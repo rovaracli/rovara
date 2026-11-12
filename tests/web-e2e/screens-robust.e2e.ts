@@ -29,6 +29,17 @@ async function shellIntact(page: Page) {
  await expect(page.locator(".rv-app-shell.rv-nav-v2")).toBeVisible();
  await expect(page.locator("aside").getByRole("navigation", { name: "Workspace" })).toBeVisible();
 }
+/**
+ * Presses Reload on the page error (the page loads again, at the same address), then runs `recovered` on the page the person is left with. Playwright's WebKit keeps a failed script fetch with the page it
+ * failed on, across a reload and after the route is removed (`unroute`), so there the recovery is looked at on a fresh page of the same browser context at that address; every other browser looks at the reloaded page itself.
+ */
+async function reloadAndRecover(page: Page, context: BrowserContext, browserName: string, recovered: (page: Page) => Promise<void>) {
+ const before = page.url(), loaded = page.waitForEvent("load");await page.getByRole("button", { name: "Reload" }).click();await loaded;
+ expect(page.url()).toBe(before);
+ if (browserName !== "webkit") { await recovered(page);return; }
+ const address = new URL(page.url()), fresh = await context.newPage();
+ await mockRealtime(fresh);await fresh.goto(address.pathname + address.search);await recovered(fresh);
+}
 /** Holds the answers to `pattern` until the returned release is called, so the loading state can be seen. */
 async function hold(page: Page, pattern: string | RegExp): Promise<() => void> {
  let release!: () => void;const gate = new Promise<void>(resolve => { release = resolve; });
@@ -141,7 +152,7 @@ test.describe("Work", () => {
   await page.unroute(/\/v1\/web\/live(\?|$)/u);await alert.getByRole("button", { name: "Try again" }).click();
   await expect(page.locator(".rv-work-row").first()).toBeVisible();
  });
- test("a screen whose code cannot load (a release changed under the page): a page that says so with Reload, never a blank page; Reload recovers", async ({ page, context, request, baseURL }) => {
+ test("a screen whose code cannot load (a release changed under the page): a page that says so with Reload, never a blank page; Reload recovers", async ({ page, context, request, baseURL, browserName }) => {
   await enter(page, context, request, baseURL, "work");
   await page.route(/\/app\/assets\/WorkListScreen[^/]*\.js$/u, route => route.abort());
   await page.goto("/app");await shellIntact(page);
@@ -149,8 +160,7 @@ test.describe("Work", () => {
   await expect(page.getByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." })).toBeVisible();await notBlank(page);
   await evidenceShot(page, { path: `${shots}/work-chunk-failed-1280.png`, fullPage: true });
   await page.unroute(/\/app\/assets\/WorkListScreen[^/]*\.js$/u);
-  await page.getByRole("button", { name: "Reload" }).click();
-  await expect(page.locator(".rv-work-row").first()).toBeVisible();await shellIntact(page);
+  await reloadAndRecover(page, context, browserName, async shown => { await expect(shown.locator(".rv-work-row").first()).toBeVisible();await shellIntact(shown); });
  });
 });
 
@@ -322,16 +332,46 @@ for (const [label, scenario, path, chunk, extra] of [
   await expect(page.locator("main").getByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." })).toHaveCount(0);await shellIntact(page);
  });
 }
-test("Reload works on an address the app would not link to (a query with + : and ,): the page reloads to the same address", async ({ page, context, request, baseURL }) => {
+// A stale deploy, as a real one looks: the old chunk's script AND its stylesheet are gone (404). Vite preloads a chunk's CSS first and throws a plain Error ("Unable to preload CSS for ..."), not the TypeError a missing
+// script alone gives, so this is the case that used to read "Something went wrong on this page." instead of "Rovara was updated. Reload to continue."
+for (const [label, path, chunk, extra] of [
+ ["Insights", "/app/insights", /\/app\/assets\/InsightsScreen-[^/]*\.(js|css)$/u, "insights"],
+ ["the task page's Continue in your own tool", TASK, /\/app\/assets\/ContinueInTool-[^/]*\.(js|css)$/u, "continue"],
+] as const) {
+ test(`${label}: its script and stylesheet both 404 (a stale deploy): the page says 'Rovara was updated' with Reload, never 'Something went wrong'; Reload recovers`, async ({ page, context, request, baseURL, browserName }) => {
+  const mocks = async (p: Page) => { if (extra === "insights") await mockInsights(p, "owner");else await p.route("**/v1/web/projects/payments/lessons/local-tools", route => route.fulfill({ json: { enabled: true, preset: "standard", companyStays: false } })); };
+  await enter(page, context, request, baseURL, extra === "insights" ? "home" : "workspace");await mocks(page);
+  await page.route(chunk, route => route.fulfill({ status: 404, contentType: "text/plain", body: "Not found" }));
+  await page.goto(path);
+  const updated = extra === "insights" ? page.locator("main").getByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." }) : page.getByRole("alert").filter({ hasText: "Couldn't load this part." });
+  await expect(updated).toBeVisible();
+  // The words of a generic crash are nowhere.
+  await expect(page.getByText("Something went wrong on this page.")).toHaveCount(0);
+  await shellIntact(page);
+  if (extra === "insights") await notBlank(page);
+  await page.unroute(chunk);
+  await reloadAndRecover(page, context, browserName, async shown => {
+   if (shown !== page) await mocks(shown);
+   // The screen itself is back (so the two checks below are not vacuous), with no page error or part error.
+   if (extra === "insights") await expect(shown.getByRole("heading", { name: "Insights", level: 1 })).toBeVisible();
+   else await expect(shown.getByRole("region", { name: "Where this task stands" })).toBeVisible();
+   await expect(shown.getByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." })).toHaveCount(0);
+   await expect(shown.getByRole("alert").filter({ hasText: "Couldn't load this part." })).toHaveCount(0);
+   await shellIntact(shown);
+  });
+ });
+}
+test("Reload works on an address the app would not link to (a query with + : and ,): the page reloads to the same address", async ({ page, context, request, baseURL, browserName }) => {
   await enter(page, context, request, baseURL, "work");
   const chunk = /\/app\/assets\/WorkListScreen-[^/]*\.js$/u, address = "/app/work?filter=mine&q=a+b:c,d";
   await page.route(chunk, route => route.abort());
   await page.goto(address);
   await expect(page.getByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." })).toBeVisible();
   await page.unroute(chunk);
-  const reloaded = page.waitForEvent("load");await page.getByRole("button", { name: "Reload" }).click();await reloaded;
-  expect(new URL(page.url()).pathname + new URL(page.url()).search).toBe(address);
-  await expect(page.getByRole("heading", { name: "Work", level: 1 })).toBeVisible();
+  await reloadAndRecover(page, context, browserName, async shown => {
+   expect(new URL(shown.url()).pathname + new URL(shown.url()).search).toBe(address);
+   await expect(shown.getByRole("heading", { name: "Work", level: 1 })).toBeVisible();
+  });
 });
 test("Continue in your own tool's code cannot load: the task page stays, the part says so with Reload", async ({ page, context, request, baseURL }) => {
   await taskPage(page, context, request, baseURL);

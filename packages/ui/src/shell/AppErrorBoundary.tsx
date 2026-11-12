@@ -8,7 +8,7 @@ const APP_ERROR_CSS = ".rv-app-error{min-height:100dvh;background:var(--rv-bg);c
 /** What App shows when anything above or around the router fails (the theme, the announcer, the router itself): the Rovara mark, the page error and Reload, in the one look. */
 export function AppErrorPage({ error, reload }: { error: unknown; reload: () => void }) {
  useLayoutEffect(() => { document.documentElement.setAttribute("data-look", "v2"); }, []);
- return <div className="rv-app-error"><ThemeSheet extra={APP_ERROR_CSS} /><span className="rv-wordmark">Rovara</span><PageError error={error} reload={reload} /></div>;
+ return <div className="rv-app-error"><ThemeSheet extra={APP_ERROR_CSS} /><span className="rv-wordmark">Rovara</span><main><PageError error={error} reload={reload} /></main></div>;
 }
 export function AppErrorBoundary({ host, children }: { host: AppHost; children: ReactNode }) {
  const reload = () => { reloadPage(host); };

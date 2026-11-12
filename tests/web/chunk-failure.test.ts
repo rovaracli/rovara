@@ -5,7 +5,8 @@ import { expect, it, vi } from "vitest";
 import { screen, configure as configureDom } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-vi.mock("../../packages/ui/src/screens/live/WorkListScreen.js", () => { throw new TypeError("Failed to fetch dynamically imported module: /app/assets/WorkListScreen-x.js"); });
+// vitest wraps an error thrown by a mock factory in its own words, so the module is replaced by one whose export throws when the route reads it, as the browser's own words for a failed import.
+vi.mock("../../packages/ui/src/screens/live/WorkListScreen.js", () => ({ get WorkListScreen(): never { throw new TypeError("Failed to fetch dynamically imported module: /app/assets/WorkListScreen-x.js"); } }));
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -21,8 +22,7 @@ it("Work's chunk cannot load: 'Rovara was updated' with Reload, and the navigati
  const nav = navFixture(), f = fakeHost(async () => ({ status: 200, body: nav })), query = createQueryClient();query.setQueryData(["nav"], nav);
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: ["/app/work"] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }));
- // vitest reports the failed module in its own words, so the heading is either of the page error's two; what matters is where it is: in the main column, inside the shell.
- const heading = await screen.findByRole("heading", { level: 1, name: /^(Rovara was updated\. Reload to continue\.|Something went wrong on this page\.)$/u });
+ const heading = await screen.findByRole("heading", { level: 1, name: "Rovara was updated. Reload to continue." });
  expect(heading.closest("main")).not.toBeNull();
  expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
  expect(ui.container.querySelector(".rv-app-shell")).not.toBeNull();

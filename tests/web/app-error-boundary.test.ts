@@ -2,7 +2,7 @@
 // App's outermost boundary wraps the theme and the announcer (decision 125 follow-up): a failure in ThemeProvider itself still ends in a styled page with the Rovara mark and Reload. Its fallback brings
 // its own sheet from the same tokens, so the page is styled even though ThemeProvider never wrote one.
 import { afterEach, expect, it, vi } from "vitest";
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { createMemoryRouter } from "react-router";
 vi.mock("../../packages/ui/src/theme.js", async original => ({ ...(await original<ThemeModule>()), ThemeProvider: () => { throw new Error("the theme could not start"); } }));
 import { App } from "../../packages/ui/src/App.js";
@@ -22,6 +22,8 @@ it("a crash in ThemeProvider shows the styled app error page: the Rovara mark, t
  const page = ui.container.querySelector(".rv-app-error");
  expect(page).not.toBeNull();
  expect(page?.querySelector(".rv-wordmark")?.textContent).toBe("Rovara");
+ // The page error sits in a main landmark, so a screen reader can reach it.
+ expect(within(page as HTMLElement).getByRole("main").querySelector("h1")?.textContent).toBe("Something went wrong on this page.");
  const sheet = page?.querySelector("style")?.textContent ?? "";
  expect(sheet).toContain("--rv-bg:");expect(sheet).toContain(':root[data-look="v2"]');expect(sheet).toContain(".rv-app-error{");
  expect(document.documentElement.getAttribute("data-look")).toBe("v2");
