@@ -421,8 +421,10 @@ export class ControlPlaneStack extends Stack {
       // environment stays under Lambda's 4 KB.
       broker.addEnvironment("AGENTX_CLOUD", "true");
       // The web app's company admin console (Settings: models, people, budgets, health, how we work) is shown only where the broker lists "admin" in
-      // WEB_FEATURES (app-nav/nav.ts; owners and admins only). The other names (usage, chains, describe) are placeholder pages and stay off.
-      BrokerSettings.of(broker).add("webFeatures", "admin");
+      // WEB_FEATURES (app-nav/nav.ts; owners and admins only). Automations (`chains`: chains, triggers, automatic runs) are ON by default (owner decision 149, 2026-11-12):
+      // (names are joined by `-`: a packed value cannot hold a comma) every cloud install lists it, a fresh one and an existing one on its next deploy, since the list is a constant of the stack and no parameter overrides it. Turning
+      // automations off stops what is running (owner decision 143c, chains/automations-gate.ts). The other names (usage, describe) are placeholder pages and stay off.
+      BrokerSettings.of(broker).add("webFeatures", "admin-chains");
     }
     // Spec 043: SWE-bench runs. The broker reads the optional eval stack's settings, the runner image
     // and the worker model per request, and starts the eval state machine by its fixed name; both
