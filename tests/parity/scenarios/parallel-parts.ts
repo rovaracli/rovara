@@ -1,0 +1,13 @@
+import { defineScenario } from "../harness/types.js";
+
+// A feature scenario: its steps are the feature's own (`feature`), which an engine drives once its driver is written.
+export default defineScenario({
+  id: "parallel-parts",
+  title: "A plan with parts runs them in parallel and restacks",
+  areas: [11],
+  kind: "happy",
+  steps: [
+    { do: "start", request: "Add a greet(name) function", path: "QUICK" },
+    { do: "feature", name: "parallel-parts" },
+  ],
+});
