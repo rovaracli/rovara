@@ -59,8 +59,10 @@ describe("the Auditor's route allow-list", () => {
       ["GET", "/v1/app/org/audit/records"], ["GET", "/v1/dev/org/audit/records"], ["GET", "/v1/app/org/audit/status"], ["POST", "/v1/app/org/audit/exports"],
       ["POST", "/v1/dev/org/audit/exports"], ["GET", "/v1/app/org/audit/exports/exp_abc-123"], ["GET", "/v1/app/me"], ["GET", "/v1/app/install"],
       ["GET", "/v1/app/projects/payments/lessons"], ["GET", "/v1/app/projects/payments/lessons/sources"],
+      // Company memberships (brief section 9): the Auditor lists its own companies and switches its browser session between them.
+      ["GET", "/v1/app/companies"], ["POST", "/v1/app/companies"],
     ] as const) expect(refused(method, path), `${method} ${path}`).toBeUndefined();
-    expect(AUDITOR_ALLOWED_ROUTES.length).toBe(8);
+    expect(AUDITOR_ALLOWED_ROUTES.length).toBe(10);
   });
 
   it("refuses every write route of a representative set with a fixed FORBIDDEN sentence", () => {

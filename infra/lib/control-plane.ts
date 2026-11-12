@@ -15,6 +15,7 @@ import type { RegistryDomain } from "./registry-access.js";
 import type { TeamRecordContext } from "./team-record-edition.js";
 import { ModelAccess } from "./model-access.js";
 import { ModelProxy } from "./model-proxy.js";
+import type { ModelProxyTls } from "./model-proxy-tls.js";
 import { bedrockClaudeModelIds, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import { resolve } from "node:path";
 import {
@@ -22,6 +23,7 @@ import {
   Aws,
   CfnCondition,
   CfnOutput,
+  type CfnResource,
   CfnParameter,
   Duration,
   Fn,
@@ -107,6 +109,8 @@ export interface ControlPlaneStackProps extends StackProps {
   modelEndpointCidrs?: readonly string[];
   /** Enterprise installs: the model proxy runs LiteLLM from the install's own ECR (loaded from the signed release bundle). Absent: the public image, as before. */
   bundledImages?: boolean;
+  /** MODEL-PROXY-TLS (decision 110): the model proxy's HTTPS name and certificate (infra/lib/model-proxy-tls.ts). Absent: the plain-http proxy, as before. */
+  modelProxyTls?: ModelProxyTls;
   /** Extra environment variables for the broker, from the install's own settings (the private MCP ranges, `privateMcpBrokerEnvironment`). Absent: none. */
   brokerEnvironment?: Readonly<Record<string, string>>;
   /** QA6-10: the release this deploy carries (`-c agentxReleaseVersion=0.5.8`), told to the broker as AGENTX_RELEASE_VERSION (the variable the health route already reads) so the app can show it. Absent: the broker has none, and the templates are unchanged. */
@@ -1590,6 +1594,7 @@ export class ControlPlaneStack extends Stack {
         models: bedrockClaudeModelIds(proxyGeographyForRegion(props?.deploymentRegion ?? "us-east-1")).map((id) => ({ id })),
         ...(props?.privateEgressCidrs === undefined ? {} : { privateEgressCidrs: [...props.privateEgressCidrs, ...(props.modelEndpointCidrs ?? [])] }),
         ...(props?.bundledImages === true ? { bundledImages: true } : {}),
+        ...(props?.modelProxyTls === undefined ? {} : { tls: props.modelProxyTls }),
       });
       grantProviderKeySecrets(this, [modelProxy.taskRole.roleName]);
       // Ruling R28: the broker is outside the VPC, so it mints member keys and reads spend through this
@@ -1620,7 +1625,9 @@ export class ControlPlaneStack extends Stack {
       BrokerNames.of(broker).add("modelAccessFunction", modelAccessFunction.functionName);
       // Ruling R29: the proxy's address, which the broker hands a task's worker together with its key.
       // The load balancer's name, in the broker's names: the host is <name>.<region>.elb.amazonaws.com and the port is MODEL_PROXY_INFERENCE_PORT, so the broker builds the URL.
-      BrokerNames.of(broker).add("modelProxy", modelProxy.loadBalancerName);
+      // With TLS (decision 110) the proxy's own DNS name instead (`mh`), and the broker builds https://<name>; the broker waits for the HTTPS listeners and the name.
+      BrokerNames.of(broker).add(modelProxy.brokerName.key, modelProxy.brokerName.value);
+      for (const each of modelProxy.tlsReady) (broker.node.defaultChild as CfnResource).addDependency(each);
       // The worker asks for its key with the operation's callback capability, which the broker verifies; like the
       // setup execution read above, the one GET is exempt from the JWT authorizer.
       new apigwv2.CfnRoute(this, "ModelAccessRoute", {

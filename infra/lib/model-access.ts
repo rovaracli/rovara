@@ -51,18 +51,23 @@ export class ModelAccess extends Construct {
       }] : enterpriseHttpsEgress(props.privateEgressCidrs, "HTTPS to Secrets Manager"),
       tags,
     });
-    new ec2.CfnSecurityGroupEgress(this, "ToModelProxy", {
-      groupId: this.securityGroup.attrGroupId,
-      ipProtocol: "tcp", fromPort: port, toPort: port,
-      destinationSecurityGroupId: proxy.loadBalancerSecurityGroup.attrGroupId,
-      description: `Model proxy management port ${port} on the proxy load balancer`,
-    });
-    new ec2.CfnSecurityGroupIngress(this, "ProxyIngress", {
-      groupId: proxy.loadBalancerSecurityGroup.attrGroupId,
-      ipProtocol: "tcp", fromPort: port, toPort: port,
-      sourceSecurityGroupId: this.securityGroup.attrGroupId,
-      description: `Model proxy management port ${port} from the model access function`,
-    });
+    // The management ports the proxy serves (4001, or 8443 with TLS, both while the legacy listeners are kept). The plain-http port keeps its old ids; the group's description
+    // above names 4001 and is left as it is, because a changed description would replace the group (and the function's network interfaces) on upgrade.
+    for (const managementPort of proxy.managementPorts) {
+      const suffix = managementPort === port ? "" : "Tls";
+      new ec2.CfnSecurityGroupEgress(this, `ToModelProxy${suffix}`, {
+        groupId: this.securityGroup.attrGroupId,
+        ipProtocol: "tcp", fromPort: managementPort, toPort: managementPort,
+        destinationSecurityGroupId: proxy.loadBalancerSecurityGroup.attrGroupId,
+        description: `Model proxy management port ${managementPort} on the proxy load balancer`,
+      });
+      new ec2.CfnSecurityGroupIngress(this, `ProxyIngress${suffix}`, {
+        groupId: proxy.loadBalancerSecurityGroup.attrGroupId,
+        ipProtocol: "tcp", fromPort: managementPort, toPort: managementPort,
+        sourceSecurityGroupId: this.securityGroup.attrGroupId,
+        description: `Model proxy management port ${managementPort} from the model access function`,
+      });
+    }
 
     (handler.node.defaultChild as lambda.CfnFunction).vpcConfig = {
       subnetIds: props.subnetIds,
@@ -70,6 +75,8 @@ export class ModelAccess extends Construct {
     };
     handler.role!.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaVPCAccessExecutionRole"));
     handler.addEnvironment("MODEL_PROXY_URL", proxy.managementUrl);
+    // With TLS the function is given https://<name>:8443: never before that listener and the name exist.
+    for (const each of proxy.tlsReady) (handler.node.defaultChild as lambda.CfnFunction).addDependency(each);
     handler.addEnvironment("MODEL_PROXY_MASTER_KEY_SECRET_ARN", proxy.masterKeySecret.secretArn);
     handler.addToRolePolicy(new iam.PolicyStatement({
       sid: "ReadMasterKey",

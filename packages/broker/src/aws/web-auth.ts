@@ -3,6 +3,9 @@ import { APP_CSRF_HEADER, appCsrfMatches } from "../developer/app-csrf.js";
 import { authenticateDeveloperSessionId, type DeveloperCaller, type DeveloperRouteDependencies } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { SESSION_COOKIE, parseCookie } from "./web-session.js";
+import { checkCompanyHeader } from "../org/companies/header.js";
+import { companySwitcherEnabled } from "../org/companies/switch.js";
+import { clearCompanyReload } from "../org/companies/memberships.js";
 export const WEB_ROUTE_FAMILIES = ["me", "nav", "home", "live", "changes", "realtime", "sessions", "projects", "agents", "models", "skills", "approvals", "spend-requests", "connections", "org", "github", "budget", "usage", "notices", "chains", "chain-runs", "tasks/{id}/continue-as-task", "trash", "devices"] as const;
 export const WEB_REQUEST_REFUSED = "This request didn't come from Rovara's app.";
 export function webRouteAllowed(method: string, pathname: string): boolean {
@@ -32,6 +35,8 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  if (family === "diagnoses") return (method === "POST" && relative === "diagnoses") || (method === "GET" && /^diagnoses\/dgn_[0-9a-z]{20}$/u.test(relative));
  // UX5b: the settings screen for script tokens. Exact shapes, mirroring script-tokens/routes.ts: list, make, revoke one.
  if (family === "script-tokens") return ((method === "GET" || method === "POST") && relative === "script-tokens") || (method === "DELETE" && /^script-tokens\/stk_[0-9a-z]{20}$/u.test(relative));
+ // Company memberships (switch `cw`): the caller's own companies (read) and the session's switch (write), exact shape only; the route checks the switch and who may.
+ if (family === "companies") return relative === "companies" && (read || method === "POST");
  // Trial and billing reads (srv/trial-reads): the trial view is read-only from a browser; the billing paths are under `org/` and their routes answer GET only.
  if (family === "trial") return read && relative === "trial";
  // Insights (srv/insights-reads): the reads, exact shapes only (the grant is under `org/insights-access`, which the `org` family carries); the routes check who may.
@@ -65,6 +70,11 @@ export async function authenticateWebRequest(deps: DeveloperRouteDependencies, r
   const csrf = request.headers[APP_CSRF_HEADER];
   if (request.headers.origin !== new URL(deps.developer.issuer).origin || csrf === undefined) throw agentXError("FORBIDDEN", WEB_REQUEST_REFUSED);
   if (!appCsrfMatches(cookie, csrf)) throw agentXError("CSRF_STALE", CSRF_STALE_MESSAGE);
+ }
+ // Company memberships (switch `cw`): `x-rovara-company` only narrows; it must name the company this request is in, and is required only while that company's `companies` UI flag is on (org/companies/header.ts).
+ if (companySwitcherEnabled()) {
+  const reload = caller.companyReload;
+  await checkCompanyHeader({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, request, caller.orgId, { reload, clearReload: reload === undefined ? undefined : () => clearCompanyReload({ documentClient: deps.documentClient, tableName: deps.tableName }, caller.sessionId, reload) });
  }
  // Only this function says a caller came through a browser session with its CSRF token: Merge merges at once for such a caller and never for a token.
  return { ...caller, browserSession: true };

@@ -167,15 +167,21 @@ const ENDPOINT_HOSTS: Readonly<Record<string, readonly string[]>> = {
 export const STDIO_MCP_ENDPOINT_HOSTS = ["ecs"] as const;
 
 /**
- * The DNS firewall allow-list of an Enterprise install: only the names of the endpoints it built, the load balancers inside the VPC (the model proxy), and the
- * install's own regional STS name. No public package, image, model or chat host. The customer's admin adds what they approve (the egress allow-list setting).
+ * The DNS firewall allow-list of an Enterprise install: only the names of the endpoints it built, the internal load balancers and Aurora endpoints in the region (the model proxy and
+ * its database), and the install's own regional STS name. No public package, image, model or chat host. The customer's admin adds what they approve (the egress allow-list setting).
  */
-export function enterpriseAllowDomains(region: string, options: { stdioMcp?: boolean } = {}): string[] {
+export function enterpriseAllowDomains(region: string, options: { stdioMcp?: boolean; modelProxyElb?: boolean } = {}): string[] {
   const hosts = new Set<string>();
   for (const names of Object.values(ENDPOINT_HOSTS)) for (const name of names) hosts.add(`${name}.${region}.amazonaws.com`);
   // Package-run MCP servers (register ME-14): the controller calls the ECS API through its own interface endpoint (the MCP host construct makes it).
   if (options.stdioMcp === true) for (const name of STDIO_MCP_ENDPOINT_HOSTS) hosts.add(`${name}.${region}.amazonaws.com`);
-  hosts.add(`*.elb.${region}.amazonaws.com`);
+  // ENTERPRISE-ELB-RDS-ALLOW-BUG: an internal Application Load Balancer is named internal-<name>-<id>.<region>.elb.amazonaws.com (region BEFORE "elb"); the old
+  // `*.elb.<region>.amazonaws.com` matched Network Load Balancer names only, so the model proxy (an ALB) did not resolve. With TLS (decision 110) callers use the proxy's own name
+  // instead, but tasks started before the upgrade still use the load balancer's while the legacy listeners are kept.
+  // L2: once the proxy serves only HTTPS under its own name (TLS on, legacy listeners off), nothing resolves a load balancer's name any more, so it leaves the list.
+  if (options.modelProxyElb !== false) hosts.add(`*.${region}.elb.amazonaws.com`);
+  // The model proxy's Aurora endpoint (<cluster>.cluster-<id>.<region>.rds.amazonaws.com), which its tasks resolve to reach their database; it was missing.
+  hosts.add(`*.${region}.rds.amazonaws.com`);
   hosts.add("sts.amazonaws.com");
   return [...hosts].sort();
 }
