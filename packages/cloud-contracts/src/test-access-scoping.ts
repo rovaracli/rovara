@@ -102,7 +102,7 @@ export function scopingOfAction(service: string, action: string): ScopingRow | u
 
 export const TEST_ACCESS_SCOPING_SERVICES: readonly string[] = Object.keys(TEST_ACCESS_SCOPING).sort();
 
-/** The ARN patterns of the resource types the service's name-guarded actions act on: `{{Name}}` where the run's name goes, `{{Partition}}`, `{{Region}}` and `{{AccountId}}` tokens. Empty for a service with no name-guarded action. */
+/** The ARN patterns of every resource type of the service whose ARN starts with a caller-chosen name: `{{Name}}` where the run's name goes, `{{Partition}}`, `{{Region}}` and `{{AccountId}}` tokens. Empty for a service with none. */
 export function nameArnPatternsOf(prefix: string): readonly string[] {
   return Object.hasOwn(TEST_ACCESS_SCOPING_NAME_ARNS, prefix) ? (TEST_ACCESS_SCOPING_NAME_ARNS[prefix] ?? []) : [];
 }

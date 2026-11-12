@@ -47,8 +47,9 @@ Parameters:
     AllowedPattern: "^arn:aws:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}$"
     ConstraintDescription: Use the link from Rovara. This is an SNS topic ARN in the stack's Region.
 Resources:
-  # The ceiling. The test role, the cleanup role and every role a test run creates carry it. It allows the services below and nothing else, requires the run tag,
-  # keeps to this Region, and cannot be taken off. The per-action checks are in the RovaraTestGuard policies.
+  # The whole fence. The test role, the cleanup role and every role a test run creates carry it, so a role a run creates is limited exactly as Rovara's own: it may
+  # change only resources named rv-<run id>-... (or already carrying the run tag), read nothing outside its run, and cannot be given to a service tests do not use.
+  # It requires the run tag, keeps to this Region, and cannot be taken off.
   RovaraTestBoundary:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -58,29 +59,209 @@ Resources:
         "Version": "2012-10-17",
         "Statement": [
           {
-            "Sid": "AllowTestServices",
+            "Sid": "AllowReads",
             "Effect": "Allow",
             "Action": [
-              "apigateway:*",
+              "dynamodb:Describe*",
+              "dynamodb:Get*",
+              "dynamodb:List*",
+              "events:Describe*",
+              "events:Get*",
+              "events:List*",
+              "iam:Describe*",
+              "iam:Get*",
+              "iam:List*",
+              "kinesis:Describe*",
+              "kinesis:Get*",
+              "kinesis:List*",
+              "lambda:Describe*",
+              "lambda:Get*",
+              "lambda:List*",
+              "logs:Describe*",
+              "logs:Get*",
+              "logs:List*",
+              "s3:Describe*",
+              "s3:Get*",
+              "s3:List*",
+              "secretsmanager:Describe*",
+              "secretsmanager:Get*",
+              "secretsmanager:List*",
+              "sns:Describe*",
+              "sns:Get*",
+              "sns:List*",
+              "sqs:Describe*",
+              "sqs:Get*",
+              "sqs:List*",
+              "ssm:Describe*",
+              "ssm:Get*",
+              "ssm:List*",
+              "states:Describe*",
+              "states:Get*",
+              "states:List*",
+              "dynamodb:BatchGetItem",
+              "dynamodb:Query",
+              "dynamodb:Scan",
+              "logs:FilterLogEvents",
+              "sts:GetCallerIdentity",
+              "tag:Get*"
+            ],
+            "Resource": "*",
+            "Condition": {
+              "ArnNotLike": {
+                "aws:PrincipalArn": [
+                  {
+                    "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/rv-*"
+                  },
+                  {
+                    "Fn::Sub": "arn:${AWS::Partition}:sts::${AWS::AccountId}:assumed-role/rv-*/*"
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "Sid": "AllowRunNamed",
+            "Effect": "Allow",
+            "Action": [
               "dynamodb:*",
               "events:*",
-              "iam:*",
               "kinesis:*",
-              "kms:*",
               "lambda:*",
               "logs:*",
-              "s3:*",
               "secretsmanager:*",
               "sns:*",
               "sqs:*",
               "ssm:*",
-              "states:*",
-              "sts:GetCallerIdentity",
-              "tag:GetResources",
-              "tag:GetTagKeys",
-              "tag:GetTagValues"
+              "states:*"
             ],
-            "Resource": "*"
+            "Resource": [
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:global-table/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:*:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:events:*:${AWS::AccountId}:archive/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:events:*:${AWS::AccountId}:event-bus/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:events:*:${AWS::AccountId}:rule/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:kinesis:*:${AWS::AccountId}:stream/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:lambda:*:${AWS::AccountId}:function:rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:lambda:*:${AWS::AccountId}:layer:rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:/aws/lambda/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:logs:*:${AWS::AccountId}:log-group:rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:sns:*:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:sqs:*:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:document/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:states:*:${AWS::AccountId}:activity:rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:states:*:${AWS::AccountId}:execution:rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:states:*:${AWS::AccountId}:stateMachine:rv-${!aws:PrincipalTag/rovara-run}-*"
+              }
+            ]
+          },
+          {
+            "Sid": "AllowRunNamedS3",
+            "Effect": "Allow",
+            "Action": [
+              "s3:*"
+            ],
+            "Resource": [
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:s3:::rv-${!aws:PrincipalTag/rovara-run}-*"
+              }
+            ],
+            "Condition": {
+              "StringEquals": {
+                "s3:ResourceAccount": {
+                  "Fn::Sub": "${AWS::AccountId}"
+                }
+              }
+            }
+          },
+          {
+            "Sid": "AllowRunNamedIam",
+            "Effect": "Allow",
+            "Action": [
+              "iam:*"
+            ],
+            "Resource": [
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/rv-${!aws:PrincipalTag/rovara-run}-*"
+              }
+            ]
+          },
+          {
+            "Sid": "AllowRunTagged",
+            "Effect": "Allow",
+            "Action": [
+              "dynamodb:*",
+              "events:*",
+              "kinesis:*",
+              "lambda:*",
+              "logs:*",
+              "secretsmanager:*",
+              "sns:*",
+              "sqs:*",
+              "ssm:*",
+              "states:*"
+            ],
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "aws:ResourceTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
+              }
+            }
+          },
+          {
+            "Sid": "AllowCreateWithRunTag",
+            "Effect": "Allow",
+            "Action": [
+              "lambda:CreateEventSourceMapping"
+            ],
+            "Resource": "*",
+            "Condition": {
+              "StringEquals": {
+                "aws:RequestTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
+              }
+            }
           },
           {
             "Sid": "DenyWithoutRunTag",
@@ -130,45 +311,32 @@ Resources:
             }
           },
           {
-            "Sid": "DenyIamOutsideRunNames",
+            "Sid": "DenySecretReadsOutsideRun",
             "Effect": "Deny",
             "Action": [
-              "iam:AcceptDelegationRequest",
-              "iam:Add*",
-              "iam:AssociateDelegationRequest",
-              "iam:Attach*",
-              "iam:ChangePassword",
-              "iam:Create*",
-              "iam:DeactivateMFADevice",
-              "iam:Delete*",
-              "iam:Detach*",
-              "iam:Disable*",
-              "iam:Enable*",
-              "iam:PassRole",
-              "iam:Put*",
-              "iam:RejectDelegationRequest",
-              "iam:Remove*",
-              "iam:ResetServiceSpecificCredential",
-              "iam:ResyncMFADevice",
-              "iam:SendDelegationToken",
-              "iam:Set*",
-              "iam:Tag*",
-              "iam:Untag*",
-              "iam:Update*",
-              "iam:UploadCloudFrontPublicKey",
-              "iam:UploadSSHPublicKey",
-              "iam:UploadServerCertificate",
-              "iam:UploadSigningCertificate"
+              "lambda:GetFunction",
+              "lambda:GetFunctionConfiguration",
+              "lambda:ListFunctions",
+              "secretsmanager:BatchGetSecretValue",
+              "secretsmanager:GetSecretValue",
+              "ssm:GetParameter*",
+              "ssm:GetParametersByPath",
+              "states:DescribeExecution",
+              "states:GetActivityTask",
+              "states:GetExecutionHistory"
             ],
             "NotResource": [
               {
-                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/rv-${!aws:PrincipalTag/rovara-run}-*"
+                "Fn::Sub": "arn:${AWS::Partition}:lambda:*:${AWS::AccountId}:function:rv-${!aws:PrincipalTag/rovara-run}-*"
               },
               {
-                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/rv-${!aws:PrincipalTag/rovara-run}-*"
+                "Fn::Sub": "arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:rv-${!aws:PrincipalTag/rovara-run}-*"
               },
               {
-                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/rv-${!aws:PrincipalTag/rovara-run}-*"
+                "Fn::Sub": "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:parameter/rv-${!aws:PrincipalTag/rovara-run}-*"
+              },
+              {
+                "Fn::Sub": "arn:${AWS::Partition}:states:*:${AWS::AccountId}:execution:rv-${!aws:PrincipalTag/rovara-run}-*"
               }
             ]
           },
@@ -189,25 +357,45 @@ Resources:
             }
           },
           {
-            "Sid": "DenyBoundaryRemoval",
+            "Sid": "DenyRoleWithoutRunTag",
             "Effect": "Deny",
             "Action": [
-              "iam:DeleteRolePermissionsBoundary",
-              "iam:DeleteUserPermissionsBoundary",
-              "iam:PutUserPermissionsBoundary"
+              "iam:CreateRole"
             ],
-            "Resource": "*"
+            "Resource": "*",
+            "Condition": {
+              "StringNotEquals": {
+                "aws:RequestTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
+              }
+            }
           },
           {
-            "Sid": "DenyLongLivedKeys",
+            "Sid": "DenyPassRoleToOtherServices",
+            "Effect": "Deny",
+            "Action": [
+              "iam:PassRole"
+            ],
+            "Resource": "*",
+            "Condition": {
+              "StringNotEquals": {
+                "iam:PassedToService": [
+                  "events.amazonaws.com",
+                  "lambda.amazonaws.com",
+                  "scheduler.amazonaws.com",
+                  "states.amazonaws.com"
+                ]
+              }
+            }
+          },
+          {
+            "Sid": "DenyBoundaryRemovalAndKeys",
             "Effect": "Deny",
             "Action": [
               "iam:CreateAccessKey",
               "iam:CreateLoginProfile",
-              "iam:CreateServiceSpecificCredential",
               "iam:CreateUser",
-              "iam:UpdateLoginProfile",
-              "iam:UploadSSHPublicKey"
+              "iam:DeleteRolePermissionsBoundary",
+              "iam:UpdateAssumeRolePolicy"
             ],
             "Resource": "*"
           }
@@ -225,12 +413,10 @@ Resources:
             "Sid": "AllowTestServices",
             "Effect": "Allow",
             "Action": [
-              "apigateway:*",
               "dynamodb:*",
               "events:*",
               "iam:*",
               "kinesis:*",
-              "kms:*",
               "lambda:*",
               "logs:*",
               "s3:*",
@@ -249,862 +435,6 @@ Resources:
         ]
       }
 
-  RovaraTestGuard1:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      Description: "Per-action limits of the test role: it creates only with the run tag and changes only what carries it (part 1 of 4). Rovara test access."
-      PolicyDocument: {
-        "Version": "2012-10-17",
-        "Statement": [
-          {
-            "Sid": "DenyCreateWithoutRunTag1",
-            "Effect": "Deny",
-            "Action": [
-              "apigateway:CreatePortal",
-              "apigateway:CreatePortalProduct",
-              "apigateway:DELETE",
-              "apigateway:PATCH",
-              "apigateway:POST",
-              "apigateway:PUT",
-              "apigateway:UpdatePortal",
-              "apigateway:UpdatePortalProduct",
-              "dynamodb:CreateTable",
-              "events:CreateEventBus",
-              "events:CreateEventSource",
-              "events:CreateSubscriber",
-              "events:PutRule",
-              "iam:CreateInstanceProfile",
-              "iam:CreateOpenIDConnectProvider",
-              "iam:CreateRole",
-              "iam:CreateSAMLProvider",
-              "iam:CreateUser",
-              "iam:CreateVirtualMFADevice",
-              "iam:UploadServerCertificate",
-              "kinesis:CreateStream",
-              "kinesis:RegisterStreamConsumer",
-              "kms:CreateKey",
-              "lambda:CreateCapacityProvider",
-              "lambda:CreateCodeSigningConfig",
-              "lambda:CreateEventSourceMapping",
-              "lambda:CreateFunction",
-              "lambda:CreateMicrovmImage",
-              "lambda:CreateNetworkConnector",
-              "lambda:CreateWebFunction",
-              "logs:CreateDelivery",
-              "logs:CreateLogAnomalyDetector",
-              "logs:CreateLogGroup",
-              "logs:CreateLookupTable",
-              "logs:CreateScheduledQuery",
-              "logs:PutDeliveryDestination",
-              "logs:PutDeliverySource",
-              "logs:PutDestination",
-              "logs:UpdateDeliveryConfiguration",
-              "s3:CreateAccessPoint",
-              "s3:CreateBucket",
-              "s3:CreateJob",
-              "s3:CreateStorageLensGroup",
-              "s3:PutStorageLensConfiguration",
-              "secretsmanager:CreateSecret",
-              "sns:CreateTopic",
-              "sqs:CreateQueue",
-              "ssm:CreateActivation",
-              "ssm:CreateAssociation",
-              "ssm:CreateAssociationBatch",
-              "ssm:CreateCloudConnector",
-              "ssm:CreateDocument",
-              "ssm:CreateMaintenanceWindow",
-              "ssm:CreateOpsItem",
-              "ssm:CreateOpsMetadata",
-              "ssm:CreatePatchBaseline",
-              "ssm:PutParameter",
-              "ssm:RegisterManagedInstance",
-              "ssm:StartAccessRequest",
-              "ssm:StartAutomationExecution",
-              "ssm:StartChangeRequestExecution",
-              "states:CreateActivity",
-              "states:CreateStateMachine",
-              "states:UpdateStateMachine"
-            ],
-            "Resource": "*",
-            "Condition": {
-              "StringNotEquals": {
-                "aws:RequestTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
-              }
-            }
-          },
-          {
-            "Sid": "DenyChangesToOtherResources1",
-            "Effect": "Deny",
-            "Action": [
-              "apigateway:AddCertificateToDomain",
-              "apigateway:CreateAccessAssociation",
-              "apigateway:DeletePortal",
-              "apigateway:DeletePortalProduct",
-              "apigateway:DeletePortalProductSharingPolicy",
-              "apigateway:DeleteProductPage",
-              "apigateway:DeleteProductRestEndpointPage",
-              "apigateway:DisablePortal",
-              "apigateway:PreviewPortal",
-              "apigateway:PublishPortal",
-              "apigateway:PutPortalProductSharingPolicy",
-              "apigateway:RejectAccessAssociation",
-              "apigateway:RemoveCertificateFromDomain",
-              "apigateway:SetWebACL",
-              "apigateway:UpdateDomainNameManagementPolicy",
-              "apigateway:UpdateDomainNamePolicy",
-              "apigateway:UpdateProductPage",
-              "apigateway:UpdateProductRestEndpointPage",
-              "apigateway:UpdateRestApiPolicy",
-              "dynamodb:AssociateTableReplica",
-              "dynamodb:BatchWriteItem",
-              "dynamodb:BulkPutItems",
-              "dynamodb:DeleteGlobalTableWitness",
-              "dynamodb:DeleteItem",
-              "dynamodb:DeleteResourcePolicy",
-              "dynamodb:DeleteTable",
-              "dynamodb:DeleteTableReplica",
-              "dynamodb:DisableKinesisStreamingDestination",
-              "dynamodb:DisassociateTableReplica",
-              "dynamodb:EnableKinesisStreamingDestination",
-              "dynamodb:ExportTableToPointInTime",
-              "dynamodb:PartiQLDelete",
-              "dynamodb:PartiQLInsert",
-              "dynamodb:PartiQLUpdate",
-              "dynamodb:PutItem",
-              "dynamodb:PutResourcePolicy",
-              "dynamodb:ReplicateSettings",
-              "dynamodb:RestoreTableFromAwsBackup",
-              "dynamodb:RestoreTableToPointInTime",
-              "dynamodb:StartAwsBackupJob",
-              "dynamodb:UpdateContinuousBackups",
-              "dynamodb:UpdateContributorInsights",
-              "dynamodb:UpdateItem",
-              "dynamodb:UpdateKinesisStreamingDestination",
-              "dynamodb:UpdateTable",
-              "dynamodb:UpdateTableReplicaAutoScaling",
-              "dynamodb:UpdateTimeToLive",
-              "dynamodb:WriteDataForReplication",
-              "events:AllowVendedLogDeliveryForResource",
-              "events:DeleteEventBus",
-              "events:DeleteEventSource",
-              "events:DeleteResourcePolicy",
-              "events:DeleteRule",
-              "events:DeleteSubscriber",
-              "events:DisableRule",
-              "events:EnableRule",
-              "events:PutEvents",
-              "events:PutRawEvents",
-              "events:PutResourcePolicy",
-              "events:PutTargets",
-              "events:RemoveTargets",
-              "events:RevokeResource",
-              "events:UpdateEventBus",
-              "events:UpdateEventSource",
-              "events:UpdateSubscriber",
-              "iam:AddClientIDToOpenIDConnectProvider",
-              "iam:AddRoleToInstanceProfile",
-              "iam:AttachRolePolicy",
-              "iam:AttachUserPolicy",
-              "iam:ChangePassword",
-              "iam:CreatePolicy",
-              "iam:CreatePolicyVersion",
-              "iam:DeactivateMFADevice",
-              "iam:DeleteAccessKey",
-              "iam:DeleteInstanceProfile",
-              "iam:DeleteLoginProfile",
-              "iam:DeleteOpenIDConnectProvider",
-              "iam:DeletePolicy",
-              "iam:DeletePolicyVersion",
-              "iam:DeleteRole",
-              "iam:DeleteRolePermissionsBoundary",
-              "iam:DeleteRolePolicy",
-              "iam:DeleteSAMLProvider",
-              "iam:DeleteSSHPublicKey",
-              "iam:DeleteServerCertificate",
-              "iam:DeleteServiceLinkedRole",
-              "iam:DeleteServiceSpecificCredential",
-              "iam:DeleteSigningCertificate",
-              "iam:DeleteUser",
-              "iam:DeleteUserPermissionsBoundary",
-              "iam:DeleteUserPolicy",
-              "iam:DetachRolePolicy",
-              "iam:DetachUserPolicy",
-              "iam:EnableMFADevice",
-              "iam:PassRole",
-              "iam:PutRolePermissionsBoundary",
-              "iam:PutRolePolicy",
-              "iam:PutUserPermissionsBoundary",
-              "iam:PutUserPolicy",
-              "iam:RemoveClientIDFromOpenIDConnectProvider",
-              "iam:RemoveRoleFromInstanceProfile",
-              "iam:ResetServiceSpecificCredential",
-              "iam:ResyncMFADevice",
-              "iam:SetDefaultPolicyVersion",
-              "iam:UpdateAccessKey",
-              "iam:UpdateAssumeRolePolicy",
-              "iam:UpdateLoginProfile",
-              "iam:UpdateOpenIDConnectProviderThumbprint",
-              "iam:UpdateRole",
-              "iam:UpdateRoleDescription",
-              "iam:UpdateSAMLProvider",
-              "iam:UpdateSSHPublicKey",
-              "iam:UpdateServerCertificate",
-              "iam:UpdateServiceSpecificCredential",
-              "iam:UpdateSigningCertificate",
-              "iam:UpdateUser",
-              "iam:UploadSSHPublicKey",
-              "iam:UploadSigningCertificate",
-              "kinesis:AssociateStreamsWithChannel",
-              "kinesis:DecreaseStreamRetentionPeriod",
-              "kinesis:Delete*",
-              "kinesis:DeregisterStreamConsumer",
-              "kinesis:IncreaseStreamRetentionPeriod",
-              "kinesis:MergeShards",
-              "kinesis:Put*",
-              "kinesis:SplitShard",
-              "kinesis:StartStreamEncryption",
-              "kinesis:StopStreamEncryption",
-              "kinesis:UpdateChannel",
-              "kinesis:UpdateMaxRecordSize",
-              "kinesis:UpdateStreamRecordDistributionStrategy",
-              "kinesis:UpdateStreamWarmThroughput",
-              "kms:CancelKeyDeletion",
-              "kms:CreateGrant"
-            ],
-            "Resource": "*",
-            "Condition": {
-              "StringNotEquals": {
-                "aws:ResourceTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
-              }
-            }
-          }
-        ]
-      }
-
-  RovaraTestGuard2:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      Description: "Per-action limits of the test role: it creates only with the run tag and changes only what carries it (part 2 of 4). Rovara test access."
-      PolicyDocument: {
-        "Version": "2012-10-17",
-        "Statement": [
-          {
-            "Sid": "DenyChangesToOtherResources2",
-            "Effect": "Deny",
-            "Action": [
-              "kms:Decapsulate",
-              "kms:Decrypt",
-              "kms:DeleteImportedKeyMaterial",
-              "kms:DeriveSharedSecret",
-              "kms:DisableKey",
-              "kms:DisableKeyRotation",
-              "kms:EnableKey",
-              "kms:EnableKeyRotation",
-              "kms:Encapsulate",
-              "kms:Encrypt",
-              "kms:GenerateDataKey",
-              "kms:GenerateDataKeyPair",
-              "kms:GenerateDataKeyPairWithoutPlaintext",
-              "kms:GenerateDataKeyWithoutPlaintext",
-              "kms:GenerateMac",
-              "kms:PutKeyPolicy",
-              "kms:ReEncryptFrom",
-              "kms:ReEncryptTo",
-              "kms:ReplicateKey",
-              "kms:RetireGrant",
-              "kms:RevokeGrant",
-              "kms:RotateKeyOnDemand",
-              "kms:ScheduleKeyDeletion",
-              "kms:Sign",
-              "kms:SynchronizeMultiRegionKey",
-              "kms:UpdateKeyDescription",
-              "kms:UpdatePrimaryRegion",
-              "kms:Verify",
-              "kms:VerifyMac",
-              "lambda:AddPermission",
-              "lambda:CheckpointDurableExecution",
-              "lambda:DeleteAlias",
-              "lambda:DeleteCapacityProvider",
-              "lambda:DeleteCodeSigningConfig",
-              "lambda:DeleteEventSourceMapping",
-              "lambda:DeleteFunction",
-              "lambda:DeleteFunctionCodeSigningConfig",
-              "lambda:DeleteFunctionConcurrency",
-              "lambda:DeleteFunctionEventInvokeConfig",
-              "lambda:DeleteFunctionUrlConfig",
-              "lambda:DeleteMicrovmImage",
-              "lambda:DeleteMicrovmImageVersion",
-              "lambda:DeleteNetworkConnector",
-              "lambda:DeleteProvisionedConcurrencyConfig",
-              "lambda:DeleteResourcePolicy",
-              "lambda:DeleteWebFunction",
-              "lambda:DeleteWebFunctionEndpoint",
-              "lambda:DeleteWebFunctionRevision",
-              "lambda:DisableReplication",
-              "lambda:EnableReplication",
-              "lambda:InvokeAsync",
-              "lambda:InvokeFunction",
-              "lambda:InvokeFunctionUrl",
-              "lambda:InvokeWebFunctionEndpoint",
-              "lambda:PassCapacityProvider",
-              "lambda:PublishVersion",
-              "lambda:Put*",
-              "lambda:RemovePermission",
-              "lambda:ResumeMicrovm",
-              "lambda:SendDurableExecutionCallbackFailure",
-              "lambda:SendDurableExecutionCallbackHeartbeat",
-              "lambda:SendDurableExecutionCallbackSuccess",
-              "lambda:StopDurableExecution",
-              "lambda:SuspendMicrovm",
-              "lambda:TerminateMicrovm",
-              "lambda:Update*",
-              "logs:AssociateKmsKey",
-              "logs:DeleteDataProtectionPolicy",
-              "logs:DeleteDelivery",
-              "logs:DeleteDeliveryDestination",
-              "logs:DeleteDeliveryDestinationPolicy",
-              "logs:DeleteDeliverySource",
-              "logs:DeleteDestination",
-              "logs:DeleteLogAnomalyDetector",
-              "logs:DeleteLogGroup",
-              "logs:DeleteLogStream",
-              "logs:DeleteLookupTable",
-              "logs:DeleteMetricFilter",
-              "logs:DeleteRetentionPolicy",
-              "logs:DeleteScheduledQuery",
-              "logs:DeleteSubscriptionFilter",
-              "logs:DeleteSyslogConfiguration",
-              "logs:DeleteTransformer",
-              "logs:DisassociateKmsKey",
-              "logs:IntegrateWithDataset",
-              "logs:IntegrateWithS3Table",
-              "logs:ProcessWithPipeline",
-              "logs:PutBearerTokenAuthentication",
-              "logs:PutDataProtectionPolicy",
-              "logs:PutDeliveryDestinationPolicy",
-              "logs:PutDestinationPolicy",
-              "logs:PutLogEvents",
-              "logs:PutLogGroupDeletionProtection",
-              "logs:PutMetricFilter",
-              "logs:PutRetentionPolicy",
-              "logs:PutSubscriptionFilter",
-              "logs:PutSyslogConfiguration",
-              "logs:PutTransformer",
-              "logs:UpdateAnomaly",
-              "logs:UpdateLogAnomalyDetector",
-              "logs:UpdateLookupTable",
-              "logs:UpdateScheduledQuery",
-              "s3:AssociateAccessGrantsIdentityCenter",
-              "s3:CreateAccessGrant",
-              "s3:CreateAccessGrantsInstance",
-              "s3:CreateAccessGrantsLocation",
-              "s3:DeleteAccessGrant",
-              "s3:DeleteAccessGrantsInstance",
-              "s3:DeleteAccessGrantsInstanceResourcePolicy",
-              "s3:DeleteAccessGrantsLocation",
-              "s3:DeleteStorageLensConfiguration",
-              "s3:DeleteStorageLensGroup",
-              "s3:DissociateAccessGrantsIdentityCenter",
-              "s3:PutAccessGrantsInstanceResourcePolicy",
-              "s3:UpdateAccessGrantsLocation",
-              "s3:UpdateJobPriority",
-              "s3:UpdateJobStatus",
-              "s3:UpdateStorageLensGroup",
-              "secretsmanager:CancelRotateSecret",
-              "secretsmanager:DeleteResourcePolicy",
-              "secretsmanager:DeleteSecret",
-              "secretsmanager:PutResourcePolicy",
-              "secretsmanager:PutSecretValue",
-              "secretsmanager:RemoveRegionsFromReplication",
-              "secretsmanager:ReplicateSecretToRegions",
-              "secretsmanager:RestoreSecret",
-              "secretsmanager:RotateSecret",
-              "secretsmanager:StopReplicationToReplica",
-              "secretsmanager:UpdateSecret",
-              "secretsmanager:UpdateSecretVersionStage",
-              "secretsmanager:ValidateResourcePolicy",
-              "sns:AddPermission",
-              "sns:ConfirmSubscription",
-              "sns:DeleteTopic",
-              "sns:Publish",
-              "sns:PutDataProtectionPolicy",
-              "sns:RemovePermission",
-              "sns:SetSubscriptionAttributes",
-              "sns:SetTopicAttributes",
-              "sns:Unsubscribe",
-              "sqs:AddPermission",
-              "sqs:CancelMessageMoveTask",
-              "sqs:ChangeMessageVisibility",
-              "sqs:DeleteMessage",
-              "sqs:DeleteQueue",
-              "sqs:PurgeQueue",
-              "sqs:RemovePermission",
-              "sqs:SendMessage",
-              "sqs:SetQueueAttributes",
-              "sqs:StartMessageMoveTask",
-              "ssm:AssociateOpsItemRelatedItem",
-              "ssm:CancelMaintenanceWindowExecution",
-              "ssm:DeleteAssociation",
-              "ssm:DeleteCloudConnector",
-              "ssm:DeleteDocument",
-              "ssm:DeleteMaintenanceWindow",
-              "ssm:DeleteOpsItem",
-              "ssm:DeleteOpsMetadata",
-              "ssm:DeleteParameter",
-              "ssm:DeleteParameters",
-              "ssm:DeletePatchBaseline",
-              "ssm:DeregisterManagedInstance",
-              "ssm:DeregisterPatchBaselineForPatchGroup",
-              "ssm:DeregisterTargetFromMaintenanceWindow",
-              "ssm:DeregisterTaskFromMaintenanceWindow",
-              "ssm:DisassociateOpsItemRelatedItem",
-              "ssm:LabelParameterVersion",
-              "ssm:ModifyDocumentPermission",
-              "ssm:PutCalendar",
-              "ssm:PutComplianceItems",
-              "ssm:SendAutomationSignal",
-              "ssm:StartAssociationsOnce",
-              "ssm:StartSession",
-              "ssm:StopAutomationExecution",
-              "ssm:UnlabelParameterVersion",
-              "ssm:UpdateAssociation",
-              "ssm:UpdateAssociationStatus",
-              "ssm:UpdateCloudConnector",
-              "ssm:UpdateDocument",
-              "ssm:UpdateDocumentDefaultVersion",
-              "ssm:UpdateDocumentMetadata",
-              "ssm:UpdateInstanceAssociationStatus",
-              "ssm:UpdateInstanceInformation",
-              "ssm:UpdateMaintenanceWindow",
-              "ssm:UpdateMaintenanceWindowTarget",
-              "ssm:UpdateMaintenanceWindowTask",
-              "ssm:UpdateManagedInstancePublicKey",
-              "ssm:UpdateOpsItem",
-              "ssm:UpdateOpsMetadata",
-              "ssm:UpdatePatchBaseline",
-              "states:Delete*",
-              "states:GetActivityTask",
-              "states:PublishStateMachineVersion",
-              "states:RedriveExecution",
-              "states:StartExecution",
-              "states:StartSyncExecution",
-              "states:StopExecution",
-              "states:UpdateStateMachineAlias"
-            ],
-            "Resource": "*",
-            "Condition": {
-              "StringNotEquals": {
-                "aws:ResourceTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
-              }
-            }
-          }
-        ]
-      }
-
-  RovaraTestGuard3:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      Description: "Per-action limits of the test role: it creates only with the run tag and changes only what carries it (part 3 of 4). Rovara test access."
-      PolicyDocument: {
-        "Version": "2012-10-17",
-        "Statement": [
-          {
-            "Sid": "DenyChangesOutsideRunNames1",
-            "Effect": "Deny",
-            "Action": [
-              "apigateway:CreateRoutingRule",
-              "apigateway:DeleteRoutingRule",
-              "apigateway:UpdateRoutingRule",
-              "dynamodb:CreateBackup",
-              "dynamodb:CreateGlobalTable",
-              "dynamodb:CreateGlobalTableWitness",
-              "dynamodb:CreateTableReplica",
-              "dynamodb:DeleteBackup",
-              "dynamodb:ImportTable",
-              "dynamodb:RestoreTableFromBackup",
-              "dynamodb:TagResource",
-              "dynamodb:UntagResource",
-              "dynamodb:UpdateGlobalTable",
-              "dynamodb:UpdateGlobalTableSettings",
-              "dynamodb:UpdateGlobalTableVersion",
-              "events:ActivateEventSource",
-              "events:CancelReplay",
-              "events:CreateApiDestination",
-              "events:CreateConnection",
-              "events:CreateEndpoint",
-              "events:CreatePartnerEventSource",
-              "events:DeactivateEventSource",
-              "events:DeauthorizeConnection",
-              "events:DeleteApiDestination",
-              "events:DeleteArchive",
-              "events:DeleteConnection",
-              "events:DeleteEndpoint",
-              "events:DeletePartnerEventSource",
-              "events:InvokeApiDestination",
-              "events:RetrieveConnectionCredentials",
-              "events:StartReplay",
-              "events:UpdateApiDestination",
-              "events:UpdateConnection",
-              "events:UpdateEndpoint",
-              "kinesis:AddTagsToStream",
-              "kinesis:RemoveTagsFromStream",
-              "lambda:AddLayerVersionPermission",
-              "lambda:CreateAlias",
-              "lambda:CreateFunctionUrlConfig",
-              "lambda:CreateMicrovmAuthToken",
-              "lambda:CreateMicrovmShellAuthToken",
-              "lambda:CreateWebFunctionEndpoint",
-              "lambda:CreateWebFunctionRevision",
-              "lambda:DeleteLayerVersion",
-              "lambda:PublishLayerVersion",
-              "lambda:RemoveLayerVersionPermission",
-              "lambda:RunMicrovm",
-              "logs:CreateExportTask",
-              "logs:CreateLogStream",
-              "logs:TagLogGroup",
-              "logs:UntagLogGroup",
-              "s3:AbortMultipartUpload",
-              "s3:BypassGovernanceRetention",
-              "s3:CreateAccessPointForObjectLambda",
-              "s3:CreateBucketMetadataTableConfiguration",
-              "s3:DeleteAccessPoint",
-              "s3:DeleteAccessPointForObjectLambda",
-              "s3:DeleteAccessPointPolicy",
-              "s3:DeleteAccessPointPolicyForObjectLambda",
-              "s3:DeleteBucket",
-              "s3:DeleteBucketMetadataTableConfiguration",
-              "s3:DeleteBucketPolicy",
-              "s3:DeleteBucketWebsite",
-              "s3:DeleteObject",
-              "s3:DeleteObjectAnnotation",
-              "s3:DeleteObjectTagging",
-              "s3:DeleteObjectVersion",
-              "s3:DeleteObjectVersionAnnotation",
-              "s3:DeleteObjectVersionTagging",
-              "s3:InitiateReplication",
-              "s3:ObjectOwnerOverrideToBucketOwner",
-              "s3:PauseReplication",
-              "s3:PutAccelerateConfiguration",
-              "s3:PutAccessPointConfigurationForObjectLambda",
-              "s3:PutAccessPointPolicy",
-              "s3:PutAccessPointPolicyForObjectLambda",
-              "s3:PutAnalyticsConfiguration",
-              "s3:PutBucketAbac",
-              "s3:PutBucketAcl",
-              "s3:PutBucketCORS",
-              "s3:PutBucketLogging",
-              "s3:PutBucketNotification",
-              "s3:PutBucketObjectLockConfiguration",
-              "s3:PutBucketOwnershipControls",
-              "s3:PutBucketPolicy",
-              "s3:PutBucketPublicAccessBlock",
-              "s3:PutBucketRequestPayment",
-              "s3:PutBucketTagging",
-              "s3:PutBucketVersioning",
-              "s3:PutBucketWebsite",
-              "s3:PutEncryptionConfiguration",
-              "s3:PutIntelligentTieringConfiguration",
-              "s3:PutInventoryConfiguration",
-              "s3:PutLifecycleConfiguration",
-              "s3:PutMetricsConfiguration",
-              "s3:PutObject",
-              "s3:PutObjectAcl",
-              "s3:PutObjectAnnotation"
-            ],
-            "NotResource": [
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:${AWS::AccountId}:/domainnames/rv-${!aws:PrincipalTag/rovara-run}-*/routingrules/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb::${AWS::AccountId}:global-table/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*/backup/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*/stream/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}::event-source/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:api-destination/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:archive/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:connection/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:endpoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:replay/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:kinesis:${AWS::Region}:${AWS::AccountId}:stream/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:layer:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:layer:rv-${!aws:PrincipalTag/rovara-run}-*:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:web-function/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:rv-${!aws:PrincipalTag/rovara-run}-*:log-stream:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3-object-lambda:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:::rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:::rv-${!aws:PrincipalTag/rovara-run}-*/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*/object/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:resource-data-sync/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:activity:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:mapRun:rv-${!aws:PrincipalTag/rovara-run}-*/*:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:rv-${!aws:PrincipalTag/rovara-run}-*"
-              }
-            ]
-          }
-        ]
-      }
-
-  RovaraTestGuard4:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      Description: "Per-action limits of the test role: it creates only with the run tag and changes only what carries it (part 4 of 4). Rovara test access."
-      PolicyDocument: {
-        "Version": "2012-10-17",
-        "Statement": [
-          {
-            "Sid": "DenyChangesOutsideRunNames2",
-            "Effect": "Deny",
-            "Action": [
-              "s3:PutObjectLegalHold",
-              "s3:PutObjectRetention",
-              "s3:PutObjectTagging",
-              "s3:PutObjectVersionAcl",
-              "s3:PutObjectVersionAnnotation",
-              "s3:PutObjectVersionTagging",
-              "s3:PutReplicationConfiguration",
-              "s3:ReplicateDelete",
-              "s3:ReplicateObject",
-              "s3:ReplicateObjectAnnotation",
-              "s3:ReplicateTags",
-              "s3:RestoreObject",
-              "s3:UpdateBucketMetadataAnnotationTableConfiguration",
-              "s3:UpdateBucketMetadataInventoryTableConfiguration",
-              "s3:UpdateBucketMetadataJournalTableConfiguration",
-              "s3:UpdateObjectEncryption",
-              "sns:Subscribe",
-              "sns:TagResource",
-              "sns:UntagResource",
-              "sqs:TagQueue",
-              "sqs:UntagQueue",
-              "ssm:CreateResourceDataSync",
-              "ssm:DeleteResourceDataSync",
-              "ssm:UpdateResourceDataSync",
-              "states:CreateStateMachineAlias",
-              "states:TagResource",
-              "states:UntagResource",
-              "states:UpdateMapRun"
-            ],
-            "NotResource": [
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:${AWS::AccountId}:/domainnames/rv-${!aws:PrincipalTag/rovara-run}-*/routingrules/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb::${AWS::AccountId}:global-table/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*/backup/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*/stream/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}::event-source/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:api-destination/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:archive/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:connection/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:endpoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:replay/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:kinesis:${AWS::Region}:${AWS::AccountId}:stream/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:layer:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:layer:rv-${!aws:PrincipalTag/rovara-run}-*:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:web-function/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:rv-${!aws:PrincipalTag/rovara-run}-*:log-stream:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3-object-lambda:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:::rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:::rv-${!aws:PrincipalTag/rovara-run}-*/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*/object/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:resource-data-sync/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:activity:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:mapRun:rv-${!aws:PrincipalTag/rovara-run}-*/*:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:rv-${!aws:PrincipalTag/rovara-run}-*"
-              }
-            ]
-          },
-          {
-            "Sid": "DenyTaggingOtherRuns1",
-            "Effect": "Deny",
-            "Action": [
-              "dynamodb:TagResource",
-              "dynamodb:UntagResource",
-              "events:TagResource",
-              "events:UntagResource",
-              "iam:Tag*",
-              "iam:Untag*",
-              "kinesis:AddTagsToStream",
-              "kinesis:CreateChannel",
-              "kinesis:RemoveTagsFromStream",
-              "kinesis:TagResource",
-              "kinesis:UntagResource",
-              "kms:TagResource",
-              "kms:UntagResource",
-              "lambda:TagResource",
-              "lambda:UntagResource",
-              "logs:TagLogGroup",
-              "logs:TagResource",
-              "logs:UntagLogGroup",
-              "logs:UntagResource",
-              "s3:DeleteJobTagging",
-              "s3:DeleteObjectTagging",
-              "s3:DeleteObjectVersionTagging",
-              "s3:DeleteStorageLensConfigurationTagging",
-              "s3:PutBucketTagging",
-              "s3:PutJobTagging",
-              "s3:PutObjectTagging",
-              "s3:PutObjectVersionTagging",
-              "s3:PutStorageLensConfigurationTagging",
-              "s3:ReplicateTags",
-              "s3:TagResource",
-              "s3:UntagResource",
-              "secretsmanager:TagResource",
-              "secretsmanager:UntagResource",
-              "sns:TagResource",
-              "sns:UntagResource",
-              "sqs:TagQueue",
-              "sqs:UntagQueue",
-              "ssm:AddTagsToResource",
-              "ssm:RemoveTagsFromResource",
-              "states:TagResource",
-              "states:UntagResource"
-            ],
-            "Resource": "*",
-            "Condition": {
-              "Null": {
-                "aws:ResourceTag/rovara-run": "false"
-              },
-              "StringNotEquals": {
-                "aws:ResourceTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
-              }
-            }
-          }
-        ]
-      }
-
   RovaraTestCleanupPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -1116,9 +446,6 @@ Resources:
             "Sid": "AllowReadAndDelete",
             "Effect": "Allow",
             "Action": [
-              "apigateway:Describe*",
-              "apigateway:Get*",
-              "apigateway:List*",
               "dynamodb:Describe*",
               "dynamodb:Get*",
               "dynamodb:List*",
@@ -1131,9 +458,6 @@ Resources:
               "kinesis:Describe*",
               "kinesis:Get*",
               "kinesis:List*",
-              "kms:Describe*",
-              "kms:Get*",
-              "kms:List*",
               "lambda:Describe*",
               "lambda:Get*",
               "lambda:List*",
@@ -1158,15 +482,12 @@ Resources:
               "states:Describe*",
               "states:Get*",
               "states:List*",
+              "dynamodb:BatchGetItem",
+              "dynamodb:Query",
+              "dynamodb:Scan",
+              "logs:FilterLogEvents",
               "sts:GetCallerIdentity",
-              "tag:GetResources",
-              "tag:GetTagKeys",
-              "tag:GetTagValues",
-              "apigateway:DeletePortal",
-              "apigateway:DeletePortalProduct",
-              "apigateway:DeleteProductPage",
-              "apigateway:DeleteProductRestEndpointPage",
-              "apigateway:DeleteRoutingRule",
+              "tag:Get*",
               "dynamodb:DeleteBackup",
               "dynamodb:DeleteGlobalTableWitness",
               "dynamodb:DeleteItem",
@@ -1198,10 +519,13 @@ Resources:
               "iam:DeleteSigningCertificate",
               "iam:DeleteUser",
               "iam:DeleteVirtualMFADevice",
-              "iam:Remove*",
-              "kinesis:Delete*",
+              "iam:RemoveClientIDFromOpenIDConnectProvider",
+              "iam:RemoveRoleFromInstanceProfile",
+              "iam:RemoveUserFromGroup",
+              "kinesis:DeleteChannel",
+              "kinesis:DeleteResourcePolicy",
+              "kinesis:DeleteStream",
               "kinesis:DeregisterStreamConsumer",
-              "kms:Delete*",
               "lambda:DeleteAlias",
               "lambda:DeleteCapacityProvider",
               "lambda:DeleteCodeSigningConfig",
@@ -1256,7 +580,10 @@ Resources:
               "s3:DeleteStorageLensGroup",
               "secretsmanager:DeleteSecret",
               "secretsmanager:RemoveRegionsFromReplication",
-              "sns:Delete*",
+              "sns:DeleteEndpoint",
+              "sns:DeletePlatformApplication",
+              "sns:DeleteSMSSandboxPhoneNumber",
+              "sns:DeleteTopic",
               "sqs:DeleteMessage",
               "sqs:DeleteQueue",
               "sqs:PurgeQueue",
@@ -1272,354 +599,16 @@ Resources:
               "ssm:DeleteParameters",
               "ssm:DeletePatchBaseline",
               "ssm:DeleteResourceDataSync",
-              "ssm:Deregister*",
-              "ssm:TerminateSession",
-              "states:Delete*"
-            ],
-            "Resource": "*"
-          }
-        ]
-      }
-
-  RovaraTestCleanupGuard1:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      Description: "Per-action limits of the cleanup role: it deletes only what carries the run tag (part 1 of 2). Rovara test access."
-      PolicyDocument: {
-        "Version": "2012-10-17",
-        "Statement": [
-          {
-            "Sid": "DenyChangesToOtherResources1",
-            "Effect": "Deny",
-            "Action": [
-              "apigateway:DeletePortal",
-              "apigateway:DeletePortalProduct",
-              "apigateway:DeleteProductPage",
-              "apigateway:DeleteProductRestEndpointPage",
-              "dynamodb:DeleteGlobalTableWitness",
-              "dynamodb:DeleteItem",
-              "dynamodb:DeleteTable",
-              "dynamodb:DeleteTableReplica",
-              "events:DeleteEventBus",
-              "events:DeleteEventSource",
-              "events:DeleteRule",
-              "events:DeleteSubscriber",
-              "events:RemoveTargets",
-              "iam:DeleteAccessKey",
-              "iam:DeleteInstanceProfile",
-              "iam:DeleteLoginProfile",
-              "iam:DeleteOpenIDConnectProvider",
-              "iam:DeleteRole",
-              "iam:DeleteSAMLProvider",
-              "iam:DeleteSSHPublicKey",
-              "iam:DeleteServerCertificate",
-              "iam:DeleteServiceLinkedRole",
-              "iam:DeleteServiceSpecificCredential",
-              "iam:DeleteSigningCertificate",
-              "iam:DeleteUser",
-              "iam:RemoveClientIDFromOpenIDConnectProvider",
-              "iam:RemoveRoleFromInstanceProfile",
-              "kinesis:Delete*",
-              "kinesis:DeregisterStreamConsumer",
-              "kms:DeleteImportedKeyMaterial",
-              "lambda:DeleteAlias",
-              "lambda:DeleteCapacityProvider",
-              "lambda:DeleteCodeSigningConfig",
-              "lambda:DeleteEventSourceMapping",
-              "lambda:DeleteFunction",
-              "lambda:DeleteFunctionCodeSigningConfig",
-              "lambda:DeleteFunctionConcurrency",
-              "lambda:DeleteFunctionEventInvokeConfig",
-              "lambda:DeleteFunctionUrlConfig",
-              "lambda:DeleteMicrovmImage",
-              "lambda:DeleteMicrovmImageVersion",
-              "lambda:DeleteNetworkConnector",
-              "lambda:DeleteProvisionedConcurrencyConfig",
-              "lambda:DeleteWebFunction",
-              "lambda:DeleteWebFunctionEndpoint",
-              "lambda:DeleteWebFunctionRevision",
-              "lambda:TerminateMicrovm",
-              "logs:DeleteDataProtectionPolicy",
-              "logs:DeleteDelivery",
-              "logs:DeleteDeliveryDestination",
-              "logs:DeleteDeliveryDestinationPolicy",
-              "logs:DeleteDeliverySource",
-              "logs:DeleteDestination",
-              "logs:DeleteLogAnomalyDetector",
-              "logs:DeleteLogGroup",
-              "logs:DeleteLogStream",
-              "logs:DeleteLookupTable",
-              "logs:DeleteMetricFilter",
-              "logs:DeleteRetentionPolicy",
-              "logs:DeleteScheduledQuery",
-              "logs:DeleteSubscriptionFilter",
-              "logs:DeleteSyslogConfiguration",
-              "logs:DeleteTransformer",
-              "s3:DeleteStorageLensConfiguration",
-              "s3:DeleteStorageLensGroup",
-              "secretsmanager:DeleteSecret",
-              "secretsmanager:RemoveRegionsFromReplication",
-              "sns:DeleteTopic",
-              "sqs:DeleteMessage",
-              "sqs:DeleteQueue",
-              "sqs:PurgeQueue",
-              "ssm:DeleteAssociation",
-              "ssm:DeleteCloudConnector",
-              "ssm:DeleteDocument",
-              "ssm:DeleteMaintenanceWindow",
-              "ssm:DeleteOpsItem",
-              "ssm:DeleteOpsMetadata",
-              "ssm:DeleteParameter",
-              "ssm:DeleteParameters",
-              "ssm:DeletePatchBaseline",
+              "ssm:DeregisterDefaultHostManagementConfiguration",
               "ssm:DeregisterManagedInstance",
               "ssm:DeregisterPatchBaselineForPatchGroup",
               "ssm:DeregisterTargetFromMaintenanceWindow",
               "ssm:DeregisterTaskFromMaintenanceWindow",
-              "states:Delete*"
-            ],
-            "Resource": "*",
-            "Condition": {
-              "StringNotEquals": {
-                "aws:ResourceTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
-              }
-            }
-          },
-          {
-            "Sid": "DenyChangesOutsideRunNames1",
-            "Effect": "Deny",
-            "Action": [
-              "apigateway:DeleteRoutingRule",
-              "dynamodb:DeleteBackup",
-              "events:DeleteApiDestination",
-              "events:DeleteArchive",
-              "events:DeleteConnection",
-              "events:DeleteEndpoint"
-            ],
-            "NotResource": [
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:${AWS::AccountId}:/domainnames/rv-${!aws:PrincipalTag/rovara-run}-*/routingrules/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb::${AWS::AccountId}:global-table/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*/backup/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*/stream/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}::event-source/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:api-destination/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:archive/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:connection/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:endpoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:replay/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:kinesis:${AWS::Region}:${AWS::AccountId}:stream/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:layer:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:layer:rv-${!aws:PrincipalTag/rovara-run}-*:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:web-function/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:rv-${!aws:PrincipalTag/rovara-run}-*:log-stream:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3-object-lambda:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:::rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:::rv-${!aws:PrincipalTag/rovara-run}-*/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*/object/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:resource-data-sync/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:activity:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:mapRun:rv-${!aws:PrincipalTag/rovara-run}-*/*:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:rv-${!aws:PrincipalTag/rovara-run}-*"
-              }
-            ]
-          }
-        ]
-      }
-
-  RovaraTestCleanupGuard2:
-    Type: AWS::IAM::ManagedPolicy
-    Properties:
-      Description: "Per-action limits of the cleanup role: it deletes only what carries the run tag (part 2 of 2). Rovara test access."
-      PolicyDocument: {
-        "Version": "2012-10-17",
-        "Statement": [
-          {
-            "Sid": "DenyChangesOutsideRunNames2",
-            "Effect": "Deny",
-            "Action": [
-              "events:DeletePartnerEventSource",
-              "lambda:DeleteLayerVersion",
-              "s3:DeleteAccessPoint",
-              "s3:DeleteAccessPointForObjectLambda",
-              "s3:DeleteBucket",
-              "s3:DeleteBucketMetadataTableConfiguration",
-              "s3:DeleteBucketWebsite",
-              "s3:DeleteObject",
-              "s3:DeleteObjectAnnotation",
-              "s3:DeleteObjectVersion",
-              "s3:DeleteObjectVersionAnnotation",
-              "ssm:DeleteResourceDataSync"
-            ],
-            "NotResource": [
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:apigateway:${AWS::Region}:${AWS::AccountId}:/domainnames/rv-${!aws:PrincipalTag/rovara-run}-*/routingrules/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb::${AWS::AccountId}:global-table/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*/backup/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/rv-${!aws:PrincipalTag/rovara-run}-*/stream/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}::event-source/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:api-destination/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:archive/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:connection/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:endpoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:replay/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:kinesis:${AWS::Region}:${AWS::AccountId}:stream/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:layer:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:layer:rv-${!aws:PrincipalTag/rovara-run}-*:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:microvm-image:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:web-function/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:rv-${!aws:PrincipalTag/rovara-run}-*:log-stream:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3-object-lambda:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:::rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:::rv-${!aws:PrincipalTag/rovara-run}-*/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:s3:${AWS::Region}:${AWS::AccountId}:accesspoint/rv-${!aws:PrincipalTag/rovara-run}-*/object/*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:resource-data-sync/rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:activity:rv-${!aws:PrincipalTag/rovara-run}-*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:mapRun:rv-${!aws:PrincipalTag/rovara-run}-*/*:*"
-              },
-              {
-                "Fn::Sub": "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:rv-${!aws:PrincipalTag/rovara-run}-*"
-              }
-            ]
-          },
-          {
-            "Sid": "DenyChangesNamedLikeReads1",
-            "Effect": "Deny",
-            "Action": [
-              "states:GetActivityTask"
+              "ssm:TerminateSession",
+              "states:DeleteActivity",
+              "states:DeleteStateMachine",
+              "states:DeleteStateMachineAlias",
+              "states:DeleteStateMachineVersion"
             ],
             "Resource": "*"
           }
@@ -1635,10 +624,6 @@ Resources:
       PermissionsBoundary: !Ref RovaraTestBoundary
       ManagedPolicyArns:
         - !Ref RovaraTestPolicy
-        - !Ref RovaraTestGuard1
-        - !Ref RovaraTestGuard2
-        - !Ref RovaraTestGuard3
-        - !Ref RovaraTestGuard4
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -1671,8 +656,6 @@ Resources:
       PermissionsBoundary: !Ref RovaraTestBoundary
       ManagedPolicyArns:
         - !Ref RovaraTestCleanupPolicy
-        - !Ref RovaraTestCleanupGuard1
-        - !Ref RovaraTestCleanupGuard2
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -1697,14 +680,14 @@ Resources:
                 aws:RequestTag/rovara-run: "????????"
 
   # Tells Rovara this stack exists, and which roles it made. CloudFormation publishes the request to Rovara's SNS topic (ServiceToken); Rovara checks the one-time
-  # token and answers CloudFormation. The role ARN and account id go to Rovara; nothing else leaves your account. When Rovara cannot be reached, creating the stack
-  # fails after 5 minutes and rolls back (create it again from Rovara). Deleting the stack tells Rovara the account is disconnected; if Rovara cannot be reached that
-  # step fails after 5 minutes, and you delete the stack again, choosing to retain RovaraCallback.
+  # token and answers CloudFormation. The role ARN and account id go to Rovara; nothing else leaves your account. No code of Rovara's runs in your account. When Rovara
+  # cannot be reached, creating the stack fails after 2 minutes and rolls back (create it again from Rovara). Deleting the stack tells Rovara the account is disconnected;
+  # if Rovara cannot be reached that step fails after 2 minutes, and you delete the stack again, choosing to retain RovaraCallback.
   RovaraCallback:
     Type: Custom::RovaraTestAccess
     Properties:
       ServiceToken: !Ref CallbackTopicArn
-      ServiceTimeout: "300"
+      ServiceTimeout: "120"
       RoleArn: !GetAtt RovaraTestRole.Arn
       CleanupRoleArn: !GetAtt RovaraTestCleanupRole.Arn
       AccountId: !Ref AWS::AccountId

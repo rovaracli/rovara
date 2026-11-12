@@ -98,7 +98,7 @@ function build(directory: string, tablePath: string): string {
     "/** Service keys with no reference to read (not an IAM service, or too new for the reference): their actions are signer-only. */",
     `export const TEST_ACCESS_SCOPING_UNMAPPED: readonly string[] = ${stringify(unmapped)};`,
     "",
-    "/** Per IAM prefix: the ARN patterns of the resource types name-guarded actions act on, with {{Name}} where the run's name goes and {{Partition}}, {{Region}}, {{AccountId}} tokens. */",
+    "/** Per IAM prefix: the ARN patterns of every resource type whose ARN starts with a caller-chosen name, with {{Name}} where the run's name goes and {{Partition}}, {{Region}}, {{AccountId}} tokens. */",
     `export const TEST_ACCESS_SCOPING_NAME_ARNS: Readonly<Record<string, readonly string[]>> = ${stringify(nameArns)};`,
     "",
     "export const TEST_ACCESS_SCOPING: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {",

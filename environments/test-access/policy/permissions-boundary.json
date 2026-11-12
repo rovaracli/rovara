@@ -2,29 +2,159 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "AllowTestServices",
+      "Sid": "AllowReads",
       "Effect": "Allow",
       "Action": [
-        "apigateway:*",
+        "dynamodb:Describe*",
+        "dynamodb:Get*",
+        "dynamodb:List*",
+        "events:Describe*",
+        "events:Get*",
+        "events:List*",
+        "iam:Describe*",
+        "iam:Get*",
+        "iam:List*",
+        "kinesis:Describe*",
+        "kinesis:Get*",
+        "kinesis:List*",
+        "lambda:Describe*",
+        "lambda:Get*",
+        "lambda:List*",
+        "logs:Describe*",
+        "logs:Get*",
+        "logs:List*",
+        "s3:Describe*",
+        "s3:Get*",
+        "s3:List*",
+        "secretsmanager:Describe*",
+        "secretsmanager:Get*",
+        "secretsmanager:List*",
+        "sns:Describe*",
+        "sns:Get*",
+        "sns:List*",
+        "sqs:Describe*",
+        "sqs:Get*",
+        "sqs:List*",
+        "ssm:Describe*",
+        "ssm:Get*",
+        "ssm:List*",
+        "states:Describe*",
+        "states:Get*",
+        "states:List*",
+        "dynamodb:BatchGetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "logs:FilterLogEvents",
+        "sts:GetCallerIdentity",
+        "tag:Get*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::<ACCOUNT_ID>:role/rv-*",
+            "arn:aws:sts::<ACCOUNT_ID>:assumed-role/rv-*/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "AllowRunNamed",
+      "Effect": "Allow",
+      "Action": [
         "dynamodb:*",
         "events:*",
-        "iam:*",
         "kinesis:*",
-        "kms:*",
         "lambda:*",
         "logs:*",
-        "s3:*",
         "secretsmanager:*",
         "sns:*",
         "sqs:*",
         "ssm:*",
-        "states:*",
-        "sts:GetCallerIdentity",
-        "tag:GetResources",
-        "tag:GetTagKeys",
-        "tag:GetTagValues"
+        "states:*"
       ],
-      "Resource": "*"
+      "Resource": [
+        "arn:aws:dynamodb:*:<ACCOUNT_ID>:global-table/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:dynamodb:*:<ACCOUNT_ID>:table/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:events:*:<ACCOUNT_ID>:archive/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:events:*:<ACCOUNT_ID>:event-bus/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:events:*:<ACCOUNT_ID>:rule/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:kinesis:*:<ACCOUNT_ID>:stream/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:lambda:*:<ACCOUNT_ID>:function:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:lambda:*:<ACCOUNT_ID>:layer:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:logs:*:<ACCOUNT_ID>:log-group:/aws/lambda/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:logs:*:<ACCOUNT_ID>:log-group:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:secretsmanager:*:<ACCOUNT_ID>:secret:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:sns:*:<ACCOUNT_ID>:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:sqs:*:<ACCOUNT_ID>:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:ssm:*:<ACCOUNT_ID>:document/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:ssm:*:<ACCOUNT_ID>:parameter/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:states:*:<ACCOUNT_ID>:activity:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:states:*:<ACCOUNT_ID>:execution:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:states:*:<ACCOUNT_ID>:stateMachine:rv-${aws:PrincipalTag/rovara-run}-*"
+      ]
+    },
+    {
+      "Sid": "AllowRunNamedS3",
+      "Effect": "Allow",
+      "Action": [
+        "s3:*"
+      ],
+      "Resource": [
+        "arn:aws:s3:::rv-${aws:PrincipalTag/rovara-run}-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "s3:ResourceAccount": "<ACCOUNT_ID>"
+        }
+      }
+    },
+    {
+      "Sid": "AllowRunNamedIam",
+      "Effect": "Allow",
+      "Action": [
+        "iam:*"
+      ],
+      "Resource": [
+        "arn:aws:iam::<ACCOUNT_ID>:instance-profile/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:iam::<ACCOUNT_ID>:policy/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:iam::<ACCOUNT_ID>:role/rv-${aws:PrincipalTag/rovara-run}-*"
+      ]
+    },
+    {
+      "Sid": "AllowRunTagged",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:*",
+        "events:*",
+        "kinesis:*",
+        "lambda:*",
+        "logs:*",
+        "secretsmanager:*",
+        "sns:*",
+        "sqs:*",
+        "ssm:*",
+        "states:*"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
+        }
+      }
+    },
+    {
+      "Sid": "AllowCreateWithRunTag",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateEventSourceMapping"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
+        }
+      }
     },
     {
       "Sid": "DenyWithoutRunTag",
@@ -72,40 +202,25 @@
       }
     },
     {
-      "Sid": "DenyIamOutsideRunNames",
+      "Sid": "DenySecretReadsOutsideRun",
       "Effect": "Deny",
       "Action": [
-        "iam:AcceptDelegationRequest",
-        "iam:Add*",
-        "iam:AssociateDelegationRequest",
-        "iam:Attach*",
-        "iam:ChangePassword",
-        "iam:Create*",
-        "iam:DeactivateMFADevice",
-        "iam:Delete*",
-        "iam:Detach*",
-        "iam:Disable*",
-        "iam:Enable*",
-        "iam:PassRole",
-        "iam:Put*",
-        "iam:RejectDelegationRequest",
-        "iam:Remove*",
-        "iam:ResetServiceSpecificCredential",
-        "iam:ResyncMFADevice",
-        "iam:SendDelegationToken",
-        "iam:Set*",
-        "iam:Tag*",
-        "iam:Untag*",
-        "iam:Update*",
-        "iam:UploadCloudFrontPublicKey",
-        "iam:UploadSSHPublicKey",
-        "iam:UploadServerCertificate",
-        "iam:UploadSigningCertificate"
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration",
+        "lambda:ListFunctions",
+        "secretsmanager:BatchGetSecretValue",
+        "secretsmanager:GetSecretValue",
+        "ssm:GetParameter*",
+        "ssm:GetParametersByPath",
+        "states:DescribeExecution",
+        "states:GetActivityTask",
+        "states:GetExecutionHistory"
       ],
       "NotResource": [
-        "arn:aws:iam::<ACCOUNT_ID>:instance-profile/rv-${aws:PrincipalTag/rovara-run}-*",
-        "arn:aws:iam::<ACCOUNT_ID>:policy/rv-${aws:PrincipalTag/rovara-run}-*",
-        "arn:aws:iam::<ACCOUNT_ID>:role/rv-${aws:PrincipalTag/rovara-run}-*"
+        "arn:aws:lambda:*:<ACCOUNT_ID>:function:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:secretsmanager:*:<ACCOUNT_ID>:secret:rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:ssm:*:<ACCOUNT_ID>:parameter/rv-${aws:PrincipalTag/rovara-run}-*",
+        "arn:aws:states:*:<ACCOUNT_ID>:execution:rv-${aws:PrincipalTag/rovara-run}-*"
       ]
     },
     {
@@ -123,25 +238,45 @@
       }
     },
     {
-      "Sid": "DenyBoundaryRemoval",
+      "Sid": "DenyRoleWithoutRunTag",
       "Effect": "Deny",
       "Action": [
-        "iam:DeleteRolePermissionsBoundary",
-        "iam:DeleteUserPermissionsBoundary",
-        "iam:PutUserPermissionsBoundary"
+        "iam:CreateRole"
       ],
-      "Resource": "*"
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestTag/rovara-run": "${aws:PrincipalTag/rovara-run}"
+        }
+      }
     },
     {
-      "Sid": "DenyLongLivedKeys",
+      "Sid": "DenyPassRoleToOtherServices",
+      "Effect": "Deny",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "iam:PassedToService": [
+            "events.amazonaws.com",
+            "lambda.amazonaws.com",
+            "scheduler.amazonaws.com",
+            "states.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyBoundaryRemovalAndKeys",
       "Effect": "Deny",
       "Action": [
         "iam:CreateAccessKey",
         "iam:CreateLoginProfile",
-        "iam:CreateServiceSpecificCredential",
         "iam:CreateUser",
-        "iam:UpdateLoginProfile",
-        "iam:UploadSSHPublicKey"
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:UpdateAssumeRolePolicy"
       ],
       "Resource": "*"
     }

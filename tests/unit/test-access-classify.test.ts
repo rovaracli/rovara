@@ -93,10 +93,12 @@ describe("name patterns", () => {
     expect(nameArnPattern("arn:${Partition}:apigateway:${Region}::/apis/${ApiId}")).toBeUndefined();
   });
 
-  it("collects the patterns of the resource types name-guarded actions act on", () => {
-    const put: ReferenceAction = { Name: "PutObject", Annotations: { Properties: write }, Resources: [{ Name: "object" }] };
-    expect(scopingRows({ Name: "s3", Actions: [put], Resources: [object] }, "s3").nameArns).toEqual(["arn:{{Partition}}:s3:::{{Name}}/*"]);
-    expect(scopingRows({ Name: "sqs", Actions: [deleteQueue], Resources: [queue] }, "sqs").nameArns).toEqual([]);
+  it("collects the patterns of every resource type whose ARN starts with a caller-chosen name, and only the service's own", () => {
+    expect(scopingRows({ Name: "s3", Actions: [], Resources: [object] }, "s3").nameArns).toEqual(["arn:{{Partition}}:s3:::{{Name}}/*"]);
+    expect(scopingRows({ Name: "sqs", Actions: [], Resources: [queue, api] }, "sqs").nameArns).toEqual(["arn:{{Partition}}:sqs:{{Region}}:{{AccountId}}:{{Name}}"]);
+    // a reference lists what an action also touches: SSM lists an IAM role and an S3 bucket, which are not SSM's
+    const role: ReferenceResource = { Name: "role", ARNFormats: ["arn:${Partition}:iam::${Account}:role/${RoleName}"] };
+    expect(scopingRows({ Name: "ssm", Actions: [], Resources: [role, object] }, "ssm").nameArns).toEqual([]);
   });
 });
 

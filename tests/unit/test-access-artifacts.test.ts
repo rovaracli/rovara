@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
 import { renderAll, renderTemplate } from "../../scripts/test-access/build-artifacts.js";
-import { TEST_ACCESS_TEMPLATE_PARAMETERS, TEST_ACCESS_TEMPLATE_VERSION } from "../../packages/cloud-contracts/src/test-access-connect.js";
+import { TEST_ACCESS_CALLBACK_TIMEOUT_SECONDS, TEST_ACCESS_TEMPLATE_PARAMETERS, TEST_ACCESS_TEMPLATE_VERSION } from "../../packages/cloud-contracts/src/test-access-connect.js";
 import { buildTestAccessPolicies, buildTrustPolicy } from "../../packages/cloud-contracts/src/test-access-policy.js";
 
 // The connect kit: the CloudFormation template, the Terraform module's policies and the copy-paste policy text are all made by scripts/test-access/build-artifacts.ts from one source.
@@ -73,24 +73,26 @@ describe("the CloudFormation template", () => {
     for (const [name, role] of roles) {
       const properties = role.Properties as { PermissionsBoundary: unknown; ManagedPolicyArns: unknown[] };
       expect(properties.PermissionsBoundary, name).toEqual({ Ref: "RovaraTestBoundary" });
-      expect(properties.ManagedPolicyArns.length, name).toBeGreaterThanOrEqual(2);
+      expect(properties.ManagedPolicyArns.length, name).toBe(1);
       expect(properties.ManagedPolicyArns.length, name).toBeLessThanOrEqual(10);
       for (const arn of properties.ManagedPolicyArns) expect(current.Resources[(arn as { Ref: string }).Ref]?.Type).toBe("AWS::IAM::ManagedPolicy");
     }
   });
 
   it("holds the same policies the builder makes, in the same number", () => {
-    const policies = buildTestAccessPolicies();
     const managed = Object.keys(current.Resources).filter((name) => current.Resources[name]?.Type === "AWS::IAM::ManagedPolicy");
-    expect(managed.length).toBe(3 + policies.guards.length + policies.cleanupGuards.length);
-    expect(managed.filter((name) => name.startsWith("RovaraTestGuard")).length).toBe(policies.guards.length);
+    expect(managed.sort()).toEqual(["RovaraTestBoundary", "RovaraTestCleanupPolicy", "RovaraTestPolicy"]);
+    const policies = buildTestAccessPolicies();
+    const boundary = (current.Resources.RovaraTestBoundary as { Properties: { PolicyDocument: { Statement: { Sid: string }[] } } }).Properties.PolicyDocument.Statement;
+    expect(boundary.map((statement) => statement.Sid)).toEqual(policies.boundary.Statement.map((statement) => statement.Sid));
   });
 
   it("reports to the topic the parameter names, with a timeout, and never creates keys or users", () => {
     const callback = current.Resources.RovaraCallback as { Type: string; Properties: Json };
     expect(callback.Type).toBe("Custom::RovaraTestAccess");
     expect(callback.Properties.ServiceToken).toEqual({ Ref: "CallbackTopicArn" });
-    expect(callback.Properties.ServiceTimeout).toBe("300");
+    expect(callback.Properties.ServiceTimeout).toBe(String(TEST_ACCESS_CALLBACK_TIMEOUT_SECONDS));
+    expect(TEST_ACCESS_CALLBACK_TIMEOUT_SECONDS).toBeLessThanOrEqual(120);
     expect(Object.values(current.Resources).filter((resource) => /^AWS::IAM::(AccessKey|User|LoginProfile)$/u.test(String(resource.Type)))).toEqual([]);
   });
 
@@ -102,17 +104,8 @@ describe("the CloudFormation template", () => {
 
 describe("the Terraform module and the copy-paste text", () => {
   it("has a policy file for every managed policy of the template", () => {
-    const policies = buildTestAccessPolicies();
-    const files = readdirSync(`${ROOT}/terraform/policies`).sort();
-    expect(files).toEqual(
-      [
-        "access.json.tftpl",
-        "boundary.json.tftpl",
-        "cleanup.json.tftpl",
-        ...policies.guards.map((_, index) => `guard-${index + 1}.json.tftpl`),
-        ...policies.cleanupGuards.map((_, index) => `cleanup-guard-${index + 1}.json.tftpl`),
-      ].sort(),
-    );
+    expect(readdirSync(`${ROOT}/terraform/policies`).sort()).toEqual(["access.json.tftpl", "boundary.json.tftpl", "cleanup.json.tftpl"]);
+    expect(readdirSync(`${ROOT}/policy`).sort()).toEqual(["cleanup-role-access.json", "permissions-boundary.json", "test-role-access.json", "trust-policy.json"]);
   });
 
   it("does the same as the template: trust with the external id, the boundary on both roles, no keys", () => {
@@ -182,6 +175,16 @@ describe.skipIf(CFN_GUARD === undefined || CFN_LINT === undefined)("cfn-lint and
     { when: "a policy allows everything", rule: "no_allow_everything", change: (p) => void policyStatements(p, "RovaraTestPolicy").push({ Effect: "Allow", Action: "*", Resource: "*" }) },
     { when: "the boundary lets a session with no run tag act", rule: "the_boundary_requires_the_run_tag", change: (p) => void (policyStatements(p, "RovaraTestBoundary").length = 0) },
     { when: "the callback goes somewhere fixed", rule: "callback_goes_to_the_topic_parameter", change: (p) => void ((p.Resources.RovaraCallback as { Properties: Json }).Properties.ServiceToken = "arn:aws:sns:us-west-2:123456789012:other") },
+    { when: "the boundary allows a service on every resource", rule: "boundary_allows_are_scoped", change: (p) => void policyStatements(p, "RovaraTestBoundary").push({ Sid: "AllowEverything", Effect: "Allow", Action: ["s3:*"], Resource: "*" }) },
+    { when: "the boundary allows a service on a starred list", rule: "boundary_allows_are_scoped", change: (p) => void policyStatements(p, "RovaraTestBoundary").push({ Sid: "AllowEverything", Effect: "Allow", Action: ["kms:*"], Resource: ["*"] }) },
+    { when: "reads are open to a role a run creates", rule: "boundary_reads_are_for_rovaras_roles_only", change: (p) => void delete (policyStatements(p, "RovaraTestBoundary").find((statement) => statement.Sid === "AllowReads") as { Condition?: unknown }).Condition },
+    { when: "a whole service is allowed by tag for IAM", rule: "boundary_does_not_allow_a_whole_service_by_tag_for_iam_or_s3", change: (p) => void ((policyStatements(p, "RovaraTestBoundary").find((statement) => statement.Sid === "AllowRunTagged") as { Action: string[] }).Action.push("iam:*")) },
+    { when: "a run may tag an existing resource with its own tag", rule: "boundary_has_no_tagging_by_request_tag", change: (p) => void policyStatements(p, "RovaraTestBoundary").push({ Sid: "AllowClaim", Effect: "Allow", Action: ["ssm:AddTagsToResource"], Resource: ["*"], Condition: { StringEquals: { "aws:RequestTag/rovara-run": "x" } } }) },
+    { when: "the S3 fence forgets the account", rule: "boundary_s3_names_are_checked_against_the_account", change: (p) => void delete (policyStatements(p, "RovaraTestBoundary").find((statement) => statement.Sid === "AllowRunNamedS3") as { Condition?: unknown }).Condition },
+    { when: "secret reads are not denied", rule: "boundary_denies_secret_reads_outside_the_run", change: (p) => void (p.Resources.RovaraTestBoundary as { Properties: { PolicyDocument: { Statement: Json[] } } }).Properties.PolicyDocument.Statement.splice(policyStatements(p, "RovaraTestBoundary").findIndex((statement) => statement.Sid === "DenySecretReadsOutsideRun"), 1) },
+    { when: "any service may be passed a role", rule: "boundary_limits_pass_role", change: (p) => void delete (policyStatements(p, "RovaraTestBoundary").find((statement) => statement.Sid === "DenyPassRoleToOtherServices") as { Condition?: unknown }).Condition },
+    { when: "a created role needs no run tag", rule: "boundary_fences_the_roles_a_run_creates", change: (p) => void (p.Resources.RovaraTestBoundary as { Properties: { PolicyDocument: { Statement: Json[] } } }).Properties.PolicyDocument.Statement.splice(policyStatements(p, "RovaraTestBoundary").findIndex((statement) => statement.Sid === "DenyRoleWithoutRunTag"), 1) },
+    { when: "the run tag may be changed", rule: "boundary_keeps_the_run_tag_and_the_region", change: (p) => void (p.Resources.RovaraTestBoundary as { Properties: { PolicyDocument: { Statement: Json[] } } }).Properties.PolicyDocument.Statement.splice(policyStatements(p, "RovaraTestBoundary").findIndex((statement) => statement.Sid === "DenyRunTagChange"), 1) },
     { when: "the external id has no pattern", rule: "external_id_is_checked_by_pattern", change: (p) => void delete p.Parameters.ExternalId?.AllowedPattern },
   ];
   it.each(cases)("fails when $when", ({ rule, change }) => {

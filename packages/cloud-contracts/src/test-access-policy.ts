@@ -1,12 +1,18 @@
 // The IAM policies of the customer test account (lane TA1): the permission boundary, the test role's access policy and the delete-only cleanup role's policy, built from one source so that
 // the CloudFormation template, the Terraform module and the copy-paste policy text cannot drift apart. Pure functions; the per-action facts come from the generated scoping table (`test-access-scoping.ts`).
 //
-// The model (customer-test-account.md, section 2):
-//   - Rovara assumes the role with the session tag `rovara-run=<run8>` (8 characters). A session with no run tag can do nothing.
-//   - A run changes only what it created. IAM confines an action by the run tag (create: aws:RequestTag, write and delete: aws:ResourceTag) or by the resource name (`rv-<run8>-...`) where the action has neither;
-//     an action IAM cannot confine at all is limited to the service and the Region, and the account signer's creation record guards it (TA4).
-//   - Reads are open inside the connection's Region. There is no list of services to refuse: an expensive service may be what a test needs (owner decision 121).
-//   - Roles a run creates carry the same boundary, so a run cannot make a role stronger than itself. Long-lived keys cannot be made.
+// The model (customer-test-account.md, section 2). Every identity a run can obtain is fenced the same way: Rovara's test role AND every role the run creates carry the boundary, so the whole fence is IN the boundary.
+//   - Rovara assumes the role with the session tag `rovara-run=<run8>` (8 characters). A session with no run tag can do nothing. A created role carries the same tag (CreateRole must set it), so it resolves to the same run.
+//   - The boundary is an allow list, so what it does not name is refused, including every action that has no scope and every action added to AWS tomorrow:
+//       reads (Get*, List*, Describe*)  Rovara's roles only; a role the run creates (named rv-<run8>-*) reads nothing but its run's own resources
+//       everything else                 only on resources named `rv-<run8>-*` (the ARN carries the name), or already carrying the run tag, or (lambda:CreateEventSourceMapping only) created with the run tag
+//     Nothing allows tagging a resource that is neither run-named nor already run-tagged, so a run cannot claim a shared resource by tagging it. Account-wide actions (resource `*`) are not allowed at all.
+//   - Explicit denies on top: no run tag, another Region, any change of the run tag key, secret-class reads (Secrets Manager values, SSM parameters, Lambda configuration with its environment) of anything the run does not own,
+//     roles without the boundary or the run tag, passing a role to a service tests do not use, taking the boundary off, long-lived keys, rewriting a trust policy.
+//   - There is no list of services to refuse because they are expensive (owner decision 121). Services whose resources have no caller-chosen name (API Gateway, KMS) cannot be fenced by IAM, so they are not in the default list and
+//     `buildTestAccessPolicies` refuses them: tests on them stay on the emulator until an admin opts in with the signer as the only guard.
+//   - What IAM cannot see and the account signer (TA4) must guard: the contents of a trust policy a run writes for a role it creates (IAM has no condition for it; an outside principal could assume the role, but only to reach the run's own
+//     resources), and the open reads of Rovara's roles (the signer holds the read allow-list).
 //
 // The policies hold tokens for the pieces only the deploy knows: `{{Partition}}`, `{{Region}}`, `{{AccountId}}` and `{{BoundaryArn}}`. IAM's own policy variable `${aws:PrincipalTag/rovara-run}` is written as IAM reads it.
 // `renderPolicyTokens`, `cloudFormationPolicy` and `terraformPolicyTemplate` turn them into a concrete policy, a CloudFormation `Fn::Sub` and a Terraform template.
@@ -24,7 +30,7 @@
 // What is NOT verified (nothing here was run against AWS): (1) that IAM accepts the policy variable `${aws:PrincipalTag/...}` in NotResource, and how it evaluates the Null checks on session tags; (2) whose credentials CloudFormation uses to publish
 // to a custom resource's SNS topic (the topic policy therefore allows any principal to publish, over TLS, and the handler decides); (3) that `sts:TagSession` is granted by a trust statement without the external id condition (the trust policy
 // is written so that it works either way). The internal live proof (TA11) checks all three.
-import { nameArnPatternsOf, scopedActionsOf, type ScopedAction } from "./test-access-scoping.js";
+import { scopedActionsOf } from "./test-access-scoping.js";
 
 /** The session tag every run carries; also the tag key of the resources a run creates. */
 export const RUN_TAG_KEY = "rovara-run";
@@ -37,23 +43,71 @@ export const RUN_TAG_VARIABLE = "${aws:PrincipalTag/rovara-run}";
 export const RUN_NAME_PATTERN = `${RUN_NAME_PREFIX}${RUN_TAG_VARIABLE}-*`;
 
 /**
- * The services a connection allows by default: the ones tests most often need. A service outside the list is refused by the boundary (a template version with a longer list is a new version, shown before it is used).
- * `sts` is not a service here: only `sts:GetCallerIdentity` is allowed, so a run cannot assume another role of the account.
+ * The services a connection allows by default: the ones tests most often need, all with caller-chosen names that an IAM Resource pattern can fence. A service outside the list is refused by the boundary (a template version with a
+ * longer list is a new version, shown before it is used). `sts` is not a service here: only `sts:GetCallerIdentity` is allowed, so a run cannot assume another role of the account.
  */
-export const DEFAULT_TEST_ACCESS_SERVICES: readonly string[] = ["apigateway", "dynamodb", "events", "iam", "kinesis", "kms", "lambda", "logs", "s3", "secretsmanager", "sns", "sqs", "ssm", "states"];
+export const DEFAULT_TEST_ACCESS_SERVICES: readonly string[] = ["dynamodb", "events", "iam", "kinesis", "lambda", "logs", "s3", "secretsmanager", "sns", "sqs", "ssm", "states"];
+
+/** Services IAM cannot fence to one run, with why. `buildTestAccessPolicies` refuses them. */
+export const UNFENCEABLE_SERVICES: Readonly<Record<string, string>> = {
+  apigateway: "REST and HTTP APIs have generated ids in their ARNs and no caller-chosen name, and tagging an existing API by its ARN cannot be told from tagging at create time",
+  kms: "keys have generated ids and no caller-chosen name, and kms:TagResource is needed at create time, so a run could claim a shared key by tagging it and then decrypt with it",
+};
 
 /** Actions of services that are not Regional: the Region condition leaves them alone. */
 const GLOBAL_ACTIONS: readonly string[] = ["iam:*", "s3:GetBucketLocation", "s3:ListAllMyBuckets", "sts:GetCallerIdentity"];
 
-/** Actions that make long-lived credentials: Rovara never accepts them, and a run must never mint them. */
-const LONG_LIVED_KEY_ACTIONS: readonly string[] = [
-  "iam:CreateAccessKey",
-  "iam:CreateLoginProfile",
-  "iam:CreateServiceSpecificCredential",
-  "iam:CreateUser",
-  "iam:UpdateLoginProfile",
-  "iam:UploadSSHPublicKey",
+/**
+ * Actions that make long-lived credentials or rewrite who may use a role. Most are refused anyway (no allow names a user), so this is a second line: Rovara never accepts long-lived keys, and a run never mints them. A role's trust
+ * policy is fixed when the role is made: IAM cannot read what a trust policy names, so the signer (TA4) reads it in the CreateRole request.
+ */
+const FORBIDDEN_IAM_ACTIONS: readonly string[] = ["iam:CreateAccessKey", "iam:CreateLoginProfile", "iam:CreateUser", "iam:DeleteRolePermissionsBoundary", "iam:UpdateAssumeRolePolicy"];
+
+/** Services a run may hand a role to: the ones tests use to run code. */
+export const PASSABLE_SERVICES: readonly string[] = ["events.amazonaws.com", "lambda.amazonaws.com", "scheduler.amazonaws.com", "states.amazonaws.com"];
+
+/** Reads that are not named Get, List or Describe. */
+const EXTRA_READS: readonly string[] = ["dynamodb:BatchGetItem", "dynamodb:Query", "dynamodb:Scan", "logs:FilterLogEvents"];
+
+/**
+ * Reads that hand out secrets or configuration with secrets in it, and the one read that takes something (a Step Functions worker's GetActivityTask takes a task). Allowed only on what the run owns: a run's own secret, parameter, function and execution. `lambda:GetFunction` and `GetFunctionConfiguration`
+ * return a function's environment variables; ListFunctions returns them for every function and has no resource to fence, so it is refused outright.
+ */
+const SECRET_READS: readonly string[] = [
+  "lambda:GetFunction",
+  "lambda:GetFunctionConfiguration",
+  "lambda:ListFunctions",
+  "secretsmanager:BatchGetSecretValue",
+  "secretsmanager:GetSecretValue",
+  "ssm:GetParameter*",
+  "ssm:GetParametersByPath",
+  "states:DescribeExecution",
+  "states:GetActivityTask",
+  "states:GetExecutionHistory",
 ];
+
+/** Created with the run tag, because the resource has no name of its own (an event source mapping is an id). Nothing tags an existing resource, so this cannot claim one. */
+const CREATE_BY_TAG: readonly string[] = ["lambda:CreateEventSourceMapping"];
+
+/**
+ * The resource types of each default service that tests create and use, as the part of the ARN after the account. `{{Name}}` is where the caller's name goes: the run's name `rv-<run8>-*`. A pattern ending in the name also covers the
+ * resource's children (`table/rv-x-*` covers its indexes, a Lambda function covers its versions and aliases, a bucket its objects). Each must be a resource type the Service Authorization Reference lists with a leading name
+ * (tests/unit/test-access-policy.test.ts checks), so a rename in AWS's data is caught. IAM is fenced to the run's roles, policies and instance profiles, never users, groups or providers.
+ */
+export const RUN_RESOURCES: Readonly<Record<string, readonly string[]>> = {
+  dynamodb: ["table/{{Name}}", "global-table/{{Name}}"],
+  events: ["archive/{{Name}}", "event-bus/{{Name}}", "rule/{{Name}}"],
+  iam: ["instance-profile/{{Name}}", "policy/{{Name}}", "role/{{Name}}"],
+  kinesis: ["stream/{{Name}}"],
+  lambda: ["function:{{Name}}", "layer:{{Name}}"],
+  logs: ["log-group:/aws/lambda/{{Name}}", "log-group:{{Name}}"],
+  s3: ["{{Name}}"],
+  secretsmanager: ["secret:{{Name}}"],
+  sns: ["{{Name}}"],
+  sqs: ["{{Name}}"],
+  ssm: ["document/{{Name}}", "parameter/{{Name}}"],
+  states: ["activity:{{Name}}", "execution:{{Name}}", "stateMachine:{{Name}}"],
+};
 
 export interface PolicyStatement {
   readonly Sid: string;
@@ -78,117 +132,64 @@ export function policySize(document: PolicyDocument): number {
   return JSON.stringify(document).replace(/\s/gu, "").length;
 }
 
-const SAFE_VERBS: ReadonlySet<string> = new Set(["Add", "Associate", "Attach", "Create", "Delete", "Deregister", "Detach", "Disable", "Disassociate", "Enable", "Modify", "Put", "Register", "Remove", "Set", "Tag", "Terminate", "Untag", "Update"]);
-
-/**
- * `names` of one service as action patterns. A verb followed by `*` replaces three or more names that start with the same safe write verb, when no changing action of the service outside `names` starts with that verb
- * (reads never do). Reads are not in the scoping table, so this relies on the verbs: none of them starts a read action.
- */
-export function compressActions(service: string, names: readonly string[], universe: readonly string[]): readonly string[] {
-  const chosen = new Set(names);
-  const byVerb = new Map<string, string[]>();
-  for (const name of names) {
-    const verb = /^[A-Z][a-z0-9]*/u.exec(name)?.[0] ?? name;
-    byVerb.set(verb, [...(byVerb.get(verb) ?? []), name]);
-  }
-  const out: string[] = [];
-  for (const [verb, group] of byVerb) {
-    const foreign = universe.some((other) => other.startsWith(verb) && !chosen.has(other));
-    if (SAFE_VERBS.has(verb) && group.length >= 3 && !foreign) out.push(`${service}:${verb}*`);
-    else out.push(...group.map((name) => `${service}:${name}`));
-  }
-  return out;
+/** A pattern is dropped when an earlier one ending in `*` already matches everything it does (a table pattern ending in a star covers the same pattern followed by an index path). */
+export function dropSubsumed(patterns: readonly string[]): string[] {
+  const unique = [...new Set(patterns)].sort();
+  return unique.filter((pattern) => !unique.some((other) => other !== pattern && other.endsWith("*") && pattern.startsWith(other.slice(0, -1))));
 }
 
-function actionsOf(services: readonly string[], keep: (action: ScopedAction) => boolean): string[] {
-  const out: string[] = [];
-  for (const service of services) {
-    const all = scopedActionsOf(service);
-    const chosen = all.filter(keep).map((action) => action.action);
-    if (chosen.length > 0) out.push(...compressActions(service, chosen, all.map((action) => action.action)));
-  }
-  return out.sort();
+/** The resource patterns of a service's own resources named for the run, in the policy's tokens. Region is `*` (another Region is refused on its own), the name is the run's. S3 ARNs have no Region or account. */
+export function runNamePatterns(service: string): string[] {
+  const reason = UNFENCEABLE_SERVICES[service];
+  if (reason !== undefined) throw new Error(`${service} cannot be in a test account policy: ${reason}`);
+  const resources = RUN_RESOURCES[service];
+  if (resources === undefined) throw new Error(`${service} has no resource with a caller-chosen name that the policy knows, so IAM cannot confine it to a run`);
+  const head = service === "s3" ? "arn:{{Partition}}:s3:::" : service === "iam" ? "arn:{{Partition}}:iam::{{AccountId}}:" : `arn:{{Partition}}:${service}:*:{{AccountId}}:`;
+  return dropSubsumed(resources.map((resource) => `${head}${resource.replace("{{Name}}", RUN_NAME_PATTERN)}`));
 }
-
-function namePatterns(services: readonly string[], keepService: (service: string) => boolean = () => true): string[] {
-  const out = new Set<string>();
-  for (const service of services) {
-    if (!keepService(service)) continue;
-    for (const pattern of nameArnPatternsOf(service)) out.add(pattern.replace("{{Name}}", RUN_NAME_PATTERN));
-  }
-  return [...out].sort();
-}
-
-const IAM_RUN_ARNS: readonly string[] = [
-  `arn:{{Partition}}:iam::{{AccountId}}:instance-profile/${RUN_NAME_PATTERN}`,
-  `arn:{{Partition}}:iam::{{AccountId}}:policy/${RUN_NAME_PATTERN}`,
-  `arn:{{Partition}}:iam::{{AccountId}}:role/${RUN_NAME_PATTERN}`,
-];
 
 export interface TestAccessPolicies {
   /**
-   * The permissions boundary of the test role, the cleanup role and every role a run creates. It must stay small (IAM's limit is 6,144 characters), so it holds the allow list of services and the
-   * checks that need no per-action list: the run tag is required, one Region, the run tag cannot be changed, and the IAM rules (run-named roles only, the boundary on every role, no long-lived keys).
+   * The permissions boundary of the test role, the cleanup role and every role a run creates. It holds the whole fence (see the model above) in under IAM's limit of 6,144 characters.
    */
   readonly boundary: PolicyDocument;
   /** What the test role may do (inside the boundary): the services, nothing else. */
   readonly access: PolicyDocument;
-  /**
-   * The per-action checks of the test role, as managed policies of at most IAM's size: create only with the run tag, change and delete only what carries it, act only on run-named resources where the action has no tag.
-   * Explicit denies, so they hold wherever the role's allows come from. The test role has these attached next to `access`.
-   */
-  readonly guards: readonly PolicyDocument[];
   /** What the delete-only cleanup role may do (inside the boundary): reads, and the delete actions of the services. */
   readonly cleanup: PolicyDocument;
-  /** The cleanup role's per-action checks: the same two delete-side guards. */
-  readonly cleanupGuards: readonly PolicyDocument[];
 }
 
-/** Room left under IAM's limit for the policy's own framing. */
-const CHUNK_BUDGET = IAM_MANAGED_POLICY_MAX_CHARS - 200;
-
-/** Splits statements that carry long action lists into policies that each fit one managed policy. A statement's other parts (condition, NotResource) are repeated in each. */
-export function chunkStatements(statements: readonly PolicyStatement[], budget: number = CHUNK_BUDGET): PolicyDocument[] {
-  const documents: PolicyStatement[][] = [[]];
-  const sizeOf = (list: readonly PolicyStatement[]): number => policySize({ Version: "2012-10-17", Statement: list });
-  for (const statement of statements) {
-    const actions = statement.Action ?? [];
-    if (actions.length === 0) continue;
-    let rest = [...actions];
-    let part = 0;
-    while (rest.length > 0) {
-      const current = documents[documents.length - 1] as PolicyStatement[];
-      const take: string[] = [];
-      for (const action of rest) {
-        const candidate: PolicyStatement = { ...statement, Sid: `${statement.Sid}${part + 1}`, Action: [...take, action] };
-        if (sizeOf([...current, candidate]) > budget) break;
-        take.push(action);
-      }
-      if (take.length === 0) {
-        if (current.length === 0) throw new Error(`one action of ${statement.Sid} does not fit an empty policy`);
-        documents.push([]);
-        continue;
-      }
-      current.push({ ...statement, Sid: `${statement.Sid}${part + 1}`, Action: take });
-      rest = rest.slice(take.length);
-      part += 1;
-    }
-  }
-  return documents.filter((list) => list.length > 0).map((list) => ({ Version: "2012-10-17", Statement: list }));
-}
+const NOT_A_RUN_ROLE: readonly string[] = ["arn:{{Partition}}:iam::{{AccountId}}:role/rv-*", "arn:{{Partition}}:sts::{{AccountId}}:assumed-role/rv-*/*"];
 
 export function buildTestAccessPolicies(services: readonly string[] = DEFAULT_TEST_ACCESS_SERVICES): TestAccessPolicies {
   const sorted = [...new Set(services)].sort();
+  const patternsOf = (list: readonly string[]): string[] => dropSubsumed(list.flatMap((service) => runNamePatterns(service)));
+  const withoutSpecial = sorted.filter((service) => service !== "s3" && service !== "iam");
   const serviceAllow = sorted.map((service) => `${service}:*`);
   const baseline = ["sts:GetCallerIdentity", "tag:GetResources", "tag:GetTagKeys", "tag:GetTagValues"];
-  const tagGuarded = (action: ScopedAction): boolean => action.guard === "tag";
+  const reads = [...sorted.flatMap((service) => [`${service}:Describe*`, `${service}:Get*`, `${service}:List*`]), ...EXTRA_READS.filter((action) => sorted.includes(action.split(":")[0] as string)), "sts:GetCallerIdentity", "tag:Get*"];
+  const secretNames = patternsOf(["lambda", "secretsmanager", "ssm", "states"].filter((service) => sorted.includes(service))).filter((pattern) => /:(function:|secret:|parameter\/|execution:)/u.test(pattern));
   const allow: PolicyStatement = { Sid: "AllowTestServices", Effect: "Allow", Action: [...serviceAllow, ...baseline], Resource: "*" };
-  const boundaryStatements: PolicyStatement[] = [
-    allow,
+  const statements: PolicyStatement[] = [
+    // Reads are Rovara's own roles' only: a role the run creates reads nothing outside its run, so an outside principal that gets to assume it reaches no more than the run's own resources.
+    { Sid: "AllowReads", Effect: "Allow", Action: reads, Resource: "*", Condition: { ArnNotLike: { "aws:PrincipalArn": NOT_A_RUN_ROLE } } },
+    { Sid: "AllowRunNamed", Effect: "Allow", Action: withoutSpecial.map((service) => `${service}:*`), Resource: patternsOf(withoutSpecial) },
+  ];
+  if (sorted.includes("s3")) {
+    // S3 bucket names are global: a bucket named like the run's but in another account is not the run's, so the account is checked too.
+    statements.push({ Sid: "AllowRunNamedS3", Effect: "Allow", Action: ["s3:*"], Resource: patternsOf(["s3"]), Condition: { StringEquals: { "s3:ResourceAccount": "{{AccountId}}" } } });
+  }
+  if (sorted.includes("iam")) statements.push({ Sid: "AllowRunNamedIam", Effect: "Allow", Action: ["iam:*"], Resource: patternsOf(["iam"]) });
+  statements.push({ Sid: "AllowRunTagged", Effect: "Allow", Action: withoutSpecial.map((service) => `${service}:*`), Resource: "*", Condition: { StringEquals: { [`aws:ResourceTag/${RUN_TAG_KEY}`]: RUN_TAG_VARIABLE } } });
+  const createByTag = CREATE_BY_TAG.filter((action) => sorted.includes(action.split(":")[0] as string));
+  if (createByTag.length > 0) {
+    statements.push({ Sid: "AllowCreateWithRunTag", Effect: "Allow", Action: createByTag, Resource: "*", Condition: { StringEquals: { [`aws:RequestTag/${RUN_TAG_KEY}`]: RUN_TAG_VARIABLE } } });
+  }
+  statements.push(
     // The one session tag every run carries. Without it every other check has nothing to compare, so nothing at all is allowed.
     { Sid: "DenyWithoutRunTag", Effect: "Deny", NotAction: ["sts:GetCallerIdentity"], Resource: "*", Condition: { Null: { [`aws:PrincipalTag/${RUN_TAG_KEY}`]: "true" } } },
     { Sid: "DenyOtherRegions", Effect: "Deny", NotAction: GLOBAL_ACTIONS, Resource: "*", Condition: { StringNotEquals: { "aws:RequestedRegion": "{{Region}}" } } },
-    // A request that carries the run tag key must carry this run's value, and a request that removes the key is refused: no action sets, changes or removes the tag on a resource it does not belong to, or on its own.
+    // A request that carries the run tag key must carry this run's value, and a request that removes the key is refused.
     {
       Sid: "DenyRunTagChange",
       Effect: "Deny",
@@ -196,51 +197,31 @@ export function buildTestAccessPolicies(services: readonly string[] = DEFAULT_TE
       Resource: "*",
       Condition: { "ForAnyValue:StringEquals": { "aws:TagKeys": RUN_TAG_KEY }, StringNotEquals: { [`aws:RequestTag/${RUN_TAG_KEY}`]: RUN_TAG_VARIABLE } },
     },
-  ];
+  );
+  if (secretNames.length > 0) {
+    statements.push({ Sid: "DenySecretReadsOutsideRun", Effect: "Deny", Action: SECRET_READS.filter((action) => sorted.includes(action.split(":")[0] as string)), NotResource: secretNames });
+  }
   if (sorted.includes("iam")) {
-    boundaryStatements.push(
-      // IAM writes only on run-named roles, policies and instance profiles: the roles a run creates, never the connection's own roles, boundary or policies.
-      { Sid: "DenyIamOutsideRunNames", Effect: "Deny", Action: actionsOf(["iam"], () => true), NotResource: IAM_RUN_ARNS },
-      // A role a run creates carries this boundary, and the boundary cannot be taken off.
+    statements.push(
       { Sid: "DenyRoleWithoutBoundary", Effect: "Deny", Action: ["iam:CreateRole", "iam:PutRolePermissionsBoundary"], Resource: "*", Condition: { StringNotEquals: { "iam:PermissionsBoundary": "{{BoundaryArn}}" } } },
-      { Sid: "DenyBoundaryRemoval", Effect: "Deny", Action: ["iam:DeleteRolePermissionsBoundary", "iam:DeleteUserPermissionsBoundary", "iam:PutUserPermissionsBoundary"], Resource: "*" },
-      { Sid: "DenyLongLivedKeys", Effect: "Deny", Action: [...LONG_LIVED_KEY_ACTIONS], Resource: "*" },
+      { Sid: "DenyRoleWithoutRunTag", Effect: "Deny", Action: ["iam:CreateRole"], Resource: "*", Condition: { StringNotEquals: { [`aws:RequestTag/${RUN_TAG_KEY}`]: RUN_TAG_VARIABLE } } },
+      { Sid: "DenyPassRoleToOtherServices", Effect: "Deny", Action: ["iam:PassRole"], Resource: "*", Condition: { StringNotEquals: { "iam:PassedToService": [...PASSABLE_SERVICES] } } },
+      { Sid: "DenyBoundaryRemovalAndKeys", Effect: "Deny", Action: [...FORBIDDEN_IAM_ACTIONS], Resource: "*" },
     );
   }
-  const guardStatements = (kinds: ReadonlySet<ScopedAction["kind"]>): PolicyStatement[] => {
-    const guards: PolicyStatement[] = [];
-    const create = actionsOf(sorted, (action) => kinds.has("create") && action.kind === "create" && tagGuarded(action));
-    if (create.length > 0) guards.push({ Sid: "DenyCreateWithoutRunTag", Effect: "Deny", Action: create, Resource: "*", Condition: { StringNotEquals: { [`aws:RequestTag/${RUN_TAG_KEY}`]: RUN_TAG_VARIABLE } } });
-    const change = actionsOf(sorted, (action) => (action.kind === "write" || action.kind === "delete" || action.kind === "permissions") && kinds.has(action.kind) && tagGuarded(action));
-    if (change.length > 0) guards.push({ Sid: "DenyChangesToOtherResources", Effect: "Deny", Action: change, Resource: "*", Condition: { StringNotEquals: { [`aws:ResourceTag/${RUN_TAG_KEY}`]: RUN_TAG_VARIABLE } } });
-    const named = sorted.filter((service) => service !== "iam");
-    const byName = actionsOf(named, (action) => action.guard === "name" && kinds.has(action.kind));
-    if (byName.length > 0) guards.push({ Sid: "DenyChangesOutsideRunNames", Effect: "Deny", Action: byName, NotResource: namePatterns(named) });
-    const tagging = actionsOf(sorted, (action) => action.kind === "tagging" && kinds.has("tagging"));
-    if (tagging.length > 0) {
-      guards.push({
-        Sid: "DenyTaggingOtherRuns",
-        Effect: "Deny",
-        Action: tagging,
-        Resource: "*",
-        Condition: { Null: { [`aws:ResourceTag/${RUN_TAG_KEY}`]: "false" }, StringNotEquals: { [`aws:ResourceTag/${RUN_TAG_KEY}`]: RUN_TAG_VARIABLE } },
-      });
-    }
-    if (!kinds.has("write")) {
-      // The cleanup role reads by verb pattern (Get*, List*, Describe*). A few changing actions are named like reads (a Step Functions worker's GetActivityTask takes a task): they are refused outright.
-      const readNamed = actionsOf(sorted, (action) => action.kind !== "delete" && /^(Get|List|Describe)/u.test(action.action));
-      if (readNamed.length > 0) guards.push({ Sid: "DenyChangesNamedLikeReads", Effect: "Deny", Action: readNamed, Resource: "*" });
-    }
-    return guards;
+  const boundary: PolicyDocument = { Version: "2012-10-17", Statement: statements };
+  const access: PolicyDocument = { Version: "2012-10-17", Statement: [allow] };
+  const deletes = sorted.flatMap((service) => scopedDeleteActions(service));
+  const cleanup: PolicyDocument = {
+    Version: "2012-10-17",
+    Statement: [{ Sid: "AllowReadAndDelete", Effect: "Allow", Action: [...reads, ...deletes], Resource: "*" }],
   };
-  const readPatterns = sorted.flatMap((service) => [`${service}:Describe*`, `${service}:Get*`, `${service}:List*`]);
-  return {
-    boundary: { Version: "2012-10-17", Statement: boundaryStatements },
-    access: { Version: "2012-10-17", Statement: [allow] },
-    guards: chunkStatements(guardStatements(new Set(["create", "write", "delete", "permissions", "tagging"]))),
-    cleanup: { Version: "2012-10-17", Statement: [{ Sid: "AllowReadAndDelete", Effect: "Allow", Action: [...readPatterns, ...baseline, ...actionsOf(sorted, (action) => action.kind === "delete")], Resource: "*" }] },
-    cleanupGuards: chunkStatements(guardStatements(new Set(["delete"]))),
-  };
+  return { boundary, access, cleanup };
+}
+
+/** The delete actions of a service as patterns: exact names, kept to the actions the table knows are deletes. */
+function scopedDeleteActions(service: string): string[] {
+  return scopedActionsOf(service).filter((action) => action.kind === "delete").map((action) => `${service}:${action.action}`).sort();
 }
 
 export interface PolicyTokenValues {

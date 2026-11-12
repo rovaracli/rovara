@@ -10,6 +10,12 @@
 # W3037 (an action cfn-lint's snapshot of IAM does not know, or a read pattern that matches nothing in a service) is ignored: the policies are generated from AWS's own, newer, service reference.
 set -eu
 cd "$(dirname "$0")/../.."
+# npx comes from the repo's pinned Node (.node-version) when the shell has none (the owner's Mac keeps it under ~/.local/share/charterarc/toolchains).
+if ! command -v npx >/dev/null 2>&1; then
+  NODE_DIR="$HOME/.local/share/charterarc/toolchains/node-v$(tr -d '[:space:]' < .node-version)-darwin-arm64/bin"
+  [ -d "$NODE_DIR" ] && PATH="$NODE_DIR:$PATH"
+  command -v npx >/dev/null 2>&1 || { echo "npx is not installed (and the pinned Node toolchain is not at $NODE_DIR)" >&2; exit 2; }
+fi
 TEMPLATE=environments/test-access/cloudformation/rovara-test-access.template.yaml
 RULES=environments/test-access/rules
 GUARD=${CFN_GUARD:-$HOME/.local/share/rovara-tools/cfn-guard-3.2.1/cfn-guard}

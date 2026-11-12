@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CALLBACK_FAILURE_REASONS,
   CLOUDFORMATION_RESPONSE_MAX_BYTES,
+  TEST_ACCESS_CALLBACK_TIMEOUT_SECONDS,
+  cloudFormationResponseHosts,
+  connectionConfirmation,
+  planCallback,
   TEST_ACCESS_DEFAULT_REGIONS,
+  TestAccessCallbackRequestSchema,
   TEST_ACCESS_TEMPLATE_PARAMETERS,
   buildCloudFormationResponse,
   buildQuickCreateLink,
@@ -194,26 +199,33 @@ describe("the answer to CloudFormation", () => {
 describe("sending the answer", () => {
   const response = buildCloudFormationResponse({ StackId: STACK_ID, RequestId: "req-1", LogicalResourceId: "RovaraCallback", RequestType: "Create", ResourceProperties: properties() }, { status: "SUCCESS" });
 
-  it("accepts only CloudFormation's own pre-signed S3 URLs", () => {
-    expect(isCloudFormationResponseUrl(RESPONSE_URL)).toBe(true);
-    expect(isCloudFormationResponseUrl("https://cloudformation-custom-resource-response-useast1.s3.amazonaws.com/arn%3Aaws")).toBe(true);
+  it("accepts only CloudFormation's response bucket for the stack's own Region, by its exact host", () => {
+    expect(isCloudFormationResponseUrl(RESPONSE_URL, REGION)).toBe(true);
+    expect(isCloudFormationResponseUrl("https://cloudformation-custom-resource-response-uswest2.s3.us-west-2.amazonaws.com/arn%3Aaws", REGION)).toBe(true);
+    expect(isCloudFormationResponseUrl("https://cloudformation-custom-resource-response-useast1.s3.amazonaws.com/arn%3Aaws", "us-east-1")).toBe(true);
+    expect(cloudFormationResponseHosts("eu-west-1")).toEqual(["cloudformation-custom-resource-response-euwest1.s3-eu-west-1.amazonaws.com", "cloudformation-custom-resource-response-euwest1.s3.eu-west-1.amazonaws.com"]);
     for (const bad of [
       "http://cloudformation-custom-resource-response-uswest2.s3-us-west-2.amazonaws.com/x",
       "https://example.com/x",
       "https://169.254.169.254/latest/meta-data",
       "https://cloudformation-custom-resource-response-uswest2.s3.amazonaws.com.evil.com/x",
       "https://evil.com/cloudformation-custom-resource-response-uswest2.s3.amazonaws.com/x",
-      "https://user:pw@cloudformation-custom-resource-response-uswest2.s3.amazonaws.com/x",
-      "https://cloudformation-custom-resource-response-uswest2.s3.amazonaws.com:8443/x",
-      "https://cloudformation-custom-resource-response-uswest2.s3.amazonaws.com",
-      "https://my-bucket.s3.amazonaws.com/x",
+      "https://user:pw@cloudformation-custom-resource-response-uswest2.s3-us-west-2.amazonaws.com/x",
+      "https://cloudformation-custom-resource-response-uswest2.s3-us-west-2.amazonaws.com:8443/x",
+      "https://cloudformation-custom-resource-response-uswest2.s3-us-west-2.amazonaws.com",
+      "https://my-bucket.s3.us-west-2.amazonaws.com/x",
+      // a look-alike bucket, another Region's response bucket, and the global host outside us-east-1
+      "https://cloudformation-custom-resource-response-attacker.s3-us-west-2.amazonaws.com/x",
+      "https://cloudformation-custom-resource-response-useast1.s3-us-east-1.amazonaws.com/x",
+      "https://cloudformation-custom-resource-response-uswest2.s3.amazonaws.com/x",
       "not a url",
-    ]) expect(isCloudFormationResponseUrl(bad), bad).toBe(false);
+    ]) expect(isCloudFormationResponseUrl(bad, REGION), bad).toBe(false);
+    expect(isCloudFormationResponseUrl(RESPONSE_URL, "not a region")).toBe(false);
   });
 
   it("puts the JSON to the URL and says whether CloudFormation took it", async () => {
     const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-    expect(await sendCloudFormationResponse(RESPONSE_URL, response, { fetch })).toBe(true);
+    expect(await sendCloudFormationResponse(RESPONSE_URL, response, { fetch, region: REGION })).toBe(true);
     expect(fetch).toHaveBeenCalledTimes(1);
     const [url, init] = fetch.mock.calls[0] as [string, { method: string; body: string }];
     expect(url).toBe(RESPONSE_URL);
@@ -223,29 +235,84 @@ describe("sending the answer", () => {
 
   it("never calls out to a URL that is not CloudFormation's", async () => {
     const fetch = vi.fn();
-    expect(await sendCloudFormationResponse("https://example.com/x", response, { fetch })).toBe(false);
+    expect(await sendCloudFormationResponse("https://example.com/x", response, { fetch, region: REGION })).toBe(false);
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it("retries a failure a bounded number of times and never throws", async () => {
     const down = vi.fn().mockRejectedValue(new Error("network"));
-    expect(await sendCloudFormationResponse(RESPONSE_URL, response, { fetch: down, attempts: 3, timeoutMs: 50 })).toBe(false);
+    expect(await sendCloudFormationResponse(RESPONSE_URL, response, { fetch: down, region: REGION, attempts: 3, timeoutMs: 50 })).toBe(false);
     expect(down).toHaveBeenCalledTimes(3);
     const flaky = vi.fn().mockResolvedValueOnce({ ok: false, status: 503 }).mockResolvedValueOnce({ ok: true, status: 200 });
-    expect(await sendCloudFormationResponse(RESPONSE_URL, response, { fetch: flaky, timeoutMs: 50 })).toBe(true);
+    expect(await sendCloudFormationResponse(RESPONSE_URL, response, { fetch: flaky, region: REGION, timeoutMs: 50 })).toBe(true);
     expect(flaky).toHaveBeenCalledTimes(2);
     const expired = vi.fn().mockResolvedValue({ ok: false, status: 403 });
-    expect(await sendCloudFormationResponse(RESPONSE_URL, response, { fetch: expired })).toBe(false);
+    expect(await sendCloudFormationResponse(RESPONSE_URL, response, { fetch: expired, region: REGION })).toBe(false);
     expect(expired).toHaveBeenCalledTimes(1);
-    expect(await sendCloudFormationResponse(RESPONSE_URL, response, { fetch: vi.fn().mockResolvedValue({ ok: false, status: 500 }), attempts: 99, timeoutMs: 50 })).toBe(false);
+    expect(await sendCloudFormationResponse(RESPONSE_URL, response, { fetch: vi.fn().mockResolvedValue({ ok: false, status: 500 }), region: REGION, attempts: 99, timeoutMs: 50 })).toBe(false);
   });
 
   it("cuts an oversized answer down to a bare one, because CloudFormation refuses a body over 4,096 bytes", async () => {
     const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     const big = { ...response, Status: "FAILED" as const, Reason: "x".repeat(5_000) };
-    await sendCloudFormationResponse(RESPONSE_URL, big, { fetch });
+    await sendCloudFormationResponse(RESPONSE_URL, big, { fetch, region: REGION });
     const body = (fetch.mock.calls[0] as [string, { body: string }])[1].body;
     expect(new TextEncoder().encode(body).length).toBeLessThanOrEqual(CLOUDFORMATION_RESPONSE_MAX_BYTES);
     expect(JSON.parse(body)).toMatchObject({ Status: "FAILED", PhysicalResourceId: response.PhysicalResourceId });
+  });
+});
+
+describe("what to do with a callback (review items M1 and M2)", () => {
+  // The shape only: whether the message is bound to its account and Region is checked by parseTestAccessCallback (above); a stranger's stack here has to reach the plan.
+  const parsed = (type: "Create" | "Update" | "Delete", over: Record<string, unknown> = {}) => TestAccessCallbackRequestSchema.parse(JSON.parse(request(type, over)));
+  const token = { orgId: ORG, connectionId: CONN };
+  const recorded = { ...token, stackId: STACK_ID, accountId: ACCOUNT };
+  const STRANGER_STACK = `arn:aws:cloudformation:${REGION}:${OTHER_ACCOUNT}:stack/Evil/99999999-2222-3333-4444-555555555555`;
+
+  it("times out after about two minutes: no code of Rovara's is in the customer's account to answer in its place", () => {
+    expect(TEST_ACCESS_CALLBACK_TIMEOUT_SECONDS).toBe(120);
+  });
+
+  it("connects a Create that holds the consumed token, with the external id made from the token, not the message", () => {
+    const plan = planCallback(parsed("Create"), { consumedToken: token });
+    expect(plan.kind).toBe("connect");
+    if (plan.kind !== "connect") return;
+    expect(plan.connection).toMatchObject({ externalId: EXTERNAL_ID, orgId: ORG, connectionId: CONN, accountId: ACCOUNT, region: REGION, stackId: STACK_ID, confirmedByAdmin: false });
+    expect(plan.answer).toEqual({ status: "SUCCESS" });
+  });
+
+  it("refuses a Create with no consumed token, or an external id that is not the token's (a publisher cannot choose the one Rovara assumes with)", () => {
+    expect(planCallback(parsed("Create"), {})).toEqual({ kind: "ignore", answer: { status: "FAILED", code: "token_refused" } });
+    const otherConnection = { orgId: ORG, connectionId: `conn_${"c".repeat(20)}` };
+    expect(planCallback(parsed("Create"), { consumedToken: otherConnection })).toEqual({ kind: "ignore", answer: { status: "FAILED", code: "external_id_mismatch" } });
+  });
+
+  it("treats a repeated Create for a recorded stack as a repeat: nothing changes and it is answered success, never failed after it succeeded", () => {
+    expect(planCallback(parsed("Create"), { recorded })).toEqual({ kind: "ignore", answer: { status: "SUCCESS" } });
+    expect(planCallback(parsed("Create"), { recorded, consumedToken: token })).toEqual({ kind: "ignore", answer: { status: "SUCCESS" } });
+  });
+
+  it("M1: disconnects on a Delete only when its stack is the one recorded at Create (positive control: it does for the real stack)", () => {
+    expect(planCallback(parsed("Delete"), { recorded })).toMatchObject({ kind: "disconnect", recorded });
+    // someone who holds the external id forges a Delete from a stack of their own: nothing changes, and it is answered success
+    const forged = parsed("Delete", { StackId: STRANGER_STACK });
+    expect(planCallback(forged, { recorded })).toEqual({ kind: "ignore", answer: { status: "SUCCESS" } });
+    expect(planCallback(parsed("Delete"), {})).toEqual({ kind: "ignore", answer: { status: "SUCCESS" } });
+    expect(buildCloudFormationResponse(forged, { status: "FAILED", code: "token_refused" }).Status).toBe("SUCCESS");
+  });
+
+  it("updates only the recorded stack with the recorded external id and account, and answers any other Update success without changing anything", () => {
+    expect(planCallback(parsed("Update"), { recorded }).kind).toBe("update");
+    expect(planCallback(parsed("Update", { StackId: STRANGER_STACK }), { recorded }).kind).toBe("ignore");
+    expect(planCallback(parsed("Update"), {}).kind).toBe("ignore");
+    expect(planCallback(parsed("Update"), { recorded: { ...recorded, accountId: OTHER_ACCOUNT } }).kind).toBe("ignore");
+    expect(planCallback(parsed("Update"), { recorded: { ...recorded, connectionId: `conn_${"c".repeat(20)}` } })).toEqual({ kind: "ignore", answer: { status: "SUCCESS" } });
+  });
+
+  it("M2: a reported connection is unconfirmed, and what the admin confirms is the account id, Region and role", () => {
+    const plan = planCallback(parsed("Create"), { consumedToken: token });
+    if (plan.kind !== "connect") throw new Error("expected a connection");
+    expect(plan.connection.confirmedByAdmin).toBe(false);
+    expect(connectionConfirmation(plan.connection)).toEqual({ accountId: ACCOUNT, region: REGION, roleArn: `arn:aws:iam::${ACCOUNT}:role/Rovara-test-access-RovaraTestRole-ABC` });
   });
 });

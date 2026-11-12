@@ -4,6 +4,8 @@
 #   - every role carries the permissions boundary
 #   - no long-lived keys, no IAM users
 #   - nothing grants every action on every resource
+#   - the boundary is the whole fence, for Rovara's roles and for every role a run creates: an allow list whose every statement is scoped (run-named resources, the run tag, or Rovara's roles for reads),
+#     with the denies a shared account needs (secret reads, passing roles, roles without the boundary or the run tag, the run tag itself)
 #   - the callback goes to the topic the parameter names
 # Run: ~/.local/share/rovara-tools/cfn-guard-3.2.1/cfn-guard validate -r <this file> -d <template> (scripts/test-access/check-templates.sh does it, with cfn-lint).
 
@@ -84,9 +86,12 @@ rule roles_have_no_inline_admin when %roles !empty {
 rule no_allow_everything when %policies !empty {
     %policies {
         Properties.PolicyDocument.Statement[ Effect == "Allow" ] {
-            Action !is_string
-            Action[*] != "*"
-            Resource == "*"
+            when Action is_string {
+                Action != "*"
+            }
+            when Action is_list {
+                Action[ this == "*" ] empty
+            }
         }
     }
 }
@@ -110,4 +115,84 @@ rule external_id_is_checked_by_pattern {
     Parameters.ExternalId.AllowedPattern exists
     Parameters.RovaraPrincipal.AllowedPattern exists
     Parameters.ConnectToken.NoEcho == true
+}
+
+# ---- the boundary (C1, H1, H2 of the TA1 review): a regression here makes a role a test run creates stronger than the run ----
+
+let boundary_statements = Resources.RovaraTestBoundary.Properties.PolicyDocument.Statement
+
+rule boundary_allows_are_scoped {
+    %boundary_statements[ Effect == "Allow" Sid != "AllowReads" ] {
+        Condition exists or Resource !is_string
+        Resource[ this == "*" ] empty
+    }
+}
+
+rule boundary_reads_are_for_rovaras_roles_only {
+    %boundary_statements[ Sid == "AllowReads" ] !empty
+    %boundary_statements[ Sid == "AllowReads" ] {
+        Effect == "Allow"
+        Condition.ArnNotLike."aws:PrincipalArn" exists
+    }
+}
+
+rule boundary_does_not_allow_a_whole_service_by_tag_for_iam_or_s3 {
+    %boundary_statements[ Sid == "AllowRunTagged" ] {
+        Action[*] != "iam:*"
+        Action[*] != "s3:*"
+        Condition.StringEquals."aws:ResourceTag/rovara-run" exists
+    }
+}
+
+# Nothing may let a run set its tag on a resource that exists: the only allow keyed on the request tag is the creation of an event source mapping.
+rule boundary_has_no_tagging_by_request_tag {
+    %boundary_statements[ Effect == "Allow" Sid != "AllowCreateWithRunTag" ] {
+        Condition.StringEquals."aws:RequestTag/rovara-run" not exists
+    }
+    %boundary_statements[ Sid == "AllowCreateWithRunTag" ] {
+        Action[*] == "lambda:CreateEventSourceMapping"
+        Action !is_string
+    }
+}
+
+rule boundary_s3_names_are_checked_against_the_account {
+    %boundary_statements[ Sid == "AllowRunNamedS3" ] !empty
+    %boundary_statements[ Sid == "AllowRunNamedS3" ] {
+        Condition.StringEquals."s3:ResourceAccount" exists
+    }
+}
+
+rule boundary_denies_secret_reads_outside_the_run {
+    %boundary_statements[ Sid == "DenySecretReadsOutsideRun" ] !empty
+    %boundary_statements[ Sid == "DenySecretReadsOutsideRun" ] {
+        Effect == "Deny"
+        NotResource !empty
+        some Action[*] == "secretsmanager:GetSecretValue"
+        some Action[*] == "ssm:GetParameter*"
+        some Action[*] == "lambda:GetFunctionConfiguration"
+    }
+}
+
+rule boundary_limits_pass_role {
+    %boundary_statements[ Sid == "DenyPassRoleToOtherServices" ] !empty
+    %boundary_statements[ Sid == "DenyPassRoleToOtherServices" ] {
+        Effect == "Deny"
+        Action[*] == "iam:PassRole"
+        Condition.StringNotEquals."iam:PassedToService" !empty
+    }
+}
+
+rule boundary_fences_the_roles_a_run_creates {
+    %boundary_statements[ Sid == "DenyRoleWithoutBoundary" ] !empty
+    %boundary_statements[ Sid == "DenyRoleWithoutRunTag" ] !empty
+    %boundary_statements[ Sid == "DenyBoundaryRemovalAndKeys" ] !empty
+    %boundary_statements[ Sid == "DenyRoleWithoutRunTag" ] {
+        Effect == "Deny"
+        Condition.StringNotEquals."aws:RequestTag/rovara-run" exists
+    }
+}
+
+rule boundary_keeps_the_run_tag_and_the_region {
+    %boundary_statements[ Sid == "DenyRunTagChange" ] !empty
+    %boundary_statements[ Sid == "DenyOtherRegions" ] !empty
 }

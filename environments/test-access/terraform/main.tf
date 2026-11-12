@@ -16,11 +16,9 @@ locals {
     account_id  = data.aws_caller_identity.current.account_id
     external_id = var.external_id
   }
-  guard_files         = sort(tolist(fileset("${path.module}/policies", "guard-*.json.tftpl")))
-  cleanup_guard_files = sort(tolist(fileset("${path.module}/policies", "cleanup-guard-*.json.tftpl")))
 }
 
-# The ceiling: the test role, the cleanup role and every role a test run creates carry it.
+# The whole fence: the test role, the cleanup role and every role a test run creates carry it, so a role a run creates is limited exactly as Rovara's own.
 resource "aws_iam_policy" "boundary" {
   name        = "rovara-test-boundary-${var.external_id}"
   description = "Limits Rovara's test role and every role a test run creates. Rovara test access."
@@ -35,26 +33,10 @@ resource "aws_iam_policy" "access" {
   tags        = var.tags
 }
 
-resource "aws_iam_policy" "guard" {
-  for_each    = toset(local.guard_files)
-  name_prefix = "rovara-test-guard-"
-  description = "Per-action limits of the test role: it creates only with the run tag and changes only what carries it. Rovara test access."
-  policy      = templatefile("${path.module}/policies/${each.value}", local.template_vars)
-  tags        = var.tags
-}
-
 resource "aws_iam_policy" "cleanup" {
   name_prefix = "rovara-test-cleanup-"
   description = "What Rovara's cleanup role may do, inside the boundary: read and delete. Rovara test access."
   policy      = templatefile("${path.module}/policies/cleanup.json.tftpl", local.template_vars)
-  tags        = var.tags
-}
-
-resource "aws_iam_policy" "cleanup_guard" {
-  for_each    = toset(local.cleanup_guard_files)
-  name_prefix = "rovara-test-cleanup-guard-"
-  description = "Per-action limits of the cleanup role: it deletes only what carries the run tag. Rovara test access."
-  policy      = templatefile("${path.module}/policies/${each.value}", local.template_vars)
   tags        = var.tags
 }
 
@@ -115,12 +97,6 @@ resource "aws_iam_role_policy_attachment" "test_access" {
   policy_arn = aws_iam_policy.access.arn
 }
 
-resource "aws_iam_role_policy_attachment" "test_guard" {
-  for_each   = aws_iam_policy.guard
-  role       = aws_iam_role.test.name
-  policy_arn = each.value.arn
-}
-
 resource "aws_iam_role" "cleanup" {
   name_prefix          = "rovara-cleanup-"
   description          = "Assumed by Rovara to delete what a test run created. It cannot create or change anything. Rovara test access."
@@ -133,10 +109,4 @@ resource "aws_iam_role" "cleanup" {
 resource "aws_iam_role_policy_attachment" "cleanup_access" {
   role       = aws_iam_role.cleanup.name
   policy_arn = aws_iam_policy.cleanup.arn
-}
-
-resource "aws_iam_role_policy_attachment" "cleanup_guard" {
-  for_each   = aws_iam_policy.cleanup_guard
-  role       = aws_iam_role.cleanup.name
-  policy_arn = each.value.arn
 }

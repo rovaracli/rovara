@@ -8,13 +8,13 @@
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  TEST_ACCESS_CALLBACK_TIMEOUT_SECONDS,
   TEST_ACCESS_TEMPLATE_VERSION,
   buildTestAccessPolicies,
   buildTrustPolicy,
   cloudFormationPolicy,
   renderPolicyTokens,
   terraformPolicyTemplate,
-  type PolicyDocument,
 } from "../../packages/cloud-contracts/src/index.js";
 
 const ROOT = "environments/test-access";
@@ -27,32 +27,15 @@ function jsonBlock(value: unknown, indent: number): string {
   return lines.map((line, index) => (index === 0 ? line : `${" ".repeat(indent)}${line}`)).join("\n");
 }
 
-function guardResources(prefix: string, documents: readonly PolicyDocument[], describe: string): { text: string; names: string[] } {
-  const names = documents.map((_, index) => `${prefix}${index + 1}`);
-  const text = documents
-    .map(
-      (document, index) =>
-        `  ${names[index]}:\n    Type: AWS::IAM::ManagedPolicy\n    Properties:\n      Description: ${JSON.stringify(`${describe} (part ${index + 1} of ${documents.length}). Rovara test access.`)}\n      PolicyDocument: ${jsonBlock(cloudFormationPolicy(document), 6)}\n`,
-    )
-    .join("\n");
-  return { text: `${text}\n`, names };
-}
-
 export function renderTemplate(): string {
   const policies = buildTestAccessPolicies();
-  const testGuards = guardResources("RovaraTestGuard", policies.guards, "Per-action limits of the test role: it creates only with the run tag and changes only what carries it");
-  const cleanupGuards = guardResources("RovaraTestCleanupGuard", policies.cleanupGuards, "Per-action limits of the cleanup role: it deletes only what carries the run tag");
   const cleanupPolicy = `  RovaraTestCleanupPolicy:\n    Type: AWS::IAM::ManagedPolicy\n    Properties:\n      Description: "What Rovara's cleanup role may do, inside the boundary: read and delete. Rovara test access."\n      PolicyDocument: ${jsonBlock(cloudFormationPolicy(policies.cleanup), 6)}\n\n`;
-  const arns = (names: readonly string[]): string => names.map((name) => `        - !Ref ${name}`).join("\n");
   const filled = readFileSync(SOURCE, "utf8")
     .replaceAll("@@VERSION@@", TEST_ACCESS_TEMPLATE_VERSION)
+    .replaceAll("@@TIMEOUT@@", String(TEST_ACCESS_CALLBACK_TIMEOUT_SECONDS))
     .replace("@@BOUNDARY@@", jsonBlock(cloudFormationPolicy(policies.boundary), 6))
     .replace("@@ACCESS@@", jsonBlock(cloudFormationPolicy(policies.access), 6))
-    .replace("@@TEST_GUARDS@@\n", testGuards.text)
-    .replace("@@CLEANUP_POLICY@@\n", cleanupPolicy)
-    .replace("@@CLEANUP_GUARDS@@\n", cleanupGuards.text)
-    .replace("@@TEST_POLICY_ARNS@@", arns(["RovaraTestPolicy", ...testGuards.names]))
-    .replace("@@CLEANUP_POLICY_ARNS@@", arns(["RovaraTestCleanupPolicy", ...cleanupGuards.names]));
+    .replace("@@CLEANUP_POLICY@@\n", cleanupPolicy);
   const body = filled.replace(/^# The source of[^\n]*\n(?:#[^\n]*\n)*/u, "");
   return GENERATED_HEADER + body;
 }
@@ -64,24 +47,12 @@ export function renderAll(): Readonly<Record<string, string>> {
   files[`${ROOT}/terraform/policies/boundary.json.tftpl`] = terraformPolicyTemplate(policies.boundary);
   files[`${ROOT}/terraform/policies/access.json.tftpl`] = terraformPolicyTemplate(policies.access);
   files[`${ROOT}/terraform/policies/cleanup.json.tftpl`] = terraformPolicyTemplate(policies.cleanup);
-  policies.guards.forEach((document, index) => {
-    files[`${ROOT}/terraform/policies/guard-${index + 1}.json.tftpl`] = terraformPolicyTemplate(document);
-  });
-  policies.cleanupGuards.forEach((document, index) => {
-    files[`${ROOT}/terraform/policies/cleanup-guard-${index + 1}.json.tftpl`] = terraformPolicyTemplate(document);
-  });
   const values = { Partition: "aws", Region: "<REGION>", AccountId: "<ACCOUNT_ID>", BoundaryArn: "arn:aws:iam::<ACCOUNT_ID>:policy/rovara-test-boundary-<EXTERNAL_ID>" };
   const text = (document: unknown): string => `${JSON.stringify(document, null, 2)}\n`;
   files[`${ROOT}/policy/trust-policy.json`] = text(buildTrustPolicy({ principalArn: "<ROVARA_PRINCIPAL_ARN>", externalId: "<EXTERNAL_ID>" }));
   files[`${ROOT}/policy/permissions-boundary.json`] = text(renderPolicyTokens(policies.boundary, values));
   files[`${ROOT}/policy/test-role-access.json`] = text(renderPolicyTokens(policies.access, values));
-  policies.guards.forEach((document, index) => {
-    files[`${ROOT}/policy/test-role-guard-${index + 1}.json`] = text(renderPolicyTokens(document, values));
-  });
   files[`${ROOT}/policy/cleanup-role-access.json`] = text(renderPolicyTokens(policies.cleanup, values));
-  policies.cleanupGuards.forEach((document, index) => {
-    files[`${ROOT}/policy/cleanup-role-guard-${index + 1}.json`] = text(renderPolicyTokens(document, values));
-  });
   return files;
 }
 

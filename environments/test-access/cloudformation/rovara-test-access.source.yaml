@@ -49,8 +49,9 @@ Parameters:
     AllowedPattern: "^arn:aws:sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_-]{1,256}$"
     ConstraintDescription: Use the link from Rovara. This is an SNS topic ARN in the stack's Region.
 Resources:
-  # The ceiling. The test role, the cleanup role and every role a test run creates carry it. It allows the services below and nothing else, requires the run tag,
-  # keeps to this Region, and cannot be taken off. The per-action checks are in the RovaraTestGuard policies.
+  # The whole fence. The test role, the cleanup role and every role a test run creates carry it, so a role a run creates is limited exactly as Rovara's own: it may
+  # change only resources named rv-<run id>-... (or already carrying the run tag), read nothing outside its run, and cannot be given to a service tests do not use.
+  # It requires the run tag, keeps to this Region, and cannot be taken off.
   RovaraTestBoundary:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -64,9 +65,7 @@ Resources:
       Description: What Rovara's test role may do, inside the boundary. Rovara test access.
       PolicyDocument: @@ACCESS@@
 
-@@TEST_GUARDS@@
 @@CLEANUP_POLICY@@
-@@CLEANUP_GUARDS@@
   # Rovara assumes this role for a test run. It must present the external id, and it must tag the session with the run id (8 characters).
   RovaraTestRole:
     Type: AWS::IAM::Role
@@ -75,7 +74,7 @@ Resources:
       MaxSessionDuration: 3600
       PermissionsBoundary: !Ref RovaraTestBoundary
       ManagedPolicyArns:
-@@TEST_POLICY_ARNS@@
+        - !Ref RovaraTestPolicy
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -107,7 +106,7 @@ Resources:
       MaxSessionDuration: 3600
       PermissionsBoundary: !Ref RovaraTestBoundary
       ManagedPolicyArns:
-@@CLEANUP_POLICY_ARNS@@
+        - !Ref RovaraTestCleanupPolicy
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -132,14 +131,14 @@ Resources:
                 aws:RequestTag/rovara-run: "????????"
 
   # Tells Rovara this stack exists, and which roles it made. CloudFormation publishes the request to Rovara's SNS topic (ServiceToken); Rovara checks the one-time
-  # token and answers CloudFormation. The role ARN and account id go to Rovara; nothing else leaves your account. When Rovara cannot be reached, creating the stack
-  # fails after 5 minutes and rolls back (create it again from Rovara). Deleting the stack tells Rovara the account is disconnected; if Rovara cannot be reached that
-  # step fails after 5 minutes, and you delete the stack again, choosing to retain RovaraCallback.
+  # token and answers CloudFormation. The role ARN and account id go to Rovara; nothing else leaves your account. No code of Rovara's runs in your account. When Rovara
+  # cannot be reached, creating the stack fails after 2 minutes and rolls back (create it again from Rovara). Deleting the stack tells Rovara the account is disconnected;
+  # if Rovara cannot be reached that step fails after 2 minutes, and you delete the stack again, choosing to retain RovaraCallback.
   RovaraCallback:
     Type: Custom::RovaraTestAccess
     Properties:
       ServiceToken: !Ref CallbackTopicArn
-      ServiceTimeout: "300"
+      ServiceTimeout: "@@TIMEOUT@@"
       RoleArn: !GetAtt RovaraTestRole.Arn
       CleanupRoleArn: !GetAtt RovaraTestCleanupRole.Arn
       AccountId: !Ref AWS::AccountId

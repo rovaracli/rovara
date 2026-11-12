@@ -2,19 +2,24 @@
 //
 //   1. Rovara mints a connection id and a one-time token, and opens the CloudFormation quick-create link (`buildTestAccessLink`) for the customer's Region.
 //   2. The template (environments/test-access/cloudformation/rovara-test-access.template.yaml) creates the test role and a custom resource whose ServiceToken is Rovara's SNS topic in that Region.
-//   3. CloudFormation publishes the custom resource's request to the topic. Rovara's handler (lane TA2) reads it with `parseTestAccessCallback`, checks the token, and answers CloudFormation's pre-signed S3 URL with
-//      `buildCloudFormationResponse` and `sendCloudFormationResponse`: Create and Update with the role, Delete always with success, so deleting the customer's stack never hangs on Rovara.
+//   3. CloudFormation publishes the custom resource's request to the topic. Rovara's handler (lane TA2) reads it with `parseTestAccessCallback`, looks up the connection recorded for the request's StackId, consumes the one-use
+//      token (one conditional write, which also records the StackId) only for a Create with no record, asks `planCallback` what to do, and answers CloudFormation's pre-signed S3 URL with `buildCloudFormationResponse` and
+//      `sendCloudFormationResponse`: Create and Update with success, Delete always with success, so deleting the customer's stack never hangs on Rovara and nobody can disconnect another's account with a forged Delete.
 //
-// Everything in a request is untrusted: the topic accepts publishes from any AWS account (the customer's account is not known when the topic is made), so the handler checks the token, binds the message to the
-// account and Region it came from, and sends the response only to a CloudFormation response URL. Browser-safe: no Node import.
+// Everything in a request is untrusted: the topic accepts publishes from any AWS account (the customer's account is not known when the topic is made), and the account and Region in the body are the publisher's word,
+// so the one-use token is the only authentication. Therefore: the external id Rovara assumes the role with is made from the token's record (`connectionExternalId`), never read from the message; a reported connection stays
+// unconfirmed until an admin has seen its account id, Region and role (`connectionConfirmation`) and said it is theirs; nothing assumes the role before. Browser-safe: no Node import.
 import { z } from "zod";
 import { OrgIdSchema } from "@rovara-code/contracts";
 
 /** The template's version: it moves with every change to the template, the policies or the callback properties. The callback carries it, so Rovara knows what a connected account runs. */
 export const TEST_ACCESS_TEMPLATE_VERSION = "1.0.0";
 export const TEST_ACCESS_STACK_NAME = "Rovara-test-access";
-/** The custom resource's timeout, in seconds: a Rovara outage fails a stack create after this long (and a delete after it, which the customer can retry or finish by retaining the resource), not after CloudFormation's hour. */
-export const TEST_ACCESS_CALLBACK_TIMEOUT_SECONDS = 300;
+/**
+ * The custom resource's timeout, in seconds: a Rovara outage fails a stack create after this long (the customer starts again from Rovara) and holds a stack delete for this long (the customer then deletes it again, retaining the
+ * RovaraCallback resource), not CloudFormation's hour. There is no code of Rovara's in the customer's account to answer in Rovara's place (owner's choice A), so this is the bound.
+ */
+export const TEST_ACCESS_CALLBACK_TIMEOUT_SECONDS = 120;
 /** The connect token's life. */
 export const TEST_ACCESS_TOKEN_TTL_SECONDS = 30 * 60;
 
@@ -274,8 +279,17 @@ export function buildCloudFormationResponse(request: Pick<TestAccessCallbackRequ
   return { Status: "FAILED", Reason: CALLBACK_FAILURE_REASONS[outcome.code], ...base };
 }
 
-/** CloudFormation's response URLs are pre-signed S3 URLs on its own buckets. Anything else in a request is an attempt to make Rovara call somewhere it should not. */
-export function isCloudFormationResponseUrl(value: string): boolean {
+/**
+ * The hosts CloudFormation's response bucket has in a Region: `cloudformation-custom-resource-response-<region without hyphens>` on S3's host for the Region, in the old (`s3-<region>`) and the current (`s3.<region>`) form, and
+ * on the global host in us-east-1. Exactly these; a host that merely looks like one is refused. (Taken from the forms in AWS's documentation; TA11 checks a real URL.)
+ */
+export function cloudFormationResponseHosts(region: string): readonly string[] {
+  const bucket = `cloudformation-custom-resource-response-${region.replaceAll("-", "")}`;
+  return [`${bucket}.s3-${region}.amazonaws.com`, `${bucket}.s3.${region}.amazonaws.com`, ...(region === "us-east-1" ? [`${bucket}.s3.amazonaws.com`] : [])];
+}
+
+/** CloudFormation's response URLs are pre-signed S3 URLs on its own bucket for the stack's Region. Anything else in a request is an attempt to make Rovara call somewhere it should not. */
+export function isCloudFormationResponseUrl(value: string, region: string): boolean {
   let url: URL;
   try {
     url = new URL(value);
@@ -283,11 +297,12 @@ export function isCloudFormationResponseUrl(value: string): boolean {
     return false;
   }
   return (
+    TestAccessRegionSchema.safeParse(region).success &&
     url.protocol === "https:" &&
     url.port === "" &&
     url.username === "" &&
     url.password === "" &&
-    /^cloudformation-custom-resource-response-[a-z0-9-]+\.s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com$/u.test(url.hostname) &&
+    cloudFormationResponseHosts(region).includes(url.hostname) &&
     url.pathname.length > 1
   );
 }
@@ -295,6 +310,8 @@ export function isCloudFormationResponseUrl(value: string): boolean {
 const byteLength = (text: string): number => new TextEncoder().encode(text).length;
 
 export interface SendResponseOptions {
+  /** The stack's Region: the response URL must be on CloudFormation's bucket for it. */
+  readonly region: string;
   /** The caller's `fetch`; a test passes a stub. */
   readonly fetch: (url: string, init: { method: "PUT"; headers: Record<string, string>; body: string; signal: AbortSignal }) => Promise<{ readonly ok: boolean; readonly status: number }>;
   readonly timeoutMs?: number;
@@ -306,7 +323,7 @@ export interface SendResponseOptions {
  * (no Reason) before it is sent, because an oversized body is refused and leaves the stack waiting.
  */
 export async function sendCloudFormationResponse(url: string, response: CloudFormationResponse, options: SendResponseOptions): Promise<boolean> {
-  if (!isCloudFormationResponseUrl(url)) return false;
+  if (!isCloudFormationResponseUrl(url, options.region)) return false;
   let body = JSON.stringify(response);
   if (byteLength(body) > CLOUDFORMATION_RESPONSE_MAX_BYTES) {
     body = JSON.stringify({ Status: response.Status, PhysicalResourceId: response.PhysicalResourceId, StackId: response.StackId, RequestId: response.RequestId, LogicalResourceId: response.LogicalResourceId });
@@ -327,4 +344,79 @@ export async function sendCloudFormationResponse(url: string, response: CloudFor
     }
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// What to do with a callback
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+/** What consuming a connect token returned: the connection it was made for. The token is one-use: the caller consumes it with one conditional write, which also stores the connection's StackId, and only then plans a Create. */
+export interface ConnectTokenRecord {
+  readonly orgId: string;
+  readonly connectionId: string;
+}
+
+/** What Rovara stored when the Create was accepted, found by the request's StackId. */
+export interface RecordedConnection extends ConnectTokenRecord {
+  readonly stackId: string;
+  readonly accountId: string;
+}
+
+/**
+ * A connection as reported. `externalId` is made from the token's record (`connectionExternalId`), never read from the message: Rovara assumes the role with this value, so a publisher cannot choose it. Account and Region
+ * come from the publisher's body (bound to the stack's own id, but not otherwise proved), and the token is the only authentication, so a connection stays unconfirmed until an admin has seen the account id, role and
+ * Region (`connectionConfirmation`) and said it is theirs: nothing assumes the role before that.
+ */
+export interface ReportedConnection extends ConnectTokenRecord {
+  readonly externalId: string;
+  readonly stackId: string;
+  readonly accountId: string;
+  readonly region: string;
+  readonly roleArn: string;
+  readonly cleanupRoleArn: string;
+  readonly templateVersion: string;
+  readonly confirmedByAdmin: false;
+}
+
+export type CallbackPlan =
+  | { readonly kind: "connect" | "update"; readonly connection: ReportedConnection; readonly answer: { readonly status: "SUCCESS" } }
+  | { readonly kind: "disconnect"; readonly recorded: RecordedConnection; readonly answer: { readonly status: "SUCCESS" } }
+  | { readonly kind: "ignore"; readonly answer: CallbackOutcome };
+
+/**
+ * What to do with a parsed callback, and what to answer. `recorded` is the connection stored for the request's StackId (look it up first); `consumedToken` is the result of consuming the connect token, passed for a Create only,
+ * and only when no connection is recorded for the stack.
+ *   Create:  a stack already recorded is a repeated delivery: nothing changes and it is answered SUCCESS. Otherwise the token must have been consumed, and the message's external id must be the one made from it.
+ *   Update:  acts only on the recorded stack, with the recorded external id and account; anything else changes nothing and is answered SUCCESS (an update must not fail a customer's stack because of a stranger's message).
+ *   Delete:  disconnects only when the StackId is exactly the one recorded at Create; any other Delete changes nothing and is answered SUCCESS. Someone who holds an external id cannot disconnect another's account.
+ */
+export function planCallback(request: TestAccessCallbackRequest, state: { readonly recorded?: RecordedConnection | undefined; readonly consumedToken?: ConnectTokenRecord | undefined }): CallbackPlan {
+  const { recorded, consumedToken } = state;
+  if (request.RequestType === "Delete") return recorded !== undefined && recorded.stackId === request.StackId ? { kind: "disconnect", recorded, answer: { status: "SUCCESS" } } : { kind: "ignore", answer: { status: "SUCCESS" } };
+  const properties = request.ResourceProperties;
+  const report = (identity: ConnectTokenRecord): ReportedConnection => ({
+    orgId: identity.orgId,
+    connectionId: identity.connectionId,
+    externalId: connectionExternalId(identity.orgId, identity.connectionId),
+    stackId: request.StackId,
+    accountId: properties.AccountId,
+    region: properties.Region,
+    roleArn: properties.RoleArn,
+    cleanupRoleArn: properties.CleanupRoleArn,
+    templateVersion: properties.TemplateVersion,
+    confirmedByAdmin: false,
+  });
+  if (request.RequestType === "Update") {
+    if (recorded === undefined || recorded.stackId !== request.StackId || recorded.accountId !== properties.AccountId || properties.ExternalId !== connectionExternalId(recorded.orgId, recorded.connectionId)) return { kind: "ignore", answer: { status: "SUCCESS" } };
+    return { kind: "update", connection: report(recorded), answer: { status: "SUCCESS" } };
+  }
+  if (recorded !== undefined && recorded.stackId === request.StackId) return { kind: "ignore", answer: { status: "SUCCESS" } };
+  if (consumedToken === undefined) return { kind: "ignore", answer: { status: "FAILED", code: "token_refused" } };
+  if (properties.ExternalId !== connectionExternalId(consumedToken.orgId, consumedToken.connectionId)) return { kind: "ignore", answer: { status: "FAILED", code: "external_id_mismatch" } };
+  return { kind: "connect", connection: report(consumedToken), answer: { status: "SUCCESS" } };
+}
+
+/** What the admin is shown to confirm a reported connection is theirs, before anything assumes the role. */
+export function connectionConfirmation(connection: ReportedConnection): { readonly accountId: string; readonly region: string; readonly roleArn: string } {
+  return { accountId: connection.accountId, region: connection.region, roleArn: connection.roleArn };
 }

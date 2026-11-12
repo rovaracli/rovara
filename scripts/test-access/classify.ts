@@ -88,24 +88,23 @@ export function nameArnPattern(format: string): string | undefined {
 
 export interface ServiceScoping {
   readonly rows: Readonly<Record<string, ScopingRow>>;
-  /** The ARN patterns of the resource types that name-guarded actions of the service act on. */
+  /** The ARN patterns of every resource type of the service whose ARN starts with a caller-chosen name: where the run's name goes, an IAM Resource pattern confines an action to the run's own resources. */
   readonly nameArns: readonly string[];
 }
 
 export function scopingRows(service: ReferenceService, prefix: string): ServiceScoping {
   const resources = new Map((service.Resources ?? []).map((resource) => [resource.Name, resource]));
   const rows: Record<string, ScopingRow> = {};
-  const patterns = new Set<string>();
   for (const action of service.Actions) {
     const row = scopingRow(prefix, action, resources);
-    if (row === undefined) continue;
-    rows[action.Name] = row;
-    if (row.guard !== "name") continue;
-    for (const entry of action.Resources ?? []) {
-      for (const format of resources.get(entry.Name)?.ARNFormats ?? []) {
-        const pattern = nameArnPattern(format);
-        if (pattern !== undefined) patterns.add(pattern);
-      }
+    if (row !== undefined) rows[action.Name] = row;
+  }
+  const patterns = new Set<string>();
+  for (const resource of service.Resources ?? []) {
+    for (const format of resource.ARNFormats ?? []) {
+      const pattern = nameArnPattern(format);
+      // A reference lists the resources a service's actions also touch (SSM lists IAM roles and S3 buckets): only the service's own ARNs belong to it.
+      if (pattern !== undefined && pattern.split(":")[2] === prefix) patterns.add(pattern);
     }
   }
   return { rows, nameArns: [...patterns].sort() };
