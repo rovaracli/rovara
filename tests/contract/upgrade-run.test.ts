@@ -660,6 +660,9 @@ describe("agentx upgrade with the cdk engine", () => {
 function withoutWrite(deps: UpgradeDependencies): Partial<UpgradeDependencies> {
   const copy: Partial<UpgradeDependencies> = { ...deps };
   delete copy.write;
+  // MODEL-PROXY-TLS (0.5.15): the CLI's own default reads the worker URL parameter through real SSM and EC2 clients on every upgrade. These tests run the real command, so they name the read:
+  // an install with no model proxy TLS and no worker instances. Left out, the command would reach for AWS from a test.
+  copy.modelProxyTlsState ??= async () => ({ deployedUrl: undefined, urlParameter: undefined, workers: [] });
   return copy;
 }
 

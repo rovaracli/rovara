@@ -3,6 +3,7 @@ import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
+import { openWorkDetails } from "./support/work-details.js";
 import { answeredSession } from "../web/support/answered-fixture.js";
 const id = "ses_aaaaaaaaaaaaaaaaaaaa", next = "ses_bbbbbbbbbbbbbbbbbbbb";
 const sign = async (context: BrowserContext, baseURL: string) => context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL, secure: true, httpOnly: true, sameSite: "Strict" }]);
@@ -17,7 +18,7 @@ test("shows the answer of an Answered task, then makes the change anyway with th
  await expect(region).toContainText("Second line stays a line.");await expect(region).toContainText("payments/src/retry.ts:4");
  await expect(region.locator("img")).toHaveCount(0);
  expect(await page.evaluate(() => "__pwned" in window)).toBe(false);
- await page.setViewportSize({ width: 360, height: 800 });
+ await page.setViewportSize({ width: 360, height: 800 });await openWorkDetails(page);
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
  await evidenceShot(page, { path: ".test-build/web-e2e/answered.png", fullPage: true });
@@ -25,6 +26,7 @@ test("shows the answer of an Answered task, then makes the change anyway with th
  await page.keyboard.press("Enter");
  await expect(page).toHaveURL(new RegExp("/app/sessions/" + next + "$"));
  // The new task starts at Understand, so the status model reads "Understanding the request" (the mock's new session is understandSession, display "understanding").
+ await openWorkDetails(page);
  await expect(page.getByRole("region", { name: "Work progress" }).getByText("Understanding the request", { exact: true })).toBeVisible();
  const posts = ((await (await request.get("/__mock/requests")).json()) as Array<{ method: string; path: string; body?: unknown }>).filter(row => row.method === "POST" && row.path.endsWith("/change-anyway"));
  expect(posts).toHaveLength(1);

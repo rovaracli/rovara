@@ -6,7 +6,8 @@ import { AppNavSchema } from "@agentx/cloud-contracts/web";
 const sid="ses_aaaaaaaaaaaaaaaaaaaa",agentId="agt_aaaaaaaaaaaaaaaaaaaa",payload="<img src=x onerror=window.__pwned=1>";
 const flows=[
  {name:"Home",scenario:"home",path:"/app",heading:"Home",phone:true},
- {name:"Live",scenario:"live",path:"/app/live",heading:"Live",phone:true},
+ // Work, since decision 125 (the old Live page is gone; /app/live lands on Work).
+ {name:"Work",scenario:"live",path:"/app/work",heading:"Work",phone:true},
  {name:"project",scenario:"project",path:"/app/projects/payments",heading:"payments",phone:true},
  {name:"task session",scenario:"workspace",path:"/app/sessions/"+sid,heading:"Fix duplicate refunds",phone:true},
  {name:"local session",scenario:"session",path:"/app/sessions/"+sid,heading:"Fix duplicate refunds",phone:true},

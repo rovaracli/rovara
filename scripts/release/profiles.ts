@@ -38,6 +38,8 @@ function everythingOn(): Record<string, string> {
     rovaraEnterpriseEgressCidrs: "10.99.0.0/16",
     rovaraEnterpriseInternetEgress: "nat",
     rovaraEnterpriseAllowPublicRanges: "false",
+    // Internal addresses (owner decision 123): extra ports workers may open toward the routed ranges above (10.99.0.0/16 stays clear of the install's own 10.42.0.0/16, which the synth requires).
+    rovaraPrivateAddressPorts: "8081,8443",
     agentxEgressAllowDomains: "packages.example.internal",
     agentxAuditTsa: "custom",
     agentxAuditTsaUrls: "https://tsa.example.internal/tsr",

@@ -187,7 +187,7 @@ function expectedVolumes(spec: SandboxSpec): string[] {
 const cpuText = (cpus: number): string => String(Math.round(cpus * 100) / 100);
 
 /** The `docker run` arguments of one function sandbox. Throws when the spec is unsound or the result would not pass `sandboxArgProblems`. */
-export function sandboxRunArgs(spec: SandboxSpec): string[] {
+export function functionSandboxRunArgs(spec: SandboxSpec): string[] {
   validateSandboxSpec(spec);
   const memory = `${String(spec.memoryMb)}m`;
   const args: string[] = [

@@ -113,26 +113,28 @@ for (const width of [340, 390]) test(`the project tab strip fades at the edge wi
  expect(end).toMatchObject({ atEnd: true, moreStart: end.hidden, faded: end.hidden });
  await page.evaluate(() => { document.querySelector("main [role=tablist]")!.scrollLeft = 0; });
  await expect.poll(async () => (await stripState(page)).moreStart).toBe(false);
- await expect(strip.getByRole("tab")).toHaveCount(4);
+ // Overview, How we work, Lessons, Sources and Spending (the Spending tab is on for everyone who may see the project's spend, since decision 116).
+ await expect(strip.getByRole("tab")).toHaveCount(5);
  await expect(strip.getByRole("tab", { selected: true })).toHaveCount(1);
 });
 
+// Spending is the last tab of the strip (after Sources), so it is the one End reaches and the one that sits at the end of the strip.
 for (const width of [340, 390]) test(`the selected project tab is scrolled into view when the page opens, on a tab change and from the keyboard, on a ${width}px phone`, async ({ page, context, request, baseURL }) => {
  await open(page, context, request, baseURL!, true);
  await page.setViewportSize({ width, height: 844 });
- await page.goto("/app/projects/payments?tab=sources");
+ await page.goto("/app/projects/payments?tab=spending");
  const strip = page.getByRole("tablist", { name: "Project" });
- await expect(strip.getByRole("tab", { name: "Sources", selected: true })).toBeVisible();
+ await expect(strip.getByRole("tab", { name: "Spending", selected: true })).toBeVisible();
  await expect.poll(async () => (await stripState(page)).activeInside).toBe(true);
- const sources = await stripState(page);
- expect(sources).toMatchObject({ selectedLabel: "Sources", atEnd: true, moreEnd: false });
+ const spending = await stripState(page);
+ expect(spending).toMatchObject({ selectedLabel: "Spending", atEnd: true, moreEnd: false });
  // Back to the first tab by click, then to the last by the keyboard (End), as a screen reader or keyboard user would; each lands in view and the strip still has one selected tab.
  await strip.getByRole("tab", { name: "Overview" }).click();
  await expect.poll(async () => (await stripState(page)).selectedLabel).toBe("Overview");
  await expect.poll(async () => (await stripState(page)).activeInside).toBe(true);
  await strip.getByRole("tab", { name: "Overview" }).focus();
  await page.keyboard.press("End");
- await expect(strip.getByRole("tab", { name: "Sources", selected: true })).toBeFocused();
+ await expect(strip.getByRole("tab", { name: "Spending", selected: true })).toBeFocused();
  await expect.poll(async () => (await stripState(page)).activeInside).toBe(true);
  await expect(strip.getByRole("tab", { selected: true })).toHaveCount(1);
  await expect(page.getByRole("tabpanel")).toHaveCount(1);

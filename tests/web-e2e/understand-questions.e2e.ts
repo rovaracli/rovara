@@ -3,6 +3,7 @@ import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { checkA11y } from "./support/axe.js";
 import { evidenceShot } from "./support/screenshot.js";
+import { openWorkDetails } from "./support/work-details.js";
 import { understandSession } from "../web/support/understand-fixture.js";
 const id = "ses_aaaaaaaaaaaaaaaaaaaa";
 const sign = async (context: BrowserContext, baseURL: string) => context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL, secure: true, httpOnly: true, sameSite: "Strict" }]);
@@ -14,7 +15,7 @@ test("answers Understand's questions on the session page with the keyboard, once
  const region = page.getByRole("region", { name: "Questions from Rovara" });
  await expect(region).toBeVisible();await expect(region.locator("img")).toHaveCount(0);
  expect(await page.evaluate(() => "__pwned" in window)).toBe(false);
- await page.setViewportSize({ width: 360, height: 800 });
+ await page.setViewportSize({ width: 360, height: 800 });await openWorkDetails(page);
  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
  await evidenceShot(page, { path: ".test-build/web-e2e/understand-questions-form.png", fullPage: true });

@@ -640,8 +640,10 @@ describe("agentx deploy", () => {
     const code = await executeCli(
       ["deploy", "--mode", "install", "--engine", "cdk", "--release", releaseDir, "--answers", answersPath, "--source", "/some/source", "--yes"],
       // assertSourceAtRelease (a dirty tree) refuses before assertCdkBootstrapped ever reads the
-      // store: the default throwing store is never touched.
-      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, commandRunner: dirtyRunner }) },
+      // store. prepareDeployment first reads the recorded model proxy TLS setting (one SSM read,
+      // MODEL-PROXY-TLS, 0.5.15), so the store is the empty read-only one: it answers that read with
+      // nothing recorded and refuses every write.
+      { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store: emptyReadOnlyStore, commandRunner: dirtyRunner }) },
     );
 
     expect(code).not.toBe(0);

@@ -892,6 +892,8 @@ describe("I4: the builders", () => {
     ["auditSavedEnvChanged", (occurrence) => builders.auditSavedEnvChanged({ ...base, occurrence, details, projectName: "Secret Project", change: "build_recorded", cause: "no_image", digest: "sha256:" + "a".repeat(64) })],
     ["auditSavedEnvSettingChanged", (occurrence) => builders.auditSavedEnvSettingChanged({ ...base, occurrence, details, projectName: "Secret Project", enabled: true })],
     ["auditTestAccountChange", (occurrence) => builders.auditTestAccountChange({ ...base, occurrence, details, action: "test_account.approved", accountId: "ta-0000000000000001", facts: { digest: "a".repeat(64), approvalMode: "second_person", approvals: 2, expiresInDays: 90 } })],
+    // Customer test AWS account connections (lane TA2): ids, Regions and fixed words only; the account id, role and alias go in details
+    ["auditTestAccessChange", (occurrence) => builders.auditTestAccessChange({ ...base, occurrence, details, action: "test_access.connection_confirmed", connectionId: "tac-0000000000000001", facts: { via: "callback" } })],
     // Test services slice 3 (answer sets), 2026-11-04 integration
     ["auditProjectFixtureSetDecided", (occurrence) => builders.auditProjectFixtureSetDecided({ ...base, occurrence, details, projectName: "Secret Project", decision: "approved", digest: "a".repeat(64) })],
     // Send-back access gate (S2), 2026-11-04 integration: a refused person-pressed path

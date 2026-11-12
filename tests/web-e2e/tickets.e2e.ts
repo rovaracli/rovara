@@ -47,9 +47,10 @@ test("the Home ticket card says why it waits, and Not this one takes it off Home
  await expect(page.getByText(/Waiting to start in "payments"\. Nobody in your company is linked/)).toBeVisible();
  // UX2 added a Start box to Home, so the card's Start is found inside the needs-you list.
  const needsYou = page.getByRole("list", { name: "What needs you" });
- await expect(needsYou.getByRole("button", { name: "Start", exact: true })).toBeVisible();
+ // The card's buttons carry the card's title in their names (Home's rows, decision 125), so two cards never offer two buttons of the same name.
+ await expect(needsYou.getByRole("button", { name: "Start: Jira PAY-12: Refunds fail twice", exact: true })).toBeVisible();
  await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: testInfo.outputPath("home-ticket-card.png"), fullPage: true });
- await needsYou.getByRole("button", { name: "Not this one", exact: true }).click();
+ await needsYou.getByRole("button", { name: "Not this one: Jira PAY-12: Refunds fail twice", exact: true }).click();
  await expect(page.getByRole("heading", { name: "Jira PAY-12: Refunds fail twice" })).toHaveCount(0);
  const sent = await (await request.get("/__mock/requests")).json() as Sent;
  const dismissals = sent.filter(item => item.method === "POST" && item.path.endsWith("/dismiss"));

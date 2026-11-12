@@ -19,7 +19,8 @@ async function enter(page: Page, { context, request, baseURL }: Pick<Fixtures, "
  await mockRealtime(page);await page.setViewportSize({ width, height: 900 });
 }
 const noSidewaysScroll = (page: Page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.body.scrollWidth <= innerWidth);
-const smallTargets = (page: Page, selector: string) => page.locator(selector).evaluateAll(nodes => nodes.filter(node => { const box = node.getBoundingClientRect();return box.width > 0 && box.height > 0 && box.height < 44; }).map(node => node.textContent));
+// The look (decision 125: the only look) makes controls 40px tall on a desktop and 44px on a phone or touch screen (design-tokens look.ts: Comfortable controlH 40, touch minimum 44), so the floor follows the width.
+const smallTargets = (page: Page, selector: string) => page.locator(selector).evaluateAll((nodes, floor) => nodes.filter(node => { const box = node.getBoundingClientRect();return box.width > 0 && box.height > 0 && box.height < floor; }).map(node => node.textContent), (page.viewportSize()?.width ?? 1280) < 768 ? 44 : 40);
 test("off: no Review groups section, no review card, and no review route is called", async ({ page, context, request, baseURL }) => {
  await enter(page, { context, request, baseURL }, "project", "light", 1280, false);
  const mock = await mockReviews(page), urls: string[] = [];page.on("request", request => { urls.push(request.url()); });
