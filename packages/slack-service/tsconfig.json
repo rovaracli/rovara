@@ -2,5 +2,5 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": "src", "outDir": "dist" },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../../vendor/rovara-code/packages/contracts" }, { "path": "../orchestrator" }]
+  "references": [{ "path": "../cloud-contracts" }, { "path": "../../vendor/rovara-code/packages/contracts" }, { "path": "../orchestrator" }]
 }
