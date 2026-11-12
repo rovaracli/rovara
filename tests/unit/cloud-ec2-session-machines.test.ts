@@ -63,6 +63,16 @@ describe("EC2 machines: one company's machines are never another's", () => {
     const damaged = world.workspace(COMPANY_B, "core");
     world.db.set({ ...world.db.get(`WORKSPACE#${damaged}`, "META")!, companyId: "org_A" });
     expect(await read(damaged)).toBeUndefined();
+    // The same for a Cloud record whose orgId is not a company id, and for a record whose two fields name different companies.
+    const badOrg = world.workspace(undefined);
+    world.db.set({ ...world.db.get(`WORKSPACE#${badOrg}`, "META")!, orgId: "org_A" });
+    expect(await read(badOrg)).toBeUndefined();
+    const split = world.workspace(COMPANY_B, "core");
+    world.db.set({ ...world.db.get(`WORKSPACE#${split}`, "META")!, orgId: COMPANY_A });
+    expect(await read(split)).toBeUndefined();
+    const agreed = world.workspace(COMPANY_B, "core");
+    world.db.set({ ...world.db.get(`WORKSPACE#${agreed}`, "META")!, orgId: COMPANY_B });
+    expect(await read(agreed)).toBe(COMPANY_B);
 
     // A workspace that moves to another company stops being reachable through the first company's adapter at once (nothing is cached).
     const { workspaceId, machines, handle } = await readyMachine(world, COMPANY_A);

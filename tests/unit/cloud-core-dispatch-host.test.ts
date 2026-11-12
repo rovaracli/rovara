@@ -8,7 +8,7 @@ import { RepositoryGrantService } from "@rovara-code/broker";
 import { MemoryDocumentStore, MemoryQueueService, createAllowAllAdmission, createNoopAuditSink, createTransactionalOutbox, localOwnerPrincipal } from "@rovara-code/broker/ports";
 import { TASK_FLOW_INDEXES, createOwnerTaskAccess, createStoreProjectSource, createTaskFlow, workspaceKey, type TaskFlow, type TaskFlowDeps } from "@rovara-code/broker/core/task-flow";
 import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
-import { coreDispatchMessage, createCoreDispatchHost, type CoreDispatchHostDependencies } from "../../packages/broker/src/aws/worker-machines/core-dispatch-host.js";
+import { LambdaBatchQueue, coreDispatchMessage, createCoreDispatchHost, type CoreDispatchHostDependencies } from "../../packages/broker/src/aws/worker-machines/core-dispatch-host.js";
 import { COMPANY_A, COMPANY_B, createSessionMachinesWorld } from "../support/session-machines-world.js";
 
 const QUEUE_ARN = "arn:aws:sqs:us-west-2:111122223333:dispatch";
@@ -58,7 +58,7 @@ async function createWorld(options: { enabled?: boolean } = {}) {
   };
   const again = (record: SqsRecord): SqsRecord => ({ ...record, receiptHandle: `rh-${randomUUID()}`, attributes: { ApproximateReceiveCount: String(Number(record.attributes.ApproximateReceiveCount) + 1) } });
   const start = async (company: OrgId) => (await flows.get(company)!.start({ principal: localOwnerPrincipal({ companyId: company }), client: "test" }, { requestId: randomUUID(), project: "payments", instructions: "Add a /health endpoint" })).task;
-  return { machinesWorld, store, flows, host, handler, deliverEc2, markDispatching, changeVisibility, depsFor, staged, again, start };
+  return { depsOf, machinesWorld, store, flows, host, handler, deliverEc2, markDispatching, changeVisibility, depsFor, staged, again, start };
 }
 
 const failures = (answer: unknown) => (answer as { batchItemFailures: Array<{ itemIdentifier: string }> }).batchItemFailures.map((failure) => failure.itemIdentifier);
@@ -135,6 +135,35 @@ describe("the dispatcher as the host of the core's dispatch", () => {
     const on = await createWorld();
     const outbox = { messageId: randomUUID(), receiptHandle: "rh", eventSource: "aws:sqs", eventSourceARN: QUEUE_ARN, attributes: { ApproximateReceiveCount: "1" }, body: JSON.stringify({ id: randomUUID(), operationId: randomUUID(), workspaceId: randomUUID(), deploymentMode: "ec2-ebs", invocation: { not: "a core message" } }) };
     expect(on.host.take([outbox])).toEqual(new Set());
+  });
+
+  it("keeps a record whose dead-letter move failed: it comes back, it is never deleted and lost", async () => {
+    const record = { messageId: "m-1", receiptHandle: "rh-1", body: JSON.stringify({ v: 1, workspaceId: randomUUID(), operationId: randomUUID() }) };
+    const failing = new LambdaBatchQueue("task-dispatch", [record], { changeVisibility: async () => undefined, deadLetter: async () => { throw new Error("AccessDenied"); } });
+    const [received] = await failing.receive();
+    await expect(failing.deadLetter(received!.receiptHandle, "malformed")).rejects.toThrow("AccessDenied");
+    expect(failing.failures()).toEqual(["m-1"]);
+    // Positive control: a dead-letter move that succeeds lets Lambda delete the record.
+    const moved: string[] = [];
+    const working = new LambdaBatchQueue("task-dispatch", [record], { changeVisibility: async () => undefined, deadLetter: async (dead) => { moved.push(dead.messageId); } });
+    const [again] = await working.receive();
+    expect(await working.deadLetter(again!.receiptHandle, "malformed")).toBe(true);
+    expect(moved).toEqual(["m-1"]);
+    expect(working.failures()).toEqual([]);
+  });
+
+  it("runs nothing when the core's deps carry another company's machines: a wiring fault, the records come back and no operation is ended", async () => {
+    const w = await createWorld();
+    const task = await w.start(COMPANY_A);
+    const [record] = await w.staged();
+    w.depsFor.mockImplementationOnce((companyId, dispatchQueues) => ({ ...w.depsOf(companyId, dispatchQueues), machines: w.machinesWorld.machinesFor(COMPANY_B) }));
+    expect(failures(await w.handler({ Records: [record!] }))).toEqual([record!.messageId]);
+    expect(w.machinesWorld.executions).toEqual([]);
+    const operation = (await w.store.get(workspaceKey(task.workspaceId)))!;
+    expect(operation.status).not.toBe("CLOSED");
+    // The next delivery, wired right, goes ahead.
+    expect(failures(await w.handler({ Records: [w.again(record!)] }))).toEqual([record!.messageId]);
+    expect(w.machinesWorld.executions).toHaveLength(1);
   });
 
   it("reads a core message strictly: exactly its three fields, version 1 and two UUIDs", () => {

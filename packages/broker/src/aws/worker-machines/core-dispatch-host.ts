@@ -140,9 +140,11 @@ export class LambdaBatchQueue implements Queue {
   }
 
   async deadLetter(receiptHandle: string, reason: string): Promise<boolean> {
-    const record = this.#settle(receiptHandle, "dead");
+    // Settled as a retry until the dead-letter function has the record: if it throws, the record is a batch item failure and comes back (never deleted and lost).
+    const record = this.#settle(receiptHandle, "retry");
     if (record === undefined) return false;
     if (this.dependencies.deadLetter !== undefined) await this.dependencies.deadLetter(record, reason);
+    this.#settled.set(record.messageId, "dead");
     return true;
   }
 
@@ -214,7 +216,9 @@ export function createCoreDispatchHost(dependencies: CoreDispatchHostDependencie
         const batch = new LambdaBatchQueue(queueName, group, dependencies);
         try {
           const deps = await dependencies.depsFor(companyId, batchQueues(queueName, batch));
+          // A wiring fault, not the operation's: nothing is run and every record of the group comes back.
           if (deps.companyId !== companyId) throw new Error("the core's dependencies are for another company");
+          if ((deps.machines as { companyId?: unknown }).companyId !== companyId) throw new Error("the core's machines adapter is for another company");
           while (batch.unreceived > 0) reports.push(await runDispatchOnce({ ...deps, dispatchQueue: queueName }, { maxMessages: 10 }));
         } catch (error) {
           log({ event: "dispatch.core_fault", error: error instanceof Error ? error.name : "unknown" });

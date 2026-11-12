@@ -282,7 +282,8 @@ export function createDispatcherHandler(dependencies: {
   maxAttempts?: number;
   /**
    * Convergence lane A4: the host of Rovara Code's `runDispatchOnce` (worker-machines/core-dispatch-host.ts). With its switch on it takes the batch's core dispatch messages and
-   * this path skips exactly those; off, or absent (the production entry wires none yet), it takes nothing and the batch is handled as before.
+   * this path skips exactly those; off, or absent (the production entry wires none yet), it takes nothing and the batch is handled as before. Behaviour-preserving when absent:
+   * the import is a type only, but the hook itself adds a step to the batch handler when it is given.
    */
   coreDispatch?: CoreDispatchHost;
   /**
