@@ -135,8 +135,9 @@ async function resolveOrg(deps: ResolveOrgOnSignInDependencies, input: ResolveOr
       return await attempt(cloud ? indexedEmail : undefined);
     } catch (error) {
       if (!cloud || indexedEmail === undefined || codeOf(error) !== "ALREADY_IN_ORG" || await winnerOfRace() !== undefined) throw error;
-      (deps.log ?? (() => undefined))({ event: "signin.email_pointer_conflict", developerId: input.developerId, ...(refuseConflict ? { refused: true } : {}) });
-      if (refuseConflict && input.separatedFrom === undefined) throw agentXError("CHANGE_STALE", ALREADY_SIGNED_UP_MESSAGE);
+      const refused = refuseConflict && input.separatedFrom === undefined;
+      (deps.log ?? (() => undefined))({ event: "signin.email_pointer_conflict", developerId: input.developerId, ...(refused ? { refused: true } : {}), ...(refuseConflict && !refused ? { refused: false, separated: true } : {}) });
+      if (refused) throw agentXError("CHANGE_STALE", ALREADY_SIGNED_UP_MESSAGE);
       return attempt(undefined);
     }
   };
