@@ -4,7 +4,9 @@
 // changes something: every flag takes its catalog default (decision 116: a finished screen is on, an unfinished one off) and previews are not allowed. A name is stored only when an owner or admin pressed its switch,
 // so a stored value (true or false, from any version) is the company's deliberate choice and wins over the default; the row keeps only those pressed values, never the defaults, so a later default change (or a
 // rollback to a broker that read an absent name as off) still applies to every name nobody pressed. A flag name outside the closed list (contracts/ui-flags.ts) is never stored and never sent; a stored name that is
-// no longer known is ignored when read.
+// no longer known is ignored when read and dropped by the next write. That includes the eight finished screens' former names (decision 125, REMOVED_UI_FLAG_NAMES): a choice stored for one of them before decision 125
+// changes nothing now (the screen has no old version left), and an older broker reading a row this one wrote finds the name absent, which it reads as its default.
+// "Turn back to the default" is a write of `null` for a name (the PUT body): the name is removed from the stored map, so the company follows the catalog default again, including a later change of that default.
 //
 // THE OPERATOR'S OVERRIDE is the install's stack parameter UiFlagsForceOff, packed broker setting `uo`, read as UI_FLAGS_FORCE_OFF (`all`, or names joined by `-`). It forces flags off for every company, wins over the
 // company's switch and over previews, and fails closed on a value it cannot read (contracts `uiFlagsForcedOff`).
@@ -38,6 +40,8 @@ export interface UiFlagsSettings {
   unreadableRevision?: { value: unknown };
   /** True when the row is there but its flags cannot be read: every flag reads as off. The next change starts from nothing stored (the defaults), so a corrupt row never pins a company to the old screens. */
   unreadable?: true;
+  /** Known names whose stored value is not a boolean: each reads as off (fail closed) but is not carried into the next write, which stores only real choices (the name then takes its default unless that write sets it). */
+  malformed?: readonly UiFlagName[];
 }
 
 const KNOWN = new Set<string>(UI_FLAG_NAMES);
@@ -61,9 +65,13 @@ export function settingsFromItem(item: Item | undefined): UiFlagsSettings {
   // A `flags` field that is there but not a map cannot say which screens the company sent back: all off. A row with no `flags` field at all stored nothing.
   if (!readable && item.flags !== undefined) return { flags: allStoredOff(), previews: item.previews === true, revision: item.revision, unreadable: true, ...(typeof item.changedAt === "string" ? { changedAt: item.changedAt } : {}) };
   const stored = readable ? item.flags as Record<string, unknown> : {};
-  const flags: Partial<Record<UiFlagName, boolean>> = {};
-  for (const [name, value] of Object.entries(stored)) if (KNOWN.has(name)) flags[name as UiFlagName] = value === true;
-  return { flags, previews: item.previews === true, revision: item.revision, ...(typeof item.changedAt === "string" ? { changedAt: item.changedAt } : {}) };
+  const flags: Partial<Record<UiFlagName, boolean>> = {}, malformed: UiFlagName[] = [];
+  for (const [name, value] of Object.entries(stored)) {
+    if (!KNOWN.has(name)) continue;
+    flags[name as UiFlagName] = value === true;
+    if (typeof value !== "boolean") malformed.push(name as UiFlagName);
+  }
+  return { flags, previews: item.previews === true, revision: item.revision, ...(typeof item.changedAt === "string" ? { changedAt: item.changedAt } : {}), ...(malformed.length > 0 ? { malformed } : {}) };
 }
 
 export async function readUiFlags(deps: UiFlagsDeps, orgId: OrgId, options: { consistent: boolean } = { consistent: true }): Promise<UiFlagsSettings> {
@@ -105,7 +113,8 @@ export function adminAnswerOf(settings: UiFlagsSettings, forced: ReadonlySet<UiF
   };
 }
 
-export interface UiFlagsChange { flags?: Readonly<Partial<Record<UiFlagName, boolean | undefined>>> | undefined; previews?: boolean | undefined }
+/** `flags`: true or false stores the company's choice for that name; null removes its stored choice (back to the catalog default); absent leaves it as it is. */
+export interface UiFlagsChange { flags?: Readonly<Partial<Record<UiFlagName, boolean | null | undefined>>> | undefined; previews?: boolean | undefined }
 
 /**
  * Writes a change. `expectedRevision` is what the caller read (0 while there is no record): the write is conditioned on it, so a stale one is CHANGE_STALE. The audit event goes in the SAME transaction; with no ledger the change is
@@ -114,11 +123,13 @@ export interface UiFlagsChange { flags?: Readonly<Partial<Record<UiFlagName, boo
 export async function writeUiFlags(deps: UiFlagsDeps, input: { orgId: OrgId; developerId: string; expectedRevision: number; change: UiFlagsChange }): Promise<UiFlagsSettings> {
   const current = await readUiFlags(deps, input.orgId);
   if (current.revision !== input.expectedRevision) throw agentXError("CHANGE_STALE", "Someone else changed this. Reload and try again.");
-  // Only pressed values are stored (never a default); a row that could not be read is replaced from nothing stored.
+  // Only pressed values are stored (never a default); a row that could not be read is replaced from nothing stored, and a stored value that is not a boolean is not carried (it read as off; the name now takes its default).
   const flags: Partial<Record<UiFlagName, boolean>> = current.unreadable === true ? {} : { ...current.flags };
+  for (const name of current.malformed ?? []) delete flags[name];
   for (const name of UI_FLAG_NAMES) {
     const wanted = input.change.flags?.[name];
-    if (wanted !== undefined) flags[name] = wanted;
+    if (wanted === null) delete flags[name];
+    else if (wanted !== undefined) flags[name] = wanted;
   }
   // Against what was in force for the company before and after (its choice, else the default), so the audit says what changed for people.
   const turnedOn = UI_FLAG_NAMES.filter((name) => !uiFlagEnabled(name, current.flags[name]) && uiFlagEnabled(name, flags[name]));

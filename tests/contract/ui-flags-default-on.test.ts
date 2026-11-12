@@ -1,33 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { UI_FLAG_CATALOG, UI_FLAG_NAMES, orgUiFlagsKey, uiFlagDefaultOn, uiFlagEnabled, uiFlagState, type UiFlagName } from "@agentx/cloud-contracts";
+import { REMOVED_UI_FLAG_NAMES, UI_FLAG_CATALOG, UI_FLAG_NAMES, orgUiFlagsKey, uiFlagDefaultOn, uiFlagEnabled, uiFlagState, type UiFlagName } from "@agentx/cloud-contracts";
 import { type OrgId } from "@rovara-code/contracts";
 import { ALL_OFF, adminAnswerOf, navUiFlags, readUiFlags, settingsFromItem, uiFlagsMapOf, writeUiFlags } from "../../packages/broker/src/org/ui-flags/store.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
-// Decision 116 (NEW-SCREENS-ON-BY-DEFAULT): a finished (wired) screen is on for a company that never chose; a company's pressed `off` still wins; the operator's override wins over both;
-// an unfinished screen stays off. And the versions around it: rows written before decision 116, an older broker reading rows this one wrote (a rollback).
+// Decision 116 (a finished screen may be on by default) and decision 125 (the eight finished screens are no flags any more): the store and the answers for the flags that are left (the screens still being
+// finished, all off by default), the removed names in stored rows, "back to the default" (null), and the versions around both.
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
-const WIRED = ["look", "nav", "home", "work", "spending", "leadingHeader", "insights", "continue"] as const;
-const UNFINISHED = ["health", "setup", "publish", "billing", "agreement", "companies"] as const;
+const RESERVED = ["health", "setup", "publish", "billing", "agreement", "companies"] as const;
 const none: ReadonlySet<UiFlagName> = new Set();
 const forcing = (...names: UiFlagName[]): ReadonlySet<UiFlagName> => new Set(names);
 const row = (flags: Record<string, unknown>, extra: Record<string, unknown> = {}) => settingsFromItem({ flags, previews: false, revision: 3, changedAt: "2026-11-10T09:00:00.000Z", ...extra });
+const storeDeps = () => { const db = new FakeDynamoDb();return { db, deps: { documentClient: db, tableName: "state", now: () => Date.UTC(2026, 10, 12, 9), audit: capturingAuditDeps({ db }).audit } }; };
+const ME = "a".repeat(64);
 
-/** How a broker from before decision 116 turned a stored row into the navigation answer (absent = off). */
-const olderBrokerMap = (flags: Record<string, unknown>, previews: boolean, forced: ReadonlySet<string>) =>
-  Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, uiFlagState({ enabled: flags[name] === true, previews, forcedOff: forced.has(name) })]));
+/** How a broker from before decision 116 (0.5.14) turned a stored row into the navigation answer: absent = off, over the fourteen names it knew. */
+const OLDER_NAMES = ["look", "nav", "home", "work", "spending", "leadingHeader", "health", "setup", "insights", "publish", "billing", "agreement", "companies", "continue"] as const;
+const olderBrokerMap = (flags: Record<string, unknown>, previews: boolean) =>
+  Object.fromEntries(OLDER_NAMES.map((name) => [name, uiFlagState({ enabled: flags[name] === true, previews, forcedOff: false })]));
 
 describe("the default", () => {
-  it("is on for exactly the wired screens, and an explicit per-name default says so in the catalog", () => {
-    expect(UI_FLAG_NAMES.filter(uiFlagDefaultOn)).toEqual([...WIRED]);
+  it("is off for every flag that is left (none is finished yet), and only a wired screen may be on by default", () => {
+    expect(UI_FLAG_NAMES.filter(uiFlagDefaultOn)).toEqual([]);
     for (const entry of UI_FLAG_CATALOG) {
-      // Only a wired screen may be on by default.
       if (entry.defaultOn) expect(entry.wired, entry.name).toBe(true);
       expect(uiFlagDefaultOn(entry.name), entry.name).toBe(entry.wired && entry.defaultOn);
     }
-    for (const name of UNFINISHED) expect(uiFlagDefaultOn(name), name).toBe(false);
   });
 
   it("a stored choice wins over the default, both ways", () => {
@@ -40,56 +40,89 @@ describe("the default", () => {
 });
 
 describe("the matrix, for every flag, as the navigation answer says it", () => {
-  for (const name of UI_FLAG_NAMES) {
-    const wired = (WIRED as readonly string[]).includes(name);
-    it(`${name}: nothing stored is ${wired ? "on" : "off"}; stored off is off (preview with previews); stored on is on; forced off is off over all of them`, () => {
-      expect(uiFlagsMapOf(settingsFromItem(undefined), none)[name]).toBe(wired ? "on" : "off");
+  for (const name of RESERVED) {
+    it(`${name}: nothing stored is off; stored off is off (preview with previews); stored on is on; forced off is off over all of them`, () => {
+      expect(uiFlagsMapOf(settingsFromItem(undefined), none)[name]).toBe("off");
       expect(uiFlagsMapOf(row({ [name]: false }), none)[name]).toBe("off");
       expect(uiFlagsMapOf(row({ [name]: false }, { previews: true }), none)[name]).toBe("preview");
       expect(uiFlagsMapOf(row({ [name]: true }), none)[name]).toBe("on");
-      // The operator's override beats the new default, a pressed on, and a preview.
-      expect(uiFlagsMapOf(settingsFromItem(undefined), forcing(name))[name]).toBe("off");
       expect(uiFlagsMapOf(row({ [name]: true }, { previews: true }), forcing(name))[name]).toBe("off");
       expect(uiFlagsMapOf(row({}, { previews: true }), forcing(name))[name]).toBe("off");
     });
   }
 
-  it("`all` forced off is every flag off for a company on the defaults: the old screens for everyone", () => {
-    expect(uiFlagsMapOf(settingsFromItem(undefined), new Set(UI_FLAG_NAMES))).toEqual(ALL_OFF);
+  it("the navigation answer and the admin answer name only the flags that are left: never a removed name", () => {
+    const stored = row(Object.fromEntries<boolean>([...REMOVED_UI_FLAG_NAMES.map((name): [string, boolean] => [name, false]), ["health", true]]), { previews: true });
+    const map = uiFlagsMapOf(stored, none);
+    expect(Object.keys(map)).toEqual([...RESERVED]);
+    expect(map.health).toBe("on");
+    const answer = adminAnswerOf(stored, forcing("setup"));
+    expect(answer.flags.map((entry) => entry.name)).toEqual([...RESERVED]);
+    expect(answer.flags.find((entry) => entry.name === "setup")).toMatchObject({ enabled: false, forcedOff: true, state: "off" });
+    expect(answer.flags.find((entry) => entry.name === "health")).toMatchObject({ enabled: true, forcedOff: false, state: "on" });
+    expect(Object.keys(ALL_OFF)).toEqual([...RESERVED]);
+  });
+});
+
+describe("stored rows", () => {
+  it("a removed name stored before decision 125 is ignored when read, whatever its value", () => {
+    for (const name of REMOVED_UI_FLAG_NAMES) {
+      const settings = row({ [name]: false });
+      expect(settings.flags, name).toEqual({});
+      expect(settings.malformed, name).toBeUndefined();
+    }
   });
 
-  it("the admin answer agrees: `enabled` is the switch in force (the default included), `state` what people get", () => {
-    const answer = adminAnswerOf(row({ home: false, health: true }), forcing("look"));
-    const of = (name: UiFlagName) => answer.flags.find((entry) => entry.name === name);
-    expect(of("look")).toMatchObject({ enabled: true, forcedOff: true, state: "off" });
-    expect(of("nav")).toMatchObject({ enabled: true, forcedOff: false, state: "on" });
-    expect(of("home")).toMatchObject({ enabled: false, forcedOff: false, state: "off" });
-    expect(of("health")).toMatchObject({ enabled: true, state: "on" });
-    expect(of("companies")).toMatchObject({ enabled: false, state: "off" });
+  it("this broker never writes a removed name: a later change drops the ones an older broker stored, and keeps the company's other choices", async () => {
+    const { db, deps } = storeDeps();
+    db.set({ ...orgUiFlagsKey(ORG), entityType: "UI_FLAGS", flags: { home: false, look: true, health: true }, previews: false, revision: 4, changedAt: "2026-11-10T09:00:00.000Z" });
+    await writeUiFlags(deps, { orgId: ORG, developerId: ME, expectedRevision: 4, change: { flags: { setup: true } } });
+    const stored = db.get(orgUiFlagsKey(ORG)) as { flags: Record<string, unknown> };
+    expect(stored.flags).toEqual({ health: true, setup: true });
+  });
+
+  it("a value that is not a boolean reads as off (fail closed) but is not carried into the next write", async () => {
+    const { db, deps } = storeDeps();
+    db.set({ ...orgUiFlagsKey(ORG), entityType: "UI_FLAGS", flags: { health: "yes", billing: 1, setup: true, agreement: false }, previews: false, revision: 2, changedAt: "2026-11-10T09:00:00.000Z" });
+    const read = await readUiFlags(deps, ORG);
+    expect(read.flags).toEqual({ health: false, billing: false, setup: true, agreement: false });
+    expect([...(read.malformed ?? [])].sort()).toEqual(["billing", "health"]);
+    expect(uiFlagsMapOf(read, none)).toMatchObject({ health: "off", billing: "off", setup: "on" });
+    await writeUiFlags(deps, { orgId: ORG, developerId: ME, expectedRevision: 2, change: { previews: true } });
+    expect((db.get(orgUiFlagsKey(ORG)) as { flags: Record<string, unknown> }).flags).toEqual({ setup: true, agreement: false });
+  });
+
+  it("null for a name removes the stored choice (F2): an explicit true never pins a company against a later default", async () => {
+    const { db, deps } = storeDeps();
+    await writeUiFlags(deps, { orgId: ORG, developerId: ME, expectedRevision: 0, change: { flags: { health: true, setup: false } } });
+    expect((db.get(orgUiFlagsKey(ORG)) as { flags: Record<string, unknown> }).flags).toEqual({ health: true, setup: false });
+    const written = await writeUiFlags(deps, { orgId: ORG, developerId: ME, expectedRevision: 1, change: { flags: { health: null } } });
+    const stored = db.get(orgUiFlagsKey(ORG)) as { flags: Record<string, unknown>; revision: number };
+    expect(stored.flags).toEqual({ setup: false });
+    expect(stored.revision).toBe(2);
+    // Back on the default: whatever the catalog says now, and later.
+    expect(uiFlagEnabled("health", written.flags.health)).toBe(uiFlagDefaultOn("health"));
+    expect(adminAnswerOf(written, none).flags.find((entry) => entry.name === "health")).toMatchObject({ enabled: uiFlagDefaultOn("health") });
+    // null on a name nobody pressed changes nothing stored (the write still moves the revision, as every write does).
+    await writeUiFlags(deps, { orgId: ORG, developerId: ME, expectedRevision: 2, change: { flags: { billing: null } } });
+    expect((db.get(orgUiFlagsKey(ORG)) as { flags: Record<string, unknown> }).flags).toEqual({ setup: false });
   });
 });
 
 describe("across versions", () => {
-  it("a row written before decision 116 keeps its pressed values (a pressed off is the company's choice of the old screen); names nobody pressed take the new default", () => {
-    // What a 0.5.14 broker stored after an admin turned look and insights on, then nav on and off again.
-    const before = row({ look: true, insights: true, nav: false });
-    expect(uiFlagsMapOf(before, none)).toEqual({ ...Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, uiFlagDefaultOn(name) ? "on" : "off"])), nav: "off" });
-  });
-
-  it("this broker stores only what was pressed, so a rollback to an older broker reads every unpressed name as it always did (off) and keeps every pressed value", async () => {
-    const db = new FakeDynamoDb();
-    const deps = { documentClient: db, tableName: "state", now: () => Date.UTC(2026, 10, 12, 9), audit: capturingAuditDeps({ db }).audit };
-    await writeUiFlags(deps, { orgId: ORG, developerId: "a".repeat(64), expectedRevision: 0, change: { flags: { home: false, health: true } } });
+  it("a rollback to an older broker reads this broker's rows as it always did: the removed names are absent (off, its old screens) and every pressed value is kept", async () => {
+    const { db, deps } = storeDeps();
+    await writeUiFlags(deps, { orgId: ORG, developerId: ME, expectedRevision: 0, change: { flags: { health: true } } });
     const stored = db.get(orgUiFlagsKey(ORG)) as { flags: Record<string, unknown>; previews: boolean; revision: number };
-    expect(stored.flags).toEqual({ home: false, health: true });
-    // The older broker: today's screens for every name, except the one the company turned on.
-    expect(olderBrokerMap(stored.flags, stored.previews, new Set())).toEqual({ ...ALL_OFF, health: "on" });
-    // The older broker writes the same way (the row's map plus the pressed name), so rolling forward again reads that company's choices, and the defaults for the rest.
-    db.set({ ...orgUiFlagsKey(ORG), ...stored, flags: { ...stored.flags, nav: false }, revision: stored.revision + 1 });
-    expect(uiFlagsMapOf(await readUiFlags(deps, ORG), none)).toMatchObject({ home: "off", nav: "off", health: "on", look: "on", work: "on", setup: "off" });
+    expect(stored.flags).toEqual({ health: true });
+    const older = olderBrokerMap(stored.flags, stored.previews);
+    expect(older).toEqual({ ...Object.fromEntries(OLDER_NAMES.map((name) => [name, "off"])), health: "on" });
+    // The older broker writes the same way (the row's map plus the pressed name); rolling forward again ignores the removed name it wrote and keeps the rest.
+    db.set({ ...orgUiFlagsKey(ORG), ...stored, flags: { ...stored.flags, nav: true }, revision: stored.revision + 1 });
+    expect(uiFlagsMapOf(await readUiFlags(deps, ORG), none)).toEqual({ ...ALL_OFF, health: "on" });
   });
 
-  it("a failed read is still the old screens (ALL_OFF), not the defaults: it cannot tell whether the company chose the old screen", async () => {
+  it("a failed read is still every flag off (ALL_OFF)", async () => {
     const broken = { documentClient: { send: async () => { throw new Error("down"); } }, tableName: "state", now: () => 0 } as never;
     expect(await navUiFlags(broken, ORG, {})).toEqual(ALL_OFF);
   });

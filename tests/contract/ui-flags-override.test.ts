@@ -28,7 +28,8 @@ describe("the UI flag override", () => {
     const parameter = (named.toJSON() as { Parameters: Record<string, { Default: string; AllowedPattern: string; MaxLength: number }> }).Parameters.UiFlagsForceOff!;
     expect(parameter).toMatchObject({ Default: "none", MaxLength: 64 });
     const allowed = new RegExp(parameter.AllowedPattern);
-    for (const value of ["none", "all", "look", "look-nav", UI_FLAG_NAMES.slice(0, 5).join("-")]) expect(allowed.test(value), value).toBe(true);
+    // The stack's pattern is letters only; it still takes a pre-0.5.15 value naming a removed screen (the broker skips it), so an upgrade keeps an existing value.
+    for (const value of ["none", "all", "look", "look-nav", "health", UI_FLAG_NAMES.slice(0, 5).join("-")]) expect(allowed.test(value), value).toBe(true);
     for (const value of ["", "look nav", "look,nav", "look-", "-look", "look--nav", "look=nav", "look\"nav"]) expect(allowed.test(value), value).toBe(false);
   });
 
@@ -41,7 +42,11 @@ describe("the UI flag override", () => {
   it("is read by the broker as the hydrated variable, and every value but a clean list of known names holds everything back", () => {
     const hydrated = (value: string): MutableEnvironment => { const env: MutableEnvironment = { [BROKER_SETTINGS_VARIABLE]: `uo=${value}` }; hydrateBrokerEnvironment(env); return env; };
     expect(operatorForcedOff(hydrated("none")).size).toBe(0);
-    expect([...operatorForcedOff(hydrated("look-home"))]).toEqual(["look", "home"]);
+    expect([...operatorForcedOff(hydrated("health-setup"))]).toEqual(["health", "setup"]);
+    // Decision 125: a removed name is ignored, never read as unknown; any other unknown name fails closed.
+    expect([...operatorForcedOff(hydrated("look-home"))]).toEqual([]);
+    expect([...operatorForcedOff(hydrated("look-billing"))]).toEqual(["billing"]);
+    expect(operatorForcedOff(hydrated("look-lok")).size).toBe(UI_FLAG_NAMES.length);
     expect(operatorForcedOff(hydrated("all")).size).toBe(UI_FLAG_NAMES.length);
     expect(operatorForcedOff(hydrated("lok")).size).toBe(UI_FLAG_NAMES.length);
     expect(operatorForcedOff({}).size).toBe(0);
@@ -56,8 +61,12 @@ describe("the UI flag override", () => {
     const entry = configKey("ui.forceOff");
     expect(entry.target).toEqual({ kind: "stack-parameter", part: "control-plane", parameter: "UiFlagsForceOff" });
     expect(entry.defaultValue).toBe("none");
-    for (const value of ["none", "all", "look", " look-nav "]) expect(entry.parse(value)).toBe(value.trim());
-    for (const value of ["", "lok", "look-", "look nav", "Look", "look,nav", "x".repeat(65)]) expect(() => entry.parse(value), value).toThrow(/ui\.forceOff must be none, all, or screen names/u);
+    for (const value of ["none", "all", "health", " health-setup ", UI_FLAG_NAMES.join("-")]) expect(entry.parse(value)).toBe(value.trim());
+    for (const value of ["", "lok", "health-", "health setup", "Health", "health,setup", "x".repeat(65)]) expect(() => entry.parse(value), value).toThrow(/ui\.forceOff must be none, all, or screen names/u);
+    // A finished screen's former name (decision 125) is refused with its reason: setting it would change nothing.
+    for (const value of ["look", "look-nav", "health-insights", "continue"]) expect(() => entry.parse(value), value).toThrow(/can no longer be turned off/u);
+    expect(entry.description).toContain("can no longer be turned off");
+    expect(entry.description).not.toMatch(/\(look, nav, home/u);
     expect(OPERATOR_PARAMETERS["control-plane"]).toContain("UiFlagsForceOff");
   });
 });
