@@ -1,9 +1,10 @@
 // A task session is created with the run it wraps (Plan 5 Task 2): `createTaskSessionItems` returns the items that join the run's own start
 // transaction, so the task and its session exist together or not at all.
 import { resolveStoredName } from "../developer/name-resolver.js";
+import { SLACK_CLIENT_NAME } from "../developer/task-records.js";
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { AgentSessionRecordSchema, SESSION_TITLE_MAX, agentSessionKey, cleanSessionName, liveSessionKey, mySessionsKey, openAgentSessionKey, principalKey, projectSessionsKey, redactText, sessionEventId, sessionLegSk, sharedSessionsKey, type AgentPrincipal, type AgentSessionRecord, type LocalTool, type OrgId, type Payer, type SessionTrigger, type SessionEvent, type SessionLeg, type SessionLevel, type WorkOrigin } from "@rovara-code/contracts";
+import { AgentSessionRecordSchema, ROVARA_CODE_AGENT_ID, SESSION_TITLE_MAX, agentSessionKey, cleanSessionName, liveSessionKey, mySessionsKey, openAgentSessionKey, principalKey, projectSessionsKey, redactText, sessionEventId, sessionLegSk, sharedSessionsKey, type AgentPrincipal, type AgentSessionRecord, type LocalTool, type OrgId, type Payer, type SessionTrigger, type SessionEvent, type SessionLeg, type SessionLevel, type WorkOrigin } from "@rovara-code/contracts";
 import { putNew, type TableInput, type TransactItem } from "../agents/table-writes.js";
 import { threadBindingItems } from "./bindings.js";
 import { sessionEventItem } from "./store.js";
@@ -280,7 +281,16 @@ export interface LazySessionTask {
   chain?: { chainRunId: string; stepId: string } | undefined;
   /** The Slack thread the task is shared to, if it has one: the session is bound to it as it is made (Task 20). */
   share?: { teamId: string; channelId: string; threadTs?: string | undefined } | undefined;
+  /** The client that started the task ("Slack" for the Slack workflow): the origin of a plain workflow task that kept none, as the start works it out (R-SESSIONS). */
+  client?: string | undefined;
+  /** Present on a workflow task (a Slack or app start of the coding workflow); a plain workflow task kept no agent snapshot (R-SESSIONS). */
+  workflow?: unknown;
+  /** Set on a project's automatic job: never a person's session by this fallback. */
+  automatic?: unknown;
 }
+
+/** The agent a plain workflow task ran as before runs carried an agent snapshot: Rovara Code's first built-in version (R-SESSIONS). */
+const PLAIN_WORKFLOW_AGENT = { agentId: ROVARA_CODE_AGENT_ID, name: "Rovara Code", version: 1 } as const;
 
 /**
  * The one session id a task gets when it is made after the fact: derived from the task id, so two first reads that race write the same item and
@@ -292,11 +302,18 @@ export function lazySessionId(taskId: string): string {
 
 /** What a lazy creation would write for a task, or undefined when the task lacks what a session needs (the same facts `ensureTaskSession` rests on). */
 function lazyTaskSessionInput(task: LazySessionTask, input: { ownerName: string; title: string }): TaskSessionInput | undefined {
-  const startedBy = sessionStarterFor({ trigger: undefined, startedBy: task.startedBy, chain: task.chain });
-  if (startedBy === undefined || task.orgId === undefined || task.agent === undefined || task.origin === undefined) return undefined;
+  if (task.orgId === undefined) return undefined;
+  // R-SESSIONS: a coding-workflow task started without agents (a Slack mention or an app start from before runs kept an agent snapshot) has no agent, origin or starter on its record. It is
+  // still a person's own task, so it gets the session every other task has: Rovara Code as the agent, the client it came from as the origin, its owner as the starter and the payer. A chain
+  // step, a task of a project's automatic job and a task that is no workflow are not given one by this fallback.
+  const plain = task.agent === undefined && task.origin === undefined && task.workflow !== undefined && task.chain === undefined && task.automatic === undefined;
+  const startedBy = sessionStarterFor({ trigger: undefined, startedBy: plain ? task.startedBy ?? { developerId: task.developerId } : task.startedBy, chain: task.chain });
+  const agent = plain ? PLAIN_WORKFLOW_AGENT : task.agent;
+  const origin = plain ? task.client === SLACK_CLIENT_NAME ? "slack" : "cli" : task.origin;
+  if (startedBy === undefined || agent === undefined || origin === undefined) return undefined;
   return {
-    orgId: task.orgId, sessionId: lazySessionId(task.taskId), taskId: task.taskId, project: task.project, agent: { agentId: task.agent.agentId, name: task.agent.name, version: task.agent.version },
-    title: input.title, owner: { developerId: task.developerId, name: input.ownerName }, startedBy, origin: task.origin,
+    orgId: task.orgId, sessionId: lazySessionId(task.taskId), taskId: task.taskId, project: task.project, agent: { agentId: agent.agentId, name: agent.name, version: agent.version },
+    title: input.title, owner: { developerId: task.developerId, name: input.ownerName }, startedBy, origin,
     payer: task.payer ?? { kind: "member", developerId: task.developerId }, now: task.createdAt,
   };
 }
