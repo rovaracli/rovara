@@ -154,7 +154,8 @@ const ROWS: readonly Row[] = [
   ["agents/agent-tools-routes.ts", "frameOf", "principal", ".ownerKey*2"],
   ["agents/agent-tools-routes.ts", "regrantAgentTool", "principal", ".ownerKey"],
   // Plan 6 Task 23 (Codex): a task's lazily made session records its creator as the session's owner and the starter it was started by, as `ensureTaskSession` always did (its reads moved into `lazyTaskSessionInput`, and `taskSessionHeader` out of `createTaskSessionItems`); history, and a take-over asks the session's own rules before it
-  ["agent-sessions/create.ts", "lazyTaskSessionInput", "history", ".developerId*2", ".startedBy"],
+  // R-SESSIONS: a coding-workflow task that kept no starter is given its session as started by its creator (history: who it was started for, as the start would have recorded)
+  ["agent-sessions/create.ts", "lazyTaskSessionInput", "history", ".developerId*3", ".startedBy*2"],
   ["agent-sessions/create.ts", "taskSessionHeader", "history", ".startedBy"],
   // ERASE-NAME-2: the owner's stored name is replaced for an erased or removed person before a session is made for the task; it decides nothing about who owns the task
   ["agent-sessions/create.ts", "ensureTaskSession", "history", ".developerId"],
