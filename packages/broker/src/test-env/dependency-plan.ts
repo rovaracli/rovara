@@ -19,7 +19,7 @@ import type { ApprovedFixture } from "./fixture-lookup.js";
  * The oldest catalog revision this release will start images from. Raise it with every catalog release that retires or replaces a pinned digest. It is a constant of the release, not a setting: the broker's
  * environment has no room for another variable, and a rollback of the catalog file must not be a matter of configuration.
  */
-export const TEST_SERVICES_MIN_CATALOG_REVISION = 3;
+export const TEST_SERVICES_MIN_CATALOG_REVISION = 4;
 
 export const DEPENDENCY_PLAN_REFUSALS = ["no_catalog", "catalog_too_old", "not_available_yet", "not_in_catalog", "not_in_edition", "retired", "not_pinned", "not_allowed", "too_many", "invalid", "fixture_not_approved", "seed_file_unbound", "image_not_approved", "image_changed", "image_copying"] as const;
 export type DependencyPlanRefusal = (typeof DEPENDENCY_PLAN_REFUSALS)[number];

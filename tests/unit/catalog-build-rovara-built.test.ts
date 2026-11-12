@@ -275,11 +275,11 @@ describe("the scan of the Java libraries inside the native binary (the image sca
     const made = await makeLayout({ javaScan: { severities: ["High", "high", "Medium", "Low", "Negligible", "Unknown"] } });
     const result = await read(made);
     expect(result.javaScan).toMatchObject({ criticalOpen: 0, highOpen: 2 });
-    expect(result.javaScan.sha256).toBe(sha256HexOf(result.javaScan.bytes));
+    expect(result.javaScan!.sha256).toBe(sha256HexOf(result.javaScan!.bytes));
   });
   it("counts a critical finding, and a finding whose severity it cannot read, as critical", async () => {
-    expect((await read(await makeLayout({ javaScan: { severities: ["Critical"] } }))).javaScan.criticalOpen).toBe(1);
-    expect((await read(await makeLayout({ javaScan: { text: JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: {}, artifact: { name: "nested", version: "1.0" } }, { artifact: { name: "nested", version: "1.0" } }, { vulnerability: { severity: "Catastrophic" }, artifact: { name: "nested", version: "1.0" } }] }) } }))).javaScan.criticalOpen).toBe(3);
+    expect((await read(await makeLayout({ javaScan: { severities: ["Critical"] } }))).javaScan!.criticalOpen).toBe(1);
+    expect((await read(await makeLayout({ javaScan: { text: JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: {}, artifact: { name: "nested", version: "1.0" } }, { artifact: { name: "nested", version: "1.0" } }, { vulnerability: { severity: "Catastrophic" }, artifact: { name: "nested", version: "1.0" } }] }) } }))).javaScan!.criticalOpen).toBe(3);
   });
   it("pass: a clean scan (no matches at all) pins, records the highs, and puts the file's hash and counts in the signed statement and the file in the evidence", async () => {
     const made = await makeLayout({ javaScan: { severities: ["High", "High", "Low"] } });
@@ -330,6 +330,44 @@ describe("the scan of the Java libraries inside the native binary (the image sca
   });
 });
 
+describe("an image with no embedded-library scan (the AWS Emulator engine: Go and Rust binaries the image SBOM and scan read)", () => {
+  const ack = (made: MadeLayout): SourcesFile => ({ schemaVersion: 1, sources: { [ID]: { kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, embeddedLibraryScan: "not_applicable" } } });
+  it("is only ever a written decision: the source says embeddedLibraryScan: not_applicable and names no pair; neither, a half pair, or both together is refused", () => {
+    const base = { kind: "rovara-built", layout: "oci", digestFile: "index.digest" };
+    const pair = { javaScan: "scan.json", javaSbom: "sbom.json" };
+    expect(BuiltSourceSchema.safeParse({ ...base, embeddedLibraryScan: "not_applicable" }).success).toBe(true);
+    expect(BuiltSourceSchema.safeParse({ ...base, ...pair }).success).toBe(true);
+    for (const bad of [base, { ...base, javaScan: "scan.json" }, { ...base, javaSbom: "sbom.json" }, { ...base, ...pair, embeddedLibraryScan: "not_applicable" }, { ...base, javaScan: "scan.json", embeddedLibraryScan: "not_applicable" }, { ...base, embeddedLibraryScan: "none" }, { ...base, embeddedLibraryScan: true }]) {
+      expect(BuiltSourceSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+  it("reads the layout without a scan file, and the result has no javaScan", async () => {
+    const made = await makeLayout({ javaScan: "missing" });
+    const result = await readBuiltSource({ baseDir: made.root })({ kind: "rovara-built", layout: made.layout, digestFile: made.digestFile, embeddedLibraryScan: "not_applicable" });
+    expect(result.digest).toBe(made.digest);
+    expect(result).not.toHaveProperty("javaScan");
+  });
+  it("pins it: the statement carries no javaScan field, the evidence has no java files, and the image SBOM and scan are still taken per platform", async () => {
+    const made = await makeLayout({ javaScan: "missing" });
+    const { ports, calls } = fakePorts({}, made);
+    const output = await buildBuilt(ports, ack(made));
+    expect(calls.sbom).toEqual([`${ID} linux/arm64`]);
+    expect(calls.scan).toEqual([`${ID} linux/arm64`]);
+    expect(ServiceCatalogSchema.parse(JSON.parse(output.catalogBytes.toString("utf8"))).entries.find((entry) => entry.id === ID)?.image.digest).toBe(made.digest);
+    const statement = JSON.parse(output.evidence.find((item) => item.path.endsWith("statement.json"))!.bytes.toString("utf8")) as SignedImageStatement;
+    expect(statement.statement).not.toHaveProperty("javaScan");
+    expect(output.evidence.some((item) => /java-/u.test(item.path))).toBe(false);
+  });
+  it("still refuses what the image checks refuse (a layout for another platform set, another digest from the registry)", async () => {
+    const made = await makeLayout({ javaScan: "missing" });
+    expect(await refusalsOf(buildBuilt(fakePorts({ served: () => ({ digest: sha("a different image") }) }, made).ports, ack(made)))).toEqual([{ id: ID, code: "digest_mismatch" }]);
+  });
+  it("a source that names the pair is still held to it: a missing scan file refuses (the old form is unchanged)", async () => {
+    const made = await makeLayout({ javaScan: "missing" });
+    expect(await refusalsOf(buildBuilt(fakePorts({}, made).ports, sourceOf(made)))).toEqual([{ id: ID, code: "built_source_invalid" }]);
+  });
+});
+
 describe("writing a Rovara-built build", () => {
   it("writes the Java scan beside the statement in the entry's evidence folder, byte for byte", async () => {
     const made = await makeLayout({ javaScan: { severities: ["Low"] } });
@@ -368,7 +406,7 @@ describe("binding the Java scan to the image's dependency list", () => {
   it("finds a package by purl, by name and version, by group:name and in nested components", async () => {
     const finding = (artifact: Record<string, unknown>) => JSON.stringify({ descriptor: { name: "grype" }, matches: [{ vulnerability: { severity: "High" }, artifact }] });
     for (const artifact of [{ purl: "pkg:maven/io.quarkus/quarkus-core@3.1.0" }, { name: "jackson-core", version: "2.17.0" }, { name: "com.fasterxml.jackson.core:jackson-core", version: "2.17.0" }, { name: "nested", version: "1.0" }]) {
-      expect((await read(await makeLayout({ javaScan: { text: finding(artifact) } }))).javaScan.highOpen, JSON.stringify(artifact)).toBe(1);
+      expect((await read(await makeLayout({ javaScan: { text: finding(artifact) } }))).javaScan!.highOpen, JSON.stringify(artifact)).toBe(1);
     }
   });
   it("refuses a missing, malformed, empty or non-CycloneDX dependency list", async () => {

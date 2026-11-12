@@ -1,5 +1,5 @@
-// The SBOMs, scans and signed statements behind this signature are NOT in the repo (megabytes): ~/web/rovara-research-2026-10-26/test-services-evidence/2026-11-04-rev2/ (README there), from GitHub run 41848024467 of the emulator image.
-// Test services, the staging pin: the catalog this tree SHIPS (environments/service-catalog/catalog.json and catalog.sig.json, pinned at revision 3 and signed with the staging-only key) is trusted by a STAGING-flavor build
+// The SBOMs, scans and signed statements behind this signature are NOT in the repo (megabytes): ~/web/rovara-research-2026-10-26/test-services-evidence/ (one folder per catalog revision; revision 4 is the AWS Emulator engine, see environments/service-catalog/README.md).
+// Test services, the staging pin: the catalog this tree SHIPS (environments/service-catalog/catalog.json and catalog.sig.json, pinned at revision 4 and signed with the staging-only key) is trusted by a STAGING-flavor build
 // running in the staging account, and by nothing else. A release-flavor build (the committed state of every release) does not contain the key, so it refuses the same files with "no trusted catalog key".
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -49,7 +49,7 @@ describe("the shipped signed catalog", () => {
     expect(signature.catalogSha256).toBe(sha256HexOf(catalogBytes));
   });
 
-  it("is trusted by a staging-flavor build in the staging account: it verifies with the staging key and loads as the pinned revision 3", async () => {
+  it("is trusted by a staging-flavor build in the staging account: it verifies with the staging key and loads as the pinned revision 4", async () => {
     const { keys, flavorLine } = await compiledKeys("staging");
     expect(flavorLine).toContain('= "staging";');
     expect(keys).toEqual(stagingKeys);
@@ -59,7 +59,7 @@ describe("the shipped signed catalog", () => {
     expect(loaded.ok).toBe(true);
     if (!loaded.ok) return;
     expect(loaded.keyId).toBe(stagingKeys[0]!.keyId);
-    expect(loaded.catalog).toMatchObject({ revision: 3, pinned: true });
+    expect(loaded.catalog).toMatchObject({ revision: 4, pinned: true });
     expect(loaded.catalog.entries.filter((entry) => entry.image.digest !== undefined).map((entry) => entry.id).sort()).toEqual(["local-aws@r1", "postgres@16"]);
   });
 

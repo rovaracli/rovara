@@ -80,8 +80,8 @@ describe("the worker pre-pull list", () => {
   it("is the file that ships in the worker image (regenerate it with scripts/catalog-build.ts, which writes it)", () => {
     const shipped = JSON.parse(readFileSync("packages/worker/service-catalog/prepull.json", "utf8")) as ReturnType<typeof catalogPrepullList>;
     expect(shipped).toEqual(catalogPrepullList(shippedCatalog()));
-    // The shipped state itself: revision 3, and exactly the two pinned images (postgres@16 for both platforms, the emulator for arm64).
-    expect(shipped.catalogRevision).toBe(3);
+    // The shipped state itself: revision 4, and exactly the two pinned images (postgres@16 for both platforms, the emulator for arm64).
+    expect(shipped.catalogRevision).toBe(4);
     expect(shipped.images.map((image) => [image.id, image.repository, image.platforms])).toEqual([["local-aws@r1", "svc/local-aws", ["linux/arm64"]], ["postgres@16", "svc/postgres", ["linux/arm64", "linux/amd64"]]]);
     // An unpinned catalog (revision 1) pre-pulls nothing.
     expect(catalogPrepullList(unpinnedCatalog())).toEqual({ schemaVersion: 1, catalogRevision: 1, images: [] });

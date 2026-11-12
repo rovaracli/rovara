@@ -11,7 +11,7 @@ const SHA = "a".repeat(40);
 const DIGEST = `sha256:${"b".repeat(64)}`;
 const META = { headBranch: "main", headSha: SHA, workflowName: "image", conclusion: "success" };
 
-function run(options: { meta?: Record<string, unknown> | string; log?: string; digestFile?: string; args?: string[] }) {
+function run(options: { meta?: Record<string, unknown> | string; log?: string; digestFile?: string; args?: string[]; env?: Record<string, string> }) {
   const directory = mkdtempSync(join(tmpdir(), "la-run-"));
   const meta = options.meta ?? META;
   const log = options.log ?? `build\nindex digest: ${DIGEST}\ndone\n`;
@@ -31,7 +31,7 @@ function run(options: { meta?: Record<string, unknown> | string; log?: string; d
     "esac",
   ].join("\n"));
   chmodSync(gh, 0o755);
-  const result = spawnSync("/bin/bash", [SCRIPT, ...(options.args ?? ["123456", SHA, directory])], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", GH: gh } });
+  const result = spawnSync("/bin/bash", [SCRIPT, ...(options.args ?? ["123456", SHA, directory])], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", GH: gh, ...(options.env ?? {}) } });
   const calls = (() => { try { return readFileSync(join(directory, "gh.log"), "utf8"); } catch { return ""; } })();
   return { status: result.status, out: result.stdout, err: result.stderr, calls };
 }
@@ -57,6 +57,22 @@ describe("verify-local-aws-run.sh", () => {
       const partial = { ...META } as Record<string, unknown>;
       delete partial[key];
       expect(run({ meta: partial }).status, key).toBe(1);
+    }
+  });
+  it("accepts the AWS Emulator engine's branch only when it is named by LOCAL_AWS_RUN_BRANCH, as ONE exact branch, and the sha is still the pin", () => {
+    const front = { ...META, headBranch: "rovara/front" };
+    expect(run({ meta: front }).status).toBe(1);
+    const accepted = run({ meta: front, env: { LOCAL_AWS_RUN_BRANCH: "rovara/front" } });
+    expect(accepted.status, accepted.err).toBe(0);
+    // main and rovara/main stay accepted, any other branch and a different head of the named branch do not
+    expect(run({ meta: { ...META, headBranch: "rovara/main" }, env: { LOCAL_AWS_RUN_BRANCH: "rovara/front" } }).status).toBe(0);
+    expect(run({ meta: { ...META, headBranch: "rovara/image-6" }, env: { LOCAL_AWS_RUN_BRANCH: "rovara/front" } }).status).toBe(1);
+    expect(run({ meta: { ...front, headSha: "c".repeat(40) }, env: { LOCAL_AWS_RUN_BRANCH: "rovara/front" } }).status).toBe(1);
+    // the variable is one exact rovara/<name>: a pattern, another prefix or a list is refused before gh is asked
+    for (const bad of ["rovara/*", "feature/x", "rovara/front,main", "main", "rovara/", "../front"]) {
+      const result = run({ meta: front, env: { LOCAL_AWS_RUN_BRANCH: bad } });
+      expect(result.status, bad).toBe(1);
+      expect(result.calls, bad).toBe("");
     }
   });
   it("refuses a failing gh, an answer that is not JSON, and a log that cannot be read", () => {
