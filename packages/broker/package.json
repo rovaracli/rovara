@@ -13,6 +13,7 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@agentx/cloud-contracts": "0.1.0",
+    "@rovara-code/aws-adapters": "0.1.0",
     "@rovara-code/broker": "0.1.0",
     "@rovara-code/contracts": "0.1.0",
     "@agentx/gateway": "0.1.0",
