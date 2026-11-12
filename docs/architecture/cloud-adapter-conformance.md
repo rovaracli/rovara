@@ -42,6 +42,10 @@ CI runs the target twice: once in the `checks` job right after `npm run typechec
 For the plug-in contracts (`code-host`, `check-runner`, `tracker`) the harness is `{ makeWorld, skip? }`. A check the adapter cannot pass yet goes in `skip` by check name with the reason; it shows as
 skipped in the report. There is no way to skip a whole port.
 
+Registered so far: lane A3's model key store (`packages/broker/src/cloud-adapters/model-keys/`, install keys in Secrets Manager by ARN; its model-provider adapters for a company Bedrock role, the
+model proxy and OpenRouter sit beside it and are checked by `tests/unit/cloud-adapters-models.test.ts`). They live in the broker until a `packages/cloud-adapters` package exists. The S3 objects and
+Secrets Manager secrets adapters are public (Code's `@rovara/aws-adapters`, owner decision 72 O2) and are registered here after the vendor pin includes `packages/aws-adapters`.
+
 Ports covered today: document-store, queue, outbox, object-storage, secret-store, worker-machines, scheduler, image-registry, admission, audit-sink, approvers, identity, metering, model-key-store,
 code-host, check-runner, tracker. `github-client-conformance.ts` is exempt (it tests Code's own GitHub client, not a port a Cloud adapter implements). A suite for a new port (the plan's K1 lane) is
 added to `ports.ts` (suite, harness type, vendored file name), `code-fakes.ts` (its positive control) and `pending-lanes.ts`.
