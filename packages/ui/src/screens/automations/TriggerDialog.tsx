@@ -43,7 +43,7 @@ export function specOf(form: Initial, existing: TriggerRead | undefined): Spec {
   return { kind: "schedule", schedule, timezone: form.timezone.trim(), missed: form.missed };
 }
 
-export function TriggerDialog({ chainId, project: projectProp, trigger, open, onOpenChange, onSaved }: { chainId: string; project: string | undefined; trigger?: TriggerRead | undefined; open: boolean; onOpenChange: (open: boolean) => void; onSaved: (note: Note) => void }) {
+export function TriggerDialog({ chainId, project: projectProp, trigger, open, onOpenChange, onSaved, onCloseAutoFocus }: { chainId: string; project: string | undefined; trigger?: TriggerRead | undefined; open: boolean; onOpenChange: (open: boolean) => void; onSaved: (note: Note) => void; /** Where focus goes when it closes (the opening button). */ onCloseAutoFocus?: ((event: Event) => void) | undefined }) {
   const api = useAutomationsApi(), [project, setProject] = useState(projectProp ?? ""), [form, setForm] = useState(() => initialOf(trigger)), [on, setOn] = useState(trigger === undefined ? true : trigger.enabled), [busy, setBusy] = useState(false), [note, setNote] = useState<Note>(), sending = useRef(false), id = useId();
   const set = <K extends keyof Initial>(key: K, value: Initial[K]) => { setForm(current => ({ ...current, [key]: value })); };
   const types = EVENT_TYPES[form.source] ?? [];
@@ -61,13 +61,13 @@ export function TriggerDialog({ chainId, project: projectProp, trigger, open, on
     } catch (error) { setNote(problemNote(error)); }
     finally { sending.current = false;setBusy(false); }
   }
-  return <Dialog title={trigger === undefined ? "Add a trigger" : "Change this trigger"} description="A trigger starts this chain on its own. Turning one on waits for someone who can confirm it." open={open} onOpenChange={onOpenChange}>
+  return <Dialog title={trigger === undefined ? "Add a trigger" : "Change this trigger"} description="A trigger starts this chain on its own. Turning one on waits for someone who can confirm it." open={open} onOpenChange={onOpenChange} onCloseAutoFocus={onCloseAutoFocus}>
     <form className="rv-auto-form" onSubmit={event => { event.preventDefault();void save(); }}>
       {projectProp === undefined && <TextField label="Project" hint="The project this trigger works in." value={project} maxLength={200} onChange={event => { setProject(event.target.value); }} autoComplete="off" />}
       <Select label="What starts it" value={form.kind} onValueChange={value => { set("kind", value === "schedule" ? "schedule" : "event"); }} options={[{ value: "event", label: "Something happens in another tool" }, { value: "schedule", label: "A schedule" }]} />
       {form.kind === "event" ? <>
         <Select label="Tool" value={form.source} onValueChange={value => { setForm(current => ({ ...current, source: value, type: EVENT_TYPES[value]?.[0] ?? "" })); }} options={EVENT_SOURCE_NAMES.map(([value, label]) => ({ value, label }))} />
-        <Select label="What happens" value={form.type} onValueChange={value => { set("type", value); }} options={types.map(value => ({ value, label: eventTypeWords(value) }))} />
+        <Select label="What happens" value={form.type} onValueChange={value => { set("type", value); }} options={(types.includes(form.type) ? types : [form.type, ...types]).map(value => ({ value, label: eventTypeWords(value) }))} />
         {form.source !== "github" && <TextField label="Webhook ID" hint="Optional. The hook this tool sends its events to." value={form.hookId} onChange={event => { set("hookId", event.target.value); }} autoComplete="off" />}
       </> : <>
         <Select label="How often" value={form.frequency} onValueChange={value => { set("frequency", value === "interval" || value === "weekly" ? value : "daily"); }} options={[{ value: "interval", label: "Every so often" }, { value: "daily", label: "Every day" }, { value: "weekly", label: "Every week" }]} />

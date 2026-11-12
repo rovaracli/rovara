@@ -18,7 +18,7 @@ const noSidewaysScroll = (page: Page) => page.evaluate(() => document.documentEl
 const sent = async (request: APIRequestContext) => await (await request.get("/__mock/requests")).json() as Array<{ method: string; path: string; body?: unknown }>;
 
 for (const width of [390, 1280]) {
-  test(`a maintainer lists chains and triggers, pauses one and resumes another (held for an admin) at ${String(width)}`, async ({ page, context, request, baseURL }, testInfo) => {
+  test(`a maintainer lists chains and triggers, pauses one and resumes another (held for confirmation) at ${String(width)}`, async ({ page, context, request, baseURL }, testInfo) => {
     await enter(page, context, request, baseURL, width, "edit");
     const first = page.getByRole("listitem").filter({ hasText: "GitHub: pull request opened" }), second = page.getByRole("listitem").filter({ hasText: "Every day at 09:30 (Europe/Berlin)" });
     await expect(page.getByRole("tab", { name: "Automations", selected: true })).toBeVisible();
@@ -39,7 +39,8 @@ for (const width of [390, 1280]) {
     await expect(first.getByRole("button", { name: "Resume" })).toBeVisible();
 
     await second.getByRole("button", { name: "Resume" }).click();
-    await expect(second.getByText("Waiting for an admin to confirm").first()).toBeVisible();
+    await expect(second.getByText("Waiting for confirmation").first()).toBeVisible();
+    await expect(second.getByText(/an admin/)).toHaveCount(0);
     await expect(second.getByRole("button", { name: "Open the confirmation page" })).toBeVisible();
     await expect(second.getByText("It is on.")).toHaveCount(0);
     expect(await noSidewaysScroll(page)).toBe(true);
@@ -72,3 +73,52 @@ test("with automations off the project page has no Automations tab and asks noth
   await page.goto("/app/chains/chn_" + "a".repeat(20));
   await expect(page.getByRole("heading", { name: "This isn't available", level: 1 })).toBeVisible();
 });
+
+// The chain page and every dialog on it, scanned only once the dialog's animation has settled (a scan mid-fade reads washed-out colours).
+const CHAIN = "/app/chains/chn_" + "a".repeat(20);
+async function settled(page: Page) { await page.waitForFunction(() => document.getAnimations().every(animation => animation.playState !== "running")); }
+for (const width of [390, 1280]) {
+  test(`the chain page and its dialogs are axe clean in both themes and return focus to the button that opened them at ${String(width)}`, async ({ page, context, request, baseURL }, testInfo) => {
+    await enter(page, context, request, baseURL, width, "edit");
+    await page.goto(CHAIN);
+    await expect(page.getByRole("heading", { name: "Refund triage", level: 1 })).toBeVisible();
+    await expect(page.getByLabel("Draft design (JSON)")).toBeVisible();
+    await expect(page.getByRole("list", { name: "Runs" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add a trigger" })).toBeVisible();
+    expect(await noSidewaysScroll(page)).toBe(true);
+    await checkA11y(page, { theme: "light" });await evidenceShot(page, { path: testInfo.outputPath(`chain-${String(width)}-light.png`), fullPage: true });
+    await checkA11y(page, { theme: "dark" });await evidenceShot(page, { path: testInfo.outputPath(`chain-${String(width)}-dark.png`), fullPage: true });
+
+    const dialogs: Array<{ opener: () => ReturnType<Page["getByRole"]>; name: string }> = [
+      { opener: () => page.getByRole("button", { name: "Archive", exact: true }), name: "Archive this chain?" },
+      { opener: () => page.getByRole("button", { name: "Roll back to this" }), name: "Run version 1 again?" },
+      { opener: () => page.getByRole("button", { name: "Add a trigger" }), name: "Add a trigger" },
+      { opener: () => page.getByRole("listitem").filter({ hasText: "GitHub: pull request opened" }).getByRole("button", { name: "Delete" }), name: "Delete this trigger?" },
+      { opener: () => page.getByRole("listitem").filter({ hasText: "GitHub: pull request opened" }).getByRole("button", { name: "Change" }), name: "Change this trigger" },
+    ];
+    for (const { opener, name } of dialogs) {
+      const button = opener();
+      await button.click();
+      const dialog = page.getByRole("dialog", { name });
+      await expect(dialog).toBeVisible();
+      await settled(page);
+      const box = (await dialog.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x + box.width).toBeLessThanOrEqual(width);
+      await checkA11y(page, { theme: "light" });
+      await checkA11y(page, { theme: "dark" });
+      await evidenceShot(page, { path: testInfo.outputPath(`dialog-${name.replace(/\W+/gu, "-")}-${String(width)}.png`) });
+      await page.keyboard.press("Escape");
+      await expect(dialog).toHaveCount(0);
+      await expect(button).toBeFocused();
+    }
+    // The draft with unsaved text asks before it is replaced, and that question is clean too.
+    await page.getByLabel("Draft design (JSON)").fill('{"start":"x"}');
+    await page.getByRole("button", { name: "Reload the latest draft" }).click();
+    const replace = page.getByRole("dialog", { name: "Reload the latest draft?" });
+    await expect(replace.getByText("This replaces your unsaved text.")).toBeVisible();
+    await settled(page);
+    await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Reload the latest draft" })).toBeFocused();
+  });
+}

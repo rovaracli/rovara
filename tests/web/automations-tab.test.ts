@@ -14,15 +14,17 @@ import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
-import { CHAIN_ID, CONFIRM_URL, RUN_ID, TRIGGER_ID, error, projectAutomations, runList, triggerOf } from "./support/automations-fixture.js";
+import { CHAIN_ID, OTHER_CHAIN_ID, CONFIRM_URL, RUN_ID, TRIGGER_ID, error, projectAutomations, runList, triggerOf } from "./support/automations-fixture.js";
 
+// jsdom has no ResizeObserver, which the switch in the trigger form measures with.
+globalThis.ResizeObserver ??= class { observe(): void { /* none */ } unobserve(): void { /* none */ } disconnect(): void { /* none */ } };
 type Answer = (request: ApiRequest) => ApiResponse | undefined;
-function setup(options: { automations?: unknown; theme?: "light" | "dark"; write?: Answer; activity?: unknown } = {}) {
+function setup(options: { automations?: unknown; theme?: "light" | "dark"; write?: Answer; activity?: unknown; activityStatus?: number } = {}) {
   let automations: unknown = options.automations ?? projectAutomations();
   const f = fakeHost(async request => {
     if (request.method === "GET" && request.path === "/v1/app/projects/payments/automations") return { status: 200, body: automations };
     if (request.method === "GET" && request.path.startsWith("/v1/app/chain-runs")) return { status: 200, body: runList() };
-    if (request.method === "GET" && request.path.endsWith("/activity")) return { status: 200, body: options.activity ?? { activity: [] } };
+    if (request.method === "GET" && request.path.endsWith("/activity")) return { status: options.activityStatus ?? 200, body: options.activity ?? { activity: [] } };
     return options.write?.(request) ?? { status: 200, body: { trigger: triggerOf() } };
   });
   const query = createQueryClient(), ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(AutomationsTab, { project: "payments" }) }) }) }) }), { theme: options.theme ?? "light" });
@@ -34,7 +36,8 @@ afterEach(() => { vi.restoreAllMocks(); });
 it("says each trigger's state in words: on, paused, waiting for an admin, and turned off with the server's reason", () => {
   expect(triggerState(triggerOf())).toEqual({ kind: "on", words: "On" });
   expect(triggerState(triggerOf({ enabled: false }))).toEqual({ kind: "paused", words: "Paused" });
-  expect(triggerState(triggerOf({ enabled: false, disabledReason: WAITING_REASON }))).toEqual({ kind: "waiting", words: "Waiting for an admin to confirm" });
+  expect(triggerState(triggerOf({ enabled: false, disabledReason: WAITING_REASON }))).toEqual({ kind: "waiting", words: "Waiting for confirmation" });
+  expect(triggerState(triggerOf({ enabled: false, disabledReason: WAITING_REASON }), true)).toEqual({ kind: "waiting", words: "Waiting for an admin to confirm" });
   expect(triggerState(triggerOf({ enabled: false, disabledReason: "Refund triage needs a monthly budget." }))).toEqual({ kind: "refused", words: "Turned off", reason: "Refund triage needs a monthly budget." });
   expect(specWords(triggerOf().spec)).toBe("GitHub: pull request opened");
   expect(specWords(triggerOf({ spec: { kind: "schedule", schedule: { kind: "daily", at: "09:30" }, timezone: "Europe/Berlin", missed: "run_once" } }).spec)).toBe("Every day at 09:30 (Europe/Berlin)");
@@ -85,11 +88,12 @@ it("pauses at once: one PUT with enabled false and the same spec, hook and rate,
   f.close();
 });
 
-it("resume answers 202: it says Waiting for an admin to confirm and offers the link, and nothing is shown as on", async () => {
+it("resume answers 202: it says Waiting for confirmation (the chain is not known to be company-shared here) and offers the link, and nothing is shown as on", async () => {
   const paused = projectAutomations({ triggers: [{ ...triggerOf({ enabled: false }), targetName: "Refund triage" }] });
   const f = setup({ automations: paused, write: () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", confirmUrl: CONFIRM_URL, changes: ["turn on a GitHub trigger for payments"] } }) });
   fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
-  expect(await screen.findByText("Waiting for an admin to confirm")).toBeTruthy();
+  expect(await screen.findByText("Waiting for confirmation")).toBeTruthy();
+  expect(screen.queryByText(/an admin/)).toBeNull();
   expect(screen.getByText("turn on a GitHub trigger for payments")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Open the confirmation page" }));
   expect(f.host.openExternal).toHaveBeenCalledWith(CONFIRM_URL);
@@ -102,17 +106,17 @@ it("never offers a confirmation link that is not this app's own", async () => {
   const paused = projectAutomations({ triggers: [{ ...triggerOf({ enabled: false }), targetName: "Refund triage" }] });
   const f = setup({ automations: paused, write: () => ({ status: 202, body: { status: "NEEDS_CONFIRMATION", confirmUrl: "https://evil.example/v1/app/approve/apr_x", changes: [] } }) });
   fireEvent.click(await screen.findByRole("button", { name: "Resume" }));
-  expect(await screen.findByText("Waiting for an admin to confirm")).toBeTruthy();
+  expect(await screen.findByText("Waiting for confirmation")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Open the confirmation page" })).toBeNull();
   f.close();
 });
 
-it("shows a trigger that waits for an admin, or was turned off, with its reason, and the right button", async () => {
+it("shows a trigger that waits for confirmation, or was turned off, with its reason, and the right button", async () => {
   const f = setup({ automations: projectAutomations({ triggers: [
     { ...triggerOf({ enabled: false, disabledReason: WAITING_REASON }), targetName: "Refund triage" },
     { ...triggerOf({ triggerId: "ctr_" + "9".repeat(20), enabled: false, disabledReason: "Refund triage needs a monthly budget." }), targetName: "Refund triage" },
   ] }) });
-  expect(await screen.findByText("Waiting for an admin to confirm")).toBeTruthy();
+  expect(await screen.findByText("Waiting for confirmation")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Ask again" })).toBeTruthy();
   expect(screen.getByText("Turned off")).toBeTruthy();
   expect(screen.getByText(/Why: Refund triage needs a monthly budget\./)).toBeTruthy();
@@ -196,5 +200,69 @@ it("keeps a trigger on an agent readable, with no change buttons (those are the 
   const row = (await screen.findByText("GitHub: pull request opened")).closest("li")!;
   expect(within(row).getByText(/Payments expert/)).toBeTruthy();
   for (const name of ["Pause", "Change", "Delete", "Activity"]) expect(within(row).queryByRole("button", { name })).toBeNull();
+  f.close();
+});
+
+const chainRow = (chainId: string, name: string, access: "view" | "use" | "edit" | "manage") => ({ chainId, name, description: "", owner: { kind: "project", project: "payments" }, currentVersion: 1, status: "active", access });
+const spec = (source: string, type: string) => ({ kind: "event", source, type }) as never;
+
+it("offers Pause, Change and Delete only on triggers of chains the person manages, never on the project's canEdit alone, and never on a chain they can't see", async () => {
+  const editable = "ctr_" + "1".repeat(20), managed = "ctr_" + "2".repeat(20), hidden = "ctr_" + "3".repeat(20);
+  const f = setup({ automations: projectAutomations({
+    canEdit: true,
+    chains: [chainRow(CHAIN_ID, "Edit-only chain", "edit"), chainRow(OTHER_CHAIN_ID, "Managed chain", "manage")] as never,
+    triggers: [
+      { ...triggerOf({ triggerId: editable, spec: spec("github", "pull_request.opened") }), targetName: "Edit-only chain" },
+      { ...triggerOf({ triggerId: managed, spec: spec("linear", "issue.created"), target: { kind: "chain", chainId: OTHER_CHAIN_ID } }), targetName: "Managed chain" },
+      { ...triggerOf({ triggerId: hidden, spec: spec("sentry", "alert.triggered"), target: { kind: "chain", chainId: "chn_" + "e".repeat(20) } }) },
+    ],
+  }) });
+  const rowOf = async (text: string) => (await screen.findByText(text)).closest("li")!;
+  const edit = await rowOf("GitHub: pull request opened"), manage = await rowOf("Linear: issue created"), unseen = await rowOf("Sentry: alert triggered");
+  for (const name of ["Pause", "Change", "Delete"]) {
+    expect(within(edit).queryByRole("button", { name }), "edit-level chain: " + name).toBeNull();
+    expect(within(manage).queryByRole("button", { name }), "managed chain: " + name).toBeTruthy();
+    expect(within(unseen).queryByRole("button", { name }), "chain not visible: " + name).toBeNull();
+  }
+  expect(within(unseen).getByText(/a chain you can't see/)).toBeTruthy();
+  expect(within(unseen).queryByRole("button", { name: "Activity" })).toBeNull();
+  expect(within(unseen).queryByRole("link", { name: /chain/ })).toBeNull();
+  expect(within(edit).getByRole("button", { name: "Activity" })).toBeTruthy();
+  f.close();
+});
+
+it("returns focus to the button that opened a dialog when it closes: New chain, Change, Delete (kept)", async () => {
+  const f = setup();
+  const newChain = await screen.findByRole("button", { name: "New chain" });
+  fireEvent.click(newChain);
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "New chain" })).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(document.activeElement).toBe(newChain));
+  const change = await screen.findByRole("button", { name: "Change" });
+  fireEvent.click(change);
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Change this trigger" })).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(document.activeElement).toBe(change));
+  const remove = screen.getByRole("button", { name: "Delete" });
+  fireEvent.click(remove);
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Delete this trigger?" })).getByRole("button", { name: "Keep it" }));
+  await waitFor(() => expect(document.activeElement).toBe(remove));
+  f.close();
+});
+
+it("after a delete the row is gone, so focus goes to the Triggers heading, not the page body", async () => {
+  const f = setup({ write: () => ({ status: 200, body: { deleted: true } }) });
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Delete this trigger?" })).getByRole("button", { name: "Delete trigger" }));
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Triggers", level: 2 })));
+  f.close();
+});
+
+it("a refused READ says \"You can't see this.\", not \"change\", and still shows the server's sentence", async () => {
+  const sentence = "Only people who can view this chain can read its activity.";
+  const f = setup({ activityStatus: 403, activity: error("FORBIDDEN", sentence) });
+  fireEvent.click(await screen.findByRole("button", { name: "Activity" }));
+  const alert = await screen.findByRole("alert");
+  expect(within(alert).getByText("You can't see this.")).toBeTruthy();
+  expect(within(alert).getByText(sentence)).toBeTruthy();
+  expect(alert.textContent).not.toContain("change");
   f.close();
 });

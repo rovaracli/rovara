@@ -4,16 +4,20 @@ import { ApiError } from "../../api/errors.js";
 /** The reason a trigger carries while an owner or admin has yet to confirm turning it on (the broker's own text, `triggers/routes.ts`). */
 export const WAITING_REASON = "waiting for someone to confirm turning it on";
 export const WAITING_FOR_ADMIN = "Waiting for an admin to confirm";
+export const WAITING_FOR_SOMEONE = "Waiting for confirmation";
+/** A company-shared chain's changes are confirmed by an owner or admin only, so only there is "an admin" said; anywhere else (or when it isn't known) the words are neutral. */
+export const waitingWords = (companyShared: boolean | undefined) => companyShared === true ? WAITING_FOR_ADMIN : WAITING_FOR_SOMEONE;
 export const READ_ONLY_NOTE = "Only maintainers can change automations";
 export const CHAIN_READ_ONLY_NOTE = "You can look at this chain. Only people who manage it can change it";
 export const NOT_ALLOWED = "You can't change this.";
+export const NOT_ALLOWED_TO_SEE = "You can't see this.";
 
 export interface TriggerLike { enabled: boolean; disabledReason?: string | undefined; scheduleStatus?: string | undefined }
 export type TriggerStateKind = "on" | "paused" | "waiting" | "refused";
 /** Where a trigger stands, in words. An off trigger with a reason of its own (the server's sentence) is "refused"; one waiting for a confirmation says so; any other is paused. */
-export function triggerState(trigger: TriggerLike): { kind: TriggerStateKind; words: string; reason?: string } {
+export function triggerState(trigger: TriggerLike, companyShared?: boolean): { kind: TriggerStateKind; words: string; reason?: string } {
   if (trigger.enabled) return { kind: "on", words: "On" };
-  if (trigger.disabledReason === WAITING_REASON) return { kind: "waiting", words: WAITING_FOR_ADMIN };
+  if (trigger.disabledReason === WAITING_REASON) return { kind: "waiting", words: waitingWords(companyShared) };
   if (trigger.disabledReason !== undefined && trigger.disabledReason !== "") return { kind: "refused", words: "Turned off", reason: trigger.disabledReason };
   return { kind: "paused", words: "Paused" };
 }
@@ -21,8 +25,8 @@ export function triggerState(trigger: TriggerLike): { kind: TriggerStateKind; wo
 const SOURCES: Record<string, string> = { github: "GitHub", linear: "Linear", jira: "Jira", pagerduty: "PagerDuty", sentry: "Sentry", datadog: "Datadog", grafana: "Grafana", vercel: "Vercel", cloudwatch: "CloudWatch" };
 /** Event types the trigger editor offers, by source (the same closed list the server holds: Code's `EVENT_TYPES`; the server checks it again). */
 export const EVENT_TYPES: Readonly<Record<string, readonly string[]>> = {
-  github: ["pull_request.opened", "pull_request.ready_for_review", "issues.opened", "deployment_status.success", "deployment_status.failure", "workflow_run.completed"],
-  linear: ["issue.created"], jira: ["issue.created"], pagerduty: ["incident.triggered"], sentry: ["issue.created", "alert.triggered"], datadog: ["monitor.triggered"], grafana: ["alert.firing"],
+  github: ["pull_request.opened", "pull_request.ready_for_review", "issues.opened", "issues.labeled", "issues.assigned", "deployment_status.success", "deployment_status.failure", "workflow_run.completed"],
+  linear: ["issue.created"], jira: ["issue.created", "issue.labeled", "issue.assigned"], pagerduty: ["incident.triggered"], sentry: ["issue.created", "alert.triggered"], datadog: ["monitor.triggered"], grafana: ["alert.firing"],
   vercel: ["deployment.succeeded", "deployment.error"], cloudwatch: ["alarm.fired"],
 };
 export const EVENT_SOURCE_NAMES: ReadonlyArray<readonly [string, string]> = Object.entries(SOURCES);
@@ -67,12 +71,14 @@ export function outcomeWords(outcome: string, reason?: string): string {
 export const runStatusWords: Record<string, string> = { running: "Running", waiting: "Waiting for a person", paused: "Paused", succeeded: "Finished", failed: "Failed", cancelled: "Stopped", timed_out: "Timed out" };
 export const runStatusKey = (status: string) => status === "waiting" ? "waiting" : status === "succeeded" ? "succeeded" : status === "failed" || status === "timed_out" ? "failed" : status === "cancelled" ? "cancelled" : status === "paused" ? "paused" : "running";
 
-export interface Problem { message: string; forbidden: boolean; reauth: boolean }
-/** A refusal. A 403 says plainly that this isn't theirs to change, then the server's own sentence says why; a REAUTH asks for a new sign-in; anything else is the server's sentence. */
-export function problemOf(error: unknown, fallback = "Rovara couldn't do that. Try again shortly."): Problem {
+export interface Problem { message: string; forbidden: boolean; reauth: boolean; /** The refusal was on a read, so the plain words are about seeing, not changing. */ read?: boolean }
+/**
+ * A refusal. A 403 says plainly that this isn't theirs (to change; to see, on a read), then the server's own sentence says why; a REAUTH asks for a new sign-in; anything else is the server's sentence.
+ */
+export function problemOf(error: unknown, fallback = "Rovara couldn't do that. Try again shortly.", read = false): Problem {
   if (error instanceof ApiError) {
     if (error.code === "REAUTH_REQUIRED") return { message: error.message, forbidden: false, reauth: true };
-    return { message: error.message, forbidden: error.status === 403, reauth: false };
+    return { message: error.message, forbidden: error.status === 403, reauth: false, ...(read ? { read: true } : {}) };
   }
   return { message: fallback, forbidden: false, reauth: false };
 }

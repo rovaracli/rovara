@@ -15,7 +15,7 @@ export function RunList({ scope, showChain }: { scope: { chain: string } | { pro
   const api = useAutomationsApi(), key = "chain" in scope ? chainKey(scope.chain, "runs") : (["automations", "project-runs", scope.project] as const);
   const read = useQuery({ queryKey: key, queryFn: () => api.runs(scope), retry: false });
   if (read.isPending) return <Skeleton label="Loading runs" />;
-  if (read.isError) return <ActionNote note={problemNote(read.error)} />;
+  if (read.isError) return <ActionNote note={problemNote(read.error, true)} />;
   if (read.data.runs.length === 0) return <p className="rv-muted">No runs yet.</p>;
   return <ul className="rv-auto-list" aria-label="Runs">{read.data.runs.map(run => <li key={run.sessionId} className="rv-auto-row">
     <div className="rv-auto-row-head"><div><Link to={paths.session(run.sessionId)}>{showChain ? <VisibleText text={run.chain.name} /> : "Run"} <span className="rv-muted">version {run.chain.version}</span></Link></div><StatusDot status={runStatusKey(run.status)} words={runStatusWords[run.status] ?? run.status} /></div>

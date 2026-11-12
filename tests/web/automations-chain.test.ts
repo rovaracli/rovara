@@ -9,6 +9,7 @@ import { ChainScreen } from "../../packages/ui/src/screens/automations/ChainScre
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
+import { navFixture } from "./support/fixtures.js";
 import { renderUi } from "./support/render.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -18,22 +19,25 @@ import { CHAIN_ID, CONFIRM_URL, DESIGN, DEVELOPER, SECOND_DEVELOPER, chainOf, dr
 // jsdom has no ResizeObserver, which the switch in the trigger form measures with.
 globalThis.ResizeObserver ??= class { observe(): void { /* none */ } unobserve(): void { /* none */ } disconnect(): void { /* none */ } };
 type Write = (request: ApiRequest) => ApiResponse | undefined;
-function setup(options: { chain?: ReturnType<typeof chainOf>; theme?: "light" | "dark"; write?: Write; id?: string } = {}) {
+const NO_SHARES = { shares: [] };
+function setup(options: { chain?: ReturnType<typeof chainOf>; theme?: "light" | "dark"; write?: Write; id?: string; orgRole?: "owner" | "admin" | "member"; triggers?: ReturnType<typeof triggerOf>[]; shared?: boolean } = {}) {
   const chain = options.chain ?? chainOf(), base = "/v1/app/chains/" + CHAIN_ID;
   const f = fakeHost(async request => {
     if (request.method === "GET") {
       if (request.path === base) return { status: 200, body: { chain, current: { version: 2, definition: DESIGN } } };
       if (request.path === base + "/versions") return { status: 200, body: versions() };
       if (request.path === base + "/draft") return chain.access === "view" || chain.access === "use" ? { status: 403, body: error("FORBIDDEN", "You can't edit this chain.") } : { status: 200, body: draft() };
-      if (request.path === base + "/shares") return { status: 200, body: shares() };
-      if (request.path === base + "/triggers") return { status: 200, body: { triggers: [triggerOf()] } };
+      if (request.path === base + "/shares") return { status: 200, body: options.shared === false ? NO_SHARES : shares() };
+      if (request.path === base + "/triggers") return { status: 200, body: { triggers: options.triggers ?? [triggerOf()] } };
       if (request.path === "/v1/app/projects/payments/people") return { status: 200, body: people() };
       if (request.path.startsWith("/v1/app/chain-runs")) return { status: 200, body: runList() };
       return { status: 404, body: error("NOT_FOUND", "Not found.") };
     }
     return options.write?.(request) ?? { status: 200, body: { chain } };
   });
-  const query = createQueryClient(), router = createMemoryRouter([{ path: "/app/chains/:id", element: h(ChainScreen, {}) }], { initialEntries: ["/app/chains/" + (options.id ?? CHAIN_ID)] });
+  const query = createQueryClient(), role = options.orgRole ?? "owner";
+  query.setQueryData(["nav"], navFixture({ me: { developerId: DEVELOPER, name: "Priya", orgRole: role } }));
+  const router = createMemoryRouter([{ path: "/app/chains/:id", element: h(ChainScreen, {}) }], { initialEntries: ["/app/chains/" + (options.id ?? CHAIN_ID)] });
   const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(Announcer, { children: h(RouterProvider, { router }) }) }) }), { theme: options.theme ?? "light" });
   const writes = () => f.request.mock.calls.map(call => call[0]).filter(request => request.method !== "GET");
   return { ...f, ...ui, writes, close() { ui.unmount();router.dispose();query.clear(); } };
@@ -70,10 +74,11 @@ it("shows someone who can only look the design and history and none of the chang
   f.close();
 });
 
-it("an editor who doesn't manage the chain gets the draft and rollback but not budget, archive or triggers", async () => {
-  const f = setup({ chain: chainOf({ access: "edit" }) });
+it("an editor who doesn't manage the chain gets the draft, publish and rollback (while no trigger is on) but not budget, archive or triggers", async () => {
+  const f = setup({ chain: chainOf({ access: "edit" }), triggers: [triggerOf({ enabled: false })] });
   expect(await screen.findByLabelText("Draft design (JSON)")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Roll back to this" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Roll back to this" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Publish" })).toBeTruthy();
   for (const name of ["Add a trigger", "Archive", "Save cap"]) expect(screen.queryByRole("button", { name })).toBeNull();
   f.close();
 });
@@ -128,6 +133,7 @@ it("a stale draft is refused in the server's words and the latest can be reloade
   fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
   expect((await screen.findByRole("alert")).textContent).toBe("Someone else changed this draft. Reload it and try again.");
   fireEvent.click(screen.getByRole("button", { name: "Reload the latest draft" }));
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Reload the latest draft?" })).getByRole("button", { name: "Replace my text" }));
   await waitFor(() => expect((screen.getByLabelText<HTMLTextAreaElement>("Draft design (JSON)")).value).toBe(JSON.stringify(DESIGN, null, 2)));
   f.close();
 });
@@ -238,5 +244,123 @@ for (const theme of ["light", "dark"] as const) it("has an accessible chain page
   await screen.findByLabelText("Draft design (JSON)");
   await screen.findByText("GitHub: pull request opened");
   await expectNoAxeViolations(f.container);
+  f.close();
+});
+
+// ---- review fixes (M1 to M3, L1 to L7)
+
+const base = "/v1/app/chains/" + CHAIN_ID;
+it("a draft with unsaved text asks before \"Reload the latest draft\" replaces it, and a clean draft reloads at once", async () => {
+  const f = setup();
+  const editor = await screen.findByLabelText<HTMLTextAreaElement>("Draft design (JSON)");
+  fireEvent.click(screen.getByRole("button", { name: "Reload the latest draft" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await waitFor(() => expect(f.request.mock.calls.filter(call => call[0].path === base + "/draft").length).toBeGreaterThan(1));
+  const mine = JSON.stringify({ ...DESIGN, start: "mine" }, null, 2);
+  fireEvent.change(screen.getByLabelText("Draft design (JSON)"), { target: { value: mine } });
+  const reload = screen.getByRole("button", { name: "Reload the latest draft" });
+  fireEvent.click(reload);
+  const dialog = await screen.findByRole("dialog", { name: "Reload the latest draft?" });
+  expect(within(dialog).getByText("This replaces your unsaved text.")).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Keep editing" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(screen.getByLabelText<HTMLTextAreaElement>("Draft design (JSON)").value).toBe(mine);
+  await waitFor(() => expect(document.activeElement).toBe(reload));
+  fireEvent.click(reload);
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Reload the latest draft?" })).getByRole("button", { name: "Replace my text" }));
+  await waitFor(() => expect(screen.getByLabelText<HTMLTextAreaElement>("Draft design (JSON)").value).toBe(JSON.stringify(DESIGN, null, 2)));
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Draft design (JSON)")));
+  void editor;
+  f.close();
+});
+
+it("returns focus to the opening button when the Archive, rollback and Add a trigger dialogs close", async () => {
+  const f = setup();
+  const archive = await screen.findByRole("button", { name: "Archive" });
+  fireEvent.click(archive);
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Archive this chain?" })).getByRole("button", { name: "Keep it" }));
+  await waitFor(() => expect(document.activeElement).toBe(archive));
+  const rollback = await screen.findByRole("button", { name: "Roll back to this" });
+  fireEvent.click(rollback);
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Run version 1 again?" })).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(document.activeElement).toBe(rollback));
+  const add = screen.getByRole("button", { name: "Add a trigger" });
+  fireEvent.click(add);
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Add a trigger" })).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(document.activeElement).toBe(add));
+  f.close();
+});
+
+it("after Archive goes through, its button is gone, so focus lands on the chain's facts rather than the page body", async () => {
+  const f = setup({ write: () => ({ status: 200, body: { chain: chainOf({ status: "archived" }) } }) });
+  fireEvent.click(await screen.findByRole("button", { name: "Archive" }));
+  fireEvent.click(within(await screen.findByRole("dialog", { name: "Archive this chain?" })).getByRole("button", { name: "Archive chain" }));
+  await waitFor(() => expect(f.writes()).toHaveLength(1));
+  await waitFor(() => expect(document.activeElement).not.toBe(document.body));
+  f.close();
+});
+
+it("hides the accountable picker on a company-shared chain unless the person is an org owner or admin", async () => {
+  const member = setup({ orgRole: "member" });
+  await screen.findByText("Everyone in the company can look at it");
+  expect(screen.queryByLabelText("Who is accountable")).toBeNull();
+  expect(screen.getByText("Only an owner or admin can change who is accountable for a company-shared chain.")).toBeTruthy();
+  member.close();
+  const admin = setup({ orgRole: "admin" });
+  expect(await screen.findByLabelText("Who is accountable")).toBeTruthy();
+  admin.close();
+  const unshared = setup({ orgRole: "member", shared: false });
+  expect(await screen.findByLabelText("Who is accountable")).toBeTruthy();
+  unshared.close();
+});
+
+it("says \"an admin\" only for a company-shared chain; a chain that is not shared waits for \"confirmation\"", async () => {
+  const held = (request: ApiRequest): ApiResponse | undefined => request.path.endsWith("/publish") ? { status: 202, body: { status: "NEEDS_CONFIRMATION", confirmUrl: CONFIRM_URL, changes: [] } } : undefined;
+  const shared = setup({ write: held });
+  await screen.findByLabelText("Draft design (JSON)");
+  await screen.findByText("Everyone in the company can look at it");
+  fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+  expect(await screen.findByText("Waiting for an admin to confirm")).toBeTruthy();
+  shared.close();
+  const alone = setup({ write: held, shared: false });
+  await screen.findByLabelText("Draft design (JSON)");
+  await screen.findByText("Nobody else");
+  fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+  expect(await screen.findByText("Waiting for confirmation")).toBeTruthy();
+  expect(screen.queryByText(/admin to/)).toBeNull();
+  alone.close();
+});
+
+it("publishing a draft that is what already runs says nothing changed and which version keeps running", async () => {
+  const f = setup({ write: request => request.path.endsWith("/publish") ? { status: 200, body: { version: { version: 2 }, chain: chainOf(), disabledTriggers: [] } } : undefined });
+  await screen.findByLabelText("Draft design (JSON)");
+  fireEvent.click(screen.getByRole("button", { name: "Publish" }));
+  expect(await screen.findByText("No change; version 2 keeps running.")).toBeTruthy();
+  expect(screen.queryByText(/Published as version/)).toBeNull();
+  f.close();
+});
+
+it("while the chain has a trigger on, someone who only edits it can save the draft but not publish or roll back", async () => {
+  const f = setup({ chain: chainOf({ access: "edit" }) });
+  expect(await screen.findByLabelText("Draft design (JSON)")).toBeTruthy();
+  await screen.findByText("GitHub: pull request opened");
+  expect(screen.getByText("This chain has triggers turned on, so only people who manage it can publish or roll back.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Publish" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Roll back to this" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Save draft" })).toBeTruthy();
+  f.close();
+  // A manager is not held by it (positive control).
+  const manager = setup({ chain: chainOf({ access: "manage" }) });
+  expect(await screen.findByRole("button", { name: "Publish" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Roll back to this" })).toBeTruthy();
+  manager.close();
+});
+
+it("editing a trigger that waits on an intake event (issues.labeled) shows its type, not a blank choice", async () => {
+  const labeled = triggerOf({ spec: { kind: "event", source: "github", type: "issues.labeled", filter: { label: ["bug"] } } });
+  const f = setup({ triggers: [labeled] });
+  fireEvent.click(await screen.findByRole("button", { name: "Change" }));
+  const dialog = await screen.findByRole("dialog", { name: "Change this trigger" });
+  expect(within(dialog).getByLabelText<HTMLSelectElement>("What happens").value).toBe("issues.labeled");
   f.close();
 });

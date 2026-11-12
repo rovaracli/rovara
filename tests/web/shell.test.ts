@@ -37,8 +37,8 @@ it("omits disabled routes and shows the exact not-found copy", async () => {
 });
 // exp/automations: this was "even when the chains switch is on". The switch now opens the chain page (tests/web/automations-gate.test.ts); while it is off the links still say this.
 it("shows \"This isn't available\" with a link home for old chain and trigger links while the chains switch is off", async () => {
- for (const path of ["/app/chains", "/app/chains/chn_aaaaaaaaaaaaaaaaaaaa", "/app/triggers/trg_aaaaaaaaaaaaaaaaaaaa"]) for (const on of [false]) {
-  const f = shell(path, "light", { ...nav, features: { ...features, chains: on } });
+ for (const path of ["/app/chains", "/app/chains/chn_aaaaaaaaaaaaaaaaaaaa", "/app/triggers/trg_aaaaaaaaaaaaaaaaaaaa"]) {
+  const f = shell(path, "light", { ...nav, features: { ...features, chains: false } });
   expect((await screen.findByRole("heading", { name: "This isn't available", level: 1 })).textContent).toBe("This isn't available");
   expect(screen.getByRole("link", { name: "Go to Home" }).getAttribute("href")).toBe("/app");expect(screen.queryByText("We couldn't find that. It may not exist, or it hasn't been shared with you.")).toBeNull();
   expect(screen.queryByRole("link", { name: /chain|trigger/i })).toBeNull();f.close();

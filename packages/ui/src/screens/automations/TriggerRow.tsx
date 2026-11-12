@@ -1,6 +1,6 @@
 // exp/automations: one trigger as a row: what starts it, where it stands (on, paused, waiting for an admin, turned off with the reason), its last result, and, for people who may change it,
 // pause, resume, change, delete (with an in-page question) and its activity. Pausing is at once; resuming waits for a confirmation, and the answer says so.
-import { useRef, useState } from "react";
+import { useContext, useRef, useState } from "react";
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { SessionIdSchema } from "@agentx/cloud-contracts/web";
@@ -12,7 +12,8 @@ import { Skeleton } from "../../design/Skeleton.js";
 import { StatusDot } from "../../design/StatusDot.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { paths } from "../../paths.js";
-import { ActionNote, noteOf, problemNote, type Note } from "./ActionNote.js";
+import { ActionNote, CompanySharedContext, noteOf, problemNote, type Note } from "./ActionNote.js";
+import { useReturnFocus } from "./useReturnFocus.js";
 import { outcomeWords, specWords, triggerState } from "./automation-text.js";
 import { TriggerDialog } from "./TriggerDialog.js";
 
@@ -28,7 +29,7 @@ export type RowTrigger = ProjectTriggerRead;
 function Activity({ chainId, triggerId }: { chainId: string; triggerId: string }) {
   const api = useAutomationsApi(), read = useQuery({ queryKey: chainKey(chainId, "activity:" + triggerId), queryFn: () => api.activity(chainId, triggerId), retry: false });
   if (read.isPending) return <Skeleton label="Loading activity" />;
-  if (read.isError) return <ActionNote note={problemNote(read.error)} />;
+  if (read.isError) return <ActionNote note={problemNote(read.error, true)} />;
   if (read.data.activity.length === 0) return <p className="rv-muted">Nothing has happened yet.</p>;
   return <ul className="rv-auto-activity" aria-label="Activity">{read.data.activity.map((entry, index) => {
     const link = sessionLink(entry.runId, entry.taskId);
@@ -36,8 +37,13 @@ function Activity({ chainId, triggerId }: { chainId: string; triggerId: string }
   })}</ul>;
 }
 
-export function TriggerRow({ trigger, chainId, canEdit, onChanged, showTarget = false }: { trigger: RowTrigger; chainId: string | undefined; canEdit: boolean; onChanged: () => void; showTarget?: boolean }) {
-  const api = useAutomationsApi(), state = triggerState(trigger), [note, setNote] = useState<Note>(), [busy, setBusy] = useState<string>(), [editing, setEditing] = useState(false), [asking, setAsking] = useState(false), [activity, setActivity] = useState(false), sending = useRef(false);
+/**
+ * `canEdit` is what the person may do to this trigger: its chain's manage access (a PUT or DELETE needs it, as well as the project's settings), never the project's `canEdit` alone.
+ * `chainId` is the chain's id only when the person can see that chain (activity is read through it). `afterRemove` says where focus goes once the row is gone.
+ */
+export function TriggerRow({ trigger, chainId, canEdit, onChanged, afterRemove, showTarget = false }: { trigger: RowTrigger; chainId: string | undefined; canEdit: boolean; onChanged: () => void; afterRemove?: () => void; showTarget?: boolean }) {
+  const shared = useContext(CompanySharedContext), backDelete = useReturnFocus(), backEdit = useReturnFocus(), removed = useRef(false), [epoch, setEpoch] = useState(0);
+  const api = useAutomationsApi(), state = triggerState(trigger, shared), [note, setNote] = useState<Note>(), [busy, setBusy] = useState<string>(), [editing, setEditing] = useState(false), [asking, setAsking] = useState(false), [activity, setActivity] = useState(false), sending = useRef(false);
   const link = sessionLink(trigger.lastRunId, trigger.lastTaskId), editable = canEdit && chainId !== undefined;
   async function run(label: string, work: () => Promise<Note>) {
     if (sending.current) return;
@@ -49,10 +55,10 @@ export function TriggerRow({ trigger, chainId, canEdit, onChanged, showTarget = 
   const put = (enabled: boolean) => api.putTrigger(chainId!, trigger.triggerId, { project: trigger.project, spec: trigger.spec, enabled, maxRunsPerHour: trigger.maxRunsPerHour, ...(trigger.hookId === undefined ? {} : { hookId: trigger.hookId }) });
   const pause = () => run("pause", async () => noteOf(await put(false), "Paused. It won't start anything until it is resumed."));
   const resume = () => run("resume", async () => noteOf(await put(true), "It is on."));
-  const remove = () => run("delete", async () => { await api.deleteTrigger(chainId!, trigger.triggerId);setAsking(false);return { kind: "done", text: "The trigger is deleted." }; });
+  const remove = () => run("delete", async () => { await api.deleteTrigger(chainId!, trigger.triggerId);removed.current = true;setAsking(false);return { kind: "done", text: "The trigger is deleted." }; });
   return <li className="rv-auto-row">
     <div className="rv-auto-row-head">
-      <div><strong><VisibleText text={specWords(trigger.spec)} /></strong>{showTarget && trigger.target.kind === "chain" && trigger.target.chainId !== undefined && <span className="rv-muted"> starts <Link to={"/app/chains/" + encodeURIComponent(trigger.target.chainId)}><VisibleText text={trigger.targetName ?? "a chain you can't see"} /></Link></span>}{showTarget && trigger.target.kind !== "chain" && <span className="rv-muted"> starts <VisibleText text={trigger.targetName ?? "an agent"} /></span>}</div>
+      <div><strong><VisibleText text={specWords(trigger.spec)} /></strong>{showTarget && trigger.target.kind === "chain" && trigger.target.chainId !== undefined && <span className="rv-muted"> starts {trigger.targetName === undefined ? "a chain you can't see" : <Link to={"/app/chains/" + encodeURIComponent(trigger.target.chainId)}><VisibleText text={trigger.targetName} /></Link>}</span>}{showTarget && trigger.target.kind !== "chain" && <span className="rv-muted"> starts <VisibleText text={trigger.targetName ?? "an agent"} /></span>}</div>
       <StatusDot status={STATE_DOT[state.kind]} words={state.words} />
     </div>
     {state.reason !== undefined && <p className="rv-muted">Why: <VisibleText text={state.reason} /></p>}
@@ -61,14 +67,14 @@ export function TriggerRow({ trigger, chainId, canEdit, onChanged, showTarget = 
     <div className="rv-auto-controls">
       {editable && state.kind === "on" && <Button busy={busy === "pause"} onClick={() => { void pause(); }}>Pause</Button>}
       {editable && state.kind !== "on" && <Button busy={busy === "resume"} onClick={() => { void resume(); }}>{state.kind === "waiting" ? "Ask again" : "Resume"}</Button>}
-      {editable && <Button onClick={() => { setEditing(true); }}>Change</Button>}
-      {editable && <Button variant="danger" onClick={() => { setAsking(true); }}>Delete</Button>}
+      {editable && <Button onClick={event => { backEdit.remember(event);setEpoch(value => value + 1);setEditing(true); }}>Change</Button>}
+      {editable && <Button variant="danger" onClick={event => { backDelete.remember(event);removed.current = false;setAsking(true); }}>Delete</Button>}
       {chainId !== undefined && <Button variant="quiet" aria-expanded={activity} onClick={() => { setActivity(value => !value); }}>{activity ? "Hide activity" : "Activity"}</Button>}
     </div>
     {!asking && <ActionNote note={note} />}
     {activity && chainId !== undefined && <Activity chainId={chainId} triggerId={trigger.triggerId} />}
-    {editing && chainId !== undefined && <TriggerDialog chainId={chainId} project={trigger.project} trigger={trigger} open onOpenChange={open => { if (!open) setEditing(false); }} onSaved={saved => { setNote(saved);onChanged(); }} />}
-    <Dialog title="Delete this trigger?" description="It will stop starting runs. This can't be undone." open={asking} onOpenChange={open => { setAsking(open);if (!open) setNote(undefined); }}>
+    {chainId !== undefined && <TriggerDialog key={epoch} chainId={chainId} project={trigger.project} trigger={trigger} open={editing} onCloseAutoFocus={event => { backEdit.onCloseAutoFocus(event); }} onOpenChange={open => { if (!open) setEditing(false); }} onSaved={saved => { setNote(saved);onChanged(); }} />}
+    <Dialog title="Delete this trigger?" description="It will stop starting runs. This can't be undone." onCloseAutoFocus={event => { if (removed.current) { event.preventDefault();afterRemove?.(); } else backDelete.onCloseAutoFocus(event); }} open={asking} onOpenChange={open => { setAsking(open);if (!open) setNote(undefined); }}>
       <ActionNote note={note} />
       <div className="rv-actions"><Button variant="danger" busy={busy === "delete"} onClick={() => { void remove(); }}>Delete trigger</Button><Button onClick={() => { setAsking(false); }}>Keep it</Button></div>
     </Dialog>

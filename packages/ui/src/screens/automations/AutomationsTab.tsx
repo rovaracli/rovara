@@ -14,12 +14,13 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { ApiError } from "../../api/errors.js";
 import { ActionNote, problemNote, type Note } from "./ActionNote.js";
 import { READ_ONLY_NOTE } from "./automation-text.js";
+import { useReturnFocus } from "./useReturnFocus.js";
 import { RunList } from "./RunList.js";
 import { TriggerRow } from "./TriggerRow.js";
 import "./automations.css";
 
 function NewChain({ project }: { project: string }) {
-  const api = useAutomationsApi(), navigate = useNavigate(), query = useQueryClient(), [open, setOpen] = useState(false), [name, setName] = useState(""), [note, setNote] = useState<Note>(), [busy, setBusy] = useState(false), sending = useRef(false);
+  const api = useAutomationsApi(), back = useReturnFocus(), navigate = useNavigate(), query = useQueryClient(), [open, setOpen] = useState(false), [name, setName] = useState(""), [note, setNote] = useState<Note>(), [busy, setBusy] = useState(false), sending = useRef(false);
   async function create() {
     if (sending.current || name.trim() === "") return;
     sending.current = true;setBusy(true);setNote(undefined);
@@ -30,8 +31,8 @@ function NewChain({ project }: { project: string }) {
     } catch (error) { setNote(problemNote(error)); } finally { sending.current = false;setBusy(false); }
   }
   return <>
-    <Button onClick={() => { setName("");setNote(undefined);setOpen(true); }}>New chain</Button>
-    <Dialog title="New chain" description="It starts with one step. You can change it on its page before anything runs." open={open} onOpenChange={setOpen}>
+    <Button onClick={event => { back.remember(event);setName("");setNote(undefined);setOpen(true); }}>New chain</Button>
+    <Dialog title="New chain" description="It starts with one step. You can change it on its page before anything runs." onCloseAutoFocus={event => { back.onCloseAutoFocus(event); }} open={open} onOpenChange={setOpen}>
       <form className="rv-auto-form" onSubmit={event => { event.preventDefault();void create(); }}>
         <TextField label="Name" value={name} maxLength={80} onChange={event => { setName(event.target.value); }} autoComplete="off" />
         <ActionNote note={note} />
@@ -44,8 +45,8 @@ function NewChain({ project }: { project: string }) {
 export function AutomationsTab({ project }: { project: string }) {
   const api = useAutomationsApi(), query = useQueryClient(), read = useQuery({ queryKey: automationsKey(project), queryFn: () => api.project(project), retry: false });
   if (read.isPending) return <Skeleton label="Loading automations" />;
-  if (read.isError) return <section className="rv-auto"><h2>Automations</h2>{read.error instanceof ApiError && read.error.status === 404 ? <p className="rv-muted">Automations aren't available here.</p> : <ActionNote note={problemNote(read.error)} />}<Button onClick={() => { void read.refetch(); }}>Try again</Button></section>;
-  const { chains, triggers, canEdit } = read.data, changed = () => { void query.invalidateQueries({ queryKey: automationsKey(project) });void query.invalidateQueries({ queryKey: ["automations", "project-runs", project] }); };
+  if (read.isError) return <section className="rv-auto"><h2>Automations</h2>{read.error instanceof ApiError && read.error.status === 404 ? <p className="rv-muted">Automations aren't available here.</p> : <ActionNote note={problemNote(read.error, true)} />}<Button onClick={() => { void read.refetch(); }}>Try again</Button></section>;
+  const { chains, triggers, canEdit } = read.data, seen = new Map(chains.map(chain => [chain.chainId, chain.access])), changed = () => { void query.invalidateQueries({ queryKey: automationsKey(project) });void query.invalidateQueries({ queryKey: ["automations", "project-runs", project] }); };
   return <section className="rv-auto" aria-label="Automations">
     {!canEdit && <p className="rv-muted" role="note">{READ_ONLY_NOTE}.</p>}
     <section className="rv-project-section" aria-labelledby="auto-chains"><div className="rv-auto-title"><h2 id="auto-chains">Chains</h2>{canEdit && <NewChain project={project} />}</div>
@@ -55,8 +56,8 @@ export function AutomationsTab({ project }: { project: string }) {
         <p className="rv-muted">{chain.currentVersion === undefined ? "Not published yet" : "Version " + String(chain.currentVersion)} · {chain.monthlyBudgetUsd === undefined ? "No spending cap yet" : <>Spending cap <Money usd={chain.monthlyBudgetUsd} /> a month</>}</p>
       </li>)}</ul>}
     </section>
-    <section className="rv-project-section" aria-labelledby="auto-triggers"><h2 id="auto-triggers">Triggers</h2>
-      {triggers.length === 0 ? <p className="rv-muted">Nothing starts a chain on its own here yet.</p> : <ul className="rv-auto-list">{triggers.map(trigger => <TriggerRow key={trigger.triggerId} trigger={trigger} showTarget canEdit={canEdit} chainId={trigger.target.kind === "chain" ? trigger.target.chainId : undefined} onChanged={changed} />)}</ul>}
+    <section className="rv-project-section" aria-labelledby="auto-triggers"><h2 id="auto-triggers" tabIndex={-1}>Triggers</h2>
+      {triggers.length === 0 ? <p className="rv-muted">Nothing starts a chain on its own here yet.</p> : <ul className="rv-auto-list">{triggers.map(trigger => { const own = trigger.target.kind === "chain" ? seen.get(trigger.target.chainId ?? "") : undefined;return <TriggerRow key={trigger.triggerId} trigger={trigger} showTarget canEdit={canEdit && own === "manage"} chainId={own === undefined ? undefined : trigger.target.chainId} afterRemove={() => { document.getElementById("auto-triggers")?.focus(); }} onChanged={changed} />; })}</ul>}
     </section>
     <section className="rv-project-section" aria-labelledby="auto-runs"><h2 id="auto-runs">Recent runs</h2><RunList scope={{ project }} showChain /></section>
   </section>;

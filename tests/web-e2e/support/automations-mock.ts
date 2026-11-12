@@ -1,7 +1,7 @@
 // exp/automations: the routes the Automations tab reads and writes, for the `project` scenario, once a journey asks (POST /__mock/automations { mode: "edit" | "readonly" }). Asking also turns the navigation answer's
 // `features.chains` on for that scenario object (the gate); not asked, nothing here answers and the cell is exactly as before. A pause is at once; a resume is held for a person (202 with the cell's own approve link).
 import { AutomationTriggerPutBodySchema } from "@agentx/cloud-contracts";
-import { chainOf, projectAutomations, runList, triggerOf, CHAIN_ID, TRIGGER_ID, RUN_ID } from "../../web/support/automations-fixture.js";
+import { chainOf, projectAutomations, runList, triggerOf, draft, people, shares, versions, CHAIN_ID, DESIGN, TRIGGER_ID, RUN_ID } from "../../web/support/automations-fixture.js";
 import { mockCellOrigin } from "./port.js";
 import type { MockExchange } from "./how-we-work-mock.js";
 
@@ -27,7 +27,14 @@ export async function automationsMock({ url, method, body, json, record, scenari
     json(200, projectAutomations({ canEdit: state.mode === "edit", triggers: state.triggers.map(trigger => ({ ...trigger, targetName: "Refund triage" })) }));return true;
   }
   if (method === "GET" && url.pathname === "/v1/web/chain-runs") { json(200, runList());return true; }
-  if (method === "GET" && url.pathname === `/v1/web/chains/${CHAIN_ID}`) { json(200, { chain: chainOf({ access: state.mode === "edit" ? "manage" : "view" }) });return true; }
+  // A chain's page: the chain, its versions, draft (edit access), shares (manage access), triggers and the project's people.
+  const chain = `/v1/web/chains/${CHAIN_ID}`, may = state.mode === "edit";
+  if (method === "GET" && url.pathname === chain) { json(200, { chain: chainOf({ access: may ? "manage" : "view" }), current: { version: 2, definition: DESIGN } });return true; }
+  if (method === "GET" && url.pathname === chain + "/versions") { json(200, versions());return true; }
+  if (method === "GET" && url.pathname === chain + "/draft") { if (may) json(200, draft());else json(403, { error: { code: "FORBIDDEN", message: "You can't edit this chain." } });return true; }
+  if (method === "GET" && url.pathname === chain + "/shares") { if (may) json(200, shares());else json(403, { error: { code: "FORBIDDEN", message: "You can't manage this chain." } });return true; }
+  if (method === "GET" && url.pathname === chain + "/triggers") { json(200, { triggers: state.triggers });return true; }
+  if (method === "GET" && url.pathname === "/v1/web/projects/payments/people") { json(200, people());return true; }
   const put = /^\/v1\/web\/chains\/[^/]+\/triggers\/(ctr_[0-9a-z]{20})$/.exec(url.pathname);
   if (put !== null && method === "PUT") {
     const input = await body();record(input);
