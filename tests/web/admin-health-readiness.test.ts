@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { screen, within, waitFor, fireEvent } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -226,13 +226,10 @@ describe("health observations: when each check last ran", () => {
   expect(fallbackLine(use({ usedFallback: true, lastFallbackAt: "2026-11-10T20:30:00.000Z" }), NOW)).toBe("Rovara used a backup model in the last 24 hours; last at Nov 10, 20:30 UTC.");
   expect(fallbackLine(use({ usedFallback: true, lastFallbackAt: "2026-11-11T09:00:00.000Z", lastFallbackReason: "SOME_NEW_CODE" }), NOW)).toBe("Rovara used a backup model in the last 24 hours (the main model could not be used); last at 09:00 UTC.");
   expect(fallbackLine(use({}), NOW)).toBe("Rovara did not need a backup model in the last 24 hours.");
-  // The broker's count: once, many, none; a count that lags (absent or 0 while a fallback happened) is left out, never invented.
+  // The broker's count covers a fixed window with no start time, so the headline never states it (it could undercount a rolling 24 hours); Details carries it.
   const base = { usedFallback: true, lastFallbackAt: "2026-11-11T14:05:00.000Z", lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" };
-  expect(fallbackLine(use({ ...base, fallbackCount: 3 }), NOW)).toBe("Rovara used a backup model 3 times in the last 24 hours (the main model was unavailable); last at 14:05 UTC.");
-  expect(fallbackLine(use({ ...base, fallbackCount: 1 }), NOW)).toBe("Rovara used a backup model once in the last 24 hours (the main model was unavailable); last at 14:05 UTC.");
-  expect(fallbackLine(use({ ...base, fallbackCount: 12 }), NOW)).toMatch(/^Rovara used a backup model 12 times in the last 24 hours/);
-  expect(fallbackLine(use({ ...base, fallbackCount: 0 }), NOW)).toBe("Rovara used a backup model in the last 24 hours (the main model was unavailable); last at 14:05 UTC.");
-  expect(fallbackLine(use({ ...base }), NOW)).toBe("Rovara used a backup model in the last 24 hours (the main model was unavailable); last at 14:05 UTC.");
+  const headline = "Rovara used a backup model in the last 24 hours (the main model was unavailable); last at 14:05 UTC.";
+  for (const fallbackCount of [undefined, 0, 1, 3, 12]) expect(fallbackLine(use({ ...base, ...(fallbackCount === undefined ? {} : { fallbackCount }) }), NOW), String(fallbackCount)).toBe(headline);
   expect(fallbackLine(use({ fallbackCount: 0 }), NOW)).toBe("Rovara did not need a backup model in the last 24 hours.");
   const counted = modelRow(reads({ observations: ok(observed({ modelSource: passed(600), modelUse: use({ ...base, fallbackCount: 3 }) })) }));
   expect(counted.status).toBe("healthy");expect(counted.details.join(" ")).toMatch(/uses since the 24-hour window opened: 3/);
@@ -395,13 +392,16 @@ describe("the Health page", () => {
 });
 
 describe("the Health page and overview with observations", () => {
+ afterEach(() => { vi.useRealTimers(); });
  const pendingObservations = () => { let release!: (value: ApiResponse) => void;const answer = new Promise<ApiResponse>(resolve => { release = resolve; });return { answer, release }; };
  // Times are relative to the real clock here: the screens read it themselves.
  const live = (over: Record<string, unknown>): Answers => ({ "/v1/app/org/health-observations": { status: 200, body: { orgId, readAt: new Date().toISOString(), ...over } } });
  const check = (secondsAgo: number, result = "ok") => ({ checked: true, checkedAt: new Date(Date.now() - secondsAgo * 1000).toISOString(), ageSeconds: secondsAgo, result });
  const rowOf = (list: HTMLElement, title: string) => within(list).getByText(title).closest("li")!;
- it("Health: a fresh passing check turns its row Healthy with 'Checked N minutes ago' and the absolute time in a tooltip; the backup model line sits under the model row; model ids stay under Details", async () => {
-  const use = { checked: true, windowHours: 24, usedMain: true, usedFallback: true, lastFallbackAt: "2026-11-11T14:05:00.000Z", lastFallbackAgeSeconds: 600, lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" };
+ // The page reads the real clock, so only `Date` is held at a fixed instant (timers stay real for waitFor); one instant just after UTC midnight, one in the afternoon, so the test never depends on when it runs.
+ it.each([["00:20", "2026-11-11T00:20:00.000Z", "00:10"], ["15:40", "2026-11-11T15:40:00.000Z", "15:30"]] as const)("Health at %s UTC: a fresh passing check turns its row Healthy with 'Checked N minutes ago' and the absolute time in a tooltip; the backup model line sits under the model row; model ids stay under Details", async (_label, clock, lastAt) => {
+  vi.useFakeTimers({ toFake: ["Date"] });vi.setSystemTime(Date.parse(clock));
+  const use = { checked: true, windowHours: 24, usedMain: true, usedFallback: true, lastFallbackAt: new Date(Date.now() - 600_000).toISOString(), lastFallbackAgeSeconds: 600, lastFallbackReason: "DEFAULT_MODEL_UNAVAILABLE" };
   const f = mount({ override: { ...live({ github: check(300), slack: check(120), modelSource: check(900), modelUse: use }), "/v1/app/org/model-sources": { status: 200, body: { sources: [{ sourceId: "src_a", kind: "anthropic", label: "Company Anthropic key", hasCredential: true, models: [{ catalog: { provider: "anthropic", modelId: "claude-secret-model-1" } }] }], order: ["rovara"] } } } });
   try {
    const list = await screen.findByRole("list", { name: "Readiness checks" });
@@ -412,7 +412,7 @@ describe("the Health page and overview with observations", () => {
     expect(within(row).getByText(words).closest("time")!.getAttribute("title")).toMatch(/UTC$/);
    }
    const models = rowOf(list, "AI models");
-   expect(models.textContent).toMatch(/Rovara used a backup model in the last 24 hours \(the main model was unavailable\); last at 14:05 UTC\./);
+   expect(models.textContent).toContain(`Rovara used a backup model in the last 24 hours (the main model was unavailable); last at ${lastAt} UTC.`);
    expect(models.textContent).not.toMatch(/DEFAULT_MODEL_UNAVAILABLE/);
    expect(models.querySelector("details")!.hasAttribute("open")).toBe(false);expect(models.querySelector("summary")!.textContent).toBe("Details");expect(models.querySelector("details")!.textContent).toMatch(/claude-secret-model-1/);
    expect(screen.queryByText(/when each check last ran/)).toBeNull();

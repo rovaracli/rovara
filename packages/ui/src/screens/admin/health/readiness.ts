@@ -204,12 +204,15 @@ function clockTime(iso: string, now: number): string {
  const day = (value: number) => new Date(value).toISOString().slice(0, 10), clock = new Date(time).toISOString().slice(11, 16);
  return `${day(time) === day(now) ? "" : `${new Date(time).toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })}, `}${clock} UTC`;
 }
-/** One plain sentence on whether Rovara used a backup model in the last 24 hours, with how many times when the broker counts it ("once", "3 times"); model ids stay under Details. Nothing when no model-governed step has run (or the broker is older). */
+/**
+ * One plain sentence on whether Rovara used a backup model in the last 24 hours; model ids stay under Details. Nothing when no model-governed step has run (or the broker is older).
+ * The broker's `fallbackCount` is not in the sentence: it counts a fixed window that opens at the first fallback (and gives no start time), so it can be lower than the number of uses in a rolling 24 hours.
+ * The count is shown under Details, worded as "since the 24-hour window opened".
+ */
 export function fallbackLine(use: HealthModelUseObservation | undefined, now: number): string | undefined {
  if (use === undefined || !use.checked) return undefined;
- const times = use.fallbackCount === undefined || use.fallbackCount < 1 ? "a backup model" : use.fallbackCount === 1 ? "a backup model once" : `a backup model ${String(use.fallbackCount)} times`;
  const reason = use.lastFallbackReason === undefined ? "" : ` (${Object.hasOwn(FALLBACK_WORDS, use.lastFallbackReason) ? FALLBACK_WORDS[use.lastFallbackReason] : "the main model could not be used"})`;
- if (use.usedFallback) return `Rovara used ${times} in the last ${String(use.windowHours)} hours${reason}${use.lastFallbackAt === undefined ? "" : `; last at ${clockTime(use.lastFallbackAt, now)}`}.`;
+ if (use.usedFallback) return `Rovara used a backup model in the last ${String(use.windowHours)} hours${reason}${use.lastFallbackAt === undefined ? "" : `; last at ${clockTime(use.lastFallbackAt, now)}`}.`;
  return `Rovara did not need a backup model in the last ${String(use.windowHours)} hours${use.lastFallbackAt === undefined ? "" : `; the last time was ${clockTime(use.lastFallbackAt, now)}`}.`;
 }
 export function modelRow(reads: Pick<ReadinessReads, "sources" | "observations" | "now">): ReadinessRow {
