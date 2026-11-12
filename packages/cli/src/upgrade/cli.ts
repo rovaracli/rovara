@@ -35,7 +35,7 @@ import { recordSynthSettings } from "./bundle/synth-settings.js";
 import { startApprovedDeployment, type DeployerInvoker } from "./bundle/deployer-client.js";
 import { EMBEDDER_BUNDLE_IMAGE_NAME, loadBundleImages } from "./bundle/load-images.js";
 import { teamRecordRecordedOrUnknown } from "../deploy/team-record-switch.js";
-import { readModelProxyTlsSetting } from "../deploy/model-proxy-tls.js";
+import { readModelProxyTlsRecord } from "../deploy/model-proxy-tls.js";
 import { awsModelProxyTlsState, systemDnsLookups } from "../deploy/model-proxy-tls-aws.js";
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { SSMClient } from "@aws-sdk/client-ssm";
@@ -197,8 +197,8 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         cdkDiff: overrides.cdkDiff ?? (async (request, settings, source, reservedConcurrency, releaseVersion) => {
           const edition = await resolveDeployEdition({ store, env: settings.env, engine: settings.engine, cloud: settings.cloud === true });
           const teamRecord = await readTeamRecordSwitch(store, settings.env);
-          const modelProxyTls = await readModelProxyTlsSetting(store, settings.env);
-          return cdkDiff({ ...(modelProxyTls === undefined ? {} : { modelProxyTls }), runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), ...(reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), ...(edition === undefined ? {} : { edition }), ...(teamRecord === undefined ? {} : { teamRecord }), ...(releaseVersion === undefined ? {} : { releaseVersion }), request });
+          const { setting: modelProxyTls, previous: modelProxyTlsPrevious } = await readModelProxyTlsRecord(store, settings.env);
+          return cdkDiff({ ...(modelProxyTls === undefined ? {} : { modelProxyTls }), ...(modelProxyTlsPrevious === undefined ? {} : { modelProxyTlsPrevious }), runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), ...(reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), ...(edition === undefined ? {} : { edition }), ...(teamRecord === undefined ? {} : { teamRecord }), ...(releaseVersion === undefined ? {} : { releaseVersion }), request });
         }),
         ask: overrides.ask ?? readlineAsk(),
         isInteractive: overrides.isInteractive ?? (() => process.stdin.isTTY === true),

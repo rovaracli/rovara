@@ -2,7 +2,7 @@
 // with a parameter-only stack update (spec 025 R6's updateStackParameters); the alert address is an
 // SSM value; the workspace limits are the control plane's setting (spec 025 FR-053). list and get
 // never print the alert address, which can be a webhook secret: only whether it is set.
-import { parseModelProxyTlsSetting, readModelProxyTlsSetting, writeModelProxyTlsSetting } from "../deploy/model-proxy-tls.js";
+import { parseModelProxyTlsSetting, previousAfterChange, readModelProxyTlsRecord, readModelProxyTlsSetting, writeModelProxyTlsSetting } from "../deploy/model-proxy-tls.js";
 import { randomUUID } from "node:crypto";
 import { AgentXError, SECRET_CONFIG_ERROR_MESSAGE, SECRET_CONFIG_KEYS, agentXError, environmentStackName, type AdminChangeInput, type ConfigChangeOutcomeRequest } from "@rovara-code/contracts";
 import { recordConfigChange, recordConfigOutcome, runCliChange } from "../admin/changes.js";
@@ -369,14 +369,21 @@ async function recordTeamRecordOptions(services: ConfigServices, env: string, va
  */
 async function recordModelProxyTls(services: ConfigServices, env: string, settings: EnvironmentSettings, value: string): Promise<{ changed: boolean }> {
   const setting = parseModelProxyTlsSetting(value, env);
+  // M-2: an Enterprise install upgrades through the signed-bundle path (build at approval, the customer's deployer), which does not carry this setting or run its checks yet
+  // (DEFERRED-CHECKS MODEL-PROXY-TLS-BUNDLE-PATH). Recording it there would be dropped by the next bundle upgrade, so it is refused until that path carries it.
+  const edition = await resolveDeployEdition({ store: services.store, env, engine: settings.engine, cloud: settings.cloud === true });
+  if (setting !== "off" && edition === "enterprise") throw agentXError("CONFIG_INVALID", `modelProxy.tls is not available on an Enterprise install yet: its bundle upgrades do not carry the setting; nothing changed`);
   if (setting !== "off" && settings.engine !== "cdk") throw agentXError("CONFIG_INVALID", `modelProxy.tls needs an install deployed from source (agentx upgrade --source); ${env} uses the prebuilt templates; nothing changed`);
   if (setting !== "off" && setting.certificateArn !== undefined && !setting.certificateArn.includes(`:acm:${settings.region}:`)) throw agentXError("CONFIG_INVALID", `modelProxy.tls: certificateArn must be a certificate in ${settings.region}, the install's region; nothing changed`);
   const holder = (await services.identity.get()).arn;
   return withEnvironmentLock({ store: services.store, env, holder, command: "config set modelProxy.tls", now: services.now }, async () => {
-    await writeModelProxyTlsSetting(services.store, env, setting);
+    // M-1: a change that removes what the old setting built keeps that name as the previous one, so the next upgrade's deploy role can delete its record, validation record and certificate.
+    const previous = previousAfterChange(await readModelProxyTlsRecord(services.store, env), setting);
+    await writeModelProxyTlsSetting(services.store, env, setting, previous);
     services.write(setting === "off"
       ? `modelProxy.tls: recorded as off. The next agentx --env ${env} upgrade puts the model proxy back on plain http only with --allow-tls-removal.`
       : `modelProxy.tls: recorded (${setting.name}, legacyHttp=${setting.legacyHttp ? "keep" : "off"}). The next agentx --env ${env} upgrade builds it, and every upgrade after it keeps it.`);
+    if (previous !== undefined) services.write(`modelProxy.tls: the next upgrade also removes what ${previous.name} had (its A record in zone ${previous.zoneId}${previous.requestedCertificate ? ", its _<token>." + previous.name + " validation CNAME and its ACM certificate" : ""}). If that upgrade fails, or is run by an agentx older than this one, delete them by hand in Route 53 and ACM.`);
     return { changed: true };
   });
 }

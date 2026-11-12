@@ -3,8 +3,10 @@
 import { describe, expect, it } from "vitest";
 import { MODEL_PROXY_TLS_CONTEXT_KEYS } from "../../infra/lib/model-proxy-tls.js";
 import { cdkAppArguments } from "../../packages/cli/src/deploy/cdk-engine.js";
+import { MODEL_PROXY_TLS_PREVIOUS_CONTEXT_KEYS } from "../../infra/lib/model-proxy-tls.js";
+import { editionRecordName } from "../../packages/cli/src/deploy/edition.js";
 import {
-  MODEL_PROXY_TLS_CONTEXT, assertModelProxyTlsDeploy, modelProxyTlsContextArguments, modelProxyTlsDnsRefusals, modelProxyTlsRefusals, modelProxyTlsSettingName, parseModelProxyTlsSetting,
+  MODEL_PROXY_TLS_CONTEXT, MODEL_PROXY_TLS_PREVIOUS_CONTEXT, clearModelProxyTlsPrevious, previousAfterChange, readModelProxyTlsRecord, assertModelProxyTlsDeploy, modelProxyTlsContextArguments, modelProxyTlsDnsRefusals, modelProxyTlsRefusals, modelProxyTlsSettingName, parseModelProxyTlsSetting,
   readModelProxyTlsSetting, writeModelProxyTlsSetting, type DnsLookups, type ModelProxyTlsSetting, type ModelProxyTlsState,
 } from "../../packages/cli/src/deploy/model-proxy-tls.js";
 import { runConfigSet } from "../../packages/cli/src/config/commands.js";
@@ -81,6 +83,64 @@ describe("the recorded setting", () => {
 });
 
 const state = (overrides: Partial<ModelProxyTlsState> = {}): ModelProxyTlsState => ({ deployedUrl: `https://${NAME}`, urlParameter: { value: `https://${NAME}`, lastModified: PUBLISHED }, workers: [], ...overrides });
+
+describe("M-1: the previous name keeps its cleanup grants for one upgrade", () => {
+  const OTHER = "proxy.staging.rovara.dev";
+  const BROUGHT = "arn:aws:acm:us-west-2:944937319445:certificate/11111111-2222-3333-4444-555555555555";
+
+  it("names the same context keys the synth reads", () => {
+    expect(MODEL_PROXY_TLS_PREVIOUS_CONTEXT).toEqual(MODEL_PROXY_TLS_PREVIOUS_CONTEXT_KEYS);
+  });
+
+  it("keeps the old setting as the previous one only when the change removes what it built", () => {
+    const requested = { name: NAME, zoneId: ZONE, requestedCertificate: true };
+    expect(previousAfterChange({ setting: SETTING }, "off")).toEqual(requested);
+    expect(previousAfterChange({ setting: SETTING }, { ...SETTING, name: OTHER })).toEqual(requested);
+    expect(previousAfterChange({ setting: SETTING }, { ...SETTING, zoneId: "Z0ANOTHERZONE1" })).toEqual(requested);
+    expect(previousAfterChange({ setting: SETTING }, { ...SETTING, certificateArn: BROUGHT })).toEqual(requested);
+    // Nothing built is removed: legacyHttp only, or the first setting.
+    expect(previousAfterChange({ setting: SETTING }, KEEP)).toBeUndefined();
+    expect(previousAfterChange({}, SETTING)).toBeUndefined();
+    // A brought certificate leaves no certificate or validation record of the stack's own.
+    expect(previousAfterChange({ setting: { ...SETTING, certificateArn: BROUGHT } }, "off")).toEqual({ name: NAME, zoneId: ZONE, requestedCertificate: false });
+    // A pending previous (no upgrade has applied the last change) is what is deployed, so it stays.
+    expect(previousAfterChange({ setting: { ...SETTING, name: OTHER }, previous: requested }, { ...SETTING, name: "third.staging.rovara.dev" })).toEqual(requested);
+  });
+
+  it("is stored with the record, passed as -c pairs, and cleared after an upgrade", async () => {
+    const store = new MemoryParameterStore();
+    const previous = { name: NAME, zoneId: ZONE, requestedCertificate: true };
+    await writeModelProxyTlsSetting(store, "staging", "off", previous);
+    expect(await readModelProxyTlsRecord(store, "staging")).toEqual({ previous });
+    expect(cdkAppArguments({ env: "staging", region: "us-west-2", identityMode: "cognito", modelProxyTlsPrevious: previous }).join(" "))
+      .toContain(`-c rovaraModelProxyTlsPreviousName=${NAME} -c rovaraModelProxyTlsPreviousZoneId=${ZONE} -c rovaraModelProxyTlsPreviousCertificate=requested`);
+    expect(await clearModelProxyTlsPrevious(store, "staging")).toBe(true);
+    expect(await readModelProxyTlsRecord(store, "staging")).toEqual({});
+    expect(await clearModelProxyTlsPrevious(store, "staging")).toBe(false);
+  });
+
+  it("config set records the previous name and prints the manual cleanup", async () => {
+    const store = await seeded();
+    const settings = (await readEnvironmentSettings(store, "staging"))!;
+    await writeEnvironmentSettings(store, { ...settings, engine: "cdk" });
+    await writeModelProxyTlsSetting(store, "staging", SETTING);
+    const cdk = services({ store });
+    await runConfigSet(cdk, "staging", { key: "modelProxy.tls", value: `name=${OTHER};zoneId=${ZONE}`, yes: true });
+    expect(await readModelProxyTlsRecord(store, "staging")).toEqual({ setting: { ...SETTING, name: OTHER }, previous: { name: NAME, zoneId: ZONE, requestedCertificate: true } });
+    expect(cdk.lines.join("\n")).toContain(`delete them by hand`);
+  });
+});
+
+describe("M-2: not on an Enterprise install until its bundle path carries the setting", () => {
+  it("refuses config set modelProxy.tls on edition=enterprise", async () => {
+    const store = await seeded();
+    const settings = (await readEnvironmentSettings(store, "staging"))!;
+    await writeEnvironmentSettings(store, { ...settings, engine: "cdk" });
+    await store.put(editionRecordName("staging"), "enterprise");
+    await expect(runConfigSet(services({ store }), "staging", { key: "modelProxy.tls", value: `name=${NAME};zoneId=${ZONE}`, yes: true })).rejects.toThrow("Enterprise");
+    expect(await readModelProxyTlsSetting(store, "staging")).toBeUndefined();
+  });
+});
 
 describe("M1: no silent removal of TLS", () => {
   it("refuses a deploy with no TLS setting on an install that serves HTTPS, unless --allow-tls-removal", () => {

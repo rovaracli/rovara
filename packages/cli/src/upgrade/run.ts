@@ -3,7 +3,7 @@
 // which leaves earlier stacks upgraded and is safe to re-run), then run doctor.
 import { teamRecordRecordedOrUnknown, teamRecordRefusalHint } from "../deploy/team-record-switch.js";
 import { enforceTeamRecordPreflight, type TeamRecordProbe } from "../deploy/team-record-preflight.js";
-import { assertModelProxyTlsDeploy, readModelProxyTlsSetting, type DnsLookups, type ModelProxyTlsState } from "../deploy/model-proxy-tls.js";
+import { assertModelProxyTlsDeploy, clearModelProxyTlsPrevious, readModelProxyTlsSetting, type DnsLookups, type ModelProxyTlsState } from "../deploy/model-proxy-tls.js";
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { agentXError, environmentStackName } from "@rovara-code/contracts";
 import { isRovaraOperatorArn } from "@agentx/cloud-contracts";
@@ -410,6 +410,8 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     }
     // The bundle is recorded as installed only after every stack deployed.
     if (bundle !== undefined) await recordInstalledBundle({ store: deps.store, env, now: deps.now(), version: target, bundleId: bundle.bundleId });
+    // M-1: every stack deployed, so the control plane removed the previous name's pieces under the grants this upgrade kept for them; the next upgrade drops those grants.
+    if (settings.engine === "cdk" && await clearModelProxyTlsPrevious(deps.store, env)) deps.write("Model proxy TLS: the previous name's record, validation record and certificate were removed; the next upgrade drops the deploy grants that removed them");
     return { settings, parts };
   });
 

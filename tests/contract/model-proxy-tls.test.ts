@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { BROKER_NAMES } from "@agentx/cloud-contracts";
 import { modelProviderAddressProblem } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { MODEL_PROXY_TLS_CONTEXT_KEYS, MODEL_PROXY_TLS_POLICY, modelProxyTlsDeployStatements, parseModelProxyTlsContext } from "../../infra/lib/model-proxy-tls.js";
+import { MODEL_PROXY_TLS_CONTEXT_KEYS, MODEL_PROXY_TLS_POLICY, MODEL_PROXY_TLS_PREVIOUS_CONTEXT_KEYS, modelProxyTlsCleanupStatements, modelProxyTlsDeployStatements, parseModelProxyTlsContext, parseModelProxyTlsPrevious } from "../../infra/lib/model-proxy-tls.js";
 import { enterpriseAllowDomains } from "../../infra/lib/vpc-endpoints.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -225,6 +225,45 @@ describe("with TLS and a brought certificate, keeping the legacy listeners for o
     expect(actions).not.toContain("acm:RequestCertificate");
     expect(statements.find((statement) => statement.Sid === "ModelProxyTlsBroughtCertificate")).toMatchObject({ Action: ["acm:DescribeCertificate"], Resource: BROUGHT });
   });
+});
+
+describe("M-1: the previous name's cleanup grants", () => {
+  const scope = { env: "staging", partition: "aws", region: REGION, account: "123456789012" };
+  const P = MODEL_PROXY_TLS_PREVIOUS_CONTEXT_KEYS;
+
+  it("reads all three settings or none", () => {
+    const get = (values: Record<string, unknown>) => (key: string) => values[key];
+    expect(parseModelProxyTlsPrevious({ get: get({}), env: "staging" })).toBeUndefined();
+    expect(parseModelProxyTlsPrevious({ get: get({ [P.name]: NAME, [P.zoneId]: ZONE, [P.certificate]: "requested" }), env: "staging" })).toEqual({ name: NAME, zoneId: ZONE, requestedCertificate: true });
+    expect(() => parseModelProxyTlsPrevious({ get: get({ [P.name]: NAME }), env: "staging" })).toThrow("go together");
+    expect(() => parseModelProxyTlsPrevious({ get: get({ [P.name]: NAME, [P.zoneId]: ZONE, [P.certificate]: "maybe" }), env: "staging" })).toThrow("requested or brought");
+  });
+
+  it("allow only DELETE of the old A record and validation CNAME in the old zone, and the tag-scoped certificate delete", () => {
+    const statements = modelProxyTlsCleanupStatements(scope, { name: NAME, zoneId: ZONE, requestedCertificate: true });
+    const records = statements.filter((statement) => statement.Action.includes("route53:ChangeResourceRecordSets"));
+    expect(records.map((statement) => statement.Sid).sort()).toEqual(["ModelProxyTlsPreviousAliasRecord", "ModelProxyTlsPreviousValidationRecord"]);
+    for (const statement of records) {
+      expect(statement.Resource).toBe(`arn:aws:route53:::hostedzone/${ZONE}`);
+      expect(statement.Condition!["ForAllValues:StringEquals"]!["route53:ChangeResourceRecordSetsActions"]).toEqual(["DELETE"]);
+      expect(Object.keys(statement.Condition!.Null!)).toHaveLength(3);
+    }
+    const certificate = statements.find((statement) => statement.Sid === "ModelProxyTlsPreviousCertificate")!;
+    expect(certificate.Action).not.toContain("acm:RequestCertificate");
+    expect(certificate.Condition).toEqual({ StringEquals: { "aws:ResourceTag/agentx:env": "staging" } });
+    // A brought certificate: only the alias record to delete.
+    expect(modelProxyTlsCleanupStatements(scope, { name: NAME, zoneId: ZONE, requestedCertificate: false }).map((statement) => statement.Sid)).not.toContain("ModelProxyTlsPreviousCertificate");
+  });
+
+  it("keeps the deploy policy when TLS is turned off, so the control plane can remove the old pieces", () => {
+    const access = stacks({ ...BASE, [P.name]: NAME, [P.zoneId]: ZONE, [P.certificate]: "requested" }).AgentXAccess!;
+    const policies = ofType(access, "AWS::IAM::ManagedPolicy").filter(([id]) => id.startsWith("ModelProxyTlsDeployPolicy"));
+    expect(policies).toHaveLength(1);
+    const text = JSON.stringify(policies[0]![1].Properties.PolicyDocument);
+    expect(text).toContain("ModelProxyTlsPreviousAliasRecord");
+    expect(text).not.toContain("acm:RequestCertificate");
+    expect(text).not.toContain("\"CREATE\"");
+  }, 400_000);
 });
 
 describe("the broker builds https://<name> from mh", () => {

@@ -20,7 +20,7 @@ import { assertStdioHostStackBuilt, mcpHostPropsFromInstall, parsePrivateMcpCont
 import { modelEndpointBrokerEnvironment, parseModelEndpointContext } from "./model-endpoints.js";
 import { requireEnterpriseAuditTsa } from "./audit-settings.js";
 import { parseTeamRecordSwitch } from "./team-record-wiring.js";
-import { parseModelProxyTlsContext } from "./model-proxy-tls.js";
+import { parseModelProxyTlsContext, parseModelProxyTlsPrevious } from "./model-proxy-tls.js";
 import { BundleSigningStack, parseBundleSigningContext } from "./bundle-signing.js";
 import { ReleasePipelineStack } from "./release-pipeline.js";
 import { RetainExceptOnCreate } from "./retention.js";
@@ -147,6 +147,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   // MODEL-PROXY-TLS (decision 110): the model proxy's HTTPS name (`-c rovaraModelProxyTlsName=...` with a zone or a certificate). Unset: the plain-http proxy, unchanged. Read once here
   // because four stacks use it: access (deploy grants), foundation (DNS firewall), control plane (certificate, zone, listeners, URLs) and the Slack orchestrator (its rules).
   const modelProxyTls = parseModelProxyTlsContext({ get: (key) => app.node.tryGetContext(key) as unknown, env: naming.env, region: deploymentRegion ?? "us-east-1" });
+  const modelProxyTlsPrevious = parseModelProxyTlsPrevious({ get: (key) => app.node.tryGetContext(key) as unknown, env: naming.env });
   let accessStack: AccessStack | undefined;
   if (naming.env !== undefined) {
     const region = deploymentRegion ?? "us-east-1";
@@ -163,6 +164,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       ...(operatorAccess === undefined ? {} : { operatorAccess }),
       ...(agentxCloud ? { cloud: true } : {}),
       ...(modelProxyTls === undefined ? {} : { modelProxyTls }),
+      ...(modelProxyTlsPrevious === undefined ? {} : { modelProxyTlsPrevious }),
       ...(explicitEdition === "enterprise" ? { bundleImageRepositories: [...BUNDLE_IMAGE_NAMES, ...(teamRecord === undefined ? [] : [BUNDLE_EMBEDDER_IMAGE_NAME])].map((name) => bundleImageRepository(naming.env!, name)) }
         // A Public install gets the embedder's repository too, and ONLY that one, whether or not the Team record is on: Lambda cannot create a function from an image in a pull-through cache repository,
         // so the deploy copies the release's embedder image into this repository (packages/cli/src/deploy/copy-embedder-image.ts). It is always in the template (one empty, retained repository) so that

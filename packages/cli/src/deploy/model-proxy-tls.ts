@@ -58,26 +58,72 @@ export function parseModelProxyTlsSetting(value: string, env: string): ModelProx
   return { name, zoneId, ...(certificateArn === undefined ? {} : { certificateArn }), legacyHttp: legacyHttp === "keep" };
 }
 
-/** The recorded setting, or undefined when none is recorded or it is recorded as off. A record that does not read refuses: a typo must never read as off, which would take TLS away. */
-export async function readModelProxyTlsSetting(store: ParameterStore, env: string): Promise<ModelProxyTlsSetting | undefined> {
+/**
+ * M-1: the name the proxy served before the recorded change, kept until an upgrade has removed its pieces, so the deploy role keeps DELETE-only grants for them during that upgrade
+ * (infra/lib/model-proxy-tls.ts MODEL_PROXY_TLS_PREVIOUS_CONTEXT_KEYS).
+ */
+export interface ModelProxyTlsPrevious { name: string; zoneId: string; requestedCertificate: boolean }
+
+export const MODEL_PROXY_TLS_PREVIOUS_CONTEXT = {
+  name: "rovaraModelProxyTlsPreviousName",
+  zoneId: "rovaraModelProxyTlsPreviousZoneId",
+  certificate: "rovaraModelProxyTlsPreviousCertificate",
+} as const;
+
+/** What is recorded: the setting (absent when off or never set) and a previous name still to clean up. */
+export interface ModelProxyTlsRecord { setting?: ModelProxyTlsSetting; previous?: ModelProxyTlsPrevious }
+
+/** The record. A record that does not read refuses: a typo must never read as off, which would take TLS away. */
+export async function readModelProxyTlsRecord(store: ParameterStore, env: string): Promise<ModelProxyTlsRecord> {
   const stored = await store.get(modelProxyTlsSettingName(env));
-  if (stored === undefined) return undefined;
+  if (stored === undefined) return {};
   let parsed: unknown;
   try { parsed = JSON.parse(stored.value); } catch { parsed = undefined; }
-  const record = parsed as { v?: unknown; enabled?: unknown; name?: unknown; zoneId?: unknown; certificateArn?: unknown; legacyHttp?: unknown } | undefined;
+  const record = parsed as { v?: unknown; enabled?: unknown; name?: unknown; zoneId?: unknown; certificateArn?: unknown; legacyHttp?: unknown; previous?: { name?: unknown; zoneId?: unknown; requestedCertificate?: unknown } | null } | undefined;
   const fail = () => agentXError("CONFIG_INVALID", `${modelProxyTlsSettingName(env)} can't be read; fix it with ${FIX(env)} before deploying`);
   if (record === undefined || record === null || record.v !== 1 || typeof record.enabled !== "boolean") throw fail();
-  if (!record.enabled) return undefined;
+  let previous: ModelProxyTlsPrevious | undefined;
+  if (record.previous !== undefined) {
+    const candidate = record.previous;
+    if (candidate === null || typeof candidate !== "object" || typeof candidate.name !== "string" || !DNS_NAME.test(candidate.name) || typeof candidate.zoneId !== "string" || !HOSTED_ZONE_ID.test(candidate.zoneId) || typeof candidate.requestedCertificate !== "boolean") throw fail();
+    previous = { name: candidate.name, zoneId: candidate.zoneId, requestedCertificate: candidate.requestedCertificate };
+  }
+  if (!record.enabled) return previous === undefined ? {} : { previous };
   if (typeof record.name !== "string" || typeof record.zoneId !== "string" || typeof record.legacyHttp !== "boolean" || (record.certificateArn !== undefined && typeof record.certificateArn !== "string")) throw fail();
   const text = `name=${record.name};zoneId=${record.zoneId}${record.certificateArn === undefined ? "" : `;certificateArn=${record.certificateArn}`};legacyHttp=${record.legacyHttp ? "keep" : "off"}`;
   let setting: ModelProxyTlsSetting | "off";
   try { setting = parseModelProxyTlsSetting(text, env); } catch { throw fail(); }
   if (setting === "off") throw fail();
-  return setting;
+  return { setting, ...(previous === undefined ? {} : { previous }) };
 }
 
-export async function writeModelProxyTlsSetting(store: ParameterStore, env: string, setting: ModelProxyTlsSetting | "off"): Promise<void> {
-  await store.put(modelProxyTlsSettingName(env), JSON.stringify(setting === "off" ? { v: 1, enabled: false } : { v: 1, enabled: true, ...setting }));
+/** The recorded setting, or undefined when none is recorded or it is recorded as off. */
+export async function readModelProxyTlsSetting(store: ParameterStore, env: string): Promise<ModelProxyTlsSetting | undefined> {
+  return (await readModelProxyTlsRecord(store, env)).setting;
+}
+
+export async function writeModelProxyTlsSetting(store: ParameterStore, env: string, setting: ModelProxyTlsSetting | "off", previous?: ModelProxyTlsPrevious): Promise<void> {
+  await store.put(modelProxyTlsSettingName(env), JSON.stringify({ v: 1, ...(setting === "off" ? { enabled: false } : { enabled: true, ...setting }), ...(previous === undefined ? {} : { previous }) }));
+}
+
+/**
+ * M-1: the previous name a change leaves to clean up. A pending one (recorded by an earlier change no upgrade has applied yet) is kept: it is what is deployed. Otherwise the old
+ * setting becomes the previous one when the change removes or replaces something it built: TLS off, another name or zone, or a requested certificate swapped for a brought one.
+ */
+export function previousAfterChange(old: ModelProxyTlsRecord, next: ModelProxyTlsSetting | "off"): ModelProxyTlsPrevious | undefined {
+  if (old.previous !== undefined) return old.previous;
+  const was = old.setting;
+  if (was === undefined) return undefined;
+  const removes = next === "off" || next.name !== was.name || next.zoneId !== was.zoneId || (was.certificateArn === undefined && next.certificateArn !== undefined);
+  return removes ? { name: was.name, zoneId: was.zoneId, requestedCertificate: was.certificateArn === undefined } : undefined;
+}
+
+/** After a successful upgrade, the previous name's pieces are gone: its cleanup grants go with the next upgrade. */
+export async function clearModelProxyTlsPrevious(store: ParameterStore, env: string): Promise<boolean> {
+  const record = await readModelProxyTlsRecord(store, env);
+  if (record.previous === undefined) return false;
+  await writeModelProxyTlsSetting(store, env, record.setting ?? "off");
+  return true;
 }
 
 /** The synth context of the setting, as `-c` pairs. */
@@ -87,6 +133,15 @@ export function modelProxyTlsContextArguments(setting: ModelProxyTlsSetting): st
     "-c", `${MODEL_PROXY_TLS_CONTEXT.zoneId}=${setting.zoneId}`,
     ...(setting.certificateArn === undefined ? [] : ["-c", `${MODEL_PROXY_TLS_CONTEXT.certificateArn}=${setting.certificateArn}`]),
     "-c", `${MODEL_PROXY_TLS_CONTEXT.legacyHttp}=${setting.legacyHttp ? "keep" : "off"}`,
+  ];
+}
+
+/** The previous name's context, as `-c` pairs. */
+export function modelProxyTlsPreviousContextArguments(previous: ModelProxyTlsPrevious): string[] {
+  return [
+    "-c", `${MODEL_PROXY_TLS_PREVIOUS_CONTEXT.name}=${previous.name}`,
+    "-c", `${MODEL_PROXY_TLS_PREVIOUS_CONTEXT.zoneId}=${previous.zoneId}`,
+    "-c", `${MODEL_PROXY_TLS_PREVIOUS_CONTEXT.certificate}=${previous.requestedCertificate ? "requested" : "brought"}`,
   ];
 }
 

@@ -24,6 +24,42 @@ export const MODEL_PROXY_TLS_CONTEXT_KEYS = {
   legacyHttp: "rovaraModelProxyLegacyHttp",
 } as const;
 
+/**
+ * M-1: the name the proxy served BEFORE this deploy, when it changes (a new name or zone, a switch to a brought certificate, or TLS turned off). The access stack is deployed first,
+ * so without these the deploy role would lose its grants before the control plane deletes the old record, validation record and certificate, and they would be left behind.
+ * The deploy role keeps DELETE-only grants for them for this one deploy; the CLI clears them after a successful upgrade (packages/cli/src/deploy/model-proxy-tls.ts).
+ *   rovaraModelProxyTlsPreviousName, rovaraModelProxyTlsPreviousZoneId   the old name and its public zone
+ *   rovaraModelProxyTlsPreviousCertificate                              `requested` (ACM certificate and validation record made by the stack) or `brought`
+ */
+export const MODEL_PROXY_TLS_PREVIOUS_CONTEXT_KEYS = {
+  name: "rovaraModelProxyTlsPreviousName",
+  zoneId: "rovaraModelProxyTlsPreviousZoneId",
+  certificate: "rovaraModelProxyTlsPreviousCertificate",
+} as const;
+
+export interface ModelProxyTlsPrevious {
+  name: string;
+  zoneId: string;
+  /** The stack requested its certificate (so there is a certificate and a validation record to delete). */
+  requestedCertificate: boolean;
+}
+
+/** The previous name's settings, or undefined when none is given. All three or none. */
+export function parseModelProxyTlsPrevious(input: { get: (key: string) => unknown; env: string | undefined }): ModelProxyTlsPrevious | undefined {
+  const keys = MODEL_PROXY_TLS_PREVIOUS_CONTEXT_KEYS;
+  const name = input.get(keys.name);
+  const zoneId = input.get(keys.zoneId);
+  const certificate = input.get(keys.certificate);
+  const given = [name, zoneId, certificate].filter(isSet).length;
+  if (given === 0) return undefined;
+  if (given !== 3) throw new Error(`${keys.name}, ${keys.zoneId} and ${keys.certificate} go together: set all three, or none`);
+  if (input.env === undefined) throw new Error(`${keys.name} is for a named environment (agentxEnv)`);
+  if (typeof name !== "string" || name.length > DNS_NAME_MAX_ACM || !DNS_NAME.test(name) || AWS_OWN_NAME.test(name)) throw new Error(`${keys.name} must be a lower-case DNS name of your own`);
+  if (typeof zoneId !== "string" || !HOSTED_ZONE_ID.test(zoneId)) throw new Error(`${keys.zoneId} must be a Route 53 hosted zone id`);
+  if (certificate !== "requested" && certificate !== "brought") throw new Error(`${keys.certificate} must be requested or brought`);
+  return { name, zoneId, requestedCertificate: certificate === "requested" };
+}
+
 /** The HTTPS inference listener: the standard port, so the URL is `https://<name>` with no port. */
 export const MODEL_PROXY_TLS_PORT = 443;
 /** The HTTPS management listener (every path), reachable only from the model access function's group. A new port, so the old 4001 can run beside it for one release. */
@@ -155,5 +191,39 @@ export function modelProxyTlsDeployStatements(scope: { env: string; partition: s
     { Sid: "ModelProxyTlsZoneList", Effect: "Allow", Action: ["route53:ListHostedZones"], Resource: "*" },
     { Sid: "ModelProxyTlsChanges", Effect: "Allow", Action: ["route53:GetChange"], Resource: `arn:${scope.partition}:route53:::change/*` },
   );
+  return statements;
+}
+
+/**
+ * M-1: what the deploy role needs to delete the PREVIOUS name's pieces, for the one deploy that removes them: the alias record (DELETE only), and when the stack had requested the
+ * certificate, its validation record (DELETE only) and the certificate (tag-scoped describe and delete). Plus the reads CloudFormation's handlers make on that zone.
+ */
+export function modelProxyTlsCleanupStatements(scope: { env: string; partition: string; region: string; account: string }, previous: ModelProxyTlsPrevious): TlsDeployStatement[] {
+  const zone = `arn:${scope.partition}:route53:::hostedzone/${previous.zoneId}`;
+  const deleteOnly = (sid: string, name: string, type: string, like: boolean): TlsDeployStatement => ({
+    Sid: sid, Effect: "Allow", Action: ["route53:ChangeResourceRecordSets"], Resource: zone,
+    Condition: {
+      ...(like ? { "ForAllValues:StringLike": { "route53:ChangeResourceRecordSetsNormalizedRecordNames": [name] } } : {}),
+      "ForAllValues:StringEquals": {
+        ...(like ? {} : { "route53:ChangeResourceRecordSetsNormalizedRecordNames": [name] }),
+        "route53:ChangeResourceRecordSetsRecordTypes": [type], "route53:ChangeResourceRecordSetsActions": ["DELETE"],
+      },
+      Null: { "route53:ChangeResourceRecordSetsNormalizedRecordNames": "false", "route53:ChangeResourceRecordSetsRecordTypes": "false", "route53:ChangeResourceRecordSetsActions": "false" },
+    },
+  });
+  const statements: TlsDeployStatement[] = [
+    deleteOnly("ModelProxyTlsPreviousAliasRecord", previous.name, "A", false),
+    { Sid: "ModelProxyTlsPreviousZoneReads", Effect: "Allow", Action: ["route53:GetHostedZone", "route53:ListResourceRecordSets"], Resource: zone },
+    { Sid: "ModelProxyTlsPreviousChanges", Effect: "Allow", Action: ["route53:GetChange", "route53:ListHostedZones"], Resource: [`arn:${scope.partition}:route53:::change/*`, "*"] },
+  ];
+  if (previous.requestedCertificate) {
+    statements.push(
+      deleteOnly("ModelProxyTlsPreviousValidationRecord", `_*.${previous.name}`, "CNAME", true),
+      {
+        Sid: "ModelProxyTlsPreviousCertificate", Effect: "Allow", Action: ["acm:DescribeCertificate", "acm:DeleteCertificate", "acm:ListTagsForCertificate"],
+        Resource: `arn:${scope.partition}:acm:${scope.region}:${scope.account}:certificate/*`, Condition: { StringEquals: { "aws:ResourceTag/agentx:env": scope.env } },
+      },
+    );
+  }
   return statements;
 }
