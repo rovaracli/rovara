@@ -34,8 +34,8 @@ function mountAdmin(respond: (request: ApiRequest) => ApiResponse) {
 }
 const at = (path: string) => { location.hash = "#" + path; };
 
-it("projectRoleLabel names all four roles", () => {
-  expect(projectRoleLabel).toEqual({ maintainer: "Maintainer", contributor: "Contributor", collaborator: "Collaborator", viewer: "Viewer" });
+it("projectRoleLabel names all four roles, and a role it does not know as Other role", () => {
+  expect(projectRoleLabel).toEqual({ maintainer: "Maintainer", contributor: "Contributor", collaborator: "Collaborator", viewer: "Viewer", unknown: "Other role" });
 });
 
 it("the Roles screen shows the collaborator with words for answering, approving low-risk product decisions, commenting and asking, and no spend or start rights", async () => {
