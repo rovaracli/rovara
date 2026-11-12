@@ -45,3 +45,11 @@ skipped in the report. There is no way to skip a whole port.
 Ports covered today: document-store, queue, outbox, object-storage, secret-store, worker-machines, scheduler, image-registry, admission, audit-sink, approvers, identity, metering, model-key-store,
 code-host, check-runner, tracker. `github-client-conformance.ts` is exempt (it tests Code's own GitHub client, not a port a Cloud adapter implements). A suite for a new port (the plan's K1 lane) is
 added to `ports.ts` (suite, harness type, vendored file name), `code-fakes.ts` (its positive control) and `pending-lanes.ts`.
+
+## When a port lacks something an adapter needs
+
+Never edit `vendor/`. Add an entry to `tests/conformance/owed-upstream.json` (port, member, lane, `owedUntil`, reason); `tests/conformance/owed-upstream.test.ts` fails an entry past its date. A Cloud adapter on a
+port that has no Code suite yet (company-instructions) is checked against the port's documented rules in `tests/conformance/cloud-ports-without-suite.test.ts` until Code ships one.
+
+Registered so far: code-host (GitHub App), check-runner (GitHub Actions, CodeBuild), tracker (Linear, Jira), all lane A9. The GitHub adapters run through Cloud's real `GitHubAppCredentialProvider`
+against Code's vendored fixture of GitHub's API (`tests/conformance/adapters/github-app-world.ts`).

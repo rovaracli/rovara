@@ -1020,6 +1020,55 @@ export class GitHubAppCredentialProvider {
   }
 
   /**
+   * Convergence lane A9 (Code's lane L12, decision 66; the code host's optional `comments`): the comments on a pull request's conversation (`GET issues/{n}/comments`: the comments of the pull
+   * request itself, not of its review threads), oldest first, created or edited since `since`, one page of 100. FETCH ONLY: each comment is what GitHub says (text, author, times, the issue it is
+   * on). A comment that says it is on another issue than the one asked is left out. A pull request that is gone reads as no comments. Nothing in Cloud calls it yet (the adapter is registered,
+   * not switched on).
+   */
+  async listPullRequestComments(repositoryUrl: string, number: number, options: { since?: string; page?: number }, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<{ comments: GitHubIssueComment[]; nextPage?: number }> {
+    const page = options.page ?? 1;
+    if (!Number.isSafeInteger(number) || number < 1 || !Number.isSafeInteger(page) || page < 1 || page > 50) throw agentXError("CONFIG_INVALID", "the pull request or the page is invalid");
+    if (options.since !== undefined && !Number.isFinite(Date.parse(options.since))) throw agentXError("CONFIG_INVALID", "the time to read comments from is invalid");
+    const provider = this.trackingProvider(budget);
+    const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await provider.createInstallationToken(repository, { pull_requests: "read", issues: "read", metadata: "read" }, scope);
+    const root = `https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/issues/${String(number)}/comments`;
+    const answered = await provider.trackingJson(`${root}?per_page=100&page=${String(page)}${options.since === undefined ? "" : `&since=${encodeURIComponent(new Date(Date.parse(options.since)).toISOString())}`}`, token);
+    if (answered.status === 404 || answered.status === 410) return { comments: [] };
+    if (answered.status !== 200 || !Array.isArray(answered.body)) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub comment read failed with HTTP ${answered.status}`);
+    const comments = answered.body.flatMap((value): GitHubIssueComment[] => {
+      const record = statusRecord(value);
+      const user = statusRecord(record.user);
+      // WHERE GitHub says the comment is: parsed from its own `issue_url`, not from what was asked. A comment that says nothing about its place is left out.
+      const place = typeof record.issue_url === "string" ? parseIssueUrl(record.issue_url, new URL(root).origin) : undefined;
+      if (!(typeof record.id === "number" || typeof record.id === "string") || typeof record.body !== "string" || typeof user.login !== "string" || user.login === ""
+        || typeof record.created_at !== "string" || typeof record.updated_at !== "string" || place === undefined) return [];
+      const type = typeof user.type === "string" ? user.type : "User";
+      return [{
+        id: String(record.id), onRepositoryUrl: place.repositoryUrl, number: place.number, body: record.body.slice(0, 65_536), authorLogin: user.login, ...(typeof user.id === "number" ? { authorId: String(user.id) } : {}),
+        isBot: type === "Bot" || user.login.endsWith("[bot]"), createdAt: record.created_at, updatedAt: record.updated_at,
+        url: typeof record.html_url === "string" && record.html_url.startsWith("https://") ? record.html_url : "",
+      }];
+    });
+    return { comments, ...(answered.body.length >= 100 ? { nextPage: page + 1 } : {}) };
+  }
+
+  /**
+   * Convergence lane A9 (Code's lane L12; the code host's optional `postComment`): posts one comment of Rovara's own fixed text on a pull request's conversation (`POST issues/{n}/comments`): one
+   * short sentence with no mention or control character. The App's own account wrote it, so it is never read as a person's command. A pull request that is gone is `gone`. Nothing in Cloud calls it yet.
+   */
+  async postPullRequestComment(repositoryUrl: string, number: number, text: string, scope: GitHubTokenScope, budget?: GithubMergeReadBudget): Promise<"posted" | "gone"> {
+    if (!Number.isSafeInteger(number) || number < 1 || text.length === 0 || text.length > 200 || /[\p{Cc}@]/u.test(text)) throw agentXError("CONFIG_INVALID", "the comment is not Rovara's fixed text");
+    const provider = this.trackingProvider(budget);
+    const repository = await provider.installed(parseGitHubRepository(repositoryUrl), scope);
+    const token = await provider.createInstallationToken(repository, { issues: "write", pull_requests: "write", metadata: "read" }, scope);
+    const answered = await provider.trackingJson(`https://api.github.com/repos/${encodeURIComponent(repository.owner)}/${encodeURIComponent(repository.name)}/issues/${String(number)}/comments`, token, { method: "POST", body: { body: text } });
+    if (answered.status === 404 || answered.status === 410) return "gone";
+    if (answered.status !== 201 && answered.status !== 200) throw agentXError("RUNTIME_UNAVAILABLE", `GitHub comment failed with HTTP ${answered.status}`);
+    return "posted";
+  }
+
+  /**
    * Slice 5 (ticket updates): posts one comment on an issue (`POST issues/{n}/comments`), with a token that asks for `issues: write` on this one repository only. `requirePrivate`: the
    * repository must say it is private, or nothing is posted and the answer is `public` (a task only its owner sees never writes to a public issue). An issue that is gone (404, 410) is
    * `not_found`; an App that may not write issues there is GitHub's refusal of the token (`GITHUB_NOT_CONNECTED`), thrown for the caller to report. Other faults throw `RUNTIME_UNAVAILABLE`.
@@ -2852,4 +2901,33 @@ async function workingBranchPageJson(response: Response): Promise<unknown> {
     }
     return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
   } finally { reader.releaseLock(); }
+}
+
+/** Convergence lane A9: the repository and pull request (issue) number an `issue_url` names, read from GitHub's own URL; undefined for any other origin or shape. */
+export function parseIssueUrl(issueUrl: string, apiOrigin: string): { repositoryUrl: string; number: number } | undefined {
+  try {
+    const url = new URL(issueUrl);
+    if (url.origin !== apiOrigin || url.search !== "" || url.hash !== "") return undefined;
+    const match = /^(?:\/api\/v3)?\/repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/issues\/([1-9][0-9]*)$/u.exec(url.pathname);
+    if (match === null) return undefined;
+    const web = apiOrigin === "https://api.github.com" ? "https://github.com" : apiOrigin;
+    return { repositoryUrl: `${web}/${match[1]!}/${match[2]!}`, number: Number(match[3]) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Convergence lane A9: a comment on a pull request's conversation as GitHub reports it: the facts only. */
+export interface GitHubIssueComment {
+  id: string;
+  /** The repository and the pull request (issue) number GitHub says it is on. */
+  onRepositoryUrl: string;
+  number: number;
+  body: string;
+  authorLogin: string;
+  authorId?: string;
+  isBot: boolean;
+  createdAt: string;
+  updatedAt: string;
+  url: string;
 }

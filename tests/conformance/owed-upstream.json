@@ -1,0 +1,47 @@
+{
+  "comment": "Convergence wave 1 adapter lanes: what Cloud's adapters need from a Code port that the port does not carry yet. Cloud does not edit vendor/; each entry is owed by Code (a Code lane adds it, then the pin is bumped and the entry is taken off). Until then the Cloud code that needs it keeps calling Cloud's own client directly, outside the port. tests/conformance/owed-upstream.test.ts checks the entries are well formed and fails any entry past owedUntil.",
+  "entries": [
+    {
+      "port": "code-host",
+      "member": "isTeamMember",
+      "lane": "A9",
+      "owedUntil": "2026-11-25",
+      "reason": "Code-owner teams (CODEOWNERS `@org/team`) need a team-membership read. Code keeps it beside the port (`core/merge/host-port.ts` ConsumerRepository.isTeamMember, GitHub-only); Cloud's GitHub provider has `isTeamMember`. It belongs on CodeHost (optional) so a Cloud adapter can serve it through the port."
+    },
+    {
+      "port": "code-host",
+      "member": "compare",
+      "lane": "A9",
+      "owedUntil": "2026-11-25",
+      "reason": "Lessons capture reads a compare of two revisions (`getRepositoryCompareJson`, aws/broker/capture-adapters-wiring.ts). CodeHost has changedFiles of a change request only, no compare of two revisions."
+    },
+    {
+      "port": "code-host",
+      "member": "listTree",
+      "lane": "A9",
+      "owedUntil": "2026-11-25",
+      "reason": "Saved environments key on the files a revision holds (`listTreeAtCommit`, aws/broker/saved-env-real.ts). CodeHost has `tree` (the tree id) and `fileAtRevision`, no listing of a revision's paths."
+    },
+    {
+      "port": "code-host",
+      "member": "agentCredential",
+      "lane": "A9",
+      "owedUntil": "2026-11-25",
+      "reason": "The agent's own read token for the host's tools (`createAgentInstallationToken`, `getAgentPullRequestHead`, `listAgentRepositoryLabels`; agents/agent-tools-routes.ts, agents/label-names.ts, connectors/native/github-actions.ts). CodeHost.issueGitCredential is clone or push for git only; the agent's narrower API token (pull requests, issues, labels read) has no port member."
+    },
+    {
+      "port": "code-host",
+      "member": "workingBranchRead",
+      "lane": "A9",
+      "owedUntil": "2026-11-25",
+      "reason": "A project's working branch is read with its repository (`readWorkingBranch`, `readWorkingBranchRepository`; org/project-working-branch-provider.ts). CodeHost.branchHead answers a head only."
+    },
+    {
+      "port": "company-instructions",
+      "member": "conformance suite",
+      "lane": "A9",
+      "owedUntil": "2026-11-25",
+      "reason": "Code has no `company-instructions-conformance.ts` in tests/support/ports, so Cloud's store adapter (company-rules/source.ts) is checked by Cloud's own tests only (tests/contract/company-rules-store.test.ts, tests/conformance/cloud-ports-without-suite.test.ts). Code owes a suite (undefined for no rules, the version changes with the rules, a read fault rejects)."
+    }
+  ]
+}

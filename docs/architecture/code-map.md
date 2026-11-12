@@ -170,6 +170,12 @@ Convergence plan wave 0, lane W0-5. Code's ports (`vendor/rovara-code/packages/c
 `tests/conformance/adapters/index.ts#CLOUD_ADAPTERS`. A wave 1 adapter lane registers its adapter with `tests/conformance/registry.ts#defineCloudAdapter` and gets its port's suite with no other wiring.
 The port-to-suite table is `tests/conformance/ports.ts`; the guards are `tests/conformance/guards.test.ts`. How to register: [cloud-adapter-conformance.md](cloud-adapter-conformance.md).
 
+Registered (lane A9, hosts and trackers): the GitHub App code host (`packages/broker/src/plugins/code-host/github`, now with the conversation `comments` / `postComment`), the CodeBuild and GitHub Actions
+check runners (`plugins/check-runner/*`), the Linear tracker (`plugins/tracker/linear`) and the Jira tracker (`plugins/tracker/jira`, new: reads through the company's Jira connection, writes through
+`ticket-updates/trackers.ts`). The company-instructions store (`company-rules/source.ts`) is typed as Code's port and checked by `tests/conformance/cloud-ports-without-suite.test.ts` (Code has no suite
+for it yet). What a Code port still lacks for Cloud is listed in `tests/conformance/owed-upstream.json` (each with an `owedUntil`, checked by `owed-upstream.test.ts`). None of these adapters is used
+by traffic yet; the composition root (lane S0) switches them.
+
 ## How to add common things
 
 Each recipe lists the files to touch in order and the tests that fail if you forget one. When in doubt, read the
