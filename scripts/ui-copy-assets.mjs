@@ -34,12 +34,14 @@ for (const path of ["design/design.css", "look-v2.css", "shell/shell.css", "scre
  "screens/project/lessons/lessons.css",
  // OWNER DECISION 18: the task page's plan panel and PR feedback view (their own lazy chunks).
  "screens/session/plan-panel.css",
-  // Recent sign-in window page (lane exp/approval-window; its own lazy chunk).
-  "screens/admin/approval-window/approval-window.css",
-  // Continue in your own tool: the task page's sheet (switch rovara.continue = v2; its own lazy chunk).
-  "screens/session/continue-in-tool.css",
-  // Automations (chains and triggers; the `chains` feature; their own lazy chunks).
-  "screens/automations/automations.css"]) {
+ // Recent sign-in window page (lane exp/approval-window; its own lazy chunk).
+ "screens/admin/approval-window/approval-window.css",
+ // Continue in your own tool: the task page's sheet (switch rovara.continue = v2; its own lazy chunk).
+ "screens/session/continue-in-tool.css",
+ // Automations (chains and triggers; the `chains` feature; their own lazy chunks).
+ "screens/automations/automations.css",
+ // Project People tab, product decisions and the join landing (lane exp/project-people; their own lazy chunks).
+ "screens/project/people/people.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

@@ -109,7 +109,8 @@ export * from "./continue-loop.js";
 // srv/automations: the chain and trigger route projections and the project automations list.
 export * from "./app-automations.js";
 export * from "./app-review-groups.js";
-// Collaborator role (W11): product decisions and the collaborator switch (Cloud-only names). The role shadow (project-roles.ts) is NOT exported here yet: the UI still reads Code's three roles,
-// and the UI lane switches to it when it shows the collaborator (`myProjectRole`, a member's `projectRole`).
+// Collaborator role (W11): product decisions and the collaborator switch (Cloud-only names). The role shadow (project-roles.ts) is exported at the end of this file under `Cloud` names (Code's three-role names above are unchanged):
+// the UI reads the collaborator through them (`myProjectRole`, a member's `projectRole`).
 export * from "./product-decisions.js";
-export { projectRoleFloor, PROJECT_ROLE_ORDER, ProjectRoleSchema as CloudProjectRoleSchema, type ProjectRole as CloudProjectRole } from "./project-roles.js";
+// Cloud's FOUR project roles (maintainer, contributor, collaborator, viewer), under `Cloud` names beside Code's three-valued ones (exp/project-people). Code's names above stay as they were, so every screen that is not about collaborators keeps reading the three-role "floor"; the People tab, the role labels and the Roles screen read these.
+export { projectRoleFloor, PROJECT_ROLE_ORDER, ProjectRoleSchema as CloudProjectRoleSchema, PROJECT_PERMISSIONS as CLOUD_PROJECT_PERMISSIONS, ProjectMemberSchema as CloudProjectMemberSchema, ProjectMembersResponseSchema as CloudProjectMembersResponseSchema, ProjectMemberChangeResponseSchema as CloudProjectMemberChangeResponseSchema, projectAllows as cloudProjectAllows, type ProjectRole as CloudProjectRole, type ProjectPermission as CloudProjectPermission, type ProjectMember as CloudProjectMember } from "./project-roles.js";

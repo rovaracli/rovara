@@ -1,4 +1,4 @@
-import { projectRoleLabel, projectSetupLabel } from "./labels.js";
+import { roleWords, projectSetupLabel } from "./labels.js";
 import { SettingsNote } from "../SettingsNote.js";
 import { Link, useSearchParams } from "react-router";
 import { AppProjectsResponseSchema } from "@agentx/cloud-contracts/web";
@@ -6,7 +6,7 @@ import { DataTable } from "../../../design/DataTable.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ReadState, useAdminRead } from "./read.js";
-const reader = { parse(value: unknown) { const data = AppProjectsResponseSchema.parse(value);return { projects: data.projects.map(p => ({ name: p.name, description: p.description, status: p.status, latestRevision: p.latestRevision, repositories: p.repositories, myRole: p.myRole, setup: { status: p.setup.status } })) }; } };
+const reader = { parse(value: unknown) { const data = AppProjectsResponseSchema.parse(value);return { projects: data.projects.map(p => ({ name: p.name, description: p.description, status: p.status, latestRevision: p.latestRevision, repositories: p.repositories, myRole: p.myRole, shownRole: p.myProjectRole ?? p.myRole, setup: { status: p.setup.status } })) }; } };
 export function ProjectsScreen() {
  const [params, setParams] = useSearchParams(), term = params.get("q") ?? "", status = params.get("status") === "archived" ? "archived" : "active";
  const read = useAdminRead("projects", "list", "/v1/app/projects?include=archived", reader);
@@ -17,7 +17,7 @@ export function ProjectsScreen() {
  {data.projects.length === 0 ? <p>No projects were returned.</p> : <><p role="status">{matches.length} matching {status} projects in this list</p>{matches.length === 0 ? <p>No matching projects in this list.</p> : <DataTable caption="Projects" rows={matches} rowKey={p => p.name} columns={[
  { key:"name", title:"Project", render:p => <Link to={`/app/admin/projects/${encodeURIComponent(p.name)}${params.size ? "?" + params.toString() : ""}`}><VisibleText text={p.name} /></Link> },
  { key:"status", title:"Status", render:p => p.status === "archived" ? "Archived" : "Active" }, { key:"repos", title:"Repositories", render:p => p.repositories.length ? p.repositories.map(r => r.fullName).join(", ") : "No repositories returned" },
- { key:"role", title:"Your project role", render:p => projectRoleLabel[p.myRole] }, { key:"setup", title:"Setup", render:p => projectSetupLabel[p.setup.status] }, { key:"revision", title:"Revision", render:p => p.latestRevision },
+ { key:"role", title:"Your project role", render:p => roleWords(p.shownRole) }, { key:"setup", title:"Setup", render:p => projectSetupLabel[p.setup.status] }, { key:"revision", title:"Revision", render:p => p.latestRevision },
  ]} />}</> }</>;
  }}</ReadState></section>;
 }
