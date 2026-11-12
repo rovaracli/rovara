@@ -42,3 +42,16 @@ test("phone session actions share one workflow and return focus to the overflow 
  await expect(page.getByRole("menuitem", { name: "Follow", exact: true })).toBeVisible();
  for (const name of ["Share", "Stop", "Retry", "Take over"]) await expect(page.getByRole("menuitem", { name, exact: true })).toHaveCount(0);
 });
+
+test("an ended failed task page offers no Stop, Retry or Take over, and says nothing stale", async ({ page, context, request, baseURL }) => {
+ await request.post("/__mock/scenario", { data: { name: "session" } });
+ // As the broker answers for a session that ended failed with no run to start again: watching, commenting and sharing only.
+ await request.post("/__mock/session-state", { data: { status: "failed", endedAt: "2026-10-23T12:00:00.000Z", you: { owner: false, following: false, level: "edit", actions: ["watch", "comment", "share"] } } });
+ await context.addCookies([{ name: "__Host-agentx_review_session", value: "11111111-1111-4111-8111-111111111111", url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
+ await mockRealtime(page);await page.setViewportSize({ width: 1280, height: 900 });await page.goto("/s/" + id);
+ await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+ for (const name of ["Stop", "Retry", "Take over"]) await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
+ await expect(page.getByText("This session has ended.")).toHaveCount(0);
+ await expect(page.getByRole("button", { name: "Follow", exact: true })).toBeVisible();
+ await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
+});

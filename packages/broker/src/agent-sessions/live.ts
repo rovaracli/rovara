@@ -7,12 +7,13 @@
 // The index item (`LIVE_SESSIONS`) is only a list of ids with the few facts that narrow it before anything is read (open or ended, project, who is needed); a tile's words, owner and cost
 // come from the session record, which the summary refresh writes in the same transaction. Nothing here is cached: a revoked grant or share is gone from the next answer.
 import { BatchGetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
-import { AGENTX_NAME_PATTERN, INDEX_EXPIRY_ATTRIBUTE, LIVE_ENDED_KEEP_HOURS, LIVE_FILTERS, LIVE_INDEX_SCAN_MAX, LIVE_PAGE_MAX, LIVE_VIEWING_MAX, LiveTileSchema, MEMBER_GRANT_SK_PREFIX, sessionTaskStatus, statusNeedsSomeone, taskStatusText, SessionIdSchema, SessionLevelSchema, agentSessionKey, agentXError, hideEmailAddresses, livePresenceKey, liveSessionKey, memberGrantsPk, sharedSessionsKey, type AgentPrincipal, type AgentSessionRecord, type LiveFilter, type LiveResponse, type LiveTile, type OrgId, type ProjectRole, type SessionLevel, type SessionOwner } from "@rovara-code/contracts";
-import { OrgRoleSchema, orgMemberKey } from "@agentx/cloud-contracts";
+import { AGENTX_NAME_PATTERN, INDEX_EXPIRY_ATTRIBUTE, LIVE_ENDED_KEEP_HOURS, LIVE_FILTERS, LIVE_INDEX_SCAN_MAX, LIVE_PAGE_MAX, LIVE_VIEWING_MAX, MEMBER_GRANT_SK_PREFIX, sessionTaskStatus, statusNeedsSomeone, taskStatusText, TaskStatusSchema, SessionIdSchema, SessionLevelSchema, agentSessionKey, agentXError, hideEmailAddresses, livePresenceKey, liveSessionKey, memberGrantsPk, sharedSessionsKey, type AgentPrincipal, type AgentSessionRecord, type LiveFilter, type OrgId, type ProjectRole, type SessionLevel, type SessionOwner } from "@rovara-code/contracts";
+import { LiveTileSchema, OrgRoleSchema, orgMemberKey, type LiveResponse, type LiveTile } from "@agentx/cloud-contracts";
 import { grantRoleOf } from "../developer/project-roles.js";
 import { taskKey } from "../developer/task-records.js";
 import type { Item } from "../agents/table-writes.js";
-import { closableSession, newSessionRoleMemo, peopleOfItem, sessionActionsFor, sessionAccessFor, type SessionAccess, type SessionAccessPrefetch } from "./access.js";
+import { closableSession, endedRetryStartsRun, newSessionRoleMemo, peopleOfItem, sessionActionsFor, sessionAccessFor, sessionHasEnded, type SessionAccess, type SessionAccessPrefetch } from "./access.js";
+import { failureCardIdOf, failureOccurrenceOf, homeDismissalsOf } from "./failure-dismissals.js";
 import { presenceIsFresh } from "./followers.js";
 import { approveLink, cursorKeyOf, openCursor, sealCursor, type SessionReadCaller, type SessionReadDependencies } from "./read.js";
 import { sessionFromItem } from "./store.js";
@@ -105,6 +106,15 @@ const withinWindow = (endedAt: unknown, now: number): boolean => typeof endedAt 
 export function needsYouOf(session: Pick<AgentSessionRecord, "endedAt" | "summary">, developerId: string, owner: boolean): boolean {
   if (session.endedAt !== undefined) return false;
   return session.summary.needsPeople.includes(developerId) || (owner && statusNeedsSomeone(sessionTaskStatus(session.summary)));
+}
+
+/**
+ * Whether a failed session's owner is done with it: its task was closed (or merged) as the status model says, or its owner closed the task. Such a task reads Closed or Merged, never Failed (as Home's failure
+ * card already rules), so the Failed filter, which the Work list's Needs attention reads, does not list it whatever its last run did.
+ */
+function closedOrMerged(session: Pick<AgentSessionRecord, "summary">, task: Item | undefined): boolean {
+  const shown = TaskStatusSchema.safeParse((session.summary as { display?: unknown }).display);
+  return task?.["closedAt"] !== undefined || (shown.success && (shown.data.state === "closed" || shown.data.state === "merged"));
 }
 
 /** Whether a stored summary may stand for a session that needs its owner (the index's narrowing; the owner is judged after the session's access is read). */
@@ -202,7 +212,7 @@ function checkedQuery(query: LiveQuery): { filter: LiveFilter; project: string |
   return { filter: filter as LiveFilter, project: query.project, limit };
 }
 
-interface Judged { session: AgentSessionRecord; access: SessionAccess }
+interface Judged { session: AgentSessionRecord; access: SessionAccess; /** The session's task, as read for the page (a task session only). */ task?: Item | undefined }
 
 /**
  * `GET /v1/app/live`: one page of the caller's wall, newest session first. `all` is every open session the caller can view; `mine` the ones they own now or started; `team` the ones on
@@ -255,6 +265,8 @@ async function readLive(deps: LiveDependencies, caller: SessionReadCaller, query
   const grants = await readGrants(deps, caller);
   const shares = await readShares(deps, caller, new Set([...grants.keys(), ...tileProjects]), log);
   const memo = newSessionRoleMemo();
+  // Needs attention's Failed list leaves out what the caller dismissed (Home's dismissal, the same rows): a dismissed failure is in neither place until the session fails again.
+  const dismissed = filter === "failed" ? await homeDismissalsOf(deps, caller) : undefined;
 
   const judgedAll: Array<Judged & { key: string }> = [];
   const followers = new Set<string>();
@@ -302,7 +314,9 @@ async function readLive(deps: LiveDependencies, caller: SessionReadCaller, query
       if (filter === "mine" && !(access.owner || (session.startedBy.kind === "member" && session.startedBy.developerId === caller.developerId))) continue;
       if (filter === "team" && !(session.kind === "local" ? !access.owner : shareRole !== undefined)) continue;
       if (filter === "needs_me" && !needsYouOf(session, caller.developerId, access.owner)) continue;
-      judgedAll.push({ session, access, key: candidates[at]!.key });
+      const task = session.subject.kind === "task" ? read.get(keyText(taskKey(session.subject.taskId))) : undefined;
+      if (filter === "failed" && (closedOrMerged(session, task) || dismissed?.get(failureCardIdOf(session.sessionId)) === failureOccurrenceOf(session))) continue;
+      judgedAll.push({ session, access, key: candidates[at]!.key, task });
       if (read.has(keyText(agentSessionKey(orgId, session.sessionId, `FOLLOWER#${caller.developerId}`)))) followers.add(session.sessionId);
     }
   }
@@ -330,8 +344,9 @@ async function readLive(deps: LiveDependencies, caller: SessionReadCaller, query
   // Release 0.4.18: the owners' chosen names, one BatchGetItem for the page.
   const ownerNames = await ownerNameOverlay(deps, page.map(({ access }) => access.effectiveOwner.developerId), orgId);
   const tiles: LiveTile[] = [];
-  for (const { session, access } of page) {
+  for (const { session, access, task } of page) {
     const { summary } = session;
+    const ended = sessionHasEnded(session);
     const looking = [...(viewers.get(session.sessionId) ?? [])].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.developerId < b.developerId ? -1 : a.developerId > b.developerId ? 1 : 0));
     const approvalUrl = decided.get(session.sessionId);
     const built = LiveTileSchema.safeParse({
@@ -353,7 +368,10 @@ async function readLive(deps: LiveDependencies, caller: SessionReadCaller, query
       viewingNowCount: looking.length,
       needsYou: needsYouOf(session, caller.developerId, access.owner),
       following: access.owner || followers.has(session.sessionId),
-      actions: sessionActionsFor(access, { ...summary, closable: closableSession(session) }),
+      actions: sessionActionsFor(access, { ...summary, closable: closableSession(session), ...(ended ? { ended: true as const, retryStartsRun: endedRetryStartsRun(session, task) } : {}) }),
+      ...(session.endedAt === undefined ? {} : { endedAt: session.endedAt }),
+      // An ended failed session its owner may dismiss: the dismissal Home's failure card keeps (the Work list's Dismiss).
+      ...(session.endedAt !== undefined && access.owner && summary.status === "failed" && !closedOrMerged(session, task) ? { canDismiss: true } : {}),
       ...(approvalUrl === undefined ? {} : { approvalUrl }),
       updatedAt: session.updatedAt,
     });

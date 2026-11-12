@@ -430,6 +430,19 @@
       "reason": "The Finished list (srv/needs-broker-ui-2) puts `finishedAs` on an ended session's tile; Code's tile has no such field. Same text as Code's with that one field. Code needs the field (FINISHED_AS, finishedAs) before this entry can go."
     },
     {
+      "file": "session-views.ts",
+      "names": [
+        "LiveResponse",
+        "LiveResponseReaderSchema",
+        "LiveResponseSchema",
+        "LiveTile",
+        "LiveTileReaderSchema",
+        "LiveTileSchema"
+      ],
+      "owedUntil": "2026-11-25",
+      "reason": "0.5.16 ended-session actions: the Live tile says when an ended session ended (`endedAt`) and whether its owner may dismiss it (`canDismiss`), so the Work list shows Failed (ended) with Open and Dismiss and offers nothing an ended session cannot take. Code's tile is the same text without those two optional fields; Code needs them before this entry can go (a Code follow-up in DEFERRED-CHECKS)."
+    },
+    {
       "file": "setup-proposal.ts",
       "names": [
         "SetupApplyResponse",

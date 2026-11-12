@@ -2,7 +2,7 @@
 // Task People roles, capped by a project viewer's rule and a Task People `denied` entry; another org, and no level at all, answer NOT_FOUND.
 import { describe, expect, it } from "vitest";
 import type { SessionStatus } from "@rovara-code/contracts";
-import { OFFER_HANDOFF, requireSessionLevel, resolveSessionAccess, sessionActionsFor, type SessionAccessDependencies } from "../../packages/broker/src/agent-sessions/access.js";
+import { OFFER_HANDOFF, endedRetryStartsRun, requireSessionLevel, resolveSessionAccess, sessionActionsFor, sessionHasEnded, type SessionAccessDependencies } from "../../packages/broker/src/agent-sessions/access.js";
 import { ARJUN, BO, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, ZED, sessionWorld, type SessionWorld } from "../support/agent-session-world.js";
 
 const VIEWER_TEXT = "Viewers of web can only watch its sessions.";
@@ -332,6 +332,42 @@ describe("sessionActionsFor", () => {
     const flaggedAt = (status: SessionStatus) => sessionActionsFor({ level: "edit", owner: false, orgAdmin: false }, { status, workflowBlocked: true });
     for (const status of ["starting", "running", "waiting", "stopped", "succeeded"] as const) expect(flaggedAt(status), status).not.toContain("retry");
     expect(flaggedAt("paused")).toContain("retry");
+  });
+
+  describe("an ended session (0.5.16: nothing that can only answer SESSION_ENDED is offered)", () => {
+    const edit = (extra: { owner?: boolean; orgAdmin?: boolean } = {}) => ({ level: "edit" as const, owner: extra.owner ?? false, orgAdmin: extra.orgAdmin ?? false });
+    it("offers no Stop, Steer or Take over, whoever asks, and keeps Watch, Comment and Share", () => {
+      for (const who of [edit(), edit({ owner: true }), edit({ orgAdmin: true }), { level: "view" as const, owner: false, orgAdmin: true }, { level: "use" as const, owner: false, orgAdmin: false }]) {
+        const offered = sessionActionsFor(who, { status: "failed", ended: true });
+        for (const gone of ["stop", "steer", "take_over"] as const) expect(offered, JSON.stringify(who)).not.toContain(gone);
+        expect(offered).toEqual(expect.arrayContaining(["watch", "comment"]));
+      }
+      expect(sessionActionsFor(edit(), { status: "failed", ended: true })).toEqual(["watch", "comment", "share"]);
+      // Positive control: the same session without the flag still offers them (the flag is what removes them).
+      expect(sessionActionsFor(edit(), { status: "failed" })).toEqual(expect.arrayContaining(["steer", "stop", "take_over"]));
+    });
+    it("offers Retry only when a retry starts a run: not by the status alone", () => {
+      expect(sessionActionsFor(edit(), { status: "failed", ended: true })).not.toContain("retry");
+      expect(sessionActionsFor(edit(), { status: "failed", ended: true, retryStartsRun: false })).not.toContain("retry");
+      expect(sessionActionsFor(edit(), { status: "failed", ended: true, retryStartsRun: true })).toContain("retry");
+      expect(sessionActionsFor(edit(), { status: "cancelled", ended: true, retryStartsRun: true })).toContain("retry");
+      // A retry that starts a run is still for a failed or cancelled run, and for a person who may edit.
+      expect(sessionActionsFor(edit(), { status: "succeeded", ended: true, retryStartsRun: true })).not.toContain("retry");
+      expect(sessionActionsFor({ level: "use", owner: false, orgAdmin: false }, { status: "failed", ended: true, retryStartsRun: true })).not.toContain("retry");
+      // A blocked workflow is not an ended session's way on.
+      expect(sessionActionsFor(edit(), { status: "needs_person", workflowBlocked: true, ended: true, retryStartsRun: false })).not.toContain("retry");
+    });
+    it("reads a session as ended by its end time or by an ending status, and a retry as starting a run for an agent run or a chain in the cloud only", () => {
+      expect(sessionHasEnded({ endedAt: "2026-11-12T00:00:00.000Z", summary: { status: "running" } as never })).toBe(true);
+      expect(sessionHasEnded({ endedAt: undefined, summary: { status: "failed" } as never })).toBe(true);
+      expect(sessionHasEnded({ endedAt: undefined, summary: { status: "running" } as never })).toBe(false);
+      const cloud = { kind: "task" as const, where: { kind: "cloud" as const } };
+      expect(endedRetryStartsRun({ ...cloud, subject: { kind: "task", taskId: "t" } }, { agent: { agentId: "a" } })).toBe(true);
+      expect(endedRetryStartsRun({ ...cloud, subject: { kind: "task", taskId: "t" } }, {})).toBe(false);
+      expect(endedRetryStartsRun({ ...cloud, subject: { kind: "task", taskId: "t" } }, undefined)).toBe(false);
+      expect(endedRetryStartsRun({ ...cloud, subject: { kind: "chain", chainRunId: "crn_00000000000000000001" } as never }, undefined)).toBe(true);
+      expect(endedRetryStartsRun({ kind: "local", where: { kind: "mac" } as never, subject: { kind: "task", taskId: "t" } }, { agent: {} })).toBe(false);
+    });
   });
 
   it("gives a project viewer who isn't the owner only watching, and an owner who is a viewer everything", () => {

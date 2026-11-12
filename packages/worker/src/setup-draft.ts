@@ -8,9 +8,10 @@
 // dev container file the proposal names is already there. The broker reads the proposal again and re-reads every citation from GitHub; the worker's copy is never trusted.
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
-import { DEVCONTAINER_PATH_PATTERN, SETUP_COMMANDS_MAX, SETUP_PROPOSAL_INFO_STRING, SETUP_SECRETS_MAX, sanitizeSetupProposal, setupProposalAnswerOf, type SetupProposal } from "@rovara-code/contracts";
+import { DEVCONTAINER_PATH_PATTERN, SETUP_COMMANDS_MAX, SETUP_PROPOSAL_INFO_STRING, SETUP_SECRETS_MAX, redactText, sanitizeSetupProposal, setupProposalAnswerOf, type SetupProposal } from "@rovara-code/contracts";
 import { scanRepositories, type SetupScan } from "./setup-scan.js";
 import { dropUntrackedCitations, isTracked, trackedScanOf, type TrackedPaths } from "./setup-citations.js";
+import { runIsolatedGit } from "./isolated-repository.js";
 
 export interface SetupDraftRepository { name: string; path: string; resolvedCommit?: string | undefined }
 
@@ -148,3 +149,76 @@ export async function readSetupProposalAnswer(
   });
   return read.ok ? { ok: true, proposal: read.proposal, answered } : { ok: false, errors: read.errors };
 }
+
+// ---- a draft that cannot find anything to propose (0.5.16): two failures with their own words, told to the broker by a marker in the run's error (the broker reads them in `setupDraftEndItems`, rovara-code/setup-draft.ts)
+
+/** The marker a run's error starts its detail with when every repository of the project holds no files at its default branch's head. The detail is one JSON object `{ branch, other? }`. */
+export const SETUP_DRAFT_EMPTY_REPO_MARKER = "SETUP_DRAFT_EMPTY_REPO";
+/** The marker when the model answered "there is nothing to set up" with notes and the folders held nothing either. The rest of the error is the notes, redacted and cut. */
+export const SETUP_DRAFT_NOTHING_MARKER = "SETUP_DRAFT_NOTHING";
+/** The reader's words (vendor, setup-proposal-read.ts) for an answer that holds nothing a person could use; a test pins them, so a rewording there is noticed here. */
+export const READER_EMPTY_ANSWER_ERROR = "the answer has nothing in it a person could use";
+const BRANCH_WORDS_MAX = 60;
+const NOTES_WORDS_MAX = 200;
+const OTHER_BRANCHES_LOOKED_AT = 5;
+
+const cleanWords = (text: string, max: number): string => [...text.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim()].slice(0, max).join("").trimEnd();
+
+/** The notes of a model's answer to the setup draft, redacted and made one short line; undefined when the answer has none (or is not a JSON block). */
+export function proposalNotesOf(finalText: string): string | undefined {
+  const answer = setupProposalAnswerOf(finalText);
+  const notes = typeof answer === "object" && answer !== null && !Array.isArray(answer) ? (answer as Record<string, unknown>)["notes"] : undefined;
+  if (typeof notes !== "string") return undefined;
+  const clean = cleanWords(redactText(notes), NOTES_WORDS_MAX);
+  return clean === "" ? undefined : clean;
+}
+
+/** The failure a model's "nothing to set up" answer ends the draft with: the marker and its notes. Undefined unless the reader refused the answer for holding nothing AND the model left notes saying why. */
+export function nothingToSetUpError(read: SetupProposalOutcome, finalText: string): string | undefined {
+  if (read.ok || !read.errors.includes(READER_EMPTY_ANSWER_ERROR)) return undefined;
+  const notes = proposalNotesOf(finalText);
+  return notes === undefined ? undefined : `${SETUP_DRAFT_NOTHING_MARKER} ${notes}`;
+}
+
+/**
+ * Whether the repositories hold nothing to read: no repository has a file at the commit the draft was prepared from (and the meta repository, when there is one, was given none), so the model
+ * would be asked to read a project with no files. A repository whose files cannot be listed is not called empty (the draft runs as it did). When all are empty, the first one's default branch is named, with
+ * another branch of it that has files, when its clone shows one (the clone holds every branch's ref).
+ */
+export async function emptyRepositoriesOf(
+  rootPath: string,
+  repositories: ReadonlyArray<{ name: string; path: string; defaultBranch: string; resolvedCommit?: string | undefined }>,
+  meta?: { files: number },
+): Promise<{ branch: string; other?: string } | undefined> {
+  if (repositories.length === 0 || (meta !== undefined && meta.files > 0)) return undefined;
+  for (const repository of repositories) {
+    if (repository.resolvedCommit === undefined) return undefined;
+    const directory = join(rootPath, repository.path);
+    try {
+      const listed = await runIsolatedGit(directory, ["ls-tree", "-r", "-z", "--name-only", repository.resolvedCommit], { maxBuffer: 1024 * 1024, timeout: 60_000 });
+      if (listed.split("\0").some((path) => path !== "")) return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  const first = repositories[0]!;
+  const branch = cleanWords(first.defaultBranch, BRANCH_WORDS_MAX);
+  const other = await branchWithFiles(join(rootPath, first.path), first.defaultBranch);
+  return { branch, ...(other === undefined ? {} : { other }) };
+}
+
+/** A branch of the clone other than `except` whose tip holds a file, from the refs the clone has (at most `OTHER_BRANCHES_LOOKED_AT` are looked at); undefined when none shows. */
+async function branchWithFiles(directory: string, except: string): Promise<string | undefined> {
+  try {
+    const refs = (await runIsolatedGit(directory, ["for-each-ref", "--format=%(refname)", "refs/remotes/origin"], { maxBuffer: 256 * 1024, timeout: 30_000 })).split("\n");
+    const names = refs.map((ref) => ref.trim().replace(/^refs\/remotes\/origin\//u, "")).filter((name) => name !== "" && name !== "HEAD" && name !== except).slice(0, OTHER_BRANCHES_LOOKED_AT);
+    for (const name of names) {
+      const listed = await runIsolatedGit(directory, ["ls-tree", "--name-only", `refs/remotes/origin/${name}`], { maxBuffer: 256 * 1024, timeout: 30_000 });
+      if (listed.trim() !== "") return cleanWords(name, BRANCH_WORDS_MAX);
+    }
+  } catch { /* none shows: the words name no other branch */ }
+  return undefined;
+}
+
+/** The error of an empty project: the marker and its detail (a JSON object), short enough to reach the broker whole (a failure's text is cut at 300 characters). */
+export const emptyRepositoriesError = (found: { branch: string; other?: string }): string => `${SETUP_DRAFT_EMPTY_REPO_MARKER} ${JSON.stringify(found)}`;

@@ -5,8 +5,8 @@ import type { AgentRouteDependencies } from "../../packages/broker/src/agents/ro
 import { randomUUID } from "node:crypto";
 import { BatchGetCommand, GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { LIVE_PAGE_MAX, LiveResponseReaderSchema, LiveResponseSchema, LiveTileReaderSchema, LiveTileSchema, SESSION_STATUS_WORDS, SESSION_STATUSES, agentSessionKey, liveSessionKey, livePresenceKey, projectMemberKey, sharedSessionsKey, type LiveResponse, type OrgId, type SessionStatus } from "@rovara-code/contracts";
-import { orgMemberKey, projectChannel } from "@agentx/cloud-contracts";
+import { LIVE_PAGE_MAX, SESSION_STATUS_WORDS, SESSION_STATUSES, agentSessionKey, liveSessionKey, livePresenceKey, projectMemberKey, sharedSessionsKey, homeDismissedKey, type OrgId, type SessionStatus } from "@rovara-code/contracts";
+import { LiveResponseReaderSchema, LiveResponseSchema, LiveTileReaderSchema, LiveTileSchema, orgMemberKey, projectChannel, type LiveResponse } from "@agentx/cloud-contracts";
 import { decidingOf, routeAgentSessionRequest } from "../../packages/broker/src/agent-sessions/routes.js";
 import { batchGetItems, liveSessions, type LiveDependencies } from "../../packages/broker/src/agent-sessions/live.js";
 import { recordPresence } from "../../packages/broker/src/agent-sessions/followers.js";
@@ -19,6 +19,7 @@ import { projectorWorld, workflow } from "../support/agent-session-projector-wor
 import { MAYA, OMAR, createDeveloperTaskBroker, grantProject } from "../support/developer-task-broker.js";
 import { loadSlackBroker } from "../support/slack-broker.js";
 import { chosenNameKey } from "../../packages/broker/src/developer/chosen-name.js";
+import { taskKey } from "../../packages/broker/src/developer/task-records.js";
 import { ARJUN, BO, CELL, MAX, MIA, OLA, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 type Item = Record<string, unknown>;
@@ -31,6 +32,8 @@ interface Seed {
   kind?: "task" | "chain" | "local"; owner?: string; project?: string | null; status?: SessionStatus; endedAgoHours?: number; needs?: string[]; pending?: number; lastRunFailed?: boolean; workflowBlocked?: boolean;
   step?: string; peek?: string; cost?: number; createdAt?: string; title?: string; people?: Array<{ developerId: string; role: "owner" | "commenter" | "viewer" | "denied" }>; currentOwner?: string;
   orgId?: OrgId; startedBy?: string; tile?: boolean;
+  /** Fields merged into the session's task record (an agent run, `closedAt`), and the summary's status-model words (`display`). */
+  task?: Record<string, unknown>; display?: unknown;
 }
 
 /** A company with `web` (Priya, Arjun, Max, Mia as viewer) and `api` (Max), and a way to seed sessions the way the summary refresh leaves them: the session, its task and its live tile. */
@@ -54,13 +57,14 @@ function world() {
     const endedAt = ended ? iso(T0 - o.endedAgoHours! * HOUR) : undefined;
     const summary = {
       status, ...(o.step === undefined ? {} : { step: o.step }), ...(o.peek === undefined ? {} : { peek: o.peek }), ...(o.lastRunFailed === true ? { lastRunFailed: true } : {}), ...(o.workflowBlocked === true ? { workflowBlocked: true } : {}),
-      costUsd: o.cost ?? 0, needsPeople: o.needs ?? [], pendingApprovals: o.pending ?? 0, digest: "d".repeat(64), computedAt: updatedAt,
+      ...(o.display === undefined ? {} : { display: o.display }), costUsd: o.cost ?? 0, needsPeople: o.needs ?? [], pendingApprovals: o.pending ?? 0, digest: "d".repeat(64), computedAt: updatedAt,
     };
     const record = {
       ...open, createdAt, updatedAt, summary, summaryRevision: 2, title: o.title ?? "Bump the Stripe SDK", ...(endedAt === undefined ? {} : { endedAt }),
       ...(o.startedBy === undefined ? {} : { startedBy: { kind: "member", developerId: o.startedBy } }),
     };
     w.db.set(record);
+    if (o.task !== undefined) w.db.set({ ...(w.db.get(taskKey(seeded.taskId)) as Item), ...o.task });
     if (o.tile !== false) {
       w.db.set({
         ...liveSessionKey(orgId, seeded.sessionId), entityType: "LIVE_SESSION", orgId, sessionId: seeded.sessionId, kind: record.kind, ...(record.project === undefined ? {} : { project: record.project }),
@@ -248,11 +252,64 @@ describe("the actions a tile offers are the caller's own", () => {
     expect(await of(PRIYA)).not.toContain("take_over");
   });
 
-  it("offers retry on a session that failed", async () => {
+  it("offers an ended failed session no Stop, Steer, Take over or Retry (nothing a retry could start), and says when it ended", async () => {
     const { w, s3 } = company();
     const tile = (await w.live(MAX, { filter: "failed" })).tiles.find((entry) => entry.sessionId === s3.sessionId)!;
-    expect(tile.actions).toEqual(expect.arrayContaining(["stop", "retry", "take_over"]));
+    expect(tile.actions).toEqual(["watch", "comment", "share"]);
+    expect(tile.endedAt).toBe(iso(T0 - 2 * HOUR));
     expect((await w.live(ARJUN, { filter: "failed" })).tiles[0]!.actions).toEqual(["watch", "comment"]);
+    // Positive control: a session still open and failing keeps the controls that apply to an open session.
+    const open = w.seed({ status: "waiting", lastRunFailed: true });
+    const openTile = (await w.live(MAX, { filter: "failed" })).tiles.find((entry) => entry.sessionId === open.sessionId)!;
+    expect(openTile.actions).toEqual(expect.arrayContaining(["steer", "stop", "take_over"]));
+    expect(openTile.endedAt).toBeUndefined();
+  });
+
+  it("offers Retry on an ended failed run only when a retry can start one: an agent run, not a task that has no run", async () => {
+    const w = world();
+    const agentRun = w.seed({ status: "failed", endedAgoHours: 1, task: { agent: { agentId: "agt_0123456789abcdefghij", name: "Ticket triage", version: 1 } } });
+    const plain = w.seed({ status: "failed", endedAgoHours: 1 });
+    const tiles = (await w.live(PRIYA, { filter: "failed" })).tiles;
+    expect(tiles.find((tile) => tile.sessionId === agentRun.sessionId)!.actions).toEqual(["watch", "comment", "retry", "share"]);
+    expect(tiles.find((tile) => tile.sessionId === plain.sessionId)!.actions).toEqual(["watch", "comment", "share"]);
+  });
+
+  it("lets the owner dismiss an ended failed session (canDismiss) and nobody else, and never an open one", async () => {
+    const { w, s3 } = company();
+    const tileOf = async (who: string) => (await w.live(who, { filter: "failed" })).tiles.find((entry) => entry.sessionId === s3.sessionId)!;
+    expect((await tileOf(PRIYA)).canDismiss).toBe(true);
+    expect((await tileOf(MAX)).canDismiss).toBeUndefined();
+    const open = w.seed({ status: "waiting", lastRunFailed: true });
+    expect((await w.live(PRIYA, { filter: "failed" })).tiles.find((entry) => entry.sessionId === open.sessionId)!.canDismiss).toBeUndefined();
+  });
+
+  it("never lists a task its owner closed (or that reads Closed or Merged) as Failed, however its last run ended", async () => {
+    const w = world();
+    const closed = w.seed({ status: "failed", endedAgoHours: 1, task: { closedAt: iso(T0 - HOUR) } });
+    const reads = w.seed({ status: "failed", endedAgoHours: 1, display: { state: "closed" } });
+    const merged = w.seed({ status: "failed", endedAgoHours: 1, display: { state: "merged" } });
+    const failed = w.seed({ status: "failed", endedAgoHours: 1 });
+    const openClosed = w.seed({ status: "waiting", lastRunFailed: true, task: { closedAt: iso(T0 - HOUR) } });
+    expect(await w.ids(PRIYA, { filter: "failed" })).toEqual([failed.sessionId]);
+    for (const left of [closed, reads, merged, openClosed]) expect(await w.ids(PRIYA, { filter: "failed" })).not.toContain(left.sessionId);
+  });
+
+  it("leaves out an ended failure its owner dismissed (Home's dismissal, the same row), for the happening they dismissed and not for a later one", async () => {
+    const w = world();
+    const failed = w.seed({ status: "failed", endedAgoHours: 1 });
+    const other = w.seed({ status: "failed", endedAgoHours: 2, owner: MAX });
+    const dismiss = (who: string, sessionId: string, occurrence: string) => w.db.set({ ...homeDismissedKey(ORG_A, who, `failure:${sessionId}`), entityType: "HOME_DISMISSED", orgId: ORG_A, developerId: who, cardId: `failure:${sessionId}`, occurrence, dismissedAt: iso(T0), indexExpiresAt: Math.floor(T0 / 1000) + 86_400 });
+    expect(await w.ids(PRIYA, { filter: "failed" })).toEqual([other.sessionId, failed.sessionId]);
+    // A dismissal of an earlier happening hides nothing.
+    dismiss(PRIYA, failed.sessionId, "ended:2026-10-01T00:00:00.000Z");
+    expect(await w.ids(PRIYA, { filter: "failed" })).toContain(failed.sessionId);
+    dismiss(PRIYA, failed.sessionId, `ended:${iso(T0 - HOUR)}`);
+    expect(await w.ids(PRIYA, { filter: "failed" })).toEqual([other.sessionId]);
+    // It is the person's own: Max still sees what Priya dismissed, and Priya's dismissal of one session hides no other.
+    expect(await w.ids(MAX, { filter: "failed" })).toContain(failed.sessionId);
+    // An expired dismissal hides nothing (the table deletes late).
+    w.db.set({ ...(w.db.get(homeDismissedKey(ORG_A, PRIYA, `failure:${failed.sessionId}`)) as Item), indexExpiresAt: Math.floor((T0 - 1000) / 1000) });
+    expect(await w.ids(PRIYA, { filter: "failed" })).toEqual([other.sessionId, failed.sessionId]);
   });
 
   it("offers retry on a session whose workflow is blocked (it shows as needing a person), to an editor and nobody below (Task 14 ruling)", async () => {
