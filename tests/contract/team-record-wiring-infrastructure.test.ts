@@ -345,7 +345,9 @@ describe("the switch on: Public cloud", () => {
     const trust = JSON.stringify(role.Properties.AssumeRolePolicyDocument);
     expect(trust).toContain("sts:TagSession");
     expect(trust).toContain("aws:RequestTag/rovara-index");
-    expect(trust).toContain("aws:RequestTag/rovara-retired-index");
+    expect(trust).toContain("aws:RequestTag/rovara-retired-index\"");
+    expect(trust).toContain("aws:RequestTag/rovara-retired-index-2");
+    expect(trust).toContain("rovara-retired-index-2");
     expect(trust).toContain("ws-*");
     const policies = Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Policy" && /^TeamRecordVectorsDataRole/.test(id));
     expect(policies).toHaveLength(1);
@@ -353,7 +355,7 @@ describe("the switch on: Public cloud", () => {
     expect(text).toContain("${aws:PrincipalTag/rovara-index}");
     expect(text).not.toContain("/index/*");
     for (const statement of (policies[0]![1].Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Resource: unknown }> }).Statement) {
-      if ([statement.Action].flat().some((action) => action.startsWith("s3vectors:"))) expect(JSON.stringify(statement.Resource)).toContain(statement.Sid === "TeamRecordVectorsRetireOldIndex" ? "${aws:PrincipalTag/rovara-retired-index}" : "${aws:PrincipalTag/rovara-index}");
+      if ([statement.Action].flat().some((action) => action.startsWith("s3vectors:"))) expect(JSON.stringify(statement.Resource)).toContain(statement.Sid === "TeamRecordVectorsRetireOldIndex" ? "${aws:PrincipalTag/rovara-retired-index-2}" : "${aws:PrincipalTag/rovara-index}");
     }
     // The one extra right is deleting the workspace's retired index (the retire step; an erase starts with it), named by its own session tag.
     const retire = (policies[0]![1].Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[] }> }).Statement.filter((statement) => [statement.Action].flat().includes("s3vectors:DeleteIndex"));

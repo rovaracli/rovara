@@ -1,4 +1,4 @@
-import { retiredTeamRecordVectorIndexName, teamRecordVectorIndexName } from "@agentx/cloud-contracts";
+import { RETIRED_INDEX_TAG_KEYS, RETIRED_TEAM_RECORD_SPECS, TEAM_RECORD_EMBEDDER, retiredTeamRecordVectorIndexName, retiredTeamRecordVectorIndexNames, teamRecordVectorIndexName } from "@agentx/cloud-contracts";
 import { describe, expect, it } from "vitest";
 import { S3VectorsIndex, type S3VectorsPort } from "../../../packages/broker/src/team-record/s3-vectors-index.js";
 import { WorkspaceVectorPorts, createAssume, createStsAssumePort, openWorkspaceIndex, workspaceVectorSessionPolicy, type SessionPolicyInput } from "../../../packages/broker/src/team-record/vector-access.js";
@@ -7,16 +7,22 @@ const base = { region: "us-west-2", account: "111122223333", bucket: "rovara-rec
 const KMS = "arn:aws:kms:us-west-2:111122223333:key/11111111-2222-3333-4444-555555555555";
 
 describe("session policy per workspace", () => {
-  it("reaches the one index of one workspace, with no wildcard on the index and no bucket right; the only delete-index right is for that workspace's retired index", () => {
+  it("reaches the one index of one workspace, with no wildcard on the index and no bucket right; the only delete-index right is for that workspace's retired indexes (Titan and Qwen3)", () => {
     const policy = workspaceVectorSessionPolicy({ ...base, workspaceId: "ws-a" });
     const text = JSON.stringify(policy);
     expect(text).toContain(`bucket/rovara-record-vectors/index/${teamRecordVectorIndexName("ws-a")}"`);
     expect(text).not.toContain("index/*");
     expect(text).not.toContain(teamRecordVectorIndexName("ws-b"));
-    expect(text).not.toContain(retiredTeamRecordVectorIndexName("ws-b"));
+    for (const name of retiredTeamRecordVectorIndexNames("ws-b")) expect(text).not.toContain(name);
     expect(text).not.toMatch(/CreateIndex|DeleteVectorBucket|ListIndexes/);
     const deletes = policy.Statement.filter((statement) => JSON.stringify(statement.Action).includes("DeleteIndex"));
-    expect(deletes).toEqual([{ Effect: "Allow", Action: ["s3vectors:DeleteIndex"], Resource: `arn:aws:s3vectors:us-west-2:111122223333:bucket/rovara-record-vectors/index/${retiredTeamRecordVectorIndexName("ws-a")}` }]);
+    expect(deletes).toEqual([{ Effect: "Allow", Action: ["s3vectors:DeleteIndex"], Resource: retiredTeamRecordVectorIndexNames("ws-a").map((name) => `arn:aws:s3vectors:us-west-2:111122223333:bucket/rovara-record-vectors/index/${name}`) }]);
+    // the old names: the Titan-era one (no spec) and one per retired spec, Qwen3 (0b0a5b868995d4ee) among them; none is the current one
+    const old = retiredTeamRecordVectorIndexNames("ws-a");
+    expect(RETIRED_TEAM_RECORD_SPECS).toContain("0b0a5b868995d4ee");
+    expect(old).toEqual([retiredTeamRecordVectorIndexName("ws-a"), teamRecordVectorIndexName("ws-a", "0b0a5b868995d4ee")]);
+    expect(new Set([...old, teamRecordVectorIndexName("ws-a")]).size).toBe(old.length + 1);
+    expect(RETIRED_TEAM_RECORD_SPECS).not.toContain(TEAM_RECORD_EMBEDDER.spec);
     expect(retiredTeamRecordVectorIndexName("ws-a")).not.toBe(teamRecordVectorIndexName("ws-a"));
     expect(text.length).toBeLessThan(2048);
     // even with index creation and a key the policy stays inside the 2,048 characters STS allows
@@ -93,8 +99,9 @@ describe("STS adapter (I-8)", () => {
     expect(sent[0]!.RoleSessionName).toMatch(/^team-record-[0-9a-f]{24}$/);
     expect(sent[0]!.Policy).toContain(teamRecordVectorIndexName("ws-a"));
     expect(sent[0]!.Policy).not.toContain("index/*");
-    // the session carries both tags the data role's rights name: the current index and the retired one
-    expect((sent[0] as { Tags?: Array<{ Key: string; Value: string }> }).Tags).toEqual([{ Key: "rovara-index", Value: teamRecordVectorIndexName("ws-a") }, { Key: "rovara-retired-index", Value: retiredTeamRecordVectorIndexName("ws-a") }]);
+    // the session carries the tags the data role's rights name: the current index and one per retired index (Titan, then Qwen3)
+    expect(RETIRED_INDEX_TAG_KEYS).toEqual(["rovara-retired-index", "rovara-retired-index-2"]);
+    expect((sent[0] as { Tags?: Array<{ Key: string; Value: string }> }).Tags).toEqual([{ Key: "rovara-index", Value: teamRecordVectorIndexName("ws-a") }, ...retiredTeamRecordVectorIndexNames("ws-a").map((name, position) => ({ Key: RETIRED_INDEX_TAG_KEYS[position], Value: name }))]);
     expect(used).toEqual(["AKIA-test"]);
     await openWorkspaceIndex({ ports, workspaceId: "ws-a", bucket: "rovara-record-vectors", dimension: 4 });
     expect(sent).toHaveLength(1);
@@ -136,8 +143,39 @@ describe("retiring the index of the embedding generation before the current one 
     const index = indexOver(portWith(state, calls));
     expect(await index.retireOldIndex()).toBe("deleted");
     expect(await index.retireOldIndex()).toBe("absent");
-    expect(calls.filter((call) => call.op === "delete").map((call) => call.indexName)).toEqual([retiredTeamRecordVectorIndexName("ws-a"), retiredTeamRecordVectorIndexName("ws-a")]);
+    expect(calls.filter((call) => call.op === "delete").map((call) => call.indexName)).toEqual([...retiredTeamRecordVectorIndexNames("ws-a"), ...retiredTeamRecordVectorIndexNames("ws-a")]);
     expect(calls.filter((call) => call.op === "get").every((call) => call.indexName === teamRecordVectorIndexName("ws-a"))).toBe(true);
+  });
+  /** A bucket that really holds indexes: getIndex and deleteIndex act on a set of names. */
+  const bucketWith = (names: string[], failOn: string[] = []) => {
+    const indexes = new Set(names);
+    const port = {
+      async getIndex({ indexName }: { indexName: string }) { if (!indexes.has(indexName)) throw Object.assign(new Error("x"), { code: "NotFoundException" }); },
+      async deleteIndex({ indexName }: { indexName: string }) {
+        if (failOn.includes(indexName)) throw Object.assign(new Error("x"), { code: "AccessDeniedException" });
+        if (!indexes.delete(indexName)) throw Object.assign(new Error("x"), { code: "NotFoundException" });
+      },
+    } as unknown as S3VectorsPort;
+    return { indexes, port };
+  };
+  const [TITAN, QWEN] = retiredTeamRecordVectorIndexNames("ws-a") as [string, string];
+
+  it("DECISIONS 140: a workspace with a leftover Qwen3 index (1,024-d, its spec's name) has it retired, and no index but the current one remains", async () => {
+    const bucket = bucketWith([teamRecordVectorIndexName("ws-a"), QWEN, teamRecordVectorIndexName("ws-b"), retiredTeamRecordVectorIndexNames("ws-b")[1]!]);
+    expect(await indexOver(bucket.port).retireOldIndex()).toBe("deleted");
+    // ws-a keeps only its current index; ws-b's indexes are not this index's business
+    expect([...bucket.indexes].sort()).toEqual([teamRecordVectorIndexName("ws-a"), teamRecordVectorIndexName("ws-b"), retiredTeamRecordVectorIndexNames("ws-b")[1]!].sort());
+    expect(await indexOver(bucket.port).retireOldIndex()).toBe("absent");
+  });
+  it("retires the Titan-era and the Qwen3 index together, leaving only the current one", async () => {
+    const bucket = bucketWith([teamRecordVectorIndexName("ws-a"), TITAN, QWEN]);
+    expect(await indexOver(bucket.port).retireOldIndex()).toBe("deleted");
+    expect([...bucket.indexes]).toEqual([teamRecordVectorIndexName("ws-a")]);
+  });
+  it("a refused delete of one old index does not keep the other alive, and still fails the retire (an erase stays blocked until every old index is gone)", async () => {
+    const bucket = bucketWith([teamRecordVectorIndexName("ws-a"), TITAN, QWEN], [TITAN]);
+    await expect(indexOver(bucket.port).retireOldIndex()).rejects.toMatchObject({ code: "AccessDeniedException" });
+    expect([...bucket.indexes].sort()).toEqual([teamRecordVectorIndexName("ws-a"), TITAN].sort());
   });
   it("deletes nothing while the current index does not exist yet", async () => {
     const calls: Call[] = [];

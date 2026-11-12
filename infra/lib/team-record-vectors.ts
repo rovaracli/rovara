@@ -5,12 +5,12 @@
 import { type CfnTag, Duration, RemovalPolicy, aws_iam as iam } from "aws-cdk-lib";
 import { CfnIndex, CfnVectorBucket } from "aws-cdk-lib/aws-s3vectors";
 import { Construct } from "constructs";
-import { NON_FILTERABLE_VECTOR_KEYS, VECTOR_DIMENSION_DEFAULT, teamRecordVectorIndexName, teamRecordVectorsRoleName } from "@agentx/cloud-contracts";
+import { NON_FILTERABLE_VECTOR_KEYS, RETIRED_INDEX_TAG_KEYS, VECTOR_DIMENSION_DEFAULT, teamRecordVectorIndexName, teamRecordVectorsRoleName } from "@agentx/cloud-contracts";
 
 /** The IAM policy variable that holds the session's index name. The broker tags every AssumeRole with `rovara-index` = the workspace's index name (team-record/vector-access.ts). */
 export const SESSION_INDEX_VARIABLE = "${aws:PrincipalTag/rovara-index}";
-/** The session's second tag: the name of the workspace's index of the embedding generation before the current one, which the only extra right (DeleteIndex) names. */
-export const SESSION_RETIRED_INDEX_VARIABLE = "${aws:PrincipalTag/rovara-retired-index}";
+/** The session's further tags: the names of the workspace's indexes of the embedding generations before the current one (Titan, then Qwen3), which the only extra right (DeleteIndex) names. */
+export const SESSION_RETIRED_INDEX_VARIABLES: readonly string[] = RETIRED_INDEX_TAG_KEYS.map((key) => `\${aws:PrincipalTag/${key}}`);
 const BUCKET_NAME = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
 
 export interface TeamRecordVectorsProps {
@@ -102,8 +102,8 @@ export class TeamRecordVectors extends Construct {
         sid: "TagSessionWithTheIndex", actions: ["sts:TagSession"], principals: [props.brokerPrincipal],
         conditions: {
           StringLike: { "aws:RequestTag/rovara-index": "ws-*" },
-          StringLikeIfExists: { "aws:RequestTag/rovara-retired-index": "ws-*" },
-          "ForAllValues:StringEquals": { "aws:TagKeys": ["rovara-index", "rovara-retired-index"] },
+          StringLikeIfExists: Object.fromEntries(RETIRED_INDEX_TAG_KEYS.map((key) => [`aws:RequestTag/${key}`, "ws-*"])),
+          "ForAllValues:StringEquals": { "aws:TagKeys": ["rovara-index", ...RETIRED_INDEX_TAG_KEYS] },
         },
       }));
       if (props.kmsKeyArn !== undefined) {
@@ -137,14 +137,14 @@ export class TeamRecordVectors extends Construct {
   }
 
   /**
-   * The one extra right of the data role: delete the workspace's index of the embedding generation before the current one, named by the session's second tag (an untagged session has no value for the
+   * The one extra right of the data role: delete the workspace's indexes of the embedding generations before the current one, each named by a session tag (an untagged session has no value for the
    * variable and matches nothing). Deleting an index deletes every vector in it, so this is also how an erase reaches vectors left in the old index.
    */
   private retireStatements(): iam.PolicyStatement[] {
     return [new iam.PolicyStatement({
       sid: "TeamRecordVectorsRetireOldIndex",
       actions: ["s3vectors:DeleteIndex"],
-      resources: this.buckets.map((bucket) => `${bucket.attrVectorBucketArn}/index/${SESSION_RETIRED_INDEX_VARIABLE}`),
+      resources: this.buckets.flatMap((bucket) => SESSION_RETIRED_INDEX_VARIABLES.map((variable) => `${bucket.attrVectorBucketArn}/index/${variable}`)),
     })];
   }
 

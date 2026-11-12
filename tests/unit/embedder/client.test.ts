@@ -310,3 +310,39 @@ describe("the Lambda invoke port", () => {
     await expect(invoke(request)).rejects.toMatchObject({ code: "sdk_unavailable" });
   });
 });
+
+describe("the ingest client pauses after a timeout (DECISIONS 140: rows written meanwhile keep embedPending at once)", () => {
+  /** A Lambda that never answers: the send ends only when the invoke's own wait aborts it. */
+  function hangingSdk() {
+    const state = { sends: 0 };
+    const load = async (): Promise<Record<string, unknown>> => ({
+      LambdaClient: class { send(_command: unknown, options?: { abortSignal?: AbortSignal }) { state.sends += 1; return new Promise((_resolve, reject) => { options?.abortSignal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))); }); } },
+      InvokeCommand: class { constructor(readonly input: unknown) {} },
+    });
+    return { state, load };
+  }
+
+  it("after one ingest call timed out, this client sends the function nothing more until the pause is over", async () => {
+    const { state, load } = hangingSdk();
+    const clock = { ms: 1_000_000 };
+    const client = recordEmbedderClientFrom({ EMBEDDER_FUNCTION_NAME: "agentx-staging-embedder" }, { region: "us-west-2", load }, 300, undefined, () => clock.ms)!;
+    // a wait of 300 ms (real time); the clock the client keeps the pause by is the injected one
+    expect(await codeOf(() => client.embed("first", "document"))).toBe("UNREACHABLE");
+    expect(state.sends).toBe(1);
+    // the very next call (another row of the batch) is not sent at all
+    expect(await codeOf(() => client.embed("second", "document"))).toBe("UNREACHABLE");
+    expect(state.sends).toBe(1);
+    clock.ms += EMBEDDER_INGEST_COOLDOWN_MS - 1;
+    expect(await codeOf(() => client.embed("third", "document"))).toBe("UNREACHABLE");
+    expect(state.sends).toBe(1);
+    // the pause is over: the function is asked again
+    clock.ms += 1;
+    expect(await codeOf(() => client.embed("fourth", "document"))).toBe("UNREACHABLE");
+    expect(state.sends).toBe(2);
+  });
+
+  it("the pause is a real default of the ingest client, longer than its wait", () => {
+    expect(EMBEDDER_INGEST_COOLDOWN_MS).toBeGreaterThan(EMBEDDER_INGEST_WAIT_MS);
+    expect(EMBEDDER_INGEST_COOLDOWN_MS).toBeGreaterThan(0);
+  });
+});

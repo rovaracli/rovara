@@ -1,5 +1,5 @@
 """Runs INSIDE the embedder container (docker exec), against the Lambda runtime emulator on 127.0.0.1:8080. See lambda_like_bench.sh, which starts the container.
-Prints one JSON object: the first invoke (cold: init + request), 100 warm single-query calls, batches of 16 documents of about 300 tokens, a 512-token document, and the memory peak of the container's cgroup.
+Prints one JSON object: the first invoke (cold: init + request), 100 warm single-query calls, batches of 16 documents of about 300 tokens, a batch of 16 documents of 512 tokens each, a 512-token document, and the memory peak of the container's cgroup.
 """
 import json
 import statistics
@@ -58,6 +58,21 @@ long_times = []
 for trial in range(5):
     ms, answer = call("record", "document", [doc(900 + trial, 3200)])
     long_times.append(ms)
+# the worst batch the re-embed job can send: 16 documents that all fill the 512-token window (the job caps a call at 8,000 characters, so this is the function's limit, not the job's)
+full_times = []
+for trial in range(3):
+    texts = [doc(2000 + trial * 16 + i, 3200) for i in range(16)]
+    ms, full = call("record", "document", texts)
+    assert full["ok"] and len(full["vectors"]) == 16 and all(full["truncated"])
+    full_times.append(ms)
+out["batch16_doc512_ms"] = {"p50": round(statistics.median(full_times)), "max": round(max(full_times))}
+# the biggest call the re-embed job sends for full-size texts: its 10,000-character cap lets 4 documents that fill the window go together
+job_times = []
+for trial in range(5):
+    ms, job = call("record", "document", [doc(3000 + trial * 4 + i, 3200) for i in range(4)])
+    assert job["ok"] and len(job["vectors"]) == 4
+    job_times.append(ms)
+out["batch4_doc512_ms"] = {"p50": round(statistics.median(job_times)), "max": round(max(job_times))}
 out["doc512_ms"] = {"p50": round(statistics.median(long_times)), "truncated": answer["truncated"]}
 lesson_ms, lesson = call("lesson", "document", [doc(5, 1400)])
 out["lesson_after_record_ms"] = round(lesson_ms, 1)

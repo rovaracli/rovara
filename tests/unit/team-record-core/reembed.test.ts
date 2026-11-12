@@ -2,7 +2,7 @@
 // outlives its row because of the job. Plus what ingest records on a row it embeds (the spec, a cut).
 import { describe, expect, it } from "vitest";
 import { TEAM_RECORD_EMBEDDER } from "@agentx/cloud-contracts";
-import { EMBED_TIMEOUTS_BEFORE_SKIP, LONG_TEXT_CHARS, REEMBED_IDLE_MS, TOO_LONG_RETRY_EPOCH, REEMBED_SWEEP_CURSOR_KEY, REEMBED_SWEEP_MAX_CHECKS, readReembedStates, reembedRows, reembedRun, sweepReembedState, sweepReembedStateRun, type ReembedBudget, type ReembedRun } from "../../../packages/broker/src/team-record/reembed.js";
+import { EMBED_TIMEOUTS_BEFORE_SKIP, LONG_TEXT_CHARS, REEMBED_BATCH_CHARS, REEMBED_BATCH_ROWS, REEMBED_WINDOW_CHARS, REEMBED_IDLE_MS, TOO_LONG_RETRY_EPOCH, REEMBED_SWEEP_CURSOR_KEY, REEMBED_SWEEP_MAX_CHECKS, readReembedStates, reembedRows, reembedRun, sweepReembedState, sweepReembedStateRun, type ReembedBudget, type ReembedRun } from "../../../packages/broker/src/team-record/reembed.js";
 import { EmbedUnavailableError } from "../../../packages/broker/src/team-record/embed.js";
 import { eventFromItem } from "../../../packages/broker/src/team-record/store.js";
 import { expireRawText } from "../../../packages/broker/src/team-record/text-expiry.js";
@@ -305,6 +305,112 @@ describe("the re-embed job batches short rows (DECISIONS 140)", () => {
     expect(w.vectorDeletes.flat()).toEqual([`event:${idOf(w, "row001")}`]);
     expect(stored(w, "row001")).not.toHaveProperty("embeddingSpec");
     expect(stored(w, "row000")).toMatchObject({ embeddingSpec: SPEC });
+  });
+
+  it("a call for several rows is also capped by total characters (not only 16 rows): rows that fill the 512-token window go four to a call, and a longer text costs no more than a full window", async () => {
+    const w = await setup();
+    await pendingRows(w, 9, (index) => `row ${index} ${"y".repeat(4_000)}`);
+    const job = batchEmbedder();
+    expect(await run(w, job)).toMatchObject({ embedded: 9 });
+    expect(job.batches.map((batch) => batch.length)).toEqual([4, 4, 1]);
+    for (const batch of job.batches) expect(batch.reduce((sum, text) => sum + Math.min(text.length, REEMBED_WINDOW_CHARS), 0)).toBeLessThanOrEqual(REEMBED_BATCH_CHARS);
+    // ordinary short rows still go 16 to a call
+    const short = await setup();
+    await pendingRows(short, 16, (index) => `short ${index} ${"x".repeat(500)}`);
+    const quick = batchEmbedder();
+    expect(await run(short, quick)).toMatchObject({ embedded: 16 });
+    expect(quick.batches.map((batch) => batch.length)).toEqual([16]);
+  });
+
+  it("a batch that times out is retried smaller (16, 8, 4, ...), the size is kept with the workspace's state, and the same size is not sent again for ever", async () => {
+    const w = await setup();
+    await pendingRows(w, 16);
+    // the function can take at most 3 rows in the time it has
+    const job = batchEmbedder({ failBatches: (texts) => (texts.length > 3 ? "timeout" : undefined) });
+    expect(await run(w, job)).toMatchObject({ embedded: 0, failed: 16 });
+    expect(job.batches.map((batch) => batch.length)).toEqual([16]);
+    expect((await readReembedStates(w.table)).get(ORG_A)?.batchRows).toBe(8);
+    // the next run starts at 8, not 16; it halves again on its own timeouts and gets through the rows
+    let guard = 0;
+    while (pendingCount(w, ORG_A) > 0 && guard++ < 30) await run(w, job);
+    expect(pendingCount(w, ORG_A)).toBe(0);
+    const sizes = job.batches.map((batch) => batch.length);
+    expect(sizes.slice(0, 3)).toEqual([16, 8, 4]);
+    expect(sizes.filter((size) => size === 16)).toHaveLength(1);
+    expect(sizes.filter((size) => size > 3)).toHaveLength(3);
+    expect(sizes.filter((size) => size === 4)).toHaveLength(1);
+    for (const item of rows(w, "TEAM_RECORD_EVENT")) { expect(item).not.toHaveProperty("embedSkip"); expect(item).not.toHaveProperty("embedTimeouts"); }
+  });
+
+  it("a batch that never succeeds shrinks to one row, and then the existing single-row timeout counting applies: each row is counted, and skipped at its second timeout", async () => {
+    const w = await setup();
+    await pendingRows(w, 3);
+    const job = batchEmbedder({ failBatches: () => "timeout" });
+    let guard = 0;
+    while (rows(w, "TEAM_RECORD_EVENT").some((item) => item.embedSkip === undefined) && guard++ < 40) await run(w, job);
+    expect(guard).toBeLessThan(40);
+    expect(job.batches.map((batch) => batch.length).slice(0, 3)).toEqual([3, 1, 1]);
+    for (const item of rows(w, "TEAM_RECORD_EVENT")) expect(item).toMatchObject({ embedSkip: `${SPEC}:${TOO_LONG_RETRY_EPOCH}` });
+    expect(w.logs.filter((entry) => entry.event === "record.embed_too_long")).toHaveLength(3);
+  });
+
+  it("after a whole pass with no timeout the batch size doubles again (up to 16)", async () => {
+    const w = await setup();
+    await pendingRows(w, 3);
+    const job = batchEmbedder({ failBatches: (texts) => (texts.length > 1 ? "timeout" : undefined) });
+    let guard = 0;
+    while (pendingCount(w, ORG_A) > 0 && guard++ < 20) await run(w, job);
+    expect((await readReembedStates(w.table)).get(ORG_A)?.batchRows ?? REEMBED_BATCH_ROWS).toBeLessThan(REEMBED_BATCH_ROWS);
+    const healthy = batchEmbedder();
+    for (let i = 0; i < 6; i += 1) await run(w, healthy);
+    expect((await readReembedStates(w.table)).get(ORG_A)?.batchRows).toBeUndefined();
+  });
+
+  it("a mark the table refuses mid-batch fails that one row only: the rows around it are counted once, as embedded, and the call counts once toward the stop (no double count)", async () => {
+    const w = await setup();
+    await pendingRows(w, 4);
+    const victim = idOf(w, "row002");
+    const real = w.table.documentClient;
+    (w.table as { documentClient: unknown }).documentClient = { send: async (command: { constructor: { name: string }; input?: { Key?: { sk?: string } } }) => {
+      if (command.constructor.name === "UpdateCommand" && String(command.input?.Key?.sk ?? "").includes(victim)) throw Object.assign(new Error("secret detail"), { name: "ProvisionedThroughputExceededException" });
+      return real.send(command);
+    } };
+    const shared = { deadline: w.clock.ms + 86_400_000, warm: false, failuresInARow: 0 };
+    const result = await run(w, batchEmbedder(), BUDGET, shared);
+    (w.table as { documentClient: unknown }).documentClient = real;
+    expect(result).toMatchObject({ embedded: 3, failed: 1, skipped: 0 });
+    expect(result.embedded + result.failed + result.skipped).toBe(4);
+    expect(shared.failuresInARow).toBe(1);
+    expect(stored(w, "row002")).toMatchObject({ embedPending: true });
+    for (const id of ["row000", "row001", "row003"]) expect(stored(w, id)).toMatchObject({ embeddingSpec: SPEC });
+    expect(JSON.stringify(w.logs)).not.toContain("secret");
+  });
+
+  it("a call whose put refused part of the batch counts as a failed call: with one failure already behind it the run stops (a partial put does not reset the count)", async () => {
+    const w = await setup();
+    await pendingRows(w, 4);
+    const real = w.vectors.put.bind(w.vectors);
+    const refuse = `event:${idOf(w, "row001")}`;
+    w.vectors.put = async (items) => { const result = await real(items.filter((item) => item.key !== refuse)); return { done: result.done, failed: items.filter((item) => item.key === refuse).map((item) => item.key) }; };
+    const shared = { deadline: w.clock.ms + 86_400_000, warm: false, failuresInARow: 1 };
+    const result = await run(w, batchEmbedder(), BUDGET, shared);
+    expect(result).toMatchObject({ embedded: 3, failed: 1, more: true });
+    expect(shared.failuresInARow).toBe(2);
+    expect(w.logs.some((entry) => entry.event === "record.reembed_stopped")).toBe(true);
+  });
+
+  it("a good call resets the failures-in-a-row count; a call whose rows were all gone changes nothing", async () => {
+    const w = await setup();
+    await pendingRows(w, 3);
+    const good = { deadline: w.clock.ms + 86_400_000, warm: false, failuresInARow: 1 };
+    expect(await run(w, batchEmbedder(), BUDGET, good)).toMatchObject({ embedded: 3, failed: 0 });
+    expect(good.failuresInARow).toBe(0);
+    const w2 = await setup();
+    await pendingRows(w2, 3);
+    const erased = batchEmbedder({ during: () => { for (const id of ["row000", "row001", "row002"]) { const item = stored(w2, id); delete item.text; delete item.textExpiresAt; w2.db.set(item); } } });
+    const gone = { deadline: w2.clock.ms + 86_400_000, warm: false, failuresInARow: 1 };
+    expect(await run(w2, erased, BUDGET, gone)).toMatchObject({ embedded: 0, skipped: 3, failed: 0 });
+    expect(gone.failuresInARow).toBe(1);
   });
 
   it("a long row goes in a call of its own, between batches of the short rows; and an embedder with no batch call gets one row per call, as before", async () => {

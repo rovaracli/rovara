@@ -8,7 +8,7 @@ import {
   parseMetadata,
   validateMetadata,
   vectorIndexName,
-  retiredVectorIndexName,
+  retiredVectorIndexNames,
   NON_FILTERABLE_KEYS,
   type BatchResult,
   type VectorFilter,
@@ -103,7 +103,7 @@ export class S3VectorsIndex implements VectorIndex {
   private readonly port: S3VectorsPort;
   private readonly bucket: string;
   private readonly indexName: string;
-  private readonly retiredIndexName: string;
+  private readonly retiredIndexNames: string[];
   private readonly retry: Retry;
 
   constructor(options: S3VectorsIndexOptions) {
@@ -113,7 +113,7 @@ export class S3VectorsIndex implements VectorIndex {
     if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(options.bucket)) throw new Error("team-record: vector bucket name is not valid");
     this.bucket = options.bucket;
     this.indexName = vectorIndexName(options.workspaceId);
-    this.retiredIndexName = retiredVectorIndexName(options.workspaceId);
+    this.retiredIndexNames = retiredVectorIndexNames(options.workspaceId);
     this.retry = options.retry ?? DEFAULT_RETRY;
   }
 
@@ -136,8 +136,8 @@ export class S3VectorsIndex implements VectorIndex {
   }
 
   /**
-   * Deletes this workspace's index of the embedding generation before the self-hosted embedder (its vectors are in another model's space and nothing can search them), once the current
-   * index exists. `absent`: nothing to delete. `current_missing`: the current index is not there yet, so nothing is deleted (an Enterprise stack that has not made it yet). Any other failure
+   * Deletes this workspace's indexes of the embedding generations before the current one (Titan, and Qwen3 with 1,024 dimensions: their vectors are in another model's space and nothing can search them), once the current
+   * index exists. `deleted`: at least one old index was deleted. `absent`: no old index was there. `current_missing`: the current index is not there yet, so nothing is deleted (an Enterprise stack that has not made it yet). Any other failure
    * throws; the caller treats the old index as still present, which blocks an erase until it is gone.
    */
   async retireOldIndex(): Promise<"deleted" | "absent" | "current_missing"> {
@@ -147,13 +147,19 @@ export class S3VectorsIndex implements VectorIndex {
       if (codeOf(error) === "NotFoundException") return "current_missing";
       throw error;
     }
-    try {
-      await withRetry(this.retry, () => this.port.deleteIndex({ vectorBucketName: this.bucket, indexName: this.retiredIndexName }));
-      return "deleted";
-    } catch (error) {
-      if (codeOf(error) === "NotFoundException") return "absent";
-      throw error;
+    // Every old name is tried, even after one fails, so a permission gap on one does not keep the others (and the vectors in them) alive; the first failure is thrown after the last attempt.
+    let deleted = false;
+    let failure: Error | undefined;
+    for (const indexName of this.retiredIndexNames) {
+      try {
+        await withRetry(this.retry, () => this.port.deleteIndex({ vectorBucketName: this.bucket, indexName }));
+        deleted = true;
+      } catch (error) {
+        if (codeOf(error) !== "NotFoundException" && failure === undefined) failure = error instanceof Error ? error : new Error("team-record: old index delete failed");
+      }
     }
+    if (failure !== undefined) throw failure;
+    return deleted ? "deleted" : "absent";
   }
 
   async put(items: VectorItem[]): Promise<BatchResult> {
