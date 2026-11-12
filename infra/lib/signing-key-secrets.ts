@@ -1,5 +1,6 @@
 // 0.5.15 signing-key lane: a named environment's functions read the callback signing key and the erasure hash key from Secrets Manager
-// (packages/broker/src/aws/signing-key-secrets.ts), never from a Lambda variable. The secrets are created by the deploy (packages/cli/src/deploy/signing-key.ts),
+// (packages/broker/src/aws/signing-key-secrets.ts), never from a Lambda variable. (For one release the named template still declares the NoEcho CallbackSigningKey
+// parameter, unused, and the CLI still passes it, so a deploy does not fail on an undeclared parameter; both are dropped in 0.5.16.) The secrets are created by the deploy (packages/cli/src/deploy/signing-key.ts),
 // outside every stack: the callback signing key existed before this lane under the same name, and a stack that created it would fail on the name. CloudFormation
 // never holds either value, so no update can regenerate or overwrite one and no stack deletion can delete one. This grants each function GetSecretValue on
 // exactly the secret(s) it needs, by name (Secrets Manager appends "-" and six characters to a secret's name in its ARN), and nothing else.

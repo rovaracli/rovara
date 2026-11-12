@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { writeCustomDomain } from "../../packages/cli/src/environments/custom-domain.js";
 import { describe, expect, it } from "vitest";
 import { environmentStackName, type ReleaseManifest } from "@rovara-code/contracts";
@@ -248,6 +249,19 @@ describe("deploy environment", () => {
     expect(firstKey).toBeDefined();
     expect(firstKey!.length).toBeGreaterThanOrEqual(32);
     expect(secondKey).toBe(firstKey);
+  });
+
+  it("refuses before any stack when both keys are gone from an environment that exists: it never re-seeds the erasure key from a new callback key (0.5.15 L3)", async () => {
+    const store = new MemoryParameterStore();
+    const install = fakeDeployer(scriptedOutputs());
+    await deployEnvironment({ mode: "install", engine: "templates", answers: baseAnswers(), release: fakeRelease(), deployer: install.deployer, store, secrets: memorySecrets(), holder: HOLDER });
+    const emptied = memorySecrets();
+    const upgrade = fakeDeployer(scriptedOutputs());
+    await expect(deployEnvironment({ mode: "upgrade", engine: "templates", answers: baseAnswers(), release: fakeRelease(), deployer: upgrade.deployer, store, secrets: emptied, holder: HOLDER, deployedParameters: nothingDeployed }))
+      .rejects.toThrow(/restore the erasure key .* or run the re-hash plan/u);
+    // Nothing is created: a new callback key now would let a later run seed the erasure key from it.
+    expect(emptied.creates).toEqual([]);
+    expect(upgrade.requests).toEqual([]);
   });
 
   it("writes settings with the engine, version, stacks, identity and access block after an install", async () => {
@@ -1223,7 +1237,9 @@ describe("the audit ledger's lock profile (Task 5b)", () => {
 
   async function upgrade(input: { answers: DeployAnswers; deployedProfile: string | undefined; release?: LoadedRelease; mode?: "install" | "upgrade"; parts?: DeployPart[] }) {
     const store = new MemoryParameterStore();
-    const secrets = memorySecrets();
+    // An environment that exists has both keys (0.5.15: an existing environment with neither is refused, never given a new key).
+    const key = randomBytes(48).toString("base64url");
+    const secrets = memorySecrets({ [`agentx/${ENV}/callback-signing-key`]: key, [`agentx/${ENV}/erasure-hash-key`]: key });
     // Every part has a stack, so a subset of the parts still reads the others' outputs.
     await writeEnvironmentSettings(store, { ...stagingSettings, stacks: { ...stagingSettings.stacks, access: stackName("access"), identity: stackName("identity") } });
     const { deployer, requests } = fakeDeployer(scriptedOutputs());

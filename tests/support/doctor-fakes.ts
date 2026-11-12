@@ -24,6 +24,8 @@ export const WEBHOOK_SECRET = "stored-webhook-secret-".padEnd(48, "w");
 
 export const SECRETS: Record<string, string> = {
   "agentx/staging/callback-signing-key": SIGNING_KEY,
+  // 0.5.15: seeded with the callback signing key's value.
+  "agentx/staging/erasure-hash-key": SIGNING_KEY,
   "agentx/staging/slack": JSON.stringify({ botToken: TEST_BOT_TOKEN, signingSecret: TEST_SIGNING_SECRET }),
   "agentx/staging/github-app": JSON.stringify({ appId: "123", slug: "agentx-acme", account: "acme", privateKey: TEST_PRIVATE_KEY, webhookSecret: WEBHOOK_SECRET }),
 };

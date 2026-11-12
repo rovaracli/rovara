@@ -62,6 +62,7 @@ export const fixtureKeyAlias = (env: string): string => `alias/agentx/${env}/fix
  *  - the callback signing key signs short-lived tokens (worker callbacks, repository grants, cancel and setup tokens); it can be rotated (docs/runbooks/rotate-callback-signing-key.md);
  *  - the erasure hash key hashes stored values (erased people's names and aliases, Ask question hashes); it is never rotated without a re-hash plan, because the stored hashes would no longer match.
  * The deploy (packages/cli/src/deploy/signing-key.ts) creates both, never CloudFormation, so a stack update or deletion never changes or deletes either value. CDK grants each function the one it needs.
+ * For one release the named control-plane template still declares the NoEcho CallbackSigningKey parameter (unused by any function) and the CLI still passes it; both go in 0.5.16.
  */
 export const callbackSigningKeySecretName = (env: string): string => `agentx/${env}/callback-signing-key`;
 export const erasureHashKeySecretName = (env: string): string => `agentx/${env}/erasure-hash-key`;

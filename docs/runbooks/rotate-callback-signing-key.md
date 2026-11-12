@@ -30,10 +30,28 @@ How the overlap works:
 - `put-secret-value` moves the labels itself: the new value becomes `AWSCURRENT` and the old one becomes
   `AWSPREVIOUS`.
 - Each function reads the key once per execution environment (cold start) and keeps it in memory. A rotation reaches
-  a function only after you roll it (step 4).
+  a function only after you roll it (step 3). Until then a warm execution environment still holds the **old** key as
+  its current key, with no window at all: it keeps accepting tokens signed with the old key for as long as it lives,
+  and it refuses tokens signed with the new key. **Step 3 is therefore mandatory, and you run it right after step 2.**
+  Without it the old key is not revoked.
 
 Functions that read the callback signing key: the broker, the eval batch tick, and the session reconciler. Only the
 broker reads the erasure hash key.
+
+## Failure behaviour (for the release notes)
+
+If the broker can't read either secret, it refuses every request, worker callbacks included, until a read succeeds.
+A failed read isn't cached, so the next request tries again.
+
+## The 0.5.15 upgrade itself (once per environment)
+
+The upgrade creates `erasure-hash-key` from the callback key's current value. It does this only while the callback key
+has never been replaced (one version, no `AWSPREVIOUS`). If the callback key was replaced, the upgrade refuses: it says
+to restore the erasure key or run a re-hash, and it creates nothing. It refuses the same way when both keys are gone
+from an environment that already exists. Before the upgrade, check
+`describe-secret --secret-id agentx/staging/callback-signing-key --query VersionIdsToStages`. If it lists more than one
+version, the owner decides how to create the erasure key before you upgrade: its value must be the one the stored
+hashes were made with.
 
 ## 1. Preview (read-only; show this to the owner)
 
@@ -67,15 +85,20 @@ screen or a command line.
 
 ```sh
 umask 077; F=$(mktemp)
-$S aws secretsmanager get-random-password --password-length 64 --exclude-punctuation --query RandomPassword --output text > "$F"
+# tr strips the newline --output text adds, so the stored key is exactly the 64 generated characters.
+$S aws secretsmanager get-random-password --password-length 64 --exclude-punctuation --query RandomPassword --output text | tr -d '\n' > "$F"
 $S aws secretsmanager put-secret-value --secret-id agentx/staging/callback-signing-key --secret-string "file://$F" --query '{VersionId: VersionId, Stages: VersionStages}'
 rm -f "$F"
 ```
 
 Run `describe-secret` again. There should be a new `AWSCURRENT` version, and the old one should now be
-`AWSPREVIOUS`.
+`AWSPREVIOUS`. Go straight on to step 3.
 
-## 3. Roll the functions (write)
+## 3. Roll the functions (write; MANDATORY, right after step 2)
+
+Between step 2 and the end of step 3 there's a short `CALLBACK_FORBIDDEN` gap. A new execution environment issues
+tokens with the new key, and a warm one, still on the old key, refuses them. Keep the gap to the minute or two this
+loop takes. A worker callback refused in that gap is retried by the worker or cleaned up by the reconciler.
 
 A configuration change sends new invocations to fresh execution environments, and those read the new version.
 `Description` isn't set in the templates, so changing it doesn't fight CloudFormation.

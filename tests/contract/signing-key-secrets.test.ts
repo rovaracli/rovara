@@ -127,6 +127,32 @@ describe("migration: the erasure hash key starts as the callback signing key and
     expect(await erasureKeySource(NAMED, () => sm.reader)()).toBe(original);
   });
 
+  it("refuses to re-seed a missing erasure key once the callback key was rotated, and never creates it then (L3)", async () => {
+    const sm = fakeSecretsManager();
+    sm.put(CALLBACK, newKey(), new Date("2026-11-01T00:00:00Z"));
+    sm.put(CALLBACK, newKey(), new Date());
+    const store = { ...sm.asValueStore(new Date()), replaced: async () => true };
+    const refused = await ensureErasureHashKey(store, "staging", newKey()).catch((error: Error) => error);
+    expect((refused as Error).message).toMatch(/restore the erasure key .* or run the re-hash plan/u);
+    await expect(erasureKeySource(NAMED, () => sm.reader)()).rejects.toThrow(/ResourceNotFoundException/u);
+  });
+
+  it("refuses when this deploy had to make a new callback key in an environment that already existed (a deleted key), and seeds on a first install", async () => {
+    const sm = fakeSecretsManager();
+    const store = { ...sm.asValueStore(new Date()), replaced: async () => false };
+    await expect(ensureErasureHashKey(store, "staging", newKey(), { environmentExisted: true, callbackCreatedNow: true })).rejects.toThrow(/restore the erasure key/u);
+    expect(await ensureErasureHashKey(store, "staging", newKey(), { environmentExisted: false, callbackCreatedNow: true })).toBe("created");
+  });
+
+  it("an existing erasure key is kept even after a rotation (no refusal: nothing is re-seeded)", async () => {
+    const sm = fakeSecretsManager();
+    const original = newKey();
+    sm.put(ERASURE, original, new Date());
+    const store = { ...sm.asValueStore(new Date()), replaced: async () => true };
+    expect(await ensureErasureHashKey(store, "staging", newKey())).toBe("kept");
+    expect(await erasureKeySource(NAMED, () => sm.reader)()).toBe(original);
+  });
+
   it("refuses to seed from a short key", async () => {
     await expect(ensureErasureHashKey(fakeSecretsManager().asValueStore(new Date()), "staging", "short")).rejects.toThrow(/too short/);
   });
