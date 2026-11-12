@@ -4,7 +4,7 @@
 //   2. The template (environments/test-access/cloudformation/rovara-test-access.template.yaml) creates the test role and a custom resource whose ServiceToken is Rovara's SNS topic in that Region.
 //   3. CloudFormation publishes the custom resource's request to the topic. Rovara's handler (lane TA2) reads it with `parseTestAccessCallback`, looks up the connection recorded for the request's StackId, consumes the one-use
 //      token (one conditional write, which also records the StackId) only for a Create with no record, asks `planCallback` what to do, and answers CloudFormation's pre-signed S3 URL with `buildCloudFormationResponse` and
-//      `sendCloudFormationResponse`: Create and Update with success, Delete always with success, so deleting the customer's stack never hangs on Rovara and nobody can disconnect another's account with a forged Delete.
+//      `sendCloudFormationResponse`: Create and Update with success, Delete always with success, so deleting the customer's stack never hangs on Rovara. A StackId is not a secret, so `planCallback` alone does not stop a forged Delete: the handler (broker test-access/callback.ts) acts on an Update or Delete only when the message carries the connect token the stack's Create spent (its hash is stored with the stack).
 //
 // Everything in a request is untrusted: the topic accepts publishes from any AWS account (the customer's account is not known when the topic is made), and the account and Region in the body are the publisher's word,
 // so the one-use token is the only authentication. Therefore: the external id Rovara assumes the role with is made from the token's record (`connectionExternalId`), never read from the message; a reported connection stays
@@ -36,6 +36,18 @@ export function connectionExternalId(orgId: string, connectionId: string): strin
 export function parseConnectionExternalId(externalId: string): { readonly orgId: string; readonly connectionId: string } | undefined {
   const match = /^rovara-(org_[0-9a-z]{20})-(conn_[0-9a-z]{20})$/u.exec(externalId);
   return match === null ? undefined : { orgId: match[1] as string, connectionId: match[2] as string };
+}
+
+/** The names of the two roles the template creates, from the connection id (the template builds the same from the last part of the external id). Rovara finds the roles from the account id with them when no callback arrives. */
+export function testAccessRoleName(connectionId: string): string {
+  return `rovara-test-${TestAccessConnectionIdSchema.parse(connectionId)}`;
+}
+export function testAccessCleanupRoleName(connectionId: string): string {
+  return `rovara-cleanup-${TestAccessConnectionIdSchema.parse(connectionId)}`;
+}
+/** A role's ARN in a commercial account. */
+export function testAccessRoleArn(accountId: string, roleName: string): string {
+  return `arn:aws:iam::${z.string().regex(/^\d{12}$/u).parse(accountId)}:role/${roleName}`;
 }
 
 /** The template's parameter names. The quick-create link fills all of them (`param_<name>`). */
@@ -208,7 +220,9 @@ export const CALLBACK_FAILURE_REASONS = {
   region_mismatch: "This stack's Region does not match Rovara's topic. Start again from Rovara.",
   account_mismatch: "The role does not belong to the account that made this stack. Start again from Rovara.",
   external_id_mismatch: "The external id does not match this connection. Start again from Rovara.",
+  role_mismatch: "The roles are not the ones this connection's template makes. Start again from Rovara.",
   token_refused: "The connect link has expired or was already used. Start again from Rovara.",
+  account_refused: "Rovara cannot use this account for tests. Start again from Rovara with a test account of your own.",
   not_ready: "Rovara could not record the connection. Try again in a few minutes.",
 } as const;
 export type CallbackFailureCode = keyof typeof CALLBACK_FAILURE_REASONS;
@@ -388,7 +402,7 @@ export type CallbackPlan =
  * and only when no connection is recorded for the stack.
  *   Create:  a stack already recorded is a repeated delivery: nothing changes and it is answered SUCCESS. Otherwise the token must have been consumed, and the message's external id must be the one made from it.
  *   Update:  acts only on the recorded stack, with the recorded external id and account; anything else changes nothing and is answered SUCCESS (an update must not fail a customer's stack because of a stranger's message).
- *   Delete:  disconnects only when the StackId is exactly the one recorded at Create; any other Delete changes nothing and is answered SUCCESS. Someone who holds an external id cannot disconnect another's account.
+ *   Delete:  disconnects only when the StackId is exactly the one recorded at Create; any other Delete changes nothing and is answered SUCCESS. Someone who holds an external id cannot disconnect another's account. (The StackId is not a secret either: the handler also requires the stack's own connect token for an Update or a Delete.)
  */
 export function planCallback(request: TestAccessCallbackRequest, state: { readonly recorded?: RecordedConnection | undefined; readonly consumedToken?: ConnectTokenRecord | undefined }): CallbackPlan {
   const { recorded, consumedToken } = state;

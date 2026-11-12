@@ -65,6 +65,8 @@ describe("the customer test account's callback topics (lane TA1)", () => {
   it("has one topic with the shared name that any account may publish to, over TLS, and nothing more", () => {
     const [topic] = Object.values(other.Resources).filter((resource) => resource.Type === "AWS::SNS::Topic");
     expect(topic?.Properties.TopicName).toBe(testAccessTopicName("agentx-ta1"));
+    // The handler accepts only SHA-256 signatures (sns-verify.ts), so the topic must sign with them.
+    expect(topic?.Properties["SignatureVersion"]).toBe("2");
     const policy = statements(other, "AWS::SNS::TopicPolicy");
     const open = policy.filter((statement) => statement.Effect === "Allow");
     expect(open).toHaveLength(1);

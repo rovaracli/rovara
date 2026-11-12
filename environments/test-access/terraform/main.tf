@@ -1,7 +1,7 @@
 # The same resources as the CloudFormation template (../cloudformation/rovara-test-access.template.yaml): the test role, the delete-only cleanup role, the permissions
 # boundary and the policies. The policies in ./policies are generated from the same source as the template's (scripts/test-access/build-artifacts.ts); do not edit them.
 #
-# There is no callback in Terraform. When it is applied, give Rovara the account id and the role_arn output (Rovara asks for them after it sees no callback).
+# There is no callback in Terraform. When it is applied, give Rovara the account id (Rovara asks for it after it sees no callback); the roles are named rovara-test-<connection id> and rovara-cleanup-<connection id>, which Rovara finds from it.
 # The Region is the provider's: the boundary refuses every other Region.
 # Apply with the provider's credentials of the account you are connecting. Rovara never asks for access keys.
 
@@ -10,6 +10,8 @@ data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
 locals {
+  # The connection id is the last part of the external id; the roles are named from it, so Rovara can find them from the account id (as in the CloudFormation template).
+  connection_id = element(split("-", var.external_id), 2)
   template_vars = {
     partition   = data.aws_partition.current.partition
     region      = data.aws_region.current.name
@@ -84,7 +86,7 @@ data "aws_iam_policy_document" "trust" {
 }
 
 resource "aws_iam_role" "test" {
-  name_prefix          = "rovara-test-"
+  name                 = "rovara-test-${local.connection_id}"
   description          = "Assumed by Rovara to run tests in this account. Rovara test access."
   assume_role_policy   = data.aws_iam_policy_document.trust.json
   permissions_boundary = aws_iam_policy.boundary.arn
@@ -98,7 +100,7 @@ resource "aws_iam_role_policy_attachment" "test_access" {
 }
 
 resource "aws_iam_role" "cleanup" {
-  name_prefix          = "rovara-cleanup-"
+  name                 = "rovara-cleanup-${local.connection_id}"
   description          = "Assumed by Rovara to delete what a test run created. It cannot create or change anything. Rovara test access."
   assume_role_policy   = data.aws_iam_policy_document.trust.json
   permissions_boundary = aws_iam_policy.boundary.arn

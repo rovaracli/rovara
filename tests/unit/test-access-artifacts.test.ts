@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
 import { renderAll, renderTemplate } from "../../scripts/test-access/build-artifacts.js";
-import { TEST_ACCESS_CALLBACK_TIMEOUT_SECONDS, TEST_ACCESS_TEMPLATE_PARAMETERS, TEST_ACCESS_TEMPLATE_VERSION } from "../../packages/cloud-contracts/src/test-access-connect.js";
+import { TEST_ACCESS_CALLBACK_TIMEOUT_SECONDS, TEST_ACCESS_TEMPLATE_PARAMETERS, TEST_ACCESS_TEMPLATE_VERSION, connectionExternalId, testAccessCleanupRoleName, testAccessRoleName } from "../../packages/cloud-contracts/src/test-access-connect.js";
 import { buildTestAccessPolicies, buildTrustPolicy } from "../../packages/cloud-contracts/src/test-access-policy.js";
 
 // The connect kit: the CloudFormation template, the Terraform module's policies and the copy-paste policy text are all made by scripts/test-access/build-artifacts.ts from one source.
@@ -22,7 +22,7 @@ interface Template {
   Outputs: Record<string, Json>;
   Metadata: Json;
 }
-const template = (text: string): Template => parse(text, { customTags: [tag("Ref"), tag("Sub"), tag("GetAtt")] }) as Template;
+const template = (text: string): Template => parse(text, { customTags: [tag("Ref"), tag("Sub"), tag("GetAtt"), tag("Join"), tag("Select"), tag("Split")] }) as Template;
 const current = template(readFileSync(TEMPLATE, "utf8"));
 const roles = Object.entries(current.Resources).filter(([, resource]) => resource.Type === "AWS::IAM::Role");
 
@@ -209,5 +209,32 @@ describe.skipIf(CFN_GUARD === undefined || CFN_LINT === undefined)("cfn-lint and
     const result = guard(mutated(rule, change));
     expect(result.status, result.stdout).not.toBe(0);
     expect(result.stdout).toContain(rule);
+  });
+});
+
+describe("the roles are named from the connection id (the polling fallback finds them from the account id alone)", () => {
+  const connectionId = "conn_0123456789abcdefghij";
+  const externalId = connectionExternalId("org_a1b2c3d4e5a1b2c3d4e5", connectionId);
+
+  it("the template names the roles `<prefix><the third part of the external id>`, which is the connection id, as testAccessRoleName and testAccessCleanupRoleName say", () => {
+    const text = readFileSync(TEMPLATE, "utf8");
+    expect(text).toContain('RoleName: !Join ["", ["rovara-test-", !Select [2, !Split ["-", !Ref ExternalId]]]]');
+    expect(text).toContain('RoleName: !Join ["", ["rovara-cleanup-", !Select [2, !Split ["-", !Ref ExternalId]]]]');
+    // `!Select [2, !Split ["-", ExternalId]]` of `rovara-org_<20>-conn_<20>`: neither the organization id nor the connection id holds a hyphen.
+    expect(externalId.split("-")[2]).toBe(connectionId);
+    expect(`rovara-test-${externalId.split("-")[2]}`).toBe(testAccessRoleName(connectionId));
+    expect(`rovara-cleanup-${externalId.split("-")[2]}`).toBe(testAccessCleanupRoleName(connectionId));
+    expect(testAccessRoleName(connectionId).length).toBeLessThanOrEqual(64);
+    expect(testAccessCleanupRoleName(connectionId).length).toBeLessThanOrEqual(64);
+    // The external id's own pattern is what makes the third part the connection id.
+    expect(current.Parameters["ExternalId"]).toMatchObject({ AllowedPattern: "^rovara-org_[0-9a-z]{20}-conn_[0-9a-z]{20}$" });
+  });
+
+  it("the Terraform module names its roles the same way", () => {
+    const main = readFileSync(`${ROOT}/terraform/main.tf`, "utf8");
+    expect(main).toContain('connection_id = element(split("-", var.external_id), 2)');
+    expect(main).toContain('name                 = "rovara-test-${local.connection_id}"');
+    expect(main).toContain('name                 = "rovara-cleanup-${local.connection_id}"');
+    expect(main).not.toContain("name_prefix          =");
   });
 });

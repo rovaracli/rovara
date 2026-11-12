@@ -70,6 +70,8 @@ Resources:
   RovaraTestRole:
     Type: AWS::IAM::Role
     Properties:
+      # Named from the connection id (the last part of the external id), so Rovara can find the role from the account id when no callback arrives.
+      RoleName: !Join ["", ["rovara-test-", !Select [2, !Split ["-", !Ref ExternalId]]]]
       Description: Assumed by Rovara to run tests in this account. Rovara test access.
       MaxSessionDuration: 3600
       PermissionsBoundary: !Ref RovaraTestBoundary
@@ -102,6 +104,7 @@ Resources:
   RovaraTestCleanupRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Join ["", ["rovara-cleanup-", !Select [2, !Split ["-", !Ref ExternalId]]]]
       Description: Assumed by Rovara to delete what a test run created. It cannot create or change anything. Rovara test access.
       MaxSessionDuration: 3600
       PermissionsBoundary: !Ref RovaraTestBoundary

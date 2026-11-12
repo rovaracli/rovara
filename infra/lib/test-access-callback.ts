@@ -63,7 +63,8 @@ export class TestAccessCallbackStack extends Stack {
     super(scope, id, { ...props, env: { ...props.env, region: props.region } });
     const { naming, settings, region } = props;
     const topicName = testAccessTopicName(naming.resourcePrefix);
-    this.topic = new sns.Topic(this, "Callback", { topicName, displayName: "Rovara test account callback" });
+    // SignatureVersion 2 (SHA-256): the handler (packages/broker/src/test-access/sns-verify.ts) accepts no other.
+    this.topic = new sns.Topic(this, "Callback", { topicName, displayName: "Rovara test account callback", signatureVersion: "2" });
     // The one wildcard principal, as narrow as SNS lets it be: publish only, and only over TLS. A plain-HTTP publish is refused outright.
     this.topic.addToResourcePolicy(new iam.PolicyStatement({
       sid: "CustomerStacksPublish",

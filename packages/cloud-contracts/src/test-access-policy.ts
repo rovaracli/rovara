@@ -56,7 +56,7 @@ export const UNFENCEABLE_SERVICES: Readonly<Record<string, string>> = {
 };
 
 /** Actions of services that are not Regional: the Region condition leaves them alone. */
-const GLOBAL_ACTIONS: readonly string[] = ["iam:*", "s3:GetBucketLocation", "s3:ListAllMyBuckets", "sts:GetCallerIdentity"];
+export const TEST_ACCESS_GLOBAL_ACTIONS: readonly string[] = ["iam:*", "s3:GetBucketLocation", "s3:ListAllMyBuckets", "sts:GetCallerIdentity"];
 
 /**
  * Actions that take the boundary off a role or rewrite who may use it. Only Rovara's test role can call IAM at all (a role a run creates is denied every IAM action), and its calls are gated by the signer, which also reads the
@@ -291,7 +291,7 @@ export function buildTestAccessPolicies(services: readonly string[] = DEFAULT_TE
     { Sid: "NoTag", Effect: "Deny", NotAction: ["sts:GetCallerIdentity"], Resource: "*", Condition: { Null: { [`aws:PrincipalTag/${RUN_TAG_KEY}`]: "true" } } },
     // A session tag overrides a role's tag, so whoever assumes a run's role could name another run. A run's role is named for its run, and the tag must agree with the name.
     { Sid: "Forged", Effect: "Deny", Action: ["*"], Resource: "*", Condition: { ArnLike: { "aws:PrincipalArn": RUN_ROLES }, ArnNotLike: { "aws:PrincipalArn": OWN_RUN_ROLES } } },
-    { Sid: "Region", Effect: "Deny", NotAction: GLOBAL_ACTIONS, Resource: "*", Condition: { StringNotEquals: { "aws:RequestedRegion": "{{Region}}" } } },
+    { Sid: "Region", Effect: "Deny", NotAction: TEST_ACCESS_GLOBAL_ACTIONS, Resource: "*", Condition: { StringNotEquals: { "aws:RequestedRegion": "{{Region}}" } } },
     // A request that carries the run tag key must carry this run's value, and a request that removes the key is refused.
     { Sid: "TagKey", Effect: "Deny", Action: ["*"], Resource: "*", Condition: { "ForAnyValue:StringEquals": { "aws:TagKeys": RUN_TAG_KEY }, StringNotEquals: { [`aws:RequestTag/${RUN_TAG_KEY}`]: RUN_TAG_VARIABLE } } },
     { Sid: "Pool", Effect: "Deny", Action: onlyHeld(ACCOUNT_POOL_ACTIONS), Resource: "*" },

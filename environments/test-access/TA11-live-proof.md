@@ -37,6 +37,25 @@ Carried from the first review:
 15. Whose credentials CloudFormation publishes to the SNS topic with, and what the response URL host looks like in each Region (`cloudFormationResponseHosts`).
 16. Quick-create accepts a template with named IAM resources (CAPABILITY_NAMED_IAM) in one acknowledgement.
 
+From the connect flow (lane TA2; nothing in it was run against AWS):
+
+25. The Lambda event of an SNS delivery carries `Signature`, `SignatureVersion` ("2": the topic is set to it, and the handler accepts no other), `SigningCertUrl` (not `SigningCertURL`), `TopicArn` and `Timestamp` as `sns-verify.ts` reads them, and the certificate at `https://sns.<region>.amazonaws.com/SimpleNotificationService-<id>.pem` verifies the canonical string. Its subject is `CN=sns.amazonaws.com` (the loader accepts `sns.amazonaws.com` or `sns.<region>.amazonaws.com`; confirm which an opt-in Region uses). Whether a cross-Region delivery to the home-Region function shows the topic's own Region in `TopicArn` and in the certificate URL.
+26. The test role can call `iam:GetRole` on the test role and the cleanup role (to read `PermissionsBoundary`) and `iam:ListAccountAliases`, from a session carrying the run tag.
+27. An `sts:AssumeRole` of the test role with the external id and NO tags succeeds (the polling probe), and `sts:GetCallerIdentity` then works while everything else is refused (`NoTag`).
+28. An `sts:AssumeRole` without the external id is refused (`AccessDenied`), for both roles.
+29. `sqs:DeleteQueue` of a queue name that is not `rv-<run8>-*` (one that does not exist) is answered `AccessDenied` by IAM, not `QueueDoesNotExist` (the connection test's "cannot touch others" check reads the difference), and `sqs:CreateQueue` with the run tag on `rv-<run8>-conntest` then `DeleteQueue` of it succeeds.
+30. The roles are named `rovara-test-<connection id>` and `rovara-cleanup-<connection id>` by the template (`!Select [2, !Split ["-", ExternalId]]`) and by the Terraform module, and an account-id-only poll finds them.
+31. An access-denied for a call an SCP blocks says "service control policy" in its message (the connection test tells an SCP from the role's own refusal by that phrase alone; it keeps no other AWS text).
+32. A quick-create stack whose custom resource hits Rovara's topic creates in about a minute, and an update or a delete of the stack sends an Update and a Delete with the same `StackId` the Create carried.
+
+## To do when the callback function is wired (not built in TA2)
+
+The topic takes publishes from any AWS account, and every publish invokes the function (cost and noise are the attacker's lever, not access). When the function is created (infra to-do, with the function's role and environment):
+
+- Reserved concurrency on `<prefix>-test-access-callback-handler`, small (for example 5): a flood queues and drains instead of consuming the account's pool, and the dead-letter queue keeps what SNS gave up on.
+- Alarms (a metric filter on the function's log group, one operator alarm each): the `callback.dropped` lines (`code`: signature, topic, cert_url, timestamp, too_large, malformed_request, response_url...) and the `callback.refused` lines (`code`: token_refused, external_id_mismatch, account_refused...). A normal day has a handful of refused lines (an expired link, a retry); a burst of either is somebody probing. Also alarm on the dead-letter queue's depth and on function errors.
+- The function's environment: `TEST_ACCESS_TABLE_NAME`, `TEST_ACCESS_TOPIC_ARNS`, `TEST_ACCESS_ROVARA_ACCOUNT_IDS`, `TEST_ACCOUNTS_ENABLED`. The connect routes refuse (`RUNTIME_UNAVAILABLE`) and the poll does nothing while the list of Rovara's own accounts is empty.
+
 ## For the signer (TA4)
 
 IAM cannot see these, so the signer must:

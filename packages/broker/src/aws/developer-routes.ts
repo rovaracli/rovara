@@ -217,6 +217,7 @@ import { COMPANY_RULES_BROWSER_MESSAGE, companyRulesEnabled, isCompanyRulesPath,
 import { setupRecipesEnabled } from "../rovara-code/setup-recipes-switch.js";
 import { SAVED_ENV_IMAGE_BROWSER_MESSAGE, isSavedEnvImagePath, routeSavedEnvImage } from "./developer-routes/saved-env-image.js";
 import { routeFixtures } from "./developer-routes/fixtures.js";
+import { routeTestAccess } from "./developer-routes/test-access.js";
 import { savedEnvEnabled } from "../test-env/saved-env-switch.js";
 import { nightlyHooks } from "../test-env/nightly-wiring.js";
 import { StatusReply } from "./status-reply.js";
@@ -657,6 +658,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (savedEnvImageReply !== undefined) return savedEnvImageReply;
   const fixturesReply = await routeFixtures(deps, caller, request, url);
   if (fixturesReply !== undefined) return fixturesReply;
+  const testAccessReply = await routeTestAccess(deps, caller, request, url);
+  if (testAccessReply !== undefined) return testAccessReply;
   // SR-1: the task owner acknowledges that an `on` second review did not run (the merge gate). Owner only, in a browser session, audited.
   const secondReviewAck = /^\/v1\/app\/tasks\/([0-9a-f-]{36})\/second-review-acknowledge$/iu.exec(url.pathname);
   if (secondReviewAck !== null && request.method === "POST") return new StatusReply(200, await acknowledgeSecondReview(developerTaskRouteDependencies(deps, caller), caller, secondReviewAck[1]!, jsonBody(request)));

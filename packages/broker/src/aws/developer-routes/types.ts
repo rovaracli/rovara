@@ -46,6 +46,7 @@ import type { OrgConnectionStore } from "../../connections/store.js";
 import type { SsoStores } from "../../developer/sso-sign-in.js";
 import type { IdentityNoticeDependencies } from "../../developer/identity-notice.js";
 import type { SeedRepoSources } from "../../test-env/seed-lock.js";
+import type { ConnectDeps } from "../../test-access/connect.js";
 
 /** How long the close spends asking running sessions to stop; the rest are stopped by the model-key mint and the dispatch guard. */
 export const CLOSE_STOP_BUDGET_MS = 8_000;
@@ -127,6 +128,8 @@ export interface DeveloperRouteDependencies {
   savedEnv?: SavedEnvDeps;
   /** Test services, slice 3: the fixture store on its real ports, made for one request with the production deny list that request reads (the project's). Only where the install has the fixture key; without it the fixture routes do not exist. */
   fixtureStore?: (denyFor: FixtureDenyFor) => FixtureStore;
+  /** Customer test AWS account, lane TA2: what the connect routes need (store, template and topics, AWS port, who may). Nothing installs it yet: without it, and while `ta` is off, the routes do not exist. */
+  testAccess?: ConnectDeps;
   /**
    * Meta repo lane B: a file of one of an org's repositories at a commit, as GitHub holds it (undefined when it is not there; throws when GitHub cannot answer). The setup agent's
    * citations are re-read through it. Without it every citation reads `unchecked` and nothing is pre-ticked.
