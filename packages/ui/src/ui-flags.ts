@@ -1,7 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { QueryCache } from "@tanstack/react-query";
 import { UI_FLAG_NAMES, type UiFlagName, type UiFlagState } from "./api/ui-flags.js";
-import { useOptionalAppHost } from "./host.js";
 /**
  * Runtime per-company UI flags (lane U5): the ONE place that decides whether a new screen is on. Every `isXOn(host)` (billing-flags.ts, health-flags.ts, ...) calls `uiFlagOn` and nothing else. The finished screens (decision 125) have no flag any more.
  *
@@ -100,7 +99,7 @@ export function uiFlagResolve(server: UiFlagState | undefined, deviceOn: boolean
   return false;
 }
 
-/** Whether the flag is on for this person, now. `localKey` is the per-device storage key the flag used before runtime flags (for example `rovara.nav`). Unreadable storage means the device switch is off. */
+/** Whether the flag is on for this person, now. `localKey` is the flag's per-device storage key (for example `rovara.billing`). Unreadable storage means the device switch is off. */
 export function uiFlagOn(host: UiFlagsStorageHost, name: UiFlagName, localKey: string): boolean {
   const server = uiFlagServerState(host, name);
   if (server === "on") return true;
@@ -109,16 +108,6 @@ export function uiFlagOn(host: UiFlagsStorageHost, name: UiFlagName, localKey: s
   try { return host.storage.get(localKey) === UI_FLAG_DEVICE_VALUE; } catch { return false; }
 }
 
-/** The server's state for a flag, kept current in a component. Without a host (or an answer) it is undefined. */
-export function useUiFlagServerState(name: UiFlagName): UiFlagState | undefined {
-  const host = useOptionalAppHost();
-  return useSyncExternalStore(
-    host === undefined ? noSubscribe : uiFlagsStoreOf(host).subscribe,
-    () => host === undefined ? undefined : uiFlagServerState(host, name),
-    () => undefined,
-  );
-}
-const noSubscribe = (): (() => void) => () => undefined;
 
 /** `App` calls it from an effect, before it renders anything below it: `wait` is true on a page that reads the navigation answer, and then every flag is off (as `holdUiFlagsUntilNav`) until the answer comes; false on a page with no navigation read, which keeps the device keys. */
 export function startUiFlags(host: object, wait: boolean): void {

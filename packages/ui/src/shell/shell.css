@@ -44,3 +44,4 @@
 .rv-company-gate-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3,12px)}
 /* The back link of the "Open on a larger screen" page (only where a caller passes backTo). */
 .rv-large-screen-back a{display:inline-flex;align-items:center;min-height:44px}
+.rv-part-error{display:flex;align-items:center;flex-wrap:wrap;gap:var(--rv-space-3);color:var(--rv-text)}.rv-part-error p{margin:0}
