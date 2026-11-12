@@ -434,18 +434,21 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-12 (0.5.15 train/0515-adapters, lane A2 adapters/a2-sqs-cloud fcf6c3bb9): the named and foreign digests were retaken from the values the test reports, after ONE intended change: the
     // DISABLED OutboxRelayBackstopSchedule (AWS::Scheduler::Schedule on the recovery schedules' role, named environments only). Checked first: with only that block switched off, all
     // pins and the named and legacy snapshots pass unchanged, and infra/ differs from integ/0515 2f072966f only by that block. Legacy did not move.
+    // 2026-11-12 (0.5.15, fix/0515-notify-dm-iam): the named and foreign digests were retaken from the values the test reports, after ONE intended change: the developer task notifier's role gains
+    // GetItem + UpdateItem on the State table for the leading key NOTIFY_DM only (attention DMs and the Slack-member warning were refused; SlackDeliveryFailed fired on staging). Checked first: with
+    // that statement removed, all pins and the named and legacy snapshots pass unchanged, and the named-templates snapshot shows exactly that one statement added. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "d16d4c6c47365f312ef61de64b0d37d81d4cd421823186b088f9666870c17478",
-        withoutRoute: "68653783ed88a2dcab5868b857f4252c12001004eb1aa64d99c381fa5d6a933f",
+        withRoute: "02107baaeaeec0fb4fb46663d1387b9716044e4829a8bceeb7c1a361221023c3",
+        withoutRoute: "6a80e508e0c790fc991a6e68644bf1a3d7c49c7c7cf930d51fecaefa33ab6c08",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "c04f5ef2c6c61905f44bf16af5ed32c5e2e7d6b65fba0f60a774ab8fe9a50ce2",
-        withoutRoute: "da5b2b6ef7952d769bd5359512a4cb4145c3713635f332eacde866871b73be18",
+        withRoute: "6f81873799bc2e262ac7584d443d7bee018660513117ae10d8279df58913b44f",
+        withoutRoute: "980a7c64cbe045ca7c5665edb5d45121846aeaa0c75f6f3355882704bd94a212",
       },
       {
         label: "legacy",

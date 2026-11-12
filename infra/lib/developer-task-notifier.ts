@@ -178,6 +178,13 @@ export class DeveloperTaskNotifier extends Construct {
       resources: [props.state.tableArn],
       conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["ADMIN_CHANGE#*"] } },
     }));
+    // NOTIFY-DM-IAM: an attention DM (a person's batch of task notifications, and the Slack-member warning) waits in a NOTIFY_DM row. The notifier reads it, claims it (PENDING to SENDING), and marks it
+    // SENT or gives it back, by key: Get and Update on that one partition, no query, no write of a new row. Without this grant every such DM was refused (SlackDeliveryFailed fired on staging).
+    this.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+      resources: [props.state.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["NOTIFY_DM"] } },
+    }));
     // C7: the State table's stream has two readers, the outbox publisher (control-plane.ts,
     // OutboxStreamMapping) and this notifier: the per-shard maximum AWS recommends. Later phases
     // (such as 25e's Slack Confirm DMs) add filters to an existing trigger, never a third reader.
