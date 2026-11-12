@@ -172,14 +172,6 @@ function hitOfFact(fact: RecordFact): RecordSearchHit {
   };
 }
 
-const words = (query: string): string[] => query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length >= 2).slice(0, 12);
-function matches(query: string, haystack: string): number {
-  const needles = words(query);
-  if (needles.length === 0) return 0;
-  const lower = haystack.toLowerCase();
-  return needles.filter((word) => lower.includes(word)).length / needles.length;
-}
-
 /**
  * Search rows and facts. ALWAYS a blend (DECISIONS 142): the meaning results (embedder + vector index) and the keyword results (BM25 over the newest `KEYWORD_SCAN_ROWS` rows of the project and its facts) are
  * fused with reciprocal rank fusion (search-fusion.ts), so a row only one side found still shows up and a row both found ranks first. Both sides go through the same cuts (workspace, project, time, kinds, sources)

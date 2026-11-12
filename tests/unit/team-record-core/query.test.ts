@@ -311,9 +311,11 @@ describe("recordSearch always blends keyword and meaning (DECISIONS 142, recipro
     expect(KEYWORD_SCAN_ROWS).toBe(400);
     const w = await corpus();
     const asked: unknown[] = [];
-    const counting = { ...w.table, documentClient: { send: async (command: { constructor: { name: string }; input?: { Limit?: number } }) => { if (command.constructor.name === "QueryCommand") asked.push(command.input?.Limit); return (w.table.documentClient as { send(c: unknown): Promise<unknown> }).send(command); } } };
-    await recordSearch(deps(w, { table: counting as never, embedder: w.embedder, vectorSearch: vectorOf(w, ["meaning"]) }), person(), "web", { query: QUERY });
-    expect(asked.length).toBeGreaterThan(0);
+    const real = w.table.documentClient;
+    const counting = { ...w.table, documentClient: { send: async (command: { constructor: { name: string }; input?: { Limit?: number } }) => { if (command.constructor.name === "QueryCommand") asked.push(command.input?.Limit); return real.send(command); } } };
+    await recordSearch(deps(w, { table: counting, embedder: w.embedder, vectorSearch: vectorOf(w, ["meaning"]) }), person(), "web", { query: QUERY });
+    // the keyword side asked for the newest KEYWORD_SCAN_ROWS rows although the vector side also answered
+    expect(asked).toContain(KEYWORD_SCAN_ROWS);
   });
 });
 
