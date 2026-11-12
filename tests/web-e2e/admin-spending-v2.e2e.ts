@@ -64,6 +64,18 @@ for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: {
  }
 }
 
+test("switch on at 390: a person's own allowance from the settings read is shown in the People table, everyone else is the company default", async ({ page, context, request, baseURL }) => {
+ await enter(page, context, request, baseURL, 390, { "rovara.spending": "v2" });
+ // The settings answer lists Maya's own allowance (`memberOverrides`, owners and admins only); the rest of the answer is the mock directory's.
+ await page.route("**/v1/web/org/budget-settings", async route => { const answer = await route.fetch(), body = await answer.json() as Record<string, unknown>;await route.fulfill({ response: answer, json: { ...body, memberOverrideCount: 1, memberOverrides: [{ developerId: "b".repeat(64), microdollars: 75_000_000 }] } }); });
+ await page.goto(PATH);await ready(page);
+ const people = page.getByRole("table", { name: "Spending by person this month" });
+ await expect(people.getByRole("row", { name: /Maya/u })).toContainText("$75.00");await expect(people.getByRole("row", { name: /Maya/u })).toContainText("own allowance");
+ await expect(page.getByText(/A person's own allowance is shown where one is set/u)).toBeVisible();
+ expect(await noSidewaysScroll(page)).toBe(true);expect(await smallTargets(page)).toEqual([]);
+ await evidenceShot(page, { path: `${shots}/own-allowance-390.png`, fullPage: true });await checkA11y(page, { theme: "light" });
+});
+
 test("switch on at 390, dark: a viewer the broker refuses the company breakdown sees totals and own figures only", async ({ page, context, request, baseURL }) => {
  await enter(page, context, request, baseURL, 390, { "rovara.look": "v2", "rovara.spending": "v2" }, "restricted", "dark");await page.goto(PATH);
  await expect(page.getByRole("heading", { name: "This month: November 2026" })).toBeVisible();await expect(page.getByText(/Spending by person is shown to company owners and admins/)).toBeVisible();

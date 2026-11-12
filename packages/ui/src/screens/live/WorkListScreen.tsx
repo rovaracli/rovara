@@ -39,10 +39,11 @@ export function WorkListScreen() {
  useEffect(() => { if (rows === undefined) return;if (previous.current?.key === selection) for (const row of previous.current.rows) if (!rows.some(next => next.sessionId === row.sessionId)) announce(row.title + " left this list");previous.current = { key: selection, rows }; }, [rows, selection, announce]);
  function choose(key: string, value: string | undefined) { const next = new URLSearchParams(params);next.delete("filter");if (value === undefined) next.delete(key);else next.set(key, value);setParams(next); }
  const projects = nav.data?.projects.map(item => item.name) ?? [];if (project !== undefined && !projects.includes(project)) projects.push(project);
- const note = view === "team" ? "Work on projects you're part of" : view === "finished" ? (project === undefined ? "Your finished work. Choose a project to see everyone's finished work in it." : "Finished work in " + project) : undefined;
+ const note = view === "team" ? "Work on projects you're part of" : view === "finished" ? (project === undefined ? "Finished work you can open: your own and your projects'. Choose a project to see just its finished work." : "Finished work in " + project) : undefined;
  const content = <>
   {note !== undefined && <p className="rv-muted rv-work-note"><VisibleText text={note} /></p>}
   {work.isPending && <Skeleton label="Loading work" />}
+  {view === "finished" && project === undefined && work.projectsCut && <p role="note" className="rv-muted rv-work-note">Some projects aren't included; filter by project to see them.</p>}
   {work.partial && <div role="alert" className="rv-work-note"><p>Some work couldn't be loaded, so this list may be incomplete.</p><Button onClick={() => { void work.refetch(); }}>Try again</Button></div>}
   {work.isError && <div role="alert"><p><VisibleText text={work.error instanceof ApiError ? work.error.message : "Couldn't load work. Try again."} /></p><Button onClick={() => { void work.refetch(); }}>Try again</Button></div>}
   {rows !== undefined && rows.length === 0 && <EmptyState title={EMPTY[view].title} description={EMPTY[view].description} />}

@@ -144,6 +144,12 @@ jobs:
         env:
           # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
           NODE_OPTIONS: --max-old-space-size=6144
+      # Convergence plan W0-5: Code's port conformance suites (vendored, vendor/README.md) run against Code's fakes and every Cloud adapter registered in tests/conformance/adapters
+      # (docs/architecture/cloud-adapter-conformance.md). It runs here, after the build and the type checks it needs, so a broken adapter or a stale suite stops the run before the six shards start (they wait for `checks`); the
+      # shards run the same files again with the rest of tests/ (a few seconds), so the adapters stay under test where the whole suite runs. Skipped where the folder does not exist.
+      - name: Port conformance suites (Code's fakes and Cloud's adapters)
+        if: hashFiles('tests/conformance/conformance.test.ts') != ''
+        run: npx vitest run tests/conformance
 
   # The full-repository lint, on every run on both repositories, with the same config and rules as `eslint .`. It starts once `checks` has passed (no lint minutes are spent on code that
   # does not type-check) and runs beside the test shards, not before them: it took 16 of the old checks job's 27 minutes on 2026-10-31 and passed 30 once v1.2 landed, and the private
@@ -519,7 +525,7 @@ jobs:
       - name: The build holds what the browser tests need
         run: node scripts/web-e2e-build-guard.ts
       - name: Archive the build outputs
-        run: tar -czf "$RUNNER_TEMP/web-e2e-build.tgz" packages/*/dist
+        run: tar -czf "$RUNNER_TEMP/web-e2e-build.tgz" packages/*/dist vendor/rovara-code/packages/*/dist
       - name: Upload the build for the browser legs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

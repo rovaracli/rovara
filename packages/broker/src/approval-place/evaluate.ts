@@ -2,7 +2,7 @@
 // and runs it. Nothing here decides a rule: every rule is in the function, so the app, a chat and a comment cannot disagree.
 //   * "Linked": a chat press is linked when the Slack user's verified Slack sign-in belongs to the very developer pressing (`developerOfSlackUser`). The stand-in identity of a Slack user who never signed in is not.
 //   * "Recent": the person's last INTERACTIVE sign-in by email code or company sign-in (OIDC, SAML). A Slack or GitHub sign-in is not a Rovara sign-in (owner answer Q3), and a refresh is not a sign-in.
-//   * The window is read only when a medium approval comes from outside the app (the one case that needs it); a window that cannot be read refuses the approval, it is never guessed.
+//   * The window is read only when a medium approval, a rejection or a request for changes comes from outside the app (the cases that need it); a window that cannot be read refuses the approval, it is never guessed.
 import { type ApprovalDeciderRole, type ApprovalDecisionKind, type ApprovalPlace, type ApprovalPlaceAnswer, type ApprovalPlaceRisk, type ApprovalPlaceVerdict, type DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import { approvalPlaceDecision, isOutsideApprovalPlace } from "@agentx/cloud-contracts";
 import { DeveloperSignInStore } from "../developer/store.js";
@@ -58,7 +58,8 @@ export interface PlaceAnswer {
  */
 export async function evaluateApprovalPlace(deps: PlaceDependencies, question: PlaceQuestion): Promise<PlaceAnswer> {
   const outside = isOutsideApprovalPlace(question.place);
-  const needsRecent = outside && question.answer === "approve" && question.risk === "medium";
+  // A medium approval, and (owner decision 99) a rejection or a request for changes at any risk, from an outside place need a recent sign-in.
+  const needsRecent = outside && ((question.answer === "approve" && question.risk === "medium") || question.answer === "reject" || question.answer === "request_changes");
   const store = deps.signInTableName === undefined ? undefined : new DeveloperSignInStore({ documentClient: deps.documentClient, tableName: deps.signInTableName, nameTableName: deps.tableName, now: () => deps.now() });
   let linked = true;
   if (outside) {
@@ -76,7 +77,8 @@ export async function evaluateApprovalPlace(deps: PlaceDependencies, question: P
   const verdict = approvalPlaceDecision({
     kind: question.kind, risk: question.risk, answer: question.answer, place: question.place,
     decider: { role: question.role, linked, authTime },
-    // An unreadable stored window is enforced as its 1-hour minimum (`readApprovalWindow`); the project switch for collaborators has no Cloud role to apply to yet.
+    // An unreadable stored window is enforced as its 1-hour minimum (`readApprovalWindow`). Plan decisions never have a collaborator seat (the seat is the owner or a maintainer), so the project switch is
+    // not read here; product decisions read it live (`product-decisions/store.ts`).
     settings: { recentSignIn: { seconds: window?.seconds ?? 86_400 }, collaboratorApprovals: true },
     freshSignIn: question.freshSignIn, nowMs,
   });

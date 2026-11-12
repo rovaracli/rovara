@@ -3,6 +3,7 @@
 //   C99: a new accountable maintainer is checked as a member in the SAME transaction as the write, not only at the route.
 //   C106: archive carries the actor fence and the manage snapshot that unarchive already had.
 // Each race test changes the world at the moment the broker's own transaction is sent, so a check made earlier cannot see it.
+import "../support/automations-on.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";

@@ -3,6 +3,7 @@
 // the gate_waiting event) is in chain-gates.test.ts and chain-view.test.ts.
 import { afterEach, describe, expect, it } from "vitest";
 import { TriggerSpecSchema } from "@rovara-code/contracts";
+import { orgOpenApprovalKey } from "@agentx/cloud-contracts";
 import { getApprovalSubjectHandler } from "../../packages/broker/src/agents/approvals.js";
 import { builtinTriggerIdFor } from "../../packages/broker/src/triggers/routes.js";
 import { closeTriggerEnableApproval } from "../../packages/broker/src/triggers/lifecycle.js";
@@ -145,8 +146,11 @@ describe("I-3 and M-3: a request to turn a trigger on dies with the state it was
     const deps = v.routeDeps;
     expect(await closeTriggerEnableApproval(deps, ORG_A, ID("b"), approvalOf(asked), "x")).toBe(false);
     expect(await closeTriggerEnableApproval(deps, ORG_A, ID("a"), "not-an-approval", "x")).toBe(false);
-    expect((await v.approval(approvalOf(asked))).status).toBe("PENDING");
+    const pending = await v.approval(approvalOf(asked));
+    expect(pending.status).toBe("PENDING");
+    expect(v.db.get(orgOpenApprovalKey(ORG_A, pending.createdAt, approvalOf(asked) as never)), "listed in the company's open index while PENDING").toBeDefined();
     expect(await closeTriggerEnableApproval(deps, ORG_A, ID("a"), approvalOf(asked), "x")).toBe(true);
+    expect(v.db.get(orgOpenApprovalKey(ORG_A, pending.createdAt, approvalOf(asked) as never)), "dropped with the close").toBeUndefined();
     expect(await closeTriggerEnableApproval(deps, ORG_A, ID("a"), approvalOf(asked), "x")).toBe(false);
   });
 

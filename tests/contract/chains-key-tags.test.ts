@@ -1,5 +1,6 @@
 // Plan 4 Task 28: a key minted for a step of a chain run says which chain and which run it is for (its ledger lines carry both), and a key minted for a step of org B's run names
 // B's own things only. The real broker, with the model proxy faked, mints for a step of A's run and of B's run through the route the worker asks.
+import "../support/automations-on.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import { call as callHandler, loadSlackBroker } from "../support/slack-broker.js";
 import { OMAR } from "../support/developer-task-broker.js";

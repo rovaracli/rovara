@@ -13,14 +13,14 @@ export function workFixture() {
  const team = liveFixture({ sessionId: ID("e"), kind: "task", title: "Check refund idempotency", owner: ARJUN, status: "running", statusWords: "Checking", actions: ["watch"], updatedAt: ago(10 * MIN) });
  return {
   mine: [building, decide, local, failed], team: [team], needs_me: [decide, failed], failed: [failed],
-  ended: [finishedFixture({ sessionId: ID("f"), title: "Fix the rounding bug in tax totals", endedAt: ago(5 * HOUR), summary: { ...finishedFixture().summary, display: { state: "merged" } } }), finishedFixture({ sessionId: ID("g"), title: "Why were customers refunded twice?", endedAt: ago(26 * HOUR), where: { kind: "mac", deviceId: "dvc_aaaaaaaaaaaaaaaaaaaa", label: "Priya's MacBook" } })],
+  ended: [finishedFixture({ sessionId: ID("f"), title: "Fix the rounding bug in tax totals", endedAt: ago(5 * HOUR), summary: { ...finishedFixture().summary, display: { state: "merged" } }, finishedAs: "merged" }), finishedFixture({ sessionId: ID("g"), title: "Why were customers refunded twice?", endedAt: ago(26 * HOUR), where: { kind: "mac", deviceId: "dvc_aaaaaaaaaaaaaaaaaaaa", label: "Priya's MacBook" }, finishedAs: "finished_no_code" })],
  };
 }
 type Work = ReturnType<typeof workFixture>;
-/** The answer to `GET /v1/web/live?filter=` or `GET /v1/web/sessions?owner=me|project=&status=ended`. */
+/** The answer to `GET /v1/web/live?filter=` or `GET /v1/web/sessions?scope=company|project=&status=ended`. The company-wide Finished list says some projects are left out (`projectsCut`), as the server does for a person who reaches more projects than one answer reads. */
 export function workAnswer(work: Work, url: URL): unknown {
  const project = url.searchParams.get("project");
- if (url.pathname === "/v1/web/sessions") return SessionListSchema.parse({ sessions: work.ended.filter(tile => project === null || tile.project === project) });
+ if (url.pathname === "/v1/web/sessions") return SessionListSchema.parse({ sessions: work.ended.filter(tile => project === null || tile.project === project), ...(project === null && url.searchParams.get("scope") === "company" ? { projectsCut: true } : {}) });
  const filter = url.searchParams.get("filter") ?? "all", tiles = filter === "mine" ? work.mine : filter === "team" ? work.team : filter === "needs_me" ? work.needs_me : filter === "failed" ? work.failed : [...work.mine, ...work.team];
  return LiveResponseSchema.parse({ tiles: tiles.filter(tile => project === null || tile.project === project) });
 }

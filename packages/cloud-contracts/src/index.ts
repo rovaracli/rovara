@@ -52,7 +52,7 @@ export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "
 export { OrgInvitePublicIdSchema, AppOrgInviteStatusSchema } from "./developer-web.js";
 
 // Lane A: safe reviewed invite creation receipts.
-export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema, InviteEmailOutcomeSchema } from "./invite-creation.js";
+export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema, InviteEmailOutcomeSchema, InviteProjectSchema, InviteProjectNoteSchema, INVITE_PROJECT_ROLES_FOR_MAINTAINERS, type InviteProject, type InviteProjectNote } from "./invite-creation.js";
 
 // Lane A: strict read-only monthly base budget settings.
 export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";
@@ -75,6 +75,9 @@ export * from "./evidence.js";
 // Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
 export * from "./org-slack-workspace-evidence.js";
 
+// 0.5.15: when each health check last ran for a company (Cloud only; the Health page says "checked 5 minutes ago").
+export * from "./org-health-observations.js";
+
 export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema, AuditIndexedResultSchema, type AuditIndexedQuery, type AuditIndexedResult } from "./audit-search.js";
 
 export { TaskStopEditablePolicySchema, type TaskStopEditablePolicy, TaskStopPendingChangeSchema, TaskStopEditingContextSchema, TaskStopEditBodySchema, TaskStopDecisionBodySchema, TaskStopEditResultSchema, taskStopEditKind } from "./task-stop-editing.js";
@@ -96,6 +99,8 @@ export * from "./saved-env-key-files.js";
 // Company domain verification (owner decision 2026-11-02).
 export * from "./company-domains-web.js";
 export * from "./app-company-rules.js";
+// A-32 / A-33 (srv/project-people): the web's project people and code settings powers.
+export * from "./app-project-people.js";
 // Approval place (U4): approval-place.ts is a byte copy of Code's file (Code PR #451, public code/next a97b0bee9) that waits for the vendor pin to move: UPSTREAM OWED, see its header and
 // tests/contract/approval-place-upstream-copy.test.ts. app-approval-window.ts and decision-dismiss.ts are Cloud's (the latter owed upstream, see its header).
 export * from "./approval-place.js";
@@ -105,8 +110,12 @@ export * from "./app-billing.js";
 export * from "./app-insights.js";
 export * from "./app-agent-publish.js";
 export * from "./company-image-mirror.js";
+export * from "./hosted-allow-domains.js";
 export * from "./saved-env-image.js";
 export * from "./app-projects.js";
+// Collaborator role (W11): the project-role shadow (owed upstream, see its header) and product decisions (Cloud-only).
+export * from "./project-roles.js";
+export * from "./product-decisions.js";
 export * from "./setup-proposal.js";
 
 export * from "./task-stop-enrollment.js";
@@ -125,3 +134,6 @@ export { DeveloperTaskViewReaderSchema, SessionCloseResponseReaderSchema, Sessio
 export * from "./finished-as.js";
 export * from "./org-pending-approvals.js";
 export * from "./continue-loop.js";
+
+export * from "./app-automations.js";
+export * from "./app-review-groups.js";

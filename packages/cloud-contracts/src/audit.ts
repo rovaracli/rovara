@@ -371,6 +371,12 @@ export const AUDIT_ACTIONS = [
   "project.automatic_runs_cap_changed",
   "automatic_runs.paused",
   "automatic_run.ended",
+  // Collaborator role (W11, decisions 14 and 36): the project's switch for collaborators' low-risk product approvals changed; a product decision a task raised was raised, answered or approved. Fixed words,
+  // revisions and counts only: never the question, an option's words or an answer's text.
+  "project.collaborator_approvals_changed",
+  "product_decision.raised",
+  "product_decision.answered",
+  "product_decision.approved",
   // Saved project images (SV wiring): ids, digests, counts and fixed words only.
   "saved_env.changed",
   "saved_env.setting_changed",
@@ -413,6 +419,14 @@ export const AUDIT_ACTIONS = [
   "agent_publication.approved",
   "agent_publication.declined",
   "agent_publication.withdrawn",
+  // Review groups (owner decision 9): a project's groups changed; a task's review was claimed, released or reassigned. Ids, counts and fixed words only; the holder is in details.
+  "review_groups.changed",
+  "review.claim_changed",
+  // A-31 (srv/project-people): an invite that also names a project and a role. Created (the inviter's kind: an owner or admin, or the project's maintainer), applied at the
+  // person's join, or skipped because the project was archived or removed since. The project is the name-keyed target, never a fact.
+  "project_member.invited",
+  "project_member.joined_by_invite",
+  "project_member.invite_skipped",
 ] as const;
 
 export const AuditActionSchema = z.enum(AUDIT_ACTIONS);
@@ -754,6 +768,14 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "automatic_runs.paused": ["month", "cap"],
   // Rovara ended an automatic run itself: `job` as above, `cause` is `project_stopped` (the project was archived or the company closed) or `too_old` (it ran past its time and the sweep ended it).
   "automatic_run.ended": ["job", "cause"],
+  // `enabled` is the switch after the change, `revision` its new revision.
+  "project.collaborator_approvals_changed": ["enabled", "revision"],
+  // `decisionId` is the product decision's id (`pdq_`), `risk` its tier, `options` how many it has.
+  "product_decision.raised": ["decisionId", "risk", "options"],
+  // `revision` is the decision's revision after the answer.
+  "product_decision.answered": ["decisionId", "risk", "revision"],
+  // `role` is who settled it as the policy saw them (`owner`, `maintainer`, `collaborator`); `optionId` the chosen option's id; `class` is always `product` (never a code approval).
+  "product_decision.approved": ["decisionId", "risk", "role", "optionId", "revision", "class"],
   // `change` is a fixed word of the saved environment registry's ledger (queued, recorded, refused, failed, marked stale, reset, images deleted, archived, deleted, registered, walk, scan, lease refused); `cause` a fixed word; `digest` an image digest.
   "saved_env.changed": ["change", "cause", "digest", "count"],
   // `enabled` is the project's savedEnv.enabled setting after the change.
@@ -797,6 +819,11 @@ export const AUDIT_FACT_KEYS: Record<AuditAction, readonly string[]> = {
   "agent_publication.approved": ["approvalId", "targetKind", "version"],
   "agent_publication.declined": ["approvalId", "targetKind", "version", "explained"],
   "agent_publication.withdrawn": ["approvalId", "targetKind", "version"],
+  "review_groups.changed": ["revision", "groups", "members", "added", "removed"],
+  "review.claim_changed": ["change", "revision", "groupId", "pullRequests", "hostSync"],
+  "project_member.invited": ["role", "inviter"],
+  "project_member.joined_by_invite": ["role"],
+  "project_member.invite_skipped": ["role", "cause"],
   "company_image.registries_changed": ["registryCount", "authority"],
 };
 

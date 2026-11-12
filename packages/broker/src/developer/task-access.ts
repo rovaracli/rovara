@@ -2,8 +2,8 @@
 // table below, so roles (slice 3) change only these two places; callers never decide roles themselves.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, agentXError, emailSafeName, projectAllows, projectMemberKey, type OrgId, type ProjectRole } from "@rovara-code/contracts";
-import { type OrgRole } from "@agentx/cloud-contracts";
-import { effectiveProjectRole, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "./project-roles.js";
+import { isWriterOrgRole, projectAllows as memberAllows, type OrgRole, type ProjectRole as MemberRole } from "@agentx/cloud-contracts";
+import { effectiveProjectRole, grantMemberRoleOf, requireNewWorkAllowed, viewerCannotStartTasksMessage } from "./project-roles.js";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks.js";
 import { resolveStoredName } from "./name-resolver.js";
@@ -196,6 +196,30 @@ export interface TaskAccess {
   source?: TaskAccessSource;
   peopleRevision?: number;
   ownerActorIds: readonly string[];
+  /**
+   * Decision 103: the caller's exact project role when its floor is a viewer and the task was reached where a project member takes part (the task's channel). Cloud's `comment` permission is asked of it
+   * (`mayComment`): a collaborator comments, a viewer does not. Never set with `source: "session"`.
+   */
+  memberRole?: MemberRole;
+}
+
+/** The actions a viewer-floor member with the `comment` permission (a collaborator) takes on a task page (decision 103): read it and comment. Not suggesting, deciding, asking AgentX (agent work) or anything an owner does. */
+const COMMENT_ONLY_TASK_ACTIONS: readonly TaskAction[] = ["read", "peopleRead", "comment"];
+
+/** Whether this access may comment: its role's own right, or (decision 103) the `comment` permission of the member's exact role. The page's comment writers and its offer read this, never `can(role, "comment")` alone. */
+export function mayComment(access: Pick<TaskAccess, "role" | "source" | "memberRole">): boolean {
+  return can(access.role, "comment", access.source) || (access.source === undefined && access.memberRole !== undefined && memberAllows(access.memberRole, "comment"));
+}
+
+/** The caller's exact role from their own grant on the task's project (read live), or undefined. Fails closed. */
+async function exactProjectRole(deps: Pick<AccessDependencies, "documentClient" | "tableName">, caller: DeveloperCaller, task: DeveloperTaskRecord): Promise<MemberRole | undefined> {
+  if (!isWriterOrgRole(caller.orgRole) || task.orgId === undefined) return undefined;
+  try {
+    const row = (await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: projectMemberKey(task.orgId, caller.developerId, task.project), ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item;
+    return grantMemberRoleOf(row);
+  } catch {
+    return undefined;
+  }
 }
 
 const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -305,6 +329,12 @@ async function resolveTaskRoleByTask(deps: AccessDependencies, caller: Developer
     if (deps.slackTeamId === undefined || share.teamId !== deps.slackTeamId) throw notFound();
     throw Object.assign(agentXError("TASK_ACCESS_DENIED", "you can't open this task yet"), { owners: [ownerNameForReaders(await resolveStoredName({ documentClient: deps.documentClient, tableName: deps.tableName, orgId: task.orgId }, owner.developerId, owner.name))] });
   }
+  // Decision 103: a viewer-floor member whose exact role has the `comment` permission (a collaborator) may also comment here, and do nothing else a viewer may not.
+  const memberRole = projectRole === "viewer" ? await exactProjectRole(deps, caller, task) : undefined;
+  if (memberRole !== undefined && memberAllows(memberRole, "comment")) {
+    if (legacyPeopleAction || (action !== undefined && (!COMMENT_ONLY_TASK_ACTIONS.includes(action) || (action !== "read" && action !== "peopleRead" && !taskOpen(task))))) throw notFound();
+    return { task, role: "viewer", memberRole, ownerActorIds: legacyOwners };
+  }
   // A project viewer may look at a task in the channel but not take part: only a role that can start tasks comments, suggests or asks.
   const role: TaskRole = projectRole !== undefined && !projectAllows(projectRole, "start_tasks") ? "viewer" : "commenter";
   if (legacyPeopleAction || (action !== undefined && (!can(role, action)
@@ -330,7 +360,7 @@ export function pageAccess(access: TaskAccess, workAllowed = true): { role: Task
   const open = taskOpen(access.task);
   return {
     role: access.role,
-    canComment: open && can(access.role, "comment"),
+    canComment: open && mayComment(access),
     canSuggest: open && can(access.role, "suggest"),
     // Deciding and asking are work: a project viewer (an owner lowered to viewer included) is not offered them.
     canDecide: open && workAllowed && can(access.role, "decide"),

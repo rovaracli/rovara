@@ -14,7 +14,7 @@ import { readProjectMeta } from "../developer/project-roles.js";
 import type { SlackRequestQueue } from "../developer/page-comments.js";
 import type { DeveloperTaskRouteDependencies } from "../aws/developer-tasks/types.js";
 import { linearCommentIdFor } from "../rovara-code/linear-comment-id.js";
-import { requireSessionLevel, sessionLevelOf, type SessionAccessDependencies, type SessionCaller } from "./access.js";
+import { requireSessionLevel, sessionAskLevelOf, type SessionAccessDependencies, type SessionCaller } from "./access.js";
 import { askContext, type AskContextReaders, type AskViewer } from "./ask-context.js";
 import { auditAsk, type AskAuditDependencies } from "./ask-audit.js";
 import { readAskAsAsker, writeAsk, type AskPerson, type AskStoreDependencies } from "./ask-store.js";
@@ -230,7 +230,8 @@ export async function submitAsk(deps: AskDependencies, caller: AskCaller, sessio
   const body = AskBodySchema.safeParse(value);
   if (!body.success) throw agentXError("CONFIG_INVALID", "an ask needs a request ID and a question of 1 to 1,000 characters");
   // "Can use", read live. Anyone below it (a viewer, a view-only share, an Auditor) is refused here, before anything is read of the task.
-  const { session } = await requireSessionLevel(deps.access, caller, sessionId, "use", "ask about it");
+  // Decision 103: a collaborator may also ask (at `view`); the rates, the lock and the queue below are the same for everyone.
+  const { session } = await requireSessionLevel(deps.access, caller, sessionId, "use", "ask about it", { ask: true });
   if (session.subject.kind !== "task") throw agentXError("CONFIG_INVALID", "You can ask about a task's session.");
   if (deps.queue === undefined) throw unavailable();
   const task = (await getItem(deps, taskKey(session.subject.taskId))) as DeveloperTaskRecord | undefined;
@@ -341,7 +342,8 @@ export async function recordSlackAsk(deps: AskDependencies, input: { task: Devel
 export function sessionLevelPort(access: SessionAccessDependencies): (person: { orgId: OrgId; developerId: string }, sessionId: string) => Promise<SessionLevel | "none"> {
   return async (person, sessionId) => {
     const session = await new AgentSessionStore(access).get(person.orgId, sessionId);
-    return session === undefined ? "none" : sessionLevelOf(access, person, session, {});
+    // Decision 103: the Ask's own level, where a collaborator holding `view` may ask (and its model key is minted and charged as anyone else's).
+    return session === undefined ? "none" : sessionAskLevelOf(access, person, session, {});
   };
 }
 

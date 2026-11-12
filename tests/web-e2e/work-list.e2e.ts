@@ -70,10 +70,13 @@ test("switch on at 390: Team, Needs attention and Finished, and the project filt
  await expect(page.getByRole("heading", { name: TITLES.export })).toBeVisible();
  await page.getByRole("tab", { name: "Team" }).click();await expect(page).toHaveURL(/view=team/u);await expect(page.locator(".rv-work-title")).toHaveText([TITLES.team]);await expect(rowOf(page, TITLES.team)).toContainText("Checking");await expect(page.getByText("Work on projects you're part of")).toBeVisible();
  await page.getByRole("tab", { name: "Needs attention" }).click();await expect(page.locator(".rv-work-title")).toHaveText([TITLES.plan, TITLES.retry]);expect(await noSidewaysScroll(page)).toBe(true);await evidenceShot(page, { path: `${shots}/attention-390.png`, fullPage: true });
- await page.getByRole("tab", { name: "Finished" }).click();await expect(page.locator(".rv-work-title")).toHaveText([TITLES.merged, TITLES.twice]);
+ const scoped = page.waitForRequest(asked => /\/v1\/web\/sessions\?/u.test(asked.url()) && asked.url().includes("scope=company") && asked.url().includes("status=ended"));
+ await page.getByRole("tab", { name: "Finished" }).click();await scoped;await expect(page.locator(".rv-work-title")).toHaveText([TITLES.merged, TITLES.twice]);
+ // How each ended (`finishedAs`), and the note that the company-wide list leaves some projects out.
+ await expect(rowOf(page, TITLES.twice)).toContainText("Finished (no code)");await expect(page.getByText("Some projects aren't included; filter by project to see them.")).toBeVisible();
  await expect(rowOf(page, TITLES.merged)).toContainText("Merged");await expect(rowOf(page, TITLES.merged)).toContainText("finished 5 h ago");await expect(rowOf(page, TITLES.twice)).toContainText("On Priya's MacBook");await expect(page.locator(".rv-work-row button")).toHaveCount(0);
- await expect(page.getByText(/Your finished work/u)).toBeVisible();expect(await noSidewaysScroll(page)).toBe(true);expect(await smallTargets(page)).toEqual([]);await evidenceShot(page, { path: `${shots}/finished-390.png`, fullPage: true });
- await page.getByRole("combobox", { name: "Project" }).selectOption("payments");await expect(page).toHaveURL(/project=payments/u);await expect(page.getByText("Finished work in payments")).toBeVisible();await expect(page.locator(".rv-work-title")).toHaveCount(2);
+ await expect(page.getByText(/Finished work you can open/u)).toBeVisible();expect(await noSidewaysScroll(page)).toBe(true);expect(await smallTargets(page)).toEqual([]);await evidenceShot(page, { path: `${shots}/finished-390.png`, fullPage: true });
+ await page.getByRole("combobox", { name: "Project" }).selectOption("payments");await expect(page).toHaveURL(/project=payments/u);await expect(page.getByText("Finished work in payments")).toBeVisible();await expect(page.getByText(/Some projects aren.t included/u)).toHaveCount(0);await expect(page.locator(".rv-work-title")).toHaveCount(2);
  await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
  // An old Live link still lands on the right view.
  await page.goto("/app/live?filter=needs_me");await expect(page.getByRole("tab", { name: "Needs attention" })).toHaveAttribute("aria-selected", "true");

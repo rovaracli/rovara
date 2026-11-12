@@ -4,12 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  DEVCONTAINER_NETWORK_UNWALLED,
+  DEVCONTAINER_NET_RAW,
   DOCKER_DATA_VISIBLE,
   WORKER_STATE_VISIBLE,
   containerProblems,
   devcontainerConfigRefusal,
   hostPathResolver,
   parseJsonc,
+  walledNetworkProblem,
   type ContainerInspection,
 } from "../../packages/worker/src/devcontainer-policy.js";
 
@@ -397,5 +400,59 @@ describe("the started dev container, checked as Docker ran it (docker containmen
     expect(containerProblems(maskedState, hidden)).toEqual([]);
     // A workspace without a Docker data folder (a developer machine) has nothing to hide.
     expect(containerProblems({ ...ordinary, Mounts: [ordinary.Mounts![0]!] }, { rootPath: "/mnt/workspace" })).toEqual([]);
+  });
+});
+
+describe("dev containers on the walled task network (TASK-BRIDGE-UNWALLED)", () => {
+  const walled = { ...context, walledNetwork: "agentx-task" };
+  const withArgs = (runArgs: string[]) => devcontainerConfigRefusal({ image: "node:22", runArgs }, walled);
+  const withBuildOptions = (options: string[], settings: ContainerSettings = walled) => devcontainerConfigRefusal({ build: { dockerfile: "Dockerfile", options } }, settings);
+  type ContainerSettings = typeof walled | typeof context;
+
+  it.each([["--network=bridge"], ["--network=agentx-task"], ["--net=my-net"]])("refuses %s in runArgs when the worker puts the container on the walled network, because it would attach a second network", (arg) => {
+    expect(withArgs([arg])).toMatch(/^runArgs --net(work)? \(dev containers on this worker join the agentx-task network\)$/u);
+  });
+
+  it.each([[["--network", "bridge"]], [["--net", "default"]], [["--init", "--network", "host"]]])("refuses the split spelling %j too", (args) => {
+    expect(withArgs(args)).toMatch(/dev containers on this worker join the agentx-task network/u);
+  });
+
+  it("still allows a runArgs network where nothing is walled (a developer's own machine), and other runArgs on a worker", () => {
+    expect(devcontainerConfigRefusal({ image: "node:22", runArgs: ["--network=my-net"] }, context)).toBeUndefined();
+    expect(withArgs(["--init", "--shm-size=1g"])).toBeUndefined();
+  });
+
+  it.each([[["--network=bridge"]], [["--network", "agentx-task"]], [["--net=my-net"]], [["--build-arg", "A=1", "--network", "none"]]])("refuses %j in build.options on a walled worker, where the build's containers are put on the walled network", (options) => {
+    expect(withBuildOptions(options)).toMatch(/^build\.options --net(work)? \(the containers of a dev container build on this worker join the agentx-task network\)$/u);
+  });
+
+  it("keeps the build.options it refused before (host network) and allows a build network where nothing is walled", () => {
+    expect(withBuildOptions(["--network=host"], context)).toBe("build.options --network=host");
+    expect(withBuildOptions(["--network=my-net"], context)).toBeUndefined();
+    expect(withBuildOptions(["--build-arg", "A=1"])).toBeUndefined();
+  });
+
+  const inspection = (NetworkMode: string, extra: Partial<ContainerInspection> & { capDrop?: string[] | null; networks?: string[] } = {}): ContainerInspection => ({
+    HostConfig: { Privileged: false, NetworkMode, IpcMode: "private", PidMode: "", CapDrop: extra.capDrop === undefined ? ["NET_RAW"] : extra.capDrop },
+    NetworkSettings: { Networks: Object.fromEntries((extra.networks ?? [NetworkMode]).map((name) => [name, {}])) },
+    Mounts: [{ Type: "bind", Source: "/mnt/workspace", Destination: "/mnt/workspace" }],
+  });
+  const checks = { rootPath: "/mnt/workspace", walledNetwork: "agentx-task" };
+
+  it("reports a started container that is not on the walled network, and accepts one that is", () => {
+    expect(containerProblems(inspection("agentx-task"), checks)).toEqual([]);
+    for (const mode of ["bridge", "default", "my-net", "", "host"]) expect(containerProblems(inspection(mode), checks), mode).toContain(DEVCONTAINER_NETWORK_UNWALLED);
+    expect(containerProblems(inspection("bridge", { capDrop: null }), { rootPath: "/mnt/workspace" })).toEqual([]);
+  });
+
+  it("reports a container attached to a second network as well (Docker 25 and later attach every --network given), or to none", () => {
+    for (const networks of [["agentx-task", "bridge"], ["agentx-task", "my-net"], []]) expect(containerProblems(inspection("agentx-task", { networks }), checks), networks.join()).toContain(DEVCONTAINER_NETWORK_UNWALLED);
+    expect(walledNetworkProblem(inspection("agentx-task"), "agentx-task")).toBe(false);
+    expect(walledNetworkProblem(inspection("agentx-task", { networks: ["agentx-task", "bridge"] }), "agentx-task")).toBe(true);
+  });
+
+  it("reports a container that kept NET_RAW, and accepts the capability dropped in either spelling or with the rest", () => {
+    for (const capDrop of [null, [], ["SYS_ADMIN"], ["CAP_NET_ADMIN"]]) expect(containerProblems(inspection("agentx-task", { capDrop }), checks), JSON.stringify(capDrop)).toEqual([DEVCONTAINER_NET_RAW]);
+    for (const capDrop of [["NET_RAW"], ["CAP_NET_RAW"], ["ALL"], ["MKNOD", "net_raw"]]) expect(containerProblems(inspection("agentx-task", { capDrop }), checks), JSON.stringify(capDrop)).toEqual([]);
   });
 });

@@ -1,6 +1,7 @@
 import { AppTrialSchema } from "./app-nav.js";
 import { z } from "zod";
 import { OrgRoleSchema } from "./org.js";
+import { InviteProjectSchema } from "./invite-creation.js";
 import { forwardReader, OrgIdSchema } from "@rovara-code/contracts";
 export const DeveloperSignInMethodSchema = z.enum(["slack", "oidc", "cloud", "github", "saml"]);
 export type DeveloperSignInMethod = z.infer<typeof DeveloperSignInMethodSchema>;
@@ -57,7 +58,9 @@ export const OrgMemberRoleChangeResponseReaderSchema = forwardReader(OrgMemberRo
 
 /** Pending indexed invites only. Historical unindexed invites may still exist; never return bearer material. */
 export const AppOrgInvitesResponseSchema = z.object({
- invites: z.array(z.object({ inviteId: z.string().uuid(), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), role: z.enum(["admin", "member"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), createdBy: z.string().regex(/^[a-f0-9]{64}$/), destination: z.discriminatedUnion("kind", [z.object({ kind: z.literal("link") }).strict(), z.object({ kind: z.literal("email"), label: z.string().max(260) }).strict()]) }).strict()).max(50),
+ invites: z.array(z.object({ inviteId: z.string().uuid(), revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), role: z.enum(["admin", "member"]), createdAt: z.string().datetime(), expiresAt: z.string().datetime(), createdBy: z.string().regex(/^[a-f0-9]{64}$/), destination: z.discriminatedUnion("kind", [z.object({ kind: z.literal("link") }).strict(), z.object({ kind: z.literal("email"), label: z.string().max(260) }).strict()]),
+  /** A-31: the project the invite also adds the person to, and their role there. */
+  project: InviteProjectSchema.optional() }).strict()).max(50),
  unavailableCount: z.number().int().min(0).max(50).optional(),
  /** UX1: whether this install can email an invite (its sign-in notice sender is set up). Absent from an older control plane: copy only. */
  emailDelivery: z.boolean().optional(),

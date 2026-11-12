@@ -1,4 +1,4 @@
-import { TASK_STATUS_WORDS, statusNeedsSomeone, taskStatusFromSession, type LiveFilterSchema } from "@agentx/cloud-contracts/web";
+import { TASK_STATUS_WORDS, type FinishedAs, statusNeedsSomeone, taskStatusFromSession, type LiveFilterSchema } from "@agentx/cloud-contracts/web";
 import type { ReadLiveTile } from "../../api/live.js";
 import type { ReadFinishedTile } from "../../api/work-list.js";
 import { plainState, type LeadStatus, type PlainState } from "../session/task-plain-state.js";
@@ -96,13 +96,25 @@ export function rowFromLive(tile: ReadLiveTile, now: number): WorkRow {
  };
 }
 
+/** How an ended session ended, in words (`finishedAs` on its tile). */
+export const FINISHED_AS_WORDS: Readonly<Record<FinishedAs, PlainState>> = { merged: { label: "Merged", tone: "success" }, closed: { label: "Closed", tone: "neutral" }, finished_no_code: { label: "Finished (no code)", tone: "success" }, finished: { label: "Finished", tone: "neutral" } };
+/**
+ * The state a finished row says: the server's `finishedAs` where the tile has one that this version knows. The server's "finished" is its word for everything else, and a run that failed keeps its own state ("Failed", the danger tone) for every word but "merged": a merged pull request is the outcome that stands, but "Closed", "Finished (no code)" or
+ * "Finished" must never hide a failure. A tile without `finishedAs` (an older server) says what it said before.
+ */
+export function finishedState(finishedAs: string | undefined, own: PlainState): PlainState {
+ // A word a newer server adds (the reader keeps it as "unknown") is not guessed at: the row says what it said before.
+ const words = finishedAs === undefined || !Object.hasOwn(FINISHED_AS_WORDS, finishedAs) ? undefined : FINISHED_AS_WORDS[finishedAs as FinishedAs];
+ return words === undefined || (finishedAs !== "merged" && own.tone === "danger") ? own : words;
+}
+
 /** A finished session from the sessions list. It carries no controls and no "waiting on you" flag, so it is never marked as needing attention and names nobody who acts next. */
 export function rowFromFinished(tile: ReadFinishedTile, now: number): WorkRow {
  const summary = tile.summary;
  const status: LeadStatus = { state: summary.display?.state ?? taskStatusFromSession({ status: summary.status, ...(summary.lastRunFailed === true ? { lastRunFailed: true as const } : {}) }).state };
  const endedAt = tile.endedAt ?? tile.updatedAt, age = ageOf(endedAt, now);
  return {
-  sessionId: tile.sessionId, title: tile.title, project: tile.project, agent: tile.agent?.name, state: plainState(status, undefined), attention: false,
+  sessionId: tile.sessionId, title: tile.title, project: tile.project, agent: tile.agent?.name, state: finishedState(tile.finishedAs, plainState(status, undefined)), attention: false,
   age: age === undefined ? undefined : age.text === "<1 min" ? "finished just now" : "finished " + age.text + " ago", ageMs: age?.ms ?? 0, since: age === undefined ? undefined : endedAt,
   next: undefined, place: placeOf({ kind: tile.where.kind, label: tile.where.kind === "mac" ? tile.where.label : undefined }), live: undefined,
  };

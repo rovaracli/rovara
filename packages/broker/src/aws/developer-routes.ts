@@ -127,6 +127,7 @@ import "./task-web.js";
 import "./task-web-api.js";
 import "./task-e2e-artifact.js";
 import { readOrgServiceStatus } from "../org/service-status.js";
+import { readOrgHealthObservations } from "../org/health-observations.js";
 import { CompanySameModelPolicyRefusal } from "../model-selection/company-prepare.js";
 import { updateCompanyModelPolicy } from "../model-selection/company-approval.js";
 import { ModelSelectionPolicyAppliedSchema, ModelSelectionPolicyPendingSchema, ReviewDefaultNoticeBodySchema } from "@rovara-code/contracts";
@@ -135,6 +136,7 @@ import { requireCompanyModelPolicyAuthority, getCompanyModelSelectionPolicy } fr
 import { getStageModels } from "../model-selection/read.js";
 import { loadStageModelSnapshot } from "../model-selection/snapshot.js";
 import { projectSlackBrowserHttp } from "../org/project-slack-browser-http.js";
+import { COLLABORATOR_BROWSER_MESSAGE, collaboratorBrowserOnly, routeCollaboratorRequest } from "../collaborators/routes.js";
 import { projectAllowedDomainsHttp } from "../org/project-allowed-domains-http.js";
 import { getTaskStopProject } from "../org/task-stop-project.js";
 import { getTaskStopAgent } from "../org/task-stop-agent.js";
@@ -152,7 +154,7 @@ import { readReviewedProjectArchiveAppPreview } from "../org/reviewed-project-ar
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
-import { OrgMemberRoleChangeBodySchema } from "@agentx/cloud-contracts";
+import { OrgMemberRoleChangeBodySchema, ORG_HEALTH_OBSERVATIONS_PATH } from "@agentx/cloud-contracts";
 import { listOrganizationMembers, lookupOrganizationMember } from "../org/directory.js";
 import { getMemberRemoval, previewMemberRemoval, startMemberRemovalRoute } from "../org/member-removal/routes.js";
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
@@ -197,6 +199,7 @@ import { KNOWN_FAILING_MARKS_BROWSER_MESSAGE, KNOWN_FAILING_MARKS_PATH, routeKno
 import { verifyResultsEnabled } from "../verification/switch.js";
 import { DESIGN_REVIEW_COMPANY_BROWSER_MESSAGE, DESIGN_REVIEW_COMPANY_PATH, routeDesignReviewCompany } from "./developer-routes/design-review-company.js";
 import { APPROVAL_WINDOW_BROWSER_MESSAGE, APPROVAL_WINDOW_PATH, routeApprovalWindow } from "./developer-routes/approval-window.js";
+import { REVIEW_GROUPS_BROWSER_MESSAGE, isReviewGroupsWrite, routeReviewGroups } from "../review-groups/routes.js";
 import { KNOWN_FAILING_POLICY_BROWSER_MESSAGE, KNOWN_FAILING_POLICY_PATH, routeKnownFailingPolicy } from "./developer-routes/known-failing-policy.js";
 import { SECOND_REVIEW_ACK_BROWSER_MESSAGE, acknowledgeSecondReview } from "./developer-tasks/second-review-ack.js";
 import { routeLearningModel } from "./developer-routes/learning-model.js";
@@ -217,6 +220,8 @@ import { StatusReply } from "./status-reply.js";
 import { getModels } from "../agents/models-route.js";
 import { isAgentRoute, routeAgentRequest } from "../agents/routes.js";
 import { isChainRoute, routeChainRequest } from "../chains/routes.js";
+import { automationsAccess } from "../chains/automations-gate.js";
+import { isProjectAutomationsRoute, routeProjectAutomations } from "../chains/project-automations.js";
 import { isAgentSessionRoute, routeAgentSessionRequest } from "../agent-sessions/routes.js";
 import { isDiagnosisPath, routeDiagnosisRequest } from "../diagnosis/routes.js";
 import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
@@ -324,6 +329,8 @@ import { SCRIPT_TOKENS_BROWSER_MESSAGE, isScriptTokensPath, routeScriptTokens } 
 import { auditScriptTokenTaskStart, authenticateScriptToken } from "../script-tokens/authenticate.js";
 import { isScriptTokenHeader } from "../script-tokens/token-format.js";
 import { scriptTokensEnabled } from "../script-tokens/switch.js";
+import { isProjectPeoplePath, routeProjectPeople } from "./developer-routes/project-people.js";
+import { PROJECT_PEOPLE_BROWSER_MESSAGE } from "@agentx/cloud-contracts";
 export { projectMembersOf, projectsWithPolicy } from "./developer-routes/project-list.js";
 export { checkProjectAccess } from "./developer-routes/project-access.js";
 export { agentRunStarterOf, codeIntentDependenciesOf, developerTaskRouteDependencies } from "./developer-routes/dependencies.js";
@@ -351,6 +358,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   }
   // Runtime UI flags (lane U5): browser-only for both methods, refused before any read.
   if (url.pathname === UI_FLAGS_PATH && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", UI_FLAGS_BROWSER_MESSAGE);
+  // Review groups (owner decision 9): changing a project's groups, and claiming, releasing or reassigning a review, are browser-only; refused before any read.
+  if (isReviewGroupsWrite(request.method, url.pathname) && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", REVIEW_GROUPS_BROWSER_MESSAGE);
   // The one-time review-default notice (reading it and dismissing it) is browser-only, like the other company settings.
   if (url.pathname === REVIEW_DEFAULT_NOTICE_PATH && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for this notice.");
@@ -370,12 +379,16 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isSetupRecipesPath(url.pathname) && setupRecipesEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SETUP_RECIPES_BROWSER_MESSAGE);
   // Company-approved extra test-service images (switches `tx` and `pj`): a token or the API can read, never change (off: the path is not found).
   if (isCompanyTestImagesPath(url.pathname) && companyTestImagesEnabled() && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COMPANY_TEST_IMAGES_BROWSER_MESSAGE);
+  // Collaborator role (W11): the collaborator switch and product decisions are changed from a live browser session only (reads are open to anyone who can see the project).
+  if (collaboratorBrowserOnly(request.method, url.pathname) && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COLLABORATOR_BROWSER_MESSAGE);
   // Company rules (G-04, switch `si`): a token or the API can read, never change (off: the path is not found).
   if (isCompanyRulesPath(url.pathname) && companyRulesEnabled() && request.method === "POST" && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COMPANY_RULES_BROWSER_MESSAGE);
   // The project's saved environment panel (switch `sv`): browser-only for reads and writes, whatever the method (off: the path is not found).
   if (isSavedEnvImagePath(url.pathname) && savedEnvEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SAVED_ENV_IMAGE_BROWSER_MESSAGE);
   // UX5b: script tokens are made, listed and revoked from a live browser session only (off: the path is not found).
   if (isScriptTokensPath(url.pathname) && scriptTokensEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", SCRIPT_TOKENS_BROWSER_MESSAGE);
+  // A-32 (srv/project-people): the web's People tab, reads and writes, is browser-only (the CLI keeps `.../members`).
+  if (isProjectPeoplePath(url.pathname) && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", PROJECT_PEOPLE_BROWSER_MESSAGE);
   // B34 reviewed reads/unbind are cookie-only; existing token Slack routes remain separate.
   if (/^\/v1\/app\/projects\/[^/]+\/slack-channel\/(links|review|requests|unbind|proposals|decisions)(?:\/|$)/.test(url.pathname) && authenticated?.caller.browserSession !== true) {
     throw agentXError("FORBIDDEN", "Use a live browser session for Slack linking.");
@@ -472,11 +485,14 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
     return routeAgentRequest({ ...deps.agents, startRun: (_agentCaller, input) => startAppRun(deps, caller, input) }, caller, request, url);
   }
   // Plan 4's chains (`/v1/app/chains*`, `/v1/app/chain-runs*`), beside Plan 3's agents.
-  if (isChainRoute(url.pathname)) {
+  if (isChainRoute(url.pathname) || isProjectAutomationsRoute(url.pathname)) {
+    // srv/automations: off unless WEB_FEATURES names `chains` (automations-gate.ts); off answers as an unknown path, but for the paths that stop an automation.
+    const automations = automationsAccess(request.method, url.pathname);
     const chainDeps = chainRouteDependenciesFor(deps, caller);
     if (chainDeps === undefined) throw agentXError("NOT_FOUND", "chains are not set up in this deployment");
     // Rovara Code (Plan 6): a step's task is read like any task, so a client without `x-agentx-task-view: 2` gets the version 1 projection of it.
-    return taskResponseForClient(await routeChainRequest(chainDeps, caller, request, url), request.headers);
+    if (isProjectAutomationsRoute(url.pathname)) return routeProjectAutomations(chainDeps, caller, request, url);
+    return taskResponseForClient(await routeChainRequest(chainDeps, caller, request, url, { safetyOnly: automations === "safety_only" }), request.headers);
   }
   // Plan 5, Task 5: `/v1/app/sessions*`.
   if (request.method === "GET" && url.pathname === "/v1/app/nav") return getAppNavigation(deps, caller);
@@ -526,6 +542,10 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && projectSettingsUndo !== null) return undoToProvenSetup(deps, caller, projectSettingsUndo[1]!, jsonBody(request));
   const metaConfigRoute = /^\/v1\/app\/projects\/([^/]+)\/meta-config(?:\/(apply|dismiss|check))?$/.exec(url.pathname);
   if (metaConfigRoute !== null && (request.method === "GET" || request.method === "POST")) return projectMetaConfigRoute(deps, caller, metaConfigRoute[1]!, metaConfigRoute[2], request.method, request.method === "POST" ? jsonBody(request) : undefined);
+  const peopleAnswer = await routeProjectPeople(deps, caller, request.method, url.pathname, () => jsonBody(request));
+  if (peopleAnswer !== undefined) return peopleAnswer;
+  const collaboratorAnswer = await routeCollaboratorRequest(deps, caller, request.method, url.pathname, () => jsonBody(request));
+  if (collaboratorAnswer !== undefined) return collaboratorAnswer;
   const projectMembersRoute = /^\/v1\/app\/projects\/([^/]+)\/members(?:\/([a-f0-9]{64}))?$/.exec(url.pathname);
   if (projectMembersRoute !== null) {
     if (request.method === "GET" && projectMembersRoute[2] === undefined) return getProjectMembers(deps, caller, projectMembersRoute[1]!);
@@ -609,6 +629,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (testEnvReply !== undefined) return testEnvReply;
   const testHealthReply = await routeTestHealth(deps, caller, request, url);
   if (testHealthReply !== undefined) return testHealthReply;
+  const reviewGroupsReply = await routeReviewGroups(deps, caller, request, url);
+  if (reviewGroupsReply !== undefined) return reviewGroupsReply;
   const approvalWindowReply = await routeApprovalWindow(deps, caller, request, url);
   if (approvalWindowReply !== undefined) return approvalWindowReply;
   const designReviewCompanyReply = await routeDesignReviewCompany(deps, caller, request, url);
@@ -835,6 +857,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && (url.pathname === "/v1/dev/org/invites" || url.pathname === "/v1/app/org/invites")) return createOrganizationInvite(deps, caller, jsonBody(request));
   // Lane C17: metadata-only Slack association evidence; scope comes only from the authenticated caller.
   if (request.method === "GET" && url.pathname === "/v1/app/org/service-status") return readOrgServiceStatus({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...deps.serviceStatus }, caller, { expectedOrgId: url.searchParams.get("expectedOrgId") });
+  // 0.5.15: when each health check last ran for this company (a live owner or admin on a browser session; the company is the session's).
+  if (request.method === "GET" && url.pathname === ORG_HEALTH_OBSERVATIONS_PATH) return readOrgHealthObservations({ documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...(deps.healthObservations === undefined ? {} : { probes: deps.healthObservations }) }, caller, { expectedOrgId: url.searchParams.get("expectedOrgId") });
   if (request.method === "GET" && url.pathname === "/v1/app/org/slack-workspace-evidence") {
     if (url.search !== "" || (request.body !== undefined && request.body.trim() !== "")) throw agentXError("CONFIG_INVALID", "Slack workspace evidence accepts no query parameters or body.");
     return readSlackWorkspaceEvidence(deps, caller);

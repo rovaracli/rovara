@@ -387,6 +387,10 @@ describe("a maintainer sets roles", () => {
 
   it("lowers a maintainer to viewer, who then loses the ability to manage or start", async () => {
     const h = await team();
+    // srv/project-people: the project's last own maintainer cannot step down; once Kit maintains it too, Priya can.
+    expect((await put(h, PRIYA, PRIYA, "viewer")).status).toBe(400);
+    expect(grantOf(h.db, PRIYA)).toMatchObject({ projectRole: "maintainer" });
+    expect((await put(h, PRIYA, KIT, "maintainer")).status).toBe(200);
     expect((await put(h, PRIYA, PRIYA, "viewer")).status).toBe(200);
     expect(grantOf(h.db, PRIYA)).toMatchObject({ role: "viewer", projectRole: "viewer" });
     expect((await put(h, PRIYA, NEO, "viewer")).status).toBe(403);
@@ -531,7 +535,7 @@ describe("the target of a role change", () => {
     h.db.set({ pk: `DEVELOPER#${duplicate}`, sk: "META", developerId: duplicate, provider: "oidc", displayName: "Neo (old)", firstSignInAt: "x", lastSignInAt: "x", revoked: false, mergedInto: NEO.developerId, mergedAt: "x" });
     const answer = await put(h, PRIYA, duplicate, "viewer");
     expect(answer.status, JSON.stringify(answer.body)).toBe(200);
-    expect(dataOf(answer)).toEqual({ member: { developerId: NEO.developerId, role: "viewer" } });
+    expect(dataOf(answer)).toEqual({ member: { developerId: NEO.developerId, role: "viewer", projectRole: "viewer" } });
     expect(grantOf(h.db, NEO)).toMatchObject({ projectRole: "viewer", ownerKey: NEO.developerId });
     expect(grantOf(h.db, { developerId: duplicate })).toBeUndefined();
   });
@@ -665,8 +669,8 @@ describe("request ids (a replay answers the stored outcome)", () => {
     expect((await remove(h, PRIYA, NEO)).status).toBe(200);
     // A removal of someone with no grant still records its request.
     expect((await remove(h, PRIYA, NEO)).status).toBe(200);
-    // Grant/member check/request plus approval generation; removal/request plus generation; absent grant records only the request.
-    expect(sent).toEqual([{ name: "TransactWriteCommand", items: 4 }, { name: "TransactWriteCommand", items: 3 }, { name: "TransactWriteCommand", items: 1 }]);
+    // Grant/member check/request plus approval generation and the roster revision; removal/request plus generation and the revision; absent grant records only the request.
+    expect(sent).toEqual([{ name: "TransactWriteCommand", items: 5 }, { name: "TransactWriteCommand", items: 4 }, { name: "TransactWriteCommand", items: 1 }]);
     const stored = h.db.get({ pk: `ORG#${TEST_ORG}#PROJECT#payments`, sk: `MEMBER_REQUEST#${requestId}` });
     expect(stored).toMatchObject({ entityType: "PROJECT_MEMBER_REQUEST", action: "put", by: PRIYA.developerId, response: { developerId: NEO.developerId, role: "viewer" } });
     expect(stored!.indexExpiresAt).toBeGreaterThan(Date.now() / 1000 + 80_000);
@@ -734,13 +738,13 @@ describe("GET /v1/app/projects/{name}/members", () => {
     const byId = new Map(listed(answer).map((member) => [member.developerId, member]));
     // Lena is an org admin, with no grant; Omar is a plain member here and does not appear.
     // Release 0.4.16 (owner decision "option A"): Priya is a project maintainer but a plain org member, so she is shown names and roles, no emails.
-    expect(byId.get(LENA.developerId)).toEqual({ developerId: LENA.developerId, name: LENA.name, role: "maintainer", source: "org_role" });
+    expect(byId.get(LENA.developerId)).toEqual({ developerId: LENA.developerId, name: LENA.name, role: "maintainer", projectRole: "maintainer", source: "org_role" });
     expect(byId.get(PRIYA.developerId)).toMatchObject({ developerId: PRIYA.developerId, name: PRIYA.name, role: "maintainer", source: "grant" });
     expect(byId.get(PRIYA.developerId)).not.toHaveProperty("email");
     expect(JSON.stringify(answer.body)).not.toContain("@");
     // An org admin sees them.
     const forAdmin = new Map(listed(await members(h, LENA)).map((member) => [member.developerId, member]));
-    expect(forAdmin.get(LENA.developerId)).toEqual({ developerId: LENA.developerId, name: LENA.name, email: emailOf(LENA), role: "maintainer", source: "org_role" });
+    expect(forAdmin.get(LENA.developerId)).toEqual({ developerId: LENA.developerId, name: LENA.name, email: emailOf(LENA), role: "maintainer", projectRole: "maintainer", source: "org_role" });
     expect(forAdmin.get(PRIYA.developerId)).toMatchObject({ name: PRIYA.name, email: emailOf(PRIYA), role: "maintainer", source: "grant" });
     expect(byId.get(SAM.developerId)).toMatchObject({ role: "viewer", source: "grant", grantedBy: { developerId: PRIYA.developerId, name: PRIYA.name } });
     expect(byId.get(KIT.developerId)).toMatchObject({ role: "contributor", source: "grant", grantedBy: { developerId: PRIYA.developerId, name: PRIYA.name } });
@@ -764,10 +768,10 @@ describe("GET /v1/app/projects/{name}/members", () => {
     const h = await team();
     grantProject(h.db, NEO);
     expect(listed(await members(h, LENA)).find((member) => member.developerId === NEO.developerId)).toEqual({
-      developerId: NEO.developerId, name: NEO.name, email: emailOf(NEO), role: "contributor", source: "grant",
+      developerId: NEO.developerId, name: NEO.name, email: emailOf(NEO), role: "contributor", projectRole: "contributor", source: "grant",
     });
     expect(listed(await members(h, PRIYA)).find((member) => member.developerId === NEO.developerId)).toEqual({
-      developerId: NEO.developerId, name: NEO.name, role: "contributor", source: "grant",
+      developerId: NEO.developerId, name: NEO.name, role: "contributor", projectRole: "contributor", source: "grant",
     });
   });
 

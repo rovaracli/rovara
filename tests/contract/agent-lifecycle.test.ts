@@ -1324,16 +1324,21 @@ describe("the broker's wiring", () => {
     const agent = await h.store.create({ orgId: TEST_ORG, name: "Payments helper", owner: { kind: "project", project: "payments" }, accountable: { developerId: MAYA.developerId }, overlay: SCRATCH, createdBy: MAYA.developerId });
     expect((await put("maintainer")).status).toBe(200);
     expect((await h.store.get(TEST_ORG, agent.agentId))!.accountable).toEqual({ developerId: MAYA.developerId });
+    // srv/project-people: the project keeps another own maintainer, so Maya's demotion and removal are not refused as the last maintainer's;
+    // the agent then re-routes to that remaining maintainer.
+    const keeper = "f".repeat(64);
+    seedMembership(h.db, keeper, { orgId: TEST_ORG, role: "member" });
+    expect((await h.dev(OMAR, "PUT", `/v1/app/projects/payments/members/${keeper}`, { requestId: randomUUID(), role: "maintainer" })).status).toBe(200);
 
     expect((await put("contributor")).status).toBe(200);
-    expect((await h.store.get(TEST_ORG, agent.agentId))!.accountable).toEqual({ developerId: OMAR.developerId });
+    expect((await h.store.get(TEST_ORG, agent.agentId))!.accountable).toEqual({ developerId: keeper });
 
     // Removing the grant of a maintainer does the same.
     await put("maintainer");
     await h.store.setAccountable(TEST_ORG, agent.agentId, { developerId: MAYA.developerId }, OMAR.developerId, undefined, { actor: fixtureActor(h.db, TEST_ORG, OMAR.developerId) });
     const removed = await h.dev(OMAR, "DELETE", `/v1/app/projects/payments/members/${MAYA.developerId}`, { requestId: randomUUID() });
     expect(removed.status, JSON.stringify(removed.body)).toBe(200);
-    expect((await h.store.get(TEST_ORG, agent.agentId))!.accountable).toEqual({ developerId: OMAR.developerId });
+    expect((await h.store.get(TEST_ORG, agent.agentId))!.accountable).toEqual({ developerId: keeper });
   });
 
   it("tells the agents platform when a project is archived, once, and archives it whatever that does", async () => {

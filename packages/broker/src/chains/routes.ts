@@ -167,6 +167,15 @@ async function chainVersionBinding(chains: ChainStore, chain: ChainRecord): Prom
   return { expectedCurrentVersion: chain.currentVersion, ...(digest === undefined ? {} : { versionDigest: digest }) };
 }
 
+/**
+ * Decision 92 (srv/automations, as for an agent's `requireOwnerOrAdminToMoveShared`): a chain the whole company can use (a stored company share) changes owner
+ * or accountable maintainer only by an org owner or admin. `role` is the mover's live org role.
+ */
+export async function requireOwnerOrAdminToMoveSharedChain(deps: { chains?: ChainStore }, orgId: OrgId, chainId: string, role: string | undefined): Promise<void> {
+  if (role === "owner" || role === "admin" || !await chainHasCompanyShare(deps, orgId, chainId)) return;
+  throw agentXError("FORBIDDEN", "This chain is shared with your whole company, so only an organization owner or admin can change who owns it or answers for it.");
+}
+
 /** Refuses applying a publish or rollback decided by someone who is not an org owner or admin once the chain has been shared company-wide (owner decision 92). */
 async function requireOwnerOrAdminWhileShared(deps: ChainApprovalDeps, record: ApprovalRecord, chainId: string, by: string): Promise<void> {
   if (!await chainHasCompanyShare(deps, record.orgId, chainId)) return;
@@ -426,6 +435,8 @@ async function putOwner(deps: ChainRouteDependencies, caller: AgentCaller, chain
   const { chain, access } = await requireChainAccess(accessOf(deps), caller, chainId, "manage");
   const { mark, replay } = await markRequest(deps, caller, "chain-owner", chainId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? { chain: chainView(replay.result as ChainRecord, access) };
+  // Decision 92: a company-shared chain changes owner only by an org owner or admin.
+  await requireOwnerOrAdminToMoveSharedChain(deps, caller.orgId, chain.chainId, caller.orgRole);
   // Store the owner this returns, not the one asked for: a member who was merged into another is named by the survivor.
   const owner = await requireChainOwnerAllowed(deps, caller, input.owner, chain.owner);
   const accountable = input.accountable === undefined ? undefined : owner.kind === "project" ? await requireChainAccountable(deps, caller.orgId, owner.project, input.accountable.developerId) : input.accountable;
@@ -446,6 +457,7 @@ async function putAccountable(deps: ChainRouteDependencies, caller: AgentCaller,
   const { mark, replay } = await markRequest(deps, caller, "chain-accountable", chainId, input);
   if (replay !== undefined) return waitingReplay(replay.result) ?? replay.result as Shown;
   if (chain.owner.kind !== "project") throw agentXError("CONFIG_INVALID", "accountable: only a project's chain has an accountable maintainer");
+  await requireOwnerOrAdminToMoveSharedChain(deps, caller.orgId, chain.chainId, caller.orgRole);
   const accountable = await requireChainAccountable(deps, caller.orgId, chain.owner.project, input.accountable.developerId);
   const done = await holdingOwnerCap(deps, caller, { kind: "chain", chainId: chain.chainId }, chain, withBudgetFields(chain, { accountable }), { op: "set_accountable", accountable }, mark,
     (options) => deps.chains.setAccountable(chain.orgId, chain.chainId, accountable, caller.developerId, mark, { ...options, actor: { developerId: caller.developerId, role: caller.orgRole }, manageSnapshot: chain }));
@@ -543,7 +555,9 @@ const CHAIN_PATH = /^\/v1\/app\/chains(?:\/([^/]+)(?:\/([a-z-]+)(?:\/([0-9]{1,6}
 /**
  * `routeChainRequest(deps, caller, request, url)`: the chain routes. A path under Plan 4's prefixes that no task has built yet answers 404 `"that isn't available yet"`.
  */
-export async function routeChainRequest(deps: ChainRouteDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+export async function routeChainRequest(deps: ChainRouteDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL, options: { safetyOnly?: boolean } = {}): Promise<unknown> {
+  // srv/automations: with the switch off only what stops an automation is served (automations-gate.ts): a trigger's turn-off or delete, and archiving a chain.
+  if (options.safetyOnly === true) return routeSafetyOnly(deps, caller, request, url);
   const cancelling = CHAIN_RUN_CANCEL_PATH.exec(url.pathname);
   if (cancelling !== null) {
     if (request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
@@ -590,6 +604,17 @@ export async function routeChainRequest(deps: ChainRouteDependencies, caller: Ag
     if (sub === "budget" && method === "PUT") return putBudget(deps, caller, chainId, body());
   }
   throw agentXError("NOT_FOUND", "route not found");
+}
+
+/** The chain routes while the automations switch is off: a trigger's turn-off and delete (triggers/routes.ts holds them to that), and an archive. Nothing else. */
+async function routeSafetyOnly(deps: ChainRouteDependencies, caller: AgentCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
+  const triggers = await routeChainTriggers(deps, caller, request, url, { safetyOnly: true });
+  if (triggers !== undefined) return triggers;
+  const matched = CHAIN_PATH.exec(url.pathname);
+  const parsed = ChainIdSchema.safeParse(matched?.[1]);
+  if (matched === null || matched[2] !== "archive" || matched[3] !== undefined || request.method !== "POST") throw agentXError("NOT_FOUND", "route not found");
+  if (!parsed.success) throw notFound();
+  return setArchived(deps, caller, parsed.data, jsonBody(request), true);
 }
 
 // ---- what confirming does

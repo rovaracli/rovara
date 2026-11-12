@@ -7,7 +7,8 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { Writable as NodeWritable, type Readable, type Writable } from "node:stream";
 import { pathToFileURL } from "node:url";
-import { CLI_COMMAND_NAME, AgentXError, AgentXNameSchema, DEFAULT_ENVIRONMENT, ENVIRONMENT_PLACEHOLDER, EnvironmentNameSchema, INTENT_QUESTIONS_MAX, WorkspaceDeploymentModeSchema, MODEL_PROVIDERS, agentXError, type ProjectRole } from "@rovara-code/contracts";
+import { CLI_COMMAND_NAME, AgentXError, AgentXNameSchema, DEFAULT_ENVIRONMENT, ENVIRONMENT_PLACEHOLDER, EnvironmentNameSchema, INTENT_QUESTIONS_MAX, WorkspaceDeploymentModeSchema, MODEL_PROVIDERS, agentXError } from "@rovara-code/contracts";
+import { type ProjectRole } from "@agentx/cloud-contracts";
 import { type ProjectDefinition } from "@agentx/cloud-contracts";
 import { OrgRoleSchema } from "@agentx/cloud-contracts";
 import { DEFAULT_DIRECT_MODELS } from "@agentx/model-runtime/config";
@@ -2207,7 +2208,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   // Plan 2, Task 21: the people in a project and their roles. Anyone who can see the project lists them; a maintainer changes them.
   projectCommand
     .command("members")
-    .description("list the people in a project: each person's role (maintainer, contributor or viewer) and who added them")
+    .description("list the people in a project: each person's role (maintainer, contributor, collaborator or viewer) and who added them")
     .argument("<name>", "the project's name")
     .action(async (name: string, _options: unknown, command: Command) => {
       const globals = globalOptions(command);
@@ -2219,7 +2220,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .description("give someone in your organization a role in a project, or change it (a maintainer of the project)")
     .argument("<name>", "the project's name")
     .argument("<email-or-id>", "the person's email or developer ID, from agentx org members")
-    .addOption(new Option("--role <role>", "what they may do: maintainer (manage the project and its people), contributor (start tasks) or viewer (look only)").choices(["maintainer", "contributor", "viewer"]).makeOptionMandatory())
+    .addOption(new Option("--role <role>", "what they may do: maintainer (manage the project and its people), contributor (start tasks), collaborator (answer and approve low-risk product decisions; no code) or viewer (look only)").choices(["maintainer", "contributor", "collaborator", "viewer"]).makeOptionMandatory())
     .action(async (name: string, who: string, options: { role: ProjectRole }, command: Command) => {
       const globals = globalOptions(command);
       const result = await projectAddMember(developerSession(), developerEnv(command), name, who, options.role);

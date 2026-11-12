@@ -10,6 +10,8 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  const relative = pathname.slice("/v1/web/".length), family = relative.split("/")[0]!;
  const read = method === "GET" || method === "HEAD";
  if (relative === "org/service-status" || relative.startsWith("org/service-status/")) return read && relative === "org/service-status";
+ // 0.5.15: when each health check last ran: this one read, owner or admin, and nothing under it.
+ if (relative === "org/health-observations" || relative.startsWith("org/health-observations/")) return read && relative === "org/health-observations";
  // L3b / K1: the task page also reads what the agent loaded (the records and one rule file's text) and the lessons it loaded and marks one "Helpful" / "Wrong here" (exact shapes only; nothing else under tasks/ is reachable from a browser).
  // OWNER DECISION 7: what the old review page did on a task (Retry the checks, Revise the plan, a held spec's choices, People, a comment's Remember and Forget); the routes re-check who may.
  if (family === "tasks" && method === "POST" && /^tasks\/[0-9a-f-]{36}\/(?:workflow\/(?:checks-retry|revise-plan)|spec\/(?:retry|continue|keep|replan)|people\/(?:role|take-ownership)|comments\/[0-9a-f-]{36}\/(?:remember|forget))$/i.test(relative)) return true;
@@ -19,6 +21,8 @@ export function webRouteAllowed(method: string, pathname: string): boolean {
  if (family === "tasks" && method === "POST" && /^tasks\/[0-9a-f-]{36}\/(?:comments|comments\/[0-9a-f-]{36}\/(?:edit|delete)|suggestions|workflow\/feedback-decision|workflow\/feedback-retry)$/i.test(relative)) return true;
  // Continue in your own tool: publish the working branch and ask for a re-check (exact shapes; the routes re-check who may and that the caller is a live browser session).
  if (family === "tasks" && method === "POST" && /^tasks\/[0-9a-f-]{36}\/continue\/(?:publish-branch|recheck)$/i.test(relative)) return true;
+ // Review groups (owner decision 9): the task's review (read), and claim, release and reassign it (exact shapes, mirroring review-groups/routes.ts, which re-checks who may).
+ if (family === "tasks" && ((read && /^tasks\/[0-9a-f-]{36}\/review$/i.test(relative)) || (method === "POST" && /^tasks\/[0-9a-f-]{36}\/review\/(?:claim|release|reassign)$/i.test(relative)))) return true;
  // UX2 slice 2: the task page's Resolve findings and Send back to coding (the routes re-check who may, as Slack's and the MCP tools' do).
  if (family === "tasks" && method === "POST" && /^tasks\/[0-9a-f-]{36}\/workflow\/(?:review-findings|send-back)$/i.test(relative)) return true;
  if (family === "tasks") return (method === "POST" && /^tasks\/[0-9a-f-]{36}\/second-review-acknowledge$/i.test(relative)) || (method === "POST" && /^tasks\/[0-9a-f-]{36}\/continue-as-task$/i.test(relative)) || (read && /^tasks\/[0-9a-f-]{36}\/design-review\/approve$/i.test(relative)) || (method === "POST" && /^tasks\/[0-9a-f-]{36}\/design-review\/(?:first|skip|answers|retry|resume|approve|spend\/(?:lower-tier|raise-cap|run-unpriced|skip))$/i.test(relative)) || (read && /^tasks\/[0-9a-f-]{36}\/lessons$/.test(relative)) || (read && /^tasks\/[0-9a-f-]{36}\/loaded-knowledge(?:\/[A-Za-z0-9_-]{1,80}\/[a-z_]{1,20}(?:\.[A-Z]{1,10})?\/items\/\d{1,3}\/text)?$/.test(relative)) || (method === "POST" && /^tasks\/[0-9a-f-]{36}\/lessons\/[A-Za-z0-9_-]{4,64}\/feedback$/.test(relative));

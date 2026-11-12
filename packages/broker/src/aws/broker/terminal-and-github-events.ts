@@ -45,6 +45,7 @@ import { githubScope, installOrgId, orgOfRecord, webhookRepositoryUrl } from "./
 import { consumerRepositoryResolver } from "./consumer-hosts.js";
 import { changeRequestRef } from "../../rovara-code/host-port.js";
 import { taskOperationParts } from "./task-operations.js";
+import { recordModelUse, type ModelUseObservation } from "../../org/health-observations.js";
 import { latestChecksItem } from "./terminal-result.js";
 import { handleSpecPullRequestEvent } from "./spec-wiring.js";
 import { type EndedPullRequestReader, outcomeDepsOf, scoreMergedCandidate } from "../../rovara-code/outcome-hooks.js";
@@ -62,9 +63,9 @@ async function queuedFirstTask(
   prepare: OperationRecord,
   pointer: DeveloperTaskPointerRecord & { pendingPrompt: string },
   now: string,
-): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems; admittedTask?: DeveloperTaskRecord; turnAudit?:ReturnType<typeof prepareTurnModelFallback>; fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>> }> {
+): Promise<{ workspaceUpdate: TransactItems[number]; items: TransactItems; admittedTask?: DeveloperTaskRecord; turnAudit?:ReturnType<typeof prepareTurnModelFallback>; fallback?:Awaited<ReturnType<typeof prepareTaskModelFallback>>; modelUse?: ModelUseObservation }> {
   const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(pointer.taskId));
-  const { operation, outbox, fence,fallback,modelChecks,turnAudit } = await taskOperationParts(dependencies, workspace, {
+  const { operation, outbox, fence,fallback,modelChecks,turnAudit,modelUse } = await taskOperationParts(dependencies, workspace, {
     requestId: pointer.firstRequestId,
     conversationId: pointer.conversationId,
     prompt: pointer.pendingPrompt,
@@ -84,6 +85,7 @@ async function queuedFirstTask(
     ...(task?.spendingStop === undefined ? {} : { admittedTask: task }),
     ...(fallback===undefined?{}:{fallback}),
     ...(turnAudit===undefined?{}:{turnAudit}),
+    ...(modelUse===undefined?{}:{modelUse}),
     workspaceUpdate: { Update: {
       TableName: dependencies.tableName,
       Key: workspaceKey(workspace.id),
@@ -185,6 +187,7 @@ export async function sendTerminalResult(
     await send(queued.admittedTask === undefined ? queuedItems : withAdmittedTaskSource(dependencies.tableName, queued.admittedTask, queuedItems, "firstOperationWindow").items);
     if(queued.fallback?.event!==undefined)await flushAuditEvents(dependencies,[queued.fallback.event]);
     if(queued.turnAudit!==undefined)await flushAuditEvents(dependencies,[queued.turnAudit.event]);
+    if(queued.modelUse!==undefined)await recordModelUse(dependencies,queued.modelUse.orgId,queued.modelUse.use);
   } catch (queueError) {
     if(queueError instanceof TurnAdmissionLimitError) {
       startRefusal.text=refusalText(queueError);

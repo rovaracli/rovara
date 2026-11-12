@@ -2,8 +2,9 @@ import { planLegacyDomainNarrowing, domainRequestHash } from "./legacy-domain-na
 import { createHash } from "node:crypto";
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXNameSchema, WorkingBranchNameSchema, AllowedDomainSchema, DEFAULT_AGENT_ALLOW_DOMAINS, EgressDomainsItemSchema, egressDomainsKey, INDEX_EXPIRY_ATTRIBUTE, agentXError, canonicalJson, orgProjectCatalogKey, projectMetaKey, projectPk, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
-import { StoredProjectDefinitionSchema, ProjectDefinitionSchema } from "@agentx/cloud-contracts";
+import { AgentXNameSchema, WorkingBranchNameSchema, AllowedDomainSchema, EgressDomainsItemSchema, egressDomainsKey, INDEX_EXPIRY_ATTRIBUTE, agentXError, canonicalJson, orgProjectCatalogKey, projectMetaKey, projectPk, projectRevisionKey, type OrgId } from "@rovara-code/contracts";
+import { BROAD_ALLOWED_DOMAIN_MESSAGE, StoredProjectDefinitionSchema, ProjectDefinitionSchema, isBroadAllowedDomain } from "@agentx/cloud-contracts";
+import { installDefaultDomains, shownDefaultDomains } from "./install-default-allow-domains.js";
 import { auditPending, type AuditRuntime, type TransactItem } from "../audit/outbox.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditOccurrence } from "../audit/events.js";
@@ -14,7 +15,7 @@ import { readSecondPersonApprovalEvidence, readAllowedDomainActorConditions } fr
 import { isAllowedDomainWidening, refuseAllowedDomainWidening } from "./allowed-domain-policy.js";
 interface Dependencies { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string; signInTableName: string; now(): number; audit?: AuditRuntime }
 type Row = Record<string, unknown>;
-const canonicalDomains = z.array(AllowedDomainSchema).max(50).transform(domains => [...new Set(domains)].sort());
+const canonicalDomains = z.array(AllowedDomainSchema).max(50).refine(domains => !domains.some(isBroadAllowedDomain), BROAD_ALLOWED_DOMAIN_MESSAGE).transform(domains => [...new Set(domains)].sort());
 const bodySchema = z.object({ requestId: z.string().uuid(), expectedRevision: z.number().int().positive(), allowedDomains: canonicalDomains, expectedContextDigest: z.string().regex(/^[a-f0-9]{64}$/).optional() }).strict();
 const proposalSchema = z.object({
  entityType: z.literal("EGRESS_PROPOSAL"), kind: z.literal("widening"), orgId: z.string(), project: z.string(), by: z.string(), proposalId: z.string().uuid(),
@@ -322,7 +323,8 @@ export async function readProjectAllowedDomainsReview(deps: Dependencies, input:
  const parsedEgress = egress === undefined ? undefined : EgressDomainsItemSchema.safeParse(egress);
  if (parsedEgress !== undefined && (!parsedEgress.success || parsedEgress.data.orgId !== input.orgId || parsedEgress.data.owner.kind !== "project" || parsedEgress.data.owner.project !== input.project)) throw unavailable();
  const staff = parsedEgress?.success ? parsedEgress.data : undefined;
- const staffDomains = allowedDomains.filter(domain => !DEFAULT_AGENT_ALLOW_DOMAINS.includes(domain)).map(domain => ({ domain, status: staff?.active === true ? staff.domains.find(entry => entry.domain === domain)?.status ?? "unknown" : "unknown" }));
+ const defaults = installDefaultDomains();
+ const staffDomains = allowedDomains.filter(domain => !defaults.includes(domain)).map(domain => ({ domain, status: staff?.active === true ? staff.domains.find(entry => entry.domain === domain)?.status ?? "unknown" : "unknown" }));
  let liveProposal: Awaited<ReturnType<typeof readProjectAllowedDomainProposal>> | null = null;
  if (rawPointer !== undefined) {
   const checked = pointerSchema.safeParse(rawPointer);if (!checked.success || checked.data.orgId !== input.orgId || checked.data.project !== input.project) throw unavailable();
@@ -332,7 +334,7 @@ export async function readProjectAllowedDomainsReview(deps: Dependencies, input:
  const [currentCatalog, currentMeta] = await Promise.all([read(deps, catalogKey), read(deps, metaKey)]);
  if (currentCatalog?.latestRevision !== revisionNumber.data || currentMeta?.status !== "active" || contextDigest(input.orgId, input.project, revisionNumber.data, revision!.definition, currentMeta) !== checkedDigest) throw stale();
  await readAllowedDomainActorConditions(deps, { orgId: input.orgId, project: input.project, actorId: input.by });
- return { orgId: input.orgId, project: input.project, baseRevision: revisionNumber.data, contextDigest: checkedDigest, allowedDomains, defaultDomains: [...DEFAULT_AGENT_ALLOW_DOMAINS], staffDomains, liveProposal };
+ return { orgId: input.orgId, project: input.project, baseRevision: revisionNumber.data, contextDigest: checkedDigest, allowedDomains, defaultDomains: shownDefaultDomains(), staffDomains, liveProposal };
 }
 
 const directSaveSchema = bodySchema.extend({ expectedContextDigest: z.string().regex(/^[a-f0-9]{64}$/) });

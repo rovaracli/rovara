@@ -259,6 +259,24 @@ export function auditOrgInviteCreated(input: AuditBuilderBase & { inviteId: stri
   return build("org.invite_created", input, { kind: "invite", id: input.inviteId }, { role: input.role, targeted: input.targeted });
 }
 
+/**
+ * A-31: an invite also names a project and a role. `occurrence`: `auditOccurrence("invite-project", orgId, inviteId)`. Written in the invite's own transaction, beside
+ * `org.invite_created`; `inviter` is `admin` (an owner or admin) or `maintainer` (the project's own maintainer).
+ */
+export function auditProjectMemberInvited(input: AuditBuilderBase & { projectName: string; inviteId: string; role: string; inviter: "admin" | "maintainer" }): AuditEventInput {
+  return build("project_member.invited", { ...input, related: [input.inviteId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { role: input.role, inviter: input.inviter });
+}
+
+/** A-31: the invite's project role given at the person's join, in the join's own transaction. `occurrence`: the invite's token hash (one join per invite). */
+export function auditProjectMemberJoinedByInvite(input: AuditBuilderBase & { projectName: string; memberId: string; role: string }): AuditEventInput {
+  return build("project_member.joined_by_invite", { ...input, related: [input.memberId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { role: input.role });
+}
+
+/** A-31: the person joined the company but not the invite's project, which was archived or removed since. `occurrence`: the invite's token hash. */
+export function auditProjectMemberInviteSkipped(input: AuditBuilderBase & { projectName: string; memberId: string; role: string; cause: "project_archived" | "project_gone" }): AuditEventInput {
+  return build("project_member.invite_skipped", { ...input, related: [input.memberId, ...(input.related ?? [])] }, { kind: "project", name: input.projectName }, { role: input.role, cause: input.cause });
+}
+
 /** A person chose their own display name (release 0.4.16). `occurrence`: `auditOccurrence(developerId, time of the change)`. The name never enters the record. */
 export function auditMemberRenamed(input: AuditBuilderBase & { memberId: string }): AuditEventInput {
   return build("member.renamed", input, { kind: "member", id: input.memberId }, {});
@@ -809,6 +827,26 @@ export function auditProjectAutomaticRunsCapChanged(input: AuditBuilderBase & { 
   return build("project.automatic_runs_cap_changed", input, { kind: "project", name: input.projectName }, { fromCap: input.fromCap, toCap: input.toCap });
 }
 
+/** `occurrence`: `auditOccurrence(project, "collaborator_approvals", request id)`. A maintainer (or a company owner or admin) turned collaborators' low-risk product approvals on or off (decision 36). */
+export function auditProjectCollaboratorApprovalsChanged(input: AuditBuilderBase & { projectName: string; enabled: boolean; revision: number }): AuditEventInput {
+  return build("project.collaborator_approvals_changed", input, { kind: "project", name: input.projectName }, { enabled: input.enabled, revision: input.revision });
+}
+
+/** `occurrence`: `auditOccurrence("product_decision", decisionId)`. A task raised a product decision. The question and its options' words are never facts. */
+export function auditProductDecisionRaised(input: AuditBuilderBase & { taskId: string; decisionId: string; risk: string; options: number }): AuditEventInput {
+  return build("product_decision.raised", input, { kind: "task", id: input.taskId }, { decisionId: input.decisionId, risk: input.risk, options: input.options });
+}
+
+/** `occurrence`: `auditOccurrence("product_decision", decisionId, request id)`. Someone answered a product decision (a note; it settles nothing). The answer's text is never a fact. */
+export function auditProductDecisionAnswered(input: AuditBuilderBase & { taskId: string; decisionId: string; risk: string; revision: number }): AuditEventInput {
+  return build("product_decision.answered", input, { kind: "task", id: input.taskId }, { decisionId: input.decisionId, risk: input.risk, revision: input.revision });
+}
+
+/** `occurrence`: `auditOccurrence("product_decision", decisionId, request id)`. A product decision was approved. `class` is always `product`: it never counts as a code approval. */
+export function auditProductDecisionApproved(input: AuditBuilderBase & { taskId: string; decisionId: string; risk: string; role: string; optionId: string; revision: number }): AuditEventInput {
+  return build("product_decision.approved", input, { kind: "task", id: input.taskId }, { decisionId: input.decisionId, risk: input.risk, role: input.role, optionId: input.optionId, revision: input.revision, class: "product" });
+}
+
 /** `occurrence`: `auditOccurrence(project, month)`: once for a month. The cap was reached, so the project's automatic runs are paused until the month ends or a maintainer raises the cap. */
 export function auditAutomaticRunsPaused(input: AuditBuilderBase & { projectName: string; month: string; cap: number }): AuditEventInput {
   return build("automatic_runs.paused", input, { kind: "project", name: input.projectName }, { month: input.month, cap: input.cap });
@@ -1126,4 +1164,24 @@ export type AgentPublicationAuditAction = Extract<AuditAction, `agent_publicatio
  */
 export function auditAgentPublication(input: AuditBuilderBase & { action: AgentPublicationAuditAction; agentId: string; facts: Record<string, Fact> }): AuditEventInput {
   return build(input.action, input, { kind: "agent", id: input.agentId }, input.facts);
+}
+
+// Review groups (owner decision 9) ------------------------------------------------------------------------------------------
+
+/**
+ * `occurrence`: `auditOccurrence(project, new revision)`. A project's review groups are one document that commits once per revision. Counts only: how many groups and people there
+ * are now, and how many people were added to or removed from a group by this change. The project is a name-keyed target; who is in a group is never a fact.
+ */
+export function auditReviewGroupsChanged(input: AuditBuilderBase & { projectName: string; revision: number; groups: number; members: number; added: number; removed: number }): AuditEventInput {
+  return build("review_groups.changed", input, { kind: "project", name: input.projectName }, { revision: input.revision, groups: input.groups, members: input.members, added: input.added, removed: input.removed });
+}
+
+/**
+ * `occurrence`: `auditOccurrence(taskId, new claim revision)`. A task's waiting review was claimed, released or reassigned (`change`), through the group `groupId`, over `pullRequests`
+ * pull requests; `hostSync` says whether the code host was asked to list the holder. The holder (a member id) is in the org's details only.
+ */
+export function auditReviewClaimChanged(input: AuditBuilderBase & { taskId: string; change: "claimed" | "released" | "reassigned"; revision: number; groupId: string; pullRequests: number; hostSync: string; holder?: string | undefined }): AuditEventInput {
+  const details = input.holder === undefined ? input.details : [...(input.details ?? []), { subject: "org" as const, fields: { holder: input.holder } }];
+  return build("review.claim_changed", { ...input, ...(details === undefined ? {} : { details }) }, { kind: "task", id: input.taskId },
+    { change: input.change, revision: input.revision, groupId: input.groupId, pullRequests: input.pullRequests, hostSync: input.hostSync });
 }

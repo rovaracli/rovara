@@ -9,6 +9,8 @@ const run = (file: string, args: string[]): Promise<Result> => execFileAsync(fil
   ({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
   (error: { code?: number; stdout?: string; stderr?: string }) => ({ code: typeof error.code === "number" ? error.code : 1, stdout: error.stdout ?? "", stderr: error.stderr ?? "" }));
 export const docker = (...args: string[]) => run("docker", args);
+/** Any program, with the same result shape (the dev container wrapper, `docker-walled.sh`). */
+export const runProgram = (file: string, ...args: string[]) => run(file, args);
 export const sudo = (...args: string[]) => run("sudo", ["-n", ...args]);
 
 /**

@@ -32,7 +32,7 @@ export { AppOrgInvitesResponseSchema, AppOrgInvitesResponseReaderSchema } from "
 export { OrgInvitePublicIdSchema, AppOrgInviteStatusSchema } from "./developer-web.js";
 
 // Lane A: safe reviewed invite creation receipts.
-export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema, InviteEmailOutcomeSchema } from "./invite-creation.js";
+export { ReviewedInviteCreateBodySchema, InviteCreateReceiptSchema, ReviewedInviteCreateResponseSchema, InviteEmailOutcomeSchema, InviteProjectSchema, InviteProjectNoteSchema, INVITE_PROJECT_ROLES_FOR_MAINTAINERS, type InviteProject, type InviteProjectNote } from "./invite-creation.js";
 
 // Lane A: strict read-only monthly base budget settings.
 export { AdminBudgetMicrodollarsSchema, AdminMonthlyBaseLimitSchema, AdminBudgetSettingsSchema, type AdminBudgetSettings } from "./admin-budget.js";
@@ -53,6 +53,9 @@ export { TaskStopProjectPolicySchema, type TaskStopProjectPolicy, TaskStopProjec
 // Lane C17: bounded company Slack stored-evidence read, browser-safe metadata only.
 export * from "./org-slack-workspace-evidence.js";
 
+// 0.5.15: when each health check last ran for a company (Cloud only; the Health page says "checked 5 minutes ago").
+export * from "./org-health-observations.js";
+
 export { AUDIT_INDEX_PAGE_DEFAULT, AUDIT_INDEX_PAGE_MAX, AuditIndexedQuerySchema, AuditIndexedResultSchema, type AuditIndexedQuery, type AuditIndexedResult } from "./audit-search.js";
 
 export { SoleOwnerConfirmationSchema } from "./session-views.js";
@@ -72,6 +75,8 @@ export { PastWorkResponseSchema, RecordSearchResponseSchema, type PastWorkRespon
 
 export * from "./company-domains-web.js";
 export * from "./app-company-rules.js";
+// A-32 / A-33 (srv/project-people): the web's project people and code settings powers.
+export * from "./app-project-people.js";
 // Approval place (U4): approval-place.ts is a byte copy of Code's file (Code PR #451, public code/next a97b0bee9) that waits for the vendor pin to move: UPSTREAM OWED, see its header and
 // tests/contract/approval-place-upstream-copy.test.ts. app-approval-window.ts and decision-dismiss.ts are Cloud's (the latter owed upstream, see its header).
 export * from "./approval-place.js";
@@ -97,4 +102,14 @@ export { type AppProjectDetail, AppProjectDetailSchema, type AppProjectSummary, 
 export { type SetupApplyResponse, SetupApplyResponseSchema } from "./setup-proposal.js";
 export * from "./finished-as.js";
 export * from "./org-pending-approvals.js";
+
+// A project's merge rules (`GET /v1/app/projects/{p}/code-settings`, any project role): Code's own reader, named here so the web app reads it through its one entry (exp/wire-reads; Working agreement).
+export { CodeSettingsResponseReaderSchema, type CodeSettingsResponseRead } from "@rovara-code/contracts";
 export * from "./continue-loop.js";
+// srv/automations: the chain and trigger route projections and the project automations list.
+export * from "./app-automations.js";
+export * from "./app-review-groups.js";
+// Collaborator role (W11): product decisions and the collaborator switch (Cloud-only names). The role shadow (project-roles.ts) is NOT exported here yet: the UI still reads Code's three roles,
+// and the UI lane switches to it when it shows the collaborator (`myProjectRole`, a member's `projectRole`).
+export * from "./product-decisions.js";
+export { projectRoleFloor, PROJECT_ROLE_ORDER, ProjectRoleSchema as CloudProjectRoleSchema, type ProjectRole as CloudProjectRole } from "./project-roles.js";

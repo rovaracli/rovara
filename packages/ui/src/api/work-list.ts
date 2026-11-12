@@ -7,12 +7,16 @@ import { mergeLiveTiles, useLive, type LiveFilter } from "./live.js";
 export type ReadFinishedPage = ReturnType<typeof SessionListReaderSchema.parse>;
 export type ReadFinishedTile = ReadFinishedPage["sessions"][number];
 
-/** Finished work (its key starts with "live", so a realtime notice that refreshes Live refreshes this list too): the ended sessions of one project (everyone's, as far as the reader may see them), or with no project the reader's own. `GET /v1/app/sessions?owner=me|project=<p>&status=ended`; the broker answers newest first. */
+/**
+ * Finished work (its key starts with "live", so a realtime notice that refreshes Live refreshes this list too): the ended sessions of one project (everyone's, as far as the reader may see them), or with no project
+ * every ended session the reader may open: `GET /v1/app/sessions?project=<p>&status=ended` or `?scope=company&status=ended`. Company is the widest reach the server gives (the projects the reader is on, an owner's or admin's reach
+ * into every project, and the reader's own sessions), so it holds what Mine and Team would; the Project filter narrows it. The broker answers newest first.
+ */
 export function useFinishedWork(project: string | undefined, enabled: boolean) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
- return useInfiniteQuery({ queryKey: ["live", "finished", project], enabled, initialPageParam: undefined as string | undefined,
+ return useInfiniteQuery({ queryKey: ["live", "finished", project === undefined ? { scope: "company" } : { project }], enabled, initialPageParam: undefined as string | undefined,
   queryFn: ({ pageParam }) => {
-   const params = new URLSearchParams(project === undefined ? { owner: "me" } : { project });params.set("status", "ended");if (pageParam !== undefined) params.set("cursor", pageParam);
+   const params = new URLSearchParams(project === undefined ? { scope: "company" } : { project });params.set("status", "ended");if (pageParam !== undefined) params.set("cursor", pageParam);
    return api.get("/v1/app/sessions?" + params.toString(), SessionListReaderSchema);
   }, getNextPageParam: (page, _pages, previous) => page.next === previous ? undefined : page.next });
 }
@@ -35,8 +39,10 @@ export function useWorkList(filters: readonly LiveFilter[], finishedOn: boolean,
  }, [finishedOn, filters.length, firstPages, secondPages]);
  const finishedPages = !finished.isError ? finished.data?.pages : undefined;
  const done = useMemo(() => finishedOn && finishedPages !== undefined ? byId(finishedPages.flatMap(page => page.sessions)) : undefined, [finishedOn, finishedPages]);
+ // Set when the reader reaches more projects than one answer reads: the rest are left to their own project's list.
+ const projectsCut = finishedOn && finishedPages?.some(page => page.projectsCut === true) === true;
  return {
-  live, finished: done, ready, isPending: !ready && failed === undefined, isError: !ready && failed !== undefined, partial: ready && failed !== undefined, error: failed?.error,
+  live, finished: done, projectsCut, ready, isPending: !ready && failed === undefined, isError: !ready && failed !== undefined, partial: ready && failed !== undefined, error: failed?.error,
   hasNextPage: loaded.some(query => query.hasNextPage), isFetchingNextPage: queries.some(query => query.isFetchingNextPage),
   refetch: () => Promise.all(queries.map(query => query.refetch())), fetchNextPage: () => Promise.all(loaded.filter(query => query.hasNextPage).map(query => query.fetchNextPage())),
  };

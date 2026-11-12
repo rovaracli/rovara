@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { AgentGuardrailsSchema, AgentIdSchema, ChainIdSchema, TriggerIdSchema, AgentPrincipalSchema, ApprovalIdSchema, ConnectorConfigSchema, RunInputSchema, WORK_ORIGINS, INDEX_EXPIRY_ATTRIBUTE, OrgIdSchema, SessionIdSchema, SessionLevelSchema, agentXError, approvalKey, approverIndexKey, canonicalInstant, canonicalJson, capText, newPrefixedId, openApprovalKey, hideEmailAddresses, orgScoped, projectAllows, redactText, type AgentGuardrails, type AgentId, type ApprovalId, type ConnectorConfig, type OrgId, type RunInput, type WorkOrigin, type SessionId, type SessionLevel, AgentOwnerSchema, type AgentOwner } from "@rovara-code/contracts";
-import { APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, type AuditProof, AgentPublishNoteSchema, PublishTargetSchema, type AuditEventInput, type PublishTarget } from "@agentx/cloud-contracts";
+import { APPROVAL_EXECUTING_RETRY_MINUTES, CHANGE_APPROVAL_TTL_DAYS, orgOpenApprovalKey, type AuditProof, AgentPublishNoteSchema, PublishTargetSchema, type AuditEventInput, type PublishTarget } from "@agentx/cloud-contracts";
 import type { SessionTakeOverDependencies } from "../agent-sessions/take-over.js";
 import type { CodeMergeHost, PullRequestMergeSubject } from "../rovara-code/merge.js";
 import { isTaskTakenOver, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
@@ -685,6 +685,7 @@ export async function createPendingChange(
         put(openApprovalKey(expiresAt, input.orgId, approvalId), "OPEN_APPROVAL", { orgId: input.orgId, approvalId }),
         ...listedPeople(input.approvers, input.requestedBy).map((developerId) => put(approverIndexKey(input.orgId, developerId, approvalId), "APPROVER_INDEX", { approvalId, expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(expiresAt) })),
         ...extra.items,
+        put(orgOpenApprovalKey(input.orgId, createdAt, approvalId), "ORG_OPEN_APPROVAL", orgOpenFields(record)),
         ...extra.events.flatMap((event) => auditPending(deps, event)),
       ],
     }));
@@ -893,6 +894,8 @@ async function createRecord(
       Put: { TableName: deps.tableName, Item: { ...approverIndexKey(record.orgId, developerId, record.approvalId), entityType: "APPROVER_INDEX", approvalId: record.approvalId, expiresAt: record.expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(record.expiresAt) } },
     })),
     ...(input.extraItems ?? []),
+    // After the extra items, so `claimIndex` and `guardIndex` still point at theirs in the cancellation reasons.
+    { Put: { TableName: deps.tableName, Item: { ...orgOpenApprovalKey(record.orgId, record.createdAt, record.approvalId), entityType: "ORG_OPEN_APPROVAL", ...orgOpenFields(record) } } },
     ...events.flatMap((event) => auditPending(deps, event)),
   );
   try {
@@ -1006,10 +1009,21 @@ export const counterDrop = (deps: Pick<ApprovalStoreDependencies, "tableName">, 
   }]
   : []);
 
-/** Deletes the record's `APPROVER#` items: once it is no longer PENDING nobody's list holds it (done in the transaction that ends PENDING). */
-export const approverDrops = (deps: Pick<ApprovalStoreDependencies, "tableName">, record: AnyApprovalRecord): TransactItem[] => listedFor(record).map((developerId): TransactItem => ({
-  Delete: { TableName: deps.tableName, Key: approverIndexKey(record.orgId, developerId, record.approvalId) },
-}));
+/**
+ * Deletes what lists the record while it is PENDING: its `APPROVER#` items and its item in the company's open index (`orgOpenApprovalKey`). Once it is no longer PENDING nobody's list holds it
+ * (done in the transaction that ends PENDING: decide, expire, withdraw, cancel). Deleting the company item of a record that has none (made before 0.5.15 and not yet backfilled) is a no-op.
+ */
+export const approverDrops = (deps: Pick<ApprovalStoreDependencies, "tableName">, record: AnyApprovalRecord): TransactItem[] => [
+  ...listedFor(record).map((developerId): TransactItem => ({
+    Delete: { TableName: deps.tableName, Key: approverIndexKey(record.orgId, developerId, record.approvalId) },
+  })),
+  { Delete: { TableName: deps.tableName, Key: orgOpenApprovalKey(record.orgId, record.createdAt, record.approvalId) } },
+];
+
+/** What a company's open-index item holds: the ids, the org and the record's expiry (no person), with the index TTL as a backstop for an item whose delete was lost. */
+export const orgOpenFields = (record: { orgId: OrgId; approvalId: ApprovalId; expiresAt: string }): Item => ({
+  orgId: record.orgId, approvalId: record.approvalId, expiresAt: record.expiresAt, [INDEX_EXPIRY_ATTRIBUTE]: indexExpiryOf(record.expiresAt),
+});
 
 /** An update of the record's fields, conditional on `when` (an expression over the aliases); undefined values are left out. */
 export function updateRecord(deps: Pick<ApprovalStoreDependencies, "tableName">, record: AnyApprovalRecord, set: Record<string, unknown>, when: Array<[attribute: string, value: unknown]> | "pending", openAt?: string): TransactItem {

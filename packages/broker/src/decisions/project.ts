@@ -331,6 +331,9 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   // Slice 2: a document to approve (requirements, a coding plan, a design) can always be sent back with a reason, on its card: never "Not now", which decided nothing.
   const changes: CardAction | undefined = DOCUMENT_KINDS.has(item.kind) && !(item.kind === "approve_design" && item.changesAllowed === false)
     ? { kind: "request_changes", label: DECISION_LABELS.requestChanges, href: `${base}/request-changes`, method: "POST" } : undefined;
+  // Owner decision 99: a coding plan can also be REJECTED from its card and from Slack (it ends the task), by anyone allowed to decide it, judged like a medium approval (`approvalPlaceDecision`); "Not now" stays a dismissal and never a rejection.
+  // A requirements or design document has no Reject (it is sent back with a reason).
+  const planReject: CardAction | undefined = item.kind === "approve_plan" ? { kind: "reject", label: "Reject", href: `${base}/reject`, method: "POST" } : undefined;
   // Every link to a decision lands on its card: a card about a task whose page is its session opens `/app/sessions/<id>?decision=<card id>`, and the task page scrolls to that card and marks it (S1a).
   // A high card with a confirmation page still opens that page (its fresh sign-in); one without opens its card on the task page, where it is decided inline. Never a link to a page that shows the same link.
   const focused = item.taskId === undefined ? item.openPath : decisionFocusPath(item.openPath, cardId);
@@ -342,7 +345,7 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   if (risk === "high" && item.kind === "approve_spend" && item.design !== undefined) {
     return { actions: [open, ...item.design.choices.slice(0, 3).map((choice): CardAction => ({ kind: "choose", label: plainLine(choice.label, 60), href: choice.href, method: "POST" }))], recommended: "open" };
   }
-  if (risk === "high") return { actions: changes === undefined ? [open] : [open, changes], recommended: "open" };
+  if (risk === "high") return { actions: [open, ...(changes === undefined ? [] : [changes]), ...(planReject === undefined ? [] : [planReject])], recommended: "open" };
   // A question or a checks choice is answered on its own page: the card only opens it (an answer or a choice is a POST of that page, never a link).
   if (item.kind === "answer_question") return { actions: [{ ...open, label: DECISION_LABELS.answer }], recommended: "open" };
   if (item.kind === "choose_checks") return { actions: [{ ...open, label: "Choose checks" }], recommended: "open" };
@@ -372,7 +375,7 @@ function actionsOf(item: DecisionItem, cardId: string, risk: DecisionRisk): { ac
   // The recommendation follows the evidence: something failed, or a blocker is open, so look first.
   const look = openBlockers > 0 || (item.kind === "merge" && (item.proof.failed > 0 || item.ci === "failing"));
   const present = (actions: Array<CardAction | undefined>): CardAction[] => actions.filter((action): action is CardAction => action !== undefined);
-  return look ? { actions: present([open, reject, approve]), recommended: "open" } : { actions: present([approve, reject, open]), recommended: "approve" };
+  return look ? { actions: present([open, reject, planReject, approve]), recommended: "open" } : { actions: present([approve, reject, planReject, open]), recommended: "approve" };
 }
 
 const REJECTABLE_REASONS: readonly DecisionRejectReason[] = DECISION_REJECT_REASONS;
@@ -404,7 +407,8 @@ export function cardOfItem(item: DecisionItem, locks: DecisionLocks = {}): { car
     actions: closed ? [] : actions,
     ...(item.kind === "approve_plan" && item.runLimit !== undefined && Number.isFinite(item.runLimit.proposedUsd)
       ? { runLimit: { proposedUsd: item.runLimit.proposedUsd, ...(item.runLimit.currentUsd === undefined || !Number.isFinite(item.runLimit.currentUsd) ? {} : { currentUsd: item.runLimit.currentUsd }) } } : {}),
-    rejectReasons: closed || !actions.some((action) => action.kind === "reject") ? [] : [...REJECTABLE_REASONS],
+    // A coding plan's Reject ends the task, so it has no "not now" reason (that is a dismissal, which decides nothing).
+    rejectReasons: closed || !actions.some((action) => action.kind === "reject") ? [] : item.kind === "approve_plan" ? REJECTABLE_REASONS.filter((reason) => reason !== "not_now") : [...REJECTABLE_REASONS],
     ...(answered === undefined ? {} : { answeredByRule: { ruleId: plainLine(answered.ruleId, 64), at: answered.at } }),
     status, createdAt: item.createdAt, ...(item.expiresAt === undefined ? {} : { expiresAt: item.expiresAt }),
   };

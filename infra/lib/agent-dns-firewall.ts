@@ -1,8 +1,16 @@
 import { RemovalPolicy, aws_logs as logs, aws_route53resolver as resolver } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { DEFAULT_AGENT_ALLOW_DOMAINS } from "@rovara-code/contracts";
+import {
+  BEDROCK_SOURCE_REGIONS, BROAD_ALLOWED_DOMAIN_MESSAGE, BROAD_DEFAULT_ALLOW_ENTRIES, HOSTED_AWS_HOSTS, NAMED_IN_PLACE_OF_BROAD_ENTRIES, hostedAgentAllowDomains, hostedAwsAllowDomains, isBroadAllowedDomain, narrowedDefaultAllowDomains,
+} from "@agentx/cloud-contracts";
 
 export { DEFAULT_AGENT_ALLOW_DOMAINS };
+
+// The hosted install's list is built in @agentx/cloud-contracts (hosted-allow-domains.ts), where the broker reads it too; re-exported here for the stack and its tests.
+export {
+  BEDROCK_SOURCE_REGIONS, BROAD_DEFAULT_ALLOW_ENTRIES, HOSTED_AWS_HOSTS, NAMED_IN_PLACE_OF_BROAD_ENTRIES, hostedAgentAllowDomains, hostedAwsAllowDomains, narrowedDefaultAllowDomains,
+};
 
 /** The CDK context key holding extra allowed domains, comma separated (for example an internal package registry). */
 export const EGRESS_ALLOW_DOMAINS_CONTEXT_KEY = "agentxEgressAllowDomains";
@@ -21,7 +29,7 @@ const MAX_DOMAIN_LENGTH = 255;
 const DOMAIN_PATTERN = /^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/i;
 
 /** The extra domains from a context value: trimmed, validated, without blanks or duplicates of `existing`. */
-export function parseExtraAllowDomains(value: unknown, existing: readonly string[] = DEFAULT_AGENT_ALLOW_DOMAINS): string[] {
+export function parseExtraAllowDomains(value: unknown, existing: readonly string[] = narrowedDefaultAllowDomains()): string[] {
   if (value === undefined || value === "") return [];
   if (typeof value !== "string") throw new Error(`${EGRESS_ALLOW_DOMAINS_CONTEXT_KEY} must be a comma-separated string of domain names`);
   const seen = new Set(existing.map((domain) => domain.toLowerCase()));
@@ -30,6 +38,8 @@ export function parseExtraAllowDomains(value: unknown, existing: readonly string
     if (entry.length > MAX_DOMAIN_LENGTH || !DOMAIN_PATTERN.test(entry)) {
       throw new Error(`${EGRESS_ALLOW_DOMAINS_CONTEXT_KEY} entry ${JSON.stringify(entry)} is not a domain name of at most ${MAX_DOMAIN_LENGTH} characters; use a name such as artifactory.example.com or *.example.com, without a scheme or path`);
     }
+    // One operator entry is cell-wide too: a wildcard over AWS or GitHub names would reopen what the default list closed.
+    if (isBroadAllowedDomain(entry)) throw new Error(`${EGRESS_ALLOW_DOMAINS_CONTEXT_KEY} entry ${JSON.stringify(entry)}: ${BROAD_ALLOWED_DOMAIN_MESSAGE}`);
     if (seen.has(entry.toLowerCase())) continue;
     seen.add(entry.toLowerCase());
     extra.push(entry);
@@ -41,10 +51,10 @@ export interface AgentDnsFirewallProps {
   /** The install, for the query log group name /agentx/<env>/dns-firewall. */
   env: string;
   vpcId: string;
-  /** Allowed in addition to DEFAULT_AGENT_ALLOW_DOMAINS. */
+  /** Allowed in addition to the base list. */
   extraAllowDomains?: readonly string[];
   /**
-   * The base allow-list. Default: DEFAULT_AGENT_ALLOW_DOMAINS, the public package, image and OS-mirror hosts every hosted install uses. An Enterprise install
+   * The base allow-list. Default: the default list without its broad entries (`narrowedDefaultAllowDomains`); a hosted install passes `hostedAgentAllowDomains(region)`, which adds its own AWS hosts. An Enterprise install
    * passes its own short list (infra/lib/vpc-endpoints.ts) and the public defaults are not on it.
    */
   baseAllowDomains?: readonly string[];
@@ -83,7 +93,7 @@ export class AgentDnsFirewall extends Construct {
 
   constructor(scope: Construct, id: string, props: AgentDnsFirewallProps) {
     super(scope, id);
-    this.allowDomains = [...(props.baseAllowDomains ?? DEFAULT_AGENT_ALLOW_DOMAINS), ...(props.extraAllowDomains ?? [])];
+    this.allowDomains = [...(props.baseAllowDomains ?? narrowedDefaultAllowDomains()), ...(props.extraAllowDomains ?? [])];
 
     const allowList = new resolver.CfnFirewallDomainList(this, "AllowList", {
       name: `agentx-${props.env}-allow`,

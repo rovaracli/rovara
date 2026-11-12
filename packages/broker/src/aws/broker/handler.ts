@@ -59,6 +59,7 @@ import { hookProviders } from "../../triggers/providers/index.js";
 import type { settlementBudgets } from "../../spend/settlement-job.js";
 import { redriveUntil, runSettlementJobs, runSpendSweep, timedSettlementJob, type SettlementJob } from "../../spend/settlement-job.js";
 import { runApprovalSweep } from "../../agents/approvals.js";
+import { backfillOrgOpenApprovals } from "../../agents/org-open-approvals-backfill.js";
 import { memberRemovalHook, onProjectArchived, onProjectMemberChanged, runMemberMergeDrain } from "../../agents/lifecycle.js";
 import { escalateOwnerRequests } from "../../spend/requests.js";
 import { fireChainSchedule, sweepSchedules } from "../../triggers/schedules.js";
@@ -98,7 +99,7 @@ import { designReviewPortsOf } from "../../design-review/wiring.js";
 import { answerSlackAdd, applyTeamRecordRemoval, drainTeamRecordQueue, installTeamRecordEmitter, isTeamRecordJobEvent, isTeamRecordQueueEvent, isTeamRecordRemovalEvent, isTeamRecordSlackAddEvent, isTeamRecordSlackEvent, recordSlackForward, runTeamRecordJob } from "./team-record-wiring.js";
 import { installLessons, recordAndLessonRouteDependencies } from "./lessons-wiring.js";
 import { companyRulesRouteDependencies, installCompanyRules, installCompanyRulesJob } from "./company-rules-wiring.js";
-import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
+import { requireSlackAllowedByEdition, removalDepsOf, slackTeamOrg, adminChangeDependencies, adminReadDependencies, agentRouteDependencies, brokerDependencies, chainRunnerDependenciesOf, developerDisplayName, developerTaskActions, eventDispatchOf, githubConnectRoute, githubConnectionOf, installChainRunner, installOwnWriteRecorder, intakePollDependenciesFrom, orgStoreOf, repositoriesGateRoute, repositoryGateOf, serviceStatusRouteDependencies, healthObservationRouteDependencies, workingBranchPagesRoute, workingBranchPreviewRoute } from "./dependency-wiring.js";
 import { runWokenTrackingPass, trackingPassDependencies } from "./e2e-rounds.js";
 import { handleProjectSetupCallback, handleProjectSetupEvidenceChunk, handleProjectSetupEvidenceFinalize, handleProjectSetupEvidenceInit, handleProjectSetupExecutionRead } from "./evidence-and-setup.js";
 import { handleModelAccess, handleSlackModelAccess } from "./model-access.js";
@@ -209,6 +210,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...repositoriesGateRoute(dependencies),
           ...workingBranchPagesRoute(dependencies),
           ...serviceStatusRouteDependencies(dependencies),
+          ...healthObservationRouteDependencies(dependencies),
           ...workingBranchPreviewRoute(dependencies),
           projectAllowedDomains: {
             registerApproved: async (actor, value, proof) => registerProjectFor(dependencies, actor, value, { creatorMembership: "none", appliedDomainProposal: proof }),
@@ -332,7 +334,20 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         ...(agents === undefined ? [] : [timed("drain-member-merges", "drain", (budgetMs) => runMemberMergeDrain(removalDepsOf(agents, dependencies), { budgetMs }))]),
         // Task 21: approvals that expired, writes stuck after a claim, and handlers that never heard the outcome. A stuck write is driven again only while the
         // function has more than the connector's timeout and a margin left.
-        ...(agents === undefined ? [] : [timed("expire-approvals", "approvals", (budgetMs) => runApprovalSweep(agents, { budgetMs, redriveUntil: redriveUntil(startedAt) }))]),
+        ...(agents === undefined ? [] : [timed("expire-approvals", "approvals", async (budgetMs) => {
+          const jobStartedAt = Date.now();
+          const swept = await runApprovalSweep(agents, { budgetMs, redriveUntil: redriveUntil(startedAt) });
+          // 0.5.15: the one-off backfill of the companies' open indexes takes what the sweep left of this job's budget, and is one read of its marker once it is done.
+          const left = budgetMs - (Date.now() - jobStartedAt);
+          if (left < 1000) return swept;
+          try {
+            const orgIndex = await backfillOrgOpenApprovals(agents, { deadline: Date.now() + left });
+            return orgIndex.ran ? { ...swept, orgIndex } : swept;
+          } catch (error) {
+            console.log(JSON.stringify({ component: "broker", event: "approval.org_index_backfill_failed", error: error instanceof Error ? error.name : "unknown" }));
+            return swept;
+          }
+        })]),
         // Task 32 (PF13): owners' spend requests nobody answered get the org's admins, and requests whose time ran out end; a small cap, before the sweeps.
         ...(agents === undefined ? [] : [timed("escalate-owner-requests", "escalate", (budgetMs) => escalateOwnerRequests(agents, { budgetMs }))]),
         // Task 24b: with a small budget of its own, before the spend sweep.
