@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 import { screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { AppMeResponseSchema, UiFlagsAdminAnswerSchema, UiFlagsAdminAnswerReaderSchema } from "@agentx/cloud-contracts/web";
+import { AppMeResponseSchema, UI_FLAG_CATALOG, UiFlagsAdminAnswerSchema, UiFlagsAdminAnswerReaderSchema } from "@agentx/cloud-contracts/web";
 import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
@@ -17,8 +17,10 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { h } from "./support/h.js";
 import { navFixture } from "./support/fixtures.js";
 
+/** The catalog's own `wired` for a name, as the broker sends it (decision 98: companies is not offered until its route exists). */
+const wiredOf = (name: string) => UI_FLAG_CATALOG.find(entry => entry.name === name)!.wired;
 const row = (name: string, label: string, over: Record<string, unknown> = {}) => ({ name, label, summary: `What ${label} turns on.`, wired: true, enabled: false, forcedOff: false, state: "off", ...over });
-const answer = (over: Record<string, unknown> = {}) => ({ revision: 3, previews: false, changedAt: "2026-11-11T12:00:00.000Z", flags: [row("look", "New look", { enabled: true, state: "on" }), row("nav", "New navigation", { state: "preview" }), row("home", "New Home"), row("spending", "Spending page", { enabled: true, forcedOff: true }), row("insights", "Insights"), row("health", "Health page", { wired: false }), row("companies", "Companies"), row("continue", "Continue in your own tool", { state: "preview" })], ...over });
+const answer = (over: Record<string, unknown> = {}) => ({ revision: 3, previews: false, changedAt: "2026-11-11T12:00:00.000Z", flags: [row("look", "New look", { enabled: true, state: "on" }), row("nav", "New navigation", { state: "preview" }), row("home", "New Home"), row("spending", "Spending page", { enabled: true, forcedOff: true }), row("insights", "Insights"), row("health", "Health page", { wired: false }), row("companies", "Companies", { wired: wiredOf("companies") }), row("continue", "Continue in your own tool", { state: "preview", wired: wiredOf("continue") })], ...over });
 const PATH = "/v1/app/org/ui-flags";
 function mount(options: { role?: "owner" | "admin" | "member"; read?: unknown; put?: (request: ApiRequest) => ApiResponse | Promise<ApiResponse> } = {}) {
  const role = options.role ?? "owner";
@@ -47,7 +49,7 @@ it("lists the wired switches with what each turns on, the company value and when
  await screen.findByRole("heading", { name: "New screens", level: 1 });
  const list = await screen.findByRole("list", { name: "New screens" });
  const items = within(list).getAllByRole("listitem");
- expect(items.map(item => item.getAttribute("aria-label"))).toEqual(["New look", "New navigation", "New Home", "Spending page", "Insights", "Companies", "Continue in your own tool"]);
+ expect(items.map(item => item.getAttribute("aria-label"))).toEqual(["New look", "New navigation", "New Home", "Spending page", "Insights", "Continue in your own tool"]);
  expect(items[0]!.textContent).toContain("What New look turns on.");expect(items[0]!.textContent).toContain("On");expect(items[0]!.textContent).toContain("On for everyone in Acme.");
  expect(items[1]!.textContent).toContain("Preview");expect(items[1]!.textContent).toContain("Anyone can try it in their own browser");
  expect(items[2]!.textContent).toContain("Off.");
@@ -56,10 +58,9 @@ it("lists the wired switches with what each turns on, the company value and when
  // Insights is a wired switch the owner can press, like the others: its own row, off, with its button.
  expect(items[4]!.textContent).toContain("What Insights turns on.");expect(items[4]!.textContent).toContain("Off.");
  expect(within(items[4]!).getByRole("button", { name: "Turn on Insights for everyone" })).toBeTruthy();
- // Decision 98: the company switcher and Continue in your own tool are wired switches too.
- expect(items[5]!.textContent).toContain("What Companies turns on.");expect(items[5]!.textContent).toContain("Off.");
- expect(within(items[5]!).getByRole("button", { name: "Turn on Companies for everyone" })).toBeTruthy();
- expect(items[6]!.textContent).toContain("Preview");expect(within(items[6]!).getByRole("button", { name: "Turn on Continue in your own tool for everyone" })).toBeTruthy();
+ // Decision 98: Continue in your own tool is a wired switch; Companies is not offered (the catalog marks it unwired until the broker answers /v1/app/companies).
+ expect(items[5]!.textContent).toContain("Preview");expect(within(items[5]!).getByRole("button", { name: "Turn on Continue in your own tool for everyone" })).toBeTruthy();
+ expect(within(list).queryByRole("listitem", { name: "Companies" })).toBeNull();expect(screen.queryByRole("button", { name: /Companies/u })).toBeNull();expect(screen.queryByText("What Companies turns on.")).toBeNull();
  expect(within(items[3]!).queryByRole("button")).toBeNull();
  expect(within(items[0]!).getByRole("button")).toBeTruthy();
  expect(screen.queryByText("Health page")).toBeNull();
@@ -87,7 +88,7 @@ it("turning one on sends only that flag with the revision read, then shows the s
  f.close();
 });
 
-for (const [name, label] of [["companies", "Companies"], ["continue", "Continue in your own tool"]] as const) {
+for (const [name, label] of [["continue", "Continue in your own tool"]] as const) {
  it(`turning ${label} on sends only \`${name}\` with the revision read (decision 98)`, async () => {
   const f = mount();
   fireEvent.click(await screen.findByRole("button", { name: `Turn on ${label} for everyone` }));
@@ -165,7 +166,7 @@ it("each switch's accessible name is its visible text (WCAG 2.5.3): no aria-labe
  const f = mount();
  const list = await screen.findByRole("list", { name: "New screens" });
  const buttons = within(list).getAllByRole("button");
- expect(buttons.map(button => button.textContent)).toEqual(["Turn off New look for everyone", "Turn on New navigation for everyone", "Turn on New Home for everyone", "Turn on Insights for everyone", "Turn on Companies for everyone", "Turn on Continue in your own tool for everyone"]);
+ expect(buttons.map(button => button.textContent)).toEqual(["Turn off New look for everyone", "Turn on New navigation for everyone", "Turn on New Home for everyone", "Turn on Insights for everyone", "Turn on Continue in your own tool for everyone"]);
  for (const button of buttons) {
   expect(button.hasAttribute("aria-label")).toBe(false);
   expect(screen.getByRole("button", { name: button.textContent })).toBe(button);

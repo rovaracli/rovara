@@ -350,10 +350,10 @@ describe("the company switcher and Continue in your own tool (decision 98: `comp
   const NEW = ["companies", "continue"] as const;
   const table = (db: FakeDynamoDb) => ({ documentClient: db, tableName: "state", now: () => START }) as never;
 
-  it("are off by default, in the admin answer (wired, with plain words) and in the navigation answer", async () => {
+  it("are off by default, in the admin answer (plain words; continue wired, companies not until its route exists) and in the navigation answer", async () => {
     const w = world();
     const answer = await w.call(w.caller(ORG_A), "GET");
-    expect(stateOf(answer, "companies")).toMatchObject({ label: "Companies", wired: true, enabled: false, forcedOff: false, state: "off" });
+    expect(stateOf(answer, "companies")).toMatchObject({ label: "Companies", wired: false, enabled: false, forcedOff: false, state: "off" });
     expect(stateOf(answer, "continue")).toMatchObject({ label: "Continue in your own tool", wired: true, enabled: false, forcedOff: false, state: "off" });
     const nav = await navUiFlags(table(w.db), ORG_A, {});
     expect(nav.companies).toBe("off");expect(nav.continue).toBe("off");

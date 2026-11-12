@@ -10,7 +10,7 @@ describe("the closed list of flag names", () => {
     expect(new Set(UI_FLAG_NAMES).size).toBe(UI_FLAG_NAMES.length);
     expect(UI_FLAG_CATALOG.map((entry) => entry.name)).toEqual([...UI_FLAG_NAMES]);
     for (const entry of UI_FLAG_CATALOG) { expect(entry.label.length).toBeGreaterThan(0);expect(entry.summary.length).toBeGreaterThan(0); }
-    expect(UI_FLAG_CATALOG.filter((entry) => entry.wired).map((entry) => entry.name)).toEqual(["look", "nav", "home", "work", "spending", "leadingHeader", "insights", "companies", "continue"]);
+    expect(UI_FLAG_CATALOG.filter((entry) => entry.wired).map((entry) => entry.name)).toEqual(["look", "nav", "home", "work", "spending", "leadingHeader", "insights", "continue"]);
   });
   it("is the same list in the browser entry", () => { expect(web.UI_FLAG_NAMES).toEqual(UI_FLAG_NAMES); });
   it("refuses unknown names in the body and in the nav map", () => {
@@ -51,8 +51,9 @@ describe("the company switcher and Continue in your own tool (decision 98), acro
   });
   const row = (name: string, extra: Record<string, unknown> = {}) => ({ name, label: name, summary: name, wired: true, enabled: false, forcedOff: false, state: "off", ...extra });
 
-  it("names both with plain words, wired, within the admin answer's limits", () => {
-    expect(UI_FLAG_CATALOG.find((entry) => entry.name === "companies")).toMatchObject({ label: "Companies", wired: true });
+  it("names both with plain words (continue wired, companies not yet), within the admin answer's limits", () => {
+    // Not offered in New screens until the broker answers /v1/app/companies; the name is still accepted, stored and sent.
+    expect(UI_FLAG_CATALOG.find((entry) => entry.name === "companies")).toMatchObject({ label: "Companies", wired: false });
     expect(UI_FLAG_CATALOG.find((entry) => entry.name === "continue")).toMatchObject({ label: "Continue in your own tool", wired: true });
     for (const entry of UI_FLAG_CATALOG) { expect(entry.label.length).toBeLessThanOrEqual(80);expect(entry.summary.length).toBeLessThanOrEqual(240); }
     expect(UiFlagsBodySchema.safeParse({ expectedRevision: 0, flags: { companies: true, continue: false } }).success).toBe(true);

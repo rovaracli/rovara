@@ -6,7 +6,6 @@ import type { ReadSession } from "./SessionHeader.js";
 import { cardsFor, leadStatus, taskLead, type Lead } from "./task-plain-state.js";
 import { workspaceTask, type ReadTask } from "./workspace-types.js";
 import { useTaskSeat } from "./task-seat.js";
-import { useContinueInToolOn } from "./continue-flags.js";
 import { outsideRowsOf, useNow } from "./continue-outside.js";
 
 /** Scrolls to an existing control or card of the page and puts focus on it (the pattern of Merge's "Go to the card"). The control keeps its own logic. */
@@ -41,8 +40,8 @@ export function TaskLeadView({ lead }: { lead: Lead }) {
 }
 
 /** The task page's header block, from data the page already has: the session's status, the task view and the viewer's pending decision cards (the same read the cards below use). */
-export function TaskLead({ session }: { session: ReadSession }) {
- const decisions = useDecisions(), read: ReadTask | undefined = workspaceTask(session), continueOn = useContinueInToolOn();
+export function TaskLead({ session, continueOn }: { session: ReadSession; /** The continue switch as the task page read it when it mounted (continue-flags.ts), the same value that decides the panel. */ continueOn: boolean }) {
+ const decisions = useDecisions(), read: ReadTask | undefined = workspaceTask(session);
  // The changed-outside state belongs to the continue loop (switch `rovara.continue`): with the switch off the lead is built as if the task view had no `continueLoop`, exactly as before.
  const task: ReadTask | undefined = continueOn || read === undefined || read.continueLoop === undefined ? read : { ...read, continueLoop: undefined };
  const cards = cardsFor(decisions.data, task?.taskId), seat = useTaskSeat(session, task?.taskId);
