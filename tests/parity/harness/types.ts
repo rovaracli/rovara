@@ -50,8 +50,6 @@ export interface Scenario {
   steps: readonly Step[];
   /** The facets this scenario compares (default: all). */
   facets?: readonly Facet[];
-  /** Run the core with Code's own flow defaults instead of the settings the composition root maps from Cloud (shows what the mapping changes). */
-  coreUsesCodeDefaults?: boolean;
   /** Failure, race or edge case (reported, so the table shows how many are covered). */
   kind?: "happy" | "failure" | "race" | "edge";
 }

@@ -15,6 +15,7 @@ import { ChainStore } from "../../../../vendor/rovara-code/packages/broker/src/c
 import { onStepEnded, readChainRun, readStepAttempts, startChainRun, type ChainRunnerDeps } from "../../../../vendor/rovara-code/packages/broker/src/core/chains/runner.js";
 import { validateChainForPublish } from "../../../../vendor/rovara-code/packages/broker/src/core/chains/validate.js";
 import { keyFamily } from "../../harness/normalize.js";
+import { journeyProjectRules } from "../core-settings.js";
 import { CUSTOM_OVERLAY, START_INPUT, TRIGGER_EVENT, TRIGGER_SPEC, TWO_BUILTIN_STEPS, dispatchWord, oneStepOn, runWord, type FlowName, type FlowObservation } from "./flows.js";
 
 const COMPANY = "org_00000000000000000000" as OrgId;
@@ -81,8 +82,8 @@ export async function runCodeFlow(flow: FlowName): Promise<FlowObservation> {
   const agents = new AgentStore({ ...table, audit: auditSink, companyId: COMPANY, newId: () => `agt_${idBody()}` as never });
   const chains = new ChainStore({ ...table, audit: auditSink, companyId: COMPANY, newId: () => `chn_${idBody()}` as never });
   // Cloud serves a connector write behind a person's approval, so the composition root must tell the core so (`allowConnectorWrites`, S0-Q2's settings
-  // mapping): without it Code refuses every agent with a writing tool, the built-in Code reviewer among them. `chains-code-defaults` leaves Code's default.
-  const rules: ProjectRules = { async definition(project) { return project === PROJECT ? {} : undefined; }, ...(flow === "chains-code-defaults" ? {} : { allowConnectorWrites: true }) };
+  // mapping): without it Code refuses every agent with a writing tool, the built-in Code reviewer among them. The root's settings mapping (S0-Q2) gives it.
+  const rules: ProjectRules = { async definition(project) { return project === PROJECT ? {} : undefined; }, ...journeyProjectRules() };
   const roster: RosterDependencies = { store: agents, rules };
   const unattended: UnattendedStartDeps = { automation: { enabled: () => switchOn.value }, companyId: COMPANY, admission, audit: auditSink, starter, enforces: { dollars: true }, store, tasks, now: () => clock.now };
   const deps: ChainRunnerDeps = {

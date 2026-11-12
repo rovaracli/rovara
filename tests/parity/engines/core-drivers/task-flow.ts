@@ -4,6 +4,7 @@ import type { CoreContext } from "../core-context.js";
 import type { StepDriver } from "../drivers.js";
 import type { FakeWorldOptions } from "../../../support/cloud-core-fakes.js";
 import type { Step } from "../../harness/types.js";
+import { applyJourneySettings } from "../core-settings.js";
 
 type Driver = StepDriver<CoreContext, FakeWorldOptions>;
 const as = <K extends Step["do"]>(step: Step, kind: K): Extract<Step, { do: K }> => {
@@ -13,18 +14,10 @@ const as = <K extends Step["do"]>(step: Step, kind: K): Extract<Step, { do: K }>
 
 export const TASK_FLOW_DRIVERS: Record<string, Driver> = {
   start: {
-    // The composition root maps Cloud's own settings onto the core's flow options (S0-Q2): Cloud's journey install runs the Quick path with no Understand
-    // step and no plan check, so the core is set the same way. `coreUsesCodeDefaults` leaves Code's defaults (code-defaults-quick shows the difference).
+    // The composition root maps Cloud's own settings onto the core's flow options (S0-Q2, packages/broker/src/cloud/app/settings-mapping.ts): the Cloud journey
+    // install runs with no Rovara Code recipe (so no Understand step and no plan check), no `rv`, and automatic fixing off unless the scenario turns it on.
     async prepare(ctx, scenario) {
-      if (scenario.coreUsesCodeDefaults !== true) {
-        ctx.runtime.app.flow.deps.understandFirst = false;
-        ctx.runtime.app.flow.deps.planCheck = false;
-      }
-      // Cloud's automatic fix switch (`af`) maps onto the core's autofix option, set as the Cloud engine sets it for a scenario with a failing check or review findings.
-      // Cloud's `af` is off by default and Code's autofix is on by default (core/build-step/autofix.ts reads `enabled !== false`), so every other
-      // scenario runs the core with it off, as Cloud runs (S0-Q2). `feature: autofix-on` (merge lane) turns it on for its scenario.
-      const autofixOn = scenario.steps.some((step) => (step.do === "checks" && step.outcome === "fail") || (step.do === "reviews" && step.outcome === "findings") || (step.do === "feature" && step.name === "autofix-on"));
-      ctx.runtime.app.flow.deps.autofix = autofixOn ? { enabled: true, capUsd: 5, roundEstimateUsd: 1 } : { enabled: false };
+      applyJourneySettings(ctx.runtime.app.flow.deps, scenario, {}, ctx.companyId);
     },
     async run(ctx, step) {
       const start = as(step, "start");

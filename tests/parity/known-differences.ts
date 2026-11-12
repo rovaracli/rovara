@@ -35,21 +35,6 @@ const LIMIT_AND_ARTIFACT_ROWS = [
 
 const CORE_LANE_DIFFERENCES: readonly KnownDifference[] = [
   {
-    scenario: "*", facet: "spend", only: ["admitted:learning.call"],
-    cause: "After a merge the core's lessons model reflects on the task and asks Admission for `learning.call` (vendor local/app/lessons-model.ts:68), now admitted by S0's rule (735cf6c26; before it failed closed). Cloud's journey install has lessons off (`ll`), so it reflects nothing. A settings difference: the root must map Cloud's lessons switch onto the core's (S0-Q2) so the core reflects only where Cloud would.",
-    owner: "S0-Q2 settings mapping (lessons on/off per company) before the switch",
-  },
-  {
-    scenario: "code-defaults-quick", facet: "transitions",
-    cause: "Settings, not logic: Code's flow defaults run Understand first and the plan check (UNDERSTAND, PLAN_CRITIQUE stages); Cloud's Quick path runs neither. The composition root must map Cloud's settings (rovaraCodeV2, plan check, the task path) onto the core's flow options (understandFirst, planCheck, planSelfCheck) per company; with the mapping the other scenarios compare the same.",
-    owner: "S0-Q2: the settings mapping in core-runtime flowOptions (owner: which Cloud setting decides Understand for Quick tasks)",
-  },
-  {
-    scenario: "code-defaults-quick", facet: "rows",
-    cause: "The same settings difference: the Understand and plan check steps leave their own artifacts (intent.json, plan-critique.md) and dispatch row, plus the limit and artifact rows of every scenario.",
-    owner: "S0-Q2 (as its transitions)",
-  },
-  {
     scenario: "*", facet: "rows", only: LIMIT_AND_ARTIFACT_ROWS,
     cause: [
       "(1) Workspace limits (plan D3, A5 S2 held): a Slack-started Cloud task is counted on the Slack workspace counters ORG#<org>#SLACK_LIMIT#<team> (MEMBER#<slack user>, ORGANIZATION, a string set of tasks),",

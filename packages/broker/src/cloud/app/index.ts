@@ -9,3 +9,5 @@ export * from "./registry.js";
 export * from "./retention.js";
 export * from "./slack-switch.js";
 export * from "./cloud-modules.js";
+export * from "./settings-mapping.js";
+export * from "./model-mapping.js";

@@ -3,6 +3,7 @@
 import type { FakeWorldOptions } from "../../../support/cloud-core-fakes.js";
 import type { CoreContext } from "../core-context.js";
 import type { StepDriver } from "../drivers.js";
+import { applyJourneySettings } from "../core-settings.js";
 import { devcontainerWords } from "../features-c-support/devcontainer.js";
 import { codeDiagnosisWords } from "../features-c-support/diagnosis.js";
 import { FEATURE_PROBES, note, outcomeWord } from "../features-c-support/probes.js";
@@ -48,11 +49,8 @@ export const FEATURES_C_DRIVERS: Record<string, Driver> = {
       await ctx.callback(prepare, "result", { status: "SUCCEEDED", result: { preparedBase: [{ repositoryId: "demo", baseCommitSha: ctx.task.base }] } });
     },
     async prepare(ctx, scenario) {
-      // The same settings mapping the start driver applies (Quick: no Understand step, no plan check): the MCP start replaces `start` in its scenario.
-      if (scenario.coreUsesCodeDefaults !== true) {
-        ctx.runtime.app.flow.deps.understandFirst = false;
-        ctx.runtime.app.flow.deps.planCheck = false;
-      }
+      // The same settings mapping the start driver applies (S0-Q2): the MCP start replaces `start` in its scenario.
+      applyJourneySettings(ctx.runtime.app.flow.deps, scenario, {}, ctx.companyId);
     },
   },
 };

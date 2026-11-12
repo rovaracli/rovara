@@ -16,8 +16,8 @@ export const FEATURES_A_DIFFERENCES: readonly KnownDifference[] = [
   },
   {
     scenario: "features-a-parallel-parts-understand", facet: "transitions",
-    cause: "Settings only (S0-Q2): this variant runs the core with Understand on (Code's default) so the Full path advances; the one extra UNDERSTAND/RUNNING at the start is that setting. The parts themselves (plans, approvals, coding with A and B side by side and C on both, reviews, the pull request) follow the same stages as Cloud's path.",
-    owner: "S0-Q2 (settings mapping); disappears once the parallel-parts Code fix lands and the variant is retired",
+    cause: "Not the settings mapping (S0-Q2 maps Cloud's Understand setting, which is off on the journey): this variant turns Understand on by hand as a workaround of the G3 core stall (a Full task never passes its first plan with Understand off), so the Full path advances; the one extra UNDERSTAND/RUNNING at the start is that workaround. The parts themselves (plans, approvals, coding with A and B side by side and C on both, reviews, the pull request) follow the same stages as Cloud's path.",
+    owner: "G3 vendor re-pin (public #484); disappears once the re-pin lands and the variant is retired",
   },
   {
     scenario: "parallel-parts", facet: "features",

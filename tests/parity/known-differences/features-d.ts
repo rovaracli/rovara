@@ -40,27 +40,7 @@ export const FEATURES_D_DIFFERENCES: readonly KnownDifference[] = [
   {
     scenario: "features-d-chain-switch-off", facet: "spend",
     cause: "The same switch placement as its transitions: Cloud's runner starts the first step (start:root-cause-analyst); the core's door refuses before any start.",
-    owner: "S0-Q2 (as its transitions)",
-  },
-  {
-    scenario: "features-d-chain-code-defaults", facet: "transitions",
-    cause: [
-      "Settings, not logic. Code's project rules refuse an agent with a writing tool unless the install says it can ask a person for each change",
-      "(vendor core/agents/rules.ts:41, ProjectRules.allowConnectorWrites, absent by default). The built-in Code reviewer has such a tool, so on Code's",
-      "defaults a chain that uses it cannot start (CHAIN_UNAVAILABLE). Cloud serves connector writes behind a person's approval and runs it. With",
-      "allowConnectorWrites: true (what Cloud's root must pass), features-d-chain-run compares the same.",
-    ].join(" "),
-    owner: "S0-Q2 settings mapping: cloud/app passes ProjectRules.allowConnectorWrites = true for Cloud's chains and agents",
-  },
-  {
-    scenario: "features-d-chain-code-defaults", facet: "rows",
-    cause: "The same project-rules default as its transitions: the core refuses the run before it is created, so it writes no CHAIN_RUN, CHAIN_RUNS, CHAIN_RUNS_P or OPEN_CHAIN_RUNS rows; Cloud runs the chain and writes them (plus its own BUILTIN_AGENTS and event-history rows).",
-    owner: "S0-Q2 (as its transitions)",
-  },
-  {
-    scenario: "features-d-chain-code-defaults", facet: "spend",
-    cause: "The same project-rules default as its transitions: the core refuses the start (refused:CHAIN_UNAVAILABLE); Cloud starts both steps.",
-    owner: "S0-Q2 (as its transitions)",
+    owner: "S0-143c (as its transitions)",
   },
   {
     // The chain and agent families are in the rows facet (harness/normalize.ts SHARED_FAMILIES), masked to <chn>/<agt>/<crn>; every chain

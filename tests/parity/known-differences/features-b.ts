@@ -26,18 +26,6 @@ export const FEATURES_B_DIFFERENCES: readonly KnownDifference[] = [
     owner: "Intended: owner decision 143(a) keeps the core's task.started and own-plan approval audit entries in Cloud; nothing to change on either side",
   },
   {
-    scenario: "model-selection", facet: "features",
-    cause: [
-      "Real gap in the composition root: Cloud's path tells each step's worker its model (PLAN and IMPLEMENT amazon-bedrock/us.anthropic.claude-sonnet-4-6, REVIEW",
-      "amazon-bedrock/us.anthropic.claude-opus-5-5, from the install's model settings); the core's invocations carry no `payload.model` at all, because no `model-provider`",
-      "adapter is registered (the local composition finds no provider key; packages/broker/src/cloud/app/cloud-modules.ts cloudAdapterModules registers none either: A3's",
-      "bedrock-role, litellm and openrouter providers exist in packages/broker/src/cloud-adapters/model-provider/ but are not in the list) and nothing maps Cloud's project",
-      "and company model settings onto the core's model selection service. With the switch, a core step's worker would run on its own default model. Proposed: add A3's",
-      "model-provider modules to cloudAdapterModules and map Cloud's per-project model choice (S0-Q2) onto core flowOptions.stepModels / usableModels.",
-    ].join(" "),
-    owner: "S0 follow-up (cloud-modules model providers + S0-Q2 settings mapping)",
-  },
-  {
     scenario: "realtime", facet: "features",
     cause: [
       "Real gap on Cloud's side, the realtime face of R-SESSIONS (resilience lane): with the agent-session projector and Cloud's real notice sink run over every write of",

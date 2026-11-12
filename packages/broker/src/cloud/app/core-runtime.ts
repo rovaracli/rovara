@@ -12,6 +12,8 @@ import { createStoreProjectSource, createTaskFlowFromRegistry, type RegistryTask
 import type { AdapterRegistry, OrgId } from "@rovara-code/contracts";
 import { stampForNewTask, stampItem } from "./engine-stamp.js";
 import type { CoreArea, CoreEngineFlags } from "./flags.js";
+import { createCloudStepModels, type CloudModelFacts } from "./model-mapping.js";
+import { mapCloudSettings, type CloudCompanySettings } from "./settings-mapping.js";
 
 /** A core service a scheduled job runs, per company. */
 export interface CoreService {
@@ -79,4 +81,13 @@ export function createCoreRuntime(options: CoreRuntimeOptions): CoreRuntime {
 /** The services an area needs that this runtime lacks. */
 export function serviceGaps(services: Partial<Record<CoreServiceName, CoreService>>, areas: readonly CoreArea[]): CoreServiceName[] {
   return (Object.entries(CORE_SERVICES) as [CoreServiceName, CoreArea][]).filter(([name, area]) => areas.includes(area) && services[name] === undefined).map(([name]) => name);
+}
+
+/**
+ * The flow options of one company, from Cloud's settings (S0-Q2): Understand, the plan check, the plan's self-check, automatic fixing, live steer, the
+ * workspace limits and, when the company's model facts are given, the model each step runs on. Pass the result as `CoreRuntimeOptions.flowOptions`.
+ * The project rules for the core's custom agents and the lessons switch come from `mapCloudSettings` (settings-mapping.ts) for the services that take them.
+ */
+export function cloudFlowOptions(settings: CloudCompanySettings, models?: CloudModelFacts): Partial<RegistryTaskFlowOptions> {
+  return { ...mapCloudSettings(settings).flowOptions, ...(models === undefined ? {} : { stepModels: createCloudStepModels(models) }) };
 }

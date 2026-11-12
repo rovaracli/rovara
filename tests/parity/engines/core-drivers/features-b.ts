@@ -1,11 +1,10 @@
 // Core drivers: Tracker intake, Slack channel, model selection, audit ledger, script tokens, realtime, outbound events (areas 18, 20, 24, 26, 36, 40, 43).
-import type { WorkerInvocation } from "@rovara-code/contracts";
 import type { FakeWorldOptions } from "../../../support/cloud-core-fakes.js";
 import type { CoreContext } from "../core-context.js";
 import type { StepDriver } from "../drivers.js";
 import { callWithCoreToken, makeCoreToken } from "../features-b-support/core-tokens.js";
 import { coreLedgerOrder, ledgerWords } from "../features-b-support/audit-order.js";
-import { modelWords } from "../features-b-support/models.js";
+import { coreModelWords } from "../features-b-support/models.js";
 import { realtimeWords } from "../features-b-support/realtime.js";
 import { logWords, outcome } from "../features-b-support/outcomes.js";
 import { runTokenScript } from "../features-b-support/tokens-script.js";
@@ -38,20 +37,11 @@ const auditLedger: Driver = {
   },
 };
 
-/** Every invocation the core handed the fake worker machines, by scenario (the fake forgets a job once its result is in). */
-const handed = new Map<string, WorkerInvocation[]>();
-
 const modelSelection: Driver = {
-  // Records every invocation as the core delivers it (the fake machine forgets a finished job), before the first step runs.
-  async prepare(ctx, scenario) {
-    const seen: WorkerInvocation[] = [];
-    handed.set(scenario.id, seen);
-    const machines = ctx.world.machines;
-    const deliver = machines.deliver.bind(machines);
-    machines.deliver = async (machineId, invocation) => { seen.push(structuredClone(invocation)); return await deliver(machineId, invocation); };
-  },
   async run(ctx) {
-    const words = modelWords(handed.get(ctx.scenario.id) ?? []);
+    // What the core recorded as each step's model (the route the worker was given names the same one); `payload.model` carries only a thinking level.
+    const operations = (await ctx.store.query({ pk: `WORKSPACE#${ctx.task.workspaceId}`, sk: { op: "beginsWith", prefix: "OPERATION#" } })).items;
+    const words = coreModelWords(operations);
     ctx.extra.features.push(...words);
     await logWords("core", ctx.scenario.id, words);
   },

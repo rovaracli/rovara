@@ -10,6 +10,7 @@ import type { CoreContext } from "../core-context.js";
 import { checkReport } from "../core-context.js";
 import type { StepDriver } from "../drivers.js";
 import { approveOnHost, reportBehind } from "../merge-support/core-host.js";
+import { applyJourneySettings } from "../core-settings.js";
 
 type Driver = StepDriver<CoreContext, FakeWorldOptions>;
 
@@ -96,18 +97,14 @@ function mergeCommit(ctx: CoreContext, head: string, base: string, resolution: R
   return model.makeRevision([head, base], files).sha;
 }
 
-/** Whether the scenario turns Cloud's automatic fix switch (`af`) on (the `feature: autofix-on` step); the journey harness has it off by default. */
-const autofixOn = (steps: readonly { do: string; name?: string }[]): boolean => steps.some((step) => step.do === "feature" && step.name === "autofix-on");
-
 function shared(): Pick<Driver, "prepare"> {
   return {
     prepare(ctx, scenario) {
       if (prepared.has(ctx)) return Promise.resolve();
       prepared.add(ctx);
       reportBehind(ctx.world.host, ctx.world.hostModel);
-      // Cloud's `af` maps onto the core's autofix option (S0-Q2). Code's default is on (core/build-step/autofix.ts reads `enabled !== false`); Cloud's
-      // journey install has it off, so a merge scenario without `autofix-on` runs the core with it off, as Cloud runs.
-      if (!autofixOn(scenario.steps)) ctx.runtime.app.flow.deps.autofix = { enabled: false };
+      // Cloud's automatic fix switch (`fx`) and the rest map onto the core's flow options through the root's mapping (S0-Q2); a merge scenario without `autofix-on` runs with it off, as Cloud's journey does.
+      applyJourneySettings(ctx.runtime.app.flow.deps, scenario, {}, ctx.companyId);
       return Promise.resolve();
     },
   };

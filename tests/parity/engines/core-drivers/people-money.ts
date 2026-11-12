@@ -9,6 +9,7 @@ import type { FakeWorldOptions } from "../../../support/cloud-core-fakes.js";
 import type { CoreContext } from "../core-context.js";
 import type { StepDriver } from "../drivers.js";
 import { PARITY_CORE_PEOPLE } from "../core-context.js";
+import { applyJourneySettings } from "../core-settings.js";
 import { coreMatrix } from "../people-money-support/approvals.js";
 import { coreErase } from "../people-money-support/erasure.js";
 import type { Step } from "../../harness/types.js";
@@ -72,12 +73,10 @@ export const PEOPLE_MONEY_DRIVERS: Record<string, Driver> = {
   "feature:spend.start-quick": spendStart("QUICK"),
   "feature:spend.start-full": spendStart("FULL"),
   "project.second": {
-    // Cloud's per-person workspace limit (1 here, as the Cloud engine sets it) mapped onto the core flow's own limit, as the composition root maps Cloud's settings (S0-Q2).
-    async prepare(ctx) {
-      ctx.runtime.app.flow.deps.limits = { member: 1, organization: 20 };
-      // The rest of the settings mapping the start driver applies (no Understand, no plan check on a Quick task, as on Cloud's journey install).
-      ctx.runtime.app.flow.deps.understandFirst = false;
-      ctx.runtime.app.flow.deps.planCheck = false;
+    // Cloud's per-person workspace limit (1 here, as the Cloud engine sets it) and the rest of the settings (no Understand, no plan check on a Quick task, as on
+    // Cloud's journey install), mapped by the root's settings mapping (S0-Q2).
+    async prepare(ctx, scenario) {
+      applyJourneySettings(ctx.runtime.app.flow.deps, scenario, { workspaceLimits: { member: 1, organization: 20 } }, ctx.companyId);
     },
     async run(ctx) {
       await ctx.api("/v1/admin/projects", { method: "POST", body: ctx.project });

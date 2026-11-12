@@ -23,6 +23,7 @@ import { PEOPLE_ORG, createPeopleWorld, type PeopleWorld } from "../../support/c
 import { createFakeWorld, type FakeWorld, type FakeWorldOptions } from "../../support/cloud-core-fakes.js";
 import { planAnswer, planDocument } from "../../support/plan-documents.js";
 import { keyFamily } from "../harness/normalize.js";
+import { mappedJourney } from "./core-settings.js";
 import type { PlanSpec, Scenario } from "../harness/types.js";
 
 export const planTextOf = (plan: PlanSpec): string =>
@@ -214,7 +215,9 @@ export async function createCoreContext(scenario: Scenario, root: string, option
   const clock = { offsetMs: 0, now: () => new Date(Date.now() + clock.offsetMs), advance: (ms: number) => { clock.offsetMs += ms; } };
   const opened: string[] = [];
   const runtime = await startLocalRuntime({
-    stateDirectory, cwd: join(root, "project"), environment: { ...options.world?.coreEnvironment }, gh: async () => undefined, workerImage: "worker:test", version: "9.9.9", machines: world.machines, timers: false,
+    stateDirectory, cwd: join(root, "project"),
+    // Lessons follow Cloud's `ll` switch through the root's settings mapping (S0-Q2): the journey install has it off, so the core reflects on nothing after a merge.
+    environment: { ROVARA_LESSONS: mappedJourney(scenario).lessonsEnabled() ? "1" : "0", ...options.world?.coreEnvironment }, gh: async () => undefined, workerImage: "worker:test", version: "9.9.9", machines: world.machines, timers: false,
     docker: { run: async () => ({ exitCode: 1, stdout: "", stderr: "docker is not available in the parity suite" }) },
     registerAdapters, openBrowser: async (url) => { opened.push(url); }, storage: "memory", now: () => clock.now(),
   });
