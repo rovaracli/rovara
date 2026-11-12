@@ -3,7 +3,7 @@ import { test, expect } from "./support/csp.js";
 import { mockRealtime } from "./support/realtime.js";
 import { evidenceShot } from "./support/screenshot.js";
 import { FIXTURE_SESSION } from "../web/support/fixtures.js";
-// The new look is off unless storage says so. These journeys show that (nothing changes while off) and that, switched on, no page scrolls sideways at phone widths,
+// The v2 look is the only look (decision 125), with no device key. These journeys show that no page scrolls sideways at phone widths,
 // focus stays visible, and both themes and both densities render. Pictures go to .test-build/web-e2e/look/ (set ROVARA_LOOK_SHOTS to change the folder, for before/after comparisons).
 const shots = process.env.ROVARA_LOOK_SHOTS ?? ".test-build/web-e2e/look";
 const SESSION = "ses_aaaaaaaaaaaaaaaaaaaa";
@@ -16,10 +16,9 @@ const SCREENS = [
  { name: "onboard", scenario: "onboarding", path: "/app/onboard?github=connected", ready: (page: Page) => page.getByLabel("acme/payments"), before: async (request: APIRequestContext) => { await request.get("/__mock/github-install"); } },
 ] as const satisfies readonly { name: string; scenario: string; path: string; ready: (page: Page) => Locator; before?: (request: APIRequestContext) => Promise<void> }[];
 const LOOKS = [
- { name: "off", store: {}, colorScheme: "light" },
- { name: "v2-light", store: { "rovara.look": "v2", "rovara.theme": "light" }, colorScheme: "light" },
- { name: "v2-dark", store: { "rovara.look": "v2", "rovara.theme": "dark" }, colorScheme: "dark" },
- { name: "v2-compact", store: { "rovara.look": "v2", "rovara.theme": "light", "rovara.density": "compact" }, colorScheme: "light" },
+ { name: "v2-light", store: { "rovara.theme": "light" }, colorScheme: "light" },
+ { name: "v2-dark", store: { "rovara.theme": "dark" }, colorScheme: "dark" },
+ { name: "v2-compact", store: { "rovara.theme": "light", "rovara.density": "compact" }, colorScheme: "light" },
 ] as const;
 for (const screen of SCREENS) {
  for (const look of LOOKS) {
@@ -33,11 +32,11 @@ for (const screen of SCREENS) {
     await mockRealtime(page);
     await page.setViewportSize({ width: width, height: 900 });await page.goto(screen.path);await expect(screen.ready(page)).toBeVisible();await page.waitForLoadState("networkidle"); // later queries (for example the Home project line) must have landed before the picture
     const root = page.locator("html");
-    if (look.name === "off") { await expect(root).not.toHaveAttribute("data-look", /.*/u); await expect(root).not.toHaveAttribute("data-density", /.*/u); } else { await expect(root).toHaveAttribute("data-look", "v2"); }
+    await expect(root).toHaveAttribute("data-look", "v2");
     if (look.name === "v2-compact") await expect(root).toHaveAttribute("data-density", "compact");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     // Every visible button and link is at least 44px tall on a phone, in every look.
-    if (width === 390 && look.name !== "off") {
+    if (width === 390) {
      const small = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>("main button:not(.rv-checkbox), main .rv-button, header button")].filter(node => { const box = node.getBoundingClientRect();return box.width > 0 && box.height > 0 && box.height < 43.5; }).map(node => node.className + ":" + Math.round(node.getBoundingClientRect().height)));
      expect(small).toEqual([]);
     }
@@ -62,7 +61,7 @@ for (const screen of SCREENS.filter(entry => entry.name !== "task")) {
    for (const density of ["comfortable", "compact"] as const) {
     const view = await context.newPage();
     await view.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
-    await view.addInitScript(store => { for (const [key, value] of Object.entries(store)) localStorage.setItem(key, value); }, { "rovara.look": "v2", "rovara.theme": "light", "rovara.density": density });
+    await view.addInitScript(store => { for (const [key, value] of Object.entries(store)) localStorage.setItem(key, value); }, { "rovara.theme": "light", "rovara.density": density });
     await mockRealtime(view);
     await view.setViewportSize({ width, height: 900 });await view.goto(screen.path);await expect(screen.ready(view)).toBeVisible();
     await expect(view.locator("html")).toHaveAttribute("data-density", density);await view.waitForLoadState("networkidle");

@@ -1,14 +1,20 @@
 // Runtime per-company UI flags (lane U5, requirement P-52): the store, the install operator's override and the answers built from them.
 //
 // ONE ROW per company: `ORG#<org>` / `UI_FLAGS` (orgUiFlagsKey), a map of known flag names to on/off, the permission for device previews, and a `revision` that fences every write. Absent until the company first
-// changes something: every flag is off and previews are not allowed. A flag name outside the closed list (contracts/ui-flags.ts) is never stored and never sent; a stored name that is no longer known is ignored when read.
+// changes something: every flag takes its catalog default (decision 116: a finished screen is on, an unfinished one off) and previews are not allowed. A name is stored only when an owner or admin pressed its switch,
+// so a stored value (true or false, from any version) is the company's deliberate choice and wins over the default; the row keeps only those pressed values, never the defaults, so a later default change (or a
+// rollback to a broker that read an absent name as off) still applies to every name nobody pressed. A flag name outside the closed list (contracts/ui-flags.ts) is never stored and never sent; a stored name that is
+// no longer known is ignored when read and dropped by the next write. That includes the eight finished screens' former names (decision 125, REMOVED_UI_FLAG_NAMES): a choice stored for one of them before decision 125
+// changes nothing now (the screen has no old version left), and an older broker reading a row this one wrote finds the name absent, which it reads as its default.
+// "Turn back to the default" is a write of `null` for a name (the PUT body): the name is removed from the stored map, so the company follows the catalog default again, including a later change of that default.
 //
 // THE OPERATOR'S OVERRIDE is the install's stack parameter UiFlagsForceOff, packed broker setting `uo`, read as UI_FLAGS_FORCE_OFF (`all`, or names joined by `-`). It forces flags off for every company, wins over the
 // company's switch and over previews, and fails closed on a value it cannot read (contracts `uiFlagsForcedOff`).
 //
-// A READ THAT FAILS gives every flag off with no preview (today's screens), never an error that takes the navigation down and never a screen left on by a guess.
+// A READ THAT FAILS gives every flag off with no preview (the old screens, which always work), never an error that takes the navigation down and never a screen left on by a guess: the read could not tell whether
+// the company chose the old screen. A row that is there but cannot be read (its revision, or one flag's value) counts as off for what it cannot read, for the same reason.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { UI_FLAG_CATALOG, UI_FLAG_NAMES, UI_FLAGS_FORCE_OFF_VARIABLE, orgUiFlagsKey, uiFlagState, uiFlagsForcedOff, type AuditEventInput, type UiFlagName, type UiFlagsAdminAnswer, type UiFlagsMap } from "@agentx/cloud-contracts";
+import { UI_FLAG_CATALOG, UI_FLAG_NAMES, UI_FLAGS_FORCE_OFF_VARIABLE, orgUiFlagsKey, uiFlagEnabled, uiFlagState, uiFlagsForcedOff, type AuditEventInput, type UiFlagName, type UiFlagsAdminAnswer, type UiFlagsMap } from "@agentx/cloud-contracts";
 import { agentXError, type OrgId } from "@rovara-code/contracts";
 import { auditCompanyUiFlagsChanged, auditOccurrence } from "../../audit/events.js";
 import { flushAuditEvents } from "../../audit/flush.js";
@@ -24,7 +30,7 @@ export interface UiFlagsDeps {
   audit?: AuditRuntime | undefined;
 }
 
-/** What a company has stored. `revision` is 0 while there is no usable record. */
+/** What a company has stored. `revision` is 0 while there is no usable record. `flags` holds only the stored (pressed) values; a name that is absent takes its default (`uiFlagEnabled`). */
 export interface UiFlagsSettings {
   flags: Readonly<Partial<Record<UiFlagName, boolean>>>;
   previews: boolean;
@@ -32,25 +38,40 @@ export interface UiFlagsSettings {
   changedAt?: string;
   /** Set only when a row exists whose `revision` is present but not a whole number of 1 or more: what is stored there, so the next write can replace exactly that row (see `writeUiFlags`). */
   unreadableRevision?: { value: unknown };
+  /** True when the row is there but its flags cannot be read: every flag reads as off. The next change starts from nothing stored (the defaults), so a corrupt row never pins a company to the old screens. */
+  unreadable?: true;
+  /** Known names whose stored value is not a boolean: each reads as off (fail closed) but is not carried into the next write, which stores only real choices (the name then takes its default unless that write sets it). */
+  malformed?: readonly UiFlagName[];
 }
 
 const KNOWN = new Set<string>(UI_FLAG_NAMES);
 const isCancellation = (error: unknown): boolean => error instanceof Error && (error.name === "TransactionCanceledException" || error.name === "ConditionalCheckFailedException");
 const send = <T>(deps: UiFlagsDeps, command: unknown): Promise<T> => deps.documentClient.send(command as never) as Promise<T>;
 
+/** Every known flag stored off: what an unreadable row reads as (it may hold a company's choice of the old screens, and that cannot be told apart). */
+const allStoredOff = (): Partial<Record<UiFlagName, boolean>> => Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, false]));
+
 /**
- * The company's settings from its stored item (or none). A value that does not read counts as off. A row whose revision does not read is UNREADABLE as a whole: every flag is off and previews are not allowed
- * (a flag value is trusted only beside a revision the fence can hold), at revision 0, and `unreadableRevision` says what is stored so an admin's next change replaces the row instead of being locked out.
+ * The company's settings from its stored item (or none). No item: nothing stored, so every flag takes its default. A known name whose value does not read counts as stored off (fail closed: it may have been a
+ * choice of the old screen). A row whose revision does not read (or has none) is UNREADABLE as a whole: every flag reads as stored off and previews are not allowed (a flag value is trusted only beside a revision
+ * the fence can hold), at revision 0, and `unreadableRevision` says what is stored so an admin's next change replaces the row instead of being locked out (`unreadable`: that change starts from the defaults).
  */
 export function settingsFromItem(item: Item | undefined): UiFlagsSettings {
   if (item === undefined) return { flags: {}, previews: false, revision: 0 };
   if (!(typeof item.revision === "number" && Number.isInteger(item.revision) && item.revision >= 1)) {
-    return { flags: {}, previews: false, revision: 0, ...(item.revision === undefined ? {} : { unreadableRevision: { value: item.revision } }) };
+    return { flags: allStoredOff(), previews: false, revision: 0, unreadable: true, ...(item.revision === undefined ? {} : { unreadableRevision: { value: item.revision } }) };
   }
-  const stored = typeof item.flags === "object" && item.flags !== null && !Array.isArray(item.flags) ? item.flags as Record<string, unknown> : {};
-  const flags: Partial<Record<UiFlagName, boolean>> = {};
-  for (const [name, value] of Object.entries(stored)) if (KNOWN.has(name) && typeof value === "boolean") flags[name as UiFlagName] = value;
-  return { flags, previews: item.previews === true, revision: item.revision, ...(typeof item.changedAt === "string" ? { changedAt: item.changedAt } : {}) };
+  const readable = typeof item.flags === "object" && item.flags !== null && !Array.isArray(item.flags);
+  // A `flags` field that is there but not a map cannot say which screens the company sent back: all off. A row with no `flags` field at all stored nothing.
+  if (!readable && item.flags !== undefined) return { flags: allStoredOff(), previews: item.previews === true, revision: item.revision, unreadable: true, ...(typeof item.changedAt === "string" ? { changedAt: item.changedAt } : {}) };
+  const stored = readable ? item.flags as Record<string, unknown> : {};
+  const flags: Partial<Record<UiFlagName, boolean>> = {}, malformed: UiFlagName[] = [];
+  for (const [name, value] of Object.entries(stored)) {
+    if (!KNOWN.has(name)) continue;
+    flags[name as UiFlagName] = value === true;
+    if (typeof value !== "boolean") malformed.push(name as UiFlagName);
+  }
+  return { flags, previews: item.previews === true, revision: item.revision, ...(typeof item.changedAt === "string" ? { changedAt: item.changedAt } : {}), ...(malformed.length > 0 ? { malformed } : {}) };
 }
 
 export async function readUiFlags(deps: UiFlagsDeps, orgId: OrgId, options: { consistent: boolean } = { consistent: true }): Promise<UiFlagsSettings> {
@@ -67,10 +88,10 @@ export function operatorForcedOff(environment: Record<string, string | undefined
 
 /** The state of each flag for the people of one company: `uiFlags` in the navigation answer. */
 export function uiFlagsMapOf(settings: UiFlagsSettings, forced: ReadonlySet<UiFlagName>): Required<UiFlagsMap> {
-  return Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, uiFlagState({ enabled: settings.flags[name] === true, previews: settings.previews, forcedOff: forced.has(name) })])) as Required<UiFlagsMap>;
+  return Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, uiFlagState({ enabled: uiFlagEnabled(name, settings.flags[name]), previews: settings.previews, forcedOff: forced.has(name) })])) as Required<UiFlagsMap>;
 }
 
-/** Every flag off, no preview: what a company that never changed anything gets, and what a failed read gives. */
+/** Every flag off, no preview: what a failed read gives (the old screens). A company that never changed anything gets the defaults instead (`uiFlagsMapOf` with nothing stored). */
 export const ALL_OFF: Required<UiFlagsMap> = Object.fromEntries(UI_FLAG_NAMES.map((name) => [name, "off" as const])) as Required<UiFlagsMap>;
 
 /** `uiFlags` for the navigation answer. Never throws: a read that fails gives every flag off (and a log line without the company's data). */
@@ -85,14 +106,15 @@ export function adminAnswerOf(settings: UiFlagsSettings, forced: ReadonlySet<UiF
     revision: settings.revision,
     previews: settings.previews,
     flags: UI_FLAG_CATALOG.map((entry) => {
-      const enabled = settings.flags[entry.name] === true, forcedOff = forced.has(entry.name);
+      const enabled = uiFlagEnabled(entry.name, settings.flags[entry.name]), forcedOff = forced.has(entry.name);
       return { name: entry.name, label: entry.label, summary: entry.summary, wired: entry.wired, enabled, forcedOff, state: uiFlagState({ enabled, previews: settings.previews, forcedOff }) };
     }),
     ...(settings.changedAt === undefined ? {} : { changedAt: settings.changedAt }),
   };
 }
 
-export interface UiFlagsChange { flags?: Readonly<Partial<Record<UiFlagName, boolean | undefined>>> | undefined; previews?: boolean | undefined }
+/** `flags`: true or false stores the company's choice for that name; null removes its stored choice (back to the catalog default); absent leaves it as it is. */
+export interface UiFlagsChange { flags?: Readonly<Partial<Record<UiFlagName, boolean | null | undefined>>> | undefined; previews?: boolean | undefined }
 
 /**
  * Writes a change. `expectedRevision` is what the caller read (0 while there is no record): the write is conditioned on it, so a stale one is CHANGE_STALE. The audit event goes in the SAME transaction; with no ledger the change is
@@ -101,16 +123,17 @@ export interface UiFlagsChange { flags?: Readonly<Partial<Record<UiFlagName, boo
 export async function writeUiFlags(deps: UiFlagsDeps, input: { orgId: OrgId; developerId: string; expectedRevision: number; change: UiFlagsChange }): Promise<UiFlagsSettings> {
   const current = await readUiFlags(deps, input.orgId);
   if (current.revision !== input.expectedRevision) throw agentXError("CHANGE_STALE", "Someone else changed this. Reload and try again.");
-  const flags: Partial<Record<UiFlagName, boolean>> = { ...current.flags };
-  const turnedOn: string[] = [], turnedOff: string[] = [];
+  // Only pressed values are stored (never a default); a row that could not be read is replaced from nothing stored, and a stored value that is not a boolean is not carried (it read as off; the name now takes its default).
+  const flags: Partial<Record<UiFlagName, boolean>> = current.unreadable === true ? {} : { ...current.flags };
+  for (const name of current.malformed ?? []) delete flags[name];
   for (const name of UI_FLAG_NAMES) {
     const wanted = input.change.flags?.[name];
-    if (wanted === undefined) continue;
-    const was = current.flags[name] === true;
-    flags[name] = wanted;
-    if (wanted && !was) turnedOn.push(name);
-    if (!wanted && was) turnedOff.push(name);
+    if (wanted === null) delete flags[name];
+    else if (wanted !== undefined) flags[name] = wanted;
   }
+  // Against what was in force for the company before and after (its choice, else the default), so the audit says what changed for people.
+  const turnedOn = UI_FLAG_NAMES.filter((name) => !uiFlagEnabled(name, current.flags[name]) && uiFlagEnabled(name, flags[name]));
+  const turnedOff = UI_FLAG_NAMES.filter((name) => uiFlagEnabled(name, current.flags[name]) && !uiFlagEnabled(name, flags[name]));
   const previews = input.change.previews ?? current.previews;
   const revision = current.revision + 1;
   const at = new Date(deps.now()).toISOString();

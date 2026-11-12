@@ -133,7 +133,7 @@ test("the nav lists it under Security and sign-in, and a server with it off says
  await expect(page.getByRole("table")).toHaveCount(0);await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
 });
 
-for (const look of [{ name: "look-off", store: {} }, { name: "look-v2", store: { "rovara.look": "v2" } }] as const) for (const width of [360, 390] as const) {
+for (const look of [{ name: "look-v2", store: {} }] as const) for (const width of [360, 390] as const) {
  test(`phone ${String(width)} in ${look.name}: one column, 44px controls, no sideways scroll, visible focus, axe clean in light and dark (with a waiting request)`, async ({ page, context, request, baseURL }) => {
   const server = fakeServer();server.model.pending = { changeId: "chg_0123456789abcdef", seconds: 3 * DAY, by: "second" };
   await enter(page, context, request, baseURL, width, look.store, server);await page.goto("/app/admin/approval-window");await settled(page);

@@ -6,16 +6,16 @@ test.beforeEach(async ({ context, request, baseURL }) => {
  await request.post("/__mock/scenario", { data: { name: "shell" } });
  await context.addCookies([{ name: "__Host-agentx_review_session", value: fixtureSession, url: baseURL!, secure: true, httpOnly: true, sameSite: "Strict" }]);
 });
-test("signs in and returns to Live without violating CSP", async ({ page, context }) => {
+test("signs in and returns to the page asked for (an old /app/live link lands on Work) without violating CSP", async ({ page, context }) => {
  await context.clearCookies();await page.goto("/app/live");await expect(page.getByRole("heading", { name: "Sign in to the mock cell" })).toBeVisible();
- await page.getByRole("button", { name: "Sign in" }).click();await expect(page).toHaveURL(/\/app\/live$/u);await expect(page.getByRole("heading", { name: "Live", exact: true })).toBeVisible();
+ await page.getByRole("button", { name: "Sign in" }).click();await expect(page).toHaveURL(/\/app\/work$/u);await expect(page.getByRole("heading", { name: "Work", exact: true, level: 1 })).toBeVisible();
 });
 test("serves the exact nonced cell CSP, supports keyboard navigation, and opens the account dialog", async ({ page }) => {
  const response = await page.goto("/app");await expect(page.getByRole("heading", { name: "Home", exact: true })).toBeVisible();
  const nonce = await page.locator('meta[name="csp-nonce"]').getAttribute("content");
  expect(response?.headers()["content-security-policy"]).toBe(`default-src 'none'; script-src 'self'; style-src 'self' 'nonce-${nonce}'; style-src-attr 'unsafe-hashes' 'sha256-3oFxofzq3N//6J8H86e9ul4WT2OkJrtonB66gn/TLJw='; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'`);
- for (const [name, heading] of [["Live", "Live"], ["payments", "payments"], ["Home, 3 waiting", "Home"]] as const) {
- const link = page.getByRole("link", { name, exact: true });await link.focus();await page.keyboard.press("Enter");await expect(page.getByRole("heading", { name: heading, exact: true })).toBeFocused();
+ for (const [name, heading] of [["Work", "Work"], ["payments", "payments"], ["Home, 3 need you", "Home"]] as const) {
+ const link = page.locator("aside").getByRole("link", { name, exact: true });await link.focus();await page.keyboard.press("Enter");await expect(page.getByRole("heading", { name: heading, exact: true })).toBeFocused();
  }
  await page.getByRole("button", { name: "Open account menu" }).click();await expect(page.getByRole("dialog", { name: "Your account" })).toBeVisible();await page.getByRole("button", { name: "Close dialog" }).click();await expect(page.getByRole("dialog")).toHaveCount(0);
 });

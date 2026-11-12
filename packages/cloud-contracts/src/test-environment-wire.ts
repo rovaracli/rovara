@@ -7,14 +7,9 @@
 //
 // The feature strings are what a worker advertises on /ping: an older worker is refused the run at dispatch (a strict parse would refuse the field), never mis-run.
 import { z } from "zod";
-import { CatalogConfigSchema, catalogIdName, CatalogIdSchema, CheckKindSchema, ConnectTemplateSchema, CoverageMapSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, IacSeedRefSchema, ProjectCommandSchema, RelativeWorkspacePathSchema, reservedDependencyEnvName, SeedScriptLockSchema, TASK_DEPENDENCY_PLAN_MAX, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_PLAN_FAILURES_MAX, TEST_ENV_PLAN_MAP_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECT_PLACEHOLDER, TEST_ENV_SELECTION_METHODS, SEEDED_AWS_SERVICES, TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, TestEnvRegionSchema } from "@rovara-code/contracts";
-// Code's own since the vendor pin 0e340c0e (one name, one owner): re-exported, not defined here.
+import { CatalogConfigSchema, catalogIdName, CatalogIdSchema, CheckKindSchema, ConnectTemplateSchema, CoverageMapSchema, DnsLabelSchema, EnvNameSchema, FamilyIdSchema, IacSeedRefSchema, ProjectCommandSchema, RelativeWorkspacePathSchema, reservedDependencyEnvName, SeedScriptLockSchema, TASK_DEPENDENCY_PLAN_MAX, TEST_ENV_DEPENDENCY_LIMITS, TEST_ENV_DEPENDENCY_RESETS, TEST_ENV_HELPER_CATALOG_NAMES, TEST_ENV_PLAN_FAILURES_MAX, TEST_ENV_PLAN_MAP_MAX_BYTES, TEST_ENV_RESERVED_ALIASES, TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECT_PLACEHOLDER, TEST_ENV_SELECTION_METHODS, AWS_PLAN_SERVICES_MAX, AwsPlanServiceSchema, normaliseAwsServiceKey, TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, TestEnvRegionSchema } from "@rovara-code/contracts";
+// Code's own since the vendor pin 0e340c0e (one name, one owner): re-exported, not defined here. A worker that lists it reads a plan dependency with `backing: "company"` (switch `pj`).
 export { TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE } from "@rovara-code/contracts";
-/**
- * Company-approved extra images (switch `pj`): a worker that lists this reads a plan dependency with `backing: "company"` and its `company` block (an image a company admin approved, by registry, repository and digest) and can
- * start exactly that digest. No worker lists it yet, so the broker never sends such a plan to any worker (`ec2-delivery.ts`); a worker that does not know the backing refuses it by its strict parse, and one that knows it and
- * cannot serve it refuses it by name. In `WORKER_INVOCATION_FEATURES`.
- */
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
 const line = (max: number) => z.string().min(1).max(max).regex(NO_HIDDEN, "one plain line");
@@ -69,7 +64,7 @@ export const TaskDependencyPlanSchema = z
     seeds: z.array(z.union([z.object({ command: ProjectCommandSchema, lock: SeedScriptLockSchema.optional() }).strict(), z.object({ fixturePath: RelativeWorkspacePathSchema, sha256: Sha256.optional() }).strict()])).max(TEST_ENV_DEPENDENCY_LIMITS.seeds),
     reset: z.enum(TEST_ENV_DEPENDENCY_RESETS),
     /** Only on an `emulated` entry: the AWS services this dependency needs from Rovara local AWS, the region the code is told, and where the project declares its resources (a file, never read by the broker). */
-    aws: z.object({ services: z.array(z.enum(SEEDED_AWS_SERVICES)).min(1).max(SEEDED_AWS_SERVICES.length), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
+    aws: z.object({ services: z.array(AwsPlanServiceSchema).min(1).max(AWS_PLAN_SERVICES_MAX), region: TestEnvRegionSchema, resources: IacSeedRefSchema.optional() }).strict().optional(),
   })
   .strict()
   .superRefine((plan, context) => {
@@ -98,7 +93,7 @@ export const TaskDependencyPlanSchema = z
       if (plan.aws === undefined) problem(["aws"], "an emulated dependency names its AWS services");
       else {
         if (new Set(plan.aws.services).size !== plan.aws.services.length) problem(["aws", "services"], "a service is listed once");
-        if (plan.family.startsWith("aws:") && !(plan.aws.services as readonly string[]).includes(plan.family.slice(4))) problem(["aws", "services"], "the services include the family's own service");
+        if (plan.family.startsWith("aws:") && !(plan.aws.services as readonly string[]).includes(normaliseAwsServiceKey(plan.family.slice(4)) ?? plan.family.slice(4))) problem(["aws", "services"], "the services include the family's own service");
       }
     }
     if (new Set(plan.aliases).size !== plan.aliases.length) problem(["aliases"], "an alias is listed once");

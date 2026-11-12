@@ -18,6 +18,20 @@ import { isBundleCheck, isMirrorCheck, isVerifiedCatalog, registerBundleCheck } 
 
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 
+/**
+ * The all-zero SHA-256: the PLACEHOLDER a release branch carries for an image that is not built yet (catalog revision 4, `local-aws@r1`, until `scripts/catalog-build.ts` pins the real one). It is a well-formed digest, so the schema takes it;
+ * no image has it, so a pull would only fail late. Everything that loads a catalog or a pre-pull list to START images refuses it up front, with `placeholderDigestProblem`.
+ */
+export const PLACEHOLDER_SHA256 = "0".repeat(64);
+
+/** The fixed words for a catalog or pre-pull list that still carries the placeholder digest, naming the first id, or undefined when there is none. Accepts a catalog (`entries`) or a pre-pull list (`images`). */
+export function placeholderDigestProblem(source: { entries: ReadonlyArray<{ id: string; image: { digest?: string | undefined } }> } | { images: ReadonlyArray<{ id: string; digest: string }> }): string | undefined {
+  const ids = "entries" in source
+    ? source.entries.filter((entry) => entry.image.digest === PLACEHOLDER_SHA256).map((entry) => entry.id)
+    : source.images.filter((image) => image.digest === PLACEHOLDER_SHA256).map((image) => image.id);
+  return ids.length === 0 ? undefined : `${ids[0] as string} still has the all-zero placeholder digest: the image was never pinned`;
+}
+
 /** One result per Enterprise entry the catalog pins; the `digest` of an `ok` result is the digest the bundle's image reference names, which equals the catalog's. */
 export function checkBundleImages(bundle: { images: ReadonlyArray<{ name: string; sourceRef: string }> }, catalog: ServiceCatalog): BundleImageCheck[] {
   const digestOf = (reference: string): string | undefined => /@sha256:([a-f0-9]{64})$/u.exec(reference)?.[1];

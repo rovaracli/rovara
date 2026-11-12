@@ -102,7 +102,7 @@ for(const [status,label] of [["unchecked","Not checked yet"],["checking","Checki
  const detail=mount("/app/admin/projects/payments",{respond:async r=>({status:200,body:r.path.endsWith("/members")?{members:[]}:{...project,setup:{status}}})});await screen.findByText("Setup status: "+label);detail.close();
 });
 
-for(const [path,title] of [["/app/admin/agents","Agents"],["/app/admin/agents/rovara-code/versions","Agent versions"]] as const)it(`UX3 shipped console wires ${path} into company settings`,async()=>{const f=mount(path,{shipped:true});await screen.findByRole("heading",{name:title,level:1});expect(screen.getByRole("link",{name:"Agents"}).getAttribute("href")).toBe("/app/admin/agents");f.close();});
+for(const [path,title] of [["/app/admin/agents","Agents"],["/app/admin/agents/rovara-code/versions","Agent versions"]] as const)it(`UX3 shipped console wires ${path} into company settings`,async()=>{const f=mount(path,{shipped:true});await screen.findByRole("heading",{name:title,level:1});expect(screen.getAllByRole("link",{name:"Agents"}).map(link=>link.getAttribute("href"))).toContain("/app/admin/agents");f.close();});
 
 it("B32 member project maintainer has own-project settings entry and no admin navigation",async()=>{const value=projectFixture();value.project.setup.status="failed";const f=mount("/app/projects/payments",{role:"member",shipped:true,respond:async r=>r.path.endsWith("/overview")?{status:200,body:value}:{status:200,body:{notices:[],next:"settled"}}});await screen.findByRole("heading",{name:"payments"});// UX-4b: the setup screen opens in place on the project page (its checklist), no longer in onboarding; a maintainer opens the setup commands' row there.
 expect(screen.getByRole("link",{name:"Setup needs attention"}).getAttribute("href")).toBe("#project-setup");const checklist=await screen.findByRole("region",{name:"Project setup"});const setupRow=within(checklist).getByRole("heading",{name:"Setup commands"}).closest("li")!;expect(within(setupRow as HTMLElement).getByRole("button",{name:"Open"})).toBeTruthy();expect(screen.queryByRole("link",{name:/^Admin$/})).toBeNull();expect(screen.queryByRole("navigation",{name:"Administration"})).toBeNull();expect(f.request.mock.calls.filter(([r])=>r.path.includes("/projects/")).every(([r])=>r.path.includes("/projects/payments/"))).toBe(true);f.close();});
@@ -111,7 +111,7 @@ it("opens website editing from fresh active admin project detail without changin
  await screen.findByRole("heading", { name: "Allowed websites" });
  expect(f.request.mock.calls.some(([r]) => r.path.includes("allowed-websites"))).toBe(false);
  fireEvent.click(screen.getByRole("button", { name: "Edit allowed websites" }));await screen.findByRole("button", { name: "Review website change" });
- expect(screen.getByText("github.com")).toBeTruthy();expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
+ expect(screen.getByText("github.com")).toBeTruthy();expect(screen.getAllByRole("link", { name: "Agents" }).length).toBeGreaterThan(0);
  expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);f.close();
 });
 it("B33 member maintainer opens company-pinned website editing on the shipped own-project route", async () => {

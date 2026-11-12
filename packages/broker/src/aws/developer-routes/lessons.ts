@@ -2,6 +2,8 @@
 // calls the two functions below. Everything answers `undefined` (the route falls through to "not found", as before) when the install has no `lessons` / `loadedKnowledge` ports, and the lessons
 // routes answer "not found" for a project whose learning mode is Off.
 import { agentXError, orgScoped } from "@rovara-code/contracts";
+import { isWriterOrgRole } from "@agentx/cloud-contracts";
+import { canReadAuditLog } from "../../org/auditor.js";
 import { LOADED_KNOWLEDGE_PATH, routeLoadedKnowledge } from "../../developer/loaded-knowledge.js";
 import { takeRateAt } from "../../developer/page-comments.js";
 import { resolveTaskAccess } from "../../developer/task-access.js";
@@ -26,7 +28,9 @@ export function lessonRouteDependenciesOf(deps: DeveloperRouteDependencies, call
     lessons, ...(deps.repoFile === undefined ? {} : { repoFile: deps.repoFile }),
     projectFor: async (who, rawName) => {
       if (who.orgId !== caller.orgId || who.developerId !== caller.developerId) throw agentXError("PROJECT_NOT_FOUND", "no such project");
-      if (who.orgRole !== "auditor") return projectRoleForRoute(deps, who, rawName);
+      // P3-OPEN-ROLES-CLOUD-ADOPTION: positive lists. A writer goes through the project's own rules; the Auditor reads; any other role reads no project.
+      if (isWriterOrgRole(who.orgRole)) return projectRoleForRoute(deps, who, rawName);
+      if (!canReadAuditLog(who.orgRole)) throw agentXError("PROJECT_NOT_FOUND", "no such project");
       let name: string;
       try { name = decodeURIComponent(rawName); } catch { throw agentXError("PROJECT_NOT_FOUND", "no such project"); }
       if (!PROJECT_NAME.test(name) || await latestDefinition(deps, caller.orgId, name) === undefined) throw agentXError("PROJECT_NOT_FOUND", "no such project");

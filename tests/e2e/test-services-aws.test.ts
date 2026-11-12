@@ -6,7 +6,7 @@
 //   control API, runs a sealed round on brand-new helpers and reads the request ledger  ->  the usage record  ->  the evidence pack  ->  the pull request line and the IAM line.
 //
 // Then the failure cases (a call outside the plan, a flooded ledger, a seed refusal), teardown on every way out, and Prove. Not covered (needs the real emulator and a Linux host): that the image starts, that the control paths
-// are really refused from the sealed sandbox (FORK-CTRL-1 and the done-check's escape tests), memory in a 384 MiB container. See the staging steps in the s2-integration report.
+// are really refused from the sealed sandbox (FORK-CTRL-1 and the done-check's escape tests), memory in a 512 MiB container. See the staging steps in the s2-integration report.
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

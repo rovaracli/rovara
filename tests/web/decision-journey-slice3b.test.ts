@@ -6,7 +6,7 @@ import { screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { DecisionCardsViewSchema } from "@agentx/cloud-contracts/web";
-import { HomeScreen } from "../../packages/ui/src/screens/home/HomeScreen.js";
+import { PendingDecisionCards } from "./support/pending-decisions.js";
 import { DecisionScreen } from "../../packages/ui/src/screens/decisions/DecisionScreen.js";
 import { AppHostProvider, type ApiRequest } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
@@ -80,7 +80,7 @@ it("Home shows the card with Open to its own page, and no older approval card fo
  const older = { cardId: "spend_request:" + ID, kind: "spend_request", title: "Budget request", reason: "A run needs $18 more", at: "2026-11-06T10:00:00.000Z", buttons: [{ label: "Decide", action: "confirm", method: "GET", href: "https://cell.example/v1/app/approve/" + ID }] };
  const f = fakeHost(async request => request.path === "/v1/app/home" ? { status: 200, body: { cards: [older], total: 1 } } : request.path === "/v1/app/decisions" ? { status: 200, body: viewOf([item]) } : { status: 200, body: { notices: [], next: "settled" } });
  const query = createQueryClient();
- const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
+ const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(PendingDecisionCards, {}) }) }) }) }));
  const card = await screen.findByRole("article", { name: "Raise the run limit to $20" });
  expect(within(card).getByRole("link", { name: "Open" }).getAttribute("href")).toBe("/app/decisions/approve_request/" + ID);
  expect(within(card).queryByRole("button", { name: "Approve" })).toBeNull();

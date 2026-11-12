@@ -157,7 +157,7 @@ import { readReviewedProjectArchiveAppPreview } from "../org/reviewed-project-ar
 import { revokeOrganizationInvite } from "../org/invite-revocation.js";
 import { logDeveloperEvent } from "../developer/log.js";
 import { listOrganizationInvites } from "../org/invite-directory.js";
-import { OrgMemberRoleChangeBodySchema, ORG_HEALTH_OBSERVATIONS_PATH } from "@agentx/cloud-contracts";
+import { OrgMemberRoleChangeBodySchema, ORG_HEALTH_OBSERVATIONS_PATH, isWriterOrgRole } from "@agentx/cloud-contracts";
 import { listOrganizationMembers, lookupOrganizationMember } from "../org/directory.js";
 import { getMemberRemoval, previewMemberRemoval, startMemberRemovalRoute } from "../org/member-removal/routes.js";
 import { taskResponseForClient } from "../rovara-code/task-view-compat.js";
@@ -406,7 +406,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // I2: the task and review pages are not for the Auditor, which reads the audit log and nothing else; a session that holds that role is signed out of them.
   const authenticatePersonSession = async (sessionId: string) => {
     const who = await authenticateSession(sessionId);
-    return who?.orgRole === "auditor" ? undefined : who;
+    // P3-OPEN-ROLES-CLOUD-ADOPTION: a positive list, so a role that is not a writer's is signed out of them too.
+    return who === undefined || !isWriterOrgRole(who.orgRole) ? undefined : who;
   };
   // The audit page (Task 13): a read-only view for the org's owners, admins and Auditors; the org is the session's own.
   if (isAuditViewPath(url.pathname)) {

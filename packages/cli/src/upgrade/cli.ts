@@ -35,6 +35,10 @@ import { recordSynthSettings } from "./bundle/synth-settings.js";
 import { startApprovedDeployment, type DeployerInvoker } from "./bundle/deployer-client.js";
 import { EMBEDDER_BUNDLE_IMAGE_NAME, loadBundleImages } from "./bundle/load-images.js";
 import { teamRecordRecordedOrUnknown } from "../deploy/team-record-switch.js";
+import { readModelProxyTlsRecord } from "../deploy/model-proxy-tls.js";
+import { awsModelProxyTlsState, systemDnsLookups } from "../deploy/model-proxy-tls-aws.js";
+import { EC2Client } from "@aws-sdk/client-ec2";
+import { SSMClient } from "@aws-sdk/client-ssm";
 import { resetDeployment } from "./bundle/reset-deployment.js";
 import { PINNED_BUNDLE_SIGNING_KEYS } from "./bundle/trusted-keys.js";
 import { verifyBundle, type VerifiedBundle } from "./bundle/verify.js";
@@ -126,9 +130,11 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .option("--slack-image <digest-ref>", "Slack service image by digest; an agentx built from source needs it with --engine cdk when the tag has no published release.json")
     .option("--embedder-image <digest-ref>", "the Team record's embedder image (a private ECR image pinned by digest in this install's account and region) for a release that names none, such as an upgrade from a --source checkout; without it the image the stack already runs is kept")
     .option("--yes", "apply without asking; every change and the release notes are still printed", false)
+    .option("--allow-tls-removal", "deploy although the model proxy serves HTTPS and no model proxy TLS setting is recorded: this puts it back on plain http", false)
+    .option("--allow-legacy-http-removal", "remove the model proxy's legacy plain-http listeners although worker instances launched before its https address was published still run", false)
     .option("--no-reserved-concurrency", "the cdk engine only: deploy with no Lambda reserved concurrency, for an AWS account whose Lambda concurrency limit is too low to reserve any (a new account's limit of 10); keep it on in production")
     .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
-    .action(async (options: { approveBuild: boolean; deployApproved?: string; bundle?: string; approvedBundleSha256?: string; bundlePublicKey: string[]; to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; embedderImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean }, command: Command) => {
+    .action(async (options: { approveBuild: boolean; deployApproved?: string; bundle?: string; approvedBundleSha256?: string; bundlePublicKey: string[]; to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; embedderImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean; allowTlsRemoval: boolean; allowLegacyHttpRemoval: boolean }, command: Command) => {
       const globals = command.optsWithGlobals<{ env: string; json: boolean; configDir: string }>();
       const overrides = context.overrides ?? {};
       const aws = options.region === undefined ? {} : { region: options.region };
@@ -191,7 +197,8 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         cdkDiff: overrides.cdkDiff ?? (async (request, settings, source, reservedConcurrency, releaseVersion) => {
           const edition = await resolveDeployEdition({ store, env: settings.env, engine: settings.engine, cloud: settings.cloud === true });
           const teamRecord = await readTeamRecordSwitch(store, settings.env);
-          return cdkDiff({ runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), ...(reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), ...(edition === undefined ? {} : { edition }), ...(teamRecord === undefined ? {} : { teamRecord }), ...(releaseVersion === undefined ? {} : { releaseVersion }), request });
+          const { setting: modelProxyTls, previous: modelProxyTlsPrevious } = await readModelProxyTlsRecord(store, settings.env);
+          return cdkDiff({ ...(modelProxyTls === undefined ? {} : { modelProxyTls }), ...(modelProxyTlsPrevious === undefined ? {} : { modelProxyTlsPrevious }), runner, source, env: settings.env, region: settings.region, identityMode: settings.identity.mode, ...(settings.cloud === true ? { cloud: true } : {}), ...(reservedConcurrency === false ? { reservedConcurrency: false as const } : {}), ...(edition === undefined ? {} : { edition }), ...(teamRecord === undefined ? {} : { teamRecord }), ...(releaseVersion === undefined ? {} : { releaseVersion }), request });
         }),
         ask: overrides.ask ?? readlineAsk(),
         isInteractive: overrides.isInteractive ?? (() => process.stdin.isTTY === true),
@@ -201,6 +208,8 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         now: overrides.now ?? Date.now,
         teamRecordProbe: overrides.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws), { ecr: new ECRClient(aws), cloudFormation: new CloudFormationClient(aws) }),
         cliVersion: "cliVersion" in overrides ? overrides.cliVersion : RELEASE_VERSION,
+        modelProxyTlsState: overrides.modelProxyTlsState ?? awsModelProxyTlsState({ ssm: new SSMClient(aws), ec2: new EC2Client(aws) }),
+        dns: overrides.dns ?? systemDnsLookups,
       };
       const images = options.workerImage === undefined && options.slackImage === undefined && options.embedderImage === undefined && options.bootStage2Sha256 === undefined ? undefined : {
         ...(options.workerImage === undefined ? {} : { worker: options.workerImage }), ...(options.slackImage === undefined ? {} : { slack: options.slackImage }), ...(options.embedderImage === undefined ? {} : { embedder: options.embedderImage }),
@@ -212,6 +221,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         ...(options.to === undefined ? {} : { to: options.to }), ...(options.release === undefined ? {} : { releaseDir: options.release }),
         ...(options.source === undefined ? {} : { source: options.source }), ...(options.export === undefined ? {} : { exportDir: options.export }),
         ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
+        ...(options.allowTlsRemoval ? { allowTlsRemoval: true } : {}), ...(options.allowLegacyHttpRemoval ? { allowLegacyHttpRemoval: true } : {}),
         ...(images === undefined ? {} : { images }),
       }, deps);
       context.stdout.write(globals.json ? formatSuccess(result, true) : result.exported !== undefined

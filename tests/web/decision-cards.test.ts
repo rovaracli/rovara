@@ -8,6 +8,7 @@ import { DecisionCardsViewSchema, SessionViewReaderSchema } from "@agentx/cloud-
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
+import { PendingDecisionCards } from "./support/pending-decisions.js";
 import { HomeScreen } from "../../packages/ui/src/screens/home/HomeScreen.js";
 import { Workspace } from "../../packages/ui/src/screens/session/Workspace.js";
 import { projectDecisionCards, type DecisionItem, type ItemBase } from "../../packages/broker/src/decisions/project.js";
@@ -38,7 +39,7 @@ function setupHome(items: DecisionItem[], respond?: (request: { method: string; 
   return { status: 200, body: { notices: [], next: "settled" } };
  });
  const query = createQueryClient();
- const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [at], children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
+ const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [at], children: h(Announcer, { children: h(PendingDecisionCards, {}) }) }) }) }));
  return { ...f, ...ui, query, set(next: DecisionItem[]) { view = viewOf(next); }, view: () => view };
 }
 const posts = (f: ReturnType<typeof setupHome>) => f.request.mock.calls.map(([r]) => r).filter(r => r.method === "POST");
@@ -77,7 +78,7 @@ it("gives a high card no Approve at all, only Open (the card on its task page)",
 });
 it("lists high first and offers no bulk control", async () => {
  setupHome([lowItem, mediumItem, highItem]);
- await screen.findByRole("heading", { name: "Needs you" });
+ await screen.findByRole("list", { name: "Decisions waiting for you" });
  expect(screen.getAllByRole("article").map(a => a.getAttribute("data-risk"))).toEqual(["high", "medium", "low"]);
  expect(screen.queryByRole("button", { name: /all/i })).toBeNull();
 });
@@ -108,7 +109,7 @@ it("renders hostile titles as text and refuses to follow an address the card mad
  const evil = { ...view, cards: view.cards.map(c => ({ ...c, title: "<img src=x onerror=alert(1)>", actions: c.actions.map(a => a.kind === "approve" ? { ...a, href: "/v1/app/decisions/approve_plan/other/approve" } : a) })) };
  const f = fakeHost(async request => request.path === "/v1/app/decisions" ? { status: 200, body: evil } : request.path === "/v1/app/home" ? { status: 200, body: { cards: [], total: 0 } } : { status: 200, body: {} });
  const query = createQueryClient();
- const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
+ const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(PendingDecisionCards, {}) }) }) }) }));
  await screen.findByText("<img src=x onerror=alert(1)>");
  expect(ui.container.querySelector("img")).toBeNull();
  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
@@ -118,19 +119,22 @@ it("renders hostile titles as text and refuses to follow an address the card mad
 it("shows nothing extra when the server has no decisions or does not know the route", async () => {
  const f = fakeHost(async request => request.path === "/v1/app/decisions" ? { status: 404, body: { error: { code: "NOT_FOUND", message: "x" } } } : { status: 200, body: { cards: [], total: 0 } });
  const query = createQueryClient();
- renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
- await screen.findByRole("heading", { name: "Nothing needs you right now" });
- expect(screen.queryByRole("heading", { name: "Needs you" })).toBeNull();
+ renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(PendingDecisionCards, {}) }) }) }) }));
+ await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/decisions")).toBe(true));
+ await waitFor(() => expect(query.isFetching()).toBe(0));
+ expect(screen.queryByRole("list", { name: "Decisions waiting for you" })).toBeNull();expect(screen.queryAllByRole("article")).toHaveLength(0);
 });
-const failing = (status: number, body: unknown) => fakeHost(async request => request.path === "/v1/app/decisions" ? { status, body } : { status: 200, body: { cards: [], total: 0 } });
+const failing = (status: number, body: unknown) => fakeHost(async request => request.path === "/v1/app/decisions" ? { status, body } : request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: [] } } : request.path.startsWith("/v1/app/sessions") ? { status: 200, body: { sessions: [] } } : request.path.startsWith("/v1/app/agents") ? { status: 200, body: { agents: [] } } : request.path === "/v1/app/home" ? { status: 200, body: { cards: [], total: 0 } } : { status: 200, body: { notices: [], next: "settled" } });
+/** Home itself (decision 125: the only Home), for what Home says when the decisions read fails. */
 const renderHome = (f: ReturnType<typeof fakeHost>) => renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: createQueryClient(), children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
-it("WEB-1: a failed read of the decisions says so with a Try again (it used to be swallowed as 'no cards'), and the older Home cards still show", async () => {
+it("WEB-1: a failed read of the decisions says so on Home with a Try again (it used to be swallowed as 'no cards'), and Home's other sections still show", async () => {
  for (const [status, body] of [[403, { error: { code: "FORBIDDEN", message: "You can't see these." } }], [200, { cards: "nope" }]] as const) {
   const f = failing(status, body);
   const ui = renderHome(f);
   const alert = await screen.findByText(status === 403 ? "You can't see these." : /unreadable|Reload/);
   expect(alert.closest("[role=alert]")).not.toBeNull();
-  expect(screen.getByRole("heading", { name: "Nothing needs you right now" })).toBeTruthy();
+  // Home's other sections are still there.
+  expect(screen.getByRole("heading", { name: "Continue" })).toBeTruthy();
   const reads = () => f.request.mock.calls.filter(([r]) => r.path === "/v1/app/decisions").length;
   const before = reads();
   fireEvent.click(within(alert.closest("[role=alert]") as HTMLElement).getByRole("button", { name: "Try again" }));
@@ -158,7 +162,7 @@ it("shows a Full pair as one card with two tabs, each its own approval", async (
 });
 it("has no accessibility violations", async () => {
  const f = setupHome([lowItem, mediumItem, highItem]);
- await screen.findByRole("heading", { name: "Needs you" });
+ await screen.findByRole("list", { name: "Decisions waiting for you" });
  await expectNoAxeViolations(f.container);
 });
 
@@ -313,7 +317,7 @@ it("Q7: a high card that (wrongly) carries an approve action shows no Approve an
  // ... but the reader the client uses accepts it, so the client's own guard is what stops the control.
  const f = fakeHost(async request => request.path === "/v1/app/decisions" ? { status: 200, body: wrong } : request.path === "/v1/app/home" ? { status: 200, body: { cards: [], total: 0 } } : { status: 200, body: {} });
  const query = createQueryClient();
- renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
+ renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(PendingDecisionCards, {}) }) }) }) }));
  await screen.findByRole("heading", { name: "Retry failed payments" });
  expect(screen.queryByRole("button", { name: /^Approve/ })).toBeNull();
  expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);
@@ -346,8 +350,10 @@ it("a card with no valid digest is not shown (a server that cannot say what it s
  const view = viewOf([lowItem]);
  const f = fakeHost(async request => request.path === "/v1/app/decisions" ? { status: 200, body: { ...view, digests: {} } } : { status: 200, body: { cards: [], total: 0 } });
  const query = createQueryClient();
- renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
- await screen.findByRole("heading", { name: "Nothing needs you right now" });
+ renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(PendingDecisionCards, {}) }) }) }) }));
+ await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.path === "/v1/app/decisions")).toBe(true));
+ await waitFor(() => expect(query.isFetching()).toBe(0));
+ expect(screen.queryAllByRole("article")).toHaveLength(0);
 });
 it("a high card says 'sign in again' only when it opens the confirmation page", async () => {
  setupHome([{ ...highItem, confirmPath: "/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa" }]);

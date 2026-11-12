@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
-// The project page's Spending tab (switch `rovara.spending` = "v2"): a maintainer sees that project's spent, held and left from GET /v1/app/projects/{p}/spend, totals only. Off, or without the server's `canViewSpend`,
+// The project page's Spending tab (always there since decision 125, where the server says `canViewSpend`): a maintainer sees that project's spent, held and left from GET /v1/app/projects/{p}/spend, totals only. Without `canViewSpend`,
 // there is no tab and no read. The formulas are the company Spending page's own: held = max(0, committed - spent); left = max(0, limit - committed), only when the read gives a limit.
 import { expect, it } from "vitest";
 import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { ProjectScreen } from "../../packages/ui/src/screens/project/ProjectScreen.js";
-import { SPENDING_STORAGE_KEY } from "../../packages/ui/src/screens/admin/spending-flags.js";
 import { ProjectSpendReaderSchema, projectSpendPath } from "../../packages/ui/src/api/spending.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
@@ -18,7 +17,7 @@ import { projectFixture } from "./support/project-fixture.js";
 
 type Answer = { status: number; body: unknown };
 const month = "2026-11", ok = (figures: Record<string, unknown>): Answer => ({ status: 200, body: { month, project: "payments", requestId: "gateway", ...figures } });
-function setup(options: { on?: boolean; canViewSpend?: boolean; spend?: Answer; path?: string } = {}) {
+function setup(options: { canViewSpend?: boolean; spend?: Answer; path?: string } = {}) {
  const base = projectFixture(), overview = options.canViewSpend === false ? projectFixture({ you: { ...base.you, canViewSpend: false }, budget: undefined }) : base;
  const f = fakeHost(async request => {
   if (request.path === "/v1/app/changes") return { status: 200, body: { notices: [], next: "settled" } };
@@ -26,7 +25,6 @@ function setup(options: { on?: boolean; canViewSpend?: boolean; spend?: Answer; 
   if (request.path === "/v1/app/projects/payments/spend") return options.spend ?? ok({ spentUsd: 150, committedUsd: 180, limitUsd: 500 });
   return request.method === "GET" ? { status: 200, body: overview } : { status: 202, body: {} };
  });
- if (options.on !== false) f.storage.set(SPENDING_STORAGE_KEY, "v2");
  const query = createQueryClient();
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: [options.path ?? "/app/projects/payments"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }));
  const spendReads = () => f.request.mock.calls.filter(([request]) => request.path.includes("/spend")).length;
@@ -35,15 +33,7 @@ function setup(options: { on?: boolean; canViewSpend?: boolean; spend?: Answer; 
 const figure = (name: string) => screen.getByText(name).nextElementSibling!.textContent;
 const openTab = async () => { fireEvent.mouseDown(await screen.findByRole("tab", { name: "Spending" }), { button: 0 });fireEvent.click(screen.getByRole("tab", { name: "Spending" })); };
 
-it("switch off: no Spending tab, no read, and ?tab=spending is the overview as before", async () => {
- const f = setup({ on: false, path: "/app/projects/payments?tab=spending" });
- await screen.findByRole("heading", { name: "payments" });
- expect(screen.queryByRole("tab", { name: "Spending" })).toBeNull();
- expect(screen.getByRole("tab", { name: "Overview", selected: true })).toBeTruthy();
- expect(f.spendReads()).toBe(0);
- f.close();
-});
-it("switch on but the server does not let this person see the spend: no tab and no read", async () => {
+it("the server does not let this person see the spend: no tab and no read", async () => {
  const f = setup({ canViewSpend: false, path: "/app/projects/payments?tab=spending" });
  await screen.findByRole("heading", { name: "payments" });
  expect(screen.queryByRole("tab", { name: "Spending" })).toBeNull();expect(screen.getByRole("tab", { name: "Overview", selected: true })).toBeTruthy();

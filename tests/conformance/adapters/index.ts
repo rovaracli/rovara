@@ -9,6 +9,27 @@
 // A harness builds its adapter over a fake or local emulator of the AWS service (no live AWS in the test shards), and `dispose`s it. Never import a live client constructor with real
 // credentials here. The port's pending row in the test report (a todo) disappears once an adapter is registered for it.
 import type { CloudAdapterRegistration } from "../registry.js";
+import { cloudAdmission } from "./admission-cloud.js";
+import { cloudApprovers } from "./approvers-cloud.js";
+import { codeBuildCheckRunnerAdapter } from "./check-runner-codebuild.js";
+import { githubActionsCheckRunnerAdapter } from "./check-runner-github-actions.js";
+import { githubAppCodeHost } from "./code-host-github-app.js";
+import { cloudIdentity } from "./identity-cloud.js";
+import { cloudMetering } from "./metering-cloud.js";
+import { cachedSecretsManagerModelKeyStore, secretsManagerModelKeyStore } from "./model-key-store-secrets-manager.js";
+import { jiraTrackerAdapter } from "./tracker-jira.js";
+import { linearTrackerAdapter } from "./tracker-linear.js";
 import { ec2SessionWorkerMachines } from "./worker-machines-ec2-sessions.js";
 
-export const CLOUD_ADAPTERS: readonly CloudAdapterRegistration[] = [ec2SessionWorkerMachines];
+export const CLOUD_ADAPTERS: readonly CloudAdapterRegistration[] = [
+  secretsManagerModelKeyStore,
+  cachedSecretsManagerModelKeyStore,
+  cloudAdmission,
+  cloudMetering,
+  cloudApprovers,
+  cloudIdentity,
+  // Lane A9 cloud/hosts-trackers
+  githubAppCodeHost, githubActionsCheckRunnerAdapter, codeBuildCheckRunnerAdapter, linearTrackerAdapter, jiraTrackerAdapter,
+  // Lane A4 cloud/ec2-machines
+  ec2SessionWorkerMachines,
+];

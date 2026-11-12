@@ -103,8 +103,8 @@ it("keeps filtered waiting counts consistent with visible rows", async () => {
  expect(within(approvals).getByText("Approvals: 1 of 1 shown in this list.")).toBeTruthy();fireEvent.change(screen.getByRole("combobox", { name: "Kind" }), { target: { value: "spend" } });
  expect(within(approvals).getByText("Approvals: 0 of 1 shown in this list.")).toBeTruthy();expect(within(approvals).queryByText("Approval")).toBeNull();fireEvent.change(screen.getByRole("combobox", { name: "Kind" }), { target: { value: "all" } });expect(within(approvals).getByText("Approvals: 1 of 1 shown in this list.")).toBeTruthy();f.close();
 });
-it("keeps the waiting navigation link on a phone", async () => {
- const f = mount({ path: "/app", role: "member", enabled: false, width: 390 });await screen.findByRole("heading", { name: "Home" });expect(screen.getByRole("link", { name: "Waiting for people" })).toBeTruthy();f.close();
+it("keeps the waiting navigation link on a phone, for an owner of an install with company settings (the navigation offers it to owners and admins only)", async () => {
+ const f = mount({ path: "/app", role: "owner", width: 390 });await screen.findByRole("heading", { name: "Home" });expect(screen.getAllByRole("link", { name: "Waiting for people" }).length).toBeGreaterThan(0);f.close();
 });
 it("normalizes configured and serving Bedrock providers at the same cache boundary", async () => {
  const f = mount({ path: "/app/admin/models/available", respond: async r => ({ status: 200, body: r.path.endsWith("/model-sources") ? { sources: [{ ...source, kind: "bedrock", models: [{ catalog: { provider: "amazon-bedrock", modelId: "bedrock-sample" } }] }], order: [] } : r.path === "/v1/app/models" ? { models: [{ provider: "amazon-bedrock", modelId: "served-bedrock-sample", sources: [source.sourceId] }] } : { developer: { id: "a".repeat(64), name: "Priya", orgRole: "owner" }, org: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", name: "Acme", plan: "team" }, identities: [] } }) });

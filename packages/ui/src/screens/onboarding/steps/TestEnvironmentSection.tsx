@@ -1,6 +1,6 @@
 import { Suspense, lazy, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { TestEnvApplyAnswer, TestEnvironmentState } from "@agentx/cloud-contracts/web";
+import { normaliseAwsServiceKey, type TestEnvApplyAnswer, type TestEnvironmentState } from "@agentx/cloud-contracts/web";
 import { useTestEnvironmentApi } from "../../../api/test-environment.js";
 import { useOnboardingApi } from "../../../api/onboarding.js";
 import { ApiError } from "../../../api/errors.js";
@@ -8,6 +8,7 @@ import { useAppHost } from "../../../host.js";
 import { Button } from "../../../design/Button.js";
 import { TextArea } from "../../../design/TextArea.js";
 import { VisibleText } from "../../../design/VisibleText.js";
+import { AwsServicePicker, type AwsServicesSaveResult } from "./AwsServicePicker.js";
 import { ShareRecipePanel } from "../../admin/how-we-work/ShareRecipePanel.js";
 
 /** The second person's card, on this screen (TS-UX-1 item 1): the decision cards' own card and Approve, with the email-code sign-in. Loaded only when a card waits for this viewer. */
@@ -78,6 +79,22 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
     } finally { setBusy(undefined); }
   }
   const take = (value: TestEnvironmentState) => { client.setQueryData(key, value); };
+  /**
+   * The AWS service picker's save. The edit route replaces the whole environment and takes no digest (the contract's `TestEnvEditBodySchema` is only `{ environment }`: a server gap), so the fence is here: the proposal is read
+   * again first, and a save built on an environment that is no longer the current proposal is refused with the picks kept (`stale`). The environment is the one the picker opened on, never the newer one it did not show.
+   */
+  async function saveAwsServices(snapshot: { digest: string; environment: unknown }, dependencyId: string, services: string[]): Promise<AwsServicesSaveResult> {
+    try {
+      const current = await api.read(project);
+      if (current.proposal?.digest !== snapshot.digest) return { ok: false, stale: true, message: "This test environment changed since you opened the AWS services. Your picks are kept. Discard them to see the newer one." };
+      const answer = await api.edit(project, withAwsServices(snapshot.environment as Proposal["environment"], dependencyId, services));
+      take(answer);
+      return { ok: true };
+    } catch (caught) {
+      if (caught instanceof ApiError) return { ok: false, stale: caught.status === 409, message: caught.message };
+      return { ok: false, stale: false, message: "Couldn't save the AWS services. Try again." };
+    }
+  }
   const askLook = () => act("look", () => onboarding.startSetupDraft(project, crypto.randomUUID()), () => { void look.refetch(); });
 
   // The feature is off (the server answers "not found"), or this server answers in a shape this page can't read (an older or newer one): nothing to show.
@@ -117,6 +134,8 @@ export function TestEnvironmentSection({ project, canEditSettings, setupStatus, 
       onRefresh={() => { void act("refresh", () => api.read(project), take); }}
       onEdit={() => setEditing(JSON.stringify(proposal.environment, null, 2))}
       onSeed={(dependencyId, commands) => act("seed", () => api.setSeed(project, proposal.digest, dependencyId, commands), take)}
+      onServices={saveAwsServices}
+      onReloadServices={() => { void refetch(); }}
       signIn={error?.reauth === true ? error.message : undefined} onSignIn={() => host.signIn(host.currentPath())}
     />}
     {proposal !== undefined && editing !== undefined && <div className="rv-proposal-card">
@@ -186,15 +205,21 @@ function backingWords(dependency: Dependency): string {
  * The services the tests use, one plain row each (TS-UX-1 item 4): what it is, what starts it, the connection variables Rovara gives the tests (names only), the names it is reached by, and its test data. A seed
  * command is edited in its field; a seed FILE is shown as the file it loads.
  */
-function DependencyRows({ dependencies, seeds, busy, canEdit, onSeed }: { dependencies: readonly Dependency[]; seeds: Proposal["dependencySeeds"]; busy: boolean; canEdit: boolean; onSeed: (dependencyId: string, commands: string[]) => Promise<void> }) {
+function DependencyRows({ dependencies, seeds, busy, canEdit, onSeed, proposal, onServices, onReloadServices }: { dependencies: readonly Dependency[]; seeds: Proposal["dependencySeeds"]; busy: boolean; canEdit: boolean; onSeed: (dependencyId: string, commands: string[]) => Promise<void>; proposal: Pick<Proposal, "digest" | "environment">; onServices: (snapshot: { digest: string; environment: unknown }, dependencyId: string, services: string[]) => Promise<AwsServicesSaveResult>; onReloadServices: () => void }) {
+  // A picker is started again (its picks dropped) only by this count or by a changed saved list; a newer proposal alone leaves it as it is, and its save is then refused as stale.
+  const [restarts, setRestarts] = useState(0);
   if (dependencies.length === 0) return null;
   return <><h4>Services the tests use</h4><ul aria-label="Services the tests use">{dependencies.map((dependency) => {
     const files = dependency.seeds.flatMap((seed) => ("fixturePath" in seed ? [seed.fixturePath] : []));
     const field = seeds.find((entry) => entry.id === dependency.id);
-    return <li key={dependency.id}>
+    // A block, not the list item's flex row of the page style: the row's paragraphs, picker and seed field stack, and long names and paths wrap inside the screen (a phone at 390 px has no sideways scroll).
+    return <li key={dependency.id} style={{ display: "block", minWidth: 0, overflowWrap: "anywhere" }}>
       <p><strong><VisibleText text={dependency.name} /></strong> ({dependency.kind}), <VisibleText text={backingWords(dependency)} /></p>
       {dependency.connect.env.length > 0 && <p className="rv-proposal-meta">Connection variables the tests get: {dependency.connect.env.map((entry, at) => <span key={entry.name}>{at > 0 ? ", " : ""}<code><VisibleText text={entry.name} /></code></span>)}</p>}
       {dependency.connect.hostAliases.length > 0 && <p className="rv-proposal-meta">Reached at: {dependency.connect.hostAliases.map((alias, at) => <span key={alias}>{at > 0 ? ", " : ""}<code><VisibleText text={alias} /></code></span>)}</p>}
+      {canEdit && dependency.backing.kind === "emulated" && dependency.family.startsWith("aws:") && <details><summary>AWS services ({dependency.backing.awsServices.length})</summary>
+        <AwsServicePicker key={`${dependency.id}:${[...dependency.backing.awsServices].sort().join(",")}:${String(restarts)}`} snapshot={{ digest: proposal.digest, environment: proposal.environment }} selected={dependency.backing.awsServices}
+          required={normaliseAwsServiceKey(dependency.family.slice(4)) ?? dependency.family.slice(4)} onSave={(snapshot, services) => onServices(snapshot, dependency.id, services)} onDiscard={() => { setRestarts((n) => n + 1); onReloadServices(); }} /></details>}
       {files.length > 0 && <p className="rv-proposal-meta">Test data loaded from {files.map((file, at) => <span key={file}>{at > 0 ? ", " : ""}<code><VisibleText text={file} /></code></span>)} (SQL the test database's own client runs inside the sealed test database, as a role with no superuser rights; it cannot reach the network or your secrets)</p>}
       {field !== undefined && (canEdit ? <SeedField key={`${field.id}:${field.commands.join("\n")}`} dependency={field} busy={busy} onSave={onSeed} /> : field.commands.length > 0 && <p className="rv-proposal-meta">Test data commands: {field.commands.map((line, at) => <span key={at}>{at > 0 ? ", " : ""}<code><VisibleText text={line} /></code></span>)}</p>)}
     </li>;
@@ -259,7 +284,7 @@ function SafetyNote({ proposal }: { proposal: Proposal }) {
 function ProposalView(props: {
   proposal: Proposal; approvedRevision: number; busy: string | undefined; applied: TestEnvApplyAnswer | undefined; pendingServices: readonly PendingService[]; canEdit: boolean;
   onCheck: () => void; onApprove: () => void; onAsk: () => void; onRefresh: () => void; onEdit: () => void;
-  onSeed: (dependencyId: string, commands: string[]) => Promise<void>; signIn: string | undefined; onSignIn: () => void;
+  onSeed: (dependencyId: string, commands: string[]) => Promise<void>; onServices: (snapshot: { digest: string; environment: unknown }, dependencyId: string, services: string[]) => Promise<AwsServicesSaveResult>; onReloadServices: () => void; signIn: string | undefined; onSignIn: () => void;
 }) {
   const { proposal, busy } = props;
   const approval = proposal.approval;
@@ -280,7 +305,7 @@ function ProposalView(props: {
         {sourceOf(proposal, `repos[${String(index)}].checks[${String(at)}]`) !== undefined && <span className="rv-proposal-meta"> <VisibleText text={sourceWords(sourceOf(proposal, `repos[${String(index)}].checks[${String(at)}]`)!)} /></span>}
       </li>)}</ul>
     </div>)}
-    <DependencyRows dependencies={proposal.environment.dependencies ?? []} seeds={proposal.dependencySeeds} busy={busy === "seed"} canEdit={props.canEdit} onSeed={props.onSeed} />
+    <DependencyRows dependencies={proposal.environment.dependencies ?? []} seeds={proposal.dependencySeeds} busy={busy === "seed"} canEdit={props.canEdit} onSeed={props.onSeed} proposal={proposal} onServices={props.onServices} onReloadServices={props.onReloadServices} />
     <PendingServices services={props.pendingServices} />
     <NightlyLine nightly={proposal.environment.nightly} />
     {proposal.valueSources.length === 0 && proposal.source === "edited" && <p className="rv-proposal-meta">Edited by a maintainer, so no value has a source file.</p>}
@@ -324,6 +349,11 @@ function ProposalView(props: {
   </div>;
 }
 
+/** The environment with one emulated dependency's AWS services replaced (the rest is left as it was); the server checks the whole environment again when it is saved as an edit. */
+function withAwsServices(environment: Proposal["environment"], dependencyId: string, services: readonly string[]): Proposal["environment"] {
+  return { ...environment, dependencies: (environment.dependencies ?? []).map((dependency) => (dependency.id === dependencyId && dependency.backing.kind === "emulated" ? { ...dependency, backing: { ...dependency.backing, awsServices: [...services] } } : dependency)) };
+}
+
 /** The lines of the field as commands: trimmed, with the empty ones left out. */
 const seedLinesOf = (text: string): string[] => text.split("\n").map((line) => line.trim()).filter((line) => line !== "");
 
@@ -331,7 +361,7 @@ const seedLinesOf = (text: string): string[] => text.split("\n").map((line) => l
 function SeedField({ dependency, busy, onSave }: { dependency: Proposal["dependencySeeds"][number]; busy: boolean; onSave: (dependencyId: string, commands: string[]) => Promise<void> }) {
   const [text, setText] = useState(dependency.commands.join("\n"));
   const changed = seedLinesOf(text).join("\n") !== dependency.commands.join("\n");
-  return <div className="rv-proposal-card">
+  return <div className="rv-proposal-card" style={{ maxWidth: "100%", boxSizing: "border-box" }}>
     <TextArea label={`Fill ${dependency.name} with test data`} hint="The commands that fill the test database, one per line, in the order they run, for example npm run seed. They run against the test database inside the test environment, never in setup. Leave it empty if the tests need no data." value={text} rows={Math.min(8, Math.max(2, dependency.commands.length + 1))} onChange={(event) => setText(event.target.value)} />
     <Button busy={busy} disabled={!changed} onClick={() => { void onSave(dependency.id, seedLinesOf(text)); }}>Save the test data commands</Button>
   </div>;

@@ -9,7 +9,7 @@ import { FIXTURE_SESSION } from "../web/support/fixtures.js";
 // On with three: a menu of companies; switching from Acme to Beta Ltd opens Beta's Home with nothing of Acme's on the page; a link for another company asks first; the phone's Menu has the same list.
 // Set ROVARA_COMPANY_SHOTS to a folder for the pictures.
 const shots = process.env.ROVARA_COMPANY_SHOTS ?? ".test-build/web-e2e/companies";
-const LOOKS = [{ name: "look-off", store: {} as Record<string, string> }, { name: "look-v2", store: { "rovara.look": "v2" } as Record<string, string> }] as const;
+const LOOKS = [{ name: "look-v2", store: {} as Record<string, string> }] as const;
 type Fixtures = Parameters<Parameters<typeof test>[2]>[0];
 async function enter(page: Page, { context, request, baseURL }: Pick<Fixtures, "context" | "request" | "baseURL">, store: Record<string, string>, width: number) {
  await request.post("/__mock/scenario", { data: { name: "home" } });
@@ -40,9 +40,9 @@ for (const width of [1280, 390] as const) {
   await evidenceShot(page, { path: `${shots}/on-one-company-${String(width)}.png`, fullPage: false });
  });
 }
-for (const look of LOOKS) for (const nav of ["old", "new"] as const) {
+for (const look of LOOKS) for (const nav of ["new"] as const) {
  test(`on, three companies, desktop, ${look.name}, ${nav} navigation: switch from Acme to Beta Ltd, Beta's Home shows and nothing of Acme's`, async ({ page, context, request, baseURL }) => {
-  await enter(page, { context, request, baseURL }, { ...look.store, "rovara.companies": "v2", ...(nav === "new" ? { "rovara.nav": "v2" } : {}), ["project-slack:v1:" + ORG_A + ":x"]: "{}" }, 1280);
+  await enter(page, { context, request, baseURL }, { ...look.store, "rovara.companies": "v2", ["project-slack:v1:" + ORG_A + ":x"]: "{}" }, 1280);
   const mock = await mockCompanies(page);
   await page.goto("/app");await homeReady(page, "Acme");
   await expect(page.locator("aside").getByRole("link", { name: /acme-payments/u })).toBeVisible();
@@ -118,9 +118,9 @@ test("a refused switch shows the server's sentence word for word and changes not
  await evidenceShot(page, { path: `${shots}/refused-1280.png`, fullPage: false });await checkA11y(page, { theme: "light" });
  await page.keyboard.press("Escape");await expect(page.getByRole("dialog")).toHaveCount(0);await expect(page.getByRole("button", { name: /Acme.*switch company/u })).toBeFocused();await homeReady(page, "Acme");
 });
-for (const width of [390, 360] as const) for (const nav of ["old", "new"] as const) {
+for (const width of [390, 360] as const) for (const nav of ["new"] as const) {
  test(`phone ${String(width)}, ${nav} navigation: the top Menu lists the companies, 44px rows, no sideways scroll, and a switch works`, async ({ page, context, request, baseURL }) => {
-  await enter(page, { context, request, baseURL }, { "rovara.companies": "v2", ...(nav === "new" ? { "rovara.nav": "v2" } : {}) }, width);
+  await enter(page, { context, request, baseURL }, { "rovara.companies": "v2" }, width);
   const mock = await mockCompanies(page);
   await page.goto("/app");await homeReady(page, "Acme");expect(await noSidewaysScroll(page)).toBe(true);
   await page.getByRole("button", { name: "Open workspace menu" }).click();
@@ -140,9 +140,9 @@ test("phone: a link for another company asks first, with 44px buttons and no sid
  expect(await page.locator(".rv-company-gate-actions button").evaluateAll(nodes => nodes.filter(node => node.getBoundingClientRect().height < 44).length)).toBe(0);
  expect(await noSidewaysScroll(page)).toBe(true);await evidenceShot(page, { path: `${shots}/link-interstitial-390.png`, fullPage: false });await checkA11y(page, { theme: "light" });await checkA11y(page, { theme: "dark" });
 });
-for (const look of LOOKS) for (const nav of ["old", "new"] as const) for (const theme of ["light", "dark"] as const) {
+for (const look of LOOKS) for (const nav of ["new"] as const) for (const theme of ["light", "dark"] as const) {
  test(`axe: the header menu open, ${look.name}, ${nav} navigation, ${theme}`, async ({ page, context, request, baseURL }) => {
-  await enter(page, { context, request, baseURL }, { ...look.store, "rovara.companies": "v2", "rovara.theme": theme, ...(nav === "new" ? { "rovara.nav": "v2" } : {}) }, 1280);
+  await enter(page, { context, request, baseURL }, { ...look.store, "rovara.companies": "v2", "rovara.theme": theme }, 1280);
   await mockCompanies(page);await page.goto("/app");await homeReady(page, "Acme");
   await page.getByRole("button", { name: /switch company/u }).click();await expect(page.getByRole("menu")).toBeVisible();
   await checkA11y(page, { theme });

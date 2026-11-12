@@ -12,14 +12,10 @@ import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
 import { SESSION_FIXTURE_ID } from "./support/session-fixture.js";
-import { forceTaskPageFlags } from "../../packages/ui/src/screens/session/task-page-flags.js";
-import { afterEach } from "vitest";
-afterEach(() => forceTaskPageFlags(undefined));
 
 /** The session as the server sends it: the task carries `modelFallbacks` and the whole fixture goes through the strict task and session view schemas. */
 const withFallbacks = (modelFallbacks?: unknown) => fixture({}, modelFallbacks === undefined ? {} : { modelFallbacks });
-function setup(value: unknown, theme: "light" | "dark" = "light", plain = false) {
- forceTaskPageFlags({ plainNotices: plain });
+function setup(value: unknown, theme: "light" | "dark" = "light") {
  const session = SessionViewReaderSchema.parse(value), f = fakeHost();
  const router = createMemoryRouter([{ path: "*", element: h("main", {}, h("h1", {}, session.title), h(Workspace, { session, onComment: () => undefined })) }], { initialEntries: ["/app/sessions/" + SESSION_FIXTURE_ID] });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(RouterProvider, { router }) }), { theme });
@@ -82,7 +78,7 @@ it("shows hostile model text as plain text: no markup", async () => {
 const opus = "amazon-bedrock/us.anthropic.claude-opus-5-5", haiku = "amazon-bedrock/us.anthropic.claude-haiku-4-5";
 const note = { stage: "plan_check", used: haiku, wanted: opus, reasonCode: "MODEL_NOT_VERIFIED" };
 it("shows three repeated notices as one plain line with no model id visible, and the ids behind Details", async () => {
- const f = setup(withFallbacks([note, note, note]), "light", true);
+ const f = setup(withFallbacks([note, note, note]), "light");
  const region = await screen.findByRole("region", { name: "Model changes" });
  const line = region.querySelector(".rv-model-fallback-line")!;
  expect(line.textContent).toBe("Used a different model for plan check: Opus unavailable.");
@@ -98,7 +94,7 @@ it("shows three repeated notices as one plain line with no model id visible, and
  f.close();
 });
 it("opens Details to the raw ids on a click", async () => {
- const f = setup(withFallbacks([note]), "dark", true);
+ const f = setup(withFallbacks([note]), "dark");
  const summary = await screen.findByText("Details");
  summary.click();
  expect((summary.closest("details") as HTMLDetailsElement).open).toBe(true);
@@ -106,7 +102,7 @@ it("opens Details to the raw ids on a click", async () => {
 });
 it("keeps hostile model text inert in the details", async () => {
  const hostile = "x<img src=x onerror=window.__pwned=1>y";
- const f = setup(withFallbacks([{ stage: "build", used: hostile, wanted: "w" + hostile, reasonCode: "MODEL_STALE" }]), "light", true);
+ const f = setup(withFallbacks([{ stage: "build", used: hostile, wanted: "w" + hostile, reasonCode: "MODEL_STALE" }]), "light");
  const region = await screen.findByRole("region", { name: "Model changes" });
  expect(region.querySelector("img,b,script")).toBeNull();
  expect(region.querySelector("details")!.textContent).toContain("Used " + hostile);

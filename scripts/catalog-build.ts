@@ -22,7 +22,7 @@
 //      present and hashes to its digest. The platforms must be exactly the entry's (linux/arm64) BEFORE anything is pushed;
 //   b. the layout is pushed by that digest into `rovara-catalog/<env>/svc/<name>` (skopeo copy --all --preserve-digests), the digest the registry then serves must equal the artifact's, and the platforms it serves must be the layout's;
 //   c. from there the path is the normal one: an SBOM and a scan per platform, a signature with Rovara's release KMS key. The artifact's own SBOMs and image scans are not trusted and not used;
-//   d. EXCEPT the scan of the Java libraries compiled into the native binary (`scan-java-arm64.json`, grype on the CycloneDX dependency list), because the image scan cannot see inside the binary. It is read before anything is pushed:
+//   d. EXCEPT the scan of the libraries compiled into the binaries (`javaScan`+`javaSbom`: grype on a CycloneDX list of the Java libraries; or the generic `libraryScan`+`librarySbom`: grype on syft's SPDX or CycloneDX SBOM, any language), because the registry's basic scan sees OS packages only. It is read before anything is pushed:
 //      missing, unparseable or without a matches list refuses; any critical finding refuses; its high count is added to the entry's; its SHA-256 and counts are in the signed image statement and the file is kept as evidence/<id>/java-scan.json.
 // A Rovara-built source for an entry that is not `emulated` is refused.
 //
@@ -61,7 +61,22 @@ export const SourceRefSchema = z
  * directory. A path may not hold `:` (skopeo's `oci:<dir>:<reference>` syntax), a newline or a NUL.
  */
 const BuiltPathSchema = z.string().min(1).max(1024).regex(/^[^:\n\r\0]+$/u, "a path without ':' or line breaks");
-export const BuiltSourceSchema = z.object({ kind: z.literal("rovara-built"), layout: BuiltPathSchema, digestFile: BuiltPathSchema, javaScan: BuiltPathSchema, javaSbom: BuiltPathSchema }).strict();
+// The embedded-library scan is ONE of two pairs, each a list of the libraries inside the binaries and a grype report over that list; a source with neither pair, a half pair or both pairs is refused, so a scan is never left out by accident.
+//   - `javaScan` + `javaSbom`: the original form (the Java libraries compiled into the native binary; a CycloneDX list). Unchanged.
+//   - `libraryScan` + `librarySbom`: the generic form, for any language (the AWS Emulator engine of catalog revision 4: a Go front process and a Rust engine). `librarySbom` is syft's SBOM of the image or binaries (SPDX JSON or CycloneDX
+//     JSON); `libraryScan` is `grype sbom:<that file> -o json`. Same checks and the same gates as the Java pair: critical refuses, highs add to the entry's.
+// Neither form can be waived: the registry's ECR scan is basic scanning (OS packages only) and the image SBOM is only hashed, so this is the only vulnerability scan of the libraries inside the binaries.
+// `provenance` (optional): when the image was built in the public CI-only copy (rovaracli/rovara-local-aws, whose `snapshot/<12 hex>` branches are each a parentless snapshot of the private branch rovara/front), the two commit ids that link the build to the source:
+// the public snapshot sha (the run's head sha, checked by scripts/verify-local-aws-run.sh) and the private commit it was cut from (checked by scripts/verify-local-aws-snapshot.sh). Kept as evidence/<id>/provenance.json.
+export const BuiltProvenanceSchema = z.object({ privateSourceSha: z.string().regex(/^[0-9a-f]{40}$/u), publicSnapshotSha: z.string().regex(/^[0-9a-f]{40}$/u) }).strict();
+export const BuiltSourceSchema = z.object({ kind: z.literal("rovara-built"), layout: BuiltPathSchema, digestFile: BuiltPathSchema, javaScan: BuiltPathSchema.optional(), javaSbom: BuiltPathSchema.optional(), libraryScan: BuiltPathSchema.optional(), librarySbom: BuiltPathSchema.optional(), provenance: BuiltProvenanceSchema.optional() }).strict()
+  .refine((source) => {
+    const java = [source.javaScan, source.javaSbom];
+    const library = [source.libraryScan, source.librarySbom];
+    const whole = (pair: Array<string | undefined>): boolean => pair.every((part) => part !== undefined);
+    const empty = (pair: Array<string | undefined>): boolean => pair.every((part) => part === undefined);
+    return (whole(java) && empty(library)) || (empty(java) && whole(library));
+  }, "a Rovara-built source names exactly one embedded-library scan: both javaScan and javaSbom, or both libraryScan and librarySbom");
 export type BuiltSource = z.infer<typeof BuiltSourceSchema>;
 export const SourcesFileSchema = z.object({ schemaVersion: z.literal(1), sources: z.record(CatalogIdSchema, z.union([SourceRefSchema, BuiltSourceSchema])) }).strict();
 export type SourcesFile = z.infer<typeof SourcesFileSchema>;
@@ -97,9 +112,15 @@ export interface PlatformTarget {
   readonly digest: string;
 }
 /** What `readBuiltSource` found in a Rovara-built layout: the index digest (hex), the platforms the index names with their own manifest digests, and the layout's absolute path. */
+/** A grype report over a list of the libraries inside the binaries, bound to that list: bytes and SHA-256 of both files and the counts. */
+export interface EmbeddedScan { readonly bytes: Buffer; readonly sha256: string; readonly sbomBytes: Buffer; readonly sbomSha256: string; readonly criticalOpen: number; readonly highOpen: number }
 export interface BuiltLayout {
   /** The scan of the Java libraries compiled into the native binary (the artifact's grype result), read here because the image scan cannot see them. `bytes` are kept as evidence; `sha256` goes in the signed statement. */
-  readonly javaScan: { readonly bytes: Buffer; readonly sha256: string; readonly sbomBytes: Buffer; readonly sbomSha256: string; readonly criticalOpen: number; readonly highOpen: number };
+  readonly javaScan?: EmbeddedScan;
+  /** The generic form of the same scan (`libraryScan` + `librarySbom`). Exactly one of the two is present. */
+  readonly libraryScan?: EmbeddedScan;
+  /** The source's `provenance`, passed through to the evidence. */
+  readonly provenance?: z.infer<typeof BuiltProvenanceSchema>;
   readonly digest: string;
   readonly children: readonly MirroredChild[];
   readonly layoutPath: string;
@@ -278,8 +299,9 @@ export async function buildPinnedCatalog(input: { catalog: unknown; sources: unk
           refuse(entry.id, "platforms_mismatch", `the layout: ${builtProblem}`);
           continue;
         }
-        if (built.javaScan.criticalOpen !== 0) {
-          refuse(entry.id, "scan_critical", `java dependencies: ${String(built.javaScan.criticalOpen)} critical finding${built.javaScan.criticalOpen === 1 ? "" : "s"} open in the artifact's scan`);
+        const embeddedCritical = (built.javaScan ?? built.libraryScan)?.criticalOpen ?? 0;
+        if (embeddedCritical !== 0) {
+          refuse(entry.id, "scan_critical", `embedded libraries: ${String(embeddedCritical)} critical finding${embeddedCritical === 1 ? "" : "s"} open in the artifact's scan`);
           continue;
         }
         expectedDigest = built.digest;
@@ -344,16 +366,18 @@ export async function buildPinnedCatalog(input: { catalog: unknown; sources: unk
       const sbomRef = combinedSbomRef(children);
       const oldestScan = children.map((child) => child.scannedAt).sort((a, b) => Date.parse(a) - Date.parse(b))[0] as string;
       // A Rovara-built image's Java libraries are scanned apart (the image scan cannot see inside the binary): those highs add to the image's.
-      const highOpen = Math.max(...highCounts) + (built?.javaScan.highOpen ?? 0);
+      const embedded = built === undefined ? undefined : built.javaScan ?? built.libraryScan;
+      const highOpen = Math.max(...highCounts) + (embedded?.highOpen ?? 0);
       // 3. the image's signed statement: the index digest and every platform's child digest, SBOM hash and scan time, and for a Rovara-built image the hash and counts of the Java dependency scan.
-      const statement = { id: entry.id, repository: entry.image.repository, digest: expectedDigest, sbomRef, scannedAt: oldestScan, children, ...(built === undefined ? {} : { javaScan: { sha256: built.javaScan.sha256, sbomSha256: built.javaScan.sbomSha256, criticalOpen: 0 as const, highOpen: built.javaScan.highOpen } }) };
+      // Both forms of the embedded-library scan are recorded in the statement's `javaScan` field (owned by Code's contracts, which cannot say which form it was; the evidence file names do).
+      const statement = { id: entry.id, repository: entry.image.repository, digest: expectedDigest, sbomRef, scannedAt: oldestScan, children, ...(embedded === undefined ? {} : { javaScan: { sha256: embedded.sha256, sbomSha256: embedded.sbomSha256, criticalOpen: 0 as const, highOpen: embedded.highOpen } }) };
       const signed: SignedImageStatement = { statement, keyId, signature: (await ports.signer.sign(imageStatementMessage(statement))).toString("base64") };
       const own = verifyImageStatement({ signed, trustedKeys: [ports.signer.publicKeyPem] });
       if (!own.ok) {
         refuse(entry.id, "unsigned", `the signer's signature does not verify against its own public key: ${own.reason}`);
         continue;
       }
-      evidence.push(...platformEvidence, ...(built === undefined ? [] : [{ path: `${folder}/java-scan.json`, bytes: built.javaScan.bytes }, { path: `${folder}/java-sbom.json`, bytes: built.javaScan.sbomBytes }]), { path: `${folder}/statement.json`, bytes: jsonBytes(signed) });
+      evidence.push(...platformEvidence, ...(embedded === undefined ? [] : [{ path: `${folder}/${built?.javaScan === undefined ? "library" : "java"}-scan.json`, bytes: embedded.bytes }, { path: `${folder}/${built?.javaScan === undefined ? "library" : "java"}-sbom.json`, bytes: embedded.sbomBytes }]), ...(built?.provenance === undefined ? [] : [{ path: `${folder}/provenance.json`, bytes: jsonBytes({ repository: "rovaracli/rovara-local-aws", ...built.provenance }) }]), { path: `${folder}/statement.json`, bytes: jsonBytes(signed) });
       entries.push({ ...entry, image: { ...entry.image, digest: expectedDigest }, sbomRef, scan: { scannedAt: oldestScan, criticalOpen: 0, highOpen } });
     } catch (error) {
       refuse(entry.id, "port_failed", error instanceof Error ? error.message.slice(0, 200) : "a step failed");
@@ -404,7 +428,7 @@ export async function writeCatalogBuild(output: CatalogBuildOutput, where: { cat
   assertOutsideRepo(evidenceDir);
   // Evidence paths were made from checked ids; every one is re-checked BEFORE anything is written, so none leaves the evidence folder and a bad one leaves no partial output.
   for (const item of output.evidence) {
-    if (!/^evidence\/[a-z0-9][a-z0-9-]*\/(?:statement\.json|java-scan\.json|java-sbom\.json|linux-(?:arm64|amd64)\/(?:sbom|scan)\.json)$/u.test(item.path)) throw new Error(`unexpected evidence path ${item.path}`);
+    if (!/^evidence\/[a-z0-9][a-z0-9-]*\/(?:statement\.json|provenance\.json|(?:java|library)-scan\.json|(?:java|library)-sbom\.json|linux-(?:arm64|amd64)\/(?:sbom|scan)\.json)$/u.test(item.path)) throw new Error(`unexpected evidence path ${item.path}`);
   }
   for (const item of output.evidence) await writeAtomic(join(evidenceDir, item.path.slice(`${EVIDENCE_DIR}/`.length)), item.bytes);
   await writeAtomic(resolve(where.prepullFile), output.prepullBytes);
@@ -487,15 +511,35 @@ const OCI_INDEX_TYPES: readonly string[] = ["application/vnd.oci.image.index.v1+
 /** The most an index or a platform manifest read from a layout may be (they are a few hundred bytes; a layer is never read here). */
 const BUILT_MANIFEST_MAX_BYTES = 1024 * 1024;
 
-/** The components of a CycloneDX list, nested ones included: their purls and their `name`/`group:name` spellings with the version. */
-function cycloneDxComponents(bytes: Buffer): { purls: Set<string>; names: Set<string>; count: number } {
-  let bom: { bomFormat?: unknown; components?: unknown } | null;
+/** What the two forms of the embedded-library scan call their files in an operator's error message. */
+interface ScanLabels { readonly scan: string; readonly list: string; readonly formats: "cyclonedx" | "cyclonedx-or-spdx" }
+const JAVA_LABELS: ScanLabels = { scan: "the Java dependency scan file", list: "the Java dependency list", formats: "cyclonedx" };
+const LIBRARY_LABELS: ScanLabels = { scan: "the library scan file", list: "the library SBOM", formats: "cyclonedx-or-spdx" };
+
+/**
+ * The components of a CycloneDX list (nested ones included), or, for the generic library form, of an SPDX JSON document (syft's `packages`, with the purls of their `externalRefs`): their purls and their `name`/`group:name` spellings with the version.
+ */
+function sbomComponents(bytes: Buffer, labels: ScanLabels = JAVA_LABELS): { purls: Set<string>; names: Set<string>; count: number } {
+  let bom: { bomFormat?: unknown; components?: unknown; spdxVersion?: unknown; packages?: unknown } | null;
   try {
     bom = JSON.parse(bytes.toString("utf8")) as typeof bom;
   } catch {
-    throw new Error("the Java dependency list is not JSON");
+    throw new Error(`${labels.list} is not JSON`);
   }
-  if (bom === null || typeof bom !== "object" || bom.bomFormat !== "CycloneDX" || !Array.isArray(bom.components)) throw new Error("the Java dependency list is not a CycloneDX document with components");
+  if (labels.formats === "cyclonedx-or-spdx" && bom !== null && typeof bom === "object" && typeof bom.spdxVersion === "string" && bom.spdxVersion.startsWith("SPDX-") && Array.isArray(bom.packages)) {
+    const purls = new Set<string>();
+    const names = new Set<string>();
+    let count = 0;
+    for (const item of bom.packages as Array<{ name?: unknown; versionInfo?: unknown; externalRefs?: unknown } | null>) {
+      if (item === null || typeof item !== "object") continue;
+      count += 1;
+      if (typeof item.name === "string" && typeof item.versionInfo === "string") names.add(`${item.name}@${item.versionInfo}`);
+      if (Array.isArray(item.externalRefs)) for (const ref of item.externalRefs as Array<{ referenceType?: unknown; referenceLocator?: unknown } | null>) if (ref?.referenceType === "purl" && typeof ref.referenceLocator === "string") purls.add(ref.referenceLocator);
+    }
+    if (count === 0) throw new Error(`${labels.list} has no packages`);
+    return { purls, names, count };
+  }
+  if (bom === null || typeof bom !== "object" || bom.bomFormat !== "CycloneDX" || !Array.isArray(bom.components)) throw new Error(labels.formats === "cyclonedx" ? `${labels.list} is not a CycloneDX document with components` : `${labels.list} is not an SPDX JSON or CycloneDX document with packages or components`);
   const purls = new Set<string>();
   const names = new Set<string>();
   let count = 0;
@@ -513,7 +557,7 @@ function cycloneDxComponents(bytes: Buffer): { purls: Set<string>; names: Set<st
     }
   };
   walk(bom.components);
-  if (count === 0) throw new Error("the Java dependency list has no components");
+  if (count === 0) throw new Error(`${labels.list} has no components`);
   return { purls, names, count };
 }
 
@@ -524,31 +568,31 @@ function cycloneDxComponents(bytes: Buffer): { purls: Set<string>; names: Set<st
  * LIMIT: grype's JSON does not carry a hash of the list it scanned, and a clean result (no findings) names nothing to bind to. For a clean result the only proof that grype ran on THIS list is the workflow's run log; the operator compares
  * the printed `descriptor` and `source` (see the operator commands) with the run's "Scan the Java libraries" step, as for the digest file. The statement records both files' SHA-256.
  */
-async function readJavaScan(scanFile: string, sbomFile: string): Promise<BuiltLayout["javaScan"]> {
+async function readJavaScan(scanFile: string, sbomFile: string, labels: ScanLabels = JAVA_LABELS): Promise<EmbeddedScan> {
   const load = async (file: string, what: string): Promise<Buffer> => {
     const info = await stat(file).catch(() => undefined);
     if (info === undefined || !info.isFile()) throw new Error(`${what} is missing`);
     if (info.size > SBOM_MAX_BYTES) throw new Error(`${what} is too large`);
     return readFile(file);
   };
-  const bytes = await load(scanFile, "the Java dependency scan file");
-  const sbomBytes = await load(sbomFile, "the Java dependency list (CycloneDX) file");
-  const list = cycloneDxComponents(sbomBytes);
+  const bytes = await load(scanFile, labels.scan);
+  const sbomBytes = await load(sbomFile, labels === JAVA_LABELS ? "the Java dependency list (CycloneDX) file" : labels.list);
+  const list = sbomComponents(sbomBytes, labels);
   let result: { matches?: unknown; descriptor?: { name?: unknown } | null } | null;
   try {
     result = JSON.parse(bytes.toString("utf8")) as typeof result;
   } catch {
-    throw new Error("the Java dependency scan file is not JSON");
+    throw new Error(`${labels.scan} is not JSON`);
   }
-  if (result === null || typeof result !== "object" || result.descriptor?.name !== "grype") throw new Error("the Java dependency scan file is not a grype result (descriptor.name)");
-  if (!Array.isArray(result.matches)) throw new Error("the Java dependency scan file has no matches list (not a grype result)");
+  if (result === null || typeof result !== "object" || result.descriptor?.name !== "grype") throw new Error(`${labels.scan} is not a grype result (descriptor.name)`);
+  if (!Array.isArray(result.matches)) throw new Error(`${labels.scan} has no matches list (not a grype result)`);
   let criticalOpen = 0;
   let highOpen = 0;
   for (const match of result.matches as Array<{ vulnerability?: { severity?: unknown }; artifact?: { name?: unknown; version?: unknown; purl?: unknown } } | null>) {
     const artifact = match?.artifact;
     const named = typeof artifact?.purl === "string" && list.purls.has(artifact.purl)
       || typeof artifact?.name === "string" && typeof artifact.version === "string" && list.names.has(`${artifact.name}@${artifact.version}`);
-    if (!named) throw new Error("a finding in the Java dependency scan names a package that is not in the CycloneDX list that came with it");
+    if (!named) throw new Error(labels === JAVA_LABELS ? "a finding in the Java dependency scan names a package that is not in the CycloneDX list that came with it" : "a finding in the library scan names a package that is not in the SBOM that came with it");
     const raw = match?.vulnerability?.severity;
     const severity = typeof raw === "string" ? raw.toLowerCase() : undefined;
     if (severity === "high") highOpen += 1;
@@ -580,11 +624,13 @@ export function readBuiltSource(input: { baseDir: string }): NonNullable<Catalog
     } catch { /* falls through */ }
     throw new Error(`${what} is not a JSON object`);
   };
-  return async ({ layout, digestFile, javaScan, javaSbom }) => {
+  return async ({ layout, digestFile, javaScan, javaSbom, libraryScan, librarySbom, provenance }) => {
     const layoutPath = place(layout);
     // skopeo reads `oci:<path>:<reference>`: the RESOLVED path (a base directory can bring a colon) may not hold one, or a line break.
     if (/[:\n\r\0]/u.test(layoutPath)) throw new Error("the layout path (resolved) holds ':' or a line break; move the artifact to a plain folder");
-    const javaScanBytes = await readJavaScan(place(javaScan), place(javaSbom));
+    const javaScanBytes = javaScan !== undefined && javaSbom !== undefined ? await readJavaScan(place(javaScan), place(javaSbom)) : undefined;
+    const libraryScanBytes = libraryScan !== undefined && librarySbom !== undefined ? await readJavaScan(place(libraryScan), place(librarySbom), LIBRARY_LABELS) : undefined;
+    if ((javaScanBytes === undefined) === (libraryScanBytes === undefined)) throw new Error("the source must name exactly one embedded-library scan (javaScan and javaSbom, or libraryScan and librarySbom)");
     const digestText = (await readSmall(place(digestFile), "the digest file")).toString("utf8").trim();
     const wanted = /^sha256:([a-f0-9]{64})$/u.exec(digestText)?.[1];
     if (wanted === undefined) throw new Error("the digest file is not one sha256:<64 hex> digest");
@@ -614,7 +660,7 @@ export function readBuiltSource(input: { baseDir: string }): NonNullable<Catalog
       await blob(hex, `the ${os}/${architecture} manifest`);
       children.push({ platform: `${os}/${architecture}`, digest: hex });
     }
-    return { digest: wanted, children, layoutPath, javaScan: javaScanBytes };
+    return { digest: wanted, children, layoutPath, ...(javaScanBytes === undefined ? {} : { javaScan: javaScanBytes }), ...(libraryScanBytes === undefined ? {} : { libraryScan: libraryScanBytes }), ...(provenance === undefined ? {} : { provenance }) };
   };
 }
 
@@ -687,7 +733,7 @@ function usage(): string {
 Run by an operator with the pipeline's own AWS credentials. It mirrors each catalog image by digest into <host>/rovara-catalog/<environment>/..., records an SBOM and a scan for EACH PLATFORM, signs, and writes the
 pinned catalog.json, catalog.sig.json and the worker pre-pull list into the repository, and the per-image evidence (SBOMs, scans, signed statements) into --evidence-dir, which is required and must be outside the repository. Nothing is written if any image is refused (a platform with a critical finding refuses the image). Needs skopeo and syft on PATH.
 The sources file maps each catalog id to a digest reference (host/path@sha256:...), or, for the emulator only, to a Rovara-built layout:
-{ "kind": "rovara-built", "layout": "<dir>/oci", "digestFile": "<dir>/index.digest", "javaScan": "<dir>/scan-java-arm64.json", "javaSbom": "<dir>/sbom-arm64/java-dependencies.cdx.json" } (the workflow artifact image-result, downloaded and unpacked; relative paths are read from the sources file's directory).
+{ "kind": "rovara-built", "layout": "<dir>/oci", "digestFile": "<dir>/index.digest", "javaScan": "<dir>/scan-java-arm64.json", "javaSbom": "<dir>/sbom-arm64/java-dependencies.cdx.json" } (the workflow artifact image-result, downloaded and unpacked; relative paths are read from the sources file's directory). javaScan and javaSbom are grype's scan of the Java libraries inside the binary and the CycloneDX list it scanned. An image from image/Containerfile.engine (AWS Emulator engine: Go and Rust) gives "libraryScan" and "librarySbom" instead (grype's report over syft's SPDX or CycloneDX SBOM). Exactly one pair; neither can be left out.
 The layout is verified on disk, pushed by its digest, and the digest the registry serves must be the artifact's; the SBOM, the scan and the signature are this script's. Every source must be a Rovara-built multi-platform INDEX holding exactly the platforms the catalog lists for that id (a
 single-platform image only for an id that lists that one platform); an index with another platform set is refused.
 --entries pins only the listed catalog ids (comma-separated, for example postgres@16): the sources file must hold exactly those ids, and every other entry is carried over as it is (never pinned stays unpinned, and nothing starts it).
