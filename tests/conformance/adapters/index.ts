@@ -20,6 +20,7 @@ import { cloudMetering } from "./metering-cloud.js";
 import { cachedSecretsManagerModelKeyStore, secretsManagerModelKeyStore } from "./model-key-store-secrets-manager.js";
 import { jiraTrackerAdapter } from "./tracker-jira.js";
 import { linearTrackerAdapter } from "./tracker-linear.js";
+import { ec2SessionWorkerMachines } from "./worker-machines-ec2-sessions.js";
 
 export const CLOUD_ADAPTERS: readonly CloudAdapterRegistration[] = [
   secretsManagerModelKeyStore,
@@ -32,4 +33,6 @@ export const CLOUD_ADAPTERS: readonly CloudAdapterRegistration[] = [
   cloudIdentity,
   // Lane A9 cloud/hosts-trackers
   githubAppCodeHost, githubActionsCheckRunnerAdapter, codeBuildCheckRunnerAdapter, linearTrackerAdapter, jiraTrackerAdapter,
+  // Lane A4 cloud/ec2-machines
+  ec2SessionWorkerMachines,
 ];
