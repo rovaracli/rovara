@@ -606,11 +606,12 @@ async function runTask(
       if (invocation.payload.evidenceCapture === true && !stop.signal.aborted && (!freshRound || reportRoot !== undefined)) {
         // Test services: the rounds' usage record rides in the raw file (the broker labels it; nothing of it was reaching the evidence). Read before the services stop.
         const servicesRecord = await testServices?.usageRecord().catch(() => undefined);
-        // The scanner baseline runs on the original code in the WORKING sandbox, after the fresh round: whatever the agent left running is stopped again first, so nothing can write the baseline the findings are compared with. A sandbox that cannot be
-        // quieted gets no baseline (no baseline, no finding is called new). The scanner itself is the project's command over the project's files, as it always was.
+        // The scanner baseline runs on the original code in the WORKING sandbox, after the fresh round. Whatever the agent left running is stopped again first (the sandbox is restarted), and a sandbox that cannot be quieted gets no baseline (no
+        // baseline, no finding is called new). The scanner is still the project's command over the project's files, some of which the agent can write (a virtual environment, an ignored folder): the baseline is as trustworthy as that, as it always was.
+        // The one agent-writable place a program loads code from by itself, the Python user base, is switched off for it (PYTHONNOUSERSITE=1), so a planted `.pth` file cannot write the baseline.
         const baselineAllowed = !freshRound || await quiesceWorkingPlace(stop.signal).then(() => true, () => false);
         await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, ...(reportRoot === undefined ? {} : { reportRoot }), plan, entries: round.entries, repositories, candidateBefore, roundStartedAtMs: roundStarted, selection: testEnv?.selection, ...(servicesRecord === undefined ? {} : { testServices: servicesRecord }), coveragePaths: invocation.payload.testEnvironment?.checks.map((check) => check.coveragePath),
-          ...(baselineAllowed ? { baseline: { runners: originalCodeRunners, signal: stop.signal, budgetMs: roundBudgetMs - roundSpentMs, ...(dependencies.testProofOriginalCode === undefined ? {} : { originalCode: dependencies.testProofOriginalCode }) } } : {}) });
+          ...(baselineAllowed ? { baseline: { runners: originalCodeRunners, signal: stop.signal, ...(freshRound ? { noUserSite: true } : {}), budgetMs: roundBudgetMs - roundSpentMs, ...(dependencies.testProofOriginalCode === undefined ? {} : { originalCode: dependencies.testProofOriginalCode }) } } : {}) });
       }
       // The export is not needed any more: removed now (and again, idempotently, when the run ends).
       await chosenRound.evidence?.releaseEvidence();

@@ -37,7 +37,8 @@ export const FRESH_NOT_RUN_SENTENCES: Readonly<Record<FreshNotRunReason, string>
 
 /** Thrown by the quiesce step with the reason the round is "not run" for. */
 export class FreshQuiesceError extends Error {
-  constructor(readonly reason: "quiesce_failed" | "ptrace_unrestricted", detail: string = reason) { super(detail); }
+  /** The message is the reason's fixed sentence, so a caller that reports `error.message` (the verification extension does) says it in plain words. */
+  constructor(readonly reason: "quiesce_failed" | "ptrace_unrestricted", detail: string = FRESH_NOT_RUN_SENTENCES[reason]) { super(detail); }
 }
 
 /** Marks a container as a fresh check sandbox (beside the task's own labels, which the leftover sweep at worker start uses to remove it). */

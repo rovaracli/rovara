@@ -306,6 +306,18 @@ describe("the baseline run on the original code", () => {
   });
   const run = (over: Record<string, unknown> = {}) => ({ rootPath: root, runners: runnersWriting("baseline sarif"), signal: new AbortController().signal, budgetMs: 10 * 60_000, repositories: [{ directory: root, commit: "a".repeat(40) }], ...over });
 
+  it("noUserSite: the baseline command runs with PYTHONNOUSERSITE=1 (a .pth file the agent planted in the Python user base cannot run), over its own env; without the flag the command is untouched", async () => {
+    const seen: Array<Record<string, string> | undefined> = [];
+    const watching: CheckRunners = { async runProjectCommand(command) { seen.push(command.env); await writeFile(join(root, "bandit.sarif"), "baseline sarif"); return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }, async runAgentCommand() { throw new Error("not used"); } };
+    const planted = { ...scanner, env: { KEEP: "1", PYTHONNOUSERSITE: "0" } };
+    await runBaselineScans([{ ...(await scan()), command: planted }], run({ runners: watching, originalCode: passthrough([]), noUserSite: true }));
+    expect(seen).toEqual([{ KEEP: "1", PYTHONNOUSERSITE: "1" }]);
+    seen.length = 0;
+    await runBaselineScans([{ ...(await scan()), command: planted }], run({ runners: watching, originalCode: passthrough([]) }));
+    expect(seen).toEqual([{ KEEP: "1", PYTHONNOUSERSITE: "0" }]);
+    expect(planted.env).toEqual({ KEEP: "1", PYTHONNOUSERSITE: "0" });
+  });
+
   it("runs the same command with the original code shown, reads what it wrote (a scanner that found something exits non-zero), and puts the candidate's file back byte for byte", async () => {
     const events: string[] = [];
     const found = await runBaselineScans([await scan()], run({ originalCode: passthrough(events) }));

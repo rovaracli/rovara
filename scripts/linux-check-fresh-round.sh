@@ -6,10 +6,11 @@
 #   FR3 the export (committed files only) IS what the sandbox sees at the working root's path, and it can write there;
 #   FR4 the sandbox is on one network only;
 #   FR5 the working sandbox cannot connect to the fresh one on the walled bridge (inter-container traffic off), which is why the working sandbox is not paused; a control network WITH inter-container traffic shows the probe can connect;
-#   FR6 RESTARTING the working sandbox (`docker restart --time 0`, what the worker does before a fresh round) kills every program the agent left running, including the two that escape an in-container stop script (a thread whose main thread exited
+#   FR6 RESTARTING the working sandbox (`docker restart --timeout 0`, what the worker does before a fresh round) kills every program the agent left running, including the two that escape an in-container stop script (a thread whose main thread exited
 #       alone and shows as a zombie leader, and a fork-hopper that wins a listing race), a PATH-renamed bash and a node process with an empty title; the verdict is taken from the HOST (`docker inspect` and `docker top`: exactly tini and its
 #       `sleep infinity`, matched by host PIDs), never from the container's output; the sandbox and its volume stay;
-#   FR7 after the round the container is gone, and so is the export.
+#   FR7 a `.pth` file planted in the Python user base (`.agentx-python`, writable by the agent) runs on the next python3 start, and does NOT run when the baseline scanner runs with PYTHONNOUSERSITE=1 (what the worker sets for it);
+#   FR8 after the round the container is gone, and so is the export.
 # Output: one line per check, `FRESH <id> PASS|FAIL <name> | <detail>`, then `FRESH SUMMARY pass=<p> fail=<f>`. Exit 0 only when every line is PASS, 1 on any FAIL, 2 on a usage or setup error.
 #
 # HERMETIC. It calls only `docker` (and mkdir, mktemp, chmod, printf, rm, test, grep, tr, cut, sed, sleep, sha256sum or shasum from the base system). It calls no `nft`, `ip6tables`, `ip` or `iptables`, reads no secret, makes no AWS call and never touches colima:
@@ -182,7 +183,7 @@ BEFORE=$(docker exec "$WORKING" sh -c "$COUNT_LEFTOVERS" 2>&1 | tr -d '[:space:]
 case "$BEFORE" in LEFT:[3-9]|LEFT:[1-9][0-9]) ;; *) FAILS="$FAILS the leftovers were not running before the restart ($BEFORE);" ;; esac
 BEAT1=$(beat); sleep 1; BEAT2=$(beat)
 [[ -n "$BEAT1" && "$BEAT1" != "$BEAT2" ]] || FAILS="$FAILS the zombie-leader and hopper probes were not running before the restart;"
-docker restart --time 0 "$WORKING" >/dev/null 2>&1 || FAILS="$FAILS the restart failed;"
+docker restart --timeout 0 "$WORKING" >/dev/null 2>&1 || FAILS="$FAILS the restart failed;"
 # the verdict from the HOST: the sandbox is running, and its processes are exactly tini (host PID = State.Pid) and one child, `sleep infinity`
 STATE=$(docker inspect --format '{{.State.Running}} {{.State.Pid}}' "$WORKING" 2>/dev/null)
 TINI=${STATE#true }
@@ -198,13 +199,22 @@ BEAT3=$(beat); sleep 1; BEAT4=$(beat)
 [[ "$(docker exec "$WORKING" sh -c "cat $LDIR/infinity" 2>&1)" == "while :; do :; done" ]] || FAILS="$FAILS the sandbox's own files did not survive the restart;"
 verdict FR6 restart_kills_every_leftover "$FAILS" "$BEFORE leftovers (zombie leader, fork-hopper, renamed bash, setsid daemon, empty-title node) were running; after the restart the host sees only tini and its sleep, and nothing heartbeats"
 
-# FR7: the container and the export are gone after the round
+# FR7: the scanner baseline's Python gets no user site. A .pth file in the user base runs code at every python3 start; with PYTHONNOUSERSITE=1 it must not.
+FAILS=""
+docker exec "$WORKING" sh -c 'B=/tmp/fresh-userbase; rm -rf "$B" /tmp/pth-ran-*; S=$(PYTHONUSERBASE="$B" python3 -c "import site; print(site.getusersitepackages())") && mkdir -p "$S" && printf "import os; open(\"/tmp/pth-ran-\" + os.environ.get(\"PTH_TAG\", \"x\"), \"w\").write(\"ran\")\n" > "$S/evil.pth"' >/dev/null 2>&1
+docker exec -e PYTHONUSERBASE=/tmp/fresh-userbase -e PTH_TAG=plain "$WORKING" python3 -c pass >/dev/null 2>&1
+docker exec -e PYTHONUSERBASE=/tmp/fresh-userbase -e PYTHONNOUSERSITE=1 -e PTH_TAG=hardened "$WORKING" python3 -c pass >/dev/null 2>&1
+[[ "$(docker exec "$WORKING" sh -c 'ls /tmp/pth-ran-plain 2>/dev/null')" == "/tmp/pth-ran-plain" ]] || FAILS="$FAILS the probe .pth did not run without PYTHONNOUSERSITE (the probe proves nothing);"
+[[ -z "$(docker exec "$WORKING" sh -c 'ls /tmp/pth-ran-hardened 2>/dev/null')" ]] || FAILS="$FAILS the .pth ran although PYTHONNOUSERSITE=1 was set;"
+verdict FR7 pth_in_user_base_does_not_run_with_nousersite "$FAILS" "the planted .pth ran with the user site on and did not run with PYTHONNOUSERSITE=1"
+
+# FR8: the container and the export are gone after the round
 FAILS=""
 docker rm --force "$NAME" >/dev/null 2>&1
 if docker container inspect "$NAME" >/dev/null 2>&1; then FAILS="$FAILS the container is still there;"; fi
 rm -rf "$EXPORT"
 [[ ! -e "$EXPORT" ]] || FAILS="$FAILS the export is still there;"
-verdict FR7 container_and_export_gone "$FAILS" "docker has no $NAME and the export directory is removed"
+verdict FR8 container_and_export_gone "$FAILS" "docker has no $NAME and the export directory is removed"
 
 printf 'FRESH SUMMARY pass=%s fail=%s\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

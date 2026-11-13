@@ -251,7 +251,7 @@ export async function saveEvidenceRaw(input: {
   /** When the check round began: a report (coverage, SARIF) must have been written at or after it. */
   roundStartedAtMs?: number | undefined;
   /** P4: what the baseline run of the SARIF-writing checks on the original code needs. Absent: no baseline, so no finding is reported. */
-  baseline?: Pick<BaselineRun, "runners" | "signal" | "budgetMs" | "originalCode" | "capMs"> | undefined;
+  baseline?: Pick<BaselineRun, "runners" | "signal" | "budgetMs" | "originalCode" | "capMs" | "noUserSite"> | undefined;
   /** Test services: the round's usage record (see `CollectEvidenceInput.testServices`). Absent for a task without dependencies: then the file is what it always was. */
   testServices?: TestServicesUsageRecord | undefined;
 }): Promise<boolean> {

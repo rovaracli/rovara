@@ -33,6 +33,11 @@ export interface BaselineRun {
   /** What is left of the check round's budget. */
   budgetMs: number;
   capMs?: number;
+  /**
+   * TE-B1-fresh: run the scanners with PYTHONNOUSERSITE=1. The Python user base (`.agentx-python`, on the workspace volume) is writable by the agent, and a `.pth` file planted in it runs at every python3 start, so a baseline scan could be made to write
+   * whatever SARIF the agent likes. With the user site off it is not read. A scanner installed with `pip --user` then cannot import its own modules: its baseline is missing, and no finding is called new (fail safe).
+   */
+  noUserSite?: boolean;
   repositories: readonly OriginalCodeRepository[];
   /** Tests supply a fake. Default: the real swap (gitOriginalCode). */
   originalCode?: (repositories: OriginalCodeRepository[]) => OriginalCode;
@@ -58,7 +63,8 @@ export async function runBaselineScans(scans: readonly BaselineScan[], run: Base
   const found = new Map<number, string>();
   const now = run.now ?? Date.now;
   if (scans.length === 0 || run.signal.aborted || run.budgetMs < MIN_BASELINE_BUDGET_MS || run.repositories.length === 0) return found;
-  const subPlan: CheckPlan = { source: "project", readiness: scans.map((scan) => scan.command), projectBefore: scans.map(() => "unknown" as const) };
+  const commandOf = (command: ProjectCommand): ProjectCommand => (run.noUserSite === true ? { ...command, env: { ...command.env, PYTHONNOUSERSITE: "1" } } : command);
+  const subPlan: CheckPlan = { source: "project", readiness: scans.map((scan) => commandOf(scan.command)), projectBefore: scans.map(() => "unknown" as const) };
   const originalCode = (run.originalCode ?? gitOriginalCode)(run.repositories.map((repository) => ({ directory: repository.directory, commit: repository.commit })));
   try {
     await originalCode.run(async () => {

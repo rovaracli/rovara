@@ -289,7 +289,7 @@ describe("H1b: nothing the agent left running may act during the round", () => {
     const calls: string[][] = [];
     const docker: DockerCli = { run: (args) => { calls.push([...args]); return Promise.resolve(answerSandboxRestart(args)!); } };
     await restartWorkingSandbox(docker, WORKING);
-    expect(calls).toEqual([["restart", "--time", "0", WORKING], ["inspect", "--format", STATE_FORMAT, WORKING], ["top", WORKING, "-eo", "pid,ppid,args"]]);
+    expect(calls).toEqual([["restart", "--timeout", "0", WORKING], ["inspect", "--format", STATE_FORMAT, WORKING], ["top", WORKING, "-eo", "pid,ppid,args"]]);
     expect(calls.some((call) => call[0] === "exec")).toBe(false);
   });
   const withTop = (top: string, extra: Partial<Record<"restart" | "inspect", { exitCode: number; stdout: string; stderr: string }>> = {}): DockerCli => ({
@@ -310,6 +310,7 @@ describe("H1b: nothing the agent left running may act during the round", () => {
       ["the first row is not the container's PID 1", rows(`${String(FAKE_TINI_PID + 7)} 0 /usr/bin/tini -- sleep infinity`, `${String(FAKE_TINI_PID + 8)} ${String(FAKE_TINI_PID + 7)} sleep infinity`)],
       ["the child is not the sleep", rows(TINI, `${String(FAKE_TINI_PID + 1)} ${String(FAKE_TINI_PID)} bash -c loop`)],
       ["two sleeps", rows(TINI, SLEEP, `${String(FAKE_TINI_PID + 3)} ${String(FAKE_TINI_PID)} sleep infinity`)],
+      ["no row has the container's PID 1 while another row is named tini (the sleep still says tini's PID is State.Pid)", rows(`${String(FAKE_TINI_PID + 5000)} 0 /usr/bin/tini -- sleep infinity`, SLEEP)],
       ["tini that is not tini", rows(`${String(FAKE_TINI_PID)} 0 /bin/bash`, SLEEP)],
     ];
     for (const [name, top] of bad) await expect(restartWorkingSandbox(withTop(top), WORKING), name).rejects.toThrow(/could not be stopped/u);

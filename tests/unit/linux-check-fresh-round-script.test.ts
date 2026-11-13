@@ -14,7 +14,7 @@ beforeEach(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), "fresh-script-"
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 /** Fake tools in `dir/bin`. `docker` logs its arguments (one JSON array a line) and answers by verb; `visible` makes `docker exec ... test -e <path>` succeed (a sandbox that can see the working root). */
-function fakeTools(options: { visible?: boolean; rootUid?: string; extraProcess?: boolean; heartbeatAfter?: boolean } = {}) {
+function fakeTools(options: { visible?: boolean; rootUid?: string; extraProcess?: boolean; heartbeatAfter?: boolean; pthRunsHardened?: boolean } = {}) {
   const bin = join(dir, "bin");
   mkdirSync(bin);
   const log = join(dir, "docker.log");
@@ -42,6 +42,8 @@ if (verb === "exec") {
   const text = args.join(" ");
   if (args.includes("--detach")) out("");
   if (text.includes("hb-zleader")) { const n = fs.existsSync(counterFile) ? Number(fs.readFileSync(counterFile, "utf8")) : 0; if (!fs.existsSync(stateFile) || ${JSON.stringify(options.heartbeatAfter === true)}) fs.writeFileSync(counterFile, String(n + 1)); out(String(n) + "\\n"); }
+  if (text.includes("pth-ran-plain")) out("/tmp/pth-ran-plain\\n");
+  if (text.includes("pth-ran-hardened")) out(${JSON.stringify(options.pthRunsHardened === true ? "/tmp/pth-ran-hardened\n" : "")});
   if (text.includes("fresh-leftovers/infinity")) out("while :; do :; done\\n");
   if (text.includes("LEFT:")) out(fs.existsSync(stateFile) ? "LEFT:0\\n" : "LEFT:4\\n");
   if (text.includes("id -u")) out(${JSON.stringify(options.rootUid ?? "1000")} + "\\n");
@@ -86,7 +88,7 @@ describe("scripts/linux-check-fresh-round.sh", () => {
   });
   it("every line passes when the sandbox sees only the export", () => {
     const result = run(fakeTools());
-    expect(result.stdout.split("\n").filter((line) => line.startsWith("FRESH FR")).map((line) => line.split(" ").slice(1, 3).join(" "))).toEqual(["FR1 PASS", "FR2 PASS", "FR3 PASS", "FR4 PASS", "FR5 PASS", "FR6 PASS", "FR7 PASS"]);
+    expect(result.stdout.split("\n").filter((line) => line.startsWith("FRESH FR")).map((line) => line.split(" ").slice(1, 3).join(" "))).toEqual(["FR1 PASS", "FR2 PASS", "FR3 PASS", "FR4 PASS", "FR5 PASS", "FR6 PASS", "FR7 PASS", "FR8 PASS"]);
     expect(result.status).toBe(0);
   });
   it("FAILS (exit 1) when the sandbox can see the working root", () => {
@@ -111,7 +113,7 @@ describe("scripts/linux-check-fresh-round.sh", () => {
     run(tools);
     const calls = dockerCalls(tools.log);
     const restart = calls.findIndex((args) => args[0] === "restart");
-    expect(calls[restart]).toEqual(["restart", "--time", "0", expect.stringMatching(/^agentx-fresh-linuxcheck-working-/u)]);
+    expect(calls[restart]).toEqual(["restart", "--timeout", "0", expect.stringMatching(/^agentx-fresh-linuxcheck-working-/u)]);
     expect(calls.slice(restart).some((args) => args[0] === "top")).toBe(true);
     expect(calls.slice(restart).some((args) => args[0] === "inspect" && args.some((arg) => arg.includes("State.Pid")))).toBe(true);
   });
@@ -123,6 +125,11 @@ describe("scripts/linux-check-fresh-round.sh", () => {
   it("FAILS (exit 1) when a probe is still heartbeating after the restart", () => {
     const result = run(fakeTools({ heartbeatAfter: true }));
     expect(result.stdout).toMatch(/FRESH FR6 FAIL/u);
+    expect(result.status).toBe(1);
+  });
+  it("FR7 FAILS (exit 1) when the planted .pth still runs with PYTHONNOUSERSITE=1", () => {
+    const result = run(fakeTools({ pthRunsHardened: true }));
+    expect(result.stdout).toMatch(/FRESH FR7 FAIL/u);
     expect(result.status).toBe(1);
   });
 });

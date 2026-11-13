@@ -221,7 +221,7 @@ async function removeContainer(docker: DockerCli, name: string, taskId: string, 
 }
 
 /**
- * Stops everything the agent left running in the WORKING sandbox by RESTARTING it (`docker restart --time 0`): the kernel kills every process of a PID namespace when its PID 1 exits, so nothing the agent started (a thread whose main
+ * Stops everything the agent left running in the WORKING sandbox by RESTARTING it (`docker restart --timeout 0`): the kernel kills every process of a PID namespace when its PID 1 exits, so nothing the agent started (a thread whose main
  * thread has exited, a fork-hopper that wins a listing race, a program that hides its name) can survive, and nothing needs to be found first. The container, its volume, its masks and its network stay as they are, so the agent's next turn
  * finds the same sandbox.
  *
@@ -235,7 +235,7 @@ async function removeContainer(docker: DockerCli, name: string, taskId: string, 
 export async function restartWorkingSandbox(docker: DockerCli, container: string, signal?: AbortSignal): Promise<void> {
   const fail = (): never => { throw new Error("programs the agent left running could not be stopped"); };
   const options = { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(signal === undefined ? {} : { signal }) };
-  const restarted = await docker.run(["restart", "--time", "0", container], options).catch(() => undefined);
+  const restarted = await docker.run(["restart", "--timeout", "0", container], options).catch(() => undefined);
   if (restarted === undefined || restarted.exitCode !== 0) return fail();
   const state = await docker.run(["inspect", "--format", "{{.State.Running}} {{.State.Pid}}", container], options).catch(() => undefined);
   const stateMatch = state === undefined || state.exitCode !== 0 ? null : /^true (\d+)\s*$/u.exec(state.stdout);

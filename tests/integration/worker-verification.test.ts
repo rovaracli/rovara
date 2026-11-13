@@ -1821,4 +1821,19 @@ describe("TE-B1-fresh: the coding run's final round with the freshCheckRound gat
     expect(fake.calls.some((args) => args[0] === "run" && args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-"))).toBe(false);
     expect(JSON.stringify(run.report ?? run.failure)).toContain("the candidate is not the commit and tree the checks were planned for");
   });
+
+  it("IMPLEMENT: a worker that lets programs trace each other (ptrace_scope 0) says so in plain words, and no fresh container starts", async () => {
+    const fake = fakeDocker();
+    const rootPath = await gitWorkspaceRoot();
+    const originalCode: OriginalCode = { async run(work) { return work(); } };
+    const shell = scriptedShell({}, async (command) => { if (command === "make-change") await writeFile(join(rootPath, "app/notes.md"), "note\n"); });
+    const run = await runTask({
+      steps: [bash("make-change", "c1"), bash("pytest tests/te-b1-marker", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], rootPath, shell, originalCode,
+      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }), freshPtraceScope: () => Promise.resolve(0), stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } },
+    });
+    expect(fake.calls.some((args) => args[0] === "run" && args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-"))).toBe(false);
+    expect(fake.calls.some((args) => args[0] === "restart")).toBe(false);
+    expect(JSON.stringify(run.events)).toContain("this worker does not stop programs from tracing each other");
+  });
 });

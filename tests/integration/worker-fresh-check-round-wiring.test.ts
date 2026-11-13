@@ -19,20 +19,20 @@ import { git } from "../support/test-proof-fixture.js";
 const IMAGE = "registry.example.test/agentx/worker@sha256:" + "b".repeat(64);
 const check: ProjectCommand = { cwd: "app", executable: "npm", args: ["fresh-wiring-marker", "--outputFile=report.json"], timeoutSeconds: 60 };
 
-async function workspace(): Promise<string> {
+async function workspace(command: ProjectCommand = check): Promise<string> {
   const rootPath = await createFixtureDirectory("agentx-wire-");
   const repository = join(rootPath, "app");
   await mkdir(join(rootPath, ".agentx"), { recursive: true });
   await mkdir(join(repository, "src"), { recursive: true });
   await writeFile(join(repository, "src/a.ts"), "export const a = 1;\n");
-  await writeFile(join(repository, ".gitignore"), "node_modules/\nreport.json\n");
+  await writeFile(join(repository, ".gitignore"), "node_modules/\nreport.json\nbandit.sarif\n");
   git(repository, "init", "-q", "-b", "main");
   git(repository, "add", "-A");
   git(repository, "commit", "-q", "-m", "fixture");
   const resolvedCommit = git(repository, "rev-parse", "HEAD");
   await writeFile(join(rootPath, ".agentx/preparation-manifest.json"), JSON.stringify({
     schemaVersion: 2, projectName: "fresh", projectRevision: 1, repositories: [{ name: "app", path: "app", defaultBranch: "main", resolvedCommit, resolvedAt: new Date().toISOString(), completedAt: new Date().toISOString() }],
-    completedSetupSteps: [], readinessResults: [], readinessCommandKeys: [projectCheckKey(check)], creationIdentity: "fixture", complete: true, updatedAt: new Date().toISOString(),
+    completedSetupSteps: [], readinessResults: [], readinessCommandKeys: [projectCheckKey(command)], creationIdentity: "fixture", complete: true, updatedAt: new Date().toISOString(),
   }));
   // what the agent left behind in the working tree that git ignores (an installed dependency it edited): a clean export must not carry it, and the candidate's tree does not name it
   await mkdir(join(repository, "node_modules", "dep"), { recursive: true });
@@ -62,16 +62,18 @@ function fakeDocker(exitOf: (text: string, container: string) => number = () => 
 }
 const nameOf = (args: string[]) => args[args.indexOf("--name") + 1]!;
 
-async function checksRun(rootPath: string, fake: ReturnType<typeof fakeDocker>, extra: Partial<Parameters<typeof runTaskInvocation>[1]> & { evidenceCapture?: boolean } = {}) {
+async function checksRun(rootPath: string, fake: ReturnType<typeof fakeDocker>, extra: Partial<Parameters<typeof runTaskInvocation>[1]> & { evidenceCapture?: boolean; command?: ProjectCommand } = {}) {
   const invocation: Extract<WorkerInvocation, { kind: "task" }> = {
     protocolVersion: 1, kind: "task", operationId: randomUUID(), workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
-    payload: { conversationId: randomUUID(), prompt: "check it", readiness: [check], workflowMode: "CHECKS", ...(extra.evidenceCapture === true ? { evidenceCapture: true } : {}) },
+    payload: { conversationId: randomUUID(), prompt: "check it", readiness: [extra.command ?? check], workflowMode: "CHECKS", ...(extra.evidenceCapture === true ? { evidenceCapture: true } : {}) },
   };
+  const { evidenceCapture: _capture, command: _command, ...dependencyExtras } = extra;
+  void _capture; void _command;
   const events: WorkerEvent[] = [];
   const artifacts: Array<{ name: string; content: string }> = [];
   const result = await runTaskInvocation(invocation, {
     rootPath, model: FAUX_MODEL, taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshPtraceScope: () => Promise.resolve(1),
-    eventSink: async (batch) => { events.push(...batch); }, artifactSink: async (artifact) => { artifacts.push(artifact); }, ...extra,
+    eventSink: async (batch) => { events.push(...batch); }, artifactSink: async (artifact) => { artifacts.push(artifact); }, ...dependencyExtras,
   });
   return { result, events, artifacts };
 }
@@ -220,3 +222,26 @@ describe("H1b: the working sandbox is restarted and checked from the host before
     expect(open.calls.some((args) => args[0] === "restart")).toBe(false);
   });
 });
+
+describe("the scanner baseline after a fresh round runs without the Python user site", () => {
+  const scanner: ProjectCommand = { cwd: "app", executable: "bandit", args: ["-r", ".", "-f", "sarif", "-o", "bandit.sarif"], timeoutSeconds: 60 };
+  const sarif = (message: string) => JSON.stringify({ version: "2.1.0", runs: [{ tool: { driver: { name: "Bandit", rules: [] } }, results: [{ ruleId: "B608", level: "error", message: { text: message }, locations: [{ physicalLocation: { artifactLocation: { uri: "src/a.ts" }, region: { startLine: 1 } } }] }] }] });
+  it("the baseline command carries PYTHONNOUSERSITE=1 in the working sandbox, and the fresh round's own command does not", async () => {
+    const rootPath = await workspace(scanner);
+    const fake = fakeDocker(() => 0, (text, calls) => {
+      if (!text.includes("bandit")) return;
+      const fresh = calls.find((args) => args[0] === "run" && args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-"));
+      if (fresh !== undefined && text.includes(fresh[fresh.indexOf("--name") + 1]!)) writeFileSync(join(fresh[fresh.indexOf("--volume") + 1]!.split(":")[0]!, "app", "bandit.sarif"), sarif("SQL built from input"));
+      else writeFileSync(join(rootPath, "app", "bandit.sarif"), sarif("baseline finding"));
+    });
+    await checksRun(rootPath, fake, { command: scanner, freshCheckRound: () => ({ setup: [] }), evidenceCapture: true, stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
+    const scannerExecs = fake.calls.filter((args) => args[0] === "exec" && args.join(" ").includes("bandit"));
+    const inFresh = scannerExecs.filter((args) => args.some((arg) => arg.startsWith("agentx-fresh-")));
+    const inWorking = scannerExecs.filter((args) => args.some((arg) => arg.startsWith("agentx-task-")));
+    expect(inFresh.length).toBeGreaterThan(0);
+    expect(inWorking.length).toBeGreaterThan(0);
+    expect(inFresh.every((args) => !args.includes("PYTHONNOUSERSITE=1"))).toBe(true);
+    expect(inWorking.every((args) => args.includes("PYTHONNOUSERSITE=1"))).toBe(true);
+  });
+});
+
