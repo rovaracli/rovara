@@ -428,7 +428,7 @@ export function createCancelRetrier(dependencies: { client: Client; tableName: s
  * The production retryCancel, where the reconciler holds the callback signing key the retried
  * cancel's callbacks are signed with. It holds it in named environments only (#173), so only there
  * is a stuck cancel on a live worker queued again; the legacy reconciler has none, and only logs and
- * counts it.
+ * counts it. A legacy CALLBACK_SIGNING_KEY variable shorter than 32 bytes now throws here (it was accepted unchecked before 0.5.17).
  */
 export function stuckCancelRetrier(
   environment: Record<string, string | undefined>,
@@ -439,5 +439,5 @@ export function stuckCancelRetrier(
   if (!callbackSigningKeyConfigured(environment)) return undefined;
   // Secret first (signing-key-secrets.ts): a named environment's function never uses the variable.
   const key = legacyKey(environment);
-  return createCancelRetrier({ ...state, callbackSigningKey: key !== undefined && key.length > 0 ? key : (callbackKey ?? (() => Promise.reject(new Error("no callback signing key source")))) });
+  return createCancelRetrier({ ...state, callbackSigningKey: key ?? (callbackKey ?? (() => Promise.reject(new Error("no callback signing key source")))) });
 }

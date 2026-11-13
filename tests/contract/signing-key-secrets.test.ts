@@ -4,7 +4,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import {
-  PREVIOUS_KEY_WINDOW_MS, callbackKeySource, callbackVerificationKeys, erasureKeySource, legacySigningKeys, previousKeyOf, readCallbackKeyRing, type SigningSecretReader,
+  PREVIOUS_KEY_WINDOW_MS, callbackKeySource, callbackVerificationKeys, erasureKeySource, isNamedEnvironment, legacySigningKeys, previousKeyOf, readCallbackKeyRing, type SigningSecretReader,
 } from "../../packages/broker/src/aws/signing-key-secrets.js";
 import { ensureErasureHashKey, SecretAlreadyExistsError, type SecretValueStore } from "../../packages/cli/src/deploy/signing-key.js";
 import { askAliasHashKey, aliasHashesOf, scrubWithAliasHashes } from "../../packages/broker/src/agent-sessions/ask-erased-aliases.js";
@@ -118,6 +118,38 @@ describe("secret first: a named environment never uses a CALLBACK_SIGNING_KEY va
     // Positive control: the secret really was read, and the variable alone (no AGENTX_ENV) is still the legacy install's key.
     expect(sm.calls.some((call) => call.id === CALLBACK)).toBe(true);
     expect(legacySigningKeys({ CALLBACK_SIGNING_KEY: leftover })).toEqual({ callback: { current: leftover }, erasure: leftover });
+  });
+
+  it("with a leftover variable and a previous version inside the window, the ring is the secret's current and previous, and the leftover verifies nothing", async () => {
+    const sm = fakeSecretsManager();
+    const [before, current, leftover] = [newKey(), newKey(), newKey()];
+    const rotatedAt = new Date();
+    sm.put(CALLBACK, before, new Date(rotatedAt.getTime() - 3_600_000));
+    sm.put(CALLBACK, current, rotatedAt);
+    const ring = await callbackKeySource({ ...NAMED, CALLBACK_SIGNING_KEY: leftover }, () => sm.reader)();
+    expect(ring).toEqual({ current, previous: { value: before, acceptUntilMs: rotatedAt.getTime() + PREVIOUS_KEY_WINDOW_MS } });
+    const keys = callbackVerificationKeys({ callbackSigningKey: ring.current, callbackPreviousKey: () => previousKeyOf(ring, rotatedAt.getTime() + 1000) });
+    expect(keys).toEqual([current, before]);
+    expect(keys).not.toContain(leftover);
+  });
+
+  it("an empty or whitespace AGENTX_ENV is the legacy install: the variable is the key and nothing is read from Secrets Manager", async () => {
+    const sm = fakeSecretsManager();
+    const key = newKey();
+    for (const blank of ["", " ", "\t \n"]) {
+      const env = { AGENTX_ENV: blank, CALLBACK_SIGNING_KEY: key };
+      expect(isNamedEnvironment(env), JSON.stringify(blank)).toBe(false);
+      expect(legacySigningKeys(env)).toEqual({ callback: { current: key }, erasure: key });
+      expect(await callbackKeySource(env, () => sm.reader)()).toEqual({ current: key });
+    }
+    expect(sm.calls).toEqual([]);
+    // Positive control: a name with surrounding blanks is the named environment, read under its trimmed name.
+    sm.put(CALLBACK, key, new Date());
+    expect(isNamedEnvironment({ AGENTX_ENV: " staging " })).toBe(true);
+    expect(await callbackKeySource({ AGENTX_ENV: " staging ", CALLBACK_SIGNING_KEY: newKey() }, () => sm.reader)()).toEqual({ current: key });
+    expect(sm.calls.every((call) => call.id === CALLBACK)).toBe(true);
+    // A blank name with no variable has no key at all.
+    await expect(callbackKeySource({ AGENTX_ENV: "  " }, () => sm.reader)()).rejects.toThrow(/no signing key is configured/);
   });
 
   it("a named environment whose secret is missing refuses (closed) instead of falling back to a leftover variable", async () => {

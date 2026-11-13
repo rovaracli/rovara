@@ -37,8 +37,14 @@ function checkedKey(value: string | undefined, label: string): string {
   return value;
 }
 
-/** Whether this function belongs to a named environment (AGENTX_ENV): its keys are its secrets, and only they. */
-export const isNamedEnvironment = (env: Environment): boolean => (env["AGENTX_ENV"] ?? "") !== "";
+/** The environment's name (AGENTX_ENV), trimmed; undefined when it is unset, empty or only whitespace (those count as the legacy install). */
+export const environmentNameOf = (env: Environment): string | undefined => {
+  const name = (env["AGENTX_ENV"] ?? "").trim();
+  return name === "" ? undefined : name;
+};
+
+/** Whether this function belongs to a named environment (AGENTX_ENV, trimmed): its keys are its secrets, and only they. */
+export const isNamedEnvironment = (env: Environment): boolean => environmentNameOf(env) !== undefined;
 
 /**
  * The legacy install's one key (its CALLBACK_SIGNING_KEY variable), or undefined where it has none. SECRET FIRST: a function of a named environment (AGENTX_ENV set)
@@ -51,14 +57,14 @@ export function legacyKey(env: Environment): string | undefined {
 }
 
 function environmentName(env: Environment): string {
-  const name = env["AGENTX_ENV"];
-  if (name === undefined || name === "") throw new Error("no signing key is configured: neither CALLBACK_SIGNING_KEY nor AGENTX_ENV is set");
+  const name = environmentNameOf(env);
+  if (name === undefined) throw new Error("no signing key is configured: neither CALLBACK_SIGNING_KEY nor AGENTX_ENV is set");
   return name;
 }
 
 /** Whether this function has a callback signing key to read at all: the legacy variable, or a named environment's secret. */
 export function callbackSigningKeyConfigured(env: Environment): boolean {
-  return (env["CALLBACK_SIGNING_KEY"] ?? "") !== "" || (env["AGENTX_ENV"] ?? "") !== "";
+  return (env["CALLBACK_SIGNING_KEY"] ?? "") !== "" || isNamedEnvironment(env);
 }
 
 /** The legacy install's keys, available without any read: both kinds are its one CALLBACK_SIGNING_KEY. Undefined in a named environment. */
