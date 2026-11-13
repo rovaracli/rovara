@@ -2,7 +2,7 @@
 // No test and no CI job runs the real tools. It turns each upstream service image (postgres, redis ...) into a Rovara-built OCI index with EXACTLY the catalog's platforms, which is the shape catalog-build requires of
 // its sources (catalog-build.ts, "SOURCES must be Rovara-built multi-platform INDEXES ... holding EXACTLY the platforms the catalog entry lists").
 //
-// The REPACK FILE lists each non-retired catalog entry with its upstream reference BY DIGEST (host/path@sha256:<digest> of the upstream INDEX, the digest the operator reviewed). A tag is refused: it names whatever the
+// The REPACK FILE lists each non-retired catalog entry with a verified local-oci source or its upstream reference BY DIGEST (host/path@sha256:<digest> of the upstream INDEX, the digest the operator reviewed). A tag is refused: it names whatever the
 // upstream owner pushes next. For each entry it:
 //   1. reads the upstream index by that digest and checks that the bytes hash to it;
 //   2. picks exactly the catalog's platforms (linux/arm64 and linux/amd64); an index without either is refused;
@@ -23,6 +23,7 @@
 // Everything outside the decision rules is a PORT (registry read and copy, index push and tag, clock, output files), so the whole script runs against fakes. The real ports at the bottom use skopeo and oras through the
 // same CommandPort catalog-build uses; they are only built by `main()`, which runs only when this file is the entry point. Nothing here is imported by the broker or the worker, and no secret is read: the registry
 // credential is ECR's short token, kept in a 0600 file inside a 0700 directory.
+import { LOCAL_OCI_ENTRY_KINDS, LocalOciSourceSchema, localOciPort, type LocalOciSource, type LocalOciPort, type VerifiedLocalOci } from "./catalog-local-oci.js";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -47,7 +48,7 @@ export const INDEX_MAX_BYTES = 4 * 1024 * 1024;
 // ---- the repack file
 
 /** `{ schemaVersion: 1, entries: { "postgres@16": "docker.io/library/postgres@sha256:<upstream index digest>" } }`. Each reference is checked on its own (so a tag is a refusal naming the entry, not a parse error). */
-export const RepackFileSchema = z.object({ schemaVersion: z.literal(1), entries: z.record(z.string(), z.string()) }).strict();
+export const RepackFileSchema = z.object({ schemaVersion: z.literal(1), entries: z.record(z.string(), z.union([z.string(), LocalOciSourceSchema])) }).strict();
 export type RepackFile = z.infer<typeof RepackFileSchema>;
 
 const hexOf = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
@@ -61,7 +62,7 @@ export interface RegistryPort {
   /** The raw bytes of the manifest `digest` (64 hex digits) of `repository` (`host/path`), read BY DIGEST. Upstream and Rovara repositories are both read through it. */
   readManifest(input: { repository: string; digest: string }): Promise<Uint8Array>;
   /** Copies ONE image manifest and its blobs, by digest, keeping the digest. The core re-reads the destination and checks the bytes hash to `digest`. */
-  copyImage(input: { sourceRepository: string; destinationRepository: string; digest: string }): Promise<void>;
+  copyImage(input: { sourceRepository: string; destinationRepository: string; digest: string; local?: { layoutPath: string; platform: SelectedChild["platform"] } }): Promise<void>;
 }
 export interface IndexPort {
   /** Pushes `bytes` as the manifest `digest` of `repository` (by digest) and tags it `tag`. */
@@ -78,6 +79,7 @@ export interface OutputPort {
 }
 export interface RepackPorts {
   readonly registry: RegistryPort;
+  readonly localOci?: LocalOciPort;
   readonly indexes: IndexPort;
   readonly clock: ClockPort;
   readonly files: OutputPort;
@@ -225,6 +227,8 @@ const byId = <T extends { id: string }>(a: T, b: T): number => (a.id < b.id ? -1
 
 interface Plan {
   readonly id: string;
+  readonly localSource?: LocalOciSource;
+  readonly local?: VerifiedLocalOci;
   readonly sourceReference: string;
   readonly sourceRepository: string;
   readonly sourceDigest: string;
@@ -268,7 +272,8 @@ export async function repackCatalog(input: { catalog: unknown; repack: unknown; 
   for (const entry of entries) {
     if (entry.status === "retired") continue;
     if (selected !== undefined && !selected.has(entry.id)) continue;
-    const reference = repack.entries[entry.id];
+    const source = repack.entries[entry.id];
+    const reference = typeof source === "object" ? source.sourceReference : source;
     if (reference === undefined) {
       refuse(entry.id, "no_upstream", "the repack file has no upstream reference for this entry");
       continue;
@@ -279,97 +284,112 @@ export async function repackCatalog(input: { catalog: unknown; repack: unknown; 
       else refuse(entry.id, "bad_reference", "not a host/path@sha256:<64 hex digits> reference");
       continue;
     }
-    plans.push({ id: entry.id, sourceReference: reference, sourceRepository: repositoryOfSource(reference), sourceDigest: digestOfSource(reference), repositoryName: catalogRepositoryName(env, entry.image.repository), selected: [], dropped: [] });
+    if (typeof source === "object" && LOCAL_OCI_ENTRY_KINDS.get(entry.id) !== "rovara-built") {
+      refuse(entry.id, "bad_reference", "local-oci is allowed only for explicitly rovara-built entries");
+      continue;
+    }
+    plans.push({ ...(typeof source === "object" ? { localSource: source } : {}), id: entry.id, sourceReference: reference, sourceRepository: repositoryOfSource(reference), sourceDigest: digestOfSource(reference), repositoryName: catalogRepositoryName(env, entry.image.repository), selected: [], dropped: [] });
   }
   // A bad reference or a missing entry refuses the run before any registry is touched.
   if (refusals.length > 0) throw new RepackError(refusals);
-  const planned: Plan[] = [];
-  for (const plan of plans) {
-    const entry = byEntry.get(plan.id);
-    if (entry === undefined) continue;
-    try {
-      const bytes = await ports.registry.readManifest({ repository: plan.sourceRepository, digest: plan.sourceDigest });
-      if (hexOf(bytes) !== plan.sourceDigest) {
-        refuse(plan.id, "upstream_digest_mismatch", `the upstream served bytes that hash to ${hexOf(bytes).slice(0, 12)} where the repack file named ${plan.sourceDigest.slice(0, 12)}`);
-        continue;
-      }
-      if (bytes.byteLength > INDEX_MAX_BYTES) {
-        refuse(plan.id, "upstream_not_index", "the upstream manifest is too large");
-        continue;
-      }
-      let parsed: unknown;
+  const localSnapshots: VerifiedLocalOci[] = [];
+  try {
+    const planned: Plan[] = [];
+    for (const plan of plans) {
+      const entry = byEntry.get(plan.id);
+      if (entry === undefined) continue;
       try {
-        parsed = JSON.parse(Buffer.from(bytes).toString("utf8"));
-      } catch {
-        refuse(plan.id, "upstream_not_index", "the upstream manifest is not JSON");
-        continue;
+        let local: VerifiedLocalOci | undefined;
+        if (plan.localSource !== undefined) {
+          if (ports.localOci === undefined) throw new Error("local OCI reader is unavailable");
+          local = await ports.localOci.read(plan.localSource, plan.id);
+          localSnapshots.push(local);
+        }
+        const bytes = local?.index ?? await ports.registry.readManifest({ repository: plan.sourceRepository, digest: plan.sourceDigest });
+        if (hexOf(bytes) !== plan.sourceDigest) {
+          refuse(plan.id, "upstream_digest_mismatch", `the upstream served bytes that hash to ${hexOf(bytes).slice(0, 12)} where the repack file named ${plan.sourceDigest.slice(0, 12)}`);
+          continue;
+        }
+        if (bytes.byteLength > INDEX_MAX_BYTES) {
+          refuse(plan.id, "upstream_not_index", "the upstream manifest is too large");
+          continue;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(Buffer.from(bytes).toString("utf8"));
+        } catch {
+          refuse(plan.id, "upstream_not_index", "the upstream manifest is not JSON");
+          continue;
+        }
+        const selection = selectPlatforms(parsed, entry.image.platforms);
+        if (!selection.ok) {
+          refuse(plan.id, selection.code, selection.problem);
+          continue;
+        }
+        planned.push({ ...plan, ...(local === undefined ? {} : { local }), selected: selection.selected, dropped: selection.dropped });
+      } catch (error) {
+        refuse(plan.id, "port_failed", error instanceof Error ? error.message.slice(0, 200) : "reading the upstream failed");
       }
-      const selection = selectPlatforms(parsed, entry.image.platforms);
-      if (!selection.ok) {
-        refuse(plan.id, selection.code, selection.problem);
-        continue;
-      }
-      planned.push({ ...plan, selected: selection.selected, dropped: selection.dropped });
-    } catch (error) {
-      refuse(plan.id, "port_failed", error instanceof Error ? error.message.slice(0, 200) : "reading the upstream failed");
     }
-  }
-  if (refusals.length > 0) throw new RepackError(refusals);
+    if (refusals.length > 0) throw new RepackError(refusals);
 
-  // ---- phase two: copy, build, push, verify
-  const repackedAt = ports.clock.now();
-  if (Number.isNaN(repackedAt.getTime())) throw new RepackError([{ id: "*", code: "port_failed", message: "the clock gave no valid time" }]);
-  const time = repackedAt.toISOString();
-  const provenanceEntries: ProvenanceEntry[] = [];
-  const sources: Record<string, string> = {};
-  for (const plan of planned) {
-    const destination = `${registry}/${plan.repositoryName}`;
-    try {
-      // copy each child BY DIGEST and check the destination holds upstream's bytes
-      for (const child of plan.selected) {
-        await ports.registry.copyImage({ sourceRepository: plan.sourceRepository, destinationRepository: destination, digest: child.digest });
-        const landed = await ports.registry.readManifest({ repository: destination, digest: child.digest });
-        if (hexOf(landed) !== child.digest) {
-          refuse(plan.id, "child_digest_changed", `${child.platformName}: the destination serves a manifest that hashes to ${hexOf(landed).slice(0, 12)} where upstream's digest is ${child.digest.slice(0, 12)}`);
+    // ---- phase two: copy, build, push, verify
+    const repackedAt = ports.clock.now();
+    if (Number.isNaN(repackedAt.getTime())) throw new RepackError([{ id: "*", code: "port_failed", message: "the clock gave no valid time" }]);
+    const time = repackedAt.toISOString();
+    const provenanceEntries: ProvenanceEntry[] = [];
+    const sources: Record<string, string> = {};
+    for (const plan of planned) {
+      const destination = `${registry}/${plan.repositoryName}`;
+      try {
+        // copy each child BY DIGEST and check the destination holds upstream's bytes
+        for (const child of plan.selected) {
+          await ports.registry.copyImage({ sourceRepository: plan.sourceRepository, destinationRepository: destination, digest: child.digest, ...(plan.local === undefined ? {} : { local: { layoutPath: plan.local.layoutPath, platform: child.platform } }) });
+          const landed = await ports.registry.readManifest({ repository: destination, digest: child.digest });
+          if (hexOf(landed) !== child.digest) {
+            refuse(plan.id, "child_digest_changed", `${child.platformName}: the destination serves a manifest that hashes to ${hexOf(landed).slice(0, 12)} where upstream's digest is ${child.digest.slice(0, 12)}`);
+            throw new RepackError(refusals);
+          }
+          if (landed.byteLength !== child.size) {
+            refuse(plan.id, "child_digest_changed", `${child.platformName}: the destination serves ${String(landed.byteLength)} bytes where upstream's descriptor says ${String(child.size)}`);
+            throw new RepackError(refusals);
+          }
+        }
+        const built = buildRepackIndex({ children: plan.selected, sourceReference: plan.sourceReference, sourceDigest: plan.sourceDigest, repackedAt: time });
+        const tag = tagFor(built.digest);
+        await ports.indexes.push({ repository: destination, digest: built.digest, mediaType: built.mediaType, bytes: built.bytes, tag });
+        // read it back by digest: the registry's bytes must be the ones built, must hash to the digest, and must list exactly upstream's children
+        const served = Buffer.from(await ports.registry.readManifest({ repository: destination, digest: built.digest }));
+        const verifyProblem = indexProblem(served, built, plan.selected);
+        if (verifyProblem !== undefined) {
+          refuse(plan.id, "index_verify_failed", verifyProblem);
           throw new RepackError(refusals);
         }
-        if (landed.byteLength !== child.size) {
-          refuse(plan.id, "child_digest_changed", `${child.platformName}: the destination serves ${String(landed.byteLength)} bytes where upstream's descriptor says ${String(child.size)}`);
+        if ((await ports.indexes.resolveTag({ repository: destination, tag })) !== `sha256:${built.digest}`) {
+          refuse(plan.id, "tag_missing", `the tag ${tag} does not resolve to the pushed index (an untagged index is expired by the repository's lifecycle policy)`);
           throw new RepackError(refusals);
         }
-      }
-      const built = buildRepackIndex({ children: plan.selected, sourceReference: plan.sourceReference, sourceDigest: plan.sourceDigest, repackedAt: time });
-      const tag = tagFor(built.digest);
-      await ports.indexes.push({ repository: destination, digest: built.digest, mediaType: built.mediaType, bytes: built.bytes, tag });
-      // read it back by digest: the registry's bytes must be the ones built, must hash to the digest, and must list exactly upstream's children
-      const served = Buffer.from(await ports.registry.readManifest({ repository: destination, digest: built.digest }));
-      const verifyProblem = indexProblem(served, built, plan.selected);
-      if (verifyProblem !== undefined) {
-        refuse(plan.id, "index_verify_failed", verifyProblem);
+        sources[plan.id] = `${destination}@sha256:${built.digest}`;
+        provenanceEntries.push({
+          id: plan.id,
+          upstream: { reference: plan.sourceReference, digest: `sha256:${plan.sourceDigest}` },
+          rovara: { repository: plan.repositoryName, reference: sources[plan.id] as string, digest: `sha256:${built.digest}`, tag },
+          children: plan.selected.map((child) => ({ platform: child.platformName, digest: `sha256:${child.digest}`, mediaType: child.mediaType, size: child.size })),
+          dropped: plan.dropped.map((item) => ({ digest: item.digest, reason: item.reason })),
+        });
+      } catch (error) {
+        if (error instanceof RepackError) throw error;
+        refuse(plan.id, "port_failed", error instanceof Error ? error.message.slice(0, 200) : "a step failed");
         throw new RepackError(refusals);
       }
-      if ((await ports.indexes.resolveTag({ repository: destination, tag })) !== `sha256:${built.digest}`) {
-        refuse(plan.id, "tag_missing", `the tag ${tag} does not resolve to the pushed index (an untagged index is expired by the repository's lifecycle policy)`);
-        throw new RepackError(refusals);
-      }
-      sources[plan.id] = `${destination}@sha256:${built.digest}`;
-      provenanceEntries.push({
-        id: plan.id,
-        upstream: { reference: plan.sourceReference, digest: `sha256:${plan.sourceDigest}` },
-        rovara: { repository: plan.repositoryName, reference: sources[plan.id] as string, digest: `sha256:${built.digest}`, tag },
-        children: plan.selected.map((child) => ({ platform: child.platformName, digest: `sha256:${child.digest}`, mediaType: child.mediaType, size: child.size })),
-        dropped: plan.dropped.map((item) => ({ digest: item.digest, reason: item.reason })),
-      });
-    } catch (error) {
-      if (error instanceof RepackError) throw error;
-      refuse(plan.id, "port_failed", error instanceof Error ? error.message.slice(0, 200) : "a step failed");
-      throw new RepackError(refusals);
     }
+    const sortedSources = Object.fromEntries(Object.entries(sources).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+    const sourcesFile = { schemaVersion: 1 as const, sources: sortedSources };
+    const provenance: ProvenanceRecord = { schemaVersion: 1, repackedAt: time, env, registry, entries: provenanceEntries.sort(byId) };
+    return { sources: sourcesFile, provenance, sourcesBytes: jsonBytes(sourcesFile), provenanceBytes: jsonBytes(provenance) };
+  } finally {
+    for (const local of localSnapshots) await local.cleanup();
   }
-  const sortedSources = Object.fromEntries(Object.entries(sources).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-  const sourcesFile = { schemaVersion: 1 as const, sources: sortedSources };
-  const provenance: ProvenanceRecord = { schemaVersion: 1, repackedAt: time, env, registry, entries: provenanceEntries.sort(byId) };
-  return { sources: sourcesFile, provenance, sourcesBytes: jsonBytes(sourcesFile), provenanceBytes: jsonBytes(provenance) };
 }
 
 /** What is wrong with the index the registry serves, if anything: not the bytes built, not hashing to its digest, or not exactly upstream's selected children. */
@@ -405,8 +425,10 @@ export function skopeoRegistryPort(input: { commands: CommandPort; authFile: str
     async readManifest({ repository, digest }) {
       return input.commands.run("skopeo", ["inspect", "--raw", "--authfile", input.authFile, `docker://${repository}@sha256:${digest}`]);
     },
-    async copyImage({ sourceRepository, destinationRepository, digest }) {
-      await input.commands.run("skopeo", ["copy", "--preserve-digests", "--dest-authfile", input.authFile, `docker://${sourceRepository}@sha256:${digest}`, `docker://${destinationRepository}@sha256:${digest}`], { timeoutMs: input.copyTimeoutMs ?? DEFAULT_COPY_TIMEOUT_MS });
+    async copyImage({ sourceRepository, destinationRepository, digest, local }) {
+      const flags = local === undefined ? [] : ["--override-os", local.platform.os, "--override-arch", local.platform.architecture, "--override-variant", local.platform.variant ?? ""];
+      const from = local === undefined ? `docker://${sourceRepository}@sha256:${digest}` : `oci:${local.layoutPath}`;
+      await input.commands.run("skopeo", [...flags, "copy", "--preserve-digests", "--dest-authfile", input.authFile, from, `docker://${destinationRepository}@sha256:${digest}`], { timeoutMs: input.copyTimeoutMs ?? DEFAULT_COPY_TIMEOUT_MS });
     },
   };
 }
@@ -460,6 +482,7 @@ export const fileOutputPort: OutputPort = {
 
 export function repackUsage(): string {
   return `Usage: tsx scripts/catalog-repack.ts --repack-file <file> --env <environment> --registry <host> --sources-out <file> --provenance-out <file> [--entries <id,id,...>] [--catalog-dir ${DEFAULT_CATALOG_DIR}] [--repack-time <ISO time>] [--overwrite] [--command-timeout-seconds ${String(DEFAULT_COMMAND_TIMEOUT_MS / 1000)}] [--copy-timeout-seconds ${String(DEFAULT_COPY_TIMEOUT_MS / 1000)}]
+Local Rovara-built inputs: see environments/service-catalog/README.md (local-oci, strict provenance and pinned digests).
 Run by an operator, with the owner's OK, on STAGING only: ~/.local/share/rovara-tools/staging-aws.sh npx tsx scripts/catalog-repack.ts ... (account 944937319445, us-west-2). Needs skopeo and oras (1.2.0 or newer, for
 \`oras resolve\`) on PATH. Upstream images must be anonymously pullable (no upstream credential is used); Docker Hub limits anonymous pulls, so a run may stop on a rate limit: wait and retry (see --repack-time).
 For each non-retired catalog entry it reads the upstream INDEX named in the repack file, checks its bytes hash to the digest the operator reviewed, picks exactly the catalog's platforms (linux/arm64 and linux/amd64; an
@@ -600,8 +623,9 @@ export async function preflightOutputs(input: { sourcesFile: string; provenanceF
 }
 
 /** The real ports, assembled the way `main` does (a function so a test can check the wiring with a fake command port). */
-export function realRepackPorts(input: { commands: CommandPort; authFile: string; copyTimeoutMs: number; clock: ClockPort; stage: Parameters<typeof orasIndexPort>[0]["stage"] }): RepackPorts {
+export function realRepackPorts(input: { commands: CommandPort; authFile: string; copyTimeoutMs: number; clock: ClockPort; stage: Parameters<typeof orasIndexPort>[0]["stage"]; localOci?: { baseDir: string; workDir: string } }): RepackPorts {
   return {
+    ...(input.localOci === undefined ? {} : { localOci: localOciPort(input.localOci) }),
     registry: skopeoRegistryPort({ commands: input.commands, authFile: input.authFile, copyTimeoutMs: input.copyTimeoutMs }),
     indexes: orasIndexPort({ commands: input.commands, authFile: input.authFile, stage: input.stage }),
     clock: input.clock,
@@ -639,6 +663,7 @@ async function main(argv: string[]): Promise<void> {
       ...(args.entries === undefined ? {} : { entries: args.entries }),
       outputs: { sourcesFile: args.sourcesOut, provenanceFile: args.provenanceOut },
       ports: realRepackPorts({
+        localOci: { baseDir: dirname(args.repackFile), workDir },
         commands,
         authFile,
         copyTimeoutMs: args.copyTimeoutMs,
