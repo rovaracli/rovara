@@ -17,7 +17,7 @@ import { privateAddressHostArgs } from "./private-address-hosts.js";
 import { SANDBOX_INIT, TASK_SANDBOX_NETWORK, TASK_SANDBOX_USER, taskSandboxRunArgs, workspaceKey } from "./task-sandbox.js";
 
 /** Why a fresh round did not run. Fixed codes: nothing a repository, git or docker printed is ever repeated. */
-export type FreshNotRunReason = "export_failed" | "tree_changed" | "too_large" | "no_space" | "corrupt" | "quiesce_failed" | "sandbox_failed" | "no_image" | "not_prepared" | "stopped";
+export type FreshNotRunReason = "export_failed" | "tree_changed" | "too_large" | "no_space" | "corrupt" | "quiesce_failed" | "candidate_moved" | "sandbox_failed" | "no_image" | "not_prepared" | "stopped";
 
 /** The words the check shows for each reason. Each starts with "not run", and none says "sealed". */
 export const FRESH_NOT_RUN_SENTENCES: Readonly<Record<FreshNotRunReason, string>> = {
@@ -27,6 +27,7 @@ export const FRESH_NOT_RUN_SENTENCES: Readonly<Record<FreshNotRunReason, string>
   no_space: "not run: there is not enough free disk space for a fresh check sandbox",
   corrupt: "not run: the committed code could not be read safely (an object is missing or does not match its id)",
   quiesce_failed: "not run: programs the agent left running could not be stopped, so the fresh check sandbox did not start",
+  candidate_moved: "not run: the candidate is not the commit and tree the checks were planned for, so the fresh check sandbox did not start",
   sandbox_failed: "not run: the fresh check sandbox could not start (the container did not start)",
   no_image: "not run: the fresh check sandbox could not start (no sandbox image is configured)",
   not_prepared: "not run: the fresh check sandbox could not be prepared (the project's setup did not finish)",
@@ -163,12 +164,14 @@ export async function exportCandidateForFreshRound(input: {
     directory = await mkdtemp(join(parent, `${safeName(input.taskId)}-`));
     await chmod(directory, 0o755);
     const skipped: FreshSkippedRepositoryEntry[] = [];
+    // the caps are for the whole export: each repository adds to what the earlier ones used
+    const used = { files: 0, bytes: 0 };
     for (const repository of [...input.repositories].sort((left, right) => left.repositoryId.localeCompare(right.repositoryId))) {
       if (input.signal.aborted) return await refuse(parent, directory, "stopped");
       const destination = repository.path === "." ? directory : join(directory, repository.path);
       await mkdir(destination, { recursive: true, mode: 0o755 });
       await chmod(destination, 0o755);
-      const entries = await materializeVerified({ repositoryRoot: resolve(repository.directory), commitSha: repository.commitSha, treeSha: repository.treeSha, destination, scratchRoot: join(parent, SCRATCH_NAME), signal: input.signal, ...(input.caps === undefined ? {} : { caps: input.caps }) });
+      const entries = await materializeVerified({ repositoryRoot: resolve(repository.directory), commitSha: repository.commitSha, treeSha: repository.treeSha, destination, scratchRoot: join(parent, SCRATCH_NAME), signal: input.signal, used, ...(input.caps === undefined ? {} : { caps: input.caps }) });
       for (const entry of entries) skipped.push({ repositoryId: repository.repositoryId, ...entry });
     }
     return { ok: true, directory, skipped };

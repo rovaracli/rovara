@@ -402,10 +402,11 @@ async function runTask(
   // TE-B1-fresh: which kind of round this task's official checks are (check-round-kind.ts). A dev container, the local shell and a task with test services are never moved to the fresh round.
   const freshSeam = dependencies.freshCheckRound?.(invocation);
   const roundKind = chooseCheckRound({ freshGate: freshSeam !== undefined, testServices: testServices !== undefined, sealedCleared: sealedRoundClearedFrom(dependencies.sealedRoundCleared), devcontainer: devcontainer !== undefined, sandbox: sandbox !== undefined, candidateCommitted: mode === "IMPLEMENT" || mode === "CHECKS" });
-  const freshWiring = (onProgress: (line: string) => void) => freshSeam === undefined ? undefined : {
-    seam: freshSeam, docker: fileToolsDocker, rootPath: canonicalRoot, taskId: invocation.operationId, image: sandboxImageOf(dependencies.taskShell), onProgress,
+  const quiesceWorkingPlace = quietWorkingPlace({ docker: fileToolsDocker, rootPath: canonicalRoot, sandboxName: sandbox?.name, ...(dependencies.stopBeforeReading?.stopWorkspaceProcesses === undefined ? {} : { stopProcesses: dependencies.stopBeforeReading.stopWorkspaceProcesses }) });
+  const freshWiring = (onProgress: (line: string) => void, keepExport: boolean) => freshSeam === undefined ? undefined : {
+    seam: freshSeam, docker: fileToolsDocker, rootPath: canonicalRoot, taskId: invocation.operationId, image: sandboxImageOf(dependencies.taskShell), onProgress, keepExport,
     // H1b: nothing the agent left running may act while the round runs: the worker's leftover processes and the working sandbox's programs are stopped first, every round (CHECKS mode does the former at its start, run-task.ts above).
-    quiesce: quietWorkingPlace({ docker: fileToolsDocker, rootPath: canonicalRoot, sandboxName: sandbox?.name, ...(dependencies.stopBeforeReading?.stopWorkspaceProcesses === undefined ? {} : { stopProcesses: dependencies.stopBeforeReading.stopWorkspaceProcesses }) }),
+    quiesce: quiesceWorkingPlace,
     // The candidate as it is NOW, read again for each round: each repository's commit and tree, with where it sits in the workspace.
     candidate: async () => (await readCandidateRepositories(candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep))).map((identity) => {
       const repository = manifest.repositories.find((entry) => entry.name === identity.repositoryId);
@@ -541,7 +542,7 @@ async function runTask(
         ? "AgentX is checking the plan's unchanged-behaviour checks against the current app. It has no code-editing tools and decides nothing about the change."
         : "AgentX is running the selected project checks against the current code. This retry has no code-editing tools." });
       // The official round is the candidate's (`final`: sealed with test services, fresh when the gate is on, today's otherwise); the baseline scans and the test proof below run on the original code (`before`).
-      const chosenRound = checkRoundRunners({ kind: roundKind, testServices, fresh: freshWiring((message) => { void events.append("progress", { message }).catch(() => undefined); }), base: dependencies.checkRunners ?? createCheckRunners({
+      const chosenRound = checkRoundRunners({ kind: roundKind, testServices, fresh: freshWiring((message) => { void events.append("progress", { message }).catch(() => undefined); }, invocation.payload.evidenceCapture === true), base: dependencies.checkRunners ?? createCheckRunners({
         rootPath: canonicalRoot,
         ...(devcontainer === undefined || devcontainerCli === undefined ? {} : { devcontainer: { cli: devcontainerCli, target: devcontainer } }),
         ...(bashOperations === undefined ? {} : { bashOperations }),
@@ -550,6 +551,8 @@ async function runTask(
       }) });
       const runners = chosenRound.final;
       const originalCodeRunners = chosenRound.before;
+      // The round checks exactly the candidate recorded here (the one the broker binds the report to), or is not run.
+      chosenRound.evidence?.pin(candidateBefore);
       releaseFreshEvidence = chosenRound.evidence === undefined ? undefined : () => chosenRound.evidence!.releaseEvidence();
       const roundBudgetMs = dependencies.checkBudgetMs?.() ?? testEnv?.budgetMs ?? CHECK_ROUND_BUDGET_MS;
       const roundStarted = Date.now();
@@ -601,8 +604,11 @@ async function runTask(
       if (invocation.payload.evidenceCapture === true && !stop.signal.aborted && (!freshRound || reportRoot !== undefined)) {
         // Test services: the rounds' usage record rides in the raw file (the broker labels it; nothing of it was reaching the evidence). Read before the services stop.
         const servicesRecord = await testServices?.usageRecord().catch(() => undefined);
+        // The scanner baseline runs on the original code in the WORKING sandbox, after the fresh round: whatever the agent left running is stopped again first, so nothing can write the baseline the findings are compared with. A sandbox that cannot be
+        // quieted gets no baseline (no baseline, no finding is called new). The scanner itself is the project's command over the project's files, as it always was.
+        const baselineAllowed = !freshRound || await quiesceWorkingPlace(stop.signal).then(() => true, () => false);
         await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, ...(reportRoot === undefined ? {} : { reportRoot }), plan, entries: round.entries, repositories, candidateBefore, roundStartedAtMs: roundStarted, selection: testEnv?.selection, ...(servicesRecord === undefined ? {} : { testServices: servicesRecord }), coveragePaths: invocation.payload.testEnvironment?.checks.map((check) => check.coveragePath),
-          baseline: { runners: originalCodeRunners, signal: stop.signal, budgetMs: roundBudgetMs - roundSpentMs, ...(dependencies.testProofOriginalCode === undefined ? {} : { originalCode: dependencies.testProofOriginalCode }) } });
+          ...(baselineAllowed ? { baseline: { runners: originalCodeRunners, signal: stop.signal, budgetMs: roundBudgetMs - roundSpentMs, ...(dependencies.testProofOriginalCode === undefined ? {} : { originalCode: dependencies.testProofOriginalCode }) } } : {}) });
       }
       // The export is not needed any more: removed now (and again, idempotently, when the run ends).
       await chosenRound.evidence?.releaseEvidence();
@@ -775,7 +781,8 @@ async function runTask(
     // The agent's shell is the devcontainer's, where the repository is at its container path (Minor 11).
     ...(containerPaths === undefined ? {} : { cdTarget: (target: string) => workspaceRelativeCdTarget(target, containerPaths, canonicalRoot) }),
   });
-  const chosenRound = checkRoundRunners({ kind: roundKind, testServices, fresh: freshWiring((message) => { void events.append("progress", { message }).catch(() => undefined); }), base: dependencies.checkRunners ?? createCheckRunners({
+  // The coding run reads no evidence from a fresh round's export, so it keeps none (an export that lingered would be left on the volume).
+  const chosenRound = checkRoundRunners({ kind: roundKind, testServices, fresh: freshWiring((message) => { void events.append("progress", { message }).catch(() => undefined); }, false), base: dependencies.checkRunners ?? createCheckRunners({
     rootPath: canonicalRoot,
     ...(devcontainer === undefined || devcontainerCli === undefined ? {} : { devcontainer: { cli: devcontainerCli, target: devcontainer } }),
     ...(sandbox === undefined ? {} : { sandbox }),
@@ -795,6 +802,7 @@ async function runTask(
     runners: checkRunners,
     // The before results are measured on the original code: the working runners, never the fresh round's (there is no candidate to export there).
     beforeRunners: chosenRound.before,
+    pinCandidate: (identity) => { chosenRound.evidence?.pin(pinnedOf(identity)); },
     budgetMs: checkBudgetMs,
     signal: verificationStop.signal,
     recorder,
@@ -1109,6 +1117,7 @@ async function runTask(
       if (candidateBefore.length !== 1 || candidateBefore[0]?.treeSha !== retainedTreeSha) {
         throw agentXError("OPERATION_INTERRUPTED", "workspace changed before the retained ordered-work candidate could be checked");
       }
+      chosenRound.evidence?.pin(candidateBefore);
       const round = await runChecks(plan, checkRunners, { budgetMs: checkBudgetMs(), signal: verificationStop.signal });
       const candidateAfter = await readCandidateRepositories(repositories);
       const candidateUnchanged = createCandidateManifest(candidateBefore).digest === createCandidateManifest(candidateAfter).digest;
@@ -2130,6 +2139,18 @@ function candidateInputs(
       ...(sweep === undefined ? {} : { sweep: () => sweep(directory) }),
     };
   });
+}
+
+/** The repositories of a candidate identity string (the verification extension's `candidateIdentity`): their ids, commits and trees. A string that is not that gives none, and a round with none is not run. */
+function pinnedOf(identity: string): Array<{ repositoryId: string; commitSha: string; treeSha: string }> {
+  try {
+    const parsed: unknown = JSON.parse(identity);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((item: unknown) => {
+      const entry = item as { repositoryId?: unknown; commitSha?: unknown; treeSha?: unknown };
+      return typeof entry.repositoryId === "string" && typeof entry.commitSha === "string" && typeof entry.treeSha === "string" ? [{ repositoryId: entry.repositoryId, commitSha: entry.commitSha, treeSha: entry.treeSha }] : [];
+    });
+  } catch { return []; }
 }
 
 /** The task sandbox's image: the selection's own, else the worker's environment (AGENTX_SANDBOX_IMAGE). The fresh check sandbox starts from the same one. */

@@ -1,11 +1,12 @@
 // TE-B1-fresh: the fresh check sandbox's run arguments (an allow-list in the style of checkSandboxArgProblems) and the clean export of the candidate commit (fresh-check-sandbox.ts). The export tests drive real git.
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, statSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FRESH_EXPORT_CAPS } from "../../packages/worker/src/fresh-check-export.js";
+import { FRESH_EXPORT_CAPS, FreshExportError, materializeVerified } from "../../packages/worker/src/fresh-check-export.js";
 import {
   FRESH_NOT_RUN_SENTENCES, FRESH_SANDBOX_ROUND_LABEL, exportCandidateForFreshRound, freshSandboxArgProblems, freshSandboxRunArgs, removeFreshExport, type FreshSandboxRunInput,
 } from "../../packages/worker/src/fresh-check-sandbox.js";
@@ -230,6 +231,108 @@ describe("the clean export of the candidate commit", () => {
     chmodSync(join(exported.directory, "repo", "src"), 0o555);
     await removeFreshExport(root, exported.directory);
     expect(existsSync(exported.directory)).toBe(false);
+  });
+  // ---- the second review: memory, caps across repositories, errors, links
+  /** Writes a loose object by hand (the way an agent with write access to .git/objects can) and returns its id. */
+  function looseObject(repo: string, type: "blob" | "tree" | "commit", content: Buffer): string {
+    const body = Buffer.concat([Buffer.from(`${type} ${String(content.length)}\0`), content]);
+    const sha = createHash("sha1").update(body).digest("hex");
+    const dirPath = join(repo, ".git", "objects", sha.slice(0, 2));
+    mkdirSync(dirPath, { recursive: true });
+    writeFileSync(join(dirPath, sha.slice(2)), deflateSync(body), { mode: 0o644 });
+    return sha;
+  }
+  const treeOf = (entries: Array<{ mode: string; name: string; sha: string }>) => Buffer.concat(entries.flatMap((entry) => [Buffer.from(`${entry.mode} ${entry.name}\0`), Buffer.from(entry.sha, "hex")]));
+  const commitOf = (repo: string, tree: string) => looseObject(repo, "commit", Buffer.from(`tree ${tree}\nauthor t <t@e.test> 1 +0000\ncommitter t <t@e.test> 1 +0000\n\nm\n`));
+  function emptyRepository() {
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    git(repo, "init", "--quiet", "-b", "main");
+    return repo;
+  }
+
+  it("MEDIUM: a tiny repository whose one tree has a huge name, referenced 16 times, is refused before it is read, and memory stays small", async () => {
+    const repo = emptyRepository();
+    const blob = looseObject(repo, "blob", Buffer.from("x"));
+    const huge = looseObject(repo, "tree", treeOf([{ mode: "100644", name: "a".repeat(40 * 1024 * 1024), sha: blob }]));
+    const rootTree = looseObject(repo, "tree", treeOf(Array.from({ length: 16 }, (_unused, index) => ({ mode: "40000", name: `d${String(index)}`, sha: huge }))));
+    const commit = commitOf(repo, rootTree);
+    global.gc?.();
+    const before = process.memoryUsage().rss;
+    let peak = before;
+    const sampler = setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 2);
+    try {
+      const exported = await exportCandidateForFreshRound({ rootPath: root, taskId: "t1", signal: signal(), repositories: [{ repositoryId: "repo", path: "repo", directory: repo, commitSha: commit, treeSha: rootTree }] });
+      expect(exported).toEqual({ ok: false, reason: "too_large" });
+    } finally { clearInterval(sampler); }
+    expect(peak - before).toBeLessThan(96 * 1024 * 1024);
+    expect(left()).toEqual([]);
+  });
+  it("a tree is read once however many times it is referenced, and the bytes of all trees are capped", async () => {
+    const repo = emptyRepository();
+    const blob = looseObject(repo, "blob", Buffer.from("x"));
+    const small = looseObject(repo, "tree", treeOf([{ mode: "100644", name: "f", sha: blob }]));
+    const rootTree = looseObject(repo, "tree", treeOf(Array.from({ length: 8 }, (_unused, index) => ({ mode: "40000", name: `d${String(index)}`, sha: small }))));
+    const commit = commitOf(repo, rootTree);
+    const dest = join(root, "dest-shared");
+    mkdirSync(dest);
+    const common = { repositoryRoot: repo, commitSha: commit, treeSha: rootTree, destination: dest, scratchRoot: join(root, "scratch"), signal: signal() };
+    expect(await materializeVerified({ ...common })).toEqual([]);
+    // the 8 references cost the tree's bytes ONCE: 29 bytes for the small tree and 232 for the root fit a cap of 300 only when a tree is read once
+    const once = join(root, "dest-once");
+    mkdirSync(once);
+    expect(await materializeVerified({ ...common, destination: once, caps: { maxTreeBytesTotal: 300 } })).toEqual([]);
+    expect(readdirSync(dest).sort()).toEqual(["d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7"]);
+    await expect(materializeVerified({ ...common, destination: (() => { const d = join(root, "dest2"); mkdirSync(d); return d; })(), caps: { maxTreeBytesTotal: 10 } })).rejects.toMatchObject({ reason: "too_large" });
+    await expect(materializeVerified({ ...common, destination: (() => { const d = join(root, "dest3"); mkdirSync(d); return d; })(), caps: { maxTreeBytes: 10 } })).rejects.toMatchObject({ reason: "too_large" });
+  });
+  it("a tree entry name over the name cap is refused in fixed words", async () => {
+    const repo = emptyRepository();
+    // the blob does not exist: only the name cap, which is checked before anything is fetched, gives 'export_failed' here
+    const rootTree = looseObject(repo, "tree", treeOf([{ mode: "100644", name: "n".repeat(300), sha: "1".repeat(40) }]));
+    expect(await exportCandidateForFreshRound({ rootPath: root, taskId: "t1", signal: signal(), repositories: [{ repositoryId: "repo", path: "repo", directory: repo, commitSha: commitOf(repo, rootTree), treeSha: rootTree }] })).toEqual({ ok: false, reason: "export_failed" });
+    expect(left()).toEqual([]);
+  });
+  it("only a FreshExportError is ever thrown: a path too long for the disk and a duplicate name are mapped", async () => {
+    const repo = emptyRepository();
+    const blob = looseObject(repo, "blob", Buffer.from("x"));
+    let tree = looseObject(repo, "tree", treeOf([{ mode: "100644", name: "f", sha: blob }]));
+    for (let depth = 0; depth < 60; depth += 1) tree = looseObject(repo, "tree", treeOf([{ mode: "40000", name: String(depth).padStart(2, "0").repeat(50), sha: tree }]));
+    const dest = join(root, "dest-deep");
+    mkdirSync(dest);
+    await expect(materializeVerified({ repositoryRoot: repo, commitSha: commitOf(repo, tree), treeSha: tree, destination: dest, scratchRoot: join(root, "scratch"), signal: signal() })).rejects.toBeInstanceOf(FreshExportError);
+    const other = looseObject(repo, "blob", Buffer.from("y"));
+    const dup = looseObject(repo, "tree", treeOf([{ mode: "100644", name: "same", sha: blob }, { mode: "100644", name: "same", sha: other }]));
+    const dest2 = join(root, "dest-dup");
+    mkdirSync(dest2);
+    await expect(materializeVerified({ repositoryRoot: repo, commitSha: commitOf(repo, dup), treeSha: dup, destination: dest2, scratchRoot: join(root, "scratch"), signal: signal() })).rejects.toBeInstanceOf(FreshExportError);
+  });
+  it("the caps apply to the whole export, across repositories", async () => {
+    const planted = plantedRepository();
+    const two = (path: string) => ({ repositoryId: path, path, directory: planted.repo, commitSha: planted.commitSha, treeSha: planted.treeSha });
+    const one = await exportCandidateForFreshRound({ rootPath: root, taskId: "t1", signal: signal(), repositories: [two("a")], caps: { maxFiles: 6 } });
+    expect(one.ok).toBe(true);
+    if (one.ok) await removeFreshExport(root, one.directory);
+    expect(await exportCandidateForFreshRound({ rootPath: root, taskId: "t1", signal: signal(), repositories: [two("a"), two("b")], caps: { maxFiles: 6 } })).toEqual({ ok: false, reason: "too_large" });
+    expect(await exportCandidateForFreshRound({ rootPath: root, taskId: "t1", signal: signal(), repositories: [two("a"), two("b")], caps: { maxTotalBytes: 40 } })).toEqual({ ok: false, reason: "too_large" });
+    expect(left()).toEqual([]);
+  });
+  it("making an export removable never follows a link: a link a check left to a folder outside keeps that folder's mode", async () => {
+    const planted = plantedRepository();
+    const exported = await exportCandidateForFreshRound({ rootPath: root, taskId: "t1", signal: signal(), repositories: repositoryOf(planted) });
+    if (!exported.ok) throw new Error("export refused");
+    const outside = join(root, "outside-folder");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "keep.txt"), "keep");
+    chmodSync(outside, 0o500);
+    symlinkSync(outside, join(exported.directory, "repo", "link-to-outside"));
+    symlinkSync(join(outside, "keep.txt"), join(exported.directory, "repo", "link-to-file"));
+    chmodSync(join(outside, "keep.txt"), 0o400);
+    await removeFreshExport(root, exported.directory);
+    expect(existsSync(exported.directory)).toBe(false);
+    expect(statSync(outside).mode & 0o777).toBe(0o500);
+    expect(statSync(join(outside, "keep.txt")).mode & 0o777).toBe(0o400);
+    chmodSync(outside, 0o700);
   });
   it("every refusal sentence starts with 'not run' and never says sealed without 'not'", () => {
     for (const sentence of Object.values(FRESH_NOT_RUN_SENTENCES)) {

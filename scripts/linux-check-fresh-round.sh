@@ -114,7 +114,33 @@ NETS=$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{$
 verdict FR4 one_network "$([[ "$NETS" == "$NET" ]] || printf 'networks are: %s' "$NETS")" "only $NET"
 
 # the stop script the worker runs in the working sandbox (kept equal to STOP_SANDBOX_PROGRAMS_SCRIPT by tests/unit/linux-check-fresh-round-script.test.ts)
-STOP_SCRIPT='n=0; pass=0; while [ "$pass" -lt 3 ]; do n=0; for p in /proc/[0-9]*; do pid=${p#/proc/}; [ "$pid" = 1 ] && continue; [ "$pid" = "$$" ] && continue; cmd=$(tr "\0" " " < "$p/cmdline" 2>/dev/null); case "$cmd" in "sleep infinity "*|"") continue;; esac; state=$(sed -n "s/^State:[[:space:]]*\(.\).*/\1/p" "$p/status" 2>/dev/null); [ "$state" = Z ] && continue; kill -9 "$pid" 2>/dev/null; n=$((n+1)); done; [ "$n" -eq 0 ] && break; pass=$((pass+1)); done; echo "REMAINING:$n"'
+STOP_SCRIPT='P=${PROC_ROOT:-/proc}
+keep=""; best=""
+for p in "$P"/[0-9]*; do
+  pid=${p#"$P"/}
+  set -- $(sed "s/^.*) //" "$p/stat" 2>/dev/null)
+  [ "$2" = 1 ] || continue
+  if [ -z "$best" ] || [ "${20:-0}" -lt "$best" ]; then best=${20:-0}; keep=$pid; fi
+done
+pass=0; n=0
+while [ "$pass" -lt 3 ]; do
+  n=0; list=""
+  for p in "$P"/[0-9]*; do
+    pid=${p#"$P"/}
+    [ "$pid" = 1 ] && continue
+    [ "$pid" = "$$" ] && continue
+    [ "$pid" = "$keep" ] && continue
+    set -- $(sed "s/^.*) //" "$p/stat" 2>/dev/null)
+    [ -z "$1" ] && continue
+    [ "$1" = Z ] && continue
+    list="$list $pid"; n=$((n+1))
+  done
+  [ "$n" -eq 0 ] && break
+  for pid in $list; do kill -STOP "$pid" 2>/dev/null; done
+  for pid in $list; do kill -9 "$pid" 2>/dev/null; done
+  pass=$((pass+1))
+done
+echo "REMAINING:$n"'
 
 # FR5: inter-container traffic. A listener in the fresh sandbox; a stand-in working sandbox on the same network tries to connect.
 FAILS=""
@@ -145,20 +171,28 @@ else
 fi
 verdict FR5 working_sandbox_cannot_reach_the_fresh_one "$FAILS" "blocked on $NET (enable_icc=$ICC), connected on the control network: no pause needed"
 
-# FR6: the stop script, in the stand-in working sandbox (still up from FR5): leftovers die, the sandbox stays.
+# FR6: the stop script, in the stand-in working sandbox (still up from FR5): every leftover dies, however it disguises itself (a command line of "sleep infinity", a renamed bash, node's process.title as "sleep infinity" and as ""), and the
+# sandbox's own `sleep infinity` and the sandbox stay. Leftovers are told apart here by an environment marker only, never by command line.
 FAILS=""
-docker exec --detach "$WORKING" sh -c 'exec sleep 777' >/dev/null 2>&1
-docker exec --detach "$WORKING" sh -c 'setsid sleep 778 </dev/null >/dev/null 2>&1 &' >/dev/null 2>&1
+LDIR=/tmp/fresh-leftovers
+docker exec "$WORKING" sh -c "mkdir -p $LDIR/bin && ln -sf \$(command -v bash) $LDIR/bin/sleep && printf 'while :; do :; done\n' > $LDIR/infinity" >/dev/null 2>&1
+docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" sh -c 'exec sleep 777' >/dev/null 2>&1
+docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" sh -c 'setsid sleep 778 </dev/null >/dev/null 2>&1 &' >/dev/null 2>&1
+docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" sh -c "cd $LDIR && PATH=$LDIR/bin:\$PATH exec sleep infinity" >/dev/null 2>&1
+docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" node -e 'process.title = "sleep infinity"; setInterval(() => {}, 1000)' >/dev/null 2>&1
+docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" node -e 'process.title = ""; setInterval(() => {}, 1000)' >/dev/null 2>&1
+docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" sh -c 'command -v perl >/dev/null && exec perl -e "\$0 = q(sleep infinity); sleep 1 while 1"' >/dev/null 2>&1
 sleep "$SETTLE"
-COUNT_LEFTOVERS='n=0; for p in /proc/[0-9]*; do case "$(tr "\0" " " < "$p/cmdline" 2>/dev/null)" in "sleep 777 "*|"sleep 778 "*) n=$((n+1));; esac; done; echo "LEFT:$n"'
+sleep 1
+COUNT_LEFTOVERS='n=0; for p in /proc/[0-9]*; do if tr "\0" "\n" < "$p/environ" 2>/dev/null | grep -qx FRESH_LEFTOVER_MARK=1; then n=$((n+1)); fi; done; echo "LEFT:$n"'
 BEFORE=$(docker exec "$WORKING" sh -c "$COUNT_LEFTOVERS" 2>&1 | tr -d '[:space:]')
-[[ "$BEFORE" == "LEFT:2" ]] || FAILS="$FAILS the leftovers were not running before the stop ($BEFORE);"
+case "$BEFORE" in LEFT:[5-9]|LEFT:[1-9][0-9]) ;; *) FAILS="$FAILS the leftovers were not running before the stop ($BEFORE);" ;; esac
 STOPPED=$(docker exec "$WORKING" sh -c "$STOP_SCRIPT" 2>&1 | tr -d '[:space:]')
 [[ "$STOPPED" == "REMAINING:0" ]] || FAILS="$FAILS the stop script said $STOPPED;"
 AFTER=$(docker exec "$WORKING" sh -c "$COUNT_LEFTOVERS" 2>&1 | tr -d '[:space:]')
 [[ "$AFTER" == "LEFT:0" ]] || FAILS="$FAILS the leftovers are still running ($AFTER);"
 [[ "$(docker inspect --format '{{.State.Running}}' "$WORKING" 2>/dev/null)" == "true" ]] || FAILS="$FAILS the sandbox itself stopped;"
-verdict FR6 leftover_programs_stopped_sandbox_stays "$FAILS" "a background program and a setsid daemon were killed; the sandbox is still running"
+verdict FR6 leftover_programs_stopped_sandbox_stays "$FAILS" "$BEFORE disguised leftovers (renamed bash, node titles, setsid) were killed; the sandbox and its own sleep are still running"
 
 # FR7: the container and the export are gone after the round
 FAILS=""

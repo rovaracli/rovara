@@ -64,7 +64,13 @@ function fakeDocker(options: FakeOptions = {}) {
 
 const command = (executable: string, args: string[] = []): ProjectCommand => ({ cwd: "repo", executable, args, timeoutSeconds: 30 });
 function input(docker: DockerCli, extra: Partial<FreshCheckRoundInput> = {}): FreshCheckRoundInput {
-  return { docker, rootPath: root, taskId: "t1", image: "worker:img", candidate: () => Promise.resolve([candidate]), setup: [], ensureNetwork: () => Promise.resolve(), hostCpus: 4, hostMemoryBytes: 8 * 1024 ** 3, environment: {}, ...extra };
+  return { docker, rootPath: root, taskId: "t1", image: "worker:img", candidate: () => Promise.resolve([candidate]), pinned: () => [candidate], setup: [], ensureNetwork: () => Promise.resolve(), hostCpus: 4, hostMemoryBytes: 8 * 1024 ** 3, environment: {}, ...extra };
+}
+/** The runners a task uses, pinned to the test candidate as run-task pins them. */
+function freshRunners(extra: Partial<FreshCheckRoundInput> & { keepExport?: boolean } = {}, docker: DockerCli = fakeDocker().docker) {
+  const runners = createFreshCheckRunners(input(docker, extra));
+  runners.pin([candidate]);
+  return runners;
 }
 const exportsLeft = () => (existsSync(join(root, ".agentx", "fresh-check")) ? readdirSync(join(root, ".agentx", "fresh-check")).filter((name) => name !== "scratch") : []);
 const runCalls = (calls: Seen[]) => calls.filter((call) => call.args[0] === "run");
@@ -134,7 +140,7 @@ describe("withFreshCheckRound", () => {
   it("NEVER falls back: a failed export is 'not run', the round is not called, and nothing runs anywhere", async () => {
     const fake = fakeDocker();
     let called = false;
-    const result = await withFreshCheckRound(input(fake.docker, { candidate: () => Promise.resolve([{ ...candidate, treeSha: "c".repeat(40) }]) }), () => { called = true; return Promise.resolve(1); });
+    const result = await withFreshCheckRound(input(fake.docker, { candidate: () => Promise.resolve([{ ...candidate, treeSha: "c".repeat(40) }]), pinned: () => [{ ...candidate, treeSha: "c".repeat(40) }] }), () => { called = true; return Promise.resolve(1); });
     expect(called).toBe(false);
     expect(result).toEqual({ kind: "not_run", reason: "tree_changed", sentence: FRESH_NOT_RUN_SENTENCES.tree_changed });
     expect(fake.calls).toEqual([]);
@@ -216,7 +222,7 @@ describe("createFreshCheckRunners (the runners a task uses: a round opens at fre
   it("runChecks runs the checks in the fresh sandbox, the first progress line is 'not sealed', and the sandbox is gone afterwards", async () => {
     const fake = fakeDocker();
     const lines: string[] = [];
-    const runners = createFreshCheckRunners(input(fake.docker, { onProgress: (line) => lines.push(line) }));
+    const runners = freshRunners({ onProgress: (line) => lines.push(line), keepExport: true }, fake.docker);
     const round = await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, runners, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(round.entries.map((entry) => entry.after)).toEqual(["passed"]);
     expect(lines[0]).toBe(FRESH_ROUND_FIRST_LINE);
@@ -228,20 +234,20 @@ describe("createFreshCheckRunners (the runners a task uses: a round opens at fre
   });
   it("two rounds (the extra try) are two sandboxes", async () => {
     const fake = fakeDocker();
-    const runners = createFreshCheckRunners(input(fake.docker));
+    const runners = freshRunners({ keepExport: true }, fake.docker);
     for (let round = 0; round < 2; round += 1) await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, runners, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(runCalls(fake.calls)).toHaveLength(2);
   });
   it("a round that could not start gives every check 'not_run' with the fixed sentence, and the working place is never used", async () => {
     const fake = fakeDocker({ runExit: 125 });
-    const runners = createFreshCheckRunners(input(fake.docker));
+    const runners = freshRunners({ keepExport: true }, fake.docker);
     const round = await runChecks({ source: "project", readiness: [command("npm", ["test"]), command("npm", ["run", "lint"])] }, runners, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(round.entries.map((entry) => entry.after)).toEqual(["not_run", "not_run"]);
     for (const entry of round.entries) expect(entry.output).toContain(FRESH_NOT_RUN_SENTENCES.sandbox_failed);
     expect(fake.calls.filter((call) => call.args[0] === "exec")).toEqual([]);
   });
   it("a command outside a round is refused (CheckNotRunError), not run somewhere else", async () => {
-    const runners = createFreshCheckRunners(input(fakeDocker().docker));
+    const runners = freshRunners({ keepExport: true });
     await expect(runners.runProjectCommand(command("npm"), new AbortController().signal)).rejects.toBeInstanceOf(CheckNotRunError);
     await expect(runners.runAgentCommand("npm test", 1_000, new AbortController().signal)).rejects.toBeInstanceOf(CheckNotRunError);
   });
@@ -275,7 +281,7 @@ describe("H1b: nothing the agent left running may act during the round", () => {
   });
   it("every round quiesces (the extra try's second round too)", async () => {
     let count = 0;
-    const runners = createFreshCheckRunners(input(fakeDocker().docker, { quiesce: () => { count += 1; return Promise.resolve(); } }));
+    const runners = freshRunners({ quiesce: () => { count += 1; return Promise.resolve(); } });
     for (let round = 0; round < 2; round += 1) await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, runners, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(count).toBe(2);
   });
@@ -288,10 +294,11 @@ describe("H1b: nothing the agent left running may act during the round", () => {
     await expect(stopWorkingSandboxPrograms(docker(0, 1), WORKING)).rejects.toThrow(/could not be stopped/u);
     await expect(stopWorkingSandboxPrograms({ run: () => Promise.resolve({ exitCode: 0, stdout: "", stderr: "" }) }, WORKING)).rejects.toThrow();
   });
-  it("the stop script never kills PID 1, the sandbox's own sleep or itself", () => {
+  it("the stop script keeps by PID and start time, never by a command line (the behaviour itself is tested in worker-stop-sandbox-programs-script.test.ts)", () => {
+    expect(STOP_SANDBOX_PROGRAMS_SCRIPT).not.toMatch(/cmdline/u);
     expect(STOP_SANDBOX_PROGRAMS_SCRIPT).toContain('[ "$pid" = 1 ] && continue');
-    expect(STOP_SANDBOX_PROGRAMS_SCRIPT).toContain('[ "$pid" = "$$" ] && continue');
-    expect(STOP_SANDBOX_PROGRAMS_SCRIPT).toContain('"sleep infinity "*');
+    expect(STOP_SANDBOX_PROGRAMS_SCRIPT).toContain('[ "$pid" = "$keep" ] && continue');
+    expect(STOP_SANDBOX_PROGRAMS_SCRIPT).toContain("${20:-0}");
   });
 });
 
@@ -302,7 +309,7 @@ describe("L3: a round ended while its sandbox was still starting releases it whe
     let reached!: () => void;
     const runCalled = new Promise<void>((done) => { reached = done; });
     const fake = fakeDocker({ holdRun: hold, onRun: () => reached() });
-    const runners = createFreshCheckRunners(input(fake.docker));
+    const runners = freshRunners({ keepExport: true }, fake.docker);
     const stop = new AbortController();
     const starting = runners.freshServices!(stop.signal);
     // the container is being started (docker run is in flight) when the round is cancelled and ended
@@ -322,7 +329,7 @@ describe("H1c: the export is kept for the evidence only when the round ran and i
   const evidence = (runners: ReturnType<typeof createFreshCheckRunners>) => runners.evidenceRoot();
   it("a round that ran keeps its export until it is released; the container is already gone", async () => {
     const fake = fakeDocker();
-    const runners = createFreshCheckRunners(input(fake.docker));
+    const runners = freshRunners({ keepExport: true }, fake.docker);
     await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, runners, { budgetMs: 60_000, signal: new AbortController().signal });
     const root = evidence(runners)!;
     expect(root).toBeDefined();
@@ -333,20 +340,61 @@ describe("H1c: the export is kept for the evidence only when the round ran and i
     expect(evidence(runners)).toBeUndefined();
   });
   it("a round that did not run, or whose container could not be removed, keeps nothing", async () => {
-    const failed = createFreshCheckRunners(input(fakeDocker({ runExit: 125 }).docker));
+    const failed = freshRunners({ keepExport: true }, fakeDocker({ runExit: 125 }).docker);
     await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, failed, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(evidence(failed)).toBeUndefined();
-    const stuck = createFreshCheckRunners(input(fakeDocker({ rmFails: true }).docker));
+    const stuck = freshRunners({ keepExport: true }, fakeDocker({ rmFails: true }).docker);
     await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, stuck, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(evidence(stuck)).toBeUndefined();
     expect(exportsLeft()).toEqual([]);
   });
   it("a new round releases the earlier round's export", async () => {
-    const runners = createFreshCheckRunners(input(fakeDocker().docker));
+    const runners = freshRunners({ keepExport: true });
     await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, runners, { budgetMs: 60_000, signal: new AbortController().signal });
     const first = evidence(runners)!;
     await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, runners, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(existsSync(first)).toBe(false);
     await runners.releaseEvidence();
+  });
+});
+
+describe("H1b (2): the round is pinned to the candidate that was recorded", () => {
+  it("a candidate that is not the recorded one is 'not run': nothing is exported, nothing starts, the round is not called", async () => {
+    const moved = { ...candidate, treeSha: "d".repeat(40) };
+    const fake = fakeDocker();
+    let called = false;
+    for (const current of [[moved], [{ ...candidate, commitSha: "e".repeat(40) }], [], [candidate, { ...candidate, repositoryId: "other" }]]) {
+      const result = await withFreshCheckRound(input(fake.docker, { candidate: () => Promise.resolve(current) }), () => { called = true; return Promise.resolve(1); });
+      expect(result).toEqual({ kind: "not_run", reason: "candidate_moved", sentence: FRESH_NOT_RUN_SENTENCES.candidate_moved });
+    }
+    expect(called).toBe(false);
+    expect(fake.calls).toEqual([]);
+    expect(exportsLeft()).toEqual([]);
+  });
+  it("a round with nothing recorded is not run", async () => {
+    const fake = fakeDocker();
+    expect(await withFreshCheckRound(input(fake.docker, { pinned: () => undefined }), () => Promise.resolve(1))).toMatchObject({ kind: "not_run", reason: "candidate_moved" });
+    expect(await withFreshCheckRound(input(fake.docker, { pinned: () => [] }), () => Promise.resolve(1))).toMatchObject({ kind: "not_run", reason: "candidate_moved" });
+    expect(fake.calls).toEqual([]);
+  });
+  it("the same candidate is run, whatever the order or extra fields of the record", async () => {
+    const fake = fakeDocker();
+    const result = await withFreshCheckRound(input(fake.docker, { pinned: () => [{ ...candidate, baseCommitSha: "f".repeat(40) } as typeof candidate] }), () => Promise.resolve(1));
+    expect(result.kind).toBe("ran");
+  });
+  it("the runners a task uses are not run until the candidate is pinned, and a HEAD that moved and came back is caught at the round", async () => {
+    const fake = fakeDocker();
+    const unpinned = createFreshCheckRunners(input(fake.docker));
+    const round = await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, unpinned, { budgetMs: 60_000, signal: new AbortController().signal });
+    expect(round.entries[0]).toMatchObject({ after: "not_run" });
+    expect(round.entries[0]!.output).toContain(FRESH_NOT_RUN_SENTENCES.candidate_moved);
+    // a survivor moved HEAD to B for the round's read: the record says A
+    let reads = 0;
+    const runners = createFreshCheckRunners(input(fake.docker, { candidate: () => { reads += 1; return Promise.resolve([{ ...candidate, treeSha: "b".repeat(40) }]); } }));
+    runners.pin([candidate]);
+    const moved = await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, runners, { budgetMs: 60_000, signal: new AbortController().signal });
+    expect(moved.entries[0]).toMatchObject({ after: "not_run" });
+    expect(reads).toBe(1);
+    expect(fake.calls.filter((call) => call.args[0] === "run")).toEqual([]);
   });
 });

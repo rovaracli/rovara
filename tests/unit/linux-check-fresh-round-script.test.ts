@@ -40,7 +40,7 @@ if (verb === "exec") {
   const text = args.join(" ");
   if (args.includes("--detach")) out("");
   if (text.includes("REMAINING:")) { fs.writeFileSync(stateFile, "1"); out("REMAINING:0\\n"); }
-  if (text.includes("LEFT:")) out(fs.existsSync(stateFile) ? "LEFT:0\\n" : "LEFT:2\\n");
+  if (text.includes("LEFT:")) out(fs.existsSync(stateFile) ? "LEFT:0\\n" : "LEFT:6\\n");
   if (text.includes("id -u")) out(${JSON.stringify(options.rootUid ?? "1000")} + "\\n");
   if (text.includes("CapEff")) out("CapEff:0000000000000000\\n");
   if (text.includes("NoNewPrivs")) out("NoNewPrivs:1\\n");

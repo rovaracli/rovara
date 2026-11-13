@@ -35,6 +35,8 @@ export interface FreshRoundWiring {
   image: string | undefined;
   candidate: () => Promise<readonly FreshCandidateRepository[]>;
   onProgress: (line: string) => void;
+  /** Keep the export of each round for the evidence (only a CHECKS run that asked for evidence). */
+  keepExport?: boolean | undefined;
   /** Stops what the agent left running before each round (H1b). */
   quiesce?: ((signal: AbortSignal) => Promise<void>) | undefined;
 }
@@ -81,7 +83,7 @@ export function checkRoundRunners(input: {
   }
   if (input.kind === "fresh_unsealed" && input.fresh !== undefined) {
     const { seam, ...wiring } = input.fresh;
-    const final = createFreshCheckRunners({ ...wiring, setup: seam.setup, ...(seam.setupBudgetMs === undefined ? {} : { setupBudgetMs: seam.setupBudgetMs }), ...(seam.hooks === undefined ? {} : { hooks: seam.hooks }) });
+    const final = createFreshCheckRunners({ ...wiring, keepExport: wiring.keepExport === true, setup: seam.setup, ...(seam.setupBudgetMs === undefined ? {} : { setupBudgetMs: seam.setupBudgetMs }), ...(seam.hooks === undefined ? {} : { hooks: seam.hooks }) });
     KINDS.set(final, "fresh_unsealed");
     // the original-code rounds are working: never a place for a real model call
     KINDS.set(input.base, "working");

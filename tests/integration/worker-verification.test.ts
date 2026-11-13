@@ -4,6 +4,7 @@
 // agent_before_settle hook run. Only the check runners are fakes, except where a test says otherwise. Offline.
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, type FauxResponseStep, type TranscriptContext } from "@earendil-works/pi-ai";
@@ -1773,5 +1774,27 @@ describe("TE-B1-fresh: the coding run's final round with the freshCheckRound gat
     expect(run.report).toMatchObject({ source: "agent_commands", status: "verified" });
     expect(run.events.some((event) => JSON.stringify(event).includes("not sealed: checked in a fresh sandbox"))).toBe(true);
     expect(fake.calls.some((args) => args[0] === "rm" && args.includes(fresh))).toBe(true);
+    // the coding run reads no evidence from the export, so none is kept on the volume
+    const parent = join(rootPath, ".agentx", "fresh-check");
+    expect(existsSync(parent) ? (await readdir(parent)).filter((name) => name !== "scratch") : []).toEqual([]);
+  });
+
+  it("a program that moved HEAD to another commit for the export (and would put it back after) cannot change what the round checks: the round is not run", async () => {
+    const fake = fakeDocker();
+    const rootPath = await gitWorkspaceRoot();
+    const repository = join(rootPath, "app");
+    const originalCode: OriginalCode = { async run(work) { return work(); } };
+    const shell = scriptedShell({}, async (command) => { if (command === "make-change") await writeFile(join(rootPath, "app/notes.md"), "note\n"); });
+    const run = await runTask({
+      steps: [bash("make-change", "c1"), bash("pytest tests/te-b1-marker", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], rootPath, shell, originalCode,
+      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }),
+        // the survivor acts exactly when the quiesce runs: HEAD moves to B
+        stopBeforeReading: { stopWorkspaceProcesses: async () => { await writeFile(join(repository, "evil.txt"), "B\n"); execFileSync("git", ["-C", repository, "-c", "user.name=x", "-c", "user.email=x@x.invalid", "add", "."]); execFileSync("git", ["-C", repository, "-c", "user.name=x", "-c", "user.email=x@x.invalid", "commit", "-qm", "B"]); } } },
+    });
+    const finalExecs = fake.calls.filter((args) => args[0] === "exec" && args.join(" ").includes("te-b1-marker") && args.some((arg) => arg.startsWith("agentx-fresh-")));
+    expect(finalExecs).toEqual([]);
+    expect(fake.calls.some((args) => args[0] === "run" && args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-"))).toBe(false);
+    expect(JSON.stringify(run.report ?? run.failure)).toContain("the candidate is not the commit and tree the checks were planned for");
   });
 });

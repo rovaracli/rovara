@@ -167,6 +167,8 @@ describe("H1c: the fresh round's evidence comes from its export", () => {
     expect(raw).toBeDefined();
     expect(raw!.content).toContain("from-the-export");
     expect(raw!.content).not.toContain("planted-in-the-working-tree");
+    // the working sandbox is quieted again before the scanner baseline runs there (once for the round, once for the baseline)
+    expect(fake.calls.filter((args) => args[0] === "exec" && args.join(" ").includes("REMAINING:"))).toHaveLength(2);
     const parent = join(rootPath, ".agentx", "fresh-check");
     expect(existsSync(parent) ? readdirSync(parent).filter((name) => name !== "scratch") : []).toEqual([]);
   });
@@ -176,6 +178,12 @@ describe("H1c: the fresh round's evidence comes from its export", () => {
     const stuck: DockerCli = { run: (args, options) => (args[0] === "rm" && args.some((arg) => arg.startsWith("agentx-fresh-")) ? Promise.resolve({ exitCode: 1, stdout: "", stderr: "busy" }) : base.docker.run(args, options)) };
     const { artifacts } = await checksRun(rootPath, { docker: stuck, calls: base.calls }, { freshCheckRound: () => ({ setup: [] }), evidenceCapture: true, stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
     expect(artifacts.find((artifact) => artifact.name === "evidence-raw.json")).toBeUndefined();
+  });
+  it("a run that asked for no evidence keeps no export (it is removed with the sandbox)", async () => {
+    const rootPath = await workspace();
+    await checksRun(rootPath, fakeDocker(), { freshCheckRound: () => ({ setup: [] }), stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
+    const parent = join(rootPath, ".agentx", "fresh-check");
+    expect(existsSync(parent) ? readdirSync(parent).filter((name) => name !== "scratch") : []).toEqual([]);
   });
   it("the same run with the gate off reads the working tree, as always", async () => {
     const rootPath = await workspace();

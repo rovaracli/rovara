@@ -36,6 +36,11 @@ export interface VerificationOptions {
   prepareCandidate?: () => Promise<void>;
   /** Exact candidate identity before and after final checks; a changed tree cannot receive a check binding. */
   candidateIdentity?: () => Promise<string>;
+  /**
+   * TE-B1-fresh: told the candidate identity (the same string `candidateIdentity` returned) just before each final round runs, so a round that exports the candidate checks exactly the commit and tree the report will be bound to. A program
+   * that moved HEAD to another commit for the export and back afterwards cannot make the round check something else.
+   */
+  pinCandidate?: (identity: string) => void;
   /** Clears the worker's candidate binding when preparation fails or the check changes the candidate. */
   onCandidateDrift?: () => void;
   /**
@@ -148,6 +153,7 @@ export function verificationExtension(options: VerificationOptions): InlineExten
           await recorder.settled();
           await options.prepareCandidate?.();
           const candidateBefore = options.candidateIdentity === undefined ? undefined : await options.candidateIdentity();
+          if (candidateBefore !== undefined) options.pinCandidate?.(candidateBefore);
           const plan = options.plan();
           if (plan.source === "none") return report(unverified("no_checks", claim));
           const budgetMs = options.budgetMs();

@@ -54,6 +54,11 @@ export interface FreshCheckRoundInput {
   image: string | undefined;
   /** The candidate as it is now: each repository's commit and tree (read again for every round). */
   candidate: () => Promise<readonly FreshCandidateRepository[]>;
+  /**
+   * The candidate the checks were PLANNED for: the commit and tree of each repository as the caller recorded them before the round (the verification extension's `candidateBefore`, a CHECKS run's own). The round exports and checks exactly
+   * these: if `candidate()` gives anything else (a program that survived moved HEAD to another commit for the export and back afterwards), or nothing was recorded, the round is "not run".
+   */
+  pinned: () => readonly FreshPinnedCandidate[] | undefined;
   /** The project's setup commands, possibly none. Run in the fresh sandbox before the round. */
   setup: readonly ProjectCommand[];
   setupBudgetMs?: number;
@@ -77,6 +82,17 @@ export interface FreshCheckRoundInput {
   hostCpus?: number;
   hostMemoryBytes?: number;
   ensureNetwork?: (docker: DockerCli) => Promise<void>;
+}
+
+/** One repository of the recorded candidate. */
+export interface FreshPinnedCandidate { repositoryId: string; commitSha: string; treeSha: string }
+
+/** The same repositories at the same commits and trees (order and extra fields do not matter). */
+function samePinned(current: readonly FreshPinnedCandidate[], pinned: readonly FreshPinnedCandidate[]): boolean {
+  if (current.length !== pinned.length || pinned.length === 0) return false;
+  const key = (item: FreshPinnedCandidate) => `${item.repositoryId}\0${item.commitSha}\0${item.treeSha}`;
+  const wanted = new Set(pinned.map(key));
+  return wanted.size === pinned.length && current.every((item) => wanted.has(key(item)));
 }
 
 export type FreshRoundResult<T> = { kind: "ran"; value: T } | { kind: "not_run"; reason: FreshNotRunReason; sentence: string };
@@ -147,6 +163,8 @@ export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round:
     try { await (input.ensureNetwork ?? ensureTaskNetwork)(input.docker); } catch { return notRun("sandbox_failed"); }
     const repositories = await input.candidate().catch(() => undefined);
     if (repositories === undefined) return notRun("export_failed");
+    const pinned = input.pinned();
+    if (pinned === undefined || !samePinned(repositories, pinned)) return notRun("candidate_moved");
     const exported = await exportCandidateForFreshRound({ rootPath: root, taskId: input.taskId, repositories, signal });
     if (!exported.ok) return notRun(exported.reason);
     exportDirectory = exported.directory;
@@ -201,10 +219,41 @@ async function removeContainer(docker: DockerCli, name: string, taskId: string, 
 }
 
 /**
- * Every program the agent left running in the WORKING sandbox, stopped without stopping the sandbox itself (the agent may get an extra turn in it): each process but PID 1 (tini), the sandbox's own `sleep infinity` and this script is killed,
- * and the sandbox is checked to hold nothing else, up to three passes. Pure `sh` and /proc, so it needs no tool the image may lack. It prints `REMAINING:<n>`; anything but 0 fails the round closed.
+ * Every program the agent left running in the WORKING sandbox, stopped without stopping the sandbox itself (the agent may get an extra turn in it). What is kept is chosen by PID and start time, never by anything a program can set about
+ * itself (its command line, its name, its title): PID 1 (tini), this script, and the sandbox's own `sleep infinity`, which is the OLDEST child of PID 1 (field 22 of /proc/<pid>/stat, the start time; the container started it first, and a program
+ * the agent starts is always younger). Everything else is frozen (SIGSTOP, so nothing can fork or respawn while the rest are killed) and then killed (SIGKILL), whatever its command line says, empty or unreadable included. Up to three
+ * passes; it prints `REMAINING:<n>` for what a last pass still had to kill, and anything but 0 fails the round closed. Pure `sh` and /proc, so it needs no tool the image may lack. `PROC_ROOT` is a test seam (default /proc).
+ * No single quote may appear in it: scripts/linux-check-fresh-round.sh carries the same text inside single quotes (a unit test keeps the two equal).
  */
-export const STOP_SANDBOX_PROGRAMS_SCRIPT = 'n=0; pass=0; while [ "$pass" -lt 3 ]; do n=0; for p in /proc/[0-9]*; do pid=${p#/proc/}; [ "$pid" = 1 ] && continue; [ "$pid" = "$$" ] && continue; cmd=$(tr "\\0" " " < "$p/cmdline" 2>/dev/null); case "$cmd" in "sleep infinity "*|"") continue;; esac; state=$(sed -n "s/^State:[[:space:]]*\\(.\\).*/\\1/p" "$p/status" 2>/dev/null); [ "$state" = Z ] && continue; kill -9 "$pid" 2>/dev/null; n=$((n+1)); done; [ "$n" -eq 0 ] && break; pass=$((pass+1)); done; echo "REMAINING:$n"';
+export const STOP_SANDBOX_PROGRAMS_SCRIPT = [
+  'P=${PROC_ROOT:-/proc}',
+  'keep=""; best=""',
+  'for p in "$P"/[0-9]*; do',
+  '  pid=${p#"$P"/}',
+  '  set -- $(sed "s/^.*) //" "$p/stat" 2>/dev/null)',
+  '  [ "$2" = 1 ] || continue',
+  '  if [ -z "$best" ] || [ "${20:-0}" -lt "$best" ]; then best=${20:-0}; keep=$pid; fi',
+  'done',
+  'pass=0; n=0',
+  'while [ "$pass" -lt 3 ]; do',
+  '  n=0; list=""',
+  '  for p in "$P"/[0-9]*; do',
+  '    pid=${p#"$P"/}',
+  '    [ "$pid" = 1 ] && continue',
+  '    [ "$pid" = "$$" ] && continue',
+  '    [ "$pid" = "$keep" ] && continue',
+  '    set -- $(sed "s/^.*) //" "$p/stat" 2>/dev/null)',
+  '    [ -z "$1" ] && continue',
+  '    [ "$1" = Z ] && continue',
+  '    list="$list $pid"; n=$((n+1))',
+  '  done',
+  '  [ "$n" -eq 0 ] && break',
+  '  for pid in $list; do kill -STOP "$pid" 2>/dev/null; done',
+  '  for pid in $list; do kill -9 "$pid" 2>/dev/null; done',
+  '  pass=$((pass+1))',
+  'done',
+  'echo "REMAINING:$n"',
+].join("\n");
 
 /** Runs `STOP_SANDBOX_PROGRAMS_SCRIPT` in the working sandbox and fails (throws) unless nothing else is left running. */
 export async function stopWorkingSandboxPrograms(docker: DockerCli, container: string, signal?: AbortSignal): Promise<void> {
@@ -214,6 +263,8 @@ export async function stopWorkingSandboxPrograms(docker: DockerCli, container: s
 
 /** Where the checks' reports of the last fresh round are read from, and the way to remove them (H1c). */
 export interface FreshEvidenceSource {
+  /** Records the candidate the next round is for (see `FreshCheckRoundInput.pinned`); call it with the identity read just before the checks are run. */
+  pin(candidate: readonly FreshPinnedCandidate[]): void;
   /** The export of the last round that ran (its container is gone), or undefined: a round that did not run, or whose container could not be removed, leaves none. */
   evidenceRoot(): string | undefined;
   /** Removes what `evidenceRoot` names. Idempotent. */
@@ -225,7 +276,11 @@ export interface FreshEvidenceSource {
  * `runChecks` is its own fresh sandbox. `freshServices` never rejects: a round that could not start leaves every command refused with the fixed "not run" sentence (a `CheckNotRunError`, so the check is `not_run`, never failed).
  * A command outside a round is refused too. The original-code rounds (before results, the test proof) do NOT use these: they run on the original code, where there is nothing to export (run-task.ts, check-round-choice.ts).
  */
-export function createFreshCheckRunners(input: FreshCheckRoundInput): CheckRunners & FreshEvidenceSource {
+export function createFreshCheckRunners(input: Omit<FreshCheckRoundInput, "pinned" | "retainExport"> & {
+  /** Keep each round's export for the evidence (a CHECKS run that asked for it); otherwise it is removed with the sandbox. */
+  keepExport?: boolean;
+}): CheckRunners & FreshEvidenceSource {
+  let pinned: readonly FreshPinnedCandidate[] | undefined;
   let open: { runners: CheckRunners; release: () => void; done: Promise<unknown> } | undefined;
   let failure: string | undefined;
   // Each round has a number; a round that ended (endRound, or a newer start) while its sandbox was still starting releases it the moment it is handed over (L3).
@@ -259,7 +314,8 @@ export function createFreshCheckRunners(input: FreshCheckRoundInput): CheckRunne
       let handOver!: (runners: CheckRunners | undefined) => void;
       const ready = new Promise<CheckRunners | undefined>((done) => { handOver = done; });
       const roundSignal = input.signal === undefined ? signal : AbortSignal.any([signal, input.signal]);
-      const done = withFreshCheckRound({ ...input, signal: roundSignal, retainExport: (directory) => { retained.push(directory); } }, async (runners) => { handOver(runners); await closed; }).then(
+      const { keepExport, ...rest } = input;
+      const done = withFreshCheckRound({ ...rest, signal: roundSignal, pinned: () => pinned, ...(keepExport === true ? { retainExport: (directory: string) => { retained.push(directory); } } : {}) }, async (runners) => { handOver(runners); await closed; }).then(
         (result) => { if (result.kind === "not_run") { failure = result.sentence; handOver(undefined); } },
         () => { failure = FRESH_NOT_RUN_SENTENCES.sandbox_failed; handOver(undefined); },
       );
@@ -270,6 +326,7 @@ export function createFreshCheckRunners(input: FreshCheckRoundInput): CheckRunne
       open = { runners, release, done };
     },
     async endRound() { epoch += 1; await close(); },
+    pin(candidate) { pinned = candidate.map((item) => ({ repositoryId: item.repositoryId, commitSha: item.commitSha, treeSha: item.treeSha })); },
     evidenceRoot: () => retained.at(-1),
     releaseEvidence: releaseRetained,
     // async: a refusal is a rejection, as the other runners' are.
