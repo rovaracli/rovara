@@ -123,7 +123,7 @@ import { completeThreadWorkspaceClose, ensureThreadWorkspace, markCommentAnswere
 import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
 import { installCoreTaskRoutes } from "../../rovara-code/task-routes.js";
 import { viewCoreTaskRowsClient } from "../../cloud/app/core-task-rows.js";
-import { createCloudCoreEntry, isCoreSlackRequestEvent } from "../../cloud/app/entry.js";
+import { createCloudCoreEntry, isCoreSlackPressEvent, isCoreSlackRequestEvent } from "../../cloud/app/entry.js";
 import { anyCoreAreaOn, readCoreEngineFlags } from "../../cloud/app/flags.js";
 import { isOutboxRelayBackstopEvent, runOutboxRelayBackstop } from "../../cloud-adapters/queue/outbox-relay-wiring.js";
 import { isWorkflowDispatchRecoveryEvent, retryDueWorkflowDispatches, startDuePlanEvidenceJobs } from "./workflow-items.js";
@@ -528,6 +528,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     if (coreEntry !== undefined && coreEntry.isScheduledJob(event)) {
       try { return json(await coreEntry.handleScheduledJob(event), "core-job"); }
       catch (error) { return unexpectedErrorAnswer(error, "core-job"); }
+    }
+    if (coreEntry !== undefined && isCoreSlackPressEvent(event)) {
+      try { return json(await coreEntry.slackPress(event.press), "slack-core-press"); }
+      catch (error) { return unexpectedErrorAnswer(error, "slack-core-press"); }
     }
     if (coreEntry !== undefined && isCoreSlackRequestEvent(event)) {
       try { return json(await coreEntry.slackRequest(event.message), "slack-ingress"); }

@@ -1,7 +1,7 @@
 // Switch blocker 2 (money): the switch must not change money behaviour. The payer a core admission counts against is Cloud's own (`resolvePayer` over the project's AI settings, as
 // `resolveRunPayer` applies it to a person's start), held to v2's functions for the same inputs; a company enrolled in per-task spending stops stays on Cloud's start, which captures the stop.
 import { describe, expect, it } from "vitest";
-import { projectAiKey, scopeKey, type BudgetScope, orgSettingsKey } from "@agentx/cloud-contracts";
+import { projectAiKey, scopeKey, type BudgetScope, orgMetaKey, orgSettingsKey } from "@agentx/cloud-contracts";
 import { ROVARA_CODE_AGENT_ID, orgScoped, type AdmissionRequest } from "@rovara-code/contracts";
 import { cloudAdmissionLevels, cloudLevelSources, readTaskStop, taskStopEnrolled } from "../../packages/broker/src/cloud/app/index.js";
 import { resolveRunPayer } from "../../packages/broker/src/agents/runs.js";
@@ -80,6 +80,25 @@ describe("M-2: follow-on spend is charged to the payer the task's start captured
     expect(await kinds(sources, followOn({}))).toEqual(["org", "project"]);
   });
 
+  it("M-C: an Ask or a diagnosis (a model call by a person, on a task) costs the TASK'S captured payer, not the asker: v2 mints the task's model key from the task's payer", async () => {
+    const OTHER_PERSON = "b".repeat(64);
+    const db = dbWith(false);
+    const sources = await started(db);
+    const asked = request({ action: "model.call", idempotencyKey: "ask:1", actor: { personId: OTHER_PERSON } as never, subject: { type: "task", id: TASK } });
+    const levels = await cloudAdmissionLevels(sources)(asked, MONTH);
+    // The starter's member budget, not the asker's.
+    expect(levels.map((level) => level.scope)).toEqual(budgetScopesFor({ kind: "member", developerId: PERSON }, { project: "payments" }, { agentId: ROVARA_CODE_AGENT_ID }).map((scope: BudgetScope) => scopeKey(scope)));
+    expect(levels.map((level) => level.scope)).not.toContain(scopeKey({ kind: "member", developerId: OTHER_PERSON }));
+    // A project-paid task: the project, whoever asks and whatever the settings say now.
+    const paid = dbWith(true);
+    const paidSources = await started(paid);
+    expect(await kinds(paidSources, { ...asked, actor: { personId: OTHER_PERSON } as never })).toEqual(["org", "project"]);
+    paid.set({ ...projectAiKey(ORG, "payments"), entityType: "PROJECT_AI", projectPays: false, revision: 2 });
+    expect(await kinds(paidSources, asked)).toEqual(["org", "project"]);
+    // The start itself is the capture moment: it is still the starter's rule.
+    expect(await kinds(sources, request({ idempotencyKey: `task.start:${TASK}:2`, subject: { type: "task", id: TASK } }))).toEqual(["org", "project", "member"]);
+  });
+
   it("the machine of a workspace is the workspace's task's: its payer, by the pointer", async () => {
     const sources = await started(dbWith(false));
     expect(await kinds(sources, followOn({ action: "machine.start", subject: { type: "workspace", id: WORKSPACE } }))).toEqual(["org", "project", "member"]);
@@ -113,12 +132,16 @@ describe("M-2: follow-on spend is charged to the payer the task's start captured
 describe("a company enrolled in per-task spending stops is known by what v2's capture reads (H-1: the bootstrap's rows are not enrollment)", () => {
   const policyRow = (state: unknown, extra: Record<string, unknown> = {}) => ({ ...orgSettingsKey(ORG, "TASK_STOP_POLICY"), entityType: "ORG_TASK_STOP_POLICY", orgId: ORG, revision: 1, enrollment: { version: 1, state }, ...extra });
   const receipt = (sk: string, extra: Record<string, unknown> = {}) => ({ pk: orgScoped(ORG, "TASK_STOP_SEED"), sk, entityType: "TASK_STOP_SEED", orgId: ORG, version: 1, source: sk === "V1#bootstrap" ? "bootstrap" : "upgrade", outcome: "created", policyRevision: 1, ...extra });
-  const over = (...rows: Record<string, unknown>[]) => { const db = new FakeDynamoDb(); for (const row of rows) db.set(row); return { documentClient: db, tableName: "state" } as never; };
+  // The company's own record is there and open, as every company's is.
+  const orgRow = (extra: Record<string, unknown> = {}) => ({ ...orgMetaKey(ORG), entityType: "ORG", orgId: ORG, ...extra });
+  const over = (...rows: Record<string, unknown>[]) => { const db = new FakeDynamoDb(); db.set(orgRow()); for (const row of rows) db.set(row); return { documentClient: db, tableName: "state" } as never; };
+  const overOrg = (org: Record<string, unknown> | undefined, ...rows: Record<string, unknown>[]) => { const db = new FakeDynamoDb(); if (org !== undefined) db.set(org); for (const row of rows) db.set(row); return { documentClient: db, tableName: "state" } as never; };
   const enrolled = async (...rows: Record<string, unknown>[]) => await taskStopEnrolled(over(...rows), ORG);
 
   it("not enrolled: no policy row and no receipt (a company the bootstrap never reached)", async () => {
     expect(await enrolled()).toBe(false);
-    expect(await taskStopEnrolled(over(policyRow("enabled")), "org_s3other000000000000z")).toBe(false);
+    // Another company's rows are not this company's: it has no record here, so it stays on Cloud (never read as "no policy").
+    expect(await taskStopEnrolled(over(policyRow("enabled")), "org_s3other000000000000z")).toBe(true);
   });
 
   it("not enrolled: what the bootstrap writes for EVERY company (a policy row with state disabled, and a seed receipt), and a company ready to enrol", async () => {
@@ -145,6 +168,30 @@ describe("a company enrolled in per-task spending stops is known by what v2's ca
     expect(await enrolled(policyRow("disabled", { entityType: "SOMETHING" }), receipt("V1#bootstrap"))).toBe(true);
     expect(await enrolled(policyRow("disabled", { ceilingMicrousd: 5 }), receipt("V1#bootstrap"))).toBe(true);
     expect(await enrolled(policyRow("disabled", { enrollment: { version: 2, state: "disabled" } }), receipt("V1#bootstrap"))).toBe(true);
+  });
+
+  it("L-1: the company's own record is read first: a company that is closing, closed or has no record stays on Cloud, whatever its policy says", async () => {
+    const rows = [policyRow("disabled"), receipt("V1#bootstrap")];
+    expect(await taskStopEnrolled(overOrg(orgRow(), ...rows), ORG)).toBe(false);
+    expect(await taskStopEnrolled(overOrg(orgRow({ closingAt: "2026-11-13T00:00:00.000Z" }), ...rows), ORG)).toBe(true);
+    expect(await taskStopEnrolled(overOrg(orgRow({ closedAt: "2026-11-13T00:00:00.000Z" }), ...rows), ORG)).toBe(true);
+    expect(await taskStopEnrolled(overOrg(undefined, ...rows), ORG)).toBe(true);
+    expect(await taskStopEnrolled(overOrg(orgRow({ orgId: "org_s3other000000000000z" }), ...rows), ORG)).toBe(true);
+    // Even a company with no policy at all, which is otherwise never enrolled.
+    expect(await taskStopEnrolled(overOrg(orgRow({ closedAt: "2026-11-13T00:00:00.000Z" })), ORG)).toBe(true);
+  });
+
+  it("L-1: a policy row or a receipt that names another company (or sits under another key) is invalid, so the start stays on Cloud", async () => {
+    expect(await enrolled(policyRow("disabled", { orgId: "org_s3other000000000000z" }), receipt("V1#bootstrap"))).toBe(true);
+    expect(await enrolled(policyRow("disabled"), receipt("V1#bootstrap", { orgId: "org_s3other000000000000z" }))).toBe(true);
+    expect(await enrolled(policyRow("disabled"), receipt("V1#bootstrap"), receipt("V1#upgrade", { orgId: "org_s3other000000000000z" }))).toBe(true);
+  });
+
+  it("a malformed UPGRADE receipt stays on Cloud, as a malformed bootstrap one does (each field of v2's receipt check)", async () => {
+    for (const bad of [{ version: 2 }, { outcome: "failed" }, { source: "bootstrap" }, { policyRevision: 0 }, { entityType: "OTHER" }]) {
+      expect(await enrolled(policyRow("disabled"), receipt("V1#bootstrap"), receipt("V1#upgrade", bad)), JSON.stringify(bad)).toBe(true);
+    }
+    expect(await enrolled(policyRow("disabled"), receipt("V1#bootstrap"), receipt("V1#upgrade", { outcome: "preserved" }))).toBe(false);
   });
 
   it("M-3: the read carries the fence the core start commits under: the policy absent, or at the revision read, and each absent receipt", async () => {

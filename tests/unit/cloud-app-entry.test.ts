@@ -11,7 +11,7 @@ import { localOwnerPrincipal } from "@rovara-code/broker/ports";
 import { orgProjectCatalogKey, projectRevisionKey, when } from "@rovara-code/contracts";
 import { createCloudAdmission } from "../../packages/broker/src/cloud-adapters/money/index.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
-import { BROKER_SETTINGS, SLACK_NOT_A_MEMBER_NOTICE, projectAiKey, type DeveloperTaskView } from "@agentx/cloud-contracts";
+import { BROKER_SETTINGS, SLACK_NOT_A_MEMBER_NOTICE, orgMetaKey, projectAiKey, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { DEFAULT_CODE_SETTINGS, codeSettingsKey } from "@rovara-code/contracts";
 import {
   CORE_ADMISSION_ACTIONS, CORE_SLACK_ACTION, cloudAdapter, cloudAdmissionLevels, cloudLevelSources, cloudRefusalWords, taskPayerKey, cloudCoreRuntime, cloudSettingsFromEnvironment, coreIntentApplies, coreSlackFromIngress, cloudCoreWiringFromBroker, createCloudApp, createCloudCoreEntry, createCoreIntentHook,
@@ -244,9 +244,9 @@ describe("S3-4 b: the Slack consumer", () => {
 
   it("a fault that is not a refusal still fails the call, so a transient fault is retried", async () => {
     const r = rig();
-    const consume = createCoreSlackConsumer({ taskStop: notEnrolled, app: { ...r.app, active: true, flags: r.app.flags, runtimeFor: async () => ({ inbound: { slack: async () => { throw new Error("boom"); } } }) } as never, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined });
+    const consume = createCoreSlackConsumer({ taskStop: notEnrolled, app: { ...r.app, active: true, flags: r.app.flags, runtimeFor: async () => ({ flow: { deps: { store: { put: async () => ({ applied: true }) } } }, inbound: { slack: async () => { throw new Error("boom"); } } }) } as never, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined });
     await expect(consume(message())).rejects.toThrow("boom");
-    const unavailable = createCoreSlackConsumer({ taskStop: notEnrolled, app: { ...r.app, active: true, flags: r.app.flags, runtimeFor: async () => ({ inbound: { slack: async () => { throw agentXError("RUNTIME_UNAVAILABLE", "down"); } } }) } as never, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined });
+    const unavailable = createCoreSlackConsumer({ taskStop: notEnrolled, app: { ...r.app, active: true, flags: r.app.flags, runtimeFor: async () => ({ flow: { deps: { store: { put: async () => ({ applied: true }) } } }, inbound: { slack: async () => { throw agentXError("RUNTIME_UNAVAILABLE", "down"); } } }) } as never, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined });
     await expect(unavailable(message())).rejects.toBeInstanceOf(AgentXError);
   });
 
@@ -307,7 +307,7 @@ describe("S3-4 b: the ingress's half", () => {
 
 describe("S3-4 c: the Lambda entry", () => {
   const sources = (env: NodeJS.ProcessEnv, moduleDeps: () => never) => ({
-    env, broker: { documentClient: { send: async () => ({}) }, tableName: "state", callbackSigningKey: "k".repeat(32), repositoryGrants: {} } as never, routes: () => undefined, now: () => new Date("2026-11-13T10:00:00.000Z"), log: () => undefined,
+    env, broker: { documentClient: { send: async (command: { input?: { Key?: { pk?: string; sk?: string } } }) => (command.input?.Key?.pk === orgMetaKey(FAKE_COMPANY).pk && command.input.Key.sk === orgMetaKey(FAKE_COMPANY).sk ? { Item: { ...command.input.Key, orgId: FAKE_COMPANY } } : {}) }, tableName: "state", callbackSigningKey: "k".repeat(32), repositoryGrants: {} } as never, routes: () => undefined, now: () => new Date("2026-11-13T10:00:00.000Z"), log: () => undefined,
     inputs: { moduleDeps, sessionFacts: { read: async () => undefined } }, installCompanyId: FAKE_COMPANY as never,
   });
 

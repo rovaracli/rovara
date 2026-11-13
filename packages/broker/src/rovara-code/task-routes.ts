@@ -15,6 +15,8 @@ export interface CoreDecideInput {
   via?: "PAGE" | undefined;
   /** The caller's own developer token (the route's `Authorization` header, without `Bearer `), when it came with one. Never logged, never stored. */
   bearer?: string | undefined;
+  /** The decide-grade cookie of a HIGH plan card's press (the card's own handler hands it over): the credential is then the `browser-step-up` method, `<session id>:<cookie>`. */
+  stepUpCookie?: string | undefined;
   /** The task as the client reads it (Cloud's own reader answers for a core task: the core writes the same task rows). */
   view: () => Promise<DeveloperTaskView>;
 }
@@ -52,5 +54,35 @@ export function coreTaskRoutes(): CoreTaskRoutes | undefined {
 export const CORE_TASK_CLOUD_ACTIONS: ReadonlySet<string> = new Set(["people/role", "people/take-ownership", "share"]);
 export const CORE_TASK_ANSWERED_ACTIONS: ReadonlySet<string> = new Set(["workflow/decision", "close"]);
 
-export const CORE_ACTION_NOT_AVAILABLE_WORDS = "This task runs on Rovara's new engine, and that action is not available on it yet. Decide its plan from the task page or its Slack card, or close the task.";
-export const CORE_CANCEL_NOT_AVAILABLE_WORDS = "Stopping a run on its own is not available on this task yet; close the task to stop it.";
+// TODO(re-pin, DEFERRED S3-RETRY-CANCEL-REVISE-WIRING): `workflow/retry`, `cancel` and `workflow/revise-plan` are refused below only until Code exports `retryBlockedStep`,
+// `createSessionControlHost().cancelTask` and `revisePlanWithLiveMessage` (a public Code PR). Once the pin carries them, answer these three in `cloud/app/task-routes.ts` (as decide and close are) and
+// delete their rows from `CORE_ACTION_WORDS`. A step blocked after the dispatch sweep's attempts (a take-over that never settled, a tripped fence) is retried through `retryBlockedStep` then.
+
+/** How every refusal below begins, so a person always reads the same plain first words. */
+export const CORE_NOT_AVAILABLE_PREFIX = "Not available on this task yet.";
+const MORE_CHANGES = "To make more changes, close this task and start a new one with the extra instructions.";
+
+/**
+ * What a person is told for each Cloud action a core task cannot do yet (owner decision 198: refused in plain words, never a generic error), by the action's route name. Each says what to do instead:
+ * mostly, close the task and start a new one with the extra instructions. `cancel` is told the same way (close the task to stop it) until the core's own stop is wired.
+ */
+export const CORE_ACTION_WORDS: Readonly<Record<string, string>> = {
+  "workflow/send-back": `${CORE_NOT_AVAILABLE_PREFIX} ${MORE_CHANGES}`,
+  "continue": `${CORE_NOT_AVAILABLE_PREFIX} To continue the work, close this task and start a new one with the extra instructions.`,
+  "workflow/review-findings": `${CORE_NOT_AVAILABLE_PREFIX} To act on these review findings, close this task and start a new one that says what to fix.`,
+  "workflow/review": `${CORE_NOT_AVAILABLE_PREFIX} The reviews run on their own as part of the task; to get another look at the code, close this task and start a new one.`,
+  "pull-requests": `${CORE_NOT_AVAILABLE_PREFIX} The pull request opens by itself when the checks and reviews pass; if it did not, close this task and start a new one with the same instructions.`,
+  "workflow/keep-pull-requests": `${CORE_NOT_AVAILABLE_PREFIX} The pull requests stay on GitHub exactly as they are when you close the task.`,
+  "workflow/publish-retry": `${CORE_NOT_AVAILABLE_PREFIX} To try opening the pull request again, close this task and start a new one with the same instructions.`,
+  "workflow/feedback-decision": `${CORE_NOT_AVAILABLE_PREFIX} To act on this feedback, close this task and start a new one that says what to change.`,
+  "workflow/feedback-retry": `${CORE_NOT_AVAILABLE_PREFIX} To act on this feedback, close this task and start a new one that says what to change.`,
+  "canvas-closeout/retry": `${CORE_NOT_AVAILABLE_PREFIX} The canvas close-out is not run for tasks on the new engine.`,
+  "e2e-publication-context": `${CORE_NOT_AVAILABLE_PREFIX} End-to-end presentation checks are not run for tasks on the new engine.`,
+  "workflow/retry": `${CORE_NOT_AVAILABLE_PREFIX} To try this step again, close this task and start a new one with the same instructions.`,
+  "workflow/revise-plan": `${CORE_NOT_AVAILABLE_PREFIX} To revise the plan, close this task and start a new one with the changes you want.`,
+  "cancel": `${CORE_NOT_AVAILABLE_PREFIX} To stop the task, close it.`,
+};
+
+/** The words for an action: its own sentence, or (for an action no row names) the same plain first words and the close-and-start-again advice. Never a generic error. */
+export const coreActionWords = (action: string): string => CORE_ACTION_WORDS[action] ?? `${CORE_NOT_AVAILABLE_PREFIX} ${MORE_CHANGES}`;
+export const CORE_CANCEL_NOT_AVAILABLE_WORDS = CORE_ACTION_WORDS["cancel"]!;

@@ -244,19 +244,19 @@ describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fe
     expect(await step(archived, taskOf(archived, archived.people.owner))).toMatchObject({ allowed: false });
   });
 
-  it("M-4: a task whose row names another owner than the record the step was given (a take-over between the two reads) is held back with words, never run for the wrong person; a task with no row is too", async () => {
+  it("M-4: a task whose row names another owner than the record the step was given (a take-over between the two reads) is retried (a retryable error, never a block), never run for the wrong person; a task with no row is too", async () => {
     const world = createPeopleWorld();
     seedProject(world);
     grant(world, world.people.member, "developer");
     grant(world, world.people.owner, "developer");
     const record = taskOf(world, world.people.member);
     const taken = { ...record, currentOwner: { developerId: world.people.owner.developerId, name: "Owner", provider: "oidc", since: "2026-11-13T09:00:00.000Z" } };
-    expect(await step(world, record, taken)).toEqual({ allowed: false, message: STEP_OWNER_CHANGED_WORDS });
+    await expect(step(world, record, taken)).rejects.toMatchObject({ code: "WORKSPACE_BUSY", message: expect.stringContaining(STEP_OWNER_CHANGED_WORDS) as string });
     expect(await step(world, record, record)).toMatchObject({ allowed: true });
     const lonely = createPeopleWorld();
     seedProject(lonely);
     grant(lonely, lonely.people.member, "developer");
-    expect(await step(lonely, taskOf(lonely, lonely.people.member), null)).toEqual({ allowed: false, message: STEP_OWNER_CHANGED_WORDS });
+    await expect(step(lonely, taskOf(lonely, lonely.people.member), null)).rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
   });
 
   it("M-4: the fence is built from rows read BEFORE the checks decide: a People change that lands during the checks still trips the commit", async () => {

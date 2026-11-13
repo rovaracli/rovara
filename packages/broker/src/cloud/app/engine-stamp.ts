@@ -82,3 +82,18 @@ export const coreInUseKey = (companyId: string): { pk: string; sk: string } => (
 export function coreInUseItem(companyId: string): Extract<TransactItem, { kind: "put" }> {
   return { kind: "put", item: { ...coreInUseKey(companyId), entityType: "CORE_ENGINE_IN_USE", orgId: companyId } };
 }
+
+const ensured = new WeakMap<object, Set<string>>();
+
+/**
+ * Makes sure the company's in-use mark is there, OFF the start's hot path: a conditional put (only when absent), made once per company per store in this container, before the first core task of the
+ * company starts. Every start used to rewrite the mark inside its own transaction, which put every company's starts on one partition key; now a burst of starts writes it at most once. A mark with no
+ * task behind it is harmless (the jobs find nothing to do); a task never exists without its mark, because the mark is written before the start that stamps it.
+ */
+export async function ensureCoreInUse(store: Pick<DocumentStore, "put">, companyId: string): Promise<void> {
+  let known = ensured.get(store);
+  if (known === undefined) ensured.set(store, known = new Set());
+  if (known.has(companyId)) return;
+  await store.put({ item: coreInUseItem(companyId).item, condition: when.absent() });
+  known.add(companyId);
+}

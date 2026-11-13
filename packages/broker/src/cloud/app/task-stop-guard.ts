@@ -10,7 +10,7 @@
 //     capture does not read these as "disabled", so the start stays on Cloud's path, where it fails or captures as it does today.
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { orgScoped, when, type OrgId, type TransactItem } from "@rovara-code/contracts";
-import { orgSettingsKey } from "@agentx/cloud-contracts";
+import { orgMetaKey, orgSettingsKey } from "@agentx/cloud-contracts";
 
 const positiveRevision = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -28,6 +28,8 @@ export async function readTaskStop(deps: { documentClient: { send(command: unkno
   const policyKey = orgSettingsKey(orgId, "TASK_STOP_POLICY");
   const bootstrapKey = { pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#bootstrap" };
   const upgradeKey = { pk: orgScoped(orgId, "TASK_STOP_SEED"), sk: "V1#upgrade" };
+  // v2's capture reads the company's own record first and refuses a company that is closing or closed (or whose record is not there): such a company stays on Cloud's path, where it is refused.
+  const org = await read(orgMetaKey(orgId));
   const policy = await read(policyKey);
   const bootstrap = await read(bootstrapKey);
   const upgrade = await read(upgradeKey);
@@ -38,20 +40,28 @@ export async function readTaskStop(deps: { documentClient: { send(command: unkno
     ...(bootstrap === undefined ? [{ kind: "check" as const, key: bootstrapKey, condition: when.absent() }] : []),
     ...(upgrade === undefined ? [{ kind: "check" as const, key: upgradeKey, condition: when.absent() }] : []),
   ];
-  return { enrolled: enrolledFromRows({ policy, bootstrap, upgrade }), fence };
+  const orgOpen = org !== undefined && org["orgId"] === orgId && org["closingAt"] === undefined && org["closedAt"] === undefined;
+  return { enrolled: !orgOpen || enrolledFromRows({ orgId, policy: [policyKey, policy], bootstrap: [bootstrapKey, bootstrap], upgrade: [upgradeKey, upgrade] }), fence };
 }
 
 export async function taskStopEnrolled(deps: { documentClient: { send(command: unknown): Promise<unknown> }; tableName: string }, orgId: OrgId): Promise<boolean> {
   return (await readTaskStop(deps, orgId)).enrolled;
 }
 
-function enrolledFromRows({ policy, bootstrap, upgrade }: { policy: Record<string, unknown> | undefined; bootstrap: Record<string, unknown> | undefined; upgrade: Record<string, unknown> | undefined }): boolean {
-  if (policy === undefined && bootstrap === undefined && upgrade === undefined) return false;
-  if (bootstrap !== undefined && !receiptOk(bootstrap, "bootstrap")) return true;
-  if (upgrade !== undefined && !receiptOk(upgrade, "upgrade")) return true;
-  if (policy === undefined) return true;
-  if (policy["entityType"] !== "ORG_TASK_STOP_POLICY" || !positiveRevision(policy["revision"]) || FORBIDDEN_CEILING_FIELDS.some((field) => Object.hasOwn(policy, field))) return true;
-  const enrollment = policy["enrollment"];
+type Found = readonly [{ pk: string; sk: string }, Record<string, unknown> | undefined];
+
+/** A row is the one asked for: its keys and its company are the ones read (v2's `row()`); anything else is invalid, which stays on Cloud's path. */
+const isRow = ([key, item]: Found, orgId: string): boolean => item !== undefined && item["pk"] === key.pk && item["sk"] === key.sk && item["orgId"] === orgId;
+
+function enrolledFromRows({ orgId, policy, bootstrap, upgrade }: { orgId: string; policy: Found; bootstrap: Found; upgrade: Found }): boolean {
+  if (policy[1] === undefined && bootstrap[1] === undefined && upgrade[1] === undefined) return false;
+  for (const [found, source] of [[bootstrap, "bootstrap"], [upgrade, "upgrade"]] as const) {
+    if (found[1] !== undefined && (!isRow(found, orgId) || !receiptOk(found[1], source))) return true;
+  }
+  if (policy[1] === undefined || !isRow(policy, orgId)) return true;
+  const row = policy[1];
+  if (row["entityType"] !== "ORG_TASK_STOP_POLICY" || !positiveRevision(row["revision"]) || FORBIDDEN_CEILING_FIELDS.some((field) => Object.hasOwn(row, field))) return true;
+  const enrollment = row["enrollment"];
   if (!object(enrollment) || enrollment["version"] !== 1) return true;
   return !(enrollment["state"] === "disabled" || enrollment["state"] === "ready");
 }

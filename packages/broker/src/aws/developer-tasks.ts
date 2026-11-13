@@ -92,7 +92,7 @@ import type { DeveloperCaller } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { proposeTaskOwnership, proposeTaskPeopleRole } from "../developer/task-people-effects.js";
 import { StatusReply } from "./status-reply.js";
-import { CORE_ACTION_NOT_AVAILABLE_WORDS, CORE_TASK_ANSWERED_ACTIONS, CORE_TASK_CLOUD_ACTIONS, coreTaskRoutes } from "../rovara-code/task-routes.js";
+import { CORE_TASK_ANSWERED_ACTIONS, coreActionWords, CORE_TASK_CLOUD_ACTIONS, coreTaskRoutes } from "../rovara-code/task-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./developer-tasks/types.js";
 import { body, parse } from "./developer-tasks/common.js";
 import { e2ePublicationContext } from "./developer-tasks/publication-context.js";
@@ -267,7 +267,7 @@ export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependen
   const core = coreTaskRoutes();
   const taskPost = core === undefined || request.method !== "POST" ? null : /^\/v1\/dev\/tasks\/([^/]+)\/(.+)$/.exec(url.pathname);
   if (core !== undefined && taskPost !== null && taskPost[2] !== "cancel" && !CORE_TASK_ANSWERED_ACTIONS.has(taskPost[2]!) && !CORE_TASK_CLOUD_ACTIONS.has(taskPost[2]!) && await core.owns(caller, safeDecode(taskPost[1]!))) {
-    throw agentXError("CONFIG_INVALID", CORE_ACTION_NOT_AVAILABLE_WORDS);
+    throw agentXError("CONFIG_INVALID", coreActionWords(taskPost[2]!));
   }
   const publicationContextRoute = /^\/v1\/dev\/tasks\/([^/]+)\/e2e-publication-context$/.exec(url.pathname);
   if (publicationContextRoute !== null && request.method === "POST") {

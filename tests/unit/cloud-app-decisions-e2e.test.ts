@@ -10,7 +10,7 @@ import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@rov
 import { createCloudApp, slackPressToken } from "../../packages/broker/src/cloud/app/index.js";
 import { BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD, createCloudIdentityProvider } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { PEOPLE_ORG, SLACK_TEAM, type Person } from "../support/cloud-people-world.js";
-import { CORE_CALLBACK_ACTIONS, cloudDeciderRole, coreInUseItem, coreInUseKey, createCoreIntentHook, cloudTaskFacts, createCoreCallbackRouter, engineStampKey } from "../../packages/broker/src/cloud/app/index.js";
+import { CORE_CALLBACK_ACTIONS, cloudDeciderRole, coreInUseItem, coreInUseKey, ensureCoreInUse, createCoreIntentHook, cloudTaskFacts, createCoreCallbackRouter, engineStampKey } from "../../packages/broker/src/cloud/app/index.js";
 import { SEAT_LIMIT_UNAVAILABLE, createSeatLimits } from "../../packages/broker/src/cloud/app/index.js";
 import { bindChannelSpace, postApprovalCard } from "@rovara-code/broker/core/channel";
 import { orgMemberKey } from "@agentx/cloud-contracts";
@@ -518,6 +518,7 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     const owner = r.people.people.owner;
     const runtime = await r.app.runtimeFor(PEOPLE_ORG);
     const principal = (await createCloudIdentityProvider(r.people.routes).getPrincipal(PEOPLE_ORG, owner.developerId))!;
+    await ensureCoreInUse(runtime.flow.deps.store, PEOPLE_ORG);
     const { task } = await runtime.flow.start({ principal, client: "app" }, { requestId: randomUUID(), project: "payments", instructions: "Add a greeting.", workflow: true, workflowPath: "QUICK" });
     for (let round = 0; round < 3; round += 1) { await runtime.flow.relayOnce(); await runtime.flow.dispatchOnce({ maxMessages: 5, waitSeconds: 0 }); await runtime.flow.sweepOnce(); }
     const row = await r.world.store.get({ pk: `DEVTASK#${task.taskId}`, sk: "META" });
@@ -527,9 +528,32 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     return { r, owner, principal, taskId: task.taskId, job };
   }
 
-  it("the first core start leaves the in-use mark, so an off root knows there is a core task to serve", async () => {
-    const { r } = await startedOnCore();
-    expect(await r.world.store.get(coreInUseKey(PEOPLE_ORG))).toBeDefined();
+  it("a start through the entry leaves the in-use mark (written before the start that stamps the task), so an off root knows there is a core task to serve", async () => {
+    const r = await rig();
+    const principal = (await createCloudIdentityProvider(r.people.routes).getPrincipal(PEOPLE_ORG, r.people.people.owner.developerId))!;
+    const hook = createCoreIntentHook({ app: r.app, principalOf: async () => principal, origin: "https://x.test", now: () => r.world.clock.now, log: () => undefined, taskStop: async () => ({ enrolled: false, fence: [] }) });
+    expect(await r.world.store.get(coreInUseKey(PEOPLE_ORG))).toBeUndefined();
+    const started = await hook.start({ caller: { orgId: PEOPLE_ORG, developerId: r.people.people.owner.developerId } as never, request: { requestId: randomUUID(), project: "payments", input: { text: "Add a greeting." }, source: "app", path: "QUICK" }, ownedTask: async (_who, taskId) => ({ taskId }) as never });
+    expect(started).toBeDefined();
+    expect(await r.world.store.get(coreInUseKey(PEOPLE_ORG))).toMatchObject({ entityType: "CORE_ENGINE_IN_USE", orgId: PEOPLE_ORG });
+  });
+
+  it("L-3: the mark is written once per company by a conditional put outside the start's transaction: a burst of starts, and an existing mark, cause no further write", async () => {
+    const r = await rig();
+    const principal = (await createCloudIdentityProvider(r.people.routes).getPrincipal(PEOPLE_ORG, r.people.people.owner.developerId))!;
+    const marks: unknown[] = [];
+    const put = r.world.store.put.bind(r.world.store);
+    r.world.store.put = (async (request: Parameters<typeof put>[0]) => { if (request.item["entityType"] === "CORE_ENGINE_IN_USE") marks.push(request); return await put(request); });
+    const transactions: unknown[][] = [];
+    const transact = r.world.store.transact.bind(r.world.store);
+    r.world.store.transact = (async (items: Parameters<typeof transact>[0]) => { transactions.push([...items]); return await transact(items); });
+    const hook = createCoreIntentHook({ app: r.app, principalOf: async () => principal, origin: "https://x.test", now: () => r.world.clock.now, log: () => undefined, taskStop: async () => ({ enrolled: false, fence: [] }) });
+    const start = () => hook.start({ caller: { orgId: PEOPLE_ORG, developerId: r.people.people.owner.developerId } as never, request: { requestId: randomUUID(), project: "payments", input: { text: "Add a greeting." }, source: "app", path: "QUICK" }, ownedTask: async (_who, taskId) => ({ taskId }) as never });
+    await start(); await start(); await start();
+    expect(marks).toHaveLength(1);
+    expect((marks[0] as { condition?: unknown }).condition).toBeDefined();
+    // No start transaction carries the mark.
+    expect(transactions.flat().some((item) => (item as { item?: Record<string, unknown> }).item?.["entityType"] === "CORE_ENGINE_IN_USE")).toBe(false);
   });
 
   it("switch on, start, switch off: the worker's callbacks, the owner's decision and the close still work, and a new start is Cloud's", async () => {

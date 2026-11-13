@@ -12,7 +12,7 @@
 //   hold sweep       Cloud's admission adapter charges a hold whose caller died (`admission-hold-sweep`).
 //   automation       `stopAutomationsWhenOff` as the `automation-stop` job (143c), when the deployment gives the chain runner's and the unattended door's dependencies.
 //   Slack inbound    the channel sink over Cloud's `ChannelWork`, fed from Cloud's Slack request queue (`inbound.slack`).
-// A deployment that gives less gets less: an area whose service is missing is refused by the root (`serviceGaps`), never half-run.
+// A deployment that gives less gets less: an area the switch has ON whose service is missing is refused by the root (`serviceGaps`), never half-run; an area that is off (served only for the tasks it still holds) loses only its own jobs, which skip as `service_not_wired`.
 import { type RepositoryGrantService, createCallbackService, createDecisionService, createMergeTrackingService, createMilestoneService, createNoticeService, createSessionService, type NoticeServiceOptions, type SessionServiceOptions } from "@rovara-code/broker";
 import { channelThreadHandler, planCardPosted, threadFollows, type ChannelCompanyOf, type ChannelMemberRule } from "@rovara-code/broker/core/channel";
 import { costUsdOf, createCostLedger } from "@rovara-code/broker/core/cost";

@@ -11,6 +11,17 @@ const OTHER = { pk: "DEVTASK#t-core", sk: "PEOPLE", companyId: "org_aaaaaaaaaaaa
 
 const world = () => { const db = new FakeDynamoDb(); for (const row of [CORE, CLOUD, OTHER]) db.set(row); return viewCoreTaskRowsClient(db as never) as unknown as { send(command: unknown): Promise<Record<string, unknown>>; items: Map<string, unknown> }; };
 
+describe("a row that already names an orgId", () => {
+  it("is left exactly as stored (the view fills a missing orgId only, it never overwrites one)", async () => {
+    const db = new FakeDynamoDb();
+    const both = { pk: "DEVTASK#t-both", sk: "META", entityType: "DEVTASK", companyId: "org_aaaaaaaaaaaaaaaaaaaa", orgId: "org_bbbbbbbbbbbbbbbbbbbb", taskId: "t-both" };
+    db.set(both);
+    const client = viewCoreTaskRowsClient(db as never) as unknown as { send(command: unknown): Promise<{ Item?: Record<string, unknown> }> };
+    const read = (await client.send(new GetCommand({ TableName: "state", Key: { pk: both.pk, sk: both.sk } }))).Item;
+    expect(read).toMatchObject({ companyId: "org_aaaaaaaaaaaaaaaaaaaa", orgId: "org_bbbbbbbbbbbbbbbbbbbb" });
+  });
+});
+
 describe("a client viewed twice", () => {
   it("is not wrapped again (the handler views its own client, and the entry's readers view theirs)", () => {
     const once = viewCoreTaskRowsClient(new FakeDynamoDb() as never);

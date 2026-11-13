@@ -10,12 +10,12 @@ import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { projectAiKey, scopeKey, type BudgetScope } from "@agentx/cloud-contracts";
 import type { AdmissionRequest, Cost, Payer, TransactItem } from "@rovara-code/contracts";
 import { ROVARA_CODE_AGENT_ID, agentXError, when } from "@rovara-code/contracts";
-import { taskPointerKey } from "../../developer/task-records.js";
+import { taskPayerKey, taskPointerKey } from "../../developer/task-records.js";
 import { effectiveLimits, readProjectAiWithRevision } from "../../spend/settings.js";
 import { budgetScopesFor, resolvePayer } from "../../spend/payer.js";
 
 /** Where a core task's payer is kept: captured by its start, read by every later admission that has no person (the machine, the second review, a design review, a re-run after a merge). */
-export const taskPayerKey = (taskId: string): { pk: string; sk: string } => ({ pk: `DEVTASK#${taskId}`, sk: "PAYER" });
+export { taskPayerKey };
 export const TASK_PAYER_ENTITY = "TASK_PAYER";
 
 /** Who records the real spend of a piece of work. */
@@ -69,10 +69,10 @@ export interface LevelSources {
 
 /**
  * Whose budgets a core request counts against, as v2 charges the same work:
- *   - a start by a person (a request with an actor): Cloud's own payer rules (`resolvePayer`, as `resolveRunPayer` applies them) over the project's AI settings read now: the project pays when its settings say
+ *   - the start of a task by a person (`task.start`): Cloud's own payer rules (`resolvePayer`, as `resolveRunPayer` applies them) over the project's AI settings read now: the project pays when its settings say
  *     so, else the person who acts. That read is the capture: the task's start records the payer it decided (`capture`), and holds the settings it read;
  *   - the nightly run: the project's own work (`resolvePayer`'s `nightly`);
- *   - every other request, which has no person (the machine of a workspace, the second review, a design review, a re-run after a merge): the task's CAPTURED payer, as v2 charges a task's follow-on spend
+ *   - every other request about a task, with or without a person (the machine of a workspace, the second review, a design review, a re-run after a merge, an Ask, a diagnosis): the task's CAPTURED payer, as v2 charges a task's follow-on spend
  *     to the payer its start recorded (`paymentOfTask`), whatever the project's settings say now. A task with no captured payer is not guessed at: the request fails (nothing is held);
  *   - anything else (no person, no task): the payer is unknown, and the request fails rather than being charged to the project by default.
  * The scopes are `budgetScopesFor` of that payer, as `admitWork` counts them, so a core admission and Cloud's agree.
@@ -82,15 +82,18 @@ export async function scopesOf(request: AdmissionRequest, sources: Pick<LevelSou
   if (project === undefined) throw new Error("a request that spends money names its project");
   const agentId = sources.agentId(request);
   const personId = request.actor?.personId;
+  const taskSubject = request.subject !== undefined && (request.subject.type === "task" || request.subject.type === "workspace") ? request.subject : undefined;
   let payer: Payer | undefined;
-  if (personId !== undefined) {
+  if (request.action === "task.start" && personId !== undefined) {
     const projectPays = sources.projectPays === undefined ? false : await sources.projectPays(request.companyId, project);
     // The origins a person starts from (the app, Slack, the CLI, MCP) all charge the project when it pays, else whoever started it.
     payer = resolvePayer({ origin: "app", project, projectPays, agentId, startedBy: { developerId: personId } });
+  } else if (taskSubject !== undefined && sources.taskPayer !== undefined) {
+    // Anything else about a task, whoever asks (the machine, a review, an Ask a person put to it, a diagnosis): v2 mints the model key from the task's own payer (`paymentOfTaskResolved`), so the
+    // asker never pays for it, and a project that started paying since does not change who pays for this task.
+    payer = await sources.taskPayer(request.companyId, taskSubject);
   } else if (request.action === "nightly.run") {
     payer = resolvePayer({ origin: "nightly", project, projectPays: false, agentId });
-  } else if (request.subject !== undefined && (request.subject.type === "task" || request.subject.type === "workspace") && sources.taskPayer !== undefined) {
-    payer = await sources.taskPayer(request.companyId, request.subject);
   }
   if (payer === undefined) throw agentXError("CONFIG_INVALID", `payer: the ${request.action} request has no payer recorded, so it is not charged to anyone by default`);
   return budgetScopesFor(payer, { project }, { agentId });

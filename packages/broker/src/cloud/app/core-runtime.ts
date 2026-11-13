@@ -6,13 +6,13 @@
 // The other core services (merge tracking, the session sweep, notices) are joined in Code by its LOCAL composition root (`Kb/local/app/tracking.ts`,
 // `app.ts`), which is not exported and carries laptop rules (`fixedCodeSettings`, `soleOwnerPeople`). Cloud needs the same joins with its own company
 // settings and people. Until Code exports a service layer for them (open question S0-Q1 in the lane report), each is a `CoreService` the deployment
-// supplies; `serviceGaps` names the ones missing so the switch cannot be turned on for an area whose service is not wired.
+// supplies; `serviceGaps` names the ones missing so the switch cannot be turned on for an area whose service is not wired (an area that is off is not asked: its missing service costs only its own jobs).
 import { AsyncLocalStorage } from "node:async_hooks";
 import { RepositoryGrantService, type createCallbackService, type createDecisionService } from "@rovara-code/broker";
 import { createStoreProjectSource, createTaskFlowFromRegistry, type RegistryTaskFlowOptions, type StartExtras, type StartExtrasInput, type TaskAccess, type TaskFlow } from "@rovara-code/broker/core/task-flow";
 import type { AdapterRegistry, ChannelInboundSink, OrgId, SlackRequestMessage, TransactItem } from "@rovara-code/contracts";
 import { withStepFenceRetry } from "./step-fence.js";
-import { coreInUseItem, stampForNewTask, stampItem } from "./engine-stamp.js";
+import { stampForNewTask, stampItem } from "./engine-stamp.js";
 import type { CoreArea, CoreEngineFlags } from "./flags.js";
 import { createCloudStepModels, type CloudModelFacts } from "./model-mapping.js";
 import { mapCloudSettings, type CloudCompanySettings } from "./settings-mapping.js";
@@ -89,7 +89,7 @@ export function createCoreRuntime(options: CoreRuntimeOptions): CoreRuntime {
   const startExtras = (input: StartExtrasInput): StartExtras => {
     const own = given?.(input);
     const stamp = stampItem(companyId, input.taskId, stampForNewTask(options.flags, companyId, options.now()));
-    return { ...(own ?? {}), items: [...(own?.items ?? []), ...(startFences.getStore() ?? []), stamp, coreInUseItem(companyId)] };
+    return { ...(own ?? {}), items: [...(own?.items ?? []), ...(startFences.getStore() ?? []), stamp] };
   };
   const flow = createTaskFlowFromRegistry(withStepFenceRetry(registry), {
     ...options.flowOptions,

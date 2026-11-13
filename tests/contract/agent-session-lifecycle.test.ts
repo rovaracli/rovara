@@ -18,8 +18,9 @@ import { AgentSessionStore } from "../../packages/broker/src/agent-sessions/stor
 import { liveSessions } from "../../packages/broker/src/agent-sessions/live.js";
 import { requireCreatorStillMember } from "../../packages/broker/src/developer/creator-member.js";
 import { requireNewWorkAllowed } from "../../packages/broker/src/developer/project-roles.js";
-import { effectiveTaskOwner, ownerActorIdOf, takenOverSince, taskIndexKey, taskKey, taskOwnerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
+import { effectiveTaskOwner, ownerActorIdOf, takenOverSince, taskIndexKey, taskKey, taskOwnerKey, taskPayerKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { paymentOfTask } from "../../packages/broker/src/spend/payer.js";
+import { viewCoreTaskRowsClient } from "../../packages/broker/src/cloud/app/core-task-rows.js";
 import { createPendingChange, getAnyApproval, registerApprovalSubjectHandler, registerApproverRule } from "../../packages/broker/src/agents/approvals.js";
 import { deleteSessionShare, type SessionShareDependencies } from "../../packages/broker/src/agent-sessions/shares.js";
 import { ARJUN, BO, CELL, MAX, MIA, NAMES, ORG_A, ORG_B, PRIYA, T0, ZED, sessionWorld } from "../support/agent-session-world.js";
@@ -494,6 +495,31 @@ describe("two members are merged", () => {
       expect(paymentOfTask(w.taskOf(explicit.taskId)).payer).toEqual({ kind: "member", developerId: ARJUN });
       expect(paymentOfTask(w.taskOf(project.taskId)).payer).toEqual({ kind: "project", project: "web" });
       expect(paymentOfTask(w.taskOf(third.taskId)).payer).toEqual({ kind: "member", developerId: PRIYA });
+    });
+
+    it("M-B: a task the CORE runs keeps its payer in its own row, which follows the person in the same transaction (a member payer moves, a project or another member's stays), and its record gets no payer", async () => {
+      const { w } = setup();
+      const coreTask = (payer: Record<string, unknown>) => {
+        const solo = soloTask(w);
+        const { orgId, ...record } = w.taskOf(solo.taskId) as unknown as Record<string, unknown>;
+        void orgId;
+        // The core's record names its company, not `orgId`, and its payer is a row of its own (what the start's admission captured).
+        w.db.delete(taskKey(solo.taskId));
+        w.db.set({ ...record, companyId: ORG_A });
+        w.db.set({ ...taskPayerKey(solo.taskId), entityType: "TASK_PAYER", orgId: ORG_A, taskId: solo.taskId, payer });
+        return solo;
+      };
+      const mine = coreTask({ kind: "member", developerId: ZED });
+      const project = coreTask({ kind: "project", project: "web" });
+      const third = coreTask({ kind: "member", developerId: PRIYA });
+      // The handler gives these routes a client that reads a core row's company as `orgId` too.
+      await onMembersMerged({ ...w.deps, documentClient: viewCoreTaskRowsClient(w.db) }, { orgId: ORG_A, survivorId: ARJUN, duplicateId: ZED });
+      expect(w.get(taskPayerKey(mine.taskId))).toMatchObject({ payer: { kind: "member", developerId: ARJUN } });
+      expect(w.get(taskPayerKey(project.taskId))).toMatchObject({ payer: { kind: "project", project: "web" } });
+      expect(w.get(taskPayerKey(third.taskId))).toMatchObject({ payer: { kind: "member", developerId: PRIYA } });
+      // The task record is handed on as any task's is (the condition accepts its `companyId`), and gets no `payer`.
+      expect(effectiveTaskOwner(w.taskOf(mine.taskId)).developerId).toBe(ARJUN);
+      expect(w.taskOf(mine.taskId)).not.toHaveProperty("payer");
     });
 
     it("moves the session's payer copy with it", async () => {

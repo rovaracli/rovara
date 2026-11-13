@@ -5,17 +5,18 @@
 //           a script token) has no credential to present, so the decision is refused, never made on their behalf. The gate's refusal becomes the AgentX error Cloud's route throws, in the same
 //           code (so the same status) and, where Cloud has words for the case, in them (`coreDecisionRefusal`).
 //   close   `flow.close`, answered as `DeveloperCloseResponse`. The core's close has no worker preflight for unpublished work (vendor core/task-flow/close.ts says so), so this rule stands in for it and
-//           fails closed: a task whose coding step ran and whose work shows no pull request and no publication is not closed without `discard_unpublished` (Slack's close button sends it: the owner confirmed
+//           fails closed: a task whose coding step ran and whose candidate is not on an open pull request (the vendor's `candidateIsOnPullRequest`), is not merged and has no succeeded publication is not closed without `discard_unpublished` (Slack's close button sends it: the owner confirmed
 //           there). DEFERRED S3-CLOSE-PREFLIGHT.
 import { AgentXError, DeveloperTaskCloseRequestSchema, WorkflowDecisionRequestSchema, agentXError, type Principal } from "@rovara-code/contracts";
-import type { DeveloperCloseResponse, DeveloperTaskView } from "@agentx/cloud-contracts";
+import type { DeveloperCloseResponse, DeveloperTaskView, WorkflowSnapshot } from "@agentx/cloud-contracts";
+import { candidateIsOnPullRequest } from "@rovara-code/broker/core/build-step";
 import { RUN_LIMIT_OWNER_DECIDES_WORDS } from "../../approval-place/words.js";
 import { parse } from "../../aws/developer-tasks/common.js";
 import { CLOSE_REFUSED } from "../../aws/developer-tasks/close.js";
 import type { DeveloperCaller } from "../../aws/developer-routes/types.js";
 import { taskKey } from "../../developer/task-records.js";
 import type { CoreTaskRoutes } from "../../rovara-code/task-routes.js";
-import { API_TOKEN_METHOD, BROWSER_SESSION_METHOD } from "../adapters/people/methods.js";
+import { API_TOKEN_METHOD, BROWSER_SESSION_METHOD, BROWSER_STEP_UP_METHOD } from "../adapters/people/methods.js";
 import type { CloudApp } from "./app.js";
 import { engineOfStoredTask } from "./engine-stamp.js";
 import { SEAT_LIMIT_WORDS } from "./seat-limits.js";
@@ -101,12 +102,12 @@ export function createCoreTaskRoutes(deps: CoreTaskRoutesDeps): CoreTaskRoutes {
       return row !== undefined && (row["orgId"] ?? row["companyId"]) === caller.orgId;
     },
 
-    async decide({ caller, taskId, value, via, bearer, view }) {
+    async decide({ caller, taskId, value, via, bearer, stepUpCookie, view }) {
       const request = parse(WorkflowDecisionRequestSchema, value, {}, "workflow-decision");
       if (request.decision === "SKIP") throw agentXError("CONFIG_INVALID", SKIP_REFUSED_WORDS);
       // The credential the caller presented. A browser session is the cookie's session id (`caller.sessionId`); a token is the request's own. Nothing else is a credential.
       const credential = caller.browserSession === true
-        ? { method: BROWSER_SESSION_METHOD, token: caller.sessionId }
+        ? stepUpCookie === undefined ? { method: BROWSER_SESSION_METHOD, token: caller.sessionId } : { method: BROWSER_STEP_UP_METHOD, token: `${caller.sessionId}:${stepUpCookie}` }
         : caller.scriptToken === undefined && bearer !== undefined && bearer !== "" ? { method: API_TOKEN_METHOD, token: bearer } : undefined;
       if (credential === undefined) throw agentXError("FORBIDDEN", NO_CREDENTIAL_WORDS);
       const gate = (await runtimeOf(caller.orgId)).inbound.clientGate;
@@ -134,10 +135,12 @@ export function createCoreTaskRoutes(deps: CoreTaskRoutesDeps): CoreTaskRoutes {
       const taskCaller = { principal: await deps.principalOf(caller), client: "app" };
       const before = await runtime.flow.get(taskCaller, taskId).catch(notYours);
       if (before.closedAt === undefined && request.discard_unpublished !== true) {
-        const row = await deps.read(taskKey(taskId));
-        const pullRequests = ((row?.["workflow"] as { pullRequests?: unknown[] } | undefined)?.pullRequests ?? []).length;
+        const workflow = (await deps.read(taskKey(taskId)))?.["workflow"] as WorkflowSnapshot | undefined;
         const coded = before.operations.some((operation) => operation.workflowMode === "IMPLEMENT");
-        const published = pullRequests > 0 || before.operations.some((operation) => operation.kind === "publish" && operation.status === "SUCCEEDED");
+        // Published: the candidate is the code the open pull requests hold now (the vendor's own test, so a commit made after the pull request opened is NOT published), or a pull request merged, or a publish
+        // operation succeeded.
+        const published = (workflow !== undefined && candidateIsOnPullRequest(workflow)) || (workflow?.pullRequests ?? []).some((pullRequest) => pullRequest.state === "MERGED")
+          || before.operations.some((operation) => operation.kind === "publish" && operation.status === "SUCCEEDED");
         if (coded && !published) return { task: await view(), closed: false, message: CLOSE_REFUSED };
       }
       await runtime.flow.close(taskCaller, taskId).catch(notYours);

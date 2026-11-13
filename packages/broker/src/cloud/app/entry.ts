@@ -10,7 +10,7 @@
 //                         request, and hands the broker its start hook. Infrastructure (the stack parameter, the schedules, the Lambda wiring) is not here.
 //   f  the wiring         `cloudCoreWiringFromBroker`: Cloud's own people, code settings, task end, channel rules, Slack standing and task access, from the broker's dependencies where they
 //                         exist. What does not exist yet is an explicit input of `CloudCoreEntryInputs`, never a default.
-import { AgentXError, SessionIdSchema, type TransactItem, orgProjectCatalogKey, projectMemberKey, projectMetaKey, when, sessionLink, type CodeIntentRequest, type CodeIntentResult, type OrgId, type Principal, type SlackRequestMessage } from "@rovara-code/contracts";
+import { AgentXError, SessionIdSchema, agentXError, type TransactItem, orgProjectCatalogKey, projectMemberKey, projectMetaKey, when, sessionLink, type CodeIntentRequest, type CodeIntentResult, type OrgId, type Principal, type SlackRequestMessage } from "@rovara-code/contracts";
 import { recordTaskThread } from "@rovara-code/broker/core/channel";
 import { taskSessionId } from "@rovara-code/broker/core/sessions";
 import type { TaskAccess } from "@rovara-code/broker/core/task-flow";
@@ -26,12 +26,13 @@ import type { CoreIntentHook } from "../../rovara-code/intent.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 import { taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { onTaskEnded, type TaskEndHost } from "../../agents/task-end.js";
+import { z } from "zod";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { createCloudIdentityProvider, principalOfCaller } from "../adapters/people/index.js";
 import { createCloudApp, type CloudApp } from "./app.js";
-import { CORE_SLACK_ACTION, type CoreSlackRequestEvent } from "./slack-ingress-hook.js";
+import { CORE_CARD_ACTION_PREFIX, CORE_SLACK_ACTION, CORE_SLACK_PRESS_ACTION, type CoreSlackPress, type CoreSlackPressRequestEvent, type CoreSlackRequestEvent } from "./slack-ingress-hook.js";
 
-export { CORE_SLACK_ACTION, coreSlackFromIngress, type CoreSlackFromIngressDeps, type CoreSlackRequestEvent } from "./slack-ingress-hook.js";
+export { CORE_CARD_ACTION_PREFIX, CORE_SLACK_ACTION, CORE_SLACK_PRESS_ACTION, corePressHandler, coreSlackFromIngress, type CoreSlackFromIngressDeps, type CoreSlackPress, type CoreSlackPressRequestEvent, type CoreSlackRequestEvent } from "./slack-ingress-hook.js";
 import { cloudAdapterModules, type CloudModuleDeps } from "./cloud-modules.js";
 import { coreAreaOn } from "./flags.js";
 import { isCoreJobEvent } from "./jobs.js";
@@ -43,7 +44,7 @@ import { readTaskStop, type TaskStopRead } from "./task-stop-guard.js";
 import { withStartFence } from "./core-runtime.js";
 import { markStepFence } from "./step-fence.js";
 import { viewCoreTaskRows } from "./core-task-rows.js";
-import { CORE_IN_USE_PARTITION, engineOfStoredTask } from "./engine-stamp.js";
+import { CORE_IN_USE_PARTITION, engineOfStoredTask, ensureCoreInUse } from "./engine-stamp.js";
 import { createCoreTaskRoutes } from "./task-routes.js";
 import type { CoreTaskRoutes } from "../../rovara-code/task-routes.js";
 import { cloudSettingsFromEnvironment, type CloudCompanySettings } from "./settings-mapping.js";
@@ -92,6 +93,7 @@ export function createCoreIntentHook(deps: CoreIntentHookDeps): CoreIntentHook {
         return undefined;
       }
       const principal = await deps.principalOf(caller);
+      await ensureCoreInUse(runtime.flow.deps.store, caller.orgId);
       const started = await withStartFence(stop.fence, async () => await runtime.flow.start({ principal, client: request.source }, {
         requestId: request.requestId, project: request.project, instructions: request.input.text, workflow: true, client: request.source,
         ...(request.path === undefined ? {} : { workflowPath: request.path }),
@@ -143,7 +145,9 @@ export function createCoreSlackConsumer(deps: CoreSlackConsumerDeps): (message: 
     if (stop === undefined || stop.enrolled) return { handled: false };
     let intake: ((request: SlackRequestMessage) => Promise<void>) | undefined;
     try {
-      intake = (await deps.app.runtimeFor(orgId)).inbound.slack;
+      const runtime = await deps.app.runtimeFor(orgId);
+      intake = runtime.inbound.slack;
+      if (intake !== undefined) await ensureCoreInUse(runtime.flow.deps.store, orgId);
     } catch (error) {
       deps.log({ event: "core_entry.runtime_unavailable", component: "cloud_core", error: error instanceof Error ? error.name : "unknown" });
       return { handled: false };
@@ -160,9 +164,74 @@ export function createCoreSlackConsumer(deps: CoreSlackConsumerDeps): (message: 
   };
 }
 
+// ---- b2: a press on a card the core posted ----
+
+export function isCoreSlackPressEvent(event: unknown): event is CoreSlackPressRequestEvent {
+  if (event === null || typeof event !== "object") return false;
+  const value = event as { source?: unknown; action?: unknown; press?: unknown; requestContext?: unknown };
+  return value.source === "agentx.slack-ingress" && value.action === CORE_SLACK_PRESS_ACTION && value.requestContext === undefined && typeof value.press === "object" && value.press !== null;
+}
+
+const PRESS_VALUE = z.object({ r: z.string().uuid(), v: z.number().int().positive(), d: z.string().regex(/^[a-f0-9]{64}$/u), o: z.enum(["APPROVE", "REQUEST_CHANGES", "REJECT", "SKIP"]) }).strict();
+const PRESS_SHAPE = z.object({
+  actionId: z.string().min(1).max(200), value: z.string().min(1).max(2_000), userId: z.string().min(1).max(64), userTeamId: z.string().max(64), workspaceTeamId: z.string().max(64),
+  teamId: z.string().min(1).max(64), channelId: z.string().min(1).max(64), threadTs: z.string().min(1).max(64), messageTs: z.string().max(64), actionTs: z.string().max(64).optional(),
+}).strict();
+
+/** What the ingress is told for a press (`enabled: false`: not the core's, the button is treated as any unknown one). */
+export type CoreSlackPressAnswer = { enabled: false } | { enabled: true; text: string };
+
+export const PRESS_TAKEN_WORDS = "Got it. Your answer is being recorded; I will post in the thread.";
+export const PRESS_FAILED_WORDS = "I couldn't take that answer. Open the task in Rovara and decide there.";
+
+export interface CoreSlackPressDeps {
+  app: CloudApp;
+  orgOfTeam: (teamId: string) => Promise<OrgId | undefined>;
+  log: (entry: Record<string, unknown>) => void;
+}
+
+/**
+ * A press on a card the core's Slack adapter posted (its buttons are `rovara_decide_<DECISION>`, carrying `{ r: request id, v: revision, d: digest, o: decision }`). The press is handed to the company's
+ * channel sink, which finds the card by its request id, the person by Cloud's own Slack rule (`slackRequesterStanding`) and decides through the one gate, with the chat-slack credential only this path may
+ * present. Nothing here decides who may press: a card for a kind that asks for a sign-in carries no buttons at all (the adapter's `stepUp`), and the gate judges the rest. Served with the switch on or off:
+ * a card the core posted keeps working until its task ends. The stamp is the sink's own (it only knows cards the core posted). A refusal or fault is answered in words, never as a failed request.
+ */
+export function createCoreSlackPressConsumer(deps: CoreSlackPressDeps): (press: CoreSlackPress) => Promise<CoreSlackPressAnswer> {
+  return async (press) => {
+    if (!deps.app.active && !deps.app.serveStamped) return { enabled: false };
+    const shape = PRESS_SHAPE.safeParse(press);
+    if (!shape.success || !press.actionId.startsWith(CORE_CARD_ACTION_PREFIX)) return { enabled: false };
+    let value: z.infer<typeof PRESS_VALUE>;
+    try { value = PRESS_VALUE.parse(JSON.parse(press.value)); } catch { return { enabled: false }; }
+    // The button and what it carries must agree, so a press cannot be altered into another decision.
+    if (press.actionId !== `${CORE_CARD_ACTION_PREFIX}${value.o}`) return { enabled: false };
+    const orgId = await deps.orgOfTeam(press.teamId).catch(() => undefined);
+    if (orgId === undefined) return { enabled: false };
+    let sink;
+    try {
+      sink = (await deps.app.runtimeFor(orgId)).inbound.slackSink;
+    } catch (error) {
+      deps.log({ event: "core_entry.runtime_unavailable", component: "cloud_core", error: error instanceof Error ? error.name : "unknown" });
+      return { enabled: true, text: PRESS_FAILED_WORDS };
+    }
+    if (sink === undefined) return { enabled: false };
+    try {
+      await sink.decision({
+        version: 1, channel: "slack", eventId: `press-${press.actionTs ?? press.messageTs}-${press.userId}`.slice(0, 120), conversation: { channel: "slack", tenant: press.teamId, space: press.channelId, thread: press.threadTs },
+        actor: { channel: "slack", tenant: press.workspaceTeamId === "" ? press.teamId : press.workspaceTeamId, userId: press.userId }, requestId: value.r, expectedRevision: value.v, artifactDigest: value.d,
+        decision: value.o, reason: "Pressed on its card in Slack.", receivedAt: new Date().toISOString(),
+      });
+      return { enabled: true, text: PRESS_TAKEN_WORDS };
+    } catch (error) {
+      deps.log({ event: "core_entry.press_failed", component: "cloud_core", error: error instanceof Error ? error.name : "unknown", ...(error instanceof AgentXError ? { code: error.code } : {}) });
+      return { enabled: true, text: PRESS_FAILED_WORDS };
+    }
+  };
+}
+
 // ---- f: Cloud's rules for the core, from the broker's dependencies ----
 
-/** What a step is told when the owner it was given is not the owner of the task now (a take-over between the two reads): the step is held back, not dropped (it is asked again). */
+/** What a step is told when the owner it was given is not the owner of the task now (a take-over between the two reads): the step is retried (a retryable error), not dropped and not blocked at once. */
 export const STEP_OWNER_CHANGED_WORDS = "this task changed owner just now; its next step will be tried again";
 
 const slackBindingKey = (orgId: OrgId, teamId: string, channelId: string): { pk: string; sk: string } => ({ pk: `ORG#${orgId}#SLACK_BINDING#${teamId}`, sk: `CHANNEL#${channelId}` });
@@ -254,7 +323,9 @@ export function cloudTaskAccess(rawRoutesOf: () => DeveloperRouteDependencies): 
         // read here shows a different owner in the row read next, and the step is held back (told to try again), never run for the wrong person.
         const people = await read({ pk: `DEVTASK#${record.taskId}`, sk: "PEOPLE" });
         const row = await read({ pk: `DEVTASK#${record.taskId}`, sk: "META" });
-        if (row === undefined || tryEffectiveTaskOwner(row as unknown as DeveloperTaskRecord)?.developerId !== owner.developerId) return { allowed: false, message: STEP_OWNER_CHANGED_WORDS };
+        // Retryable, not a refusal: `allowed: false` would block the workflow for good, and a take-over is not a reason to stop the task. The dispatch row is rescheduled and asks this check again
+        // (it then judges the new owner); only after the sweep's attempts are spent is the workflow blocked, with this sentence.
+        if (row === undefined || tryEffectiveTaskOwner(row as unknown as DeveloperTaskRecord)?.developerId !== owner.developerId) throw agentXError("WORKSPACE_BUSY", STEP_OWNER_CHANGED_WORDS);
         const grant = await read(projectMemberKey(orgId, owner.developerId, record.project));
         const catalog = await read(orgProjectCatalogKey(orgId, record.project));
         const access = await checkProjectAccess(routes, caller, record.project, undefined, undefined);
@@ -266,7 +337,8 @@ export function cloudTaskAccess(rawRoutesOf: () => DeveloperRouteDependencies): 
           items: markStepFence(stepFence({ orgId, project: record.project, taskId: record.taskId, developerId: owner.developerId, orgRole: caller.orgRole, revision: access.revision, catalog, grant, people, channelKeys })),
         };
       } catch (error) {
-        if (error instanceof AgentXError) return { allowed: false, message: error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message };
+        // A busy answer is the step's to retry (the dispatch sweep asks again); every other refusal of the checks blocks the step with its words.
+        if (error instanceof AgentXError && error.code !== "WORKSPACE_BUSY") return { allowed: false, message: error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message };
         throw error;
       }
     },
@@ -404,6 +476,8 @@ export interface CloudCoreEntry {
   readonly taskRoutes: CoreTaskRoutes;
   /** The broker's answer to the ingress's `core-slack-request` event. */
   slackRequest(message: SlackRequestMessage): Promise<CoreSlackAnswer>;
+  /** The broker's answer to the ingress's `core-slack-press` event (a press on a card the core posted). */
+  slackPress(press: CoreSlackPress): Promise<CoreSlackPressAnswer>;
   /** An EventBridge event: `undefined` when it is not a core job's. */
   handleScheduledJob(event: unknown): Promise<unknown>;
   isScheduledJob(event: unknown): boolean;
@@ -465,6 +539,7 @@ export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): Clou
     intentHook: createCoreIntentHook({ app, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), origin, now: () => options.now().getTime(), log: options.log, taskStop }),
     taskRoutes: createCoreTaskRoutes({ app, read: readItem, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), log: options.log }),
     slackRequest: createCoreSlackConsumer({ app, log: options.log, taskStop, orgOfTeam: async (teamId) => await slackTeamOrg(options.broker, teamId).catch(() => undefined) }),
+    slackPress: createCoreSlackPressConsumer({ app, log: options.log, orgOfTeam: async (teamId) => await slackTeamOrg(options.broker, teamId).catch(() => undefined) }),
     routeCallback: createCoreCallbackRouter(app, readItem),
     isScheduledJob: isCoreJobEvent,
     handleScheduledJob: async (event) => (!app.active && !(await coreInUse()) ? (isCoreJobEvent(event) ? { skipped: "off" } : undefined) : await app.handleScheduledJob(event)),
