@@ -17,6 +17,7 @@ import { BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD, cloudApprovalIssuers, create
 import { createCallbackService } from "@rovara-code/broker";
 import { PEOPLE_ORG, SLACK_TEAM, createPeopleWorld, type Person, type PeopleWorld } from "../support/cloud-people-world.js";
 import { CORE_CALLBACK_ACTIONS, cloudDeciderRole, coreInUseKey, createCoreIntentHook, cloudTaskFacts, createCoreCallbackRouter, engineStampKey } from "../../packages/broker/src/cloud/app/index.js";
+import { SEAT_LIMIT_UNAVAILABLE, createSeatLimits } from "../../packages/broker/src/cloud/app/index.js";
 import { resolveSlackDecisionCaller } from "../../packages/broker/src/decisions/slack-actions.js";
 import { CloudSlackChannel } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
 import { bindChannelSpace, postApprovalCard } from "@rovara-code/broker/core/channel";
@@ -631,5 +632,52 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     const r = await rig();
     const off = r.rebuild({ env: {}, serveStamped: true });
     expect(await createCoreCallbackRouter(off, (key) => r.world.store.get(key) as never)(post(randomUUID(), randomUUID(), "events", "x", {}))).toBeUndefined();
+  });
+
+  it("it fails closed: a maintainer verified for a task outside the wrapped gate is refused, and inside it only the limited details are", async () => {
+    const r = await rig();
+    const { maintainer } = r.people.people;
+    r.standing.set(maintainer.developerId, "maintainer");
+    const { taskId } = await plannedTask(r);
+    const raw = (await r.app.registry()).require("approvers");
+    const seats = createSeatLimits();
+    const wrapped = seats.wrap(raw);
+    const request = () => ({ companyId: PEOPLE_ORG, requestId: randomUUID(), kind: "plan", subject: { type: "task", id: taskId }, revision: 1, artifactDigest: "b".repeat(64), risk: "low" as const, outcome: "approve" as const });
+    const proofOf = (req: ReturnType<typeof request>) => ({ proofId: randomUUID(), method: BROWSER_SESSION_METHOD, requestId: req.requestId, revision: req.revision, artifactDigest: req.artifactDigest, token: maintainer.sessionId });
+    const outside = request();
+    expect(await wrapped.verify(outside, proofOf(outside))).toEqual({ approved: false, reason: SEAT_LIMIT_UNAVAILABLE });
+    const through = (details: unknown) => seats.gate({ decide: async () => { const req = request(); return await wrapped.verify(req, proofOf(req)); } } as never).decide({ requestId: "x", credentials: [], details } as never) as Promise<{ approved: boolean }>;
+    expect((await through(undefined)).approved).toBe(true);
+    expect((await through({ acknowledgedRunLimitUsd: 5 })).approved).toBe(false);
+  });
+
+  it("concurrent decisions do not see each other's details: the limited one is refused, the plain one is approved", async () => {
+    const r = await rig();
+    const { maintainer } = r.people.people;
+    r.standing.set(maintainer.developerId, "maintainer");
+    const { taskId } = await plannedTask(r);
+    const seats = createSeatLimits();
+    const wrapped = seats.wrap((await r.app.registry()).require("approvers"));
+    const verifyAfter = async (delayMs: number) => { await new Promise((resolve) => setTimeout(resolve, delayMs)); const req = { companyId: PEOPLE_ORG, requestId: randomUUID(), kind: "plan", subject: { type: "task", id: taskId }, revision: 1, artifactDigest: "b".repeat(64), risk: "low" as const, outcome: "approve" as const }; return await wrapped.verify(req, { proofId: randomUUID(), method: BROWSER_SESSION_METHOD, requestId: req.requestId, revision: 1, artifactDigest: req.artifactDigest, token: maintainer.sessionId }); };
+    const gate = seats.gate({ decide: async (attempt: { delay: number }) => await verifyAfter(attempt.delay) } as never) as unknown as { decide(attempt: unknown): Promise<{ approved: boolean }> };
+    const [limited, plain] = await Promise.all([gate.decide({ delay: 20, details: { closeAsAnswered: true } }), gate.decide({ delay: 5, details: undefined })]);
+    expect([limited.approved, plain.approved]).toEqual([false, true]);
+  });
+
+  it("a maintainer's plain approval changes no run limit on the core (v2's ban on raising the owner's limit has nothing to hold): the task's money fields are as they were", async () => {
+    const r = await rig();
+    const { maintainer } = r.people.people;
+    r.standing.set(maintainer.developerId, "maintainer");
+    const { taskId } = await plannedTask(r);
+    const money = async () => { const row = await r.world.store.get({ pk: `DEVTASK#${taskId}`, sk: "META" }) as unknown as Record<string, unknown>; return JSON.stringify({ budgetUsd: row["budgetUsd"], runLimitUsd: row["runLimitUsd"], runEstimate: row["runEstimate"], charge: row["charge"], payer: row["payer"] }); };
+    const before = await money();
+    expect((await press(r, taskId, maintainer, BROWSER_SESSION_METHOD)).status).toBe("decided");
+    expect(await money()).toBe(before);
+  });
+
+  it("the raw decision service's `actions` (built on the raw gate, which skips the seat limits) are not carried", async () => {
+    const r = await rig();
+    const inbound = (await r.app.runtimeFor(PEOPLE_ORG)).inbound as Record<string, unknown>;
+    expect(Object.keys(inbound)).not.toContain("actions");
   });
 });

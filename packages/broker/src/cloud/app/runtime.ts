@@ -156,7 +156,8 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
         ...(wiring.decisionSubjects === undefined ? {} : { subjects: wiring.decisionSubjects }),
         workflowSubject: { actorFor: cloudActorFor },
       });
-      const decisions = { ...service, gate: seats.gate(service.gate) };
+      // Only the wrapped gate leaves this function: the service's own `actions` are built on the raw gate, which skips the seat limits, so they are not carried.
+      const decisions = { gate: seats.gate(service.gate) };
       if (channelOn) {
         // The plan's approval card by risk (low and medium: Approve in the thread; high: a pointer to the web with a fresh sign-in) and the milestone lines, registered before any milestone is written.
         milestones.register(channelThreadHandler({
