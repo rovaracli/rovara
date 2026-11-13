@@ -417,6 +417,21 @@ describe("workflow merge recovery outcomes", () => {
     expect(h.db.get(RECOVERY_PK, `TASK#${taskId}`)).not.toHaveProperty("indexExpiresAt");
   });
 
+  for (const held of [true, false]) {
+    it(`${held ? "does not retire" : "retires"} an already closed task whose slot ${held ? "is still held as" : "is not held as"} a marker row (S2 readers)`, async () => {
+      const taskId = uuid(1);
+      const h = harness({ reconcile: async () => ({ kind: "TERMINAL", release: "confirmed" }) });
+      h.db.set(taskRecord(taskId, { closedAt: new Date(h.now()).toISOString() }));
+      h.db.set({ pk: `WORKSPACE#workspace-${taskId}`, sk: "META", status: "CLOSED" });
+      const member = { pk: slackLimitPk(TEST_ORG, "team"), sk: `MEMBER#${taskId}` };
+      h.db.set({ ...member, count: 0 });
+      h.db.set({ pk: slackLimitPk(TEST_ORG, "team"), sk: "ORGANIZATION", count: 0 });
+      if (held) h.db.set({ pk: member.pk, sk: `TASK#${taskId}`, entityType: "DEVELOPER_LIMIT_TASK", taskId, memberSk: member.sk, chargedAt: "x" });
+      await enroll(h.db, taskId, h.now() - 1);
+      expect(await runDueWorkflowMergeRecovery(h.dependencies)).toEqual({ attempted: 1, reconciled: held ? 0 : 1, deferred: held ? 1 : 0 });
+    });
+  }
+
   it("retires an already closed task only after its workspace and both charged counters prove cleanup", async () => {
     const taskId = uuid(1);
     const h = harness({ reconcile: async () => ({ kind: "TERMINAL", release: "confirmed" }) });
@@ -429,7 +444,7 @@ describe("workflow merge recovery outcomes", () => {
       TransactItems: releaseItems(TABLE, {
         member: { pk: slackLimitPk(TEST_ORG, "team"), sk: `MEMBER#${taskId}` },
         organization: { pk: slackLimitPk(TEST_ORG, "team"), sk: "ORGANIZATION" },
-      }, taskId),
+      }, taskId, "set"),
     }));
     expect(h.db.get(slackLimitPk(TEST_ORG, "team"), `MEMBER#${taskId}`)).not.toHaveProperty("tasks");
     await enroll(h.db, taskId, h.now() - 1);

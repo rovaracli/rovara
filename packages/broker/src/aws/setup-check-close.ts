@@ -4,7 +4,7 @@
 // sweep (`sweepStuckSetupChecks`), for a check that never reported or whose close did not land. The check's `SETUP_CHECK` record says which slot
 // it holds and whether it was given back, so a repeat of any of these changes nothing.
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
-import { releaseItems } from "../developer/limits.js";
+import { chargeFormOf, releaseItems } from "../developer/limits.js";
 import type { WorkspaceCharge } from "../developer/task-records.js";
 import { STALLED_CHECK_ERROR, SETUP_CHECK_WATCH_PK, setupCheckRecordKey, setupCheckWatchKey } from "../org/project-setup-check.js";
 import { STUCK_SETUP_MS } from "./stuck-setup.js";
@@ -115,8 +115,8 @@ export async function closeSetupCheck(
     if (status !== "CLOSED" && status !== "READY" && status !== "PREPARATION_FAILED") return "busy";
     if (status !== "CLOSED") await options.deleteCompute({ id: workspaceId, deploymentMode: String(workspace.deploymentMode) });
     const release: TransactItems = record.releasedAt === undefined && record.charge !== undefined ? [
-      // First, at positions 0 and 1 (releaseItems' own convention).
-      ...releaseItems(tableName, record.charge, workspaceId),
+      // First (releaseItems' own convention); the form the slot was charged in is read just before.
+      ...releaseItems(tableName, record.charge, workspaceId, await chargeFormOf(client, tableName, record.charge, workspaceId)),
       { Update: {
         TableName: tableName, Key: setupCheckRecordKey(workspaceId),
         UpdateExpression: "SET releasedAt = :now", ConditionExpression: "attribute_not_exists(releasedAt)", ExpressionAttributeValues: { ":now": now },

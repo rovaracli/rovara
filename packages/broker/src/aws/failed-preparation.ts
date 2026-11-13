@@ -8,7 +8,7 @@ import { installOrgIdFromEnvironment } from "../org/resolve.js";
 // that decrements, so a repeated release, or a later close, never gives the slot back twice.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { type OrgId, OrgIdSchema, parseSlackThreadSubject, slackMemberLimitKey, slackOrganizationLimitKey } from "@rovara-code/contracts";
-import { releaseConflict, releaseItems } from "../developer/limits.js";
+import { chargeFormOf, releaseConflict, releaseItems } from "../developer/limits.js";
 import { taskKey, taskPointerKey, type DeveloperTaskRecord, type DeveloperTaskPointerRecord } from "../developer/task-records.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
@@ -82,15 +82,16 @@ async function attemptRelease(client: Client, tableName: string, workspaceId: st
   if (pointer === undefined) return "not_charged";
   const task = await get<DeveloperTaskRecord>(taskKey(pointer.taskId));
   if (task === undefined || task.closedAt !== undefined || task.charge === undefined) return "not_charged";
+  const form = await chargeFormOf(client, tableName, task.charge, task.taskId);
   try {
-    // releaseItems first, at positions 0 and 1: releaseConflict reads the cancellation reasons by position.
-    await client.send(new TransactWriteCommand({ TransactItems: [...releaseItems(tableName, task.charge, task.taskId), stillFailed] }));
+    // releaseItems first (positions 0 to 2): releaseConflict reads the cancellation reasons by position.
+    await client.send(new TransactWriteCommand({ TransactItems: [...releaseItems(tableName, task.charge, task.taskId, form), stillFailed] }));
     return "developer_task";
   } catch (error) {
     if (!isCancelled(error)) throw error;
     // The task is no longer in its member counter: an earlier release or a close gave it back.
     try {
-      await releaseConflict(client, tableName, task.charge, task.taskId, error);
+      await releaseConflict(client, tableName, task.charge, task.taskId, error, form);
       return "not_charged";
     } catch {
       return "retry";

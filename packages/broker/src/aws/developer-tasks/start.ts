@@ -561,7 +561,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const preparationItems = spendingStop === undefined ? preparedItems : preparedItems.map(item => item.Put?.Item?.entityType === "OPERATION"
     ? { Put: { ...item.Put, Item: { ...item.Put.Item, spendingTaskId: taskId, spendingAdmission: task.spendingAdmission } } } : item);
   const items: TransactItems = [
-    // First, at positions 0 and 1: chargeConflict reads the cancellation reasons by position (a paused run takes no slot).
+    // First, at positions 0 to 2: chargeConflict reads the cancellation reasons by position (a paused run takes no slot).
     ...(paused ? [] : chargeItems(deps.tableName, charge, limits, taskId)),
     ...preparationItems,
     ...(fundingProof === undefined ? [] : fundingAuditItems(deps.tableName, fundingProof, { taskId, occurrence: request.requestId, actor: { kind: "member", id: caller.developerId }, at: deps.now() })),

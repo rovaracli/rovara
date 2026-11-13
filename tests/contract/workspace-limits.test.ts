@@ -67,7 +67,7 @@ describe("developer counters (FR-020, R6)", () => {
     await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: chargeItems("state", charge, fallback, "task-1") } });
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "MEMBER#U0MAYA001")).toMatchObject({ count: 2, threads: [thread(1)], tasks: new Set(["task-1"]) });
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 1 });
-    await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-1") } });
+    await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-1", "set") } });
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "MEMBER#U0MAYA001")).toMatchObject({ count: 1, threads: [thread(1)] });
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "MEMBER#U0MAYA001")).not.toHaveProperty("tasks");
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 0 });
@@ -97,8 +97,8 @@ describe("developer counters (FR-020, R6)", () => {
     const db = new FakeDynamoDb();
     const charge = developerCharge({ orgId: TEST_ORG, teamId: SLACK_TEAM, slackUserId: "U0MAYA001", developerId });
     await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: chargeItems("state", charge, fallback, "task-5") } });
-    await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-5") } });
-    await expect(db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-5") } })).rejects.toMatchObject({ name: "TransactionCanceledException" });
+    await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-5", "set") } });
+    await expect(db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-5", "set") } })).rejects.toMatchObject({ name: "TransactionCanceledException" });
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "MEMBER#U0MAYA001")).toMatchObject({ count: 0 });
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "MEMBER#U0MAYA001")).not.toHaveProperty("tasks");
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 0 });
@@ -151,8 +151,8 @@ describe("developer counters (FR-020, R6)", () => {
     const charge = developerCharge({ orgId: TEST_ORG, teamId: SLACK_TEAM, slackUserId: "U0MAYA001", developerId });
     await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: chargeItems("state", charge, fallback, "task-7") } });
     await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: chargeItems("state", charge, fallback, "task-8") } });
-    await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-7") } });
-    await expect(db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-7") } })).rejects.toMatchObject({ name: "TransactionCanceledException" });
+    await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-7", "set") } });
+    await expect(db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-7", "set") } })).rejects.toMatchObject({ name: "TransactionCanceledException" });
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "MEMBER#U0MAYA001")).toMatchObject({ count: 1, tasks: new Set(["task-8"]) });
   });
 
@@ -160,9 +160,9 @@ describe("developer counters (FR-020, R6)", () => {
     const db = new FakeDynamoDb();
     const charge = developerCharge({ orgId: TEST_ORG, teamId: SLACK_TEAM, slackUserId: "U0MAYA001", developerId });
     await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: chargeItems("state", charge, fallback, "task-6") } });
-    await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-6") } });
-    const repeat = await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-6") } }).catch((error: unknown) => error);
-    expect(await releaseConflict(db, "state", charge, "task-6", repeat)).toBe("already_released");
+    await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-6", "set") } });
+    const repeat = await db.send({ constructor: { name: "TransactWriteCommand" }, input: { TransactItems: releaseItems("state", charge, "task-6", "set") } }).catch((error: unknown) => error);
+    expect(await releaseConflict(db, "state", charge, "task-6", repeat, "set")).toBe("already_released");
   });
 });
 
