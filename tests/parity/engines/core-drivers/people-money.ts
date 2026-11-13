@@ -12,6 +12,7 @@ import { PARITY_CORE_PEOPLE } from "../core-context.js";
 import { applyJourneySettings } from "../core-settings.js";
 import { coreMatrix } from "../people-money-support/approvals.js";
 import { coreErase } from "../people-money-support/erasure.js";
+import { readCoreEngineFlags, stampForNewTask, stampItem } from "../../../../packages/broker/src/cloud/app/index.js";
 import type { Step } from "../../harness/types.js";
 import { coreCounterItem, effectiveLimitOf, monthNow, spendStepOf } from "../people-money-support/spend.js";
 
@@ -100,7 +101,10 @@ export const PEOPLE_MONEY_DRIVERS: Record<string, Driver> = {
     async run(ctx) {
       const task = await ctx.readTask();
       if (task === undefined || typeof task.ownerKey !== "string" || typeof task.workspaceId !== "string" || typeof task.developerId !== "string") throw new Error("the core task has no owner key, workspace or person to erase");
-      const words = await coreErase({ store: ctx.store, objects: ctx.runtime.registry.require("object-storage"), companyId: ctx.companyId, developerId: task.developerId, own: { ownerKey: task.ownerKey, workspaceId: task.workspaceId, taskId: ctx.task.taskId } });
+      // The parity core runs Code's local runtime, which does not write the engine stamp (Cloud's composition root writes it in the start's own transaction: core-runtime.ts).
+      // The product's walk leaves a task with no stamp to Cloud, so the stamp the root would have written is written here, from the product's own stamp function.
+      await ctx.store.put({ item: stampItem(ctx.companyId, ctx.task.taskId, stampForNewTask(readCoreEngineFlags({ CLOUD_CORE_ENGINE: "on" }), ctx.companyId, new Date())).item });
+      const words = await coreErase({ registry: ctx.runtime.registry, companyId: ctx.companyId, developerId: task.developerId, own: { ownerKey: task.ownerKey, workspaceId: task.workspaceId, taskId: ctx.task.taskId } });
       ctx.extra.features.push(...words);
     },
   },
