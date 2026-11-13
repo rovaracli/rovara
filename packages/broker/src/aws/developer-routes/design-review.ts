@@ -41,10 +41,8 @@ import type { DeveloperTaskRouteDependencies } from "../developer-tasks/types.js
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { developerTaskRouteDependencies } from "./dependencies.js";
 import { seatTaskOwner } from "./owner-seat.js";
-import { getSignIn } from "./authentication.js";
 import { logDeveloperEvent } from "../../developer/log.js";
-import { mergeSurvivor, TASK_OWNER_CANNOT_ACT_MESSAGE, TASK_OWNER_NOT_MEMBER_MESSAGE } from "../../developer/merged-owner.js";
-import type { DeveloperRecord } from "../../developer/store.js";
+import { linkedPersonOf, TASK_OWNER_CANNOT_ACT_MESSAGE, TASK_OWNER_NOT_MEMBER_MESSAGE } from "../../developer/merged-owner.js";
 import { jsonBody } from "./organization.js";
 import { signInStoreOf } from "./common.js";
 import { withCardDecideGrade } from "./card-decide-grade.js";
@@ -171,7 +169,8 @@ function approvePortsOf(env: Env, page = false, decideGrade = false): DesignAppr
       // The owner's seat is the OWNER's own (their sign-in record and membership, read now), never the approver's role or session under the owner's id (ON-4). An owner whose sign-in was merged
       // into another is seated as the survivor, in this company only, after the task is handed on to them (0.5.18, owner-seat.ts). An owner nobody can seat (removed, revoked, merged into someone
       // outside this company) is said plainly, never as "stale": nothing is committed on a guess. The decision and the record name the person who really pressed.
-      const seat = await seatTaskOwner(env.deps, caller.orgId, loaded.task);
+      // 0.5.18x: a task held by a Slack id only LINKED to a web account is handed on by that web account's own approval only (`caller` is who pressed).
+      const seat = await seatTaskOwner(env.deps, caller.orgId, loaded.task, caller.developerId);
       if (seat.kind === "not_member") throw agentXError("CONFIG_INVALID", TASK_OWNER_NOT_MEMBER_MESSAGE);
       if (seat.kind === "not_writer") throw agentXError("CONFIG_INVALID", TASK_OWNER_CANNOT_ACT_MESSAGE);
       if (seat.kind === "moved") {
@@ -183,9 +182,14 @@ function approvePortsOf(env: Env, page = false, decideGrade = false): DesignAppr
   };
 }
 
-/** A task's requester as the person they are now: the end of the creator's merge chain (0.5.18). Undefined when the chain cannot be read (the card is then stale, never decided on a guess). */
-function requesterOf(env: Env, developerId: string): Promise<string | undefined> {
-  return mergeSurvivor((id) => getSignIn<DeveloperRecord>(env.deps, `DEVELOPER#${id}`), developerId);
+/**
+ * A task's requester as the person they are now: the end of the creator's merge chain (0.5.18), or (0.5.18x) the web account the creator's Slack account is linked to now. Undefined when the path
+ * cannot be read (the card is then stale, never decided on a guess).
+ */
+async function requesterOf(env: Env, developerId: string): Promise<string | undefined> {
+  const read = async (key: { pk: string; sk: string }) => ((await env.deps.documentClient.send(new GetCommand({ TableName: env.deps.developer.signInTableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
+  const path = await linkedPersonOf(read, developerId, env.deps.developer.signInTableName);
+  return "refused" in path ? undefined : path.survivor;
 }
 
 /** The `approve_design` handler for the decision cards' performer. Registered only while the design review switch is on (the caller decides); a task with no design review is refused by the handler's own context. */

@@ -257,7 +257,9 @@ describe("a Slack requester who is not a current writer of the team's org is ref
         // Arranged after the reach, which clears the Slack id's own record: a stale owner record there, a viewer grant under the Slack id, and no record under the survivor.
         h.db.set({ ...orgMemberKey(TEST_ORG, guestId), orgId: TEST_ORG, developerId: guestId, role: "owner" });
         setGrant(h.db, { ...KIT, developerId: guestId }, "viewer");
-        expect(await code(h), `${how} stale owner`).toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+        // 0.5.18x (DECISIONS 183(d), changed on purpose): a LINKED Slack account acts as its web account's membership or not at all, so a web account with no member record is refused outright
+        // (FORBIDDEN, never the implicit member). Either way the stale owner record gives no role.
+        expect(await code(h), `${how} stale owner`).toMatchObject({ code: how === "relinked" ? "FORBIDDEN" : "PROJECT_ACCESS_DENIED" });
       }
       // And with a survivor who is a member the stale owner record gives no maintainer role either.
       for (const [how, arrange] of reach) {

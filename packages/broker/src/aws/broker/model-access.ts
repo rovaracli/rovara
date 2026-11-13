@@ -44,6 +44,8 @@ import { resolveTaskAccess } from "../../developer/task-access.js";
 import { acceptTask } from "./acceptance.js";
 import { parseBody, verifyCapability } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
+import { linkedPersonOf } from "../../developer/merged-owner.js";
+import { signInReader } from "../../org/live-role.js";
 import { orgStoreOf, requesterStandingGuard, slackRequesterStanding, slackTeamOrg, type RequesterStanding } from "./dependency-wiring.js";
 import { putArtifact } from "./pull-request-reconcile.js";
 import { requireProjectAuthority, requireWorkspace } from "./records.js";
@@ -812,9 +814,22 @@ export async function slackWorkPayment(dependencies: AwsBrokerDependencies, orgI
  */
 export async function linkedRequester(dependencies: AwsBrokerDependencies, orgId: OrgId, requester: OperationRequester | undefined): Promise<string | undefined> {
   if (requester === undefined) return undefined;
-  const developerId = "kind" in requester ? requester.developerId : developerIdForSlackUser(requester.userId);
+  const developerId = "kind" in requester ? requester.developerId : await slackPersonOf(dependencies, requester.userId);
+  if (developerId === undefined) return undefined;
   const membership = await orgStoreOf(dependencies).orgForDeveloper(developerId);
   return membership?.orgId === orgId ? developerId : undefined;
+}
+
+/**
+ * 0.5.18x (R31, owner decision 183(d)): the person a Slack user's spend counts against: the web account the Slack account is merged into or linked to now (`linkedPersonOf`, read live), else the
+ * Slack id itself. A path that cannot be followed names nobody (the project pays), never a guess.
+ */
+async function slackPersonOf(dependencies: AwsBrokerDependencies, userId: string): Promise<string | undefined> {
+  const slackId = developerIdForSlackUser(userId);
+  const table = dependencies.developer?.signInTableName;
+  if (table === undefined) return slackId;
+  const path = await linkedPersonOf(signInReader({ documentClient: dependencies.documentClient, signInTableName: table }), slackId, table);
+  return "refused" in path ? undefined : path.survivor;
 }
 
 /** How long a task's model key lasts; the worker asks for a new one a minute before it ends. */

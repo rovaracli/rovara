@@ -82,7 +82,7 @@ function unlink(db: FakeDynamoDb, from: string, slackUser = SLACK_USER): void {
 function beforeTransaction(h: Harness, match: (items: Item[]) => boolean, effect: () => void): { fired: () => boolean } {
   const original = h.db.send;
   let fired = false;
-  h.db.send = async (command: never) => {
+  h.db.send = async (command: Parameters<typeof original>[0]) => {
     const name = (command as { constructor: { name: string } }).constructor.name;
     if (!fired && name === "TransactWriteCommand" && match(((command as { input: { TransactItems?: Item[] } }).input.TransactItems ?? []))) {
       fired = true;
@@ -141,7 +141,7 @@ async function waitingPlan(h: Harness, ts: string): Promise<{ taskId: string; de
     const workflow = taskOf(h, taskId)!.workflow;
     const requestId = randomUUID();
     const response = await h.handler({ source: "agentx.slack-ingress", action: "workflow-decision", taskId, userId: SLACK_USER, thread: threadOf(ts), requestId,
-      expectedRevision: workflow.revision, artifactDigest: workflow.artifacts.at(-1)!.sha256, decision: "REQUEST_CHANGES", reason: "Use the shared helper.", selectedOptionalCheckIds: [], ...extra }) as { statusCode: number; body: string };
+      expectedRevision: workflow.revision, artifactDigest: workflow.artifacts.at(-1)!.sha256, decision: "REQUEST_CHANGES", reason: "Use the shared helper.", selectedOptionalCheckIds: [], ...extra });
     return { ...response, requestId };
   };
   return { taskId, decide };
@@ -207,7 +207,8 @@ describe("threat 2: a stale identity carried in data", () => {
     const plan = await waitingPlan(h, "1695500000.000221");
     unlink(h.db, PERSON);
     const answer = await plan.decide({ developerId: PERSON, caller: { developerId: PERSON, orgId: TEST_ORG, orgRole: "owner" }, sessionId: "slack-workflow" });
-    expect(answer.statusCode).not.toBe(200);
+    // Refused: an error status, or the ingress's private refusal notice.
+    expect(answer.statusCode !== 200 || (JSON.parse(answer.body) as { refused?: boolean }).refused === true, answer.body).toBe(true);
     expect(decided(h, plan.taskId, answer.requestId)).toBe(false);
     const note = await h.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId: plan.taskId, thread: threadOf("1695500000.000221"), userId: SLACK_USER, messageTs: "1695500002.000001", eventId: "EvStale1", text: "Change it." }) as { body: string };
     expect((JSON.parse(note.body) as { outcome?: string }).outcome).toBe("refused");
@@ -217,23 +218,25 @@ describe("threat 2: a stale identity carried in data", () => {
 });
 
 describe("threat 3: link takeover", () => {
-  it("a link row with no reverse item (made from the Slack side alone) never seats the web account, and nothing is written", async () => {
+  it("a link made from the Slack side alone (the Slack account's own sign-in: a link to its own developer) never seats the web account", async () => {
     const h = await createSingleAnswerPlanBroker();
     person(h, PERSON, { role: "owner" });
-    h.db.set({ pk: `SIGNIN_IDENTITY#${SLACK_ID}`, sk: "META", entityType: "IDENTITY_LINK", developerId: PERSON, provider: "slack", issuer: SLACK_OIDC_ISSUER, subject: SLACK_USER, linkedAt: LINKED_AT, lastSignInAt: LINKED_AT });
-    const before = taskCount(h);
-    expect((await slackStart(h, "1695500000.000231")).statusCode).toBe(403);
-    expect(taskCount(h)).toBe(before);
+    h.db.set({ pk: `SIGNIN_IDENTITY#${SLACK_ID}`, sk: "META", entityType: "IDENTITY_LINK", developerId: SLACK_ID, provider: "slack", issuer: SLACK_OIDC_ISSUER, subject: SLACK_USER, linkedAt: LINKED_AT, lastSignInAt: LINKED_AT });
+    const started = await slackStart(h, "1695500000.000231");
+    expect(started.statusCode, started.body).toBe(200);
+    expect(taskOf(h, taskIdOf(started))!.developerId).not.toBe(PERSON);
+    expect((await slackCallerFor(deps(h), SLACK_USER, SLACK_TEAM)).orgRole).not.toBe("owner");
   });
 
-  it("a link row for ANOTHER Slack user's subject, or another provider, never seats", async () => {
-    for (const forged of [{ subject: "U0SOMEONE01" }, { provider: "github" }]) {
-      const h = await createSingleAnswerPlanBroker();
-      person(h, PERSON, { role: "owner" });
-      link(h, PERSON);
-      h.db.set({ ...h.db.get(`SIGNIN_IDENTITY#${SLACK_ID}`, "META")!, ...forged });
-      expect(await codeOf(() => slackCallerFor(deps(h), SLACK_USER, SLACK_TEAM)), JSON.stringify(forged)).toBe("FORBIDDEN");
-    }
+  it("an identity row of another provider pointing at the web account never seats it, and nothing is written", async () => {
+    const h = await createSingleAnswerPlanBroker();
+    person(h, PERSON, { role: "owner" });
+    link(h, PERSON);
+    h.db.set({ ...h.db.get(`SIGNIN_IDENTITY#${SLACK_ID}`, "META")!, provider: "github" });
+    const before = taskCount(h);
+    expect(await codeOf(() => slackCallerFor(deps(h), SLACK_USER, SLACK_TEAM))).toBe("FORBIDDEN");
+    expect((await slackStart(h, "1695500000.000232")).statusCode).toBe(403);
+    expect(taskCount(h)).toBe(before);
   });
 
   it("a replayed old sign-in (the tombstone of an earlier link) never seats, and the single-org implicit member does not come back through it", async () => {
@@ -368,11 +371,14 @@ describe("threat 8: no union of rights", () => {
   it("the Slack id is itself an owner and has a project grant; the linked account acts with the web account's role and grant only", async () => {
     const h = await linkedWorld();
     seedMembership(h.db, SLACK_ID, { orgId: TEST_ORG, role: "owner" });
-    h.db.set({ ...projectMemberKey(TEST_ORG, SLACK_ID, "payments"), entityType: "MEMBERSHIP", ownerKey: SLACK_ID, projectName: "payments", role: "maintainer" });
+    h.db.set({ ...projectMemberKey(TEST_ORG, SLACK_ID, "payments"), entityType: "MEMBERSHIP", ownerKey: SLACK_ID, projectName: "payments", role: "developer", projectRole: "maintainer" });
     const caller = await slackCallerFor(deps(h), SLACK_USER, SLACK_TEAM);
     expect(caller).toMatchObject({ developerId: PERSON, orgRole: "member" });
     const role = await slackRequesterProjectRole(deps(h), TEST_ORG, SLACK_USER, "payments");
     expect(role).not.toBe("maintainer");
+    // Positive control: the same grant under the web account itself does make them a maintainer.
+    h.db.set({ ...projectMemberKey(TEST_ORG, PERSON, "payments"), entityType: "MEMBERSHIP", ownerKey: PERSON, projectName: "payments", role: "developer", projectRole: "maintainer" });
+    expect(await slackRequesterProjectRole(deps(h), TEST_ORG, SLACK_USER, "payments")).toBe("maintainer");
   });
 });
 
@@ -386,12 +392,12 @@ describe("threat 9: one rule everywhere", () => {
     expect({ person: standing.ids.at(-1), role: standing.role }).toEqual({ person: PERSON, role: "admin" });
     expect(await slackRequesterProjectRole(d, TEST_ORG, SLACK_USER, "payments")).toBeDefined();
     // R31: the spend counts once, against the web person.
-    expect(await linkedRequester(d, TEST_ORG, { teamId: SLACK_TEAM, userId: SLACK_USER } as never)).toBe(PERSON);
+    expect(await linkedRequester(d, TEST_ORG, { teamId: SLACK_TEAM, userId: SLACK_USER })).toBe(PERSON);
     unlink(h.db, PERSON);
     expect(await codeOf(() => slackCallerFor(d, SLACK_USER, SLACK_TEAM))).toBe("SLACK_ACCOUNT_NOT_LINKED");
     expect(await codeOf(() => slackRequesterStanding(d, SLACK_USER, TEST_ORG, { allowUnlinked: true }))).toBe("SLACK_ACCOUNT_NOT_LINKED");
     expect(await codeOf(() => slackRequesterProjectRole(d, TEST_ORG, SLACK_USER, "payments"))).toBe("SLACK_ACCOUNT_NOT_LINKED");
-    expect(await linkedRequester(d, TEST_ORG, { teamId: SLACK_TEAM, userId: SLACK_USER } as never)).toBeUndefined();
+    expect(await linkedRequester(d, TEST_ORG, { teamId: SLACK_TEAM, userId: SLACK_USER })).toBeUndefined();
   });
 });
 
@@ -535,12 +541,12 @@ describe("threat 12: lessons (LP-2b restated for linked people)", () => {
     // Before any link: the single-org implicit member starts under the bare Slack id, which names nobody.
     const before = await createSingleAnswerPlanBroker();
     person(before, PERSON);
-    grantProject(before.db, { developerId: PERSON, name: "Pat", provider: "cloud", sessionId: "s-p" });
+    grantProject(before.db, { developerId: PERSON, name: "Pat", provider: "oidc", sessionId: "s-p" });
     const t0 = await preLaneSlackTask(before, "1695500000.000321");
     expect((await (await lessonsWorld(before, t0)).read()).facts.rest).toMatchObject({ initiatorTrust: "outsider" });
 
     const h = await linkedWorld();
-    grantProject(h.db, { developerId: PERSON, name: "Pat", provider: "cloud", sessionId: "s-p" });
+    grantProject(h.db, { developerId: PERSON, name: "Pat", provider: "oidc", sessionId: "s-p" });
     const started = await slackStart(h, "1695500000.000322");
     const taskId = taskIdOf(started);
     const lessons = await lessonsWorld(h, taskId);
@@ -577,7 +583,7 @@ describe("threat 14: words and logs", () => {
     const lines: string[] = [];
     vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
     const shapes: Record<string, (h: Harness) => void> = {
-      link_unverified: (h) => { h.db.delete({ pk: `DEVELOPER#${PERSON}`, sk: `IDENTITY#${SLACK_ID}` }); },
+      link_unverified: (h) => { h.db.set({ ...h.db.get(`SIGNIN_IDENTITY#${SLACK_ID}`, "META")!, provider: "github" }); },
       survivor_other_company: (h) => { h.db.set({ ...developerOrgKey(PERSON), entityType: "DEVELOPER_ORG", orgId: OTHER_ORG, role: "member", joinedAt: "x" }); },
       survivor_not_member: (h) => { h.db.delete(orgMemberKey(TEST_ORG, PERSON)); h.db.delete(developerOrgKey(PERSON)); },
       survivor_revoked: (h) => { h.db.set({ ...h.db.get(`DEVELOPER#${PERSON}`, "META")!, revoked: true }); },

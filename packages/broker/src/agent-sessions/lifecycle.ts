@@ -388,7 +388,9 @@ export type MergedTaskHandOn = TaskHold | "would_hand" | "closed" | "refused";
  * Conditional on the owner it was read with, on the task still being open and on the survivor not being banned from the company, and repeatable: a second call finds the survivor already holds it.
  * `dryRun` plans and writes nothing. The caller has checked that the survivor is the end of the duplicate's chain and a member of `orgId`; the task must be in `orgId` too, or it is "gone".
  */
-export async function handOnMergedTask(deps: SessionLifecycleDeps, merge: { orgId: string; taskId: string; duplicateId: string; survivorId: string; dryRun?: boolean }): Promise<MergedTaskHandOn> {
+export async function handOnMergedTask(deps: SessionLifecycleDeps, merge: { orgId: string; taskId: string; duplicateId: string; survivorId: string; dryRun?: boolean;
+  /** 0.5.18x: a hand-on through a Slack link (or a Slack merge) holds only while it still stands: `items` go in the hand-on's own transaction, and `holds` is asked before every attempt. */
+  fence?: { items: readonly TransactItem[]; holds: () => Promise<boolean> } }): Promise<MergedTaskHandOn> {
   const orgId = requireIds(merge.orgId, merge.survivorId, merge.duplicateId);
   if (merge.survivorId === merge.duplicateId) throw invalid("a member cannot be merged into itself");
   const record = deps.signInStore === undefined ? undefined : await deps.signInStore.getDeveloper(merge.survivorId);
@@ -400,6 +402,7 @@ export async function handOnMergedTask(deps: SessionLifecycleDeps, merge: { orgI
   const survivor = await survivorOf(deps, merge.survivorId);
   for (let attempt = 0; attempt < CONFLICT_RETRIES; attempt += 1) {
     if (await getItem(deps, orgBanKey(orgId, merge.survivorId)) !== undefined) return refused();
+    if (merge.fence !== undefined && !(await merge.fence.holds())) return refused();
     if ((await getItem(deps, taskKey(merge.taskId)))?.["closedAt"] !== undefined) return "closed";
     const { items, hold } = await taskPlan(deps, orgId, merge.taskId, merge.duplicateId, survivor, isoOf(deps.now()));
     if (hold !== "handed" || items.length === 0) return hold;
@@ -412,6 +415,7 @@ export async function handOnMergedTask(deps: SessionLifecycleDeps, merge: { orgI
       { Update: { ...update, ConditionExpression: `${String(update.ConditionExpression)} AND attribute_not_exists(closedAt)` } },
       ...rest,
       { ConditionCheck: { TableName: deps.tableName, Key: orgBanKey(orgId, merge.survivorId), ConditionExpression: "attribute_not_exists(pk)" } },
+      ...(merge.fence?.items ?? []),
     ];
     if (await transact(deps, fenced)) {
       log(deps, "agent_session.merged_task_handed_on", { orgId, taskId: merge.taskId });

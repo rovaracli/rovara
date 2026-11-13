@@ -93,6 +93,8 @@ describe("with the switch on (the default), on a cloud install", () => {
     const h = await cloud();
     const survivor = "s".repeat(64);
     seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
+    // 0.5.18x: the survivor is a person with a sign-in record (one rule for every Slack surface: a survivor with no record, or a revoked one, is refused everywhere).
+    h.db.set({ pk: `DEVELOPER#${survivor}`, sk: "META", provider: "cloud", displayName: "Survivor", revoked: false });
     h.db.set({ pk: `DEVELOPER#${PRIYA}`, sk: "META", developerId: PRIYA, mergedInto: survivor });
     expect((await ensureWorkspace(h.handler, thread("1695500000.000406"), PRIYA_SLACK)).status).toBe(200);
 

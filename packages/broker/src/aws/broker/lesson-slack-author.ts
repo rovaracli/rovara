@@ -6,6 +6,10 @@
 //      pointing at a developer. A Slack id nobody ever signed in with has no link row, so it names nobody; the id is never turned into a person by its shape;
 //   4. the linked developer is followed through merges to the person they are now, and that person's sign-in record must exist and not be revoked.
 // Whether that person is a MEMBER of the project is NOT decided here: the subject source reads their project role live (`standing`), exactly as for any other steerer.
+// LP-2b (linked people, 0.5.18x, DECISIONS 183(d)): a task started from Slack while the Slack account is linked belongs to the linked web person from the start: the task record, ownership and the
+// lessons subject all carry that person's id. Lessons from it stay attributed to that person after an unlink, and an erase of the person removes them (erase still checks both ids for older tasks).
+// After an unlink, messages, replies and presses from that Slack account come from an outsider: they do not steer as the person, and a task they steer after the unlink is outsider-steered for
+// lessons eligibility (a new reply is refused; a reply saved while linked is read through the link live, so it reads as an outsider's). Before any link, a Slack account names nobody (unchanged).
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { SLACK_OIDC_ISSUER, SlackUserIdSchema } from "@rovara-code/contracts";
 import { slackTeamOrgKey } from "@agentx/cloud-contracts";

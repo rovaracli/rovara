@@ -327,8 +327,9 @@ export function lessonSubjectSource(deps: LessonSubjectSourceDeps): TaskSubjectS
       if (visibility === undefined) return undefined;
       const project = task.project;
 
-      // A task started in Slack is recorded under the Slack-derived developer id of its creator (and its taker), which is no member of the company when the person is a member through a linked web account. The
-      // task record, its ownership and every authorization path keep that id. This source reads it as the person the Slack account is verifiably linked to (`slackAuthor`, the same proof that names a reply's author),
+      // LP-2b restated (0.5.18x): a task started from Slack while the Slack account is linked is recorded under the linked web person from the start, so nothing needs reading for it. An OLDER task
+      // (before 0.5.18x) is recorded under the Slack-derived developer id of its creator (and its taker), which is no member of the company when the person is a member through a linked web account.
+      // Its task record and ownership keep that id until it is handed on. This source reads it as the person the Slack account is verifiably linked to (`slackAuthor`, the same proof that names a reply's author),
       // and that person's id is what goes into the subject: their trust and erasure are read under it, and it is the intent span's and the close reason's `authorId` and the initiator, so the lessons made from
       // the task are attributed to the person (and a later erase of that person removes them). An erase is checked under the recorded id as well as the person (see `erased`).
       // Only an id that is exactly the Slack-derived id of a Slack account this record names, in the workspace the task was shared in, is looked up. Anything else, a failed lookup or no proof: the id as it is.

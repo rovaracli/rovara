@@ -26,9 +26,19 @@ const MAYA_SLACK_DEV = developerIdForSlackUser(MAYA.slackUserId!);
 const MAYA_NATIVE: Developer = { ...MAYA, developerId: MAYA_SLACK_DEV };
 const STRANGER_SLACK = "U0STRANGER";
 
-/** The Sign in with Slack link row: the Slack account is `developer`'s. */
+/** The Sign in with Slack link: the Slack account is `developer`'s (the forward row and, for a link to another account, its reverse item, as the sign-in function writes them). */
 function linkSlack(db: FakeDynamoDb, slackUserId: string, developerId: string): void {
-  db.set({ pk: `SIGNIN_IDENTITY#${ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId)}`, sk: "META", entityType: "IDENTITY_LINK", developerId, provider: "slack", issuer: SLACK_OIDC_ISSUER, subject: slackUserId, linkedAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-01T00:00:00.000Z" });
+  const key = ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId);
+  const body = { entityType: "IDENTITY_LINK", developerId, provider: "slack", issuer: SLACK_OIDC_ISSUER, subject: slackUserId, linkedAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-01T00:00:00.000Z" };
+  db.set({ pk: `SIGNIN_IDENTITY#${key}`, sk: "META", ...body });
+  if (developerId !== key) db.set({ pk: `DEVELOPER#${developerId}`, sk: `IDENTITY#${key}`, ...body });
+}
+
+/** The unlink, as `unlinkIdentity` writes it: the tombstone and the reverse item gone. */
+function unlinkSlack(db: FakeDynamoDb, slackUserId: string, from: string): void {
+  const key = ownerKeyForSubject(SLACK_OIDC_ISSUER, slackUserId);
+  db.set({ ...db.get(`SIGNIN_IDENTITY#${key}`, "META")!, unlinkedFrom: from, unlinkedAt: "2026-11-02T00:00:00.000Z" });
+  db.delete({ pk: `DEVELOPER#${from}`, sk: `IDENTITY#${key}` });
 }
 
 async function world(options: { replies: Array<{ slackUserId: string; text: string }>; link?: Array<[string, Developer]>; project?: Developer[]; webCreator?: true }) {
@@ -107,14 +117,19 @@ describe("a task steered through Slack replies, through the real Slack path and 
   });
 });
 
+// LP-2b, restated for linked people (0.5.18x, owner decision 183(d)): a task started from Slack while the Slack account is linked belongs to the linked web person from the start: the task
+// record, ownership and the lessons subject all carry that person's id. Lessons from it stay attributed to that person after an unlink, and an erase of the person removes them (erase still checks
+// both ids for older tasks). After an unlink, messages, replies and presses from that Slack account come from an outsider: they do not steer as the person (a new reply is refused, and a reply saved
+// while linked is read through the link live, so it reads as an outsider's: the task is then outsider-steered). Before any link, a Slack account names nobody (unchanged).
 describe("a task started in Slack by a member who is linked through a web account (LP-2b)", () => {
   const replies = [{ slackUserId: MAYA.slackUserId!, text: "Keep the old flag." }];
 
-  it("the creator is read as the linked web account: a member, and the task is eligible with them as the initiator", async () => {
+  it("the creator is the linked web account: the task record itself is theirs, they are a member, and the task is eligible with them as the initiator", async () => {
     const w = await world({ replies, webCreator: true });
     const base = await w.read();
     expect(base.facts.rest).toMatchObject({ initiatorTrust: "member", intentTrust: "member", steeringTrust: ["member"] });
     expect(base.facts.task.developerId).toBe(MAYA.developerId);
+    expect(w.harness.db.get(`DEVTASK#${w.taskId}`, "META")).toMatchObject({ developerId: MAYA.developerId, slackUserId: MAYA.slackUserId });
     expect(await w.verdict()).toMatchObject({ eligible: true });
   });
 
@@ -124,12 +139,36 @@ describe("a task started in Slack by a member who is linked through a web accoun
     expect(await w.verdict()).toMatchObject({ eligible: false });
   });
 
-  it("the link removed after the task started: the creator is an outsider again on the next read", async () => {
+  // CHANGED ON PURPOSE (0.5.18x, DECISIONS 183(d)): this case used to pin "the link removed after the task started: the creator is an outsider again on the next read". A linked Slack account now
+  // acts as its web account, so the task is the person's from the start and stays theirs (and its lessons stay attributed to them) after the unlink.
+  it("LP-2b restated: the link removed after the task started: the task and its lessons stay the person's (initiator and intent still a member)", async () => {
+    const w = await world({ replies: [], webCreator: true });
+    expect(await w.verdict()).toMatchObject({ eligible: true });
+    unlinkSlack(w.harness.db, MAYA.slackUserId!, MAYA.developerId);
+    const base = await w.read();
+    expect(base.facts.task.developerId).toBe(MAYA.developerId);
+    expect(base.facts.rest).toMatchObject({ initiatorTrust: "member", intentTrust: "member" });
+    expect(await w.verdict()).toMatchObject({ eligible: true });
+  });
+
+  it("LP-2b restated: after the unlink a reply saved while linked reads as an outsider's (outsider-steered), and a new reply from that Slack account is refused", async () => {
     const w = await world({ replies, webCreator: true });
     expect(await w.verdict()).toMatchObject({ eligible: true });
-    const key = `SIGNIN_IDENTITY#${ownerKeyForSubject(SLACK_OIDC_ISSUER, MAYA.slackUserId!)}`;
-    w.harness.db.set({ ...w.harness.db.get(key, "META")!, unlinkedFrom: MAYA.developerId, unlinkedAt: "2026-11-02T00:00:00.000Z" });
-    expect(await w.verdict()).toMatchObject({ eligible: false, reason: "outsider_initiated" });
+    unlinkSlack(w.harness.db, MAYA.slackUserId!, MAYA.developerId);
+    expect((await w.read()).facts.rest).toMatchObject({ initiatorTrust: "member" });
+    expect((await w.read()).facts.rest.steeringTrust).toContain("outsider");
+    expect(await w.verdict()).toMatchObject({ eligible: false, reason: "outsider_steered" });
+    const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000031" };
+    const sent = await w.harness.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId: w.taskId, thread, userId: MAYA.slackUserId, messageTs: "1695500009.000001", eventId: "EvAfter", text: "Also this." });
+    expect((JSON.parse(sent.body) as { outcome: string }).outcome).toBe("refused");
+  });
+
+  it("LP-2b restated: an erase of the person removes the lessons of their Slack-started task; an erase of another person does not", async () => {
+    const w = await world({ replies: [], webCreator: true });
+    w.harness.db.set({ ...erasedPersonKey(TEST_ORG, { developerId: DANA.developerId }), entityType: "ERASED_PERSON", orgId: TEST_ORG });
+    expect(await w.verdict()).toMatchObject({ eligible: true });
+    w.harness.db.set({ ...erasedPersonKey(TEST_ORG, { developerId: MAYA.developerId }), entityType: "ERASED_PERSON", orgId: TEST_ORG });
+    expect(await w.verdict()).toMatchObject({ eligible: false });
   });
 
   it("the linked web account removed from the project: ineligible (the live project role decides)", async () => {

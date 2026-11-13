@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): Slack workflow, people and note events.
 
+import { fencedActions, seatFenceOf } from "../../developer/seat-fence.js";
 import { admitOutsideRecheckOf } from "./outside-recheck.js";
 import { workspaceWorkerFeatures } from "./redirect-runtime.js";
 import { nightlyHeadDependencies } from "./nightly-head.js";
@@ -875,7 +876,8 @@ export async function recordSlackThreadNote(dependencies: AwsBrokerDependencies,
   const effectiveOwner = tryEffectiveTaskOwner(access.task);
   const replier = { developerId: effectiveOwner?.slackUserId === userId.data ? effectiveOwner.developerId : author.developerId, name: author.name };
   const mayAnswer = waiting && await mayAnswerFromSlack(dependencies, tasks, { ...actor, developerId: replier.developerId }, access.task);
-  const result = await recordWorkflowThreadNote({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: tasks, now: Date.now },
+  // 0.5.18x: the note holds only while the seat's link still stands (its fence), as every other write made for a linked Slack account.
+  const result = await recordWorkflowThreadNote({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: fencedActions(tasks, seatFenceOf(actor)), now: Date.now },
     { taskId, thread: thread.data, userId: userId.data, messageTs: messageTs.data, eventId: event.eventId, text: event.text,
       ...(event.smallTalk === true ? { smallTalk: true } : {}),
       peopleAccess: { ...(access.peopleRevision === undefined ? {} : { peopleRevision: access.peopleRevision }), isOwner: access.role === "owner" },

@@ -1,4 +1,5 @@
-// 0.5.18 (Slack merged identity) backfill: hands every OPEN task still held by a merged-away sign-in on to the merge's survivor, with the merge mover's own step. See
+// 0.5.18 (Slack merged identity) backfill: hands every OPEN task still held by a merged-away sign-in on to the merge's survivor, with the merge mover's own step. 0.5.18x: also every OPEN task
+// still held by a Slack id whose Slack account is LINKED (active, verified link, read at run time) to a web account, made while that link stood, each hand-on fenced on the link. See
 // packages/broker/src/developer/merged-owner-backfill.ts for what it reads and writes, and why a task's developerId and ownerKey are left as they are.
 //
 // DEFAULT IS A DRY RUN: it reads only, and prints counts and the ids of the tasks it WOULD hand on. --apply writes. Idempotent: a second --apply changes nothing.

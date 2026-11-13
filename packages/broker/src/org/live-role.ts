@@ -33,25 +33,39 @@ export function signInReader(deps: { documentClient: DocumentClient; signInTable
   return deps.readSignIn ?? (async (key) => (await deps.documentClient.send(new GetCommand({ TableName: deps.signInTableName, Key: key, ConsistentRead: true })) as { Item?: Record<string, unknown> }).Item);
 }
 
-/** `personIds`, and the identity link's `unlinkedFrom` (the developer a Slack identity was unlinked from) from the same read of the link, so a caller needs one walk, not two. */
-export async function personWalk(deps: { documentClient: DocumentClient; signInTableName?: string | undefined; /** A caller that cannot read the sign-in table itself (the dispatcher) gives the one read it may make. */ readSignIn?: ((key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined>) | undefined }, developerId: string): Promise<{ ids: string[]; unlinkedFrom: string | undefined }> {
+/**
+ * `personIds`, and the identity link's `unlinkedFrom` (the developer a Slack identity was unlinked from) from the same read of the link, so a caller needs one walk, not two. 0.5.18x: `firstHop`
+ * says how the walk left the id (its own merge, or its identity link, with the link row's provider and time), so the Slack seat can check and fence that hop without reading it again.
+ */
+export async function personWalk(deps: { documentClient: DocumentClient; signInTableName?: string | undefined; /** A caller that cannot read the sign-in table itself (the dispatcher) gives the one read it may make. */ readSignIn?: ((key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined>) | undefined }, developerId: string): Promise<PersonWalk> {
   if (deps.signInTableName === undefined && deps.readSignIn === undefined) return { ids: [developerId], unlinkedFrom: undefined };
   const read = signInReader(deps);
   const link = await read({ pk: `SIGNIN_IDENTITY#${developerId}`, sk: "META" });
   const unlinkedFrom = typeof link?.["unlinkedFrom"] === "string" ? link["unlinkedFrom"] : undefined;
   let pendingLink = link !== undefined && link["unlinkedFrom"] === undefined && typeof link["developerId"] === "string" && link["developerId"] !== developerId ? link["developerId"] : undefined;
   const ids = [developerId];
+  let firstHop: PersonWalk["firstHop"];
   for (let hops = 0; ; hops += 1) {
     const merged = (await read({ pk: `DEVELOPER#${ids[ids.length - 1]!}`, sk: "META" }))?.["mergedInto"];
     let next = typeof merged === "string" && merged !== "" ? merged : undefined;
+    let viaLink = false;
     if (next === undefined && pendingLink !== undefined) {
       next = ids.includes(pendingLink) ? undefined : pendingLink;
+      viaLink = next !== undefined;
       pendingLink = undefined;
     }
-    if (next === undefined) return { ids, unlinkedFrom };
+    if (next === undefined) return { ids, unlinkedFrom, ...(firstHop === undefined ? {} : { firstHop }) };
     if (ids.includes(next) || hops >= MERGE_HOPS) throw agentXError("FORBIDDEN", "this person's identity could not be followed to one person; ask an admin");
+    if (ids.length === 1) firstHop = viaLink ? { kind: "link", to: next, provider: link?.["provider"], linkedAt: link?.["linkedAt"] } : { kind: "merge", to: next };
     ids.push(next);
   }
+}
+
+/** What `personWalk` answers. */
+export interface PersonWalk {
+  ids: string[];
+  unlinkedFrom: string | undefined;
+  firstHop?: { kind: "merge"; to: string } | { kind: "link"; to: string; provider: unknown; linkedAt: unknown };
 }
 
 /**

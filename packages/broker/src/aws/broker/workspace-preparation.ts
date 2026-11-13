@@ -18,7 +18,7 @@ import { auditOccurrence, auditSlackChannelBound, auditSlackChannelUnbound, audi
 import { requireOrgId } from "../../org/resolve.js";
 import { listTeamChannels, readSlackBinding, slackBindingItem } from "../../org/slack-binding.js";
 import { getItem, issueCapability, operationKey, operationOrg, operationRecord, outboxRecord, requireOperation } from "../cancellation.js";
-import { effectiveProjectRole, viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
+import { effectiveProjectRole, grantRoleOf, viewerCannotStartTasksMessage } from "../../developer/project-roles.js";
 import { effectiveTaskOwner, taskKey, taskOwnerKey, taskOwnerSubject, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { requirePerson } from "../../developer/system-owner.js";
 import { hashJson } from "../broker-shared.js";
@@ -335,13 +335,15 @@ export async function slackRequesterProjectAccess(dependencies: AwsBrokerDepende
   // The one rule for the requester's own identity, shared with the ingress callers (slackCallerFor): their org must be the team's, the company sign-in must allow them, their role is read
   // under every id they answer to (a merge), and the Auditor, a role this release does not know, a record with no role and a missing record outside a single-org install are all refused.
   const { role: orgRole, ids, standing } = await slackRequesterStanding(dependencies, userId, orgId, { allowUnlinked: true });
-  // The explicit grant is read under the id whose role wins, as the role is: the survivor's grant first, then back along the merge and link chain to the Slack id's own. The ids are the ones the
-  // rule just walked and org-checked (not walked again here). An explicit grant (a viewer's included) is applied before channel access, so linking or merging a Slack identity into a
-  // developer with a restrictive grant does not hand it the channel's contributor role.
-  let grant: Awaited<ReturnType<typeof getMembership>>;
-  for (const id of [...ids].reverse()) {
-    grant = await getMembership(dependencies, orgId, id, projectName);
+  // The explicit grant is read under the person the Slack account acts as (the survivor of the walk the rule just made and org-checked), as the role is. 0.5.18x (owner decision 183(d)): a linked
+  // or merged Slack account has the web account's rights ALONE, never a union: a grant an earlier id (the Slack id, an id merged away) holds of its own is never used to widen them. Only a
+  // VIEWER grant there still binds when the survivor has none (it can only narrow). An explicit grant is applied before channel access, so a person with a restrictive grant does not get the
+  // channel's contributor role.
+  let grant = await getMembership(dependencies, orgId, ids.at(-1)!, projectName);
+  for (const id of [...ids].reverse().slice(1)) {
     if (grant !== undefined) break;
+    const earlier = await getMembership(dependencies, orgId, id, projectName);
+    if (earlier !== undefined && grantRoleOf(earlier) === "viewer") grant = earlier;
   }
   // No default role: a person the rules give no project role to (the Auditor) is refused, never made a contributor.
   const role = effectiveProjectRole({ developerId, orgRole }, grant, true);

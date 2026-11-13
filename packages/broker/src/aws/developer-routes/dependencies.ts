@@ -1,4 +1,5 @@
 import { logDeveloperEvent } from "../../developer/log.js";
+import { fencedActions, seatFenceOf } from "../../developer/seat-fence.js";
 import { branchGateOf } from "./branch-check.js";
 import { decisionRouteDepsOf } from "./decisions.js";
 import { pendingDecisionRefs } from "../../decisions/routes.js";
@@ -520,7 +521,8 @@ export function developerTaskRouteDependencies(
     resolveMember: (developerId) => survivorOf(projectMembersDepsOf(deps), developerId),
     ...(deps.developer.slackTeamId === undefined ? {} : { slackTeamId: deps.developer.slackTeamId }),
     issuer: deps.developer.issuer,
-    actions: deps.tasks!,
+    // 0.5.18x: a Slack caller seated through a link (or a merge) writes only while that link still stands: every task write for them carries its fence (developer/seat-fence.ts).
+    actions: fencedActions(deps.tasks!, seatFenceOf(caller)),
     ...(deps.modelAccess === undefined ? {} : { modelAccess: deps.modelAccess }),
     ...(deps.cloud === true ? { cloud: true } : {}),
     ...(deps.workflowE2EPresentation === undefined ? {} : { workflowE2EPresentation: deps.workflowE2EPresentation }),

@@ -53,7 +53,7 @@ const SCENARIOS: Array<{ name: string; slackUser: string; member: boolean; dispa
     const survivor = "5".repeat(64);
     seedMembership(h.db, survivor, { orgId: TEST_ORG, role: "member" });
     // The identity link Sign in with Slack writes: the Slack identity belongs to the developer it names, and nothing was merged.
-    h.db.set({ pk: `SIGNIN_IDENTITY#${native}`, sk: "META", developerId: survivor });
+    h.db.set({ pk: `SIGNIN_IDENTITY#${native}`, sk: "META", developerId: survivor, provider: "slack" }); // 0.5.18x: a Slack identity's link row is a Slack link
   } },
 ];
 

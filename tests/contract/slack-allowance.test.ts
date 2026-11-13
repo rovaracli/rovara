@@ -61,7 +61,8 @@ describe("the Slack ingress", () => {
     expect(wiring).toMatch(/await requireSlackAllowedByEdition\(dependencies, userId, orgId\);[\s\S]*?explicitMemberStanding\(/);
     // 0.5.18 (review L2): the workflow caller runs the rule's own body once (`slackRequesterStanding`, default options: a writer only) and seats the survivor of that same walk, with that role.
     expect(wiring).toMatch(/return \(await slackRequesterStanding\(dependencies, userId, teamOrg, options\)\)\.role;/);
-    expect(wiring).toMatch(/const standing = await slackRequesterStanding\(dependencies, userId, teamOrg\);\s*const seat = await slackSeatOf\(dependencies, userId, teamOrg, standing\.ids\);\s*return requireWriterCaller\(\{ \.\.\.slackWorkflowCaller\(userId, teamOrg\), \.\.\.seat, orgRole: standing\.role \}\);/);
+    // 0.5.18x (DECISIONS 183(d)): the seat is the person that same walk found (`seatId`, a linked account's web account too), and every write made for it carries the link's fence.
+    expect(wiring).toMatch(/const standing = await slackRequesterStanding\(dependencies, userId, teamOrg\);\s*const seat = await slackSeatOf\(dependencies, userId, standing\);\s*return withSeatFence\(requireWriterCaller\(\{ \.\.\.slackWorkflowCaller\(userId, teamOrg\), \.\.\.seat, orgRole: standing\.role \}\), standing\.fence\);/);
     const preparation = readFileSync(new URL("../../packages/broker/src/aws/broker/workspace-preparation.ts", import.meta.url), "utf8");
     expect(preparation).toMatch(/await requireSlackAllowedByEdition\(dependencies, context\.requester\.userId, orgId\);/);
     expect(preparation).toMatch(/await slackRequesterStanding\(dependencies, userId, orgId, \{ allowUnlinked: true \}\)/);

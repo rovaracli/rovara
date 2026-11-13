@@ -14,8 +14,9 @@ import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { DeveloperSignInMethodSchema, type DeveloperTaskView, type ProjectDefinition, type OrgRole, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/cloud-contracts";
 import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, agentXError, type OperationStatus, type ChannelTurn, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer } from "@rovara-code/contracts";
 import { cloudToolBudget } from "./tool-budget.js";
-import { liveStoredRole, personWalk, signInReader } from "../../org/live-role.js";
-import { mergeSurvivor } from "../../developer/merged-owner.js";
+import { liveStoredRole, personWalk, signInReader, type PersonWalk } from "../../org/live-role.js";
+import { MERGE_HOPS_MAX, handOnAllowedAt, linkedPersonOf } from "../../developer/merged-owner.js";
+import { withSeatFence, type SeatFence } from "../../developer/seat-fence.js";
 import { handOnMergedTask } from "../../agent-sessions/lifecycle.js";
 import { taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { traceFormerDevelopers } from "../../org/former-developers.js";
@@ -448,47 +449,47 @@ export async function slackTeamOrg(dependencies: AwsBrokerDependencies, teamId: 
  */
 export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId: string, teamId: string): Promise<WriterCaller<DeveloperCaller>> {
   const teamOrg = await slackTeamOrg(dependencies, teamId);
-  // One walk for the role AND the seat (review L2): the person the role was read for is the person who acts.
+  // One walk for the role AND the seat (review L2): the person the role was read for is the person who acts, and every write made for them holds only while the link still stands (the fence).
   const standing = await slackRequesterStanding(dependencies, userId, teamOrg);
-  const seat = await slackSeatOf(dependencies, userId, teamOrg, standing.ids);
-  return requireWriterCaller({ ...slackWorkflowCaller(userId, teamOrg), ...seat, orgRole: standing.role });
+  const seat = await slackSeatOf(dependencies, userId, standing);
+  return withSeatFence(requireWriterCaller({ ...slackWorkflowCaller(userId, teamOrg), ...seat, orgRole: standing.role }), standing.fence);
 }
 
 /**
- * 0.5.18 (Slack merged identity): the developer id a Slack person acts as. A Slack-only sign-in merged into the person's web sign-in is that survivor from then on, so a task started from Slack is
- * never written under the merged-away id again (it could not be seated as its owner: its membership moved with the merge). The seat follows `mergedInto` only (`mergeSurvivor`), never an identity
- * link: a Slack account only LINKED to a web account keeps acting as its Slack id, whose authority is read through the link each time (so an unlink makes it an outsider again, LP-2b). The seat must
- * lie on the SAME walk `slackRequesterStanding` read the role on (`ids`, review L2): a merge survivor that walk did not reach is refused, never guessed, as is a chain longer than MERGE_HOPS_MAX.
- * The survivor must be a current, unrevoked member of the Slack team's own company right now: following a merge never lets anyone act in a company the survivor does not belong to.
+ * 0.5.18 / 0.5.18x (owner decision 183(d)): the developer id a Slack person acts as. A Slack account merged into, or LINKED to, a web account acts as that account (followed through merges to the
+ * survivor): its id, its role, its rights alone, so a task started from Slack belongs to the web account from the start. The seat is the person `slackRequesterStanding` checked (`seatId`: the
+ * survivor of the same walk the role was read on, review L2), who it already found a current, unrevoked member of the Slack team's company. An unlinked Slack account acts as its own Slack id.
  */
-export async function slackSeatOf(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, ids: readonly string[]): Promise<Pick<DeveloperCaller, "developerId"> & Partial<Pick<DeveloperCaller, "amr" | "name">>> {
+export async function slackSeatOf(dependencies: AwsBrokerDependencies, userId: string, standing: Pick<SlackRequesterStandingResult, "ids" | "seatId" | "standing">): Promise<Pick<DeveloperCaller, "developerId"> & Partial<Pick<DeveloperCaller, "amr" | "name">>> {
   const slackId = developerIdForSlackUser(userId);
-  if (ids[0] !== undefined && ids[0] !== slackId) throw agentXError("FORBIDDEN", "this person's identity could not be followed to one person; ask an admin");
+  if (standing.ids[0] !== undefined && standing.ids[0] !== slackId) throw agentXError("FORBIDDEN", "this person's identity could not be followed to one person; ask an admin");
+  const survivor = standing.seatId;
   const table = dependencies.developer?.signInTableName;
-  if (table === undefined) return { developerId: slackId };
-  const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
-  const survivor = await mergeSurvivor((id) => read({ pk: `DEVELOPER#${id}`, sk: "META" }), slackId);
-  // The walk follows each merge before any link, so the merge survivor is on it; one that is not (or a chain that loops or is too long) is not this person's.
-  if (survivor === undefined || (survivor !== slackId && !ids.includes(survivor))) {
-    logSlackSeat({ event: "slack.merged_seat_refused", reason: "merge_chain_unreadable" });
-    throw agentXError("FORBIDDEN", "this person's identity could not be followed to one person; ask an admin");
+  if (survivor === slackId || table === undefined) return { developerId: slackId };
+  // The owner seat's bound (MERGE_HOPS_MAX): a longer path is refused, never guessed.
+  if (standing.ids.length - 1 > MERGE_HOPS_MAX) {
+    logSlackSeat({ event: "slack.linked_seat_refused", reason: "merge_chain_unreadable" });
+    throw agentXError("FORBIDDEN", IDENTITY_NOT_FOLLOWED);
   }
-  if (survivor === slackId) return { developerId: slackId };
-  const [membership, record, chosen] = await Promise.all([
-    survivorMembershipIn(dependencies, survivor, teamOrg), read({ pk: `DEVELOPER#${survivor}`, sk: "META" }), readChosenName(dependencies.documentClient, dependencies.tableName, survivor),
-  ]);
+  const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
+  const [record, chosen, membership] = await Promise.all([read({ pk: `DEVELOPER#${survivor}`, sk: "META" }), readChosenName(dependencies.documentClient, dependencies.tableName, survivor),
+    survivorMembershipIn(dependencies, survivor, standing.standing.orgId)]);
+  // The company check for every seat (a merge's survivor too): a current member of the Slack team's own company right now.
   if (membership !== "member") {
-    logSlackSeat({ event: "slack.merged_seat_refused", reason: membership === "none" ? "survivor_not_member" : "survivor_other_company" });
-    throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+    logSlackSeat({ event: "slack.linked_seat_refused", reason: membership === "none" ? "survivor_not_member" : "survivor_other_company" });
+    throw agentXError("FORBIDDEN", SLACK_NOT_THIS_COMPANY);
   }
   const provider = DeveloperSignInMethodSchema.safeParse(record?.["provider"]);
   if (record === undefined || record["revoked"] === true || !provider.success) {
-    logSlackSeat({ event: "slack.merged_seat_refused", reason: record === undefined ? "survivor_record_missing" : record["revoked"] === true ? "survivor_revoked" : "survivor_method_unreadable" });
-    throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+    logSlackSeat({ event: "slack.linked_seat_refused", reason: record === undefined ? "survivor_record_missing" : record["revoked"] === true ? "survivor_revoked" : "survivor_method_unreadable" });
+    throw agentXError("FORBIDDEN", SLACK_NOT_THIS_COMPANY);
   }
   // The person as their surviving sign-in knows them (its method and name), acting from Slack: the Slack id stays on the caller for the channel checks, as for any member who linked Slack.
   return { developerId: survivor, amr: provider.data, name: chosen ?? safeDisplayName(typeof record["displayName"] === "string" ? record["displayName"] : "", survivor) };
 }
+
+const SLACK_NOT_THIS_COMPANY = "this Slack member does not belong to the organization this Slack workspace is connected to";
+const IDENTITY_NOT_FOLLOWED = "this person's identity could not be followed to one person; ask an admin";
 
 /**
  * Whether the survivor is a member of `teamOrg` now: their own company pointer (DEVELOPER_ORG) names it; or, for a member whose pointer row is missing (a single-org install's member from before
@@ -501,21 +502,61 @@ async function survivorMembershipIn(dependencies: AwsBrokerDependencies, survivo
 }
 
 /**
- * 0.5.18: a task still held by a merged-away id (made before this fix, or after the merge drain ran) is handed on to the Slack caller when the caller IS that id's survivor (the end of its
- * merge chain), exactly as the merge's own mover would: the person's Slack presses on their own task keep working. Only the task's own company: the caller was org-checked by
- * `slackCallerFor`, and a task of any other company is left alone. Answers the task as it is now (read again after a hand-on).
+ * 0.5.18x: the person a Slack id acts as (the survivor of the walk the role was read on, `ids`: review L2, so the seat always lies on the role's walk) and the fence its first hop must still meet
+ * in a write. Through a LINK the web account is checked here, for every Slack surface: the link row is a Slack link, the account is not revoked, and its company is THIS company (a merge
+ * survivor is checked by the seat, `slackSeatOf`, as in 0.5.18). Each refusal logs its own reason code (never an id).
  */
-export async function handOnSlackMergedTask(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, caller: Pick<DeveloperCaller, "developerId" | "orgId">): Promise<DeveloperTaskRecord> {
+async function slackSeatPath(dependencies: AwsBrokerDependencies, walk: PersonWalk, orgId: OrgId): Promise<{ seatId: string; fence: SeatFence; viaLink: boolean }> {
+  const developerId = walk.ids[0]!;
+  const seatId = walk.ids.at(-1)!;
+  const table = dependencies.developer?.signInTableName;
+  const hop = walk.firstHop;
+  if (seatId === developerId || table === undefined || hop === undefined) return { seatId, fence: [], viaLink: false };
+  if (hop.kind === "merge") {
+    return { seatId, viaLink: false, fence: [{ ConditionCheck: { TableName: table, Key: { pk: `DEVELOPER#${developerId}`, sk: "META" }, ConditionExpression: "#rvSeatMerged = :rvSeatMerged",
+      ExpressionAttributeNames: { "#rvSeatMerged": "mergedInto" }, ExpressionAttributeValues: { ":rvSeatMerged": hop.to } } }] };
+  }
+  // The row is keyed by the Slack identity and only the sign-in function writes it: an active row of any other provider is not a Slack link.
+  if (hop.provider !== "slack") {
+    logSlackSeat({ event: "slack.linked_seat_refused", reason: "link_unverified" });
+    throw agentXError("FORBIDDEN", IDENTITY_NOT_FOLLOWED);
+  }
+  const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
+  const [record, membership] = await Promise.all([read({ pk: `DEVELOPER#${seatId}`, sk: "META" }), survivorMembershipIn(dependencies, seatId, orgId)]);
+  if (record?.["revoked"] === true) {
+    logSlackSeat({ event: "slack.linked_seat_refused", reason: "survivor_revoked" });
+    throw agentXError("FORBIDDEN", SLACK_NOT_THIS_COMPANY);
+  }
+  if (membership === "other") {
+    logSlackSeat({ event: "slack.linked_seat_refused", reason: "survivor_other_company" });
+    throw agentXError("FORBIDDEN", SLACK_NOT_THIS_COMPANY);
+  }
+  // The unlink marks the account it unlinked from (`identityUnlinked#<key>`) in its own transaction, and a re-link to that account clears it: a write holds only while the mark is absent.
+  return { seatId, viaLink: true, fence: [{ ConditionCheck: { TableName: table, Key: { pk: `DEVELOPER#${hop.to}`, sk: "META" }, ConditionExpression: "attribute_not_exists(#rvSeatUnlinked)",
+    ExpressionAttributeNames: { "#rvSeatUnlinked": `identityUnlinked#${developerId}` } } }] };
+}
+
+/**
+ * 0.5.18 / 0.5.18x: a task still held by an id this Slack account answers to (its own Slack id, or an id it was merged through: made before this lane, or before the merge drain ran) is handed on
+ * to the Slack caller when the caller IS that account's person now, exactly as the merge's own mover would: the person's Slack presses on their own task keep working. Only that Slack account's own
+ * press (the owner must be on ITS path), only the task's own company, only an open task, and through a link only a task made while the link stood. The hand-on holds only while the link still
+ * stands (the fence). Answers the task as it is now (read again after a hand-on).
+ */
+export async function handOnSlackMergedTask(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, caller: Pick<DeveloperCaller, "developerId" | "orgId" | "slackUserId">): Promise<DeveloperTaskRecord> {
   const owner = tryEffectiveTaskOwner(task);
   const table = dependencies.developer?.signInTableName;
   // A closed task is history: never handed on (review L4).
-  if (owner === undefined || owner.developerId === caller.developerId || task.orgId !== caller.orgId || task.closedAt !== undefined || table === undefined) return task;
+  if (owner === undefined || owner.developerId === caller.developerId || task.orgId !== caller.orgId || task.closedAt !== undefined || table === undefined || caller.slackUserId === undefined) return task;
   const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
   const readRecord = async (id: string) => await read({ pk: `DEVELOPER#${id}`, sk: "META" }) as DeveloperRecord | undefined;
-  // The owner's merge survivor, followed exactly as the caller's seat is (`mergedInto` only, bounded by MERGE_HOPS_MAX); a chain that cannot be followed hands nothing on.
-  if (await mergeSurvivor(readRecord, owner.developerId) !== caller.developerId) return task;
+  const slackId = developerIdForSlackUser(caller.slackUserId);
+  const pathNow = async () => { const path = await linkedPersonOf(read, slackId, table); return "refused" in path ? undefined : path; };
+  const path = await pathNow();
+  // The hand-on actor check: the caller is this Slack account's person now, and the task's owner is an id on this account's own path (never another account's, never another person's).
+  if (path === undefined || path.survivor !== caller.developerId || !path.ids.slice(0, -1).includes(owner.developerId) || !handOnAllowedAt(path, task.createdAt)) return task;
   const hold = await handOnMergedTask({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, signInStore: { getDeveloper: readRecord } },
-    { orgId: caller.orgId, taskId: task.taskId, duplicateId: owner.developerId, survivorId: caller.developerId });
+    { orgId: caller.orgId, taskId: task.taskId, duplicateId: owner.developerId, survivorId: caller.developerId,
+      fence: { items: path.fence, holds: async () => (await pathNow())?.survivor === caller.developerId } });
   logSlackSeat({ event: "slack.merged_task_hand_on", outcome: hold });
   return hold === "handed" ? (await getItem<DeveloperTaskRecord>(dependencies, taskKey(task.taskId))) ?? task : task;
 }
@@ -546,7 +587,7 @@ export async function requireSlackRequesterWriterRole(dependencies: AwsBrokerDep
  * under exactly the ids that were org-checked here. The company role comes from the survivor's record only. A ban row under ANY of the ids refuses (an invite clears a ban, so one that is
  * still there is live); a removal row refuses only a person the survivor has no member record for (it is never cleared, and a person invited again under the survivor works).
  */
-export async function slackRequesterStanding(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean; allowReadOnly?: boolean } = {}): Promise<{ role: OrgRole; ids: string[]; standing: RequesterStanding }> {
+export async function slackRequesterStanding(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, options: { allowUnlinked?: boolean; allowReadOnly?: boolean } = {}): Promise<SlackRequesterStandingResult> {
   const developerId = developerIdForSlackUser(userId);
   // The single-org resolver answers the install's org for everyone, which says nothing about this person; only a tenant-resolving install (an orgResolver) can say they are of another org.
   const live = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, signInTableName: dependencies.developer?.signInTableName };
@@ -567,9 +608,13 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
   // I1 (Slack allowed by the company sign-in) first, then I2: the Slack caller carries the person's real company role, not a stand-in "member".
   await requireSlackAllowedByEdition(dependencies, userId, orgId);
   // One walk, used for every check below and by the caller's grant read.
-  const { ids, unlinkedFrom: former } = walked ?? await personWalk(live, developerId);
+  const walkedNow = walked ?? await personWalk(live, developerId);
+  const { ids, unlinkedFrom: former } = walkedNow;
   // The person the id was finally merged into must belong to the team's org too, not only the Slack-derived id.
   const survivor = ids.at(-1)!;
+  // 0.5.18x (owner decision 183(d)): the person this Slack account acts as, by the verified path that must be exactly this walk, and a current, unrevoked member of THIS company: one rule for
+  // the ingress callers, the service routes, model access and spend. Never a union with anything the Slack id holds of its own.
+  const seat = await slackSeatPath(dependencies, walkedNow, orgId);
   if (survivor !== developerId && dependencies.orgResolver !== undefined) {
     const survivorOrg = await dependencies.orgResolver({ developerId: survivor });
     if (survivorOrg === undefined ? options.allowUnlinked !== true || resolved !== undefined : survivorOrg !== teamOrg) throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
@@ -594,12 +639,22 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
     if (await has(orgRemovedKey(orgId, id))) throw refuse();
     standing.absent.push(orgRemovedKey(orgId, id));
   }
-  if (seen !== undefined) return { role: seen.role, ids, standing: { ...standing, present: [{ key: orgMemberKey(orgId, survivor), role: seen.role, joinedAt: seen.joinedAt }] } };
+  if (seen !== undefined) return { role: seen.role, ids, seatId: seat.seatId, fence: seat.fence, standing: { ...standing, present: [{ key: orgMemberKey(orgId, survivor), role: seen.role, joinedAt: seen.joinedAt }] } };
   // No member record for the survivor: a removed person is refused before anything else, an Enterprise install (one company whose people all sign in) does not let a Slack identity with
   // no record in as an implicit member, and anyone else is the implicit member of a single-org install.
   for (const id of ids) {
     if (await has(orgRemovedKey(orgId, id))) throw refuse();
     standing.absent.push(orgRemovedKey(orgId, id));
+  }
+  // A linked or merged Slack account acts as its web account's membership or not at all: a web account with no member record here is refused, never the implicit member (0.5.18 release note).
+  if (seat.viaLink) {
+    logSlackSeat({ event: "slack.linked_seat_refused", reason: "survivor_not_member" });
+    throw agentXError("FORBIDDEN", SLACK_NOT_THIS_COMPANY);
+  }
+  // 0.5.18x: a Slack account that was unlinked from a web account is refused as not linked: the single-org implicit member never comes back through a stale link (unlink removes the rights at once).
+  if (former !== undefined && former !== developerId) {
+    logSlackSeat({ event: "slack.linked_seat_refused", reason: "link_unlinked" });
+    throw agentXError("SLACK_ACCOUNT_NOT_LINKED", SLACK_ACCOUNT_NOT_LINKED_MESSAGE);
   }
   if (dependencies.editionPolicy !== undefined && featureEnabled(dependencies.editionPolicy, "auditorRole")) {
     throw agentXError("FORBIDDEN", "this Slack member has not signed in to Rovara; sign in once, then try again");
@@ -611,8 +666,11 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
     if (rule === "require") throw agentXError("SLACK_ACCOUNT_NOT_LINKED", SLACK_ACCOUNT_NOT_LINKED_MESSAGE);
     if (rule === "warn") await warnImplicitSlackMember({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, orgId, userId);
   }
-  return { role: "member", ids, standing };
+  return { role: "member", ids, seatId: seat.seatId, fence: seat.fence, standing };
 }
+
+/** What `slackRequesterStanding` answers: the role, the walk, the person the Slack account acts as (`seatId`, the walk's survivor) and the fence a write made for them carries. */
+export interface SlackRequesterStandingResult { role: OrgRole; ids: string[]; seatId: string; fence: SeatFence; standing: RequesterStanding }
 
 /** What `slackRequesterStanding` read about a person to let them through: the rows that were not there (a ban, a removal) and the member record that was. */
 export interface RequesterStanding {
