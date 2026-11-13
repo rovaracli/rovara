@@ -2,8 +2,9 @@
 // 0.5.18 (Slack merged identity): a person whose Slack-only sign-in was merged into their web sign-in is the survivor from then on. A merged-away id must never be written as
 // a task owner again, and a task that still names one (made before this fix, or before the merge drain ran) is seated as the survivor, never left "stale" for good.
 //
-// The walk follows the sign-in record's `mergedInto` only (the field the merge writes, and the one the dispatcher can read too), never an identity link: a Slack account that was linked
-// without a developer of its own to merge keeps today's id. A chain is at most MERGE_HOPS_MAX long; a loop or a longer chain is unreadable (undefined), never a guess.
+// `mergeSurvivor` (the owner seat, the design card's requester, the backfill) follows the sign-in record's `mergedInto` only: the field the merge writes, and the one the dispatcher can read too.
+// The Slack seat takes the survivor of the walk its role was read on (org/live-role.ts `personWalk`: merges, else the identity link), bounded by the same MERGE_HOPS_MAX. A chain longer than
+// MERGE_HOPS_MAX, or one that loops, is unreadable (undefined), never a guess.
 //
 // Following a merge never crosses a company: every caller checks that the survivor is a member of the task's (or the Slack team's) company before it seats them.
 
@@ -31,4 +32,7 @@ export async function mergeSurvivor(read: MergeRecordReader, developerId: string
 }
 
 /** What a person reads when a task's owner can no longer be seated: they are not a member of the company any more (removed, revoked, or merged into someone outside it). Never "stale". */
+/** What a person reads when the task's owner is still a member but their company role cannot act on tasks (the Auditor), or cannot be read. */
+export const TASK_OWNER_CANNOT_ACT_MESSAGE = "The task's owner can't act on tasks in this company with their current role, so Rovara can't act for them on this task. Ask a company admin to change their role or hand the task to someone else.";
+
 export const TASK_OWNER_NOT_MEMBER_MESSAGE = "The task's owner is no longer a member of this company, so Rovara can't act for them on this task. Ask a company admin to hand the task to someone else, or start it again.";

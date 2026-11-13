@@ -15,7 +15,7 @@ import { DeveloperSignInMethodSchema, type DeveloperTaskView, type ProjectDefini
 import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, agentXError, type OperationStatus, type ChannelTurn, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer } from "@rovara-code/contracts";
 import { cloudToolBudget } from "./tool-budget.js";
 import { liveStoredRole, personWalk, signInReader } from "../../org/live-role.js";
-import { mergeSurvivor } from "../../developer/merged-owner.js";
+import { MERGE_HOPS_MAX } from "../../developer/merged-owner.js";
 import { handOnMergedTask } from "../../agent-sessions/lifecycle.js";
 import { taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { traceFormerDevelopers } from "../../org/former-developers.js";
@@ -448,33 +448,34 @@ export async function slackTeamOrg(dependencies: AwsBrokerDependencies, teamId: 
  */
 export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId: string, teamId: string): Promise<WriterCaller<DeveloperCaller>> {
   const teamOrg = await slackTeamOrg(dependencies, teamId);
-  const role = await requireSlackRequesterWriterRole(dependencies, userId, teamOrg);
-  const seat = await slackSeatOf(dependencies, userId, teamOrg);
-  return requireWriterCaller({ ...slackWorkflowCaller(userId, teamOrg), ...seat, orgRole: role });
+  // One walk for the role AND the seat (review L2): the person the role was read for is the person who acts.
+  const standing = await slackRequesterStanding(dependencies, userId, teamOrg);
+  const seat = await slackSeatOf(dependencies, userId, teamOrg, standing.ids);
+  return requireWriterCaller({ ...slackWorkflowCaller(userId, teamOrg), ...seat, orgRole: standing.role });
 }
 
 /**
- * 0.5.18 (Slack merged identity): the developer id a Slack person acts as. A Slack-only sign-in that was merged into another (the person's web sign-in) is that survivor from then on, so a
- * task started from Slack is never written under the merged-away id again (it could not be seated as its owner: its membership moved with the merge). Only `mergedInto` is followed (never an
- * identity link), and the survivor must be a member of the Slack team's own company right now: following a merge never lets anyone act in a company the survivor does not belong to. A chain
- * that loops or is too long is refused, never guessed.
+ * 0.5.18 (Slack merged identity): the developer id a Slack person acts as: the survivor of the SAME walk `slackRequesterStanding` read their role on (`ids`, the Slack id first: each merge, else the
+ * identity link, the survivor last). A Slack-only sign-in merged into the person's web sign-in is that survivor from then on, so a task started from Slack is never written under the merged-away
+ * id again (it could not be seated as its owner: its membership moved with the merge). The survivor must be a current, unrevoked member of the Slack team's own company right now: following a
+ * merge never lets anyone act in a company the survivor does not belong to. A walk longer than MERGE_HOPS_MAX (the owner seat's bound) is refused, never guessed.
  */
-export async function slackSeatOf(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId): Promise<Pick<DeveloperCaller, "developerId"> & Partial<Pick<DeveloperCaller, "amr" | "name">>> {
+export async function slackSeatOf(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, ids: readonly string[]): Promise<Pick<DeveloperCaller, "developerId"> & Partial<Pick<DeveloperCaller, "amr" | "name">>> {
   const slackId = developerIdForSlackUser(userId);
+  const survivor = ids.at(-1) ?? slackId;
+  if (ids[0] !== undefined && ids[0] !== slackId) throw agentXError("FORBIDDEN", "this person's identity could not be followed to one person; ask an admin");
+  if (survivor === slackId) return { developerId: slackId };
   const table = dependencies.developer?.signInTableName;
-  if (table === undefined) return { developerId: slackId };
-  const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
-  const survivor = await mergeSurvivor((id) => read({ pk: `DEVELOPER#${id}`, sk: "META" }), slackId);
-  if (survivor === undefined) {
+  if (table === undefined || ids.length - 1 > MERGE_HOPS_MAX) {
     logSlackSeat({ event: "slack.merged_seat_refused", reason: "merge_chain_unreadable" });
     throw agentXError("FORBIDDEN", "this person's identity could not be followed to one person; ask an admin");
   }
-  if (survivor === slackId) return { developerId: slackId };
+  const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
   const [membership, record, chosen] = await Promise.all([
-    orgStoreOf(dependencies).orgForDeveloper(survivor), read({ pk: `DEVELOPER#${survivor}`, sk: "META" }), readChosenName(dependencies.documentClient, dependencies.tableName, survivor),
+    survivorMembershipIn(dependencies, survivor, teamOrg), read({ pk: `DEVELOPER#${survivor}`, sk: "META" }), readChosenName(dependencies.documentClient, dependencies.tableName, survivor),
   ]);
-  if (membership?.orgId !== teamOrg) {
-    logSlackSeat({ event: "slack.merged_seat_refused", reason: membership === undefined ? "survivor_not_member" : "survivor_other_company" });
+  if (membership !== "member") {
+    logSlackSeat({ event: "slack.merged_seat_refused", reason: membership === "none" ? "survivor_not_member" : "survivor_other_company" });
     throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
   }
   const provider = DeveloperSignInMethodSchema.safeParse(record?.["provider"]);
@@ -487,6 +488,16 @@ export async function slackSeatOf(dependencies: AwsBrokerDependencies, userId: s
 }
 
 /**
+ * Whether the survivor is a member of `teamOrg` now: their own company pointer (DEVELOPER_ORG) names it; or, for a member whose pointer row is missing (a single-org install's member from before
+ * the pointer was written), their member row in `teamOrg` itself exists. A pointer that names another company is "other", whatever rows exist.
+ */
+async function survivorMembershipIn(dependencies: AwsBrokerDependencies, survivor: string, teamOrg: OrgId): Promise<"member" | "other" | "none"> {
+  const pointer = await orgStoreOf(dependencies).orgForDeveloper(survivor);
+  if (pointer !== undefined) return pointer.orgId === teamOrg ? "member" : "other";
+  return await getItem(dependencies, orgMemberKey(teamOrg, survivor)) === undefined ? "none" : "member";
+}
+
+/**
  * 0.5.18: a task still held by a merged-away id (made before this fix, or after the merge drain ran) is handed on to the Slack caller when the caller IS that id's survivor (the end of its
  * merge chain), exactly as the merge's own mover would: the person's Slack presses on their own task keep working. Only the task's own company: the caller was org-checked by
  * `slackCallerFor`, and a task of any other company is left alone. Answers the task as it is now (read again after a hand-on).
@@ -494,10 +505,14 @@ export async function slackSeatOf(dependencies: AwsBrokerDependencies, userId: s
 export async function handOnSlackMergedTask(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, caller: Pick<DeveloperCaller, "developerId" | "orgId">): Promise<DeveloperTaskRecord> {
   const owner = tryEffectiveTaskOwner(task);
   const table = dependencies.developer?.signInTableName;
-  if (owner === undefined || owner.developerId === caller.developerId || task.orgId !== caller.orgId || table === undefined) return task;
+  // A closed task is history: never handed on (review L4).
+  if (owner === undefined || owner.developerId === caller.developerId || task.orgId !== caller.orgId || task.closedAt !== undefined || table === undefined) return task;
   const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
   const readRecord = async (id: string) => await read({ pk: `DEVELOPER#${id}`, sk: "META" }) as DeveloperRecord | undefined;
-  if (await mergeSurvivor(readRecord, owner.developerId) !== caller.developerId) return task;
+  // The owner's survivor by the same walk the caller's seat came from (merges, else the identity link), bounded as the seat is; a walk that cannot be followed hands nothing on.
+  let walked: string[];
+  try { walked = (await personWalk({ documentClient: dependencies.documentClient, signInTableName: table }, owner.developerId)).ids; } catch { return task; }
+  if (walked.length - 1 > MERGE_HOPS_MAX || walked.at(-1) !== caller.developerId) return task;
   const hold = await handOnMergedTask({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, signInStore: { getDeveloper: readRecord } },
     { orgId: caller.orgId, taskId: task.taskId, duplicateId: owner.developerId, survivorId: caller.developerId });
   logSlackSeat({ event: "slack.merged_task_hand_on", outcome: hold });

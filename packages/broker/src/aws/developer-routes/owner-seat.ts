@@ -6,6 +6,7 @@
 // The company check stays: the survivor is seated only when `callerFor` finds them a current member of THIS company (their sign-in, not revoked, and their membership's company), and the task is
 // this company's. Anyone else is "not_member", which the caller says plainly (TASK_OWNER_NOT_MEMBER_MESSAGE), never as "stale". Each outcome is logged with a fixed reason code and no ids.
 import type { OrgId } from "@rovara-code/contracts";
+import { isWriterOrgRole } from "@agentx/cloud-contracts";
 import { handOnMergedTask } from "../../agent-sessions/lifecycle.js";
 import { logDeveloperEvent } from "../../developer/log.js";
 import { mergeSurvivor } from "../../developer/merged-owner.js";
@@ -19,6 +20,8 @@ export type TaskOwnerSeat =
   | { kind: "seated"; caller: DeveloperCaller; /** The task was handed on to the merge survivor just now (re-read it before deciding). */ handedOn: boolean }
   /** Nobody can be seated: the owner (or the survivor of their merge) is not a current member of this company. */
   | { kind: "not_member"; reason: "owner_unreadable" | "no_runs" | "owner_not_member" | "merge_chain_unreadable" | "survivor_not_member" | "task_other_company" }
+  /** The owner (or the survivor) is a member, but their company role does not act on tasks (the Auditor) or cannot be read: said with its own words, not as "no longer a member". */
+  | { kind: "not_writer" }
   /** Someone else holds the task now (a take-over raced the hand-on): the card is stale. */
   | { kind: "moved" };
 
@@ -37,7 +40,7 @@ async function seatOf(deps: DeveloperRouteDependencies, orgId: OrgId, task: Deve
   const owner = tryEffectiveTaskOwner(task);
   if (owner === undefined) return { kind: "not_member", reason: "owner_unreadable" };
   const direct = await starter.callerFor(orgId, owner.developerId);
-  if (direct !== undefined) return { kind: "seated", caller: direct, handedOn: false };
+  if (direct !== undefined) return isWriterOrgRole(direct.orgRole) ? { kind: "seated", caller: direct, handedOn: false } : { kind: "not_writer" };
   const readRecord = (id: string) => getSignIn<DeveloperRecord>(deps, `DEVELOPER#${id}`);
   const survivor = await mergeSurvivor(readRecord, owner.developerId);
   if (survivor === undefined) return { kind: "not_member", reason: "merge_chain_unreadable" };
@@ -45,11 +48,13 @@ async function seatOf(deps: DeveloperRouteDependencies, orgId: OrgId, task: Deve
   // The company check: the survivor's own sign-in and membership, read now, in THIS company (callerFor refuses a revoked sign-in and a membership of any other company).
   const caller = await starter.callerFor(orgId, survivor);
   if (caller === undefined) return { kind: "not_member", reason: "survivor_not_member" };
+  if (!isWriterOrgRole(caller.orgRole)) return { kind: "not_writer" };
   if (task.orgId !== orgId) return { kind: "not_member", reason: "task_other_company" };
   const hold = await handOnMergedTask(
     { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, signInStore: { getDeveloper: readRecord } },
     { orgId, taskId: task.taskId, duplicateId: owner.developerId, survivorId: survivor },
   );
   if (hold === "handed" || hold === "already") return { kind: "seated", caller, handedOn: true };
+  if (hold === "refused") return { kind: "not_member", reason: "survivor_not_member" };
   return hold === "gone" ? { kind: "not_member", reason: "task_other_company" } : { kind: "moved" };
 }

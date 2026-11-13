@@ -3,12 +3,14 @@
 // idempotent). The design approval's owner seat is in design-review-e2e.test.ts ("0.5.18").
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { developerOrgKey, orgMemberKey } from "@agentx/cloud-contracts";
+import { developerOrgKey, orgBanKey, orgMemberKey } from "@agentx/cloud-contracts";
 import type { OrgId } from "@rovara-code/contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { mergeSurvivor } from "../../packages/broker/src/developer/merged-owner.js";
 import { backfillMergedTaskOwners } from "../../packages/broker/src/developer/merged-owner-backfill.js";
-import { taskIndexKey } from "../../packages/broker/src/developer/task-records.js";
+import { taskIndexKey, type DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
+import { seatTaskOwner } from "../../packages/broker/src/aws/developer-routes/owner-seat.js";
+import { OrgStore } from "../../packages/broker/src/org/store.js";
 import { MAYA, createSingleAnswerPlanBroker, seedMembership } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
@@ -70,6 +72,49 @@ describe("a Slack request from a person whose Slack sign-in was merged into thei
     expect(h.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.sk === "META")).toHaveLength(before);
   });
 
+  it("review L6: a survivor whose sign-in is revoked is refused, and no task is written", async () => {
+    const h = await createSingleAnswerPlanBroker();
+    mergeSlackIntoWeb(h);
+    h.db.set({ ...(h.db.get(`DEVELOPER#${MAYA.developerId}`, "META") as Record<string, unknown>), revoked: true });
+    const before = h.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.sk === "META").length;
+    const started = await slackStart(h, "1695500000.000104");
+    expect(started.statusCode).toBe(403);
+    expect(h.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.sk === "META")).toHaveLength(before);
+  });
+
+  it("review L6: a merge chain longer than 5 hops is refused (the owner seat's bound), and one of 5 is followed", async () => {
+    const hops = (h: Harness, count: number) => {
+      // The Slack id, then count-1 intermediate merged-away ids, then MAYA: `count` merges in all.
+      const ids = [SLACK_ID, ...Array.from({ length: count - 1 }, (_, index) => String(index + 1).repeat(64).slice(0, 64)), MAYA.developerId];
+      for (let index = 0; index < ids.length - 1; index += 1) {
+        h.db.set({ pk: `DEVELOPER#${ids[index]!}`, sk: "META", provider: "cloud", displayName: "Old", firstSignInAt: "x", lastSignInAt: "x", revoked: false, mergedInto: ids[index + 1] });
+        h.db.delete(developerOrgKey(ids[index]!));
+        h.db.delete(orgMemberKey(TEST_ORG, ids[index]!));
+      }
+    };
+    const long = await createSingleAnswerPlanBroker();
+    hops(long, 6);
+    expect((await slackStart(long, "1695500000.000105")).statusCode).toBe(403);
+    const ok = await createSingleAnswerPlanBroker();
+    hops(ok, 5);
+    const started = await slackStart(ok, "1695500000.000106");
+    expect(started.statusCode, started.body).toBe(200);
+    expect(taskOf(ok, String((JSON.parse(started.body) as { taskId: string }).taskId)).developerId).toBe(MAYA.developerId);
+    const chain = new Map<string, { mergedInto?: string }>(Array.from({ length: 7 }, (_, index) => [String(index), index === 6 ? {} : { mergedInto: String(index + 1) }]));
+    expect(await mergeSurvivor(async (id) => chain.get(id), "1")).toBe("6");
+    expect(await mergeSurvivor(async (id) => chain.get(id), "0")).toBeUndefined();
+  });
+
+  it("single-org install: a survivor with a member row but no company pointer row (DEVELOPER_ORG) is still seated in that company", async () => {
+    const h = await createSingleAnswerPlanBroker();
+    mergeSlackIntoWeb(h);
+    h.db.delete(developerOrgKey(MAYA.developerId));
+    expect(h.db.get(orgMemberKey(TEST_ORG, MAYA.developerId))).toBeDefined();
+    const started = await slackStart(h, "1695500000.000107");
+    expect(started.statusCode, started.body).toBe(200);
+    expect(taskOf(h, String((JSON.parse(started.body) as { taskId: string }).taskId)).developerId).toBe(MAYA.developerId);
+  });
+
   it("a merge chain that loops is refused, never guessed", async () => {
     const records = new Map<string, { mergedInto?: string }>([["a", { mergedInto: "b" }], ["b", { mergedInto: "a" }], ["c", { mergedInto: "d" }], ["d", {}]]);
     const read = async (id: string) => records.get(id);
@@ -108,6 +153,17 @@ describe("the backfill of tasks still held by a merged-away id", () => {
     task(ELSEWHERE, OUTSIDER_DUP);
     return db;
   }
+  /** A client that closes the task (as a person's close would) just before the first transaction it is asked to write. */
+  const closingBeforeWrite = (db: FakeDynamoDb, taskId: string) => {
+    let closed = false;
+    return { send: async (command: unknown) => {
+      if (!closed && (command as { constructor: { name: string } }).constructor.name === "TransactWriteCommand") {
+        closed = true;
+        db.set({ ...(db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown>), closedAt: "2026-11-13T09:30:00.000Z" });
+      }
+      return db.send(command as never);
+    } };
+  };
   const run = (db: FakeDynamoDb, apply: boolean) => backfillMergedTaskOwners({ documentClient: db, stateTable: "state", signInTable: "signin", now: () => Date.parse("2026-11-13T10:00:00.000Z") }, { apply });
 
   it("a dry run reads only and names the open task it would hand on; --apply hands it on; a second --apply changes nothing; a closed task and another company's are left alone", async () => {
@@ -128,5 +184,62 @@ describe("the backfill of tasks still held by a merged-away id", () => {
     const again = await run(db, true);
     expect(again).toMatchObject({ taskIds: [], outcomes: { handed: 0, already: 1 } });
     expect(JSON.stringify(db.find(() => true)), "a second apply changes nothing").toBe(after);
+  });
+
+  it("review L3: a task closed between the read and the write is not handed on (the write holds only while it is open)", async () => {
+    const db = store();
+    const summary = await backfillMergedTaskOwners({ documentClient: closingBeforeWrite(db, OPEN), stateTable: "state", signInTable: "signin", now: () => Date.parse("2026-11-13T10:00:00.000Z") }, { apply: true });
+    expect(summary.outcomes).toMatchObject({ handed: 0, closed: 1 });
+    expect(summary.taskIds).toEqual([]);
+    expect(db.get(`DEVTASK#${OPEN}`, "META")).not.toHaveProperty("currentOwner");
+  });
+
+  it("review L3: nothing is handed to a survivor whose sign-in is revoked, or who is banned from the company", async () => {
+    for (const block of ["revoked", "banned"] as const) {
+      const db = store();
+      if (block === "revoked") db.set({ ...(db.get(`DEVELOPER#${SURVIVOR}`, "META") as Record<string, unknown>), revoked: true });
+      else db.set({ ...orgBanKey(TEST_ORG, SURVIVOR), entityType: "ORG_BAN" });
+      const summary = await run(db, true);
+      expect(summary.outcomes, block).toMatchObject({ handed: 0, refused: 1 });
+      expect(db.get(`DEVTASK#${OPEN}`, "META"), block).not.toHaveProperty("currentOwner");
+    }
+  });
+});
+
+describe("the task owner's seat (owner-seat.ts), read on its own", () => {
+  const OWNER = "5".repeat(64);
+  const SURVIVOR = "6".repeat(64);
+  const TASK = "44444444-4444-4444-8444-444444444444";
+  const CREATED = "2026-11-13T09:00:00.000Z";
+  function world(survivor: { orgId: OrgId; role: string } | undefined) {
+    const db = new FakeDynamoDb();
+    db.set({ pk: `DEVELOPER#${OWNER}`, sk: "META", provider: "slack", slackUserId: "U0OWNER001", displayName: "Old", revoked: false, mergedInto: SURVIVOR });
+    db.set({ pk: `DEVELOPER#${SURVIVOR}`, sk: "META", provider: "cloud", displayName: "Person", revoked: false });
+    if (survivor !== undefined) seedMembership(db, SURVIVOR, survivor as never);
+    db.set({ pk: `DEVTASK#${TASK}`, sk: "META", taskId: TASK, orgId: TEST_ORG, developerId: OWNER, developerName: "Old", provider: "slack", project: "payments", createdAt: CREATED });
+    db.set({ ...taskIndexKey(OWNER, CREATED, TASK), taskId: TASK, status: "RUNNING" });
+    const deps = { documentClient: db, tableName: "state", now: () => Date.parse("2026-11-13T10:00:00.000Z"), developer: { signInTableName: "signin" }, orgs: new OrgStore({ documentClient: db, tableName: "state", now: Date.now }), agents: {} };
+    const task = () => db.get(`DEVTASK#${TASK}`, "META") as unknown as DeveloperTaskRecord;
+    return { db, seat: () => seatTaskOwner(deps as never, TEST_ORG, task()), task };
+  }
+
+  it("seats the survivor of a merged-away owner in this company, after handing the task on", async () => {
+    const w = world({ orgId: TEST_ORG, role: "member" });
+    expect(await w.seat()).toMatchObject({ kind: "seated", handedOn: true, caller: { developerId: SURVIVOR, orgId: TEST_ORG } });
+    expect(w.task().currentOwner).toMatchObject({ developerId: SURVIVOR });
+  });
+
+  it("review L5: a survivor who is a member but an Auditor gets its own outcome, not 'no longer a member', and the task is not handed on", async () => {
+    const w = world({ orgId: TEST_ORG, role: "auditor" });
+    expect(await w.seat()).toEqual({ kind: "not_writer" });
+    expect(w.task()).not.toHaveProperty("currentOwner");
+  });
+
+  it("two companies: a survivor of another company, or of none, is 'not_member' and the task is not handed across", async () => {
+    for (const survivor of [{ orgId: OTHER_ORG, role: "owner" }, undefined]) {
+      const w = world(survivor);
+      expect(await w.seat()).toMatchObject({ kind: "not_member", reason: "survivor_not_member" });
+      expect(w.task()).not.toHaveProperty("currentOwner");
+    }
   });
 });

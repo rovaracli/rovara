@@ -7,7 +7,8 @@
 // rewritten: the owner key is the task's principal (its workspace, its artifacts' paths and its idempotency keys are under it), and the creator stays as history, as the merge mover leaves it.
 //
 // SAFE: a dry run by default (reads only; `apply: false`); every write is conditional on the owner it was read with, so a repeat, or a run after the read-time hand-on (owner-seat.ts) already
-// did it, changes nothing ("already"). A task of a company the survivor is not a member of is never touched ("gone"). Only counts and task ids (random UUIDs) are reported, never a person's id.
+// did it, changes nothing ("already"). A task of a company the survivor is not a member of is never touched ("gone"); a task closed since it was listed is not handed on (the write is
+// conditional on it being open: "closed"); a survivor whose sign-in is revoked or who is banned from the company gets nothing ("refused"). Only counts and task ids (random UUIDs) are reported, never a person's id.
 import { GetCommand, QueryCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { developerOrgKey } from "@agentx/cloud-contracts";
 import { handOnMergedTask, type MergedTaskHandOn } from "../agent-sessions/lifecycle.js";
@@ -39,7 +40,7 @@ export interface MergedOwnerBackfillSummary {
   /** Task-list rows of duplicates read. */
   tasksSeen: number;
   closedSkipped: number;
-  /** Per outcome of `handOnMergedTask` (`would_hand` only in a dry run). */
+  /** Per outcome of `handOnMergedTask` (`would_hand` only in a dry run; `closed`: closed since it was listed; `refused`: the survivor is revoked or banned). */
   outcomes: Record<MergedTaskHandOn, number>;
   /** The tasks handed on (or, in a dry run, that would be). */
   taskIds: string[];
@@ -55,7 +56,7 @@ async function get(deps: MergedOwnerBackfillDeps, table: string, key: { pk: stri
 export async function backfillMergedTaskOwners(deps: MergedOwnerBackfillDeps, options: { apply: boolean }): Promise<MergedOwnerBackfillSummary> {
   const summary: MergedOwnerBackfillSummary = {
     apply: options.apply, merged: 0, chainUnreadable: 0, survivorNoCompany: 0, tasksSeen: 0, closedSkipped: 0,
-    outcomes: { handed: 0, already: 0, gone: 0, other: 0, would_hand: 0 }, taskIds: [],
+    outcomes: { handed: 0, already: 0, gone: 0, other: 0, would_hand: 0, closed: 0, refused: 0 }, taskIds: [],
   };
   const readRecord = async (id: string) => await get(deps, deps.signInTable, { pk: `DEVELOPER#${id}`, sk: "META" }) as DeveloperRecord | undefined;
   const lifecycle = { documentClient: deps.documentClient, tableName: deps.stateTable, now: deps.now, signInStore: { getDeveloper: readRecord } };

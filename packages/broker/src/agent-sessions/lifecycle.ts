@@ -19,7 +19,7 @@ import { moveAsksOnMerge } from "./ask-erase.js";
 import { createHash } from "node:crypto";
 import { DeleteCommand, GetCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AGENTX_NAME_PATTERN, DeviceIdSchema, INDEX_EXPIRY_ATTRIBUTE, LIVE_INDEX_SCAN_MAX, OrgIdSchema, SessionIdSchema, SlackUserIdSchema, agentSessionKey, agentXError, changesKey, cleanSessionName, livePresenceKey, liveSessionKey, mySessionsKey, openAgentSessionKey, orgPk, orgProjectCatalogPk, projectMonthStatsKey, projectSessionsKey, sessionBindingKey, sessionSurfaceKey, sharedSessionsKey, type AgentPrincipal, type OrgId, type Payer, type SessionBinding, type SessionLevel } from "@rovara-code/contracts";
-import { LOCAL_ORG_CLOSED_MESSAGE, deviceKey, memberDevicesKey, type DeveloperSignInMethod } from "@agentx/cloud-contracts";
+import { LOCAL_ORG_CLOSED_MESSAGE, deviceKey, memberDevicesKey, orgBanKey, type DeveloperSignInMethod } from "@agentx/cloud-contracts";
 import { checkTime, registerMemberMover } from "../agents/lifecycle.js";
 import { errorName, failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
@@ -376,24 +376,44 @@ async function taskPlan(deps: SessionLifecycleDeps, orgId: OrgId, taskId: string
   return { items, hold };
 }
 
-/** What `handOnMergedTask` found or did for one task: see `TaskHold`. "would_hand" is a dry run's "handed" (it would hand the task on, and wrote nothing). */
-export type MergedTaskHandOn = TaskHold | "would_hand";
+/**
+ * What `handOnMergedTask` found or did for one task: see `TaskHold`. "would_hand" is a dry run's "handed" (it would hand the task on, and wrote nothing); "closed": the task is closed (history,
+ * never handed on); "refused": the survivor's sign-in is revoked or they are banned from the company (nobody to hand it to).
+ */
+export type MergedTaskHandOn = TaskHold | "would_hand" | "closed" | "refused";
 
 /**
- * 0.5.18 (Slack merged identity): hands ONE task the duplicate holds on to the survivor, exactly as the merge's own mover does (`taskPlan`: the survivor becomes the task's current owner, pays where
- * the duplicate did, and gets the task-list row), for a task the mover never saw: one created under the duplicate's id after the merge ran, or one the person presses before the next run. Conditional
- * on the owner it was read with and repeatable: a second call finds the survivor already holds it. `dryRun` plans and writes nothing. The caller has checked that the survivor is the end of the
- * duplicate's merge chain and a member of `orgId`; the task must be in `orgId` too, or it is "gone".
+ * 0.5.18 (Slack merged identity): hands ONE open task the duplicate holds on to the survivor, exactly as the merge's own mover does (`taskPlan`: the survivor becomes the task's current owner, pays
+ * where the duplicate did, and gets the task-list row), for a task the mover never saw: one created under the duplicate's id after the merge ran, or one the person presses before the next run.
+ * Conditional on the owner it was read with, on the task still being open and on the survivor not being banned from the company, and repeatable: a second call finds the survivor already holds it.
+ * `dryRun` plans and writes nothing. The caller has checked that the survivor is the end of the duplicate's chain and a member of `orgId`; the task must be in `orgId` too, or it is "gone".
  */
 export async function handOnMergedTask(deps: SessionLifecycleDeps, merge: { orgId: string; taskId: string; duplicateId: string; survivorId: string; dryRun?: boolean }): Promise<MergedTaskHandOn> {
   const orgId = requireIds(merge.orgId, merge.survivorId, merge.duplicateId);
   if (merge.survivorId === merge.duplicateId) throw invalid("a member cannot be merged into itself");
+  const record = deps.signInStore === undefined ? undefined : await deps.signInStore.getDeveloper(merge.survivorId);
+  const refused = (): MergedTaskHandOn => {
+    log(deps, "agent_session.merged_task_hand_on_refused", { orgId, taskId: merge.taskId });
+    return "refused";
+  };
+  if (record === undefined || record.revoked === true) return refused();
   const survivor = await survivorOf(deps, merge.survivorId);
   for (let attempt = 0; attempt < CONFLICT_RETRIES; attempt += 1) {
+    if (await getItem(deps, orgBanKey(orgId, merge.survivorId)) !== undefined) return refused();
+    if ((await getItem(deps, taskKey(merge.taskId)))?.["closedAt"] !== undefined) return "closed";
     const { items, hold } = await taskPlan(deps, orgId, merge.taskId, merge.duplicateId, survivor, isoOf(deps.now()));
     if (hold !== "handed" || items.length === 0) return hold;
     if (merge.dryRun === true) return "would_hand";
-    if (await transact(deps, items)) {
+    // The task's own update holds only while it is still open, and the whole hand-on only while the survivor is not banned (a close or a ban in between makes it a lost race: read again).
+    const [first, ...rest] = items;
+    const update = first?.Update;
+    if (update === undefined || update.Key?.["pk"] !== taskKey(merge.taskId).pk) throw invalid("the hand-on's first write must be the task's own");
+    const fenced: TransactItem[] = [
+      { Update: { ...update, ConditionExpression: `${String(update.ConditionExpression)} AND attribute_not_exists(closedAt)` } },
+      ...rest,
+      { ConditionCheck: { TableName: deps.tableName, Key: orgBanKey(orgId, merge.survivorId), ConditionExpression: "attribute_not_exists(pk)" } },
+    ];
+    if (await transact(deps, fenced)) {
       log(deps, "agent_session.merged_task_handed_on", { orgId, taskId: merge.taskId });
       return "handed";
     }

@@ -1428,6 +1428,33 @@ describe("slice C: the design review's routes", () => {
       expect(record).toMatchObject({ approverId: SURVIVOR.developerId, requesterId: SURVIVOR.developerId, mode: "requester" });
     });
 
+    it("review L1: the survivor sees the old task's card as its requester (a plain contributor, not a maintainer) and the press does what the card promised", async () => {
+      const w = await openBlockerCard();
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "contributor"]]);
+      const done = await pressApprove(w, SURVIVOR);
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      expect(w.task().currentOwner).toMatchObject({ developerId: SURVIVOR.developerId });
+    });
+
+    it("review L6: on a HIGH-risk design the survivor is the requester, so never its second person: they may not approve while another approver exists, and the approver still may", async () => {
+      const w = await openBlockerCard({ touches: ["auth"] });
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "maintainer"], [OMAR, "member", "maintainer"]]);
+      const page = web(w);
+      const mine = await page(SURVIVOR, "GET", `/v1/app/tasks/${w.taskId}/design-review/approve`);
+      expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+      expect(mine.body.mayApprove, "the survivor asked for this task").toBe(false);
+      expect((await page(OMAR, "GET", `/v1/app/tasks/${w.taskId}/design-review/approve`)).body.mayApprove).toBe(true);
+      const before = w.task().workflow;
+      const press = (cookie?: string) => page(SURVIVOR, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: mine.body.digest as string, reason: "Reviewed the open blocker." }, 0, cookie);
+      const first = await press();
+      const pressed = first.status === 200 ? first : await press((await decideSessionFor(w.db, SURVIVOR.developerId, signInApprovalOf(first.body))).cookie);
+      expect(pressed.status, JSON.stringify(pressed.body)).not.toBe(200);
+      expect(w.task().workflow).toEqual(before);
+      expect(w.db.find((item) => String(item.sk).startsWith("DESIGN_APPROVAL#"))).toEqual([]);
+    });
+
     it("a maintainer's approval of the old task is seated as the survivor too", async () => {
       const w = await openBlockerCard();
       merge(w);
