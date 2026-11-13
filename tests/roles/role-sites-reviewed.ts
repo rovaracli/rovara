@@ -28,6 +28,7 @@ export const REVIEWED_ROLE_SITES: readonly ReviewedRoleSite[] = [
   { file: "packages/broker/src/spend/requests.ts", needle: 'case "member": return `Your monthly AI budget', why: "A budget scope kind, not a company role." },
   { file: "packages/broker/src/spend/requests.ts", needle: 'case "member":', why: "A budget scope kind, not a company role." },
   { file: "packages/cloud-contracts/src/spend.ts", needle: 'case "member": return `MEMBER#', why: "A budget scope kind, not a company role." },
+  { file: "packages/broker/src/cloud/app/refusal-words.ts", needle: 'case "member": return { kind, developerId: "member" };', why: "A budget scope kind (the S0 core refusal's member budget, scopeOf), not a company role: it only picks which budget sentence to tell; no person is judged and an Auditor is not involved." },
   // ---- project lifecycle (archive, restore, working branch): one authority with an explicit allow
   { file: "packages/broker/src/org/reviewed-project-archive.ts", needle: 'actor.role !== "owner" && actor.role !== "admin" && actor.role !== "member"', why: "The explicit three-way allow; the Auditor is refused here (FORBIDDEN), before anything else." },
   { file: "packages/broker/src/org/reviewed-project-archive.ts", needle: 'if (actor.role === "member") { const grant', why: LIFECYCLE },

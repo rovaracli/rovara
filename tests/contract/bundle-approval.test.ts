@@ -62,6 +62,24 @@ describe("agentx bundle approve", () => {
     await expect(withdrawApproval({ bundleId: "nope", store })).rejects.toThrow(/64 hexadecimal/);
     void sha256OfBytes;
   });
+
+  // Review M2 (0.5.17): `--rollback` meets the same floors as agentx upgrade --rollback-to, from the highest release the install ever ran, before anything is placed.
+  it("a rollback approval is refused under a floor, without the install's versions, or for a newer bundle, placing nothing", async () => {
+    const bundle = await build();
+    const verified = await verifyBundle({ dir: bundle.dir, trustedKeys: [bundle.key.publicKeyPem] });
+    const store = storeOf(new World());
+    const floors = [{ release: "1.6.0", floor: "1.5.0", reason: "re-keyed every approval row" }];
+    // Installed 1.5.0 now, but it ran 1.6.0: 1.6.0's floor still holds, and the 1.4.0 bundle is below it.
+    await expect(approveBundle({ bundle: verified, approvedBy: "alice", parameters: undefined, rollback: true, store, now: () => T0, rollbackGuard: { env: "staging", installedVersion: "1.5.0", highWater: "1.6.0", floors, declaredThrough: "1.6.0" } }))
+      .rejects.toThrow("release 1.6.0 re-keyed every approval row, so environment staging, which has run 1.6.0 (it runs 1.5.0 now), rolls back no lower than 1.5.0; 1.4.0 is below that floor");
+    await expect(approveBundle({ bundle: verified, approvedBy: "alice", parameters: undefined, rollback: true, store, now: () => T0 })).rejects.toThrow("a rollback approval needs the install's recorded and highest versions");
+    await expect(approveBundle({ bundle: verified, approvedBy: "alice", parameters: undefined, rollback: true, store, now: () => T0, rollbackGuard: { env: "staging", installedVersion: "1.3.0", highWater: undefined, floors: [], declaredThrough: "1.6.0" } })).rejects.toThrow("release 1.4.0 is newer than 1.3.0");
+    expect(store.puts).toEqual([]);
+    // Above every floor: approved as a rollback.
+    const record = await approveBundle({ bundle: verified, approvedBy: "alice", parameters: undefined, rollback: true, store, now: () => T0, rollbackGuard: { env: "staging", installedVersion: "1.5.0", highWater: "1.6.0", floors: [], declaredThrough: "1.6.0" } });
+    expect(record).toMatchObject({ version: "1.4.0", rollback: true, rollbackFrom: { installedVersion: "1.5.0", highWater: "1.6.0" } });
+    await verified.cleanup();
+  });
 });
 
 describe("the operator's client", () => {

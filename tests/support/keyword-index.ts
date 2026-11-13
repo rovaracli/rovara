@@ -83,3 +83,9 @@ export function allIndexTerms(w: World, orgId: OrgId = ORG_A): Set<string> {
 export const indexHoldsWord = (w: World, word: string, orgId: OrgId = ORG_A): boolean => [...allIndexTerms(w, orgId)].some((bytes) => bytes.includes(word));
 
 export const eventsInTable = (w: World): StoredEvent[] => w.db.find((item) => item.entityType === "TEAM_RECORD_EVENT").flatMap((item) => { const event = eventFromItem(item, Math.floor(w.clock.ms / 1000)); return event === undefined ? [] : [event]; });
+
+/** True for the table write that stores a segment chunk (a transaction that checks the build's intent and puts the chunk). */
+export function isChunkWrite(command: unknown): boolean {
+  const typed = command as { constructor: { name: string }; input?: { TransactItems?: Array<{ Put?: { Item?: { sk?: string } } }> } };
+  return typed.constructor.name === "TransactWriteCommand" && (typed.input?.TransactItems ?? []).some((entry) => String(entry.Put?.Item?.sk).startsWith("KWIDX#S#"));
+}

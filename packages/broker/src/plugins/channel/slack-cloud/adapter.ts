@@ -17,7 +17,7 @@ const SEEN_MAX = 1_000;
 const SECTION_MAX = 3_000;
 
 export class CloudSlackError extends Error {
-  constructor(readonly code: "wrong_channel" | "wrong_workspace") {
+  constructor(readonly code: "wrong_channel" | "wrong_workspace" | "direct_not_supported") {
     super(code);
     this.name = "CloudSlackError";
   }
@@ -45,7 +45,12 @@ export function renderCloudSlackEvent(event: ChannelEvent, maxLength: number): R
     case "question": return { text: text(event.data.choices === undefined ? event.data.text : `${event.data.text}\n${event.data.choices.map((choice, index) => `${String(index + 1)}. ${choice}`).join("\n")}`) };
     case "check_report": return { text: text(`${{ passed: "Checks passed.", failed: "Checks failed.", unknown: "Checks have not finished." }[event.data.status]} ${event.data.text}`) };
     case "pr": return { text: text(`Pull request: ${event.data.title}\n${event.data.url}`) };
-    case "done": return { text: text(event.data.text) };
+    // The text of a reply or notice only, as Code's own Slack adapter does (this adapter declares no `edits`, `ephemeral` parts or `direct`); parts and actions are not shown.
+    case "message": return { text: text(event.data.text), ...(event.data.audience?.kind === "ephemeral" ? { ephemeralTo: event.data.audience.actor.userId } : {}) };
+    // A closing line is optional since the 0.5.17 pin: everything the request said came before it.
+    case "done": return event.data.text === undefined ? undefined : { text: text(event.data.text) };
+    // Needs `direct`, which this adapter does not declare.
+    case "direct": return undefined;
     case "error": return { text: text(event.data.text) };
     case "link_required": return { text: text(`Link your account to Rovara: ${event.data.linkUrl}`), ephemeralTo: event.data.actor.userId };
     case "approval_request": {
@@ -82,7 +87,10 @@ export class CloudSlackChannel implements ChannelAdapter {
   }
 
   async deliver(event: ChannelEvent): Promise<void> {
-    if (event.channel !== "slack" || event.conversation.channel !== "slack") throw new CloudSlackError("wrong_channel");
+    if (event.channel !== "slack") throw new CloudSlackError("wrong_channel");
+    // A message to one person outside any conversation needs the `direct` ability, which this adapter does not declare, so the core never sends one here (Code's Slack adapter refuses it the same way).
+    if (event.type === "direct") throw new CloudSlackError("direct_not_supported");
+    if (event.conversation.channel !== "slack") throw new CloudSlackError("wrong_channel");
     // At least once: a repeat of an event id in this run is dropped, as an adapter must.
     if (this.seen.has(event.id)) return;
     const served = await this.options.serves(event.conversation.tenant).catch(() => false);

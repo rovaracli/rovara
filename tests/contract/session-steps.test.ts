@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
-import { createSessionStepsHandler, pingWorker, type SessionStepsDependencies } from "../../packages/broker/src/aws/session-steps.js";
+import { createSessionStepsHandler, pingWorker, tslSelftestWiredFor, type SessionStepsDependencies } from "../../packages/broker/src/aws/session-steps.js";
 import { ec2WorkerBootScript } from "@rovara-code/contracts";
 import { PRIVATE_ADDRESS_NOTHING_OPEN } from "@agentx/cloud-contracts";
 import { NO_PRIVATE_ADDRESS_LIST, readPrivateAddressesOff, type PrivateAddressLaunch } from "../../packages/broker/src/aws/private-address-launch.js";
@@ -122,6 +122,28 @@ describe("session steps", () => {
       expect(read).not.toHaveBeenCalled();
       const on = setup(undefined, { modelProxyRequired: true, privateAddresses: read, privateAddressesOff: async () => false }, named(proxyUrl));
       expect(gunzipSync(Buffer.from((await launch(on.handler)).userData, "base64")).toString("utf8")).toContain("export AGENTX_PRIVATE_ADDRESSES='10.20.0.15:443'");
+    });
+
+    // M1: the staging-only TS-L self-test switch. The launch carries AGENTX_TSL_SELFTEST=1 only when the operator's parameter is on, for a named environment, with the staging prefix; the reader is not even asked otherwise.
+    it("carries the TS-L self-test switch only when it is on, for a named staging launch", async () => {
+      const userData = async (overrides: Partial<SessionStepsDependencies>) => gunzipSync(Buffer.from((await launch(setup(undefined, { modelProxyRequired: true, ...overrides }, named(proxyUrl)).handler)).userData, "base64")).toString("utf8");
+      const asked = vi.fn(async () => true);
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", tslSelftestOn: asked })).toContain("\nexport AGENTX_TSL_SELFTEST='1'\n");
+      expect(asked).toHaveBeenCalledTimes(1);
+      // With an internal address list too.
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", tslSelftestOn: async () => true, privateAddresses: async () => listed(["10.20.0.15:443"]) })).toMatch(/export AGENTX_PRIVATE_ADDRESSES='10\.20\.0\.15:443'\nexport AGENTX_TSL_SELFTEST='1'\n/);
+      // Off, no reader, a reader that fails, and another environment's prefix: nothing is carried.
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", tslSelftestOn: async () => false })).not.toContain("AGENTX_TSL_SELFTEST");
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/" })).not.toContain("AGENTX_TSL_SELFTEST");
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", tslSelftestOn: async () => { throw new Error("boom"); } })).not.toContain("AGENTX_TSL_SELFTEST");
+      expect(await userData({ workerSettingsPrefix: "/agentx/production/", tslSelftestOn: async () => true })).not.toContain("AGENTX_TSL_SELFTEST");
+      // A named launch with no prefix given carries nothing either.
+      expect(await userData({ tslSelftestOn: async () => true })).not.toContain("AGENTX_TSL_SELFTEST");
+      // The legacy launch never reads it.
+      const never = vi.fn(async () => true);
+      const legacy = setup(undefined, { workerSettingsPrefix: "/agentx/staging/", tslSelftestOn: never });
+      expect(gunzipSync(Buffer.from((await launch(legacy.handler)).userData, "base64")).toString("utf8")).not.toContain("AGENTX_TSL_SELFTEST");
+      expect(never).not.toHaveBeenCalled();
     });
 
     // Review L2: the launch records the revision its worker read, before it returns the user data; a launch with nothing open records that; a failed record fails the launch; the legacy launch records nothing.
@@ -402,5 +424,18 @@ describe("the internal address kill switch reader", () => {
     // A thrown value that is not an Error is off too.
     // eslint-disable-next-line @typescript-eslint/only-throw-error -- the point: anything thrown, not only an Error
     expect(await reader(async () => { throw "nope"; }).read()).toBe(true);
+  });
+});
+
+// M1: whether this install's steps function asks for the TS-L self-test switch at all (wired at module load from MODEL_PROXY_REQUIRED and WORKER_SETTINGS_PREFIX). Only a named staging install does.
+describe("which installs wire the TS-L self-test switch", () => {
+  it("is true only for a named environment whose settings prefix is exactly /agentx/staging/", () => {
+    expect(tslSelftestWiredFor(true, "/agentx/staging/")).toBe(true);
+    for (const prefix of ["/agentx/production/", "/agentx/qa/", "/agentx/staging-2/", "/agentx/staging", "/agentx/staging/x/", "/agentx/Staging/", "agentx/staging/", ""]) {
+      expect(tslSelftestWiredFor(true, prefix), JSON.stringify(prefix)).toBe(false);
+    }
+    // The legacy deployment (no model proxy required) never wires it, even with staging's prefix.
+    expect(tslSelftestWiredFor(false, "/agentx/staging/")).toBe(false);
+    expect(tslSelftestWiredFor(false, "")).toBe(false);
   });
 });

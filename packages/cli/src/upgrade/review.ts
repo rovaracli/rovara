@@ -108,7 +108,7 @@ export async function guardData(input: { stackName: string; data: DataChange[]; 
 
 /** The templates engine's confirmation. A refusal returns false, so the engine deletes its change set,
  * and keeps the reason for agentx upgrade to report instead of the engine's generic words. */
-export function upgradeConfirm(input: { write: (line: string) => void; ask: Ask; yes: boolean; allowReplace: ReadonlySet<string> }): { confirm: ConfirmFn; refusal(): string | undefined } {
+export function upgradeConfirm(input: { write: (line: string) => void; ask: Ask; yes: boolean; allowReplace: ReadonlySet<string>; /** The refusal for a declined stack; default: the upgrade's. */ stopped?: (stackName: string) => string }): { confirm: ConfirmFn; refusal(): string | undefined } {
   let refusal: string | undefined;
   return {
     refusal: () => refusal,
@@ -119,7 +119,7 @@ export function upgradeConfirm(input: { write: (line: string) => void; ask: Ask;
       if (refusal !== undefined) return false;
       if (input.yes) return true;
       if (/^y(es)?$/i.test((await input.ask(`Apply these changes to ${stackName}? [y/N] `)).trim())) return true;
-      refusal = `upgrade stopped before ${stackName}: nothing in it changed. Stacks upgraded before it keep the new release; run agentx upgrade again to continue`;
+      refusal = input.stopped?.(stackName) ?? `upgrade stopped before ${stackName}: nothing in it changed. Stacks upgraded before it keep the new release; run agentx upgrade again to continue`;
       return false;
     },
   };

@@ -7,12 +7,20 @@ import { ENVIRONMENT_PLACEHOLDER, EnvironmentNameSchema, renderTemplate } from "
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { evaluate } from "../support/cfn-evaluate.js";
 
+/**
+ * Why this file is fast: building the app (not synthesizing it) is what costs. Construction bundles every Lambda with esbuild (about 13 s per app on the Mac, over 60 s on a shared free CI runner), and this file builds
+ * eleven apps. None of its tests is about the Lambda bundles: they check the name replacement, the guard clauses and where the context is read from. CDK's own switch for that, an empty `aws:cdk:bundling-stacks` list,
+ * keeps every construct and every template but stages each Lambda's code without running its bundler (the build drops from about 13 s to 0.1 s; the only difference in a template is the content hash in an asset parameter's
+ * name, which both sides of every comparison here carry alike). Real bundling stays covered by the tests that synthesize for release.
+ */
+const NO_BUNDLING = { "aws:cdk:bundling-stacks": [] } as const;
+
 function templates(env: string): Map<string, string> {
   // A published template is the placeholder environment's, with the name replaced. The audit ledger's Object Lock
   // default depends on the name (governance for staging, test and dev*, compliance for the rest), which a text
   // replacement cannot follow, so the published template always carries the safe default: compliance, 1,096 days.
   // Pinning it for the direct synth keeps this test about what it checks, the fidelity of the name replacement.
-  const assembly = buildAgentXApp({ agentxEnv: env, agentxSynthesizer: "legacy", agentxAuditLockMode: "COMPLIANCE", agentxAuditRetentionDays: 1096 }).synth();
+  const assembly = buildAgentXApp({ ...NO_BUNDLING, agentxEnv: env, agentxSynthesizer: "legacy", agentxAuditLockMode: "COMPLIANCE", agentxAuditRetentionDays: 1096 }).synth();
   const byPart = new Map<string, string>();
   for (const stack of assembly.stacks) {
     const part = stack.stackName.replace(`agentx-${env}-`, "");
@@ -60,15 +68,14 @@ function withContextOverflowFile(value: Record<string, unknown>, run: () => void
 }
 
 describe("templates for any environment", () => {
-  // Synthesizing the whole app bundles four Lambdas with esbuild per synth (slow). The placeholder
-  // app is identical across every test in this file, so it is synthesized once here and reused,
+  // The placeholder app is identical across every test in this file, so it is synthesized once here and reused,
   // instead of once per test/case as the brief's inline snippet would (this changes nothing about
-  // what each test asserts).
+  // what each test asserts). It skips Lambda bundling (see NO_BUNDLING above).
   let placeholderTemplates: Map<string, string>;
 
   beforeAll(() => {
     placeholderTemplates = templates(ENVIRONMENT_PLACEHOLDER);
-  }, 300_000);
+  }, 120_000);
 
   it("uses a placeholder that is a valid name and that no real environment can take", () => {
     expect(ENVIRONMENT_PLACEHOLDER).toBe("qqenv-placeholderqq");
@@ -82,7 +89,7 @@ describe("templates for any environment", () => {
       expect(text, part).not.toContain("BootstrapVersion");
     }
     expect(placeholderTemplates.get("control-plane")).toMatch(/AssetParameters[0-9a-f]{64}S3Bucket/);
-  }, 300_000);
+  });
 
   it.each(["staging", "dev-2"])("renders to exactly what CDK synthesizes for %s", (env) => {
     const direct = templates(env);
@@ -90,7 +97,7 @@ describe("templates for any environment", () => {
     for (const [part, text] of placeholderTemplates) {
       expect(withoutVersionHash(renderTemplate(text, env)), part).toBe(withoutVersionHash(direct.get(part)!));
     }
-  }, 600_000);
+  });
 
   it("a published template offers the audit lock profile and defaults to production, for any name it is rendered for (Task 5b)", () => {
     for (const env of ["staging", "dev-2", "acme"]) {
@@ -145,12 +152,12 @@ describe("templates for any environment", () => {
 describe("agentxSynthesizer from CDK_CONTEXT_JSON (how the cdk CLI actually passes -c flags)", () => {
   it("synthesizes bootstrap-free templates from agentxEnv/agentxSynthesizer alone", () => {
     withCdkContextJson({ agentxEnv: "staging", agentxSynthesizer: "legacy" }, () => {
-      const assembly = buildAgentXApp().synth();
+      const assembly = buildAgentXApp(NO_BUNDLING).synth();
       const text = assembly.stacks.map((stack) => JSON.stringify(stack.template)).join("\n");
       expect(text).not.toContain("cdk-hnb659fds");
       expect(text).not.toContain("BootstrapVersion");
     });
-  }, 300_000);
+  });
 
   it("refuses an unsupported agentxSynthesizer value, naming it", () => {
     withCdkContextJson({ agentxEnv: "staging", agentxSynthesizer: "bogus" }, () => {
@@ -190,7 +197,7 @@ describe("agentxSynthesizer from CDK_CONTEXT_JSON (how the cdk CLI actually pass
 describe("context-overflow temp file (App's own readContextFromTempFile, layered like App.loadContext)", () => {
   it("is read the same way App reads it, and feeds the pre-App guard clauses", () => {
     withContextOverflowFile({ agentxSynthesizer: "legacy", agentxEnv: "overflow-env" }, () => {
-      const app = buildAgentXApp();
+      const app = buildAgentXApp(NO_BUNDLING);
       expect(app.node.tryGetContext("agentxEnv")).toBe("overflow-env");
     });
   });
@@ -199,7 +206,7 @@ describe("context-overflow temp file (App's own readContextFromTempFile, layered
     withCdkContextJson({ agentxSynthesizer: "bogus" }, () => {
       withContextOverflowFile({ agentxSynthesizer: "legacy", agentxEnv: "staging" }, () => {
         // If CDK_CONTEXT_JSON still won, this would throw naming "bogus" instead.
-        expect(() => buildAgentXApp()).not.toThrow();
+        expect(() => buildAgentXApp(NO_BUNDLING)).not.toThrow();
       });
     });
   });
@@ -225,7 +232,7 @@ describe("context-overflow temp file (App's own readContextFromTempFile, layered
     const original = process.env[CONTEXT_OVERFLOW_LOCATION_ENV];
     try {
       process.env[CONTEXT_OVERFLOW_LOCATION_ENV] = "";
-      expect(() => buildAgentXApp({ agentxEnv: "staging", agentxSynthesizer: "legacy" })).not.toThrow();
+      expect(() => buildAgentXApp({ ...NO_BUNDLING, agentxEnv: "staging", agentxSynthesizer: "legacy" })).not.toThrow();
     } finally {
       if (original === undefined) delete process.env[CONTEXT_OVERFLOW_LOCATION_ENV];
       else process.env[CONTEXT_OVERFLOW_LOCATION_ENV] = original;
@@ -235,24 +242,22 @@ describe("context-overflow temp file (App's own readContextFromTempFile, layered
 
 describe("outdir context (buildAgentXApp forwards it to `new App({ outdir })`)", () => {
   it("defaults to a fresh temporary directory when no outdir context is given, unchanged from before", () => {
-    const first = buildAgentXApp({ agentxSynthesizer: "legacy", agentxEnv: "staging" });
-    const second = buildAgentXApp({ agentxSynthesizer: "legacy", agentxEnv: "staging" });
+    const first = buildAgentXApp({ ...NO_BUNDLING, agentxSynthesizer: "legacy", agentxEnv: "staging" });
+    const second = buildAgentXApp({ ...NO_BUNDLING, agentxSynthesizer: "legacy", agentxEnv: "staging" });
     expect(first.outdir).toMatch(/cdk\.out/);
     expect(second.outdir).toMatch(/cdk\.out/);
     // Two apps built with no outdir context each get their own ephemeral directory: proof this is
     // still App's own default, not something buildAgentXApp now pins by accident.
     expect(first.outdir).not.toBe(second.outdir);
-    // Two named-environment syntheses bundle every Lambda twice; under full-suite load that passes 10 s.
-  }, 120_000);
+  });
 
   it("honors an explicit outdir context key", () => {
     const outdir = mkdtempSync(join(tmpdir(), "agentx-outdir-context-"));
     try {
-      const app = buildAgentXApp({ agentxSynthesizer: "legacy", agentxEnv: "staging", outdir });
+      const app = buildAgentXApp({ ...NO_BUNDLING, agentxSynthesizer: "legacy", agentxEnv: "staging", outdir });
       expect(app.outdir).toBe(outdir);
     } finally {
       rmSync(outdir, { recursive: true, force: true });
     }
-    // A named-environment synthesis bundles every Lambda; under parallel load that can pass 10 s.
-  }, 120_000);
+  });
 });
