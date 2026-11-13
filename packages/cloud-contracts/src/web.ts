@@ -123,3 +123,5 @@ export { AWS_EMULATOR_SERVICES, AWS_EMULATOR_ENGINE_VERSION, AWS_PLAN_SERVICES_M
 export { AWS_SERVICE_DISPLAY_NAMES, awsServiceDisplayName, awsFamilyDisplayName } from "./aws-service-display-names.js";
 // The default-branch check (0.5.16): the empty-branch question the setup step asks before any setup work starts.
 export { BRANCH_CHECK_STATES, BRANCH_GATE_MESSAGE, BranchCandidateSchema, BranchCheckResponseSchema, BranchCheckStateSchema, ContinueBranchBodySchema, RepositoryBranchCheckSchema, SetDefaultBranchBodySchema, SetDefaultBranchResponseSchema, type SetDefaultBranchResponse, type BranchCandidate, type BranchCheckResponse, type BranchCheckState, type ContinueBranchBody, type RepositoryBranchCheck, type SetDefaultBranchBody } from "./app-branch-check.js";
+
+export * from "./app-code-suggestion.js";

@@ -36,6 +36,8 @@ instead: give it a one-line header comment when you next edit it.
 
 ## A task's life
 
+- **Web path suggestions.** `packages/broker/src/rovara-code/suggest.ts#routeCodeSuggestion` checks start authority and returns a fixed wording-based suggestion, without a model call or task creation. `packages/ui/src/screens/project/StartWorkBox.tsx` offers Quick/Full; project-level Just answer is unavailable until the Ask engine supports it.
+
 - **Start.** `packages/broker/src/aws/developer-tasks/start.ts#startTask`. Money is checked before any work starts in
   `packages/broker/src/spend/admission.ts#admitWork`. Who pays is decided in `packages/broker/src/spend/payer.ts#resolvePayer`.
 - **The workflow model** (steps, states, send-back rules) is in `packages/cloud-contracts/src/task-workflow-node.ts`.

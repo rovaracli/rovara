@@ -1,11 +1,11 @@
-import { TaskStopStartPreviewSchema, PROCESS_START_REFUSED_MESSAGE, DESIGN_FIRST_UNAVAILABLE_MESSAGE, ProjectOverviewProjectSchema, SessionIdSchema, TaskResponseReaderSchema } from "@agentx/cloud-contracts/web";
+import { CODE_SUGGESTION_TEXT_MAX, CODE_SUGGESTION_UNAVAILABLE, CodeSuggestionBodySchema, CodeSuggestionSchema, type CodeSuggestion, TaskStopStartPreviewSchema, PROCESS_START_REFUSED_MESSAGE, DESIGN_FIRST_UNAVAILABLE_MESSAGE, ProjectOverviewProjectSchema, SessionIdSchema, TaskResponseReaderSchema } from "@agentx/cloud-contracts/web";
 import type { AppHost } from "../host.js";
 import { createApiClient, type Reader, type SendResult } from "./client.js";
 import { withoutRequestId } from "./without-request-id.js";
 import { ApiError } from "./errors.js";
 
 /** The longest request the route takes (the same limit the other start forms show). */
-export const CODE_TEXT_MAX = 4000;
+export const CODE_TEXT_MAX = CODE_SUGGESTION_TEXT_MAX;
 
 type Answer = ReturnType<typeof TaskResponseReaderSchema.parse>;
 /** What starting work answers: the task, and the session to open (absent only on a legacy answer that has no session). */
@@ -37,6 +37,22 @@ export const DESIGN_FIRST_REFUSED = "Rovara couldn't start this with Design firs
 export function createCodeApi(host: AppHost) {
  const api = createApiClient(host);
  return {
+  /** One bounded, cancellable suggestion. Failure leaves the person free to choose a path manually. */
+  async suggestCode(project: string, text: string, requestId: string, signal?: AbortSignal): Promise<CodeSuggestion> {
+   const abort = new AbortController(), cancel = () => { abort.abort(); };
+   let timer: ReturnType<typeof setTimeout> | undefined;
+   try {
+    if (signal?.aborted === true) return CODE_SUGGESTION_UNAVAILABLE;
+    const name = ProjectOverviewProjectSchema.shape.name.parse(project), body = CodeSuggestionBodySchema.parse({ text, requestId });
+    signal?.addEventListener("abort", cancel, { once: true });
+    const stopped = new Promise<never>((_, reject) => { abort.signal.addEventListener("abort", () => { reject(new Error("suggestion cancelled")); }, { once: true }); });
+    timer = setTimeout(cancel, 4000);
+    const response = await Promise.race([host.transport.request({ method: "POST", path: "/v1/app/projects/" + encodeURIComponent(name) + "/code/suggest", body, retry: "never", signal: abort.signal }), stopped]);
+    const parsed = response.status === 200 ? CodeSuggestionSchema.safeParse(withoutRequestId(response.body)) : undefined;
+    return parsed?.success === true ? parsed.data : CODE_SUGGESTION_UNAVAILABLE;
+   } catch { return CODE_SUGGESTION_UNAVAILABLE; }
+   finally { clearTimeout(timer);signal?.removeEventListener("abort", cancel); }
+  },
   async previewStart(project: string, signal?: AbortSignal) {
    let timer: ReturnType<typeof setTimeout> | undefined, cancel: (() => void) | undefined;
    try {
@@ -51,10 +67,10 @@ export function createCodeApi(host: AppHost) {
    finally { clearTimeout(timer);if (cancel !== undefined) signal?.removeEventListener("abort", cancel); }
   },
   /** One request id per attempt at the same text: pass the same `requestId` to retry it. */
-  async startCode(project: string, text: string, requestId: string = crypto.randomUUID(), designFirst = false): Promise<SendResult<StartedCode>> {
+  async startCode(project: string, text: string, requestId: string = crypto.randomUUID(), designFirst = false, path?: "QUICK" | "FULL"): Promise<SendResult<StartedCode>> {
    const name = ProjectOverviewProjectSchema.shape.name.parse(project);
    if (!text.trim() || text.length > CODE_TEXT_MAX) throw new ApiError(400, "INVALID_INPUT", "Describe the work in 4000 characters or fewer.");
-   try { return await api.send("POST", "/v1/app/projects/" + encodeURIComponent(name) + "/code", { requestId, input: { text }, ...(designFirst ? { designFirst: true } : {}) }, StartedCodeReader); }
+   try { return await api.send("POST", "/v1/app/projects/" + encodeURIComponent(name) + "/code", { requestId, input: { text }, ...(path === undefined ? {} : { path }), ...(designFirst ? { designFirst: true } : {}) }, StartedCodeReader); }
    catch (failure) {
     if (designFirst && failure instanceof ApiError && failure.code === "CONFIG_INVALID" && failure.message === DESIGN_FIRST_UNAVAILABLE_MESSAGE) throw new ApiError(failure.status, failure.code, DESIGN_FIRST_REFUSED);
     const message = failure instanceof ApiError ? MESSAGES[failure.code] : undefined;

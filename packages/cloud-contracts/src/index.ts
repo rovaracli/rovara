@@ -151,3 +151,5 @@ export * from "./test-access-policy.js";
 export * from "./test-access-scoping.js";
 // TE-B9: Cloud copy of Code's never-commit list, until the vendored pin carries it.
 export * from "./never-commit.js";
+
+export * from "./app-code-suggestion.js";

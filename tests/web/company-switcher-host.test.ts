@@ -6,6 +6,15 @@ import { applyNavUiFlags, holdUiFlagsUntilNav } from "../../packages/ui/src/ui-f
 const B = "org_" + "b".repeat(20);
 describe("the browser host", () => {
  const win = (headers: Record<string, string>, local = new Map<string, string>()) => ({ location: { origin: "https://cell.example", pathname: "/app", search: "", assign: () => undefined }, fetch: async () => new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json", ...headers } }), localStorage: { getItem: (key: string) => local.get(key) ?? null, setItem: (key: string, value: string) => { local.set(key, value); }, removeItem: (key: string) => { local.delete(key); }, key: (index: number) => [...local.keys()][index] ?? null, get length() { return local.size; } }, sessionStorage: { getItem: () => null, setItem: () => undefined } }) as unknown as BrowserWindow;
+ it("passes cancellation to fetch so obsolete suggestions stop waiting on the network", async () => {
+  let seen: AbortSignal | null | undefined;
+  const host = createBrowserHost({ ...win({}), fetch: async (_input, init) => {
+   seen = init?.signal;
+   return new Promise<Response>((resolve, reject) => { seen?.addEventListener("abort", () => { reject(new Error("cancelled")); }, { once: true });if (seen === undefined) resolve(new Response("{}")); });
+  } });
+  const abort = new AbortController(), result = host.transport.request({ method: "GET", path: "/v1/app/home", signal: abort.signal }).catch(() => "cancelled");
+  await Promise.resolve();abort.abort();expect(await result).toBe("cancelled");expect(seen).toBe(abort.signal);
+ });
  it("hands the echoed company header to the client, and nothing when the server sent none", async () => {
   expect(await createBrowserHost(win({ "x-rovara-company": B })).transport.request({ method: "GET", path: "/v1/app/home" })).toMatchObject({ status: 200, company: B });
   expect(await createBrowserHost(win({})).transport.request({ method: "GET", path: "/v1/app/home" })).not.toHaveProperty("company");
