@@ -5,6 +5,7 @@ import { AgentXError, agentXError, workspaceSessionKey } from "@rovara-code/cont
 import { MACHINE_PRICES, machineHourlyUsd, machineTimePk, openComputeKey } from "@agentx/cloud-contracts";
 import { z } from "zod";
 import { resolveTaskAccess } from "../developer/task-access.js";
+import { taskPointerKey } from "../developer/task-records.js";
 
 type Dependencies = Parameters<typeof resolveTaskAccess>[0];
 type Caller = Parameters<typeof resolveTaskAccess>[1];
@@ -38,7 +39,7 @@ async function get(deps: Dependencies, key: { pk: string; sk: string }): Promise
 /**
  * Owner-only broker reader; no public route. Call with the worker deployment's known region (unknown means unpriced).
  * A task stores workspaceId; SESSION belongs to that workspace, can restart, and is not the task's AGENT_SESSION.
- * Several tasks may share a workspace. These are its whole recorded runs, never apportioned or summed across tasks.
+ * Only the task the workspace's pointer names reads it; its figures are the workspace's whole recorded runs, never apportioned or summed across tasks.
  * Open time is not estimated. Completeness requires one annotated receipt for EVERY generation and a stable stopped
  * session with the same last launch. Old receipts still contribute seconds, but missing coverage (including failed or
  * zero-length starts without receipts) says "so far". At most 1,000 receipts are read; truncated totals say so far too.
@@ -51,6 +52,8 @@ export async function readTaskMachineMeter(deps: Dependencies, caller: Caller, t
     if (typeof workspaceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(workspaceId)) throw notFound();
     const workspace = await get(deps, { pk: `WORKSPACE#${workspaceId}`, sk: "META" });
     if (workspace?.orgId !== caller.orgId) throw notFound();
+    // The workspace is this task's own (the same check live steering makes): only the task its pointer names reads its meter.
+    if ((await get(deps, taskPointerKey(workspaceId)))?.taskId !== taskId) throw notFound();
     const before = await get(deps, workspaceSessionKey(workspaceId));
     const pk = machineTimePk(caller.orgId), prefix = `ONCE#${workspaceId}#`;
     const byInstanceType: Record<string, MachineTypeMeter> = Object.create(null) as Record<string, MachineTypeMeter>;

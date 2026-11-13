@@ -41,8 +41,10 @@ function world() {
     orgId: TEST_ORG, workspaceId, instanceType: "m6g.large", startedAt: START, stoppedAt: STOP, generation: 1, ...extra,
   });
   session();
+  const pointerKey = { pk: `WORKSPACE#${workspaceId}`, sk: "DEVELOPER_TASK" };
+  w.db.set({ ...pointerKey, entityType: "DEVELOPER_TASK_POINTER", taskId: w.taskId });
   const read = () => readTaskMachineMeter(w.deps, PRIYA, w.taskId, REGION);
-  return { ...w, workspaceId, workspaceKey, d, session, stop, read };
+  return { ...w, workspaceId, workspaceKey, pointerKey, d, session, stop, read };
 }
 
 describe("task machine meter", () => {
@@ -64,6 +66,19 @@ describe("task machine meter", () => {
     const manager = new SessionManager({ ...w.d, now: () => new Date(STOP), recordCompute: machineTimeRecorder(w.db, "state", TEST_ORG) });
     await manager.markStopped(w.workspaceId, 1);
     expect(await w.read()).toMatchObject({ complete: true, minutes: 120 });
+  });
+
+  it("still records the allowance seconds when the optional session read throws synchronously", async () => {
+    const w = world();
+    const client = { send: (command: unknown) => {
+      if (command instanceof GetCommand && command.input.Key?.sk === "SESSION") throw new Error("sync failure");
+      return w.db.send(command as never);
+    } };
+    await machineTimeRecorder(client as never, "state", TEST_ORG)({ workspaceId: w.workspaceId, instanceType: "m6g.large", startedAt: START, stoppedAt: STOP });
+    const receipt = w.db.get(machineTimeOnceKey(TEST_ORG, w.workspaceId, STOP))!;
+    expect(receipt).toMatchObject({ seconds: 7200, instanceType: "m6g.large" });
+    expect(receipt).not.toHaveProperty("generation");
+    expect(w.db.get(machineTimeMonthKey(TEST_ORG, "2026-11"))).toMatchObject({ seconds: 7200 });
   });
 
   it("returns only recorded time so far for an open run, never extrapolates", async () => {
@@ -155,11 +170,23 @@ describe("task machine meter", () => {
     expect(w.db.get(machineTimeMonthKey(TEST_ORG, "2026-11"))).toMatchObject({ seconds: 7200 });
   });
 
-  it("keeps two tasks sharing one workspace explicitly per workspace", async () => {
+  it("keeps the meter explicitly per workspace, readable only by the task its pointer names", async () => {
     const w = world(); await w.stop();
+    const reading = await w.read();
     const taskId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     w.db.set({ ...w.db.get(`DEVTASK#${w.taskId}`, "META")!, pk: `DEVTASK#${taskId}`, taskId });
-    expect(await readTaskMachineMeter(w.deps, PRIYA, taskId, REGION)).toEqual(await w.read());
+    w.db.set({ ...w.pointerKey, entityType: "DEVELOPER_TASK_POINTER", taskId });
+    expect(await readTaskMachineMeter(w.deps, PRIYA, taskId, REGION)).toEqual(reading);
+  });
+
+  it("returns TASK_NOT_FOUND, before reading any receipt, when the workspace pointer names another task", async () => {
+    const w = world(); await w.stop();
+    w.db.set({ ...w.pointerKey, entityType: "DEVELOPER_TASK_POINTER", taskId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" });
+    const before = w.db.commandNames().length;
+    await expect(w.read()).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
+    expect(w.db.commandNames().slice(before)).not.toContain("QueryCommand");
+    w.db.delete(w.pointerKey);
+    await expect(w.read()).rejects.toMatchObject({ code: "TASK_NOT_FOUND" });
   });
 
   it("refuses nonowners and another company before reading meter rows", async () => {
