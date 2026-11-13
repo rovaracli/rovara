@@ -56,7 +56,7 @@ export async function coreErase(input: { registry: Pick<AdapterRegistry, "requir
   const objects = seededObjects(input.own, OTHER_SCOPE);
   const storage = input.registry.require("object-storage");
   for (const key of Object.values(objects)) await storage.put(key, new TextEncoder().encode("{}"), { contentType: "application/json", metadata: {}, retention: "evidence-std" });
-  const report = await erasePersonOnCore({ registry: input.registry, companyId: input.companyId, developerId: input.developerId });
+  const report = await erasePersonOnCore({ ports: { store: input.registry.require("storage"), objects: storage }, companyId: input.companyId, developerId: input.developerId });
   if (report.erased < 1 || report.incomplete > 0) throw new Error(`the product's person erase reported ${JSON.stringify(report)}`);
   return wordsOf(objects, async (key) => (await storage.stat(key)) !== undefined);
 }

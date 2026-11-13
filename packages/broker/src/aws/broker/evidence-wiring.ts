@@ -65,19 +65,20 @@ export function evidenceEraseOf(dependencies: Pick<AwsBrokerDependencies, "s3" |
  * What a person's erase does after the learning walk: the Team record's erase (where that switch is on), the erase of the names they are shown by (ERASE-NAME-1), then the stored evidence of the
  * person's tasks. Any one not finishing throws, and the request is repeated. Where the record is on, its erase runs the names (its `names` step, after the Asks step has kept the keyed hashes of
  * those names); where it is off, nothing hashes them and they are erased here.
- * Convergence S0: where a core switch is on (`core.active`), the evidence of the tasks the core ran for the person is erased last (cloud/app/erase.ts); with every switch off nothing here changes.
+ * Convergence S0: the evidence of the tasks the core ran for the person is erased last (cloud/app/erase.ts). It is not behind a switch: a task keeps its engine (its stamp) after the switch is turned off, and
+ * a person with no core-stamped task loses nothing here.
  */
 export function personErasureStep(
   teamRecord: { erase: { person(orgId: OrgId, developerId: string): Promise<void> } } | undefined,
   evidence: Pick<EvidenceErase, "person">,
   names?: { erase(developerId: string): Promise<void> },
-  core?: Pick<CorePersonErase, "active" | "person">,
+  core?: CorePersonErase,
 ): (orgId: OrgId, developerId: string) => Promise<void> {
   return async (orgId, developerId) => {
     if (teamRecord !== undefined) await teamRecord.erase.person(orgId, developerId);
     else await names?.erase(developerId);
     await evidence.person(orgId, developerId);
-    if (core?.active === true) await core.person(orgId, developerId);
+    if (core !== undefined) await core.person(orgId, developerId);
   };
 }
 
