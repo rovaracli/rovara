@@ -311,6 +311,7 @@ export async function startSlackWorkflow(dependencies: AwsBrokerDependencies, ta
   const routeDependencies: DeveloperRouteDependencies = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks,
     ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
     ...(dependencies.cloud === true ? { cloud: true } : {}),
+    ...(dependencies.coreStart === undefined ? {} : { coreStart: dependencies.coreStart }),
     // Plan 3, Task 15: a Slack-started workflow stores its agent snapshot like any other start.
     ...(agents === undefined ? {} : { agents }) };
   // Plan 6 Task 3: the Slack start is a Rovara Code intent from the thread, through the one entry point; the explicit path the member chose is the request's.

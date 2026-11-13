@@ -18,3 +18,4 @@ export * from "./task-end.js";
 export * from "./slack-work.js";
 export * from "./automation.js";
 export * from "./runtime.js";
+export * from "./entry.js";

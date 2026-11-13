@@ -2,6 +2,8 @@ import { sqsOpsQueue } from "../team-record/ops-queue.js";
 import { askThroughBroker, botInvite, isHandedOffLearnPress, isLearnFromChannel, offerLearnPrompt, type HandedOffLearnPress, type LearnIngress } from "../team-record/slack-add.js";
 import { createSlackForwarder, removalPayload } from "../team-record/slack-forward.js";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { coreSlackFromIngress } from "../cloud/app/slack-ingress-hook.js";
+import { anyCoreAreaOn, readCoreEngineFlags } from "../cloud/app/flags.js";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import {
   DeleteCommand,
@@ -1329,6 +1331,10 @@ function createAwsSlackIngressHandler() {
     if (response.FunctionError !== undefined || response.Payload === undefined) throw new Error(`broker ${String(event.action)} failed`);
     return JSON.parse(Buffer.from(response.Payload).toString("utf8")) as BrokerReply;
   };
+  const coreSlack = coreSlackFromIngress({
+    env: process.env, active: anyCoreAreaOn(readCoreEngineFlags(process.env)), invokeBroker,
+    post: async (thread, text) => { await postSlackMessage((await secrets()).botToken, { channel: thread.channelId, threadTs: thread.threadTs, text }); },
+  });
   const invokeWorkflow = async (input: SlackWorkflowStartInput) => {
     await startWorkflowThroughBroker(invokeBroker, input);
   };
@@ -1429,6 +1435,9 @@ function createAwsSlackIngressHandler() {
       },
       // Task 21: the Slack service routes a plain top-level request; the queue mark (not the body) says so.
       async routeRequest(message: SlackRequestMessage, messageGroupId: string, taskQuestion?: TaskQuestionRoute) {
+        // S3 (decision 130): with the combined switch on, a plain top-level request of a company on the core goes to the core's channel sink through the broker; a refusal is told in the thread
+        // here, and the request is not queued. `coreSlack` is undefined while the switch is off (the default), and then this is exactly what it was.
+        if (taskQuestion === undefined && coreSlack !== undefined && await coreSlack(message)) return;
         await sqs.send(new SendMessageCommand({ QueueUrl: queueUrl, MessageBody: JSON.stringify(message), MessageGroupId: messageGroupId,
           MessageDeduplicationId: message.eventId, MessageAttributes: taskQuestion === undefined ? routeAttributes() : taskQuestionAttributes(taskQuestion) }));
       },

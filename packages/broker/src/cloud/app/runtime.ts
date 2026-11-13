@@ -186,7 +186,8 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
       const adapter = registry.get("channel", "slack") as CloudSlackChannel | undefined;
       if (slack === undefined || adapter === undefined) return { gate };
       const start: StartTask = (caller, request) => flow.start(caller, request);
-      const work = createCloudChannelWork({ store, now: nowMs, start, gate, principalOf: slack.principalOf, log: wiring.log });
+      // A plain message with Understand off has no step to choose its path: it starts as Quick, and the lighter flow sizes it from the diff (178/179; P5 replaces this default).
+      const work = createCloudChannelWork({ store, now: nowMs, start, gate, principalOf: slack.principalOf, ...(flowOptions.understandFirst === true ? {} : { defaultPath: "QUICK" as const }), log: wiring.log });
       const sink = createCloudSlackSink({ adapter, store, now: nowMs, work, orgOfTeam: async (teamId) => { const org = await slack.orgOfTeam(teamId); return org === companyId ? org : undefined; }, standingOf: slack.standingOf, linkWords: slack.linkWords, log: wiring.log });
       return { slack: createSlackIntake(sink), slackSink: sink, gate };
     };

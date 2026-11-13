@@ -8,7 +8,7 @@
 //   decide   asks the core's decision gate with the chat credential of Slack (`chat-slack`, which Cloud's approvers adapter names): a Slack press decides low and
 //            medium plans inside the company's window and never anything higher (A6 gaps G1/G7, owner decision 144 for the card itself), and the gate says which.
 // `quick:` and `full:` at the start of a message choose the path, as today's ingress reads them; with neither, the core's Understand step chooses where it runs, and where
-// it does not the start is refused for want of a path (the Quick or Full question card is the 143b lane's).
+// it does not the root passes `defaultPath: "QUICK"` (S3 item e; lane P5's shared intake rule replaces it).
 import { createHash } from "node:crypto";
 import { recordTaskThread, type ChannelWork } from "@rovara-code/broker/core/channel";
 import { taskSessionId } from "@rovara-code/broker/core/sessions";
@@ -37,6 +37,12 @@ export interface CloudChannelWorkDeps {
   gate: DecideOnGate;
   /** The person as the core knows them (lane A6's `identity.getPrincipal`): undefined for anyone who is not of this company. */
   principalOf: (orgId: OrgId, personId: string) => Promise<Principal | undefined>;
+  /**
+   * The path a message with no `quick:` or `full:` prefix takes. `QUICK` while Understand is off: the core has no Understand step to choose a path, and a start with none is refused
+   * ("workflow requests require an explicit Quick or Full path"). The lighter flow then sizes the task from its diff (decisions 178 and 179), and the shared intake rule (lane P5) replaces
+   * this default. Absent: no default, and the core's Understand step chooses (`understandFirst` on).
+   */
+  defaultPath?: "QUICK" | "FULL" | undefined;
   log?: Log;
 }
 
@@ -66,7 +72,7 @@ export function createCloudChannelWork(deps: CloudChannelWorkDeps): ChannelWork 
       const path = /^(quick|full):\s*/iu.exec(message.text);
       const started = await deps.start({ principal, client: "slack" }, {
         project: projectName, instructions: path === null ? message.text : message.text.slice(path[0].length), requestId: requestIdOf(`slack/${message.eventId}`), workflow: true,
-        ...(path === null ? {} : { workflowPath: path[1]!.toLowerCase() === "full" ? "FULL" as const : "QUICK" as const }),
+        ...(path !== null ? { workflowPath: path[1]!.toLowerCase() === "full" ? "FULL" as const : "QUICK" as const } : deps.defaultPath === undefined ? {} : { workflowPath: deps.defaultPath }),
       });
       await recordTaskThread({ store: deps.store, orgId, now: deps.now }, { sessionId: taskSessionId(started.task.taskId), conversation: message.conversation, personId });
     },

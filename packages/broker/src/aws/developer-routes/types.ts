@@ -1,3 +1,4 @@
+import type { CoreIntentHook } from "../../rovara-code/intent.js";
 import type { RepositoryBranchProbe } from "../../github-app.js";
 import type { HealthRefreshProbes } from "../../org/health-observations.js";
 import type { RepoFileRuntime } from "../../lessons/repo-file-job.js";
@@ -115,6 +116,8 @@ export interface DeveloperApiConfiguration {
   slackRequestQueue?: SlackRequestQueue;
 }
 export interface DeveloperRouteDependencies {
+  /** S3 item a: the core start hook for a Rovara Code intent (`rovara-code/intent.ts`), set by the broker only where the Cloud root is built. */
+  coreStart?: CoreIntentHook | undefined;
   /** Test services (slice 1): the release's signed service image catalog (`serviceCatalogSourceOf`). The setup draft's dependency candidates become proposed dependencies only with it; without it none are proposed. */
   serviceCatalog?: ServiceCatalogSource;
   /** Company-approved extra images (switch `pj`): the digest lookup of a tag. Absent: the registry API over global fetch (`registryDigestResolver`). A test gives a fake. */
