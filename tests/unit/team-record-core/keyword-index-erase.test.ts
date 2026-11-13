@@ -10,7 +10,7 @@ import { recordSearch, type RecordQueryDependencies } from "../../../packages/br
 import type { TeamRecordTable } from "../../../packages/broker/src/team-record/types.js";
 import { GITHUB_SCOPE, ORG_A, ORG_B, addSource, caller, githubDraft, rows, world, type World } from "../../support/team-record-core.js";
 import { deleteDeps, idsOf } from "../../support/team-record-delete.js";
-import { DAY, HOUR, buildIndex, depsOf, indexHoldsWord, manifestOf, rowOf, seedRows } from "../../support/keyword-index.js";
+import { DAY, HOUR, buildIndex, depsOf, indexHoldsWord, isChunkWrite, manifestOf, rowOf, seedRows } from "../../support/keyword-index.js";
 
 const PUT = async (w: World, id: string, dev: "dev-1" | "dev-2", text: string): Promise<void> => {
   const outcome = await w.sink.put(githubDraft({ sourceRef: { system: "github.com", id, version: "1" }, actor: { sourceId: dev === "dev-1" ? "123" : "456", developerId: dev, trust: "member" }, links: [], text, audience: { kind: "project" }, scope: GITHUB_SCOPE }));
@@ -38,8 +38,7 @@ function failingChunks(w: World): { table: TeamRecordTable; fail: { on: boolean 
   return {
     fail,
     table: { ...w.table, documentClient: { send: async (command: unknown) => {
-      const input = (command as { input?: { Item?: { sk?: string } } }).input;
-      if (fail.on && (command as { constructor: { name: string } }).constructor.name === "PutCommand" && String(input?.Item?.sk).startsWith("KWIDX#S#")) throw Object.assign(new Error("table unavailable"), { name: "ServiceUnavailable" });
+      if (fail.on && isChunkWrite(command)) throw Object.assign(new Error("table unavailable"), { name: "ServiceUnavailable" });
       return real.send(command);
     } } },
   };
