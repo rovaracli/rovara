@@ -20,7 +20,7 @@
 // its time: `removalGate` (called by `purgeItems` before a row is deleted, the same rule as "a row goes only after its vector") marks the segments dirty, rebuilds them now within a budget, and says which rows are ready. A
 // row is deleted only when its segment has been rebuilt without it, no retired segment or unfinished build is left, and the row is tombstoned (a rebuild skips tombstoned rows). Text expiry and archiving are cleaned by the nightly pass.
 import { randomBytes } from "node:crypto";
-import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { BatchGetCommand, DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { teamRecordPk, type OrgId } from "@rovara-code/contracts";
 import { RECORD_EVENT_SK_PREFIX, recordEventKey } from "@agentx/cloud-contracts";
@@ -46,6 +46,11 @@ export const TAIL_MAX_ROWS = 1_500;
 export const LATE_MAX = 500;
 /** The rows of the best ranks a search reloads and checks (the caller then keeps the best `KEYWORD_RRF_TOP` the reader may see). */
 export const KEYWORD_CANDIDATES = 100;
+/**
+ * The most rows of the best ranks a search reloads from the index, so the visibility check can go past rows the reader may not see: it checks `KEYWORD_CANDIDATES` at a time and stops at that many visible rows or after this many
+ * candidates (a fixed bound: five batches of reads and checks at most).
+ */
+export const KEYWORD_CANDIDATES_MAX = 500;
 export const KEYWORD_RRF_TOP = 30;
 export const CHUNK_BYTES = 300_000;
 /** A segment build reads rows until SEGMENT_DOCS rows OR about this many bytes of text and structured fields (a page of 8 KB rows is 4 MB, so it can overshoot by a page): the memory of one build, tokens included, stays far inside the broker's 512 MB. */
@@ -108,30 +113,37 @@ export interface KeywordIndexDeps {
   cache?: SegmentCache | undefined;
 }
 
-/** The segments a Lambda has read, by company, project and segment id. A segment is immutable, so an entry never goes stale: it is only dropped when its segment is retired, or to make room. */
+/**
+ * The segments a Lambda has read, by company, project and segment id. A segment is immutable, so an entry never goes stale: it is dropped when its segment is retired, rebuilt or marked damaged (by this process), when a search
+ * reads a manifest that no longer lists it (`retainOnly`: that is how a warm container that did not do the rebuild lets go of retired words), or to make room.
+ */
 export class SegmentCache {
-  private readonly entries = new Map<string, SegmentReader>();
+  private readonly entries = new Map<string, { reader: SegmentReader; scope: { orgId: OrgId; project: string; segment: string } | undefined }>();
   private bytes = 0;
   constructor(private readonly maxBytes: number = 150 * 1_048_576) {}
   static key(orgId: OrgId, project: string, segment: string): string { return `${orgId}|${project}|${segment}`; }
   get(key: string): SegmentReader | undefined {
     const found = this.entries.get(key);
     if (found !== undefined) { this.entries.delete(key); this.entries.set(key, found); }
-    return found;
+    return found?.reader;
   }
-  set(key: string, reader: SegmentReader): void {
+  set(key: string, reader: SegmentReader, scope?: { orgId: OrgId; project: string; segment: string }): void {
     this.delete(key);
-    this.entries.set(key, reader);
+    this.entries.set(key, { reader, scope });
     this.bytes += reader.byteLength;
     for (const [oldest, old] of this.entries) {
       if (this.bytes <= this.maxBytes || oldest === key) break;
       this.entries.delete(oldest);
-      this.bytes -= old.byteLength;
+      this.bytes -= old.reader.byteLength;
     }
   }
   delete(key: string): void {
     const found = this.entries.get(key);
-    if (found !== undefined) { this.entries.delete(key); this.bytes -= found.byteLength; }
+    if (found !== undefined) { this.entries.delete(key); this.bytes -= found.reader.byteLength; }
+  }
+  /** Drops every cached segment of the project that is not in `listed` (the segments a manifest just read lists). With an empty set the project has no index, and nothing of it stays in memory. */
+  retainOnly(orgId: OrgId, project: string, listed: ReadonlySet<string>): void {
+    for (const [key, found] of [...this.entries]) if (found.scope?.orgId === orgId && found.scope.project === project && !listed.has(found.scope.segment)) this.delete(key);
   }
   get size(): number { return this.entries.size; }
 }
@@ -140,6 +152,9 @@ export const defaultSegmentCache = new SegmentCache();
 
 const nowOf = (deps: KeywordIndexDeps): number => (deps.now ?? Date.now)();
 const isoOf = (ms: number): string => new Date(ms).toISOString();
+const cacheOf = (deps: KeywordIndexDeps): SegmentCache => deps.cache ?? defaultSegmentCache;
+/** Lets go of cached segments at once (retired, rebuilt, damaged): the words of a segment do not wait for the LRU. */
+const evictSegments = (deps: KeywordIndexDeps, orgId: OrgId, project: string, ids: readonly string[]): void => { for (const id of ids) cacheOf(deps).delete(SegmentCache.key(orgId, project, id)); };
 
 async function readManifest(deps: KeywordIndexDeps, orgId: OrgId, project: string): Promise<ManifestRead> {
   const response = await deps.table.documentClient.send(new GetCommand({ TableName: deps.table.tableName, Key: manifestKey(orgId, project), ConsistentRead: true })) as { Item?: Item };
@@ -228,14 +243,28 @@ async function tableDelete(deps: KeywordIndexDeps, key: { pk: string; sk: string
   await deps.table.documentClient.send(new DeleteCommand({ TableName: deps.table.tableName, Key: key }));
 }
 
+/** The intent of a segment's build (its sort key): the first thing a build writes, and what finds the chunks of a build that died. */
+const intentSk = (segment: string): string => `${KWIDX_BUILD_PREFIX}${segment}`;
+
+/**
+ * Stores the chunks of one segment. Each chunk is written in a transaction that checks the build's intent is still there: a project erase (or a sweep of a dead build) deletes the intent first, so a build that is still
+ * writing cannot leave chunks behind it, with no intent to find them by (the narrow race of review finding 7). The write is then refused and the build fails and discards what it wrote.
+ */
 async function putChunks(deps: KeywordIndexDeps, orgId: OrgId, project: string, segment: string, bytes: Buffer): Promise<number> {
   const pk = teamRecordPk(orgId, project);
   const count = Math.max(1, Math.ceil(bytes.length / CHUNK_BYTES));
   for (let n = 0; n < count; n += 1) {
-    await deps.table.documentClient.send(new PutCommand({
-      TableName: deps.table.tableName,
-      Item: { pk, sk: chunkSk(segment, n), entityType: "TEAM_RECORD_KWIDX_CHUNK", segment, n, data: new Uint8Array(bytes.subarray(n * CHUNK_BYTES, (n + 1) * CHUNK_BYTES)) },
-    }));
+    try {
+      await deps.table.documentClient.send(new TransactWriteCommand({
+        TransactItems: [
+          { ConditionCheck: { TableName: deps.table.tableName, Key: { pk, sk: intentSk(segment) }, ConditionExpression: "attribute_exists(pk)" } },
+          { Put: { TableName: deps.table.tableName, Item: { pk, sk: chunkSk(segment, n), entityType: "TEAM_RECORD_KWIDX_CHUNK", segment, n, data: new Uint8Array(bytes.subarray(n * CHUNK_BYTES, (n + 1) * CHUNK_BYTES)) } } },
+        ],
+      }));
+    } catch (error) {
+      if (errorName(error) === "TransactionCanceledException") throw new Error("keyword index: the build's intent is gone (the index was erased or the build was swept)", { cause: error });
+      throw error;
+    }
   }
   return count;
 }
@@ -258,7 +287,7 @@ async function sortKeysUnder(deps: KeywordIndexDeps, orgId: OrgId, project: stri
 async function deleteChunks(deps: KeywordIndexDeps, orgId: OrgId, project: string, segment: string): Promise<void> {
   const pk = teamRecordPk(orgId, project);
   for (const sk of await sortKeysUnder(deps, orgId, project, `${KWIDX_CHUNK_PREFIX}${segment}#`)) await tableDelete(deps, { pk, sk });
-  (deps.cache ?? defaultSegmentCache).delete(SegmentCache.key(orgId, project, segment));
+  evictSegments(deps, orgId, project, [segment]);
 }
 
 /** A segment the manifest lists whose chunks are missing or the wrong size: the search marks it dirty (the next pass rebuilds it from the rows) and answers from the window meanwhile. */
@@ -267,7 +296,7 @@ export class DamagedSegmentError extends Error {
 }
 
 async function loadSegment(deps: KeywordIndexDeps, orgId: OrgId, project: string, entry: SegmentEntry): Promise<SegmentReader> {
-  const cache = deps.cache ?? defaultSegmentCache;
+  const cache = cacheOf(deps);
   const key = SegmentCache.key(orgId, project, entry.id);
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
@@ -289,7 +318,7 @@ async function loadSegment(deps: KeywordIndexDeps, orgId: OrgId, project: string
   const bytes = Buffer.concat(ordered as Uint8Array[]);
   if (bytes.length !== entry.bytes) throw new DamagedSegmentError(entry.id);
   const reader = new SegmentReader(bytes);
-  cache.set(key, reader);
+  cache.set(key, reader, { orgId, project, segment: entry.id });
   return reader;
 }
 
@@ -383,6 +412,7 @@ export async function replaceSegments(ctx: BuildContext, manifest: Manifest, fro
     };
     if (!(await writeManifest(ctx, ctx.orgId, ctx.project, next, manifest.version))) { await discard(); return { status: "conflict" }; }
     manifest = next;
+    evictSegments(ctx, ctx.orgId, ctx.project, replaced.map((entry) => entry.id));
   } catch (error) {
     // The build failed (a write the table refused, say): its chunks and intents are removed now if the table lets us; if it does not, the intents stay and are how the next pass finds the chunks.
     try { await discard(); } catch { /* the intents stay */ }
@@ -436,6 +466,7 @@ async function cleanOrphans(ctx: BuildContext): Promise<number> {
 async function resetIndex(ctx: BuildContext): Promise<void> {
   const pk = teamRecordPk(ctx.orgId, ctx.project);
   for (const prefix of [KWIDX_PREFIX, KWLATE_PREFIX]) for (const sk of await sortKeysUnder(ctx, ctx.orgId, ctx.project, prefix)) await tableDelete(ctx, { pk, sk });
+  cacheOf(ctx).retainOnly(ctx.orgId, ctx.project, new Set());
 }
 
 interface LateMarker { sk: string; occurredAt: string; id: string }
@@ -680,6 +711,7 @@ export async function runKeywordIndexJob(deps: KeywordIndexJobDeps, startedAt: n
 export async function eraseKeywordIndexItems(deps: KeywordIndexDeps, orgId: OrgId, project: string | undefined, maxItems: number): Promise<{ deleted: number; more: boolean }> {
   const pk = teamRecordPk(orgId, project);
   let deleted = 0;
+  if (project !== undefined) cacheOf(deps).retainOnly(orgId, project, new Set());
   for (const prefix of [KWIDX_PREFIX, KWLATE_PREFIX]) {
     let startKey: Record<string, unknown> | undefined;
     do {
@@ -699,6 +731,7 @@ export async function eraseKeywordIndexItems(deps: KeywordIndexDeps, orgId: OrgI
 
 /** Marks one segment dirty because its chunks cannot be read (a search found them missing). Conditional on the manifest's version, a few tries. */
 async function markDamaged(ctx: BuildContext, segment: string): Promise<void> {
+  evictSegments(ctx, ctx.orgId, ctx.project, [segment]);
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const read = await readManifest(ctx, ctx.orgId, ctx.project);
     if (read.status !== "ok" || !read.manifest.segments.some((entry) => entry.id === segment)) return;
@@ -706,6 +739,11 @@ async function markDamaged(ctx: BuildContext, segment: string): Promise<void> {
     const next: Manifest = { ...read.manifest, version: read.manifest.version + 1, updatedAt: since, segments: read.manifest.segments.map((entry) => (entry.id === segment && entry.dirty === undefined ? { ...entry, dirty: { since, reason: "damaged" as const } } : entry)) };
     if (await writeManifest(ctx, ctx.orgId, ctx.project, next, read.manifest.version)) return;
   }
+}
+
+/** For tests: marks one segment dirty as a search does when its chunks cannot be read (see `markDamaged`), and drops it from the cache. */
+export async function markKeywordIndexDamaged(deps: KeywordIndexDeps, orgId: OrgId, project: string, segment: string): Promise<void> {
+  await markDamaged({ ...deps, orgId, project, deadlineAt: Number.POSITIVE_INFINITY }, segment);
 }
 
 // ---- removal (K3)
@@ -832,6 +870,8 @@ export interface KeywordIndexView {
  */
 export async function openKeywordIndex(deps: KeywordIndexDeps, orgId: OrgId, project: string, nowSeconds: number): Promise<KeywordIndexView | undefined> {
   const read = await readManifest(deps, orgId, project);
+  // Whatever this container cached of the project that the manifest no longer lists (a segment another container retired, or an index that was erased) is dropped now, before anything is ranked.
+  cacheOf(deps).retainOnly(orgId, project, new Set(read.status === "ok" ? read.manifest.segments.map((entry) => entry.id) : []));
   if (read.status !== "ok" || read.manifest.coverage !== "complete") return undefined;
   const { manifest } = read;
   if (manifest.segments.reduce((sum, entry) => sum + entry.bytes, 0) > SEARCH_INDEX_MAX_BYTES) { deps.log?.("record.keyword_index_too_large", {}); return undefined; }
