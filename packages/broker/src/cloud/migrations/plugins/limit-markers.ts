@@ -44,10 +44,12 @@ const members = (value: unknown): string[] => (value instanceof Set ? [...value]
 
 const cancelled = (error: unknown): boolean => error instanceof Error && (error.name === "TransactionCanceledException" || error.name === "ConditionalCheckFailedException");
 const transient = (error: unknown): boolean => error instanceof Error && ["TransactionConflictException", "ProvisionedThroughputExceededException", "ThrottlingException", "RequestLimitExceeded", "InternalServerError"].includes(error.name);
-const conflictOnly = (error: unknown): boolean => {
+const reasonCodes = (error: unknown): string[] => {
   const reasons = (error as { CancellationReasons?: Array<{ Code?: string } | undefined> } | null)?.CancellationReasons;
-  return Array.isArray(reasons) && reasons.some((reason) => reason?.Code === "TransactionConflict") && !reasons.some((reason) => reason?.Code === "ConditionalCheckFailed");
+  return Array.isArray(reasons) ? reasons.map((reason) => reason?.Code ?? "None") : [];
 };
+/** Cancellation reasons that mean "try again": a lost race or a throttle, not a refused condition. */
+const RETRY_REASONS = new Set(["TransactionConflict", "ProvisionedThroughputExceeded", "ThrottlingError"]);
 
 export interface LimitMarkerMoveOptions {
   /** DynamoDB document client (set values read and written as Sets) and the State table. Never the port: it cannot hold a set. */
@@ -80,16 +82,25 @@ export function limitMarkerMove(options: LimitMarkerMoveOptions): DataMove {
   const read = async (key: { pk: string; sk: string }): Promise<Row | undefined> =>
     ((await client.send(new GetCommand({ TableName: tableName, Key: key, ConsistentRead: true }))) as { Item?: Row }).Item;
 
-  /** One conditional transaction; a lost race or a throttle is tried again (bounded). False when a condition refused it. */
+  /**
+   * One conditional transaction. True when it applied. False ONLY when a condition refused it (a ConditionalCheckFailed reason, or the plain exception),
+   * which the runner reads as "the item changed". A lost race or a throttle is tried again (bounded), then thrown; a validation error, a size limit or
+   * any other fault is thrown at once, so it can never be counted as "changed under the move".
+   */
   const transact = async (items: unknown[]): Promise<boolean> => {
     for (let attempt = 1; ; attempt += 1) {
       try {
         await client.send(new TransactWriteCommand({ TransactItems: items as never }));
         return true;
       } catch (error) {
-        const retry = transient(error) || (cancelled(error) && conflictOnly(error));
+        const codes = reasonCodes(error);
+        // Any reason that is a fault (a validation error, a size limit, one this code does not know) is thrown, whatever else the cancellation says.
+        const fault = cancelled(error) && codes.some((code) => code !== "None" && code !== "ConditionalCheckFailed" && !RETRY_REASONS.has(code));
+        if (fault) throw error;
+        // A refused condition: the plain exception, or a ConditionalCheckFailed reason.
+        if (cancelled(error) && (codes.length === 0 || codes.includes("ConditionalCheckFailed"))) return false;
+        const retry = transient(error) || cancelled(error);
         if (retry && attempt < ATTEMPTS) { await sleep(50 * attempt); continue; }
-        if (cancelled(error) && !conflictOnly(error)) return false;
         throw error;
       }
     }
@@ -132,15 +143,22 @@ export function limitMarkerMove(options: LimitMarkerMoveOptions): DataMove {
     const row = await read(holder.key);
     if (row === undefined || (holder.attribute === "tasks" ? !isMemberCounter(row) : !isSession(row))) return { kind: "conflict", reason: "orphan: its counter or session is gone" };
     if (members(row[holder.attribute]).includes(holder.entry)) return { kind: "conflict", reason: "in the set and a marker row" };
+    // A deleted session takes no parked delivery (markDeleted removes its markers): putting one back would leave a set on a dead session. Left for a person.
+    const session = holder.attribute === "waitingOutboxIds";
+    if (session && row["state"] === "DELETED") return { kind: "conflict", reason: "orphan: its session is deleted" };
     return { kind: "native", apply: () => transact([
-      { Update: { TableName: tableName, Key: holder.key, UpdateExpression: "ADD #set :entry", ConditionExpression: "attribute_exists(pk) AND NOT contains(#set, :id)", ExpressionAttributeNames: { "#set": holder.attribute }, ExpressionAttributeValues: { ":entry": new Set([holder.entry]), ":id": holder.entry } } },
+      { Update: { TableName: tableName, Key: holder.key, UpdateExpression: "ADD #set :entry",
+        // For a session the same fence as the plan: not a deleted one (the state is read here, so a session deleted between the plan and the write refuses it).
+        ConditionExpression: session ? "attribute_exists(pk) AND NOT contains(#set, :id) AND #state <> :deleted" : "attribute_exists(pk) AND NOT contains(#set, :id)",
+        ExpressionAttributeNames: { "#set": holder.attribute, ...(session ? { "#state": "state" } : {}) },
+        ExpressionAttributeValues: { ":entry": new Set([holder.entry]), ":id": holder.entry, ...(session ? { ":deleted": "DELETED" } : {}) } } },
       { Delete: { TableName: tableName, Key: { pk: item.pk, sk: item.sk }, ConditionExpression: "attribute_exists(pk)" } },
     ]) };
   }
 
   return {
     id: S2_MOVE_ID,
-    title: "Limits and session sets to marker rows (S2)",
+    title: "Limits and session sets to marker rows (S2; table-wide: every row of the table, --company is ignored)",
     status: "ready",
     source: {
       forward: async (context, cursor) => {

@@ -271,6 +271,32 @@ describe("closing a task: repeats, races and audit records (R12, R15)", () => {
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 0 });
   });
 
+  it("a close whose slot changed form between the form read and the release (the S2 move reversed) reads the form again and frees the slot once", async () => {
+    const { db, close, taskId, task, active, finish, member } = await finished();
+    const key = { pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: `MEMBER#${MAYA.slackUserId}` };
+    expect(db.get(key.pk, `TASK#${taskId}`)).toBeDefined();
+    await close(randomUUID());
+    const closeId = active();
+    // Just before the close's marker-form release lands, the reverse converts the slot back to the set form: the release fails at its marker, and the task is
+    // still charged (in the other form), so the close must read the form again and release through the set, not give up.
+    const send = db.send.bind(db);
+    let converted = 0;
+    (db as { send: unknown }).send = async (command: { constructor: { name: string }; input?: { TransactItems?: Array<{ Delete?: { Key?: { sk?: string } } }> } }) => {
+      if (converted === 0 && command.constructor.name === "TransactWriteCommand" && command.input?.TransactItems?.some((item) => item.Delete?.Key?.sk === `TASK#${taskId}`) === true) {
+        converted += 1;
+        db.delete(key.pk, `TASK#${taskId}`);
+        db.set({ ...db.get(key.pk, key.sk)!, tasks: new Set([taskId]) });
+      }
+      return send(command as never);
+    };
+    await finish(task.workspaceId, closeId, "SUCCEEDED", { result: { safeToClose: true, repositories: [] } });
+    expect(converted).toBe(1);
+    expect(member()).toMatchObject({ count: 0 });
+    expect(member()).not.toHaveProperty("tasks");
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 0 });
+    expect(db.get(`DEVTASK#${taskId}`, "META")).toHaveProperty("closedAt");
+  });
+
   it("closes a task whose counters were already released, without releasing them again", async () => {
     const { db, close, taskId, task, active, finish, actions, deleteEc2Session, member } = await finished();
     deleteEc2Session!.mockRejectedValueOnce(Object.assign(new Error("starting"), { name: "AgentXError" }));

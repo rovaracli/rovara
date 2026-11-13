@@ -261,17 +261,18 @@ export async function chargeConflict(client: Client, tableName: string, charge: 
   throw error;
 }
 
-export type ReleaseConflict = "already_released";
+/** `already_released`: neither form holds the task. `form_changed`: the task is still charged, in the other form (the move ran between the form read and the release): read the form again and release again. */
+export type ReleaseConflict = "already_released" | "form_changed";
 
 /**
  * Classifies a `releaseItems` transaction's `TransactionCanceledException` for the form it was built in. A repeat release fails at the marker (marker
  * form) or at the member's `contains` (set form). A consistent re-read must then find the task in neither form before this says "already_released":
- * a task still charged (or one the migration moved from the set to a marker between the form read and the release) is the caller's error to retry,
- * rethrown as the same object. Anything else is rethrown too.
+ * a task still charged (one the move converted between the form read and the release, say) is answered `form_changed`, for the caller to read the form
+ * again and retry. Anything that is not such a refusal is rethrown as the same object.
  */
 export async function releaseConflict(client: Client, tableName: string, charge: WorkspaceCharge, taskId: string, error: unknown, form: ChargeForm): Promise<ReleaseConflict> {
   const reasons = cancellationReasons(error);
   if (reasons === undefined || !conditionFailed(reasons, form === "marker" ? 2 : 1)) throw error;
-  if (await isTaskCharged(client, tableName, charge, taskId)) throw error;
+  if (await isTaskCharged(client, tableName, charge, taskId)) return "form_changed";
   return "already_released";
 }

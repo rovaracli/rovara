@@ -91,8 +91,7 @@ async function attemptRelease(client: Client, tableName: string, workspaceId: st
     if (!isCancelled(error)) throw error;
     // The task is no longer in its member counter: an earlier release or a close gave it back.
     try {
-      await releaseConflict(client, tableName, task.charge, task.taskId, error, form);
-      return "not_charged";
+      return await releaseConflict(client, tableName, task.charge, task.taskId, error, form) === "form_changed" ? "retry" : "not_charged";
     } catch {
       return "retry";
     }

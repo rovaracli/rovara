@@ -212,8 +212,9 @@ async function releaseFinishedTaskNow(deps: ReleaseDeps, task: DeveloperTaskReco
       if (fresh === undefined || fresh.releasedAt !== undefined || (!closed && fresh.closedAt !== undefined)) return "already_released";
       if (!release) return "busy";
       try {
-        // Counters that no longer hold this task: given back already; the rest is sent again without them.
-        await releaseConflict(deps.documentClient, deps.tableName, task.charge, task.taskId, error, form ?? "set");
+        // Counters that no longer hold this task: given back already; the rest is sent again without them. A task still charged in the other form (the S2
+        // move ran between the form read and the release) is read again and released again.
+        if (await releaseConflict(deps.documentClient, deps.tableName, task.charge, task.taskId, error, form ?? "set") === "form_changed") continue;
       } catch {
         // Not the counters: something else moved meanwhile; the next call tries again.
         return "busy";

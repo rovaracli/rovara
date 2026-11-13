@@ -84,14 +84,14 @@ describe("workspace limits on both stored forms", () => {
     expect(db.get(charge.organization)).toMatchObject({ count: 0 });
   });
 
-  it("a release whose form moved under it (the migration ran in between) is retried, never called released", async () => {
+  it("a release whose form moved under it (the migration ran in between) is answered form_changed, never already_released", async () => {
     const db = new FakeDynamoDb();
     oldRows(db, ["mid-1"]);
     const charge = slackCharge();
     const form = await chargeFormOf(db, TABLE, charge, "mid-1");
     await run(db, "forward");
     const error = await fails(send(db, releaseItems(TABLE, charge, "mid-1", form)));
-    await expect(releaseConflict(db, TABLE, charge, "mid-1", error, form)).rejects.toBe(error);
+    expect(await releaseConflict(db, TABLE, charge, "mid-1", error, form)).toBe("form_changed");
     expect(await isTaskCharged(db, TABLE, charge, "mid-1")).toBe(true);
   });
 
@@ -231,6 +231,43 @@ describe("the S2 move (forward)", () => {
   });
 });
 
+describe("the S2 move's write faults", () => {
+  const moveOver = (db: FakeDynamoDb, client: unknown) => limitMarkerMove({ client: client as never, tableName: TABLE, sleep: async () => undefined, scanSets: scan(db, 5, { expression: "attribute_exists(#tasks)", names: { "#tasks": "tasks" } }), scanMarkers: scan(db, 5, { expression: "#type = :t", names: { "#type": "entityType" }, values: { ":t": "DEVELOPER_LIMIT_TASK" } }) });
+  const sent = { transactions: 0 };
+  const refusing = (db: FakeDynamoDb, reasons: Array<{ Code: string }>, times = Infinity) => {
+    let left = times;
+    return new Proxy(db, { get(target, name, receiver) {
+      if (name !== "send") return Reflect.get(target, name, receiver) as unknown;
+      return async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === "TransactWriteCommand") sent.transactions += 1;
+        if (command.constructor.name === "TransactWriteCommand" && left > 0) { left -= 1; throw Object.assign(new Error("cancelled"), { name: "TransactionCanceledException", CancellationReasons: reasons }); }
+        return target.send(command as never);
+      };
+    } });
+  };
+
+  it("a validation error is thrown, never counted as the item changing", async () => {
+    const db = new FakeDynamoDb();
+    oldRows(db, ["v1"]);
+    const before = snapshot(db);
+    sent.transactions = 0;
+    await expect(runDataMove(moveOver(db, refusing(db, [{ Code: "ValidationError" }, { Code: "None" }])), context(), { direction: "forward", apply: true })).rejects.toMatchObject({ name: "TransactionCanceledException" });
+    expect(sent.transactions).toBe(1);
+    expect(snapshot(db)).toEqual(before);
+  });
+
+  it("a throttle is tried again and then applies; one that never stops is thrown, not a conflict", async () => {
+    const db = new FakeDynamoDb();
+    oldRows(db, ["th1"]);
+    const report = await runDataMove(moveOver(db, refusing(db, [{ Code: "ThrottlingError" }, { Code: "None" }], 2)), context(), { direction: "forward", apply: true });
+    expect(report).toMatchObject({ writes: 1, conflicts: 0 });
+    expect(heldTasks(db, slackCharge().member)).toEqual(["th1"]);
+    const stuck = new FakeDynamoDb();
+    oldRows(stuck, ["th2"]);
+    await expect(runDataMove(moveOver(stuck, refusing(stuck, [{ Code: "ThrottlingError" }])), context(), { direction: "forward", apply: true })).rejects.toMatchObject({ name: "TransactionCanceledException" });
+  });
+});
+
 describe("the S2 reverse", () => {
   const world = () => {
     const db = new FakeDynamoDb();
@@ -295,6 +332,32 @@ describe("the S2 reverse", () => {
     expect(report).toMatchObject({ writes: 0, conflicts: 1 });
     expect(report.conflictList[0]?.reason).toContain("orphan");
     expect(db.get(slackLimitPk(TEST_ORG, TEAM), "TASK#lost")).toBeDefined();
+  });
+
+  it("a parked-delivery marker on a DELETED session is a conflict, never put back into a set (also when the session is deleted during the run)", async () => {
+    const db = new FakeDynamoDb();
+    db.set({ pk: "WORKSPACE#ws-dead", sk: "SESSION", entityType: "SESSION", workspaceId: "ws-dead", state: "DELETED", generation: 3 });
+    db.set({ pk: "WORKSPACE#ws-dead", sk: "SESSION_WAITING#o1", entityType: "SESSION_WAITING", workspaceId: "ws-dead", outboxId: "o1", parkedAt: "x" });
+    const dead = await run(db, "reverse");
+    expect(dead).toMatchObject({ writes: 0, conflicts: 1 });
+    expect(dead.conflictList[0]?.reason).toContain("deleted");
+    expect(db.get("WORKSPACE#ws-dead", "SESSION")).not.toHaveProperty("waitingOutboxIds");
+    // Deleted between the plan and the write: the write's own fence refuses it, and the second plan reports it.
+    const racing = new FakeDynamoDb();
+    racing.set({ pk: "WORKSPACE#ws-r", sk: "SESSION", entityType: "SESSION", workspaceId: "ws-r", state: "READY", generation: 3 });
+    racing.set({ pk: "WORKSPACE#ws-r", sk: "SESSION_WAITING#o2", entityType: "SESSION_WAITING", workspaceId: "ws-r", outboxId: "o2", parkedAt: "x" });
+    let tripped = false;
+    const proxy = new Proxy(racing, { get(target, name, receiver) {
+      if (name !== "send") return Reflect.get(target, name, receiver) as unknown;
+      return async (command: { constructor: { name: string } }) => {
+        if (!tripped && command.constructor.name === "TransactWriteCommand") { tripped = true; racing.set({ ...racing.get("WORKSPACE#ws-r", "SESSION")!, state: "DELETED" }); }
+        return target.send(command as never);
+      };
+    } });
+    const report = await runDataMove(limitMarkerMove({ client: proxy, tableName: TABLE, sleep: async () => undefined, scanSets: scan(racing, 5, { expression: "attribute_exists(#w)", names: { "#w": "waitingOutboxIds" } }), scanMarkers: scan(racing, 5, { expression: "#type = :t", names: { "#type": "entityType" }, values: { ":t": "SESSION_WAITING" } }) }), context(), { direction: "reverse", apply: true });
+    expect(report).toMatchObject({ writes: 0, conflicts: 1 });
+    expect(racing.get("WORKSPACE#ws-r", "SESSION")).not.toHaveProperty("waitingOutboxIds");
+    expect(racing.get("WORKSPACE#ws-r", "SESSION_WAITING#o2")).toBeDefined();
   });
 
   it("a marker also in the set is a conflict, left alone", async () => {

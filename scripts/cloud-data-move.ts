@@ -7,6 +7,7 @@
 //
 // A dry run is the default and writes nothing. `--apply yes` writes (one conditional transaction per item); give `--resume <file>` so a stopped run carries
 // on. Re-run the dry run until it reports 0 writes and 0 conflicts. Prints the report as JSON (keys and counts, never item contents).
+// TABLE-WIDE moves: `s2-limits-session-markers` scans every row of the table and ignores --company (the option is required by every move; an install has one company, R3).
 // Region and credentials come from the environment (the staging wrapper sets them); there is no default table and no default company.
 import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";

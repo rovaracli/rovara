@@ -211,8 +211,9 @@ export async function finishTaskClose(
         continue;
       }
       if (!release) throw error;
-      // Rethrows anything but counters that no longer hold this task.
-      await releaseConflict(deps.documentClient, deps.tableName, task.charge, task.taskId, error, form ?? "set");
+      // Rethrows anything but counters that no longer hold this task, or a task that is still charged in the other form (the S2 move ran between the form
+      // read and the release): then the form is read again and the release sent again, within the attempts.
+      if (await releaseConflict(deps.documentClient, deps.tableName, task.charge, task.taskId, error, form ?? "set") === "form_changed") continue;
       console.log(JSON.stringify({ component: "broker", event: "developer.task_release_already_released", taskId: task.taskId }));
       release = false;
     }
