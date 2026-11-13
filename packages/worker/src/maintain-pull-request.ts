@@ -1,10 +1,9 @@
 import { assertPushCarriesNoLessonsFile } from "./lessons-file-guard.js";
 import { assertPushCarriesNoRovaraWorkingFiles, unstageRovaraWorkingFiles } from "./never-commit-guard.js";
-import { ROVARA_NEVER_COMMIT_EXCLUDE } from "./never-commit-list.js";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { AgentXError, CONFLICT_PATHS_MAX, WORKFLOW_FIX_DROPS_BASE_CHANGES, PullRequestLifecycleResultSchema, WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE, agentXError, type PullRequestLifecycleResult } from "@rovara-code/contracts";
-import { type WorkerInvocation } from "@agentx/cloud-contracts";
+import { ROVARA_NEVER_COMMIT_EXCLUDE, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { AGENTX_GIT_EMAIL, AGENTX_GIT_NAME } from "./git.js";
 import { assertCredentialFreeRemote, type GitCredential } from "./git-auth.js";
 import { assertWorkspaceIsPlain, runIsolatedGit, withIsolatedRepository } from "./isolated-repository.js";
@@ -146,7 +145,7 @@ export async function maintainPullRequest(options: {
       workspaceTree = (await git(repositoryPath, ["write-tree"])).trim();
     } else {
       // In a temporary index, as the reviewed tree was computed, so the real index is untouched.
-      workspaceTree = await temporaryIndexTree({ directory: repositoryPath });
+      workspaceTree = await temporaryIndexTree({ directory: repositoryPath }, invocation.payload.workflowBaseCommit);
       if (workspaceTree !== reviewedTree) throw agentXError("CONFIG_INVALID", WORKFLOW_PUBLISH_CANDIDATE_CHANGED_MESSAGE);
     }
     const publishedTree = (await git(repositoryPath, ["rev-parse", `${remoteHead}^{tree}`])).trim();

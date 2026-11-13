@@ -1,31 +1,27 @@
-// CLOUD COPY of Code's `packages/contracts/src/never-commit.ts` (TE-B9, public PR #510 on code/next). Cloud's worker imports Code's contracts from the vendored pin (`@rovara-code/contracts`), and the pin does not carry
-// this list yet, so the worker reads it from here. The day the pin does, delete this file and import `ROVARA_NEVER_COMMIT`, `ROVARA_NEVER_COMMIT_EXCLUDE` and `neverCommitRefusal` from `@rovara-code/contracts`:
-// tests/contract/worker-mirror-of-code.test.ts fails then, and says so.
+// CLOUD COPY of Code's `packages/contracts/src/never-commit.ts` (TE-B9, public PR #510 on code/next). Cloud's worker and CLI import Code's contracts from the vendored pin (`@rovara-code/contracts`), and the pin does not
+// carry this list yet, so they read it from here. The day the pin does, delete this file (and its export in index.ts) and import the three names from `@rovara-code/contracts`: tests/contract/worker-mirror-of-code.test.ts
+// fails then, and says so. A change to the list is made in Code first.
 // TE-B9 (O38): Rovara's own working files are never part of a customer's change, whatever the workspace layout (a repository at the workspace root, one folder down, a monorepo). This is the one list. The worker leaves
 // every listed path out of each `git add` (candidate snapshot, publication, pull request maintenance), takes a force-added one out of the index, and checks the commit about to be pushed before it goes (worker/src/never-commit-guard.ts).
 // The customer's own `.gitignore` is never edited: this is a safety net beside it, not a rule written into their repository.
 //
-// What is listed:
+// What is listed (and nothing else: the customer's own build output is theirs to keep or ignore, and Rovara does not guess at it):
 //   - `.agentx` and `.agentx-*` (the task store, the check history `.agentx/last-checks.json`, the preparation manifest, the sandbox's scratch folders), as a file or a folder, at any depth;
 //   - Code's local store files if one is misplaced inside a checkout: `.rovara/state.db*` and `.rovara/audit.db*` (the database and its `-wal`, `-shm` and `-journal` files; O40). Only those: `.rovara/rules/`, `.rovara/project.yaml` and
-//     `.rovara/lessons.md` are the customer's own files and stay committable (the lessons file has its own guard);
-//   - the verifier's report and coverage folders, which it reads from a build's own output: Maven `target/surefire-reports`, `target/failsafe-reports`, `target/site/jacoco`; Gradle `build/test-results`, `build/reports/jacoco`.
+//     `.rovara/lessons.md` are the customer's own files and stay committable (the lessons file has its own guard).
+// Names are matched without regard to case (`:(icase)`), so a case-insensitive file system cannot hide `.AGENTX` from the rule.
 //
-// Each entry is a Git pathspec (`literal` or `glob`), so Git does the matching, in `git add` and in `git diff` alike, and the two cannot drift apart.
+// Each entry is a Git pathspec (`glob` magic), so Git does the matching, in `git add` and in `git diff` alike, and the two cannot drift apart. The worker deletes the Git variables that change how a pathspec is read
+// (GIT_LITERAL_PATHSPECS and the others, worker/src/git.ts), so the magic is always the entry's own.
 
 /** Pathspecs that select the listed paths (for `git diff`, `git ls-files`, `git rm --cached`). */
 export const ROVARA_NEVER_COMMIT: readonly string[] = Object.freeze([
-  ":(top,glob)**/.agentx",
-  ":(top,glob)**/.agentx/**",
-  ":(top,glob)**/.agentx-*",
-  ":(top,glob)**/.agentx-*/**",
-  ":(top,glob)**/.rovara/state.db*",
-  ":(top,glob)**/.rovara/audit.db*",
-  ":(top,glob)**/target/surefire-reports/**",
-  ":(top,glob)**/target/failsafe-reports/**",
-  ":(top,glob)**/target/site/jacoco/**",
-  ":(top,glob)**/build/test-results/**",
-  ":(top,glob)**/build/reports/jacoco/**",
+  ":(top,icase,glob)**/.agentx",
+  ":(top,icase,glob)**/.agentx/**",
+  ":(top,icase,glob)**/.agentx-*",
+  ":(top,icase,glob)**/.agentx-*/**",
+  ":(top,icase,glob)**/.rovara/state.db*",
+  ":(top,icase,glob)**/.rovara/audit.db*",
 ]);
 
 /** The same entries as exclusions, to put after `.` in `git add --all -- . <these>`. */
@@ -41,5 +37,5 @@ const SHOWN_PATH_MAX = 200;
 export function neverCommitRefusal(path: string): string {
   const characters = [...path.replace(/[\p{Cc}\p{Cf}]/gu, "?")];
   const shown = characters.length > SHOWN_PATH_MAX ? `${characters.slice(0, SHOWN_PATH_MAX).join("")}...` : characters.join("");
-  return `Rovara stopped: its own working files were about to be committed (${shown}). Not your code. Next: retrying without them`;
+  return `Rovara stopped: its own working files were about to be committed (${shown}). Not your code. Nothing was pushed. Next: run the task again.`;
 }
