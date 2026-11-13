@@ -26,8 +26,9 @@ import { designApprovalKey } from "../../packages/broker/src/aws/developer-tasks
 import { proofDesignContextOf } from "../../packages/broker/src/aws/developer-tasks/design-proof.js";
 import { designSpecStateOf, specDesignLineOf } from "../../packages/broker/src/aws/developer-tasks/design-spec.js";
 import { designProofLine } from "../../packages/broker/src/design-review/proof-line.js";
-import { orgMetaKey } from "@agentx/cloud-contracts";
-import { projectMemberKey, projectMetaKey } from "@rovara-code/contracts";
+import { developerOrgKey, orgMemberKey, orgMetaKey } from "@agentx/cloud-contracts";
+import { TASK_OWNER_NOT_MEMBER_MESSAGE } from "../../packages/broker/src/developer/merged-owner.js";
+import { projectMemberKey, projectMetaKey, type OrgId } from "@rovara-code/contracts";
 import type * as CatalogModule from "@agentx/model-runtime/catalog";
 import { fakeModelAccess } from "../support/fake-model-access.js";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
@@ -1377,7 +1378,7 @@ describe("slice C: the design review's routes", () => {
     expect(record).toMatchObject({ approverId: OMAR.developerId, mode: "maintainer" });
   });
 
-  it("ON-4: the approval is committed in the owner's seat built from the OWNER's record: an owner who can no longer be seated leaves it stale, however strong the approver's own role is", async () => {
+  it("ON-4: the approval is committed in the owner's seat built from the OWNER's record: an owner who can no longer be seated is refused plainly (0.5.18: never 'stale'), however strong the approver's own role is", async () => {
     const w = await openBlockerCard();
     seedPeople(w, [[MAYA, "member", "contributor"], [OMAR, "member", "maintainer"]]);
     const shown = await cardOf(w, OMAR, "approve_design");
@@ -1387,8 +1388,127 @@ describe("slice C: the design review's routes", () => {
     w.db.set({ ...(w.db.get(`DEVELOPER#${MAYA.developerId}`, "META") as Record<string, unknown>), revoked: true });
     const before = w.task().workflow;
     const refused = await w.dev(OMAR, "POST", approve.href, { requestId: randomUUID(), shownDigest: shown!.digest, reason: "Reviewed the blocker." });
-    expect(refused.status).toBe(409);
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(refused.body)).toContain(TASK_OWNER_NOT_MEMBER_MESSAGE);
     expect(w.task().workflow).toEqual(before);
+  });
+
+  describe("0.5.18: an owner whose sign-in was merged into another (a Slack-only sign-in merged into the person's web sign-in)", () => {
+    const SURVIVOR: Developer = { developerId: "f".repeat(64), name: "Maya Chen", provider: "oidc", sessionId: "s-maya-web" };
+    /** The task's creator, MAYA, is merged into SURVIVOR: her membership went with the merge (as the sign-in function's merge does). SURVIVOR signs in on the web. */
+    const merge = (w: World, survivorOrg?: OrgId) => {
+      w.db.set({ ...(w.db.get(`DEVELOPER#${MAYA.developerId}`, "META") as Record<string, unknown>), mergedInto: SURVIVOR.developerId, mergedAt: NOW });
+      w.db.delete(developerOrgKey(MAYA.developerId));
+      w.db.delete(orgMemberKey(TEST_ORG, MAYA.developerId));
+      w.db.set({ pk: `SESSION#${SURVIVOR.sessionId}`, sk: "META", sessionId: SURVIVOR.sessionId, developerId: SURVIVOR.developerId, amr: SURVIVOR.provider, startedAt: new Date(Date.now() - 60_000).toISOString(), endsAt: Math.floor(Date.now() / 1000) + 604_800 });
+      w.db.set({ pk: `DEVELOPER#${SURVIVOR.developerId}`, sk: "META", developerId: SURVIVOR.developerId, provider: SURVIVOR.provider, displayName: SURVIVOR.name, firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+      if (survivorOrg !== undefined) {
+        w.db.delete(orgMemberKey(TEST_ORG, SURVIVOR.developerId));
+        seedMembership(w.db, SURVIVOR.developerId, { orgId: survivorOrg, role: "owner" });
+      }
+    };
+    const pressApprove = async (w: World, who: Developer) => {
+      const shown = await cardOf(w, who, "approve_design");
+      expect(shown, "the card is on their list").toBeDefined();
+      const approve = shown!.card.actions.find((action) => action.kind === "approve")!;
+      await w.dev(who, "POST", `/v1/app/decisions/${shown!.card.id.replace(":", "/")}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown!.digest });
+      return w.dev(who, "POST", approve.href, { requestId: randomUUID(), shownDigest: shown!.digest, reason: "Accepted: the bound is in config." });
+    };
+
+    it("the survivor's own approval of the old task succeeds: the task is handed on and the owner's seat is the survivor's, as the requester (never a 'second person')", async () => {
+      const w = await openBlockerCard();
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "maintainer"]]);
+      const done = await pressApprove(w, SURVIVOR);
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      expect(w.task()).toMatchObject({ developerId: MAYA.developerId, currentOwner: { developerId: SURVIVOR.developerId } });
+      expect(w.task().workflow).toMatchObject({ stage: "PLAN", reviewPhase: "IMPLEMENTATION_PLAN" });
+      expect(w.task().workflow.decisions.at(-1)).toMatchObject({ decision: "APPROVE", actorRole: "TASK_OWNER" });
+      const record = w.db.get(...Object.values(designApprovalKey(w.taskId, sha256(designWith(["new_api"])))) as [string, string]) as { approverId: string; requesterId: string; mode: string };
+      expect(record).toMatchObject({ approverId: SURVIVOR.developerId, requesterId: SURVIVOR.developerId, mode: "requester" });
+    });
+
+    it("review L1: the survivor sees the old task's card as its requester (a plain contributor, not a maintainer) and the press does what the card promised", async () => {
+      const w = await openBlockerCard();
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "contributor"]]);
+      const done = await pressApprove(w, SURVIVOR);
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      expect(w.task().currentOwner).toMatchObject({ developerId: SURVIVOR.developerId });
+    });
+
+    it("review L6: on a HIGH-risk design the survivor is the requester, so never its second person: they may not approve while another approver exists, and the approver still may", async () => {
+      const w = await openBlockerCard({ touches: ["auth"] });
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "maintainer"], [OMAR, "member", "maintainer"]]);
+      const page = web(w);
+      const mine = await page(SURVIVOR, "GET", `/v1/app/tasks/${w.taskId}/design-review/approve`);
+      expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+      expect(mine.body.mayApprove, "the survivor asked for this task").toBe(false);
+      expect((await page(OMAR, "GET", `/v1/app/tasks/${w.taskId}/design-review/approve`)).body.mayApprove).toBe(true);
+      const before = w.task().workflow;
+      const press = (cookie?: string) => page(SURVIVOR, "POST", `/v1/app/tasks/${w.taskId}/design-review/approve`, { requestId: randomUUID(), shownDigest: mine.body.digest as string, reason: "Reviewed the open blocker." }, 0, cookie);
+      const first = await press();
+      const pressed = first.status === 200 ? first : await press((await decideSessionFor(w.db, SURVIVOR.developerId, signInApprovalOf(first.body))).cookie);
+      expect(pressed.status, JSON.stringify(pressed.body)).not.toBe(200);
+      expect(w.task().workflow).toEqual(before);
+      expect(w.db.find((item) => String(item.sk).startsWith("DESIGN_APPROVAL#"))).toEqual([]);
+    });
+
+    it("recheck L-C: on a HIGH-risk design the survivor still finds the card as its requester (told what is needed), even though they may not approve it", async () => {
+      const w = await openBlockerCard({ touches: ["auth"] });
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "contributor"], [OMAR, "member", "maintainer"]]);
+      expect(await cardOf(w, SURVIVOR, "approve_design"), "the requester's own card").toBeDefined();
+    });
+
+    it("recheck L-C: the survivor, a plain contributor, may Retry the old task's review that did not run (the requester's right, as mayDirectWork reads it)", async () => {
+      const w = await world({ capUsd: 8 });
+      await runWorker(w, String(w.operations()[0]!.id), {}, { failure: { error: "the run failed" } });
+      expect(w.task().workflow).toMatchObject({ designReview: { status: "not_run" } });
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "contributor"], [OMAR, "member", "contributor"]]);
+      expect((await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/retry`, { requestId: randomUUID() })).status, "a contributor who did not ask cannot").toBe(403);
+      const done = await w.dev(SURVIVOR, "POST", `/v1/app/tasks/${w.taskId}/design-review/retry`, { requestId: randomUUID() });
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      expect(w.task().workflow).toMatchObject({ designReview: { status: "estimating" } });
+    });
+
+    it("recheck L-C: on the cost card the survivor is the requester: they raise the cap within the low amount, as the press reads the requester", async () => {
+      const w = await openBlockerCard({ capUsd: 0.5 });
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "contributor"], [OMAR, "member", "contributor"]]);
+      const shown = await cardOf(w, SURVIVOR, "approve_spend");
+      expect(shown, "the spend card is on the survivor's list").toBeDefined();
+      const raise = shown!.card.actions.find((action) => action.href.endsWith("/spend/raise-cap"));
+      expect(raise, "the card offers the requester's raise").toBeDefined();
+      if (shown!.card.friction.expandEvidenceFirst) await w.dev(SURVIVOR, "POST", `/v1/app/decisions/${shown!.card.id.replace(":", "/")}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown!.digest });
+      const done = await w.dev(SURVIVOR, "POST", raise!.href, { requestId: randomUUID(), shownDigest: shown!.digest });
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      expect(w.task().workflow).toMatchObject({ designReview: { status: "estimating", approvals: [expect.objectContaining({ kind: "raise_cap", by: { actorId: SURVIVOR.developerId } })] } });
+    });
+
+    it("a maintainer's approval of the old task is seated as the survivor too", async () => {
+      const w = await openBlockerCard();
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "contributor"], [OMAR, "member", "maintainer"]]);
+      const done = await pressApprove(w, OMAR);
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      expect(w.task().currentOwner).toMatchObject({ developerId: SURVIVOR.developerId });
+      expect(w.task().workflow.decisions.at(-1)).toMatchObject({ decision: "APPROVE", actorId: OMAR.developerId, actorRole: "PROJECT_ADMIN" });
+    });
+
+    it("two companies: a survivor who belongs to ANOTHER company is never seated; the approval is refused plainly and the task is not handed across", async () => {
+      const w = await openBlockerCard();
+      merge(w, "org_zzzzzzzzzzzzzzzzzzzz");
+      seedPeople(w, [[OMAR, "member", "maintainer"]]);
+      const before = w.task().workflow;
+      const refused = await pressApprove(w, OMAR);
+      expect(refused.status).toBe(400);
+      expect(JSON.stringify(refused.body)).toContain(TASK_OWNER_NOT_MEMBER_MESSAGE);
+      expect(w.task().workflow).toEqual(before);
+      expect(w.task()).not.toHaveProperty("currentOwner");
+    });
   });
 
   it("ON-5: the cost card and the question card are listed for the people who may act on them, and not for others", async () => {
