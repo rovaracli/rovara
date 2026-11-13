@@ -95,6 +95,13 @@ A named environment's stage 2 can run Rovara's TS-L Linux checks (`scripts/linux
   worker image's inputs and the release pipeline's trigger paths already cover them); the Dockerfile builds the driver to `live.mjs` in a staging build and removes the directory otherwise. The only pull is the pinned Postgres image, by digest,
   with the worker role's existing catalog grant.
 
+### Recovery when the sweep or the read-back cannot clear leftovers (`tsl_leftover`)
+
+Docker's data root is on the workspace volume, so a self-test object that cannot be removed would meet every later boot of that volume, and the boot FAILS CLOSED rather than let a customer task meet it. The session's failure then reads
+`worker boot failed: tsl_leftover: ...` (the boot's `/ping` BootFailed reason), which tells it apart from any other boot failure. There is no automatic replacement of a claimed volume (the reconciler's quarantine only tags volumes
+no session claims), so the recovery is the existing close path: close that workspace (its machine and volume are deleted) and start a new one; its volume is fresh. Nothing on a staging worker may be cleared by hand (no SSM, no key pair).
+A person with a shell on a purpose-launched host can instead remove what carries the labels `rovara.tsl-selftest=1` and `rovara.run-network.workspace=7e57c4ec7e57c4ec` (containers, networks, volumes) and start again.
+
 ### How a staging launch would turn it on (M1, an owner decision; nothing here sets it)
 
 `AGENTX_TSL_SELFTEST` is a launch field that no launch carries today, so the self-test is off everywhere. To switch it on for staging only, without touching the vendored (read-only) boot configuration: add a Cloud-side helper beside

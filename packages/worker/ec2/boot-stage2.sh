@@ -1039,14 +1039,17 @@ tsl_identity() {
   [[ "${1:-}" =~ ^i-[0-9a-f]{8,17}$ ]] && TSL_INSTANCE=$1
   return 0
 }
-# Seconds the CHECKS may run: TSL_SELFTEST_BUDGET_S (30 to 300, default 170), and never so long that the checks plus TSL_RESERVE_S end after the boot deadline. May be under 45 or negative: the caller then does not start.
+# Seconds the CHECKS may run: TSL_SELFTEST_BUDGET_S (45 to 300, default 170; under 45 never starts), and never so long that the checks plus TSL_RESERVE_S end after the boot deadline. May be under 45 or negative: the caller then does not start.
 tsl_budget_seconds() {
   local want=${TSL_SELFTEST_BUDGET_S:-170} left
-  if [[ "$want" =~ ^[0-9]{2,3}$ ]] && ((10#$want >= 30 && 10#$want <= 300)); then want=$((10#$want)); else want=170; fi
+  if [[ "$want" =~ ^[0-9]{2,3}$ ]] && ((10#$want >= 45 && 10#$want <= 300)); then want=$((10#$want)); else want=170; fi
   left=$(( ${BOOT_DEADLINE:-$((SECONDS + 100000))} - SECONDS - TSL_RESERVE_S ))
   ((left >= want)) || want=$left
   printf '%s\n' "$want"
 }
+# Text that changes by itself between two looks is not a difference: the countdown of a router-advertisement route (`expires 1795sec`), address lifetimes (`valid_lft`, `preferred_lft`), an age, a set element's expiry (nft) and packet and byte
+# counters. They are cut out of every part of the snapshot, so a healthy host never fails the read-back for the clock; everything that is a rule, a route, a table or a link name stays.
+tsl_normalize() { sed -E 's/ (expires|valid_lft|preferred_lft|age) [0-9a-z.]+//g; s/ ?(counter )?packets [0-9]+ bytes [0-9]+//g; s/ ?\[[0-9]+:[0-9]+\]//g'; }
 # What the host looks like, as text IN ORDER (never sorted: a rule moved below an ACCEPT is a different firewall): every table of iptables (filter, nat, mangle, raw) and, where it is usable, ip6tables; the nft ruleset (stateless) when nft is
 # there; routes of every table, ip rules and the interface names. Fails (returns 1) when anything that should be readable was not: an unread table proves nothing.
 tsl_snapshot() {
@@ -1056,21 +1059,22 @@ tsl_snapshot() {
   for tool in iptables ip6tables; do
     if [[ "$tool" == ip6tables ]] && ! { command -v ip6tables >/dev/null 2>&1 && ip6tables -S INPUT >/dev/null 2>&1; }; then continue; fi
     for table in filter nat mangle raw; do
+      tsl_past_deadline && return 1
       # filter and nat must be readable; a table the kernel does not have (raw and mangle are loaded on demand) cannot hold a rule, and is recorded as such (the same before and after, unless a leftover loaded it).
       text=$(timeout --kill-after=3s 10s "$tool" -t "$table" -S 2>/dev/null) || { if [[ "$table" == filter || ( "$tool" == iptables && "$table" == nat ) ]]; then return 1; fi; text=unreadable; }
-      printf '%s\n' "$text" | sed "s/^/$tool:$table /" >>"$out"
+      printf '%s\n' "$text" | tsl_normalize | sed "s/^/$tool:$table /" >>"$out"
     done
   done
   if command -v nft >/dev/null 2>&1; then
     text=$(timeout --kill-after=3s 10s nft -s list ruleset 2>/dev/null) || return 1
-    printf '%s\n' "$text" | sed 's/^/nft /' >>"$out"
+    printf '%s\n' "$text" | tsl_normalize | sed 's/^/nft /' >>"$out"
   fi
   text=$(timeout --kill-after=3s 10s ip -4 route show table all 2>/dev/null) || return 1
-  printf '%s\n' "$text" | sed 's/^/route4 /' >>"$out"
+  printf '%s\n' "$text" | tsl_normalize | sed 's/^/route4 /' >>"$out"
   text=$(timeout --kill-after=3s 10s ip -6 route show table all 2>/dev/null) || text=""
-  printf '%s\n' "$text" | sed 's/^/route6 /' >>"$out"
+  printf '%s\n' "$text" | tsl_normalize | sed 's/^/route6 /' >>"$out"
   text=$(timeout --kill-after=3s 10s ip rule show 2>/dev/null) || return 1
-  printf '%s\n' "$text" | sed 's/^/rule /' >>"$out"
+  printf '%s\n' "$text" | tsl_normalize | sed 's/^/rule /' >>"$out"
   text=$(timeout --kill-after=3s 10s ip -o link show 2>/dev/null) || return 1
   printf '%s\n' "$text" | awk '{ n = $2; sub(/@.*/, "", n); sub(/:$/, "", n); print "link " n }' >>"$out"
 }
@@ -1109,12 +1113,13 @@ tsl_objects_gone() {
 # EVERY named boot, before anything else and whether or not the self-test is on: Docker's data root is on the workspace volume, so a self-test that failed its clean-up on an earlier instance would otherwise reach this launch. Removes what carries
 # the fixed labels, reads it back (one settle and retry), and returns 1 when it cannot, so the boot fails before any customer task can meet it.
 tsl_sweep_leftovers() {
-  TSL_HARD_DEADLINE=""
+  TSL_HARD_DEADLINE=$((SECONDS + 90))
   tsl_remove_objects
-  tsl_objects_gone && return 0
+  if tsl_objects_gone; then TSL_HARD_DEADLINE=""; return 0; fi
   sleep 2
   tsl_remove_objects
-  if tsl_objects_gone; then return 0; fi
+  if tsl_objects_gone; then TSL_HARD_DEADLINE=""; return 0; fi
+  TSL_HARD_DEADLINE=""
   log "TS-L self-test leftovers could not be removed from the workspace volume ($TSL_DIFF)"
   return 1
 }
@@ -1325,7 +1330,7 @@ stage2_main() {
   write_worker_environment "$region"
   if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then
     # FIRST, on every named boot (the self-test off or on): what a failed TS-L self-test left on the workspace volume's Docker data root must not meet this launch (tsl_sweep_leftovers).
-    tsl_sweep_leftovers || fail "TS-L self-test leftovers on the workspace volume could not be removed; this worker is stopped before it takes any work"
+    tsl_sweep_leftovers || fail "tsl_leftover: TS-L self-test leftovers on the workspace volume could not be removed; this worker is stopped before it takes any work (README: recovery)"
     install_function_runner_runsc || true
     if pull_catalog_images "$region"; then
       write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"
@@ -1347,7 +1352,7 @@ stage2_main() {
   if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then
     tsl_status=0
     run_tsl_selftest "$instance_id" || tsl_status=$?
-    ((tsl_status == 0)) || fail "the TS-L self-test left test objects on this worker and it is unusable (cleanup_failed); it is stopped before it takes any work"
+    ((tsl_status == 0)) || fail "tsl_leftover: the TS-L self-test left test objects on this worker and it is unusable (cleanup_failed); it is stopped before it takes any work (README: recovery)"
   fi
   systemctl enable --now "$WORKER_UNIT"
   log "worker started"

@@ -116,7 +116,8 @@ function setup(): Setup {
     '       [[ ! -e "$STATE/iface" ]] || echo "9: rvi1234abcd: <BROADCAST> mtu 1500"',
     '     fi ;;',
     '  *"-4 route"*) echo "default via 10.0.0.1 dev ens5"; [[ ! -e "$STATE/iface" ]] || echo "172.30.0.0/24 dev rvi1234abcd" ;;',
-    '  *"-6 route"*) echo "::1 dev lo" ;;',
+    '  *"-6 route"*) echo "::1 dev lo"; if [[ -n "${RA_ROUTE:-}" ]]; then n=$(cat "$STATE/racalls" 2>/dev/null || echo 0); n=$((n + 7)); echo $n >"$STATE/racalls"; echo "default via fe80::1 dev ens5 proto ra metric 1024 expires $((1800 - n))sec hoplimit 64 pref medium"; echo "2600:1f13::/64 dev ens5 proto ra metric 256 expires $((86400 - n))sec pref medium"; fi ;;',
+    '  *"addr"*) exit 0 ;;',
     '  *rule*) echo "0: from all lookup local" ;;',
     'esac',
   ].join("\n"));
@@ -276,6 +277,8 @@ describe("condition 2: never blocks the boot (the WHOLE self-test ends before th
     expect(budgets([700, 400, 300, 250, 195, 194, 100, -5])).toEqual([170, 170, 150, 100, 45, 44, -50, -155]);
     expect(budgets([700, 400], "TSL_SELFTEST_BUDGET_S=90;")).toEqual([90, 90]);
     expect(budgets([700], "TSL_SELFTEST_BUDGET_S=5;")).toEqual([170]);
+    expect(budgets([700], "TSL_SELFTEST_BUDGET_S=44;")).toEqual([170]);
+    expect(budgets([700], "TSL_SELFTEST_BUDGET_S=45;")).toEqual([45]);
     expect(budgets([700], "TSL_SELFTEST_BUDGET_S=abc;")).toEqual([170]);
     expect(budgets([700], "TSL_SELFTEST_BUDGET_S=9999;")).toEqual([170]);
     // For every deadline the whole thing (budget, then the reserve) ends no later than the deadline.
@@ -393,7 +396,7 @@ describe("condition 2: never blocks the boot (the WHOLE self-test ends before th
     expect(at("run_tsl_selftest")).toBeGreaterThan(at("write_worker_unit"));
     expect(at("run_tsl_selftest")).toBeLessThan(at('systemctl enable --now "$WORKER_UNIT"'));
     expect(stage2Main).toContain('run_tsl_selftest "$instance_id" || tsl_status=$?');
-    expect(stage2Main).toMatch(/\(\(tsl_status == 0\)\) \|\| fail "the TS-L self-test left test objects/u);
+    expect(stage2Main).toMatch(/\(\(tsl_status == 0\)\) \|\| fail "tsl_leftover: the TS-L self-test left test objects/u);
     expect(spawnSync("bash", ["-n"], { input: stage2, encoding: "utf8" }).status).toBe(0);
     // The comment says what is true: the launcher's wall steps are applied first by the self-test itself.
     expect(stage2Main).not.toContain("after every wall and before");
@@ -477,6 +480,26 @@ describe("condition 3: clean-up is proven before the worker takes work", () => {
     expect(parsedOf(noRaw)).toMatchObject({ state: "ran" });
   });
 
+  it("volatile text is not a difference: a router-advertisement route whose `expires Nsec` counts down, lifetimes, ages, counters and nft expiries are cut out of the snapshot (N1)", () => {
+    const s = setup();
+    const result = run(s, 'a=$(mktemp); b=$(mktemp); tsl_snapshot "$a"; tsl_snapshot "$b"; cmp -s "$a" "$b"; echo "same=$?"; grep -c expires "$a"', { RA_ROUTE: "1" });
+    expect(result.stdout).toContain("same=0");
+    expect(result.stdout.trim().split("\n").pop()).toBe("0");
+    // The route itself is still there, without its clock.
+    const out = join(s.dir, "snap-ra");
+    run(s, `tsl_snapshot "${out}"`, { RA_ROUTE: "1" });
+    expect(readFileSync(out, "utf8")).toContain("route6 default via fe80::1 dev ens5 proto ra metric 1024 hoplimit 64 pref medium");
+    // A whole self-test on such a host passes the read-back (it used to fail it, twice).
+    const full = setup();
+    expect(selfTest(full, { ...STAGING, RA_ROUTE: "1" }).stdout).toContain("rc=0");
+    expect(parsedOf(full)).toMatchObject({ state: "ran", reason: "ok" });
+    // Other volatile forms.
+    const forms = run(s, `printf '%s\\n' 'inet6 fd00::1/64 scope global valid_lft 3000sec preferred_lft 1200sec' 'tcp dport 22 counter packets 10 bytes 640 accept' '-A INPUT -j ACCEPT [12:3400]' 'elements = { 10.0.0.1 expires 4m31s }' 'x age 77' | tsl_normalize`).stdout;
+    expect(forms).toBe(['inet6 fd00::1/64 scope global', 'tcp dport 22 accept', '-A INPUT -j ACCEPT', 'elements = { 10.0.0.1 }', 'x'].join("\n") + "\n");
+    // A real change still shows: a rule, a route or a link name is not volatile text.
+    expect(run(s, `printf '%s\\n' '172.30.0.0/24 dev rvi1234abcd' | tsl_normalize`).stdout.trim()).toBe("172.30.0.0/24 dev rvi1234abcd");
+  });
+
   it("a bridge that goes a moment late is not a failure: the read-back is polled, and a second round of clean-up follows before it gives up (M4)", () => {
     const s = setup();
     expect(selfTest(s, { ...STAGING, LATE_IFACE: "1" }).stdout).toContain("rc=0");
@@ -524,9 +547,9 @@ describe("condition 3: clean-up is proven before the worker takes work", () => {
   });
 
   it("the boot is stopped through the existing path: `fail` (a reason on /ping, the provisioner stops the session) and the worker unit is not started", () => {
-    expect(stage2Main).toMatch(/fail "the TS-L self-test left test objects on this worker and it is unusable/u);
+    expect(stage2Main).toMatch(/fail "tsl_leftover: the TS-L self-test left test objects on this worker and it is unusable/u);
     expect(stage2Main.indexOf("run_tsl_selftest")).toBeLessThan(stage2Main.indexOf('systemctl enable --now "$WORKER_UNIT"'));
-    expect(/fail "the TS-L self-test[^"]*"/u.exec(stage2Main)?.[0]).not.toMatch(/[0-9]+\.[0-9]+\.[0-9]+/u);
+    expect(/fail "tsl_leftover: the TS-L self-test[^"]*"/u.exec(stage2Main)?.[0]).not.toMatch(/[0-9]+\.[0-9]+\.[0-9]+/u);
     expect(readFileSync(new URL("../../packages/worker/ec2/boot.sh", import.meta.url), "utf8")).toContain('"status": "BootFailed"');
   });
 });
@@ -578,7 +601,7 @@ describe("condition 3, across launches (H2): Docker's data root is on the worksp
     expect(at("tsl_sweep_leftovers")).toBeLessThan(at("install_function_runner_runsc"));
     expect(at("tsl_sweep_leftovers")).toBeLessThan(at("pull_catalog_images"));
     expect(at("tsl_sweep_leftovers")).toBeLessThan(at("set_docker_address_pools"));
-    expect(stage2Main).toMatch(/tsl_sweep_leftovers \|\| fail "TS-L self-test leftovers on the workspace volume could not be removed/u);
+    expect(stage2Main).toMatch(/tsl_sweep_leftovers \|\| fail "tsl_leftover: TS-L self-test leftovers on the workspace volume could not be removed/u);
   });
 
   it("everything the self-test creates carries one of the two fixed labels: the bundle container, the working sandbox's network and the checker's driver containers have the driver label; the driver's run objects have the throwaway workspace key", () => {
