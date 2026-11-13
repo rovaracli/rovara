@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
-import { defaultBoundaryArn, deployRoleBoundaryArn } from "@agentx/cloud-contracts";
+import { customDomainDeployPolicyArn, customDomainStatements, defaultBoundaryArn, deployRoleBoundaryArn } from "@agentx/cloud-contracts";
 import { environmentCloudFormationRoleName, environmentOperatorRoleName, type ReleaseManifest } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import type { DeployAnswers } from "../../packages/cli/src/deploy/deploy-environment.js";
@@ -450,6 +450,33 @@ describe("writeExportBundle", () => {
     expect(info.mode & 0o111).not.toBe(0);
   });
 
+  it("0.5.18: with a hosted-cloud custom domain, writes policies/custom-domain.json (the deploy role's managed policy) and lets the access deployer create and attach exactly that one policy; without one, neither", async () => {
+    const customDomain = { domainName: "staging.rovara.dev", hostedZoneId: "Z08286002FKUL2VBSO3MO" };
+    const policyArn = customDomainDeployPolicyArn({ env: ENV, partition: "aws", account: ACCOUNT });
+    const boundaries = [defaultBoundaryArn({ env: ENV, partition: "aws", account: ACCOUNT }), deployRoleBoundaryArn({ env: ENV, partition: "aws", account: ACCOUNT })];
+    for (const [answers, withDomain] of [[cognitoAnswers({ cloud: true, customDomain }), true], [cognitoAnswers({ cloud: true }), false], [cognitoAnswers({ customDomain }), false]] as const) {
+      const dir = join(await mkdtemp(join(tmpdir(), "agentx-export-out-")), "bundle");
+      const result = await writeExportBundle({ dir, answers, release: fakeRelease() });
+      expect(result.files.includes("policies/custom-domain.json"), JSON.stringify(answers.customDomain)).toBe(withDomain);
+      const deployer = JSON.parse(await readFile(join(dir, "policies/access-deployer.json"), "utf8")) as { Statement: Statement[] };
+      const managed = deployer.Statement.find((s) => s.Sid === "IamManagedPolicy")!;
+      expect([managed.Resource].flat()).toEqual(withDomain ? [...boundaries, policyArn] : boundaries);
+      // Never a wildcard: the one exact ARN, under the environment's path.
+      expect([managed.Resource].flat().every((arn) => !arn.includes("*"))).toBe(true);
+      // Attaching it is iam:AttachRolePolicy on the deploy role, which IamRoles grants on the two roles only.
+      expect(deployer.Statement.find((s) => s.Sid === "IamRoles")!.Action).toContain("iam:AttachRolePolicy");
+      const serviceRole = await readFile(join(dir, "policies/service-role.json"), "utf8");
+      expect(serviceRole).not.toMatch(/"(acm|route53):/u);
+      const readmeText = await readFile(join(dir, "README.md"), "utf8");
+      expect(readmeText.includes("policies/custom-domain.json"), "README").toBe(withDomain);
+      if (withDomain) {
+        const policy = JSON.parse(await readFile(join(dir, "policies/custom-domain.json"), "utf8")) as { Version: string; Statement: unknown[] };
+        expect(policy).toEqual({ Version: "2012-10-17", Statement: customDomainStatements({ env: ENV, partition: "aws", region: REGION, account: ACCOUNT, customDomain }) });
+        expect(readmeText).toContain(`agentx-${ENV}--custom-domain-deploy`);
+      }
+    }
+  });
+
   it("writes policies with concrete account and region, and the access deployer policy scoped to the environment", async () => {
     const dir = join(await mkdtemp(join(tmpdir(), "agentx-export-out-")), "bundle");
     await writeExportBundle({ dir, answers: cognitoAnswers(), release: fakeRelease() });
@@ -478,7 +505,8 @@ describe("writeExportBundle", () => {
     expect(defaultBoundary.Statement.some((s) => s.Sid === "Services")).toBe(true);
     // 0.5.17: the deploy role's own boundary, the only one with the Certificate Manager and Route 53 ceiling.
     const deployBoundary = await readJson("policies/deploy-role-boundary.json");
-    expect(JSON.stringify(deployBoundary)).toContain("route53:ChangeResourceRecordSets");
+    // 0.5.18: route53:*ResourceRecordSets is exactly ChangeResourceRecordSets and ListResourceRecordSets (deploy-role-boundary-coverage.test.ts pins it).
+    expect(JSON.stringify(deployBoundary)).toContain("route53:*ResourceRecordSets");
     expect(JSON.stringify(defaultBoundary)).not.toMatch(/"(acm|route53):/u);
 
     // --- Item 2: the access-deployer's role actions are scoped to the two real role ARNs — never
