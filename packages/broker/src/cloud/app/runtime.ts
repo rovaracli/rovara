@@ -13,7 +13,7 @@
 //   automation       `stopAutomationsWhenOff` as the `automation-stop` job (143c), when the deployment gives the chain runner's and the unattended door's dependencies.
 //   Slack inbound    the channel sink over Cloud's `ChannelWork`, fed from Cloud's Slack request queue (`inbound.slack`).
 // A deployment that gives less gets less: an area whose service is missing is refused by the root (`serviceGaps`), never half-run.
-import { createDecisionService, createMergeTrackingService, createMilestoneService, createNoticeService, createSessionService, type NoticeServiceOptions, type SessionServiceOptions } from "@rovara-code/broker";
+import { type RepositoryGrantService, createCallbackService, createDecisionService, createMergeTrackingService, createMilestoneService, createNoticeService, createSessionService, type NoticeServiceOptions, type SessionServiceOptions } from "@rovara-code/broker";
 import { channelThreadHandler, planCardPosted, threadFollows, type ChannelCompanyOf, type ChannelMemberRule } from "@rovara-code/broker/core/channel";
 import { costUsdOf, createCostLedger } from "@rovara-code/broker/core/cost";
 import type { CodeSettingsReader, MergePeople } from "@rovara-code/broker/core/merge";
@@ -185,15 +185,23 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
       return composed;
     };
 
+    // The flow holds the grants service whole (the one that issues them also exchanges them); its type names only what the flow itself uses.
+    const grantsOf = (flow: TaskFlow): Pick<RepositoryGrantService, "exchange"> => {
+      const grants = flow.deps.repositoryGrants as Partial<Pick<RepositoryGrantService, "exchange">>;
+      if (typeof grants.exchange !== "function") throw new Error("the repository grants of this runtime cannot be exchanged (give the whole RepositoryGrantService)");
+      return grants as Pick<RepositoryGrantService, "exchange">;
+    };
     const inboundOf = (flow: TaskFlow, gate: ReturnType<typeof createDecisionService>["gate"]): CoreInbound => {
+      // What a core task's worker posts to: Code's callback service over the flow's own dependencies and Cloud's repository grants (the flow's `repositoryGrants`).
+      const callbacks = createCallbackService({ flow: flow.deps, blobs: registry.require("object-storage"), grants: grantsOf(flow) });
       const slack = wiring.slack;
       const adapter = registry.get("channel", "slack") as CloudSlackChannel | undefined;
-      if (slack === undefined || adapter === undefined) return { gate, clientGate: createClientDecisionGate(gate) };
+      if (slack === undefined || adapter === undefined) return { gate, clientGate: createClientDecisionGate(gate), callbacks };
       const start: StartTask = (caller, request) => flow.start(caller, request);
       // A plain message with Understand off has no step to choose its path: it starts as Quick, and the lighter flow sizes it from the diff (178/179; P5 replaces this default).
       const work = createCloudChannelWork({ store, now: nowMs, start, gate, principalOf: slack.principalOf, ...(flowOptions.understandFirst === true ? {} : { defaultPath: "QUICK" as const }), log: wiring.log });
       const sink = createCloudSlackSink({ adapter, store, now: nowMs, work, orgOfTeam: async (teamId) => { const org = await slack.orgOfTeam(teamId); return org === companyId ? org : undefined; }, standingOf: slack.standingOf, linkWords: slack.linkWords, log: wiring.log });
-      return { slack: createSlackIntake(sink), slackSink: sink, gate, clientGate: createClientDecisionGate(gate) };
+      return { slack: createSlackIntake(sink), slackSink: sink, gate, clientGate: createClientDecisionGate(gate), callbacks };
     };
 
     return {

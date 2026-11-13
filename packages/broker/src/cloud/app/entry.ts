@@ -24,7 +24,7 @@ import type { AwsBrokerDependencies } from "../../aws/broker/definitions.js";
 import { readCodeSettings } from "../../rovara-code/code-settings.js";
 import type { CoreIntentHook } from "../../rovara-code/intent.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
-import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { onTaskEnded, type TaskEndHost } from "../../agents/task-end.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { createCloudIdentityProvider, principalOfCaller } from "../adapters/people/index.js";
@@ -39,6 +39,7 @@ import { createCloudMergePeople } from "./merge-people.js";
 import { cloudWordsForCoreRefusal } from "./refusal-words.js";
 import { cloudCoreRuntime, type CloudCoreWiring } from "./runtime.js";
 import { cloudTaskFacts } from "./task-facts.js";
+import { engineOfStoredTask } from "./engine-stamp.js";
 import { cloudSettingsFromEnvironment, type CloudCompanySettings } from "./settings-mapping.js";
 import type { CloudAdapterContext } from "./registry.js";
 
@@ -294,9 +295,41 @@ export function cloudCoreWiringFromBroker(sources: CloudCoreWiringSources): Clou
   };
 }
 
+/** The worker-callback router of the Cloud root (see `CloudCoreEntry.routeCallback`). */
+export function createCoreCallbackRouter(app: CloudApp): CloudCoreEntry["routeCallback"] {
+  return async (request) => {
+    if (!app.active) return undefined;
+    const match = CALLBACK_PATH.exec(request.path.split("?")[0] ?? "");
+    if (match === null || !CORE_CALLBACK_ACTIONS.has(match[3]!)) return undefined;
+    const [, workspaceId] = match as unknown as [string, string];
+    const registry = await app.registry().catch(() => undefined);
+    if (registry === undefined) return undefined;
+    const store = registry.require("storage");
+    const taskId = (await store.get(taskPointerKey(workspaceId)))?.["taskId"];
+    if (typeof taskId !== "string" || await engineOfStoredTask(store, taskId, "flow") !== "core") return undefined;
+    const workspace = await store.get({ pk: `WORKSPACE#${workspaceId}`, sk: "META" });
+    const company = workspace?.["orgId"] ?? workspace?.["companyId"];
+    if (typeof company !== "string") return undefined;
+    const callbacks = (await app.runtimeFor(company).catch(() => undefined))?.inbound.callbacks;
+    return callbacks === undefined ? undefined : await callbacks(request);
+  };
+}
+
 // ---- c: the Lambda entry ----
 
+/**
+ * The callbacks of a worker that Code's callback service answers (vendor services/callbacks.ts `SERVED_ACTIONS`), and the repository-credential exchange it answers first. A test holds this list
+ * to the vendored source, so a pin that adds one fails there. Every other internal route (the model proxy, fixtures, company images, the design packet) stays Cloud's: it reads the operation's
+ * rows, which the core writes in the same shape.
+ */
+export const CORE_CALLBACK_ACTIONS: ReadonlySet<string> = new Set([
+  "events", "artifacts", "result", "candidate-export", "candidate-build-source", "baseline-source", "e2e-admission", "e2e-evidence", "pull-request", "pull-request-update", "setup-agent", "repository-credentials",
+]);
+const CALLBACK_PATH = /^\/v1\/internal\/workspaces\/([0-9a-f-]{36})\/operations\/([0-9a-f-]{36})\/([a-z0-9-]+)$/u;
+
 export interface CloudCoreEntry {
+  /** A worker's callback on a core-stamped task: Code's callback service answers it. `undefined`: it is Cloud's (not a callback the core serves, or not a core task). */
+  routeCallback(request: { method: string; path: string; headers: Record<string, string | undefined>; body?: string; requestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string } | undefined>;
   readonly app: CloudApp;
   /** Install this as `dependencies.coreStart`. */
   readonly intentHook: CoreIntentHook;
@@ -340,6 +373,7 @@ export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): Clou
     app,
     intentHook: createCoreIntentHook({ app, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), origin, now: () => options.now().getTime(), log: options.log }),
     slackRequest: createCoreSlackConsumer({ app, log: options.log, orgOfTeam: async (teamId) => await slackTeamOrg(options.broker, teamId).catch(() => undefined) }),
+    routeCallback: createCoreCallbackRouter(app),
     isScheduledJob: isCoreJobEvent,
     handleScheduledJob: async (event) => await app.handleScheduledJob(event),
   };

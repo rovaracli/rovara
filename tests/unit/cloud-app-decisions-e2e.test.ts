@@ -16,7 +16,7 @@ import {
 import { BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD, cloudApprovalIssuers, createCloudApprovers, createCloudIdentityProvider } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { createCallbackService } from "@rovara-code/broker";
 import { PEOPLE_ORG, SLACK_TEAM, createPeopleWorld, type Person, type PeopleWorld } from "../support/cloud-people-world.js";
-import { cloudDeciderRole, cloudTaskFacts } from "../../packages/broker/src/cloud/app/index.js";
+import { CORE_CALLBACK_ACTIONS, cloudDeciderRole, cloudTaskFacts, createCoreCallbackRouter, engineStampKey } from "../../packages/broker/src/cloud/app/index.js";
 import { resolveSlackDecisionCaller } from "../../packages/broker/src/decisions/slack-actions.js";
 import { CloudSlackChannel } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
 import { bindChannelSpace, postApprovalCard } from "@rovara-code/broker/core/channel";
@@ -485,5 +485,59 @@ describe("switch blocker 10: Cloud's own task facts for the core's sessions", ()
     const row = r.people.db.get({ pk: `DEVTASK#${taskId}`, sk: "META" }) as Record<string, unknown>;
     r.people.db.set({ ...row, closedAt: "2026-11-13T12:00:00.000Z" });
     expect(await facts.read(PEOPLE_ORG, taskId)).toMatchObject({ closedAt: "2026-11-13T12:00:00.000Z", endedAt: "2026-11-13T12:00:00.000Z" });
+  });
+});
+
+describe("switch blocker 7 (callbacks): a worker's callback on a core-stamped task goes to Code's callback service", () => {
+  const post = (workspaceId: string, operationId: string, action: string, capability: string, body: unknown) => ({
+    method: "POST", path: `/v1/internal/workspaces/${workspaceId}/operations/${operationId}/${action}`, headers: { "x-agentx-callback-capability": capability, "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+
+  async function started() {
+    const r = await rig();
+    const owner = r.people.people.owner;
+    const runtime = await r.app.runtimeFor(PEOPLE_ORG);
+    const principal = (await createCloudIdentityProvider(r.people.routes).getPrincipal(PEOPLE_ORG, owner.developerId))!;
+    const { task } = await runtime.flow.start({ principal, client: "app" }, { requestId: randomUUID(), project: "payments", instructions: "Add a greeting.", workflow: true, workflowPath: "QUICK" });
+    for (let round = 0; round < 3; round += 1) { await runtime.flow.relayOnce(); await runtime.flow.dispatchOnce({ maxMessages: 5, waitSeconds: 0 }); await runtime.flow.sweepOnce(); }
+    const row = await r.world.store.get({ pk: `DEVTASK#${task.taskId}`, sk: "META" });
+    const workspaceId = (row as unknown as { workspaceId: string }).workspaceId;
+    const machineId = ((await r.world.store.get({ pk: `WORKSPACE#${workspaceId}`, sk: "META" }))?.machine as { machineId: string }).machineId;
+    const job = r.world.machines.delivered(machineId)[0]!;
+    return { r, job, workspaceId, taskId: task.taskId };
+  }
+
+  it("a core task's artifact callback is answered by the core: the document is stored", async () => {
+    const { r, job } = await started();
+    const route = createCoreCallbackRouter(r.app);
+    const text = planAnswer(planDocument({ title: "Greeting", why: [{ text: "Asked for.", author: "Maya" }], claims: [{ id: "1", text: "Add a greeting." }], decisions: [] }), { checks: { checks: [], none_reason: "Covered." } });
+    const answer = await route(post(job.workspaceId, job.operationId, "artifacts", job.callbackCapability, { name: "plan.md", mediaType: "text/markdown", content: text }));
+    expect(answer?.statusCode).toBe(200);
+  });
+
+  it("the core still checks the capability: a wrong one is refused by the core, not handed to Cloud", async () => {
+    const { r, job } = await started();
+    const answer = await createCoreCallbackRouter(r.app)(post(job.workspaceId, job.operationId, "events", "not-a-capability", { events: [] }));
+    expect(answer).toBeDefined();
+    expect(answer!.statusCode).toBeGreaterThanOrEqual(400);
+  });
+
+  it("a task with no core stamp, an action the core does not serve, and any other path are Cloud's (undefined)", async () => {
+    const { r, job, taskId } = await started();
+    const route = createCoreCallbackRouter(r.app);
+    expect(await route(post(job.workspaceId, job.operationId, "model-access", job.callbackCapability, {}))).toBeUndefined();
+    expect(await route({ method: "POST", path: "/v1/app/projects", headers: {} })).toBeUndefined();
+    // The same task with its stamp gone is a Cloud task.
+    await r.world.store.delete({ key: engineStampKey(taskId) });
+    expect(await route(post(job.workspaceId, job.operationId, "events", job.callbackCapability, { events: [] }))).toBeUndefined();
+  });
+
+  it("with the switch off nothing is routed, and the served actions are held to the vendored callback service's", async () => {
+    const world = createFakeWorld();
+    const off = createCloudApp({ env: {}, modules: world.modules, context: () => world.context(), runtime: () => ({}) as never });
+    expect(await createCoreCallbackRouter(off)(post(randomUUID(), randomUUID(), "events", "x", {}))).toBeUndefined();
+    const vendored = readFileSync(join(import.meta.dirname, "../../vendor/rovara-code/packages/broker/src/services/callbacks.ts"), "utf8");
+    const served = /SERVED_ACTIONS[^=]*= new Set\(\[([^\]]*)\]\)/u.exec(vendored)![1]!.split(",").map((name) => name.trim().replaceAll("\"", ""));
+    expect([...CORE_CALLBACK_ACTIONS].sort()).toEqual([...served, "repository-credentials"].sort());
   });
 });

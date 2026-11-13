@@ -677,6 +677,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // the broker through the authorizer-free /v1/dev route (D17), so it must never be resolved.
       if (DOT_SEGMENT.test(event.rawPath ?? "/")) throw agentXError("NOT_FOUND", "route not found");
       const url = new URL(request.path, "https://agentx.invalid");
+      // S3 (decision 130): a worker of a core-stamped task posts its callbacks to Code's callback service; every other request is Cloud's, as before. `coreEntry` is undefined while the switch is off.
+      if (coreEntry !== undefined && request.method === "POST" && url.pathname.startsWith("/v1/internal/workspaces/")) {
+        const core = await coreEntry.routeCallback({ method: request.method, path: request.path, headers: request.headers, ...(request.body === undefined ? {} : { body: request.body }), requestId: request.requestId });
+        if (core !== undefined) return core;
+      }
       // Shared links belong exclusively to the web shell, including stale broker route events.
       if (url.pathname.startsWith("/s/")) throw agentXError("NOT_FOUND", "route not found");
       // 0.5.7: with a custom domain, every browser page opened on the API's own address (an old Slack link, a bookmark, the GitHub App's install callback) moves to the domain:
