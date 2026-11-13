@@ -410,6 +410,27 @@ describe("a budget, a cursor and the every-minute resume", () => {
     await expect(corePersonEraseOf(ports, 0).person(FAKE_COMPANY, PERSON)).rejects.toBeInstanceOf(CorePersonEraseUnfinished);
   });
 
+  it("with no time left it does not read the index at all, even when none of its rows needs a delete (a Cloud person's erase pays nothing past the deadline)", async () => {
+    const world = createFakeWorld();
+    for (let index = 0; index < 150; index += 1) await seedRecords(world, { person: PERSON, stamp: "cloud" });
+    const queries = vi.spyOn(world.store, "query");
+    const report = await erasePersonOnCore({ ports: { store: world.store, objects: { deletePrefix: async () => true } }, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 0 });
+    expect(report).toMatchObject({ tasks: 0, complete: false });
+    expect(queries.mock.calls.filter(([request]) => request.pk === `DEVELOPER#${PERSON}`)).toEqual([]);
+  });
+
+  it("a person with only Cloud tasks, over more than one page, is complete after one run, with batched reads and no deletes", async () => {
+    const world = createFakeWorld();
+    for (let index = 0; index < 150; index += 1) await seedRecords(world, { person: PERSON, stamp: "cloud" });
+    const getMany = vi.spyOn(world.store, "getMany");
+    const deleted = vi.fn(async () => true);
+    const report = await erasePersonOnCore({ ports: { store: world.store, objects: { deletePrefix: deleted } }, companyId: FAKE_COMPANY, developerId: PERSON });
+    expect(report).toMatchObject({ tasks: 150, cloudStamped: 150, complete: true });
+    expect(deleted).not.toHaveBeenCalled();
+    // One batched read per page of stamps (no record read for a Cloud stamp): two pages, two reads, never one per row.
+    expect(getMany.mock.calls.map(([keys]) => keys.length)).toEqual([100, 50]);
+  });
+
   it("the every-minute resume finishes what a request left, from the cursor, and clears the pending item", async () => {
     const { world, ports, keys, clock } = await many();
     const first = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 250 });

@@ -166,7 +166,7 @@ export async function erasePersonOnCore(input: ErasePersonOnCoreInput): Promise<
       if (stamp === "cloud") { counts.cloudStamped += 1; return; }
       const record = recordOf.get(taskId);
       // No stamp: the core's start writes `companyId` and no `orgId` (it also writes the stamp, so this is the net under a start that did not); Cloud's records name `orgId`.
-      const isCore = stamp === "core" || (record !== undefined && record.companyId !== undefined && record.orgId === undefined);
+      const isCore = stamp === "core" || (stamp === undefined && record !== undefined && record.companyId !== undefined && record.orgId === undefined);
       if (!isCore) { counts.cloudStamped += 1; return; }
       if (record === undefined) { counts.missingRecord += 1; return; }
       if (companyOf(record) !== companyId || typeof record.ownerKey !== "string" || typeof record.workspaceId !== "string") { counts.skipped += 1; return; }
