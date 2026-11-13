@@ -8,6 +8,7 @@ import type { SessionServiceOptions } from "@rovara-code/broker";
 import { agentRunStarterOf, developerTaskRouteDependencies } from "../../aws/developer-routes/dependencies.js";
 import type { DeveloperRouteDependencies } from "../../aws/developer-routes/types.js";
 import { taskView } from "../../aws/developer-tasks/task-view.js";
+import { viewCoreTaskRows } from "./core-task-rows.js";
 import { taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 
 type Facts = Awaited<ReturnType<SessionServiceOptions["facts"]["read"]>>;
@@ -30,7 +31,7 @@ export function stepWords(stage: string, state: string): string | undefined {
 export function cloudTaskFacts(routesOf: () => DeveloperRouteDependencies): SessionServiceOptions["facts"] {
   return {
     async read(companyId, taskId) {
-      const routes = routesOf();
+      const routes = viewCoreTaskRows(routesOf());
       const task = ((await routes.documentClient.send(new GetCommand({ TableName: routes.tableName, Key: taskKey(taskId), ConsistentRead: true }))) as { Item?: DeveloperTaskRecord }).Item;
       if (task === undefined || (task.orgId ?? (task as { companyId?: string }).companyId) !== companyId) return undefined;
       const owner = tryEffectiveTaskOwner(task);

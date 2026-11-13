@@ -342,7 +342,7 @@ describe("switch blocker 4: the decider's standing is read live from Cloud's own
     const r = await rig({ liveRole: true });
     const { taskId } = await plannedTask(r);
     const task = await r.world.store.get({ pk: `DEVTASK#${taskId}`, sk: "META" });
-    r.people.db.set({ ...task, orgId: PEOPLE_ORG });
+    r.people.db.set({ ...task });
     r.people.db.set({ ...projectRevisionKey(PEOPLE_ORG, "payments", 1), entityType: "PROJECT", definition: { name: "payments", revision: 1, repositories: [{ name: "demo", url: "https://github.com/acme/demo.git", path: "repo/demo", defaultBranch: "main", credentialRef: "host-app" }], setup: [], readiness: [], orchestratorInstructions: "Delegate work." } });
     r.people.db.set({ ...orgProjectCatalogKey(PEOPLE_ORG, "payments"), entityType: "PROJECT_CATALOG", name: "payments", latestRevision: 1, firstRegisteredAt: "2026-10-01T00:00:00.000Z" });
     setup(r);
@@ -449,7 +449,7 @@ describe("switch blocker 10: Cloud's own task facts for the core's sessions", ()
     const r = await rig();
     const { taskId, owner } = await plannedTask(r);
     const task = await r.world.store.get({ pk: `DEVTASK#${taskId}`, sk: "META" });
-    r.people.db.set({ ...task, orgId: PEOPLE_ORG });
+    r.people.db.set({ ...task });
     // The workspace and its operations are the same table in production; here they are copied beside the people world's records.
     const workspaceId = (task as unknown as { workspaceId: string }).workspaceId;
     for (const row of (await r.world.store.query({ pk: `WORKSPACE#${workspaceId}` })).items) r.people.db.set(row);

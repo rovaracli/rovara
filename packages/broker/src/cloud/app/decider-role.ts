@@ -13,13 +13,14 @@ import type { DeveloperRouteDependencies } from "../../aws/developer-routes/type
 import { resolveTaskApprover } from "../../developer/task-access.js";
 import { isTaskOwner, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import type { CloudApproversDependencies } from "../adapters/people/index.js";
+import { viewCoreTaskRows } from "./core-task-rows.js";
 
 const TASK_ID = /^[0-9a-f-]{36}$/iu;
 
 export function cloudDeciderRole(routesOf: () => DeveloperRouteDependencies): CloudApproversDependencies["deciderRole"] {
   return async (request, decider): Promise<ApprovalDeciderRole> => {
     if (request.subject.type !== "task" || !TASK_ID.test(request.subject.id) || decider.orgId !== request.companyId) return "none";
-    const routes = routesOf();
+    const routes = viewCoreTaskRows(routesOf());
     // The person as they are now: a person removed, revoked or moved to another company is not found, so they stand nowhere.
     const caller = await agentRunStarterOf(routes)?.callerFor(decider.orgId, decider.developerId);
     if (caller === undefined || caller.orgId !== request.companyId) return "none";

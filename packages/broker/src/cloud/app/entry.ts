@@ -40,6 +40,7 @@ import { cloudWordsForCoreRefusal } from "./refusal-words.js";
 import { cloudCoreRuntime, type CloudCoreWiring } from "./runtime.js";
 import { cloudTaskFacts } from "./task-facts.js";
 import { taskStopEnrolled as taskStopEnrolledOf } from "./task-stop-guard.js";
+import { viewCoreTaskRows } from "./core-task-rows.js";
 import { coreInUseKey, engineOfStoredTask } from "./engine-stamp.js";
 import { cloudSettingsFromEnvironment, type CloudCompanySettings } from "./settings-mapping.js";
 import type { CloudAdapterContext } from "./registry.js";
@@ -160,7 +161,9 @@ export function createCoreSlackConsumer(deps: CoreSlackConsumerDeps): (message: 
  * (an archived project, a role that may not start work), the same two checks `startTask` makes. Acting on a task is v2's set, the task's owner and its co-owners; a project maintainer's one
  * seat (a coding plan) is the decision gate's live check at the moment of a decision. A person who cannot be found as a caller is refused.
  */
-export function cloudTaskAccess(routesOf: () => DeveloperRouteDependencies): TaskAccess {
+export function cloudTaskAccess(rawRoutesOf: () => DeveloperRouteDependencies): TaskAccess {
+  // A core task's row names its company `companyId`: the access functions are given a view in which it also reads as `orgId` (core-task-rows.ts).
+  const routesOf = (): DeveloperRouteDependencies => viewCoreTaskRows(rawRoutesOf());
   const callerOf = async (principal: Principal): Promise<DeveloperCaller | undefined> => await agentRunStarterOf(routesOf())?.callerFor(principal.companyId, principal.personId);
   return {
     async checkStart(principal, project) {

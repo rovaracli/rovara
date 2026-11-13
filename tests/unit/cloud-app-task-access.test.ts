@@ -99,6 +99,19 @@ describe("cloudTaskAccess.canAct is v2's set: the task's owner, and no one else"
     expect(await canAct(world, world.people.member)).toBe(false);
   });
 
+  it("a task row as the CORE writes it (it names `companyId`, no `orgId`) is the same task: the owner acts and the others do not, and a step is allowed", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    grant(world, world.people.member, "developer");
+    world.db.set({
+      pk: `DEVTASK#${TASK}`, sk: "META", entityType: "DEVTASK", taskId: TASK, companyId: PEOPLE_ORG, project: "payments", developerId: world.people.member.developerId, developerName: "Mia",
+      ownerKey: taskOwnerKey(world.people.member.developerId, TASK), workspaceId: "33333333-3333-4333-8333-333333333333", status: "RUNNING", createdAt: "2026-11-12T10:00:00.000Z",
+    } as never);
+    expect(await canAct(world, world.people.member)).toBe(true);
+    expect(await canAct(world, world.people.maintainer)).toBe(false);
+    expect(await cloudTaskAccess(() => world.routes).checkStep(world.db.get(`DEVTASK#${TASK}`, "META") as never)).toMatchObject({ allowed: true });
+  });
+
   it("a person who is revoked, of another company, or the Auditor may not", async () => {
     const world = createPeopleWorld();
     seedProject(world);
