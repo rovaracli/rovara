@@ -1,7 +1,7 @@
 // Plan 4 Task 9: the cancel port, through the real broker. A chain stops a step's task with Plan 3's own cancel, as the task's owner (the same path as the owner's cancel
 // button): the worker is asked to stop, the task's end comes back through the end handlers, and a repeat of the request is the same cancel.
 import { randomUUID } from "node:crypto";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
 import { startAgentRun } from "../../packages/broker/src/agents/runs.js";
 import { registerTaskEndHandler, type TaskEndEvent } from "../../packages/broker/src/agents/task-end.js";
@@ -21,7 +21,11 @@ beforeAll(async () => {
 });
 
 const unregister: Array<() => void> = [];
+// Automations ship on (owner decision 149: WEB_FEATURES lists `chains` on every install). The broker's own wiring reads that switch for the engine, and with it off the sweep stops
+// the runs it finds (decision 143c), so these tests, which sweep runs that must stay, run as the shipped install does.
+beforeEach(() => { vi.stubEnv("WEB_FEATURES", "admin,chains"); });
 afterEach(() => {
+  vi.unstubAllEnvs();
   while (unregister.length > 0) unregister.pop()!();
 });
 

@@ -128,7 +128,7 @@ async function taskDetails(deps: DeveloperTaskRouteDependencies, task: Developer
   const details: TaskDetails = {};
   const lastTask = operations.filter((operation) => operation.kind === "task").sort(byCreated).at(-1);
   if (lastTask !== undefined) {
-    const said = lastAssistantResponse((await deps.actions.eventsNewestFirst(lastTask.id, 500)).reverse());
+    const said = lastAssistantResponse((await deps.actions.eventsNewestFirst(lastTask.id, 500, task.workspaceId)).reverse());
     if (said !== undefined) details.summary = redactText(said).slice(0, DEVELOPER_TASK_SUMMARY_MAX);
     const artifacts = await deps.actions.artifacts(task.workspaceId, lastTask.id);
     details.artifacts = artifacts.map((artifact) => ({ name: redactText(artifact.name).slice(0, ARTIFACT_NAME_MAX), ...(artifact.size === undefined ? {} : { size: artifact.size }) }));
@@ -230,7 +230,7 @@ export async function taskView(
   const eventsOf = derived.current ?? derived.failedPrepare ?? startingPrepare;
   const operationEvents = eventsOf === undefined || options.events === 0
     ? []
-    : recentTaskEvents(await deps.actions.eventsNewestFirst(eventsOf.id, 200), options.events);
+    : recentTaskEvents(await deps.actions.eventsNewestFirst(eventsOf.id, 200, task.workspaceId), options.events);
   // The run's own events and the approval events of its steps (Task 21 writes them in the task's partition) are the task's too.
   // The run's events, and the spend requests' events of any agent task (Task 32), are the task's too.
   const events = (run === undefined && (task.agent === undefined || task.workflow !== undefined)) || options.events === 0
@@ -487,7 +487,7 @@ async function pauseViewOf(deps: DeveloperTaskRouteDependencies, task: Developer
   }
   if (pause.scope.kind === "planning") {
     const plan = [...operations].filter((operation) => operation.kind === "task" && operation.workflowMode === "PLAN").sort(byCreated).at(-1);
-    const said = plan === undefined ? undefined : lastAssistantResponse((await deps.actions.eventsNewestFirst(plan.id, 500)).reverse());
+    const said = plan === undefined ? undefined : lastAssistantResponse((await deps.actions.eventsNewestFirst(plan.id, 500, task.workspaceId)).reverse());
     if (said !== undefined) out.planningSoFar = Array.from(said).slice(0, 4096).join("");
   }
   return out;

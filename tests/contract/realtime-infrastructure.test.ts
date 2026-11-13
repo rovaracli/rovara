@@ -96,15 +96,20 @@ describe("who may publish and who may read", () => {
     expect(JSON.stringify(named.Resources)).not.toMatch(/appsync:(EventSubscribe|EventConnect|\*)/);
   });
 
-  it("gives the authorizer's role exactly the State table's GetItem and Query and the token key's GetPublicKey", () => {
+  it("gives the authorizer's role exactly the State table's GetItem and Query, BatchGetItem on the DEVELOPER_NAME# keys only (the owner's name read, 0.5.15.1), and the token key's GetPublicKey", () => {
     const policies = ofType(named, "AWS::IAM::Policy").filter(([, policy]) => rolesOfPolicy(policy).includes("RealtimeAuthorizerServiceRole"));
     expect(policies).toHaveLength(1);
-    // CDK adds the X-Ray write statement of every traced function; nothing else is on top of the two grants.
+    // CDK adds the X-Ray write statement of every traced function; nothing else is on top of the three grants.
     const statements = statementsOf(policies[0]![1]).filter((statement) => !actionsOf(statement).every((action) => action.startsWith("xray:")));
     const [stateId] = ofType(named, "AWS::DynamoDB::Table").find(([id]) => /^State[0-9A-F]{8}$/.test(id))!;
     const [keyId] = ofType(named, "AWS::KMS::Key").find(([, key]) => key.Properties.KeySpec === "RSA_2048")!;
     expect(statements).toEqual([
       { Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: { "Fn::GetAtt": [stateId, "Arn"] } },
+      // REALTIME-NAME-IAM (0.5.15.1): the name rows the session owner's name is read from, in one BatchGetItem, and no other key.
+      {
+        Effect: "Allow", Action: "dynamodb:BatchGetItem", Resource: { "Fn::GetAtt": [stateId, "Arn"] },
+        Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER_NAME#*"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+      },
       { Effect: "Allow", Action: "kms:GetPublicKey", Resource: { "Fn::GetAtt": [keyId, "Arn"] } },
     ]);
     // No Secrets Manager access, and no other managed policy attached to the role.

@@ -9,6 +9,7 @@
 //     that `advanceChainRun` re-drives to the same task, never a second one.
 //   - A pause is not an end: the attempt and the run are `paused` and nothing is released or retried. An end is handled once however often it is told.
 //   - Text a person is shown from a task (a failure reason) is neutralised; text that goes to another agent is redacted (`handoff.ts`).
+import { AUTOMATIONS_OFF_MESSAGE, type AutomationsSwitch } from "./automations-gate.js";
 import { createHash } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { AGENT_REPORT_MAX_BYTES, AgentXError, BranchIdSchema, CHAIN_MAX_CONCURRENT_RUNS, CHAIN_MAX_STEP_RUNS, CHAIN_START_INPUT_MAX, ChainRunIdSchema, ChainRunStartedBySchema, StepLinkSchema, StepResultSchema, STEP_LINKS_MAX, agentXError, answeredMessage, canonicalJson, chainKey, chainRunKey, chainRunsByChainKey, chainRunsByProjectKey, isBuiltinAgentId, newPrefixedId, GATE_DEFAULT_TIMEOUT_HOURS, STEP_DEFAULT_TIMEOUT_MINUTES, UNVERIFIED_END_PREFIX, openChainRunKey, projectAllows, shortenToBytes, stepSk, type AgentId, type AgentOwner, type ChainId, type ChainRunId, type ChainRunStartedBy, type ChainRunStatus, type Edge, type OrgId, type Payer, type PinnedChainDefinition, type ResultContract, type RunInput, type StepAttemptStatus, type StepResult, type WorkOrigin } from "@rovara-code/contracts";
@@ -139,7 +140,11 @@ export interface ChainRunPorts {
 }
 
 /** The chain routes' dependencies, and the run starts and the people they need. */
-export type ChainRunnerDependencies = ChainRouteDependencies & { chainRuns: ChainRunPorts };
+export type ChainRunnerDependencies = ChainRouteDependencies & {
+  chainRuns: ChainRunPorts;
+  /** Owner decision 143(c): the automations switch as the engine reads it. Absent: no check (the harnesses). Off: nothing starts on its own and the sweep stops the runs already started. */
+  automations?: AutomationsSwitch;
+};
 
 /** The ports from Plan 3's run starter: its `startAgentRun`, its member lookup and, with the model proxy, admission. */
 export function chainRunPortsFor(starter: AgentRunStarter, admission?: AdmissionDependencies): ChainRunPorts {
@@ -352,6 +357,8 @@ async function startOnce(deps: Deps, caller: AgentCaller | SystemCaller, input: 
   if (deps.chainRuns === undefined) throw agentXError("NOT_FOUND", "chain runs are not set up in this deployment");
   const system = "system" in caller ? caller : undefined;
   const person = system === undefined ? caller as AgentCaller : undefined;
+  // Owner decision 143(c): a trigger's event or schedule starts nothing while automations are off.
+  if (system !== undefined && deps.automations?.enabled() === false) throw agentXError("NOT_AVAILABLE_HERE", AUTOMATIONS_OFF_MESSAGE);
   checkInput(input, caller);
   const trigger = input.trigger === undefined ? undefined : parseTrigger(input.trigger);
   const ownerId = system === undefined ? person!.developerId : system.owner.developerId;
@@ -756,6 +763,8 @@ async function driveStart(deps: Deps, run: ChainRunRecord, attempt: StepAttemptR
   };
   let started: AgentRunResult;
   try {
+    // Owner decision 143(c): the next step of a run does not start while automations are off (the run fails with the refusal, as on the core).
+    if (deps.automations?.enabled() === false) throw agentXError("NOT_AVAILABLE_HERE", AUTOMATIONS_OFF_MESSAGE);
     started = await deps.chainRuns.startAgentRun(request);
   } catch (error) {
     if (isRetryLater(error)) throw error;

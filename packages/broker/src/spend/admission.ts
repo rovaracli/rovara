@@ -56,7 +56,7 @@ export interface Level {
 export interface RefusalNames { agentName: string; chainName?: string | undefined }
 
 /** The words each scope's refusal is made of. `agentName` names the agent whose budget it is; `chainName` the chain's. */
-function refusalFor(level: Level, names: RefusalNames): AgentXError {
+export function refusalFor(level: Level, names: RefusalNames): AgentXError {
   const { scope } = level;
   const figures = `$${dollars(level.usedUsd)} of $${dollars(level.limitUsd ?? 0)}`;
   switch (scope.kind) {

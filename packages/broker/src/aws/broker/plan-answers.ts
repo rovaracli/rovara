@@ -257,7 +257,7 @@ export async function storePlanAnswer(
       // saved (`content`, not the canonical form) and each result is attributed to a proposed check by its command. A worker the planner was not asked through (an older one) has no report to read.
       const proposed = (plan.checks?.proposed ?? []).map((check) => ({ id: check.id, command: check.command }));
       const outcome = readPlanDryRunOutcome({
-        events: proposed.length === 0 ? [] : (await operationEventsNewestFirst(dependencies, operation.id, 500)).reverse(),
+        events: proposed.length === 0 ? [] : (await operationEventsNewestFirst(dependencies, operation.id, 500, task.workspaceId)).reverse(),
         planText: content, proposed, workerFeatures: operation.planQualityAsked === true ? [PLAN_DRY_RUN_FEATURE] : [],
       });
       findings = [...planQualityFindings(plan, { kind: "plan", context: recordedPlanQualityContext(operation.planQualityContext) }), ...planDryRunFindings({ outcome, expectOnBase: plan.checks?.expectOnBase })];

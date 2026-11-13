@@ -8,9 +8,10 @@
 // What it cannot see, said plainly: keys built inside another file's functions that the entry file only calls (the session-binding items, the work-event rows, the run-limit reads).
 // A test that uses this lists those by hand and checks that the named file still mentions them.
 
-export type ItemAction = "GetItem" | "PutItem" | "UpdateItem" | "DeleteItem" | "Query" | "ConditionCheckItem";
+export type ItemAction = "GetItem" | "PutItem" | "UpdateItem" | "DeleteItem" | "Query" | "ConditionCheckItem" | "BatchGetItem";
 
-export interface KeyUse { prefix: string; action: ItemAction; line: number }
+/** `attributes`: for a GetItem, the attribute names its ProjectionExpression names (aliases resolved), or null when it names none and so reads every attribute. Undefined for the other actions. */
+export interface KeyUse { prefix: string; action: ItemAction; line: number; attributes?: string[] | null }
 export interface Unresolved { expression: string; action: ItemAction | "?"; line: number }
 
 export interface Builders {
@@ -143,8 +144,16 @@ export interface ScanOptions {
   members?: Record<string, string[]>;
   /** Commands the file sends that are not about the State table at all (S3, SQS, Secrets Manager), by class name. Any other `send(` argument fails the scan. */
   nonTableCommands?: readonly string[];
+  /** `send(...)` calls that are not a command at all (a queue wrapper's `send({ op, payload })`), by the text the argument begins with. Any other `send` argument that is not a command fails the scan. */
+  nonTableArguments?: readonly string[];
   /** Spreads inside a TransactItems list that come from another file's function, by function name, each with the reason it is covered (the test lists the grants by hand). Any other spread fails the scan. */
   allowedSpreads?: Record<string, string>;
+  /**
+   * For a Lambda whose one document client reaches several tables (the Slack ingress: State, Slack threads, turn records): the exact text of the `TableName` of the State table, and of each other
+   * table the file's calls name. A call whose TableName is in `other` is not a State-table use and is left out; a call whose TableName is in neither list fails the scan, so a new table cannot slip by.
+   * Without this option every call counts as a State-table use (the notifier, whose client reaches only the State table). With it, each Get's projected attributes are read as well (`KeyUse.attributes`).
+   */
+  tables?: { state: readonly string[]; other: readonly string[] };
 }
 
 /** The DynamoDB commands the scanner reads. The ones below it are recognised on purpose: it cannot read their keys, so a file that uses one fails the scan until the scanner is taught. */
@@ -252,12 +261,39 @@ export function scanStateKeyUses(source: string, options: ScanOptions): { uses: 
   const uses: KeyUse[] = [];
   const unresolved: Unresolved[] = [];
   let sites = 0;
-  const record = (action: ItemAction, expression: string | undefined, at: number, resolver: "key" | "pk" = "key") => {
+  /** What a call's TableName says: "state" (count it), "other" (not the State table), or the unreadable text. */
+  const tableOf = (props: Map<string, string>): string => {
+    if (options.tables === undefined) return "state";
+    const name = props.get("TableName")?.trim();
+    if (name === undefined) return "(no TableName)";
+    if (options.tables.state.includes(name)) return "state";
+    if (options.tables.other.includes(name)) return "other";
+    return name;
+  };
+  /** The attributes a Get names, from its literal ProjectionExpression and ExpressionAttributeNames; null when it has no ProjectionExpression; "unreadable" when the expression is not a literal string. */
+  const attributesOf = (props: Map<string, string>): string[] | null | "unreadable" => {
+    const projection = props.get("ProjectionExpression")?.trim();
+    if (projection === undefined) return null;
+    const literal = /^(["'`])([^"'`$]*)\1$/.exec(projection);
+    if (literal === null) return "unreadable";
+    const names = new Map<string, string>();
+    const aliases = props.get("ExpressionAttributeNames");
+    if (aliases !== undefined) for (const [alias, value] of objectEntries(aliases).props) names.set(alias.replace(/^"|"$/g, ""), value.replace(/^["']|["']$/g, ""));
+    return literal[2]!.split(",").map((part) => part.trim()).filter((part) => part !== "").map((part) => names.get(part) ?? part);
+  };
+  const record = (action: ItemAction, expression: string | undefined, at: number, resolver: "key" | "pk" = "key", props?: Map<string, string>) => {
     const line = lineOf(source, at);
     sites++;
+    if (props !== undefined) {
+      const table = tableOf(props);
+      if (table === "other") return;
+      if (table !== "state") { unresolved.push({ expression: `TableName ${table}: not in the listed State or other tables`, action, line }); return; }
+    }
     const prefixes = expression === undefined ? undefined : resolver === "pk" ? resolvePk(expression, at, 0) : resolveExpression(expression, at, 0);
     if (prefixes === undefined || prefixes.length === 0) { unresolved.push({ expression: (expression ?? "(no key)").replace(/\s+/g, " ").slice(0, 120), action, line }); return; }
-    for (const prefix of prefixes) uses.push({ prefix, action, line });
+    const attributes = action === "GetItem" && props !== undefined && options.tables !== undefined ? attributesOf(props) : undefined;
+    if (attributes === "unreadable") { unresolved.push({ expression: `ProjectionExpression ${props?.get("ProjectionExpression")?.slice(0, 80) ?? ""}: not a literal string`, action, line }); return; }
+    for (const prefix of prefixes) uses.push({ prefix, action, line, ...(attributes === undefined ? {} : { attributes }) });
   };
 
   // getItem(deps, KEY) and getItem<T>(deps, KEY)
@@ -289,6 +325,7 @@ export function scanStateKeyUses(source: string, options: ScanOptions): { uses: 
     const line = lineOf(source, match.index);
     if (command !== undefined && UNREADABLE_COMMANDS.has(command)) { sites++; unresolved.push({ expression: `${command}: recognised, but the scanner cannot read its keys: teach it before using it`, action: "?", line }); continue; }
     if (command !== undefined && (READ_COMMANDS.has(command) || options.nonTableCommands?.includes(command) === true)) continue;
+    if (command === undefined && options.nonTableArguments?.some((begin) => argument.startsWith(begin)) === true) continue;
     sites++;
     unresolved.push({ expression: `send(${argument.replace(/\s+/g, " ").slice(0, 80)}): not a recognised command`, action: "?", line });
   }
@@ -304,16 +341,17 @@ export function scanStateKeyUses(source: string, options: ScanOptions): { uses: 
     const { props } = objectEntries(argument);
     if (action === "Query") {
       const values = props.get("ExpressionAttributeValues");
-      record(action, values === undefined ? undefined : objectEntries(values).props.get(":pk"), match.index, "pk");
-    } else if (action === "PutItem") record(action, props.get("Item"), match.index);
-    else record(action, props.get("Key"), match.index);
+      record(action, values === undefined ? undefined : objectEntries(values).props.get(":pk"), match.index, "pk", props);
+    } else if (action === "PutItem") record(action, props.get("Item"), match.index, "key", props);
+    else record(action, props.get("Key"), match.index, "key", props);
   }
 
   const MEMBERS: Record<string, ItemAction> = { Update: "UpdateItem", Put: "PutItem", Delete: "DeleteItem", ConditionCheck: "ConditionCheckItem" };
   for (const match of source.matchAll(/new\s+TransactWriteCommand\s*\(/g)) {
     const open = match.index + match[0].length - 1;
     const close = closeOf(source, open);
-    const items = objectEntries(source.slice(open + 1, close).trim()).props.get("TransactItems");
+    const transaction = objectEntries(source.slice(open + 1, close).trim()).props;
+    const items = transaction.get("TransactItems");
     if (items === undefined || !items.startsWith("[")) { record("PutItem", undefined, match.index); continue; }
     for (const element of splitTop(inner(items))) {
       if (element.startsWith("...")) {
@@ -328,7 +366,7 @@ export function scanStateKeyUses(source: string, options: ScanOptions): { uses: 
         const body = props.get(member);
         if (body === undefined) continue;
         const parts = objectEntries(body).props;
-        record(action, action === "PutItem" ? parts.get("Item") : parts.get("Key"), match.index);
+        record(action, action === "PutItem" ? parts.get("Item") : parts.get("Key"), match.index, "key", options.tables === undefined ? undefined : parts);
       }
     }
   }
