@@ -6,7 +6,7 @@
 //
 // Sessions live in memory: restarting the server signs everyone out.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
 import { createAppHandler } from "../packages/web/src/server/handler.js";
@@ -24,7 +24,15 @@ const SCOPES = process.env.ROVARA_SCOPES ?? "projects:members projects:create";
 interface Access { developerId: string; displayName: string; administrator: boolean; projects: Array<{ name: string; access: string }>; notices: string[] }
 interface Session { accessToken: string; refreshToken?: string; access: Access; csrf: string; signedInAt: string }
 const pendingSignIns = new Map<string, { verifier: string; returnTo: string; at: number }>();
-const sessions = new Map<string, Session>();
+// Kept in a private file when PROTOTYPE_SESSIONS_FILE is set, so restarting the prototype keeps people signed in.
+const SESSIONS_FILE = process.env.PROTOTYPE_SESSIONS_FILE;
+const sessions = new Map<string, Session>(SESSIONS_FILE === undefined ? [] : loadSessions(SESSIONS_FILE));
+function loadSessions(file: string): Array<[string, Session]> {
+  try { return Object.entries(JSON.parse(readFileSync(file, "utf8")) as Record<string, Session>); } catch { return []; }
+}
+function saveSessions(): void {
+  if (SESSIONS_FILE !== undefined) writeFileSync(SESSIONS_FILE, JSON.stringify(Object.fromEntries(sessions)), { mode: 0o600 });
+}
 
 const app = createAppHandler({ appDirectory: join(resolve(process.cwd(), "packages/web/dist"), "app"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
 
@@ -84,6 +92,7 @@ async function finishSignIn(res: ServerResponse, url: URL): Promise<void> {
   if (access === undefined) return send(res, 502, "Rovara Code's access check refused the new sign-in.");
   const id = randomBytes(32).toString("base64url");
   sessions.set(id, { accessToken: tokens.access_token, ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }), access, csrf: randomBytes(32).toString("base64url"), signedInAt: new Date().toISOString() });
+  saveSessions();
   console.log(JSON.stringify({ event: "signed_in", developerId: access.developerId, projects: access.projects.length }));
   redirect(res, pending.returnTo, { "set-cookie": `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Lax; Path=/` });
 }
@@ -101,6 +110,27 @@ function me(session: Session) {
     developer: { id: session.access.developerId, name: session.access.displayName, orgRole: session.access.administrator ? "owner" : "member", nameChosen: true },
     org: { orgId: "rovara-production", name: "Rovara (production)", plan: "prototype" },
     identities: [{ provider: "oidc", linkedAt: session.signedInAt, lastSignInAt: session.signedInAt }],
+  };
+}
+
+/** A project's role for the person, from Rovara Code's access: an administrator maintains it, anyone else contributes. */
+function roleOf(access: string): "maintainer" | "contributor" {
+  return access === "administrator" ? "maintainer" : "contributor";
+}
+
+/**
+ * GET /v1/app/projects/{name}/overview (ProjectOverviewSchema), from what the access check says. Repositories, setup
+ * and channels need Rovara Code's project read (next step); until then they are empty.
+ */
+function overview(session: Session, name: string) {
+  const project = session.access.projects.find((entry) => entry.name === name);
+  if (project === undefined) return undefined;
+  const role = roleOf(project.access);
+  return {
+    project: { name, status: "active", repositories: [], setup: { status: "unchecked" }, channels: [] },
+    you: { role, canStartWork: true, canEditSettings: role === "maintainer", canViewSpend: false },
+    agents: [],
+    running: [],
   };
 }
 
@@ -127,6 +157,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     const session = sessionOf(req);
     if (session !== undefined && sameText(String(req.headers["x-rovara-csrf"] ?? ""), session.csrf)) {
       for (const [id, value] of sessions) if (value === session) sessions.delete(id);
+      saveSessions();
     }
     return send(res, 204, "", { "set-cookie": `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0` });
   }
@@ -143,6 +174,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return send(res, 200, nav(session));
     }
     if (url.pathname === "/v1/web/home" && method === "GET") return send(res, 200, { cards: [], total: 0 });
+    const overviewPath = /^\/v1\/web\/projects\/([^/]+)\/overview$/.exec(url.pathname);
+    if (overviewPath !== null && method === "GET") {
+      const fresh = await accessCheck(session.accessToken);
+      if (fresh === undefined) return send(res, 401, { error: { code: "AUTH_REQUIRED", message: "Your Rovara sign-in ended. Sign in again." } });
+      session.access = fresh;
+      const answer = overview(session, decodeURIComponent(overviewPath[1]!));
+      return answer === undefined ? send(res, 404, { error: { code: "PROJECT_NOT_FOUND", message: "That project doesn't exist, or you can't use it." } }) : send(res, 200, answer);
+    }
     console.log(JSON.stringify({ event: "not_in_prototype", method, path: url.pathname }));
     return notBuilt(res, url.pathname.replace("/v1/web/", "/v1/app/"));
   }
