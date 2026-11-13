@@ -75,6 +75,8 @@ export function personErasureStep(
   core?: CorePersonErase,
 ): (orgId: OrgId, developerId: string) => Promise<void> {
   return async (orgId, developerId) => {
+    // The core's walk is recorded as owed before anything that can fail or run the Lambda out of time: the every-minute run finishes it whatever happens next.
+    await core?.begin(orgId, developerId);
     if (teamRecord !== undefined) await teamRecord.erase.person(orgId, developerId);
     else await names?.erase(developerId);
     await evidence.person(orgId, developerId);

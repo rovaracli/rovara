@@ -7,6 +7,7 @@ import { deliverAttention } from "../../notifications/attention.js";
 import { sweepAttentionDms } from "../../notifications/attention-dm-sweep.js";
 import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { noteInvokedFunctionArn } from "../../test-env/lambda-identity.js";
+import { noteRequestEnd } from "../../cloud/app/erase.js";
 import { EVIDENCE_RESUME_BUDGET_MS, evidenceEraseOf, resumeCoreEvidence, resumeEvidence } from "./evidence-wiring.js";
 import { runCompanyDomainRecheck } from "../../org/company-domains/recheck.js";
 import { TaskStopReadinessError } from "../../org/task-stop-enrollment-common.js";
@@ -243,6 +244,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.chain-sweep" } | { source: "agentx.intake-poll" } | { source: "agentx.session-sweep" } | { source: "agentx.audit-drain" } | { source: "agentx.outbox-relay-backstop" }, context?: { awsRequestId?: string; invokedFunctionArn?: string; getRemainingTimeInMillis?: () => number }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Test services: the account this function runs in, from the Lambda's own ARN (the catalog's trust decision reads it; nothing else does).
     noteInvokedFunctionArn(context?.invokedFunctionArn);
+    // Convergence S0: what this event has left of the Lambda's time, for the core's evidence walk (it takes at most what is left minus a margin).
+    noteRequestEnd(context?.getRemainingTimeInMillis?.());
     // Enterprise foundations I-2: an install whose edition stamp is not its recorded edition serves nothing (every kind of event).
     await dependencies.editionGuard?.();
     // Plan 3, Task 21a-wiring (hand-off 1): the sign-in function asks whether a member may decide an approval, by a direct invoke (never through
