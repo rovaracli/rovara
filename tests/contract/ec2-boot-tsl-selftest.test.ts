@@ -126,6 +126,10 @@ function setup(): Setup {
     'esac',
   ].join("\n"));
   tool("sleep", "exit 0");
+  // The snapshot reads nft and ip6tables when they are on the PATH. A real runner (Linux CI) has both under /usr/sbin and the test is not root, so the real ones would fail and the snapshot with them: the fakes keep the test hermetic
+  // (an empty ruleset, and an ip6tables that is not usable, which the snapshot skips, as on a host without IPv6 tables).
+  tool("nft", "exit 0");
+  tool("ip6tables", "exit 1");
   return s;
 }
 
