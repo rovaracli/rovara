@@ -93,8 +93,6 @@ const ROWS: readonly Row[] = [
   // Proof and evidence (wire-proof fix round 1): the erase builds the same object prefixes (a person\'s tasks, a project\'s workspaces); it reads the principal for a key and decides nothing about who owns the task.
   ["rovara-code/evidence-erase.ts", "createEvidenceErase>personPage", "principal", ".ownerKey*2"],
   ["rovara-code/evidence-erase.ts", "evidencePrefixesOf", "principal", ".ownerKey*2"],
-  // Convergence S0 (person erase on the core): the walk reads a core task's principal (`ownerKey`) and workspace only to name the same evidence prefixes; it decides nothing about who owns the task
-  ["cloud/app/erase.ts", "erasePersonOnCore", "principal", ".ownerKey*2"],
   // Plan 6 Task 13: the object prefix of the task's own diff artifact (`ownArtifactKey`): the task's principal, never changes
   ["aws/developer-tasks/task-view.ts", "candidateChangedFiles", "principal", ".ownerKey"],
   ["aws/developer-tasks/feedback-review.ts", "submitWorkflowFeedbackDecision", "principal", ".ownerKey"],

@@ -359,7 +359,8 @@ import { deadLetterUrlOf, opsQueueUrlOf, sqsDeadLetters, sqsOpsQueue } from "../
 import { askAliasHashKey } from "../agent-sessions/ask-erased-aliases.js";
 import { callbackKeySource, erasureKeySource, handlerAfterKeys, isNamedEnvironment, legacySigningKeys, previousKeyOf, type CallbackKeyRing } from "./signing-key-secrets.js";
 import { createEvidenceErase } from "../rovara-code/evidence-erase.js";
-import { corePersonEraseOf, coreErasePortsOf } from "../cloud/app/erase.js";
+import { corePersonEraseOf } from "../cloud/app/erase.js";
+import { coreEvidencePorts } from "./broker/evidence-wiring.js";
 import { personErasureStep } from "./broker/evidence-wiring.js";
 import { nameEraserOf } from "../developer/erase-name.js";
 import { recordAuditSinkOf, removalFallbackThroughLambda, slackLinksOf } from "./broker/team-record-wiring.js";
@@ -563,7 +564,7 @@ const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, c
 const personEvidenceErase = createEvidenceErase({ s3, artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"), documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") });
 // Convergence S0: and the evidence of the tasks Rovara Code's core ran for the person (cloud/app/erase.ts). Not behind the switch: a task keeps its engine after the switch is turned off, so the walk reads each task's own
 // stamp. It uses the same State table and bucket as the line above (reads, and prefix deletes under `private/<owner>/<workspace>/evidence*/<task>/`), so it needs no grant of its own.
-const personCoreErase = corePersonEraseOf(coreErasePortsOf({ dynamo: new DynamoDBClient(awsClientConfiguration), tableName: requiredEnvironment("STATE_TABLE_NAME"), s3, bucket: requiredEnvironment("ARTIFACT_BUCKET_NAME"), log: (entry) => console.log(JSON.stringify(entry)) }));
+const personCoreErase = corePersonEraseOf(coreEvidencePorts({ s3, artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"), tableName: requiredEnvironment("STATE_TABLE_NAME") }));
 
 // Erasing a person's details (Task 15): the tombstone goes in the keys table with the audit.subject_erased event, in one transaction made
 // with the broker's own client; the export files are deleted by the export function (its role holds that grant), which the broker asks.
