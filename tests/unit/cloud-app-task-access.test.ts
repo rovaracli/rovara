@@ -5,7 +5,7 @@ import { MemoryDocumentStore } from "@rovara-code/broker/ports";
 import { projectMetaKey, orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { orgMemberKey } from "@agentx/cloud-contracts";
-import { cloudTaskAccess, stepFence } from "../../packages/broker/src/cloud/app/index.js";
+import { STEP_OWNER_CHANGED_WORDS, cloudTaskAccess, isStepFence, stepFence } from "../../packages/broker/src/cloud/app/index.js";
 import { createCloudIdentityProvider } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { PEOPLE_ORG, createPeopleWorld, type Person, type PeopleWorld } from "../support/cloud-people-world.js";
 
@@ -135,7 +135,11 @@ describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fe
     pk: `DEVTASK#${TASK}`, sk: "META", entityType: "DEVTASK", taskId: TASK, orgId: PEOPLE_ORG, project: "payments", developerId: creator.developerId, developerName: creator.name, provider: "oidc",
     ownerKey: taskOwnerKey(creator.developerId, TASK), workspaceId: "55555555-5555-4555-8555-555555555555", ...extra,
   });
-  const step = async (world: PeopleWorld, task: Record<string, unknown>) => await cloudTaskAccess(() => world.routes).checkStep(task as never);
+  // The task row is in the table as the core keeps it (the step re-reads it, M-4), unless a test stores another.
+  const step = async (world: PeopleWorld, task: Record<string, unknown>, stored: Record<string, unknown> | null = task) => {
+    if (stored !== null) world.db.set(stored);
+    return await cloudTaskAccess(() => world.routes).checkStep(task as never);
+  };
 
   it("the owner of a task in an open project may have a step, and the answer fences the owner's seat, grant, the project's revision and its archive status", async () => {
     const world = createPeopleWorld();
@@ -145,6 +149,8 @@ describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fe
     expect(verdict).toMatchObject({ allowed: true });
     const items = (verdict as unknown as { items: Array<{ key: { pk: string; sk: string }; condition: unknown }> }).items;
     expect(items).toHaveLength(5);
+    // Every item is marked as the step's fence, so a transaction that fails on one is retried, not dropped (cloud-app-step-fence.test.ts).
+    expect(items.every((item) => isStepFence(item))).toBe(true);
     // The fence holds as long as nothing changed, and refuses the step when any of the four does.
     const store = new MemoryDocumentStore();
     const copy = (key: { pk: string; sk: string }) => { const row = world.db.get(key); if (row !== undefined) void store.put({ item: row as never }); };
@@ -236,6 +242,44 @@ describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fe
     const archived = createPeopleWorld();
     seedProject(archived, { archived: true });
     expect(await step(archived, taskOf(archived, archived.people.owner))).toMatchObject({ allowed: false });
+  });
+
+  it("M-4: a task whose row names another owner than the record the step was given (a take-over between the two reads) is held back with words, never run for the wrong person; a task with no row is too", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    grant(world, world.people.member, "developer");
+    grant(world, world.people.owner, "developer");
+    const record = taskOf(world, world.people.member);
+    const taken = { ...record, currentOwner: { developerId: world.people.owner.developerId, name: "Owner", provider: "oidc", since: "2026-11-13T09:00:00.000Z" } };
+    expect(await step(world, record, taken)).toEqual({ allowed: false, message: STEP_OWNER_CHANGED_WORDS });
+    expect(await step(world, record, record)).toMatchObject({ allowed: true });
+    const lonely = createPeopleWorld();
+    seedProject(lonely);
+    grant(lonely, lonely.people.member, "developer");
+    expect(await step(lonely, taskOf(lonely, lonely.people.member), null)).toEqual({ allowed: false, message: STEP_OWNER_CHANGED_WORDS });
+  });
+
+  it("M-4: the fence is built from rows read BEFORE the checks decide: a People change that lands during the checks still trips the commit", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    grant(world, world.people.member, "developer");
+    world.db.set({ pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 3 });
+    world.db.set(taskOf(world, world.people.member));
+    // A take-over lands the moment the checks first look at the project's own rows (after the fence's rows were read).
+    const real = world.routes.documentClient;
+    let landed = false;
+    const documentClient = { ...real, send: async (command: { input?: { Key?: { pk?: string; sk?: string } } }) => {
+      if (!landed && command.input?.Key?.pk?.includes("#PROJECT#") === true && command.input.Key.sk === "META") { landed = true; world.db.set({ pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 4 }); }
+      return await (real).send(command);
+    } };
+    const verdict = await cloudTaskAccess(() => ({ ...world.routes, documentClient })).checkStep(taskOf(world, world.people.member));
+    expect(verdict).toMatchObject({ allowed: true });
+    expect(landed, "the take-over landed during the checks").toBe(true);
+    const people = (verdict as unknown as { items: Array<{ key: { pk: string; sk: string }; condition: unknown }> }).items.at(-1)!;
+    const store = new MemoryDocumentStore();
+    await store.put({ item: { pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 4 } });
+    // The fence holds the revision read first (3): the store now holds 4, so the step does not commit.
+    expect((await store.transact([{ kind: "check", key: people.key, condition: people.condition as never }])).applied).toBe(false);
   });
 
   it("after a take-over the step is judged on the taker, not the creator", async () => {

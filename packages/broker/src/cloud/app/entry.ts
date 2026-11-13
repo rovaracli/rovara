@@ -26,7 +26,7 @@ import type { CoreIntentHook } from "../../rovara-code/intent.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 import { taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { onTaskEnded, type TaskEndHost } from "../../agents/task-end.js";
-import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { createCloudIdentityProvider, principalOfCaller } from "../adapters/people/index.js";
 import { createCloudApp, type CloudApp } from "./app.js";
 import { CORE_SLACK_ACTION, type CoreSlackRequestEvent } from "./slack-ingress-hook.js";
@@ -39,9 +39,11 @@ import { createCloudMergePeople } from "./merge-people.js";
 import { cloudWordsForCoreRefusal } from "./refusal-words.js";
 import { cloudCoreRuntime, type CloudCoreWiring } from "./runtime.js";
 import { cloudTaskFacts } from "./task-facts.js";
-import { taskStopEnrolled as taskStopEnrolledOf } from "./task-stop-guard.js";
+import { readTaskStop, type TaskStopRead } from "./task-stop-guard.js";
+import { withStartFence } from "./core-runtime.js";
+import { markStepFence } from "./step-fence.js";
 import { viewCoreTaskRows } from "./core-task-rows.js";
-import { coreInUseKey, engineOfStoredTask } from "./engine-stamp.js";
+import { CORE_IN_USE_PARTITION, engineOfStoredTask } from "./engine-stamp.js";
 import { createCoreTaskRoutes } from "./task-routes.js";
 import type { CoreTaskRoutes } from "../../rovara-code/task-routes.js";
 import { cloudSettingsFromEnvironment, type CloudCompanySettings } from "./settings-mapping.js";
@@ -69,8 +71,8 @@ export interface CoreIntentHookDeps {
   origin: string;
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
-  /** Whether the company is enrolled in per-task spending stops (`taskStopEnrolled`): its new tasks stay on Cloud's path, which captures the stop. Absent: nobody is. */
-  taskStopEnrolled?: (orgId: OrgId) => Promise<boolean>;
+  /** What the company's spending-stop rows say (`readTaskStop`): enrolled, its new tasks stay on Cloud's path (which captures the stop); not enrolled, the core start commits only while the rows are as read (`fence`). Required: nothing is assumed about a company's money. A read that fails keeps the start on Cloud's path. */
+  taskStop: (orgId: OrgId) => Promise<TaskStopRead>;
 }
 
 export function createCoreIntentHook(deps: CoreIntentHookDeps): CoreIntentHook {
@@ -79,7 +81,8 @@ export function createCoreIntentHook(deps: CoreIntentHookDeps): CoreIntentHook {
       if (!deps.app.active || !coreIntentApplies(request)) return undefined;
       if (deps.app.engineForNewTask(caller.orgId) !== "core") return undefined;
       // Money: a company enrolled in per-task stops keeps Cloud's start (which captures the stop) until the core can carry it (task-stop-guard.ts).
-      if (await deps.taskStopEnrolled?.(caller.orgId) === true) { deps.log({ event: "core_entry.task_stop_enrolled", component: "cloud_core" }); return undefined; }
+      const stop = await deps.taskStop(caller.orgId).catch(() => undefined);
+      if (stop === undefined || stop.enrolled) { deps.log({ event: "core_entry.task_stop_enrolled", component: "cloud_core", unread: stop === undefined }); return undefined; }
       let runtime;
       try {
         runtime = await deps.app.runtimeFor(caller.orgId);
@@ -89,10 +92,10 @@ export function createCoreIntentHook(deps: CoreIntentHookDeps): CoreIntentHook {
         return undefined;
       }
       const principal = await deps.principalOf(caller);
-      const started = await runtime.flow.start({ principal, client: request.source }, {
+      const started = await withStartFence(stop.fence, async () => await runtime.flow.start({ principal, client: request.source }, {
         requestId: request.requestId, project: request.project, instructions: request.input.text, workflow: true, client: request.source,
         ...(request.path === undefined ? {} : { workflowPath: request.path }),
-      });
+      }));
       const taskId = started.task.taskId;
       const sessionId = SessionIdSchema.parse(taskSessionId(taskId));
       // A task started from a Slack thread is told there (the plan card, the milestones): the thread is remembered with the task, as the channel work does for a message.
@@ -127,8 +130,8 @@ export interface CoreSlackConsumerDeps {
   /** `OrgStore.orgForSlackTeam`. */
   orgOfTeam: (teamId: string) => Promise<OrgId | undefined>;
   log: (entry: Record<string, unknown>) => void;
-  /** As the start hook's: a company enrolled in per-task stops is Cloud's. */
-  taskStopEnrolled?: (orgId: OrgId) => Promise<boolean>;
+  /** As the start hook's. */
+  taskStop: (orgId: OrgId) => Promise<TaskStopRead>;
 }
 
 export function createCoreSlackConsumer(deps: CoreSlackConsumerDeps): (message: SlackRequestMessage) => Promise<CoreSlackAnswer> {
@@ -136,7 +139,8 @@ export function createCoreSlackConsumer(deps: CoreSlackConsumerDeps): (message: 
     if (!deps.app.active) return { handled: false };
     const orgId = await deps.orgOfTeam(message.thread.teamId);
     if (orgId === undefined || !coreAreaOn(deps.app.flags, "flow", orgId)) return { handled: false };
-    if (await deps.taskStopEnrolled?.(orgId) === true) return { handled: false };
+    const stop = await deps.taskStop(orgId).catch(() => undefined);
+    if (stop === undefined || stop.enrolled) return { handled: false };
     let intake: ((request: SlackRequestMessage) => Promise<void>) | undefined;
     try {
       intake = (await deps.app.runtimeFor(orgId)).inbound.slack;
@@ -146,7 +150,7 @@ export function createCoreSlackConsumer(deps: CoreSlackConsumerDeps): (message: 
     }
     if (intake === undefined) return { handled: false };
     try {
-      await intake(message);
+      await withStartFence(stop.fence, async () => await intake(message));
       return { handled: true };
     } catch (error) {
       if (!isCoreRefusal(error)) throw error;
@@ -157,6 +161,9 @@ export function createCoreSlackConsumer(deps: CoreSlackConsumerDeps): (message: 
 }
 
 // ---- f: Cloud's rules for the core, from the broker's dependencies ----
+
+/** What a step is told when the owner it was given is not the owner of the task now (a take-over between the two reads): the step is held back, not dropped (it is asked again). */
+export const STEP_OWNER_CHANGED_WORDS = "this task changed owner just now; its next step will be tried again";
 
 const slackBindingKey = (orgId: OrgId, teamId: string, channelId: string): { pk: string; sk: string } => ({ pk: `ORG#${orgId}#SLACK_BINDING#${teamId}`, sk: `CHANNEL#${channelId}` });
 
@@ -241,19 +248,22 @@ export function cloudTaskAccess(rawRoutesOf: () => DeveloperRouteDependencies): 
       const caller = await agentRunStarterOf(routes)?.callerFor(orgId, owner.developerId);
       if (caller === undefined) return { allowed: false, message: "the person this task runs for is no longer a member of the company" };
       try {
+        const read = async (key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> => ((await routes.documentClient.send(new GetCommand({ TableName: routes.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
+        // What the fence holds is read BEFORE the checks that decide, never after them: the commit then refuses anything that changed since the oldest of these reads, so no change can fall between a check
+        // and the read that fences it. The People sidecar goes first and the task row second: a take-over writes both, so a task whose owner this check was given from an older row than the sidecar
+        // read here shows a different owner in the row read next, and the step is held back (told to try again), never run for the wrong person.
+        const people = await read({ pk: `DEVTASK#${record.taskId}`, sk: "PEOPLE" });
+        const row = await read({ pk: `DEVTASK#${record.taskId}`, sk: "META" });
+        if (row === undefined || tryEffectiveTaskOwner(row as unknown as DeveloperTaskRecord)?.developerId !== owner.developerId) return { allowed: false, message: STEP_OWNER_CHANGED_WORDS };
+        const grant = await read(projectMemberKey(orgId, owner.developerId, record.project));
+        const catalog = await read(orgProjectCatalogKey(orgId, record.project));
         const access = await checkProjectAccess(routes, caller, record.project, undefined, undefined);
         await requireNewWorkAllowed(developerTaskRouteDependencies(routes, caller), orgId, record.project, access.role, "task");
-        const read = async (key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> => ((await routes.documentClient.send(new GetCommand({ TableName: routes.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
-        const channelRows = access.access === "channel" && routes.developer.slackTeamId !== undefined
-          ? await Promise.all(access.channelIds.map(async (channelId) => ({ key: slackBindingKey(orgId, routes.developer.slackTeamId!, channelId) })))
-          : [];
+        // The channel bindings that granted access are named by the check's own answer (the keys come from what it required), each held to the project.
+        const channelKeys = access.access === "channel" && routes.developer.slackTeamId !== undefined ? access.channelIds.map((channelId) => slackBindingKey(orgId, routes.developer.slackTeamId!, channelId)) : [];
         return {
           allowed: true,
-          items: stepFence({
-            orgId, project: record.project, taskId: record.taskId, developerId: owner.developerId, orgRole: caller.orgRole, revision: access.revision,
-            catalog: await read(orgProjectCatalogKey(orgId, record.project)), grant: await read(projectMemberKey(orgId, owner.developerId, record.project)),
-            people: await read({ pk: `DEVTASK#${record.taskId}`, sk: "PEOPLE" }), channelKeys: channelRows.map((row) => row.key),
-          }),
+          items: markStepFence(stepFence({ orgId, project: record.project, taskId: record.taskId, developerId: owner.developerId, orgRole: caller.orgRole, revision: access.revision, catalog, grant, people, channelKeys })),
         };
       } catch (error) {
         if (error instanceof AgentXError) return { allowed: false, message: error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message };
@@ -422,18 +432,27 @@ export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): Clou
       throw error;
     }
   };
-  const app = createCloudApp({ env: options.env, nowMs: () => options.now().getTime(), modules, serveStamped: true, context, runtime: cloudCoreRuntime(cloudCoreWiringFromBroker(options)) });
-  let inUseAt = 0;
-  let inUse = false;
-  const coreInUse = async (): Promise<boolean> => {
-    if (inUse) return true;
-    if (options.now().getTime() - inUseAt < 30_000) return false;
-    inUseAt = options.now().getTime();
-    const found = (await options.broker.documentClient.send(new GetCommand({ TableName: options.broker.tableName, Key: coreInUseKey(options.installCompanyId), ConsistentRead: true }))).Item;
-    inUse = found !== undefined;
-    return inUse;
+  // The companies that hold core tasks: every in-use mark, read from their one partition (cached for 30 s; a company is added the moment its first task starts, and never removed).
+  let marked: readonly string[] = [];
+  let markedAt = -Infinity;
+  const markedCompanies = async (): Promise<readonly string[]> => {
+    if (options.now().getTime() - markedAt < 30_000) return marked;
+    markedAt = options.now().getTime();
+    const found = new Set(marked);
+    let start: Record<string, unknown> | undefined;
+    do {
+      const page = await options.broker.documentClient.send(new QueryCommand({
+        TableName: options.broker.tableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": CORE_IN_USE_PARTITION }, ConsistentRead: true, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+      })) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+      for (const item of page.Items ?? []) if (typeof item["orgId"] === "string") found.add(item["orgId"]);
+      start = page.LastEvaluatedKey;
+    } while (start !== undefined);
+    marked = [...found];
+    return marked;
   };
-  const taskStopEnrolled = async (orgId: OrgId): Promise<boolean> => await taskStopEnrolledOf({ documentClient: options.broker.documentClient, tableName: options.broker.tableName }, orgId);
+  const app = createCloudApp({ env: options.env, nowMs: () => options.now().getTime(), modules, serveStamped: true, context, servedCompanies: markedCompanies, runtime: cloudCoreRuntime(cloudCoreWiringFromBroker(options)) });
+  const coreInUse = async (): Promise<boolean> => (await markedCompanies()).length > 0;
+  const taskStop = async (orgId: OrgId): Promise<TaskStopRead> => await readTaskStop({ documentClient: options.broker.documentClient, tableName: options.broker.tableName }, orgId);
   const routesOf = (): DeveloperRouteDependencies => {
     const routes = options.routes();
     if (routes === undefined) throw new Error("the developer API is not configured");
@@ -443,9 +462,9 @@ export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): Clou
   const origin = options.inputs.origin ?? new URL(options.broker.developer?.issuer ?? "https://localhost").origin;
   return {
     app,
-    intentHook: createCoreIntentHook({ app, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), origin, now: () => options.now().getTime(), log: options.log, taskStopEnrolled }),
+    intentHook: createCoreIntentHook({ app, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), origin, now: () => options.now().getTime(), log: options.log, taskStop }),
     taskRoutes: createCoreTaskRoutes({ app, read: readItem, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), log: options.log }),
-    slackRequest: createCoreSlackConsumer({ app, log: options.log, taskStopEnrolled, orgOfTeam: async (teamId) => await slackTeamOrg(options.broker, teamId).catch(() => undefined) }),
+    slackRequest: createCoreSlackConsumer({ app, log: options.log, taskStop, orgOfTeam: async (teamId) => await slackTeamOrg(options.broker, teamId).catch(() => undefined) }),
     routeCallback: createCoreCallbackRouter(app, readItem),
     isScheduledJob: isCoreJobEvent,
     handleScheduledJob: async (event) => (!app.active && !(await coreInUse()) ? (isCoreJobEvent(event) ? { skipped: "off" } : undefined) : await app.handleScheduledJob(event)),

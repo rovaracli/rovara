@@ -2,18 +2,20 @@
 // no hook is installed and every start and Slack request is what it was.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { AgentXError, SessionIdSchema, agentXError, type CodeIntentRequest, type JsonValue, type ProjectDefinition } from "@rovara-code/contracts";
+import { AgentXError, SessionIdSchema, agentXError, type Admission, type CodeIntentRequest, type DocumentStore, type JsonValue, type ProjectDefinition } from "@rovara-code/contracts";
 import { bindChannelSpace, readTaskThread } from "@rovara-code/broker/core/channel";
 import { taskSessionId } from "@rovara-code/broker/core/sessions";
 import { createOwnerTaskAccess } from "@rovara-code/broker/core/task-flow";
 import { fixedCodeSettings, soleOwnerPeople } from "@rovara-code/broker/core/merge";
 import { localOwnerPrincipal } from "@rovara-code/broker/ports";
-import { orgProjectCatalogKey, projectRevisionKey } from "@rovara-code/contracts";
-import { BROKER_SETTINGS, SLACK_NOT_A_MEMBER_NOTICE, type DeveloperTaskView } from "@agentx/cloud-contracts";
+import { orgProjectCatalogKey, projectRevisionKey, when } from "@rovara-code/contracts";
+import { createCloudAdmission } from "../../packages/broker/src/cloud-adapters/money/index.js";
+import { FakeDynamoDb } from "../support/fake-dynamodb.js";
+import { BROKER_SETTINGS, SLACK_NOT_A_MEMBER_NOTICE, projectAiKey, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { DEFAULT_CODE_SETTINGS, codeSettingsKey } from "@rovara-code/contracts";
 import {
-  CORE_SLACK_ACTION, cloudAdapter, cloudCoreRuntime, cloudSettingsFromEnvironment, coreIntentApplies, coreSlackFromIngress, cloudCoreWiringFromBroker, createCloudApp, createCloudCoreEntry, createCoreIntentHook,
-  createCoreSlackConsumer, isCoreSlackRequestEvent, type CloudApp, type CloudCoreWiring,
+  CORE_ADMISSION_ACTIONS, CORE_SLACK_ACTION, cloudAdapter, cloudAdmissionLevels, cloudLevelSources, cloudRefusalWords, taskPayerKey, cloudCoreRuntime, cloudSettingsFromEnvironment, coreIntentApplies, coreSlackFromIngress, cloudCoreWiringFromBroker, createCloudApp, createCloudCoreEntry, createCoreIntentHook,
+  createCoreSlackConsumer, isCoreSlackRequestEvent, type CloudApp, type CloudCoreWiring, type TaskStopRead,
 } from "../../packages/broker/src/cloud/app/index.js";
 import { startCodeIntent } from "../../packages/broker/src/rovara-code/intent.js";
 import { CloudSlackChannel } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
@@ -37,8 +39,8 @@ async function registerProject(world: FakeWorld): Promise<void> {
 
 interface Rig { world: FakeWorld; app: CloudApp; logs: Array<Record<string, unknown>> }
 
-function rig(options: { env?: NodeJS.ProcessEnv; without?: readonly string[]; member?: boolean; orgOfTeam?: (teamId: string) => Promise<string | undefined>; understand?: boolean } = {}): Rig {
-  const world = createFakeWorld({ ...(options.without === undefined ? {} : { without: options.without }) });
+function rig(options: { env?: NodeJS.ProcessEnv; without?: readonly string[]; member?: boolean; orgOfTeam?: (teamId: string) => Promise<string | undefined>; understand?: boolean; admission?: Admission } = {}): Rig {
+  const world = createFakeWorld({ ...(options.without === undefined ? {} : { without: options.without }), ...(options.admission === undefined ? {} : { admission: options.admission }) });
   const logs: Rig["logs"] = [];
   const slack = cloudAdapter({ point: "channel", name: "slack", lane: "A8", create: () => new CloudSlackChannel({ projects: ["payments", "ghost"], botToken: async () => "unused", serves: async () => true, fetch: (async () => new Response(JSON.stringify({ ok: true, ts: "1695500000.000009", channel: SPACE }))) }) });
   const wiring: CloudCoreWiring = {
@@ -55,7 +57,8 @@ function rig(options: { env?: NodeJS.ProcessEnv; without?: readonly string[]; me
   return { world, app, logs };
 }
 
-const hookOf = (r: Rig, log: Rig["logs"] = r.logs, taskStopEnrolled?: () => Promise<boolean>) => createCoreIntentHook({ app: r.app, ...(taskStopEnrolled === undefined ? {} : { taskStopEnrolled }), principalOf: async (caller) => localOwnerPrincipal({ companyId: caller.orgId }), origin: "https://rovara.example.test", now: () => r.world.clock.now, log: (entry) => log.push(entry) });
+const notEnrolled = async (): Promise<TaskStopRead> => ({ enrolled: false, fence: [] });
+const hookOf = (r: Rig, log: Rig["logs"] = r.logs, taskStop: () => Promise<TaskStopRead> = notEnrolled) => createCoreIntentHook({ app: r.app, taskStop, principalOf: async (caller) => localOwnerPrincipal({ companyId: caller.orgId }), origin: "https://rovara.example.test", now: () => r.world.clock.now, log: (entry) => log.push(entry) });
 const caller = { orgId: FAKE_COMPANY, developerId: MAYA } as never;
 const ownedTask = async (_caller: unknown, taskId: string) => ({ taskId }) as unknown as DeveloperTaskView;
 const tasksOf = async (r: Rig) => (await (await r.app.runtimeFor(FAKE_COMPANY)).flow.list({ principal: localOwnerPrincipal({ companyId: FAKE_COMPANY }), client: "test" })).tasks.length;
@@ -99,13 +102,60 @@ describe("S3-4 a: the start hook", () => {
     expect(thread).toEqual({ conversation: { channel: "slack", tenant: TENANT, space: SPACE, thread: THREAD }, personId: MAYA });
   });
 
+  it("M-2: the start's admission records the payer in the start's own commit (a person-paid task here), and holds the project's AI settings as read", async () => {
+    const holder: { store?: DocumentStore } = {};
+    const admissionOver = (client: unknown): Admission => {
+      const sources = cloudLevelSources({ documentClient: client, tableName: "state", now: () => 0 } as never);
+      return createCloudAdmission({ get store() { return holder.store!; }, levels: cloudAdmissionLevels(sources), capture: sources.capture!, actions: CORE_ADMISSION_ACTIONS, words: cloudRefusalWords });
+    };
+    const r = rig({ admission: admissionOver(new FakeDynamoDb()) });
+    holder.store = r.world.store;
+    await registerProject(r.world);
+    const started = await hookOf(r).start({ caller, request: intent(), ownedTask });
+    const taskId = (started as { task: { taskId: string } }).task.taskId;
+    expect(await r.world.store.get(taskPayerKey(taskId))).toMatchObject({ entityType: "TASK_PAYER", orgId: FAKE_COMPANY, payer: { kind: "member", developerId: expect.any(String) as string } });
+    // A project switched to paying between the capture's read and the commit stops the start, and nothing is recorded.
+    const dynamo = new FakeDynamoDb();
+    const racing = { send: async (command: { input?: { Key?: { pk?: string } } }) => {
+      const found = await (dynamo as unknown as { send(c: unknown): Promise<unknown> }).send(command);
+      if (command.input?.Key?.pk?.includes("PROJECT_AI") === true || JSON.stringify(command.input?.Key).includes("AI")) await racy.world.store.put({ item: { ...projectAiKey(FAKE_COMPANY, "payments"), entityType: "PROJECT_AI", projectPays: true, revision: 1 } });
+      return found;
+    } };
+    const racy = rig({ admission: admissionOver(racing) });
+    holder.store = racy.world.store;
+    await registerProject(racy.world);
+    await expect(hookOf(racy).start({ caller, request: intent(), ownedTask })).rejects.toBeDefined();
+    expect(await tasksOf(racy)).toBe(0);
+  });
+
+  it("L-3: the spending-stop read is required, and a read that fails keeps the start on Cloud's path (nothing is assumed about a company's money)", async () => {
+    const r = rig();
+    await registerProject(r.world);
+    expect(await hookOf(r, r.logs, async () => { throw new Error("table down"); }).start({ caller, request: intent(), ownedTask })).toBeUndefined();
+    expect(await tasksOf(r)).toBe(0);
+  });
+
+  it("M-3: the core start is fenced on the spending-stop rows as they were read: a policy that changed since the read stops the start, and nothing is written", async () => {
+    const r = rig();
+    await registerProject(r.world);
+    const policyKey = { pk: "SETTINGS#probe", sk: "FENCE" };
+    // Read as absent; a policy then appears before the start commits.
+    const read = async (): Promise<TaskStopRead> => { await r.world.store.put({ item: { ...policyKey, entityType: "PROBE" } }); return { enrolled: false, fence: [{ kind: "check", key: policyKey, condition: when.absent() }] }; };
+    await expect(hookOf(r, r.logs, read).start({ caller, request: intent(), ownedTask })).rejects.toBeDefined();
+    expect(await tasksOf(r)).toBe(0);
+    // The same fence over a row that is as it was read: the start commits.
+    const same = async (): Promise<TaskStopRead> => ({ enrolled: false, fence: [{ kind: "check", key: { pk: "SETTINGS#other", sk: "FENCE" }, condition: when.absent() }] });
+    expect(await hookOf(r, r.logs, same).start({ caller, request: intent(), ownedTask })).toBeDefined();
+    expect(await tasksOf(r)).toBe(1);
+  });
+
   it("a company enrolled in per-task spending stops keeps Cloud's start (which captures the stop): nothing is started on the core, and a company that is not enrolled starts as before", async () => {
     const r = rig();
     await registerProject(r.world);
-    expect(await hookOf(r, r.logs, async () => true).start({ caller, request: intent(), ownedTask })).toBeUndefined();
+    expect(await hookOf(r, r.logs, async () => ({ enrolled: true, fence: [] })).start({ caller, request: intent(), ownedTask })).toBeUndefined();
     expect(await tasksOf(r)).toBe(0);
     expect(r.logs.some((entry) => entry["event"] === "core_entry.task_stop_enrolled")).toBe(true);
-    expect(await hookOf(r, r.logs, async () => false).start({ caller, request: intent(), ownedTask })).toBeDefined();
+    expect(await hookOf(r, r.logs, notEnrolled).start({ caller, request: intent(), ownedTask })).toBeDefined();
     expect(await tasksOf(r)).toBe(1);
   });
 
@@ -153,7 +203,7 @@ describe("S3-4 b: the Slack consumer", () => {
     const r = rig(options);
     await registerProject(r.world);
     await bindChannelSpace({ store: r.world.store, orgId: FAKE_COMPANY, now: () => r.world.clock.now }, { channel: "slack", tenant: TENANT, space: SPACE }, project);
-    return { r, consume: createCoreSlackConsumer({ app: r.app, orgOfTeam: async (team) => (team === TENANT ? FAKE_COMPANY : undefined), log: (entry) => r.logs.push(entry) }) };
+    return { r, consume: createCoreSlackConsumer({ taskStop: notEnrolled, app: r.app, orgOfTeam: async (team) => (team === TENANT ? FAKE_COMPANY : undefined), log: (entry) => r.logs.push(entry) }) };
   }
 
   it("takes a plain request of a company on the core: handled, and a task started", async () => {
@@ -168,9 +218,20 @@ describe("S3-4 b: the Slack consumer", () => {
     expect(await tasksOf(r)).toBe(1);
   });
 
+  it("L-3: a spending-stop read that fails keeps a plain request on Cloud's path (handled false), and it is started under the read's fence", async () => {
+    const { r } = await consumer();
+    const unread = createCoreSlackConsumer({ app: r.app, taskStop: async () => { throw new Error("table down"); }, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined });
+    expect(await unread(message())).toEqual({ handled: false });
+    expect(await tasksOf(r)).toBe(0);
+    const fenced = createCoreSlackConsumer({ app: r.app, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined, taskStop: async () => ({ enrolled: false, fence: [{ kind: "check", key: { pk: "SETTINGS#probe", sk: "FENCE" }, condition: when.eq("revision", 1) }] }) });
+    // A tripped fence is a refusal told in the thread (try again), never a task on stale money rules.
+    expect(await fenced(message())).toMatchObject({ handled: true, reply: expect.any(String) as string });
+    expect(await tasksOf(r)).toBe(0);
+  });
+
   it("an enrolled company's plain request is Cloud's (handled false): no task is started on the core", async () => {
     const { r } = await consumer();
-    const enrolled = createCoreSlackConsumer({ app: r.app, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined, taskStopEnrolled: async () => true });
+    const enrolled = createCoreSlackConsumer({ app: r.app, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined, taskStop: async () => ({ enrolled: true, fence: [] }) });
     expect(await enrolled(message())).toEqual({ handled: false });
     expect(await tasksOf(r)).toBe(0);
   });
@@ -183,16 +244,16 @@ describe("S3-4 b: the Slack consumer", () => {
 
   it("a fault that is not a refusal still fails the call, so a transient fault is retried", async () => {
     const r = rig();
-    const consume = createCoreSlackConsumer({ app: { ...r.app, active: true, flags: r.app.flags, runtimeFor: async () => ({ inbound: { slack: async () => { throw new Error("boom"); } } }) } as never, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined });
+    const consume = createCoreSlackConsumer({ taskStop: notEnrolled, app: { ...r.app, active: true, flags: r.app.flags, runtimeFor: async () => ({ inbound: { slack: async () => { throw new Error("boom"); } } }) } as never, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined });
     await expect(consume(message())).rejects.toThrow("boom");
-    const unavailable = createCoreSlackConsumer({ app: { ...r.app, active: true, flags: r.app.flags, runtimeFor: async () => ({ inbound: { slack: async () => { throw agentXError("RUNTIME_UNAVAILABLE", "down"); } } }) } as never, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined });
+    const unavailable = createCoreSlackConsumer({ taskStop: notEnrolled, app: { ...r.app, active: true, flags: r.app.flags, runtimeFor: async () => ({ inbound: { slack: async () => { throw agentXError("RUNTIME_UNAVAILABLE", "down"); } } }) } as never, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined });
     await expect(unavailable(message())).rejects.toBeInstanceOf(AgentXError);
   });
 
   it("is Cloud's (handled false) with the switch off, for a team no company is bound to, for another company's team, and when the root cannot be built", async () => {
     expect(await (await consumer({ env: {} })).consume(message())).toEqual({ handled: false });
     const unbound = await consumer();
-    expect(await createCoreSlackConsumer({ app: unbound.r.app, orgOfTeam: async () => undefined, log: () => undefined })(message())).toEqual({ handled: false });
+    expect(await createCoreSlackConsumer({ taskStop: notEnrolled, app: unbound.r.app, orgOfTeam: async () => undefined, log: () => undefined })(message())).toEqual({ handled: false });
     const elsewhere = await consumer({ env: { CLOUD_CORE_ENGINE: `on:${OTHER_COMPANY}` } });
     expect(await elsewhere.consume(message())).toEqual({ handled: false });
     expect(await tasksOf(elsewhere.r).catch(() => 0)).toBe(0);

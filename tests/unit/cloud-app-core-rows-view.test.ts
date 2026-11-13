@@ -57,6 +57,6 @@ describe("the root's own rows keep what Cloud keeps", () => {
       expect(retentionFor(kind), kind).toBe("strip");
       expect(INDEX_EXPIRY_ATTRIBUTE in withCloudRetention({ pk: "p", sk: "s", entityType: kind, [INDEX_EXPIRY_ATTRIBUTE]: 1 }), kind).toBe(false);
     }
-    expect(coreInUseKey("org_aaaaaaaaaaaaaaaaaaaa").sk).toBe("MARK");
+    expect(coreInUseKey("org_aaaaaaaaaaaaaaaaaaaa")).toEqual({ pk: "CORE_ENGINE_IN_USE", sk: "ORG#org_aaaaaaaaaaaaaaaaaaaa" });
   });
 });

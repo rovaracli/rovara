@@ -130,7 +130,7 @@ export function cloudAdapterModules(deps: CloudModuleDeps): CloudAdapterModule[]
     } })]),
     cloudAdapter({
       point: "admission", name: "cloud", lane: "A5",
-      create: (_context, registry) => createCloudAdmission({ store: registry.require("storage"), levels: cloudAdmissionLevels(deps.levels), actions: CORE_ADMISSION_ACTIONS, words: cloudRefusalWords }),
+      create: (_context, registry) => createCloudAdmission({ store: registry.require("storage"), levels: cloudAdmissionLevels(deps.levels), ...(deps.levels.capture === undefined ? {} : { capture: deps.levels.capture }), actions: CORE_ADMISSION_ACTIONS, words: cloudRefusalWords }),
     }),
     cloudAdapter({ point: "metering", name: "cloud", lane: "A5", create: (_context, registry) => createCloudMetering({ store: registry.require("storage"), prices: deps.prices }) }),
     cloudAdapter({ point: "identity", name: "cloud", lane: "A6", create: () => createCloudIdentityProvider(deps.people) }),

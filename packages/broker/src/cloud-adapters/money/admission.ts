@@ -62,6 +62,11 @@ export interface CloudAdmissionOptions {
   now?: () => number;
   /** The scopes and limits of a request in a month (Cloud: `budgetScopesFor` and `effectiveLimits`). A failure is a fault and propagates; nothing is written. */
   levels(request: AdmissionRequest, month: string): Promise<readonly AdmissionLevel[]>;
+  /**
+   * What a request writes beside its hold, in the same commit (Cloud: a task's start records its payer, and holds the project's AI settings as read). Called for a request that is allowed; its items join the
+   * request's own. A failure is a fault and propagates; nothing is written. Absent: nothing more is written.
+   */
+  capture?(request: AdmissionRequest): Promise<readonly TransactItem[]>;
   /** Refusals that come before money (Cloud: the trial lock, the month's machine time). Undefined: no refusal. */
   gate?(request: AdmissionRequest): Promise<{ code: string; message: string } | undefined>;
   /** Each action this install admits. An action not listed is refused (fail closed): a new spending action is a wiring decision, never a free pass. */
@@ -282,7 +287,7 @@ export class CloudAdmission implements Admission {
     if (rule.kind === "room") {
       const checks = levels.flatMap((level): TransactItem[] => level.limitUsd === undefined ? []
         : [{ kind: "check", key: spendCounterKey(request.companyId as never, month, level.scope), condition: when.or(when.notExists("committedUsd"), when.lte("committedUsd", cleanUsd(level.limitUsd - amountUsd))) }]);
-      return { decision: { allowed: true }, items: checks };
+      return { decision: { allowed: true }, items: [...checks, ...(await this.options.capture?.(request) ?? [])] };
     }
     const id = holdId!;
     const expiresAt = now + this.ttlMs;
@@ -295,6 +300,7 @@ export class CloudAdmission implements Admission {
         ops: [change.add("committedUsd", cleanUsd(amountUsd)), change.setIfAbsent("entityType", COUNTER_ENTITY)],
         ...(level.limitUsd === undefined ? {} : { condition: roomFor(level.limitUsd, amountUsd) }),
       })),
+      ...(await this.options.capture?.(request) ?? []),
     ];
     return { decision: { allowed: true, reservationId: reservationIdOf(request.companyId, id) }, items, holdId: id };
   }

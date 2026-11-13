@@ -7,9 +7,11 @@
 // `app.ts`), which is not exported and carries laptop rules (`fixedCodeSettings`, `soleOwnerPeople`). Cloud needs the same joins with its own company
 // settings and people. Until Code exports a service layer for them (open question S0-Q1 in the lane report), each is a `CoreService` the deployment
 // supplies; `serviceGaps` names the ones missing so the switch cannot be turned on for an area whose service is not wired.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { RepositoryGrantService, type createCallbackService, type createDecisionService } from "@rovara-code/broker";
 import { createStoreProjectSource, createTaskFlowFromRegistry, type RegistryTaskFlowOptions, type StartExtras, type StartExtrasInput, type TaskAccess, type TaskFlow } from "@rovara-code/broker/core/task-flow";
-import type { AdapterRegistry, ChannelInboundSink, OrgId, SlackRequestMessage } from "@rovara-code/contracts";
+import type { AdapterRegistry, ChannelInboundSink, OrgId, SlackRequestMessage, TransactItem } from "@rovara-code/contracts";
+import { withStepFenceRetry } from "./step-fence.js";
 import { coreInUseItem, stampForNewTask, stampItem } from "./engine-stamp.js";
 import type { CoreArea, CoreEngineFlags } from "./flags.js";
 import { createCloudStepModels, type CloudModelFacts } from "./model-mapping.js";
@@ -69,6 +71,16 @@ export interface CoreRuntimeOptions {
   inbound?: (flow: TaskFlow) => CoreInbound;
 }
 
+const startFences = new AsyncLocalStorage<readonly TransactItem[]>();
+
+/**
+ * Runs a core start (and anything it awaits) with these checks added to the start's own transaction (`startExtras`): what the entry read about the company before it started the task
+ * (the spending-stop policy as it was; entry.ts). A start that finds one changed commits nothing. The context belongs to this call and its awaits, so concurrent starts never see each other's.
+ */
+export function withStartFence<T>(items: readonly TransactItem[], run: () => Promise<T>): Promise<T> {
+  return startFences.run(items, run);
+}
+
 export function createCoreRuntime(options: CoreRuntimeOptions): CoreRuntime {
   const { registry, companyId } = options;
   const store = registry.require("storage");
@@ -77,9 +89,9 @@ export function createCoreRuntime(options: CoreRuntimeOptions): CoreRuntime {
   const startExtras = (input: StartExtrasInput): StartExtras => {
     const own = given?.(input);
     const stamp = stampItem(companyId, input.taskId, stampForNewTask(options.flags, companyId, options.now()));
-    return { ...(own ?? {}), items: [...(own?.items ?? []), stamp, coreInUseItem(companyId)] };
+    return { ...(own ?? {}), items: [...(own?.items ?? []), ...(startFences.getStore() ?? []), stamp, coreInUseItem(companyId)] };
   };
-  const flow = createTaskFlowFromRegistry(registry, {
+  const flow = createTaskFlowFromRegistry(withStepFenceRetry(registry), {
     ...options.flowOptions,
     companyId,
     projects: options.flowOptions?.projects ?? createStoreProjectSource(store, companyId),

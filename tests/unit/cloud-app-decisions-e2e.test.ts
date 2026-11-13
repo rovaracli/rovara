@@ -10,7 +10,7 @@ import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@rov
 import { createCloudApp, slackPressToken } from "../../packages/broker/src/cloud/app/index.js";
 import { BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD, createCloudIdentityProvider } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { PEOPLE_ORG, SLACK_TEAM, type Person } from "../support/cloud-people-world.js";
-import { CORE_CALLBACK_ACTIONS, cloudDeciderRole, coreInUseKey, createCoreIntentHook, cloudTaskFacts, createCoreCallbackRouter, engineStampKey } from "../../packages/broker/src/cloud/app/index.js";
+import { CORE_CALLBACK_ACTIONS, cloudDeciderRole, coreInUseItem, coreInUseKey, createCoreIntentHook, cloudTaskFacts, createCoreCallbackRouter, engineStampKey } from "../../packages/broker/src/cloud/app/index.js";
 import { SEAT_LIMIT_UNAVAILABLE, createSeatLimits } from "../../packages/broker/src/cloud/app/index.js";
 import { bindChannelSpace, postApprovalCard } from "@rovara-code/broker/core/channel";
 import { orgMemberKey } from "@agentx/cloud-contracts";
@@ -558,15 +558,28 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     expect(await createCoreIntentHook({ app: off, principalOf: async () => principal, origin: "https://x.test", now: () => r.world.clock.now, log: () => undefined }).start({ caller: { orgId: PEOPLE_ORG, developerId: owner.developerId } as never, request: { requestId: randomUUID(), project: "payments", input: { text: "again" }, source: "app", path: "QUICK" } as never, ownedTask: (async () => ({})) as never })).toBeUndefined();
   });
 
-  it("the jobs run for the install's company while the switch is off, and the root without serveStamped refuses to serve (the control)", async () => {
+  it("the jobs run for the install's company AND every company with an in-use mark while the switch is off, and the root without serveStamped refuses to serve (the control)", async () => {
     const { r } = await startedOnCore();
+    // A second company that started a task on the core (its mark, as the core's start writes it).
+    const SECOND = "org_bbbbbbbbbbbbbbbbbbbb";
+    await r.world.store.put({ item: coreInUseItem(SECOND).item });
     const off = r.rebuild({ env: {}, serveStamped: true });
     const ran = await off.handleScheduledJob({ source: "agentx.core-job", job: "merge-tracking" }) as { companies: Array<{ companyId: string; outcome: string }> };
-    // The install's own company (the world's), whatever the switch names.
-    expect(ran.companies.map((company) => [company.companyId, company.outcome])).toEqual([[r.world.context().installCompanyId, "ran"]]);
+    expect(ran.companies.map((company) => company.companyId).sort()).toEqual([r.world.context().installCompanyId, PEOPLE_ORG, SECOND].sort());
+    expect(ran.companies.every((company) => company.outcome === "ran")).toBe(true);
     const old = r.rebuild({ env: {} });
     await expect(old.runtimeFor(PEOPLE_ORG)).rejects.toThrow();
     expect(await old.handleScheduledJob({ source: "agentx.core-job", job: "merge-tracking" })).toEqual({ skipped: "off" });
+  });
+
+  it("L-1: a callback of a core-stamped task whose workspace names no company that can be read is told to retry (503), never handed to Cloud", async () => {
+    const { r, job } = await startedOnCore();
+    const unreadable = createCoreCallbackRouter(r.app, async (key) => {
+      const row = await r.world.store.get(key);
+      return key.pk.startsWith("WORKSPACE#") && row !== undefined ? { ...row, orgId: undefined, companyId: undefined } : row;
+    });
+    const answer = await unreadable({ method: "POST", path: `/v1/internal/workspaces/${job.workspaceId}/operations/${job.operationId}/events`, headers: {}, body: "{}" });
+    expect(answer?.statusCode).toBe(503);
   });
 
   it("a core-stamped task's callback is NEVER Cloud's: with the root unable to be built it is told to retry (503), and the stamp is read with the switch off and no in-use mark", async () => {
@@ -591,6 +604,27 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     const r = await rig();
     const off = r.rebuild({ env: {}, serveStamped: true });
     expect(await createCoreCallbackRouter(off, (key) => r.world.store.get(key) as never)(post(randomUUID(), randomUUID(), "events", "x", {}))).toBeUndefined();
+  });
+
+  it("M-1: two credentials of one person put ONE member check in the decision's transaction (a transaction names an item once)", async () => {
+    const r = await rig();
+    const { owner } = r.people.people;
+    r.standing.set(owner.developerId, "owner");
+    const { taskId } = await plannedTask(r);
+    const recorded: Array<{ kind: string; key?: { pk: string; sk: string } }[]> = [];
+    const seats = createSeatLimits();
+    const store = seats.fenceStore({ transact: async (items: Array<{ kind: string; key?: { pk: string; sk: string } }>) => { recorded.push(items); return { applied: true, failed: [] }; } } as never) as unknown as { transact(items: unknown[]): Promise<unknown> };
+    const wrapped = seats.wrap(r.approvers);
+    const request = { companyId: PEOPLE_ORG, requestId: randomUUID(), kind: "plan", subject: { type: "task" as const, id: taskId }, revision: 1, artifactDigest: "b".repeat(64), risk: "low" as const, outcome: "approve" as const };
+    const proofOf = (token: string, method: string) => ({ proofId: randomUUID(), method, requestId: request.requestId, revision: request.revision, artifactDigest: request.artifactDigest, token });
+    const gate = seats.gate({ decide: async () => {
+      expect((await wrapped.verify(request, proofOf(owner.sessionId, BROWSER_SESSION_METHOD))).approved).toBe(true);
+      expect((await wrapped.verify(request, proofOf(r.people.tokenOf(owner), "api-token"))).approved).toBe(true);
+      return await store.transact([{ kind: "put", item: { entityType: "APPROVAL_DECISION" } }]);
+    } }) as unknown as { decide(attempt: unknown): Promise<unknown> };
+    await gate.decide({ requestId: "x", credentials: [], details: undefined });
+    const memberChecks = recorded[0]!.filter((item) => item.kind === "check" && JSON.stringify(item.key).includes(owner.developerId));
+    expect(memberChecks).toHaveLength(1);
   });
 
   it("it fails closed: a maintainer verified for a task outside the wrapped gate is refused, and inside it only the limited details are", async () => {

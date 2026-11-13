@@ -173,6 +173,31 @@ describe("a task keeps the engine it started on", () => {
   });
 });
 
+describe("L-4: a missing service costs its own area, not the whole runtime", () => {
+  const without = (world: FakeWorld, env: NodeJS.ProcessEnv, serveStamped: boolean) => createCloudApp({
+    env, modules: world.modules, context: () => world.context(), nowMs: () => world.clock.now, ...(serveStamped ? { serveStamped: true } : {}),
+    runtime: () => ({
+      callbackSigningKey: Buffer.alloc(32, 7), access: createOwnerTaskAccess(), repositoryGrantKey: Buffer.alloc(32, 5), repositoryCredential: async () => ({ token: "x" }), now: () => new Date(world.clock.now), log: () => undefined,
+      // The merge area's service is missing; the flow's are there.
+      services: () => ({ "session-sweep": { pass: async () => ({ swept: 0 }) }, "notify-deliver": { pass: async () => ({ sent: 0 }) }, "admission-hold-sweep": { pass: async () => ({ charged: 0 }) } }),
+    }),
+  });
+
+  it("with the switch off and the root serving stamped tasks, the runtime is built and the merge area's job is skipped (service_not_wired); the flow's still runs", async () => {
+    const world = createFakeWorld();
+    const app = without(world, {}, true);
+    await expect(app.runtimeFor(FAKE_COMPANY)).resolves.toBeDefined();
+    const merge = await app.handleScheduledJob({ source: "agentx.core-job", job: "merge-tracking" }) as { companies: Array<{ outcome: string; report?: unknown }> };
+    expect(merge.companies[0]).toMatchObject({ outcome: "ran", report: { skipped: "service_not_wired" } });
+    const flow = await app.handleScheduledJob({ source: "agentx.core-job", job: "session-sweep" }) as { companies: Array<{ outcome: string; report?: unknown }> };
+    expect(flow.companies[0]).toMatchObject({ outcome: "ran", report: { swept: 0 } });
+  });
+
+  it("with the switch ON for that area the runtime is still refused (a switched area is never half-wired)", async () => {
+    await expect(without(createFakeWorld(), { CLOUD_CORE_ENGINE: "on" }, true).runtimeFor(FAKE_COMPANY)).rejects.toThrow(/merge-tracking/);
+  });
+});
+
 describe("scheduled jobs", () => {
   it("each company runs isolated: one failure is that company's, the rest run, and the order rotates so a budget never defers the same tail", async () => {
     const seen: string[][] = [];

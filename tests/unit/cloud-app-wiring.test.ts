@@ -86,6 +86,19 @@ describe("WIRING: the module list adds nothing unless asked for", () => {
   });
 });
 
+describe("WIRING: the admission module carries the levels' capture into the start's commit", () => {
+  it("a task.start admitted through the module stages what the capture returned (the payer's record), beside its own checks", async () => {
+    const capture = vi.fn(async () => [{ kind: "put" as const, item: { pk: "DEVTASK#t", sk: "PAYER", entityType: "TASK_PAYER" } }]);
+    const levels = { limits: async () => new Map(), agentId: () => "rovara-code", projectPays: async () => false, capture };
+    const module = cloudAdapterModules({ tableName: "state", levels } as unknown as CloudModuleDeps).find((candidate) => candidate.point === "admission")!;
+    const admission = (module as unknown as { create(context: unknown, registry: unknown): { stage(request: unknown): Promise<{ decision: { allowed: boolean }; items: Array<{ kind: string }> }> } }).create({}, { require: () => new MemoryDocumentStore() });
+    const staged = await admission.stage({ companyId: ORG, idempotencyKey: "task.start:t:1", action: "task.start", actor: { personId: MAYA }, projectName: "payments", subject: { type: "task", id: "t" } });
+    expect(staged.decision.allowed).toBe(true);
+    expect(capture).toHaveBeenCalledOnce();
+    expect(staged.items.some((item) => item.kind === "put")).toBe(true);
+  });
+});
+
 describe("WIRING: MergePeople from Cloud's member directory", () => {
   async function directory(): Promise<ReturnType<typeof createCloudMergePeople>> {
     const db = new FakeDynamoDb();

@@ -75,8 +75,13 @@ export function createSeatLimits(options: { read?: (key: { pk: string; sk: strin
             if (!decision || held === undefined || held.verified.length === 0) return await target.transact(items);
             const fence: TransactItem[] = [];
             const seenTasks = new Set<string>();
+            // One check per person: a transaction names an item once, and two credentials of one person read the one record. The first read is held; a role that differs between the two reads fails it.
+            const seenMembers = new Set<string>();
             for (const person of held.verified) {
-              fence.push({ kind: "check", key: orgMemberKey(person.companyId, person.developerId), condition: when.eq("role", person.orgRole) });
+              if (!seenMembers.has(`${person.companyId}/${person.developerId}`)) {
+                seenMembers.add(`${person.companyId}/${person.developerId}`);
+                fence.push({ kind: "check", key: orgMemberKey(person.companyId, person.developerId), condition: when.eq("role", person.orgRole) });
+              }
               if (person.taskId !== undefined && person.people !== undefined && !seenTasks.has(person.taskId)) {
                 seenTasks.add(person.taskId);
                 fence.push({ kind: "check", key: { pk: `DEVTASK#${person.taskId}`, sk: "PEOPLE" }, condition: person.people === "absent" ? when.absent() : when.eq("revision", person.people.revision) });

@@ -11,7 +11,7 @@ import type { BROWSER_SESSION_METHOD} from "../../packages/broker/src/cloud/adap
 import { CHAT_SLACK_METHOD, cloudApprovalIssuers, createCloudApprovers, createCloudIdentityProvider } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { createCallbackService } from "@rovara-code/broker";
 import { PEOPLE_ORG, SLACK_TEAM, createPeopleWorld, type Person, type PeopleWorld } from "../support/cloud-people-world.js";
-import { cloudDeciderRole, createCoreCallbackRouter } from "../../packages/broker/src/cloud/app/index.js";
+import { CORE_IN_USE_PARTITION, cloudDeciderRole, createCoreCallbackRouter } from "../../packages/broker/src/cloud/app/index.js";
 import { createClientFacingApprovers } from "../../packages/broker/src/cloud/app/index.js";
 import { resolveSlackDecisionCaller } from "../../packages/broker/src/decisions/slack-actions.js";
 import { CloudSlackChannel } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
@@ -29,7 +29,7 @@ export const allowAll: TaskAccess = { checkStart: async () => ({ allowed: true }
 
 export interface Rig { /** A6's approvers adapter as built, without the client-facing wrapper the root registers (for tests of A6 itself). */ approvers: Approvers; world: FakeWorld; people: PeopleWorld; app: CloudApp; standing: Map<string, ApprovalDeciderRole>; posts: string[]; /** Another root over the same world, adapters and wiring (a later Lambda container, with the switch changed). */ rebuild(options: { env: NodeJS.ProcessEnv; serveStamped?: boolean }): CloudApp }
 
-export async function rig(options: { slack?: boolean; liveRole?: boolean; afterVerify?: () => Promise<void> | void } = {}): Promise<Rig> {
+export async function rig(options: { slack?: boolean; liveRole?: boolean; afterVerify?: () => Promise<void> | void; access?: TaskAccess; log?: (entry: Record<string, unknown>) => void } = {}): Promise<Rig> {
   const world = createFakeWorld();
   const people = createPeopleWorld();
   const standing = new Map<string, ApprovalDeciderRole>();
@@ -50,14 +50,14 @@ export async function rig(options: { slack?: boolean; liveRole?: boolean; afterV
   const identity = createCloudIdentityProvider(people.routes);
   const wiring: CloudCoreWiring = {
     settings: () => cloudSettingsFromEnvironment({}, { recipeStepKinds: undefined, connectorWritesBehindApproval: true }),
-    callbackSigningKey: Buffer.alloc(32, 7), repositoryGrantKey: Buffer.alloc(32, 5), repositoryCredential: async () => ({ token: "unused" }), access: allowAll,
-    now: () => new Date(world.clock.now), log: () => undefined, people: soleOwnerPeople, codeSettings: fixedCodeSettings(),
+    callbackSigningKey: Buffer.alloc(32, 7), repositoryGrantKey: Buffer.alloc(32, 5), repositoryCredential: async () => ({ token: "unused" }), access: options.access ?? allowAll,
+    now: () => new Date(world.clock.now), log: options.log ?? (() => undefined), people: soleOwnerPeople, codeSettings: fixedCodeSettings(),
     taskEnd: { readTask: async () => undefined, onTaskEnded: async () => undefined }, sessionFacts: { read: async () => undefined },
     slack: { orgOfTeam: async (teamId) => (teamId === SLACK_TEAM ? PEOPLE_ORG : undefined),
       // The Slack account's person is found by A6's own lookups (the linked, signed-in, live member), as the broker's `slackRequesterStanding` finds them in production.
       standingOf: async (_org, slackUserId) => { const member = await resolveSlackDecisionCaller(people.slackLookups(new Map()), { userId: slackUserId, userTeamId: SLACK_TEAM, workspaceTeamId: SLACK_TEAM, enterpriseId: "", userEnterpriseId: "" }); if (member === undefined) throw new Error("not a member"); return member.developerId; }, principalOf: async (orgId, personId) => await identity.getPrincipal(orgId, personId), linkWords: () => "x" },
   };
-  const rebuild = (built: { env: NodeJS.ProcessEnv; serveStamped?: boolean }): CloudApp => createCloudApp({ env: built.env, modules, context: () => world.context(), nowMs: () => world.clock.now, runtime: cloudCoreRuntime(wiring), ...(built.serveStamped === true ? { serveStamped: true } : {}) });
+  const rebuild = (built: { env: NodeJS.ProcessEnv; serveStamped?: boolean }): CloudApp => createCloudApp({ env: built.env, modules, context: () => world.context(), nowMs: () => world.clock.now, runtime: cloudCoreRuntime(wiring), ...(built.serveStamped === true ? { serveStamped: true, servedCompanies: async () => (await world.store.query({ pk: CORE_IN_USE_PARTITION })).items.map((item) => item["orgId"] as string) } : {}) });
   const app = rebuild({ env: { CLOUD_CORE_ENGINE: "on" } });
   // The members' records in the core's table (one table in production): the decision's transaction holds them to the roles read at verification.
   for (const person of Object.values(people.people)) await world.store.put({ item: { ...orgMemberKey(person.orgId, person.developerId), entityType: "ORG_MEMBER", role: person.role } });

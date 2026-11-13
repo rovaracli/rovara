@@ -22,10 +22,12 @@ export interface CloudAppOptions {
   modules: readonly CloudAdapterModule[] | (() => readonly CloudAdapterModule[]);
   /**
    * The switch gates NEW tasks only (decision 130: a task keeps its engine). With this on, the root also serves the tasks the core already holds while the switch is off or narrowed: it builds
-   * the whole registry (every area's points) and a runtime for any company on request (`runtimeFor`), and runs the jobs for the install's company (`installCompanyId`). `active` still says whether
+   * the whole registry (every area's points) and a runtime for any company on request (`runtimeFor`), and runs the jobs for the install's company (`installCompanyId`) and for every company that holds core tasks (`servedCompanies`). `active` still says whether
    * a new task may start on the core. Default off: with every switch off the root builds nothing.
    */
   serveStamped?: boolean;
+  /** The companies that hold core tasks (`serveStamped`): every company with an in-use mark, listed. The jobs run for these as well as the install's company. Absent: the install's company only. */
+  servedCompanies?: () => Promise<readonly string[]>;
   /** Builds the adapter context (clients) on first use. */
   context: () => CloudAdapterContext;
   /** The per-company runtime's own wiring (signing key, access, credentials, services). */
@@ -94,7 +96,9 @@ export function createCloudApp(options: CloudAppOptions): CloudApp {
     if (found === undefined) {
       found = registry().then((built) => {
         const runtime = createCoreRuntime({ ...options.runtime(built, companyId, flags), registry: built, companyId: companyId, flags });
-        const areas = serveStamped ? [...CORE_AREAS] : CORE_AREAS.filter((area) => coreAreaOn(flags, area, companyId));
+        // Only an area the switch has ON for this company must have its services: a gap in an area that is off (one this container serves only for the stamped tasks it still holds) costs that
+        // area its jobs (`service_not_wired`), never the company's whole runtime, so a task of another area keeps being served.
+        const areas = CORE_AREAS.filter((area) => coreAreaOn(flags, area, companyId));
         const gaps = serviceGaps(runtime.services, areas);
         if (gaps.length > 0) throw new Error(`the core runtime lacks services for the areas switched on: ${gaps.join(", ")}`);
         return runtime;
@@ -105,11 +109,11 @@ export function createCloudApp(options: CloudAppOptions): CloudApp {
     return found;
   };
 
-  const companiesFor = (area: CoreArea): string[] => {
+  const companiesFor = async (area: CoreArea): Promise<string[]> => {
     const covered = coreCompanies(flags);
     const all = covered === "all" ? [contextOnce().installCompanyId] : [...covered];
-    // Serving stamped tasks: the install's company is always served (the core's tasks of a company the switch no longer names still need their sweeps).
-    if (serveStamped) return [...new Set([...all, contextOnce().installCompanyId])];
+    // Serving stamped tasks: the install's company, and every company that holds core tasks, is served (the core's tasks of a company the switch no longer names still need their sweeps).
+    if (serveStamped) return [...new Set([...all, contextOnce().installCompanyId, ...(await options.servedCompanies?.() ?? [])])];
     return all.filter((companyId) => coreAreaOn(flags, area, companyId));
   };
 
@@ -128,7 +132,7 @@ export function createCloudApp(options: CloudAppOptions): CloudApp {
       const job = jobs.find((entry) => entry.name === event.job);
       if (job === undefined) return { skipped: "unknown_job" };
       const budgetMs = options.jobBudgetMs ?? 50_000;
-      const companies = await runPerCompany(companiesFor(job.area), async (companyId) => await job.run(await runtimeFor(companyId), budgetMs), { rotation: rotation++, budgetMs, nowMs });
+      const companies = await runPerCompany(await companiesFor(job.area), async (companyId) => await job.run(await runtimeFor(companyId), budgetMs), { rotation: rotation++, budgetMs, nowMs });
       return { job: job.name, companies };
     },
     async relayOutbox(companies) {
