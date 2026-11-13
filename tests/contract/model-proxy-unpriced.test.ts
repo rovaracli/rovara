@@ -44,13 +44,17 @@ ns["MIN_MAP_MODELS"] = scenario.get("min_models", 2)
 ns["SETTLE_GRACE_SECONDS"] = 0.01
 
 class Ledger:
-    """The Postgres ledger's meaning, in memory: a take against the cap, a settle that records the charge and whether it is an estimate."""
-    def __init__(self): self.rows, self.holds, self.settled = {}, {}, []
-    async def take(self, key, call_id, worst, spent, cap):
+    """The Postgres ledger's meaning, in memory: a take against the cap (an ESTIMATED hold that does not fit goes ahead once, while the key has not overrun and nothing else is held,
+    holding only the room that is left: DECISIONS 165), and a settle that records the charge and whether it is an estimate."""
+    def __init__(self): self.rows, self.holds, self.settled, self.worsts = {}, {}, [], {}
+    async def take(self, key, call_id, worst, spent, cap, estimated=False):
         row = self.rows.setdefault(key, {"charged": 0, "held": 0})
-        if max(row["charged"], spent) + row["held"] + worst <= cap:
-            row["held"] += worst; self.holds[call_id] = (key, worst); return "ok", None
-        return ("exceeded" if max(row["charged"], spent) + worst > cap else "held"), row["charged"]
+        known = max(row["charged"], spent)
+        self.worsts[call_id] = worst
+        if known + row["held"] + worst <= cap: reserve = worst
+        elif estimated and known < cap and row["held"] == 0: reserve = min(worst, max(cap - known, 0))
+        else: return ("exceeded" if known + worst > cap else "held"), row["charged"]
+        row["held"] += reserve; self.holds[call_id] = (key, reserve); return "ok", None
     async def settle(self, call_id, cost, estimated=False):
         key, reserved = self.holds.pop(call_id)
         charge = reserved if cost is None else cost
@@ -79,7 +83,7 @@ async def run(step, n):
         await guard.async_pre_call_hook(Key(step.get("cap", 100.0)), None, data, "acompletion")
     except ProxyException as e:
         return {"status": int(e.code), "type": e.type}
-    out = {"status": 200, "held": ledger.holds["call-%d" % n][1], "prices": list(ns["_hold_prices"](step["model"]))[1:]}
+    out = {"status": 200, "held": ledger.worsts["call-%d" % n], "reserved": ledger.holds["call-%d" % n][1], "prices": list(ns["_hold_prices"](step["model"]))[1:]}
     if "usage" in step or "cost" in step or step.get("cut"):
         if step.get("cut"): await guard.async_post_call_failure_hook(data, Exception("cut"), None); await guard._finish("call-%d" % n, None, True)
         else: await guard.async_log_success_event({"litellm_call_id": "call-%d" % n, "response_cost": step.get("cost")}, {"usage": step["usage"]} if "usage" in step else None, None, None)
@@ -92,7 +96,7 @@ json.dump(asyncio.run(main()), sys.stdout)
 `;
 
 type Step = Record<string, unknown>;
-type Result = { status?: number; type?: string; held?: number; prices?: boolean[]; settled?: { micros: number; estimated: boolean; whole_hold: boolean } | null; refresh?: Record<string, string>; entries?: Record<string, Record<string, number> | null> };
+type Result = { status?: number; type?: string; held?: number; reserved?: number; prices?: boolean[]; settled?: { micros: number; estimated: boolean; whole_hold: boolean } | null; refresh?: Record<string, string>; entries?: Record<string, Record<string, number> | null> };
 
 function run(scenario: { deployments: unknown[]; model_cost: Record<string, unknown>; steps: Step[]; min_models?: number }): Result[] {
   const directory = mkdtempSync(join(tmpdir(), "rovara-guard-unpriced-"));
@@ -110,6 +114,8 @@ const KNOWN = {
   "us.anthropic.claude-opus-4-8": { litellm_provider: "bedrock", mode: "chat", input_cost_per_token: 5.5e-6, output_cost_per_token: 2.75e-5, input_cost_per_token_above_200k_tokens: 1.1e-5, output_cost_per_token_above_200k_tokens: 4.125e-5, cache_creation_input_token_cost: 6.875e-6, max_output_tokens: 128000 },
   "us.anthropic.claude-haiku-4-5": { litellm_provider: "bedrock", mode: "chat", input_cost_per_token: 1.1e-6, output_cost_per_token: 5.5e-6 },
   "gpt-4o": { litellm_provider: "openai", mode: "chat", input_cost_per_token: 2.5e-6, output_cost_per_token: 1e-5 },
+  "gemini-2-flash": { litellm_provider: "gemini", mode: "chat", input_cost_per_token: 1e-7, output_cost_per_token: 4e-7 },
+  "gemini-2-pro": { litellm_provider: "gemini", mode: "chat", input_cost_per_token: 1.25e-6, output_cost_per_token: 1e-5 },
   "gpt-5-pro": { litellm_provider: "openai", mode: "chat", input_cost_per_token: 1.5e-5, output_cost_per_token: 1.2e-4 },
 };
 const NEW_CLAUDE = deployment("us.anthropic.claude-haiku-9", "bedrock/us.anthropic.claude-haiku-9");
@@ -148,21 +154,69 @@ describe("a model with no price is held and settled cautiously, never refused", 
     expect(calls[1]!.settled).toEqual({ micros: calls[1]!.held, estimated: true, whole_hold: true });
   });
 
+  itPython("puts the estimate in LiteLLM's cost map at the dearest known rate with cached tokens at that rate too (left out, LiteLLM counts them as free)", () => {
+    const [, entries] = run({ deployments: [NEW_CLAUDE], model_cost: KNOWN, steps: [{ op: "call", model: "us.anthropic.claude-haiku-9", max_tokens: 100 }, { op: "refresh", sources: {}, inspect: ["bedrock/us.anthropic.claude-haiku-9"] }] });
+    const entry = entries!.entries!["bedrock/us.anthropic.claude-haiku-9"]!;
+    expect(entry).toMatchObject({ input_cost_per_token: 1.1e-5, output_cost_per_token: 4.125e-5, cache_read_input_token_cost: 1.1e-5, cache_creation_input_token_cost: 1.1e-5 });
+  });
+
   itPython("settles a call LiteLLM did price at LiteLLM's cost, not flagged estimated", () => {
     const [call] = run({ deployments: [deployment("us.anthropic.claude-sonnet-4-6", "bedrock/us.anthropic.claude-sonnet-4-6")], model_cost: KNOWN, steps: [{ op: "call", model: "us.anthropic.claude-sonnet-4-6", max_tokens: 1000, cost: 0.0042, usage: { prompt_tokens: 100, completion_tokens: 100 } }] });
     expect(call).toMatchObject({ status: 200, prices: [false], settled: { micros: 4200, estimated: false } });
   });
 
-  itPython("enforces the task's cap on the cautious hold: a call whose hold does not fit is refused as budget_exceeded, one that fits is held", () => {
-    const calls = run({ deployments: [NEW_CLAUDE], model_cost: KNOWN, steps: [
-      { op: "call", model: "us.anthropic.claude-haiku-9", max_tokens: 1000, cap: 0.05 },
-      { op: "call", model: "us.anthropic.claude-haiku-9", max_tokens: 1000, cap: 0.07 },
-      { op: "call", model: "us.anthropic.claude-haiku-9", max_tokens: 1000, cap: 0.0001 },
+  itPython("lets a cheap model of an unknown provider work on a small cap: the first call goes ahead, holding the room that is left; calls go on while the task has not overrun; the first call settled over the cap blocks every later one (DECISIONS 165)", () => {
+    const small = (step: Step): Step => ({ op: "call", model: "mystery", cap: 0.01, ...step });
+    const calls = run({ deployments: [deployment("mystery", "mystery")], model_cost: KNOWN, steps: [
+      small({ cost: 0, usage: { prompt_tokens: 100, completion_tokens: 50 } }),
+      small({ cost: 0, usage: { prompt_tokens: 100, completion_tokens: 50 } }),
+      small({ cost: 0, usage: { prompt_tokens: 100, completion_tokens: 50 } }),
+      small({}),
     ] });
-    // The hold is about $0.0620: more than $0.05, under $0.07. $0.0001 leaves no room even for a smaller output limit.
-    expect(calls[0]).toMatchObject({ status: 422 });
-    expect(calls[1]).toMatchObject({ status: 200 });
-    expect(calls[2]).toMatchObject({ status: 422, type: "budget_exceeded" });
+    // The cautious hold (64,000 output tokens at 1.5 x $120 per million: $11.5) is far over the $0.01 cap, yet the task has spent nothing: the call goes ahead and holds the $0.01 that is left.
+    expect(calls[0]).toMatchObject({ status: 200, prices: [true], reserved: 10_000 });
+    expect(calls[0]!.held).toBeGreaterThan(10_000_000);
+    // It settles at its actual usage times the dearest known rate (100 x $15 + 50 x $120 per million = $0.0075), flagged estimated: under the cap, so the next call also goes ahead, on what is left.
+    expect(calls[0]!.settled).toEqual({ micros: 7500, estimated: true, whole_hold: false });
+    expect(calls[1]).toMatchObject({ status: 200, reserved: 2500 });
+    // That second call settles at $0.0075 too: $0.015 spent of $0.01. From then on every call is blocked, in the shape the worker reads as a spent budget.
+    expect(calls[1]!.settled).toEqual({ micros: 7500, estimated: true, whole_hold: false });
+    expect(calls[2]).toEqual({ status: 422, type: "budget_exceeded" });
+    expect(calls[3]).toEqual({ status: 422, type: "budget_exceeded" });
+  });
+
+  itPython("answers 429 budget_held, not a spent budget, to an estimated call that arrives while an earlier one is still in flight", () => {
+    const calls = run({ deployments: [deployment("mystery", "mystery")], model_cost: KNOWN, steps: [
+      { op: "call", model: "mystery", cap: 0.01 },
+      { op: "call", model: "mystery", cap: 0.01 },
+    ] });
+    expect(calls[0]).toMatchObject({ status: 200 });
+    expect(calls[1]).toEqual({ status: 429, type: "budget_held" });
+  });
+
+  itPython("still enforces the cap on a call whose price IS known: no overrun, a hold that does not fit is refused", () => {
+    const calls = run({ deployments: [deployment("us.anthropic.claude-sonnet-4-6", "bedrock/us.anthropic.claude-sonnet-4-6")], model_cost: KNOWN, steps: [
+      { op: "call", model: "us.anthropic.claude-sonnet-4-6", max_tokens: 1000, cap: 0.01 },
+      { op: "call", model: "us.anthropic.claude-sonnet-4-6", max_tokens: 100, cap: 0.01 },
+    ] });
+    expect(calls[0]).toMatchObject({ status: 422 });                   // 1,000 tokens at $16.50 per million is $0.0165 over the $0.01 cap
+    expect(calls[1]).toMatchObject({ status: 200, prices: [false] });  // 100 tokens fit
+  });
+
+  itPython("uses the SAME provider's dearest known rate when the provider is known (prefix or name), and every model's only for an unknown provider", () => {
+    const calls = run({ deployments: [deployment("g", "gemini/gemini-new"), deployment("gemini-newer", "gemini-newer"), deployment("o", "openai/o-new"), deployment("mystery", "mystery")], model_cost: KNOWN, steps: [
+      { op: "call", model: "g", max_tokens: 1000 }, { op: "call", model: "gemini-newer", max_tokens: 1000 }, { op: "call", model: "o", max_tokens: 1000 }, { op: "call", model: "mystery", max_tokens: 1000 },
+    ] });
+    // Gemini's dearest is gemini-2-pro at $10 per million out: 1,000 tokens at 1.5 times that is 15,000 micro-dollars (the request's bytes add under 1,000); not gpt-5-pro's $120.
+    for (const gemini of [calls[0]!, calls[1]!]) { expect(gemini.held).toBeGreaterThanOrEqual(15_000); expect(gemini.held).toBeLessThan(16_000); }
+    expect(calls[2]!.held).toBeGreaterThanOrEqual(180_000);                                          // OpenAI's dearest is gpt-5-pro
+    expect(calls[3]!.held).toBeGreaterThanOrEqual(180_000);                                          // unknown provider: the dearest of every model
+  });
+
+  itPython("bounds the hold by the request's own max_tokens when it names one, and by the model's maximum (else 64,000) when it does not", () => {
+    const [few, none] = run({ deployments: [NEW_CLAUDE], model_cost: KNOWN, steps: [{ op: "call", model: "us.anthropic.claude-haiku-9", max_tokens: 100 }, { op: "call", model: "us.anthropic.claude-haiku-9" }] });
+    expect(few!.held).toBeLessThan(10_000);                         // 100 tokens at $61.875 per million output, plus the request's bytes
+    expect(none!.held).toBeGreaterThan(3_900_000);                  // 64,000 tokens at $61.875 per million
   });
 
   itPython("holds a model with a price of zero (a free one, or a gap in the map) the same way, not as free", () => {

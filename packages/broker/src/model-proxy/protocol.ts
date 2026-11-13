@@ -62,6 +62,7 @@ export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("spend"), args: z.object({ orgId: OrgIdSchema, developerId: DeveloperIdSchema }).strict() }).strict(),
   z.object({ op: z.literal("orgSpend"), args: z.object({ orgId: OrgIdSchema }).strict() }).strict(),
   z.object({ op: z.literal("keySpend"), args: z.object({ keyIds: z.array(KeyIdSchema).max(MAX_KEY_IDS) }).strict() }).strict(),
+  z.object({ op: z.literal("keyEstimatedSpend"), args: z.object({ keyIds: z.array(KeyIdSchema).max(MAX_KEY_IDS) }).strict() }).strict(),
   z.object({
     op: z.literal("mintKey"),
     args: z.object({

@@ -70,7 +70,7 @@ describe.skipIf(!usable)("model proxy task budget against the pinned LiteLLM (do
       const lines = result.stdout.trim().split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as { check?: string; ok?: boolean; failed?: string[] });
       expect(lines.filter((line) => line.check !== undefined && line.ok !== true), result.stdout + result.stderr).toEqual([]);
       expect(lines.filter((line) => line.check !== undefined).map((line) => line.check)).toEqual([
-        "routes_settle_to_cost", "charged_matches_litellm_spend", "upstream_error_not_retried_under_hold", "cut_streams_charged_in_full", "error_answer_released", "parallel_no_overshoot", "held_429_every_route", "spent_422_every_route", "max_tokens_hint_every_route", "orphan_becomes_spent",
+        "routes_settle_to_cost", "charged_matches_litellm_spend", "upstream_error_not_retried_under_hold", "cut_streams_charged_in_full", "estimated_charge_stamped_in_key_metadata", "error_answer_released", "parallel_no_overshoot", "held_429_every_route", "spent_422_every_route", "max_tokens_hint_every_route", "orphan_becomes_spent",
       ]);
       expect(result.status).toBe(0);
     } finally {

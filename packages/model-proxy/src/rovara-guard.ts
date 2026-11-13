@@ -15,7 +15,9 @@ export const ROVARA_GUARD_PY = String.raw`"""Rovara proxy guard: loaded by LiteL
    call ends. A call cut before its cost is known (worker cut, provider cut, timeout, replica crash) is charged in full.
    422 budget_exceeded: the spend leaves no room for this call. 429 budget_held (retry-after): only other calls' holds block it.
    No model is refused for lack of a price (DECISIONS 172): a model with no known price is held at a cautious estimate (the dearest known
-   rate of its family, times CAUTION_FACTOR) and settled at the dearest known rate, flagged estimated, never at $0. Prices are refreshed
+   rate of its provider, times CAUTION_FACTOR) and settled at the dearest known rate, flagged estimated, never at $0. Its worst case is a guess,
+   so it never refuses a call the task could still afford one call of (DECISIONS 165): it goes ahead once while the key has not overrun, and
+   every call after the overrun is refused. Prices are refreshed
    daily from AWS's public Price List files and LiteLLM's upstream cost map (validated, with the image's bundled map as the fallback).
 """
 import asyncio, json, os, sys, threading
@@ -284,12 +286,20 @@ _SQL_SWEEP_ALL = (
     " FROM s WHERE k.key_hash = s.key_hash")
 _SQL_FORGET = "DELETE FROM rovara_budget.keys WHERE held_micros = 0 AND updated_at < now() - interval '45 days'"
 _SQL_ENSURE = "INSERT INTO rovara_budget.keys (key_hash) VALUES ($1::text) ON CONFLICT (key_hash) DO NOTHING"
-# The take: the key's row is locked by the UPDATE, so two replicas taking at once are serialised and the second sees the first's hold.
+# The take: the key's row is locked (FOR UPDATE), so two replicas taking at once are serialised and the second sees the first's hold. $7 is an ESTIMATED hold (a model with
+# no known price; its worst case is a guess): when it does not fit the room it goes ahead anyway, once, while the key has not overrun its budget and nothing else is held
+# (DECISIONS 165: the cap may be exceeded by at most one call), and it holds only the room that is left. After that call settles over the cap, every take is refused.
 _SQL_TAKE = (
-    "WITH k AS (UPDATE rovara_budget.keys SET held_micros = held_micros + $2::bigint, updated_at = now()"
-    " WHERE key_hash = $1::text AND GREATEST(charged_micros, $3::bigint) + held_micros + $2::bigint <= $4::bigint RETURNING key_hash)"
+    "WITH q AS (SELECT key_hash,"
+    " (GREATEST(charged_micros, $3::bigint) + held_micros + $2::bigint <= $4::bigint) AS fits,"
+    " ($7::boolean AND GREATEST(charged_micros, $3::bigint) < $4::bigint AND held_micros = 0) AS overrun,"
+    " LEAST($2::bigint, GREATEST($4::bigint - GREATEST(charged_micros, $3::bigint), 0)) AS room"
+    " FROM rovara_budget.keys WHERE key_hash = $1::text FOR UPDATE),"
+    " k AS (UPDATE rovara_budget.keys t SET held_micros = t.held_micros + CASE WHEN q.fits THEN $2::bigint ELSE q.room END, updated_at = now()"
+    " FROM q WHERE t.key_hash = q.key_hash AND (q.fits OR q.overrun)"
+    " RETURNING t.key_hash, CASE WHEN q.fits THEN $2::bigint ELSE q.room END AS reserved)"
     " INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, expires_at)"
-    " SELECT $5::text, key_hash, $2::bigint, now() + make_interval(secs => $6::int) FROM k RETURNING call_id")
+    " SELECT $5::text, key_hash, reserved, now() + make_interval(secs => $6::int) FROM k RETURNING call_id")
 _SQL_READ = "SELECT charged_micros, held_micros FROM rovara_budget.keys WHERE key_hash = $1::text"
 # Settle: the hold leaves and its key is charged the call's cost ($2), or the whole hold when $2 is negative, and $3 says the charge is an estimate. Settling twice charges once.
 _SQL_SETTLE = (
@@ -297,7 +307,12 @@ _SQL_SETTLE = (
     " c AS (SELECT key_hash, reserved_micros, CASE WHEN $2::bigint < 0 THEN reserved_micros ELSE $2::bigint END AS cost FROM h)"
     " UPDATE rovara_budget.keys k SET held_micros = k.held_micros - c.reserved_micros, charged_micros = k.charged_micros + c.cost,"
     " estimated_micros = k.estimated_micros + CASE WHEN $3::boolean THEN c.cost ELSE 0 END, updated_at = now()"
-    " FROM c WHERE k.key_hash = c.key_hash RETURNING k.charged_micros")
+    " FROM c WHERE k.key_hash = c.key_hash RETURNING k.charged_micros, k.key_hash, k.estimated_micros")
+# The broker reads a key's spend through LiteLLM's /key/info only, so the estimated part of it travels there, in the key's metadata (monotonic: the largest value wins, whichever
+# replica stamps last). Only ever stamped when a charge was an estimate.
+_SQL_STAMP = (
+    "UPDATE \"LiteLLM_VerificationToken\" SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('rovara_estimated_micros', $2::bigint)"
+    " WHERE token = $1::text AND COALESCE((metadata->>'rovara_estimated_micros')::bigint, -1) < $2::bigint")
 
 
 class _PostgresLedger:
@@ -327,13 +342,13 @@ class _PostgresLedger:
                     self._ready = True
         return db
 
-    async def take(self, key, call_id, worst, spent, cap):
+    async def take(self, key, call_id, worst, spent, cap, estimated=False):
         """('ok' | 'exceeded' | 'held', charged micros): held; the spend leaves no room for this call; only other calls' holds are in the way."""
         db = await self._db()
         try:
             await db.execute_raw(_SQL_ENSURE, key)
             await db.execute_raw(_SQL_SWEEP, key)
-            if await db.query_raw(_SQL_TAKE, key, worst, spent, cap, call_id, HOLD_SECONDS):
+            if await db.query_raw(_SQL_TAKE, key, worst, spent, cap, call_id, HOLD_SECONDS, bool(estimated)):
                 return "ok", None
             rows = await db.query_raw(_SQL_READ, key)
         except Exception:
@@ -346,10 +361,15 @@ class _PostgresLedger:
         """Ends a hold: its key is charged cost micro-dollars, or the whole hold when cost is None; 'estimated' adds the charge to what is shown as estimated."""
         db = await self._db()
         try:
-            await db.query_raw(_SQL_SETTLE, call_id, -1 if cost is None else cost, bool(estimated))
+            rows = await db.query_raw(_SQL_SETTLE, call_id, -1 if cost is None else cost, bool(estimated))
         except Exception:
             self._ready = False
             raise
+        if estimated and rows:
+            try:
+                await db.execute_raw(_SQL_STAMP, rows[0]["key_hash"], int(rows[0]["estimated_micros"]))
+            except Exception as e:
+                print(f"rovara_guard: could not stamp a key's estimated spend ({type(e).__name__})", file=sys.stderr, flush=True)
 
 
 _LEDGER = _PostgresLedger()
@@ -430,17 +450,42 @@ def _prices_for(alias):
     return found
 
 
+_PROVIDER_OF_NAME = (
+    (re.compile(r"^(?:gpt-|chatgpt|o\d|codex|text-embedding)"), "openai"), (re.compile(r"^gemini"), "gemini"), (re.compile(r"^grok"), "xai"),
+    (re.compile(r"^(?:mistral|mixtral|codestral|pixtral|ministral)"), "mistral"), (re.compile(r"^(?:command|cohere)"), "cohere"), (re.compile(r"^deepseek"), "deepseek"),
+)
+
+
+def _model_label(deployment):
+    """A deployment's model as LiteLLM names it, with its provider in front when only custom_llm_provider says it."""
+    params = (deployment or {}).get("litellm_params") or {}
+    model, provider = params.get("model"), params.get("custom_llm_provider")
+    if isinstance(model, str) and "/" not in model and isinstance(provider, str) and provider:
+        return f"{provider}/{model}"
+    return model if isinstance(model, str) else None
+
+
 def _family_of(model):
-    """What a model is compared with when it has no price: Claude (whoever serves it), else the provider named in front of its id."""
+    """What a model is compared with when it has no price: Claude (whoever serves it); else the provider it names (bedrock/, openai/, azure/, gemini/, vertex_ai/,
+    openrouter/ ... in front of its id, or what a bare name like gpt-5 or gemini-2 says); only a truly unknown provider is compared with every model."""
     text = (model or "").lower()
     if "claude" in text or "anthropic" in text:
         return ("claude", None)
-    return ("provider", text.split("/", 1)[0]) if "/" in text else ("any", None)
+    if "/" in text:
+        return ("provider", text.split("/", 1)[0])
+    for pattern, provider in _PROVIDER_OF_NAME:
+        if pattern.match(text):
+            return ("provider", provider)
+    return ("any", None)
+
+
+def _same_provider(entry_provider, provider):
+    return isinstance(entry_provider, str) and (entry_provider == provider or entry_provider.startswith(provider + "-") or entry_provider.startswith(provider + "_"))
 
 
 def _dearest_known(model):
-    """(input rate, output rate, fixed price per call) of the dearest chat model of the family in the cost map, long-context tiers and cache writes included;
-    never a key this guard filled with an estimate."""
+    """(input rate, output rate, fixed price per call) of the dearest chat model of the family in the cost map, long-context tiers and cache writes included:
+    the same provider's when the provider is known, every model's only for an unknown provider. Never a key this guard filled with an estimate."""
     import litellm
     family = _family_of(model)
     if family in _CAUTION_CACHE:
@@ -454,13 +499,13 @@ def _dearest_known(model):
             continue
         if kind == "claude" and "claude" not in key.lower():
             continue
-        if kind == "provider" and entry.get("litellm_provider") != provider:
+        if kind == "provider" and not _same_provider(entry.get("litellm_provider"), provider):
             continue
         rate_in, rate_out, _o, _i, per_call = _rates([entry])
         best = (max(best[0], rate_in), max(best[1], rate_out), max(best[2], per_call))
     if best[0] <= 0 or best[1] <= 0:
         if kind != "any":
-            return _dearest_known(None)                     # nothing known of this family: the dearest of any
+            return _dearest_known(None)                     # nothing priced is known of this family: the dearest of any
         best = (max(best[0], CAUTIOUS_FLOOR_PER_TOKEN[0]), max(best[1], CAUTIOUS_FLOOR_PER_TOKEN[1]), best[2])
     _CAUTION_CACHE[family] = best
     return best
@@ -475,7 +520,8 @@ def _register_estimate(alias, rates):
         model = (deployment.get("litellm_params") or {}).get("model")
         if not isinstance(model, str):
             continue
-        record = {"litellm_provider": model.split("/", 1)[0] if "/" in model else "openai", "mode": "chat", "input_cost_per_token": rate_in, "output_cost_per_token": rate_out}
+        record = {"litellm_provider": model.split("/", 1)[0] if "/" in model else (deployment.get("litellm_params") or {}).get("custom_llm_provider") or "openai", "mode": "chat", "input_cost_per_token": rate_in, "output_cost_per_token": rate_out,
+                  "cache_read_input_token_cost": rate_in, "cache_creation_input_token_cost": rate_in}   # cached tokens too: left out, LiteLLM counts them as free
         if per_call > 0:
             record["input_cost_per_request"] = per_call
         keys = {model, _stripped(model)}
@@ -492,7 +538,7 @@ def _hold_prices(alias):
     known = _prices_for(alias)
     if known is not None:
         return known, False
-    rate_in, rate_out, per_call = _dearest_known(next((d.get("litellm_params", {}).get("model") for d in _deployments_of(alias)), None) or alias)
+    rate_in, rate_out, per_call = _dearest_known(next((_model_label(d) for d in _deployments_of(alias)), None) or alias)
     if _deployments_of(alias) and not any(_stripped(d.get("litellm_params", {}).get("model", "")) in _ESTIMATED for d in _deployments_of(alias)):
         _register_estimate(alias, (rate_in, rate_out, per_call))
     return (rate_in * CAUTION_FACTOR, rate_out * CAUTION_FACTOR, None, None, per_call * CAUTION_FACTOR), True
@@ -532,7 +578,7 @@ def _settled_cost(state, cost, tokens, alias):
     if prompt + completion <= 0:
         return 0.0, False
     deployment = next(iter(_deployments_of(alias)), None)
-    rate_in, rate_out, per_call = _dearest_known(((deployment or {}).get("litellm_params") or {}).get("model") or alias)
+    rate_in, rate_out, per_call = _dearest_known(_model_label(deployment) or alias)
     return max(prompt, 0) * rate_in + max(completion, 0) * rate_out + per_call, True
 
 
@@ -875,10 +921,12 @@ class RovaraGuard(CustomLogger):
         if not isinstance(call_id, str) or not call_id:
             call_id = data["litellm_call_id"] = str(_uuid.uuid4())
         try:
-            verdict, charged = await _LEDGER.take(key, call_id, worst, spent, limit)
+            verdict, charged = await _LEDGER.take(key, call_id, worst, spent, limit, estimated)
         except Exception as e:
             print(f"rovara_guard: budget hold failed ({type(e).__name__}); the call is refused", file=sys.stderr, flush=True)
             raise _proxy_error(route, 503, "budget_unavailable", "the task budget could not be checked; try again shortly")
+        if verdict == "exceeded" and estimated and max(charged or 0, spent) < limit:
+            verdict = "held"                                # an estimated hold the room cannot take while the task has not overrun: only an earlier call's hold is in the way
         if verdict == "exceeded":
             asked = max([int(v) for v in (data.get("max_tokens"), data.get("max_output_tokens"), data.get("max_completion_tokens"))
                          if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0] or [0])

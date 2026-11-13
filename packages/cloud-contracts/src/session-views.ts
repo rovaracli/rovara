@@ -38,6 +38,8 @@ export const SessionViewSchema = z
     cost: z
       .object({
         spentUsd: z.number().min(0),
+        /** DECISIONS 172: how much of `spentUsd` is an estimate (a model with no known price is settled at the dearest known rate of its provider). Absent: none of it. Shown as "estimated" beside the cost. */
+        estimatedUsd: z.number().min(0).optional(),
         runLimitUsd: z.number().min(0).optional(),
         stopAtUsd: z.number().min(0).optional(),
         payer: PayerNameSchema,

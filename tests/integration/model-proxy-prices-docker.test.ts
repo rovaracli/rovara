@@ -26,7 +26,7 @@ server.llm_router = Router(model_list=yaml.safe_load(scenario["config"])["model_
 import rovara_guard as g
 class Ledger:
     def __init__(self): self.settled = []
-    async def take(self, key, call_id, worst, spent, cap): return "ok", None
+    async def take(self, key, call_id, worst, spent, cap, estimated=False): return "ok", None
     async def settle(self, call_id, cost, estimated=False): self.settled.append((cost, estimated))
 g._LEDGER = Ledger()
 litellm.callbacks = [g.proxy_handler_instance]

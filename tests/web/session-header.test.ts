@@ -13,6 +13,14 @@ it("shows stable task identity, real status, money and execution location", () =
  const view = sessionFixture();const f = renderUi(h(SessionHeader, { session: view, onAction: () => undefined, lead: null }));
  expect(screen.getByRole("heading", { name: "Fix duplicate refunds", level: 1 })).toBeTruthy();expect(screen.getByText("Payments expert")).toBeTruthy();expect(screen.getByText("on Priya's MacBook")).toBeTruthy();expect(screen.getByText("offline")).toBeTruthy();expect(sessionDisplay(view).text).toBe("Building");expect(screen.queryByRole("img", { name: "Building" }), "the lead block says the state; the header has no status dot (decision 125)").toBeNull();expect(screen.getByText("$1.20")).toBeTruthy();expect(screen.getByText("$4.00")).toBeTruthy();f.unmount();
 });
+it("says when the cost is an estimate (DECISIONS 172): all of it, part of it, none of it", () => {
+ const cost = (estimatedUsd?: number) => ({ spentUsd: 2, ...(estimatedUsd === undefined ? {} : { estimatedUsd }), payer: { kind: "member" as const, name: sessionPerson.name } });
+ const show = (estimatedUsd?: number) => { const f = renderUi(h(SessionHeader, { session: sessionFixture({ cost: cost(estimatedUsd) }), onAction: () => undefined, lead: null })); const text = document.body.textContent ?? ""; f.unmount(); return text; };
+ expect(show(2)).toContain("Estimated $2.00");
+ expect(show(0.5)).toContain("$2.00 ($0.50 of it estimated)");
+ expect(show(0.5)).not.toContain("Estimated $2.00");
+ expect(show()).not.toMatch(/stimated/u);
+});
 it("offers follow and sharing only from explicit server actions", () => {
  const view = sessionFixture({ you: { level: "view", owner: false, following: false, actions: ["watch"] } });const f = renderUi(h(SessionHeader, { session: view, onAction: () => undefined, lead: null }));
  expect(screen.getByRole("button", { name: "Follow" })).toBeTruthy();expect(screen.queryByRole("button", { name: "Share" })).toBeNull();expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();f.unmount();

@@ -129,6 +129,18 @@ cuts = [cut(P0, "messages", "anth-slow", key), cut(P1, "chat", "oai-slow", key),
 charged, held, holds = settled(token)
 check("cut_streams_charged_in_full", cuts == ["200"] * 3 and held == 0 and holds == 0 and charged > 3 * 4_000, cuts=cuts, charged=charged)
 
+# 2b. a cut stream's charge is an estimate: it is stamped in the key's metadata, where the broker reads it through /key/info (DECISIONS 172)
+def estimated_stamp(key, want, wait=40):
+    end, got = time.time() + wait, None
+    while time.time() < end:
+        s, _, b = post_get(f"/key/info?key={key}")
+        got = ((json.loads(b).get("info") or {}).get("metadata") or {}).get("rovara_estimated_micros") if s == 200 else None
+        if got == want: return got
+        time.sleep(2)
+    return got
+stamped = estimated_stamp(key, charged)
+check("estimated_charge_stamped_in_key_metadata", stamped == charged, stamped=stamped, charged=charged)
+
 # 3. an error answer is not billed: the hold is released
 key, token = mint(100.0)
 s, _, _ = post(P1, *body("chat", "oai-fail", False), key)
