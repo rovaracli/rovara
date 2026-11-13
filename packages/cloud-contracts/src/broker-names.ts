@@ -251,6 +251,11 @@ export const BROKER_SETTINGS = {
   // (everyone is in the company their sign-in pointer names, exactly as before) and the header is neither read nor echoed. The infrastructure half (a stack parameter, "0" by default, packed into AGENTX_SETTINGS; see the
   // feature-switch recipe in docs/architecture/code-map.md) is NOT wired yet, so a deployed install reads it as off.
   companySwitcher: { code: "cw", variable: "COMPANY_SWITCHER_ENABLED" },
+  // Convergence S0 (decision 130): the combined switch that starts NEW tasks on Rovara Code's core (merge tracking, build step and task flow together) for
+  // the companies it names: `off` (the default; absent or anything malformed is off too), `on`, or `on:<company id>[:<company id>...]`. A running task keeps
+  // the engine it started on (packages/broker/src/cloud/app/flags.ts, engine-stamp.ts). The infrastructure half (a stack parameter packed into AGENTX_SETTINGS)
+  // is NOT wired yet, so a deployed install reads it as off.
+  coreEngine: { code: "cc", variable: "CLOUD_CORE_ENGINE" },
 } as const satisfies Record<string, BrokerSettingSpec>;
 
 export type BrokerSettingKey = keyof typeof BROKER_SETTINGS;

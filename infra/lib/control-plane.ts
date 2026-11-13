@@ -1494,13 +1494,14 @@ export class ControlPlaneStack extends Stack {
         resources: [state.tableArn],
         conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["SHARED_TASK#*"] } },
       }));
-      // Slack plan buttons read only the task owner, share binding, and saved workflow policy by key.
+      // Slack plan buttons read only the task owner, share binding, and saved workflow policy by key. `currentOwner` (0.5.15.1) is the person who took the task over, which the owner check
+      // reads (slack-interactivity.ts loadTask, via tryEffectiveTaskOwner): without it every button press was refused by DynamoDB, Stop on a Quick auto-start first (found live on 0.5.15).
       slackIngress.addToRolePolicy(new iam.PolicyStatement({
         actions: ["dynamodb:GetItem"],
         resources: [state.tableArn],
         conditions: {
           "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVTASK#*"] },
-          "ForAllValues:StringEquals": { "dynamodb:Attributes": ["pk", "sk", "slackUserId", "share", "workflow"] },
+          "ForAllValues:StringEquals": { "dynamodb:Attributes": ["pk", "sk", "slackUserId", "share", "workflow", "currentOwner"] },
           StringEqualsIfExists: { "dynamodb:Select": "SPECIFIC_ATTRIBUTES" },
           Null: { "dynamodb:Attributes": "false" },
         },

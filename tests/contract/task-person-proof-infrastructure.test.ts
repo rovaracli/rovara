@@ -454,18 +454,23 @@ describe("the named TEST proof-only installation gate", () => {
     // TeamRecordKeywordIndex with its packed setting `tw`. All of it exists only with the Team record built, which none of the templates this test pins builds, so NO digest moved: checked first (the infra file put back to the branch's
     // previous version) and again with the change: this test, named-templates and legacy-templates pass on the same pins both times. The committed list of the resources the record switch adds
     // (tests/fixtures/team-record-switch-resources.json) shows exactly the eight new ids. Legacy did not move.
+    // 2026-11-12 (0.5.15.1, fix/05151-slack-stop-iam, on v0.5.15 5f4d7627d): the named and foreign digests were retaken from the values the test reports, after TWO intended changes: (1) the Slack ingress role's
+    // DEVTASK#* GetItem statement lists `currentOwner` among its dynamodb:Attributes (the interactivity task read names it; every Slack button press was refused by DynamoDB, Stop and Close seen live), and (2) the realtime
+    // authorizer's role gains dynamodb:BatchGetItem on the State table for the leading key DEVELOPER_NAME#* only, with the Null guard (the owner's name read on a session subscribe was refused). Checked first: with
+    // infra/lib/control-plane.ts, infra/lib/realtime.ts and the named snapshot put back to v0.5.15's, this test and named-templates pass on v0.5.15's own pins. The named snapshot shows exactly that one attribute and
+    // that one statement added. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "876d05468942b5654a2c4464dc2f57967ee137e320588c3f586c33e635610179",
-        withoutRoute: "dd7a8952b232cb93c7c66a4256721ae67377a87464ac9307c3379ea468c97d33",
+        withRoute: "c1cb67860eacd4945cc9e31be8389f0c97b5b2d96dcc72717569c59290896ac3",
+        withoutRoute: "499c5d8dcd97f2ef40eb555fcd68089a4b539ab15221ea0ff92511a24346ab1f",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "b78fff34584a4becb845ebeaee90030a83c11536e0d8467ea5fa24ec1e46a104",
-        withoutRoute: "b05b7d04387318269a6272e161f176fb612635cf2eb02983aba4fa2769ee1dd6",
+        withRoute: "83f42fd1e7483a6715220f6a55e4a9486fcb3df3cfbffbd00b832d6dd29c600b",
+        withoutRoute: "24683fc7b7d18dd0009289cfa6af4f0e17c23093beec66f903c09242f241e28d",
       },
       {
         label: "legacy",

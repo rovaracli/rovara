@@ -1,7 +1,7 @@
 // FR-026: `agentx upgrade --export <dir>` writes the upgrade for a platform team's pipeline. It makes
 // no AWS write. Each stack's parameter file names every value this upgrade sets (developer sign-in
 // included, from SSM, as agentx upgrade sends it), and marks each deployed parameter an upgrade keeps
-// (ruling F29: the operator's settings and the callback signing key) UsePreviousValue, so the change
+// (ruling F29: the operator's settings) UsePreviousValue, so the change
 // set keeps them and no secret is in any file.
 import { chmod, copyFile, mkdir, mkdtemp, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -114,7 +114,7 @@ export async function writeUpgradeBundle(input: {
     const readme = [
       `# Upgrade AgentX environment ${env} to ${version}`, "",
       `Environment ${env} (account ${settings.account}, region ${region}) runs ${settings.version}. This bundle upgrades it to ${version}.`,
-      "No file here holds a secret. The parameters an upgrade keeps (the operator's settings, the callback signing key and developer sign-in) are marked UsePreviousValue, so they keep their values. Any other parameter set by hand in the console goes back to the template's default, as it does with agentx upgrade.", "",
+      "No file here holds a secret. The parameters an upgrade keeps (the operator's settings and developer sign-in) are marked UsePreviousValue, so they keep their values. Any other parameter set by hand in the console goes back to the template's default, as it does with agentx upgrade.", "",
       "Run every command below from this bundle's directory.",
       `Deploy the stacks in this order, one at a time, each only after the one before it finished: ${input.parts.map((part) => environmentStackName(env, part)).join(", ")}.`,
       "Read each change set before executing it: a replaced or deleted table, user pool, bucket, key or secret loses its data.",

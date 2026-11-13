@@ -357,7 +357,7 @@ import { linearWriteOf } from "../rovara-code/linear-write.js";
 import { companyDomainsPort } from "../org/company-domains/port.js";
 import { deadLetterUrlOf, opsQueueUrlOf, sqsDeadLetters, sqsOpsQueue } from "../team-record/ops-queue.js";
 import { askAliasHashKey } from "../agent-sessions/ask-erased-aliases.js";
-import { callbackKeySource, erasureKeySource, handlerAfterKeys, legacySigningKeys, previousKeyOf, type CallbackKeyRing } from "./signing-key-secrets.js";
+import { callbackKeySource, erasureKeySource, handlerAfterKeys, isNamedEnvironment, legacySigningKeys, previousKeyOf, type CallbackKeyRing } from "./signing-key-secrets.js";
 import { createEvidenceErase } from "../rovara-code/evidence-erase.js";
 import { personErasureStep } from "./broker/evidence-wiring.js";
 import { nameEraserOf } from "../developer/erase-name.js";
@@ -593,8 +593,8 @@ const brokerInput: AwsBrokerInput = {
   // Lessons in production (lane 2, WB-4, M1): a finished task's reflection goes to this queue (its URL is derived from the environment's name; nothing is passed). Its client gives up quickly (two tries, 1.5 s), like the audit client, so a queue brownout cannot hold a task end.
   ...(teamRecord === undefined || reflectQueueUrlOf(process.env) === undefined ? {} : { lessonsReflectQueue: sqsReflectQueue(new SQSClient({ ...awsClientConfiguration, maxAttempts: 2, requestHandler: { requestTimeout: REFLECT_SDK_REQUEST_TIMEOUT_MS, connectionTimeout: REFLECT_SDK_REQUEST_TIMEOUT_MS } }), reflectQueueUrlOf(process.env)!) }),
   ...(audit === undefined ? {} : { audit }),
-  // Work events (U3): written where the State table expires them by TTL (named environments set AGENTX_ENV); `AGENTX_WORK_EVENTS=off` turns them off.
-  ...(process.env.AGENTX_ENV === undefined || process.env.AGENTX_WORK_EVENTS === "off" ? {} : { workEvents: {} }),
+  // Work events (U3): written where the State table expires them by TTL (named environments set AGENTX_ENV; an empty or blank one counts as the legacy install, as for the signing keys); `AGENTX_WORK_EVENTS=off` turns them off.
+  ...(!isNamedEnvironment(process.env) || process.env.AGENTX_WORK_EVENTS === "off" ? {} : { workEvents: {} }),
   ...(auditLedger === undefined ? {} : { auditLedger }),
   ...(auditErase === undefined ? {} : { auditErase }),
   s3,

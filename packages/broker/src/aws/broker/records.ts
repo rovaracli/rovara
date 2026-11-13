@@ -15,6 +15,7 @@ import { requireOrgId } from "../../org/resolve.js";
 import { getItem, operationKey, publicOperation, requireOperation, type OperationRecord } from "../cancellation.js";
 import { grantRoleOf } from "../../developer/project-roles.js";
 import { developerIdForSlackUser } from "../admin-actions.js";
+import { coreOperationEvents, findCoreArtifactRow } from "../../cloud/rows/core-rows.js";
 import { decodeCursor, encodeCursor, parseStoredEvent, pullRequestKey, workspaceKey } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies, MembershipRecord, ProjectModelSelectionRecord, PullRequestRecord, RegisteredProjectRecord } from "./definitions.js";
 import { agentRouteDependencies, developerTaskActions, requireRecordLatestProject, requireRecordProject } from "./dependency-wiring.js";
@@ -45,11 +46,23 @@ export async function pageEvents(
     Limit: input.limit,
     ConsistentRead: true,
   }));
-  const events = (response.Items ?? [])
-    .filter((item) => item.entityType === "EVENT")
-    .map((item) => parseStoredEvent(item));
+  let items = (response.Items ?? []).filter((item) => item.entityType === "EVENT");
+  let more = response.LastEvaluatedKey !== undefined;
+  if (items.length === 0) {
+    // An operation of a core task keeps its events under its workspace (D18): looked for only where Cloud's own partition has none, with Cloud's cursor rule (from `after`, inclusive).
+    const core = await coreOperationEvents(dependencies, workspaceId, operationId, { limit: input.limit + 1, afterSequence: after });
+    items = core.slice(0, input.limit);
+    more = core.length > input.limit;
+  }
+  const events = items.map((item) => parseStoredEvent(item));
   const last = events.at(-1)?.sequence;
-  return { events, ...(response.LastEvaluatedKey && last !== undefined ? { cursor: encodeCursor(last) } : {}) };
+  return { events, ...(more && last !== undefined ? { cursor: encodeCursor(last) } : {}) };
+}
+
+/** A core task's artifact by id, as the Cloud row it stands for (its workspace is the caller's: `requireOwnedWorkspace` has run, so the owner is the caller's). */
+async function coreShapedArtifact(dependencies: AwsBrokerDependencies, workspaceId: string, artifactId: string, ownerKey: string): Promise<Record<string, unknown> | undefined> {
+  const row = await findCoreArtifactRow(dependencies, workspaceId, artifactId);
+  return row === undefined ? undefined : { ...row, ownerKey };
 }
 
 export async function getArtifact(
@@ -59,10 +72,12 @@ export async function getArtifact(
   artifactId: string,
 ) {
   await requireOwnedWorkspace(dependencies, identity, workspaceId);
-  const artifact = await getItem<Record<string, unknown>>(dependencies, {
+  // Cloud's key first (one read, as always); a core task's artifact is kept under its operation and name (D17, cloud/rows/core-rows.ts), its workspace already checked as the caller's.
+  const cloudShaped = await getItem<Record<string, unknown>>(dependencies, {
     pk: `WORKSPACE#${workspaceId}`,
     sk: `ARTIFACT#${artifactId}`,
   });
+  const artifact = cloudShaped ?? await coreShapedArtifact(dependencies, workspaceId, artifactId, identity.ownerKey);
   if (!artifact || artifact.ownerKey !== identity.ownerKey || typeof artifact.objectKey !== "string") {
     throw agentXError("NOT_FOUND", "artifact not found");
   }
