@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError } from "@rovara-code/contracts";
+import { engineOfTask, engineStampKey } from "../../cloud/app/engine-stamp.js";
 import { recordRunCost } from "../../spend/estimate.js";
 import { noteFinishedTaskDuration } from "../../rovara-code/duration.js";
 import type { ModelAccess } from "../../model-proxy/access.js";
@@ -239,6 +240,9 @@ export async function releaseFinishedTasksOf(deps: ReleaseDeps, member: { pk: st
     if (released >= SELF_HEAL_MAX) break;
     const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
     if (task === undefined) continue;
+    // A marker beside a person's counter may be the core's (it charges the same family and marks each task `TASK#<id>`): the core releases its own tasks, and
+    // Cloud's path must never close one (it would write releasedAt, a task-index update and an audit row on a core task). Only Cloud's tasks are healed here.
+    if (engineOfTask(await get<Record<string, unknown>>(deps, engineStampKey(taskId)), "flow") === "core") continue;
     // A finished task goes through the marked release, so a claim it leaves (the compute refused, say) is the sweep's to
     // finish; a closed task only gives back its slot.
     try {

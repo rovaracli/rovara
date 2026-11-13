@@ -30,16 +30,18 @@ function markerCharged(db: FakeDynamoDb, who: typeof charge, taskId: string, cou
 describe("0.5.18 readers: a slot charged by the marker writers", () => {
   it("is read as charged and released through its marker, once", async () => {
     const db = new FakeDynamoDb();
-    markerCharged(db, charge, "m1");
+    // Two slots held (another task owns the second), so only the marker's condition, never the count, can stop a repeated release.
+    markerCharged(db, charge, "m1", 2);
     expect(await isTaskCharged(db, TABLE, charge, "m1")).toBe(true);
     expect(await chargeFormOf(db, TABLE, charge, "m1")).toBe("marker");
     await send(db, releaseItems(TABLE, charge, "m1", "marker"));
-    expect(db.get(charge.member)).toMatchObject({ count: 0 });
-    expect(db.get(charge.organization)).toMatchObject({ count: 0 });
+    expect(db.get(charge.member)).toMatchObject({ count: 1 });
+    expect(db.get(charge.organization)).toMatchObject({ count: 1 });
     expect(db.get(charge.member.pk, "TASK#m1")).toBeUndefined();
     const repeat = await fails(send(db, releaseItems(TABLE, charge, "m1", "marker")));
     expect(await releaseConflict(db, TABLE, charge, "m1", repeat, "marker")).toBe("already_released");
-    expect(db.get(charge.member)).toMatchObject({ count: 0 });
+    expect(db.get(charge.member)).toMatchObject({ count: 1 });
+    expect(db.get(charge.organization)).toMatchObject({ count: 1 });
   });
 
   it("cannot be charged a second time by this release's set writer", async () => {
