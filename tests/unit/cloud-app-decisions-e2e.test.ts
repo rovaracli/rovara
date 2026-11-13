@@ -78,7 +78,7 @@ async function plannedTask(r: Rig, path: "QUICK" | "FULL" = "QUICK", driver?: Cl
   const drive = driver === undefined ? runtime : await driver.runtimeFor(PEOPLE_ORG);
   const registry = await r.app.registry();
   const direct = createCallbackService({ flow: runtime.flow.deps, blobs: registry.require("object-storage"), grants: { exchange: async () => { throw new Error("unused"); } } });
-  const routed = driver === undefined ? undefined : createCoreCallbackRouter(driver, async () => true);
+  const routed = driver === undefined ? undefined : createCoreCallbackRouter(driver, (key) => r.world.store.get(key) as never);
   const callbacks = async (request: Parameters<typeof direct>[0]) => (routed === undefined ? await direct(request) : (await routed(request)) ?? { statusCode: 599, headers: {}, body: "not routed" });
   const store = r.world.store;
   for (let round = 0; round < 6; round += 1) {
@@ -514,7 +514,7 @@ describe("switch blocker 7 (callbacks): a worker's callback on a core-stamped ta
 
   it("a core task's artifact callback is answered by the core: the document is stored", async () => {
     const { r, job } = await started();
-    const route = createCoreCallbackRouter(r.app);
+    const route = createCoreCallbackRouter(r.app, (key) => r.world.store.get(key) as never);
     const text = planAnswer(planDocument({ title: "Greeting", why: [{ text: "Asked for.", author: "Maya" }], claims: [{ id: "1", text: "Add a greeting." }], decisions: [] }), { checks: { checks: [], none_reason: "Covered." } });
     const answer = await route(post(job.workspaceId, job.operationId, "artifacts", job.callbackCapability, { name: "plan.md", mediaType: "text/markdown", content: text }));
     expect(answer?.statusCode).toBe(200);
@@ -522,14 +522,14 @@ describe("switch blocker 7 (callbacks): a worker's callback on a core-stamped ta
 
   it("the core still checks the capability: a wrong one is refused by the core, not handed to Cloud", async () => {
     const { r, job } = await started();
-    const answer = await createCoreCallbackRouter(r.app)(post(job.workspaceId, job.operationId, "events", "not-a-capability", { events: [] }));
+    const answer = await createCoreCallbackRouter(r.app, (key) => r.world.store.get(key) as never)(post(job.workspaceId, job.operationId, "events", "not-a-capability", { events: [] }));
     expect(answer).toBeDefined();
     expect(answer!.statusCode).toBeGreaterThanOrEqual(400);
   });
 
   it("a task with no core stamp, an action the core does not serve, and any other path are Cloud's (undefined)", async () => {
     const { r, job, taskId } = await started();
-    const route = createCoreCallbackRouter(r.app);
+    const route = createCoreCallbackRouter(r.app, (key) => r.world.store.get(key) as never);
     expect(await route(post(job.workspaceId, job.operationId, "model-access", job.callbackCapability, {}))).toBeUndefined();
     expect(await route({ method: "POST", path: "/v1/app/projects", headers: {} })).toBeUndefined();
     // The same task with its stamp gone is a Cloud task.
@@ -540,7 +540,7 @@ describe("switch blocker 7 (callbacks): a worker's callback on a core-stamped ta
   it("with the switch off nothing is routed, and the served actions are held to the vendored callback service's", async () => {
     const world = createFakeWorld();
     const off = createCloudApp({ env: {}, modules: world.modules, context: () => world.context(), runtime: () => ({}) as never });
-    expect(await createCoreCallbackRouter(off)(post(randomUUID(), randomUUID(), "events", "x", {}))).toBeUndefined();
+    expect(await createCoreCallbackRouter(off, async () => undefined)(post(randomUUID(), randomUUID(), "events", "x", {}))).toBeUndefined();
     const vendored = readFileSync(join(import.meta.dirname, "../../vendor/rovara-code/packages/broker/src/services/callbacks.ts"), "utf8");
     const served = /SERVED_ACTIONS[^=]*= new Set\(\[([^\]]*)\]\)/u.exec(vendored)![1]!.split(",").map((name) => name.trim().replaceAll("\"", ""));
     expect([...CORE_CALLBACK_ACTIONS].sort()).toEqual([...served, "repository-credentials"].sort());
@@ -609,9 +609,27 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     expect(await old.handleScheduledJob({ source: "agentx.core-job", job: "merge-tracking" })).toEqual({ skipped: "off" });
   });
 
+  it("a core-stamped task's callback is NEVER Cloud's: with the root unable to be built it is told to retry (503), and the stamp is read with the switch off and no in-use mark", async () => {
+    const { r, job } = await startedOnCore();
+    const store = r.world.store;
+    // A root that cannot be built (the registry's points are missing), the switch off: still a retryable refusal, not a fall-through.
+    const broken = createCloudApp({ env: {}, modules: () => { throw new Error("no clients"); }, serveStamped: true, context: () => r.world.context(), runtime: () => ({}) as never });
+    const answer = await createCoreCallbackRouter(broken, (key) => store.get(key) as never)(post(job.workspaceId, job.operationId, "events", job.callbackCapability, { events: [] }));
+    expect(answer?.statusCode).toBe(503);
+    expect(answer?.headers["retry-after"]).toBe("5");
+    // And the stamp is read whatever the in-use mark says: a core task started a moment ago is served with the switch off.
+    const off = r.rebuild({ env: {}, serveStamped: true });
+    await store.delete({ key: coreInUseKey(PEOPLE_ORG) });
+    const served = await createCoreCallbackRouter(off, (key) => store.get(key) as never)(post(job.workspaceId, job.operationId, "events", job.callbackCapability, { events: [] }));
+    // Answered by the core (whatever it says of an empty batch), neither handed to Cloud nor told to retry.
+    expect(served).toBeDefined();
+    expect(served!.statusCode).not.toBe(503);
+    expect(served!.body).not.toContain("route not found");
+  });
+
   it("an off root that holds no core task serves nothing: no in-use mark, no callback routing", async () => {
     const r = await rig();
     const off = r.rebuild({ env: {}, serveStamped: true });
-    expect(await createCoreCallbackRouter(off, async () => false)(post(randomUUID(), randomUUID(), "events", "x", {}))).toBeUndefined();
+    expect(await createCoreCallbackRouter(off, (key) => r.world.store.get(key) as never)(post(randomUUID(), randomUUID(), "events", "x", {}))).toBeUndefined();
   });
 });

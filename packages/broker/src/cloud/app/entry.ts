@@ -341,24 +341,32 @@ export function cloudCoreWiringFromBroker(sources: CloudCoreWiringSources): Clou
   };
 }
 
-/** The worker-callback router of the Cloud root (see `CloudCoreEntry.routeCallback`). */
-export function createCoreCallbackRouter(app: CloudApp, inUse: () => Promise<boolean> = async () => false): CloudCoreEntry["routeCallback"] {
+/** What the router reads of the table: one item by key, consistent. */
+export type ReadItem = (key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined>;
+
+const retryLater = (): { statusCode: number; headers: Record<string, string>; body: string } => ({
+  statusCode: 503, headers: { "content-type": "application/json", "retry-after": "5", "cache-control": "no-store" }, body: JSON.stringify({ error: { code: "RUNTIME_UNAVAILABLE", message: "try again" } }),
+});
+
+/**
+ * The worker-callback router of the Cloud root (see `CloudCoreEntry.routeCallback`). The stamp decides, with the switch on or off: a callback of a core-stamped task is the core's and is NEVER
+ * handed to Cloud. When the core cannot serve it (the root cannot be built, the company cannot be read) the worker is told to retry (503), not answered by code that does not know the task.
+ * Only a task with no core stamp, or an action the core does not serve, is Cloud's (`undefined`). Read with the table directly, so a root that cannot be built still knows the stamp.
+ */
+export function createCoreCallbackRouter(app: CloudApp, read: ReadItem): CloudCoreEntry["routeCallback"] {
   return async (request) => {
-    // A new task may start on the core (`active`), or the root serves what the core already holds (`serveStamped`) and this install has started one: otherwise the request is Cloud's, with no read.
-    if (!app.active && !(app.serveStamped && await inUse())) return undefined;
+    if (!app.active && !app.serveStamped) return undefined;
     const match = CALLBACK_PATH.exec(request.path.split("?")[0] ?? "");
     if (match === null || !CORE_CALLBACK_ACTIONS.has(match[3]!)) return undefined;
     const [, workspaceId] = match as unknown as [string, string];
-    const registry = await app.registry().catch(() => undefined);
-    if (registry === undefined) return undefined;
-    const store = registry.require("storage");
-    const taskId = (await store.get(taskPointerKey(workspaceId)))?.["taskId"];
-    if (typeof taskId !== "string" || await engineOfStoredTask(store, taskId, "flow") !== "core") return undefined;
-    const workspace = await store.get({ pk: `WORKSPACE#${workspaceId}`, sk: "META" });
+    const taskId = (await read(taskPointerKey(workspaceId)))?.["taskId"];
+    if (typeof taskId !== "string" || await engineOfStoredTask({ get: read as never }, taskId, "flow") !== "core") return undefined;
+    const workspace = await read({ pk: `WORKSPACE#${workspaceId}`, sk: "META" });
     const company = workspace?.["orgId"] ?? workspace?.["companyId"];
-    if (typeof company !== "string") return undefined;
+    if (typeof company !== "string") return retryLater();
     const callbacks = (await app.runtimeFor(company).catch(() => undefined))?.inbound.callbacks;
-    return callbacks === undefined ? undefined : await callbacks(request);
+    if (callbacks === undefined) return retryLater();
+    return await callbacks(request);
   };
 }
 
@@ -432,7 +440,7 @@ export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): Clou
     app,
     intentHook: createCoreIntentHook({ app, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), origin, now: () => options.now().getTime(), log: options.log, taskStopEnrolled }),
     slackRequest: createCoreSlackConsumer({ app, log: options.log, taskStopEnrolled, orgOfTeam: async (teamId) => await slackTeamOrg(options.broker, teamId).catch(() => undefined) }),
-    routeCallback: createCoreCallbackRouter(app, coreInUse),
+    routeCallback: createCoreCallbackRouter(app, async (key) => ((await options.broker.documentClient.send(new GetCommand({ TableName: options.broker.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item),
     isScheduledJob: isCoreJobEvent,
     handleScheduledJob: async (event) => (!app.active && !(await coreInUse()) ? (isCoreJobEvent(event) ? { skipped: "off" } : undefined) : await app.handleScheduledJob(event)),
   };
