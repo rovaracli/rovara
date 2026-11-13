@@ -4543,6 +4543,18 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               ],
             },
             {
+              "ExpirationInDays": 365,
+              "Id": "ExpireEvidenceRecord",
+              "Prefix": "private/",
+              "Status": "Enabled",
+              "TagFilters": [
+                {
+                  "Key": "rovara-retention",
+                  "Value": "evidence-record",
+                },
+              ],
+            },
+            {
               "ExpirationInDays": 30,
               "Id": "ExpireNightlyMaps",
               "Prefix": "nightly-maps/",
