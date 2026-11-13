@@ -15,7 +15,7 @@ import { DeveloperSignInMethodSchema, type DeveloperTaskView, type ProjectDefini
 import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, agentXError, type OperationStatus, type ChannelTurn, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer } from "@rovara-code/contracts";
 import { cloudToolBudget } from "./tool-budget.js";
 import { liveStoredRole, personWalk, signInReader } from "../../org/live-role.js";
-import { MERGE_HOPS_MAX } from "../../developer/merged-owner.js";
+import { mergeSurvivor } from "../../developer/merged-owner.js";
 import { handOnMergedTask } from "../../agent-sessions/lifecycle.js";
 import { taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { traceFormerDevelopers } from "../../org/former-developers.js";
@@ -455,22 +455,25 @@ export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId
 }
 
 /**
- * 0.5.18 (Slack merged identity): the developer id a Slack person acts as: the survivor of the SAME walk `slackRequesterStanding` read their role on (`ids`, the Slack id first: each merge, else the
- * identity link, the survivor last). A Slack-only sign-in merged into the person's web sign-in is that survivor from then on, so a task started from Slack is never written under the merged-away
- * id again (it could not be seated as its owner: its membership moved with the merge). The survivor must be a current, unrevoked member of the Slack team's own company right now: following a
- * merge never lets anyone act in a company the survivor does not belong to. A walk longer than MERGE_HOPS_MAX (the owner seat's bound) is refused, never guessed.
+ * 0.5.18 (Slack merged identity): the developer id a Slack person acts as. A Slack-only sign-in merged into the person's web sign-in is that survivor from then on, so a task started from Slack is
+ * never written under the merged-away id again (it could not be seated as its owner: its membership moved with the merge). The seat follows `mergedInto` only (`mergeSurvivor`), never an identity
+ * link: a Slack account only LINKED to a web account keeps acting as its Slack id, whose authority is read through the link each time (so an unlink makes it an outsider again, LP-2b). The seat must
+ * lie on the SAME walk `slackRequesterStanding` read the role on (`ids`, review L2): a merge survivor that walk did not reach is refused, never guessed, as is a chain longer than MERGE_HOPS_MAX.
+ * The survivor must be a current, unrevoked member of the Slack team's own company right now: following a merge never lets anyone act in a company the survivor does not belong to.
  */
 export async function slackSeatOf(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId, ids: readonly string[]): Promise<Pick<DeveloperCaller, "developerId"> & Partial<Pick<DeveloperCaller, "amr" | "name">>> {
   const slackId = developerIdForSlackUser(userId);
-  const survivor = ids.at(-1) ?? slackId;
   if (ids[0] !== undefined && ids[0] !== slackId) throw agentXError("FORBIDDEN", "this person's identity could not be followed to one person; ask an admin");
-  if (survivor === slackId) return { developerId: slackId };
   const table = dependencies.developer?.signInTableName;
-  if (table === undefined || ids.length - 1 > MERGE_HOPS_MAX) {
+  if (table === undefined) return { developerId: slackId };
+  const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
+  const survivor = await mergeSurvivor((id) => read({ pk: `DEVELOPER#${id}`, sk: "META" }), slackId);
+  // The walk follows each merge before any link, so the merge survivor is on it; one that is not (or a chain that loops or is too long) is not this person's.
+  if (survivor === undefined || (survivor !== slackId && !ids.includes(survivor))) {
     logSlackSeat({ event: "slack.merged_seat_refused", reason: "merge_chain_unreadable" });
     throw agentXError("FORBIDDEN", "this person's identity could not be followed to one person; ask an admin");
   }
-  const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
+  if (survivor === slackId) return { developerId: slackId };
   const [membership, record, chosen] = await Promise.all([
     survivorMembershipIn(dependencies, survivor, teamOrg), read({ pk: `DEVELOPER#${survivor}`, sk: "META" }), readChosenName(dependencies.documentClient, dependencies.tableName, survivor),
   ]);
@@ -509,10 +512,8 @@ export async function handOnSlackMergedTask(dependencies: AwsBrokerDependencies,
   if (owner === undefined || owner.developerId === caller.developerId || task.orgId !== caller.orgId || task.closedAt !== undefined || table === undefined) return task;
   const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
   const readRecord = async (id: string) => await read({ pk: `DEVELOPER#${id}`, sk: "META" }) as DeveloperRecord | undefined;
-  // The owner's survivor by the same walk the caller's seat came from (merges, else the identity link), bounded as the seat is; a walk that cannot be followed hands nothing on.
-  let walked: string[];
-  try { walked = (await personWalk({ documentClient: dependencies.documentClient, signInTableName: table }, owner.developerId)).ids; } catch { return task; }
-  if (walked.length - 1 > MERGE_HOPS_MAX || walked.at(-1) !== caller.developerId) return task;
+  // The owner's merge survivor, followed exactly as the caller's seat is (`mergedInto` only, bounded by MERGE_HOPS_MAX); a chain that cannot be followed hands nothing on.
+  if (await mergeSurvivor(readRecord, owner.developerId) !== caller.developerId) return task;
   const hold = await handOnMergedTask({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, signInStore: { getDeveloper: readRecord } },
     { orgId: caller.orgId, taskId: task.taskId, duplicateId: owner.developerId, survivorId: caller.developerId });
   logSlackSeat({ event: "slack.merged_task_hand_on", outcome: hold });

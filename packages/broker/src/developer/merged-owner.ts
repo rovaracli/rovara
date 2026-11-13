@@ -2,9 +2,9 @@
 // 0.5.18 (Slack merged identity): a person whose Slack-only sign-in was merged into their web sign-in is the survivor from then on. A merged-away id must never be written as
 // a task owner again, and a task that still names one (made before this fix, or before the merge drain ran) is seated as the survivor, never left "stale" for good.
 //
-// `mergeSurvivor` (the owner seat, the design card's requester, the backfill) follows the sign-in record's `mergedInto` only: the field the merge writes, and the one the dispatcher can read too.
-// The Slack seat takes the survivor of the walk its role was read on (org/live-role.ts `personWalk`: merges, else the identity link), bounded by the same MERGE_HOPS_MAX. A chain longer than
-// MERGE_HOPS_MAX, or one that loops, is unreadable (undefined), never a guess.
+// `mergeSurvivor` (the Slack seat, the owner seat, the design card's requester, the backfill) follows the sign-in record's `mergedInto` only: the field the merge writes, and the one the dispatcher
+// can read too, never an identity link (a Slack account only linked to a web account keeps its Slack id, read through the link each time). The Slack seat must also lie on the walk its role was
+// read on (org/live-role.ts `personWalk`). A chain longer than MERGE_HOPS_MAX, or one that loops, is unreadable (undefined), never a guess.
 //
 // Following a merge never crosses a company: every caller checks that the survivor is a member of the task's (or the Slack team's) company before it seats them.
 
