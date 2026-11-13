@@ -1181,7 +1181,7 @@ export function auditCompanyUiFlagsChanged(input: AuditBuilderBase & { revision:
 // Company rollout gates (TE-A1) -------------------------------------------------------------------------------------------
 
 /**
- * `occurrence`: `auditOccurrence(org, revision)`: the new revision of the company's gates, so a replay of one write is one event. An owner or admin turned evidence features on or off for the company. `turnedOn` and `turnedOff` are
+ * `occurrence`: `auditOccurrence(org, revision, changedAt)`: the new revision of the company's gates and the time of the change, so a row that was deleted and started again at revision 1 never collides with an older event. An owner or admin turned evidence features on or off for the company. `turnedOn` and `turnedOff` are
  * gate names (a closed list of plain words) joined by `+`, or `none`. The target is the company.
  */
 export function auditCompanyFeatureRolloutChanged(input: AuditBuilderBase & { revision: number; turnedOn: readonly string[]; turnedOff: readonly string[] }): AuditEventInput {

@@ -1,4 +1,5 @@
 import type { RepositoryBranchProbe } from "../../github-app.js";
+import type { GateReader } from "../../org/feature-rollout.js";
 import type { HealthRefreshProbes } from "../../org/health-observations.js";
 import type { RepoFileRuntime } from "../../lessons/repo-file-job.js";
 import type { ServiceCatalogSource } from "../../test-env/dependency-plan.js";
@@ -117,6 +118,8 @@ export interface DeveloperApiConfiguration {
 export interface DeveloperRouteDependencies {
   /** TE-A1: the install switches as the caller's company sees them (`companyGatedEnv`: an evidence switch the company's gate does not turn on reads "0"). Set once per request, after the caller is known; routes read it with `routeEnvOf`. Absent: the process environment. */
   env?: NodeJS.ProcessEnv | undefined;
+  /** TE-A1: this request's gate reader (`createGateReader`): a company's gates are read once for the request, however many places ask. Set with `env`; absent: every ask reads the table. */
+  gates?: GateReader | undefined;
   /** Test services (slice 1): the release's signed service image catalog (`serviceCatalogSourceOf`). The setup draft's dependency candidates become proposed dependencies only with it; without it none are proposed. */
   serviceCatalog?: ServiceCatalogSource;
   /** Company-approved extra images (switch `pj`): the digest lookup of a tag. Absent: the registry API over global fetch (`registryDigestResolver`). A test gives a fake. */

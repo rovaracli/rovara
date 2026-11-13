@@ -1,13 +1,18 @@
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EvidencePackSchema, createCandidateManifest, type EvidencePack } from "@rovara-code/contracts";
 import { WorkflowSnapshotSchema, createWorkflowSnapshot, orgFeatureRolloutKey, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import type { OrgId } from "@rovara-code/contracts";
+import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { keepEvidenceAfterChecks } from "../../packages/broker/src/aws/broker/evidence-wiring.js";
+import { createGateReader, isGateUnavailable } from "../../packages/broker/src/org/feature-rollout.js";
+import { fixSetupDependencies } from "../../packages/broker/src/aws/broker/fix-setup-wiring.js";
 import { gatedEvidencePort } from "../../packages/broker/src/aws/developer-tasks/evidence-gate.js";
 import { evidenceRiskOfTask } from "../../packages/broker/src/aws/developer-tasks/evidence-risk-input.js";
 import type { EvidencePort } from "../../packages/broker/src/aws/developer-tasks/evidence-port.js";
 import { loadTestingView, type TestingViewDeps } from "../../packages/broker/src/aws/developer-tasks/testing-view.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
+import { PROOF_WORDS } from "../../packages/broker/src/org/settings-proof.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { setupWizardBench } from "../support/setup-wizard-testenv.js";
@@ -15,7 +20,7 @@ import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 // TE-A1: the company gate where the evidence features are used. Each surface is shown on (positive control: the path ran) and off for the same company, and off for a company whose neighbour's gate is on.
 
-afterEach(() => { delete process.env.VERIFY_RESULTS_ENABLED; });
+afterEach(() => { delete process.env.VERIFY_RESULTS_ENABLED; delete process.env.TEST_ENVIRONMENT_ENABLED; });
 const ORG_A = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 const ORG_B = "org_bbbbbbbbbbbbbbbbbbbb" as OrgId;
 const NOW = "2026-11-13T12:00:00.000Z";
@@ -24,7 +29,7 @@ const GATES_ON = { proofEvidence: true, verifyResults: true, testEnvironment: tr
 const INSTALL_ON = { PROOF_EVIDENCE_ENABLED: "1", VERIFY_RESULTS_ENABLED: "1" } as NodeJS.ProcessEnv;
 
 function store(rows: Array<[OrgId, Record<string, unknown>]> = []) {
-  const db = new FakeDynamoDb({ rolloutGates: "stored" });
+  const db = new FakeDynamoDb();
   for (const [orgId, gates] of rows) db.set({ ...orgFeatureRolloutKey(orgId), entityType: "FEATURE_ROLLOUT", orgId, gates, revision: 1 });
   let sends = 0;
   const documentClient = { send: (command: unknown) => { sends += 1; return db.send(command as never); } };
@@ -32,7 +37,7 @@ function store(rows: Array<[OrgId, Record<string, unknown>]> = []) {
 }
 
 describe("the evidence port", () => {
-  const key = (orgId: OrgId | undefined) => ({ taskId: TASK_ID, ownerKey: "dev_a", workspaceId: "ws", ...(orgId === undefined ? {} : { orgId }) });
+  const key = (orgId: OrgId | undefined) => ({ taskId: TASK_ID, ownerKey: "dev_a", workspaceId: "ws", orgId });
   const base = () => {
     const calls = { pack: 0, context: 0, view: 0 };
     const port: EvidencePort = {
@@ -44,7 +49,7 @@ describe("the evidence port", () => {
     return { port, calls };
   };
 
-  it("shows a company whose gate is on, and nothing to a company whose gate is off, absent, a neighbour's, or unknown", async () => {
+  it("shows a company whose gate is on or that never chose (it follows the install), and nothing to a company whose gate is off or whose company is unknown", async () => {
     const s = store([[ORG_A, { proofEvidence: true }], [ORG_B, { proofEvidence: false }]]);
     const { port, calls } = base();
     const gated = gatedEvidencePort(port, s.deps, INSTALL_ON);
@@ -52,13 +57,28 @@ describe("the evidence port", () => {
     expect(await gated.context(key(ORG_A), "d")).toBeDefined();
     expect(await gated.view(key(ORG_A), "d")).toBeDefined();
     expect(calls).toEqual({ pack: 1, context: 1, view: 1 });
-    for (const orgId of [ORG_B, "org_cccccccccccccccccccc" as OrgId, undefined]) {
+    expect(await gated.pack(key("org_cccccccccccccccccccc"), "d")).toBeDefined();
+    expect(calls.pack).toBe(2);
+    for (const orgId of [ORG_B, undefined]) {
       expect(await gated.pack(key(orgId), "d")).toBeUndefined();
       expect(await gated.context(key(orgId), "d")).toBeUndefined();
       expect(await gated.view(key(orgId), "d")).toBeUndefined();
       expect(await gated.on?.(key(orgId))).toBe(false);
     }
-    expect(calls).toEqual({ pack: 1, context: 1, view: 1 });
+    expect(calls).toEqual({ pack: 2, context: 1, view: 1 });
+  });
+
+  it("a port scoped to one request's reader reads a company's gate once however often it is used; a new request reads again", async () => {
+    const s = store([[ORG_A, { proofEvidence: true }]]);
+    const { port } = base();
+    const gated = gatedEvidencePort(port, s.deps, INSTALL_ON);
+    const reader = createGateReader(s.deps);
+    const scoped = gated.scoped!(reader);
+    const before = s.sends();
+    await scoped.pack(key(ORG_A), "d"); await scoped.context(key(ORG_A), "d"); await scoped.view(key(ORG_A), "d"); await scoped.on!(key(ORG_A));
+    expect(s.sends() - before).toBe(1);
+    await gated.scoped!(createGateReader(s.deps)).pack(key(ORG_A), "d");
+    expect(s.sends() - before).toBe(2);
   });
 
   it("the install switch off is off even for a company whose gate is on, and the gate is read live (a change is the next read)", async () => {
@@ -91,10 +111,11 @@ describe("keeping evidence", () => {
   const dependencies = (documentClient: unknown) => ({ s3: { send: async () => { throw new Error("NoSuchKey"); } }, artifactBucketName: "bucket", tableName: "state", documentClient }) as never;
   const args = (orgId: OrgId | undefined) => ({ task: { taskId: TASK_ID, ownerKey: "dev_a", workspaceId: "ws", ...(orgId === undefined ? {} : { orgId }) }, operation: { id: "op", workflowMode: "CHECKS" } as never, workflow: { checkPolicy: undefined } as never, candidateDigest: "c".repeat(64), checks: [] });
 
-  it("is done for a company whose gate is on, and is not for one whose gate is off, absent, or unknown", async () => {
+  it("is done for a company whose gate is on or that never chose, and is not for one whose gate is off or whose company is unknown", async () => {
     const s = store([[ORG_A, { proofEvidence: true }], [ORG_B, { proofEvidence: false }]]);
     expect(await keepEvidenceAfterChecks(dependencies(s.deps.documentClient), args(ORG_A), INSTALL_ON)).toBeDefined();
-    for (const orgId of [ORG_B, "org_cccccccccccccccccccc" as OrgId, undefined]) expect(await keepEvidenceAfterChecks(dependencies(s.deps.documentClient), args(orgId), INSTALL_ON)).toBeUndefined();
+    expect(await keepEvidenceAfterChecks(dependencies(s.deps.documentClient), args("org_cccccccccccccccccccc"), INSTALL_ON)).toBeDefined();
+    for (const orgId of [ORG_B, undefined]) expect(await keepEvidenceAfterChecks(dependencies(s.deps.documentClient), args(orgId), INSTALL_ON)).toBeUndefined();
   });
 });
 
@@ -113,10 +134,11 @@ describe("the four test results", () => {
   const deps = (s: ReturnType<typeof store>): TestingViewDeps => ({ ...s.deps, evidence: { pack: async () => pack() } });
   const ON = { VERIFY_RESULTS_ENABLED: "1" };
 
-  it("are decided for a company whose gate is on, and not for one whose gate is off, absent, a neighbour's or unknown", async () => {
+  it("are decided for a company whose gate is on or that never chose, and not for one whose gate is off or whose company is unknown", async () => {
     const s = store([[ORG_A, { verifyResults: true }], [ORG_B, { verifyResults: false, proofEvidence: true }]]);
     expect((await loadTestingView(deps(s), task(ORG_A), workflow(), ON))?.result).toBe("verified");
-    for (const orgId of [ORG_B, "org_cccccccccccccccccccc" as OrgId, undefined]) expect(await loadTestingView(deps(s), task(orgId), workflow(), ON), String(orgId)).toBeUndefined();
+    expect((await loadTestingView(deps(s), task("org_cccccccccccccccccccc"), workflow(), ON))?.result).toBe("verified");
+    for (const orgId of [ORG_B, undefined]) expect(await loadTestingView(deps(s), task(orgId), workflow(), ON), String(orgId)).toBeUndefined();
   });
 
   it("an install with the switch off reads nothing at all, gate or no gate", async () => {
@@ -147,6 +169,54 @@ describe("through the broker's route dispatcher (a company's gate decides what i
     expect((await t.web(OMAR, "GET", POLICY)).status).toBe(404);
   });
 
+  const failGateReads = (db: FakeDynamoDb) => db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { sk?: string } | undefined)?.sk === "FEATURE_ROLLOUT", error: { name: "ProvisionedThroughputExceededException", message: "throttled" }, times: 10 });
+
+  it("a request reads the company's gates once, and the next request reads again (no cache between requests)", async () => {
+    const t = await setupWizardBench({});
+    process.env.VERIFY_RESULTS_ENABLED = "1";
+    let gateReads = 0;
+    const original = t.db.send.bind(t.db);
+    t.db.send = ((command: { constructor: { name: string }; input?: { Key?: { sk?: string } } }) => { if (command.constructor.name === "GetCommand" && command.input?.Key?.sk === "FEATURE_ROLLOUT") gateReads += 1; return original(command as never); });
+    expect((await t.web(OMAR, "GET", POLICY)).status).toBe(200);
+    expect(gateReads).toBe(1);
+    expect((await t.web(OMAR, "GET", POLICY)).status).toBe(200);
+    expect(gateReads).toBe(2);
+  });
+
+  it("a gate that cannot be read for a request follows the catalog default (the install switch), and is logged: a route is neither lost nor opened up by an outage", async () => {
+    const t = await setupWizardBench({});
+    process.env.VERIFY_RESULTS_ENABLED = "1";
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    setGates(t.db, { ...GATES_ON, verifyResults: false });
+    expect((await t.web(OMAR, "GET", POLICY)).status).toBe(404);
+    failGateReads(t.db);
+    expect((await t.web(OMAR, "GET", POLICY)).status).toBe(200);
+    const lines = log.mock.calls.map((call) => String(call[0]));
+    log.mockRestore();
+    expect(lines.some((line) => line.includes("feature_rollout_read_failed"))).toBe(true);
+  });
+
+  it("the browser save of setup and test commands stays refused where the test environment is on, and never gets looser when the gate cannot be read", async () => {
+    const t = await setupWizardBench({});
+    process.env.TEST_ENVIRONMENT_ENABLED = "1";
+    let n = 0;
+    const save = (expectedRevision = 1) => t.web(OMAR, "PUT", "/v1/app/projects/web/settings", { setupCommands: [`make new-setup-${(n += 1)}`], expectedRevision, requestId: `00000000-0000-4000-8000-00000000004${n}` });
+    const refused = (reply: { status: number; body: unknown }) => JSON.stringify(reply.body).includes(PROOF_WORDS.provedInTestEnvironment);
+    // No row: follows the install, on.
+    expect(refused(await save())).toBe(true);
+    // The company turned it off: the old save path is open to it (it is not this refusal).
+    setGates(t.db, { ...GATES_ON, testEnvironment: false });
+    expect(refused(await save())).toBe(false);
+    // Its row cannot be read: the refusal holds (the catalog default is on), so a failed read never opens the save.
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    failGateReads(t.db);
+    // (The save with the gate off went through, so the project is at revision 2.)
+    const third = await save(2);
+    expect(refused(third)).toBe(true);
+    expect(third.status).toBe(400);
+    log.mockRestore();
+  });
+
   it("the Preview features route is found for an owner in a browser, and refused to a member and to a token", async () => {
     const t = await setupWizardBench({});
     await t.person(MAYA, "member");
@@ -156,5 +226,109 @@ describe("through the broker's route dispatcher (a company's gate decides what i
     expect((owner.body as { features: Array<{ name: string }> }).features.map((row) => row.name)).toContain("proofEvidence");
     expect((await t.web(MAYA, "GET", path)).status).toBe(403);
     expect((await t.dev(OMAR, "GET", path)).status).toBe(403);
+  });
+});
+
+describe("the Fix setup wiring reads the evidence with the task's company (H2)", () => {
+  const DIGEST = "d".repeat(64);
+  const pack = EvidencePackSchema.parse({
+    schemaVersion: 1, candidateDigest: DIGEST, environment: { tier: "sandbox", envRevision: 1, services: [], data: "synthetic", accounts: [] },
+    checks: [{ checkId: "unit", kind: "test", label: "unit", before: "failed", after: "failed", class: "already_failing", durationMs: 5, tests: { total: 10, passed: 9, failed: 1, skipped: 0, errored: 0, newTests: [], names: [{ name: "Y", status: "failed" }] } }],
+    selection: { method: "full", selected: 10, total: 10 }, api: [], browser: [], notTested: [],
+  });
+  const taskOf = (orgId: OrgId) => ({
+    taskId: TASK_ID, orgId, project: "web", ownerKey: "dev_a", workspaceId: "ws",
+    workflow: { candidate: { digest: DIGEST }, checkPolicy: { required: [{ id: "unit", label: "unit", kind: "test", command: { cwd: "repo/app", executable: "pytest", args: [], timeoutSeconds: 60 } }], optional: [], selectedOptionalIds: [], proposed: [] }, verification: { candidateDigest: DIGEST, results: [{ checkId: "unit", status: "FAILED" }] } },
+  }) as unknown as DeveloperTaskRecord;
+  const run = async (gate: boolean, orgId: OrgId = ORG_A) => {
+    const db = new FakeDynamoDb();
+    db.set({ ...orgFeatureRolloutKey(ORG_A), entityType: "FEATURE_ROLLOUT", orgId: ORG_A, gates: { proofEvidence: gate }, revision: 1 });
+    let reads = 0;
+    const s3 = { send: async (command: unknown) => { expect(command).toBeInstanceOf(GetObjectCommand); reads += 1; return { Body: { transformToString: async () => JSON.stringify(pack) } }; } };
+    const dependencies = { documentClient: db, tableName: "state", now: Date.now, s3, artifactBucketName: "bucket" } as never;
+    const checks = await fixSetupDependencies(dependencies, { VERIFY_RESULTS_ENABLED: "1", PROOF_EVIDENCE_ENABLED: "1" }).newFailingChecks!(taskOf(orgId), { unit: "failed" });
+    return { checks, reads };
+  };
+
+  it("the real gated port reads the pack for the task's company when its gate is on", async () => {
+    // The pack is read from the store for this company's task (the key carries its company, so the gated port lets it through).
+    const on = await run(true);
+    expect(on.reads).toBe(1);
+    expect(on.checks).toEqual(["unit"]);
+  });
+
+  it("with the gate off the port reads nothing and the check is named from the run's own facts; a company with no row follows the install and reads", async () => {
+    const off = await run(false);
+    expect(off.reads).toBe(0);
+    expect(off.checks).toEqual(["unit"]);
+    const other = await run(true, ORG_B);
+    expect(other.reads).toBe(1);
+  });
+});
+
+describe("a gate that cannot be read is RUNTIME_UNAVAILABLE where work starts or is kept, never a silent off (M3)", () => {
+  const PREPARED = { result: { preparedBase: [{ repositoryId: "web", baseCommitSha: "e".repeat(40) }] } };
+  const failGateReads = (db: FakeDynamoDb) => db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { sk?: string } | undefined)?.sk === "FEATURE_ROLLOUT", error: { name: "ProvisionedThroughputExceededException", message: "throttled" }, times: 50 });
+  const tasks = (db: FakeDynamoDb) => db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.sk === "META");
+  const taskOf = (t: Awaited<ReturnType<typeof setupWizardBench>>) => t.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.purpose === "setup_draft").at(-1) as unknown as { taskId: string; workspaceId: string };
+  const quick = (t: Awaited<ReturnType<typeof setupWizardBench>>) => t.dev(OMAR, "POST", "/v1/app/projects/web/code", { requestId: randomUUID(), input: { text: "Fix the retry bug" }, path: "QUICK" });
+
+  it("the keep path throws RUNTIME_UNAVAILABLE and writes nothing", async () => {
+    const calls: string[] = [];
+    const documentClient = { send: async (command: unknown) => { calls.push((command as { constructor: { name: string } }).constructor.name); throw new Error("down"); } };
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = await keepEvidenceAfterChecks({ s3: { send: async () => { throw new Error("no"); } }, artifactBucketName: "bucket", tableName: "state", documentClient } as never, { task: { taskId: TASK_ID, ownerKey: "dev_a", workspaceId: "ws", orgId: ORG_A }, operation: { id: "op", workflowMode: "CHECKS" } as never, workflow: { checkPolicy: undefined }, candidateDigest: "c".repeat(64), checks: [] }, INSTALL_ON).catch((caught: unknown) => caught as Error);
+    log.mockRestore();
+    expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(isGateUnavailable(error)).toBe(true);
+    expect(calls).toEqual(["GetCommand"]);
+  });
+
+  it("starting a task refuses with RUNTIME_UNAVAILABLE and creates no task; the same start goes through when the gate reads", async () => {
+    const t = await setupWizardBench({});
+    process.env.TEST_ENVIRONMENT_ENABLED = "1";
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect((await quick(t)).status).toBe(202);
+    const before = tasks(t.db).length;
+    failGateReads(t.db);
+    const refused = await quick(t);
+    log.mockRestore();
+    expect(refused.status).toBeGreaterThanOrEqual(500);
+    expect(JSON.stringify(refused.body)).toContain("RUNTIME_UNAVAILABLE");
+    expect(tasks(t.db)).toHaveLength(before);
+  });
+
+  it("dispatching a run (the task's plan and capture) throws RUNTIME_UNAVAILABLE and sends nothing: the run waits in the queue for its retry instead of going out without them", async () => {
+    const t = await setupWizardBench({});
+    process.env.TEST_ENVIRONMENT_ENABLED = "1";
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect((await t.ask()).status).toBe(202);
+    const task = taskOf(t);
+    const prepare = t.operations(task.workspaceId).find((operation) => operation.kind === "prepare")!;
+    // Finishing the preparation reads the company's gate twice: the setup draft's end items (first), then the dispatch of the run (second). Only the second read fails, so it is the dispatch that is under test.
+    let seen = 0;
+    t.db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { sk?: string } | undefined)?.sk === "FEATURE_ROLLOUT" && (seen += 1) >= 2, error: { name: "ProvisionedThroughputExceededException", message: "throttled" }, times: 1 });
+    await t.finish(task.workspaceId, prepare.id, "SUCCEEDED", PREPARED);
+    const lines = log.mock.calls.map((call) => String(call[0]));
+    log.mockRestore();
+    expect(seen).toBeGreaterThanOrEqual(2);
+    // The run was not sent without its plan: no run operation exists, and the failure was logged for the retry.
+    expect(t.operations(task.workspaceId).some((operation) => operation.kind === "task")).toBe(false);
+    expect(lines.some((line) => line.includes("feature_rollout_read_failed"))).toBe(true);
+  });
+
+  it("ending a setup draft throws RUNTIME_UNAVAILABLE (its environment draft is not dropped)", async () => {
+    const t = await setupWizardBench({});
+    process.env.TEST_ENVIRONMENT_ENABLED = "1";
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect((await t.ask()).status).toBe(202);
+    const task = taskOf(t);
+    await t.finish(task.workspaceId, t.operations(task.workspaceId).find((operation) => operation.kind === "prepare")!.id, "SUCCEEDED", PREPARED);
+    const own = t.operations(task.workspaceId).find((operation) => operation.kind === "task")!;
+    failGateReads(t.db);
+    const error = await t.finish(task.workspaceId, own.id, "SUCCEEDED", { result: { conversationId: randomUUID(), reopened: false, workflowMode: "SETUP_DRAFT" } }).catch((caught: unknown) => caught as Error);
+    log.mockRestore();
+    expect((error as Error).message).toContain("RUNTIME_UNAVAILABLE");
+    expect((error as Error).message).toContain("settings could not be read");
   });
 });

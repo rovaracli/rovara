@@ -2,6 +2,7 @@
 // returns undefined without a read, and every caller leaves its text as it was. Everything it reads is a stored field: the workflow, the broker's evidence pack, the project's already-failing set (the nightly
 // baseline and a maintainer's marks, `alreadyFailingForResults`), the follow-up full run and the stored ask. The view is a classifier answer (SH5) plus rows (`rovara-code/testing-section.ts`); anything that is
 // not decided, or does not fit the contract, is `undefined`, and an undecided result is never guessed.
+import type { OrgId } from "@rovara-code/contracts";
 import { AUTO_FIX_DEFAULT_CAP_USD, wholeTaskSpendUsd, type EvidencePack, type TestingView } from "@rovara-code/contracts";
 import { autoFixAskCard, type AutoFixBudget, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { AutoFixAskSchema } from "../../developer/autofix-messages.js";
@@ -11,17 +12,19 @@ import { testingViewOf } from "../../rovara-code/testing-section.js";
 import { alreadyFailingForResults } from "../../test-env/known-failing.js";
 import { nightlyOptionsFor, type NightlyHeadReader } from "../../test-env/nightly-usable.js";
 import { verifyResultsEnabled } from "../../verification/switch.js";
-import { companyGatedEnv } from "../../org/feature-rollout.js";
+import { companyGatedEnv, type GateReader } from "../../org/feature-rollout.js";
 import type { FullSuiteState } from "../../verification/result.js";
 
 export interface TestingViewDeps {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now: () => number;
+  /** This request's gate reader (TE-A1); absent, the gate is read from the table. */
+  gates?: GateReader | undefined;
   /** The evidence port (only while the proof switch is on); absent, the view says "the test details are missing" and cannot be Verified. */
   /** Reads the default-branch head (only while `vx` is on); absent, a baseline older than 7 days is refused. */
   nightlyHead?: NightlyHeadReader | undefined;
-  evidence?: { pack: (task: { taskId: string; ownerKey: string; workspaceId: string }, candidateDigest: string | undefined) => Promise<EvidencePack | undefined> } | undefined;
+  evidence?: { pack: (task: { taskId: string; ownerKey: string; workspaceId: string; orgId: OrgId | undefined }, candidateDigest: string | undefined) => Promise<EvidencePack | undefined> } | undefined;
 }
 
 /** Whether Rovara's own automatic fixing is on, read the way the runner reads it (on unless exactly `false`). */
@@ -46,7 +49,7 @@ export async function fullSuiteOf(deps: TestingViewDeps, task: DeveloperTaskReco
 export async function loadTestingView(deps: TestingViewDeps, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, env: NodeJS.ProcessEnv = process.env): Promise<TestingView | undefined> {
   if (!verifyResultsEnabled(env) || workflow.definitionVersion !== "1.1.0") return undefined;
   // TE-A1: the four results are shown only for a company whose `verifyResults` gate is on.
-  if (!verifyResultsEnabled(await companyGatedEnv({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task.orgId, env))) return undefined;
+  if (!verifyResultsEnabled(await companyGatedEnv({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, gates: deps.gates }, task.orgId, env))) return undefined;
   const digest = workflow.candidate?.digest;
   if (digest === undefined) return undefined;
   try {
@@ -55,7 +58,7 @@ export async function loadTestingView(deps: TestingViewDeps, task: DeveloperTask
     const ask = blocked ? AutoFixAskSchema.safeParse(task.autofixAsk) : undefined;
     const asked = ask?.success === true && ask.data.workflowRevision === workflow.revision ? ask.data : undefined;
     if (blocked && asked === undefined && autofixOn(env)) return undefined;
-    const evidence = await deps.evidence?.pack(task, digest).catch(() => undefined);
+    const evidence = await deps.evidence?.pack({ taskId: task.taskId, ownerKey: task.ownerKey, workspaceId: task.workspaceId, orgId: task.orgId }, digest).catch(() => undefined);
     const fullSuite = await fullSuiteOf(deps, task, evidence, digest);
     if (fullSuite === "failed") return undefined;
     const store = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };

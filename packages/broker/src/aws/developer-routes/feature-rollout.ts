@@ -10,7 +10,7 @@ import { FeatureRolloutBodySchema } from "@agentx/cloud-contracts";
 import { agentXError, orgScoped } from "@rovara-code/contracts";
 import { takeRateAt } from "../../developer/page-comments.js";
 import { isFreshSignIn, type SessionRecord } from "../../developer/store.js";
-import { adminAnswerOf, readFeatureRollout, writeFeatureRollout } from "../../org/feature-rollout.js";
+import { adminAnswerOf, readFeatureRolloutFresh, writeFeatureRollout } from "../../org/feature-rollout.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
 import { getSignIn } from "./authentication.js";
 import { jsonBody } from "./organization.js";
@@ -43,7 +43,7 @@ export async function routeFeatureRollout(deps: DeveloperRouteDependencies, call
   if (caller.browserSession !== true) throw agentXError("FORBIDDEN", FEATURE_ROLLOUT_BROWSER_MESSAGE);
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "Only a company owner or admin can see or change preview features.");
   const store = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, audit: deps.audit };
-  if (request.method === "GET") return adminAnswerOf(await readFeatureRollout(store, caller.orgId), environment);
+  if (request.method === "GET") return adminAnswerOf(await readFeatureRolloutFresh(store, caller.orgId), environment);
   await requireFreshBrowserSignIn(deps, caller);
   const parsed = FeatureRolloutBodySchema.safeParse(jsonBody(request));
   // Field names only: the values and any unknown key are the caller's.

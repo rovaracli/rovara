@@ -282,7 +282,7 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     // Test services: the dependencies a candidate check starts, pinned from the signed catalog (a refusal stops the check before anything is written). Nothing for any other check, so its options are what they were.
     // TS-UX-1 item 3: the project's OWN check (the one an approval starts after writing its commands) runs with the APPROVED environment's test services, so tests that need the database do not fail it for want of one.
     const approvedServices = candidate === undefined ? await approvedTestServicesOf(deps, caller.orgId, name) : undefined;
-    const testServices = candidate !== undefined && "body" in candidate ? await candidateDependencyPlan(deps, candidate.body, { orgId: caller.orgId, project: name }) : approvedServices?.plan;
+    const testServices = candidate !== undefined && "body" in candidate ? await candidateDependencyPlan(deps, candidate.body, { orgId: caller.orgId, project: name }, routeEnvOf(deps)) : approvedServices?.plan;
     // The proposal's own production list rides with the check (its fixture-set callback scans a fake with it too: the first check has no approved environment).
     const testServicesDeny = testServices !== undefined && candidate !== undefined && "body" in candidate ? candidate.body.prodDeny : approvedServices?.prodDeny;
     const preparation = await tasks.preparation(identity, prepared, requestId, runCommits === undefined && testServices === undefined ? undefined : { ...(runCommits === undefined ? {} : { pins: runCommits }), ...(testServices === undefined ? {} : { testServices }), ...(testServicesDeny === undefined ? {} : { testServicesDeny }) });

@@ -73,9 +73,109 @@ describe("the readers", () => {
   });
 });
 
+// ---- One level up: a helper whose environment defaults to process.env and that reaches a reader ---------------------------------------------------------------------------------------------------------------------------
+// A route or a hook that calls such a helper without an environment hands the reader the install's switch. The helpers are found in the files that read an install switch with an environment argument: a function (or an arrow
+// constant) there with a parameter `env: NodeJS.ProcessEnv = process.env`. Every call of one outside its own file must give that parameter (counting arguments), or its file must be listed with the reason.
+
+interface Helper { name: string; file: string; index: number }
+const sourceOf = (path: string): string => readFileSync(path, "utf8").split("\n").map(codeOf).join("\n");
+
+/** The text between the parenthesis that opens at `open` and its match, and the position after it. */
+function balanced(text: string, open: number): { inner: string; end: number } {
+  let depth = 0;
+  for (let i = open; i < text.length; i += 1) {
+    const char = text[i];
+    if (char === "(" || char === "[" || char === "{") depth += 1;
+    else if (char === ")" || char === "]" || char === "}") { depth -= 1; if (depth === 0) return { inner: text.slice(open + 1, i), end: i + 1 }; }
+  }
+  return { inner: text.slice(open + 1), end: text.length };
+}
+/** Top-level arguments (commas inside brackets, braces, angle brackets of a type, strings and template strings do not split). */
+function splitArguments(inner: string): string[] {
+  const parts: string[] = [];
+  let depth = 0, angle = 0, quote = "", current = "";
+  for (let i = 0; i < inner.length; i += 1) {
+    const char = inner[i]!;
+    if (quote !== "") { current += char; if (char === quote && inner[i - 1] !== "\\") quote = ""; continue; }
+    if (char === '"' || char === "'" || char === "`") { quote = char; current += char; continue; }
+    if (char === "(" || char === "[" || char === "{") depth += 1;
+    if (char === ")" || char === "]" || char === "}") depth -= 1;
+    if (char === "<" && inner[i + 1] !== "=") angle += 1;
+    if (char === ">" && inner[i - 1] !== "=" && angle > 0) angle -= 1;
+    if (char === "," && depth === 0 && angle === 0) { parts.push(current.trim()); current = ""; continue; }
+    current += char;
+  }
+  if (current.trim() !== "") parts.push(current.trim());
+  return parts;
+}
+
+const readerFiles = [...new Set(calls.filter((call) => call.argument !== "" && !/^process\.env$/u.test(call.argument)).map((call) => call.file))];
+const helpers: Helper[] = readerFiles.flatMap((file) => {
+  const text = sourceOf(join(ROOT, file));
+  return [...text.matchAll(/export\s+(?:async\s+)?function\s+(\w+)\s*(?:<[^>]*>)?\s*\(|export\s+const\s+(\w+)\s*=\s*(?:async\s*)?\(/gu)].flatMap((match) => {
+    const name = match[1] ?? match[2]!;
+    const open = match.index + match[0].length - 1;
+    const parameters = splitArguments(balanced(text, open).inner);
+    const index = parameters.findIndex((parameter) => /\benv\??\s*:\s*NodeJS\.ProcessEnv\s*=\s*process\.env\b/u.test(parameter));
+    return index < 0 ? [] : [{ name, file, index }];
+  });
+});
+
+/** Files that call such a helper without an environment on purpose, with why. */
+const HELPER_CALLERS_INSTALL_LEVEL: Record<string, string> = {
+  "aws/broker/callbacks.ts handleCompanyImageLogin": "a worker callback of one operation whose plan was made behind the company gate (`companyImageIds` is set only by a gated plan)",
+  "aws/broker/callbacks.ts handleFixtureSetCallback": "a worker callback of one operation whose plan was made behind the company gate (`fixtureSetDigests` is set only by a gated plan)",
+  "aws/broker/dependency-wiring.ts releaseServiceCatalogSource": "the release's signed catalog, not a company's; every route and plan that uses it is gated",
+  "aws/broker/dispatch.ts blockedByEnvironmentHook": "builds the hook from the install; the hook reads the task's company's gates itself (health-wiring.ts)",
+  "aws/broker/handler.ts fireTestEnvNightly": "the nightly fire reads the fire's company's gate itself (nightly-wiring.ts)",
+  "aws/broker/pull-request-reconcile.ts evidenceRouteDependencies": "the evidence port is made once and gated per task company on every read (evidence-gate.ts)",
+  "aws/broker/pull-request-reconcile.ts nightlyHeadReaderOf": "builds the reader from the install; the testing view that uses it reads the task's company's gate itself",
+  "aws/broker/pull-request-reconcile.ts loadTestingView": "reads the task's company's gate itself (testing-view.ts)",
+  "aws/broker/workflow-items.ts keepEvidenceAfterChecks": "reads the task's company's gate itself (evidence-wiring.ts)",
+  "aws/developer-routes.ts companyTestImagesEnabled": "the browser-only restriction asks the install switch before the caller's company is read, so it is stricter than the gated route behind it, never looser",
+  "aws/developer-tasks/publication.ts loadTestingView": "reads the task's company's gate itself (testing-view.ts)",
+  "aws/developer-tasks/task-view.ts loadTestingView": "reads the task's company's gate itself (testing-view.ts)",
+  "aws/developer-task-notifier.ts fixSetupWording": "NOT GATED YET: wording of the Fix setup line on an auto-fix card (DEFERRED-CHECKS, TE-A1)",
+  "developer/workflow-messages.ts fixSetupWording": "NOT GATED YET: wording of the Fix setup line on an auto-fix card (DEFERRED-CHECKS, TE-A1)",
+};
+
+describe("helpers whose environment defaults to process.env", () => {
+  it("finds the helpers this test reasons about (a positive control)", () => {
+    const names = helpers.map((helper) => helper.name);
+    for (const known of ["testEnvPlanFor", "approveTestEnvItemsFor", "envChangeItemsFor", "fixSetupItemsFor", "loadTestingView", "environmentUnusedReason", "nightlyHooks"]) expect(names, known).toContain(known);
+  });
+
+  it("every entry of the list still has such a call", () => {
+    for (const key of Object.keys(HELPER_CALLERS_INSTALL_LEVEL)) {
+      const [file, name] = key.split(" ") as [string, string];
+      expect(sourceOf(join(ROOT, file)), key).toMatch(new RegExp(`(?<![\\w.])${name}\\s*\\(`, "u"));
+    }
+  });
+
+  it("every call of one, outside its own file, gives it the environment (or the call is listed)", () => {
+    const missing: string[] = [];
+    for (const path of files(ROOT)) {
+      const file = relative(ROOT, path);
+      const text = sourceOf(path);
+      for (const helper of helpers) {
+        if (helper.file === file || HELPER_CALLERS_INSTALL_LEVEL[`${file} ${helper.name}`] !== undefined) continue;
+        for (const match of text.matchAll(new RegExp(`(?<![\\w.])${helper.name}\\s*\\(`, "gu"))) {
+          const before = text.slice(Math.max(0, match.index - 40), match.index);
+          if (/\b(import|function|const|type|interface)\s*[\w{ ,]*$/u.test(before)) continue;
+          const open = match.index + match[0].length - 1;
+          const given = splitArguments(balanced(text, open).inner);
+          const environment = given[helper.index];
+          if (environment === undefined || /^process\.env$/u.test(environment)) missing.push(`${file}: ${helper.name}(...) from ${helper.file} takes env as argument ${helper.index + 1}`);
+        }
+      }
+    }
+    expect(missing, "give the helper the company's environment, or list the file and the helper in HELPER_CALLERS_INSTALL_LEVEL with the reason").toEqual([]);
+  });
+});
+
 describe("the entry points that have a company gate its environment", () => {
   const MARKERS: Array<[string, RegExp, string]> = [
-    ["aws/developer-routes.ts", /deps = \{ \.\.\.deps, env: await companyGatedEnv\(/u, "every HTTP route: the request's environment is the caller's company's, set once after the caller is known"],
+    ["aws/developer-routes.ts", /deps = \{ \.\.\.deps, gates, env: await companyGatedEnv\(/u, "every HTTP route: the request's environment is the caller's company's, set once after the caller is known"],
     ["aws/broker/task-operations.ts", /const gatedEnv = await companyGatedEnv\(/u, "a task's run: the plan, the evidence capture and the setup detection"],
     ["aws/broker/evidence-wiring.ts", /gatedEvidencePort\(createEvidencePort/u, "the evidence port every task route, Slack press and pull request rewrite reads"],
     ["aws/broker/evidence-wiring.ts", /const gated = await companyGatedEnv\(/u, "keeping the evidence of a finished check run"],
@@ -86,6 +186,11 @@ describe("the entry points that have a company gate its environment", () => {
     ["aws/broker/fix-setup-wiring.ts", /companyGatedEnv\(/u, "the Fix setup cards an auto-fix opens"],
     ["test-env/health-wiring.ts", /companyGatedEnv\(/u, "the nightly result, the blocked-task count and the repaired setup"],
     ["test-env/nightly-wiring.ts", /companyGatedEnv\(/u, "a nightly fire"],
+    ["aws/broker/task-operations.ts", /onReadFailure: "throw"/u, "dispatch throws RUNTIME_UNAVAILABLE on a gate it cannot read (M3)"],
+    ["aws/developer-tasks/start.ts", /onReadFailure: "throw"/u, "a task start throws RUNTIME_UNAVAILABLE on a gate it cannot read (M3)"],
+    ["aws/broker/workflow-items.ts", /onReadFailure: "throw"/u, "a setup draft's end throws RUNTIME_UNAVAILABLE on a gate it cannot read (M3)"],
+    ["aws/broker/evidence-wiring.ts", /onReadFailure: "throw"/u, "keeping evidence throws RUNTIME_UNAVAILABLE on a gate it cannot read (M3)"],
+    ["aws/developer-routes.ts", /onReadFailure: "default"/u, "the per-request dispatch follows the catalog default on a gate it cannot read (M3)"],
   ];
   for (const [file, marker, what] of MARKERS) {
     it(`${file}: ${what}`, () => { expect(read(file)).toMatch(marker); });

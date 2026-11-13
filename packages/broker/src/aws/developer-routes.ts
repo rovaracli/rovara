@@ -12,7 +12,7 @@ import { SPEC_CHOICE_ROUTE, SPEC_PAGE_CHOICES, routeSpecChoice } from "./develop
 import { getInstallInfo } from "./developer-routes/install.js";
 import { isSsoRoute, routeSsoRequest } from "./developer-routes/sso.js";
 import { isCompanyDomainsRoute, routeCompanyDomains } from "./developer-routes/company-domains.js";
-import { companyGatedEnv, routeEnvOf } from "../org/feature-rollout.js";
+import { companyGatedEnv, createGateReader, routeEnvOf } from "../org/feature-rollout.js";
 import { FEATURE_ROLLOUT_BROWSER_MESSAGE, FEATURE_ROLLOUT_PATH, routeFeatureRollout } from "./developer-routes/feature-rollout.js";
 import { UI_FLAGS_BROWSER_MESSAGE, UI_FLAGS_PATH, routeUiFlags } from "./developer-routes/ui-flags.js";
 import { COMPANIES_PATH, routeCompanies } from "./developer-routes/companies.js";
@@ -485,7 +485,9 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // UX5b: a script token (`Bearer rvst_…`) is checked, with its closed list of routes, by its own module; every other bearer is a sign-in token.
   const caller = authenticated?.caller ?? (isScriptTokenHeader(request.headers.authorization) ? await authenticateScriptToken(deps, request, url) : await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization)));
   // TE-A1: from here every route reads the install's evidence switches as this caller's company has them (a company whose gate is off sees the switch off). Nothing is read while the install has none of them on.
-  deps = { ...deps, env: await companyGatedEnv({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller.orgId, deps.env ?? process.env) };
+  // One read of the company's gates for the whole request (a reader on the dependencies, the evidence port scoped to it); a gate that cannot be read follows the catalog default for the routes, so an outage never makes a route stricter or looser than for a company that never chose.
+  const gates = createGateReader({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now });
+  deps = { ...deps, gates, env: await companyGatedEnv({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, gates }, caller.orgId, deps.env ?? process.env, { onReadFailure: "default" }), ...(deps.evidence?.scoped === undefined ? {} : { evidence: deps.evidence.scoped(gates) }) };
   // I2: before any route is matched, an Auditor is held to its allow-list (the audit log, its exports, its own identity). Nothing below this line runs for it otherwise.
   requireAuditorRoute(caller, request.method, url.pathname);
   // Lane C6: only the trusted cookie adapter supplies authenticated; source guards share the handlers' paths.
@@ -647,7 +649,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (request.method === "POST" && projectArchiveRoute !== null) return changeProjectArchive(deps, caller, projectArchiveRoute[1]!, jsonBody(request), projectArchiveRoute[2] as "archive" | "restore");
   // Meta repo lane F: the tickets that wait for a member, and the places work is asked for.
   // Test environment (wire-testenv): `/v1/app/projects/{name}/test-environment*`. Exists only while the switch is on; with it off the path falls through as any unknown path.
-  const testEnvReply = await routeTestEnvironment(deps, caller, request, url, nightlyHooks({ health: testEnvStoreOf(deps) }));
+  const testEnvReply = await routeTestEnvironment(deps, caller, request, url, nightlyHooks({ health: testEnvStoreOf(deps) }, routeEnvOf(deps)));
   if (testEnvReply !== undefined) return testEnvReply;
   const testHealthReply = await routeTestHealth(deps, caller, request, url);
   if (testHealthReply !== undefined) return testHealthReply;

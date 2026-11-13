@@ -13,7 +13,7 @@ import { evidenceRiskOfTask, securityCheckIdsOf } from "../../packages/broker/sr
 
 const DIGEST = "c".repeat(64);
 const OTHER = "e".repeat(64);
-const TASK = { ownerKey: "owner-1", workspaceId: "ws-1", taskId: "task-1" };
+const TASK = { ownerKey: "owner-1", workspaceId: "ws-1", taskId: "task-1", orgId: undefined };
 const OP = "op-1";
 const PREFIX = `private/${TASK.ownerKey}/${TASK.workspaceId}/${OP}/`;
 const entry = (id: string, label: string, over: Partial<CheckEntry> = {}): CheckEntry => ({ id, label, source: "project", before: "passed", after: "passed", class: "passing", output: "", durationMs: 700, exitCode: 0, ...over });

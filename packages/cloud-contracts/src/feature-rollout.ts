@@ -23,15 +23,15 @@ export interface RolloutFeatureCatalogEntry {
   readonly summary: string;
   /** False while no code reads the gate yet. */
   readonly wired: boolean;
-  /** What a company that never chose gets. False for every feature today (the rollout is explicit); a later release default flips it. */
+  /** What a company that never chose gets: true for the four features that already have an install switch (a missing row follows the install switch), false for a feature whose lane is not built yet. */
   readonly defaultOn: boolean;
 }
 
 export const ROLLOUT_FEATURE_CATALOG: readonly RolloutFeatureCatalogEntry[] = [
-  { name: "proofEvidence", label: "Evidence for checks", summary: "Each task's checks leave evidence that is kept, shown on the task page and linked from the pull request.", wired: true, defaultOn: false },
-  { name: "verifyResults", label: "Clear test results", summary: "Test results use the four plain result words on tasks and pull requests, with the Fix setup card.", wired: true, defaultOn: false },
-  { name: "testEnvironment", label: "Project test setup", summary: "A project's approved test setup is used by its tasks' checks and named in the evidence.", wired: true, defaultOn: false },
-  { name: "testServices", label: "Test services", summary: "Projects may use real software, fakes and fixtures as test dependencies on a sealed network.", wired: true, defaultOn: false },
+  { name: "proofEvidence", label: "Evidence for checks", summary: "Each task's checks leave evidence that is kept, shown on the task page and linked from the pull request.", wired: true, defaultOn: true },
+  { name: "verifyResults", label: "Clear test results", summary: "Test results use the four plain result words on tasks and pull requests, with the Fix setup card.", wired: true, defaultOn: true },
+  { name: "testEnvironment", label: "Project test setup", summary: "A project's approved test setup is used by its tasks' checks and named in the evidence.", wired: true, defaultOn: true },
+  { name: "testServices", label: "Test services", summary: "Projects may use real software, fakes and fixtures as test dependencies on a sealed network.", wired: true, defaultOn: true },
   { name: "sealedChecks", label: "Sealed check rounds", summary: "Checks run in a sealed round with no outside network.", wired: false, defaultOn: false },
   { name: "honestCi", label: "Honest CI reading", summary: "The pull request evidence says what the project's CI did and did not prove.", wired: false, defaultOn: false },
   { name: "summaryCheck", label: "Rovara check on pull requests", summary: "One \"Rovara\" check on the pull request carries the evidence summary.", wired: false, defaultOn: false },

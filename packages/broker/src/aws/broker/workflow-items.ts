@@ -1,6 +1,6 @@
 // Part of the broker (split out of ../broker.ts): retries, evidence jobs and the items each completed workflow step writes.
 
-import { companyGatedEnv } from "../../org/feature-rollout.js";
+import { companyGatedEnv, isGateUnavailable } from "../../org/feature-rollout.js";
 import { OUTSIDE_RECHECK_NOT_ADOPTED, outsideRecheckOutcomeItem } from "../developer-tasks/continue-loop.js";
 import { createHash } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
@@ -717,7 +717,7 @@ export async function completedWorkflowItems(
     const repositories = terminalStatus === "SUCCEEDED" && operation.kind === "task"
       ? setupDraftRepositoriesOf((await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition) : { names: [], urls: {} };
     return [...setupDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now),
-      ...testEnvDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result }, now, await companyGatedEnv({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, task.orgId))];
+      ...testEnvDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result }, now, await companyGatedEnv({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, task.orgId, process.env, { onReadFailure: "throw" }))];
   }
   // SH14: a setup run's result is its proposal and summary (or the fixed reason there is none), written with the result; a person's stop, if one was recorded, is passed so the end can tell it from a system cancel.
   if (task?.purpose === "setup_agent") {
@@ -975,6 +975,8 @@ export async function completedWorkflowItems(
       let verificationDetail: string | undefined;
       // Review only: the tests the rerun found regressed, for the owner's message and a send-back.
       let regressedChecks: string[] | undefined;
+      // TE-A1: the company's gate could not be read when the evidence was to be kept: the run is NOT blocked for it; nothing is committed and the callback fails, so the worker or queue sends it again.
+      let evidenceGateFailure: Error | undefined;
       let failedE2ERound: { status: "FAILED"; candidateDigest: string; roundId: string; groupRunIds: string[]; admissionSha256: string; evidenceSha256: string } | undefined;
       try {
         if (dependencyBinding !== undefined && (!dependencyResultValid || !graphItemsComplete)) {
@@ -1184,7 +1186,7 @@ export async function completedWorkflowItems(
           ...(e2eQualification === undefined ? {} : { e2eQualification }),
         });
         // Proof and evidence (wire-proof): the verification is recorded, so the run's evidence is assembled for this code. Off unless the proof switch is on; informational and bounded; never throws.
-        await keepEvidenceAfterChecks(dependencies, { task, operation, workflow: task.workflow, candidateDigest: candidate.digest, checks: checks.data.checks });
+        await keepEvidenceAfterChecks(dependencies, { task, operation, workflow: task.workflow, candidateDigest: candidate.digest, checks: checks.data.checks }).catch((error: unknown) => { if (isGateUnavailable(error)) evidenceGateFailure = error as Error; else throw error; });
       } catch (error) {
         console.log(JSON.stringify({ component: "broker", event: "workflow.verification_blocked", taskId: task.taskId, operationId: operation.id, errorName: error instanceof Error ? error.name : "unknown", reason: verificationFailure, ...(verificationDetail === undefined ? {} : { detail: verificationDetail }) }));
         if (verificationFailure === WORKFLOW_BLOCK_REASONS.fixChangedNothing && task.workflow.fixSource === "ci" && task.orgId !== undefined) {
@@ -1197,6 +1199,7 @@ export async function completedWorkflowItems(
               ...(failedE2ERound === undefined ? {} : { failedE2ERound }) });
         }
       }
+      if (evidenceGateFailure !== undefined) throw evidenceGateFailure;
     }
     // "Continue in your own tool": a re-check of an outside head ends with these checks (pass or fail). Its result counts only for the code the pull request still shows (the fence when results are
     // recorded): a head that moved while it ran makes the result stale, not passing. The task then goes back to what it had before the adoption, and the new head reads as changed outside.

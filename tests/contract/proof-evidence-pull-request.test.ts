@@ -21,7 +21,7 @@ const CODE = createCandidateManifest([{ repositoryId: "payments", commitSha: "1"
 const OTHER = createCandidateManifest([{ repositoryId: "payments", commitSha: "2".repeat(40), treeSha: "2".repeat(40), baseCommitSha: "e".repeat(40) }]);
 const command = { cwd: "repo/payments", executable: "pytest", args: ["-q"], timeoutSeconds: 30 };
 const check = (id: string, label: string) => ({ id, label, command });
-const TASK = { taskId, ownerKey: "owner-1", workspaceId: "ws-1" };
+const TASK = { taskId, ownerKey: "owner-1", workspaceId: "ws-1", orgId: undefined };
 const PREFIX = `private/${TASK.ownerKey}/${TASK.workspaceId}/op-1/`;
 
 const plan = (): PlanDocument => ({

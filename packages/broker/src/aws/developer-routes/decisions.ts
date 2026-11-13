@@ -116,9 +116,9 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
             tracking: (taskId, orgId) => readMergeTracking(table, taskId, orgId as never),
           }, who),
           specChoiceItemsFor(taskDeps(who), who),
-          approveTestEnvItemsFor(testEnvCards, who),
-          envChangeItemsFor({ store, task: loadTask, taskPagePathOf: (task) => taskPagePathOf(deps, who.orgId, task) }, who),
-          fixSetupItemsFor({ store, maintainedProjects: testEnvCards.maintainedProjects, task: loadTask }, who),
+          approveTestEnvItemsFor(testEnvCards, who, env),
+          envChangeItemsFor({ store, task: loadTask, taskPagePathOf: (task) => taskPagePathOf(deps, who.orgId, task) }, who, env),
+          fixSetupItemsFor({ store, maintainedProjects: testEnvCards.maintainedProjects, task: loadTask }, who, env),
           hostsOn ? hostAskItemsFor({ ...hostDeps, approvableProjects: (caller) => approvableHostProjects(caller as DeveloperCaller), staffStep: deps.cloud === true, companyApproved: (orgId, project) => companyApprovedHostMarks(hostDeps, { orgId, project, cloud: deps.cloud === true }),
             // The setup run's task page, when the run has a session; else the project page.
             taskPagePathOf: async (taskId) => { const task = await loadTask(taskId); return task === undefined || task.orgId !== who.orgId ? undefined : await taskPagePathOf(deps, who.orgId, task); } }, who) : Promise.resolve([]),
@@ -144,9 +144,9 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
       })),
       approve_test_env: testEnvHandler(async (who, item, requestId) => {
         const role = (await visibleProjectRoles(deps, who)).get(item.project);
-        await approveChecked(deps, who, role, item.project, { digest: item.digest, expectedRevision: item.expectedRevision, requestId }, nightlyHooks());
+        await approveChecked(deps, who, role, item.project, { digest: item.digest, expectedRevision: item.expectedRevision, requestId }, nightlyHooks({}, env));
       }),
-      confirm_env_change: envChangeHandler((who, taskId, answer) => answerEnvChange({ store, task: loadTask }, who, taskId, answer)),
+      confirm_env_change: envChangeHandler((who, taskId, answer) => answerEnvChange({ store, task: loadTask }, who, taskId, answer, env)),
       fix_setup: fixSetupHandler({
         markKnownFailing: (who, item, requestId) => markKnownFailing(fixSetupPorts, who, item, requestId),
         dismiss: (who, item) => dismissFixSetup(fixSetupPorts, who, item),

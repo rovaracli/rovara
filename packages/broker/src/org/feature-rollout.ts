@@ -6,9 +6,15 @@
 // hands the result on; a caller with no company in hand keeps the install's answer and is listed, with the reason, in tests/contract/feature-rollout-readers.test.ts.
 //
 // ONE ROW per company: `ORG#<org>` / `FEATURE_ROLLOUT` (orgFeatureRolloutKey), a map of known gate names to on/off and a `revision` that fences every write. Absent until the company first changes something: every gate takes its catalog
-// default (off). A stored value that is not the boolean true reads as off. A name outside the closed list (contracts/feature-rollout.ts) is never stored and never sent.
+// default (on for the four features that have an install switch, so a missing row follows the install switch; off for the three not built yet). A stored value that is not the boolean true reads as off. A name outside the closed list
+// (contracts/feature-rollout.ts) is never stored and never sent.
 //
-// A READ THAT FAILS gives every gated feature off (fail closed, the same as no gate), logged without the company's data. A row that is there but cannot be read counts as off for what it cannot read.
+// A READ THAT FAILS is handled by the caller's choice (`onReadFailure`): "off" (the default: every gated feature off, fail closed, for what only shows something), "throw" (RUNTIME_UNAVAILABLE, for a path that starts or keeps work, so
+// its queue or caller tries again instead of silently doing less) or "default" (the catalog default, for the per-request dispatch, so an outage never makes a route stricter or looser than a company that never chose). Each logs
+// without the company's data. A row that is there but cannot be read counts as off for what it cannot read.
+//
+// ONE READ A REQUEST: a request makes a `GateReader` (`createGateReader`) and puts it on the dependencies it hands on (`gates`); every helper below reads a company once through it. There is no cache between requests, so a change
+// is the next request's read.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import {
   BROKER_SETTINGS, ROLLOUT_FEATURE_CATALOG, ROLLOUT_FEATURE_NAMES, isRolloutFeatureName, orgFeatureRolloutKey, rolloutGateOn,
@@ -27,6 +33,25 @@ export interface FeatureRolloutDeps {
   tableName: string;
   now(): number;
   audit?: AuditRuntime | undefined;
+  /** This request's reader (`createGateReader`): a company is read once through it. Absent: every ask reads the table. */
+  gates?: GateReader | undefined;
+}
+
+/** A company's gates, read once for as long as the reader lives (one request). A failed read is not remembered. */
+export interface GateReader { read: (orgId: OrgId) => Promise<FeatureRolloutSettings> }
+
+export function createGateReader(deps: FeatureRolloutDeps): GateReader {
+  const known = new Map<OrgId, Promise<FeatureRolloutSettings>>();
+  return {
+    read(orgId) {
+      const found = known.get(orgId);
+      if (found !== undefined) return found;
+      const reading = readFeatureRolloutFresh({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, orgId);
+      known.set(orgId, reading);
+      reading.catch(() => { if (known.get(orgId) === reading) known.delete(orgId); });
+      return reading;
+    },
+  };
 }
 
 /** The variable of each gate's install switch. A gate that is not here (the lanes not built yet) has no install switch: its company gate is its whole switch. */
@@ -87,29 +112,46 @@ export function settingsFromItem(item: Item | undefined): FeatureRolloutSettings
   return { gates, revision: item.revision, ...(typeof item.changedAt === "string" ? { changedAt: item.changedAt } : {}), ...(malformed.length > 0 ? { malformed } : {}) };
 }
 
-export async function readFeatureRollout(deps: FeatureRolloutDeps, orgId: OrgId, options: { consistent: boolean } = { consistent: true }): Promise<FeatureRolloutSettings> {
-  const found = await send<{ Item?: Item }>(deps, new GetCommand({ TableName: deps.tableName, Key: orgFeatureRolloutKey(orgId), ConsistentRead: options.consistent }));
+/** The company's settings straight from the table (a consistent read). A write reads this way, never through a request's reader. */
+export async function readFeatureRolloutFresh(deps: FeatureRolloutDeps, orgId: OrgId): Promise<FeatureRolloutSettings> {
+  const found = await send<{ Item?: Item }>(deps, new GetCommand({ TableName: deps.tableName, Key: orgFeatureRolloutKey(orgId), ConsistentRead: true }));
   return settingsFromItem(found.Item);
 }
 
+/** The company's settings: through this request's reader when the dependencies carry one, else straight from the table. */
+export const readFeatureRollout = (deps: FeatureRolloutDeps, orgId: OrgId): Promise<FeatureRolloutSettings> => deps.gates === undefined ? readFeatureRolloutFresh(deps, orgId) : deps.gates.read(orgId);
+
+/** What a read that fails does (see the header). */
+export type GateReadFailure = "off" | "throw" | "default";
+const UNREADABLE_WORDS = "This company's settings could not be read. Try again.";
+
+/** Whether an error is the one a gate read that failed gives with `onReadFailure: "throw"` (so a caller can let it through to its retry instead of treating it as its own failure). */
+export const isGateUnavailable = (error: unknown): boolean => typeof error === "object" && error !== null && (error as { code?: unknown }).code === "RUNTIME_UNAVAILABLE" && typeof (error as { message?: unknown }).message === "string" && (error as Error).message.endsWith(UNREADABLE_WORDS);
+
 /**
- * The environment a company's code reads its install switches from: every gated variable that is not on for this company is "0". Nothing is read when the install has none of them on. No company, or a read that fails, turns every
- * gated variable off (the failure is logged without the company's data), unless `throwOnReadFailure` asks for it to be thrown. The environment given is not changed.
+ * The environment a company's code reads its install switches from: every gated variable that is not on for this company is "0". Nothing is read when the install has none of them on. No company turns every gated variable off.
+ * A read that fails does what `onReadFailure` says: "off" (the default), "throw" (RUNTIME_UNAVAILABLE) or "default" (the catalog default). The environment given is not changed.
  */
-export async function companyGatedEnv(deps: FeatureRolloutDeps, orgId: OrgId | undefined, env: NodeJS.ProcessEnv = process.env, options: { throwOnReadFailure?: boolean } = {}): Promise<NodeJS.ProcessEnv> {
+export async function companyGatedEnv(deps: FeatureRolloutDeps, orgId: OrgId | undefined, env: NodeJS.ProcessEnv = process.env, options: { onReadFailure?: GateReadFailure } = {}): Promise<NodeJS.ProcessEnv> {
   const installOn = GATED_VARIABLES.filter(([, variable]) => liveInteractionFlagOn(env[variable]));
   if (installOn.length === 0) return env;
   let settings: FeatureRolloutSettings | undefined;
+  let failed = false;
   if (orgId !== undefined) {
     try { settings = await readFeatureRollout(deps, orgId); }
-    catch (error) {
-      // A caller that retries (a background hook) asks for the failure, so a throttled read is tried again instead of being taken for "off".
-      if (options.throwOnReadFailure === true) throw error;
+    catch {
+      failed = true;
       logDeveloperEvent({ event: "developer.feature_rollout_read_failed" });
+      if (options.onReadFailure === "throw") throw agentXError("RUNTIME_UNAVAILABLE", UNREADABLE_WORDS);
     }
   }
   const gated: NodeJS.ProcessEnv = { ...env };
-  for (const [name, variable] of installOn) if (settings === undefined || !rolloutGateOn(name, settings.gates[name])) gated[variable] = "0";
+  // A failed read follows the catalog default only where the caller asked for it; otherwise (and with no company at all) nothing is on.
+  const noRow = failed && options.onReadFailure === "default";
+  for (const [name, variable] of installOn) {
+    const on = settings !== undefined ? rolloutGateOn(name, settings.gates[name]) : noRow ? rolloutGateOn(name, undefined) : false;
+    if (!on) gated[variable] = "0";
+  }
   return gated;
 }
 
@@ -117,10 +159,14 @@ export async function companyGatedEnv(deps: FeatureRolloutDeps, orgId: OrgId | u
 export const routeEnvOf = (deps: { env?: NodeJS.ProcessEnv | undefined }): NodeJS.ProcessEnv => deps.env ?? process.env;
 
 /** Whether one feature is on for one company: the install's switch exactly "1" AND the company's gate on. No company, or a failed read, is off. */
-export async function companyFeatureOn(deps: FeatureRolloutDeps, orgId: OrgId | undefined, name: RolloutFeatureName, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+export async function companyFeatureOn(deps: FeatureRolloutDeps, orgId: OrgId | undefined, name: RolloutFeatureName, env: NodeJS.ProcessEnv = process.env, options: { onReadFailure?: GateReadFailure } = {}): Promise<boolean> {
   if (orgId === undefined || !installSwitchOn(name, env)) return false;
   try { return rolloutGateOn(name, (await readFeatureRollout(deps, orgId)).gates[name]); }
-  catch { logDeveloperEvent({ event: "developer.feature_rollout_read_failed" }); return false; }
+  catch {
+    logDeveloperEvent({ event: "developer.feature_rollout_read_failed" });
+    if (options.onReadFailure === "throw") throw agentXError("RUNTIME_UNAVAILABLE", UNREADABLE_WORDS);
+    return options.onReadFailure === "default" ? rolloutGateOn(name, undefined) : false;
+  }
 }
 
 /** The answer of the admin route: every gate with the company's choice and whether the install's switch lets it take effect. */
@@ -140,7 +186,7 @@ export type FeatureRolloutChange = Readonly<Partial<Record<RolloutFeatureName, b
  * refused (AUDIT_UNAVAILABLE). Writing the value already in force still moves the revision, so a double click is never a change the audit cannot see. The row is keyed by the caller's checked company only.
  */
 export async function writeFeatureRollout(deps: FeatureRolloutDeps, input: { orgId: OrgId; developerId: string; expectedRevision: number; change: FeatureRolloutChange }): Promise<FeatureRolloutSettings> {
-  const current = await readFeatureRollout(deps, input.orgId);
+  const current = await readFeatureRolloutFresh(deps, input.orgId);
   if (current.revision !== input.expectedRevision) throw agentXError("CHANGE_STALE", "Someone else changed this. Reload and try again.");
   const gates: Partial<Record<RolloutFeatureName, boolean>> = current.unreadable === true ? {} : { ...current.gates };
   for (const name of current.malformed ?? []) delete gates[name];
@@ -154,7 +200,7 @@ export async function writeFeatureRollout(deps: FeatureRolloutDeps, input: { org
   const revision = current.revision + 1;
   const at = new Date(deps.now()).toISOString();
   const event: AuditEventInput = auditCompanyFeatureRolloutChanged({
-    orgId: input.orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(input.orgId, String(revision)), revision, turnedOn, turnedOff,
+    orgId: input.orgId, actor: auditActorOf(input.developerId), occurredAt: at, occurrence: auditOccurrence(input.orgId, String(revision), at), revision, turnedOn, turnedOff,
   });
   const pending = deps.audit === undefined ? undefined : auditPending({ audit: deps.audit }, event)[0]?.Put;
   if (pending === undefined) throw agentXError("AUDIT_UNAVAILABLE", "This change needs the audit ledger.");

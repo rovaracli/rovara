@@ -7,6 +7,7 @@ export function gatedEvidencePort(port: EvidencePort, store: FeatureRolloutDeps,
   const on = (task: EvidenceTaskKey): Promise<boolean> => companyFeatureOn(store, task.orgId, "proofEvidence", env);
   return {
     on,
+    scoped: (gates) => gatedEvidencePort(port, { ...store, gates }, env),
     download: port.download,
     async pack(task, digest) { return (await on(task)) ? port.pack(task, digest) : undefined; },
     async context(task, digest) { return (await on(task)) ? port.context(task, digest) : undefined; },

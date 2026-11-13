@@ -1,4 +1,5 @@
 import { attributionBodyLines, workflowReviewsSawPartialDiff, hideEmailAddresses, redactText, workflowIsReviewOnly, planSummaryLines } from "@rovara-code/contracts";
+import { evidenceKeyOf } from "./evidence-port.js";
 import { type WorkflowSnapshot, workflowFindingAccepted } from "@agentx/cloud-contracts";
 import { PULL_REQUEST_PARTIAL_REVIEW_LINE, PULL_REQUEST_STATUS_END, PULL_REQUEST_STATUS_START, ROVARA_STATUS_START } from "../../developer/pull-request-feedback-section.js";
 import type { DeveloperTaskRecord, OperationFacts } from "../../developer/task-records.js";
@@ -150,7 +151,7 @@ export async function proofContextOfTask(
   const evidence = deps.evidence;
   return loadProofContext({
     actions: deps.actions, scenarioResults: async () => deps.workflowE2EScenarioResults?.({ task, operations: operations ?? await deps.actions.operations(task.workspaceId), actor }),
-    ...(evidence === undefined ? {} : { evidence: (digest: string) => evidence.context(task, digest) }),
+    ...(evidence === undefined ? {} : { evidence: (digest: string) => evidence.context(evidenceKeyOf(task), digest) }),
     // Design review (DR12): the approved design's line; undefined for a task with no design review, which leaves the section as it was.
     ...(deps.documentClient === undefined || deps.tableName === undefined ? {} : { design: proofDesignContextOf({ documentClient: deps.documentClient, tableName: deps.tableName, taskId: task.taskId, readArtifact: (key, max) => deps.actions.readArtifact(key, max) }) }),
   }, task, workflow, approvedPlan, operations);

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { evidenceKeyOf } from "./evidence-port.js";
 import { isReplayCopy } from "../../developer/eval-copy.js";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, type WorkflowPullRequestUpdateCause, orgProjectCatalogKey, agentXError, E2EPolicySchema, WorkflowTransitionError, WorkflowPublishRetryRequestSchema, canonicalJson, workflowRequestId, workflowPublicationRetryable, WORKFLOW_KEEP_PULL_REQUESTS_NOTE } from "@rovara-code/contracts";
@@ -245,7 +246,7 @@ export async function startTaskWorkflowPublicationFromSystem(
     { orgId: deps.orgId, taskId, requesterId: task.developerId, decisions: workflow.decisions, origin: origin.taskPageUrl ?? deps.issuer },
   );
   // Proof and evidence P4: a security scan's new high findings on this code raise the risk (only while the proof switch is on; otherwise there is no port and no signal).
-  const evidenceRisk = rovaraV2 ? await evidenceRiskOfTask(deps.evidence, task, workflow.candidate?.digest, securityCheckIdsOf(workflow.checkPolicy)) : undefined;
+  const evidenceRisk = rovaraV2 ? await evidenceRiskOfTask(deps.evidence, evidenceKeyOf(task), workflow.candidate?.digest, securityCheckIdsOf(workflow.checkPolicy)) : undefined;
   // Setup and test health SH18: the Testing view of this code (only while `vx` is on; otherwise undefined and the description is what it was).
   const testing = rovaraV2 ? await loadTestingView(deps, task, workflow) : undefined;
   // Approve by exception (DECISIONS 24): the lessons this task used, each with a not-helpful link (none where lessons are off).
@@ -379,7 +380,7 @@ async function startTaskWorkflowPullRequestUpdate(
   const receivedAt = iso(deps);
   // Rovara Code version 2: the code on the pull request changes with this push, so its risk is judged again for the new code, in the write that starts the push.
   const started = startWorkflowPullRequestUpdate(workflow, receivedAt);
-  const judged = workflow.definitionVersion === "1.1.0" ? recomputeRisk(started, await candidateChangedFiles(deps, task), {}, await evidenceRiskOfTask(deps.evidence, task, started.candidate?.digest, securityCheckIdsOf(workflow.checkPolicy))) : started;
+  const judged = workflow.definitionVersion === "1.1.0" ? recomputeRisk(started, await candidateChangedFiles(deps, task), {}, await evidenceRiskOfTask(deps.evidence, evidenceKeyOf(task), started.candidate?.digest, securityCheckIdsOf(workflow.checkPolicy))) : started;
   let accepted: Awaited<ReturnType<DeveloperTaskActions["acceptPullRequestUpdate"]>>;
   try {
     accepted = await deps.actions.acceptPullRequestUpdate(developerTaskIdentity(task, deps.orgId), task.workspaceId, {

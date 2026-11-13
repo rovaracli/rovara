@@ -2,6 +2,7 @@
 // path is not a route at all. The reader's right to the task is the page's own rule (`resolveTaskAccess`: the owner, a person the task was shared with, or a member of the task's Slack channel who can use its project),
 // checked on EVERY request, and only a role that may read the task is served; on top of it the person must hold the task's PROJECT (owner decision on proof Q8: signed in with access to the project), which a session share, even company-wide, does not give; anyone else is told 403, a task that does not exist as well. What is served is only what the task's CURRENT pack names as available
 // (`servableEvidenceArtifact`, in `serveEvidenceArtifact`); every download that is served is audited first; where the install keeps an audit ledger, a download that cannot be audited does not happen (a legacy install has no ledger and keeps none).
+import { evidenceKeyOf } from "./developer-tasks/evidence-port.js";
 import { agentXError } from "@rovara-code/contracts";
 import type { AuditEventInput } from "@agentx/cloud-contracts";
 import { auditActorOf } from "../audit/plan3-hooks.js";
@@ -46,7 +47,7 @@ export async function routeEvidenceDownload(request: EvidenceDownloadRequest): P
         // Q8: evidence is for signed-in people with access to the PROJECT. A session share (even company-wide) reads the task page; it does not hold the project.
         if (!(await mayReadEvidence(request.deps, task))) throw agentXError("TASK_NOT_FOUND", "no task here that you can see");
         const candidateDigest = task.workflow?.candidate?.digest;
-        return { ownerKey: task.ownerKey, workspaceId: task.workspaceId, taskId: task.taskId, candidateDigest, view: await port.view(task, candidateDigest) };
+        return { ownerKey: task.ownerKey, workspaceId: task.workspaceId, taskId: task.taskId, candidateDigest, view: await port.view(evidenceKeyOf(task), candidateDigest) };
       },
     },
     sha256: request.sha256, taskId: request.taskId,

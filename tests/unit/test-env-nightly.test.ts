@@ -1,5 +1,5 @@
 // Proof and test environment E6: the nightly full baseline (schedule, fire decisions, recording a result, what the baseline feeds).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { agentXError, CoverageMapSchema, NIGHTLY_STEP_WORDS, NightlyBaselineSchema, NightlyResultSchema, StoredNightlyHealthSchema, TestEnvironmentBodySchema, projectMetaKey, projectRevisionKey, type CoverageMapData, type TestEnvironmentBody } from "@rovara-code/contracts";
 import { nightlyHealthListener, readProjectHealth, type HealthPorts } from "../../packages/broker/src/test-env/health.js";
 import { NIGHTLY_ENVIRONMENT_CAUSES, NIGHTLY_HEALTH_STEPS, NIGHTLY_UNCLEAR_CAUSES } from "../../packages/broker/src/test-env/nightly-health.js";
@@ -494,6 +494,24 @@ describe("a recorded night and the known-failing marks (KF-1)", () => {
     const row = await recorded({ VERIFY_RESULTS_ENABLED: "1" });
     expect(row.marks.map((m) => m.name)).toEqual(["tests/test_x.py::bad1", "tests/test_y.py::flaky1"]);
     expect(row.version).toBe(3);
+  });
+  it("with vx on but the company's gate unreadable, the night is still recorded and the listeners stay off (the marks are left as they were), and the failure is logged (M2)", async () => {
+    const h = await harness();
+    h.db.set({ ...projectRevisionKey(ORG, PROJECT, 1), entityType: "PROJECT", definition: { name: PROJECT, revision: 1, repositories: [{ name: "svc", url: "https://github.com/acme/svc.git", path: "repo/svc", defaultBranch: "main" }] } });
+    h.db.set({ ...knownFailingKey(ORG, PROJECT), entityType: "TEST_ENV_KNOWN_FAILING", orgId: ORG, project: PROJECT, version: 2, updatedAt: "2026-11-01T00:00:00.000Z", marks: [markOf("tests/test_x.py::bad1"), markOf("tests/test_y.py::flaky1"), markOf("tests/test_z.py::gone")] });
+    const started = await handleNightlyFire(h.deps, h.fire());
+    if (started.outcome !== "started") throw new Error("not started");
+    const data = result(started.slotId, { health: stepWords });
+    h.db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { sk?: string } | undefined)?.sk === "FEATURE_ROLLOUT", error: { name: "ProvisionedThroughputExceededException", message: "throttled" }, times: 5 });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await recordNightlyResultWithHealth(h.deps, h.store, { orgId: ORG, project: PROJECT, result: data.result, coverageMap: data.coverageMap }, { VERIFY_RESULTS_ENABLED: "1" });
+    const lines = log.mock.calls.map((call) => String(call[0]));
+    log.mockRestore();
+    expect((await readNightlyBaseline(h.deps, ORG, PROJECT))?.headSha).toBe(HEAD1);
+    const row = (await readKnownFailingRow(h.deps, ORG, PROJECT))!;
+    expect(row.marks).toHaveLength(3);
+    expect(row.version).toBe(2);
+    expect(lines.some((line) => line.includes("feature_rollout_read_failed"))).toBe(true);
   });
   it("a night that carries no step words never takes a mark off, even with vx on", async () => {
     const row = await recorded({ VERIFY_RESULTS_ENABLED: "1" }, {});

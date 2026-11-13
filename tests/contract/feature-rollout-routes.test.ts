@@ -20,7 +20,7 @@ interface Answer { revision: number; features: Row[]; changedAt?: string }
 interface Stored { revision: number; gates: Record<string, boolean>; changedBy?: string }
 
 function world(options: { ledger?: boolean } = {}) {
-  const db = new FakeDynamoDb({ rolloutGates: "stored" });
+  const db = new FakeDynamoDb();
   const capture = capturingAuditDeps({ db });
   const clock = { at: START };
   const deps = { documentClient: db, tableName: "state", now: () => clock.at, developer: { signInTableName: "state" }, ...(options.ledger === false ? {} : { audit: capture.audit }) } as unknown as DeveloperRouteDependencies;
@@ -77,7 +77,7 @@ describe("who may use the route", () => {
 });
 
 describe("GET", () => {
-  it("is every gate off with all the known gates in catalog order, and says whether the install lets each take effect", async () => {
+  it("is each gate at its catalog default (the four existing features on, the three new ones off), all in catalog order, and says whether the install lets each take effect", async () => {
     const w = world();
     const owner = w.caller(ORG_A);
     const answer = await w.call(owner, "GET", undefined, { PROOF_EVIDENCE_ENABLED: "1", VERIFY_RESULTS_ENABLED: "true" });
@@ -85,7 +85,7 @@ describe("GET", () => {
     expect(answer.changedAt).toBeUndefined();
     expect(answer.features.map((row) => row.name)).toEqual([...ROLLOUT_FEATURE_NAMES]);
     expect(ROLLOUT_FEATURE_CATALOG.map((entry) => entry.name)).toEqual([...ROLLOUT_FEATURE_NAMES]);
-    expect(answer.features.filter((row) => row.enabled)).toEqual([]);
+    expect(answer.features.filter((row) => row.enabled).map((row) => row.name)).toEqual(["proofEvidence", "verifyResults", "testEnvironment", "testServices"]);
     expect(rowOf(answer, "proofEvidence").installOn).toBe(true);
     expect(rowOf(answer, "verifyResults").installOn).toBe(false);
     expect(rowOf(answer, "testEnvironment").installOn).toBe(false);
@@ -113,21 +113,36 @@ describe("PUT", () => {
     const w = world();
     const owner = w.caller(ORG_A);
     w.signIn(owner, 1);
-    const first = await w.call(owner, "PUT", { expectedRevision: 0, features: { proofEvidence: true, verifyResults: true } });
+    const first = await w.call(owner, "PUT", { expectedRevision: 0, features: { sealedChecks: true, verifyResults: false } });
     expect(first.revision).toBe(1);
-    expect(rowOf(first, "proofEvidence").enabled).toBe(true);
-    expect(rowOf(first, "testServices").enabled).toBe(false);
-    const second = await w.call(owner, "PUT", { expectedRevision: 1, features: { verifyResults: false, testEnvironment: true } });
+    expect(rowOf(first, "sealedChecks").enabled).toBe(true);
+    expect(rowOf(first, "verifyResults").enabled).toBe(false);
+    expect(rowOf(first, "testServices").enabled).toBe(true);
+    const second = await w.call(owner, "PUT", { expectedRevision: 1, features: { verifyResults: true, honestCi: true, sealedChecks: false } });
     expect(second.revision).toBe(2);
-    expect(second.features.filter((row) => row.enabled).map((row) => row.name)).toEqual(["proofEvidence", "testEnvironment"]);
+    expect(second.features.filter((row) => row.enabled).map((row) => row.name)).toEqual(["proofEvidence", "verifyResults", "testEnvironment", "testServices", "honestCi"]);
     expect(w.stored(ORG_A)).toMatchObject({ revision: 2, changedBy: owner.developerId });
-    expect(w.stored(ORG_A)?.gates).toEqual({ proofEvidence: true, verifyResults: false, testEnvironment: true });
+    expect(w.stored(ORG_A)?.gates).toEqual({ sealedChecks: false, verifyResults: true, honestCi: true });
     const events = w.capture.recordedBy(EVENT);
     expect(events).toHaveLength(2);
-    expect(events[0]).toMatchObject({ orgId: ORG_A, actor: { id: owner.developerId }, target: { kind: "org", id: ORG_A }, facts: { revision: 1, turnedOn: "proofEvidence+verifyResults", turnedOff: "none" } });
-    expect(events[1]).toMatchObject({ facts: { revision: 2, turnedOn: "testEnvironment", turnedOff: "verifyResults" } });
+    expect(events[0]).toMatchObject({ orgId: ORG_A, actor: { id: owner.developerId }, target: { kind: "org", id: ORG_A }, facts: { revision: 1, turnedOn: "sealedChecks", turnedOff: "verifyResults" } });
+    expect(events[1]).toMatchObject({ facts: { revision: 2, turnedOn: "verifyResults+honestCi", turnedOff: "sealedChecks" } });
     for (const event of events) expect(AuditEventInputSchema.safeParse(event).success).toBe(true);
     expect(await w.call(owner, "GET")).toEqual(second);
+  });
+
+  it("salts the audit occurrence with the time of the change: a row deleted and started again at revision 1 is a new event, not an old one", async () => {
+    const w = world();
+    const owner = w.caller(ORG_A);
+    w.signIn(owner, 0);
+    await w.call(owner, "PUT", { expectedRevision: 0, features: { sealedChecks: true } });
+    w.db.delete(orgFeatureRolloutKey(ORG_A).pk, orgFeatureRolloutKey(ORG_A).sk);
+    w.clock.at += 5_000;
+    w.signIn(owner, 0);
+    await w.call(owner, "PUT", { expectedRevision: 0, features: { sealedChecks: true } });
+    const events = w.capture.recordedBy(EVENT);
+    expect(events).toHaveLength(2);
+    expect(events[0]!.eventId).not.toBe(events[1]!.eventId);
   });
 
   it("writes the audit event in the same transaction as the change: no ledger, no change", async () => {
@@ -162,11 +177,11 @@ describe("PUT", () => {
     const w = world();
     const owner = w.caller(ORG_A);
     w.signIn(owner, 0);
-    await w.call(owner, "PUT", { expectedRevision: 0, features: { proofEvidence: true, verifyResults: false } });
+    await w.call(owner, "PUT", { expectedRevision: 0, features: { proofEvidence: false, verifyResults: true } });
     const back = await w.call(owner, "PUT", { expectedRevision: 1, features: { proofEvidence: null } });
-    expect(rowOf(back, "proofEvidence").enabled).toBe(false);
-    expect(w.stored(ORG_A)?.gates).toEqual({ verifyResults: false });
-    expect(w.capture.recordedBy(EVENT)[1]).toMatchObject({ facts: { revision: 2, turnedOn: "none", turnedOff: "proofEvidence" } });
+    expect(rowOf(back, "proofEvidence").enabled).toBe(true);
+    expect(w.stored(ORG_A)?.gates).toEqual({ verifyResults: true });
+    expect(w.capture.recordedBy(EVENT)[1]).toMatchObject({ facts: { revision: 2, turnedOn: "proofEvidence", turnedOff: "none" } });
   });
 
   it("is fenced by the revision: a stale write is CHANGE_STALE and changes nothing", async () => {
@@ -174,12 +189,12 @@ describe("PUT", () => {
     const owner = w.caller(ORG_A);
     const admin = w.caller(ORG_A, "admin");
     w.signIn(owner, 0); w.signIn(admin, 0);
-    await w.call(owner, "PUT", { expectedRevision: 0, features: { proofEvidence: true } });
-    await expect(w.call(admin, "PUT", { expectedRevision: 0, features: { proofEvidence: false } })).rejects.toMatchObject({ code: "CHANGE_STALE" });
-    await expect(w.call(admin, "PUT", { expectedRevision: 5, features: { proofEvidence: false } })).rejects.toMatchObject({ code: "CHANGE_STALE" });
-    expect(w.stored(ORG_A)).toMatchObject({ revision: 1, gates: { proofEvidence: true } });
+    await w.call(owner, "PUT", { expectedRevision: 0, features: { proofEvidence: false } });
+    await expect(w.call(admin, "PUT", { expectedRevision: 0, features: { proofEvidence: true } })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    await expect(w.call(admin, "PUT", { expectedRevision: 5, features: { proofEvidence: true } })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(w.stored(ORG_A)).toMatchObject({ revision: 1, gates: { proofEvidence: false } });
     expect(w.capture.recordedBy(EVENT)).toHaveLength(1);
-    expect(await w.call(admin, "PUT", { expectedRevision: 1, features: { proofEvidence: false } })).toMatchObject({ revision: 2 });
+    expect(await w.call(admin, "PUT", { expectedRevision: 1, features: { proofEvidence: true } })).toMatchObject({ revision: 2 });
   });
 
   it("lets only one of two racing writes win", async () => {
@@ -218,17 +233,19 @@ describe("tenancy", () => {
     const w = world();
     const a = w.caller(ORG_A), b = w.caller(ORG_B);
     w.signIn(a, 0); w.signIn(b, 0);
-    await w.call(a, "PUT", { expectedRevision: 0, features: { proofEvidence: true, testServices: true } });
-    // A sees its own choice, and B sees nothing of it.
-    expect(rowOf(await w.call(a, "GET"), "proofEvidence").enabled).toBe(true);
+    await w.call(a, "PUT", { expectedRevision: 0, features: { proofEvidence: false, sealedChecks: true } });
+    // A sees its own choice, and B sees none of it.
+    expect(await w.call(a, "GET")).toMatchObject({ revision: 1 });
+    expect(rowOf(await w.call(a, "GET"), "proofEvidence").enabled).toBe(false);
     expect(await w.call(b, "GET")).toMatchObject({ revision: 0 });
-    expect((await w.call(b, "GET")).features.filter((row) => row.enabled)).toEqual([]);
+    expect(rowOf(await w.call(b, "GET"), "proofEvidence").enabled).toBe(true);
+    expect(rowOf(await w.call(b, "GET"), "sealedChecks").enabled).toBe(false);
     // B naming A in the body is refused (no company field is accepted); naming a revision of A's row writes B's row, never A's.
-    await expect(w.call(b, "PUT", { expectedRevision: 1, orgId: ORG_A, features: { proofEvidence: false } })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
-    await expect(w.call(b, "PUT", { expectedRevision: 1, features: { proofEvidence: false } })).rejects.toMatchObject({ code: "CHANGE_STALE" });
-    expect(await w.call(b, "PUT", { expectedRevision: 0, features: { verifyResults: true } })).toMatchObject({ revision: 1 });
-    expect(w.stored(ORG_A)).toMatchObject({ revision: 1, gates: { proofEvidence: true, testServices: true }, changedBy: a.developerId });
-    expect(w.stored(ORG_B)?.gates).toEqual({ verifyResults: true });
+    await expect(w.call(b, "PUT", { expectedRevision: 1, orgId: ORG_A, features: { proofEvidence: true } })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+    await expect(w.call(b, "PUT", { expectedRevision: 1, features: { proofEvidence: true } })).rejects.toMatchObject({ code: "CHANGE_STALE" });
+    expect(await w.call(b, "PUT", { expectedRevision: 0, features: { verifyResults: false } })).toMatchObject({ revision: 1 });
+    expect(w.stored(ORG_A)).toMatchObject({ revision: 1, gates: { proofEvidence: false, sealedChecks: true }, changedBy: a.developerId });
+    expect(w.stored(ORG_B)?.gates).toEqual({ verifyResults: false });
     expect(w.capture.recordedBy(EVENT).map((event) => event.orgId)).toEqual([ORG_A, ORG_B]);
   });
 
@@ -236,28 +253,27 @@ describe("tenancy", () => {
     const w = world();
     const adminA = w.caller(ORG_A, "admin"), memberB = w.caller(ORG_B, "member");
     w.signIn(adminA, 0); w.signIn(memberB, 0);
-    await w.call(adminA, "PUT", { expectedRevision: 0, features: { proofEvidence: true } });
+    await w.call(adminA, "PUT", { expectedRevision: 0, features: { proofEvidence: false } });
     await expect(w.call(memberB, "GET")).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(w.call(memberB, "PUT", { expectedRevision: 0, features: { proofEvidence: false } })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(w.call(memberB, "PUT", { expectedRevision: 0, features: { proofEvidence: true } })).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(w.stored(ORG_B)).toBeUndefined();
   });
 });
 
 describe("a change reaches the readers at once", () => {
   const ON = { PROOF_EVIDENCE_ENABLED: "1", VERIFY_RESULTS_ENABLED: "1", TEST_ENVIRONMENT_ENABLED: "1", TEST_SERVICES_ENABLED: "1" };
-  it("turning a gate on, then off, changes the next read for that company only", async () => {
+  it("turning a gate off, then back, changes the next read for that company only", async () => {
     const w = world();
-    const a = w.caller(ORG_A), b = w.caller(ORG_B);
+    const a = w.caller(ORG_A);
     w.signIn(a, 0);
     const store = { documentClient: w.db, tableName: "state", now: () => w.clock.at };
-    expect((await companyGatedEnv(store, ORG_A, ON)).PROOF_EVIDENCE_ENABLED).toBe("0");
-    await w.call(a, "PUT", { expectedRevision: 0, features: { proofEvidence: true } });
     expect((await companyGatedEnv(store, ORG_A, ON)).PROOF_EVIDENCE_ENABLED).toBe("1");
-    expect((await companyGatedEnv(store, ORG_B, ON)).PROOF_EVIDENCE_ENABLED).toBe("0");
-    expect((await companyGatedEnv(store, ORG_A, ON)).VERIFY_RESULTS_ENABLED).toBe("0");
-    await w.call(a, "PUT", { expectedRevision: 1, features: { proofEvidence: false } });
+    await w.call(a, "PUT", { expectedRevision: 0, features: { proofEvidence: false } });
     expect((await companyGatedEnv(store, ORG_A, ON)).PROOF_EVIDENCE_ENABLED).toBe("0");
-    void b;
+    expect((await companyGatedEnv(store, ORG_B, ON)).PROOF_EVIDENCE_ENABLED).toBe("1");
+    expect((await companyGatedEnv(store, ORG_A, ON)).VERIFY_RESULTS_ENABLED).toBe("1");
+    await w.call(a, "PUT", { expectedRevision: 1, features: { proofEvidence: true } });
+    expect((await companyGatedEnv(store, ORG_A, ON)).PROOF_EVIDENCE_ENABLED).toBe("1");
   });
 });
 

@@ -145,7 +145,7 @@ describe("callers retry a health update that failed (F2)", () => {
     await hook(task("task_1"), ["host-blocked"]);
     expect((await readProjectHealth(h.deps, ORG, PROJECT))?.blocked).toHaveLength(1);
     const giving = harness();
-    await expect(blockedByEnvironmentHook(flaky(giving, 3), ON)!(task("task_1"), ["host-blocked"])).rejects.toThrow(/throttled/);
+    await expect(blockedByEnvironmentHook(flaky(giving, 3), ON)!(task("task_1"), ["host-blocked"])).rejects.toThrow(/settings could not be read/);
   });
 
   it("the approval hook tries again too", async () => {

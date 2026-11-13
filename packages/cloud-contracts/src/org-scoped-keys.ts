@@ -456,7 +456,7 @@ export function orgUiFlagsKey(orgId: OrgId): OrgKey {
   return { pk: orgPk(orgId), sk: "UI_FLAGS" };
 }
 
-/** The company's rollout gates (TE-A1): `ORG#<org>` / `FEATURE_ROLLOUT`. One row, a map of known gate names to on/off, fenced by `revision`. Absent until the company first changes one: every gate takes its catalog default (off). */
+/** The company's rollout gates (TE-A1): `ORG#<org>` / `FEATURE_ROLLOUT`. One row, a map of known gate names to on/off, fenced by `revision`. Absent until the company first changes one: every gate takes its catalog default (on for the four features that have an install switch, off for the three not built yet). */
 export function orgFeatureRolloutKey(orgId: OrgId): OrgKey {
   return { pk: orgPk(orgId), sk: "FEATURE_ROLLOUT" };
 }

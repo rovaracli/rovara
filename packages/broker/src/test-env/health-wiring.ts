@@ -26,7 +26,7 @@ export const healthWiringOn = (env: NodeJS.ProcessEnv = process.env): boolean =>
 /** Records a finished nightly run; while `nh` is on the project's health follows it. With `nh` off this is `recordNightlyResult` exactly. */
 export async function recordNightlyResultWithHealth(deps: TestEnvDeps, maps: MapStore, input: { orgId: OrgId; project: string; result: unknown; coverageMap?: unknown }, installEnv: NodeJS.ProcessEnv = process.env): ReturnType<typeof recordNightlyResult> {
   // TE-A1: the health and the known-failing expiry follow the company's gates (`verifyResults`, `testEnvironment`); the nightly itself is always recorded.
-  const env = await companyGatedEnv(deps, input.orgId, installEnv, { throwOnReadFailure: true });
+  const env = await companyGatedEnv(deps, input.orgId, installEnv);
   return recordNightlyResult(deps, maps, input, nightlyListeners(nightlyHealthListener(deps, healthPortsOf(deps, env), env), knownFailingExpiryListener(deps, env)));
 }
 
@@ -66,7 +66,7 @@ export function blockedByEnvironmentHook(deps: TestEnvDeps, env: NodeJS.ProcessE
     const orgId = task.orgId;
     if (orgId === undefined) return;
     // TE-A1: the company's gates, read inside the retry (a throttled read is tried again, never taken for "off").
-    for (const reason of blockedReasonsOf(codes)) await retried(async () => { const gated = await companyGatedEnv(deps, orgId, env, { throwOnReadFailure: true }); if (healthWiringOn(gated)) await noteBlockedTask(deps, healthPortsOf(deps, gated), { orgId, project: task.project, taskId: task.taskId, reason }); });
+    for (const reason of blockedReasonsOf(codes)) await retried(async () => { const gated = await companyGatedEnv(deps, orgId, env, { onReadFailure: "throw" }); if (healthWiringOn(gated)) await noteBlockedTask(deps, healthPortsOf(deps, gated), { orgId, project: task.project, taskId: task.taskId, reason }, gated); });
   };
 }
 
@@ -74,7 +74,7 @@ export function blockedByEnvironmentHook(deps: TestEnvDeps, env: NodeJS.ProcessE
 export function setupProvedHook(deps: TestEnvDeps, env: NodeJS.ProcessEnv = process.env): ((orgId: OrgId, project: string) => Promise<void>) | undefined {
   if (!healthWiringOn(env)) return undefined;
   return async (orgId, project) => {
-    await retried(async () => { const gated = await companyGatedEnv(deps, orgId, env, { throwOnReadFailure: true }); if (healthWiringOn(gated)) await noteSetupProved(deps, healthPortsOf(deps, gated), { orgId, project }); });
+    await retried(async () => { const gated = await companyGatedEnv(deps, orgId, env, { onReadFailure: "throw" }); if (healthWiringOn(gated)) await noteSetupProved(deps, healthPortsOf(deps, gated), { orgId, project }, gated); });
   };
 }
 

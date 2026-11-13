@@ -336,7 +336,7 @@ export async function taskOperationParts(
   const orgId = input.orgId ?? await orgOfRecord(dependencies, workspace);
   const settings = await requireLatestProject(dependencies, orgId, workspace.projectName);
   // TE-A1: what this company has on. The install switches the task's evidence and test-setup readers see are the install's only where this company's gate is on.
-  const gatedEnv = await companyGatedEnv({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId);
+  const gatedEnv = await companyGatedEnv({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, process.env, { onReadFailure: "throw" });
   const resolvedModel:Awaited<ReturnType<typeof resolveProjectModel>> = input.workflowMode === "CHECKS" ? {} : await resolveProjectModel(dependencies, orgId, settings);
   const task = await workspaceTask(dependencies, workspace.id);
   // #341: a task whose owner connected a working ChatGPT plan runs on it; `model` stays the default it falls back to.

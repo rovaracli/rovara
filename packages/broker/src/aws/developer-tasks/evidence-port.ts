@@ -1,6 +1,7 @@
 // Proof and evidence (wire-proof): what the task routes need to show a task's evidence: the pack kept for the task's current code (rovara-code/evidence-keep.ts), as the pull request shows it (counts, a link) and as the
 // task page shows it (links to stored artifacts). It exists only while the proof switch is on (`evidenceRouteDependencies`, aws/broker/evidence-wiring.ts): with the switch off nothing builds it, every reader sees `undefined`
 // and the pull request, the task view and the routes are exactly what they were. A pack is read only for the digest it was kept for, so evidence of earlier code is never shown against later code.
+import type { GateReader } from "../../org/feature-rollout.js";
 import { resolveEvidenceMode, type EvidencePack, type EvidenceView, type OrgId } from "@rovara-code/contracts";
 import type { TestProofActions } from "../../developer/test-proof-lines.js";
 import { evidenceViewOf, type EvidenceArtifactState } from "../../rovara-code/evidence-pack.js";
@@ -11,12 +12,17 @@ import type { AuditDeps } from "../../audit/outbox.js";
 import { taskPageUrl } from "./common.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 
-/** `orgId` is the task's company when the caller has it (a task record always does): the company gate (TE-A1, `gatedEvidencePort`) is read for it. A key without it is a task whose company is unknown, and the gated port shows it nothing. */
-export interface EvidenceTaskKey { taskId: string; ownerKey: string; workspaceId: string; orgId?: OrgId | undefined }
+/** `orgId` is the task's company (a task record always has it; `undefined` only for a task from before companies): the company gate (TE-A1, `gatedEvidencePort`) is read for it. It is a required key, so a literal that leaves it out does not compile; `undefined` is a task whose company is unknown, and the gated port shows it nothing. */
+export interface EvidenceTaskKey { taskId: string; ownerKey: string; workspaceId: string; orgId: OrgId | undefined }
+
+/** The evidence key of a task record: the three the store is keyed by, and the company the gate is read for (`orgId` is undefined only for a task from before companies). */
+export const evidenceKeyOf = (task: { taskId: string; ownerKey: string; workspaceId: string; orgId?: OrgId | undefined }): EvidenceTaskKey => ({ taskId: task.taskId, ownerKey: task.ownerKey, workspaceId: task.workspaceId, orgId: task.orgId });
 
 export interface EvidencePort {
   /** Whether evidence is on for this task's company (TE-A1). Absent on a port that is not company-gated: it is on. A reader that finds none must treat the task as the proof switch off, not as evidence lost. */
   on?(task: EvidenceTaskKey): Promise<boolean>;
+  /** The same port reading a company's gate through one request's reader (`createGateReader`), so the request reads it once. Only the company-gated port has it. */
+  scoped?(gates: GateReader): EvidencePort;
   /** The pack kept for exactly this code; undefined when there is none. */
   pack(task: EvidenceTaskKey, candidateDigest: string | undefined): Promise<EvidencePack | undefined>;
   /** What the pull request's Proof section shows of it: the pack, how much of it, and where the rest is (the task page, behind sign-in). Undefined when there is no pack. */

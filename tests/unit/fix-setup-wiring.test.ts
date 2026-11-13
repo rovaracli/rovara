@@ -1,6 +1,8 @@
 // Setup and test health SH17: the dispatch wiring of the Fix setup port: absent with vx off, and with it on it records the cause the policy's own codes name (never text), with no tests to mark unless the broker's own
 // evidence pack gives them (the proof switch is off here, so there is none).
+import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { describe, expect, it } from "vitest";
+import { orgFeatureRolloutKey } from "@agentx/cloud-contracts";
 import { fixSetupDependencies } from "../../packages/broker/src/aws/broker/fix-setup-wiring.js";
 import { fixSetupItemsFor } from "../../packages/broker/src/test-env/fix-setup.js";
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
@@ -104,6 +106,20 @@ describe("the wiring and the nightly baseline", () => {
 
   it("offers the mark for a test a usable nightly lists", async () => {
     expect(await run(bench({}), ["Y"])).toMatchObject({ knownFailingTests: 1 });
+  });
+
+  it("reads the pack with the task's company through the real gated port (H2): the mark is offered with the company's proof gate on, and not with it off", async () => {
+    const withPort = async (gate: boolean) => {
+      const db = bench({});
+      db.set({ ...orgFeatureRolloutKey(ORG), entityType: "FEATURE_ROLLOUT", orgId: ORG, gates: { proofEvidence: gate }, revision: 1 });
+      const s3 = { send: async (command: unknown) => { expect(command).toBeInstanceOf(GetObjectCommand); return { Body: { transformToString: async () => JSON.stringify(pack(["Y"])) } }; } };
+      const port = fixSetupDependencies({ documentClient: db, tableName: "state", now: () => NOW, s3, artifactBucketName: "bucket" } as never, { VERIFY_RESULTS_ENABLED: "1", PROOF_EVIDENCE_ENABLED: "1" }).fixSetup!;
+      await port.record(taskOf, { reason: "original-code-also-fails", codes: ["fails-on-original-code"], stage: "VERIFY" });
+      const [item] = await fixSetupItemsFor({ store: { documentClient: db, tableName: "state", now: () => NOW }, maintainedProjects: async () => ["web"], task: async () => undefined }, { orgId: ORG, developerId: "d".repeat(64) }, { VERIFY_RESULTS_ENABLED: "1" });
+      return item as { knownFailingTests: number } | undefined;
+    };
+    expect(await withPort(true)).toMatchObject({ knownFailingTests: 1 });
+    expect(await withPort(false)).not.toMatchObject({ knownFailingTests: 1 });
   });
 
   it("opens no card at all when a failing test is not on the list (Y old, Z new): it is the code's fault, not the setup's", async () => {
