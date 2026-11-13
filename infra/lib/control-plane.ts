@@ -17,7 +17,7 @@ import type { TeamRecordContext } from "./team-record-edition.js";
 import { ModelAccess } from "./model-access.js";
 import { ModelProxy } from "./model-proxy.js";
 import type { ModelProxyTls } from "./model-proxy-tls.js";
-import { bedrockClaudeModelIds, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
+import { bedrockProxyModels, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import { resolve } from "node:path";
 import {
   ArnFormat,
@@ -1612,7 +1612,8 @@ export class ControlPlaneStack extends Stack {
         subnetIds: Fn.split(",", sessions.privateSubnetIds.valueAsString),
         clientSecurityGroupIds: [new CfnParameter(this, "Ec2WorkerSecurityGroupId", { type: "String", description: "The foundation's EC2 worker security group" }).valueAsString],
         // Ruling R52: the geography follows the install's region (an eu install serves eu.* profiles); an unsupported region fails the synth.
-        models: bedrockClaudeModelIds(proxyGeographyForRegion(props?.deploymentRegion ?? "us-east-1")).map((id) => ({ id })),
+        // A model LiteLLM's own cost map lacks (Haiku 5.5, Fable 5.2) carries the catalog's price in the config; the guard refuses a model with no price.
+        models: bedrockProxyModels(proxyGeographyForRegion(props?.deploymentRegion ?? "us-east-1")),
         ...(props?.privateEgressCidrs === undefined ? {} : { privateEgressCidrs: [...props.privateEgressCidrs, ...(props.modelEndpointCidrs ?? [])] }),
         ...(props?.bundledImages === true ? { bundledImages: true } : {}),
         ...(props?.modelProxyTls === undefined ? {} : { tls: props.modelProxyTls }),

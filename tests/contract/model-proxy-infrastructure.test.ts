@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { INFERENCE_PATHS } from "@rovara-code/contracts";
 import { litellmConfig } from "../../packages/model-proxy/src/litellm-config.js";
+import { bedrockProxyModels } from "../../packages/model-runtime/src/catalog.js";
 import { ROVARA_GUARD_PY } from "../../packages/model-proxy/src/rovara-guard.js";
 import { ROVARA_GUARD_PACKED, ROVARA_GUARD_SHA256 } from "../../packages/model-proxy/src/rovara-guard-packed.js";
 import { litellmStartCommand } from "../../packages/model-proxy/src/start-command.js";
@@ -105,7 +106,9 @@ describe("model proxy infrastructure (named environments)", () => {
     expect(text).not.toContain("?");
     for (const id of new Set(Object.values(DEFAULT_BEDROCK_MODELS))) expect(text).toContain(`model_name: ${JSON.stringify(id)}`);
     const served = [...text.matchAll(/model_name: "([^"]+)"/g)].map((match) => ({ id: match[1]! }));
-    expect(text).toBe(litellmConfig({ region: "us-east-1", models: served }));
+    // The config is the one the control plane builds: every id of the geography, with the verified price overrides (DECISIONS 172 (d)) on the few that have one.
+    expect(text).toBe(litellmConfig({ region: "us-east-1", models: bedrockProxyModels("us") }));
+    expect(served.map(({ id }) => id)).toEqual(bedrockProxyModels("us").map(({ id }) => id));
     expect(served.every(({ id }) => id.startsWith("us.anthropic.claude-"))).toBe(true);
   });
 

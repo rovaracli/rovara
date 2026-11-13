@@ -14,6 +14,9 @@ export const ROVARA_GUARD_PY = String.raw`"""Rovara proxy guard: loaded by LiteL
    in a ledger the guard keeps in LiteLLM's own Postgres (shared by every replica), and settles it to the real cost when the
    call ends. A call cut before its cost is known (worker cut, provider cut, timeout, replica crash) is charged in full.
    422 budget_exceeded: the spend leaves no room for this call. 429 budget_held (retry-after): only other calls' holds block it.
+   No model is refused for lack of a price (DECISIONS 172): a model with no known price is held at a cautious estimate (the dearest known
+   rate of its family, times CAUTION_FACTOR) and settled at the dearest known rate, flagged estimated, never at $0. Prices are refreshed
+   daily from AWS's public Price List files and LiteLLM's upstream cost map (validated, with the image's bundled map as the fallback).
 """
 import asyncio, json, os, sys, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -232,7 +235,7 @@ def _check_include(include):
 
 
 # ---------------------------------------------------------------- 4. task budget: hold the worst case before forwarding
-import asyncio, json, math, re, sys, time as _time, uuid as _uuid
+import asyncio, json, math, os, re, sys, time as _time, urllib.request, uuid as _uuid
 
 HOLD_SECONDS = 1000                 # longer than the proxy's 900 s REQUEST_TIMEOUT: an older hold is an orphan (its replica died) and counts as spent
 SETTLE_GRACE_SECONDS = 60           # a call that ended but whose cost never arrived is charged its whole hold after this long
@@ -241,6 +244,17 @@ MIN_AFFORDABLE_OUTPUT_TOKENS = 4_096  # below this a smaller output limit is not
 MAX_TOKENS_HINT_HEADER = "x-rovara-max-tokens"
 ASSUMED_MAX_OUTPUT_TOKENS = 64_000  # a request that names no output limit, for a model whose limit is not known (as the Code proxy assumes)
 ASSUMED_MAX_INPUT_TOKENS = 2_000_000
+CAUTION_FACTOR = 1.5                # a model with no known price is held at its family's dearest known rate times this
+CAUTIOUS_FLOOR_PER_TOKEN = (0.00006, 0.00024)   # (input, output) when not one model of the cost map says anything about the family: $60 and $240 per million
+PRICE_REFRESH_ENABLED = os.environ.get("ROVARA_PRICE_REFRESH") != "0"
+PRICE_REFRESH_SECONDS = 24 * 3600
+PRICE_RETRY_SECONDS = 3600
+PRICE_FETCH_TIMEOUT_SECONDS = 20
+PRICE_FILE_MAX_BYTES = 64_000_000
+MIN_MAP_MODELS = 500                # an upstream cost map with fewer models than this is not the cost map
+LONG_CONTEXT_ABOVE_TOKENS = 100_000  # AWS's price list names a long-context tier but not its size; the Pi catalog and pi.dev give 100,000 for Haiku 5.5
+AWS_PRICE_URL = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrockFoundationModels/current/{region}/index.json"
+LITELLM_COST_MAP_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 _MICROS = 1_000_000
 # Every per-token rate a call's tokens could be billed at (long-context tiers and the 1-hour cache write included, batch-only rates excluded by the max).
 _INPUT_RATE = re.compile(r"^(input_cost_per_token|cache_creation_input_token_cost)(_above_[a-z0-9_]+)?$")
@@ -254,6 +268,8 @@ _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS rovara_budget.holds (call_id text PRIMARY KEY, key_hash text NOT NULL, reserved_micros bigint NOT NULL,"
     " expires_at timestamptz NOT NULL)",
     "CREATE INDEX IF NOT EXISTS holds_key ON rovara_budget.holds (key_hash, expires_at)",
+    # How much of what a key was charged is an estimate (a model with no known price, a cut call's whole hold): shown as "estimated" wherever the cost is.
+    "ALTER TABLE rovara_budget.keys ADD COLUMN IF NOT EXISTS estimated_micros bigint NOT NULL DEFAULT 0",
 )
 # An orphan (older than HOLD_SECONDS) leaves the holds and is added to what its key has been charged. One statement: a hold is moved once.
 _SQL_SWEEP = (
@@ -275,12 +291,13 @@ _SQL_TAKE = (
     " INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, expires_at)"
     " SELECT $5::text, key_hash, $2::bigint, now() + make_interval(secs => $6::int) FROM k RETURNING call_id")
 _SQL_READ = "SELECT charged_micros, held_micros FROM rovara_budget.keys WHERE key_hash = $1::text"
-# Settle: the hold leaves and its key is charged the call's cost ($2), or the whole hold when $2 is negative. Settling twice charges once.
+# Settle: the hold leaves and its key is charged the call's cost ($2), or the whole hold when $2 is negative, and $3 says the charge is an estimate. Settling twice charges once.
 _SQL_SETTLE = (
-    "WITH h AS (DELETE FROM rovara_budget.holds WHERE call_id = $1::text RETURNING key_hash, reserved_micros)"
-    " UPDATE rovara_budget.keys k SET held_micros = k.held_micros - h.reserved_micros,"
-    " charged_micros = k.charged_micros + CASE WHEN $2::bigint < 0 THEN h.reserved_micros ELSE $2::bigint END, updated_at = now()"
-    " FROM h WHERE k.key_hash = h.key_hash RETURNING k.charged_micros")
+    "WITH h AS (DELETE FROM rovara_budget.holds WHERE call_id = $1::text RETURNING key_hash, reserved_micros),"
+    " c AS (SELECT key_hash, reserved_micros, CASE WHEN $2::bigint < 0 THEN reserved_micros ELSE $2::bigint END AS cost FROM h)"
+    " UPDATE rovara_budget.keys k SET held_micros = k.held_micros - c.reserved_micros, charged_micros = k.charged_micros + c.cost,"
+    " estimated_micros = k.estimated_micros + CASE WHEN $3::boolean THEN c.cost ELSE 0 END, updated_at = now()"
+    " FROM c WHERE k.key_hash = c.key_hash RETURNING k.charged_micros")
 
 
 class _PostgresLedger:
@@ -325,11 +342,11 @@ class _PostgresLedger:
         charged = int(rows[0]["charged_micros"]) if rows else 0
         return ("exceeded" if max(charged, spent) + worst > cap else "held"), charged
 
-    async def settle(self, call_id, cost):
-        """Ends a hold: its key is charged cost micro-dollars, or the whole hold when cost is None."""
+    async def settle(self, call_id, cost, estimated=False):
+        """Ends a hold: its key is charged cost micro-dollars, or the whole hold when cost is None; 'estimated' adds the charge to what is shown as estimated."""
         db = await self._db()
         try:
-            await db.query_raw(_SQL_SETTLE, call_id, -1 if cost is None else cost)
+            await db.query_raw(_SQL_SETTLE, call_id, -1 if cost is None else cost, bool(estimated))
         except Exception:
             self._ready = False
             raise
@@ -369,21 +386,37 @@ def _rates(entries):
     return rate_in, rate_out, max_out, max_in, sum(per_call.values())
 
 
+_ESTIMATED = {}                     # cost-map key -> alias, for each key this guard filled with an estimate (never read back as a known price)
+_CAUTION_CACHE = {}
+
+
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _stripped(model):
+    return model.split("/", 1)[-1]
+
+
+def _deployments_of(alias):
+    from litellm.proxy.proxy_server import llm_router
+    return (llm_router.get_model_list(model_name=alias) if llm_router is not None and isinstance(alias, str) else None) or []
+
+
 def _prices_for(alias):
     """The dearest price of every deployment serving this model name: the deployment's own prices (a company source's) and LiteLLM's cost map
-    (shipped in the image, LITELLM_LOCAL_MODEL_COST_MAP). None when the name has no deployment or no positive input and output price."""
+    (the image's, as the daily refresh has updated it). None when the name has no deployment or no positive input and output price: an estimate
+    this guard put in the cost map for a model with no price is not a price."""
     import litellm
-    from litellm.proxy.proxy_server import llm_router
-    deployments = (llm_router.get_model_list(model_name=alias) if llm_router is not None and isinstance(alias, str) else None) or []
     found = None
-    for deployment in deployments:
+    for deployment in _deployments_of(alias):
         params = dict(deployment.get("litellm_params") or {})
         entries = [params, dict(deployment.get("model_info") or {})]
         model = params.get("model")
-        if isinstance(model, str):
+        if isinstance(model, str) and model not in _ESTIMATED and _stripped(model) not in _ESTIMATED:
             try: entries.append(dict(litellm.get_model_info(model=model) or {}))
             except Exception: pass
-            mapped = litellm.model_cost.get(model) or litellm.model_cost.get(model.split("/", 1)[-1])
+            mapped = litellm.model_cost.get(model) or litellm.model_cost.get(_stripped(model))
             if isinstance(mapped, dict): entries.append(mapped)
         rate_in, rate_out, max_out, max_in, per_call = _rates(entries)
         if rate_in <= 0 or rate_out <= 0:
@@ -395,6 +428,344 @@ def _prices_for(alias):
                      None if found[2] is None or max_out is None else max(found[2], max_out), None if found[3] is None or max_in is None else max(found[3], max_in),
                      max(found[4], per_call))
     return found
+
+
+def _family_of(model):
+    """What a model is compared with when it has no price: Claude (whoever serves it), else the provider named in front of its id."""
+    text = (model or "").lower()
+    if "claude" in text or "anthropic" in text:
+        return ("claude", None)
+    return ("provider", text.split("/", 1)[0]) if "/" in text else ("any", None)
+
+
+def _dearest_known(model):
+    """(input rate, output rate, fixed price per call) of the dearest chat model of the family in the cost map, long-context tiers and cache writes included;
+    never a key this guard filled with an estimate."""
+    import litellm
+    family = _family_of(model)
+    if family in _CAUTION_CACHE:
+        return _CAUTION_CACHE[family]
+    kind, provider = family
+    best = (0.0, 0.0, 0.0)
+    for key, entry in list(litellm.model_cost.items()):
+        if key == "sample_spec" or not isinstance(entry, dict) or key in _ESTIMATED or _stripped(key) in _ESTIMATED:
+            continue
+        if entry.get("mode") not in (None, "chat", "completion", "responses"):
+            continue
+        if kind == "claude" and "claude" not in key.lower():
+            continue
+        if kind == "provider" and entry.get("litellm_provider") != provider:
+            continue
+        rate_in, rate_out, _o, _i, per_call = _rates([entry])
+        best = (max(best[0], rate_in), max(best[1], rate_out), max(best[2], per_call))
+    if best[0] <= 0 or best[1] <= 0:
+        if kind != "any":
+            return _dearest_known(None)                     # nothing known of this family: the dearest of any
+        best = (max(best[0], CAUTIOUS_FLOOR_PER_TOKEN[0]), max(best[1], CAUTIOUS_FLOOR_PER_TOKEN[1]), best[2])
+    _CAUTION_CACHE[family] = best
+    return best
+
+
+def _register_estimate(alias, rates):
+    """Puts the dearest known rate in the cost map for each deployment of the alias, so LiteLLM settles the call (and the key's spend) at an estimate, not
+    at $0. The key stays listed in _ESTIMATED until a real price replaces it."""
+    import litellm
+    rate_in, rate_out, per_call = rates
+    for deployment in _deployments_of(alias):
+        model = (deployment.get("litellm_params") or {}).get("model")
+        if not isinstance(model, str):
+            continue
+        record = {"litellm_provider": model.split("/", 1)[0] if "/" in model else "openai", "mode": "chat", "input_cost_per_token": rate_in, "output_cost_per_token": rate_out}
+        if per_call > 0:
+            record["input_cost_per_request"] = per_call
+        keys = {model, _stripped(model)}
+        for key in keys:
+            _ESTIMATED[key] = alias
+        try: litellm.register_model({key: dict(record) for key in keys})
+        except Exception as e: print(f"rovara_guard: could not register an estimated price for a model ({type(e).__name__})", file=sys.stderr, flush=True)
+        print(f"rovara_guard: model {alias} has no known price: held at {CAUTION_FACTOR}x and settled at the dearest known rate of its family, flagged estimated", file=sys.stderr, flush=True)
+
+
+def _hold_prices(alias):
+    """((input rate, output rate, max output, max input, per call), estimated) for the hold. A model with no known price is never refused: its hold
+    is the family's dearest known rate times CAUTION_FACTOR, and its settlement, flagged estimated, is that dearest known rate (below)."""
+    known = _prices_for(alias)
+    if known is not None:
+        return known, False
+    rate_in, rate_out, per_call = _dearest_known(next((d.get("litellm_params", {}).get("model") for d in _deployments_of(alias)), None) or alias)
+    if _deployments_of(alias) and not any(_stripped(d.get("litellm_params", {}).get("model", "")) in _ESTIMATED for d in _deployments_of(alias)):
+        _register_estimate(alias, (rate_in, rate_out, per_call))
+    return (rate_in * CAUTION_FACTOR, rate_out * CAUTION_FACTOR, None, None, per_call * CAUTION_FACTOR), True
+
+
+def _usage_tokens(kwargs, response_obj):
+    """(input tokens, output tokens, cache read tokens, cache write tokens) the provider reported for the call, or None when it reported none."""
+    usage = getattr(response_obj, "usage", None)
+    if usage is None and isinstance(response_obj, dict):
+        usage = response_obj.get("usage")
+    if usage is None:
+        logged = kwargs.get("standard_logging_object") if isinstance(kwargs, dict) else None
+        usage = logged if isinstance(logged, dict) else None
+    if usage is None:
+        return None
+    get = (lambda name: usage.get(name)) if isinstance(usage, dict) else (lambda name: getattr(usage, name, None))
+    prompt = get("prompt_tokens") if _is_number(get("prompt_tokens")) else get("input_tokens")
+    completion = get("completion_tokens") if _is_number(get("completion_tokens")) else get("output_tokens")
+    if not _is_number(prompt) and not _is_number(completion):
+        return None
+    details = get("prompt_tokens_details")
+    cached = (details.get("cached_tokens") if isinstance(details, dict) else getattr(details, "cached_tokens", None)) if details is not None else None
+    read = get("cache_read_input_tokens") if _is_number(get("cache_read_input_tokens")) else cached
+    write = get("cache_creation_input_tokens")
+    return tuple(int(v) if _is_number(v) and v > 0 else 0 for v in (prompt, completion, read, write))
+
+
+def _settled_cost(state, cost, tokens, alias):
+    """(cost in USD or None for the whole hold, estimated): LiteLLM's cost when it priced the call; otherwise what the provider's reported usage costs at
+    the dearest known rate of the model's family, flagged estimated; the whole hold, flagged estimated, when the provider reported no usage. A call that
+    used tokens never settles at $0."""
+    if cost is not None and cost > 0:
+        return cost, bool(state.get("estimated"))
+    if tokens is None:
+        return None, True                                   # no usage reported, no cost: the whole hold
+    prompt, completion, read, write = tokens
+    if prompt + completion <= 0:
+        return 0.0, False
+    deployment = next(iter(_deployments_of(alias)), None)
+    rate_in, rate_out, per_call = _dearest_known(((deployment or {}).get("litellm_params") or {}).get("model") or alias)
+    return max(prompt, 0) * rate_in + max(completion, 0) * rate_out + per_call, True
+
+
+# ---------------------------------------------------------------- 4a. fresh prices: AWS's price list, LiteLLM's upstream cost map
+# Each is fetched at most once a day by every replica, over HTTPS from one fixed host, and only ever fills in or corrects LiteLLM's own cost map in memory (register_model):
+# a source that cannot be reached, or whose answer fails its checks, leaves the image's bundled map as it is.
+_AWS_USAGE = re.compile(r"_(input|output|cache_read|cache_write)_tokens(_1h)?(_long_ctx)?(_global)?_standard-Units$")
+_AWS_FIELDS = {"input": "input_cost_per_token", "output": "output_cost_per_token", "cache_read": "cache_read_input_token_cost", "cache_write": "cache_creation_input_token_cost"}
+_VENDOR_PREFIX = re.compile(r"^(?:(?:us-gov|us|eu|apac|global|jp|au|in|ca)\.)?[a-z0-9-]+\.")
+_VERSION_SUFFIX = re.compile(r"(?:-\d{8})?(?:-v\d+(?::\d+)?)?$|@\d+$")
+_PRICE_STATE = {"aws": None, "litellm": None}
+_BUNDLED = {}
+
+
+def _norm_model_id(model_id):
+    """'us.anthropic.claude-haiku-4-5-20251001-v1:0' and AWS's 'Claude Haiku 4.5' both come to 'claude-haiku-4-5'."""
+    text = _stripped(model_id).lower()
+    text = _VENDOR_PREFIX.sub("", text, count=1) if "." in text else text
+    return _VERSION_SUFFIX.sub("", text)
+
+
+def _parse_aws_offer(offer):
+    """{(normalized model, 'global' | 'geo'): LiteLLM-named price record} from an AWS Price List offer file (AmazonBedrockFoundationModels, one region).
+    Only standard on-demand token prices: batch, flex and provisioned rows are not in the standard usage types."""
+    products = offer.get("products") if isinstance(offer, dict) else None
+    terms = ((offer.get("terms") or {}).get("OnDemand") if isinstance(offer, dict) else None) or {}
+    if not isinstance(products, dict):
+        raise ValueError("the price list has no products")
+    out = {}
+    for sku, product in products.items():
+        attributes = product.get("attributes") or {}
+        name, usage = attributes.get("model"), _AWS_USAGE.search(str(attributes.get("usagetype") or ""))
+        if not isinstance(name, str) or usage is None:
+            continue
+        kind, hour, long_ctx, is_global = usage.group(1), usage.group(2), usage.group(3), usage.group(4)
+        price = None
+        for term in (terms.get(sku) or {}).values():
+            for dimension in (term.get("priceDimensions") or {}).values():
+                if dimension.get("unit") == "1M tokens":
+                    try: price = float((dimension.get("pricePerUnit") or {}).get("USD"))
+                    except (TypeError, ValueError): price = None
+        if price is None or not math.isfinite(price) or price <= 0 or price > 1000:
+            continue
+        field = _AWS_FIELDS[kind]
+        if hour:
+            if kind != "cache_write" or long_ctx:
+                continue
+            field = "cache_creation_input_token_cost_above_1hr"
+        elif long_ctx:
+            field = f"{field}_above_{LONG_CONTEXT_ABOVE_TOKENS // 1000}k_tokens"
+        record = out.setdefault((re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-"), "global" if is_global else "geo"), {})
+        record[field] = price / 1e6
+    return {key: record for key, record in out.items() if record.get("input_cost_per_token", 0) > 0 and record.get("output_cost_per_token", 0) > 0}
+
+
+def _aws_region():
+    import litellm
+    from litellm.proxy.proxy_server import llm_router
+    for deployment in (llm_router.get_model_list() if llm_router is not None else None) or []:
+        region = (deployment.get("litellm_params") or {}).get("aws_region_name")
+        if isinstance(region, str) and re.fullmatch(r"[a-z]{2}(?:-gov)?-[a-z]+-\d", region):
+            return region
+    return os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
+
+
+def _own_prices(deployment):
+    """Whether a deployment carries prices of its own (a company source's): a refresh never replaces those. Rovara's own override (marked in its model_info)
+    is a fallback, not a company's price: a refresh from AWS replaces it."""
+    if (deployment.get("model_info") or {}).get("rovara_price_override") is True:
+        return False
+    return any(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for source in (deployment.get("litellm_params") or {}, deployment.get("model_info") or {})
+               for k, v in source.items() if k in ("input_cost_per_token", "output_cost_per_token"))
+
+
+def _price_keys(deployment):
+    """Where LiteLLM looks a deployment's price up: its model as configured, the bare id, and the id the router registered the deployment's own prices under."""
+    model = (deployment.get("litellm_params") or {}).get("model")
+    ident = (deployment.get("model_info") or {}).get("id")
+    return [k for k in {model, _stripped(model), ident} if isinstance(k, str) and k]
+
+
+def _current_entry(deployment):
+    import litellm
+    merged = {}
+    for key in reversed(_price_keys(deployment)):
+        merged.update(litellm.model_cost.get(key) or {})
+    return merged
+
+
+def _apply_aws_prices(parsed):
+    """Fills in, for each Bedrock deployment, the prices LiteLLM's map lacks, and corrects a base rate that differs from AWS's by more than half a percent
+    (a stale bundled map). Tiers come from AWS only for a model whose map entry has none, at LONG_CONTEXT_ABOVE_TOKENS. Returns how many models changed."""
+    import litellm
+    from litellm.proxy.proxy_server import llm_router
+    changed = 0
+    for deployment in (llm_router.get_model_list() if llm_router is not None else None) or []:
+        model = (deployment.get("litellm_params") or {}).get("model")
+        if not isinstance(model, str) or not model.startswith("bedrock/") or _own_prices(deployment):
+            continue
+        bare = _stripped(model)
+        record = parsed.get((_norm_model_id(bare), "global" if bare.startswith("global.") else "geo"))
+        if record is None:
+            continue
+        current = _current_entry(deployment)
+        known = model not in _ESTIMATED and bare not in _ESTIMATED and (current.get("input_cost_per_token") or 0) > 0 and (current.get("output_cost_per_token") or 0) > 0
+        if known:
+            drift = max(abs(current[f] - record[f]) / record[f] for f in ("input_cost_per_token", "output_cost_per_token"))
+            if drift <= 0.005:
+                continue
+            merged = dict(current)
+            for field, value in record.items():
+                if "_above_" in field and any("_above_" in k and "tokens" in k for k in current):
+                    continue
+                merged[field] = value
+        else:
+            merged = {"litellm_provider": "bedrock", "mode": "chat", **record}
+        try:
+            litellm.register_model({key: dict(merged) for key in _price_keys(deployment)})
+        except Exception:
+            continue
+        for key in _price_keys(deployment):
+            _ESTIMATED.pop(key, None)
+        changed += 1
+    _CAUTION_CACHE.clear()
+    return changed
+
+
+def _validate_cost_map(candidate, bundled):
+    """None when an upstream cost map can be trusted, else why not: it must be an object of enough models, with sane per-token prices, and the models
+    both maps price must not have moved implausibly (more than 100-fold either way for more than a tenth of them)."""
+    if not isinstance(candidate, dict):
+        return "not an object"
+    entries = {k: v for k, v in candidate.items() if k != "sample_spec" and isinstance(v, dict)}
+    if len(entries) < max(MIN_MAP_MODELS, 0.8 * len(bundled)):
+        return "too few models"
+    bad = 0
+    for entry in entries.values():
+        for field in ("input_cost_per_token", "output_cost_per_token"):
+            value = entry.get(field)
+            if value is not None and (not _is_number(value) or value < 0 or value > 0.01):
+                bad += 1
+    if bad > 0.01 * len(entries):
+        return "prices out of range"
+    compared = drifted = 0
+    for key, (bundled_in, bundled_out) in bundled.items():
+        entry = entries.get(key)
+        if entry is None:
+            continue
+        compared += 1
+        new_in, new_out = entry.get("input_cost_per_token"), entry.get("output_cost_per_token")
+        if not _is_number(new_in) or not _is_number(new_out) or new_in <= 0 or new_out <= 0 or not 0.01 <= new_in / bundled_in <= 100 or not 0.01 <= new_out / bundled_out <= 100:
+            drifted += 1
+    if compared and drifted > 0.1 * compared:
+        return "prices changed implausibly"
+    return None
+
+
+def _bundled_prices():
+    import litellm
+    if not _BUNDLED:
+        for key, entry in litellm.model_cost.items():
+            if key != "sample_spec" and isinstance(entry, dict) and _is_number(entry.get("input_cost_per_token")) and _is_number(entry.get("output_cost_per_token")) \
+                    and entry["input_cost_per_token"] > 0 and entry["output_cost_per_token"] > 0:
+                _BUNDLED[key] = (entry["input_cost_per_token"], entry["output_cost_per_token"])
+    return _BUNDLED
+
+
+def _apply_cost_map(candidate):
+    """Registers a validated upstream cost map, and refreshes the entry LiteLLM's router copied for each deployment (it copies at start, so it would stay stale).
+    A deployment with prices of its own, and a model this guard holds an estimate for until a price appears, are handled by the same rule as a bundled price."""
+    import litellm
+    from litellm.proxy.proxy_server import llm_router
+    entries = {k: v for k, v in candidate.items() if k != "sample_spec" and isinstance(v, dict)}
+    litellm.register_model(entries)
+    for deployment in (llm_router.get_model_list() if llm_router is not None else None) or []:
+        model = (deployment.get("litellm_params") or {}).get("model")
+        if not isinstance(model, str) or _own_prices(deployment):
+            continue
+        fresh = entries.get(model) or entries.get(_stripped(model))
+        if fresh is not None and _is_number(fresh.get("input_cost_per_token")) and fresh["input_cost_per_token"] > 0:
+            litellm.register_model({key: dict(fresh) for key in _price_keys(deployment)})
+            for key in _price_keys(deployment):
+                _ESTIMATED.pop(key, None)
+    _CAUTION_CACHE.clear()
+
+
+def _fetch_json(url, host):
+    """One fixed https host, a time limit and a size limit. Run in a thread (urllib blocks)."""
+    if not url.startswith(f"https://{host}/"):
+        raise ValueError("not a price source")
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"user-agent": "rovara-price-refresh"}), timeout=PRICE_FETCH_TIMEOUT_SECONDS) as reply:
+        body = reply.read(PRICE_FILE_MAX_BYTES + 1)
+    if len(body) > PRICE_FILE_MAX_BYTES:
+        raise ValueError("the price file is too large")
+    return json.loads(body)
+
+
+async def _refresh_prices(fetch=None):
+    """One refresh of both sources; each fails on its own. Never raises. Returns {'litellm': reason or 'ok', 'aws': reason or 'ok'}."""
+    fetch = fetch or _fetch_json
+    result = {}
+    try:
+        candidate = await asyncio.to_thread(fetch, LITELLM_COST_MAP_URL, "raw.githubusercontent.com")
+        reason = _validate_cost_map(candidate, _bundled_prices())
+        if reason is None:
+            _apply_cost_map(candidate)
+            _PRICE_STATE["litellm"] = _time.time()
+        result["litellm"] = reason or "ok"
+    except Exception as e:
+        result["litellm"] = type(e).__name__
+    try:
+        offer = await asyncio.to_thread(fetch, AWS_PRICE_URL.format(region=_aws_region()), "pricing.us-east-1.amazonaws.com")
+        parsed = _parse_aws_offer(offer)
+        _apply_aws_prices(parsed)
+        _PRICE_STATE["aws"] = _time.time()
+        result["aws"] = "ok" if parsed else "no prices"
+    except Exception as e:
+        result["aws"] = type(e).__name__
+    print(f"rovara_guard: price refresh: {json.dumps(result)}", file=sys.stderr, flush=True)
+    return result
+
+
+_REFRESHER = [None]
+
+
+def _ensure_refresher():
+    """Starts the daily refresh on the proxy's event loop, once per process."""
+    if PRICE_REFRESH_ENABLED and _REFRESHER[0] is None:
+        async def loop():
+            while True:
+                result = await _refresh_prices()
+                await asyncio.sleep(PRICE_REFRESH_SECONDS if all(v == "ok" for v in result.values()) else PRICE_RETRY_SECONDS)
+        _REFRESHER[0] = asyncio.get_running_loop().create_task(loop())
 
 
 def _request_bytes(data):
@@ -471,22 +842,22 @@ class RovaraGuard(CustomLogger):
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _finish(self, call_id, cost_usd):
-        """Settles this replica's hold for the call once: to its cost, or to the whole hold when cost_usd is None. A cost after an attempt that timed out
-        (and may have been billed) is charged with the whole hold on top."""
+    async def _finish(self, call_id, cost_usd, estimated=False):
+        """Settles this replica's hold for the call once: to its cost, or to the whole hold when cost_usd is None (then flagged estimated). A cost after an
+        attempt that timed out (and may have been billed) is charged with the whole hold on top. 'estimated': the cost is an estimate, not a price."""
         state = self._calls.pop(call_id, None)
         if state is None:
             return
         cost = None if cost_usd is None else max(0, _micros_up(cost_usd)) + (state["worst"] if state["timed_out"] else 0)
         try:
-            await _LEDGER.settle(call_id, cost)
+            await _LEDGER.settle(call_id, cost, True if cost_usd is None else bool(estimated))
         except Exception as e:
             # The hold stays and becomes spent when it expires: never less than the call cost.
             print(f"rovara_guard: budget settle failed for a call ({type(e).__name__}); its hold is charged when it expires", file=sys.stderr, flush=True)
 
     async def _charge_later(self, call_id):
         await asyncio.sleep(SETTLE_GRACE_SECONDS)
-        await self._finish(call_id, None)
+        await self._finish(call_id, None, True)
 
     async def _hold(self, route, user_api_key_dict, data):
         cap = getattr(user_api_key_dict, "max_budget", None)
@@ -496,9 +867,7 @@ class RovaraGuard(CustomLogger):
         now = _time.monotonic()
         for stale in [c for c, s in self._calls.items() if now - s["at"] > HOLD_SECONDS + SETTLE_GRACE_SECONDS]:
             self._calls.pop(stale, None)                    # its hold has expired into spend in the ledger
-        prices = _prices_for(data.get("model"))
-        if prices is None:
-            raise _proxy_error(route, 403, "model_not_priced", "this model has no price, so the task budget cannot be held")
+        prices, estimated = _hold_prices(data.get("model"))
         worst = _worst_case_micros(data, prices)
         spent = _micros_up(getattr(user_api_key_dict, "spend", 0) or 0)
         limit = int(math.floor(float(cap) * _MICROS + 1e-6))
@@ -525,13 +894,14 @@ class RovaraGuard(CustomLogger):
         if verdict == "held":
             raise _proxy_error(route, 429, "budget_held", "other model calls of this task hold its budget for now; try again shortly",
                                {"retry-after": str(HELD_RETRY_AFTER_SECONDS)})
-        self._calls[call_id] = {"stream": data.get("stream") is True, "started": False, "ended": None, "cost": None, "at": now, "worst": worst, "timed_out": False, "failed": False}
+        self._calls[call_id] = {"stream": data.get("stream") is True, "started": False, "ended": None, "cost": None, "at": now, "worst": worst, "timed_out": False, "failed": False, "estimated": estimated, "model": data.get("model")}
 
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
         route = CALL_TYPES.get(str(call_type))
         if route is None:
             _refuse(f"call type {call_type} is not served")
+        _ensure_refresher()
         allowed = ROUTE_FIELDS[route]
         original = (data.get("proxy_server_request") or {})
         body = data
@@ -598,7 +968,7 @@ class RovaraGuard(CustomLogger):
             if not clean:
                 self._spawn(self._finish(call_id, None))
             elif state["cost"] is not None:
-                self._spawn(self._finish(call_id, state["cost"]))
+                self._spawn(self._finish(call_id, state["cost"], state.get("cost_estimated", False)))
             else:
                 state["ended"] = "ok"
                 self._spawn(self._charge_later(call_id))
@@ -617,10 +987,13 @@ class RovaraGuard(CustomLogger):
             return
         cost = kwargs.get("response_cost")
         cost = float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+        # LiteLLM prices a call it has no price for at $0: a call that used tokens is never settled at that.
+        cost, estimated = _settled_cost(state, cost, _usage_tokens(kwargs, response_obj), state.get("model"))
         if state["stream"] and state["started"] and state["ended"] is None:
             state["cost"] = cost if cost is not None else state["cost"]    # the stream is still open (or not yet seen): it settles when it ends
+            state["cost_estimated"] = estimated
             return
-        await self._finish(call_id, cost)
+        await self._finish(call_id, cost, estimated)
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         """One ATTEMPT failed. LiteLLM may still retry under the same call id, so nothing is settled here: only whether an attempt timed out is noted."""
