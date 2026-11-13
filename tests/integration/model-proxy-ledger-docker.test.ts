@@ -122,6 +122,18 @@ async def main():
     out["released"] = {"second_while_held": second[0], "row": month_row("org-j", "2026-11"), "third": (await ledger.take("mj-2", "mj-call-2", 5_000_000, 900_000, CAP, True, ("org-j", "2026-11", 1_000_000, 0)))[0]}
     await ledger.take("kp-0", "kp-call-0", 5_000_000, 900_000, CAP, True, ("org-k", "2026-11", 1_000_000, 0))
     await ledger.settle("kp-call-0", None, True)
+    # L-1: the slot is given back when the call that took it did not take the month over its cap (a known cost of 30,000 on a month of 4,000,000)
+    await ledger.take("mq-0", "mq-call-0", 5_000_000, 900_000, CAP, True, ("org-q", "2026-11", 4_000_000, 0))
+    await ledger.settle("mq-call-0", 30_000, True)
+    out["cheap_release"] = {"row": month_row("org-q", "2026-11"), "next": (await ledger.take("mq-1", "mq-call-1", 5_000_000, 900_000, CAP, True, ("org-q", "2026-11", 4_000_000, 0)))[0]}
+    # the slot is taken and nothing is in flight (its call crashed and was never swept): the answer is the month's room, not "month" and not a wait
+    sql("INSERT INTO rovara_budget.org_months (org, month, over_used) VALUES ('org-o', '2026-11', true);")
+    out["orphan_slot"] = await ledger.take("mo-0", "mo-call-0", 5_000_000, 900_000, CAP, True, ("org-o", "2026-11", 4_000_000, 0))
+    # defensive: the slot's call is in flight (a hold with the slot set) while the month's held is smaller than the call's worst case: wait, do not offer a hint
+    sql("INSERT INTO rovara_budget.org_months (org, month, over_used) VALUES ('org-w', '2026-11', true);")
+    sql("INSERT INTO rovara_budget.keys (key_hash, held_micros) VALUES ('mw-holder', 1);")
+    sql("INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, org, month, slot, expires_at) VALUES ('mw-holder-call', 'mw-holder', 1, 'org-w', '2026-11', true, now() + interval '1 hour');")
+    out["slot_in_flight"] = await ledger.take("mw-0", "mw-call-0", 5_000_000, 900_000, CAP, True, ("org-w", "2026-11", 4_000_000, 0))
     out["kept"] = {"row": month_row("org-k", "2026-11"), "next": (await ledger.take("kp-1", "kp-call-1", 5_000_000, 900_000, CAP, True, ("org-k", "2026-11", 1_000_000, 0)))[0]}
     await ledger.take("ml-0", "ml-call-0", 5_000_000, 900_000, CAP, True, ("org-l", "2026-11", 1_000_000, 0))
     expire("ml-call-0")
@@ -151,7 +163,7 @@ type Row = { charged_micros: string; held_micros: string; estimated_micros: stri
 type MonthRow = { held_micros: string; charged_micros: string; over_used: string };
 type Out = { cut: { verdict: string; held: string; after: Row }; known: Row; fits: Row; orphan: { after: Row; holds: number }; start: { after: Row; holds: number }; old: { settled: Row; swept: Row }; twice: Row;
   slot: string[]; slot_row: MonthRow; slot_other_company: string[]; slot_next_month: string[]; fits_but_month: string[]; blocked: string[]; blocked_known: string[]; blocked_known_row: MonthRow; none: string[]; none_row: MonthRow;
-  inflight: string[]; released: { second_while_held: string; row: MonthRow; third: string }; kept: { row: MonthRow; next: string }; swept: MonthRow; month_known: { held: MonthRow; settled: MonthRow }; retried: { verdict: string; failed: number } };
+  inflight: string[]; cheap_release: { row: MonthRow; next: string }; orphan_slot: [string, number]; slot_in_flight: [string, number]; released: { second_while_held: string; row: MonthRow; third: string }; kept: { row: MonthRow; next: string }; swept: MonthRow; month_known: { held: MonthRow; settled: MonthRow }; retried: { verdict: string; failed: number } };
 
 describe.skipIf(!usable)("the budget ledger's SQL against a real Postgres (docker)", () => {
   it("charges the worst case of an overrun call whose cost is never known, by settle, by the sweep of its key and by the start-up sweep; an older hold keeps its reserved charge", () => {
@@ -190,18 +202,21 @@ describe.skipIf(!usable)("the budget ledger's SQL against a real Postgres (docke
       // 8. DECISIONS 180: the company's month is a ledger. Of four estimated calls on four keys of one company, each able to pass the month's cap, one goes ahead and three find the month used
       // up (the one that went ahead holds its worst case); another company, and the next month, each have their own one.
       const month = (held: string, charged: string, over: string) => ({ held_micros: held, charged_micros: charged, over_used: over });
-      expect(out.slot).toEqual(["month", "month", "month", "ok"]);
+      expect(out.slot).toEqual(["held", "held", "held", "ok"]);
       expect(out.slot_row).toEqual(month("5000000", "0", "t"));
-      expect(out.slot_other_company).toEqual(["month", "month", "ok"]);
-      expect(out.slot_next_month).toEqual(["month", "month", "ok"]);
-      expect(out.fits_but_month).toEqual(["month", "month", "ok"]);                  // a call that fits its key still needs the slot when it could pass the month
-      expect(out.blocked).toEqual(["month", "month"]);
+      expect(out.slot_other_company).toEqual(["held", "held", "ok"]);
+      expect(out.slot_next_month).toEqual(["held", "held", "ok"]);
+      expect(out.fits_but_month).toEqual(["held", "held", "ok"]);                    // a call that fits its key still needs the slot when it could pass the month
+      expect(out.blocked).toEqual(["month", "month"]);                              // the month's spend itself is at its cap: the only thing that ends the task
       expect(out.blocked_known).toEqual(["ok", "ok"]);                              // not refused for the month in this lane, but counted
       expect(out.blocked_known_row).toEqual(month("20000", "0", "f"));
       expect(out.none).toEqual(["ok", "ok", "ok", "ok"]);                           // worst cases that fit the month together take no slot
       expect(out.none_row).toEqual(month("20000000", "0", "f"));
-      expect(out.inflight).toEqual(["month", "ok", "ok", "ok"]);                    // in-flight holds count against the month
-      expect(out.released).toEqual({ second_while_held: "month", row: month("0", "0", "f"), third: "ok" });   // a failed call (cost 0) gives the slot back
+      expect(out.inflight).toEqual(["held", "ok", "ok", "ok"]);                     // in-flight holds count against the month, and wait
+      expect(out.released).toEqual({ second_while_held: "held", row: month("0", "0", "f"), third: "ok" });   // a failed call (cost 0) gives the slot back
+      expect(out.cheap_release).toEqual({ row: month("0", "30000", "f"), next: "ok" });
+      expect(out.slot_in_flight[0]).toBe("held");
+      expect(out.orphan_slot).toEqual(["slot", 100000]);
       expect(out.kept).toEqual({ row: month("0", "5000000", "t"), next: "month" });  // a whole-hold settle keeps it, and charges the month its worst case
       expect(out.swept).toEqual(month("0", "5000000", "t"));
       expect(out.month_known).toEqual({ held: month("100000", "0", "f"), settled: month("0", "34000", "f") });

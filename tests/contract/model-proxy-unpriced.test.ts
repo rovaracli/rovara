@@ -52,26 +52,35 @@ class Ledger:
         known = max(row["charged"], spent)
         self.worsts[call_id] = worst
         self.gates[call_id] = bool(month_gate)
-        mrow, in_month = None, True
+        mrow, needs_slot = None, False
         if month_gate:
             org, month, month_limit, month_spent = month_gate
-            mrow = self.months.setdefault((org, month), {"held": 0, "charged": 0, "over": False})
+            mrow = self.months.setdefault((org, month), {"held": 0, "charged": 0, "over": False, "slots": 0})
             used = max(mrow["charged"], month_spent) + mrow["held"]
-            in_month = not estimated or used + worst <= month_limit
-            if estimated and used >= month_limit: return "month", row["charged"]
+            needs_slot = estimated and used + worst > month_limit
+            if estimated and (used >= month_limit or (needs_slot and mrow["over"])):
+                room = min(month_limit - used, cap - known)
+                if max(mrow["charged"], month_spent) >= month_limit: return "month", month_limit
+                if used >= month_limit or mrow["slots"] > 0: return "held", row["charged"]
+                return "slot", room
         if known + row["held"] + worst <= cap: reserve = worst
         elif estimated and known < cap and row["held"] == 0: reserve = min(worst, max(cap - known, 0))
         else: return ("exceeded" if known + worst > cap else "held"), row["charged"]
         if mrow is not None:
-            if not in_month and mrow["over"]: return "slot", max(month_limit - used, 0)
             mrow["held"] += worst
-            if not in_month: mrow["over"] = True
-        row["held"] += reserve; self.holds[call_id] = (key, reserve, worst, (month_gate[0], month_gate[1]) if month_gate else None); return "ok", None
+            if needs_slot: mrow["over"] = True; mrow["slots"] += 1
+        row["held"] += reserve; self.holds[call_id] = (key, reserve, worst, (month_gate[0], month_gate[1], month_gate[2], needs_slot) if month_gate else None); return "ok", None
     async def settle(self, call_id, cost, estimated=False):
         key, reserved, worst, month_key = self.holds.pop(call_id)
         charge = reserved if cost is None else cost
         row = self.rows[key]; row["held"] -= reserved; row["charged"] += charge
-        if month_key: self.months[month_key]["held"] -= worst; self.months[month_key]["charged"] += charge
+        if month_key:
+            m = self.months[month_key[:2]]
+            m["held"] -= worst
+            if month_key[3]:
+                m["slots"] -= 1
+                if m["charged"] + charge <= month_key[2]: m["over"] = False
+            m["charged"] += charge
         self.settled.append({"micros": charge, "estimated": bool(estimated), "whole_hold": cost is None})
 ledger = ns["_LEDGER"] = Ledger()
 guard = ns["RovaraGuard"]()
@@ -88,6 +97,10 @@ async def fetch_for(sources):
     return fetch
 
 async def run(step, n):
+    if step["op"] == "orphan_slot":
+        org, month = step["org"], __import__("time").strftime("%Y-%m", __import__("time").gmtime())
+        ledger.months[(org, month)] = {"held": 0, "charged": 0, "over": True, "slots": 0}
+        return {}
     if step["op"] == "redirect":
         try: ns["_NoRedirect"]().redirect_request(None, None, 302, "Found", {}, "https://elsewhere.example/x"); return {"refused": False}
         except Exception as e: return {"refused": True, "error": type(e).__name__}
@@ -426,6 +439,29 @@ describe("fresh prices: LiteLLM's upstream cost map", () => {
     expect(priced!.held).toBeLessThan(2_000);                      // 1,000 tokens at $0.80 per million, not at the estimate's $180
   });
 
+  itPython("counts an upstream price as real only with both input and output above zero: an input-only entry leaves the estimate in place", () => {
+    const [estimated, refreshed, again] = run({ deployments: [NEW_OPENAI], model_cost: withFiller, steps: [
+      { op: "call", model: "gpt-new", max_tokens: 1000 },
+      { op: "refresh", sources: { [GITHUB]: { ...withFiller, "gpt-new": { litellm_provider: "openai", mode: "chat", input_cost_per_token: 2e-5 } } }, inspect: ["openai/gpt-new", "gpt-new"] },
+      { op: "call", model: "gpt-new", max_tokens: 1000 },
+    ] });
+    expect(estimated).toMatchObject({ prices: [true] });
+    for (const key of ["openai/gpt-new", "gpt-new"]) expect(refreshed!.entries![key], key).toMatchObject({ input_cost_per_token: 1.5e-5, output_cost_per_token: 1.2e-4 });
+    expect(again).toMatchObject({ prices: [true] });
+  });
+
+  itPython("does not take another provider's model of the same bare name for the guard's estimate: its known price is not replaced by a lower upstream one", () => {
+    const azure = { litellm_provider: "azure", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 4e-6 };
+    const [, refreshed, again] = run({ deployments: [NEW_OPENAI], model_cost: { ...withFiller, "azure/gpt-new": azure }, steps: [
+      { op: "call", model: "gpt-new", max_tokens: 1000 },
+      { op: "refresh", sources: { [GITHUB]: { ...withFiller, "azure/gpt-new": { ...azure, input_cost_per_token: 2e-7, output_cost_per_token: 8e-7 } } }, inspect: ["openai/gpt-new", "azure/gpt-new"] },
+      { op: "call", model: "gpt-new", max_tokens: 1000 },
+    ] });
+    expect(refreshed!.entries!["azure/gpt-new"]).toMatchObject({ input_cost_per_token: 1e-6, output_cost_per_token: 4e-6 });
+    expect(refreshed!.entries!["openai/gpt-new"]).toMatchObject({ input_cost_per_token: 1.5e-5 });   // still the estimate
+    expect(again).toMatchObject({ prices: [true] });
+  });
+
   itPython("rejects an upstream price of zero for a served model: its entry is not registered, and the model stays held at an estimate", () => {
     const zero = { litellm_provider: "bedrock", mode: "chat", input_cost_per_token: 0, output_cost_per_token: 0 };
     const [fresh, call] = run({ deployments: [NEW_CLAUDE, deployment("us.anthropic.claude-sonnet-4-6", "bedrock/us.anthropic.claude-sonnet-4-6")], model_cost: withFiller, steps: [
@@ -465,25 +501,38 @@ describe("the company's month (DECISIONS 180)", () => {
   const team = (spend: number, cap = 1000) => ({ id: "org-1", cap, spend });
   const small = (step: Step): Step => ({ op: "call", model: "mystery", cap: 0.01, want_message: true, ...step });
   const mystery = [deployment("mystery", "mystery")];
-  const CHEAP = { cost: 0.001, usage: { prompt_tokens: 10, completion_tokens: 10 } };      // the call that took the slot is over and cost little: the month has room again, but no slot
+  const CHEAP = { cost: 0.001, usage: { prompt_tokens: 10, completion_tokens: 10 } };      // a call that is over and cost little
 
-  itPython("lets one estimated call from the company's keys pass the month's cap; the next, from another key, is refused like an overrun of its key, with the output limit the month's room pays for", () => {
-    // The month has $5 and nothing spent; the call's worst case (about $11.5) could pass it: the first call takes the month's one slot, and costs $0.001.
-    const calls = run({ deployments: mystery, model_cost: KNOWN, steps: [small({ token: "k1", team: team(0, 5), ...CHEAP }), small({ token: "k2", team: team(0, 5) })] });
+  itPython("makes the next estimated call wait (429, the task goes on) while the call that took the month's one slot is still in flight", () => {
+    // The month has $5 and nothing spent; the call's worst case (about $11.5) could pass it: the first call takes the month's one slot and is still running.
+    const calls = run({ deployments: mystery, model_cost: KNOWN, steps: [small({ token: "k1", team: team(0, 5) }), small({ token: "k2", team: team(0, 5) })] });
     expect(calls[0]).toMatchObject({ status: 200, gate: true });
-    expect(calls[1]).toMatchObject({ status: 422, type: "budget_max_tokens" });
-    expect(Number(calls[1]!.headers!["x-rovara-max-tokens"])).toBeGreaterThanOrEqual(4096);
-    expect(calls[1]!.message).not.toContain("Team=");
+    expect(calls[1]).toMatchObject({ status: 429, type: "budget_held" });
   });
 
-  itPython("says the company's month is spent (Team=) only when it is at its cap; with a slot taken and almost no room left it is the plain budget_exceeded of the key", () => {
-    const [blocked] = run({ deployments: mystery, model_cost: KNOWN, steps: [small({ team: team(1, 1) })] });
-    expect(blocked).toMatchObject({ status: 422, type: "budget_exceeded" });
-    expect(blocked!.message).toMatch(/^Budget has been exceeded! Team=org-1 /u);
-    const [first, second] = run({ deployments: mystery, model_cost: KNOWN, steps: [small({ token: "k1", team: team(0.5, 1), ...CHEAP }), small({ token: "k2", team: team(0.5, 1) })] });
-    expect(first).toMatchObject({ status: 200 });
-    expect(second).toMatchObject({ status: 422, type: "budget_exceeded" });
-    expect(second!.message).toMatch(/^Budget has been exceeded! Key=/u);
+  itPython("gives the slot back when the call that took it did not take the month over its cap: the next call may take it", () => {
+    const calls = run({ deployments: mystery, model_cost: KNOWN, steps: [small({ token: "k1", team: team(0, 5), ...CHEAP }), small({ token: "k2", team: team(0, 5) })] });
+    expect(calls.map((call) => call.status)).toEqual([200, 200]);
+  });
+
+  itPython("ends the task with the company's month spent (Team=) only when the month's spend is at its cap, whatever is in flight", () => {
+    const [spent] = run({ deployments: mystery, model_cost: KNOWN, steps: [small({ team: team(1, 1) })] });
+    expect(spent).toMatchObject({ status: 422, type: "budget_exceeded" });
+    expect(spent!.message).toMatch(/^Budget has been exceeded! Team=org-1 /u);
+    // Calls in flight that fill the month are not spending: the next call waits.
+    // Each worst case is about $11.52 and the month has $11.6: the first fits, the second takes the slot, the third finds the month full of holds and waits.
+    const [first, second, third] = run({ deployments: mystery, model_cost: KNOWN, steps: [1, 2, 3].map((n) => small({ token: `k${String(n)}`, team: team(0, 11.6) })) });
+    expect([first!.status, second!.status, third!.status]).toEqual([200, 200, 429]);
+    expect(third).toMatchObject({ type: "budget_held" });
+  });
+
+  itPython("with the slot taken by nobody in flight and the month not spent, offers the smaller output the month's room pays for, and else waits; never the key's Key= words", () => {
+    const hinted = run({ deployments: mystery, model_cost: KNOWN, steps: [{ op: "orphan_slot", org: "org-1" }, small({ team: team(0, 5), cap: 100 })] })[1]!;
+    expect(hinted).toMatchObject({ status: 422, type: "budget_max_tokens" });
+    expect(Number(hinted.headers!["x-rovara-max-tokens"])).toBeGreaterThanOrEqual(4096);
+    const tiny = run({ deployments: mystery, model_cost: KNOWN, steps: [{ op: "orphan_slot", org: "org-1" }, small({ team: team(4.99, 5), cap: 100 })] })[1]!;
+    expect(tiny).toMatchObject({ status: 429, type: "budget_held" });
+    expect(tiny.message ?? "").not.toContain("Key=");
   });
 
   itPython("takes no slot for calls whose worst cases together fit the month, and a key with no company month keeps the one-call rule of DECISIONS 165", () => {
@@ -494,10 +543,9 @@ describe("the company's month (DECISIONS 180)", () => {
     expect(calls.map((call) => call.gate)).toEqual([true, true, false]);
   });
 
-  itPython("counts the held worst case of calls in flight against the month: four estimated calls on a month with room for two get two", () => {
-    // Each call's worst case is about $11.5; the month has $30 and nothing spent: two fit (23), the third could pass the month and takes its one slot, the fourth is refused.
+  itPython("counts the held worst case of calls in flight against the month: four estimated calls on a month with room for two get two, one the slot, and the fourth waits", () => {
     const calls = run({ deployments: mystery, model_cost: KNOWN, steps: [1, 2, 3, 4].map((n) => small({ token: `k${String(n)}`, team: team(0, 30) })) });
-    expect(calls.map((call) => call.status)).toEqual([200, 200, 200, 422]);
+    expect(calls.map((call) => call.status)).toEqual([200, 200, 200, 429]);
   });
 });
 

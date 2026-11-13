@@ -290,25 +290,31 @@ _SCHEMA = (
     "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS org text",
     "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS month text",
     "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS slot boolean",
+    "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS month_cap bigint",
 )
 # An orphan (older than HOLD_SECONDS) leaves the holds and is added to what its key and its company's month have been charged: the worst case of its call when that is more than the
-# room it held (an overrun call), else what it held. One statement per sweep: a hold is moved once. What leaves "held" is what was reserved (key) or the worst case (month). A swept slot stays taken.
+# room it held (an overrun call), else what it held. One statement per sweep: a hold is moved once. What leaves "held" is what was reserved (key) or the worst case (month). A swept slot is
+# given back unless the month really went over its cap (what it was charged, with this charge, is more than the cap).
 _SQL_OWED = "GREATEST(reserved_micros, COALESCE(worst_micros, reserved_micros))"
 _SQL_SWEEP = (
-    "WITH gone AS (DELETE FROM rovara_budget.holds WHERE key_hash = $1::text AND expires_at < now() RETURNING reserved_micros, worst_micros, org, month),"
+    "WITH gone AS (DELETE FROM rovara_budget.holds WHERE key_hash = $1::text AND expires_at < now() RETURNING reserved_micros, worst_micros, org, month, slot, month_cap),"
     f" s AS (SELECT COALESCE(SUM(reserved_micros), 0)::bigint AS n, COALESCE(SUM({_SQL_OWED}), 0)::bigint AS owed FROM gone),"
     " k AS (UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.owed, held_micros = k.held_micros - s.n, updated_at = now()"
     " FROM s WHERE k.key_hash = $1::text AND s.n > 0 RETURNING 1 AS ok),"
-    f" mm AS (SELECT org, month, SUM(COALESCE(worst_micros, reserved_micros))::bigint AS w, SUM({_SQL_OWED})::bigint AS owed FROM gone WHERE org IS NOT NULL GROUP BY org, month)"
-    " UPDATE rovara_budget.org_months o SET held_micros = o.held_micros - mm.w, charged_micros = o.charged_micros + mm.owed, updated_at = now()"
+    f" mm AS (SELECT org, month, SUM(COALESCE(worst_micros, reserved_micros))::bigint AS w, SUM({_SQL_OWED})::bigint AS owed, COALESCE(bool_or(slot), false) AS slot, MAX(month_cap) AS cap"
+    " FROM gone WHERE org IS NOT NULL GROUP BY org, month)"
+    " UPDATE rovara_budget.org_months o SET held_micros = o.held_micros - mm.w, charged_micros = o.charged_micros + mm.owed,"
+    " over_used = o.over_used AND NOT (mm.slot AND o.charged_micros + mm.owed <= COALESCE(mm.cap, -1)), updated_at = now()"
     " FROM mm, (SELECT count(*) AS n FROM k) kk WHERE o.org = mm.org AND o.month = mm.month")
 _SQL_SWEEP_ALL = (
-    "WITH gone AS (DELETE FROM rovara_budget.holds WHERE expires_at < now() RETURNING key_hash, reserved_micros, worst_micros, org, month),"
+    "WITH gone AS (DELETE FROM rovara_budget.holds WHERE expires_at < now() RETURNING key_hash, reserved_micros, worst_micros, org, month, slot, month_cap),"
     f" s AS (SELECT key_hash, SUM(reserved_micros)::bigint AS n, SUM({_SQL_OWED})::bigint AS owed FROM gone GROUP BY key_hash),"
     " k AS (UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.owed, held_micros = k.held_micros - s.n, updated_at = now()"
     " FROM s WHERE k.key_hash = s.key_hash RETURNING 1 AS ok),"
-    f" mm AS (SELECT org, month, SUM(COALESCE(worst_micros, reserved_micros))::bigint AS w, SUM({_SQL_OWED})::bigint AS owed FROM gone WHERE org IS NOT NULL GROUP BY org, month)"
-    " UPDATE rovara_budget.org_months o SET held_micros = o.held_micros - mm.w, charged_micros = o.charged_micros + mm.owed, updated_at = now()"
+    f" mm AS (SELECT org, month, SUM(COALESCE(worst_micros, reserved_micros))::bigint AS w, SUM({_SQL_OWED})::bigint AS owed, COALESCE(bool_or(slot), false) AS slot, MAX(month_cap) AS cap"
+    " FROM gone WHERE org IS NOT NULL GROUP BY org, month)"
+    " UPDATE rovara_budget.org_months o SET held_micros = o.held_micros - mm.w, charged_micros = o.charged_micros + mm.owed,"
+    " over_used = o.over_used AND NOT (mm.slot AND o.charged_micros + mm.owed <= COALESCE(mm.cap, -1)), updated_at = now()"
     " FROM mm, (SELECT count(*) AS n FROM k) kk WHERE o.org = mm.org AND o.month = mm.month")
 _SQL_FORGET = "DELETE FROM rovara_budget.keys WHERE held_micros = 0 AND updated_at < now() - interval '45 days'"
 _SQL_FORGET_MONTHS = "DELETE FROM rovara_budget.org_months WHERE held_micros = 0 AND updated_at < now() - interval '120 days'"
@@ -337,21 +343,22 @@ _SQL_TAKE = (
     " RETURNING t.key_hash, CASE WHEN g.fits THEN $2::bigint ELSE g.room END AS reserved, g.needs_slot),"
     " o AS (UPDATE rovara_budget.org_months o SET held_micros = o.held_micros + $2::bigint, over_used = o.over_used OR k.needs_slot, updated_at = now()"
     " FROM k WHERE o.org = $8::text AND o.month = $9::text RETURNING 1 AS ok)"
-    " INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, worst_micros, org, month, slot, expires_at)"
-    " SELECT $5::text, key_hash, reserved, $2::bigint, $8::text, $9::text, needs_slot, now() + make_interval(secs => $6::int) FROM k RETURNING call_id")
+    " INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, worst_micros, org, month, slot, month_cap, expires_at)"
+    " SELECT $5::text, key_hash, reserved, $2::bigint, $8::text, $9::text, needs_slot, $10::bigint, now() + make_interval(secs => $6::int) FROM k RETURNING call_id")
 _SQL_READ = "SELECT charged_micros, held_micros FROM rovara_budget.keys WHERE key_hash = $1::text"
-_SQL_MONTH_READ = "SELECT charged_micros, held_micros, over_used FROM rovara_budget.org_months WHERE org = $1::text AND month = $2::text"
+_SQL_MONTH_READ = ("SELECT charged_micros, held_micros, over_used, (SELECT count(*) FROM rovara_budget.holds h WHERE h.org = $1::text AND h.month = $2::text AND h.slot) AS slots"
+                   " FROM rovara_budget.org_months WHERE org = $1::text AND month = $2::text")
 # Settle: the hold leaves and its key is charged the call's cost ($2), or the whole worst case when $2 is negative (the room it held, or the call's worst case when that is more:
 # an overrun call), and $3 says the charge is an estimate. The company's month moves the call's worst case from held to charged, and takes its slot back when the call that held
-# it cost nothing (a failed call). Settling twice charges once.
+# it cost little: it is given back unless the month really went over its cap (charged, with this call's cost, more than the cap). Settling twice charges once.
 _SQL_SETTLE = (
-    "WITH h AS (DELETE FROM rovara_budget.holds WHERE call_id = $1::text RETURNING key_hash, reserved_micros, worst_micros, org, month, slot),"
-    f" c AS (SELECT key_hash, reserved_micros, COALESCE(worst_micros, reserved_micros) AS worst, org, month, slot, CASE WHEN $2::bigint < 0 THEN {_SQL_OWED} ELSE $2::bigint END AS cost FROM h),"
+    "WITH h AS (DELETE FROM rovara_budget.holds WHERE call_id = $1::text RETURNING key_hash, reserved_micros, worst_micros, org, month, slot, month_cap),"
+    f" c AS (SELECT key_hash, reserved_micros, COALESCE(worst_micros, reserved_micros) AS worst, org, month, slot, month_cap, CASE WHEN $2::bigint < 0 THEN {_SQL_OWED} ELSE $2::bigint END AS cost FROM h),"
     " k AS (UPDATE rovara_budget.keys k SET held_micros = k.held_micros - c.reserved_micros, charged_micros = k.charged_micros + c.cost,"
     " estimated_micros = k.estimated_micros + CASE WHEN $3::boolean THEN c.cost ELSE 0 END, updated_at = now()"
     " FROM c WHERE k.key_hash = c.key_hash RETURNING k.charged_micros, k.key_hash, k.estimated_micros),"
     " o AS (UPDATE rovara_budget.org_months o SET held_micros = o.held_micros - c.worst, charged_micros = o.charged_micros + c.cost,"
-    " over_used = o.over_used AND NOT (COALESCE(c.slot, false) AND c.cost = 0), updated_at = now()"
+    " over_used = o.over_used AND NOT (COALESCE(c.slot, false) AND o.charged_micros + c.cost <= COALESCE(c.month_cap, -1)), updated_at = now()"
     " FROM c, (SELECT count(*) AS n FROM k) kk WHERE c.org IS NOT NULL AND o.org = c.org AND o.month = c.month RETURNING 1 AS ok)"
     " SELECT charged_micros, key_hash, estimated_micros FROM k")
 # The broker reads a key's spend through LiteLLM's /key/info only, so the estimated part of it travels there, in the key's metadata (monotonic: the largest value wins, whichever
@@ -416,12 +423,18 @@ class _PostgresLedger:
         except Exception:
             self._ready = False                             # the tables are created again on the next call if they went
             raise
+        charged = int(rows[0]["charged_micros"]) if rows else 0
         if months:
-            used = max(int(months[0]["charged_micros"]), month_spent) + int(months[0]["held_micros"])
+            settled = max(int(months[0]["charged_micros"]), month_spent)
+            used = settled + int(months[0]["held_micros"])
+            if settled >= month_cap:
+                return "month", settled                     # the month's spend itself is at its cap: the only answer that ends the task
             if used >= month_cap:
-                return "month", used
+                return "held", charged                      # only calls in flight fill the month: try again when they settle
             if used + worst > month_cap and str(months[0]["over_used"]).lower() in ("true", "t", "1"):
-                return "slot", month_cap - used
+                if int(months[0]["slots"]) > 0:
+                    return "held", charged                  # the call that took the slot is still in flight
+                return "slot", min(month_cap - used, cap - max(charged, spent))
         charged = int(rows[0]["charged_micros"]) if rows else 0
         return ("exceeded" if max(charged, spent) + worst > cap else "held"), charged
 
@@ -833,8 +846,13 @@ def _zero_priced(entry):
 
 
 def _is_guess(key):
-    """Whether the cost map's entry for a key is this guard's own estimate, not a price."""
-    return key in _ESTIMATED or _stripped(key) in _ESTIMATED
+    """Whether the cost map's entry for exactly this key is this guard's own estimate, not a price."""
+    return key in _ESTIMATED
+
+
+def _real_price(entry):
+    """An upstream price counts only with both an input and an output cost above zero."""
+    return all(_is_number(entry.get(name)) and entry[name] > 0 for name in ("input_cost_per_token", "output_cost_per_token"))
 
 
 def _apply_cost_map(candidate):
@@ -857,7 +875,9 @@ def _apply_cost_map(candidate):
     for key, value in candidate.items():
         if key == "sample_spec" or not isinstance(value, dict) or key in protected or (key in served and _zero_priced(value)):
             continue
-        guess = _is_guess(key) and _is_number(value.get("input_cost_per_token")) and value["input_cost_per_token"] > 0
+        if _is_guess(key) and not _real_price(value):
+            continue                                         # not a price: the guess stays until a real one comes
+        guess = _is_guess(key)
         entries[key] = value if guess else _raise_only(value, litellm.model_cost.get(key))   # a real price replaces the guard's guess, however much lower
         if guess:
             replaced.add(key)
@@ -873,7 +893,7 @@ def _apply_cost_map(candidate):
         if not isinstance(model, str) or _own_prices(deployment) or model in protected:
             continue
         fresh = entries.get(model) or entries.get(_stripped(model))
-        if fresh is not None and _is_number(fresh.get("input_cost_per_token")) and fresh["input_cost_per_token"] > 0:
+        if fresh is not None and _real_price(fresh):
             fresh = _raise_only(fresh, known)
             if known is None:
                 for key in _price_keys(deployment):
@@ -1079,13 +1099,20 @@ class RovaraGuard(CustomLogger):
             raise _proxy_error(route, 422, "budget_exceeded", f"Budget has been exceeded! Team={gate[0]} Max budget: {gate[2] / _MICROS:.6f}, this call could cost up to {worst / _MICROS:.6f}")
         month_room = None
         if verdict == "slot":
-            verdict, month_room = "exceeded", charged       # the month's one slot is taken: like a key with no room, but the room is the month's
-        if verdict == "exceeded" and estimated and month_room is None and max(charged or 0, spent) < limit:
+            month_room = charged                            # the month's one slot is taken and nothing is in flight: only a smaller output (the room is the least of the key's and the month's) can go on
+            fits = _affordable_output(data, prices, month_room)
+            asked = max([int(v) for v in (data.get("max_tokens"), data.get("max_output_tokens"), data.get("max_completion_tokens"))
+                         if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0] or [0])
+            if fits is not None and (asked == 0 or fits < asked):
+                raise _proxy_error(route, 422, "budget_max_tokens", f"the budget left pays for at most {fits} output tokens on this call; send it again with that limit",
+                                   {MAX_TOKENS_HINT_HEADER: str(fits)})
+            verdict = "held"
+        if verdict == "exceeded" and estimated and max(charged or 0, spent) < limit:
             verdict = "held"                                # an estimated hold the room cannot take while the task has not overrun: only an earlier call's hold is in the way
         if verdict == "exceeded":
             asked = max([int(v) for v in (data.get("max_tokens"), data.get("max_output_tokens"), data.get("max_completion_tokens"))
                          if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0] or [0])
-            fits = _affordable_output(data, prices, month_room if month_room is not None else limit - max(charged or 0, spent))
+            fits = _affordable_output(data, prices, limit - max(charged or 0, spent))
             if fits is not None and (asked == 0 or fits < asked):
                 # The room left cannot pay for the output limit asked, but can for a smaller one: say which, so the worker sends the call again with it
                 # instead of ending the task while the budget still has room for useful work.
