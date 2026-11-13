@@ -21,7 +21,8 @@ import type { ApprovedFixture } from "./fixture-lookup.js";
 // Revision 6 (the AWS Emulator 1.0.337 catalog) replaces the pinned digest of local-aws@r1, which revision 5 pinned to the 1.0.322 engine. A broker or worker that still accepted revision 5 would start that older engine's image;
 // the runtime engine check would refuse it afterwards, so the task would fail late and the retired digest would be pulled first. Refusing it at the catalog ("catalog_too_old") is the earlier, plainer failure, and it is
 // what this constant is for (see above). A test keeps it equal to the shipped catalog's revision.
-export const TEST_SERVICES_MIN_CATALOG_REVISION = 6;
+// Revision 7 (the AWS Emulator 1.0.343 catalog, which also adds model-stand-in@r1 and the function runner's images) replaces the pinned digest of local-aws@r1 that revision 6 pinned to the 1.0.337 engine; the reasoning above holds again.
+export const TEST_SERVICES_MIN_CATALOG_REVISION = 7;
 
 export const DEPENDENCY_PLAN_REFUSALS = ["no_catalog", "catalog_too_old", "not_available_yet", "not_in_catalog", "not_in_edition", "retired", "not_pinned", "not_allowed", "too_many", "invalid", "fixture_not_approved", "seed_file_unbound", "image_not_approved", "image_changed", "image_copying"] as const;
 export type DependencyPlanRefusal = (typeof DEPENDENCY_PLAN_REFUSALS)[number];

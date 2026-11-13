@@ -559,7 +559,7 @@
             "logs"
           ]
         },
-        "engineVersion": "1.0.337",
+        "engineVersion": "1.0.343",
         "iamEnforced": false,
         "storage": "memory"
       }
@@ -716,6 +716,302 @@
         "enterprise"
       ],
       "workerImage": true
+    },
+    {
+      "id": "model-stand-in@r1",
+      "family": "model-stand-in",
+      "backing": "local",
+      "version": "r1",
+      "status": "available",
+      "image": {
+        "repository": "svc/model-stand-in",
+        "platforms": [
+          "linux/arm64",
+          "linux/amd64"
+        ]
+      },
+      "run": {
+        "user": "65532:65532",
+        "readOnlyRoot": true,
+        "tmpfs": [],
+        "ports": [
+          8080,
+          8081,
+          8082,
+          8083
+        ],
+        "extraArgs": []
+      },
+      "health": {
+        "kind": "http",
+        "port": 8080,
+        "path": "/ping",
+        "startTimeoutS": 15
+      },
+      "resources": {
+        "memMiB": 128,
+        "cpus": 0.5,
+        "pids": 64
+      },
+      "connect": {
+        "templates": {},
+        "defaultAliases": [
+          "model-stand-in"
+        ]
+      },
+      "reset": {
+        "kind": "restart"
+      },
+      "licence": "LicenseRef-Rovara AND BSD-3-Clause",
+      "editions": [
+        "public",
+        "enterprise"
+      ]
+    },
+    {
+      "id": "lambda-python@3.12",
+      "family": "lambda-python",
+      "backing": "local",
+      "version": "3.12",
+      "status": "available",
+      "image": {
+        "repository": "svc/lambda-python",
+        "platforms": [
+          "linux/arm64"
+        ]
+      },
+      "run": {
+        "user": "993:993",
+        "readOnlyRoot": true,
+        "tmpfs": [
+          {
+            "path": "/tmp",
+            "sizeMiB": 64
+          }
+        ],
+        "ports": [
+          9001
+        ],
+        "extraArgs": []
+      },
+      "health": {
+        "kind": "tcp",
+        "port": 9001,
+        "startTimeoutS": 30
+      },
+      "resources": {
+        "memMiB": 128,
+        "cpus": 0.25,
+        "pids": 256
+      },
+      "connect": {
+        "templates": {},
+        "defaultAliases": []
+      },
+      "reset": {
+        "kind": "restart"
+      },
+      "licence": "LicenseRef-AmazonLinux-2023 AND Apache-2.0",
+      "editions": [
+        "public",
+        "enterprise"
+      ]
+    },
+    {
+      "id": "lambda-python@3.13",
+      "family": "lambda-python",
+      "backing": "local",
+      "version": "3.13",
+      "status": "available",
+      "image": {
+        "repository": "svc/lambda-python",
+        "platforms": [
+          "linux/arm64"
+        ]
+      },
+      "run": {
+        "user": "993:993",
+        "readOnlyRoot": true,
+        "tmpfs": [
+          {
+            "path": "/tmp",
+            "sizeMiB": 64
+          }
+        ],
+        "ports": [
+          9001
+        ],
+        "extraArgs": []
+      },
+      "health": {
+        "kind": "tcp",
+        "port": 9001,
+        "startTimeoutS": 30
+      },
+      "resources": {
+        "memMiB": 128,
+        "cpus": 0.25,
+        "pids": 256
+      },
+      "connect": {
+        "templates": {},
+        "defaultAliases": []
+      },
+      "reset": {
+        "kind": "restart"
+      },
+      "licence": "LicenseRef-AmazonLinux-2023 AND Apache-2.0",
+      "editions": [
+        "public",
+        "enterprise"
+      ]
+    },
+    {
+      "id": "lambda-nodejs@22",
+      "family": "lambda-nodejs",
+      "backing": "local",
+      "version": "22",
+      "status": "available",
+      "image": {
+        "repository": "svc/lambda-nodejs",
+        "platforms": [
+          "linux/arm64"
+        ]
+      },
+      "run": {
+        "user": "993:993",
+        "readOnlyRoot": true,
+        "tmpfs": [
+          {
+            "path": "/tmp",
+            "sizeMiB": 64
+          }
+        ],
+        "ports": [
+          9001
+        ],
+        "extraArgs": []
+      },
+      "health": {
+        "kind": "tcp",
+        "port": 9001,
+        "startTimeoutS": 30
+      },
+      "resources": {
+        "memMiB": 128,
+        "cpus": 0.25,
+        "pids": 256
+      },
+      "connect": {
+        "templates": {},
+        "defaultAliases": []
+      },
+      "reset": {
+        "kind": "restart"
+      },
+      "licence": "LicenseRef-AmazonLinux-2023 AND Apache-2.0",
+      "editions": [
+        "public",
+        "enterprise"
+      ]
+    },
+    {
+      "id": "lambda-nodejs@24",
+      "family": "lambda-nodejs",
+      "backing": "local",
+      "version": "24",
+      "status": "available",
+      "image": {
+        "repository": "svc/lambda-nodejs",
+        "platforms": [
+          "linux/arm64"
+        ]
+      },
+      "run": {
+        "user": "993:993",
+        "readOnlyRoot": true,
+        "tmpfs": [
+          {
+            "path": "/tmp",
+            "sizeMiB": 64
+          }
+        ],
+        "ports": [
+          9001
+        ],
+        "extraArgs": []
+      },
+      "health": {
+        "kind": "tcp",
+        "port": 9001,
+        "startTimeoutS": 30
+      },
+      "resources": {
+        "memMiB": 128,
+        "cpus": 0.25,
+        "pids": 256
+      },
+      "connect": {
+        "templates": {},
+        "defaultAliases": []
+      },
+      "reset": {
+        "kind": "restart"
+      },
+      "licence": "LicenseRef-AmazonLinux-2023 AND Apache-2.0",
+      "editions": [
+        "public",
+        "enterprise"
+      ]
+    },
+    {
+      "id": "function-agent@r1",
+      "family": "function-agent",
+      "backing": "local",
+      "version": "r1",
+      "status": "available",
+      "image": {
+        "repository": "svc/function-agent",
+        "platforms": [
+          "linux/arm64"
+        ]
+      },
+      "run": {
+        "user": "993:993",
+        "readOnlyRoot": true,
+        "tmpfs": [
+          {
+            "path": "/tmp",
+            "sizeMiB": 64
+          }
+        ],
+        "ports": [
+          9001
+        ],
+        "extraArgs": []
+      },
+      "health": {
+        "kind": "tcp",
+        "port": 9001,
+        "startTimeoutS": 30
+      },
+      "resources": {
+        "memMiB": 64,
+        "cpus": 0.25,
+        "pids": 256
+      },
+      "connect": {
+        "templates": {},
+        "defaultAliases": []
+      },
+      "reset": {
+        "kind": "restart"
+      },
+      "licence": "LicenseRef-Rovara",
+      "editions": [
+        "public",
+        "enterprise"
+      ]
     }
   ]
 }
