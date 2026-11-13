@@ -96,6 +96,15 @@ describe("erasePersonOnCore", () => {
     expect(await leftOf(registry, task)).toBe(2);
   });
 
+  it("leaves a task alone whose record names another company, even if the person's index row names this one", async () => {
+    const { world, registry } = await setup();
+    const task = await seedTask(world, registry, { person: PERSON, stamp: "core" });
+    const meta = (await world.store.get({ pk: `DEVTASK#${task.taskId}`, sk: "META" }))!;
+    await world.store.put({ item: { ...meta, companyId: OTHER_COMPANY, orgId: OTHER_COMPANY } });
+    expect(await erasePersonOnCore({ registry, companyId: FAKE_COMPANY, developerId: PERSON })).toMatchObject({ erased: 0, skipped: 1 });
+    expect(await leftOf(registry, task)).toBe(2);
+  });
+
   it("is idempotent: a second run erases nothing new, writes nothing and keeps what was kept", async () => {
     const { world, registry } = await setup();
     const mine = await seedTask(world, registry, { person: PERSON, stamp: "core" });
