@@ -17,6 +17,9 @@
       "path": "vendor/rovara-code/packages/model-runtime"
     },
     {
+      "path": "vendor/rovara-code/packages/testing"
+    },
+    {
       "path": "vendor/rovara-code/packages/verifier"
     },
     {

@@ -16,6 +16,7 @@ import {
   IacSeedRefSchema, TestEnvDependencyIdSchema, TestEnvDependencyKindSchema, TestEnvRegionSchema, catalogIdName, testEnvStartedCount,
 } from "./test-env-dependency.js";
 import { reservedDependencyEnvName } from "./test-services-shared.js";
+import { SAGEMAKER_DETECTION_SIGNALS, SageMakerEndpointNameSchema } from "./sagemaker-endpoint.js";
 import { AWS_PLAN_SERVICES_MAX, AwsPlanServiceSchema, normaliseAwsServiceKey } from "./aws-emulator-service-keys.js";
 import { TEST_ENV_ROUND_BUDGET_MIN, TEST_ENV_SELECTION_METHODS, TEST_ENV_SELECT_PLACEHOLDER, TestEnvValueSourceSchema, TestEnvironmentBodySchema, type TestEnvironmentBody } from "./test-environment.js";
 
@@ -63,9 +64,13 @@ export const TEST_SERVICES_AWS_ALL_SERVICES_FEATURE = "task.testServices.aws.all
  * now seeds are `AWS_SEEDED_KINDS`, and any other service of the table starts empty.
  */
 export const SEEDED_AWS_SERVICES = ["s3", "sqs", "dynamodb"] as const;
-/** Whether a plan's services need `TEST_SERVICES_AWS_ALL_SERVICES_FEATURE`: any of them is not one a worker without the feature accepts. Legacy spellings are read as their keys. */
+/**
+ * Whether a plan's services need `TEST_SERVICES_AWS_ALL_SERVICES_FEATURE`: any of them is not one a worker without the feature accepts, or the list is longer than the three such a worker takes (so a list of repeated
+ * names cannot slip past it; the environment's own schema lists a service once, but the plan's does not). Legacy spellings are read as their keys. This is the broker's fence for the wider environment cap
+ * (`TEST_ENV_DEPENDENCY_LIMITS.awsServices`): a plan that is not wide never goes to a worker that would refuse it, and a wide one goes only to a worker that lists the feature.
+ */
 export function awsPlanNeedsAllServices(services: readonly string[]): boolean {
-  return services.some((service) => !(SEEDED_AWS_SERVICES as readonly string[]).includes(normaliseAwsServiceKey(service) ?? service));
+  return services.length > SEEDED_AWS_SERVICES.length || services.some((service) => !(SEEDED_AWS_SERVICES as readonly string[]).includes(normaliseAwsServiceKey(service) ?? service));
 }
 
 const NO_HIDDEN = /^[^\p{Cc}\p{Cf}]*$/u;
@@ -124,9 +129,12 @@ export const TestEnvDependencyCandidateSchema = z
         testcontainers: z.boolean().optional(),
         /** The settings that name it, parsed down to the scheme and the host FAMILY; never the host. */
         url: z.object({ scheme: line(32), hostFamily: z.enum(["local", "private", "cloud", "unknown"]) }).strict().optional(),
-        resources: z.array(CandidateResource).max(TEST_ENV_DEPENDENCY_LIMITS.awsServices).optional(),
+        resources: z.array(CandidateResource).max(TEST_ENV_DEPENDENCY_LIMITS.candidateResources).optional(),
         /** An AWS service no seed handler creates resources for: its emulator starts empty and the tests create their resources. */
         startsEmpty: z.boolean().optional(),
+        /** SM4: the SageMaker endpoint names the code, its settings or its infrastructure code write as literals (SageMaker's own name pattern), and fixed words for what else a detector saw. */
+        endpointNames: z.array(SageMakerEndpointNameSchema).max(16).optional(),
+        sagemakerSignals: z.array(z.enum(SAGEMAKER_DETECTION_SIGNALS)).max(SAGEMAKER_DETECTION_SIGNALS.length).optional(),
         seenBy: z.array(line(40)).max(8).optional(),
       })
       .strict(),
@@ -433,8 +441,14 @@ export const TestEnvCheckBodySchema = z.object({ digest: Sha256.optional(), requ
 export type TestEnvCheckBody = z.infer<typeof TestEnvCheckBodySchema>;
 export const TestEnvApproveBodySchema = z.object({ digest: Sha256, expectedRevision: z.number().int().min(0), requestId: z.string().min(8).max(100).optional() }).strict();
 
-/** A maintainer's edited proposal: the whole body, validated like any other (the broker checks it again and refuses production, recordings in the shared tier and unsafe selection). */
-export const TestEnvEditBodySchema = z.object({ environment: TestEnvironmentBodySchema }).strict();
+/**
+ * A maintainer's edited proposal: the whole body, validated like any other (the broker checks it again and refuses production, recordings in the shared tier and unsafe selection). `digest` is the digest of the proposal
+ * the person was editing: when it is given and that is no longer the project's current proposal (someone proposed or edited since), the broker refuses the edit with `TEST_ENV_EDIT_STALE_MESSAGE` (409) instead of
+ * replacing the newer one. Optional, so a client that does not send it behaves as before.
+ */
+export const TestEnvEditBodySchema = z.object({ environment: TestEnvironmentBodySchema, digest: Sha256.optional() }).strict();
+/** The fixed sentence of a refused stale edit (never the digests). */
+export const TEST_ENV_EDIT_STALE_MESSAGE = "The proposal you edited has changed since you opened it. Reload it and make your edit again.";
 /** The longest seed command line the field takes (the same bound a command line has in the settings). */
 export const TEST_ENV_SEED_COMMAND_MAX_CHARS = 500;
 /**

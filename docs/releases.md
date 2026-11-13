@@ -207,6 +207,96 @@ place; this records what it is, so a change to any piece can be made deliberatel
   release already exists. `gh release create` publishes a real release, not a draft. To redo that
   version, delete the release and its tag, then push the tag again, or cut a new patch version.
 
+## Rolling a release back
+
+Policy (owner, 2026-11-12): undo means redeploying the previous release. Records are additive only and
+readers ship first, so the previous release can still run on what the newer one wrote. A plain
+`agentx upgrade` never moves an environment back; `agentx upgrade --rollback-to <x.y.z>` is the one
+guarded way to do it (and `agentx bundle approve --rollback` for a signed bundle, under the same floors).
+
+**Which agentx runs it.** The agentx of the release being rolled back FROM (or a newer one), because
+only it knows that release's rollback floor. On the cdk engine it builds the target from a clean
+checkout of the target's tag:
+
+```sh
+# the installed release's own CLI (here a 0.5.17 build), target = 0.5.16
+agentx --env <env> upgrade --region <region> --rollback-to 0.5.16 \
+  --source <clean checkout of v0.5.16> \
+  --worker-image <0.5.16 worker@sha256:...> --boot-stage2-sha256 <0.5.16 boot-stage2 hash> \
+  --slack-image <0.5.16 slack@sha256:...> --embedder-image <0.5.16 embedder@sha256:...> [--yes]
+```
+
+`--embedder-image` is required on a cdk rollback when the target's release names no embedder image and
+the Team record is on (otherwise the newer release's embedder would keep running under the older code).
+On the templates engine, `--rollback-to <x.y.z>` downloads that release (or pass `--release <dir>`
+holding it). It cannot be combined with `--to`, `--export`, `--bundle` or `--deploy-approved`.
+
+**What it checks, before anything changes** (each again under the environment lock):
+
+- the target is older than the version in `/agentx/<env>/settings`;
+- the target is at or above every floor declared by a release between it and the **high-water mark**
+  (below), and the mark is no newer than `ROLLBACK_FLOORS_DECLARED_THROUGH`
+  (`packages/cli/src/upgrade/target.ts`);
+- every stack's final parameters against the target's templates: a parameter the older template does
+  not declare, or one it needs (no default) that this agentx does not send (on the cdk engine: and the
+  stack does not already hold), refuses the rollback with nothing deployed. Example: 0.5.14's control
+  plane needs `CallbackSigningKey`, which this agentx no longer sends; 0.5.15 also declares that as a
+  floor, so `--rollback-to 0.5.14` is refused (the 0.5.14 CLI itself can still deploy 0.5.14).
+  Limit: the check computes each later stack's parameters from the outputs the stacks report now (the
+  newer release's). It does not check that the older templates still declare those outputs; a renamed
+  or removed output shows up only when that stack deploys.
+
+Then it is an upgrade: the same preview, questions, data guard (a table the newer release added is
+deleted only when named with `--allow-replace`), `--yes`, doctor run, and the settings record the target.
+Messages say "rollback" and name `--rollback-to` for re-running.
+
+**The high-water mark.** `/agentx/<env>/release-high-water` holds the highest release the environment
+ever ran or started to install (its own SSM parameter, not the strict settings record, which every older
+agentx must still read). Before its first stack changes, an upgrade raises it to its target (so an upgrade
+that stops part way still leaves that release's floors in force) and a rollback records the release it
+leaves; nothing lowers it, so a second rollback still meets the floors the first one passed. A plain
+upgrade or a same-version re-run whose target is below the mark is checked against the floors too. A
+writer reads the mark back after writing it and writes again (at most 3 times) if another writer left it
+lower. The mark guards against mistakes; it is not a security boundary (anyone who may write
+`/agentx/<env>/*` can change it). An install made before 0.5.17 has none,
+and its recorded version stands in. Who writes it: the CLI (admin credentials, or the environment's
+operator role, whose grant already covers `/agentx/<env>/*`), `agentx bundle approve` (raised to the
+installed version at every approval), and the Enterprise bundle deployer (raised to the installed
+version before its first stack change and to the bundle's version after its last; its role has
+`ssm:GetParameter` and `ssm:PutParameter` on exactly this parameter, as on the settings record). If an
+upgrade or a rollback cannot record it, it stops before anything changes; a malformed mark is named and
+must be fixed by hand.
+
+**Bundle rollbacks.** `agentx bundle approve --rollback` checks the floors and pins the install it checked
+(`rollbackFrom`: the recorded version and the mark) in the approval record. The deployer refuses that
+approval once either has moved (an upgrade since, another rollback): approve it again.
+
+**Operator values a rollback drops.** A `config set` value whose parameter the older template does not
+declare is dropped (the rollback prints each one), and rolling forward again deploys the newer
+release's default, not the value. The rollback prints a WARNING with the `agentx --env <env> config set
+<key> <value>` line for each; run them after the next upgrade.
+
+**A release package's rollback script** (`rollback-<from>-to-<to>.sh`) keeps its read-only preflight
+checks (stack states, idle workers and queues, images present in ECR, the clone's tag and hashes), then:
+
+1. builds the FROM release's CLI from its own clone (not the target's clone: an older CLI has no
+   `--rollback-to`, and its plain upgrade refuses the older target);
+2. checks out a separate clean copy of the target tag for `--source`;
+3. runs the command above without `--yes` first to show the change sets (answer no), then with
+   `--yes` once the reviewer has read them;
+4. reads back `/agentx/<env>/settings` (expects the target version), `/agentx/<env>/release-high-water`
+   (expects the FROM version or higher) and the broker's `AGENTX_RELEASE_VERSION`;
+5. after the next roll-forward, re-applies every value the WARNING listed.
+
+**Floors.** A release that writes data an older release cannot read, or that an older release's
+templates cannot be deployed beside, adds an entry to `ROLLBACK_FLOORS` in
+`packages/cli/src/upgrade/target.ts` (`release`, the oldest `floor` that still works, and a `reason`).
+Entries are never removed. In particular, **a release that adds a field to the environment settings
+record (`/agentx/<env>/settings`, a strict schema) declares a floor at itself**: an older agentx cannot
+read the settings any more. **Every release bumps `ROLLBACK_FLOORS_DECLARED_THROUGH` to its own
+version**; `npm run release:pack-cli` refuses a version whose x.y.z is not it, and a forgotten bump
+otherwise only makes that release's rollback refuse, never allow.
+
 ## The release test
 
 The `Release test` workflow (`.github/workflows/release-test.yml`) installs, upgrades and removes

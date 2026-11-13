@@ -21,7 +21,7 @@ import type { LearningModeReader } from "./mode.js";
 import type { SourceRouteDependencies } from "./source-write.js";
 import { getRecordEvent, getRecordFact, pendingHidesOf, queryRecordEventWindow, queryRecordEvents, queryRecordFacts, type StoredEvent, type StoredFact } from "./store.js";
 import { keywordDocumentOf } from "./keyword-document.js";
-import { KEYWORD_CANDIDATES, KEYWORD_RRF_TOP, openKeywordIndex, type SegmentCache } from "./keyword-index.js";
+import { KEYWORD_CANDIDATES, KEYWORD_CANDIDATES_MAX, KEYWORD_RRF_TOP, openKeywordIndex, type SegmentCache } from "./keyword-index.js";
 import { bm25PassageScores, reciprocalRankFusion } from "./search-fusion.js";
 import type { LiveAclCheck, ReadAudience, RecordEmbedder, RecordLog, TeamRecordTable } from "./types.js";
 
@@ -261,7 +261,7 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
     try {
       const view = await openKeywordIndex({ table: deps.table, ...(deps.now === undefined ? {} : { now: deps.now }), ...(deps.log === undefined ? {} : { log: deps.log }), ...(deps.keywordIndex?.cache === undefined ? {} : { cache: deps.keywordIndex.cache }) }, orgId, project, nowSeconds);
       if (view === undefined) return undefined;
-      const hits = await view.rank(request.query, { facts, accept, top: KEYWORD_CANDIDATES, nowSeconds });
+      const hits = await view.rank(request.query, { facts, accept, top: KEYWORD_CANDIDATES_MAX, nowSeconds });
       deps.log?.("record.keyword_index", { ...view.shape, hits: hits.length });
       return hits.map((hit): Candidate => (hit.event !== undefined ? { id: hit.event.id, event: hit.event } : { id: (hit.fact as StoredFact).id, fact: hit.fact as StoredFact }));
     } catch {
@@ -295,12 +295,28 @@ export async function recordSearch(deps: RecordQueryDependencies, audience: Read
 
   const checkedEvents = await filterVisible(toCheck.flatMap((candidate) => (candidate.event === undefined ? [] : [candidate.event])), audience, filters);
   const checkedFacts = await filterVisible(toCheck.flatMap((candidate) => (candidate.fact === undefined ? [] : [candidate.fact])), audience, filters);
+  // The cut to `KEYWORD_CANDIDATES` is made on rows the reader may not see too, so a visible row ranked behind 100 hidden ones would be lost. The keyword list (up to KEYWORD_CANDIDATES_MAX rows, reloaded by the index) is therefore
+  // checked a batch of KEYWORD_CANDIDATES at a time, past the first, until it holds KEYWORD_CANDIDATES visible rows or ends: at most KEYWORD_CANDIDATES_MAX / KEYWORD_CANDIDATES batches. Every row still goes through `filterVisible`.
+  const extraEvents: StoredEvent[] = [];
+  const extraFacts: StoredFact[] = [];
+  const countVisibleKeyword = (upTo: number): number => {
+    const visibleIds = new Set([...checkedEvents.visible, ...checkedFacts.visible, ...extraEvents, ...extraFacts].map((row) => row.id));
+    return new Set(keywordList.slice(0, upTo).map(idOf).filter((id) => visibleIds.has(id))).size;
+  };
+  const keywordCheckLimit = Math.min(keywordList.length, KEYWORD_CANDIDATES_MAX);
+  let checkedUpTo = Math.min(KEYWORD_CANDIDATES, keywordList.length);
+  while (checkedUpTo < keywordCheckLimit && countVisibleKeyword(checkedUpTo) < KEYWORD_CANDIDATES) {
+    const batch = [...new Set(keywordList.slice(checkedUpTo, Math.min(checkedUpTo + KEYWORD_CANDIDATES, keywordCheckLimit)).map((candidate) => byId.get(idOf(candidate)) as Candidate))];
+    checkedUpTo += KEYWORD_CANDIDATES;
+    extraEvents.push(...(await filterVisible(batch.flatMap((candidate) => (candidate.event === undefined ? [] : [candidate.event])), audience, filters)).visible);
+    extraFacts.push(...(await filterVisible(batch.flatMap((candidate) => (candidate.fact === undefined ? [] : [candidate.fact])), audience, filters)).visible);
+  }
   // Only rows the AUDIENCE hid count towards the flag. A deleted row, or one in a place being changed, is hidden from everyone and says nothing about the reader.
   const top = wanted.slice(0, limit * VECTOR_OVERFETCH);
   const topEvents = await filterVisible(top.flatMap((candidate) => (candidate.event === undefined ? [] : [candidate.event])), audience, filters);
   const topFacts = await filterVisible(top.flatMap((candidate) => (candidate.fact === undefined ? [] : [candidate.fact])), audience, filters);
-  const okEvents = new Set(checkedEvents.visible);
-  const okFacts = new Set(checkedFacts.visible);
+  const okEvents = new Set([...checkedEvents.visible, ...extraEvents]);
+  const okFacts = new Set([...checkedFacts.visible, ...extraFacts]);
   // "Some results are hidden" is a flag, never a count, looks at the best matches only, and is false for a shared task: an exact count of matching private rows lets a
   // viewer probe whether a private discussion exists.
   const someHidden = audience.kind === "caller" && topEvents.withheld + topFacts.withheld > 0;

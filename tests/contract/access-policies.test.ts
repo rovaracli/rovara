@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BOUNDARY_INSTANCE_PROFILE_ACTIONS, BOUNDARY_NAMED_READS, BOUNDARY_ROLE_LIST_ACTIONS, BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
+  BOUNDARY_INSTANCE_PROFILE_ACTIONS, BOUNDARY_NAMED_READS, BOUNDARY_ROLE_LIST_ACTIONS, BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, deployRoleBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
 import { readFileSync } from "node:fs";
 import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/cloud-contracts";
@@ -682,6 +682,9 @@ describe("CloudFront permissions (web app deploy)", () => {
         const boundary = size(withoutSids(defaultBoundaryStatements(longest)));
         worst = Math.max(worst, boundary);
         expect(boundary, `boundary, ${env}, ${rovaraOrganizationId ?? "no org id"}`).toBeLessThanOrEqual(6144 - 90);
+        // 0.5.17: the deploy role's own boundary is the default plus the acm/route53 ceiling, ECR's service-linked role and its own ARN in DenyBoundaryChanges, less the merged AppSync/SES
+        // statement and the namespace pattern; the same margin.
+        expect(size(withoutSids(deployRoleBoundaryStatements(longest))), `deploy role boundary, ${env}, ${rovaraOrganizationId ?? "no org id"}`).toBeLessThanOrEqual(6144 - 90);
         expect(size(serviceRoleStatements(longest)), `service role, ${env}`).toBeLessThanOrEqual(10_240 - 1000);
       }
     }

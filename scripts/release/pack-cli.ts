@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { build, type Metafile, type Plugin } from "esbuild";
 import { NODE_ENGINE_RANGE } from "../../packages/cli/src/node-version.js";
+import { assertRollbackFloorsDeclaredFor } from "../../packages/cli/src/upgrade/target.js";
 import { DEFAULT_CLI_PACKAGE_NAME } from "@rovara-code/contracts";
 
 const execFileAsync = promisify(execFile);
@@ -312,6 +313,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     // other failure, instead of a raw Node stack trace.
     try {
       const args = parsePackCliArgs(process.argv.slice(2));
+      // Every release declares its own rollback floors (docs/releases.md, "Rolling a release back").
+      assertRollbackFloorsDeclaredFor(args.version);
       packCli({
         version: args.version,
         out: resolve(args.out),

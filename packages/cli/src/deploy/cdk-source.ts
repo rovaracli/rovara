@@ -4,6 +4,7 @@
 // context the deploy uses, and reads which parameters each stack's template declares. The deploy
 // still runs `cdk deploy` as before; the synthesized assembly is only read, never deployed.
 import type { ModelProxyTlsPrevious, ModelProxyTlsSetting } from "./model-proxy-tls.js";
+import { declaredFromTemplate } from "./declared-parameters.js";
 import type { TeamRecordOptions } from "./team-record-switch.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -120,8 +121,8 @@ export async function synthDeclaredParameters(input: { runner: CommandRunner; so
       } catch (error) {
         throw agentXError("CONFIG_INVALID", `cdk synth of ${source} wrote an unreadable template for ${id} (${errorMessage(error)})`);
       }
-      const parameters = template.Parameters !== null && typeof template.Parameters === "object" ? Object.keys(template.Parameters) : [];
-      entries.set(part, { declared: new Set(parameters) });
+      // The names, carrying which have no Default (declared-parameters.ts).
+      entries.set(part, { declared: declaredFromTemplate(template.Parameters) });
     }
   } finally {
     await rm(dir, { recursive: true, force: true });

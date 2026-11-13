@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { grantSigningKeySecrets } from "./signing-key-secrets.js";
 import {
   Aws,
+  CfnCondition,
   CfnOutput,
   CfnParameter,
   Duration,
@@ -120,6 +121,20 @@ export class SessionLifecycle extends Construct {
         actions: ["ssm:GetParameter"],
         resources: [`arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}private-addresses-off`],
       }));
+    }
+    // M1 (owner decision): the operator's switch for the TS-L worker self-test (session-steps.ts TSL_SELFTEST_PARAMETER). The STAGING install only, read only, one exact parameter; the operator creates it when needed.
+    // A published template is the placeholder environment's with the name replaced (template-rendering.test.ts), so "staging only" cannot be an `if` on the name here: it is a condition on the name that CloudFormation evaluates
+    // (`TslSelftestIsStaging`: Fn::Equals [<environment name>, "staging"]), on one separate policy. In every other environment the condition is false and the policy does not exist; the function asks for the parameter only on staging's prefix.
+    if (naming.env !== undefined) {
+      const isStaging = new CfnCondition(this, "TslSelftestIsStaging", { expression: Fn.conditionEquals(naming.env, "staging") });
+      const tslSelftestRead = new iam.Policy(this, "TslSelftestSwitchRead", {
+        statements: [new iam.PolicyStatement({
+          actions: ["ssm:GetParameter"],
+          resources: [`arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}tsl-selftest`],
+        })],
+      });
+      tslSelftestRead.attachToRole(this.steps.role!);
+      (tslSelftestRead.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = isStaging;
     }
     this.steps.addToRolePolicy(new iam.PolicyStatement({ actions: ["kms:GetPublicKey"], resources: [props.invokeSigningKey.keyArn] }));
 

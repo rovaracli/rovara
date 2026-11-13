@@ -461,18 +461,22 @@ describe("the named TEST proof-only installation gate", () => {
     // that one statement added. Legacy did not move.
     // 2026-11-13 (TE-H4a, feat/te-h4a-evidence-record-tag, on integ/0516 574adbb27): the named and foreign digests (with and without the route) were retaken from the values the test reports, after ONE intended change:
     // the artifacts bucket gains the lifecycle rule ExpireEvidenceRecord (365 days, prefix private/, tag rovara-retention=evidence-record). The named snapshot shows exactly that rule added. Legacy did not move.
+    // 2026-11-13 (0.5.16, feat/0516-tsl-worker-selftest, M1; replaces the 2026-11-12 note): the named and foreign digests were retaken from the values the test reports, after ONE intended change to the session steps
+    // function: the condition SessionsTslSelftestIsStaging (Fn::Equals [<environment name>, "staging"]) and the policy SessionsTslSelftestSwitchRead (ssm:GetParameter on exactly parameter/agentx/<env>/tsl-selftest) behind it.
+    // Every named template has them (a published template is the placeholder's with the name replaced, so the condition, not an `if` on the name, keeps the permission to staging); the legacy digests did not move.
+    // 2026-11-13 (TE-H4a merged onto integ/0518 cc2966810, v0.5.17): the four named and foreign digests were retaken again from the values the test reports, after the two changes above together (the ExpireEvidenceRecord rule and the 0.5.16 TSL self-test condition and policy).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "d1241e06b3c162b38432db630cbf968e5cf32e3af27d97631f992d224c3f6f14",
-        withoutRoute: "1a55b21b487a80784c73453d0c0ddb66d9c7698de6c3f90899ad3382fcd2dc07",
+        withRoute: "9618f73ecfa4e3a4b7b466b7cc7879ae39897ecb804a9b69e11b3d3adb75df57",
+        withoutRoute: "d4ff2ef4c790efa35b615363d878dbdf41718fbc4fd2431cb449c613da2b712c",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "4d2a398167ad954544690a8c1fa4d02109614df51064fcae41a0876d53711383",
-        withoutRoute: "33a2b8966a6e02a6fd904a74539abf481dfa6d488cd04efa7a3d87267ba729e2",
+        withRoute: "8bff4640ed75df6440ed8c91fd7ef58762ae02f072b2b145247855a04c54e5a4",
+        withoutRoute: "cdc331e991d3362bb506c9d515c94270169abe74e369e6b1396234bcb23a6515",
       },
       {
         label: "legacy",

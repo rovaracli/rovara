@@ -3,6 +3,7 @@
 import type { KnownDifference } from "../known-differences.js";
 
 const LOST_RUN_CAUSE = [
+  "UPDATED for the 0.5.17 pin (public 3cb1053f): the core now ends the operation INTERRUPTED and blocks the step, IMPLEMENT/BLOCKED(\"implementation operation ended interrupted\"), where Cloud ends it failed; the remaining difference is that word (and the notices and rows below). The text that follows describes the gap before the pin.",
   "Core gap found by the suite (stated in Code's own docs, vendor/rovara-code/docs/ports.md:696-697: \"no watchdog ends a step whose worker died ... a running step is not\").",
   "When the coding run's machine is lost, Cloud's session reconciler (aws/session-reconciler.ts, run by the dispatch recovery schedule) ends the operation and blocks the step",
   "IMPLEMENT/BLOCKED(\"implementation operation ended failed\") with Retry; on the core the operation stays RUNNING for ever: nothing reads `WorkerMachines.health` for a held",
