@@ -1455,6 +1455,39 @@ describe("slice C: the design review's routes", () => {
       expect(w.db.find((item) => String(item.sk).startsWith("DESIGN_APPROVAL#"))).toEqual([]);
     });
 
+    it("recheck L-C: on a HIGH-risk design the survivor still finds the card as its requester (told what is needed), even though they may not approve it", async () => {
+      const w = await openBlockerCard({ touches: ["auth"] });
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "contributor"], [OMAR, "member", "maintainer"]]);
+      expect(await cardOf(w, SURVIVOR, "approve_design"), "the requester's own card").toBeDefined();
+    });
+
+    it("recheck L-C: the survivor, a plain contributor, may Retry the old task's review that did not run (the requester's right, as mayDirectWork reads it)", async () => {
+      const w = await world({ capUsd: 8 });
+      await runWorker(w, String(w.operations()[0]!.id), {}, { failure: { error: "the run failed" } });
+      expect(w.task().workflow).toMatchObject({ designReview: { status: "not_run" } });
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "contributor"], [OMAR, "member", "contributor"]]);
+      expect((await w.dev(OMAR, "POST", `/v1/app/tasks/${w.taskId}/design-review/retry`, { requestId: randomUUID() })).status, "a contributor who did not ask cannot").toBe(403);
+      const done = await w.dev(SURVIVOR, "POST", `/v1/app/tasks/${w.taskId}/design-review/retry`, { requestId: randomUUID() });
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      expect(w.task().workflow).toMatchObject({ designReview: { status: "estimating" } });
+    });
+
+    it("recheck L-C: on the cost card the survivor is the requester: they raise the cap within the low amount, as the press reads the requester", async () => {
+      const w = await openBlockerCard({ capUsd: 0.5 });
+      merge(w);
+      seedPeople(w, [[SURVIVOR, "member", "contributor"], [OMAR, "member", "contributor"]]);
+      const shown = await cardOf(w, SURVIVOR, "approve_spend");
+      expect(shown, "the spend card is on the survivor's list").toBeDefined();
+      const raise = shown!.card.actions.find((action) => action.href.endsWith("/spend/raise-cap"));
+      expect(raise, "the card offers the requester's raise").toBeDefined();
+      if (shown!.card.friction.expandEvidenceFirst) await w.dev(SURVIVOR, "POST", `/v1/app/decisions/${shown!.card.id.replace(":", "/")}/evidence-opened`, { requestId: randomUUID(), shownDigest: shown!.digest });
+      const done = await w.dev(SURVIVOR, "POST", raise!.href, { requestId: randomUUID(), shownDigest: shown!.digest });
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      expect(w.task().workflow).toMatchObject({ designReview: { status: "estimating", approvals: [expect.objectContaining({ kind: "raise_cap", by: { actorId: SURVIVOR.developerId } })] } });
+    });
+
     it("a maintainer's approval of the old task is seated as the survivor too", async () => {
       const w = await openBlockerCard();
       merge(w);
