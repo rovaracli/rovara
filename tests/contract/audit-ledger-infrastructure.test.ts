@@ -562,7 +562,9 @@ describe("the audit ledger in templates", () => {
       // resource by design (R53: the service role manages every key; the boundary is only a ceiling). That reaches
       // nothing here: the key policy delegates no use action to IAM (AdminWithoutUse above), so an IAM allow cannot
       // open it. Any other statement that could reach the key is an offender.
-      const baseline = (stack: string, where: string) => /^agentx-[a-z0-9-]+-access$/.test(stack) && /^(DefaultPermissionsBoundary|CloudFormationServiceRole)/.test(where);
+      // 0.5.17: and the deploy role's own boundary (DeployRolePermissionsBoundary), which is the default boundary plus Certificate Manager, Route 53 and ECR's service-linked role: the same kms:* ceiling,
+      // copied, never a grant (a boundary only caps a role's own policies). The test below checks its KMS reach is exactly the default boundary's.
+      const baseline = (stack: string, where: string) => /^agentx-[a-z0-9-]+-access$/.test(stack) && /^(DefaultPermissionsBoundary|DeployRolePermissionsBoundary|CloudFormationServiceRole)/.test(where);
 
       // Managed policies that grant nothing on KMS. Any other attachment to a role is an offender, because an
       // AWS-managed policy such as AdministratorAccess or PowerUserAccess cannot be read here.
@@ -596,6 +598,18 @@ describe("the audit ledger in templates", () => {
 
       it("no policy or managed-policy attachment in any stack allows use of the key by naming it, by NotResource or on a wildcard", () => {
         expect(offenders(production.stacks)).toStrictEqual([]);
+      });
+
+      it("the deploy role's boundary (0.5.17) reaches KMS exactly as the default boundary does: no statement names the key, and the same KMS statements", () => {
+        const access = production.stacks.find((stack) => /^agentx-[a-z0-9-]+-access$/.test(stack.stackName))!;
+        const resources = (Template.fromStack(access).toJSON() as TemplateJson).Resources;
+        // The Services statement differs only by the acm and route53 names; compare the KMS reach, not the text.
+        const kmsActions = (id: string) => [((resources[id]!.Properties.PolicyDocument as { Statement: Statement[] }).Statement)].flat()
+          .map((statement) => ({ effect: statement.Effect, actions: [statement.Action].flat().map(String).filter((action) => /^kms:/i.test(action) || action === "*"), resource: JSON.stringify(statement.Resource ?? statement.NotResource), condition: JSON.stringify(statement.Condition ?? null) }))
+          .filter((entry) => entry.actions.length > 0).map((entry) => JSON.stringify(entry)).sort();
+        expect(kmsActions("DeployRolePermissionsBoundary").length).toBeGreaterThan(0);
+        expect(kmsActions("DeployRolePermissionsBoundary")).toStrictEqual(kmsActions("DefaultPermissionsBoundary"));
+        expect(JSON.stringify(resources.DeployRolePermissionsBoundary)).not.toContain("AuditVaultKey");
       });
 
       it("the baseline wildcards exist as described, so the allowance above is not stale", () => {
