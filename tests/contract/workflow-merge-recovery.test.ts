@@ -429,7 +429,7 @@ describe("workflow merge recovery outcomes", () => {
       TransactItems: releaseItems(TABLE, {
         member: { pk: slackLimitPk(TEST_ORG, "team"), sk: `MEMBER#${taskId}` },
         organization: { pk: slackLimitPk(TEST_ORG, "team"), sk: "ORGANIZATION" },
-      }, taskId),
+      }, taskId, "set"),
     }));
     expect(h.db.get(slackLimitPk(TEST_ORG, "team"), `MEMBER#${taskId}`)).not.toHaveProperty("tasks");
     await enroll(h.db, taskId, h.now() - 1);
