@@ -151,7 +151,7 @@ export async function erasePersonOnCore(input: ErasePersonOnCoreInput): Promise<
     for (const row of rows) {
       const rowCompany = companyOf(row);
       if (typeof row.taskId !== "string" || (rowCompany !== undefined && rowCompany !== companyId)) counts.skipped += 1;
-      else candidates.set(row.taskId, row.sk as string);
+      else candidates.set(row.taskId, row.sk);
     }
     const taskIds = [...candidates.keys()];
     // The stamps of the page, then the records of every task a stamp does not name as Cloud's.

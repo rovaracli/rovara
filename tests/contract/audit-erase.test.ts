@@ -189,7 +189,8 @@ describe("an unfinished evidence erase is told apart from the learning clean-up"
     await b.seedKeys(A);
     const deps: AuditEraseDeps = { ...b.erase, eraseLearning: async () => { throw Object.assign(new Error("SECRET-KEY private/abc"), { name }); } };
     const error = await eraseAuditSubject(deps, request()).catch((caught: unknown) => caught);
-    expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("stored test evidence") });
+    expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect((error as Error).message).toContain("stored test evidence");
     expect((error as Error).message).not.toContain("suggested-rule");
     expect(JSON.stringify(b.logs)).toContain("audit.erase_evidence_failed");
     expect(JSON.stringify(b.logs)).not.toContain("SECRET-KEY");

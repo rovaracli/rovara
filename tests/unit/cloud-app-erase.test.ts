@@ -4,7 +4,9 @@
 // (vendor core task-flow/start.ts), so they are seeded that way; Cloud's own walk (`orgId` only) is shown to skip them.
 import { randomUUID } from "node:crypto";
 import { DeleteObjectsCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
-import { PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { Readable } from "node:stream";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { createOwnerTaskAccess } from "@rovara-code/broker/core/task-flow";
@@ -14,7 +16,7 @@ import { FakeDynamoDb } from "../../vendor/rovara-code/tests/support/ports/dynam
 import { FakeS3 } from "../../vendor/rovara-code/tests/support/ports/aws-fakes.js";
 import { evidencePrefixesOf as codePrefixesOf, eraseTaskEvidence } from "../../vendor/rovara-code/packages/broker/src/core/proof/evidence-erase.js";
 import { createEvidenceErase, evidencePrefixesOf as cloudPrefixesOf } from "../../packages/broker/src/rovara-code/evidence-erase.js";
-import { personErasureStep } from "../../packages/broker/src/aws/broker/evidence-wiring.js";
+import { coreEvidencePorts, personErasureStep } from "../../packages/broker/src/aws/broker/evidence-wiring.js";
 import {
   CORE_ERASE_PENDING_PK, CorePersonEraseUnfinished, coreErasePortsOf, corePersonEraseOf, createCloudApp, erasePersonOnCore, readCoreEngineFlags, resumeCoreEvidenceErase, stampForNewTask, stampItem, type CloudApp, type CoreErasePorts, type PersonEraseOnCoreReport,
 } from "../../packages/broker/src/cloud/app/index.js";
@@ -455,7 +457,7 @@ async function realWorld() {
   const world = createFakeWorld();
   const logs: Array<Record<string, unknown>> = [];
   const send = (command: unknown) => s3.send(command);
-  const ports = coreErasePortsOf({ dynamo: table, tableName: "State", s3: { send } as never, bucket: "artifact-bucket", log: (entry) => logs.push(entry) });
+  const ports = coreErasePortsOf({ dynamo: table, tableName: "State", s3: { send }, bucket: "artifact-bucket", log: (entry) => logs.push(entry) });
   const put = async (task: Seeded) => { for (const key of keysOf(task)) await s3.send(new PutObjectCommand({ Bucket: "artifact-bucket", Key: key, Body: new TextEncoder().encode("{}") })); };
   const seed = async (input: SeedInput) => { const task = await seedRecords(world, input, store); await put(task); return task; };
   return { table, s3, store, ports, logs, seed, send, left: (task: Seeded) => keysOf(task).filter((key) => s3.objects.has(key)).length };
@@ -480,7 +482,7 @@ describe("over the real DynamoDB and S3 adapters", () => {
     const { table, s3, send, seed, left, logs } = await realWorld();
     const task = await seed({ person: PERSON, stamp: "core" });
     const failing = coreErasePortsOf({ dynamo: table, tableName: "State", bucket: "artifact-bucket", log: (entry) => logs.push(entry),
-      s3: { async send(command: unknown) { const answer = await send(command); return command instanceof DeleteObjectsCommand ? { ...(answer as object), Errors: [{ Key: "x", Code: "AccessDenied" }] } : answer; } } as never });
+      s3: { async send(command: unknown) { const answer = await send(command); return command instanceof DeleteObjectsCommand ? { ...(answer as object), Errors: [{ Key: "x", Code: "AccessDenied" }] } : answer; } } });
     const before = s3.calls.length;
     const report = await erasePersonOnCore({ ports: failing, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 10_000 });
     expect(report).toMatchObject({ erased: 0, incomplete: 1, complete: false });
@@ -489,14 +491,14 @@ describe("over the real DynamoDB and S3 adapters", () => {
     expect(JSON.stringify(report)).not.toContain("AccessDenied");
     // The objects the fake deleted before the error was reported are gone, the task is still not reported done, and a clean run finishes it.
     expect(left(task)).toBeLessThanOrEqual(2);
-    expect((await erasePersonOnCore({ ports: coreErasePortsOf({ dynamo: table, tableName: "State", s3: { send } as never, bucket: "artifact-bucket" }), companyId: FAKE_COMPANY, developerId: PERSON })).complete).toBe(true);
+    expect((await erasePersonOnCore({ ports: coreErasePortsOf({ dynamo: table, tableName: "State", s3: { send }, bucket: "artifact-bucket" }), companyId: FAKE_COMPANY, developerId: PERSON })).complete).toBe(true);
   });
 
   it("an item the store cannot read is logged without the person or the task", async () => {
     const { table, ports, logs, seed } = await realWorld();
     await seed({ person: PERSON, stamp: "core" });
     // A set attribute cannot be represented by the port (decision 60): the store leaves the item out and tells `onUnreadable`.
-    await table.send(new PutItemCommand({ TableName: "State", Item: { pk: { S: `DEVELOPER#${PERSON}` }, sk: { S: `TASK#2026-11-12T11:00:00.000Z#${randomUUID()}` }, tags: { SS: ["a"] } } }) as never);
+    await table.send(new PutItemCommand({ TableName: "State", Item: { pk: { S: `DEVELOPER#${PERSON}` }, sk: { S: `TASK#2026-11-12T11:00:00.000Z#${randomUUID()}` }, tags: { SS: ["a"] } } }));
     await corePersonEraseOf(ports).person(FAKE_COMPANY, PERSON);
     const unreadable = logs.filter((entry) => entry.event === "core_person_erase.unreadable_item");
     expect(unreadable).toEqual([{ component: "broker", event: "core_person_erase.unreadable_item" }]);
@@ -530,8 +532,29 @@ describe("over the real DynamoDB and S3 adapters", () => {
     const theirs = await seed({ person: OTHER_PERSON, stamp: "core" });
     const theirsCloud = await seed({ person: OTHER_PERSON, stamp: "none", shape: "cloud" });
     const cloudWalk = createEvidenceErase({ s3: { send } as never, artifactBucketName: "artifact-bucket", documentClient: documentClientOver(store), tableName: "State" });
-    await personErasureStep(undefined, cloudWalk, undefined, corePersonEraseOf(ports))(FAKE_COMPANY as OrgId, PERSON);
+    await personErasureStep(undefined, cloudWalk, undefined, corePersonEraseOf(ports))(FAKE_COMPANY, PERSON);
     expect([left(cloudTask), left(coreTask), left(coreUnstamped)]).toEqual([0, 0, 0]);
     expect([left(theirs), left(theirsCloud)]).toEqual([2, 2]);
+  });
+});
+
+describe("the broker's wiring of the ports", () => {
+  it("sends the vendored store's plain commands through the broker's own document client, which leaves them unmarshalled (no second client is made)", async () => {
+    const seen: Array<{ target: string | undefined; body: string }> = [];
+    const requestHandler = {
+      async handle(request: { headers: Record<string, string>; body?: unknown }) {
+        seen.push({ target: request.headers["x-amz-target"], body: String(request.body) });
+        const answer = JSON.stringify({ Item: { pk: { S: "pk-1" }, sk: { S: "sk-1" }, kept: { S: "yes" } } });
+        return { response: { statusCode: 200, headers: { "content-type": "application/x-amz-json-1.0" }, body: Readable.from([Buffer.from(answer)]) } };
+      },
+      updateHttpClientConfig() { /* none */ },
+      httpHandlerConfigs() { return {}; },
+    };
+    const credentials = { accessKeyId: ["fake", "access"].join("-"), secretAccessKey: ["fake", "secret"].join("-") };
+    const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "us-west-2", credentials, requestHandler: requestHandler as never }));
+    const ports = coreEvidencePorts({ documentClient, tableName: "State", artifactBucketName: "artifact-bucket", s3: { send: async () => ({}) } as never });
+    expect(await ports.store.get({ pk: "pk-1", sk: "sk-1" })).toMatchObject({ pk: "pk-1", sk: "sk-1", kept: "yes" });
+    expect(seen.map((call) => call.target)).toEqual(["DynamoDB_20120810.GetItem"]);
+    expect(JSON.parse(seen[0]!.body)).toMatchObject({ TableName: "State", Key: { pk: { S: "pk-1" }, sk: { S: "sk-1" } } });
   });
 });
