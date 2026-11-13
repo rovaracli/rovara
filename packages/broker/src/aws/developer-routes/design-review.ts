@@ -13,7 +13,7 @@ import { z } from "zod";
 import { ModelSelectionSchema, WORKSPACE_PROJECT_INDEX, WorkflowTransitionError, isHighRiskDesign, workspaceProjectIndexValue, agentXError, DESIGN_ACTIONS_NAME_MAX, plainOneLine, type DesignActionsView, type DesignReason, type ModelIdentifier, type OrgId } from "@rovara-code/contracts";
 import { enableDesignReview, retryDesignReviewNotRun, designReviewRetryOffer, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { StatusReply } from "../status-reply.js";
-import { effectiveTaskOwner, taskKey, taskOwnerKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { taskKey, taskOwnerKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { listProjectMembers } from "../../org/project-members.js";
 import { AgentSessionStore } from "../../agent-sessions/store.js";
 import { DECISION_REFUSALS, type DecisionCaller } from "../../decisions/routes.js";
@@ -39,7 +39,12 @@ import { commitDesignApproval, membershipFenceItem } from "../developer-tasks/de
 import { TASK_ID, get } from "../developer-tasks/common.js";
 import type { DeveloperTaskRouteDependencies } from "../developer-tasks/types.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
-import { agentRunStarterOf, developerTaskRouteDependencies } from "./dependencies.js";
+import { developerTaskRouteDependencies } from "./dependencies.js";
+import { seatTaskOwner } from "./owner-seat.js";
+import { getSignIn } from "./authentication.js";
+import { logDeveloperEvent } from "../../developer/log.js";
+import { mergeSurvivor, TASK_OWNER_NOT_MEMBER_MESSAGE } from "../../developer/merged-owner.js";
+import type { DeveloperRecord } from "../../developer/store.js";
 import { jsonBody } from "./organization.js";
 import { signInStoreOf } from "./common.js";
 import { withCardDecideGrade } from "./card-decide-grade.js";
@@ -143,7 +148,13 @@ function approvePortsOf(env: Env, page = false, decideGrade = false): DesignAppr
       const loaded = item.taskId === undefined ? undefined : await loadDesignTask(env, item.taskId);
       if (loaded === undefined || !waitingOnDesign(loaded.workflow)) return undefined;
       const facts = await factsOf(env, loaded);
-      return { requesterId: loaded.task.developerId, setting: facts.setting, edition: facts.edition, directory: facts.directory, freshSignIn: decideGrade };
+      // The requester is the person who asked, as they are now: a creator merged into another sign-in is that survivor, so the survivor is never a "second person" for their own design.
+      const requesterId = await requesterOf(env, loaded.task.developerId);
+      if (requesterId === undefined) {
+        logDeveloperEvent({ event: "design.approve_stale", reason: "requester_unreadable" });
+        return undefined;
+      }
+      return { requesterId, setting: facts.setting, edition: facts.edition, directory: facts.directory, freshSignIn: decideGrade };
     },
     // Company locks on a card's tier are not stored anywhere yet: the tiers are the projector's own (as `decisionRouteDepsOf` says).
     locks: async () => ({}),
@@ -153,15 +164,27 @@ function approvePortsOf(env: Env, page = false, decideGrade = false): DesignAppr
     confirmUrl: () => (page ? PAGE_REAUTH : undefined),
     async commit(caller, write) {
       const loaded = write.taskId === undefined ? undefined : await loadDesignTask(env, write.taskId);
-      if (loaded === undefined) return "stale";
-      // The owner's seat is the OWNER's own (their sign-in record and membership, read now), never the approver's role or session under the owner's id (ON-4). An owner who can no longer be seated (removed, revoked) leaves the
-      // approval stale: nothing is committed on a guess. The decision and the record name the person who really pressed.
-      const owner = effectiveTaskOwner(loaded.task);
-      const ownerCaller = await agentRunStarterOf(env.deps)?.callerFor(caller.orgId, owner.developerId);
-      if (ownerCaller === undefined) return "stale";
-      return commitDesignApproval(developerTaskRouteDependencies(env.deps, ownerCaller), ownerCaller, { developerId: caller.developerId, name: caller.name }, write);
+      if (loaded === undefined) {
+        logDeveloperEvent({ event: "design.approve_stale", reason: "task_not_waiting" });
+        return "stale";
+      }
+      // The owner's seat is the OWNER's own (their sign-in record and membership, read now), never the approver's role or session under the owner's id (ON-4). An owner whose sign-in was merged
+      // into another is seated as the survivor, in this company only, after the task is handed on to them (0.5.18, owner-seat.ts). An owner nobody can seat (removed, revoked, merged into someone
+      // outside this company) is said plainly, never as "stale": nothing is committed on a guess. The decision and the record name the person who really pressed.
+      const seat = await seatTaskOwner(env.deps, caller.orgId, loaded.task);
+      if (seat.kind === "not_member") throw agentXError("CONFIG_INVALID", TASK_OWNER_NOT_MEMBER_MESSAGE);
+      if (seat.kind === "moved") {
+        logDeveloperEvent({ event: "design.approve_stale", reason: "owner_moved" });
+        return "stale";
+      }
+      return commitDesignApproval(developerTaskRouteDependencies(env.deps, seat.caller), seat.caller, { developerId: caller.developerId, name: caller.name }, write);
     },
   };
+}
+
+/** A task's requester as the person they are now: the end of the creator's merge chain (0.5.18). Undefined when the chain cannot be read (the card is then stale, never decided on a guess). */
+function requesterOf(env: Env, developerId: string): Promise<string | undefined> {
+  return mergeSurvivor((id) => getSignIn<DeveloperRecord>(env.deps, `DEVELOPER#${id}`), developerId);
 }
 
 /** The `approve_design` handler for the decision cards' performer. Registered only while the design review switch is on (the caller decides); a task with no design review is refused by the handler's own context. */

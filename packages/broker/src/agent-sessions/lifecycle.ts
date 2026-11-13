@@ -376,6 +376,31 @@ async function taskPlan(deps: SessionLifecycleDeps, orgId: OrgId, taskId: string
   return { items, hold };
 }
 
+/** What `handOnMergedTask` found or did for one task: see `TaskHold`. "would_hand" is a dry run's "handed" (it would hand the task on, and wrote nothing). */
+export type MergedTaskHandOn = TaskHold | "would_hand";
+
+/**
+ * 0.5.18 (Slack merged identity): hands ONE task the duplicate holds on to the survivor, exactly as the merge's own mover does (`taskPlan`: the survivor becomes the task's current owner, pays where
+ * the duplicate did, and gets the task-list row), for a task the mover never saw: one created under the duplicate's id after the merge ran, or one the person presses before the next run. Conditional
+ * on the owner it was read with and repeatable: a second call finds the survivor already holds it. `dryRun` plans and writes nothing. The caller has checked that the survivor is the end of the
+ * duplicate's merge chain and a member of `orgId`; the task must be in `orgId` too, or it is "gone".
+ */
+export async function handOnMergedTask(deps: SessionLifecycleDeps, merge: { orgId: string; taskId: string; duplicateId: string; survivorId: string; dryRun?: boolean }): Promise<MergedTaskHandOn> {
+  const orgId = requireIds(merge.orgId, merge.survivorId, merge.duplicateId);
+  if (merge.survivorId === merge.duplicateId) throw invalid("a member cannot be merged into itself");
+  const survivor = await survivorOf(deps, merge.survivorId);
+  for (let attempt = 0; attempt < CONFLICT_RETRIES; attempt += 1) {
+    const { items, hold } = await taskPlan(deps, orgId, merge.taskId, merge.duplicateId, survivor, isoOf(deps.now()));
+    if (hold !== "handed" || items.length === 0) return hold;
+    if (merge.dryRun === true) return "would_hand";
+    if (await transact(deps, items)) {
+      log(deps, "agent_session.merged_task_handed_on", { orgId, taskId: merge.taskId });
+      return "handed";
+    }
+  }
+  throw unavailable("A task is busy right now; try again in a moment.");
+}
+
 /**
  * The tasks the duplicate has a list row for (the ones it created, also those with no session, and its taker copies), each handed on in a transaction on what was read, read
  * again after a lost race. The row is marked handed on (`mergedTo`) in the same transaction, or by a write of its own when there was nothing to hand on, and a marked row is

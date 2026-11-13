@@ -39,7 +39,7 @@ import { taskAccessFence } from "../../developer/task-people.js";
 import { cancelRunningTask, type TaskCancellation } from "./acceptance.js";
 import { swebenchDependencies } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
-import { agentRouteDependencies, developerTaskActions, requireRecordProject, requireSlackAllowedByEdition, requireSlackRequesterWriterRole, slackCallerFor, slackTeamOrg } from "./dependency-wiring.js";
+import { agentRouteDependencies, developerTaskActions, handOnSlackMergedTask, requireRecordProject, requireSlackAllowedByEdition, requireSlackRequesterWriterRole, slackCallerFor, slackTeamOrg } from "./dependency-wiring.js";
 import { slackMemberRule } from "../../org/slack-explicit-members.js";
 import { dispatchWorkflowContinuation } from "./e2e-rounds.js";
 import { getMembership, requireWorkspace } from "./records.js";
@@ -215,6 +215,7 @@ export async function handleSlackTaskPeople(dependencies: AwsBrokerDependencies,
   const thread = SlackThreadSchema.parse(event.thread);
   const caller = await slackCallerFor(dependencies, SlackRequesterSchema.shape.userId.parse(event.userId), thread.teamId);
   const taskId = randomUUIDSchema.parse(event.taskId);
+  await handOnSlackMergedTaskById(dependencies, taskId, caller);
   const agents = agentRouteDependencies(dependencies, tasks);
   const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, ...(agents === undefined ? {} : { agents }) }, caller);
   const access = await resolveTaskAccess(routeDeps, caller, taskId, event.action === "task-people-read" ? "read" : event.action === "task-people-change" ? "peopleManage" : "read");
@@ -241,6 +242,7 @@ export async function confirmSlackTaskPeople(dependencies: AwsBrokerDependencies
   const thread = SlackThreadSchema.parse(event.thread);
   const caller = await slackCallerFor(dependencies, SlackRequesterSchema.shape.userId.parse(event.userId), thread.teamId);
   const taskId = randomUUIDSchema.parse(event.taskId);
+  await handOnSlackMergedTaskById(dependencies, taskId, caller);
   const requestId = randomUUIDSchema.parse(event.requestId);
   const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks }, caller);
   const access = await resolveTaskAccess(routeDeps, caller, taskId, "read");
@@ -261,6 +263,7 @@ export async function authorizeSlackTaskAction(dependencies: AwsBrokerDependenci
   const thread = SlackThreadSchema.parse(event.thread);
   const caller = await slackCallerFor(dependencies, SlackRequesterSchema.shape.userId.parse(event.userId), thread.teamId);
   const taskId = randomUUIDSchema.parse(event.taskId);
+  await handOnSlackMergedTaskById(dependencies, taskId, caller);
   const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks }, caller);
   // This signed UI port reports the current lifecycle state (for example, a retired button) after
   // a fresh read+role check. The separately invoked mutation route still requires an open task.
@@ -428,6 +431,12 @@ function slackWorkflowRouteDependencies(dependencies: AwsBrokerDependencies, tas
     ...workflowApplicationRouteDependencies(dependencies) }, caller);
 }
 
+/** `handOnSlackMergedTask` for a task named by id (0.5.18): a task that is not there is left to the access check that follows. */
+async function handOnSlackMergedTaskById(dependencies: AwsBrokerDependencies, taskId: string, caller: DeveloperCaller): Promise<void> {
+  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+  if (task !== undefined) await handOnSlackMergedTask(dependencies, task, caller);
+}
+
 /** The owner's task, read for a Slack workflow press from its own thread; anyone else, or another thread, is refused. */
 async function ownedSlackWorkflowTask(dependencies: AwsBrokerDependencies, event: { taskId: string; userId: string; thread: SlackThread; requestId: string }, what: string,
   legacySlackOwner = false) {
@@ -486,10 +495,12 @@ export async function slackTaskAccess(
   legacySlackOwner = false,
 ): Promise<{ caller: DeveloperCaller; routeDeps: ReturnType<typeof developerTaskRouteDependencies>; access: TaskAccess }> {
   if (dependencies.developer === undefined) throw agentXError("NOT_FOUND", "developer task workflows are not configured");
-  const task = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
-  if (task === undefined) throw agentXError("FORBIDDEN", "task access could not be verified");
+  const stored = await getItem<DeveloperTaskRecord>(dependencies, taskKey(taskId));
+  if (stored === undefined) throw agentXError("FORBIDDEN", "task access could not be verified");
   const sidecar = await getItem<Record<string, unknown>>(dependencies, { pk: `DEVTASK#${taskId}`, sk: "PEOPLE" });
   const canonical = await slackCallerFor(dependencies, userId, dependencies.developer.slackTeamId ?? "");
+  // 0.5.18: a task still held by the id this person was merged away from is handed on to them first (their own company only), so their presses on it keep working.
+  const task = await handOnSlackMergedTask(dependencies, stored, canonical);
   // The legacy Slack owner of a task with no People list is the effective owner (Plan 5 Task 12a): the person who took it over, else its creator.
   const legacyOwner = sidecar === undefined && legacySlackOwner ? tryEffectiveTaskOwner(task) : undefined;
   const caller = legacyOwner !== undefined && legacyOwner.provider === "slack" && legacyOwner.slackUserId === userId

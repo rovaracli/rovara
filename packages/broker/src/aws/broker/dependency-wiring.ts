@@ -11,10 +11,13 @@ import { createWorkingBranchPageProvider, createWorkingBranchProvider } from "..
 import { createHmac, randomUUID } from "node:crypto";
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
-import { type DeveloperTaskView, type ProjectDefinition, type OrgRole, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/cloud-contracts";
+import { DeveloperSignInMethodSchema, type DeveloperTaskView, type ProjectDefinition, type OrgRole, featureEnabled, orgBanKey, orgMemberKey, orgRemovedKey, type WriterOrgRole } from "@agentx/cloud-contracts";
 import { AgentXError, CHANNEL_TURN_REQUEST_MAX, type CodeIntentResult, CONNECTOR_SECRET_PREFIX, ChannelTurnSchema, approvedToolCount, agentXError, type OperationStatus, type ChannelTurn, type TriggerEvent, redactAndCap, projectRevisionKey, type OrgId, type ChannelMembersRequest, type Payer } from "@rovara-code/contracts";
 import { cloudToolBudget } from "./tool-budget.js";
 import { liveStoredRole, personWalk, signInReader } from "../../org/live-role.js";
+import { mergeSurvivor } from "../../developer/merged-owner.js";
+import { handOnMergedTask } from "../../agent-sessions/lifecycle.js";
+import { taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { traceFormerDevelopers } from "../../org/former-developers.js";
 import { requireWriterCaller, type WriterCaller } from "../../org/auditor.js";
 import { slackMemberRule, warnImplicitSlackMember } from "../../org/slack-explicit-members.js";
@@ -31,7 +34,7 @@ import type { ScopeDiscovery } from "../connector-routes.js";
 import { resolveConnectors } from "../connector-types.js";
 import { CredentialRegistry } from "../credentials.js";
 import { readChosenName } from "../../developer/chosen-name.js";
-import { DeveloperSignInStore } from "../../developer/store.js";
+import { DeveloperSignInStore, type DeveloperRecord } from "../../developer/store.js";
 import { safeDisplayName } from "../../developer/person-name.js";
 import { disconnectGithubInstallation, listGithubInstallations, listInstallationRepositories, requireRepositoriesConnected, startGithubConnect, type GithubConnectionDependencies, type RepositoryGateDependencies } from "../../org/github-connection.js";
 import { cancelInstallRequest, listInstallRequests } from "../../org/github-install-requests.js";
@@ -446,8 +449,62 @@ export async function slackTeamOrg(dependencies: AwsBrokerDependencies, teamId: 
 export async function slackCallerFor(dependencies: AwsBrokerDependencies, userId: string, teamId: string): Promise<WriterCaller<DeveloperCaller>> {
   const teamOrg = await slackTeamOrg(dependencies, teamId);
   const role = await requireSlackRequesterWriterRole(dependencies, userId, teamOrg);
-  return requireWriterCaller({ ...slackWorkflowCaller(userId, teamOrg), orgRole: role });
+  const seat = await slackSeatOf(dependencies, userId, teamOrg);
+  return requireWriterCaller({ ...slackWorkflowCaller(userId, teamOrg), ...seat, orgRole: role });
 }
+
+/**
+ * 0.5.18 (Slack merged identity): the developer id a Slack person acts as. A Slack-only sign-in that was merged into another (the person's web sign-in) is that survivor from then on, so a
+ * task started from Slack is never written under the merged-away id again (it could not be seated as its owner: its membership moved with the merge). Only `mergedInto` is followed (never an
+ * identity link), and the survivor must be a member of the Slack team's own company right now: following a merge never lets anyone act in a company the survivor does not belong to. A chain
+ * that loops or is too long is refused, never guessed.
+ */
+export async function slackSeatOf(dependencies: AwsBrokerDependencies, userId: string, teamOrg: OrgId): Promise<Pick<DeveloperCaller, "developerId"> & Partial<Pick<DeveloperCaller, "amr" | "name">>> {
+  const slackId = developerIdForSlackUser(userId);
+  const table = dependencies.developer?.signInTableName;
+  if (table === undefined) return { developerId: slackId };
+  const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
+  const survivor = await mergeSurvivor((id) => read({ pk: `DEVELOPER#${id}`, sk: "META" }), slackId);
+  if (survivor === undefined) {
+    logSlackSeat({ event: "slack.merged_seat_refused", reason: "merge_chain_unreadable" });
+    throw agentXError("FORBIDDEN", "this person's identity could not be followed to one person; ask an admin");
+  }
+  if (survivor === slackId) return { developerId: slackId };
+  const [membership, record, chosen] = await Promise.all([
+    orgStoreOf(dependencies).orgForDeveloper(survivor), read({ pk: `DEVELOPER#${survivor}`, sk: "META" }), readChosenName(dependencies.documentClient, dependencies.tableName, survivor),
+  ]);
+  if (membership?.orgId !== teamOrg) {
+    logSlackSeat({ event: "slack.merged_seat_refused", reason: membership === undefined ? "survivor_not_member" : "survivor_other_company" });
+    throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+  }
+  const provider = DeveloperSignInMethodSchema.safeParse(record?.["provider"]);
+  if (record === undefined || record["revoked"] === true || !provider.success) {
+    logSlackSeat({ event: "slack.merged_seat_refused", reason: record === undefined ? "survivor_record_missing" : record["revoked"] === true ? "survivor_revoked" : "survivor_method_unreadable" });
+    throw agentXError("FORBIDDEN", "this Slack member does not belong to the organization this Slack workspace is connected to");
+  }
+  // The person as their surviving sign-in knows them (its method and name), acting from Slack: the Slack id stays on the caller for the channel checks, as for any member who linked Slack.
+  return { developerId: survivor, amr: provider.data, name: chosen ?? safeDisplayName(typeof record["displayName"] === "string" ? record["displayName"] : "", survivor) };
+}
+
+/**
+ * 0.5.18: a task still held by a merged-away id (made before this fix, or after the merge drain ran) is handed on to the Slack caller when the caller IS that id's survivor (the end of its
+ * merge chain), exactly as the merge's own mover would: the person's Slack presses on their own task keep working. Only the task's own company: the caller was org-checked by
+ * `slackCallerFor`, and a task of any other company is left alone. Answers the task as it is now (read again after a hand-on).
+ */
+export async function handOnSlackMergedTask(dependencies: AwsBrokerDependencies, task: DeveloperTaskRecord, caller: Pick<DeveloperCaller, "developerId" | "orgId">): Promise<DeveloperTaskRecord> {
+  const owner = tryEffectiveTaskOwner(task);
+  const table = dependencies.developer?.signInTableName;
+  if (owner === undefined || owner.developerId === caller.developerId || task.orgId !== caller.orgId || table === undefined) return task;
+  const read = signInReader({ documentClient: dependencies.documentClient, signInTableName: table });
+  const readRecord = async (id: string) => await read({ pk: `DEVELOPER#${id}`, sk: "META" }) as DeveloperRecord | undefined;
+  if (await mergeSurvivor(readRecord, owner.developerId) !== caller.developerId) return task;
+  const hold = await handOnMergedTask({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, signInStore: { getDeveloper: readRecord } },
+    { orgId: caller.orgId, taskId: task.taskId, duplicateId: owner.developerId, survivorId: caller.developerId });
+  logSlackSeat({ event: "slack.merged_task_hand_on", outcome: hold });
+  return hold === "handed" ? (await getItem<DeveloperTaskRecord>(dependencies, taskKey(task.taskId))) ?? task : task;
+}
+
+const logSlackSeat = (fields: Record<string, unknown>): void => { console.log(JSON.stringify({ component: "broker", ...fields })); };
 
 /** Why a Slack account is refused when it belongs to no member (never the Slack ID or any account ID). */
 export const SLACK_ACCOUNT_NOT_LINKED_MESSAGE = "this Slack account is not a member of the company this Slack workspace is connected to; ask a Rovara admin to add you, or sign in to Rovara and link your Slack account, then try again";
