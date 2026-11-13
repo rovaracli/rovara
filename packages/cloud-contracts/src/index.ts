@@ -8,6 +8,7 @@ export * from "./developer-tasks-node.js";
 export * from "./task-workflow-node.js";
 export * from "./task-workflow-revise.js";
 export * from "./task-workflow-design-review.js";
+export * from "./task-flow-tier.js";
 export * from "./workflow-autofix.js";
 export * from "./rovara-code.js";
 export * from "./rovara-code-node.js";
