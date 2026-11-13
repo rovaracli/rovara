@@ -1,6 +1,3 @@
-// CLOUD COPY of Code's `packages/contracts/src/never-commit.ts` (TE-B9, public PR #510 on code/next). Cloud's worker and CLI import Code's contracts from the vendored pin (`@rovara-code/contracts`), and the pin does not
-// carry this list yet, so they read it from here. The day the pin does, delete this file (and its export in index.ts) and import the three names from `@rovara-code/contracts`: tests/contract/worker-mirror-of-code.test.ts
-// fails then, and says so. A change to the list is made in Code first.
 // TE-B9 (O38): Rovara's own working files are never part of a customer's change, whatever the workspace layout (a repository at the workspace root, one folder down, a monorepo). This is the one list. The worker leaves
 // every listed path out of each `git add` (candidate snapshot, publication, pull request maintenance), takes a force-added one out of the index, and checks the commit about to be pushed before it goes (worker/src/never-commit-guard.ts).
 // The customer's own `.gitignore` is never edited: this is a safety net beside it, not a rule written into their repository.

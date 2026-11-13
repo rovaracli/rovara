@@ -19,6 +19,7 @@ export * from "./developer-tasks-node.js";
 export * from "./task-workflow-node.js";
 export * from "./task-workflow-revise.js";
 export * from "./task-workflow-design-review.js";
+export * from "./task-flow-tier.js";
 export * from "./design-review-state.js";
 export * from "./no-change-findings.js";
 export * from "./workflow-autofix.js";
@@ -222,7 +223,12 @@ export * from "./ports/index.js";
 export * from "./outcomes.js";
 
 // Proof and evidence (W4/W5): the evidence pack, decision cards, the test environment and service mocks.
+export * from "./check-kinds.js";
 export * from "./evidence.js";
+// TE-B9: the list of Rovara working files that are never committed.
+export * from "./never-commit.js";
+export * from "./evidence-inert.js";
+export * from "./evidence-render.js";
 export * from "./api-samples.js";
 export * from "./media-gate.js";
 
@@ -276,7 +282,18 @@ export * from "./catalog-trust.js";
 export * from "./owner-image-list.js";
 export * from "./owner-starter-images.js";
 export * from "./service-catalog-verify.js";
+// TE-F0a (M2): the model catcher foundation. Pure contracts and data with no callers yet; Rovara's own agent-model files (model-providers.ts, model-sources.ts, e2e-model-*.ts) are separate (DECISIONS 157).
+export * from "./model-catalog.js";
+export * from "./model-catalog-rows.js";
+// The unsigned parse (`parseModelCatalogBytes`) is deliberately NOT exported here: only `builtinModelCatalog()` may feed F1 and F2 until the rows are signed.
+export { MODEL_CATALOG_MAX_BYTES, modelCatalogDigest } from "./model-catalog-digest.js";
+export * from "./model-family-common.js";
+export * from "./model-family-gemini.js";
+export * from "./model-family-openai.js";
+export * from "./model-egress-block.js";
+export * from "./model-serve.js";
 export * from "./test-account.js";
+export * from "./test-account-model-hosts.js";
 export * from "./context-sources.js";
 export * from "./mcp-servers.js";
 
