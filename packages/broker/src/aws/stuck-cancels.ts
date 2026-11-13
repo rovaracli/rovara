@@ -1,5 +1,5 @@
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
-import { callbackSigningKeyConfigured, resolveKey, type KeyOrSource } from "./signing-key-secrets.js";
+import { callbackSigningKeyConfigured, legacyKey, resolveKey, type KeyOrSource } from "./signing-key-secrets.js";
 import { OrgIdSchema } from "@rovara-code/contracts";
 import { resolveSlackThreadKey } from "./slack-thread-key.js";
 // Issue 195: a cancel that never reaches the worker never holds a workspace for good. Stopping a
@@ -437,6 +437,7 @@ export function stuckCancelRetrier(
   callbackKey?: () => Promise<string>,
 ): StuckCancelDependencies["retryCancel"] {
   if (!callbackSigningKeyConfigured(environment)) return undefined;
-  const key = environment.CALLBACK_SIGNING_KEY;
+  // Secret first (signing-key-secrets.ts): a named environment's function never uses the variable.
+  const key = legacyKey(environment);
   return createCancelRetrier({ ...state, callbackSigningKey: key !== undefined && key.length > 0 ? key : (callbackKey ?? (() => Promise.reject(new Error("no callback signing key source")))) });
 }

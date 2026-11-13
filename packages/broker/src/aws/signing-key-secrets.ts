@@ -4,8 +4,8 @@
 //    signed with the previous key (the secret's AWSPREVIOUS version) still verifies, so in-flight callbacks are not cut off.
 //  - The erasure hash key (kind b) hashes values that are stored: erased people's names and aliases, Ask question hashes. It is never rotated here: a new value
 //    would orphan every stored hash, so rotating it needs a re-hash plan first.
-// Named environments read both secrets by the names the environment's name decides (@agentx/cloud-contracts derived-names.ts). The legacy production
-// install keeps its CALLBACK_SIGNING_KEY variable (its template is frozen), and that one value serves both kinds, exactly as before.
+// Named environments read both secrets by the names the environment's name decides (@agentx/cloud-contracts derived-names.ts), and ignore any CALLBACK_SIGNING_KEY
+// variable (secret first). The legacy production install keeps its CALLBACK_SIGNING_KEY variable (its template is frozen), and that one value serves both kinds, exactly as before.
 // Read once per Lambda execution environment (cold start, on the first request) and kept in memory; a failed read is not kept, so the next request tries
 // again. Fail closed: a missing, unreadable or short key refuses (throws a fixed message with the error's name only), never runs without a key.
 // Never logs or returns a key in an error.
@@ -37,8 +37,15 @@ function checkedKey(value: string | undefined, label: string): string {
   return value;
 }
 
-/** The legacy install's one key (its CALLBACK_SIGNING_KEY variable), or undefined where it has none (a named environment). */
-function legacyKey(env: Environment): string | undefined {
+/** Whether this function belongs to a named environment (AGENTX_ENV): its keys are its secrets, and only they. */
+export const isNamedEnvironment = (env: Environment): boolean => (env["AGENTX_ENV"] ?? "") !== "";
+
+/**
+ * The legacy install's one key (its CALLBACK_SIGNING_KEY variable), or undefined where it has none. SECRET FIRST: a function of a named environment (AGENTX_ENV set)
+ * never uses the variable, even if one is left over on it, because the secret is the key that rotates and a stale variable would keep signing with the old value.
+ */
+export function legacyKey(env: Environment): string | undefined {
+  if (isNamedEnvironment(env)) return undefined;
   const value = env["CALLBACK_SIGNING_KEY"];
   return value === undefined || value === "" ? undefined : checkedKey(value, "callback signing key");
 }

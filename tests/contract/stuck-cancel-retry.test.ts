@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   SLACK_CHANNEL, SLACK_TEAM, call, createBroker, ensureWorkspace, finishOperation, loadSlackBroker, markReady, registerSlackProject, serviceCall,
 } from "../support/slack-broker.js";
-import { FAILED_CANCEL_RELEASED_MESSAGE, STUCK_CANCEL_RETRY_MS, createCancelRetrier, sweepStuckCancels } from "../../packages/broker/src/aws/stuck-cancels.js";
+import { FAILED_CANCEL_RELEASED_MESSAGE, STUCK_CANCEL_RETRY_MS, createCancelRetrier, stuckCancelRetrier, sweepStuckCancels } from "../../packages/broker/src/aws/stuck-cancels.js";
 
 const SIGNING_KEY = "c".repeat(64);
 
@@ -64,6 +64,23 @@ describe("the stuck-cancel retry, in the reconciler (issue 195)", () => {
     const [body, signature] = capability.split(".");
     expect(signature).toBe(createHmac("sha256", SIGNING_KEY).update(body!).digest("base64url"));
     expect(JSON.parse(Buffer.from(body!, "base64url").toString())).toMatchObject({ operationId: cancelId, actions: ["artifacts", "events", "result"] });
+  });
+
+  it("secret first: a named environment signs with its secret, never with a leftover CALLBACK_SIGNING_KEY variable; the legacy install still signs with its variable", async () => {
+    const secretKey = "s".repeat(64);
+    const leftover = "l".repeat(64);
+    const signedWith = async (environment: Record<string, string | undefined>, source?: () => Promise<string>) => {
+      const { db, workspaceId, taskOperationId } = await stuckCancel();
+      const retrier = stuckCancelRetrier(environment, { client: db, tableName: "state" }, source)!;
+      const cancelId = (await retrier(workspaceId, taskOperationId) as { cancelOperationId: string }).cancelOperationId;
+      const outbox = db.find((item) => item.entityType === "OUTBOX" && item.operationId === cancelId)[0]!;
+      const [body, signature] = (outbox.invocation as { callbackCapability: string }).callbackCapability.split(".");
+      return [secretKey, leftover].filter((key) => createHmac("sha256", key).update(body!).digest("base64url") === signature);
+    };
+    expect(await signedWith({ AGENTX_ENV: "staging", CALLBACK_SIGNING_KEY: leftover }, async () => secretKey)).toEqual([secretKey]);
+    expect(await signedWith({ AGENTX_ENV: "staging" }, async () => secretKey)).toEqual([secretKey]);
+    // Positive control: with no AGENTX_ENV the variable is the key (the legacy install), and the secret source is not used.
+    expect(await signedWith({ CALLBACK_SIGNING_KEY: leftover }, async () => secretKey)).toEqual([leftover]);
   });
 
   it("queues nothing unless the reconciler recorded the retry first", async () => {
