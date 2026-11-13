@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { customDomainDeployPolicyArn, customDomainDeployPolicyName, customDomainStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
-import { GRANT_ACCOUNT, GRANT_CASES, deployRoleGrants, deployRolePolicies, grantContext, hostedAccessTemplate } from "../support/deploy-role-grants.js";
+import { GRANT_ACCOUNT, GRANT_CASES, deployRoleGrants, deployRolePolicies, grantContext, grantLines, hostedAccessTemplate } from "../support/deploy-role-grants.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -55,6 +55,19 @@ describe("the deploy role's effective grants are identical before and after the 
     // The two boundaries and this one: no other managed policy came with it.
     expect(Object.entries(json.Resources).filter(([, resource]) => resource.Type === "AWS::IAM::ManagedPolicy").map(([id]) => id).sort()).toEqual(["CustomDomainDeployPolicy", "DefaultPermissionsBoundary", "DeployRolePermissionsBoundary"]);
   }, 300_000);
+
+  it("review L1: a NotAction statement is in the grant set (as NotAction= lines), never dropped, and a statement with neither Action nor NotAction is refused", () => {
+    const deny = { Effect: "Deny", NotAction: ["iam:GetRole", "sts:GetCallerIdentity"], Resource: "*", Condition: { StringNotEquals: { "aws:RequestedRegion": "us-west-2" } } };
+    const lines = grantLines([{ Effect: "Allow", Action: ["s3:*"], Resource: "*" }, deny]);
+    expect(lines).toEqual([
+      "Allow s3:* * -",
+      'Deny NotAction=iam:GetRole * {"StringNotEquals":{"aws:RequestedRegion":"us-west-2"}}',
+      'Deny NotAction=sts:GetCallerIdentity * {"StringNotEquals":{"aws:RequestedRegion":"us-west-2"}}',
+    ]);
+    // Dropping the NotAction Deny changes the set, so a move that lost one would fail the equivalence above.
+    expect(grantLines([{ Effect: "Allow", Action: ["s3:*"], Resource: "*" }])).not.toEqual(lines);
+    expect(() => grantLines([{ Effect: "Allow", Resource: "*" }])).toThrow(/neither Action nor NotAction/u);
+  });
 
   it("customDomainStatements are the statements the inline policy had, Sids included, and serviceRoleStatements no longer adds them", () => {
     const scope = { env: "staging", partition: "aws", region: "us-west-2", account: GRANT_ACCOUNT, artifactBucketArn: "x", pullThroughPrefix: "x", cloudFormationRoleName: "x" };

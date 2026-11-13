@@ -9,7 +9,7 @@ import { evaluate, evaluateCondition, type CfnContext } from "./cfn-evaluate.js"
 
 type Resource = { Type: string; Condition?: string; Properties: Record<string, unknown> };
 export type AccessJson = { Conditions?: Record<string, unknown>; Resources: Record<string, Resource> };
-type Statement = { Effect: string; Action?: string | string[]; Resource?: unknown; NotResource?: unknown; Condition?: unknown };
+type Statement = { Effect: string; Action?: string | string[]; NotAction?: string | string[]; Resource?: unknown; NotResource?: unknown; Condition?: unknown };
 
 export const GRANT_ACCOUNT = "123456789012";
 export const GRANT_REGION = "ap-southeast-2";
@@ -54,17 +54,25 @@ export function deployRolePolicies(json: AccessJson, context: CfnContext): Array
   return [...inline, ...managed];
 }
 
-/** The deploy role's grants as sorted "Effect action Resource|NotResource condition" lines. */
-export function deployRoleGrants(json: AccessJson, env: string, parameters: { CustomDomainName: string; CustomDomainHostedZoneId: string }): string[] {
+/**
+ * Statements as sorted "Effect action Resource|NotResource condition" lines. A NotAction statement gives "Effect NotAction=<action> ..." lines, so it is never dropped from the set
+ * (review L1); a statement with neither Action nor NotAction is refused.
+ */
+export function grantLines(statements: readonly Statement[]): string[] {
   const out = new Set<string>();
-  for (const { statements } of deployRolePolicies(json, grantContext(json, env, parameters))) {
-    for (const statement of statements) {
-      const condition = statement.Condition === undefined ? "-" : text(statement.Condition);
-      const targets = statement.NotResource !== undefined ? list(statement.NotResource).map((entry) => `NotResource=${text(entry)}`) : list(statement.Resource).map((entry) => text(entry));
-      for (const action of list(statement.Action)) for (const target of targets) out.add(`${statement.Effect} ${String(action)} ${target} ${condition}`);
-    }
+  for (const statement of statements) {
+    const condition = statement.Condition === undefined ? "-" : text(statement.Condition);
+    const targets = statement.NotResource !== undefined ? list(statement.NotResource).map((entry) => `NotResource=${text(entry)}`) : list(statement.Resource).map((entry) => text(entry));
+    if (statement.Action === undefined && statement.NotAction === undefined) throw new Error(`a statement with neither Action nor NotAction: ${JSON.stringify(statement)}`);
+    const actions = [...list(statement.Action).map(String), ...list(statement.NotAction).map((entry) => `NotAction=${String(entry)}`)];
+    for (const action of actions) for (const target of targets) out.add(`${statement.Effect} ${action} ${target} ${condition}`);
   }
   return [...out].sort();
+}
+
+/** The deploy role's grants (every policy it holds for these parameters) as grantLines. */
+export function deployRoleGrants(json: AccessJson, env: string, parameters: { CustomDomainName: string; CustomDomainHostedZoneId: string }): string[] {
+  return grantLines(deployRolePolicies(json, grantContext(json, env, parameters)).flatMap(({ statements }) => statements));
 }
 
 /** The cases the equivalence fixture was recorded for: the size test's two custom-domain cases, and no custom domain. */

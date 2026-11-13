@@ -99,7 +99,15 @@ created only while a custom domain is set. The statements are the same; only whe
 policy was close to IAM's 10,240-character limit. One access stack update removes the inline statements and creates and
 attaches the managed policy. The access stack deploys first and alone, so no other stack deploys during the swap. With a
 custom domain set, whoever deploys the access stack needs `iam:CreatePolicy` on that policy and `iam:AttachRolePolicy` on
-`agentx-<env>-cloudformation`.
+`agentx-<env>-cloudformation`. Removing the custom domain, or rolling back to a release before 0.5.18 while one is set,
+deletes the policy, so that deploy needs `iam:DetachRolePolicy` on `agentx-<env>-cloudformation` and `iam:DeletePolicy` and
+`iam:DeletePolicyVersion` on `arn:<partition>:iam::<account>:policy/agentx/<env>/agentx-<env>--custom-domain-deploy`.
+
+A self-hosted install deployed from an export bundle: roll back from 0.5.18 with the 0.5.18 bundle's
+`policies/access-deployer.json`, not the 0.5.17 one. Only the 0.5.18 deployer policy names the custom domain's policy. With
+the 0.5.17 one, CloudFormation cannot delete `agentx-<env>--custom-domain-deploy` during the rollback and leaves it behind.
+A later upgrade to 0.5.18 then fails with "already exists". If that has happened, delete the left-behind policy (detach it from
+`agentx-<env>-cloudformation` first), then upgrade.
 
 It prints the release notes, then deploys each stack in turn. For each stack it shows the change
 set (or, for a cdk environment, `cdk diff`), lists IAM changes on their own, and asks before
