@@ -270,6 +270,8 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // 2026-11-12 (chore/0515-drop-callback-key-param, decision 123 folds the next release into 0.5.15): the CallbackSigningKey parameter is dropped from the named control-plane snapshot (nothing else
 // moved), and the CLI stops passing it (tests/contract/callback-key-param-upgrade.test.ts). The legacy install's snapshot is not touched: its frozen template keeps the parameter and its variable.
 // No other snapshot moved.
+// 2026-11-12 (feat/0516-tsl-worker-selftest, M1): the agentx-staging-control-plane snapshot was re-recorded for one added statement in the session steps function's role: ssm:GetParameter on exactly
+// parameter/agentx/staging/tsl-selftest (the operator's switch for the TS-L worker self-test). Staging only; tests/contract/tsl-selftest-grant.test.ts holds that no other environment has it.
 describe("named environment templates", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   for (const stack of stacks) {

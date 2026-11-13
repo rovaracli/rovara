@@ -454,6 +454,9 @@ describe("the named TEST proof-only installation gate", () => {
     // TeamRecordKeywordIndex with its packed setting `tw`. All of it exists only with the Team record built, which none of the templates this test pins builds, so NO digest moved: checked first (the infra file put back to the branch's
     // previous version) and again with the change: this test, named-templates and legacy-templates pass on the same pins both times. The committed list of the resources the record switch adds
     // (tests/fixtures/team-record-switch-resources.json) shows exactly the eight new ids. Legacy did not move.
+    // 2026-11-12 (0.5.16, feat/0516-tsl-worker-selftest, M1): ONLY the foreign (staging) digests were retaken, from the values the test reports, after ONE intended change: the session steps function's role gains
+    // ssm:GetParameter on exactly parameter/agentx/staging/tsl-selftest (the operator's switch for the TS-L worker self-test; infra/lib/session-lifecycle.ts, `naming.env === "staging"` only). The named
+    // (agentxlivetest123) and legacy digests did not move, which is the point of the staging-only grant; the named-templates snapshot shows exactly that one statement added.
     const digestCases = [
       {
         label: "named",
@@ -464,8 +467,8 @@ describe("the named TEST proof-only installation gate", () => {
       {
         label: "foreign",
         template: foreign,
-        withRoute: "b78fff34584a4becb845ebeaee90030a83c11536e0d8467ea5fa24ec1e46a104",
-        withoutRoute: "b05b7d04387318269a6272e161f176fb612635cf2eb02983aba4fa2769ee1dd6",
+        withRoute: "128880361b5745a4b0894d29a85ab848b6cea0ee2dc80c9eac48f3688ff9a362",
+        withoutRoute: "7b63b742daedf36ba88e77c83bddb9177766e63d0b9c77ced58c28f9aa338e66",
       },
       {
         label: "legacy",

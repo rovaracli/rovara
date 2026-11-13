@@ -124,6 +124,28 @@ describe("session steps", () => {
       expect(gunzipSync(Buffer.from((await launch(on.handler)).userData, "base64")).toString("utf8")).toContain("export AGENTX_PRIVATE_ADDRESSES='10.20.0.15:443'");
     });
 
+    // M1: the staging-only TS-L self-test switch. The launch carries AGENTX_TSL_SELFTEST=1 only when the operator's parameter is on, for a named environment, with the staging prefix; the reader is not even asked otherwise.
+    it("carries the TS-L self-test switch only when it is on, for a named staging launch", async () => {
+      const userData = async (overrides: Partial<SessionStepsDependencies>) => gunzipSync(Buffer.from((await launch(setup(undefined, { modelProxyRequired: true, ...overrides }, named(proxyUrl)).handler)).userData, "base64")).toString("utf8");
+      const asked = vi.fn(async () => true);
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", tslSelftestOn: asked })).toContain("\nexport AGENTX_TSL_SELFTEST='1'\n");
+      expect(asked).toHaveBeenCalledTimes(1);
+      // With an internal address list too.
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", tslSelftestOn: async () => true, privateAddresses: async () => listed(["10.20.0.15:443"]) })).toMatch(/export AGENTX_PRIVATE_ADDRESSES='10\.20\.0\.15:443'\nexport AGENTX_TSL_SELFTEST='1'\n/);
+      // Off, no reader, a reader that fails, and another environment's prefix: nothing is carried.
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", tslSelftestOn: async () => false })).not.toContain("AGENTX_TSL_SELFTEST");
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/" })).not.toContain("AGENTX_TSL_SELFTEST");
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", tslSelftestOn: async () => { throw new Error("boom"); } })).not.toContain("AGENTX_TSL_SELFTEST");
+      expect(await userData({ workerSettingsPrefix: "/agentx/production/", tslSelftestOn: async () => true })).not.toContain("AGENTX_TSL_SELFTEST");
+      // A named launch with no prefix given carries nothing either.
+      expect(await userData({ tslSelftestOn: async () => true })).not.toContain("AGENTX_TSL_SELFTEST");
+      // The legacy launch never reads it.
+      const never = vi.fn(async () => true);
+      const legacy = setup(undefined, { workerSettingsPrefix: "/agentx/staging/", tslSelftestOn: never });
+      expect(gunzipSync(Buffer.from((await launch(legacy.handler)).userData, "base64")).toString("utf8")).not.toContain("AGENTX_TSL_SELFTEST");
+      expect(never).not.toHaveBeenCalled();
+    });
+
     // Review L2: the launch records the revision its worker read, before it returns the user data; a launch with nothing open records that; a failed record fails the launch; the legacy launch records nothing.
     it("records the list revision a named launch read (or that nothing is open) before returning its user data", async () => {
       const calls: string[] = [];

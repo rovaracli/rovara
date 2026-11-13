@@ -121,6 +121,14 @@ export class SessionLifecycle extends Construct {
         resources: [`arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}private-addresses-off`],
       }));
     }
+    // M1 (owner decision): the operator's switch for the TS-L worker self-test (session-steps.ts TSL_SELFTEST_PARAMETER). The STAGING install only, read only, one exact parameter; the operator creates it when needed.
+    // Every other environment's template stays as it was, and its function never asks for it.
+    if (naming.env === "staging") {
+      this.steps.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["ssm:GetParameter"],
+        resources: [`arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}tsl-selftest`],
+      }));
+    }
     this.steps.addToRolePolicy(new iam.PolicyStatement({ actions: ["kms:GetPublicKey"], resources: [props.invokeSigningKey.keyArn] }));
 
     const definitionProps = {

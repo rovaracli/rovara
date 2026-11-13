@@ -253,10 +253,13 @@ describe("condition 1: off by default, staging only, and only on a build and an 
     const gate = /^tsl_selftest_gate\(\) \{[\s\S]*?^\}$/mu.exec(stage2)?.[0] ?? "";
     expect(gate).toContain("AGENTX_TSL_SELFTEST");
     expect(gate).not.toMatch(/aws |ssm|cat |curl/u);
-    // Nothing else in the repository's launch (control plane, broker, boot configuration) sets it (the M1 owner decision: packages/worker/ec2/README.md).
-    for (const file of ["../../infra/lib/control-plane.ts", "../../infra/lib/worker-settings.ts", "../../packages/broker/src/aws/session-steps.ts", "../../packages/broker/src/aws/private-address-launch.ts"]) {
+    // Only one place in the repository's launch sets it (the M1 owner decision: packages/worker/ec2/README.md): the Cloud-side user data helper, staging prefix and operator switch only. Nothing else names it.
+    for (const file of ["../../infra/lib/control-plane.ts", "../../infra/lib/worker-settings.ts", "../../infra/lib/session-lifecycle.ts", "../../packages/broker/src/aws/session-steps.ts"]) {
       expect(readFileSync(new URL(file, import.meta.url), "utf8"), file).not.toContain("AGENTX_TSL_SELFTEST");
     }
+    const helper = readFileSync(new URL("../../packages/broker/src/aws/private-address-launch.ts", import.meta.url), "utf8");
+    expect(helper.match(/AGENTX_TSL_SELFTEST/gu)).toHaveLength(1);
+    expect(helper).toContain('TSL_SELFTEST_ALLOWED_PREFIX = "/agentx/staging/"');
   });
 });
 

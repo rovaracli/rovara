@@ -102,9 +102,20 @@ Docker's data root is on the workspace volume, so a self-test object that cannot
 no session claims), so the recovery is the existing close path: close that workspace (its machine and volume are deleted) and start a new one; its volume is fresh. Nothing on a staging worker may be cleared by hand (no SSM, no key pair).
 A person with a shell on a purpose-launched host can instead remove what carries the labels `rovara.tsl-selftest=1` and `rovara.run-network.workspace=7e57c4ec7e57c4ec` (containers, networks, volumes) and start again.
 
-### How a staging launch would turn it on (M1, an owner decision; nothing here sets it)
+### How a staging launch turns it on (M1, an owner decision, 2026-11-12)
 
-`AGENTX_TSL_SELFTEST` is a launch field that no launch carries today, so the self-test is off everywhere. To switch it on for staging only, without touching the vendored (read-only) boot configuration: add a Cloud-side helper beside
-`workerUserDataWithPrivateAddresses` (`packages/broker/src/aws/private-address-launch.ts`) that appends `export AGENTX_TSL_SELFTEST='1'` after the rendered header, and only when the launch is for a named environment whose settings prefix is
-`/agentx/staging/`; and gate it on an operator switch, the SSM parameter `<WORKER_SETTINGS_PREFIX>tsl-selftest` (absent means off; only the exact value `true` turns it on), read in `session-steps.ts` next to `readPrivateAddressesOff`. That
-adds one SSM parameter name under the prefix the broker already reads (check the broker role's read grant covers it) and no IAM for workers. It is a new launch interface, so it needs the owner's go and its own release item.
+`AGENTX_TSL_SELFTEST` is a launch field, and only a staging launch whose operator switch is on carries it; everywhere else the self-test is off. The vendored (read-only) boot configuration is not touched:
+`workerUserDataWithPrivateAddresses` (`packages/broker/src/aws/private-address-launch.ts`) appends `export AGENTX_TSL_SELFTEST='1'` after the rendered header, beside the private address exports (with or without a list; with neither
+the user data is byte for byte what it was). It does so only when ALL hold:
+
+- the launch is for a named environment;
+- the install's worker settings prefix (`WORKER_SETTINGS_PREFIX`) is exactly `/agentx/staging/`;
+- the operator's SSM parameter `<WORKER_SETTINGS_PREFIX>tsl-selftest` (`/agentx/staging/tsl-selftest`) holds exactly `true`. An absent parameter means off; `false`, any other value and a failed read all mean off (fail closed). The odd
+  cases log the event `tsl_selftest.switch_unreadable` with the error's name or the word `value`, never the value.
+
+`session-steps.ts` reads the parameter (`readTslSelftestOn`, beside `readPrivateAddressesOff`) at each named-environment launch, and only on the staging install: the dependency is wired nowhere else, so no other environment asks for it.
+The steps function's role has one added statement for it, in `infra/lib/session-lifecycle.ts`, only when the environment is `staging`: `ssm:GetParameter` on exactly that one parameter. No other environment's template changes, and
+workers get no IAM. Nothing creates the parameter: it is off until an operator creates it with the value `true` (and off again when it is deleted or set to anything else). Launches that already happened keep what they were given.
+
+This is the switch only. The boot gate (`tsl_selftest_gate` in `boot-stage2.sh`) still refuses unless the environment name cut from the log group is `staging`, the worker image's build flavor is `staging`, and the registry account of the
+worker image and the instance's own account are both the staging account; a launch that carries the variable anywhere else records `refused` and runs nothing.
