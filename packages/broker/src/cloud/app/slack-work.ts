@@ -26,7 +26,7 @@ export interface DecideOnGate {
   decide(request: {
     companyId: OrgId; kind: string; subjectId: string; requestId: string; outcome: "approve" | "reject" | "request_changes";
     seen: { revision: number; artifactDigest: string };
-    credentials: Array<{ method: string; token: string; claimedAccount: { provider: string; tenant: string; accountId: string } }>; reason?: string | undefined;
+    credentials: Array<{ method: string; token: string; claimedAccount: { provider: string; tenant: string; accountId: string } }>; reason?: string;
   }): Promise<{ status: "refused"; reason: string } | { status: string }>;
 }
 
@@ -66,7 +66,7 @@ export function createCloudChannelWork(deps: CloudChannelWorkDeps): ChannelWork 
       if (outcome === undefined || (await deps.principalOf(orgId, personId)) === undefined) return { status: "refused" as const, reason: "invalid" };
       const result = await deps.gate.decide({
         companyId: orgId, kind: card.subject.type, subjectId: card.subject.id, requestId: card.requestId, outcome, seen: { revision: card.revision, artifactDigest: card.artifactDigest },
-        credentials: [{ method: CHAT_SLACK_METHOD, token: decision.eventId, claimedAccount: { provider: decision.actor.channel, tenant: decision.actor.tenant, accountId: decision.actor.userId } }], reason: decision.reason,
+        credentials: [{ method: CHAT_SLACK_METHOD, token: decision.eventId, claimedAccount: { provider: decision.actor.channel, tenant: decision.actor.tenant, accountId: decision.actor.userId } }], ...(decision.reason === undefined ? {} : { reason: decision.reason }),
       });
       return result.status === "refused" ? { status: "refused" as const, reason: (result as { reason: string }).reason } : { status: "decided" as const };
     },

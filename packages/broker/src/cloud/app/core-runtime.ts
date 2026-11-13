@@ -9,7 +9,7 @@
 // supplies; `serviceGaps` names the ones missing so the switch cannot be turned on for an area whose service is not wired.
 import { RepositoryGrantService } from "@rovara-code/broker";
 import { createStoreProjectSource, createTaskFlowFromRegistry, type RegistryTaskFlowOptions, type StartExtras, type StartExtrasInput, type TaskAccess, type TaskFlow } from "@rovara-code/broker/core/task-flow";
-import type { AdapterRegistry, OrgId } from "@rovara-code/contracts";
+import type { AdapterRegistry, ChannelInboundSink, OrgId, SlackRequestMessage } from "@rovara-code/contracts";
 import { stampForNewTask, stampItem } from "./engine-stamp.js";
 import type { CoreArea, CoreEngineFlags } from "./flags.js";
 import { createCloudStepModels, type CloudModelFacts } from "./model-mapping.js";
@@ -31,10 +31,18 @@ export const CORE_SERVICES = {
 /** The required services (above) and the optional ones: a runtime without an optional one skips its job (`service_not_wired`), and the switch is never refused for it. */
 export type CoreServiceName = keyof typeof CORE_SERVICES | "automation-stop";
 
+/** What reaches the core from outside, per company (S3 item 4): the intake of Cloud's Slack request queue, as the channel sink takes it. */
+export interface CoreInbound {
+  slack?: (message: SlackRequestMessage) => Promise<void>;
+  /** The Slack channel sink itself (a message, and a card's decision pressed in Slack); `slack` is its message intake. */
+  slackSink?: ChannelInboundSink;
+}
+
 export interface CoreRuntime {
   companyId: OrgId;
   flow: TaskFlow;
   services: Partial<Record<CoreServiceName, CoreService>>;
+  inbound: CoreInbound;
 }
 
 export interface CoreRuntimeOptions {
@@ -53,6 +61,8 @@ export interface CoreRuntimeOptions {
   flowOptions?: Partial<RegistryTaskFlowOptions>;
   /** The services beyond the flow, built for this company. */
   services?: (flow: TaskFlow) => Partial<Record<CoreServiceName, CoreService>>;
+  /** What reaches the core from outside, built for this company's flow (the Slack intake). */
+  inbound?: (flow: TaskFlow) => CoreInbound;
 }
 
 export function createCoreRuntime(options: CoreRuntimeOptions): CoreRuntime {
@@ -76,7 +86,7 @@ export function createCoreRuntime(options: CoreRuntimeOptions): CoreRuntime {
     log: options.log,
     startExtras,
   });
-  return { companyId, flow, services: options.services?.(flow) ?? {} };
+  return { companyId, flow, services: options.services?.(flow) ?? {}, inbound: options.inbound?.(flow) ?? {} };
 }
 
 /** The services an area needs that this runtime lacks. */
