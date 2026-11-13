@@ -133,9 +133,15 @@ a terminal no lock is taken over, not your own and not a stale one someone else 
 are all read from the environment, and nothing is asked again. If a release drops a `config` key,
 `upgrade` names it before deploying, and says nothing replaces it.
 
-**Never back.** `upgrade` refuses a release older than the one the environment runs, naming both,
-because a newer release may have written data an older one cannot read. The same release is fine
-(a re-run). It also refuses every prerelease (such as `1.4.0-rc.1`).
+**Never back, unless you say so.** `upgrade` refuses a release older than the one the environment
+runs, naming both, because a newer release may have written data an older one cannot read. The same
+release is fine (a re-run). It also refuses every prerelease (such as `1.4.0-rc.1`). To move back on
+purpose, name the release with `--rollback-to <x.y.z>` instead of `--to` (on the cdk engine, with
+`--source <checkout of v<x.y.z>>`). It is refused unless that release is older than the recorded one,
+and refused below a floor a newer release declared (one that wrote data older releases cannot read).
+Every change is shown and confirmed exactly as for an upgrade, `--yes` works the same, the data guard
+still stops on a deleted table unless you name it with `--allow-replace`, and the settings then record
+the release you rolled back to. See "Rolling a release back" in [releases.md](releases.md).
 
 **The operator role and the access stack.** The operator role cannot change the access stack.
 Under it, `upgrade` compares the deployed access template with the release's. If they are the

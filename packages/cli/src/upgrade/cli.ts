@@ -114,8 +114,9 @@ const collect = (value: string, previous: string[]) => [...previous, value];
 export function registerUpgradeCommand(program: Command, context: UpgradeCommandContext): void {
   program
     .command("upgrade")
-    .description("upgrade an environment to a newer release: shows the release notes and every change, stops on a data replacement unless you name it, then runs doctor (operator role; the cdk engine needs admin credentials)")
+    .description("upgrade an environment to a newer release (or, with --rollback-to, move it back to an older one on purpose): shows the release notes and every change, stops on a data replacement unless you name it, then runs doctor (operator role; the cdk engine needs admin credentials)")
     .option("--to <version>", "the release to upgrade to; default: this agentx's own release, or for an agentx built from source upgrading a cdk environment, the --source tag")
+    .option("--rollback-to <version>", "move the environment back to this older release on purpose (undo = redeploy the previous release): refused for a release that is not older than the recorded one, or below a floor a newer release declared; every change is shown and confirmed as for an upgrade, and --yes works the same; on the cdk engine pass --source <checkout of its tag>; instead of --to")
     .option("--release <dir>", "a release directory (agentx release build output) instead of downloading one")
     .option("--bundle <dir>", "a signed release bundle (Enterprise): its signature and every hash are checked before anything changes, a restore point is recorded, its images are loaded into your registry; instead of --release and --to")
     .option("--approved-bundle-sha256 <hex>", "with --bundle: the bundle id (SHA-256 of bundle.json) your team approved; any other bundle is refused")
@@ -134,13 +135,13 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .option("--allow-legacy-http-removal", "remove the model proxy's legacy plain-http listeners although worker instances launched before its https address was published still run", false)
     .option("--no-reserved-concurrency", "the cdk engine only: deploy with no Lambda reserved concurrency, for an AWS account whose Lambda concurrency limit is too low to reserve any (a new account's limit of 10); keep it on in production")
     .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
-    .action(async (options: { approveBuild: boolean; deployApproved?: string; bundle?: string; approvedBundleSha256?: string; bundlePublicKey: string[]; to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; embedderImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean; allowTlsRemoval: boolean; allowLegacyHttpRemoval: boolean }, command: Command) => {
+    .action(async (options: { approveBuild: boolean; deployApproved?: string; bundle?: string; approvedBundleSha256?: string; bundlePublicKey: string[]; to?: string; rollbackTo?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; embedderImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean; allowTlsRemoval: boolean; allowLegacyHttpRemoval: boolean }, command: Command) => {
       const globals = command.optsWithGlobals<{ env: string; json: boolean; configDir: string }>();
       const overrides = context.overrides ?? {};
       const aws = options.region === undefined ? {} : { region: options.region };
       if (options.deployApproved !== undefined) {
         // The operator's whole path: a bundle id to the customer's deployer. No release, bundle, source or setting of the operator's choosing is accepted beside it.
-        if (options.approveBuild || options.bundle !== undefined || options.to !== undefined || options.release !== undefined || options.source !== undefined || options.export !== undefined || options.approvedBundleSha256 !== undefined || options.workerImage !== undefined || options.slackImage !== undefined || options.embedderImage !== undefined || options.bootStage2Sha256 !== undefined) {
+        if (options.approveBuild || options.bundle !== undefined || options.to !== undefined || options.rollbackTo !== undefined || options.release !== undefined || options.source !== undefined || options.export !== undefined || options.approvedBundleSha256 !== undefined || options.workerImage !== undefined || options.slackImage !== undefined || options.embedderImage !== undefined || options.bootStage2Sha256 !== undefined) {
           throw agentXError("CONFIG_INVALID", "--deploy-approved takes a bundle id and nothing else");
         }
         const result = await startApprovedDeployment({ env: globals.env, bundleId: options.deployApproved, invoker: context.deployerInvoker ?? lambdaInvoker(new LambdaClient(aws)), write: (line) => { context.stderr.write(`${line}\n`); } });
@@ -210,6 +211,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         cliVersion: "cliVersion" in overrides ? overrides.cliVersion : RELEASE_VERSION,
         modelProxyTlsState: overrides.modelProxyTlsState ?? awsModelProxyTlsState({ ssm: new SSMClient(aws), ec2: new EC2Client(aws) }),
         dns: overrides.dns ?? systemDnsLookups,
+        ...(overrides.rollbackFloors === undefined ? {} : { rollbackFloors: overrides.rollbackFloors }),
       };
       const images = options.workerImage === undefined && options.slackImage === undefined && options.embedderImage === undefined && options.bootStage2Sha256 === undefined ? undefined : {
         ...(options.workerImage === undefined ? {} : { worker: options.workerImage }), ...(options.slackImage === undefined ? {} : { slack: options.slackImage }), ...(options.embedderImage === undefined ? {} : { embedder: options.embedderImage }),
@@ -218,7 +220,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       const result = await runUpgrade({
         env: globals.env, yes: options.yes, allowReplace: options.allowReplace,
         ...(options.bundle === undefined ? {} : { bundleDir: options.bundle }), ...(options.approveBuild ? { approveBuild: true } : {}), ...(options.approvedBundleSha256 === undefined ? {} : { approvedBundleSha256: options.approvedBundleSha256 }),
-        ...(options.to === undefined ? {} : { to: options.to }), ...(options.release === undefined ? {} : { releaseDir: options.release }),
+        ...(options.to === undefined ? {} : { to: options.to }), ...(options.rollbackTo === undefined ? {} : { rollbackTo: options.rollbackTo }), ...(options.release === undefined ? {} : { releaseDir: options.release }),
         ...(options.source === undefined ? {} : { source: options.source }), ...(options.export === undefined ? {} : { exportDir: options.export }),
         ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
         ...(options.allowTlsRemoval ? { allowTlsRemoval: true } : {}), ...(options.allowLegacyHttpRemoval ? { allowLegacyHttpRemoval: true } : {}),
@@ -226,7 +228,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       }, deps);
       context.stdout.write(globals.json ? formatSuccess(result, true) : result.exported !== undefined
         ? `Wrote the upgrade of ${result.env} to ${result.to} to ${result.exported}; give it to your platform team.\n`
-        : `Upgraded ${result.env} from ${result.from} to ${result.to}.\n`);
+        : `${result.rolledBack === true ? "Rolled back" : "Upgraded"} ${result.env} from ${result.from} to ${result.to}.\n`);
     });
   const bundleCommand = program.command("bundle").description("approve or withdraw a signed release bundle for the Rovara operator to deploy (run by your own administrators)");
   bundleCommand

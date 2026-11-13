@@ -17,6 +17,7 @@ import { agentXError } from "@rovara-code/contracts";
 import { writeCustomDomain } from "../../packages/cli/src/environments/custom-domain.js";
 import { accessChanged, runUpgrade, type UpgradeDependencies } from "../../packages/cli/src/upgrade/run.js";
 import { DECISION_CARDS_ON_LINE, forcedOperatorValues } from "../../packages/cli/src/upgrade/forced-values.js";
+import { compareVersions, rollbackDirection, ROLLBACK_FLOORS, ROLLBACK_FLOORS_DECLARED_THROUGH, upgradeDirection, type RollbackFloor } from "../../packages/cli/src/upgrade/target.js";
 import { SETTINGS } from "../support/doctor-fakes.js";
 import { allStackOutputs, fakeGitHubApi, fakeRelease, memoryInitSecrets, scriptedDeployer, T0, TEST_PRIVATE_KEY } from "../support/init-fakes.js";
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
@@ -819,5 +820,161 @@ describe("owner decision, 0.5.9: the upgrade turns decision cards on, once", () 
     const file = JSON.parse(await readFile(join(out, "parameters", "control-plane.json"), "utf8")) as Array<{ ParameterKey: string; ParameterValue?: string; UsePreviousValue?: true }>;
     expect(file.filter((entry) => entry.ParameterKey === "DecisionCardsEnabled")).toEqual([{ ParameterKey: "DecisionCardsEnabled", ParameterValue: "1" }]);
     expect(h.lines).toContain(DECISION_CARDS_ON_LINE);
+  });
+});
+
+// Owner policy 2026-11-12, "undo = redeploy the previous release": `agentx upgrade --rollback-to` is the only way an environment moves back.
+describe("agentx upgrade --rollback-to", () => {
+  // The installed 1.2.3 is newer than the floors this source ships, so every test names the floors it means.
+  const known = { floors: [] as RollbackFloor[], declaredThrough: "1.2.3" };
+  const rollback = async (overrides: Parameters<typeof harness>[0] = {}) => harness({ rollbackFloors: known, loadRelease: async () => release("1.1.0"), ...overrides });
+
+  it("plain upgrade to an older release is still refused, names --rollback-to, and changes nothing", async () => {
+    const h = await rollback();
+    await expect(runUpgrade(options, h.deps)).rejects.toThrow("release 1.1.0 is older than 1.2.3, which environment staging runs; agentx upgrade never moves an environment back");
+    await expect(runUpgrade({ ...options, to: "1.1.0" }, h.deps)).rejects.toThrow("run agentx upgrade --rollback-to 1.1.0");
+    expect(h.prepared).toEqual([]);
+    expect(h.deployer.deployed).toEqual([]);
+    expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.2.3");
+  });
+
+  it("an explicit rollback loads that release, deploys every stack in upgrade order, records the rolled-back-to version and runs doctor", async () => {
+    const loaded: Array<{ releaseDir?: string; version?: string }> = [];
+    const h = await rollback({ loadRelease: async (input) => { loaded.push(input); return release("1.1.0"); } });
+    const result = await runUpgrade({ ...options, rollbackTo: "1.1.0" }, h.deps);
+    expect(loaded).toEqual([{ version: "1.1.0" }]);
+    expect(h.lines).toContain("Rolling back staging from 1.2.3 to 1.1.0 (templates engine): every change is shown and confirmed as for an upgrade");
+    expect(h.deployer.deployed).toEqual(["agentx-staging-access", "agentx-staging-foundation", "agentx-staging-identity", "agentx-staging-runtime", "agentx-staging-control-plane", "agentx-staging-slack"]);
+    expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.1.0");
+    expect(h.doctorRuns).toEqual(["staging"]);
+    expect(result).toMatchObject({ from: "1.2.3", to: "1.1.0", rolledBack: true });
+    expect(h.store.values.has(lockParameterName("staging"))).toBe(false);
+  });
+
+  it("shows each stack's changes and asks as an upgrade does: a declined stack stops the rollback and the recorded version stays", async () => {
+    const changes = { "agentx-staging-access": [{ action: "Modify", logicalId: "ArtifactBucket", type: "AWS::S3::Bucket", replacement: "False" }] };
+    const asked: string[] = [];
+    const h = await rollback({ changes, ask: async (question) => { asked.push(question); return "n"; } });
+    await expect(runUpgrade({ ...options, yes: false, rollbackTo: "1.1.0" }, h.deps)).rejects.toThrow("upgrade stopped before agentx-staging-access");
+    expect(asked).toEqual(["Apply these changes to agentx-staging-access? [y/N] "]);
+    expect(h.lines.join("\n")).toContain("ArtifactBucket");
+    expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.2.3");
+    // Without a terminal it needs --yes, as an upgrade does.
+    const quiet = await rollback({ isInteractive: () => false });
+    await expect(runUpgrade({ ...options, yes: false, rollbackTo: "1.1.0" }, quiet.deps)).rejects.toThrow("agentx upgrade needs --yes when stdin is not a terminal");
+    expect(quiet.deployer.deployed).toEqual([]);
+  });
+
+  it("stops on a data deletion under --yes unless it is named, as an upgrade does", async () => {
+    const changes = { "agentx-staging-control-plane": [{ action: "Remove", logicalId: "LessonsTable", type: "AWS::DynamoDB::Table", replacement: "False" }] };
+    const h = await rollback({ changes });
+    await expect(runUpgrade({ ...options, rollbackTo: "1.1.0" }, h.deps)).rejects.toThrow("LessonsTable");
+    expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.2.3");
+  });
+
+  it("refuses a target below a floor a newer release declared, before anything is prepared", async () => {
+    const floors = { floors: [{ release: "1.2.0", floor: "1.1.5", reason: "rewrote every lesson row in a new shape" }], declaredThrough: "1.2.3" };
+    const h = await rollback({ rollbackFloors: floors });
+    await expect(runUpgrade({ ...options, rollbackTo: "1.1.0" }, h.deps)).rejects.toThrow("release 1.2.0 rewrote every lesson row in a new shape, so no release older than 1.1.5 can run on environment staging's data; 1.1.0 is below that floor");
+    expect(h.prepared).toEqual([]);
+    expect(h.deployer.deployed).toEqual([]);
+    expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.2.3");
+    // At the floor itself the rollback goes ahead.
+    const atFloor = await rollback({ rollbackFloors: floors, loadRelease: async () => release("1.1.5") });
+    await runUpgrade({ ...options, rollbackTo: "1.1.5" }, atFloor.deps);
+    expect((await readEnvironmentSettings(atFloor.store, "staging"))?.version).toBe("1.1.5");
+  });
+
+  it("refuses when the installed release is newer than every floor this agentx knows", async () => {
+    const h = await rollback({ rollbackFloors: { floors: [], declaredThrough: "1.2.0" } });
+    await expect(runUpgrade({ ...options, rollbackTo: "1.1.0" }, h.deps)).rejects.toThrow("Run the rollback with release 1.2.3's agentx or a newer one");
+    expect(h.prepared).toEqual([]);
+  });
+
+  it("refuses the same or a newer release, a version that is not x.y.z, and --to or --export beside it", async () => {
+    await expect(runUpgrade({ ...options, rollbackTo: "1.2.3" }, (await rollback({ loadRelease: async () => release("1.2.3") })).deps)).rejects.toThrow("already runs 1.2.3; --rollback-to moves only to an older release");
+    await expect(runUpgrade({ ...options, rollbackTo: "1.3.0" }, (await rollback({ loadRelease: async () => release("1.3.0") })).deps)).rejects.toThrow("release 1.3.0 is newer than 1.2.3");
+    await expect(runUpgrade({ ...options, rollbackTo: "1.1" }, (await rollback()).deps)).rejects.toThrow("--rollback-to takes a published release version (x.y.z)");
+    await expect(runUpgrade({ ...options, rollbackTo: "1.1.0", to: "1.1.0" }, (await rollback()).deps)).rejects.toThrow("do not combine it with --to");
+    await expect(runUpgrade({ ...options, rollbackTo: "1.1.0", exportDir: "/out" }, (await rollback()).deps)).rejects.toThrow("cannot be combined with --export");
+    await expect(runUpgrade({ ...options, rollbackTo: "1.1.0", releaseDir: "/releases/1.0.0" }, (await rollback({ loadRelease: async () => release("1.0.0") })).deps)).rejects.toThrow("--rollback-to 1.1.0 does not match the release given, which is 1.0.0 (--release)");
+  });
+
+  it("re-checks under the environment lock: a rollback that is no longer older changes nothing", async () => {
+    const h = await rollback();
+    h.deps.loadRelease = async () => {
+      // Another command moves the environment to 1.0.0 while this one loads its release.
+      await writeEnvironmentSettings(h.store, { ...INSTALLED, version: "1.0.0" });
+      return release("1.1.0");
+    };
+    await expect(runUpgrade({ ...options, rollbackTo: "1.1.0" }, h.deps)).rejects.toThrow("release 1.1.0 is newer than 1.0.0");
+    expect(h.prepared).toEqual([]);
+    expect(h.store.values.has(lockParameterName("staging"))).toBe(false);
+  });
+
+  it("on the cdk engine, builds the target from the --source checkout (never a download) and checks its tag against --rollback-to", async () => {
+    const built: string[] = [];
+    const h = await rollback({ loadRelease: async () => { throw new Error("test setup: no download expected"); }, sourceRelease: async (input) => { built.push(input.source); return release("1.1.0"); } });
+    await writeEnvironmentSettings(h.store, { ...INSTALLED, engine: "cdk" });
+    await runUpgrade({ ...options, source: "/src-1.1.0", rollbackTo: "1.1.0" }, h.deps);
+    expect(built).toEqual(["/src-1.1.0"]);
+    expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.1.0");
+    const wrongTag = await rollback({ sourceRelease: async () => release("1.0.0") });
+    await writeEnvironmentSettings(wrongTag.store, { ...INSTALLED, engine: "cdk" });
+    await expect(runUpgrade({ ...options, source: "/src", rollbackTo: "1.1.0" }, wrongTag.deps)).rejects.toThrow("does not match the release given, which is 1.0.0 (the --source checkout's tag)");
+    expect(wrongTag.deployer.deployed).toEqual([]);
+    const noSource = await rollback();
+    await writeEnvironmentSettings(noSource.store, { ...INSTALLED, engine: "cdk" });
+    await expect(runUpgrade({ ...options, rollbackTo: "1.1.0" }, noSource.deps)).rejects.toThrow("pass --source <dir>");
+  });
+
+  it("the command takes --rollback-to and says it rolled back; --bundle and --deploy-approved refuse it", async () => {
+    const h = await rollback();
+    const out: string[] = [];
+    const err: string[] = [];
+    const io = { stdout: { write: (text: string) => out.push(text) }, stderr: { write: (text: string) => err.push(text) } };
+    const code = await executeCli(["--env", "staging", "upgrade", "--yes", "--rollback-to", "1.1.0"], { ...io, upgrade: withoutWrite(h.deps) });
+    expect(err.join("")).not.toContain("AgentX error");
+    expect(code).toBe(0);
+    expect(out.join("")).toBe("Rolled back staging from 1.2.3 to 1.1.0.\n");
+    expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.1.0");
+    await expect(runUpgrade({ ...options, rollbackTo: "1.1.0", bundleDir: "/bundle" }, (await rollback()).deps)).rejects.toThrow("do not combine it with --release, --to, --rollback-to");
+    err.length = 0;
+    expect(await executeCli(["--env", "staging", "upgrade", "--deploy-approved", "a".repeat(64), "--rollback-to", "1.1.0"], { ...io, upgrade: withoutWrite(h.deps) })).not.toBe(0);
+    expect(err.join("")).toContain("--deploy-approved takes a bundle id and nothing else");
+  });
+});
+
+describe("rollbackDirection (the direction guard)", () => {
+  const floors: RollbackFloor[] = [
+    { release: "0.6.0", floor: "0.5.20", reason: "moved approvals to a new table" },
+    { release: "0.7.0", floor: "0.6.5", reason: "re-keyed lesson rows" },
+  ];
+  it("allows only an older target above every floor of a release it rolls back past", () => {
+    expect(rollbackDirection("staging", "0.7.2", "0.7.0", floors, "0.7.2")).toBe("older");
+    expect(rollbackDirection("staging", "0.7.2", "0.6.5", floors, "0.7.2")).toBe("older");
+    expect(() => rollbackDirection("staging", "0.7.2", "0.6.4", floors, "0.7.2")).toThrow("release 0.7.0 re-keyed lesson rows, so no release older than 0.6.5");
+    // The highest floor wins when two releases are rolled back past.
+    expect(() => rollbackDirection("staging", "0.7.2", "0.5.19", floors, "0.7.2")).toThrow("no release older than 0.6.5");
+    // A floor declared by a release not yet installed does not apply.
+    expect(rollbackDirection("staging", "0.6.9", "0.6.0", floors, "0.7.2")).toBe("older");
+    expect(() => rollbackDirection("staging", "0.6.9", "0.5.19", floors, "0.7.2")).toThrow("release 0.6.0 moved approvals to a new table");
+  });
+  it("refuses the same and a newer target, an unversioned install, and an install newer than the declared floors", () => {
+    expect(() => rollbackDirection("staging", "0.5.17", "0.5.17", [], "0.5.17")).toThrow("already runs 0.5.17");
+    expect(() => rollbackDirection("staging", "0.5.16", "0.5.17", [], "0.5.17")).toThrow("is newer than 0.5.16");
+    expect(() => rollbackDirection("staging", "unversioned", "0.5.16", [], "0.5.17")).toThrow("not a release");
+    expect(() => rollbackDirection("staging", "0.5.18", "0.5.17", [], "0.5.17")).toThrow("newer than every release this agentx knows (through 0.5.17)");
+  });
+  it("this source's floors are declared through a release, and each floor is below the release that declares it", () => {
+    expect(ROLLBACK_FLOORS_DECLARED_THROUGH).toMatch(/^\d+\.\d+\.\d+$/);
+    for (const entry of ROLLBACK_FLOORS) expect(compareVersions(entry.floor, entry.release)).toBeLessThan(0);
+    // The 0.5.17 rollback (0.5.17 -> 0.5.16) runs with this agentx.
+    expect(rollbackDirection("staging", "0.5.17", "0.5.16")).toBe("older");
+  });
+  it("leaves the plain upgrade direction unchanged: same and newer only", () => {
+    expect(upgradeDirection("staging", "0.5.16", "0.5.17")).toBe("newer");
+    expect(upgradeDirection("staging", "0.5.17", "0.5.17")).toBe("same");
+    expect(() => upgradeDirection("staging", "0.5.17", "0.5.16")).toThrow("never moves an environment back");
   });
 });

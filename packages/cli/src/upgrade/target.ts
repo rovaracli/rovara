@@ -49,7 +49,48 @@ export function upgradeDirection(env: string, current: string, target: string): 
   const order = compareVersions(current, target);
   if (order === 0) return "same";
   if (order < 0) return "newer";
-  throw agentXError("CONFIG_INVALID", `release ${target} is older than ${current}, which environment ${env} runs; agentx upgrade never moves an environment back, because a newer release may have written data an older one cannot read. Upgrade to ${current} or later`);
+  throw agentXError("CONFIG_INVALID", `release ${target} is older than ${current}, which environment ${env} runs; agentx upgrade never moves an environment back, because a newer release may have written data an older one cannot read. Upgrade to ${current} or later, or, to move back on purpose, run agentx upgrade --rollback-to ${target}`);
+}
+
+/**
+ * Rollback floors (owner policy 2026-11-12: "undo = redeploy the previous release"; records are additive only and readers ship first).
+ * A release that breaks that policy, by writing data an older release cannot read, declares here the oldest release that can still run
+ * on its data. `agentx upgrade --rollback-to` refuses any target below the floor of every release it would roll back past.
+ * A release that keeps the policy adds nothing. Entries are never removed: a later agentx must still know an earlier release's floor.
+ */
+export interface RollbackFloor { /** The release that wrote the data. */ release: string; /** The oldest release that can run on that data. */ floor: string; /** What the release wrote, for the refusal. */ reason: string }
+
+export const ROLLBACK_FLOORS: readonly RollbackFloor[] = [];
+
+/**
+ * The newest release whose floor this agentx knows: this source's own release. Bump it in every release (the release checklist and
+ * docs/operations/rollback.md say so). A rollback from a newer installed release is refused, because that release may have declared a
+ * floor this agentx has never seen; run the rollback with the installed release's agentx (or a newer one) instead. Forgetting the bump
+ * only refuses, never allows.
+ */
+export const ROLLBACK_FLOORS_DECLARED_THROUGH = "0.5.17";
+
+/**
+ * `agentx upgrade --rollback-to`: the only way an environment moves back. The target must be older than the recorded version, no
+ * newer than any floor a release between them declared, and this agentx must know every such release.
+ */
+export function rollbackDirection(env: string, current: string, target: string, floors: readonly RollbackFloor[] = ROLLBACK_FLOORS, declaredThrough: string = ROLLBACK_FLOORS_DECLARED_THROUGH): "older" {
+  if (!RELEASE_VERSION_PATTERN.test(current)) {
+    throw agentXError("CONFIG_INVALID", `environment ${env}'s settings record version "${current}", not a release, so agentx upgrade --rollback-to cannot tell whether ${target} is older; nothing was changed`);
+  }
+  const order = compareVersions(current, target);
+  if (order === 0) throw agentXError("CONFIG_INVALID", `environment ${env} already runs ${target}; --rollback-to moves only to an older release. To finish an upgrade that stopped, run agentx upgrade without --rollback-to; nothing was changed`);
+  if (order < 0) throw agentXError("CONFIG_INVALID", `release ${target} is newer than ${current}, which environment ${env} runs; --rollback-to moves only to an older release. Run agentx upgrade --to ${target} instead; nothing was changed`);
+  if (compareVersions(current, declaredThrough) > 0) {
+    throw agentXError("CONFIG_INVALID", `environment ${env} runs ${current}, newer than every release this agentx knows (through ${declaredThrough}), so it cannot tell whether ${current} wrote data ${target} cannot read. Run the rollback with release ${current}'s agentx or a newer one (with --source <checkout of v${target}> on a cdk install); nothing was changed`);
+  }
+  const blocking = floors
+    .filter((entry) => compareVersions(entry.release, target) > 0 && compareVersions(entry.release, current) <= 0 && compareVersions(target, entry.floor) < 0)
+    .sort((a, b) => compareVersions(b.floor, a.floor))[0];
+  if (blocking !== undefined) {
+    throw agentXError("CONFIG_INVALID", `release ${blocking.release} ${blocking.reason}, so no release older than ${blocking.floor} can run on environment ${env}'s data; ${target} is below that floor. Roll back to ${blocking.floor} or later, or fix forward; nothing was changed`);
+  }
+  return "older";
 }
 
 /** Ruling F31, amended: like init, upgrade moves only to published releases, from --release <dir> too.
