@@ -21,7 +21,7 @@ const ROWS_CAUSE = [
   "(1) Cloud-only DEVTASK#<task>/OUTCOME_KEYS#<hash>: Cloud's track-record outcome hooks (packages/broker/src/rovara-code/outcome-hooks.ts) key a task's outcome when its pull request opens;",
   "the core has no track record (area 14/15, Cloud-only team record). Not a bug; the root wires the hook as an outbound-events or learning adapter when lessons move (X2).",
   "(2) Cloud-only DEVTASK#<task>/TASK_END (pr-merged): Cloud's task-end record (packages/broker/src/agents/task-end.ts:118, its end handlers: triggers, chains, agents) is written when the task ends;",
-  "the core calls its `taskEnded` seam only from close (vendor core/task-flow/close.ts:69), not when a merge completes the task. The root's side is built (cloud/rows/core-rows.ts coreTaskEndedHandler maps the seam",
+  "UPDATED for the 0.5.17 pin (public #502): the core now calls its `taskEnded` seam when a merge completes the task too, and the suite's core writes DEVTASK#<task>/TASK_END on merge; the row no longer differs in pr-merged. (Before the pin: the core called the seam only from close, vendor core/task-flow/close.ts:69.) The root's side is built (cloud/rows/core-rows.ts coreTaskEndedHandler maps the seam",
   "onto Cloud's onTaskEnded, tested in tests/unit/cloud-core-rows.test.ts); what stays open is Code's: the core must call the seam on MERGED/COMPLETE too (upstream), and the suite's core runs Code's local composition, which has no Cloud handler.",
   "(3) Core-only DEVTASK#<task>/CODE_MILESTONE#approved#<n>: the core's tracking pass announces the person's approval (\"Approved by maint. Ready to merge\", vendor core/merge/merge-tracking.ts:604-620);",
   "Cloud's same rule (packages/broker/src/rovara-code/merge-tracking.ts:716-734) did not announce it for the same review. The rule is identical; the inputs differ: Cloud counts an approval only",
@@ -38,18 +38,6 @@ const rowsEntries: KnownDifference[] = MERGE_SCENARIOS.map((scenario) => ({
 
 export const MERGE_DIFFERENCES: readonly KnownDifference[] = [
   ...rowsEntries,
-  {
-    scenario: "pr-merged", facet: "audit", only: ["pull_request.merged"],
-    cause: [
-      "BUG (core): a merged pull request leaves no audit event on the core. Cloud's webhook path stages `pull_request.merged` for each pull request a save moves to MERGED",
-      "(packages/broker/src/aws/github-webhooks.ts:380, builder packages/broker/src/audit/events.ts:154). The core records the merge through mergedStateItems (vendor core/merge/merged.ts:76) and",
-      "stages no audit event there (only pull_request.opened at core/build-step/publish.ts:234 and pull_request.merge_requested at core/merge/merge.ts:624). With the switch on, merges of core tasks would",
-      "be missing from the audit ledger. Proposed fix (Code upstream): in the merged save (merged.ts, the commit that moves a pull request to MERGED) add `deps.audit.stage({ action: \"pull_request.merged\",",
-      "eventId: `pull_request.merged:${repositoryKey}#${number}`, subject: { type: \"change_request\", id: `${repositoryKey}#${number}` }, actor: { type: \"system\" } })` once per newly merged pull request,",
-      "and add the name to A7's event map (Cloud type pull_request.merged).",
-    ].join(" "),
-    owner: "Code upstream (core/merge/merged.ts) + A7 event map; blocks the combined switch (audit chain completeness)",
-  },
   {
     scenario: "merge-base-drift-autofix", facet: "spend", only: ["admitted:autofix.base-merged"],
     cause: "The core asks Admission before the automatic recheck after a base merge (`autofix.base-merged`, vendor core/build-step/autofix.ts:35, 169); Cloud's path runs the same recheck through its own day budget, which the Cloud spend reader does not show as an admission. Same decision, different recording.",

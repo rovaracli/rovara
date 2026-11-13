@@ -4,7 +4,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { approvedFileKey, bundleApprovalKey, bundleTrustParameter, deployLockParameter, deployProgressParameter, installedBundleParameter, operatorAccessStateParameter, restorePointParameter } from "@agentx/cloud-contracts";
+import { approvedFileKey, bundleApprovalKey, bundleTrustParameter, deployLockParameter, deployProgressParameter, installedBundleParameter, operatorAccessStateParameter, releaseHighWaterParameter, restorePointParameter } from "@agentx/cloud-contracts";
 import { builtBundle, newTestKey, type BuiltBundle } from "../support/bundle-fixture.js";
 import { T0, World } from "../support/deployer-world.js";
 
@@ -236,6 +236,67 @@ describe("direction, restore point and the fixed stack set", () => {
     expect((await back.world.run({ bundleId: back.bundle.bundleSha256 })).status).toBe("done");
     const unversioned = await ready({ seed: { version: "unversioned" } });
     expect(await unversioned.world.run({ bundleId: unversioned.bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/not a release version/) });
+  });
+
+  // 0.5.17: the release high-water mark (the highest release the install ever ran or started to install) is raised by the deployer's own installs before
+  // the first change and never lowered, so the CLI's rollback floors (upgrade/target.ts) still apply after a deploy that stopped part way or a rollback.
+  it("raises the release high-water mark before the first change: to the bundle's version for an upgrade, kept for a rollback, never lowered", async () => {
+    const up = await ready();
+    expect((await up.world.run({ bundleId: up.bundle.bundleSha256 })).status).toBe("done");
+    expect(up.world.params.get(releaseHighWaterParameter("ent"))).toBe("1.4.0");
+    const writes = up.world.log.map((line, index) => [line, index] as const).filter(([line]) => line === `ssm.put ${releaseHighWaterParameter("ent")}`);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]![1]).toBeLessThan(up.world.log.findIndex((line) => line.startsWith("cfn.create")));
+    const back = await ready({ version: "1.0.0", approve: { rollback: true } });
+    expect((await back.world.run({ bundleId: back.bundle.bundleSha256 })).status).toBe("done");
+    expect(back.world.params.get(releaseHighWaterParameter("ent"))).toBe("1.2.3");
+    expect(JSON.parse(back.world.params.get("/agentx/ent/settings")!)).toMatchObject({ version: "1.0.0" });
+    const higher = await ready({ version: "1.0.0", approve: { rollback: true, rollbackFrom: { installedVersion: "1.2.3", highWater: "2.0.0" } } });
+    higher.world.params.set(releaseHighWaterParameter("ent"), "2.0.0");
+    expect((await higher.world.run({ bundleId: higher.bundle.bundleSha256 })).status).toBe("done");
+    expect(higher.world.params.get(releaseHighWaterParameter("ent"))).toBe("2.0.0");
+  });
+
+  it("writes the mark again when another writer lowered it, a bounded number of times, and changes nothing when it never holds", async () => {
+    const lowered = (world: World, times: number) => {
+      const set = world.params.set.bind(world.params);
+      let left = times;
+      world.params.set = (name: string, value: string) => (name === releaseHighWaterParameter("ent") && left-- > 0 ? set(name, "1.0.0") : set(name, value));
+    };
+    const once = await ready();
+    lowered(once.world, 1);
+    expect((await once.world.run({ bundleId: once.bundle.bundleSha256 })).status).toBe("done");
+    expect(once.world.params.get(releaseHighWaterParameter("ent"))).toBe("1.4.0");
+    const always = await ready();
+    lowered(always.world, 99);
+    expect(await always.world.run({ bundleId: always.bundle.bundleSha256 })).toMatchObject({ status: "failed", reason: expect.stringMatching(/high-water mark could not be written/) });
+    expect(always.world.log.some((line) => line.startsWith("cfn."))).toBe(false);
+  });
+
+  // Review M2: a rollback approval is checked against the floors for one install state; once the install moved, the old approval is refused.
+  it("refuses a rollback approval once the installed version or the mark moved since it was approved, or when it pins nothing", async () => {
+    const upgradedSince = await ready({ version: "1.0.0", approve: { rollback: true } });
+    upgradedSince.world.params.set("/agentx/ent/settings", JSON.stringify({ version: "1.3.0", region: "us-east-1", identity: { mode: "cognito" }, updatedAt: "2026-10-02T00:00:00.000Z" }));
+    expect(await upgradedSince.world.run({ bundleId: upgradedSince.bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/installed release changed since this rollback was approved/) });
+    expect(changes(upgradedSince.world)).toEqual([]);
+    const markMoved = await ready({ version: "1.0.0", approve: { rollback: true } });
+    markMoved.world.params.set(releaseHighWaterParameter("ent"), "1.3.0");
+    expect(await markMoved.world.run({ bundleId: markMoved.bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/high-water mark changed since this rollback was approved/) });
+    expect(changes(markMoved.world)).toEqual([]);
+    const unpinned = await ready({ version: "1.0.0", approve: { rollback: true, rollbackFrom: null } });
+    expect(await unpinned.world.run({ bundleId: unpinned.bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/does not pin the install/) });
+    expect(changes(unpinned.world)).toEqual([]);
+  });
+
+  it("refuses an unreadable high-water mark, and changes nothing when it cannot be written", async () => {
+    const bad = await ready();
+    bad.world.params.set(releaseHighWaterParameter("ent"), "latest");
+    expect(await bad.world.run({ bundleId: bad.bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/high-water mark is not a release version/) });
+    expect(changes(bad.world)).toEqual([]);
+    const denied = await ready();
+    denied.world.failPut = "release-high-water";
+    expect(await denied.world.run({ bundleId: denied.bundle.bundleSha256 })).toMatchObject({ status: "failed", reason: expect.stringMatching(/high-water mark could not be written/) });
+    expect(denied.world.log.some((line) => line.startsWith("cfn."))).toBe(false);
   });
 
   it("changes nothing when the restore point cannot be written, and refuses while another bundle's deployment is unfinished", async () => {

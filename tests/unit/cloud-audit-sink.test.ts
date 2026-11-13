@@ -586,6 +586,18 @@ describe("one pull request, one id; one approval window setting, one action", ()
     expect(idOf(a)).not.toBe(idOf(requested({ repository: "acme/web", number: 7, method: "squash" })));
   });
 
+  it("the core's pull_request.merged (merge tracking, since the 0.5.17 pin) maps to Cloud's own event, on the same pull request id as merge_requested, with the number as its only fact", () => {
+    const merged = toCloudAuditEvent({
+      ...sampleOf("pull_request.merged", CORE_AUDIT_EVENT_MAP["pull_request.merged"]!),
+      actor: { type: "system", id: "merge-tracking" },
+      details: { repository: "Acme/Web", number: 7, taskId: "task-1", mergeCommit: "a".repeat(40), mergedBy: "someone" },
+    });
+    if (!merged.ok) throw new Error(merged.refusal);
+    expect(merged.event).toMatchObject({ action: "pull_request.merged", facts: { number: 7 }, details: [{ subject: "org", fields: { repository: "acme/web" } }] });
+    expect(idOf(merged)).toBe(idOf(requested({ repository: "acme/web", number: 7, method: "squash" })));
+    expect(JSON.stringify(merged.event)).not.toContain("someone");
+  });
+
   it("the merge method fact is one of the merge methods", () => {
     const made = requested({ repository: "acme/web", number: 7, method: "pat-smith" });
     expect(made.ok && made.event.facts).toEqual({ number: 7 });

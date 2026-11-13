@@ -318,11 +318,29 @@ describe("the Rovara operator role", () => {
     });
 
     it("writes only the records an upgrade owns, and reads the trusted keys it cannot write", () => {
-      for (const name of ["settings", "bundle", "restore-points/20261031T101500000Z", "deploy/progress"]) expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(true);
-      for (const name of ["bundle-trust/public-keys", "signin", "lock", "install/answers"]) expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
+      for (const name of ["settings", "bundle", "restore-points/20261031T101500000Z", "deploy/progress", "release-high-water"]) expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(true);
+      for (const name of ["bundle-trust/public-keys", "signin", "lock", "install/answers", "release-high-water/x", "release-high-water-x", "other"]) expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
       expect(allowed(deployer, "ssm:GetParameter", ARN("ssm", "parameter/agentx/ent/bundle-trust/public-keys"))).toBe(true);
       expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/agentx/ent/deploy/progress"))).toBe(true);
       expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/agentx/ent/settings"))).toBe(false);
+    });
+
+    // 0.5.17: the release high-water mark, granted exactly like the settings record (GetParameter, PutParameter) on its one ARN, never through a wildcard.
+    it("reads and writes the release high-water mark by its exact ARN only, and may not delete it", () => {
+      const exact = ARN("ssm", "parameter/agentx/ent/release-high-water");
+      expect(allowed(deployer, "ssm:GetParameter", exact)).toBe(true);
+      expect(allowed(deployer, "ssm:PutParameter", exact)).toBe(true);
+      expect(allowed(deployer, "ssm:DeleteParameter", exact)).toBe(false);
+      const naming = deployer.filter((statement) => statement.Effect === "Allow" && list(statement.Resource).some((resource) => JSON.stringify(resource).includes("release-high-water")));
+      expect(naming.map((statement) => statement.Sid).sort()).toEqual(["ReadInstallRecords", "WriteUpgradeRecords"]);
+      for (const statement of naming) {
+        const entries = list(statement.Resource).filter((resource) => JSON.stringify(resource).includes("release-high-water"));
+        expect(entries).toHaveLength(1);
+        expect(JSON.stringify(entries[0])).toMatch(/:parameter\/agentx\/ent\/release-high-water"/);
+        expect(JSON.stringify(entries[0])).not.toContain("*");
+      }
+      // The Rovara operator still writes no record, this one included.
+      expect(allowed(statementsFor(template, "enabled"), "ssm:PutParameter", exact)).toBe(false);
     });
 
     it("reads the install's recorded build settings and edition (to check an approval built for it) and can write neither; the operator reads neither (N3b)", () => {

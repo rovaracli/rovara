@@ -88,6 +88,11 @@ Without `--to`, it upgrades to the release of the `agentx` you run. So
 The access stack deploys first, so the CloudFormation role can create the broker's
 `agentx-<env>-broker-*` managed policies before the control plane needs them.
 
+Upgrading to 0.5.17 or later from an earlier release also gives the CloudFormation role its own permissions boundary,
+`agentx-<env>--deploy-boundary`, changed in place. Whoever deploys the access stack needs `iam:CreatePolicy` on that
+policy and `iam:PutRolePermissionsBoundary` on `agentx-<env>-cloudformation`. See
+[the model proxy TLS notes](architecture/model-proxy-tls.md#0517-upgrade-and-runbook-notes-the-deploy-roles-own-boundary).
+
 It prints the release notes, then deploys each stack in turn. For each stack it shows the change
 set (or, for a cdk environment, `cdk diff`), lists IAM changes on their own, and asks before
 deploying. It stops before any change that replaces or deletes a table, user pool, bucket, KMS
@@ -133,9 +138,18 @@ a terminal no lock is taken over, not your own and not a stale one someone else 
 are all read from the environment, and nothing is asked again. If a release drops a `config` key,
 `upgrade` names it before deploying, and says nothing replaces it.
 
-**Never back.** `upgrade` refuses a release older than the one the environment runs, naming both,
-because a newer release may have written data an older one cannot read. The same release is fine
-(a re-run). It also refuses every prerelease (such as `1.4.0-rc.1`).
+**Never back, unless you say so.** `upgrade` refuses a release older than the one the environment
+runs, naming both, because a newer release may have written data an older one cannot read. The same
+release is fine (a re-run). It also refuses every prerelease (such as `1.4.0-rc.1`). To move back on
+purpose, name the release with `--rollback-to <x.y.z>` instead of `--to` (on the cdk engine, with
+`--source <checkout of v<x.y.z>>`). It is refused unless that release is older than the recorded one,
+below a floor declared by any release the environment ever ran (recorded in
+`/agentx/<env>/release-high-water`), or when the older templates would not take the parameters this
+agentx sends; all of that is checked before any stack changes. Every change is shown and confirmed
+exactly as for an upgrade, `--yes` works the same, the data guard still stops on a deleted table unless
+you name it with `--allow-replace`, and the settings then record the release you rolled back to. Values
+the older templates drop are listed with the `config set` line to re-apply each after the next upgrade.
+See "Rolling a release back" in [releases.md](releases.md).
 
 **The operator role and the access stack.** The operator role cannot change the access stack.
 Under it, `upgrade` compares the deployed access template with the release's. If they are the

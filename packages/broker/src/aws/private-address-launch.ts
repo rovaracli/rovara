@@ -70,19 +70,53 @@ export async function readPrivateAddressesOff(ssm: { send(command: GetParameterC
   }
 }
 
-/** The user data, with the list (and the install's reserved and routed ranges, for the worker's own checks) when there is one. With none it is exactly `ec2WorkerUserData`'s. */
-export function workerUserDataWithPrivateAddresses(config: Ec2WorkerBootConfig, bootScript: string, entries: readonly string[], ranges: { reservedCidrs?: readonly string[]; routedCidrs?: readonly string[] } = {}): string {
-  if (entries.length === 0) return ec2WorkerUserData(config, bootScript);
-  const value = entries.join(",");
-  if (!PRIVATE_ADDRESSES_BOOT_PATTERN.test(value)) throw new Error("the internal address list does not fit the worker's launch setting");
-  if (config.environmentKind !== "named") throw new Error("only a named environment's worker can carry an internal address list");
-  const exports = [`export ${PRIVATE_ADDRESSES_BOOT_VARIABLE}='${value}'`];
-  for (const [name, cidrs] of [[PRIVATE_ADDRESS_RESERVED_BOOT_VARIABLE, ranges.reservedCidrs ?? []], [PRIVATE_ADDRESS_ROUTED_BOOT_VARIABLE, ranges.routedCidrs ?? []]] as const) {
-    if (cidrs.length === 0) continue;
-    const listed = cidrs.join(",");
-    if (!PRIVATE_ADDRESS_CIDRS_BOOT_PATTERN.test(listed)) throw new Error("the install's address ranges do not fit the worker's launch setting");
-    exports.push(`export ${name}='${listed}'`);
+/** M1 (owner decision): the worker's TS-L self-test is switched on by this launch variable (boot-stage2.sh `tsl_selftest_gate` reads exactly `1`), and only a STAGING launch may carry it. */
+export const TSL_SELFTEST_BOOT_VARIABLE = "AGENTX_TSL_SELFTEST";
+/** The SSM parameter (under the worker settings prefix) that the operator sets to `true` to turn the self-test on for staging launches. Absent means off. */
+export const TSL_SELFTEST_PARAMETER = "tsl-selftest";
+/** The only worker settings prefix whose launches may carry the self-test variable. */
+export const TSL_SELFTEST_ALLOWED_PREFIX = "/agentx/staging/";
+
+/**
+ * M1: the operator's switch for the TS-L worker self-test, read from the SSM parameter `name`. FAIL CLOSED the other way round from the kill switch: ONLY the exact value `true` is on. A parameter that is not there
+ * (ParameterNotFound) or says `false` is off without a word; any other value and any failed read are off and logged (an event name and the error's name or the word `value`, never the value).
+ */
+export async function readTslSelftestOn(ssm: { send(command: GetParameterCommand): Promise<{ Parameter?: { Value?: string } }> }, name: string, log: (line: string) => void = console.error): Promise<boolean> {
+  try {
+    const value = (await ssm.send(new GetParameterCommand({ Name: name }))).Parameter?.Value;
+    if (value === "true") return true;
+    if (value !== "false") log(JSON.stringify({ component: "session-steps", event: "tsl_selftest.switch_unreadable", level: "error", reason: "value" }));
+    return false;
+  } catch (error) {
+    if (error instanceof Error && error.name === "ParameterNotFound") return false;
+    log(JSON.stringify({ component: "session-steps", event: "tsl_selftest.switch_unreadable", level: "error", errorName: error instanceof Error ? error.name : "unknown" }));
+    return false;
   }
+}
+
+/** The switch as a launch holds it: present only when the operator's parameter said `true`; `settingsPrefix` is the install's worker settings prefix. */
+export interface TslSelftestSwitch { settingsPrefix: string }
+
+/**
+ * The user data, with the list (and the install's reserved and routed ranges, for the worker's own checks) when there is one, and the TS-L self-test variable when `tslSelftest` is given for a named environment whose
+ * settings prefix is exactly staging's (anything else leaves it out: the boot's own gate then never sees it). With neither it is exactly `ec2WorkerUserData`'s.
+ */
+export function workerUserDataWithPrivateAddresses(config: Ec2WorkerBootConfig, bootScript: string, entries: readonly string[], ranges: { reservedCidrs?: readonly string[]; routedCidrs?: readonly string[] } = {}, tslSelftest?: TslSelftestSwitch): string {
+  const exports: string[] = [];
+  if (entries.length > 0) {
+    const value = entries.join(",");
+    if (!PRIVATE_ADDRESSES_BOOT_PATTERN.test(value)) throw new Error("the internal address list does not fit the worker's launch setting");
+    if (config.environmentKind !== "named") throw new Error("only a named environment's worker can carry an internal address list");
+    exports.push(`export ${PRIVATE_ADDRESSES_BOOT_VARIABLE}='${value}'`);
+    for (const [name, cidrs] of [[PRIVATE_ADDRESS_RESERVED_BOOT_VARIABLE, ranges.reservedCidrs ?? []], [PRIVATE_ADDRESS_ROUTED_BOOT_VARIABLE, ranges.routedCidrs ?? []]] as const) {
+      if (cidrs.length === 0) continue;
+      const listed = cidrs.join(",");
+      if (!PRIVATE_ADDRESS_CIDRS_BOOT_PATTERN.test(listed)) throw new Error("the install's address ranges do not fit the worker's launch setting");
+      exports.push(`export ${name}='${listed}'`);
+    }
+  }
+  if (tslSelftest !== undefined && config.environmentKind === "named" && tslSelftest.settingsPrefix === TSL_SELFTEST_ALLOWED_PREFIX) exports.push(`export ${TSL_SELFTEST_BOOT_VARIABLE}='1'`);
+  if (exports.length === 0) return ec2WorkerUserData(config, bootScript);
   const lines = ec2WorkerBootScript(config, bootScript).split("\n");
   // Line 0 is the interpreter, line 1 the header; the configuration's exports follow, and these join them.
   lines.splice(2, 0, ...exports);

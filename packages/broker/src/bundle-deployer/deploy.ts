@@ -7,7 +7,7 @@
 // parameter either kept at its current value or taken from the approval. The caller never supplies a template, a stack, a parameter or a path.
 //
 // All outcomes are values, never thrown text: the only strings returned are fixed reasons and part names.
-import { BUNDLE_PUBLIC_DEPLOYED_KINDS, BUILT_MANIFEST_FILE, BuiltManifestSchema, SynthSettingsSchema, accessTemplatesAgree, editionBackupParameter, editionRecordParameter, redactedSynthSettings, synthKitSha256, synthSettingsParameter, synthSettingsSha256, BUNDLE_MANIFEST_FILE, BUNDLE_SIGNATURE_FILE, ApprovalRecordSchema, BundleManifestSchema, BundleSignatureSchema, DEPLOYER_PARTS, DEPLOY_LOCK_STALE_MS, DeployerRequestSchema, bundleApprovalKey, approvedFileKey, bundleTrustParameter, deployLockParameter, deployProgressParameter, operatorAccessStateParameter, deployingKey, installedBundleParameter, restorePointParameter, sha256OfBytes, verifyBundleSignature, type DeployerPart, type DeployerResult } from "@agentx/cloud-contracts";
+import { BUNDLE_PUBLIC_DEPLOYED_KINDS, BUILT_MANIFEST_FILE, BuiltManifestSchema, SynthSettingsSchema, accessTemplatesAgree, editionBackupParameter, editionRecordParameter, redactedSynthSettings, synthKitSha256, synthSettingsParameter, synthSettingsSha256, BUNDLE_MANIFEST_FILE, BUNDLE_SIGNATURE_FILE, ApprovalRecordSchema, BundleManifestSchema, BundleSignatureSchema, DEPLOYER_PARTS, DEPLOY_LOCK_STALE_MS, DeployerRequestSchema, bundleApprovalKey, approvedFileKey, bundleTrustParameter, deployLockParameter, deployProgressParameter, operatorAccessStateParameter, deployingKey, installedBundleParameter, releaseHighWaterParameter, restorePointParameter, sha256OfBytes, verifyBundleSignature, type DeployerPart, type DeployerResult } from "@agentx/cloud-contracts";
 import { canonicalJson, parseReleaseManifestIgnoringUnknownFields, environmentSettingsPrefix, environmentStackName, renderTemplate } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -88,6 +88,24 @@ function compare(a: string, b: string): number | undefined {
   if (left === undefined || right === undefined) return undefined;
   for (let index = 0; index < 3; index += 1) if (left[index] !== right[index]) return (left[index] as number) - (right[index] as number);
   return 0;
+}
+
+/** How many times the deployer writes the mark and reads it back while another writer leaves it lower. */
+const HIGH_WATER_ATTEMPTS = 3;
+
+/** Raises the mark to `version` (never lowers it), reading it back after each write and writing again while another writer left it lower, a bounded
+ * number of times. Throws when it could not, or when the mark is not a release version. */
+async function raiseHighWater(ports: DeployerPorts, env: string, version: string): Promise<void> {
+  if (semver(version) === undefined) return;
+  for (let attempt = 0; attempt <= HIGH_WATER_ATTEMPTS; attempt += 1) {
+    const current = (await ports.ssm.get(releaseHighWaterParameter(env)))?.trim();
+    if (current !== undefined && semver(current) === undefined) throw new Error("the mark is not a release version");
+    const order = current === undefined ? undefined : compare(current, version);
+    if (order !== undefined && order >= 0) return;
+    if (attempt === HIGH_WATER_ATTEMPTS) break;
+    await ports.ssm.put(releaseHighWaterParameter(env), version);
+  }
+  throw new Error("another writer kept lowering the mark");
 }
 
 const LOCK_STALE_MS = DEPLOY_LOCK_STALE_MS;
@@ -242,6 +260,15 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
   const direction = compare(settings.version, manifest.version);
   if (direction === undefined) return refused("the installed version is not a release version");
   if (direction > 0 && !approval.rollback) return refused("this bundle is older than the installed release and no rollback was approved");
+  // A rollback approval was checked against the rollback floors for one install state (agentx bundle approve --rollback): the version its settings recorded and
+  // its release high-water mark, both pinned. Once either moved (an upgrade since, another rollback), the check no longer holds: approve it again.
+  if (approval.rollback) {
+    const pinned = approval.rollbackFrom;
+    if (pinned === undefined) return refused("this rollback approval does not pin the install it was checked against; approve it again");
+    if (settings.version !== pinned.installedVersion) return refused("the installed release changed since this rollback was approved; approve it again");
+    const markNow = (await ports.ssm.get(releaseHighWaterParameter(env)))?.trim() ?? null;
+    if (markNow !== pinned.highWater) return refused("the release high-water mark changed since this rollback was approved; approve it again");
+  }
 
   // The edition of the install decides which kind of approval may deploy to it: an Enterprise install takes only a build made at its own approval (below), and an install
   // that is not Enterprise never takes one. An edition record that cannot be read is a refusal, never "not Enterprise".
@@ -366,6 +393,17 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
     if (!same) return refused(accessRefusal);
   } catch {
     return refused("the access stack could not be compared");
+  }
+
+  // 5b. The release high-water mark (the highest release the install ever ran; never lowered), raised before the first change to the highest release this run
+  // touches: the bundle's for an upgrade (so one that stops part way leaves its floors in force), the installed one for a rollback. The CLI reads it:
+  // upgrade/target.ts floorCheck. It is the only write of the mark here, so every outcome stays a value.
+  const highWater = await ports.ssm.get(releaseHighWaterParameter(env));
+  if (highWater !== undefined && semver(highWater.trim()) === undefined) return refused("the install's release high-water mark is not a release version");
+  try {
+    await raiseHighWater(ports, env, direction > 0 ? settings.version : manifest.version);
+  } catch {
+    return failed("the release high-water mark could not be written");
   }
 
   // 6. Progress, and the restore point before the first change.

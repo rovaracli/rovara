@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { ec2WorkerUserData, type Ec2WorkerBootConfig } from "@rovara-code/contracts";
 import { PRIVATE_ADDRESS_CIDRS_BOOT_PATTERN, PRIVATE_ADDRESS_RANGES, PRIVATE_ADDRESS_RESERVED_BOOT_VARIABLE, PRIVATE_ADDRESS_ROUTED_BOOT_VARIABLE, WORKER_NETWORK_RANGES, checkPrivateAddress } from "@agentx/cloud-contracts";
 import { TASK_SANDBOX_BRIDGE } from "../../packages/worker/src/task-network.js";
-import { workerUserDataWithPrivateAddresses } from "../../packages/broker/src/aws/private-address-launch.js";
+import { TSL_SELFTEST_BOOT_VARIABLE, readTslSelftestOn, workerUserDataWithPrivateAddresses } from "../../packages/broker/src/aws/private-address-launch.js";
 
 const stage2 = readFileSync(new URL("../../packages/worker/ec2/boot-stage2.sh", import.meta.url), "utf8");
 const step = /cat >\/usr\/local\/libexec\/rovara-private-allow <<'PRIVATEALLOW'\n([\s\S]*?)\nPRIVATEALLOW/.exec(stage2)?.[1] ?? "";
@@ -372,5 +372,107 @@ describe("the launch's user data", () => {
   it("fits under EC2's limit with the longest list", () => {
     const longest = Array.from({ length: 16 }, (_, index) => `${String(index).padStart(2, "0")}${"n".repeat(40)}.${"m".repeat(43)}.example:65535`);
     expect(Buffer.from(workerUserDataWithPrivateAddresses(config, boot, longest), "base64").length).toBeLessThan(12_000);
+  });
+});
+
+// M1 (owner decision, 2026-11-12): the staging-only switch for the TS-L worker self-test. The launch adds `export AGENTX_TSL_SELFTEST='1'` after the header, beside the private address exports, only for a named
+// environment whose settings prefix is exactly /agentx/staging/ and only when the operator's SSM parameter says `true`. The boot's own gate (boot-stage2.sh tsl_selftest_gate) still checks the rest.
+describe("the launch's TS-L self-test switch", () => {
+  const config: Ec2WorkerBootConfig = {
+    workspaceId: randomUUID(), generation: 2, volumeId: "vol-0123456789abcdef0", expectNewVolume: false, workerImage: `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx/worker@sha256:${"b".repeat(64)}`,
+    invokePublicKey: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE+/9=", controlPlaneUrl: "https://abc123.execute-api.us-east-1.amazonaws.com", modelProvider: "amazon-bedrock", modelId: "anthropic.claude-sonnet",
+    promptCacheRetention: "short", logGroupName: "/agentx/staging/worker", environmentKind: "named", bootStage2Sha256: "c".repeat(64), modelProxyUrl: "http://internal-x.us-east-1.elb.amazonaws.com:4000",
+  };
+  const boot = readFileSync(new URL("../../packages/worker/ec2/boot.sh", import.meta.url), "utf8");
+  const text = (userData: string) => gunzipSync(Buffer.from(userData, "base64")).toString("utf8");
+  const on = { settingsPrefix: "/agentx/staging/" };
+  const line = `export ${TSL_SELFTEST_BOOT_VARIABLE}='1'`;
+
+  it("names the variable the boot gate reads, and the boot gate reads exactly 1", () => {
+    expect(TSL_SELFTEST_BOOT_VARIABLE).toBe("AGENTX_TSL_SELFTEST");
+    expect(stage2).toContain('[[ "${AGENTX_TSL_SELFTEST:-}" == 1 ]]');
+  });
+
+  it("adds the line after the header when on, with and without an internal address list", () => {
+    const plain = text(workerUserDataWithPrivateAddresses(config, boot, [], {}, on)).split("\n");
+    expect(plain[2]).toBe(line);
+    expect(plain.filter((l) => l.includes("AGENTX_TSL_SELFTEST"))).toHaveLength(1);
+    expect(plain.filter((l) => l.includes("AGENTX_PRIVATE_ADDRESSES"))).toHaveLength(0);
+    const both = text(workerUserDataWithPrivateAddresses(config, boot, ["10.20.0.15:443"], { routedCidrs: ["10.20.0.0/16"] }, on)).split("\n");
+    expect(both.slice(2, 5)).toEqual(["export AGENTX_PRIVATE_ADDRESSES='10.20.0.15:443'", "export AGENTX_PRIVATE_ADDRESS_ROUTED_CIDRS='10.20.0.0/16'", line]);
+    // Without the switch, the private address output is what it was, minus nothing.
+    const without = text(workerUserDataWithPrivateAddresses(config, boot, ["10.20.0.15:443"], { routedCidrs: ["10.20.0.0/16"] }));
+    expect(both.filter((l) => l !== line).join("\n")).toBe(without);
+  });
+
+  it("is byte-identical to the plain user data when off (no switch, or a refused one)", () => {
+    expect(workerUserDataWithPrivateAddresses(config, boot, [], {}, undefined)).toBe(ec2WorkerUserData(config, boot));
+    expect(workerUserDataWithPrivateAddresses(config, boot, [], {})).toBe(ec2WorkerUserData(config, boot));
+    for (const settingsPrefix of ["/agentx/production/", "/agentx/staging", "/agentx/staging/x/", "/agentx/Staging/", "/agentx/staging-2/", ""]) {
+      expect(workerUserDataWithPrivateAddresses(config, boot, [], {}, { settingsPrefix }), settingsPrefix).toBe(ec2WorkerUserData(config, boot));
+    }
+  });
+
+  it("is not added for a launch that is not a named environment's", () => {
+    const legacy: Ec2WorkerBootConfig = { ...config };
+    delete legacy.environmentKind; delete legacy.bootStage2Sha256; delete legacy.modelProxyUrl;
+    expect(workerUserDataWithPrivateAddresses(legacy, boot, [], {}, on)).toBe(ec2WorkerUserData(legacy, boot));
+    expect(text(workerUserDataWithPrivateAddresses(legacy, boot, [], {}, on))).not.toContain("AGENTX_TSL_SELFTEST");
+  });
+
+  it("keeps the user data size check when the line is added", () => {
+    const longest = Array.from({ length: 16 }, (_, index) => `${String(index).padStart(2, "0")}${"n".repeat(40)}.${"m".repeat(43)}.example:65535`);
+    expect(Buffer.from(workerUserDataWithPrivateAddresses(config, boot, longest, {}, on), "base64").length).toBeLessThan(12_000);
+    // An oversized configuration still fails, switch or not (the check runs on the final text).
+    const huge: Ec2WorkerBootConfig = { ...config, controlPlaneUrl: `https://${"a".repeat(60_000)}.example.com` };
+    expect(() => workerUserDataWithPrivateAddresses(huge, boot, [], {}, on)).toThrow();
+  });
+});
+
+describe("the TS-L self-test switch reader", () => {
+  const NAME = "/agentx/staging/tsl-selftest";
+  const reader = (answer: () => Promise<{ Parameter?: { Value?: string } }>) => {
+    const sent: unknown[] = [];
+    const logged: string[] = [];
+    return { read: () => readTslSelftestOn({ send: async (command) => { sent.push(command); return answer(); } }, NAME, (l) => { logged.push(l); }), sent, logged };
+  };
+
+  it("is off when the parameter is absent, silently", async () => {
+    const r = reader(async () => { throw Object.assign(new Error("not found"), { name: "ParameterNotFound" }); });
+    expect(await r.read()).toBe(false);
+    expect(r.logged).toEqual([]);
+  });
+
+  it("is on only for exactly `true`, asking for that one parameter by name", async () => {
+    const r = reader(async () => ({ Parameter: { Value: "true" } }));
+    expect(await r.read()).toBe(true);
+    expect((r.sent[0] as { input: { Name: string } }).input).toEqual({ Name: NAME });
+    expect(r.logged).toEqual([]);
+  });
+
+  it("is off for false (silently) and for any other value (logged without the value)", async () => {
+    const off = reader(async () => ({ Parameter: { Value: "false" } }));
+    expect(await off.read()).toBe(false);
+    expect(off.logged).toEqual([]);
+    for (const value of ["TRUE", "True", " true", "true ", "1", "yes", "", "maybe"]) {
+      const junk = reader(async () => ({ Parameter: { Value: value } }));
+      expect(await junk.read(), JSON.stringify(value)).toBe(false);
+      expect(junk.logged, JSON.stringify(value)).toHaveLength(1);
+      expect(JSON.parse(junk.logged[0]!)).toEqual({ component: "session-steps", event: "tsl_selftest.switch_unreadable", level: "error", reason: "value" });
+      if (value.trim() !== "") expect(junk.logged[0]).not.toContain(value);
+    }
+    expect(await reader(async () => ({})).read()).toBe(false);
+  });
+
+  it("is off when the read fails, logging the error's name only", async () => {
+    for (const name of ["AccessDeniedException", "ThrottlingException", "InternalServerError"]) {
+      const failing = reader(async () => { throw Object.assign(new Error(`secret detail ${name}`), { name }); });
+      expect(await failing.read(), name).toBe(false);
+      expect(failing.logged).toHaveLength(1);
+      expect(failing.logged[0]).toContain(name);
+      expect(failing.logged[0]).not.toContain("secret detail");
+    }
+    // eslint-disable-next-line @typescript-eslint/only-throw-error -- the point: anything thrown, not only an Error
+    expect(await reader(async () => { throw "nope"; }).read()).toBe(false);
   });
 });

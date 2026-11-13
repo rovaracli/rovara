@@ -73,7 +73,7 @@ describe("the pinned copy of Rovara Code in vendor/rovara-code", () => {
     expect(rootPackage.workspaces).toContain(`${SHIMS_DIR}/*`);
     const tsconfig = JSON.parse(readFileSync(join(REAL_ROOT, "tsconfig.json"), "utf8")) as { references: { path: string }[] };
     const referenced = tsconfig.references.map((r) => r.path).filter((p) => p.startsWith(CODE_DIR));
-    expect(referenced.sort()).toEqual(["aws-adapters", "contracts", "gateway", "local-adapters", "model-runtime", "verifier", "broker", "worker"].map((n) => `${CODE_DIR}/packages/${n}`).sort());
+    expect(referenced.sort()).toEqual(["aws-adapters", "contracts", "gateway", "local-adapters", "model-runtime", "testing", "verifier", "broker", "worker"].map((n) => `${CODE_DIR}/packages/${n}`).sort());
     const eslint = readFileSync(join(REAL_ROOT, "eslint.config.js"), "utf8");
     expect(eslint).toContain('"vendor/rovara-code/**"');
     expect(eslint).toContain('"vendor/rovara-code-shims/**"');
