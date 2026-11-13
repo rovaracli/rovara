@@ -122,12 +122,21 @@ function roleOf(access: string): "maintainer" | "contributor" {
  * GET /v1/app/projects/{name}/overview (ProjectOverviewSchema), from what the access check says. Repositories, setup
  * and channels need Rovara Code's project read (next step); until then they are empty.
  */
-function overview(session: Session, name: string) {
+interface CodeProject { latestRevision: number; repositories: Array<{ name: string; defaultBranch: string; fullName?: string }> }
+
+/** Spec 065: the project as Rovara Code answers it for this person; undefined while that route isn't there. */
+async function codeProject(session: Session, name: string): Promise<CodeProject | undefined> {
+  const response = await fetch(`${CODE}/v1/dev/client/projects/${encodeURIComponent(name)}`, { headers: { authorization: `Bearer ${session.accessToken}` } });
+  return response.ok ? await response.json() as CodeProject : undefined;
+}
+
+function overview(session: Session, name: string, code: CodeProject | undefined) {
   const project = session.access.projects.find((entry) => entry.name === name);
   if (project === undefined) return undefined;
   const role = roleOf(project.access);
+  const repositories = (code?.repositories ?? []).slice(0, 20).map((repository) => ({ fullName: repository.fullName ?? repository.name, defaultBranch: repository.defaultBranch }));
   return {
-    project: { name, status: "active", repositories: [], setup: { status: "unchecked" }, channels: [] },
+    project: { name, status: "active", ...(code === undefined ? {} : { latestRevision: code.latestRevision }), repositories, setup: { status: "unchecked" }, channels: [] },
     you: { role, canStartWork: true, canEditSettings: role === "maintainer", canViewSpend: false },
     agents: [],
     running: [],
@@ -179,7 +188,8 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const fresh = await accessCheck(session.accessToken);
       if (fresh === undefined) return send(res, 401, { error: { code: "AUTH_REQUIRED", message: "Your Rovara sign-in ended. Sign in again." } });
       session.access = fresh;
-      const answer = overview(session, decodeURIComponent(overviewPath[1]!));
+      const name = decodeURIComponent(overviewPath[1]!);
+      const answer = overview(session, name, await codeProject(session, name));
       return answer === undefined ? send(res, 404, { error: { code: "PROJECT_NOT_FOUND", message: "That project doesn't exist, or you can't use it." } }) : send(res, 200, answer);
     }
     console.log(JSON.stringify({ event: "not_in_prototype", method, path: url.pathname }));
