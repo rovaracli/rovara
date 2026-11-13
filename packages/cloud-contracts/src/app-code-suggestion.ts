@@ -8,10 +8,11 @@ export const CodeSuggestionBodySchema = z.object({
   text: z.string().min(1).max(CODE_SUGGESTION_TEXT_MAX).refine(text => text.trim().length > 0),
 }).strict();
 export const CodeSuggestionSchema = z.discriminatedUnion("reason", [
-  z.object({ path: z.literal("quick"), reason: z.literal("small_change"), source: z.literal("wording") }).strict(),
-  z.object({ path: z.literal("full"), reason: z.literal("large_change"), source: z.literal("wording") }).strict(),
-  z.object({ path: z.literal("answer"), reason: z.literal("question"), source: z.literal("wording") }).strict(),
-  z.object({ path: z.literal("answer"), reason: z.literal("unavailable"), source: z.literal("wording") }).strict(),
+  z.object({ path: z.literal("quick"), reason: z.literal("small_change"), source: z.enum(["wording", "previous_wording"]) }).strict(),
+  z.object({ path: z.literal("full"), reason: z.literal("large_change"), source: z.enum(["wording", "previous_wording"]) }).strict(),
+  z.object({ path: z.literal("answer"), reason: z.literal("question"), source: z.enum(["wording", "previous_wording"]) }).strict(),
+  z.object({ path: z.literal("answer"), reason: z.literal("unclear"), source: z.enum(["wording", "previous_wording"]) }).strict(),
+  z.object({ path: z.literal("answer"), reason: z.literal("unavailable"), source: z.enum(["wording", "previous_wording"]) }).strict(),
 ]);
 export type CodeSuggestion = z.infer<typeof CodeSuggestionSchema>;
 export const CODE_SUGGESTION_UNAVAILABLE: CodeSuggestion = { path: "answer", reason: "unavailable", source: "wording" };
@@ -24,7 +25,8 @@ export function codeSuggestionReason(reason: CodeSuggestion["reason"]): string {
   switch (reason) {
     case "small_change": return plainSuggestion("small_change");
     case "large_change": return plainSuggestion("large_change");
-    case "question": return "Just answer isn't available here yet. Choose Quick or Full to request a code change.";
+    case "question": return "This looks like a question. Let Rovara decide how to answer it.";
+    case "unclear": return "Choose how Rovara should handle this, or let Rovara decide.";
     case "unavailable": return "No suggestion right now";
   }
 }

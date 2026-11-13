@@ -35,12 +35,51 @@ for (const path of ["quick", "full"] as const) it("preselects " + path + " and s
  fireEvent.click(screen.getByRole("radio", { name: path === "quick" ? "Full" : "Quick" }));fireEvent.click(startButton());
  await waitFor(() => expect(f.posts()).toHaveLength(1));expect(f.posts()[0]?.body).toMatchObject({ path: path === "quick" ? "FULL" : "QUICK" });
 });
-it("answer/unclear and failures require a manual coding choice, never start a task to answer", async () => {
- for (const response of [answer("answer"), answer("answer", "unavailable"), { status: 503, body: { reason: "<img src=x>" } }, { status: 200, body: { path: "quick", reason: "injected", source: "wording" } }]) {
-  const f = setup(async () => response);type();await screen.findByText(/Just answer isn't available here yet/);expect(startButton().disabled).toBe(true);expect(f.posts()).toHaveLength(0);
-  if (response !== undefined && response.body && (response.body as { reason?: string }).reason !== "question") expect(screen.getByText(/No suggestion right now/)).toBeTruthy();
-  expect(document.body.textContent).not.toContain("injected");fireEvent.click(screen.getByRole("radio", { name: "Full" }));fireEvent.click(startButton());await waitFor(() => expect(f.posts()).toHaveLength(1));cleanups.pop()?.();
+it("a question defaults to Let Rovara decide and sends no explicit path", async () => {
+ const f = setup(async () => answer("answer"));type("How does retry work?");
+ expect(screen.getByRole<HTMLInputElement>("radio", { name: "Let Rovara decide" }).checked).toBe(true);
+ await ready();fireEvent.click(startButton());await waitFor(() => expect(f.posts()).toHaveLength(1));
+ expect(f.posts()[0]?.body).toMatchObject({ input: { text: "How does retry work?" } });expect(f.posts()[0]?.body).not.toHaveProperty("path");
+ expect(document.body.textContent).not.toContain("Just answer isn't available");
+});
+it("unclear wording leaves choices unselected without claiming failure and still permits the default start", async () => {
+ const f = setup(async () => answer("answer", "unclear"));type("Something with the widget");await ready();
+ expect(screen.getAllByRole<HTMLInputElement>("radio").every(radio => !radio.checked)).toBe(true);
+ expect(screen.queryByText(/No suggestion right now/)).toBeNull();
+ fireEvent.click(startButton());await waitFor(() => expect(f.posts()).toHaveLength(1));expect(f.posts()[0]?.body).not.toHaveProperty("path");
+});
+it("failures keep the default route available and never display injected words", async () => {
+ for (const response of [answer("answer", "unavailable"), { status: 503, body: { reason: "<img src=x>" } }, { status: 200, body: { path: "quick", reason: "injected", source: "wording" } }]) {
+  const f = setup(async () => response);type();await ready();expect(screen.getByText("No suggestion right now")).toBeTruthy();
+  expect(screen.getByRole<HTMLInputElement>("radio", { name: "Let Rovara decide" }).checked).toBe(true);
+  expect(document.body.textContent).not.toContain("injected");expect(document.body.textContent).not.toContain("Just answer isn't available");
+  fireEvent.click(startButton());await waitFor(() => expect(f.posts()).toHaveLength(1));expect(f.posts()[0]?.body).not.toHaveProperty("path");cleanups.pop()?.();
  }
+});
+it("a capped previous suggestion never preselects a coding path for new wording", async () => {
+ const f = setup(async () => ({ status: 200, body: { path: "quick", reason: "small_change", source: "previous_wording" } }));type("How does retry work?");await ready();
+ expect(screen.getByRole<HTMLInputElement>("radio", { name: "Let Rovara decide" }).checked).toBe(true);
+ expect(screen.getByText(/Last suggestion, from earlier wording/)).toBeTruthy();
+ fireEvent.click(startButton());await waitFor(() => expect(f.posts()).toHaveLength(1));expect(f.posts()[0]?.body).not.toHaveProperty("path");
+});
+it("waits for 800 ms of quiet typing and makes just one suggestion for the finished text", async () => {
+ vi.useFakeTimers();const f = setup(async () => answer("quick"));type("Fix");
+ await act(async () => { await vi.advanceTimersByTimeAsync(799); });
+ expect(f.request.mock.calls.filter(([r]) => r.path.endsWith("/suggest"))).toHaveLength(0);
+ type("Fix typo");await act(async () => { await vi.advanceTimersByTimeAsync(799); });
+ expect(f.request.mock.calls.filter(([r]) => r.path.endsWith("/suggest"))).toHaveLength(0);
+ await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+ const suggestions = f.request.mock.calls.filter(([r]) => r.path.endsWith("/suggest"));expect(suggestions).toHaveLength(1);expect(suggestions[0]?.[0].body).toMatchObject({ text: "Fix typo" });
+});
+it("a manual default choice survives a late suggestion and uses a new retry ID after an explicit path", async () => {
+ let finish!: (value: ApiResponse) => void;const f = setup(async () => new Promise(resolve => { finish = resolve; }), async () => ({ status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE" } } }));
+ type();fireEvent.click(screen.getByRole("radio", { name: "Let Rovara decide" }));await waitFor(() => expect(finish).toBeDefined());
+ await act(async () => { finish(answer("quick")); });await ready();
+ expect(screen.getByRole<HTMLInputElement>("radio", { name: "Let Rovara decide" }).checked).toBe(true);
+ fireEvent.click(startButton());await screen.findByRole("alert");expect(f.posts()[0]?.body).not.toHaveProperty("path");
+ fireEvent.click(screen.getByRole("radio", { name: "Quick" }));fireEvent.click(startButton());await waitFor(() => expect(f.posts()).toHaveLength(2));await ready();
+ fireEvent.click(screen.getByRole("radio", { name: "Let Rovara decide" }));fireEvent.click(startButton());await waitFor(() => expect(f.posts()).toHaveLength(3));
+ const bodies = f.posts().map(r => r.body as { requestId: string; path?: string });expect(new Set(bodies.map(b => b.requestId)).size).toBe(3);expect(bodies[2]).not.toHaveProperty("path");
 });
 it("clears the old selection on edit, cancels its request, and ignores an old answer", async () => {
  let finish!: (response: ApiResponse) => void;const requests: ApiRequest[] = [];
@@ -52,12 +91,12 @@ it("clears the old selection on edit, cancels its request, and ignores an old an
 });
 it("an edit immediately clears an already displayed suggestion and manual choice", async () => {
  const f = setup(async () => answer("quick"));type();await ready();fireEvent.click(screen.getByRole("radio", { name: "Full" }));
- type("Changed text");expect(startButton().disabled).toBe(true);expect(screen.getAllByRole<HTMLInputElement>("radio").every(radio => !radio.checked)).toBe(true);
+ type("Changed text");expect(startButton().disabled).toBe(true);expect(screen.getByRole<HTMLInputElement>("radio", { name: "Let Rovara decide" }).checked).toBe(true);
  expect(screen.getByText("Checking the wording…")).toBeTruthy();await ready();expect(f.posts()).toHaveLength(0);
 });
 it("editing away and back to the same text still waits for a fresh suggestion", async () => {
  let calls = 0;setup(async () => ++calls === 1 ? answer("quick") : new Promise(() => undefined));type("Original text");await ready();
- type("Other text");type("Original text");expect(startButton().disabled).toBe(true);expect(screen.getAllByRole<HTMLInputElement>("radio").every(radio => !radio.checked)).toBe(true);
+ type("Other text");type("Original text");expect(startButton().disabled).toBe(true);expect(screen.getByRole<HTMLInputElement>("radio", { name: "Let Rovara decide" }).checked).toBe(true);
 });
 it("a late suggestion cannot overwrite a hand choice made while waiting", async () => {
  let finish!: (response: ApiResponse) => void;const f = setup(async () => new Promise(resolve => { finish = resolve; }));type();

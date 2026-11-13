@@ -41,7 +41,7 @@ export function StartWorkBox({ project, agents }: { project: string; agents: rea
   void api.previewStart(project, abort.signal).then(value => { if (live) setPreview(value === undefined ? undefined : { project, api, stop: value.effectiveStopMicrousd }); });
   return () => { live = false;abort.abort(); };
  }, [api, project]);
- const [suggestion, setSuggestion] = useState<{ project: string; api: typeof api; text: string; result?: CodeSuggestion; path?: "QUICK" | "FULL"; manual: boolean }>();
+ const [suggestion, setSuggestion] = useState<{ project: string; api: typeof api; text: string; result?: CodeSuggestion; path?: "AUTO" | "QUICK" | "FULL"; manual: boolean }>();
  const current = suggestion?.project === project && suggestion.api === api && suggestion.text === text ? suggestion : undefined;
  useEffect(() => {
   if (!text.trim() || text.length > CODE_TEXT_MAX) return;
@@ -51,23 +51,24 @@ export function StartWorkBox({ project, agents }: { project: string; agents: rea
     if (!live) return;
     setSuggestion(previous => {
      const manual = previous?.project === project && previous.api === api && previous.text === text && previous.manual;
-     const path = manual ? previous.path : result.path === "quick" ? "QUICK" : result.path === "full" ? "FULL" : undefined;
+     const path = manual ? previous.path : result.source === "previous_wording" ? "AUTO" : result.path === "quick" ? "QUICK" : result.path === "full" ? "FULL" : result.reason === "unclear" ? undefined : "AUTO";
      return { project, api, text, result, manual, ...(path === undefined ? {} : { path }) };
     });
    });
-  }, 250);
+  }, 800);
   return () => { live = false;clearTimeout(timer);abort.abort(); };
  }, [api, project, text]);
- const choosePath = (path: "QUICK" | "FULL") => setSuggestion({ ...current, project, api, text, path, manual: true });
- const sending = useRef(false), intent = useRef<{ project: string; text: string; path: "QUICK" | "FULL"; asked: boolean; requestId: string } | undefined>(undefined);
- const tooLong = text.length > CODE_TEXT_MAX, locked = busy || accepted || pending !== undefined, blocked = locked || !text.trim() || tooLong || current?.result === undefined || current.path === undefined;
+ const choosePath = (path: "AUTO" | "QUICK" | "FULL") => setSuggestion({ ...current, project, api, text, path, manual: true });
+ const sending = useRef(false), intent = useRef<{ project: string; text: string; path: "QUICK" | "FULL" | undefined; asked: boolean; requestId: string } | undefined>(undefined);
+ const tooLong = text.length > CODE_TEXT_MAX, locked = busy || accepted || pending !== undefined, blocked = locked || !text.trim() || tooLong || current?.result === undefined;
  async function start() {
-  if (sending.current || blocked || current?.path === undefined) return;
+  if (sending.current || blocked) return;
+  const path = current?.path === "AUTO" ? undefined : current?.path;
   sending.current = true;setBusy(true);setError(undefined);setFull(false);
   // A retry of the same text (and the same path and Design first choice) reuses its request id, so a lost answer never starts the work twice.
-  if (intent.current?.project !== project || intent.current.text !== text || intent.current.path !== current.path || intent.current.asked !== asked) intent.current = { project, text, path: current.path, asked, requestId: crypto.randomUUID() };
+  if (intent.current?.project !== project || intent.current.text !== text || intent.current.path !== path || intent.current.asked !== asked) intent.current = { project, text, path, asked, requestId: crypto.randomUUID() };
   try {
-   const result = await api.startCode(project, text, intent.current.requestId, asked, current.path);
+   const result = await api.startCode(project, text, intent.current.requestId, asked, path);
    if (result.kind !== "done") { setPending(result);return; }
    setAccepted(true);
    // A legacy answer can lack its session id: never guess one, and never send the work a second time.
@@ -82,5 +83,5 @@ export function StartWorkBox({ project, agents }: { project: string; agents: rea
   }
   finally { sending.current = false;setBusy(false); }
  }
- return <section className="rv-project-start" aria-label="Start work"><form onSubmit={event => { event.preventDefault();void start(); }}><div className="rv-field"><label htmlFor={field}>What do you need?</label><textarea id={field} className="rv-input rv-project-start-text" value={text} disabled={locked} aria-invalid={tooLong || undefined} aria-describedby={field + "-count " + field + "-runs"} onChange={event => { setSuggestion(undefined);setText(event.target.value); }} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault();void start(); } }} /></div>{text.trim() && !tooLong && <fieldset aria-describedby={field + "-suggestion"} disabled={locked}><legend>How should Rovara handle this?</legend>{(["QUICK", "FULL"] as const).map(path => <div className="rv-check-row" key={path}><input type="radio" id={field + "-" + path} name={field + "-path"} checked={current?.path === path} onChange={() => choosePath(path)} /><label htmlFor={field + "-" + path}>{path === "QUICK" ? "Quick" : "Full"}</label></div>)}<p id={field + "-suggestion"} className="rv-muted" role="status">{current?.result === undefined ? "Checking the wording…" : (current.result.path !== "answer" ? "Suggested from the wording. " : "") + codeSuggestionReason(current.result.reason)}</p>{current?.result?.reason === "unavailable" && <p className="rv-muted">Just answer isn't available here yet. Choose Quick or Full to request a code change.</p>}</fieldset>}{offered && <Checkbox label="Review the design before building (Design first)" checked={designFirst} onCheckedChange={value => setDesignFirst(value === true)} disabled={locked} />}<div className="rv-project-start-bar"><p id={field + "-count"} className={tooLong ? "rv-error" : "rv-muted"}>{text.length} / {CODE_TEXT_MAX}</p><Button type="submit" variant="primary" busy={busy} disabled={blocked}>Start</Button></div><p id={field + "-runs"} className="rv-muted"><VisibleText text={runs} /></p>{preview?.project === project && preview.api === api && <p className="rv-muted">Effective spending stop: {formatUsdMicrodollars(preview.stop)}. Checked again when work starts.</p>}{error && <p role="alert"><VisibleText text={error} /></p>}{full && <OpenTasksToClose onClosed={() => { setFull(false);setError(undefined); }} />}{accepted && <p role="status">Work was accepted. <Link to={paths.work}>Open Work</Link> to find its session.</p>}{pending && <ConfirmInBrowser result={pending} subjectKey={["project", project, "overview"]} isApplied={() => false} />}</form></section>;
+ return <section className="rv-project-start" aria-label="Start work"><form onSubmit={event => { event.preventDefault();void start(); }}><div className="rv-field"><label htmlFor={field}>What do you need?</label><textarea id={field} className="rv-input rv-project-start-text" value={text} disabled={locked} aria-invalid={tooLong || undefined} aria-describedby={field + "-count " + field + "-runs"} onChange={event => { setSuggestion(undefined);setText(event.target.value); }} onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault();void start(); } }} /></div>{text.trim() && !tooLong && <fieldset aria-describedby={field + "-suggestion"} disabled={locked}><legend>How should Rovara handle this?</legend>{(["AUTO", "QUICK", "FULL"] as const).map(path => <div className="rv-check-row" key={path}><input type="radio" id={field + "-" + path} name={field + "-path"} checked={(current === undefined ? "AUTO" : current.path) === path} onChange={() => choosePath(path)} onClick={() => choosePath(path)} /><label htmlFor={field + "-" + path}>{path === "AUTO" ? "Let Rovara decide" : path === "QUICK" ? "Quick" : "Full"}</label></div>)}<p id={field + "-suggestion"} className="rv-muted" role="status">{current?.result === undefined ? "Checking the wording…" : (current.result.source === "previous_wording" ? "Last suggestion, from earlier wording. " : current.result.path !== "answer" ? "Suggested from the wording. " : "") + codeSuggestionReason(current.result.reason)}</p></fieldset>}{offered && <Checkbox label="Review the design before building (Design first)" checked={designFirst} onCheckedChange={value => setDesignFirst(value === true)} disabled={locked} />}<div className="rv-project-start-bar"><p id={field + "-count"} className={tooLong ? "rv-error" : "rv-muted"}>{text.length} / {CODE_TEXT_MAX}</p><Button type="submit" variant="primary" busy={busy} disabled={blocked}>Start</Button></div><p id={field + "-runs"} className="rv-muted"><VisibleText text={runs} /></p>{preview?.project === project && preview.api === api && <p className="rv-muted">Effective spending stop: {formatUsdMicrodollars(preview.stop)}. Checked again when work starts.</p>}{error && <p role="alert"><VisibleText text={error} /></p>}{full && <OpenTasksToClose onClosed={() => { setFull(false);setError(undefined); }} />}{accepted && <p role="status">Work was accepted. <Link to={paths.work}>Open Work</Link> to find its session.</p>}{pending && <ConfirmInBrowser result={pending} subjectKey={["project", project, "overview"]} isApplied={() => false} />}</form></section>;
 }

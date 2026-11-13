@@ -36,7 +36,7 @@ instead: give it a one-line header comment when you next edit it.
 
 ## A task's life
 
-- **Web path suggestions.** `packages/broker/src/rovara-code/suggest.ts#routeCodeSuggestion` checks start authority and returns a fixed wording-based suggestion, without a model call or task creation. `packages/ui/src/screens/project/StartWorkBox.tsx` offers Quick/Full; project-level Just answer is unavailable until the Ask engine supports it.
+- **Web path suggestions.** `packages/broker/src/rovara-code/suggest.ts#routeCodeSuggestion` checks start authority and returns a fixed wording-based suggestion, without a model call or task creation. `packages/ui/src/screens/project/StartWorkBox.tsx` offers Let Rovara decide (no explicit path, preserving Understand answers), Quick and Full. Suggestions cache by company/project/text, with a company/person allowance; capped replies identify earlier wording and do not preselect a coding path. Project-level Just answer without a task still needs the Ask engine.
 
 - **Start.** `packages/broker/src/aws/developer-tasks/start.ts#startTask`. Money is checked before any work starts in
   `packages/broker/src/spend/admission.ts#admitWork`. Who pays is decided in `packages/broker/src/spend/payer.ts#resolvePayer`.

@@ -15,6 +15,11 @@ it("accepts the stated maximum and refuses blank, oversized, unknown or forged f
  expect(CodeIntentBodySchema.safeParse({ requestId, input: { text: "x".repeat(4000) } }).success).toBe(true);
 });
 it("accepts only matching fixed path/reason pairs and never model text or extra fields", () => {
- for (const [path, reason] of [["quick", "small_change"], ["full", "large_change"], ["answer", "question"], ["answer", "unavailable"]]) expect(web.CodeSuggestionSchema.safeParse({ path, reason, source: "wording" }).success).toBe(true);
+ for (const [path, reason] of [["quick", "small_change"], ["full", "large_change"], ["answer", "question"], ["answer", "unclear"], ["answer", "unavailable"]]) expect(web.CodeSuggestionSchema.safeParse({ path, reason, source: "wording" }).success).toBe(true);
  for (const value of [{ path: "quick", reason: "injected", source: "wording" }, { path: "full", reason: "small_change", source: "wording" }, { path: "answer", reason: "unavailable", source: "model" }, { path: "quick", reason: "small_change", source: "wording", score: 1 }]) expect(web.CodeSuggestionSchema.safeParse(value).success).toBe(false);
+});
+
+it("distinguishes a capped previous suggestion from current wording without allowing model provenance", () => {
+ expect(web.CodeSuggestionSchema.safeParse({ path: "quick", reason: "small_change", source: "previous_wording" }).success).toBe(true);
+ expect(web.CodeSuggestionSchema.safeParse({ path: "quick", reason: "small_change", source: "model" }).success).toBe(false);
 });
