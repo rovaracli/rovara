@@ -42,6 +42,8 @@ import { cloudTaskFacts } from "./task-facts.js";
 import { taskStopEnrolled as taskStopEnrolledOf } from "./task-stop-guard.js";
 import { viewCoreTaskRows } from "./core-task-rows.js";
 import { coreInUseKey, engineOfStoredTask } from "./engine-stamp.js";
+import { createCoreTaskRoutes } from "./task-routes.js";
+import type { CoreTaskRoutes } from "../../rovara-code/task-routes.js";
 import { cloudSettingsFromEnvironment, type CloudCompanySettings } from "./settings-mapping.js";
 import type { CloudAdapterContext } from "./registry.js";
 
@@ -388,6 +390,8 @@ export interface CloudCoreEntry {
   readonly app: CloudApp;
   /** Install this as `dependencies.coreStart`. */
   readonly intentHook: CoreIntentHook;
+  /** Cloud's decide, close and cancel routes for a core-stamped task (`installCoreTaskRoutes`). */
+  readonly taskRoutes: CoreTaskRoutes;
   /** The broker's answer to the ingress's `core-slack-request` event. */
   slackRequest(message: SlackRequestMessage): Promise<CoreSlackAnswer>;
   /** An EventBridge event: `undefined` when it is not a core job's. */
@@ -435,12 +439,14 @@ export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): Clou
     if (routes === undefined) throw new Error("the developer API is not configured");
     return routes;
   };
+  const readItem: ReadItem = async (key) => ((await options.broker.documentClient.send(new GetCommand({ TableName: options.broker.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
   const origin = options.inputs.origin ?? new URL(options.broker.developer?.issuer ?? "https://localhost").origin;
   return {
     app,
     intentHook: createCoreIntentHook({ app, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), origin, now: () => options.now().getTime(), log: options.log, taskStopEnrolled }),
+    taskRoutes: createCoreTaskRoutes({ app, read: readItem, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), log: options.log }),
     slackRequest: createCoreSlackConsumer({ app, log: options.log, taskStopEnrolled, orgOfTeam: async (teamId) => await slackTeamOrg(options.broker, teamId).catch(() => undefined) }),
-    routeCallback: createCoreCallbackRouter(app, async (key) => ((await options.broker.documentClient.send(new GetCommand({ TableName: options.broker.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item),
+    routeCallback: createCoreCallbackRouter(app, readItem),
     isScheduledJob: isCoreJobEvent,
     handleScheduledJob: async (event) => (!app.active && !(await coreInUse()) ? (isCoreJobEvent(event) ? { skipped: "off" } : undefined) : await app.handleScheduledJob(event)),
   };

@@ -121,6 +121,7 @@ import { handleDesignReviewPacket } from "./design-review-packet-route.js";
 import { SWEEP_EVENT_BUDGET_MS, headEventDependencies, outsidePushDependencies, processGithubWorkflowEvent, reconcileWorkflowMergeRecoveryTask, retryDueGithubWebhookEvents, retryGithubWebhookAsAdministrator } from "./terminal-and-github-events.js";
 import { completeThreadWorkspaceClose, ensureThreadWorkspace, markCommentAnswered, markThreadNoteAnswered, prepareThreadWorkspace, startThreadWorkspaceClose } from "./thread-workspaces.js";
 import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
+import { installCoreTaskRoutes } from "../../rovara-code/task-routes.js";
 import { viewCoreTaskRowsClient } from "../../cloud/app/core-task-rows.js";
 import { createCloudCoreEntry, isCoreSlackRequestEvent } from "../../cloud/app/entry.js";
 import { anyCoreAreaOn, readCoreEngineFlags } from "../../cloud/app/flags.js";
@@ -253,7 +254,8 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     env: process.env, broker: dependencies, routes: developerRouteDependencies, inputs: dependencies.cloudCore, installCompanyId: installOrgId(dependencies), now: () => new Date(), log: coreLog,
   });
   if (coreEntry !== undefined) dependencies.coreStart = coreEntry.intentHook;
-  else if (dependencies.cloudCore === undefined && anyCoreAreaOn(readCoreEngineFlags(process.env))) coreLog({ event: "core_entry.not_configured", component: "cloud_core", missing: "cloudCore" });
+  installCoreTaskRoutes(coreEntry?.taskRoutes);
+  if (coreEntry === undefined && dependencies.cloudCore === undefined && anyCoreAreaOn(readCoreEngineFlags(process.env))) coreLog({ event: "core_entry.not_configured", component: "cloud_core", missing: "cloudCore" });
   return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.chain-sweep" } | { source: "agentx.intake-poll" } | { source: "agentx.session-sweep" } | { source: "agentx.audit-drain" } | { source: "agentx.outbox-relay-backstop" }, context?: { awsRequestId?: string; invokedFunctionArn?: string; getRemainingTimeInMillis?: () => number }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Test services: the account this function runs in, from the Lambda's own ARN (the catalog's trust decision reads it; nothing else does).
     noteInvokedFunctionArn(context?.invokedFunctionArn);

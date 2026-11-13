@@ -56,6 +56,7 @@ import {
 } from "./common.js";
 import { type AuthorizedTask, accessFence, authorizeTaskAction, authorizeTaskActor } from "./access.js";
 import { taskView } from "./task-view.js";
+import { coreTaskRoutes } from "../../rovara-code/task-routes.js";
 import { syncIndex } from "./task-index.js";
 import { actionableWorkspace, busyOrClosing, capWindowBaseline } from "./task-window.js";
 import {
@@ -151,6 +152,11 @@ export async function decideTaskWorkflow(
   /** `changeText`: Stop & redirect on a plan that waits for approval (LR-2): the owner's whole instruction (up to the redirect limit), for the planner's prompt. The decision keeps `reason`, held to its own 500 characters. */
   options: { via?: "PAGE"; /** Lessons replay (lane 7, re-check N1): set only by the replay approve route. For a replay COPY (`isReplayCopy`) and nothing else, approving accepts the plan's run limit without the amount being acknowledged: the limit is already capped at the copy's own `maxUsd`, so the operator has agreed to it. */ acceptCopyRunLimit?: true; /** Security review (2026-11-06): set only by the plan card's press under the decide-grade sign-in (`withCardDecideGrade`); a HIGH plan is approved with nothing less. */ decideGrade?: true; /** Approval place (U4): set only by server code that took the decision from a comment (`approval-place/comment-decision.ts`); the caller's own channel decides every other place. */ place?: "tracker-comment" | "code-host-comment"; /** Approval place (U4): the comment feed resolved the author to this very person through a verified link. Only that feed sets it. */ commentAuthorLinked?: true; note?: string; changeText?: string; /** Design review (DR7 slice C): the items an approved design adds to its own transaction (approval record, membership fence, audit). Only `design-decision.ts` passes it. */ designApproval?: { items: TransactItems; /** The person who really pressed Approve. When it is not the owner whose seat the commit uses, the decision is recorded under THIS person, as a project approver's (`PROJECT_ADMIN`), never as the owner's. */ approverId: string } } = {},
 ): Promise<{ task: DeveloperTaskView }> {
+  // S3 item 7: a task the core engine runs is decided by the core, whoever calls (the route, the task page, a card): this function's own rules read workflow rows the core does not write.
+  const core = coreTaskRoutes();
+  if (core !== undefined && await core.owns(caller, taskId)) {
+    return await core.decide({ caller, taskId, value, via: options.via, bearer: deps.coreBearer, view: async () => await taskView(deps, (await authorizeTaskActor(deps, caller, taskId, "decide")).task, { events: 0, details: false }) });
+  }
   const request = parse(WorkflowDecisionRequestSchema, value, deps, "workflow-decision");
   // What the planner is told as the requested changes: the decision's reason, or the whole instruction when a redirect brought one.
   const promptRequest = options.changeText === undefined ? request : { ...request, reason: options.changeText };

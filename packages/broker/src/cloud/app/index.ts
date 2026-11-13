@@ -24,3 +24,4 @@ export * from "./seat-limits.js";
 export * from "./task-facts.js";
 export * from "./task-stop-guard.js";
 export * from "./core-task-rows.js";
+export * from "./task-routes.js";

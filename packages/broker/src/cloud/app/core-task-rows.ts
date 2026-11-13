@@ -31,9 +31,14 @@ async function viewedSend(inner: (command: unknown) => Promise<unknown>, command
 }
 
 /** The client as Cloud's readers should see it (every other property is the real client's). */
+const VIEWED = Symbol("coreTaskRowsView");
+
 export function viewCoreTaskRowsClient<C extends { send(command: never): Promise<unknown> }>(client: C): C {
+  // A client already viewed (the broker's handler views its own, once) is not wrapped again.
+  if ((client as unknown as Record<symbol, unknown>)[VIEWED] === true) return client;
   return new Proxy(client, {
     get(target, property) {
+      if (property === VIEWED) return true;
       if (property === "send") return (command: unknown) => viewedSend((c) => (target as unknown as { send(command: unknown): Promise<unknown> }).send(c), command);
       const value = Reflect.get(target, property, target) as unknown;
       return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
@@ -42,5 +47,7 @@ export function viewCoreTaskRowsClient<C extends { send(command: never): Promise
 }
 
 export function viewCoreTaskRows<T extends { documentClient: { send(command: never): Promise<unknown> } }>(deps: T): T {
+  // A deployment (or a test's stub) with no client has nothing to view.
+  if (typeof deps.documentClient !== "object" || deps.documentClient === null) return deps;
   return { ...deps, documentClient: viewCoreTaskRowsClient(deps.documentClient) };
 }
