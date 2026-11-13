@@ -27,6 +27,7 @@ import { cloudAutomationSwitch, stopAutomationsWhenOff, type AutomationStopDeps 
 import { cloudFlowOptions, type CoreInbound, type CoreRuntimeOptions, type CoreService, type CoreServiceName } from "./core-runtime.js";
 import type { CloudCompanySettings } from "./settings-mapping.js";
 import type { CloudModelFacts } from "./model-mapping.js";
+import { createSeatLimits } from "./seat-limits.js";
 import { createClientDecisionGate, createCloudChannelWork, createSlackIntake, type StartTask } from "./slack-work.js";
 import type { CoreTaskEndedDeps } from "../rows/core-rows.js";
 import type { CloudAppOptions } from "./app.js";
@@ -147,12 +148,15 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
         planCarded: planCardPosted({ store, now: nowMs }),
         ...(pinnedCompanyOf === undefined ? {} : { companyOf: pinnedCompanyOf }),
       });
-      const decisions = createDecisionService({
-        flow: flow.deps, blobs: registry.require("object-storage"), store, approvers: registry.require("approvers"), audit: registry.require("audit-sink"), companyId,
+      // v2's limits on a maintainer's seat (see seat-limits.ts): the decision's details are noted for the approvers adapter, which refuses a maintainer's proof for a close-as-answered or an acknowledged run limit.
+      const seats = createSeatLimits();
+      const service = createDecisionService({
+        flow: flow.deps, blobs: registry.require("object-storage"), store, approvers: seats.wrap(registry.require("approvers")), audit: registry.require("audit-sink"), companyId,
         identity: registry.require("identity"), now: wiring.now,
         ...(wiring.decisionSubjects === undefined ? {} : { subjects: wiring.decisionSubjects }),
         workflowSubject: { actorFor: cloudActorFor },
       });
+      const decisions = { ...service, gate: seats.gate(service.gate) };
       if (channelOn) {
         // The plan's approval card by risk (low and medium: Approve in the thread; high: a pointer to the web with a fresh sign-in) and the milestone lines, registered before any milestone is written.
         milestones.register(channelThreadHandler({

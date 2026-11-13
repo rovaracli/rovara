@@ -5,9 +5,9 @@
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { TaskAccess } from "@rovara-code/broker/core/task-flow";
-import { orgProjectCatalogKey, projectRevisionKey, type ApprovalDeciderRole as _Unused, type JsonValue, type ProjectDefinition } from "@rovara-code/contracts";
+import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey, type ApprovalDeciderRole as _Unused, type JsonValue, type ProjectDefinition } from "@rovara-code/contracts";
 import type { ApprovalDeciderRole } from "@agentx/cloud-contracts";
 import { fixedCodeSettings, soleOwnerPeople } from "@rovara-code/broker/core/merge";
 import {
@@ -16,6 +16,7 @@ import {
 import { BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD, cloudApprovalIssuers, createCloudApprovers, createCloudIdentityProvider } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { createCallbackService } from "@rovara-code/broker";
 import { PEOPLE_ORG, SLACK_TEAM, createPeopleWorld, type Person, type PeopleWorld } from "../support/cloud-people-world.js";
+import { cloudDeciderRole, cloudTaskFacts } from "../../packages/broker/src/cloud/app/index.js";
 import { resolveSlackDecisionCaller } from "../../packages/broker/src/decisions/slack-actions.js";
 import { CloudSlackChannel } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
 import { bindChannelSpace, postApprovalCard } from "@rovara-code/broker/core/channel";
@@ -32,13 +33,13 @@ const allowAll: TaskAccess = { checkStart: async () => ({ allowed: true }), canA
 
 interface Rig { world: FakeWorld; people: PeopleWorld; app: CloudApp; standing: Map<string, ApprovalDeciderRole>; posts: string[] }
 
-async function rig(options: { slack?: boolean } = {}): Promise<Rig> {
+async function rig(options: { slack?: boolean; liveRole?: boolean } = {}): Promise<Rig> {
   const world = createFakeWorld();
   const people = createPeopleWorld();
   const standing = new Map<string, ApprovalDeciderRole>();
   const approvers = createCloudApprovers({
     issuers: cloudApprovalIssuers({ routes: people.routes, slackLookups: people.slackLookups }),
-    deciderRole: async (_request, decider) => standing.get(decider.developerId) ?? "none",
+    deciderRole: options.liveRole === true ? cloudDeciderRole(() => people.routes) : async (_request, decider) => standing.get(decider.developerId) ?? "none",
     place: { documentClient: people.db, tableName: "state", signInTableName: "signin", now: people.now },
   });
   const posts: string[] = [];
@@ -99,7 +100,7 @@ async function plannedTask(r: Rig, path: "QUICK" | "FULL" = "QUICK"): Promise<{ 
 }
 const seen = new Set<string>();
 
-async function press(r: Rig, taskId: string, who: Person, method: typeof BROWSER_SESSION_METHOD | typeof CHAT_SLACK_METHOD, outcome: "approve" | "reject" = "approve") {
+async function press(r: Rig, taskId: string, who: Person, method: typeof BROWSER_SESSION_METHOD | typeof CHAT_SLACK_METHOD, outcome: "approve" | "reject" = "approve", details?: Record<string, unknown>) {
   const runtime = await r.app.runtimeFor(PEOPLE_ORG);
   const gate = runtime.inbound.gate!;
   const found = (await gate.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
@@ -109,6 +110,7 @@ async function press(r: Rig, taskId: string, who: Person, method: typeof BROWSER
   return await gate.decide({
     companyId: PEOPLE_ORG, kind: "workflow-document", subjectId: taskId, requestId: randomUUID(), outcome, seen: { revision: found.revision, artifactDigest: found.artifactDigest },
     credentials: [{ method, token, claimedAccount: { provider: "slack", tenant: SLACK_TEAM, accountId: who.slackUserId ?? "U0NOBODY01" } }], reason: "fine",
+    ...(details === undefined ? {} : { details }),
   });
 }
 
@@ -144,14 +146,28 @@ describe("F3: a decision on this root goes through the real A6 adapters and the 
     expect(await decisionsOf(r, taskId)).toMatchObject([{ actorId: maintainer.developerId, actorRole: "PROJECT_ADMIN" }]);
   });
 
-  it("a Full task's requirements document is decided by nobody on the core path today: A6 has no approval rule for it (DEFERRED S3-A6-REQUIREMENTS-KIND, a switch-on blocker)", async () => {
+  it("a Full task's requirements document is the owner's alone: the owner and a co-owner decide it, a maintainer does not", async () => {
     const r = await rig();
     const { maintainer, owner } = r.people.people;
     r.standing.set(maintainer.developerId, "maintainer");
     r.standing.set(owner.developerId, "owner");
     const { taskId } = await plannedTask(r, "FULL");
-    for (const who of [maintainer, owner]) expect(await press(r, taskId, who, BROWSER_SESSION_METHOD), who.key).toMatchObject({ status: "refused", reason: "not_approved", detail: expect.stringContaining("no Cloud approval rule") as string });
+    expect(await press(r, taskId, maintainer, BROWSER_SESSION_METHOD)).toMatchObject({ status: "refused", reason: "not_approved", detail: expect.stringContaining("only the task's owner decides the requirements") as string });
     expect(await decisionsOf(r, taskId)).toEqual([]);
+    const decided = await press(r, taskId, owner, BROWSER_SESSION_METHOD);
+    expect(decided.status, JSON.stringify(decided)).toBe("decided");
+    expect(await decisionsOf(r, taskId)).toMatchObject([{ actorId: await ownerIdOf(r, taskId), actorRole: "TASK_OWNER" }]);
+  });
+
+  it("a co-owner decides the requirements as the owner; a contributor and an approver with no standing do not", async () => {
+    const r = await rig();
+    const { maintainer, member, owner } = r.people.people;
+    r.standing.set(maintainer.developerId, "co-owner");
+    r.standing.set(member.developerId, "contributor");
+    r.standing.set(owner.developerId, "none");
+    const { taskId } = await plannedTask(r, "FULL");
+    for (const who of [member, owner]) expect((await press(r, taskId, who, BROWSER_SESSION_METHOD)).status, who.key).toBe("refused");
+    expect((await press(r, taskId, maintainer, BROWSER_SESSION_METHOD)).status).toBe("decided");
   });
 
   it("a contributor, and anyone whose standing is nobody's, is refused and nothing is recorded", async () => {
@@ -310,5 +326,164 @@ describe("switch blocker 8: only the Slack path presents chat-slack", () => {
       return /CHAT_SLACK_METHOD|["']chat-slack["']/u.test(code);
     });
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("switch blocker 4: the decider's standing is read live from Cloud's own records", () => {
+  afterEach(() => { delete process.env["DECISION_CARDS_ENABLED"]; });
+  /** The core's task row and Cloud's project records are one table in production; here the task row is copied beside the people world's records. */
+  async function live(setup: (r: Rig) => void = () => undefined) {
+    process.env["DECISION_CARDS_ENABLED"] = "1";
+    const r = await rig({ liveRole: true });
+    const { taskId } = await plannedTask(r);
+    const task = await r.world.store.get({ pk: `DEVTASK#${taskId}`, sk: "META" });
+    r.people.db.set({ ...task, orgId: PEOPLE_ORG });
+    r.people.db.set({ ...projectRevisionKey(PEOPLE_ORG, "payments", 1), entityType: "PROJECT", definition: { name: "payments", revision: 1, repositories: [{ name: "demo", url: "https://github.com/acme/demo.git", path: "repo/demo", defaultBranch: "main", credentialRef: "host-app" }], setup: [], readiness: [], orchestratorInstructions: "Delegate work." } });
+    r.people.db.set({ ...orgProjectCatalogKey(PEOPLE_ORG, "payments"), entityType: "PROJECT_CATALOG", name: "payments", latestRevision: 1, firstRegisteredAt: "2026-10-01T00:00:00.000Z" });
+    setup(r);
+    return { r, taskId };
+  }
+  const grant = (r: Rig, who: Person, role: "developer" | "viewer") => r.people.db.set({ ...projectMemberKey(PEOPLE_ORG, who.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: who.developerId, projectName: "payments", role });
+
+  it("the task's owner decides, as TASK_OWNER", async () => {
+    const { r, taskId } = await live();
+    // The task's creator is the owner the flow was started for (people world's owner).
+    expect((await press(r, taskId, r.people.people.owner, BROWSER_SESSION_METHOD)).status).toBe("decided");
+    expect(await decisionsOf(r, taskId)).toMatchObject([{ actorRole: "TASK_OWNER" }]);
+  });
+
+  it("a project maintainer who is not the owner (a company admin) decides the coding plan as PROJECT_ADMIN", async () => {
+    const { r, taskId } = await live();
+    const answer = await press(r, taskId, r.people.people.maintainer, BROWSER_SESSION_METHOD);
+    expect(answer.status, JSON.stringify(answer)).toBe("decided");
+    expect(await decisionsOf(r, taskId)).toMatchObject([{ actorId: r.people.people.maintainer.developerId, actorRole: "PROJECT_ADMIN" }]);
+  });
+
+  it("a contributor, a viewer and a member with no grant decide nothing", async () => {
+    const { r, taskId } = await live((rig) => grant(rig, rig.people.people.member, "developer"));
+    expect((await press(r, taskId, r.people.people.member, BROWSER_SESSION_METHOD)).status).toBe("refused");
+    grant(r, r.people.people.member, "viewer");
+    expect((await press(r, taskId, r.people.people.member, BROWSER_SESSION_METHOD)).status).toBe("refused");
+    r.people.db.delete?.(projectMemberKey(PEOPLE_ORG, r.people.people.member.developerId, "payments") as never);
+    expect((await press(r, taskId, r.people.people.member, BROWSER_SESSION_METHOD)).status).toBe("refused");
+    expect(await decisionsOf(r, taskId)).toEqual([]);
+  });
+
+  it("a person who is revoked or of another company stands nowhere, whatever their old role was", async () => {
+    const { r, taskId } = await live();
+    for (const who of [r.people.people.revoked, r.people.people.stranger]) expect((await press(r, taskId, who, BROWSER_SESSION_METHOD)).status, who.key).toBe("refused");
+    expect(await decisionsOf(r, taskId)).toEqual([]);
+  });
+
+  it("the reader's own answers, person by person, now", async () => {
+    const { r, taskId } = await live((rig) => grant(rig, rig.people.people.member, "developer"));
+    const read = cloudDeciderRole(() => r.people.routes);
+    const request = { companyId: PEOPLE_ORG, requestId: randomUUID(), kind: "plan", subject: { type: "task", id: taskId }, revision: 1, artifactDigest: "b".repeat(64) };
+    const decider = (who: Person) => ({ developerId: who.developerId, sessionId: who.sessionId, amr: who.amr, name: who.name, orgId: who.orgId, orgRole: who.role });
+    const { owner, maintainer, member, revoked, stranger } = r.people.people;
+    expect(await read(request, decider(owner))).toBe("owner");
+    expect(await read(request, decider(maintainer))).toBe("maintainer");
+    expect(await read(request, decider(member))).toBe("contributor");
+    grant(r, member, "viewer");
+    expect(await read(request, decider(member))).toBe("viewer");
+    expect(await read(request, decider(revoked))).toBe("none");
+    expect(await read(request, decider(stranger))).toBe("none");
+    // Not a task, another company's request, and an unreadable task are nobody's seat.
+    expect(await read({ ...request, subject: { type: "design", id: taskId } }, decider(owner))).toBe("none");
+    expect(await read({ ...request, companyId: "org_s3other000000000000z" }, decider(owner))).toBe("none");
+    expect(await read({ ...request, subject: { type: "task", id: randomUUID() } }, decider(owner))).toBe("none");
+    // With the decision cards off a maintainer who is not the owner has no seat (v2's rollout switch), and reads as nothing.
+    delete process.env["DECISION_CARDS_ENABLED"];
+    expect(await read(request, decider(maintainer))).toBe("none");
+  });
+});
+
+describe("switch blocker 5: v2's limits on a maintainer's seat", () => {
+  const SEAT = "a project maintainer decides a coding plan only";
+  it("a maintainer's decision that accepts a run limit or closes the plan as answered is refused, and nothing is written", async () => {
+    const r = await rig();
+    const { maintainer } = r.people.people;
+    r.standing.set(maintainer.developerId, "maintainer");
+    const { taskId } = await plannedTask(r);
+    for (const details of [{ acknowledgedRunLimitUsd: 5 }, { closeAsAnswered: true }]) {
+      const answer = await press(r, taskId, maintainer, BROWSER_SESSION_METHOD, "approve", details);
+      expect(answer, JSON.stringify(details)).toMatchObject({ status: "refused", detail: expect.stringContaining(SEAT) as string });
+    }
+    expect(await decisionsOf(r, taskId)).toEqual([]);
+  });
+
+  it("the same maintainer's plain approval still decides (the limit is the two details, not the seat)", async () => {
+    const r = await rig();
+    const { maintainer } = r.people.people;
+    r.standing.set(maintainer.developerId, "maintainer");
+    const { taskId } = await plannedTask(r);
+    expect((await press(r, taskId, maintainer, BROWSER_SESSION_METHOD, "approve", { selectedOptionalCheckIds: [] })).status).toBe("decided");
+  });
+
+  it("the owner's decision with the same details is not stopped by the seat rule (the engine judges it)", async () => {
+    const r = await rig();
+    const { owner } = r.people.people;
+    r.standing.set(owner.developerId, "owner");
+    const { taskId } = await plannedTask(r);
+    const answer = await press(r, taskId, owner, BROWSER_SESSION_METHOD, "approve", { acknowledgedRunLimitUsd: 5 });
+    expect(JSON.stringify(answer)).not.toContain(SEAT);
+  });
+
+  it("a co-owner is the owner's seat, and carries no maintainer limit", async () => {
+    const r = await rig();
+    const { maintainer } = r.people.people;
+    r.standing.set(maintainer.developerId, "co-owner");
+    const { taskId } = await plannedTask(r);
+    const answer = await press(r, taskId, maintainer, BROWSER_SESSION_METHOD, "approve", { acknowledgedRunLimitUsd: 5 });
+    expect(JSON.stringify(answer)).not.toContain(SEAT);
+  });
+});
+
+describe("switch blocker 10: Cloud's own task facts for the core's sessions", () => {
+  async function planned() {
+    const r = await rig();
+    const { taskId, owner } = await plannedTask(r);
+    const task = await r.world.store.get({ pk: `DEVTASK#${taskId}`, sk: "META" });
+    r.people.db.set({ ...task, orgId: PEOPLE_ORG });
+    // The workspace and its operations are the same table in production; here they are copied beside the people world's records.
+    const workspaceId = (task as unknown as { workspaceId: string }).workspaceId;
+    for (const row of (await r.world.store.query({ pk: `WORKSPACE#${workspaceId}` })).items) r.people.db.set(row);
+    // Cloud's workspace reads, over those rows (the people world has no task actions of its own).
+    const store = r.world.store;
+    (r.people.routes as unknown as { tasks: unknown }).tasks = {
+      workspace: async (id: string) => await store.get({ pk: `WORKSPACE#${id}`, sk: "META" }),
+      operations: async (id: string) => (await store.query({ pk: `WORKSPACE#${id}`, sk: { op: "beginsWith", prefix: "OPERATION#" } })).items,
+    };
+    return { r, taskId, owner, facts: cloudTaskFacts(() => r.people.routes) };
+  }
+
+  it("a planned task's facts: its project, owner, workflow, step and run, read from the rows the core wrote", async () => {
+    const { taskId, owner, facts } = await planned();
+    const read = (await facts.read(PEOPLE_ORG, taskId))!;
+    expect(read).toMatchObject({ companyId: PEOPLE_ORG, taskId, project: "payments", ownerDeveloperId: owner.developerId, workflow: { stage: "PLAN_REVIEW", state: "WAITING" }, step: "Waiting for your approval", pendingApprovals: 0 });
+    expect(read.runStatus).toBe("SUCCEEDED");
+    expect(Number.isNaN(Date.parse(read.updatedAt))).toBe(false);
+  });
+
+  it("a task of another company, and a task that does not exist, have none", async () => {
+    const { taskId, facts } = await planned();
+    expect(await facts.read("org_s3other000000000000z", taskId)).toBeUndefined();
+    expect(await facts.read(PEOPLE_ORG, randomUUID())).toBeUndefined();
+  });
+
+  it("a task whose owner is no longer a member still has facts, with an idle run", async () => {
+    const { r, taskId, facts } = await planned();
+    const row = r.people.db.get({ pk: `DEVTASK#${taskId}`, sk: "META" }) as Record<string, unknown>;
+    r.people.db.set({ ...row, developerId: r.people.people.revoked.developerId, ownerKey: undefined });
+    const read = await facts.read(PEOPLE_ORG, taskId);
+    expect(read).toBeDefined();
+    expect(read!.runStatus).toBe("IDLE");
+  });
+
+  it("a closed task is ended: closedAt and endedAt are carried", async () => {
+    const { r, taskId, facts } = await planned();
+    const row = r.people.db.get({ pk: `DEVTASK#${taskId}`, sk: "META" }) as Record<string, unknown>;
+    r.people.db.set({ ...row, closedAt: "2026-11-13T12:00:00.000Z" });
+    expect(await facts.read(PEOPLE_ORG, taskId)).toMatchObject({ closedAt: "2026-11-13T12:00:00.000Z", endedAt: "2026-11-13T12:00:00.000Z" });
   });
 });

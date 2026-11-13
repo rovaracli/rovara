@@ -19,3 +19,6 @@ export * from "./slack-work.js";
 export * from "./automation.js";
 export * from "./runtime.js";
 export * from "./entry.js";
+export * from "./decider-role.js";
+export * from "./seat-limits.js";
+export * from "./task-facts.js";

@@ -306,16 +306,13 @@ describe("S3-4 f: Cloud's own rules for the core, from the broker's dependencies
     expect(wiring.slack!.linkWords("ABCD-1234")).not.toContain("ABCD-1234");
   });
 
-  it("task access: a person who cannot be found as a member of the company starts nothing; the owner of a task, and a company owner or admin, may act on it; nobody else", async () => {
+  it("task access: a person who cannot be found as a member of the company starts nothing and acts on nothing (the rules themselves are in cloud-app-task-access.test.ts)", async () => {
     const { wiring } = await wiringOver({ agents: undefined });
     const principal = (personId: string, roles: string[]) => ({ companyId: FAKE_COMPANY, personId, roles }) as never;
     expect(await wiring.access.checkStart(principal(MAYA, ["member"]), "payments")).toMatchObject({ allowed: false, code: "FORBIDDEN" });
-    const task = { developerId: MAYA } as never;
-    expect(await wiring.access.canAct(principal(MAYA, ["member"]), task)).toBe(true);
-    expect(await wiring.access.canAct(principal("b".repeat(64), ["admin"]), task)).toBe(true);
-    expect(await wiring.access.canAct(principal("b".repeat(64), ["owner"]), task)).toBe(true);
-    expect(await wiring.access.canAct(principal("b".repeat(64), ["member"]), task)).toBe(false);
-    expect(await wiring.access.canAct(principal("b".repeat(64), ["auditor"]), task)).toBe(false);
+    expect(await wiring.access.canAct(principal(MAYA, ["owner"]), { developerId: MAYA, project: "payments", taskId: randomUUID() } as never)).toBe(false);
+    expect(await wiring.access.canAct(principal(MAYA, ["owner"]), { developerId: MAYA, project: "payments" })).toBe(false);
+    expect(await wiring.access.checkStep({ taskId: randomUUID(), developerId: MAYA, project: "payments", orgId: FAKE_COMPANY } as never)).toMatchObject({ allowed: false });
   });
 
   it("the settings carry what Cloud knows: the connector writes behind approval, the install's workspace limits, the pinned recipe", async () => {

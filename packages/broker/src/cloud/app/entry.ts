@@ -10,12 +10,13 @@
 //                         request, and hands the broker its start hook. Infrastructure (the stack parameter, the schedules, the Lambda wiring) is not here.
 //   f  the wiring         `cloudCoreWiringFromBroker`: Cloud's own people, code settings, task end, channel rules, Slack standing and task access, from the broker's dependencies where they
 //                         exist. What does not exist yet is an explicit input of `CloudCoreEntryInputs`, never a default.
-import { AgentXError, SessionIdSchema, sessionLink, type CodeIntentRequest, type CodeIntentResult, type OrgId, type Principal, type SlackRequestMessage } from "@rovara-code/contracts";
+import { AgentXError, SessionIdSchema, orgProjectCatalogKey, projectMemberKey, projectMetaKey, when, sessionLink, type CodeIntentRequest, type CodeIntentResult, type OrgId, type Principal, type SlackRequestMessage } from "@rovara-code/contracts";
 import { recordTaskThread } from "@rovara-code/broker/core/channel";
 import { taskSessionId } from "@rovara-code/broker/core/sessions";
 import type { TaskAccess } from "@rovara-code/broker/core/task-flow";
-import { SLACK_NOT_A_MEMBER_NOTICE, type DeveloperTaskView } from "@agentx/cloud-contracts";
+import { SLACK_NOT_A_MEMBER_NOTICE, orgMemberKey, type DeveloperTaskView } from "@agentx/cloud-contracts";
 import { agentRunStarterOf, developerTaskRouteDependencies } from "../../aws/developer-routes/dependencies.js";
+import { authorizeTaskAction } from "../../aws/developer-tasks/access.js";
 import { checkProjectAccess } from "../../aws/developer-routes/project-access.js";
 import type { DeveloperCaller, DeveloperRouteDependencies } from "../../aws/developer-routes/types.js";
 import { slackRequesterStanding, slackTeamOrg } from "../../aws/broker/dependency-wiring.js";
@@ -23,6 +24,7 @@ import type { AwsBrokerDependencies } from "../../aws/broker/definitions.js";
 import { readCodeSettings } from "../../rovara-code/code-settings.js";
 import type { CoreIntentHook } from "../../rovara-code/intent.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
+import { tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { onTaskEnded, type TaskEndHost } from "../../agents/task-end.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { createCloudIdentityProvider, principalOfCaller } from "../adapters/people/index.js";
@@ -36,6 +38,7 @@ import { isCoreJobEvent } from "./jobs.js";
 import { createCloudMergePeople } from "./merge-people.js";
 import { cloudWordsForCoreRefusal } from "./refusal-words.js";
 import { cloudCoreRuntime, type CloudCoreWiring } from "./runtime.js";
+import { cloudTaskFacts } from "./task-facts.js";
 import { cloudSettingsFromEnvironment, type CloudCompanySettings } from "./settings-mapping.js";
 import type { CloudAdapterContext } from "./registry.js";
 
@@ -145,8 +148,8 @@ export function createCoreSlackConsumer(deps: CoreSlackConsumerDeps): (message: 
 
 /**
  * Who may start work on a project and who may act on a task, for the core's flow (`TaskAccess`). The start is Cloud's own rule: the person's project role and `requireNewWorkAllowed`
- * (an archived project, a role that may not start work), the same two checks `startTask` makes. Acting on a task is the task's owner or a company owner or admin; Cloud's finer rule
- * (co-owners, project maintainers, the Auditor's read) is the decision gate's live check at the moment of a decision. A person who cannot be found as a caller is refused.
+ * (an archived project, a role that may not start work), the same two checks `startTask` makes. Acting on a task is v2's set, the task's owner and its co-owners; a project maintainer's one
+ * seat (a coding plan) is the decision gate's live check at the moment of a decision. A person who cannot be found as a caller is refused.
  */
 export function cloudTaskAccess(routesOf: () => DeveloperRouteDependencies): TaskAccess {
   const callerOf = async (principal: Principal): Promise<DeveloperCaller | undefined> => await agentRunStarterOf(routesOf())?.callerFor(principal.companyId, principal.personId);
@@ -164,12 +167,49 @@ export function cloudTaskAccess(routesOf: () => DeveloperRouteDependencies): Tas
         throw error;
       }
     },
+    // v2's set: the task's owner and its co-owners, and no one else (a company owner or admin included: a maintainer's one seat is the decision gate's, for a coding plan). Cloud's own `close` action,
+    // read live: the task in the person's company, they own it or sit on its People list as an owner, and they are still a member.
     async canAct(principal, task) {
-      return principal.personId === task.developerId || principal.roles.includes("owner") || principal.roles.includes("admin");
+      const taskId = (task as { taskId?: unknown }).taskId;
+      if (typeof taskId !== "string") return false;
+      const caller = await callerOf(principal);
+      if (caller === undefined) return false;
+      try {
+        await authorizeTaskAction(developerTaskRouteDependencies(routesOf(), caller), caller, taskId, "close");
+        return true;
+      } catch {
+        return false;
+      }
     },
-    async checkStep() {
-      // As Code's own: the person a task runs for was authorized at its start.
-      return { allowed: true };
+    // Switch blocker 1: v2's dispatch check (aws/task-person-runtime.ts: the owner's membership, their project authority and the project's own switches, read now), fenced into the step's own
+    // transaction. The person the step runs for is the task's owner NOW (a taker after a take-over), read as a live caller: removed, revoked, moved or demoted to Auditor, they are not found or hold no
+    // project role; the project must still take new work (not archived; tasks on; a role that may start tasks). The fence is `items`: the owner's member record, their grant, the project's latest
+    // revision and its archive status, as read here, so a change between this check and the step's commit refuses the step.
+    async checkStep(task) {
+      const record = task as unknown as DeveloperTaskRecord & { companyId?: string };
+      const orgId = (record.orgId ?? record.companyId);
+      const owner = tryEffectiveTaskOwner(record);
+      if (orgId === undefined || owner === undefined) return { allowed: false, message: "the person this task runs for could not be found" };
+      const routes = routesOf();
+      const caller = await agentRunStarterOf(routes)?.callerFor(orgId, owner.developerId);
+      if (caller === undefined) return { allowed: false, message: "the person this task runs for is no longer a member of the company" };
+      try {
+        const access = await checkProjectAccess(routes, caller, record.project, undefined, undefined);
+        await requireNewWorkAllowed(developerTaskRouteDependencies(routes, caller), orgId, record.project, access.role, "task");
+        const orgMaintainer = caller.orgRole === "owner" || caller.orgRole === "admin";
+        return {
+          allowed: true,
+          items: [
+            { kind: "check", key: orgMemberKey(orgId, owner.developerId), condition: when.eq("role", caller.orgRole) },
+            ...(orgMaintainer ? [] : [{ kind: "check" as const, key: projectMemberKey(orgId, owner.developerId, record.project), condition: when.present() }]),
+            { kind: "check", key: orgProjectCatalogKey(orgId, record.project), condition: when.eq("latestRevision", access.revision) },
+            { kind: "check", key: projectMetaKey(orgId, record.project), condition: when.or(when.absent(), when.eq("status", "active")) },
+          ],
+        };
+      } catch (error) {
+        if (error instanceof AgentXError) return { allowed: false, message: error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message };
+        throw error;
+      }
     },
   };
 }
@@ -178,8 +218,8 @@ export function cloudTaskAccess(routesOf: () => DeveloperRouteDependencies): Tas
 export interface CloudCoreEntryInputs {
   /** The adapter modules' deployment inputs: the clients and option bags (`CloudModuleDeps`). Built once per container when the first core request arrives. */
   moduleDeps: () => CloudModuleDeps;
-  /** What a task's session shows, from Cloud's records. Code's own facts source is local to its laptop composition (an upstream need), and Cloud has none for core tasks yet. */
-  sessionFacts: CloudCoreWiring["sessionFacts"];
+  /** What a task's session shows. Absent: Cloud's own (`cloudTaskFacts`, over the task rows the core writes). */
+  sessionFacts?: CloudCoreWiring["sessionFacts"] | undefined;
   /** The company's pinned Rovara Code recipe's step kinds (decides Understand and the plan check); undefined: Cloud's journey install, which has none. */
   recipeStepKinds?: ((companyId: OrgId) => readonly string[] | undefined) | undefined;
   /** The agent runs host the end of a core task tells (`TaskEndHost`); absent: the end is recorded and the handlers told as Cloud's end bookkeeping does with none. */
@@ -232,7 +272,7 @@ export function cloudCoreWiringFromBroker(sources: CloudCoreWiringSources): Clou
       readTask: async (taskId) => (await broker.documentClient.send(new GetCommand({ TableName: broker.tableName, Key: { pk: `DEVTASK#${taskId}`, sk: "META" }, ConsistentRead: true }))).Item,
       onTaskEnded: async (task, outcome) => { await onTaskEnded({ ...table, now: memberDeps.now, log: (event, fields) => log({ event, ...fields }), ...(inputs.agentRuns === undefined ? {} : { agentRuns: inputs.agentRuns }) }, task as never, outcome); },
     },
-    sessionFacts: inputs.sessionFacts,
+    sessionFacts: inputs.sessionFacts ?? cloudTaskFacts(routes),
     ...(inputs.notices === undefined ? {} : { notices: inputs.notices }),
     channels: {
       // Owner decision 131: a chat tenant is the company the Slack team is bound to; nobody's otherwise.

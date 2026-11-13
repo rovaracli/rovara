@@ -1,15 +1,17 @@
 // Review round 2 (M9, M10): the start rule of `cloudTaskAccess` (cloud/app/entry.ts) is Cloud's own, read from the real project and role records: the project role (checkProjectAccess)
 // and the refusals that belong where new work starts (requireNewWorkAllowed: an archived project, a role that may not start tasks).
 import { describe, expect, it } from "vitest";
+import { MemoryDocumentStore } from "@rovara-code/broker/ports";
 import { projectMetaKey, orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
+import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { cloudTaskAccess } from "../../packages/broker/src/cloud/app/index.js";
 import { createCloudIdentityProvider } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { PEOPLE_ORG, createPeopleWorld, type Person, type PeopleWorld } from "../support/cloud-people-world.js";
 
-const seedProject = (world: PeopleWorld, options: { archived?: boolean } = {}) => {
+const seedProject = (world: PeopleWorld, options: { archived?: boolean; tasksOff?: boolean } = {}) => {
   world.db.set({
     ...projectRevisionKey(PEOPLE_ORG, "payments", 1), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z",
-    definition: { name: "payments", revision: 1, repositories: [{ name: "web", url: "https://github.com/acme/payments.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [], orchestratorInstructions: "Delegate work." },
+    definition: { name: "payments", revision: 1, repositories: [{ name: "web", url: "https://github.com/acme/payments.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [], orchestratorInstructions: "Delegate work.", ...(options.tasksOff === true ? { developerTasks: { enabled: false } } : {}) },
   });
   world.db.set({ ...orgProjectCatalogKey(PEOPLE_ORG, "payments"), entityType: "PROJECT_CATALOG", name: "payments", latestRevision: 1, firstRegisteredAt: "2026-10-01T00:00:00.000Z" });
   world.db.set({
@@ -71,5 +73,128 @@ describe("cloudTaskAccess.checkStart is Cloud's own start rule", () => {
     for (const who of [world.people.revoked, world.people.stranger]) {
       expect(await access.checkStart({ companyId: PEOPLE_ORG, personId: who.developerId, roles: ["owner"] } as never, "payments"), who.key).toMatchObject({ allowed: false, code: "FORBIDDEN" });
     }
+  });
+});
+
+describe("cloudTaskAccess.canAct is v2's set: the task's owner, and no one else", () => {
+  const TASK = "22222222-2222-4222-8222-222222222222";
+  const seedTask = (world: PeopleWorld, owner: Person) => world.db.set({
+    pk: `DEVTASK#${TASK}`, sk: "META", entityType: "DEVTASK", taskId: TASK, orgId: PEOPLE_ORG, project: "payments", developerId: owner.developerId, developerName: owner.name, ownerKey: taskOwnerKey(owner.developerId, TASK),
+    workspaceId: "33333333-3333-4333-8333-333333333333", status: "RUNNING", createdAt: "2026-11-12T10:00:00.000Z",
+  });
+  const canAct = async (world: PeopleWorld, who: Person) => await cloudTaskAccess(() => world.routes).canAct(
+    (await createCloudIdentityProvider(world.routes).getPrincipal(PEOPLE_ORG, who.developerId)) ?? { companyId: PEOPLE_ORG, personId: who.developerId, roles: [who.role], displayName: who.name, provider: "oidc", methods: [] },
+    { taskId: TASK, developerId: world.people.owner.developerId, project: "payments" } as never,
+  );
+
+  it("the owner may act; a company admin, a contributor and a viewer who are not the owner may not", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    seedTask(world, world.people.owner);
+    grant(world, world.people.member, "developer");
+    expect(await canAct(world, world.people.owner)).toBe(true);
+    expect(await canAct(world, world.people.maintainer)).toBe(false);
+    expect(await canAct(world, world.people.member)).toBe(false);
+    grant(world, world.people.member, "viewer");
+    expect(await canAct(world, world.people.member)).toBe(false);
+  });
+
+  it("a person who is revoked, of another company, or the Auditor may not", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    seedTask(world, world.people.owner);
+    for (const who of [world.people.revoked, world.people.stranger, world.people.auditor]) expect(await canAct(world, who), who.key).toBe(false);
+  });
+
+  it("a task of another company, or one that does not exist, is not actable", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    expect(await canAct(world, world.people.owner)).toBe(false);
+    world.db.set({ pk: `DEVTASK#${TASK}`, sk: "META", entityType: "DEVTASK", taskId: TASK, orgId: "org_s3other000000000000z", project: "payments", developerId: world.people.owner.developerId, ownerKey: taskOwnerKey(world.people.owner.developerId, TASK) });
+    expect(await canAct(world, world.people.owner)).toBe(false);
+  });
+});
+
+describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fenced into the step", () => {
+  const TASK = "44444444-4444-4444-8444-444444444444";
+  const taskOf = (world: PeopleWorld, creator: Person, extra: Record<string, unknown> = {}) => ({
+    pk: `DEVTASK#${TASK}`, sk: "META", entityType: "DEVTASK", taskId: TASK, orgId: PEOPLE_ORG, project: "payments", developerId: creator.developerId, developerName: creator.name, provider: "oidc",
+    ownerKey: taskOwnerKey(creator.developerId, TASK), workspaceId: "55555555-5555-4555-8555-555555555555", ...extra,
+  });
+  const step = async (world: PeopleWorld, task: Record<string, unknown>) => await cloudTaskAccess(() => world.routes).checkStep(task as never);
+
+  it("the owner of a task in an open project may have a step, and the answer fences the owner's seat, grant, the project's revision and its archive status", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    grant(world, world.people.member, "developer");
+    const verdict = await step(world, taskOf(world, world.people.member));
+    expect(verdict).toMatchObject({ allowed: true });
+    const items = (verdict as unknown as { items: Array<{ key: { pk: string; sk: string }; condition: unknown }> }).items;
+    expect(items.map((item) => item.key.pk.split("#")[0])).toHaveLength(4);
+    // The fence holds as long as nothing changed, and refuses the step when any of the four does.
+    const store = new MemoryDocumentStore();
+    const copy = (key: { pk: string; sk: string }) => { const row = world.db.get(key); if (row !== undefined) void store.put({ item: row as never }); };
+    for (const item of items) copy(item.key);
+    await Promise.resolve();
+    const fenced = async () => (await store.transact(items.map((item) => ({ kind: "check" as const, key: item.key, condition: item.condition as never })))).applied;
+    expect(await fenced()).toBe(true);
+    const [member, , catalog, meta] = items;
+    await store.put({ item: { ...(world.db.get(member!.key) as object), role: "auditor" } as never });
+    expect(await fenced()).toBe(false);
+    await store.put({ item: world.db.get(member!.key) as never });
+    expect(await fenced()).toBe(true);
+    await store.put({ item: { ...(world.db.get(catalog!.key) as object), latestRevision: 2 } as never });
+    expect(await fenced()).toBe(false);
+    await store.put({ item: world.db.get(catalog!.key) as never });
+    await store.put({ item: { ...(world.db.get(meta!.key) as object), status: "archived" } as never });
+    expect(await fenced()).toBe(false);
+    await store.put({ item: world.db.get(meta!.key) as never });
+    await store.delete({ key: items[1]!.key });
+    expect(await fenced()).toBe(false);
+  });
+
+  it("a company admin (a maintainer of every project) owns a task with no grant: the fence has no grant to hold", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    const verdict = await step(world, taskOf(world, world.people.maintainer));
+    expect(verdict).toMatchObject({ allowed: true });
+    expect((verdict as unknown as { items: unknown[] }).items).toHaveLength(3);
+  });
+
+  it("a removed or revoked owner, an owner of another company, and a demoted Auditor get no step", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    for (const who of [world.people.revoked, world.people.stranger, world.people.auditor]) expect(await step(world, taskOf(world, who)), who.key).toMatchObject({ allowed: false });
+  });
+
+  it("an owner who lost their grant, a viewer, a project with its tasks off and an archived project get no step", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    expect(await step(world, taskOf(world, world.people.member))).toMatchObject({ allowed: false });
+    grant(world, world.people.member, "viewer");
+    expect(await step(world, taskOf(world, world.people.member))).toMatchObject({ allowed: false });
+    const off = createPeopleWorld();
+    seedProject(off, { tasksOff: true });
+    grant(off, off.people.member, "developer");
+    expect(await step(off, taskOf(off, off.people.member))).toMatchObject({ allowed: false });
+    const archived = createPeopleWorld();
+    seedProject(archived, { archived: true });
+    expect(await step(archived, taskOf(archived, archived.people.owner))).toMatchObject({ allowed: false });
+  });
+
+  it("after a take-over the step is judged on the taker, not the creator", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    grant(world, world.people.member, "developer");
+    const taken = { currentOwner: { developerId: world.people.revoked.developerId, name: "Gone", provider: "oidc", since: "2026-11-13T09:00:00.000Z" } };
+    expect(await step(world, taskOf(world, world.people.member, taken))).toMatchObject({ allowed: false });
+    expect(await step(world, taskOf(world, world.people.member))).toMatchObject({ allowed: true });
+  });
+
+  it("a task naming no company, or whose owner cannot be read, gets no step", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    expect(await step(world, { ...taskOf(world, world.people.owner), orgId: undefined })).toMatchObject({ allowed: false });
+    expect(await step(world, { ...taskOf(world, world.people.owner), developerId: undefined, ownerKey: undefined })).toMatchObject({ allowed: false });
   });
 });
