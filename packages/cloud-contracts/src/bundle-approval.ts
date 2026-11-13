@@ -35,6 +35,12 @@ export const ApprovalRecordSchema = z
     /** True only when the customer approves moving back to this older version on purpose. */
     rollback: z.boolean().default(false),
     /**
+     * A rollback approval only (0.5.17): the install it was checked against, the version its settings recorded and its release high-water mark (null: none
+     * recorded). The deployer refuses the approval once either differs, so an approval checked against the rollback floors at one version is never deployed
+     * after the install moved on. A rollback approval without it is refused (approve it again). A deployer that predates the field refuses the record.
+     */
+    rollbackFrom: z.object({ installedVersion: z.string().regex(/^\d+\.\d+\.\d+$/), highWater: z.string().regex(/^\d+\.\d+\.\d+$/).nullable() }).strict().optional(),
+    /**
      * Present only for an Enterprise install's approval: the files above then include `built/...`, the templates and packages the approval built for this install
      * (task N3b), and this pins the hash of that result and of every setting it was built from. Absent: the bundle's own (Public) templates, as before. A deployer
      * that predates this field refuses the record (the schema is strict), which is the safe side.

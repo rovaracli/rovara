@@ -43,7 +43,7 @@ import { SSMClient } from "@aws-sdk/client-ssm";
 import { resetDeployment } from "./bundle/reset-deployment.js";
 import { PINNED_BUNDLE_SIGNING_KEYS } from "./bundle/trusted-keys.js";
 import { verifyBundle, type VerifiedBundle } from "./bundle/verify.js";
-import { runUpgrade, type UpgradeDependencies } from "./run.js";
+import { highWaterRefusal, runUpgrade, type UpgradeDependencies } from "./run.js";
 import { releaseNotes, rollbackDirection, ROLLBACK_FLOORS, ROLLBACK_FLOORS_DECLARED_THROUGH } from "./target.js";
 
 /** The embedder image has no repository in an install without the Team record (the access stack makes it only with the record): skipped there, an error where the record is on or cannot be read. */
@@ -273,7 +273,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
           rollbackGuard = { ...rollbackGuard, highWater: await raiseReleaseHighWater(store, globals.env, settings.version) };
         } else {
           // Any other approval moves the install off the version it records: that version is at least the mark (best effort; the deployer installs either way).
-          await raiseReleaseHighWater(store, globals.env, settings.version).catch(() => undefined);
+          await raiseReleaseHighWater(store, globals.env, settings.version).catch((error: unknown) => { context.stderr.write(`WARNING: ${highWaterRefusal(globals.env, settings.version, "upgrade", error, true)}\n`); });
         }
         const runner = realCommandRunner(context.stderr);
         const loadImages = async (): Promise<void> => {

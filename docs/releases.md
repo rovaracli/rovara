@@ -242,22 +242,34 @@ holding it). It cannot be combined with `--to`, `--export`, `--bundle` or `--dep
   stack does not already hold), refuses the rollback with nothing deployed. Example: 0.5.14's control
   plane needs `CallbackSigningKey`, which this agentx no longer sends; 0.5.15 also declares that as a
   floor, so `--rollback-to 0.5.14` is refused (the 0.5.14 CLI itself can still deploy 0.5.14).
+  Limit: the check computes each later stack's parameters from the outputs the stacks report now (the
+  newer release's). It does not check that the older templates still declare those outputs; a renamed
+  or removed output shows up only when that stack deploys.
 
 Then it is an upgrade: the same preview, questions, data guard (a table the newer release added is
 deleted only when named with `--allow-replace`), `--yes`, doctor run, and the settings record the target.
 Messages say "rollback" and name `--rollback-to` for re-running.
 
 **The high-water mark.** `/agentx/<env>/release-high-water` holds the highest release the environment
-ever ran (its own SSM parameter, not the strict settings record, which every older agentx must still
-read). Every upgrade raises it; a rollback first records the release it leaves, and never lowers it, so
-a second rollback still meets the floors the first one passed. An install made before 0.5.17 has none,
+ever ran or started to install (its own SSM parameter, not the strict settings record, which every older
+agentx must still read). Before its first stack changes, an upgrade raises it to its target (so an upgrade
+that stops part way still leaves that release's floors in force) and a rollback records the release it
+leaves; nothing lowers it, so a second rollback still meets the floors the first one passed. A plain
+upgrade or a same-version re-run whose target is below the mark is checked against the floors too. A
+writer reads the mark back after writing it and writes again (at most 3 times) if another writer left it
+lower. The mark guards against mistakes; it is not a security boundary (anyone who may write
+`/agentx/<env>/*` can change it). An install made before 0.5.17 has none,
 and its recorded version stands in. Who writes it: the CLI (admin credentials, or the environment's
 operator role, whose grant already covers `/agentx/<env>/*`), `agentx bundle approve` (raised to the
 installed version at every approval), and the Enterprise bundle deployer (raised to the installed
 version before its first stack change and to the bundle's version after its last; its role has
 `ssm:GetParameter` and `ssm:PutParameter` on exactly this parameter, as on the settings record). If an
-upgrade cannot raise it, it warns; if a rollback cannot record it, the rollback stops before anything
-changes.
+upgrade or a rollback cannot record it, it stops before anything changes; a malformed mark is named and
+must be fixed by hand.
+
+**Bundle rollbacks.** `agentx bundle approve --rollback` checks the floors and pins the install it checked
+(`rollbackFrom`: the recorded version and the mark) in the approval record. The deployer refuses that
+approval once either has moved (an upgrade since, another rollback): approve it again.
 
 **Operator values a rollback drops.** A `config set` value whose parameter the older template does not
 declare is dropped (the rollback prints each one), and rolling forward again deploys the newer

@@ -32,7 +32,7 @@ import type { VerifiedBundle } from "./bundle/verify.js";
 import { writeUpgradeBundle } from "./export.js";
 import { FORCED_OPERATOR_VALUES, forcedOperatorValues, forcedValueLines } from "./forced-values.js";
 import { cdkDiffRisks, cdkReviewedDeployer, guardData, upgradeConfirm } from "./review.js";
-import { notesText, refusePrereleaseTarget, rollbackDirection, ROLLBACK_FLOORS, ROLLBACK_FLOORS_DECLARED_THROUGH, upgradeDirection, type ReleaseNotes, type RollbackFloor } from "./target.js";
+import { floorCheck, notesText, refusePrereleaseTarget, rollbackDirection, ROLLBACK_FLOORS, ROLLBACK_FLOORS_DECLARED_THROUGH, upgradeDirection, type ReleaseNotes, type RollbackFloor } from "./target.js";
 
 /** The release's embedder image, sent over the deployed value of the control plane's EmbedderImageUri (only where the Team record is built, see prepareDeployment). */
 function withEmbedderImage(forced: ReturnType<typeof forcedOperatorValues>, image: string | undefined): ReturnType<typeof forcedOperatorValues> {
@@ -314,8 +314,15 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
   // The direction guard: a plain upgrade never moves back; only --rollback-to does, and only to an older release above every floor of every
   // release the environment ever ran (the high-water mark, read again under the lock).
   const rollback = options.rollbackTo !== undefined;
-  const checkDirection = async (current: string): Promise<"same" | "newer" | "older"> => (!rollback ? upgradeDirection(env, current, target)
-    : rollbackDirection(env, current, target, floors.floors, floors.declaredThrough, await readReleaseHighWater(deps.store, env)));
+  // A plain upgrade or a same-version re-run is checked against the floors too whenever the mark is above the target: an upgrade that stopped
+  // part way already recorded its target as the mark, so the floors it declared hold from then on.
+  const checkDirection = async (current: string): Promise<"same" | "newer" | "older"> => {
+    const highWater = await readReleaseHighWater(deps.store, env);
+    if (rollback) return rollbackDirection(env, current, target, floors.floors, floors.declaredThrough, highWater);
+    const direction = upgradeDirection(env, current, target);
+    floorCheck(env, current, target, floors.floors, floors.declaredThrough, highWater);
+    return direction;
+  };
   // Checked here to fail fast, and again under the lock, where it counts.
   await checkDirection(first.version);
   // A cdk rollback to a release that names no embedder image would keep the newer release's image running under the older code: name it.
@@ -418,14 +425,12 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
           throw agentXError("CONFIG_INVALID", stoppedBefore(request.stackName, options.rollbackTo));
         }
       });
-      // A rollback first records the release it leaves as the high-water mark (never lowered), so the next rollback still meets its floors.
-      // It must be recorded: without it a second rollback could step under a floor this one passed.
-      if (rollback) {
-        try {
-          await raiseReleaseHighWater(deps.store, env, settings.version);
-        } catch (error) {
-          throw agentXError("CONFIG_INVALID", `the rollback could not record ${settings.version} as ${releaseHighWaterParameter(env)} (${plainMessage(error)}), so it stopped before anything changed. Check that these credentials may write it (ssm:PutParameter), then run the rollback again`);
-        }
+      // Before the first stack changes, the mark records the highest release this run touches: the release a rollback leaves, or the target of an
+      // upgrade (so an upgrade that stops part way still leaves its floors in force). It must be recorded; otherwise nothing changes.
+      try {
+        await raiseReleaseHighWater(deps.store, env, rollback ? settings.version : target);
+      } catch (error) {
+        throw agentXError("CONFIG_INVALID", highWaterRefusal(env, rollback ? settings.version : target, rollback ? "rollback" : "upgrade", error));
       }
       try {
         // The lock is this command's, in deps.store, where the settings live; deployEnvironment
@@ -454,17 +459,18 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     if (bundle !== undefined) await recordInstalledBundle({ store: deps.store, env, now: deps.now(), version: target, bundleId: bundle.bundleId });
     // M-1: every stack deployed, so the control plane removed the previous name's pieces under the grants this upgrade kept for them; the next upgrade drops those grants.
     if (settings.engine === "cdk" && await clearModelProxyTlsPrevious(deps.store, env)) deps.write("Model proxy TLS: the previous name's record, validation record and certificate were removed; the next upgrade drops the deploy grants that removed them");
-    // An upgrade raises the high-water mark to the release it installed (a rollback leaves it). Every stack is already on it, so a refusal here only warns.
-    if (!rollback) {
-      try { await raiseReleaseHighWater(deps.store, env, target); } catch (error) {
-        deps.write(`WARNING: ${releaseHighWaterParameter(env)} could not be raised to ${target} (${plainMessage(error)}); a later rollback then checks floors only from the version it finds recorded. Run agentx upgrade again with credentials that may write it (ssm:PutParameter) to record it`);
-      }
-    }
     return { settings, parts };
   });
 
   const finished = await finishUpgrade({ env, from: settings.version, target, parts, deps, ...(rollback ? { rollback: true } : {}) });
   return options.rollbackTo === undefined ? finished : { ...finished, rolledBack: true };
+}
+
+/** Why the mark could not be recorded, with the advice that fits: a malformed mark is fixed by hand, a refused write needs other credentials. */
+export function highWaterRefusal(env: string, version: string, what: "upgrade" | "rollback", error: unknown, afterDeploy = false): string {
+  const reason = plainMessage(error);
+  const advice = /not a release version/.test(reason) ? "fix it by hand to the highest release the environment ever ran, then run it again" : "check that these credentials may write it (ssm:PutParameter), then run it again";
+  return `the ${what} could not record ${version} as ${releaseHighWaterParameter(env)} (${reason})${afterDeploy ? "" : ", so it stopped before anything changed"}; ${advice}`;
 }
 
 /** A declined stack: what changed, and how to go on (an upgrade and a rollback each re-run themselves). */
@@ -500,6 +506,7 @@ async function runBuiltBundleUpgrade(input: { options: UpgradeOptions; deps: Upg
   const target = bundle.manifest.version;
   refusePrereleaseTarget(target);
   upgradeDirection(first.env, first.version, target);
+  floorCheck(first.env, first.version, target, deps.rollbackFloors?.floors ?? ROLLBACK_FLOORS, deps.rollbackFloors?.declaredThrough ?? ROLLBACK_FLOORS_DECLARED_THROUGH, await readReleaseHighWater(deps.store, first.env));
   if (deps.approveAndDeploy === undefined) throw agentXError("CONFIG_INVALID", "this agentx cannot build an install's templates at approval; the bundle was refused and nothing was changed");
   // The same check as the main path, before the approval is written or the deployer started: a table left by a rolled-back Team record build would fail the deployer on "already exists".
   await enforceTeamRecordPreflight({ env: first.env, store: deps.store, controlPlaneParameters: (await deps.stacks.describe(first.stacks["control-plane"]))?.parameters, probe: deps.teamRecordProbe, write: deps.write, stoppedMessage: "upgrade stopped before anything changed" });
@@ -509,8 +516,9 @@ async function runBuiltBundleUpgrade(input: { options: UpgradeOptions; deps: Upg
   if (outcome.status !== "done") {
     throw agentXError("CONFIG_INVALID", `the deployer did not finish (${outcome.status}); stacks done so far: ${outcome.done.length === 0 ? "none" : outcome.done.join(", ")}. Run agentx upgrade again; the approval stands`);
   }
+  // The deployer raised the mark itself before its first change; this only repairs a mark it could not (a malformed one is named, not overwritten).
   try { await raiseReleaseHighWater(deps.store, first.env, target); } catch (error) {
-    deps.write(`WARNING: ${releaseHighWaterParameter(first.env)} could not be raised to ${target} (${plainMessage(error)}); a later rollback then checks floors only from the version it finds recorded`);
+    deps.write(`WARNING: ${highWaterRefusal(first.env, target, "upgrade", error, true)}`);
   }
   return finishUpgrade({ env: first.env, from: first.version, target, parts: outcome.done as DeployPart[], deps });
 }

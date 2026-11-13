@@ -1005,21 +1005,66 @@ describe("agentx upgrade --rollback-to", () => {
       expect(h.deployer.deployed).toEqual([]);
     });
 
-    it("a rollback that cannot record the mark stops before anything deploys; an upgrade that cannot only warns", async () => {
+    it("an upgrade or a rollback that cannot record the mark stops before anything deploys, with advice that fits the cause", async () => {
       const denied = (store: MemoryParameterStore) => {
         const put = store.put.bind(store);
         store.put = async (name, value, putOptions) => { if (name === releaseHighWaterParameter("staging")) throw new Error("AccessDeniedException"); return put(name, value, putOptions); };
       };
       const h = await rollback();
       denied(h.store);
-      await expect(runUpgrade({ ...options, rollbackTo: "1.1.0" }, h.deps)).rejects.toThrow("the rollback could not record 1.2.3 as /agentx/staging/release-high-water");
+      await expect(runUpgrade({ ...options, rollbackTo: "1.1.0" }, h.deps)).rejects.toThrow("the rollback could not record 1.2.3 as /agentx/staging/release-high-water (AccessDeniedException), so it stopped before anything changed; check that these credentials may write it");
       expect(h.deployer.deployed).toEqual([]);
-      expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.2.3");
       const up = await harness();
       denied(up.store);
-      await runUpgrade(options, up.deps);
-      expect(up.lines.join("\n")).toContain("WARNING: /agentx/staging/release-high-water could not be raised to 1.3.0");
-      expect((await readEnvironmentSettings(up.store, "staging"))?.version).toBe("1.3.0");
+      await expect(runUpgrade(options, up.deps)).rejects.toThrow("the upgrade could not record 1.3.0 as /agentx/staging/release-high-water");
+      expect(up.deployer.deployed).toEqual([]);
+      expect((await readEnvironmentSettings(up.store, "staging"))?.version).toBe("1.2.3");
+      // A malformed mark is named, with the advice to fix it by hand (not to change credentials).
+      const bad = await harness();
+      await bad.store.put(releaseHighWaterParameter("staging"), "latest");
+      await expect(runUpgrade(options, bad.deps)).rejects.toThrow(/holds "latest", not a release version \(x\.y\.z\)/);
+      expect(bad.deployer.deployed).toEqual([]);
+    });
+
+    it("writes the mark again when another writer lowered it, a bounded number of times", async () => {
+      const lowering = (store: MemoryParameterStore, times: number) => {
+        const put = store.put.bind(store);
+        let left = times;
+        store.put = async (name, value, putOptions) => { await put(name, value, putOptions); if (name === releaseHighWaterParameter("staging") && left-- > 0) await put(name, "1.0.0"); };
+      };
+      const once = new MemoryParameterStore();
+      lowering(once, 1);
+      expect(await raiseReleaseHighWater(once, "staging", "1.3.0")).toBe("1.3.0");
+      expect(await readReleaseHighWater(once, "staging")).toBe("1.3.0");
+      const always = new MemoryParameterStore();
+      lowering(always, 99);
+      await expect(raiseReleaseHighWater(always, "staging", "1.3.0")).rejects.toThrow("was lowered by another writer 3 times");
+    });
+
+    it("an upgrade that stopped part way leaves its floors in force: a rollback below the floor, a same-version re-run or an upgrade below it is refused", async () => {
+      const floors = { floors: [{ release: "1.3.0", floor: "1.3.0", reason: "re-keyed every lesson row" }], declaredThrough: "1.3.0" };
+      const failing = scriptedDeployer(allStackOutputs(), Object.keys(allStackOutputs()));
+      const h = await harness({ rollbackFloors: floors, deployer: { ...failing, deploy: async (request) => { if (request.part === "control-plane") throw new Error("control plane update failed"); return failing.deploy(request); } } });
+      await expect(runUpgrade(options, h.deps)).rejects.toThrow("control plane update failed");
+      expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.2.3");
+      expect(await readReleaseHighWater(h.store, "staging")).toBe("1.3.0");
+      // The same-version re-run of the release still recorded: 1.3.0's floor holds.
+      h.deps.loadRelease = async () => release("1.2.3");
+      await expect(runUpgrade(options, h.deps)).rejects.toThrow("release 1.3.0 re-keyed every lesson row, so environment staging, which has run 1.3.0 (it runs 1.2.3 now), deploys no lower than 1.3.0; 1.2.3 is below that floor");
+      // A rollback below it.
+      const prepare = h.deps.prepare.bind(h.deps);
+      h.deps.prepare = async (input) => ({ ...(await prepare(input)), declaredParameters: () => everything() });
+      h.deps.loadRelease = async () => release("1.1.0");
+      await expect(runUpgrade({ ...options, rollbackTo: "1.1.0" }, h.deps)).rejects.toThrow("rolls back no lower than 1.3.0");
+      // An upgrade to a release still below the mark and the floor.
+      await writeEnvironmentSettings(h.store, { ...INSTALLED, version: "1.1.0" });
+      h.deps.loadRelease = async () => release("1.2.3");
+      await expect(runUpgrade(options, h.deps)).rejects.toThrow("deploys no lower than 1.3.0");
+      // Finishing the stopped upgrade itself is allowed.
+      const done = await harness({ rollbackFloors: floors });
+      await done.store.put(releaseHighWaterParameter("staging"), "1.3.0");
+      await runUpgrade(options, done.deps);
+      expect((await readEnvironmentSettings(done.store, "staging"))?.version).toBe("1.3.0");
     });
   });
 

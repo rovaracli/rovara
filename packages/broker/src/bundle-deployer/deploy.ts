@@ -90,12 +90,22 @@ function compare(a: string, b: string): number | undefined {
   return 0;
 }
 
-/** Writes `version` as the mark when none is recorded or it is higher; never lowers it. `current` is the mark as read (already checked to be x.y.z or absent). */
-async function raiseHighWater(ports: DeployerPorts, env: string, current: string | undefined, version: string): Promise<void> {
-  const order = current === undefined ? undefined : compare(current, version);
-  if (order !== undefined && order >= 0) return;
+/** How many times the deployer writes the mark and reads it back while another writer leaves it lower. */
+const HIGH_WATER_ATTEMPTS = 3;
+
+/** Raises the mark to `version` (never lowers it), reading it back after each write and writing again while another writer left it lower, a bounded
+ * number of times. Throws when it could not, or when the mark is not a release version. */
+async function raiseHighWater(ports: DeployerPorts, env: string, version: string): Promise<void> {
   if (semver(version) === undefined) return;
-  await ports.ssm.put(releaseHighWaterParameter(env), version);
+  for (let attempt = 0; attempt <= HIGH_WATER_ATTEMPTS; attempt += 1) {
+    const current = (await ports.ssm.get(releaseHighWaterParameter(env)))?.trim();
+    if (current !== undefined && semver(current) === undefined) throw new Error("the mark is not a release version");
+    const order = current === undefined ? undefined : compare(current, version);
+    if (order !== undefined && order >= 0) return;
+    if (attempt === HIGH_WATER_ATTEMPTS) break;
+    await ports.ssm.put(releaseHighWaterParameter(env), version);
+  }
+  throw new Error("another writer kept lowering the mark");
 }
 
 const LOCK_STALE_MS = DEPLOY_LOCK_STALE_MS;
@@ -250,6 +260,15 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
   const direction = compare(settings.version, manifest.version);
   if (direction === undefined) return refused("the installed version is not a release version");
   if (direction > 0 && !approval.rollback) return refused("this bundle is older than the installed release and no rollback was approved");
+  // A rollback approval was checked against the rollback floors for one install state (agentx bundle approve --rollback): the version its settings recorded and
+  // its release high-water mark, both pinned. Once either moved (an upgrade since, another rollback), the check no longer holds: approve it again.
+  if (approval.rollback) {
+    const pinned = approval.rollbackFrom;
+    if (pinned === undefined) return refused("this rollback approval does not pin the install it was checked against; approve it again");
+    if (settings.version !== pinned.installedVersion) return refused("the installed release changed since this rollback was approved; approve it again");
+    const markNow = (await ports.ssm.get(releaseHighWaterParameter(env)))?.trim() ?? null;
+    if (markNow !== pinned.highWater) return refused("the release high-water mark changed since this rollback was approved; approve it again");
+  }
 
   // The edition of the install decides which kind of approval may deploy to it: an Enterprise install takes only a build made at its own approval (below), and an install
   // that is not Enterprise never takes one. An edition record that cannot be read is a refusal, never "not Enterprise".
@@ -376,12 +395,13 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
     return refused("the access stack could not be compared");
   }
 
-  // 5b. The release high-water mark (the highest release the install ever ran; never lowered), checked and raised to the installed version before the first change,
-  // so a rollback this run makes still leaves the floors of the release it leaves in force (the CLI reads the mark: upgrade/target.ts rollbackDirection).
+  // 5b. The release high-water mark (the highest release the install ever ran; never lowered), raised before the first change to the highest release this run
+  // touches: the bundle's for an upgrade (so one that stops part way leaves its floors in force), the installed one for a rollback. The CLI reads it:
+  // upgrade/target.ts floorCheck. It is the only write of the mark here, so every outcome stays a value.
   const highWater = await ports.ssm.get(releaseHighWaterParameter(env));
   if (highWater !== undefined && semver(highWater.trim()) === undefined) return refused("the install's release high-water mark is not a release version");
   try {
-    await raiseHighWater(ports, env, highWater?.trim(), settings.version);
+    await raiseHighWater(ports, env, direction > 0 ? settings.version : manifest.version);
   } catch {
     return failed("the release high-water mark could not be written");
   }
@@ -491,8 +511,6 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
   const installedAt = new Date(ports.now()).toISOString();
   await ports.ssm.put(installedBundleParameter(env), JSON.stringify({ schemaVersion: 1, bundleId, version: manifest.version, installedAt }));
   await ports.ssm.put(`${environmentSettingsPrefix(env)}settings`, JSON.stringify({ ...(JSON.parse(settingsText as string) as Record<string, unknown>), version: manifest.version, updatedAt: installedAt }));
-  // An upgrade raises the mark to the release now installed; a rollback leaves it where step 5b put it.
-  await raiseHighWater(ports, env, (await ports.ssm.get(releaseHighWaterParameter(env)))?.trim(), manifest.version);
   await ports.ssm.delete(deployProgressParameter(env));
   return { status: "done", bundleId, done: parts, remaining: [] };
 }

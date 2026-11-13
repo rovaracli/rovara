@@ -51,6 +51,8 @@ export async function approveBundle(input: { bundle: VerifiedBundle; approvedBy:
   const record = ApprovalRecordSchema.parse({
     schemaVersion: 1, bundleId: bundle.bundleId, version: bundle.manifest.version, approvedAt: new Date(input.now()).toISOString(), approvedBy: input.approvedBy,
     files, parameters: parameters.data, rollback: input.rollback,
+    // The install the rollback was checked against; the deployer refuses the approval once it moved (bundle-deployer/deploy.ts).
+    ...(input.rollback && input.rollbackGuard !== undefined ? { rollbackFrom: { installedVersion: input.rollbackGuard.installedVersion, highWater: input.rollbackGuard.highWater ?? null } } : {}),
     ...(input.built === undefined ? {} : { build: { resultSha256: input.built.build.resultSha256, kitSha256: input.built.build.kitSha256, settingsSha256: input.built.build.settingsSha256, settings: redactedSynthSettings(input.built.settings) } }),
   });
   await input.store.put(bundleApprovalKey(bundle.bundleId), Buffer.from(JSON.stringify(record)));

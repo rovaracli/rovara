@@ -77,7 +77,7 @@ describe("agentx bundle approve", () => {
     expect(store.puts).toEqual([]);
     // Above every floor: approved as a rollback.
     const record = await approveBundle({ bundle: verified, approvedBy: "alice", parameters: undefined, rollback: true, store, now: () => T0, rollbackGuard: { env: "staging", installedVersion: "1.5.0", highWater: "1.6.0", floors: [], declaredThrough: "1.6.0" } });
-    expect(record).toMatchObject({ version: "1.4.0", rollback: true });
+    expect(record).toMatchObject({ version: "1.4.0", rollback: true, rollbackFrom: { installedVersion: "1.5.0", highWater: "1.6.0" } });
     await verified.cleanup();
   });
 });
