@@ -22,7 +22,8 @@ function checksWords(item: Item): string {
  if (item.ci === "passing") return "Checks passing";
  if (item.ci === "failing") return item.failingChecks.length === 0 ? "Checks failing" : "Checks failing: " + item.failingChecks.join(", ");
  if (item.ci === "pending") return "Checks still running";
- return "No checks to wait for";
+ if (item.ci === "unreadable") return "CI not readable: grant checks read, or set this project to 'do not read CI'";
+ return "No CI on this repository";
 }
 function reviewWords(item: Item): string {
  if (item.review === "approved") return item.approval === undefined ? "Approved" : "Approved by " + item.approval.login;
