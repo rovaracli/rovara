@@ -50,8 +50,8 @@ export const FACETS_DIFFERENCES: readonly KnownDifference[] = [
   // again, it tells the person differently. They change with that difference.
   {
     scenario: "plan-changes-requested", facet: "messages",
-    cause: "Consequence of the core re-plan bug (plan-changes-requested transitions): Cloud posts the v2 plan card (needs_you=2), the core never re-plans so it asks once. Fixed upstream in Code #484; gone after the vendor pin bump.",
-    owner: "vendor pin bump to a code/next with #484",
+    cause: "The core now re-plans (the 0.5.17 pin, public #484) and posts the v2 plan card (needs_you=2), as Cloud does; Cloud also posts three progress notices (the plan step's progress lines) that the core's plan step does not.",
+    owner: "Progress notices of the plan step on the core: decide at the notifications switch (S0-143b)",
   },
   {
     scenario: "review-findings-send-back", facet: "messages",
@@ -85,7 +85,7 @@ export const FACETS_DIFFERENCES: readonly KnownDifference[] = [
   },
   {
     scenario: "worker-lost", facet: "messages",
-    cause: "Consequence of worker-lost's transitions (resilience lane): Cloud notices the lost run and tells the person (\"Coding stopped before it finished\", failed); the core never ends the run in the harness, so it tells nothing.",
+    cause: "Consequence of worker-lost's transitions (resilience lane): Cloud notices the lost run and tells the person (\"Coding stopped before it finished\", failed); since the 0.5.17 pin the core ends the run INTERRUPTED and asks once more for the person (needs_you=2) but says nothing like \"failed\".",
     owner: "resilience lane's transitions entry",
   },
   {
