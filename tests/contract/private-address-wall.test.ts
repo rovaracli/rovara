@@ -571,6 +571,7 @@ describe("the launch's SU-1 check switch", () => {
   it("keeps the user data size check when the line is added", () => {
     const longest = Array.from({ length: 16 }, (_, index) => `${String(index).padStart(2, "0")}${"n".repeat(40)}.${"m".repeat(43)}.example:65535`);
     expect(Buffer.from(workerUserDataWithPrivateAddresses(config, boot, longest, {}, undefined, on), "base64").length).toBeLessThan(12_000);
+    expect(Buffer.from(workerUserDataWithPrivateAddresses(config, boot, longest, {}, on, on), "base64").length).toBeLessThan(12_000);
     // An oversized configuration still fails, switch or not (the check runs on the final text).
     const huge: Ec2WorkerBootConfig = { ...config, controlPlaneUrl: `https://${"a".repeat(60_000)}.example.com` };
     expect(() => workerUserDataWithPrivateAddresses(huge, boot, [], {}, undefined, on)).toThrow();

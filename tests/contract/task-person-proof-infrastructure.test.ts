@@ -465,18 +465,20 @@ describe("the named TEST proof-only installation gate", () => {
     // function: the condition SessionsTslSelftestIsStaging (Fn::Equals [<environment name>, "staging"]) and the policy SessionsTslSelftestSwitchRead (ssm:GetParameter on exactly parameter/agentx/<env>/tsl-selftest) behind it.
     // Every named template has them (a published template is the placeholder's with the name replaced, so the condition, not an `if` on the name, keeps the permission to staging); the legacy digests did not move.
     // 2026-11-13 (TE-H4a merged onto integ/0518 cc2966810, v0.5.17): the four named and foreign digests were retaken again from the values the test reports, after the two changes above together (the ExpireEvidenceRecord rule and the 0.5.16 TSL self-test condition and policy).
+    // SU-1 boot lane (ANSWER-2): only TslSelftestSwitchRead.Resource gains the exact su1-check ARN.
+    // Four named/foreign pins move; legacy is unchanged. The named snapshot shows only that statement.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "9618f73ecfa4e3a4b7b466b7cc7879ae39897ecb804a9b69e11b3d3adb75df57",
-        withoutRoute: "d4ff2ef4c790efa35b615363d878dbdf41718fbc4fd2431cb449c613da2b712c",
+        withRoute: "33859640e871fa400e188c06b3a4b7ee2bedc0e97540902cbc508f6f4f54d059",
+        withoutRoute: "20045412790e053b10a726ed958dd34d24043953ee0aae8922eba7edb81897f5",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "8bff4640ed75df6440ed8c91fd7ef58762ae02f072b2b145247855a04c54e5a4",
-        withoutRoute: "cdc331e991d3362bb506c9d515c94270169abe74e369e6b1396234bcb23a6515",
+        withRoute: "a5f780facacb6a70170e201099314e16d7513dceb95933fe6187f36cbf0e2c1a",
+        withoutRoute: "ba8010842d616855a60017c51c9ccf3b74743756206aeb820017c066cf44f732",
       },
       {
         label: "legacy",

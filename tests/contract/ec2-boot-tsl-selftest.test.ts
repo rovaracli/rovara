@@ -255,7 +255,7 @@ describe("condition 1: off by default, staging only, and only on a build and an 
     expect(stage2).toContain("readonly TSL_FLAVOR_FILE=/opt/agentx/packages/cloud-contracts/dist/catalog-build-flavor.js");
     expect(dockerfile).toContain('grep -q "CATALOG_BUILD_FLAVOR = \\"$CATALOG_FLAVOR\\";" packages/cloud-contracts/dist/catalog-build-flavor.js');
     expect(block).toContain('CATALOG_BUILD_FLAVOR = "staging";');
-    expect(dockerfile).toMatch(/RUN if \[ "\$CATALOG_FLAVOR" = staging \]; then \\\n[\s\S]*?else rm -rf packages\/worker\/ec2\/tsl; fi/u);
+    expect(dockerfile).toMatch(/RUN if \[ "\$CATALOG_FLAVOR" = staging \]; then \\\n[\s\S]*?else rm -rf packages\/worker\/ec2\/tsl packages\/worker\/ec2\/su1; fi/u);
   });
 
   it("reads the opt-in from the launch environment only: the gate names no SSM parameter, no AWS call and no file", () => {

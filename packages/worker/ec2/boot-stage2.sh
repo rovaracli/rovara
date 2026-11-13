@@ -1363,7 +1363,7 @@ readonly SU1_LABEL=agentx.su1-check
 readonly SU1_BUNDLE_DIR=/opt/agentx/packages/worker/ec2/su1
 readonly SU1_STATES="ran refused incomplete unusable"
 readonly SU1_STATUSES="pass fail pending incomplete"
-readonly SU1_REASONS="ok not_named not_staging wrong_account not_staging_image no_time budget docker_unavailable walls_failed bundle_missing snapshot_failed cleanup_failed check_failed no_result needs_model_run"
+readonly SU1_REASONS="ok not_named not_staging wrong_account not_staging_image no_time budget docker_unavailable walls_failed bundle_missing snapshot_failed cleanup_failed check_failed no_result needs_model_run timeout_unavailable"
 readonly SU1_ITEM_IDS="1 2 3 4 5 6 7 8 9 10 11"
 readonly SU1_RESERVE_S=150
 SU1_HARD_DEADLINE=0; SU1_DIFF=""; SU1_RESULTS=""
@@ -1421,7 +1421,10 @@ su1_sweep_leftovers() {
   if [[ ! -e "$SU1_MARKER_FILE" ]]; then
     # No previous run: a transient Docker error is logged, never a boot failure.
     if su1_objects_gone; then su1_erase_files; su1_files_gone; return $?; fi
-    if [[ "$SU1_DIFF" == docker ]]; then log "SU-1 leftover look unavailable; no marker, boot continues"; return 0; fi
+    if [[ "$SU1_DIFF" == docker ]]; then
+      log "SU-1 leftover look unavailable; no marker, boot continues"
+      su1_erase_files; su1_files_gone; return $?
+    fi
   fi
   su1_remove_objects; su1_erase_files
   if ! su1_objects_gone || ! su1_files_gone; then
@@ -1474,6 +1477,12 @@ su1_finish() {
   [[ ! -e "$SU1_MARKER_FILE" ]] || { su1_record unusable cleanup_failed $((SECONDS - started)); return 75; }
   su1_record "$state" "$reason" $((SECONDS - started))
 }
+su1_run_checks() {
+  local seconds=$1 dir=$2 out=$3
+  # Default timeout process group is intentional: TERM then KILL covers every
+  # checker descendant. The copied script's two inner layers use --foreground.
+  SU1_TIMEOUT_SECONDS=$seconds SU1_DOCKER_TIMEOUT_SECONDS=15 timeout --kill-after=2s "${seconds}s" bash "$dir/s.sh" >"$out" 2>/dev/null
+}
 run_su1_check() {
   local instance_id=$1 budget started=$SECONDS dir id rc=0 run_s state=ran reason=ok
   local SU1_HARD_DEADLINE=${BOOT_DEADLINE:-$SECONDS} SU1_BEFORE="" SU1_AFTER="" SU1_RESULTS=""
@@ -1482,6 +1491,10 @@ run_su1_check() {
   [[ "$TSL_GATE" != off ]] || return 0
   su1_classify /dev/null
   if [[ "$TSL_GATE" == refused ]]; then su1_record refused "$TSL_GATE_REASON" 0; return 0; fi
+  if [[ "$(timeout --version 2>/dev/null)" != 'timeout (GNU coreutils)'* ]]; then
+    log "SU-1 check cannot run: GNU timeout is required"
+    su1_record incomplete timeout_unavailable 0; return 0
+  fi
   budget=$(su1_budget_seconds)
   if ((budget < 45)); then su1_record incomplete no_time 0; return 0; fi
   SU1_HARD_DEADLINE=$((SECONDS + budget + SU1_RESERVE_S)); TSL_HARD_DEADLINE=$SU1_HARD_DEADLINE
@@ -1489,7 +1502,10 @@ run_su1_check() {
   tsl_identity "$instance_id" su1_dk
   if ! su1_dk version >/dev/null 2>&1; then su1_record incomplete docker_unavailable 0; return 0; fi
   if ! su1_command 60 "$TSL_LAUNCHER" --walls-only >/dev/null 2>&1; then su1_record incomplete walls_failed 0; return 0; fi
-  SU1_BEFORE=$(mktemp) && SU1_AFTER=$(mktemp) && dir=$(mktemp -d /var/tmp/su1-boot.XXXXXX) || { su1_record incomplete snapshot_failed 0; return 0; }
+  SU1_BEFORE=$(mktemp) && SU1_AFTER=$(mktemp) && dir=$(mktemp -d /var/tmp/su1-boot.XXXXXX) || {
+    rm -rf "$SU1_BEFORE" "$SU1_AFTER" "${dir:-}"
+    su1_record incomplete snapshot_failed 0; return 0
+  }
   if ! tsl_snapshot "$SU1_BEFORE" su1_command; then
     rm -rf "$dir"; rm -f "$SU1_BEFORE" "$SU1_AFTER"; su1_record incomplete snapshot_failed 0; return 0
   fi
@@ -1501,14 +1517,12 @@ run_su1_check() {
   if ! su1_dk cp "$id:$TSL_FLAVOR_FILE" "$dir/flavor.js" >/dev/null 2>&1 || ! grep -Fq 'CATALOG_BUILD_FLAVOR = "staging";' "$dir/flavor.js"; then
     su1_finish refused not_staging_image "$started"; return $?
   fi
-  if ! su1_dk cp "$id:$SU1_BUNDLE_DIR/setup-agent-su1.sh" "$dir/s.sh" >/dev/null 2>&1; then su1_finish incomplete bundle_missing "$started"; return $?; fi
+  if ! su1_dk cp "$id:$SU1_BUNDLE_DIR/setup-agent-su1.sh" "$dir/s.sh" >/dev/null 2>&1 || [[ ! -s "$dir/s.sh" ]]; then su1_finish incomplete bundle_missing "$started"; return $?; fi
   su1_dk rm -f "$id" >/dev/null 2>&1 || true
   run_s=$((SU1_HARD_DEADLINE - SECONDS - SU1_RESERVE_S - 2))
   ((run_s <= budget)) || run_s=$budget
   if ((run_s < 10)); then su1_finish incomplete no_time "$started"; return $?; fi
-  # Default timeout process group is intentional: TERM then KILL covers every
-  # checker descendant. The copied script's two inner layers use --foreground.
-  SU1_TIMEOUT_SECONDS=$run_s SU1_DOCKER_TIMEOUT_SECONDS=15 timeout --kill-after=2s "${run_s}s" bash "$dir/s.sh" >"$dir/out" 2>/dev/null || rc=$?
+  su1_run_checks "$run_s" "$dir" "$dir/out" || rc=$?
   su1_classify "$dir/out"
   if ((rc == 124 || rc == 137)); then state=incomplete; reason=budget
   elif ((rc != 0 && rc != 1)); then state=incomplete; reason=no_result; fi

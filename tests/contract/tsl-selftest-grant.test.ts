@@ -24,18 +24,21 @@ const tslPolicies = (template: Template) => Object.entries(template.Resources).f
 const arnText = (resource: unknown) => (resource as { "Fn::Join": [string, unknown[]] })["Fn::Join"][1].filter((part) => typeof part === "string").join("");
 
 describe("the steps function's read of the TS-L self-test switch", () => {
-  it("is one separate policy of one ssm:GetParameter on exactly <prefix>tsl-selftest, behind the staging condition, on the steps function's role", () => {
+  it("grants only the two boot switches under the existing staging condition on the steps role", () => {
     for (const env of ["staging", "qa", "production", "staging-2"]) {
       const template = controlPlane({ agentxEnv: env });
       const found = tslPolicies(template);
       expect(found, env).toHaveLength(1);
       const [, policy] = found[0]!;
+      expect(typeof policy.Condition, env).toBe("string");
       expect(policy.Condition, env).toMatch(/^SessionsTslSelftestIsStaging[0-9A-F]{8}$/u);
       expect(template.Conditions?.[policy.Condition!], env).toEqual({ "Fn::Equals": [env, "staging"] });
       const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
       expect(statements, env).toHaveLength(1);
       expect(statements[0]!.Action, env).toBe("ssm:GetParameter");
       expect(statements[0]!.Effect, env).toBe("Allow");
+      expect(Array.isArray(statements[0]!.Resource), env).toBe(true);
+      expect(statements[0]!.Resource, env).toHaveLength(2);
       expect((statements[0]!.Resource as unknown[]).map(arnText), env).toEqual([`arn::ssm:::parameter/agentx/${env}/tsl-selftest`, `arn::ssm:::parameter/agentx/${env}/su1-check`]);
       // It is attached to the steps function's role, and to no other.
       const roles = policy.Properties.Roles as Array<{ Ref: string }>;

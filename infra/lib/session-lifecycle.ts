@@ -122,7 +122,7 @@ export class SessionLifecycle extends Construct {
         resources: [`arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}private-addresses-off`],
       }));
     }
-    // M1 (owner decision): the operator's switch for the TS-L worker self-test (session-steps.ts TSL_SELFTEST_PARAMETER). The STAGING install only, read only, one exact parameter; the operator creates it when needed.
+    // The TS-L and SU-1 boot switches: STAGING only, read only, two exact parameters; the operator creates them when needed.
     // A published template is the placeholder environment's with the name replaced (template-rendering.test.ts), so "staging only" cannot be an `if` on the name here: it is a condition on the name that CloudFormation evaluates
     // (`TslSelftestIsStaging`: Fn::Equals [<environment name>, "staging"]), on one separate policy. In every other environment the condition is false and the policy does not exist; the function asks for the parameter only on staging's prefix.
     if (naming.env !== undefined) {
@@ -130,7 +130,10 @@ export class SessionLifecycle extends Construct {
       const tslSelftestRead = new iam.Policy(this, "TslSelftestSwitchRead", {
         statements: [new iam.PolicyStatement({
           actions: ["ssm:GetParameter"],
-          resources: [`arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}tsl-selftest`],
+          resources: [
+            `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}tsl-selftest`,
+            `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${naming.ec2.workerSettingsPrefix}su1-check`,
+          ],
         })],
       });
       tslSelftestRead.attachToRole(this.steps.role!);

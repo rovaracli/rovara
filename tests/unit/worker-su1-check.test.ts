@@ -16,12 +16,12 @@ describe("the strictly fixed SU-1 worker log event", () => {
   });
   it("rejects extra/missing keys, versions, words, identities, numbers and oversized input", () => {
     for (const over of [{ extra: 1 }, { v: 2 }, { state: "secret" }, { reason: "private" }, { ami: "host" }, { boot2: "wrong" }, { docker: "private.host" }, { instance: "ip-10-0-0-1" }, { secs: -1 }, { secs: 1.5 }, { secs: 10000 }, { items: [] }]) expect(parseSu1Check(text(over)), JSON.stringify(over)).toBe("unreadable");
-    expect(parseSu1Check(" ".repeat(3001))).toBe("unreadable");
+    expect(parseSu1Check(" ".repeat(3001) + text())).toBe("unreadable");
     const missing = result() as Record<string, unknown>; delete missing.ami;
     expect(parseSu1Check(JSON.stringify(missing))).toBe("unreadable");
   });
   it("rejects duplicate/missing rows, bad statuses, false passes and any pass/fail for 9 or 10", () => {
-    for (const bad of ["1:pass:no_result", "1:fail:ok", "1:unknown:ok", "12:pass:ok", "9:pass:ok", "10:fail:check_failed", "9:pending:no_result"]) {
+    for (const bad of ["1:pass:no_result", "1:fail:ok", "1:unknown:ok", "1:incomplete:private", "1:pass:ok:extra", "12:pass:ok", "9:pass:ok", "10:fail:check_failed", "9:pending:no_result"]) {
       const items = rows(); items[Number(bad.split(":")[0]) - 1] = bad;
       expect(parseSu1Check(text({ items })), bad).toBe("unreadable");
     }

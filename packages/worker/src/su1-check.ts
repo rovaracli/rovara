@@ -3,7 +3,7 @@
 export const SU1_CHECK_RESULT_ENVIRONMENT = "AGENTX_SU1_CHECK_RESULT";
 export const SU1_CHECK_STATES = ["ran", "refused", "incomplete", "unusable"] as const;
 export const SU1_CHECK_STATUSES = ["pass", "fail", "pending", "incomplete"] as const;
-export const SU1_CHECK_REASONS = ["ok", "not_named", "not_staging", "wrong_account", "not_staging_image", "no_time", "budget", "docker_unavailable", "walls_failed", "bundle_missing", "snapshot_failed", "cleanup_failed", "check_failed", "no_result", "needs_model_run"] as const;
+export const SU1_CHECK_REASONS = ["ok", "not_named", "not_staging", "wrong_account", "not_staging_image", "no_time", "budget", "docker_unavailable", "walls_failed", "bundle_missing", "snapshot_failed", "cleanup_failed", "check_failed", "no_result", "needs_model_run", "timeout_unavailable"] as const;
 
 export interface Su1CheckResult {
   v: 1;

@@ -158,6 +158,11 @@ describe("session steps", () => {
       expect(await userData({ workerSettingsPrefix: "/agentx/staging/" })).not.toContain("AGENTX_SU1_CHECK");
       expect(await userData({ workerSettingsPrefix: "/agentx/staging/", su1CheckOn: async () => { throw new Error("boom"); } })).not.toContain("AGENTX_SU1_CHECK");
       expect(await userData({ workerSettingsPrefix: "/agentx/production/", su1CheckOn: async () => true })).not.toContain("AGENTX_SU1_CHECK");
+      for (const workerSettingsPrefix of ["/agentx/production/", "/agentx/staging", "/agentx/staging-2/", ""]) {
+        const otherInstall = vi.fn(async () => true);
+        await userData({ workerSettingsPrefix, su1CheckOn: otherInstall });
+        expect(otherInstall).not.toHaveBeenCalled();
+      }
       // A named launch with no prefix given carries nothing either.
       expect(await userData({ su1CheckOn: async () => true })).not.toContain("AGENTX_SU1_CHECK");
       // The legacy launch never reads it.
