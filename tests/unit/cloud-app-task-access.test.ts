@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 import { MemoryDocumentStore } from "@rovara-code/broker/ports";
 import { projectMetaKey, orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
-import { cloudTaskAccess } from "../../packages/broker/src/cloud/app/index.js";
+import { orgMemberKey } from "@agentx/cloud-contracts";
+import { cloudTaskAccess, stepFence } from "../../packages/broker/src/cloud/app/index.js";
 import { createCloudIdentityProvider } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { PEOPLE_ORG, createPeopleWorld, type Person, type PeopleWorld } from "../support/cloud-people-world.js";
 
@@ -143,7 +144,7 @@ describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fe
     const verdict = await step(world, taskOf(world, world.people.member));
     expect(verdict).toMatchObject({ allowed: true });
     const items = (verdict as unknown as { items: Array<{ key: { pk: string; sk: string }; condition: unknown }> }).items;
-    expect(items.map((item) => item.key.pk.split("#")[0])).toHaveLength(4);
+    expect(items).toHaveLength(5);
     // The fence holds as long as nothing changed, and refuses the step when any of the four does.
     const store = new MemoryDocumentStore();
     const copy = (key: { pk: string; sk: string }) => { const row = world.db.get(key); if (row !== undefined) void store.put({ item: row as never }); };
@@ -151,7 +152,7 @@ describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fe
     await Promise.resolve();
     const fenced = async () => (await store.transact(items.map((item) => ({ kind: "check" as const, key: item.key, condition: item.condition as never })))).applied;
     expect(await fenced()).toBe(true);
-    const [member, , catalog, meta] = items;
+    const [member, , catalog, meta, people] = items;
     await store.put({ item: { ...(world.db.get(member!.key) as object), role: "auditor" } as never });
     expect(await fenced()).toBe(false);
     await store.put({ item: world.db.get(member!.key) as never });
@@ -162,8 +163,50 @@ describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fe
     await store.put({ item: { ...(world.db.get(meta!.key) as object), status: "archived" } as never });
     expect(await fenced()).toBe(false);
     await store.put({ item: world.db.get(meta!.key) as never });
+    // A grant demoted to a viewer between the check and the commit refuses the step, as does a grant that is gone.
+    const grantRow = world.db.get(items[1]!.key) as object;
+    await store.put({ item: { ...grantRow, role: "viewer" } as never });
+    expect(await fenced()).toBe(false);
+    await store.put({ item: { ...grantRow, projectRole: "maintainer" } as never });
+    expect(await fenced()).toBe(false);
+    await store.put({ item: grantRow as never });
+    expect(await fenced()).toBe(true);
+    // A take-over (it writes the task's PEOPLE sidecar) between the check and the commit refuses the step.
+    await store.put({ item: { pk: people!.key.pk, sk: people!.key.sk, revision: 1 } as never });
+    expect(await fenced()).toBe(false);
+    await store.delete({ key: people!.key });
     await store.delete({ key: items[1]!.key });
     expect(await fenced()).toBe(false);
+  });
+
+  it("with a PEOPLE sidecar present the fence holds its revision, and a change of it refuses the step", async () => {
+    const world = createPeopleWorld();
+    seedProject(world);
+    grant(world, world.people.member, "developer");
+    world.db.set({ pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 3 } as never);
+    const verdict = await step(world, taskOf(world, world.people.member));
+    const people = (verdict as unknown as { items: Array<{ key: { pk: string; sk: string }; condition: unknown }> }).items.at(-1)!;
+    const store = new MemoryDocumentStore();
+    await store.put({ item: { pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 3 } as never });
+    const holds = async () => (await store.transact([{ kind: "check", key: people.key, condition: people.condition as never }])).applied;
+    expect(await holds()).toBe(true);
+    await store.put({ item: { pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 4 } as never });
+    expect(await holds()).toBe(false);
+  });
+
+  it("the fence of a step by channel access names each bound channel, and holds the catalog as absent where it was", async () => {
+    const base = { orgId: PEOPLE_ORG, project: "payments", taskId: TASK, developerId: "e".repeat(64), orgRole: "member", revision: 1, grant: undefined, people: undefined };
+    const items = stepFence({ ...base, catalog: undefined, channelKeys: [{ pk: `ORG#${PEOPLE_ORG}#SLACK_BINDING#T0PEOPLE1`, sk: "CHANNEL#C0CHAN" }] });
+    const store = new MemoryDocumentStore();
+    const run = async () => (await store.transact(items.map((item) => ({ kind: "check" as const, key: item.key, condition: item.condition })))).applied;
+    // No grant row, no binding row: the person's channel access is gone.
+    expect(await run()).toBe(false);
+    await store.put({ item: { ...orgMemberKey(PEOPLE_ORG, base.developerId), role: "member" } as never });
+    await store.put({ item: { pk: `ORG#${PEOPLE_ORG}#SLACK_BINDING#T0PEOPLE1`, sk: "CHANNEL#C0CHAN", projectName: "payments" } as never });
+    expect(await run()).toBe(true);
+    // The channel rebound to another project, or the catalog row appearing where there was none, refuses the step.
+    await store.put({ item: { pk: `ORG#${PEOPLE_ORG}#SLACK_BINDING#T0PEOPLE1`, sk: "CHANNEL#C0CHAN", projectName: "other" } as never });
+    expect(await run()).toBe(false);
   });
 
   it("a company admin (a maintainer of every project) owns a task with no grant: the fence has no grant to hold", async () => {
@@ -171,7 +214,7 @@ describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fe
     seedProject(world);
     const verdict = await step(world, taskOf(world, world.people.maintainer));
     expect(verdict).toMatchObject({ allowed: true });
-    expect((verdict as unknown as { items: unknown[] }).items).toHaveLength(3);
+    expect((verdict as unknown as { items: unknown[] }).items).toHaveLength(4);
   });
 
   it("a removed or revoked owner, an owner of another company, and a demoted Auditor get no step", async () => {

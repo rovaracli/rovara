@@ -156,6 +156,39 @@ export function createCoreSlackConsumer(deps: CoreSlackConsumerDeps): (message: 
 
 // ---- f: Cloud's rules for the core, from the broker's dependencies ----
 
+const slackBindingKey = (orgId: OrgId, teamId: string, channelId: string): { pk: string; sk: string } => ({ pk: `ORG#${orgId}#SLACK_BINDING#${teamId}`, sk: `CHANNEL#${channelId}` });
+
+/**
+ * The fence of a step (v2's dispatch fence): conditions on exactly what the check read, added to the step's own transaction, so a change between the check and the commit refuses the step.
+ *   - the owner's member record holds the role read (a demotion, an Auditor);
+ *   - the owner's grant on the project holds its project name and BOTH its role fields as read (a demotion to viewer or collaborator), or the grant is still absent;
+ *   - for access through a bound channel, each channel's binding still names the project;
+ *   - the project's catalog row holds the latest revision read, or is still absent where it was;
+ *   - the project is not archived;
+ *   - the task's PEOPLE sidecar holds the revision read (`taskAccessFence`): a take-over or a change of owners writes it; absent where there was none.
+ */
+export function stepFence(input: {
+  orgId: OrgId; project: string; taskId: string; developerId: string; orgRole: string; revision: number;
+  catalog: Record<string, unknown> | undefined; grant: Record<string, unknown> | undefined; people: Record<string, unknown> | undefined; channelKeys: ReadonlyArray<{ pk: string; sk: string }>;
+}): Array<Extract<import("@rovara-code/contracts").TransactItem, { kind: "check" }>> {
+  const { orgId, project } = input;
+  const maintainer = input.orgRole === "owner" || input.orgRole === "admin";
+  const grant = input.grant;
+  return [
+    { kind: "check", key: orgMemberKey(orgId, input.developerId), condition: when.eq("role", input.orgRole) },
+    ...(grant === undefined
+      ? (maintainer ? [] : [{ kind: "check" as const, key: projectMemberKey(orgId, input.developerId, project), condition: when.absent() }])
+      : [{
+        kind: "check" as const, key: projectMemberKey(orgId, input.developerId, project),
+        condition: when.and(when.eq("projectName", project), grant["role"] === undefined ? when.notExists("role") : when.eq("role", grant["role"] as string), grant["projectRole"] === undefined ? when.notExists("projectRole") : when.eq("projectRole", grant["projectRole"] as string)),
+      }]),
+    ...input.channelKeys.map((key) => ({ kind: "check" as const, key, condition: when.eq("projectName", project) })),
+    { kind: "check", key: orgProjectCatalogKey(orgId, project), condition: input.catalog === undefined ? when.absent() : when.eq("latestRevision", input.revision) },
+    { kind: "check", key: projectMetaKey(orgId, project), condition: when.or(when.absent(), when.eq("status", "active")) },
+    { kind: "check", key: { pk: `DEVTASK#${input.taskId}`, sk: "PEOPLE" }, condition: input.people === undefined ? when.absent() : when.eq("revision", input.people["revision"] as number) },
+  ];
+}
+
 /**
  * Who may start work on a project and who may act on a task, for the core's flow (`TaskAccess`). The start is Cloud's own rule: the person's project role and `requireNewWorkAllowed`
  * (an archived project, a role that may not start work), the same two checks `startTask` makes. Acting on a task is v2's set, the task's owner and its co-owners; a project maintainer's one
@@ -208,15 +241,17 @@ export function cloudTaskAccess(rawRoutesOf: () => DeveloperRouteDependencies): 
       try {
         const access = await checkProjectAccess(routes, caller, record.project, undefined, undefined);
         await requireNewWorkAllowed(developerTaskRouteDependencies(routes, caller), orgId, record.project, access.role, "task");
-        const orgMaintainer = caller.orgRole === "owner" || caller.orgRole === "admin";
+        const read = async (key: { pk: string; sk: string }): Promise<Record<string, unknown> | undefined> => ((await routes.documentClient.send(new GetCommand({ TableName: routes.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
+        const channelRows = access.access === "channel" && routes.developer.slackTeamId !== undefined
+          ? await Promise.all(access.channelIds.map(async (channelId) => ({ key: slackBindingKey(orgId, routes.developer.slackTeamId!, channelId) })))
+          : [];
         return {
           allowed: true,
-          items: [
-            { kind: "check", key: orgMemberKey(orgId, owner.developerId), condition: when.eq("role", caller.orgRole) },
-            ...(orgMaintainer ? [] : [{ kind: "check" as const, key: projectMemberKey(orgId, owner.developerId, record.project), condition: when.present() }]),
-            { kind: "check", key: orgProjectCatalogKey(orgId, record.project), condition: when.eq("latestRevision", access.revision) },
-            { kind: "check", key: projectMetaKey(orgId, record.project), condition: when.or(when.absent(), when.eq("status", "active")) },
-          ],
+          items: stepFence({
+            orgId, project: record.project, taskId: record.taskId, developerId: owner.developerId, orgRole: caller.orgRole, revision: access.revision,
+            catalog: await read(orgProjectCatalogKey(orgId, record.project)), grant: await read(projectMemberKey(orgId, owner.developerId, record.project)),
+            people: await read({ pk: `DEVTASK#${record.taskId}`, sk: "PEOPLE" }), channelKeys: channelRows.map((row) => row.key),
+          }),
         };
       } catch (error) {
         if (error instanceof AgentXError) return { allowed: false, message: error.message.startsWith(`${error.code}: `) ? error.message.slice(error.code.length + 2) : error.message };
