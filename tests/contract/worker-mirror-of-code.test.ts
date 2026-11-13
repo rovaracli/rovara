@@ -45,9 +45,7 @@ const KNOWN: Readonly<Record<string, readonly Known[]>> = {
   "isolated-git.ts": [
     { reason: "Cloud's wording of the lessons-replay note (older than Code's)", line: "Lane 7 (lessons replay, the file arm)" },
   ],
-  "git.ts": [
-    { reason: "Code only: a server's redirect is never followed, so the credential is never sent to an address the registered repository does not name (Cloud's copy lacks it: see DEFERRED-CHECKS, 0.5.18 re-pin)", line: '["http.followRedirects", "false"]' },
-  ],
+  "git.ts": [],
   "verification/candidate.ts": [
   ],
   "publish.ts": [
