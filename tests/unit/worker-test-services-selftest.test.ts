@@ -2,11 +2,12 @@
 // a report without the self-test is exactly what it was.
 import { describe, expect, it } from "vitest";
 import { checkReport, collectReport, reportLine, type TestServicesReport } from "../../packages/worker/src/test-services-report.js";
-import { SELFTEST_ALWAYS_PENDING_IDS, SELFTEST_CI_ITEM_IDS, SELFTEST_ITEM_IDS, SELFTEST_MAX_CHARS, parseSelfTest, type SelfTestResult } from "../../packages/worker/src/test-services-selftest.js";
+import { SELFTEST_ALWAYS_PENDING_IDS, SELFTEST_CI_ITEM_IDS, SELFTEST_EXTRA_IDS, SELFTEST_ITEM_IDS, SELFTEST_MAX_CHARS, parseSelfTest, type SelfTestResult } from "../../packages/worker/src/test-services-selftest.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
-const row = (id: string): string => (SELFTEST_ALWAYS_PENDING_IDS as readonly string[]).includes(id) ? `${id}:pending:no_pin` : `${id}:pass:ok`;
-const GOOD = { v: 1, state: "ran", reason: "ok", ami: "ami-0d2beaff07e79c24e", boot2: "b".repeat(64), docker: "25.0.18", instance: "i-08a32b24c7e3efe6c", secs: 93, items: SELFTEST_ITEM_IDS.map(row) };
+const row = (id: string): string => (SELFTEST_ALWAYS_PENDING_IDS as readonly string[]).includes(id) ? `${id}:pending:no_capture` : `${id}:pass:ok`;
+const EXTRA = SELFTEST_EXTRA_IDS.map((id) => `${id}:pending:no_pin`);
+const GOOD = { v: 1, state: "ran", reason: "ok", ami: "ami-0d2beaff07e79c24e", boot2: "b".repeat(64), docker: "25.0.18", instance: "i-08a32b24c7e3efe6c", secs: 93, items: SELFTEST_ITEM_IDS.map(row), extra: EXTRA };
 const text = (over: Record<string, unknown> = {}): string => JSON.stringify({ ...GOOD, ...over });
 const START = { phase: "worker_start", outcome: "booted", leftoverContainers: 0, leftoverNetworks: 0, runDirEmpty: true, runDirTmpfs: true, workingSandboxPaused: null } as const;
 const FACTS = { metadataBlocked: true, runWalls: true, ipv6Drops: true, prepull: "off", prepulled: 0, loggedOut: false, dockerVersion: "25.0.18" };
@@ -18,6 +19,7 @@ describe("parseSelfTest", () => {
     expect(parsed).toMatchObject({ v: 1, state: "ran", reason: "ok", ami: "ami-0d2beaff07e79c24e", docker: "25.0.18", instance: "i-08a32b24c7e3efe6c", secs: 93 });
     expect(parsed.items).toHaveLength(SELFTEST_ITEM_IDS.length);
     expect(parsed.items[0]).toEqual({ id: "L1.walls", status: "pass", reason: "ok" });
+    expect(parsed.extra).toEqual([{ id: "extra.redis-flush", status: "pending", reason: "no_pin" }, { id: "extra.http-reset", status: "pending", reason: "no_pin" }]);
   });
 
   it("says `absent` when the self-test is off (the normal case) and `unreadable` for anything else that is not the shape", () => {
@@ -37,6 +39,11 @@ describe("parseSelfTest", () => {
       ["negative seconds", text({ secs: -1 })],
       ["fractional seconds", text({ secs: 1.5 })],
       ["an unknown item id", text({ items: [...GOOD.items.slice(1), "L9.surprise:pass:ok"] })],
+      ["an extra id among the items", text({ items: [...GOOD.items.slice(1), "extra.redis-flush:pending:no_pin"] })],
+      ["an old RUN3 id in the extras", text({ extra: ["RUN3.redis-flush:pending:no_pin", "RUN3.http-reset:pending:no_pin"] })],
+      ["a CI id among the extras", text({ extra: ["L1.walls:pass:ok", "extra.http-reset:pending:no_pin"] })],
+      ["a run with an extra missing", text({ extra: [EXTRA[0]] })],
+      ["no extra key", JSON.stringify({ ...GOOD, extra: undefined })],
       ["a duplicate item", text({ items: [...GOOD.items.slice(0, -1), GOOD.items[0]] })],
       ["an item with free text", text({ items: [...GOOD.items.slice(1), "L1.walls:fail:no rule at 172.30.0.2"] })],
       ["a pass with a reason that is not ok", text({ items: [...GOOD.items.slice(1), "L1.walls:pass:check_failed"] })],
@@ -51,7 +58,7 @@ describe("parseSelfTest", () => {
   });
 
   it("accepts the shorter results of a refusal, a start that did not happen, and a cleanup that failed", () => {
-    for (const over of [{ state: "refused", reason: "not_staging", items: [], secs: 0 }, { state: "incomplete", reason: "budget", items: [], secs: 0 }, { state: "unusable", reason: "cleanup_failed", items: [row("L1.walls")], secs: 170 }, { state: "incomplete", reason: "too_large", items: [], secs: 3 }]) {
+    for (const over of [{ state: "refused", reason: "not_staging", items: [], extra: [], secs: 0 }, { state: "refused", reason: "wrong_account", items: [], extra: [], secs: 0 }, { state: "refused", reason: "not_staging_image", items: [], extra: [], secs: 4 }, { state: "incomplete", reason: "no_time", items: [], extra: [], secs: 0 }, { state: "incomplete", reason: "budget", items: [row("L1.walls")], extra: EXTRA, secs: 170 }, { state: "unusable", reason: "cleanup_failed", items: [row("L1.walls")], extra: [], secs: 170 }, { state: "incomplete", reason: "too_large", items: [], extra: [], secs: 3 }]) {
       expect(parseSelfTest(text(over)), JSON.stringify(over)).toMatchObject({ state: over.state, reason: over.reason });
     }
     expect(parseSelfTest(text({ ami: "unknown", boot2: "unknown", docker: "unknown", instance: "unknown" }))).toMatchObject({ ami: "unknown", boot2: "unknown", docker: "unknown", instance: "unknown" });

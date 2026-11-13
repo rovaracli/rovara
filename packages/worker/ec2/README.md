@@ -79,10 +79,25 @@ The default bridge (docker0) cannot be walled because the worker's own container
 
 ## Opt-in TS-L self-test (staging only)
 
-A named environment's stage 2 can run Rovara's TS-L Linux checks (`scripts/linux-check-test-services.sh` and its live driver, the same ones the linux-runtime CI job runs) on the real worker, before the worker unit starts, and
-report the result in the worker's `worker_start` line (key `selfTest`). It is OFF unless the launch environment carries `AGENTX_TSL_SELFTEST=1`, and even then it refuses unless the environment's name (from the log group) is exactly
-`staging`. It has its own time budget (170 s by default, never past the boot deadline plus 90 s), never fails the boot, and proves its clean-up before the worker takes work: every container, network, bridge and rule it made is
-removed and read back as gone (the same iptables, ip6tables and nat rules and interfaces as before, compared as sorted text); if the read-back fails twice the boot fails (`/ping` says `BootFailed`) and the provisioner stops the
-session. The result is fixed words only (item ids that are CI's, a status and a reason code each, the AMI id, the boot-stage2 SHA-256, the Docker version and the instance id), at most 3,000 characters. The checker and the driver
-come from the worker image (`packages/worker/ec2/tsl`: `checks.sh` and `live-driver.ts.txt` are byte-for-byte copies of the scripts under `scripts/`, held equal by `tests/contract/ec2-boot-tsl-selftest.test.ts`; the Dockerfile
-builds the driver to `live.mjs`). The only pull is the pinned Postgres image, by digest, with the worker role's existing catalog grant. See the comment above `TSL_SELFTEST_VARIABLE` in `boot-stage2.sh` for the five conditions.
+A named environment's stage 2 can run Rovara's TS-L Linux checks (`scripts/linux-check-test-services.sh` and its live driver, the same ones the linux-runtime CI job runs) on the real worker and report the result in the worker's
+`worker_start` line (key `selfTest`). The five release-gate conditions and the review's findings, in short (the long form is the comment above `TSL_SELFTEST_VARIABLE` in `boot-stage2.sh`):
+
+- **Off by default, staging only.** It runs only when the launch environment carries `AGENTX_TSL_SELFTEST=1`, and then only in a named environment called exactly `staging`, on a worker image built with `CATALOG_FLAVOR=staging` (a
+  release image carries no checks at all), in the staging account (the image's registry account and the instance identity document must both say it). Anything else records `refused` and runs nothing.
+- **Never blocks the boot.** The whole self-test, clean-up included, ends before `BOOT_DEADLINE`: the checks get at most 170 s and only what is left after a 150 s reserve; with under 45 s it records `incomplete: no_time`.
+- **Clean-up proven before work.** It applies the launcher's own wall steps first (`agentx-worker-start --walls-only`), so it runs against the firewall tasks get; after the checks every container, network, volume, bridge and rule it made
+  is removed and read back (iptables and ip6tables in every table, nft, routes, ip rules and interfaces, compared in order), polled for about 15 s, with a second round before it gives up. If that fails the boot fails (`/ping` says
+  `BootFailed`) and the provisioner stops the session. Because Docker's data root is on the workspace volume, EVERY named boot (self-test on or off) first removes anything carrying the two fixed labels
+  (`rovara.tsl-selftest=1`, and the throwaway workspace key `rovara.run-network.workspace=7e57c4ec7e57c4ec`) and reads that back (`tsl_sweep_leftovers`).
+- **Fixed output.** Item ids that are CI's, a status and a reason code each, the AMI id, the boot-stage2 SHA-256, the Docker version and the instance id; at most 3,000 characters. TS-RUN-3's Redis flush and http_reset have no CI id: they are
+  `extra.redis-flush` and `extra.http-reset` in their own list, always pending. The result is written under `/run/agentx/tsl-selftest` and the launcher passes it only when it is there, so a rebooted instance reports nothing old.
+- **Where the checks come from.** `packages/worker/ec2/tsl/checks.sh` and `live-driver.ts.txt` are byte-for-byte copies of the scripts under `scripts/` (held equal by `tests/contract/ec2-boot-tsl-selftest.test.ts`; the copies exist so the
+  worker image's inputs and the release pipeline's trigger paths already cover them); the Dockerfile builds the driver to `live.mjs` in a staging build and removes the directory otherwise. The only pull is the pinned Postgres image, by digest,
+  with the worker role's existing catalog grant.
+
+### How a staging launch would turn it on (M1, an owner decision; nothing here sets it)
+
+`AGENTX_TSL_SELFTEST` is a launch field that no launch carries today, so the self-test is off everywhere. To switch it on for staging only, without touching the vendored (read-only) boot configuration: add a Cloud-side helper beside
+`workerUserDataWithPrivateAddresses` (`packages/broker/src/aws/private-address-launch.ts`) that appends `export AGENTX_TSL_SELFTEST='1'` after the rendered header, and only when the launch is for a named environment whose settings prefix is
+`/agentx/staging/`; and gate it on an operator switch, the SSM parameter `<WORKER_SETTINGS_PREFIX>tsl-selftest` (absent means off; only the exact value `true` turns it on), read in `session-steps.ts` next to `readPrivateAddressesOff`. That
+adds one SSM parameter name under the prefix the broker already reads (check the broker role's read grant covers it) and no IAM for workers. It is a new launch interface, so it needs the owner's go and its own release item.

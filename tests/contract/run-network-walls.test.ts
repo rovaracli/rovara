@@ -84,7 +84,7 @@ describe("the run network adds no firewall rule", () => {
       }
       expect(scripts[name].replace(step, "")).not.toContain(`${RUN_NETWORK_FIRST_OCTETS}.`);
       // The opt-in TS-L self-test (boot-stage2.sh, ec2-boot-tsl-selftest.test.ts) names the run networks' Docker labels to find and remove the check objects it made; it writes no rule at all (that test), so it is the one place outside this check.
-      const withoutSelfTest = name === "boot-stage2.sh" ? scripts[name].slice(0, scripts[name].indexOf("readonly TSL_SELFTEST_VARIABLE")) + scripts[name].slice(scripts[name].indexOf("# What boot.sh's main did after the worker image was pulled")) : scripts[name];
+      const withoutSelfTest = name === "boot-stage2.sh" ? scripts[name].slice(0, scripts[name].indexOf("# TS-L worker self-test (OPT-IN")) + scripts[name].slice(scripts[name].indexOf("# What boot.sh's main did after the worker image was pulled")) : scripts[name];
       expect(withoutSelfTest).not.toMatch(/rovara-svc|rovara\.run-network|run-network/u);
     });
   }
@@ -193,7 +193,7 @@ esac
     expect(at("withhold_test_services_for_ipv6")).toBeLessThan(at("write_worker_unit"));
     // The function runner's two steps (slice 4 C1: gVisor installed first, its check finished after the walls) are not fatal either: a worker without them just does not offer the runner.
     // Pulling the catalog images and writing the test services settings is not fatal; the metadata block and the run-network walls are (a failed IPv6 drop withholds test services instead).
-    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+install_function_runner_runsc \|\| true\n\s+if pull_catalog_images "\$region"; then\n\s+write_test_services_environment \|\| log [^\n]*\n\s+else\n\s+log [^\n]*\n\s+fi\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+wall_ipv6_into_host \|\| withhold_test_services_for_ipv6 "\$\{IPV6_WALL_REASON:-ip6tables-unusable\}" \|\| fail [^\n]*\n\s+install_run_walls_unit \|\| fail [^\n]*\n\s+finish_function_runner \|\| log [^\n]*\n\s+write_test_services_boot_facts \|\| log [^\n]*\n\s+write_private_addresses \|\| log [^\n]*\n\s+fi/u);
+    expect(main).toMatch(/if \[\[ \$\{AGENTX_ENVIRONMENT_KIND:-\} == named \]\]; then\n\s+tsl_sweep_leftovers \|\| fail [^\n]*\n\s+install_function_runner_runsc \|\| true\n\s+if pull_catalog_images "\$region"; then\n\s+write_test_services_environment \|\| log [^\n]*\n\s+else\n\s+log [^\n]*\n\s+fi\n\s+set_docker_address_pools \|\| fail [^\n]*\n\s+metadata_blocked \|\| fail "the metadata block is missing after the Docker restart"\n\s+wall_between_run_networks \|\| fail [^\n]*\n\s+wall_ipv6_into_host \|\| withhold_test_services_for_ipv6 "\$\{IPV6_WALL_REASON:-ip6tables-unusable\}" \|\| fail [^\n]*\n\s+install_run_walls_unit \|\| fail [^\n]*\n\s+finish_function_runner \|\| log [^\n]*\n\s+write_test_services_boot_facts \|\| log [^\n]*\n\s+write_private_addresses \|\| log [^\n]*\n\s+fi/u);
   });
 
   // TS-SEAL-2: the IPv6 INPUT drop for the run bridges, run for real against fake iptables and ip6tables that keep their rules in files.

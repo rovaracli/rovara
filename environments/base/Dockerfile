@@ -46,10 +46,13 @@ RUN npx tsc -b packages/cloud-contracts packages/verifier packages/worker --pret
     && grep -q "CATALOG_BUILD_FLAVOR = \"$CATALOG_FLAVOR\";" packages/cloud-contracts/dist/catalog-build-flavor.js \
     && { [ "$CATALOG_FLAVOR" != release ] || grep -q "CATALOG_STAGING_ONLY_SIGNING_KEYS = \[\];" packages/cloud-contracts/dist/catalog-staging-keys.js; }
 # The TS-L checks, for the worker boot's opt-in self-test (packages/worker/ec2/boot-stage2.sh `run_tsl_selftest`): the checker script (a byte-for-byte mirror of scripts/linux-check-test-services.sh, held equal by a test) and its live
-# driver (a mirror of scripts/linux-check-test-services-live.ts, kept as .txt so no tool reads it as part of the worker's own sources) already came in with packages/worker above. The driver is built here to one JavaScript file (types
-# stripped, imports left as they are: it loads the contracts and the compiled worker from this image's own node_modules and dist, as it does on CI). Built before the prune, which removes esbuild. Nothing here runs unless a staging launch opts in.
-RUN node_modules/.bin/esbuild --loader:.txt=ts --format=esm --platform=node --target=node22 --log-level=warning --outfile=packages/worker/ec2/tsl/live.mjs packages/worker/ec2/tsl/live-driver.ts.txt \
-    && test -s packages/worker/ec2/tsl/live.mjs
+# driver (a mirror of scripts/linux-check-test-services-live.ts, kept as .txt so no tool reads it as part of the worker's own sources) already came in with packages/worker above. In a STAGING build the driver is built here to one
+# JavaScript file (types stripped, imports left as they are: it loads the contracts and the compiled worker from this image's own node_modules and dist, as it does on CI), before the prune removes esbuild. Any other flavor (every release
+# image) carries neither file: the self-test also refuses an image that is not a staging build, and there is nothing for it to run. Nothing here runs unless a staging launch opts in.
+RUN if [ "$CATALOG_FLAVOR" = staging ]; then \
+      node_modules/.bin/esbuild --loader:.txt=ts --format=esm --platform=node --target=node22 --log-level=warning --outfile=packages/worker/ec2/tsl/live.mjs packages/worker/ec2/tsl/live-driver.ts.txt \
+      && test -s packages/worker/ec2/tsl/live.mjs; \
+    else rm -rf packages/worker/ec2/tsl; fi
 RUN npm prune --omit=dev --workspaces
 
 # The Docker CLI and Compose plugin, which run a project's devcontainer through the EC2 host's

@@ -34,7 +34,7 @@ const MOVED_DECLARATIONS = [
 ] as const;
 
 // The opt-in TS-L self-test's functions (tests/contract/ec2-boot-tsl-selftest.test.ts): defined in stage 2, run only when a staging launch opts in.
-const TSL_SELFTEST_FUNCTIONS = ["tsl_dk", "tsl_selftest_gate", "tsl_identity", "tsl_budget_seconds", "tsl_snapshot", "tsl_cleanup", "tsl_readback", "tsl_item", "tsl_pending_reason", "tsl_classify", "tsl_encode", "tsl_record", "tsl_run_checks", "tsl_extract_bundle", "run_tsl_selftest"];
+const TSL_SELFTEST_FUNCTIONS = ["tsl_past_deadline", "tsl_dk", "tsl_selftest_gate", "tsl_account_ok", "tsl_identity", "tsl_budget_seconds", "tsl_snapshot", "tsl_remove_objects", "tsl_objects_gone", "tsl_sweep_leftovers", "tsl_cleanup", "tsl_readback", "tsl_readback_settled", "tsl_item", "tsl_pending_reason", "tsl_classify", "tsl_encode", "tsl_record", "tsl_run_checks", "tsl_extract_bundle", "tsl_finish_early", "run_tsl_selftest"];
 const MOVED_FUNCTIONS = [
   "pull_contained_image",
   "pull_executor_image",
@@ -55,6 +55,10 @@ const TEST_SERVICES_RUN_DIR_VOLUME = /^if \[\[ "\$test_services_run_dir" == true
 const SETUP_ISOLATION_ARGUMENT_WITH_COMMENT = /^# Setup runs need[^\n]*\nif named_environment; then args\+=\(--env "AGENTX_SETUP_ISOLATION=[^\n]*\n/mu;
 // Owner decision 123 (named environments only): the launcher opens the company's approved internal addresses before the worker starts (tests/contract/private-address-wall.test.ts).
 const PRIVATE_ALLOW_WITH_COMMENT = /^# Owner decision 123: open the company's approved internal addresses[^\n]*\nif named_environment && \[\[ -f \/usr\/local\/libexec\/rovara-private-allow \]\]; then[^\n]*\n/mu;
+// The opt-in TS-L self-test (tests/contract/ec2-boot-tsl-selftest.test.ts): the launcher stops after its wall steps when started with --walls-only (stage 2 applies the same walls before the checks), and hands the worker the self-test's result for this boot
+// when root wrote one under /run. Both are named-environment additions inside a moved function.
+const TSL_WALLS_ONLY_WITH_COMMENT = /^# The opt-in TS-L self-test \(stage 2 `run_tsl_selftest`\) applies exactly the wall steps above[^\n]*\n\[\[ "\$\{1:-\}" != --walls-only \]\] \|\| exit 0\n/mu;
+const TSL_RESULT_ARGUMENT_WITH_COMMENT = /^# The opt-in TS-L self-test's result for THIS boot[^\n]*\ntsl_selftest_result=[^\n]*\nif named_environment && [^\n]*\n/mu;
 const PRIVATE_ALLOW_ENVIRONMENT_WITH_COMMENT = /^# Owner decision 123: the pinned name=address pairs[^\n]*\nif named_environment; then for pair in "AGENTX_PRIVATE_ADDRESS_HOSTS:[^\n]*\n/mu;
 
 describe("boot-legacy.sh", () => {
@@ -115,7 +119,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     const moved = legacy.slice(legacy.indexOf(firstMoved), mainStart + 1).trimEnd();
     // Named exceptions: `block_imds` (the launcher's firewall step, run only for a named environment, never by a legacy worker) may differ, because a setup run's network rules sit in it; and, since 2026-11-03, the reader of the
     // setup-isolation state file and the one line that hands its content to the worker (both named-environment only). Everything else is verbatim.
-    const withoutSetupIsolation = (text: string) => text.replace(BLOCK_IMDS_WITH_COMMENT, "").replace(SETUP_ISOLATION_STATE_WITH_COMMENT, "").replace(SETUP_ISOLATION_ARGUMENT_WITH_COMMENT, "").replace(TEST_SERVICES_RUN_DIR_BLOCK, "").replace(TEST_SERVICES_RUN_DIR_VOLUME, "").replace(PRIVATE_ALLOW_WITH_COMMENT, "").replace(PRIVATE_ALLOW_ENVIRONMENT_WITH_COMMENT, "");
+    const withoutSetupIsolation = (text: string) => text.replace(BLOCK_IMDS_WITH_COMMENT, "").replace(SETUP_ISOLATION_STATE_WITH_COMMENT, "").replace(SETUP_ISOLATION_ARGUMENT_WITH_COMMENT, "").replace(TEST_SERVICES_RUN_DIR_BLOCK, "").replace(TEST_SERVICES_RUN_DIR_VOLUME, "").replace(PRIVATE_ALLOW_WITH_COMMENT, "").replace(PRIVATE_ALLOW_ENVIRONMENT_WITH_COMMENT, "").replace(TSL_WALLS_ONLY_WITH_COMMENT, "").replace(TSL_RESULT_ARGUMENT_WITH_COMMENT, "");
     expect(withoutSetupIsolation(stage2)).toContain(`\n${withoutSetupIsolation(moved)}\n`);
     for (const name of MOVED_FUNCTIONS) {
       expect(stage1, `${name} left boot.sh`).not.toContain(`\n${name}() {`);
@@ -133,10 +137,10 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(stage1).toContain(legacyMainHead);
     const stage2Main = /^stage2_main\(\) \{\n([\s\S]*?)^\}$/m.exec(stage2)?.[1] ?? "";
     // The one addition: in a named environment, after the worker environment is written and before the worker unit, Docker's address pools and the rvi-to-rvi wall (design test-services.md 4.0.1).
-    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    install_function_runner_runsc || true\n    if pull_catalog_images "$region"; then\n      write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"\n    else\n      log "test services are not offered on this worker (the catalog images could not be pulled; not fatal)"\n    fi\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n    wall_ipv6_into_host || withhold_test_services_for_ipv6 "${IPV6_WALL_REASON:-ip6tables-unusable}" || fail "could not withhold test services after the IPv6 wall failed"\n    install_run_walls_unit || fail "could not install the unit that restores the run network walls"\n    finish_function_runner || log "the function runner check did not finish (not fatal; the runner is not offered)"\n    write_test_services_boot_facts || log "the test services boot facts could not be written (not fatal)"\n    write_private_addresses || log "the internal address step could not be written (not fatal; no internal address is opened)"\n  fi\n';
+    const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    # FIRST, on every named boot (the self-test off or on): what a failed TS-L self-test left on the workspace volume\'s Docker data root must not meet this launch (tsl_sweep_leftovers).\n    tsl_sweep_leftovers || fail "TS-L self-test leftovers on the workspace volume could not be removed; this worker is stopped before it takes any work"\n    install_function_runner_runsc || true\n    if pull_catalog_images "$region"; then\n      write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"\n    else\n      log "test services are not offered on this worker (the catalog images could not be pulled; not fatal)"\n    fi\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n    wall_ipv6_into_host || withhold_test_services_for_ipv6 "${IPV6_WALL_REASON:-ip6tables-unusable}" || fail "could not withhold test services after the IPv6 wall failed"\n    install_run_walls_unit || fail "could not install the unit that restores the run network walls"\n    finish_function_runner || log "the function runner check did not finish (not fatal; the runner is not offered)"\n    write_test_services_boot_facts || log "the test services boot facts could not be written (not fatal)"\n    write_private_addresses || log "the internal address step could not be written (not fatal; no internal address is opened)"\n  fi\n';
     expect(legacyTail).toContain('  write_worker_environment "$region"\n');
     // The opt-in TS-L self-test (tests/contract/ec2-boot-tsl-selftest.test.ts): in a named environment, after the worker's unit is written and before it is started. A failed clean-up read-back is the only thing in it that can fail the boot.
-    const selfTestCall = '  # The opt-in TS-L self-test (above), after every wall and before the worker unit is started: it never fails the boot, except that a worker whose clean-up could not be read back as complete must not take work (return 75).\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    tsl_status=0\n    run_tsl_selftest "$instance_id" || tsl_status=$?\n    ((tsl_status == 0)) || fail "the TS-L self-test left test objects on this worker and it is unusable (cleanup_failed); it is stopped before it takes any work"\n  fi\n';
+    const selfTestCall = '  # The opt-in TS-L self-test (above), after every wall (it applies the launcher\'s own wall steps first) and before the worker unit is started: it never fails the boot, except that a worker whose clean-up could not be read back as complete must not take work (return 75).\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    tsl_status=0\n    run_tsl_selftest "$instance_id" || tsl_status=$?\n    ((tsl_status == 0)) || fail "the TS-L self-test left test objects on this worker and it is unusable (cleanup_failed); it is stopped before it takes any work"\n  fi\n';
     const startUnit = '  systemctl enable --now "$WORKER_UNIT"\n';
     expect(legacyTail).toContain(startUnit);
     expect(stage2Main).toBe(`  local region=$1 instance_id=$2 tsl_status\n  BOOT_STEP="download the worker image"\n${legacyTail.replace('  write_worker_environment "$region"\n', addition).replace(startUnit, selfTestCall + startUnit)}`);
@@ -266,7 +270,9 @@ dir=0; args=()
 while (($#)); do case "$1" in -d) dir=1 ;; -o|-g|-m) shift ;; *) args+=("$1") ;; esac; shift; done
 if ((dir)); then mkdir -p "\${args[@]}"; else cp "\${args[0]}" "\${args[1]}"; fi
 `,
+  // timeout(1): leading options, then the duration, then the command (the TS-L self-test's sweep and the catalog pulls pass --foreground and --kill-after).
   timeout: `#!/bin/bash
+while [[ "$1" == --* ]]; do shift; done
 shift
 exec "$@"
 `,
