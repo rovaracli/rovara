@@ -108,7 +108,7 @@ export function chargeItems(tableName: string, charge: WorkspaceCharge, limits: 
 /**
  * Releases what chargeItems (or the old set form) took. The caller's transaction also marks the task closed, once. `form` is what `chargeFormOf` read:
  *  - `marker`: positions 0 (organization), 1 (member) and 2 (the marker, which must still exist): a repeated release fails at the marker instead of
- *    decrementing twice.
+ *    decrementing twice. The member's update also removes the task from the old `tasks` set, so a task held in both forms clears both at once.
  *  - `set` (a task charged before markers, or one already released): positions 0 and 1, the member's condition requiring the task in the old `tasks` set,
  *    which the update deletes it from, exactly as before.
  * Callers classify a `TransactionCanceledException` with releaseConflict, passing the same form.
@@ -125,13 +125,15 @@ export function releaseItems(tableName: string, charge: WorkspaceCharge, taskId:
   if (form === "marker") {
     return [
       organization,
+      // The set entry goes in the same transaction (a no-op when the task is not in the set): a task held in BOTH forms (the move half done, or a marker
+      // written beside a set entry) must clear both, or a second release would find the set entry and free a second slot for one task.
       { Update: {
         TableName: tableName,
         Key: charge.member,
-        UpdateExpression: "SET #count = #count - :one",
+        UpdateExpression: "SET #count = #count - :one DELETE #tasks :task",
         ConditionExpression: "#count >= :one",
-        ExpressionAttributeNames: { "#count": "count" },
-        ExpressionAttributeValues: { ":one": 1 },
+        ExpressionAttributeNames: { "#count": "count", "#tasks": "tasks" },
+        ExpressionAttributeValues: { ":one": 1, ":task": new Set([taskId]) },
       } },
       { Delete: { TableName: tableName, Key: chargeMarkerKey(charge, taskId), ConditionExpression: "attribute_exists(pk)" } },
     ];

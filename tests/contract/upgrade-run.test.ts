@@ -1146,6 +1146,16 @@ describe("rollbackDirection (the direction guard)", () => {
     expect(rollbackDirection("staging", "0.5.17", "0.5.16")).toBe("older");
     expect(() => rollbackDirection("staging", "0.5.17", "0.5.14")).toThrow("release 0.5.15 removed the control plane's CallbackSigningKey parameter");
   });
+  it("0.5.19 (S2 marker rows) rolls back to 0.5.18, the release that reads them, and no lower", () => {
+    expect(ROLLBACK_FLOORS).toContainEqual(expect.objectContaining({ release: "0.5.19", floor: "0.5.18" }));
+    expect(rollbackDirection("staging", "0.5.19", "0.5.18", ROLLBACK_FLOORS, "0.5.19")).toBe("older");
+    expect(() => rollbackDirection("staging", "0.5.19", "0.5.17", ROLLBACK_FLOORS, "0.5.19")).toThrow("release 0.5.19 writes limit slots and parked deliveries as marker rows");
+    expect(() => rollbackDirection("staging", "0.5.19", "0.5.17", ROLLBACK_FLOORS, "0.5.19")).toThrow("no lower than 0.5.18");
+    // An environment that ran 0.5.19 and was rolled back to 0.5.18 still cannot go below 0.5.18 (the high-water mark).
+    expect(() => rollbackDirection("staging", "0.5.18", "0.5.17", ROLLBACK_FLOORS, "0.5.19", "0.5.19")).toThrow("no lower than 0.5.18");
+    // 0.5.15's floor still holds under it.
+    expect(() => rollbackDirection("staging", "0.5.19", "0.5.14", ROLLBACK_FLOORS, "0.5.19")).toThrow("no lower than 0.5.18");
+  });
   it("the release's own check: a release whose x.y.z is not ROLLBACK_FLOORS_DECLARED_THROUGH is not packed", () => {
     expect(() => assertRollbackFloorsDeclaredFor(ROLLBACK_FLOORS_DECLARED_THROUGH)).not.toThrow();
     expect(() => assertRollbackFloorsDeclaredFor(`${ROLLBACK_FLOORS_DECLARED_THROUGH}-rc.1`)).not.toThrow();

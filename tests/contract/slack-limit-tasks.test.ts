@@ -4,6 +4,7 @@ import { slackLimitPk } from "@rovara-code/contracts";
 import { TEST_ORG } from "../support/orgs.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { limitMessage } from "../../packages/slack-service/src/messages.js";
 import { MAYA, createDeveloperTaskBroker, grantProject, type Developer } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, serviceCall } from "../support/slack-broker.js";
@@ -81,6 +82,63 @@ describe("a Slack thread at the limit first gives back slots finished tasks stil
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `TASK#${String(task.taskId)}`)).toBeUndefined();
     expect(db.get(`WORKSPACE#${String(task.workspaceId)}`, "META")?.status).toBe("CLOSED");
     expect(deleteEc2Session).toHaveBeenCalledWith(task.workspaceId);
+  });
+});
+
+/**
+ * The member counter's held tasks in marker form: each `tasks` set entry (what the readers release writes) becomes a `TASK#` row; a counter that already holds
+ * markers (this release writes them) is left as it is. Answers the task ids.
+ */
+function toMarkers(db: FakeDynamoDb, member: { pk: string; sk: string }): string[] {
+  const counter = db.get(member.pk, member.sk)!;
+  const ids = counter.tasks instanceof Set ? [...counter.tasks as Set<string>] : db.find((item) => item.pk === member.pk && item.entityType === "DEVELOPER_LIMIT_TASK" && item.memberSk === member.sk).map((item) => String(item.taskId));
+  const { tasks: _tasks, ...rest } = counter;
+  void _tasks;
+  db.set(rest);
+  for (const taskId of ids) db.set({ pk: member.pk, sk: `TASK#${taskId}`, entityType: "DEVELOPER_LIMIT_TASK", taskId, memberSk: member.sk, chargedAt: "2026-11-20T00:00:00.000Z" });
+  return ids;
+}
+
+describe("S2 readers: slots charged as marker rows (the form the next release writes)", () => {
+  const memberKey = { pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: `MEMBER#${MAYA.slackUserId!}` };
+  const finish = (db: FakeDynamoDb, taskId: string) => {
+    const task = db.get(`DEVTASK#${taskId}`, "META")!;
+    db.set({ ...task, workflow: { stage: "MERGED", state: "COMPLETE", outcome: "MERGED" } });
+    const { activeOperationId: _active, ...workspace } = db.get(`WORKSPACE#${String(task.workspaceId)}`, "META")!;
+    void _active;
+    db.set({ ...workspace, status: "READY" });
+    return task;
+  };
+
+  it("the open-task count a Slack service asks for counts marker-form tasks", async () => {
+    const { handler, db, subject } = await fullOfTasks();
+    expect(toMarkers(db, memberKey)).toHaveLength(3);
+    const asked = await serviceCall(handler, subject, MAYA.slackUserId!, "POST", "/v1/service/threads/workspace", { requestId: randomUUID(), includeOpenTaskCount: true });
+    expect(result(asked.body)).toEqual({ outcome: "LIMIT_REACHED", limit: "MEMBER", maximum: 3, starterThreads: [], openTaskCount: 3 });
+  });
+
+  it("a merged Cloud task still counted as a marker is released by the self-heal, and the thread's workspace starts", async () => {
+    const { handler, db, subject } = await fullOfTasks();
+    const [first] = toMarkers(db, memberKey);
+    const task = finish(db, first!);
+    const opened = await serviceCall(handler, subject, MAYA.slackUserId!, "POST", "/v1/service/threads/workspace", { requestId: randomUUID() });
+    expect(opened.body).toMatchObject({ outcome: "WORKSPACE", created: true });
+    expect(db.get(memberKey.pk, `TASK#${String(task.taskId)}`)).toBeUndefined();
+    expect(db.get(`DEVTASK#${String(task.taskId)}`, "META")).toHaveProperty("releasedAt");
+  });
+
+  it("the self-heal leaves a marker the core owns alone: the core's task is not closed through Cloud's path", async () => {
+    const { handler, db, subject } = await fullOfTasks();
+    const [first] = toMarkers(db, memberKey);
+    const task = finish(db, first!);
+    // The core stamped this task (D2, decision 130): its slot is the core's to release.
+    db.set({ pk: `TASK_ENGINE#${String(task.taskId)}`, sk: "STAMP", entityType: "TASK_ENGINE", orgId: TEST_ORG, taskId: String(task.taskId), coreEngine: { engine: "core", areas: { merge: "core", build: "core", flow: "core" }, flags: "x", stampedAt: "2026-11-20T00:00:00.000Z" } });
+    const before = structuredClone(db.get(`DEVTASK#${String(task.taskId)}`, "META"));
+    const refused = await serviceCall(handler, subject, MAYA.slackUserId!, "POST", "/v1/service/threads/workspace", { requestId: randomUUID() });
+    expect(refused.body).toMatchObject({ outcome: "LIMIT_REACHED" });
+    expect(db.get(memberKey.pk, `TASK#${String(task.taskId)}`)).toBeDefined();
+    expect(db.get(`DEVTASK#${String(task.taskId)}`, "META")).toEqual(before);
+    expect(db.get(memberKey.pk, memberKey.sk)).toMatchObject({ count: 3 });
   });
 });
 

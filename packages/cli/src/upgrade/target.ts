@@ -64,6 +64,10 @@ export const ROLLBACK_FLOORS: readonly RollbackFloor[] = [
   // 0.5.15 dropped the control plane's CallbackSigningKey parameter (parameters.ts): this agentx no longer sends it, and 0.5.14's template
   // has no default for it, so this agentx cannot deploy 0.5.14 or older. (The 0.5.14 CLI itself still can: rollback-0515-to-0514.sh.)
   { release: "0.5.15", floor: "0.5.15", reason: "removed the control plane's CallbackSigningKey parameter, which every older template needs and this agentx no longer sends" },
+  // 0.5.19 (S2) writes a limit slot as a `TASK#<id>` row and a parked delivery as a `SESSION_WAITING#<id>` row instead of an entry of a string set, and
+  // its data move converts the stored sets. 0.5.18 reads and releases both forms (the readers release, DECISIONS 152a); 0.5.17 and older read only the sets,
+  // so they would never free those slots or send those deliveries. (Below 0.5.18 the S2 move's reverse must also have run: docs/runbooks/s2-marker-rows-migration.md.)
+  { release: "0.5.19", floor: "0.5.18", reason: "writes limit slots and parked deliveries as marker rows, which only 0.5.18 and newer read (older releases read only the string sets)" },
 ];
 
 /**
