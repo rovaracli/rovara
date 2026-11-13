@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { coreFamilyCounters } from "../../cloud/rows/core-rows.js";
 import { CHANNEL_PRIVACY_NOT_SET_UP, PRIVATE_CHANNEL_NOT_A_MEMBER, AgentXError, DEVELOPER_INSTRUCTIONS_MAX_BYTES, codingRequestText, DEVELOPER_EVENTS_DEFAULT, SlackChannelIdSchema, StartDeveloperTaskRequestSchema, agentXError, cleanClientName, SCRIPT_TOKEN_CLIENT_NAME, sharedTaskKey, ROVARA_CODE_AGENT_ID, ROVARA_CODE_V2_FOR_NEW_ORGS, newPrefixedId, sessionSurfaceKey, WORKFLOW_PATH_REQUIRED, AUTOMATIC_RUNS_AT_ONCE, isSystemOwnerId, systemOwnerIdOf, SYSTEM_OWNER_PROVIDER, type SessionBinding } from "@rovara-code/contracts";
 import { PER_TASK_BUDGET_USD, type DeveloperTaskView, createWorkflowSnapshot } from "@agentx/cloud-contracts";
 import { SYSTEM_OWNER_REFUSAL, isSystemOwnerCaller } from "../../developer/system-owner.js";
@@ -480,9 +481,9 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   const limits = systemStart ? { ...personalLimits, member: Math.min(AUTOMATIC_RUNS_AT_ONCE, personalLimits.organization) } : personalLimits;
   const charge = developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: caller.slackUserId, developerId: caller.developerId });
   // A run started paused (run limit 0) takes no workspace slot until its run limit is raised, so there is nothing to count.
-  let full = paused ? undefined : await limitReached(deps.documentClient, deps.tableName, charge, limits);
+  let full = paused ? undefined : await limitReached(deps.documentClient, deps.tableName, charge, limits, coreFamilyCounters(deps.orgId, caller.developerId));
   // Slots finished tasks kept (merged before releases ran on merge) are given back, then the limit is read once more.
-  if (full !== undefined && await releaseFinishedTasksOf(deps, charge.member) > 0) full = await limitReached(deps.documentClient, deps.tableName, charge, limits);
+  if (full !== undefined && await releaseFinishedTasksOf(deps, charge.member) > 0) full = await limitReached(deps.documentClient, deps.tableName, charge, limits, coreFamilyCounters(deps.orgId, caller.developerId));
   if (full !== undefined) return refused(await limitError(deps, caller, full, limits));
 
   // Test environment (wire-testenv): the project's approved environment, if a task may use it, decides the checks the task is held to, and its revision is pinned with the task. Nothing while the switch is off.

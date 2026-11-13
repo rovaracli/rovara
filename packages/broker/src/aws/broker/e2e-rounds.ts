@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): application E2E rounds (baseline, replay, grounding) and their dispatch.
 
+import { findArtifactRow } from "../../cloud/rows/core-rows.js";
 import { createHash, randomUUID } from "node:crypto";
 import { DeleteCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
@@ -983,7 +984,7 @@ export async function finishPlanGrounding(dependencies: AwsBrokerDependencies, t
 
   // The plan is read again from the planner's saved answer, as it was when held; the check's result is added to it.
   const planOperation = await getItem<OperationRecord>(dependencies, operationKey(task.workspaceId, hold.planOperationId));
-  const answer = await getItem<Record<string, unknown>>(dependencies, { pk: `WORKSPACE#${task.workspaceId}`, sk: `ARTIFACT#${hold.artifactId}` });
+  const answer = await findArtifactRow(dependencies, task.workspaceId, hold.artifactId);
   const plannerReplies: PlannerReplies[] = [];
   let stored: Awaited<ReturnType<typeof storePlanAnswer>> | undefined;
   let next: WorkflowSnapshot;

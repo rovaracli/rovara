@@ -1,6 +1,6 @@
 // Spec 025 FR-020 and FR-053: one set of workspace limits for Slack threads and developer tasks.
 // The numbers are the admin's setting when there is one, else the stack parameters (R7).
-import { GetCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, QueryCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import { isSlackLimitPk, orgLimitKey, slackMemberLimitKey, slackOrganizationLimitKey, type OrgId } from "@rovara-code/contracts";
 import { orgSettingsKey } from "@agentx/cloud-contracts";
 import type { CounterKey, WorkspaceCharge } from "./task-records.js";
@@ -111,13 +111,30 @@ export function releaseItems(tableName: string, charge: WorkspaceCharge, taskId:
   ];
 }
 
-/** Which counter is full, read before the start's transaction so the refusal can say so. */
-export async function limitReached(client: Client, tableName: string, charge: WorkspaceCharge, limits: { member: number; organization: number }): Promise<"member" | "organization" | undefined> {
+/**
+ * Which counter is full, read before the start's transaction so the refusal can say so. `alsoCounted.member` is the person's counter on the core's family (D3,
+ * cloud/rows/core-rows.ts CORE_LIMIT_FAMILY): the core marks each task it charges with a `TASK#<id>` row beside that counter, and Cloud's own tasks never write one, so
+ * those markers are exactly the person's core tasks. A start on Cloud's path counts them too, whichever family it charges itself. Where the person's counter on Cloud's
+ * path IS that row (a developer with no Slack link), the core's tasks are already in its count and nothing is added. The company's counter is not read across families:
+ * Cloud's non-Slack tasks and the core's share it already.
+ */
+export async function limitReached(
+  client: Client, tableName: string, charge: WorkspaceCharge, limits: { member: number; organization: number },
+  alsoCounted?: { member?: CounterKey },
+): Promise<"member" | "organization" | undefined> {
   const count = async (key: CounterKey) => {
     const response = await client.send(new GetCommand({ TableName: tableName, Key: key, ConsistentRead: true })) as { Item?: { count?: unknown } };
     return typeof response.Item?.count === "number" ? response.Item.count : 0;
   };
-  if (await count(charge.member) >= limits.member) return "member";
+  const coreMarkers = async (member: CounterKey): Promise<number> => {
+    if (member.pk === charge.member.pk && member.sk === charge.member.sk) return 0;
+    const response = await client.send(new QueryCommand({
+      TableName: tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": member.pk, ":prefix": "TASK#" }, ConsistentRead: true,
+    })) as { Items?: unknown[] };
+    return response.Items?.length ?? 0;
+  };
+  const held = await count(charge.member) + (alsoCounted?.member === undefined ? 0 : await coreMarkers(alsoCounted.member));
+  if (held >= limits.member) return "member";
   if (await count(charge.organization) >= limits.organization) return "organization";
   return undefined;
 }

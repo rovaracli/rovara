@@ -38,8 +38,26 @@ export interface AdmissionLevel {
  */
 export type CloudActionRule = { kind: "room"; minimumUsd: number } | { kind: "hold"; unknownCostUsd: number };
 
+/**
+ * What a refusal knows, for the words it is told in. `message` is this adapter's own sentence (a neutral one); a host that has words of its own for the
+ * same refusal (Cloud's: convergence S0-143d) returns them from `CloudAdmissionOptions.words`. The figures are in dollars; `spentUsd` is what the counter says
+ * is spent, `committedUsd` what is spent or held by running work.
+ */
+export interface RefusalCircumstance {
+  code: string;
+  message: string;
+  /** The budget scope that was short (a money refusal only). */
+  kind?: BudgetScope["kind"];
+  limitUsd?: number;
+  spentUsd?: number;
+  committedUsd?: number;
+  projectName?: string;
+}
+
 export interface CloudAdmissionOptions {
   store: DocumentStore;
+  /** The sentence a refusal is told in. Absent: this adapter's own. A host's words for a code must be a person-fit sentence and never raw text (the core shows `message` as it is). */
+  words?: (circumstance: RefusalCircumstance) => string;
   /** Epoch milliseconds. */
   now?: () => number;
   /** The scopes and limits of a request in a month (Cloud: `budgetScopesFor` and `effectiveLimits`). A failure is a fault and propagates; nothing is written. */
@@ -102,7 +120,7 @@ export const holdKey = (companyId: string, holdId: string): DocumentKey => ({ pk
 export const openHoldsPk = (companyId: string): string => orgScoped(companyId, "ADMISSION_HOLDS_OPEN");
 const reservationIdOf = (companyId: string, holdId: string): string => `${companyId}.${holdId}`;
 
-const refused = (code: string, message: string): Extract<AdmissionDecision, { allowed: false }> => ({ allowed: false, code, message });
+const refusedAs = (words: CloudAdmissionOptions["words"], circumstance: RefusalCircumstance): Extract<AdmissionDecision, { allowed: false }> => ({ allowed: false, code: circumstance.code, message: words?.(circumstance) ?? circumstance.message });
 
 function readHold(item: StoredDocument | undefined, companyId: string, holdId: string): HoldRow | undefined {
   if (item === undefined || item["entityType"] !== HOLD_ENTITY || item["orgId"] !== companyId || item["holdId"] !== holdId) return undefined;
@@ -146,7 +164,7 @@ export class CloudAdmission implements Admission {
       // Refused by a condition: the hold row was there (an earlier call with this key won; the next read answers its reservation), or another hold or key
       // took the room between the read and the write (the next read decides again from the counters as they are now).
     }
-    return { allowed: false, code: "budget_busy", message: "Other work is taking this budget's room right now. Try again in a moment.", retryAfterSeconds: 1 };
+    return { ...this.refuse(request, { code: "budget_busy", message: "Other work is taking this budget's room right now. Try again in a moment." }), retryAfterSeconds: 1 };
   }
 
   async stage(request: AdmissionRequest): Promise<{ decision: AdmissionDecision; items: readonly TransactItem[] }> {
@@ -214,14 +232,19 @@ export class CloudAdmission implements Admission {
     return (await this.options.store.transact(items)).applied;
   }
 
+  /** A refusal, in the host's words when it gave some. */
+  private refuse(request: AdmissionRequest, circumstance: RefusalCircumstance): Extract<AdmissionDecision, { allowed: false }> {
+    return refusedAs(this.options.words, { ...circumstance, ...(request.projectName === undefined ? {} : { projectName: request.projectName }) });
+  }
+
   /** The decision and the steps for a request, from the counters as they are now. A refusal has no steps. */
   private async prepare(request: AdmissionRequest): Promise<{ decision: AdmissionDecision; items: TransactItem[]; holdId?: string }> {
-    if (!OrgIdSchema.safeParse(request.companyId).success) return { decision: refused("admission_invalid_request", "This request names no company Rovara knows."), items: [] };
-    if (typeof request.idempotencyKey !== "string" || request.idempotencyKey.length === 0 || request.idempotencyKey.length > 512) return { decision: refused("admission_invalid_request", "This request has no usable key."), items: [] };
+    if (!OrgIdSchema.safeParse(request.companyId).success) return { decision: this.refuse(request, { code: "admission_invalid_request", message: "This request names no company Rovara knows." }), items: [] };
+    if (typeof request.idempotencyKey !== "string" || request.idempotencyKey.length === 0 || request.idempotencyKey.length > 512) return { decision: this.refuse(request, { code: "admission_invalid_request", message: "This request has no usable key." }), items: [] };
     const rule = Object.hasOwn(this.options.actions, request.action) ? this.options.actions[request.action] : undefined;
-    if (rule === undefined) return { decision: refused("admission_action_unknown", "Rovara does not admit this kind of work on this install."), items: [] };
+    if (rule === undefined) return { decision: this.refuse(request, { code: "admission_action_unknown", message: "Rovara does not admit this kind of work on this install." }), items: [] };
     const estimate = request.estimate?.cost;
-    if (estimate !== undefined && estimate.currency !== "USD") return { decision: refused("currency_unsupported", "Rovara counts spend in US dollars only."), items: [] };
+    if (estimate !== undefined && estimate.currency !== "USD") return { decision: this.refuse(request, { code: "currency_unsupported", message: "Rovara counts spend in US dollars only." }), items: [] };
     // A known dollar estimate above $0, or the action's worst case: never $0 (decision 79).
     const amountUsd = cleanUsd(rule.kind === "room" ? rule.minimumUsd
       : isCountableCost(estimate) && estimate.micros > 0 ? microsToUsd(estimate.micros) : rule.unknownCostUsd);
@@ -232,11 +255,11 @@ export class CloudAdmission implements Admission {
         // The same request again answers the same reservation and holds nothing more, but only while that hold is still held and is this request: a key
         // whose hold was settled or released, or reused for another action or amount, is refused rather than answered with a reservation that holds nothing.
         if (existing.state === "held" && existing.action === request.action && existing.heldUsd === amountUsd) return { decision: { allowed: true, reservationId: reservationIdOf(request.companyId, holdId) }, items: [], holdId };
-        return { decision: refused("admission_key_reused", "This request's key was already used for other or finished work. Ask again with a new key."), items: [], holdId };
+        return { decision: this.refuse(request, { code: "admission_key_reused", message: "This request's key was already used for other or finished work. Ask again with a new key." }), items: [], holdId };
       }
     }
     const gate = await this.options.gate?.(request);
-    if (gate !== undefined) return { decision: refused(gate.code, gate.message), items: [] };
+    if (gate !== undefined) return { decision: this.refuse(request, { code: gate.code, message: gate.message }), items: [] };
     const now = this.now();
     const month = monthOfMs(now);
     const levels = dedupe(await this.options.levels(request, month));
@@ -246,7 +269,14 @@ export class CloudAdmission implements Admission {
       const committed = counterNumber(counters[index], "committedUsd");
       const short = rule.kind === "room" ? cleanUsd(level.limitUsd - committed) < amountUsd : committed > cleanUsd(level.limitUsd - amountUsd + SLACK_USD) || cleanUsd(level.limitUsd - amountUsd) < 0;
       if (short) {
-        return { decision: refused(SCOPE_CODES[level.kind], `${SCOPE_WORDS[level.kind]} has too little left for this ($${cleanUsd(Math.max(0, level.limitUsd - committed)).toFixed(2)} of $${level.limitUsd.toFixed(2)} left). Try again when running work finishes, or ask an admin to raise it.`), items: [], ...(holdId === undefined ? {} : { holdId }) };
+        return {
+          decision: this.refuse(request, {
+            code: SCOPE_CODES[level.kind],
+            message: `${SCOPE_WORDS[level.kind]} has too little left for this ($${cleanUsd(Math.max(0, level.limitUsd - committed)).toFixed(2)} of $${level.limitUsd.toFixed(2)} left). Try again when running work finishes, or ask an admin to raise it.`,
+            kind: level.kind, limitUsd: level.limitUsd, committedUsd: committed, spentUsd: counterNumber(counters[index], "spentUsd"),
+          }),
+          items: [], ...(holdId === undefined ? {} : { holdId }),
+        };
       }
     }
     if (rule.kind === "room") {

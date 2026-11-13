@@ -5,6 +5,7 @@
 //   notes     the messages people sent to the agent, with the sender's fixed label and authority. A Slack reply by someone who is not the task's owner is OUTSIDER text, not a note.
 //   outsider  Slack thread replies by people who are not the task's owner, as untrusted data. (Team record rows and pull request comments are not wired yet: see the lane report.)
 //   diff      a peek of the working tree, else the pull request's diff (`ask-diff.ts`).
+import { coreOperationEvents } from "../cloud/rows/core-rows.js";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { LatestChecksSchema, SessionEventSchema, agentSessionKey, checkOutputTail, redactText, workflowSelectedChecks, type OrgId } from "@rovara-code/contracts";
 import { effectiveTaskOwner, taskEvent, type DeveloperTaskRecord } from "../developer/task-records.js";
@@ -61,10 +62,12 @@ async function recentToolEvents(deps: AskReaderDependencies, task: DeveloperTask
     .filter((item) => item["kind"] === "task" && typeof item["id"] === "string" && typeof item["createdAt"] === "string")
     .sort((left, right) => String(right["createdAt"]).localeCompare(String(left["createdAt"])))[0];
   if (newest === undefined) return [];
-  const events = (await deps.documentClient.send(new QueryCommand({
+  const cloudEvents = (await deps.documentClient.send(new QueryCommand({
     TableName: deps.tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": `OPERATION#${String(newest["id"])}`, ":prefix": "EVENT#" },
     ScanIndexForward: false, Limit: TOOL_EVENTS_READ_MAX, ConsistentRead: true,
   })) as { Items?: Array<Record<string, unknown>> }).Items ?? [];
+  // An operation of a core task keeps its events under its workspace (D18): looked for only where Cloud's own partition has none.
+  const events = cloudEvents.length > 0 ? cloudEvents : await coreOperationEvents(deps, task.workspaceId, String(newest["id"]), { limit: TOOL_EVENTS_READ_MAX, newestFirst: true });
   const lines: string[] = [];
   for (const item of events) {
     if (item["entityType"] !== "EVENT" || typeof item["sequence"] !== "number" || typeof item["type"] !== "string" || typeof item["timestamp"] !== "string") continue;
