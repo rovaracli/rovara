@@ -12,7 +12,7 @@ import { deterministicEventId, eventItem, tombstoneItem } from "../../../package
 import type { TeamRecordTable } from "../../../packages/broker/src/team-record/types.js";
 import { GITHUB_SCOPE, ORG_A, addSource, caller, githubDraft, world, type World } from "../../support/team-record-core.js";
 import { deleteDeps } from "../../support/team-record-delete.js";
-import { DAY, HOUR, buildIndex, depsOf, indexHoldsWord, manifestOf, rowOf, seedRows } from "../../support/keyword-index.js";
+import { DAY, HOUR, buildIndex, depsOf, indexHoldsWord, isChunkWrite, manifestOf, rowOf, seedRows } from "../../support/keyword-index.js";
 
 const NOW = (w: World): number => Math.floor(w.clock.ms / 1000);
 const searchDeps = (w: World, extra: Partial<RecordQueryDependencies> = {}): RecordQueryDependencies => ({ table: w.table, modes: w.deps.modes, now: () => w.clock.ms, log: (event, fields) => { w.logs.push({ event, fields: { ...fields } }); }, ...extra });
@@ -280,7 +280,7 @@ describe("review: the kill switch and the gate", () => {
       await w.sink.tombstone({ workspaceId: ORG_A, system: "github.com", sourceIds: ["g-1"], cause: "source_deleted" });
       const real = w.table.documentClient;
       const broken: TeamRecordTable = { ...w.table, documentClient: { send: async (command: unknown) => {
-        if ((command as { constructor: { name: string } }).constructor.name === "PutCommand" && String((command as { input?: { Item?: { sk?: string } } }).input?.Item?.sk).startsWith("KWIDX#S#")) throw Object.assign(new Error("down"), { name: "ServiceUnavailable" });
+        if (isChunkWrite(command)) throw Object.assign(new Error("down"), { name: "ServiceUnavailable" });
         return real.send(command);
       } } };
       const d = deleteDeps(w, { table: broken });
