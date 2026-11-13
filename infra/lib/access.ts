@@ -1,13 +1,13 @@
-import { Aws, CfnCondition, CfnRule, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Validations, type StackProps } from "aws-cdk-lib";
+import { Aws, CfnCondition, CfnRule, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Token, Validations, type StackProps } from "aws-cdk-lib";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import type { Construct } from "constructs";
-import { defaultBoundaryName, defaultBoundaryStatements, environmentRolePath, operatorRoleStatements, serviceRoleStatements, withoutSids } from "./access-policies.js";
+import { defaultBoundaryName, defaultBoundaryStatements, deployRoleBoundaryName, deployRoleBoundaryStatements, environmentRolePath, operatorRoleStatements, serviceRoleStatements, withoutSids } from "./access-policies.js";
 import type { AgentXNaming } from "./naming.js";
 import { OperatorAccess, type OperatorAccessSettings } from "./operator-access.js";
 import { CUSTOM_DOMAIN_NAME_PATTERN, CUSTOM_DOMAIN_ZONE_PATTERN } from "./custom-domain-patterns.js";
-import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
+import { applyPermissionsBoundaryParameter, useOwnPermissionsBoundary } from "./permissions-boundary.js";
 import { modelProxyTlsCleanupStatements, modelProxyTlsDeployStatements, type ModelProxyTls, type ModelProxyTlsPrevious } from "./model-proxy-tls.js";
 
 export interface AccessStackProps extends StackProps {
@@ -66,26 +66,38 @@ export class AccessStack extends Stack {
     // the Fn::If's else branch, which is valid for a conditional resource (the branch is evaluated
     // only when the resource exists) and makes CloudFormation create the policy before the roles.
     // A DependsOn would not do: DependsOn on a resource whose condition is false fails the stack.
-    const { effectiveBoundaryArn } = applyPermissionsBoundaryParameter(this, env, {
+    let deployBoundaryRef: string | undefined;
+    const { effectiveBoundaryArn, parameter: boundaryParameter, condition: hasPermissionsBoundary } = applyPermissionsBoundaryParameter(this, env, {
       defaultBoundary: (hasPermissionsBoundary) => {
         const useDefaultBoundary = new CfnCondition(this, "UseDefaultBoundary", {
           expression: Fn.conditionNot(hasPermissionsBoundary),
         });
+        const boundaryScope = { env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account, cloudFormationRoleName: naming.cloudFormationRoleName, ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }) };
+        // withoutSids: the deployed boundaries are capped at 6,144 characters; the tests find statements by Sid in defaultBoundaryStatements and deployRoleBoundaryStatements.
+        const deployed = (statements: ReturnType<typeof defaultBoundaryStatements>) => withoutSids(statements.map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement));
         const policy = new iam.CfnManagedPolicy(this, "DefaultPermissionsBoundary", {
           managedPolicyName: defaultBoundaryName(env),
           path: environmentRolePath(env),
           description: `Default permission boundary for every agentx-${env} role`,
-          policyDocument: {
-            Version: "2012-10-17",
-            Statement: withoutSids(defaultBoundaryStatements({ env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account, cloudFormationRoleName: naming.cloudFormationRoleName, ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }) })
-              // withoutSids: the deployed boundary is capped at 6,144 characters; the tests find statements by Sid in defaultBoundaryStatements.
-              .map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement)),
-          },
+          policyDocument: { Version: "2012-10-17", Statement: deployed(defaultBoundaryStatements(boundaryScope)) },
         });
         policy.cfnOptions.condition = useDefaultBoundary;
+        // 0.5.17 (MODEL-PROXY-TLS-BOUNDARY-BLOCKER, review M-1): the deploy role's own boundary, the default one plus the Certificate Manager and Route 53 ceiling its grants need
+        // (deployRoleBoundaryStatements). Only the deploy role carries it; every role the deploy creates is still pinned to the default boundary (IamRequireBoundary).
+        const deployPolicy = new iam.CfnManagedPolicy(this, "DeployRolePermissionsBoundary", {
+          managedPolicyName: deployRoleBoundaryName(env),
+          path: environmentRolePath(env),
+          description: `Permission boundary for the agentx-${env} deploy role only`,
+          policyDocument: { Version: "2012-10-17", Statement: deployed(deployRoleBoundaryStatements(boundaryScope)) },
+        });
+        deployPolicy.cfnOptions.condition = useDefaultBoundary;
+        deployBoundaryRef = deployPolicy.ref;
         return policy.ref;
       },
     });
+    if (deployBoundaryRef === undefined) throw new Error("the access stack's default boundary was not created");
+    // A company's own boundary (the parameter) bounds the deploy role as it bounds every role; without one, the deploy role's own boundary.
+    const deployRoleBoundaryArn = Token.asString(Fn.conditionIf(hasPermissionsBoundary.logicalId, boundaryParameter.valueAsString, deployBoundaryRef));
     const operatorPrincipalArn = new CfnParameter(this, "OperatorPrincipalArn", {
       type: "String",
       default: "",
@@ -192,6 +204,7 @@ export class AccessStack extends Stack {
         ...(operatorAccessConstruct === undefined ? [] : [operatorAccessConstruct.deployRoleReadPolicy]),
       ],
     });
+    useOwnPermissionsBoundary(serviceRole, deployRoleBoundaryArn);
 
     const operatorRole = new iam.CfnRole(this, "OperatorRole", {
       roleName: naming.operatorRoleName,

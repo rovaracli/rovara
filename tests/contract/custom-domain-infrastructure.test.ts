@@ -158,8 +158,8 @@ describe("the deploy role's grants for the custom domain (access stack)", () => 
 
   it("grants nothing for it by default, and nothing at all to an environment that is not the hosted cloud", () => {
     expect(granted(access, off)).toEqual([]);
-    // Seven statements exist in the template, each behind the condition: the cloud access stack carries them, and the plain one does not.
-    expect(statements(access).filter((statement) => JSON.stringify(statement).includes("CustomDomainEnabled"))).toHaveLength(7);
+    // Six statements (seven before 0.5.17 merged GetChange into the zone list) exist in the template, each behind the condition: the cloud access stack carries them, and the plain one does not.
+    expect(statements(access).filter((statement) => JSON.stringify(statement).includes("CustomDomainEnabled"))).toHaveLength(6);
     expect(JSON.stringify(statements(plainAccess))).not.toContain("acm:");
     expect(JSON.stringify(statements(plainAccess))).not.toContain("route53:");
   });
@@ -172,7 +172,7 @@ describe("the deploy role's grants for the custom domain (access stack)", () => 
 
   it("grants certificate and record changes for that name and that one hosted zone only, never the apex", () => {
     const all = granted(access, on);
-    expect(all.map((statement) => statement.Sid)).toEqual(["CustomDomainCertificateRequest", "CustomDomainCertificateTag", "CustomDomainCertificates", "CustomDomainRecords", "CustomDomainZoneReads", "CustomDomainZoneList", "CustomDomainChanges"]);
+    expect(all.map((statement) => statement.Sid)).toEqual(["CustomDomainCertificateRequest", "CustomDomainCertificateTag", "CustomDomainCertificates", "CustomDomainRecords", "CustomDomainZoneReads", "CustomDomainZoneList"]);
     const bySid = Object.fromEntries(all.map((statement) => [statement.Sid, statement]));
     // The certificate: this region, this one name (and it must name one), tagged as this environment's.
     expect(bySid.CustomDomainCertificateRequest).toMatchObject({ Action: ["acm:RequestCertificate"], Resource: "*", Condition: {
@@ -193,8 +193,10 @@ describe("the deploy role's grants for the custom domain (access stack)", () => 
     for (const refused of ["rovara.dev", "www.rovara.dev", `x.${DOMAIN}`, "evil-staging.rovara.dev", "_0a1b2c.rovara.dev"]) expect(names.some((pattern) => matches(pattern, refused)), refused).toBe(false);
     // The reads CloudFormation's record handler makes, and the one action that takes no resource.
     expect(bySid.CustomDomainZoneReads).toMatchObject({ Action: ["route53:GetHostedZone", "route53:ListResourceRecordSets"], Resource: `arn:aws:route53:::hostedzone/${ZONE}` });
-    expect(bySid.CustomDomainZoneList).toMatchObject({ Action: ["route53:ListHostedZones"], Resource: "*" });
-    expect(bySid.CustomDomainChanges).toMatchObject({ Action: ["route53:GetChange"], Resource: "arn:aws:route53:::change/*" });
+    // 0.5.17: GetChange shares ListHostedZones's "*" (its only resource type is change, so it reaches exactly the changes change/* did), for room in the inline policy.
+    expect(bySid.CustomDomainZoneList).toMatchObject({ Action: ["route53:ListHostedZones", "route53:GetChange"], Resource: "*" });
+    // 0.5.17 review L-2: never an exportable certificate.
+    expect(bySid.CustomDomainCertificateRequest!.Condition).toMatchObject({ StringEqualsIfExists: { "acm:Export": "DISABLED" } });
     const actions = all.flatMap((statement) => statement.Action);
     expect(actions.filter((action) => action.endsWith("*"))).toEqual([]);
     expect(actions.sort()).toEqual(["acm:AddTagsToCertificate", "acm:DeleteCertificate", "acm:DescribeCertificate", "acm:ListTagsForCertificate", "acm:RemoveTagsFromCertificate", "acm:RequestCertificate",
@@ -236,7 +238,7 @@ describe("adding, removing and re-adding the domain never leaves a resource with
 
   it("has the resources and the grants together exactly when the domain is set", () => {
     expect([controlResources("on"), controlResources("off")]).toEqual([5, 0]);
-    expect([accessGrants("on"), accessGrants("off")]).toEqual([7, 0]);
+    expect([accessGrants("on"), accessGrants("off")]).toEqual([6, 0]);
   });
 
   it("adding: access first, so the grants exist before the control plane creates the certificate and records", () => {

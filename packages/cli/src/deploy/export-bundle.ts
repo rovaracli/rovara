@@ -12,7 +12,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, rmdir, writeFile 
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { agentXError, environmentCloudFormationRoleName, environmentOperatorRoleName, environmentPullThroughPrefix, environmentStackName, EnvironmentNameSchema } from "@rovara-code/contracts";
-import { defaultBoundaryArn, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, type PolicyScope, type PolicyStatementJson } from "@agentx/cloud-contracts";
+import { defaultBoundaryArn, defaultBoundaryStatements, deployRoleBoundaryArn, deployRoleBoundaryStatements, operatorRoleStatements, serviceRoleStatements, type PolicyScope, type PolicyStatementJson } from "@agentx/cloud-contracts";
 import type { InitAnswers } from "../init/install-state.js";
 import { ACCOUNT_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
 import type { DeployAnswers } from "./deploy-environment.js";
@@ -192,7 +192,8 @@ function accessDeployerStatements(scope: { env: string; partition: string; regio
     `arn:${partition}:iam::${account}:role/${environmentCloudFormationRoleName(env)}`,
     `arn:${partition}:iam::${account}:role/${environmentOperatorRoleName(env)}`,
   ];
-  const boundaryArn = defaultBoundaryArn({ env, partition, account });
+  // 0.5.17: and the deploy role's own boundary (agentx-<env>-deploy-boundary), the second managed policy the stack creates.
+  const boundaryArns = [defaultBoundaryArn({ env, partition, account }), deployRoleBoundaryArn({ env, partition, account })];
   const bucketArn = `arn:${partition}:s3:::${environmentStackName(env, "access")}-*`;
   const serviceLinkedRoleArn = `arn:${partition}:iam::${account}:role/aws-service-role/*`;
   return [
@@ -239,7 +240,7 @@ function accessDeployerStatements(scope: { env: string; partition: string; regio
         "iam:ListEntitiesForPolicy",
         "iam:ListPolicyVersions",
       ],
-      Resource: boundaryArn,
+      Resource: boundaryArns,
     },
     {
       // The one IAM action the ECR pull-through-cache-rule handler needs outside CredentialArn's
@@ -525,7 +526,11 @@ pull-through cache rule, and the two IAM roles every later stack needs.
 - \`agentx-${env}-operator\`: the role an AgentX operator assumes to run \`agentx\` against this
   environment.
 - \`agentx-${env}-boundary\` (only when no permissions boundary ARN is given): the default
-  permission boundary applied to both roles above and every role the later stacks create.
+  permission boundary applied to the operator role and every role the later stacks create.
+- \`agentx-${env}-deploy-boundary\` (only when no permissions boundary ARN is given): the
+  CloudFormation role's own boundary: the default one plus the Certificate Manager and Route 53
+  actions its certificate and DNS record grants need, which no other role's boundary allows. A
+  company boundary given instead must allow those actions too (see \`policies/deploy-role-boundary.json\`).
 - An S3 bucket for release artifacts (templates and code packages) and an ECR pull-through cache
   rule prefixed \`agentx-${env}\`.
 
@@ -706,7 +711,7 @@ whose deletion protection keeps it; its name is not unique, so it never blocks a
   real value. No file here has a callback signing key: it lives in Secrets Manager (\`agentx/${env}/callback-signing-key\`), not in any stack parameter.
 - \`packages/\`: the release's code packages, plus \`packages/SHA256SUMS\` to check them
   (\`sha256sum -c SHA256SUMS\` from inside that directory).
-- \`policies/service-role.json\`, \`policies/operator-role.json\`, \`policies/default-boundary.json\`:
+- \`policies/service-role.json\`, \`policies/operator-role.json\`, \`policies/default-boundary.json\`, \`policies/deploy-role-boundary.json\`:
   the inline policies the later stacks' roles carry, with this environment's real account,
   region and partition.
 - \`policies/access-deployer.json\`: the policy for whoever runs \`deploy-access.sh\`.
@@ -812,6 +817,7 @@ export async function writeExportBundle(input: ExportBundleInput): Promise<Expor
     await write("policies/service-role.json", policyDocument(serviceRoleStatements(policyScope)));
     await write("policies/operator-role.json", policyDocument(operatorRoleStatements(policyScope)));
     await write("policies/default-boundary.json", policyDocument(defaultBoundaryStatements(policyScope)));
+    await write("policies/deploy-role-boundary.json", policyDocument(deployRoleBoundaryStatements(policyScope)));
     await write("policies/access-deployer.json", policyDocument(accessDeployerStatements({ env, partition, region, account })));
 
     await write("deploy-access.sh", deployAccessScript({ env, region, version: release.manifest.version }), { mode: 0o755 });

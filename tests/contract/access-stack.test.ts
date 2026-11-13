@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { APPSYNC_EVENTS_ACTIONS, APPSYNC_EVENTS_UNSCOPED_ACTIONS, CLOUDFRONT_BOUNDARY_ACTIONS, CLOUDFRONT_DISTRIBUTION_ACTIONS, CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS, CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS, CLOUDFRONT_ORIGIN_ACCESS_CONTROL_ACTIONS, CLOUDFRONT_RESPONSE_HEADERS_POLICY_ACTIONS, CLOUDFRONT_UNSCOPED_ACTIONS } from "@agentx/cloud-contracts";
 import { ENVIRONMENT_PLACEHOLDER } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, TEAM_RECORD_BOUNDARY_SERVICES, defaultBoundaryStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
+import { SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, TEAM_RECORD_BOUNDARY_SERVICES, defaultBoundaryStatements, deployRoleBoundaryStatements, serviceRoleStatements } from "../../infra/lib/access-policies.js";
 import { boundaryWithSids } from "../support/deployed-boundary.js";
 import { serviceRoleWithSids } from "../support/deployed-service-role.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
@@ -103,7 +103,9 @@ describe("access stack", () => {
     template.hasParameter("OperatorPrincipalArn", { Type: "String", Default: "", AllowedPattern: "^$|^arn:aws[a-z-]*:iam::[0-9]{12}:(root|role/.+|user/.+)$" });
   });
 
-  const boundaryPolicies = Object.entries(template.findResources("AWS::IAM::ManagedPolicy") as Record<string, Resource>);
+  const managedPolicies = Object.entries(template.findResources("AWS::IAM::ManagedPolicy") as Record<string, Resource>);
+  // 0.5.17: the deploy role's own boundary is the stack's second managed policy (DeployRolePermissionsBoundary); these checks are about the default one.
+  const boundaryPolicies = managedPolicies.filter(([id]) => id === "DefaultPermissionsBoundary");
   const boundaryId = boundaryPolicies[0]?.[0] ?? "missing";
   const effectiveBoundary = { "Fn::If": ["HasPermissionsBoundary", { Ref: "PermissionsBoundaryArn" }, { Ref: boundaryId }] };
 
@@ -122,8 +124,19 @@ describe("access stack", () => {
     expect(boundaryWithSids(statements).map((st) => st.Sid)).toEqual(defaultBoundaryStatements({ env: "staging", partition: "aws", region: "us-east-1", account: "1", cloudFormationRoleName: "x" }).map((st) => st.Sid));
   });
 
-  it("always applies a boundary to both access roles: the given one, else the default", () => {
-    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "agentx-staging-cloudformation", PermissionsBoundary: effectiveBoundary });
+  it("creates the deploy role's own boundary beside it, under the same condition and path (0.5.17)", () => {
+    expect(managedPolicies.map(([id]) => id).sort()).toEqual(["DefaultPermissionsBoundary", "DeployRolePermissionsBoundary"]);
+    const [, policy] = managedPolicies.find(([id]) => id === "DeployRolePermissionsBoundary")!;
+    expect(policy.Condition).toBe("UseDefaultBoundary");
+    expect(policy.Properties.ManagedPolicyName).toBe("agentx-staging-deploy-boundary");
+    expect(policy.Properties.Path).toBe("/agentx/staging/");
+    const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    expect(statements.every((st) => st.Sid === undefined)).toBe(true);
+    expect(statements).toHaveLength(deployRoleBoundaryStatements({ env: "staging", partition: "aws", region: "us-east-1", account: "1", cloudFormationRoleName: "x" }).length);
+  });
+
+  it("always applies a boundary to both access roles: the given one, else the default (the deploy role: else its own)", () => {
+    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "agentx-staging-cloudformation", PermissionsBoundary: { "Fn::If": ["HasPermissionsBoundary", { Ref: "PermissionsBoundaryArn" }, { Ref: "DeployRolePermissionsBoundary" }] } });
     template.hasResourceProperties("AWS::IAM::Role", { RoleName: "agentx-staging-operator", PermissionsBoundary: effectiveBoundary });
     template.hasOutput("EffectiveBoundaryArn", { Value: effectiveBoundary });
   });
@@ -161,8 +174,7 @@ describe("access stack", () => {
     const neededServices = new Set([...resourceTypeServices(), ...Object.values(MANAGED_POLICY_SERVICES).flat()].filter((s) => s !== "iam"));
     // AppSync is allowed by name (Events APIs and their namespaces only, Plan 5 Task 8), never by wildcard.
     expect(allowedServices.has("appsync")).toBe(false);
-    // 0.5.17: by name or by pattern (the four channel namespace actions are BOUNDARY_APPSYNC_NAMESPACE_ACTIONS in the boundary).
-    expect([...APPSYNC_EVENTS_ACTIONS, ...APPSYNC_EVENTS_UNSCOPED_ACTIONS].filter((action) => ![...allowed].some((pattern) => globMatches(pattern, action)))).toEqual([]);
+    expect([...APPSYNC_EVENTS_ACTIONS, ...APPSYNC_EVENTS_UNSCOPED_ACTIONS].filter((action) => !allowed.has(action))).toEqual([]);
     // CloudFront is allowed by name too (distributions by environment tag, the rest by ARN), never `cloudfront:*`.
     expect(allowedServices.has("cloudfront")).toBe(false);
     expect([...CLOUDFRONT_ALL_ACTIONS].filter((action) => !CLOUDFRONT_BOUNDARY_ACTIONS.some((pattern) => globMatches(pattern, action)))).toEqual([]);

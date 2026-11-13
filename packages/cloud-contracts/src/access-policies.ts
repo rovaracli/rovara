@@ -52,7 +52,8 @@ export const CUSTOM_DOMAIN_TAG = "agentx:env";
  *    without the trailing dot, and an underscore is not escaped); the reads CloudFormation's record handler makes (GetHostedZone, ListResourceRecordSets) are on that zone,
  *    and ListHostedZones takes no resource;
  *  - GetChange waits for a change to reach the name servers; it names a change id, which cannot be known in advance.
- * The deploy role carries the permissions boundary, so these need its ceiling too: BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS (0.5.17; before it the boundary refused them all).
+ * The deploy role is bounded too, by its own boundary (deployRoleBoundaryStatements, 0.5.17), which is the only boundary that allows these actions: the roles the deploy creates carry the default
+ * boundary, which allows no acm or route53 action at all.
  */
 const customDomainStatements = (scope: Pick<PolicyScope, "env" | "partition" | "region" | "account" | "customDomain">): PolicyStatementJson[] => {
   const domain = scope.customDomain;
@@ -64,6 +65,8 @@ const customDomainStatements = (scope: Pick<PolicyScope, "env" | "partition" | "
       Sid: "CustomDomainCertificateRequest", Effect: "Allow", Action: ["acm:RequestCertificate"], Resource: "*",
       Condition: {
         StringEquals: { "aws:RequestedRegion": scope.region, [`aws:RequestTag/${CUSTOM_DOMAIN_TAG}`]: scope.env },
+        // 0.5.17 review L-2: never an exportable certificate (its private key could be exported). IfExists: CloudFormation's request names no export option, and a request that does must say DISABLED.
+        StringEqualsIfExists: { "acm:Export": "DISABLED" },
         "ForAllValues:StringEquals": { "acm:DomainNames": [domain.domainName] },
         Null: { "acm:DomainNames": "false" },
       },
@@ -83,8 +86,9 @@ const customDomainStatements = (scope: Pick<PolicyScope, "env" | "partition" | "
       },
     },
     { Sid: "CustomDomainZoneReads", Effect: "Allow", Action: ["route53:GetHostedZone", "route53:ListResourceRecordSets"], Resource: zone },
-    { Sid: "CustomDomainZoneList", Effect: "Allow", Action: ["route53:ListHostedZones"], Resource: "*" },
-    { Sid: "CustomDomainChanges", Effect: "Allow", Action: ["route53:GetChange"], Resource: `arn:${scope.partition}:route53:::change/*` },
+    // 0.5.17 (room in the deploy role's 10,240-character inline limit for the acm:Export condition, nothing more allowed): GetChange joins ListHostedZones on "*". GetChange's only resource type is
+    // change, so "*" matches exactly what arn:<partition>:route53:::change/* did.
+    { Sid: "CustomDomainZoneList", Effect: "Allow", Action: ["route53:ListHostedZones", "route53:GetChange"], Resource: "*" },
   ];
 };
 
@@ -157,17 +161,16 @@ export const BOUNDARY_SERVICES: readonly string[] = [...SERVICE_ROLE_SERVICES, "
 export const BOUNDARY_NAMED_READS: readonly string[] = ["sts:GetCallerIdentity", "servicequotas:GetServiceQuota", "lakeformation:GetDataAccess", "glue:GetCatalog", "glue:GetDatabase*", "glue:GetTable*"];
 
 /**
- * MODEL-PROXY-TLS-BOUNDARY-BLOCKER (0.5.17): the Certificate Manager and Route 53 actions the deploy role's own grants use, as the boundary's ceiling over them. The deploy role carries this boundary
- * (the access stack's PermissionsBoundaryAspect bounds every role in it), so before 0.5.17 ModelProxyTlsDeployPolicy (infra/lib/model-proxy-tls.ts) and the hosted cloud's custom domain grants
- * (customDomainStatements) were implicitly denied: the boundary allowed no acm:* and no route53:* (route53resolver is another service).
- *  - acm: RequestCertificate; the three tag actions (`acm:*Tags*` is exactly AddTagsToCertificate, ListTagsForCertificate and RemoveTagsFromCertificate); DescribeCertificate and DeleteCertificate
- *    (`acm:De*Certificate` is exactly those two). Never ImportCertificate, ExportCertificate, GetCertificate, RenewCertificate, RevokeCertificate or the account configuration.
+ * MODEL-PROXY-TLS-BOUNDARY-BLOCKER (0.5.17): the Certificate Manager and Route 53 actions the deploy role's own grants use (ModelProxyTlsDeployPolicy, infra/lib/model-proxy-tls.ts, and the hosted
+ * cloud's custom domain, customDomainStatements), as the ceiling over them in the DEPLOY ROLE'S OWN boundary (deployRoleBoundaryStatements). Never in the default boundary: that one bounds every role
+ * the deploy creates, so an acm or route53 write there would let any template's role rewrite any hosted zone or delete any certificate in the account (0.5.17 review M-1).
+ *  - acm: RequestCertificate; `acm:*Tags*` (exactly AddTagsToCertificate, ListTagsForCertificate, RemoveTagsFromCertificate and the read ListTagsForResource); `acm:De*Certificate` (exactly
+ *    DeleteCertificate and DescribeCertificate). tests/contract/deploy-role-boundary-coverage.test.ts pins each pattern's match set against AWS's action list (tests/fixtures/iam-actions-acm-route53-2026-11-12.json).
  *  - route53: the five actions named, never hosted zone creation, deletion, VPC association, DNSSEC, health checks or tags.
- * On "*" in the Services statement, with no tag or zone condition: the boundary is at IAM's 6,144 character limit (5,997 of 6,144 in the worst case with these and the room made for them, measured 2026-11-12), and a tag-conditioned
- * statement for the certificates alone costs about 265. The narrow conditions (this environment's tag on every certificate, the one zone, the one record name, type and change action) are in the
- * deploy role's own grants, and no other bounded role is granted any acm or route53 action (tests/contract/deploy-role-boundary-coverage.test.ts checks both directions).
+ * On "*": the deploy boundary is the default one plus these, near IAM's 6,144 character limit, so the narrow conditions (this environment's tag on every certificate, the one zone, the one record
+ * name, type and change action) are in the deploy role's own grants. Only the deploy role carries this boundary.
  */
-export const BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS: readonly string[] = [
+export const DEPLOY_ROLE_BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS: readonly string[] = [
   "acm:RequestCertificate", "acm:*Tags*", "acm:De*Certificate",
   "route53:ChangeResourceRecordSets", "route53:GetChange", "route53:GetHostedZone", "route53:ListResourceRecordSets", "route53:ListHostedZones",
 ];
@@ -578,6 +581,15 @@ export function defaultBoundaryArn(scope: Pick<PolicyScope, "env" | "partition" 
   return `arn:${scope.partition}:iam::${scope.account}:policy${environmentRolePath(scope.env)}${defaultBoundaryName(scope.env)}`;
 }
 
+/** The deploy (CloudFormation service) role's own boundary (0.5.17): `agentx-<env>-deploy-boundary`, under the environment's path. Not matched by the broker grant policies' `agentx-<env>-broker-*`. */
+export function deployRoleBoundaryName(env: string): string {
+  return `agentx-${env}-deploy-boundary`;
+}
+
+export function deployRoleBoundaryArn(scope: Pick<PolicyScope, "env" | "partition" | "account">): string {
+  return `arn:${scope.partition}:iam::${scope.account}:policy${environmentRolePath(scope.env)}${deployRoleBoundaryName(scope.env)}`;
+}
+
 /**
  * Role ARNs this environment's stacks may create and manage: every role under the environment's
  * IAM path. A path, not a name prefix, because CloudFormation truncates generated role names (a
@@ -613,17 +625,17 @@ function withBoundaryRoleListPattern(actions: readonly string[]): string[] {
 }
 
 /**
- * 0.5.17 (room, no new permission): the boundary's one pattern for AppSync's four channel namespace actions (Create, Get, Update and DeleteChannelNamespace). Against AWS's service authorization
- * reference for AppSync no other action name ends in ChannelNamespace (the list call is ListChannelNamespaces); tests/contract/access-policies.test.ts pins it.
+ * 0.5.17 (room in the deploy role's boundary, no new permission): one pattern for AppSync's four channel namespace actions (Create, Get, Update and DeleteChannelNamespace). Against AWS's service
+ * authorization reference for AppSync no other action name ends in ChannelNamespace (the list call is ListChannelNamespaces); tests/contract/deploy-role-boundary-coverage.test.ts pins it.
  */
 export const BOUNDARY_APPSYNC_NAMESPACE_ACTIONS = "appsync:*ChannelNamespace";
+const APPSYNC_NAMESPACE_ACTIONS = ["appsync:CreateChannelNamespace", "appsync:GetChannelNamespace", "appsync:UpdateChannelNamespace", "appsync:DeleteChannelNamespace"];
 
 /** `actions` with the four channel namespace actions as the one BOUNDARY_APPSYNC_NAMESPACE_ACTIONS pattern, where the first of them stood. */
 function withBoundaryNamespacePattern(actions: readonly string[]): string[] {
-  const named = ["appsync:CreateChannelNamespace", "appsync:GetChannelNamespace", "appsync:UpdateChannelNamespace", "appsync:DeleteChannelNamespace"];
-  if (!named.every((action) => actions.includes(action))) throw new Error("the boundary's namespace pattern stands for all four channel namespace actions");
-  const first = actions.findIndex((action) => named.includes(action));
-  const rest = actions.filter((action) => !named.includes(action));
+  if (!APPSYNC_NAMESPACE_ACTIONS.every((action) => actions.includes(action))) throw new Error("the boundary's namespace pattern stands for all four channel namespace actions");
+  const first = actions.findIndex((action) => APPSYNC_NAMESPACE_ACTIONS.includes(action));
+  const rest = actions.filter((action) => !APPSYNC_NAMESPACE_ACTIONS.includes(action));
   return [...rest.slice(0, first), BOUNDARY_APPSYNC_NAMESPACE_ACTIONS, ...rest.slice(first)];
 }
 
@@ -728,14 +740,9 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
     // 2026-11-03 (boundary tightened for room, no new permission): the two unconditional "*" reads that were statements of their own (CallerIdentity, Quotas) sit here, with the same Effect and Resource.
     // sts:GetCallerIdentity is the operator's identity check. servicequotas:GetServiceQuota is the operator's EC2 quota read (prerequisites on a resume); named, not scoped further, since the scoped ARNs in
     // the operator's identity policy already limit it to two quotas.
-    // 0.5.17: and the deploy role's Certificate Manager and Route 53 actions (BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS), which it was refused before.
-    { Sid: "Services", Effect: "Allow", Action: [...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS, ...BOUNDARY_NAMED_READS, ...BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS], Resource: "*" },
+    { Sid: "Services", Effect: "Allow", Action: [...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS, ...BOUNDARY_NAMED_READS], Resource: "*" },
     { Sid: "EcsFailureEventsRule", Effect: "Allow", Action: ["events:*"], Resource: ecsFailureRuleArn(scope) },
-    // 0.5.17 (room for the line above, no new permission): appsync:CreateApi and ListApis and ses:GetAccount were two statements with the same Effect, Resource ("*") and Condition (the deploy
-    // region); here they are one, UnscopedInRegion. The service and operator roles keep their own two (AppSyncEventsCreate, SesAccountCheck).
-    // And the four namespace actions as the one BOUNDARY_APPSYNC_NAMESPACE_ACTIONS pattern (exactly those four), for room.
-    ...appsyncEvents(scope).map((statement) => statement.Sid === "AppSyncEventsCreate" ? { ...statement, Sid: "UnscopedInRegion", Action: [...statement.Action, "ses:GetAccount"] }
-      : statement.Sid === "AppSyncEvents" ? { ...statement, Action: withBoundaryNamespacePattern(statement.Action) } : statement),
+    ...appsyncEvents(scope),
     // The broker and the outbox publisher publish change notices to the realtime events API's one namespace (Plan 5 Task 8): the boundary allows that action on that namespace only.
     { Sid: "AppSyncEventsPublish", Effect: "Allow", Action: ["appsync:EventPublish"], Resource: `arn:${scope.partition}:appsync:${scope.region}:${scope.account}:apis/*/channelNamespace/${REALTIME_NAMESPACE}` },
     // The sign-in function's notice of a newly linked sign-in method (Plan 2, Task 8) sends from a verified SES identity: ses:SendEmail
@@ -795,12 +802,10 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
       Effect: "Allow",
       Action: ["iam:CreateServiceLinkedRole"],
       Resource: `arn:${partition}:iam::${account}:role/aws-service-role/*`,
-      // 0.5.17: and ECR's, as the ceiling over the deploy role's EcrTemplateServiceLinkedRole grant (exact role name there). The deploy role carries this boundary, so without it a first deploy into an
-      // account that has no AWSServiceRoleForECRTemplate yet is refused (tests/contract/deploy-role-boundary-coverage.test.ts found it; staging has the role since 2026-11-03, so it never hit staging again).
-      Condition: { StringLike: { "iam:AWSServiceName": [...SERVICE_LINKED_ROLE_SERVICES, ECR_TEMPLATE_SERVICE] } },
+      Condition: { StringLike: { "iam:AWSServiceName": [...SERVICE_LINKED_ROLE_SERVICES] } },
     },
     cognitoEmailServiceLinkedRole(partition, account),
-    ...sesChecks(scope).filter((statement) => statement.Sid !== "SesAccountCheck"),
+    ...sesChecks(scope),
     // Account and organization changes, and IAM users and groups: two Denies with the same Effect and Resource, one statement since 2026-11-03.
     { Sid: "DenyAccountUsersAndGroups", Effect: "Deny", Action: ["organizations:*", "account:*", "iam:*User*", "iam:*Group*"], Resource: "*" },
     {
@@ -817,6 +822,33 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
     // would be opened or copied to another account. Nothing in the record needs it (the deploy role withholds all three; the broker and the vector role never held them). tests/contract/team-record-iam-coverage.test.ts pins the match set.
     { Sid: "DenyRecordStoreSharing", Effect: "Deny", Action: [...TEAM_RECORD_BOUNDARY_DENIED_ACTIONS], Resource: "*" },
   ];
+}
+
+/**
+ * The deploy (CloudFormation service) role's own permissions boundary (0.5.17 review M-1). The default boundary is the ceiling of every role the deploy creates (IamRequireBoundary pins them to it),
+ * so the deploy role's Certificate Manager and Route 53 grants get their ceiling here instead, and the roles it creates still have none. It is the default boundary, with:
+ *  - DEPLOY_ROLE_BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS in Services;
+ *  - ecr.amazonaws.com in ServiceLinkedRoles, the ceiling over the deploy role's exact EcrTemplateServiceLinkedRole grant (without it a first deploy into an account with no
+ *    AWSServiceRoleForECRTemplate is refused; staging has had the role since 2026-11-03);
+ *  - DenyBoundaryChanges also covering this policy (one ARN pattern for both boundaries);
+ *  - for room, nothing else allowed: ses:GetAccount in the AppSync region statement (the same Effect, "*" and Condition) and the four channel namespace actions as BOUNDARY_APPSYNC_NAMESPACE_ACTIONS.
+ * tests/contract/deploy-role-boundary-coverage.test.ts checks that it permits exactly what the default boundary does plus those additions, and that every grant the deploy role holds is inside it.
+ */
+export function deployRoleBoundaryStatements(scope: Pick<PolicyScope, "env" | "partition" | "region" | "account" | "cloudFormationRoleName" | "rovaraOrganizationId">): PolicyStatementJson[] {
+  const statements = defaultBoundaryStatements(scope);
+  const regionHeld = statements.find((statement) => statement.Sid === "SesAccountCheck");
+  if (regionHeld === undefined) throw new Error("the default boundary has no SesAccountCheck statement to merge");
+  return statements.filter((statement) => statement !== regionHeld).map((statement): PolicyStatementJson => {
+    switch (statement.Sid) {
+      case "Services": return { ...statement, Action: [...statement.Action, ...DEPLOY_ROLE_BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS] };
+      case "AppSyncEvents": return { ...statement, Action: withBoundaryNamespacePattern(statement.Action) };
+      case "AppSyncEventsCreate": return { ...statement, Sid: "UnscopedInRegion", Action: [...statement.Action, ...regionHeld.Action] };
+      case "ServiceLinkedRoles": return { ...statement, Condition: { StringLike: { "iam:AWSServiceName": [...SERVICE_LINKED_ROLE_SERVICES, ECR_TEMPLATE_SERVICE] } } };
+      // Both boundaries in one ARN pattern (agentx-<env>-*boundary: agentx-<env>-boundary and agentx-<env>-deploy-boundary), for room; a wider Deny refuses more, never less.
+      case "DenyBoundaryChanges": return { ...statement, Resource: defaultBoundaryArn(scope).replace(/agentx-([^/]+)-boundary$/u, "agentx-$1-*boundary") };
+      default: return statement;
+    }
+  });
 }
 
 /** The inline policy of the role an operator assumes to run `agentx` against this environment. */

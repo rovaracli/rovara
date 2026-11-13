@@ -5,7 +5,7 @@ import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { defaultBoundaryArn, serviceRoleStatements } from "../../infra/lib/access-policies.js";
+import { defaultBoundaryArn, deployRoleBoundaryArn, serviceRoleStatements } from "../../infra/lib/access-policies.js";
 import { evaluate, type CfnContext } from "../support/cfn-evaluate.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -28,7 +28,7 @@ function accessTemplate(env: string): Json {
 /** Every inline policy of every role, and every managed policy, as IAM receives them once the stack is deployed with these parameter values and no company boundary. */
 function resolved(json: Json, env: string, parameters: { CustomDomainName: string; CustomDomainHostedZoneId: string }, companyBoundary = "") {
   const context: CfnContext = {
-    parameters: { ...parameters, PermissionsBoundaryArn: companyBoundary, OperatorPrincipalArn: "", DefaultPermissionsBoundary: defaultBoundaryArn({ env, partition: "aws", account: "123456789012" }) },
+    parameters: { ...parameters, PermissionsBoundaryArn: companyBoundary, OperatorPrincipalArn: "", DefaultPermissionsBoundary: defaultBoundaryArn({ env, partition: "aws", account: "123456789012" }), DeployRolePermissionsBoundary: deployRoleBoundaryArn({ env, partition: "aws", account: "123456789012" }) },
     conditions: json.Conditions,
     pseudo: { "AWS::Region": "ap-southeast-2" },
   };
@@ -68,9 +68,11 @@ describe("the access stack with the custom domain and the Team record on stays w
       }
     });
 
-    it(`${name}: the default boundary is under 6,144 characters`, () => {
-      const boundary = managed.find((policy) => policy.id === "DefaultPermissionsBoundary")!;
-      expect(size(boundary.document)).toBeLessThan(MANAGED_POLICY_LIMIT);
+    it(`${name}: the default boundary and the deploy role's own boundary (0.5.17) are each under 6,144 characters`, () => {
+      for (const id of ["DefaultPermissionsBoundary", "DeployRolePermissionsBoundary"]) {
+        const boundary = managed.find((policy) => policy.id === id)!;
+        expect(size(boundary.document), id).toBeLessThan(MANAGED_POLICY_LIMIT);
+      }
     });
   }
 });
