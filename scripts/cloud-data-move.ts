@@ -11,6 +11,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { DynamoDBClient, ScanCommand, type AttributeValue } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import { createDynamoStoreFromSettings } from "@rovara-code/aws-adapters/dynamodb";
 import { OrgIdSchema, WORKFLOW_DISPATCH_DUE_INDEX, type StoredDocument } from "@rovara-code/contracts";
@@ -67,6 +68,10 @@ function scanSource(client: DynamoDBClient, table: string, filter: { expression:
   };
 }
 
+/** Every row that holds a `tasks` or `waitingOutboxIds` string set, and (reverse) every S2 marker row (`s2-limits-session-markers`). Read with unmarshall, so a set arrives as a Set. */
+const S2_SET_FILTER = { expression: "attribute_exists(#tasks) OR attribute_exists(#waiting)", names: { "#tasks": "tasks", "#waiting": "waitingOutboxIds" } };
+const S2_MARKER_FILTER = { expression: "#type = :limit OR #type = :waiting", names: { "#type": "entityType" }, values: { ":limit": { S: "DEVELOPER_LIMIT_TASK" }, ":waiting": { S: "SESSION_WAITING" } } };
+
 async function main(argv: readonly string[]): Promise<number> {
   const args = parseMoveArgs(argv);
   const client = new DynamoDBClient({});
@@ -75,6 +80,7 @@ async function main(argv: readonly string[]): Promise<number> {
     companies: () => (args.company === undefined ? [] : [args.company]),
     scanPrefix: (prefix) => scanSource(client, table, { expression: "begins_with(#pk, :prefix)", names: { "#pk": "pk" }, values: { ":prefix": { S: prefix } } }),
     scanBindings: scanSource(client, table, { expression: "begins_with(#pk, :prefix) AND contains(#pk, :binding) AND begins_with(#sk, :channel)", names: { "#pk": "pk", "#sk": "sk" }, values: { ":prefix": { S: "ORG#" }, ":binding": { S: "#SLACK_BINDING#" }, ":channel": { S: "CHANNEL#" } } }),
+    s2: { client: DynamoDBDocumentClient.from(client), tableName: table, scanSets: scanSource(client, table, S2_SET_FILTER), scanMarkers: scanSource(client, table, S2_MARKER_FILTER) },
     scanHolding: (attribute) => scanSource(client, table, { expression: "attribute_exists(#a)", names: { "#a": attribute } }),
   });
   if (args.list) {

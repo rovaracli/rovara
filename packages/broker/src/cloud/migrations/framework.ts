@@ -16,6 +16,12 @@ export type MoveDirection = "forward" | "reverse";
 /** What to do with one item. */
 export type MovePlan =
   | { kind: "write"; steps: readonly TransactItem[]; note?: string }
+  /**
+   * One write the port cannot say (a DynamoDB string-set DELETE or ADD: the port has no sets, owner decision 60 S2). `apply` makes the write through the
+   * move's own client, in one conditional transaction, and answers whether its fence held (false: the item changed under it, as a failed `write` is
+   * treated). It is never called in a dry run. A move that uses it also gives `reread`, because the port refuses to read a row that holds a set.
+   */
+  | { kind: "native"; apply: () => Promise<boolean>; note?: string }
   | { kind: "skip"; reason: string }
   | { kind: "conflict"; reason: string };
 
@@ -37,6 +43,8 @@ export interface DataMove {
   /** `held`: written but not to be run (the report names why); the runner refuses an apply. */
   readonly status: "ready" | "held" | "check-only";
   readonly heldBecause?: string;
+  /** Reads an item again after its write was refused (the default is `store.get` of its key). A move whose items the port cannot read gives its own. */
+  readonly reread?: (item: StoredDocument, direction: MoveDirection, context: MoveContext) => Promise<StoredDocument | undefined>;
   /** One page of the items to look at in a direction. A move without a reverse leaves `reverse` out (a check, or a move that writes nothing). */
   readonly source: Partial<Record<MoveDirection, (context: MoveContext, cursor: string | undefined) => Promise<MovePage>>>;
   plan(item: StoredDocument, direction: MoveDirection, context: MoveContext): Promise<MovePlan>;
@@ -130,12 +138,13 @@ export async function runDataMove(move: DataMove, context: MoveContext, options:
       if (plan.kind === "skip") { report.skipped[plan.reason] = (report.skipped[plan.reason] ?? 0) + 1; continue; }
       if (plan.kind === "conflict") { conflict(item, plan.reason); continue; }
       if (!apply) { report.writes += 1; continue; }
-      let result = await context.store.transact(plan.steps);
+      const run = async (write: Exclude<MovePlan, { kind: "skip" | "conflict" }>): Promise<{ applied: boolean }> => (write.kind === "native" ? { applied: await write.apply() } : context.store.transact(write.steps));
+      let result = await run(plan);
       if (!result.applied) {
         // The item changed between the read and the write: plan it again from what is there now, once.
-        const fresh = await context.store.get(keyOf(item));
+        const fresh = await (move.reread === undefined ? context.store.get(keyOf(item)) : move.reread(item, options.direction, context));
         plan = fresh === undefined ? { kind: "skip", reason: "gone before the write" } : await move.plan(fresh, options.direction, context);
-        if (plan.kind === "write") result = await context.store.transact(plan.steps);
+        if (plan.kind === "write" || plan.kind === "native") result = await run(plan);
         if (plan.kind === "skip") { report.skipped[plan.reason] = (report.skipped[plan.reason] ?? 0) + 1; continue; }
         if (plan.kind === "conflict") { conflict(item, plan.reason); continue; }
         if (!result.applied) { conflict(item, "changed under the move twice"); continue; }

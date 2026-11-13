@@ -128,7 +128,7 @@ const SESSION_ENTITY = "SESSION";
 // An outbox record that waits for the workspace's compute used to be an entry of the SESSION item's string set `waitingOutboxIds`. Code's document store
 // has no sets, so each parked record is now one marker item in the workspace's partition, written in the same transaction as the session change that
 // parks it (which is conditional on the session's state and generation, as the set's ADD was) and deleted when it is released. Until the one-time
-// migration (scripts/migrate-s2-marker-rows.ts) has run, a SESSION item may still hold the old set: every read merges both, and every release removes
+// migration (the `s2-limits-session-markers` data move, scripts/cloud-data-move.ts) has run, a SESSION item may still hold the old set: every read merges both, and every release removes
 // the record from both, so either form works.
 
 /** The marker's entity type and its sort-key prefix in the workspace's partition. */

@@ -59,7 +59,7 @@ const entityOf = (key: CounterKey) => (isSlackLimitPk(key.pk) ? "SLACK_LIMIT" : 
 // core (`core/task-flow/keys.ts` `chargeMarkerKey`), so a slot Cloud charged is one Code's core can release after the switch. The marker also names the
 // member counter's sort key (`memberSk`): a Slack team's member counters share one partition, so the key alone does not say whose slot it is.
 //
-// Until the one-time migration (scripts/migrate-s2-marker-rows.ts) has run, counters may still hold old `tasks` sets. Every reader here reads both
+// Until the one-time migration (the `s2-limits-session-markers` data move, scripts/cloud-data-move.ts) has run, counters may still hold old `tasks` sets. Every reader here reads both
 // forms; a charge is refused for a task in either form; a release frees the form the task was charged in (`chargeFormOf`). The count itself is unchanged.
 
 /** The marker's entity type: Code's core writes the same one. */
@@ -201,8 +201,8 @@ export async function chargedTaskIds(client: Client, tableName: string, member: 
 
 /**
  * Which counter is full, read before the start's transaction so the refusal can say so. `alsoCounted.member` is the person's counter on the core's family (D3,
- * cloud/rows/core-rows.ts CORE_LIMIT_FAMILY): the core marks each task it charges with a `TASK#<id>` row beside that counter, and Cloud's own tasks never write one, so
- * those markers are exactly the person's core tasks. A start on Cloud's path counts them too, whichever family it charges itself. Where the person's counter on Cloud's
+ * cloud/rows/core-rows.ts CORE_LIMIT_FAMILY): the core marks each task it charges with a `TASK#<id>` row beside that counter. Since S2 Cloud's own tasks write such rows too, but only beside the counter they
+ * charge: where that is this same counter nothing is added (below), and where it is a Slack counter its rows are in another partition, so the rows read here are exactly the person's core tasks. A start on Cloud's path counts them too, whichever family it charges itself. Where the person's counter on Cloud's
  * path IS that row (a developer with no Slack link), the core's tasks are already in its count and nothing is added. The company's counter is not read across families:
  * Cloud's non-Slack tasks and the core's share it already.
  */

@@ -188,10 +188,10 @@ check runners (`plugins/check-runner/*`), the Linear tracker (`plugins/tracker/l
 for it yet). What a Code port still lacks for Cloud is listed in `tests/conformance/owed-upstream.json` (each with an `owedUntil`, checked by `owed-upstream.test.ts`). None of these adapters is used
 by traffic yet; the composition root (lane S0) switches them.
 
-Lane A5 (S2, held for the S0 release): owner decision 60 item S2 (no sets
+Lane A5/S2 (0.5.19): owner decision 60 item S2 (no sets
 on the port): workspace-limit slots are `TASK#<taskId>` marker rows (`packages/broker/src/developer/limits.ts#chargeMarkerKey`, both forms read until the migration), parked deliveries are
 `SESSION_WAITING#` rows (`packages/broker/src/aws/sessions.ts#sessionWaitingKey`), and `modelKeyIds` is written whole under an exact-list fence (`packages/broker/src/org/budget.ts#modelKeyIdsWrite`).
-The one-time move and its reverse: `scripts/migrate-s2-marker-rows.ts` over `packages/broker/src/migrations/s2-marker-rows.ts#migrateS2MarkerRows` (the controller runs it, owner gate G-DATA).
+The one-time move and its reverse: the data move `s2-limits-session-markers` (`packages/broker/src/cloud/migrations/plugins/limit-markers.ts`, run with `scripts/cloud-data-move.ts`; the controller runs it, DECISIONS 181; runbook `docs/runbooks/s2-marker-rows-migration.md`).
 
 ## How to add common things
 

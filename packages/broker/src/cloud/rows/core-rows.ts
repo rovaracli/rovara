@@ -135,7 +135,7 @@ export function coreTaskEndedHandler(deps: CoreTaskEndedDeps, outcome: "closed" 
  *      workspace and per Slack user, so a person's tasks from the web and from Slack are two counters today (R6 joins them only for a linked developer on a Slack install).
  *   3. Cloud's own route-started tasks already charge this family (`developer/limits.ts` developerCharge without a team), so after the switch every task of a person counts in
  *      the same place; the Slack counters are Cloud-path-only and go with the Cloud path (DEL).
- *   4. Nothing of Cloud's is rewritten: no counter moves, no marker is written for Cloud's in-flight tasks (a move needs Cloud's writers on markers first: the held S2 move).
+ *   4. Nothing of Cloud's is rewritten: no counter moves, no marker is written for Cloud's in-flight tasks by the core; Cloud's own writers write `TASK#` markers beside the counter they charge (S2, the `s2-limits-session-markers` move for the ones charged before).
  * The cost: while Cloud-path tasks that were already running at the flip finish, a Slack-linked person's slots are split over the two families. The readers close that gap:
  * Cloud's start counts the person's core tasks too (`coreFamilyCounters`, their `TASK#` markers, read by `limitReached`), so a person cannot start past the limit on Cloud's
  * path with core tasks open. The company's counter is shared by Cloud's non-Slack tasks and the core's already. The core cannot see Cloud's Slack counters (vendor), so on the core's side a Slack-linked person may hold up to their limit in each family until those tasks finish.

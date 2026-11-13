@@ -8,15 +8,16 @@ import { createCloudAdmission, holdKey, microsToUsd, monthOfMs, openHoldsPk, usd
 
 const A = "org_aaaaaaaaaaaaaaaaaaaa";
 const B = "org_bbbbbbbbbbbbbbbbbbbb";
+type AdmissionRequestCheck = (request: AdmissionRequest) => boolean;
 const NOW = Date.parse("2026-11-11T12:00:00.000Z");
 const MONTH = monthOfMs(NOW);
 const dollars = (usd: number) => ({ micros: usdToMicros(usd), currency: "USD" });
 
-function world(options: { orgLimit?: number; now?: () => number; ttl?: number } = {}) {
+function world(options: { orgLimit?: number; now?: () => number; ttl?: number; countedByKeyLedger?: AdmissionRequestCheck } = {}) {
   const store = new MemoryDocumentStore();
   const levels: AdmissionLevel[] = [{ scope: "ORG", kind: "org", limitUsd: options.orgLimit ?? 10 }, { scope: "PROJECT#web", kind: "project", limitUsd: undefined }];
   const admission = createCloudAdmission({
-    store, now: options.now ?? (() => NOW), levels: async () => levels, ...(options.ttl === undefined ? {} : { holdTtlSeconds: options.ttl }),
+    store, now: options.now ?? (() => NOW), levels: async () => levels, ...(options.ttl === undefined ? {} : { holdTtlSeconds: options.ttl }), ...(options.countedByKeyLedger === undefined ? {} : { countedByKeyLedger: options.countedByKeyLedger }),
     actions: { "task.start": { kind: "room", minimumUsd: 0.5 }, "model.call": { kind: "hold", unknownCostUsd: 2 } },
   });
   const counter = async (company: string, scope = "ORG") => {
@@ -279,5 +280,35 @@ describe("money units match Cloud's rows", () => {
     for (const micros of [0, 1, 999_999, 1_000_000, 123_456_789, 25_000_000, 1_000_000_000_000]) expect(usdToMicros(microsToUsd(micros))).toBe(micros);
     expect(usdToMicros(0.1 + 0.2)).toBe(300_000);
     expect(microsToUsd(300_000)).toBe(0.3);
+  });
+});
+
+describe("Cloud Admission: one writer per spend (A5-S0-OPEN-QUESTIONS point 2)", () => {
+  const onLedger = (request: AdmissionRequest) => request.idempotencyKey.startsWith("key-");
+
+  it("a hold the key ledger counts is released on settle: the room it held comes back and the adapter counts no spend", async () => {
+    const { admission, counter } = world({ countedByKeyLedger: onLedger });
+    const id = reservation(await admission.admit(call("key-1", 3)));
+    expect(await counter(A)).toEqual({ committed: 3, spent: 0 });
+    await admission.settle(id, { cost: dollars(2.5) });
+    // The key ledger's own settlement adds the 2.5; this adapter must add nothing.
+    expect(await counter(A)).toEqual({ committed: 0, spent: 0 });
+  });
+
+  it("a hold nothing else counts settles as before, in the same world", async () => {
+    const { admission, counter } = world({ countedByKeyLedger: onLedger });
+    const id = reservation(await admission.admit(call("plain-1", 3)));
+    await admission.settle(id, { cost: dollars(2.5) });
+    expect(await counter(A)).toEqual({ committed: 2.5, spent: 2.5 });
+  });
+
+  it("an expired hold the key ledger counts is given back by the sweep, not charged in full; any other is still charged", async () => {
+    let now = NOW;
+    const { admission, counter } = world({ countedByKeyLedger: onLedger, now: () => now, ttl: 60 });
+    reservation(await admission.admit(call("key-2", 3)));
+    reservation(await admission.admit(call("plain-2", 2)));
+    now += 120_000;
+    expect(await admission.sweepExpiredHolds(A)).toBe(2);
+    expect(await counter(A)).toEqual({ committed: 2, spent: 2 });
   });
 });

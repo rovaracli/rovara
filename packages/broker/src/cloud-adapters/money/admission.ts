@@ -68,6 +68,13 @@ export interface CloudAdmissionOptions {
   actions: Readonly<Record<string, CloudActionRule>>;
   /** How long a hold may stay open before the sweep charges it. Default one hour. */
   holdTtlSeconds?: number;
+  /**
+   * One writer per model spend (DEFERRED A5-S0-OPEN-QUESTIONS point 2). A model call that runs on a LiteLLM key is already counted on the same `SPEND#`
+   * counters by the key ledger's settlement (`spend/ledger.ts`, R22). For a request this answers true for, the hold still guards the room, but it is only
+   * ever RELEASED: `settle` gives the hold back and counts nothing, and the expired-hold sweep gives it back too (the ledger charges its own orphaned
+   * reservation). Absent: no request is counted elsewhere, and every hold settles as before.
+   */
+  countedByKeyLedger?(request: AdmissionRequest): boolean;
 }
 
 const HOLD_ENTITY = "ADMISSION_HOLD";
@@ -111,6 +118,8 @@ interface HoldRow {
   state: HoldState;
   openSk: string;
   expiresAt: number;
+  /** Set when the key ledger counts this hold's spend: the hold is released, never settled (`CloudAdmissionOptions.countedByKeyLedger`). */
+  countedBy?: "key-ledger";
 }
 
 export const monthOfMs = (epochMs: number): string => new Date(epochMs).toISOString().slice(0, 7);
@@ -127,7 +136,7 @@ function readHold(item: StoredDocument | undefined, companyId: string, holdId: s
   const state = item["state"], heldUsd = item["heldUsd"], month = item["month"], scopes = item["scopes"], openSk = item["openSk"], expiresAt = item["expiresAt"];
   if ((state !== "held" && state !== "settled" && state !== "released") || typeof heldUsd !== "number" || !(heldUsd >= 0) || typeof month !== "string" || !/^\d{4}-\d{2}$/.test(month)
     || !Array.isArray(scopes) || !scopes.every((scope) => typeof scope === "string") || typeof openSk !== "string" || typeof expiresAt !== "number") return undefined;
-  return { orgId: companyId, holdId, action: typeof item["action"] === "string" ? item["action"] : "", month, heldUsd, scopes: scopes, state, openSk, expiresAt };
+  return { orgId: companyId, holdId, action: typeof item["action"] === "string" ? item["action"] : "", month, heldUsd, scopes: scopes, state, openSk, expiresAt, ...(item["countedBy"] === "key-ledger" ? { countedBy: "key-ledger" as const } : {}) };
 }
 
 const counterNumber = (item: StoredDocument | undefined, name: string): number => {
@@ -175,6 +184,8 @@ export class CloudAdmission implements Admission {
   async settle(reservationId: string, actual: { tokens?: number; cost?: { micros: number; currency: string } }): Promise<void> {
     const hold = await this.openHold(reservationId);
     if (hold === undefined) return;
+    // The key ledger counts this spend (one writer per spend): give the hold back and count nothing here.
+    if (hold.countedBy === "key-ledger") { await this.close(hold, "released", 0); return; }
     // A cost Cloud cannot count (none, or not in dollars) charges the whole hold: an unknown cost is never $0 (decision 79).
     const actualUsd = isCountableCost(actual.cost) ? microsToUsd(actual.cost.micros) : hold.heldUsd;
     await this.close(hold, "settled", actualUsd);
@@ -199,7 +210,8 @@ export class CloudAdmission implements Admission {
       if (typeof holdId !== "string") continue;
       const hold = readHold(await this.options.store.get(holdKey(companyId, holdId)), companyId, holdId);
       if (hold === undefined || hold.state !== "held" || hold.expiresAt > this.now()) continue;
-      if (await this.close(hold, "settled", hold.heldUsd)) charged += 1;
+      // A hold the key ledger counts is given back: the ledger charges its own orphaned reservation, and charging here too would count the spend twice.
+      if (hold.countedBy === "key-ledger" ? await this.close(hold, "released", 0) : await this.close(hold, "settled", hold.heldUsd)) charged += 1;
     }
     return charged;
   }
@@ -288,7 +300,7 @@ export class CloudAdmission implements Admission {
     const expiresAt = now + this.ttlMs;
     const openSk = `${new Date(expiresAt).toISOString()}#${id}`;
     const items: TransactItem[] = [
-      { kind: "put", item: { ...holdKey(request.companyId, id), entityType: HOLD_ENTITY, orgId: request.companyId, holdId: id, action: request.action, month, heldUsd: cleanUsd(amountUsd), scopes: levels.map((level) => level.scope), state: "held", openSk, expiresAt, createdAt: new Date(now).toISOString() }, condition: when.absent() },
+      { kind: "put", item: { ...holdKey(request.companyId, id), entityType: HOLD_ENTITY, orgId: request.companyId, holdId: id, action: request.action, month, heldUsd: cleanUsd(amountUsd), scopes: levels.map((level) => level.scope), state: "held", openSk, expiresAt, ...(this.options.countedByKeyLedger?.(request) === true ? { countedBy: "key-ledger" } : {}), createdAt: new Date(now).toISOString() }, condition: when.absent() },
       { kind: "put", item: { pk: openHoldsPk(request.companyId), sk: openSk, entityType: OPEN_ENTITY, orgId: request.companyId, holdId: id }, condition: when.absent() },
       ...levels.map((level): TransactItem => ({
         kind: "update", key: spendCounterKey(request.companyId as never, month, level.scope),

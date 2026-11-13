@@ -5,8 +5,8 @@ import { TASK_FLOW_INDEXES, dispatchPartition } from "@rovara-code/broker/core/t
 import type { DocumentStore, StoredDocument } from "@rovara-code/contracts";
 import { engineStampKey, readCoreEngineFlags, stampForNewTask, stampItem } from "../../packages/broker/src/cloud/app/index.js";
 import {
-  DataMoveRefused, OLD_DISPATCH_PARTITION, dispatchPartitionMove, dueRowsBothPartitions, memoryResume, outboxRelayPrep, retentionReview, runDataMove, s2MarkerRowsHeld,
-  type MoveContext, type MovePage,
+  DataMoveRefused, OLD_DISPATCH_PARTITION, cloudDataMoves, dispatchPartitionMove, dueRowsBothPartitions, memoryResume, outboxRelayPrep, retentionReview, runDataMove,
+  type DataMove, type MoveContext, type MovePage,
 } from "../../packages/broker/src/cloud/migrations/index.js";
 
 const COMPANY = "org_s0parity00000000000a";
@@ -130,26 +130,53 @@ describe("the other moves", () => {
     await expect(runDataMove(move, contextOver(store), { direction: "forward", apply: true })).rejects.toBeInstanceOf(DataMoveRefused);
   });
 
-  it("D12 removes the expiry of kinds Cloud keeps, keeps it on kinds Cloud expires, and the reverse restores it", async () => {
+  it("D12 removes the expiry of kinds Cloud keeps, keeps it on kinds Cloud expires, and the reverse restores it (both proof-marker partitions)", async () => {
     const store = new MemoryDocumentStore();
     const items: StoredDocument[] = [
+      // The legacy used-proof partition (one per company) and the sharded one Code's PR #556 writes (`APPROVAL_PROOF#<nn>`, 32 of them), by the entity type the move matches on.
       { pk: "ORG#c#APPROVAL_PROOF", sk: "p1", entityType: "APPROVAL_PROOF_USED", indexExpiresAt: 1_900_000_000 },
+      { pk: "ORG#c#APPROVAL_PROOF#07", sk: "p1", entityType: "APPROVAL_PROOF_USED", indexExpiresAt: 1_900_000_010 },
+      { pk: "ORG#c#APPROVAL_PROOF#31", sk: "p2-spent", entityType: "APPROVAL_PROOF_SPENT", indexExpiresAt: 1_900_000_011 },
       { pk: "ORG#c#COST", sk: "e1", entityType: "COST_ENTRY_ONCE", indexExpiresAt: 1_900_000_001 },
       { pk: "ORG#c#WORK_EVENT", sk: "w1", entityType: "WORK_EVENT", indexExpiresAt: 1_900_000_002 },
     ];
     for (const item of items) await store.put({ item });
     const scanAll = async (): Promise<MovePage> => ({ items: (await Promise.all(items.map((item) => store.get(item)))).filter((item): item is StoredDocument => item !== undefined) });
     const move = retentionReview({ scan: scanAll });
-    expect(await runDataMove(move, contextOver(store), { direction: "forward", apply: true })).toMatchObject({ writes: 2, skipped: { "keeps its expiry: WORK_EVENT": 1 } });
-    expect(await store.get(items[0]!)).toMatchObject({ retentionReviewedExpiry: 1_900_000_000 });
-    expect(await store.get(items[0]!)).not.toHaveProperty("indexExpiresAt");
-    expect(await store.get(items[2]!)).toEqual(items[2]);
+    expect(await runDataMove(move, contextOver(store), { direction: "forward", apply: true })).toMatchObject({ writes: 4, skipped: { "keeps its expiry: WORK_EVENT": 1 } });
+    // Both key shapes lose the expiry and keep it aside, so in Cloud a legacy marker and a sharded one never expire (DEFERRED APPROVAL-PROOF-LEGACY-READ-STAYS).
+    for (const proof of [items[0]!, items[1]!, items[2]!]) {
+      expect(await store.get(proof)).toMatchObject({ retentionReviewedExpiry: proof.indexExpiresAt });
+      expect(await store.get(proof)).not.toHaveProperty("indexExpiresAt");
+    }
+    expect(await store.get(items[4]!)).toEqual(items[4]);
     await runDataMove(move, contextOver(store), { direction: "reverse", apply: true });
     for (const item of items) expect(await store.get(item)).toEqual(item);
   });
 
-  it("A5's S2 move is held: listed with its reason, an apply refused", async () => {
-    await expect(runDataMove(s2MarkerRowsHeld, contextOver(new MemoryDocumentStore()), { direction: "forward", apply: true })).rejects.toThrow(/adapters\/a5-s2-live-rewrite/);
+  it("the S2 move is in the registry, ready, with both directions (no longer held)", () => {
+    const moves = cloudDataMoves({ companies: () => [COMPANY], scanPrefix: () => async () => ({ items: [] }), scanBindings: async () => ({ items: [] }), scanHolding: () => async () => ({ items: [] }),
+      s2: { client: { send: async () => ({}) }, tableName: "state", scanSets: async () => ({ items: [] }), scanMarkers: async () => ({ items: [] }) } });
+    const s2 = moves.find((move) => move.id === "s2-limits-session-markers");
+    expect(s2).toMatchObject({ status: "ready" });
+    expect(Object.keys(s2!.source).sort()).toEqual(["forward", "reverse"]);
+  });
+
+  it("a native plan is applied only on an apply, and a refused one is read again through the move's own reread and planned once more", async () => {
+    const calls: string[] = [];
+    let live = true;
+    const move: DataMove = {
+      id: "test-native", title: "t", status: "ready",
+      source: { forward: async () => ({ items: [{ pk: "A", sk: "1" }] }) },
+      reread: async (item) => { calls.push("reread"); return live ? item : undefined; },
+      plan: async () => { calls.push("plan"); return { kind: "native", apply: async () => { calls.push("apply"); live = false; return false; } }; },
+    };
+    expect(await runDataMove(move, contextOver(new MemoryDocumentStore()), { direction: "forward" })).toMatchObject({ writes: 1 });
+    expect(calls).toEqual(["plan"]);
+    calls.length = 0;
+    const report = await runDataMove(move, contextOver(new MemoryDocumentStore()), { direction: "forward", apply: true });
+    expect(calls).toEqual(["plan", "apply", "reread"]);
+    expect(report).toMatchObject({ writes: 0, skipped: { "gone before the write": 1 } });
   });
 
   it("the stamp item is the only thing a core task adds for routing", () => {

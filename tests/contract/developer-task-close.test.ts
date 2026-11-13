@@ -255,6 +255,22 @@ describe("closing a task: repeats, races and audit records (R12, R15)", () => {
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 0 });
   });
 
+  it("frees the slot of a task charged in the old set form and closed on the new code (the state between the code deploy and the move), once", async () => {
+    const { db, close, taskId, task, active, finish, member } = await finished();
+    const key = { pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: `MEMBER#${MAYA.slackUserId}` };
+    // Charged by the previous release: an entry of the counter's `tasks` set and no marker row.
+    expect(db.get(key.pk, `TASK#${taskId}`)).toBeDefined();
+    db.delete(key.pk, `TASK#${taskId}`);
+    db.set({ ...db.get(key.pk, key.sk)!, tasks: new Set([taskId]) });
+    expect(member()).toMatchObject({ count: 1 });
+    await close(randomUUID());
+    const closeId = active();
+    await finish(task.workspaceId, closeId, "SUCCEEDED", { result: { safeToClose: true, repositories: [] } });
+    expect(member()).toMatchObject({ count: 0 });
+    expect(member()).not.toHaveProperty("tasks");
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 0 });
+  });
+
   it("closes a task whose counters were already released, without releasing them again", async () => {
     const { db, close, taskId, task, active, finish, actions, deleteEc2Session, member } = await finished();
     deleteEc2Session!.mockRejectedValueOnce(Object.assign(new Error("starting"), { name: "AgentXError" }));
