@@ -18,6 +18,8 @@ const CLIENT_SECRET = readFileSync(required("ROVARA_CLIENT_SECRET_FILE"), "utf8"
 // Rovara Code takes a loopback redirect only at exactly this path (isLoopbackRedirectUri).
 const REDIRECT_URI = `http://127.0.0.1:${PORT}/callback`;
 const SESSION_COOKIE = "rovara_prototype_session";
+// Spec 065: what Cloud asks to do as the signed-in person; Rovara Code keeps only what its registration allows.
+const SCOPES = process.env.ROVARA_SCOPES ?? "projects:members projects:create";
 
 interface Access { developerId: string; displayName: string; administrator: boolean; projects: Array<{ name: string; access: string }>; notices: string[] }
 interface Session { accessToken: string; refreshToken?: string; access: Access; csrf: string; signedInAt: string }
@@ -58,7 +60,7 @@ function startSignIn(res: ServerResponse, url: URL): void {
   pendingSignIns.set(state, { verifier, returnTo: returnPath(url.searchParams.get("return_to")), at: Date.now() });
   const authorize = new URL(`${CODE}/v1/auth/authorize`);
   authorize.search = new URLSearchParams({
-    response_type: "code", client_id: CLIENT_ID, redirect_uri: REDIRECT_URI, state,
+    response_type: "code", client_id: CLIENT_ID, redirect_uri: REDIRECT_URI, state, scope: SCOPES,
     code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256",
   }).toString();
   redirect(res, authorize.toString());
