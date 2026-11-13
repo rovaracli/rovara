@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
-import { createSessionStepsHandler, pingWorker, type SessionStepsDependencies } from "../../packages/broker/src/aws/session-steps.js";
+import { createSessionStepsHandler, pingWorker, tslSelftestWiredFor, type SessionStepsDependencies } from "../../packages/broker/src/aws/session-steps.js";
 import { ec2WorkerBootScript } from "@rovara-code/contracts";
 import { PRIVATE_ADDRESS_NOTHING_OPEN } from "@agentx/cloud-contracts";
 import { NO_PRIVATE_ADDRESS_LIST, readPrivateAddressesOff, type PrivateAddressLaunch } from "../../packages/broker/src/aws/private-address-launch.js";
@@ -424,5 +424,18 @@ describe("the internal address kill switch reader", () => {
     // A thrown value that is not an Error is off too.
     // eslint-disable-next-line @typescript-eslint/only-throw-error -- the point: anything thrown, not only an Error
     expect(await reader(async () => { throw "nope"; }).read()).toBe(true);
+  });
+});
+
+// M1: whether this install's steps function asks for the TS-L self-test switch at all (wired at module load from MODEL_PROXY_REQUIRED and WORKER_SETTINGS_PREFIX). Only a named staging install does.
+describe("which installs wire the TS-L self-test switch", () => {
+  it("is true only for a named environment whose settings prefix is exactly /agentx/staging/", () => {
+    expect(tslSelftestWiredFor(true, "/agentx/staging/")).toBe(true);
+    for (const prefix of ["/agentx/production/", "/agentx/qa/", "/agentx/staging-2/", "/agentx/staging", "/agentx/staging/x/", "/agentx/Staging/", "agentx/staging/", ""]) {
+      expect(tslSelftestWiredFor(true, prefix), JSON.stringify(prefix)).toBe(false);
+    }
+    // The legacy deployment (no model proxy required) never wires it, even with staging's prefix.
+    expect(tslSelftestWiredFor(false, "/agentx/staging/")).toBe(false);
+    expect(tslSelftestWiredFor(false, "")).toBe(false);
   });
 });

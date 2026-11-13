@@ -242,7 +242,11 @@ const modelProxyRequired = process.env.MODEL_PROXY_REQUIRED === "true";
 
 // M1: only the staging install's function is granted (infra/lib/session-lifecycle.ts) and asks for the TS-L self-test switch; every other install never reads it.
 const workerSettingsPrefix = process.env.WORKER_SETTINGS_PREFIX ?? "";
-const tslSelftestWired = modelProxyRequired && workerSettingsPrefix === TSL_SELFTEST_ALLOWED_PREFIX;
+/** Whether an install's steps function asks for the TS-L self-test switch at all: a named environment (model proxy required) whose worker settings prefix is exactly staging's. */
+export function tslSelftestWiredFor(namedEnvironment: boolean, settingsPrefix: string): boolean {
+  return namedEnvironment && settingsPrefix === TSL_SELFTEST_ALLOWED_PREFIX;
+}
+const tslSelftestWired = tslSelftestWiredFor(modelProxyRequired, workerSettingsPrefix);
 
 const stateClient = DynamoDBDocumentClient.from(new DynamoDBClient(awsClientConfiguration));
 const stateTableName = process.env.STATE_TABLE_NAME ?? "";
