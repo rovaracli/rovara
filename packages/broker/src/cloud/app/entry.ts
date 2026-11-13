@@ -39,6 +39,7 @@ import { createCloudMergePeople } from "./merge-people.js";
 import { cloudWordsForCoreRefusal } from "./refusal-words.js";
 import { cloudCoreRuntime, type CloudCoreWiring } from "./runtime.js";
 import { cloudTaskFacts } from "./task-facts.js";
+import { taskStopEnrolled as taskStopEnrolledOf } from "./task-stop-guard.js";
 import { coreInUseKey, engineOfStoredTask } from "./engine-stamp.js";
 import { cloudSettingsFromEnvironment, type CloudCompanySettings } from "./settings-mapping.js";
 import type { CloudAdapterContext } from "./registry.js";
@@ -65,6 +66,8 @@ export interface CoreIntentHookDeps {
   origin: string;
   now: () => number;
   log: (entry: Record<string, unknown>) => void;
+  /** Whether the company is enrolled in per-task spending stops (`taskStopEnrolled`): its new tasks stay on Cloud's path, which captures the stop. Absent: nobody is. */
+  taskStopEnrolled?: (orgId: OrgId) => Promise<boolean>;
 }
 
 export function createCoreIntentHook(deps: CoreIntentHookDeps): CoreIntentHook {
@@ -72,6 +75,8 @@ export function createCoreIntentHook(deps: CoreIntentHookDeps): CoreIntentHook {
     async start({ caller, request, ownedTask }): Promise<CodeIntentResult<DeveloperTaskView> | undefined> {
       if (!deps.app.active || !coreIntentApplies(request)) return undefined;
       if (deps.app.engineForNewTask(caller.orgId) !== "core") return undefined;
+      // Money: a company enrolled in per-task stops keeps Cloud's start (which captures the stop) until the core can carry it (task-stop-guard.ts).
+      if (await deps.taskStopEnrolled?.(caller.orgId) === true) { deps.log({ event: "core_entry.task_stop_enrolled", component: "cloud_core" }); return undefined; }
       let runtime;
       try {
         runtime = await deps.app.runtimeFor(caller.orgId);
@@ -119,6 +124,8 @@ export interface CoreSlackConsumerDeps {
   /** `OrgStore.orgForSlackTeam`. */
   orgOfTeam: (teamId: string) => Promise<OrgId | undefined>;
   log: (entry: Record<string, unknown>) => void;
+  /** As the start hook's: a company enrolled in per-task stops is Cloud's. */
+  taskStopEnrolled?: (orgId: OrgId) => Promise<boolean>;
 }
 
 export function createCoreSlackConsumer(deps: CoreSlackConsumerDeps): (message: SlackRequestMessage) => Promise<CoreSlackAnswer> {
@@ -126,6 +133,7 @@ export function createCoreSlackConsumer(deps: CoreSlackConsumerDeps): (message: 
     if (!deps.app.active) return { handled: false };
     const orgId = await deps.orgOfTeam(message.thread.teamId);
     if (orgId === undefined || !coreAreaOn(deps.app.flags, "flow", orgId)) return { handled: false };
+    if (await deps.taskStopEnrolled?.(orgId) === true) return { handled: false };
     let intake: ((request: SlackRequestMessage) => Promise<void>) | undefined;
     try {
       intake = (await deps.app.runtimeFor(orgId)).inbound.slack;
@@ -375,6 +383,7 @@ export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): Clou
     inUse = found !== undefined;
     return inUse;
   };
+  const taskStopEnrolled = async (orgId: OrgId): Promise<boolean> => await taskStopEnrolledOf({ documentClient: options.broker.documentClient, tableName: options.broker.tableName }, orgId);
   const routesOf = (): DeveloperRouteDependencies => {
     const routes = options.routes();
     if (routes === undefined) throw new Error("the developer API is not configured");
@@ -383,8 +392,8 @@ export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): Clou
   const origin = options.inputs.origin ?? new URL(options.broker.developer?.issuer ?? "https://localhost").origin;
   return {
     app,
-    intentHook: createCoreIntentHook({ app, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), origin, now: () => options.now().getTime(), log: options.log }),
-    slackRequest: createCoreSlackConsumer({ app, log: options.log, orgOfTeam: async (teamId) => await slackTeamOrg(options.broker, teamId).catch(() => undefined) }),
+    intentHook: createCoreIntentHook({ app, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), origin, now: () => options.now().getTime(), log: options.log, taskStopEnrolled }),
+    slackRequest: createCoreSlackConsumer({ app, log: options.log, taskStopEnrolled, orgOfTeam: async (teamId) => await slackTeamOrg(options.broker, teamId).catch(() => undefined) }),
     routeCallback: createCoreCallbackRouter(app, coreInUse),
     isScheduledJob: isCoreJobEvent,
     handleScheduledJob: async (event) => (!app.active && !(await coreInUse()) ? (isCoreJobEvent(event) ? { skipped: "off" } : undefined) : await app.handleScheduledJob(event)),

@@ -55,7 +55,7 @@ function rig(options: { env?: NodeJS.ProcessEnv; without?: readonly string[]; me
   return { world, app, logs };
 }
 
-const hookOf = (r: Rig, log: Rig["logs"] = r.logs) => createCoreIntentHook({ app: r.app, principalOf: async (caller) => localOwnerPrincipal({ companyId: caller.orgId }), origin: "https://rovara.example.test", now: () => r.world.clock.now, log: (entry) => log.push(entry) });
+const hookOf = (r: Rig, log: Rig["logs"] = r.logs, taskStopEnrolled?: () => Promise<boolean>) => createCoreIntentHook({ app: r.app, ...(taskStopEnrolled === undefined ? {} : { taskStopEnrolled }), principalOf: async (caller) => localOwnerPrincipal({ companyId: caller.orgId }), origin: "https://rovara.example.test", now: () => r.world.clock.now, log: (entry) => log.push(entry) });
 const caller = { orgId: FAKE_COMPANY, developerId: MAYA } as never;
 const ownedTask = async (_caller: unknown, taskId: string) => ({ taskId }) as unknown as DeveloperTaskView;
 const tasksOf = async (r: Rig) => (await (await r.app.runtimeFor(FAKE_COMPANY)).flow.list({ principal: localOwnerPrincipal({ companyId: FAKE_COMPANY }), client: "test" })).tasks.length;
@@ -97,6 +97,16 @@ describe("S3-4 a: the start hook", () => {
     const started = await hookOf(r).start({ caller, request: intent({ source: "slack", binding: { kind: "slack_thread", teamId: TENANT, channelId: SPACE, threadTs: THREAD } as never }), ownedTask });
     const thread = await readTaskThread(r.world.store, FAKE_COMPANY, started!.sessionId!);
     expect(thread).toEqual({ conversation: { channel: "slack", tenant: TENANT, space: SPACE, thread: THREAD }, personId: MAYA });
+  });
+
+  it("a company enrolled in per-task spending stops keeps Cloud's start (which captures the stop): nothing is started on the core, and a company that is not enrolled starts as before", async () => {
+    const r = rig();
+    await registerProject(r.world);
+    expect(await hookOf(r, r.logs, async () => true).start({ caller, request: intent(), ownedTask })).toBeUndefined();
+    expect(await tasksOf(r)).toBe(0);
+    expect(r.logs.some((entry) => entry["event"] === "core_entry.task_stop_enrolled")).toBe(true);
+    expect(await hookOf(r, r.logs, async () => false).start({ caller, request: intent(), ownedTask })).toBeDefined();
+    expect(await tasksOf(r)).toBe(1);
   });
 
   it("with the switch off (the default) it answers nothing and builds nothing", async () => {
@@ -156,6 +166,13 @@ describe("S3-4 b: the Slack consumer", () => {
     const { r, consume } = await consumer();
     expect(await consume(message("Add a greeting"))).toEqual({ handled: true });
     expect(await tasksOf(r)).toBe(1);
+  });
+
+  it("an enrolled company's plain request is Cloud's (handled false): no task is started on the core", async () => {
+    const { r } = await consumer();
+    const enrolled = createCoreSlackConsumer({ app: r.app, orgOfTeam: async () => FAKE_COMPANY, log: () => undefined, taskStopEnrolled: async () => true });
+    expect(await enrolled(message())).toEqual({ handled: false });
+    expect(await tasksOf(r)).toBe(0);
   });
 
   it("a refusal of the core is told in the thread in Cloud's words and never escapes, so the queue does not retry it", async () => {

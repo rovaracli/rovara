@@ -22,3 +22,4 @@ export * from "./entry.js";
 export * from "./decider-role.js";
 export * from "./seat-limits.js";
 export * from "./task-facts.js";
+export * from "./task-stop-guard.js";
