@@ -148,3 +148,5 @@ export * from "./smart-intake.js";
 export * from "./test-access-connect.js";
 export * from "./test-access-policy.js";
 export * from "./test-access-scoping.js";
+
+export * from "./machine-prices.js";

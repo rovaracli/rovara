@@ -62,7 +62,14 @@ export function machineTimeRecorder(
   fallbackOrg: OrgId,
 ): (stop: ComputeStop) => Promise<void> {
   return async (stop) => {
-    await recordMachineTime({ documentClient, tableName }, { orgId: await workspaceOrg(documentClient, tableName, fallbackOrg, stop.workspaceId), ...stop });
+    // Optional meter coverage only: a failed read or a newer launch must never lose allowance seconds.
+    const session = await documentClient.send(new GetCommand({ TableName: tableName, Key: workspaceSessionKey(stop.workspaceId), ConsistentRead: true })).catch(() => undefined);
+    const generation: unknown = session?.Item?.generation;
+    const sameLaunch = typeof session?.Item?.launchedAt === "string" && Date.parse(session.Item.launchedAt) === stop.startedAt;
+    await recordMachineTime({ documentClient, tableName }, {
+      orgId: await workspaceOrg(documentClient, tableName, fallbackOrg, stop.workspaceId), ...stop,
+      ...(sameLaunch && typeof generation === "number" && Number.isSafeInteger(generation) && generation > 0 ? { generation } : {}),
+    });
   };
 }
 

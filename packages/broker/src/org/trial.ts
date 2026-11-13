@@ -116,7 +116,7 @@ function allowanceHours(plan: unknown): number | undefined {
  */
 export async function recordMachineTime(
   deps: TrialDependencies,
-  input: { orgId: OrgId; workspaceId: string; instanceType: string; startedAt: number; stoppedAt: number },
+  input: { orgId: OrgId; workspaceId: string; instanceType: string; startedAt: number; stoppedAt: number; generation?: number },
 ): Promise<void> {
   const seconds = Math.max(0, Math.round((input.stoppedAt - input.startedAt) / 1000));
   if (seconds === 0) {
@@ -129,7 +129,8 @@ export async function recordMachineTime(
       TransactItems: [
         { Put: {
           TableName: deps.tableName,
-          Item: { ...machineTimeOnceKey(input.orgId, input.workspaceId, input.stoppedAt), entityType: "MACHINE_TIME_ONCE", instanceType: input.instanceType, seconds },
+          Item: { ...machineTimeOnceKey(input.orgId, input.workspaceId, input.stoppedAt), entityType: "MACHINE_TIME_ONCE", instanceType: input.instanceType, seconds,
+            startedAt: input.startedAt, stoppedAt: input.stoppedAt, ...(input.generation === undefined ? {} : { generation: input.generation }) },
           ConditionExpression: "attribute_not_exists(pk)",
         } },
         { Update: {
