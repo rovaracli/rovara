@@ -197,12 +197,12 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
       const callbacks = createCallbackService({ flow: flow.deps, blobs: registry.require("object-storage"), grants: grantsOf(flow) });
       const slack = wiring.slack;
       const adapter = registry.get("channel", "slack") as CloudSlackChannel | undefined;
-      if (slack === undefined || adapter === undefined) return { gate, clientGate: createClientDecisionGate(gate), callbacks };
+      if (slack === undefined || adapter === undefined) return { clientGate: createClientDecisionGate(gate), callbacks };
       const start: StartTask = (caller, request) => flow.start(caller, request);
       // A plain message with Understand off has no step to choose its path: it starts as Quick, and the lighter flow sizes it from the diff (178/179; P5 replaces this default).
       const work = createCloudChannelWork({ store, now: nowMs, start, gate, principalOf: slack.principalOf, ...(flowOptions.understandFirst === true ? {} : { defaultPath: "QUICK" as const }), log: wiring.log });
       const sink = createCloudSlackSink({ adapter, store, now: nowMs, work, orgOfTeam: async (teamId) => { const org = await slack.orgOfTeam(teamId); return org === companyId ? org : undefined; }, standingOf: slack.standingOf, linkWords: slack.linkWords, log: wiring.log });
-      return { slack: createSlackIntake(sink), slackSink: sink, gate, clientGate: createClientDecisionGate(gate), callbacks };
+      return { slack: createSlackIntake(sink), slackSink: sink, clientGate: createClientDecisionGate(gate), callbacks };
     };
 
     return {

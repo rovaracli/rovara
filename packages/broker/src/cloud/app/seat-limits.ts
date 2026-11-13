@@ -44,7 +44,7 @@ export function createSeatLimits() {
       return {
         ...gate,
         decide: (attempt: Attempt) => context.run({ details: attempt.details }, () => (gate as unknown as { decide(attempt: Attempt): Promise<unknown> }).decide(attempt)),
-      } as G;
+      };
     },
   };
 }

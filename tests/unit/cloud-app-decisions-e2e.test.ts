@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import type { Approvers } from "@rovara-code/contracts";
 import type { TaskAccess } from "@rovara-code/broker/core/task-flow";
 import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey, type ApprovalDeciderRole as _Unused, type JsonValue, type ProjectDefinition } from "@rovara-code/contracts";
 import type { ApprovalDeciderRole } from "@agentx/cloud-contracts";
@@ -17,7 +18,7 @@ import { BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD, cloudApprovalIssuers, create
 import { createCallbackService } from "@rovara-code/broker";
 import { PEOPLE_ORG, SLACK_TEAM, createPeopleWorld, type Person, type PeopleWorld } from "../support/cloud-people-world.js";
 import { CORE_CALLBACK_ACTIONS, cloudDeciderRole, coreInUseKey, createCoreIntentHook, cloudTaskFacts, createCoreCallbackRouter, engineStampKey } from "../../packages/broker/src/cloud/app/index.js";
-import { SEAT_LIMIT_UNAVAILABLE, createSeatLimits } from "../../packages/broker/src/cloud/app/index.js";
+import { SEAT_LIMIT_UNAVAILABLE, createClientFacingApprovers, createSeatLimits } from "../../packages/broker/src/cloud/app/index.js";
 import { resolveSlackDecisionCaller } from "../../packages/broker/src/decisions/slack-actions.js";
 import { CloudSlackChannel } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
 import { bindChannelSpace, postApprovalCard } from "@rovara-code/broker/core/channel";
@@ -32,7 +33,7 @@ const PROJECT = (url: string): ProjectDefinition => ({
 
 const allowAll: TaskAccess = { checkStart: async () => ({ allowed: true }), canAct: async () => true, checkStep: async () => ({ allowed: true }) };
 
-interface Rig { world: FakeWorld; people: PeopleWorld; app: CloudApp; standing: Map<string, ApprovalDeciderRole>; posts: string[]; /** Another root over the same world, adapters and wiring (a later Lambda container, with the switch changed). */ rebuild(options: { env: NodeJS.ProcessEnv; serveStamped?: boolean }): CloudApp }
+interface Rig { /** A6's approvers adapter as built, without the client-facing wrapper the root registers (for tests of A6 itself). */ approvers: Approvers; world: FakeWorld; people: PeopleWorld; app: CloudApp; standing: Map<string, ApprovalDeciderRole>; posts: string[]; /** Another root over the same world, adapters and wiring (a later Lambda container, with the switch changed). */ rebuild(options: { env: NodeJS.ProcessEnv; serveStamped?: boolean }): CloudApp }
 
 async function rig(options: { slack?: boolean; liveRole?: boolean } = {}): Promise<Rig> {
   const world = createFakeWorld();
@@ -49,7 +50,7 @@ async function rig(options: { slack?: boolean; liveRole?: boolean } = {}): Promi
     point: "channel", name: "slack", lane: "A8",
     create: () => new CloudSlackChannel({ projects: ["payments"], botToken: async () => "unused", serves: async () => true, fetch: (async (_url: string, init: { body: string }) => { posts.push(String(init.body)); return new Response(JSON.stringify({ ok: true, ts: "1695500000.000009", channel: "C0CHAN" })); }) as never }),
   });
-  const modules = [...world.modules.map((module) => (module.point === "approvers" ? cloudAdapter({ point: "approvers", name: "cloud", lane: "A6", create: () => approvers }) : module)), ...(options.slack === true ? [slackAdapter] : [])];
+  const modules = [...world.modules.map((module) => (module.point === "approvers" ? cloudAdapter({ point: "approvers", name: "cloud", lane: "A6", create: () => createClientFacingApprovers(approvers) }) : module)), ...(options.slack === true ? [slackAdapter] : [])];
   const identity = createCloudIdentityProvider(people.routes);
   const wiring: CloudCoreWiring = {
     settings: () => cloudSettingsFromEnvironment({}, { recipeStepKinds: undefined, connectorWritesBehindApproval: true }),
@@ -65,7 +66,7 @@ async function rig(options: { slack?: boolean; liveRole?: boolean } = {}): Promi
   const project = PROJECT(world.hostModel.url);
   await world.store.put({ item: { ...projectRevisionKey(PEOPLE_ORG, project.name, project.revision), entityType: "PROJECT", definition: JSON.parse(JSON.stringify(project)) as JsonValue } });
   await world.store.put({ item: { ...orgProjectCatalogKey(PEOPLE_ORG, project.name), entityType: "PROJECT_CATALOG", latestRevision: project.revision } });
-  return { world, people, app, standing, posts, rebuild };
+  return { approvers, world, people, app, standing, posts, rebuild };
 }
 
 /** Starts a task as the owner and plans it: the fake worker answers the planning job through the real callback service, so the task waits at its plan review. */
@@ -79,7 +80,7 @@ async function plannedTask(r: Rig, path: "QUICK" | "FULL" = "QUICK", driver?: Cl
   const drive = driver === undefined ? runtime : await driver.runtimeFor(PEOPLE_ORG);
   const registry = await r.app.registry();
   const direct = createCallbackService({ flow: runtime.flow.deps, blobs: registry.require("object-storage"), grants: { exchange: async () => { throw new Error("unused"); } } });
-  const routed = driver === undefined ? undefined : createCoreCallbackRouter(driver, (key) => r.world.store.get(key) as never);
+  const routed = driver === undefined ? undefined : createCoreCallbackRouter(driver, (key) => r.world.store.get(key));
   const callbacks = async (request: Parameters<typeof direct>[0]) => (routed === undefined ? await direct(request) : (await routed(request)) ?? { statusCode: 599, headers: {}, body: "not routed" });
   const store = r.world.store;
   for (let round = 0; round < 6; round += 1) {
@@ -108,7 +109,7 @@ const seen = new Set<string>();
 
 async function press(r: Rig, taskId: string, who: Person, method: typeof BROWSER_SESSION_METHOD | typeof CHAT_SLACK_METHOD, outcome: "approve" | "reject" = "approve", details?: Record<string, unknown>) {
   const runtime = await r.app.runtimeFor(PEOPLE_ORG);
-  const gate = runtime.inbound.gate!;
+  const gate = runtime.inbound.clientGate!;
   const found = (await gate.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
   const token = method === CHAT_SLACK_METHOD
     ? slackPressToken({ actor: { channel: "slack", tenant: SLACK_TEAM, userId: who.slackUserId ?? "U0NOBODY01" }, conversation: { channel: "slack", tenant: SLACK_TEAM, space: "C0CHAN", thread: "1695500000.000001" } })
@@ -212,12 +213,12 @@ describe("F1: a Slack press carries the token A6's chat-slack issuer reads", () 
     r.standing.set(member.developerId, "owner");
     const { taskId } = await plannedTask(r);
     const runtime = await r.app.runtimeFor(PEOPLE_ORG);
-    const found = (await runtime.inbound.gate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
+    const found = (await runtime.inbound.clientGate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
     // The same bytes the people world builds for a real press.
     const decision = { actor: { channel: "slack", tenant: SLACK_TEAM, userId: member.slackUserId! }, conversation: { channel: "slack", tenant: SLACK_TEAM, space: "C0CHAN", thread: "1695500000.000001" } } as never;
     expect(JSON.parse(slackPressToken(decision))).toEqual(JSON.parse(r.people.slackPress(member)));
     // Through the real approvers (the issuer parses the token strictly): a low or medium plan pressed in Slack is accepted when the person is linked.
-    const approvers = (await r.app.registry()).require("approvers");
+    const approvers = r.approvers;
     const request = { companyId: PEOPLE_ORG, requestId: randomUUID(), kind: "plan", subject: { type: "task", id: randomUUID() }, revision: found.revision, artifactDigest: found.artifactDigest, risk: "low" as const, outcome: "approve" as const };
     const proof = { proofId: randomUUID(), method: CHAT_SLACK_METHOD, requestId: request.requestId, revision: request.revision, artifactDigest: request.artifactDigest, token: slackPressToken(decision) };
     expect((await approvers.verify(request, proof)).approved).toBe(true);
@@ -227,7 +228,7 @@ describe("F1: a Slack press carries the token A6's chat-slack issuer reads", () 
     const r = await rig();
     const { member } = r.people.people;
     r.standing.set(member.developerId, "owner");
-    const approvers = (await r.app.registry()).require("approvers");
+    const approvers = r.approvers;
     const requestOf = () => ({ companyId: PEOPLE_ORG, requestId: randomUUID(), kind: "plan", subject: { type: "task", id: randomUUID() }, revision: 2, artifactDigest: "b".repeat(64), risk: "low" as const, outcome: "approve" as const });
     const proofOf = (request: ReturnType<typeof requestOf>, tenant: string) => ({
       proofId: randomUUID(), method: CHAT_SLACK_METHOD, requestId: request.requestId, revision: request.revision, artifactDigest: request.artifactDigest,
@@ -285,12 +286,32 @@ describe("F3: a person who is not a member of the company starts and decides not
     expect(r.posts.join("\n")).toContain('"user":"U0REVOKED1"');
   });
 
+  it("a linked member's press on the plan's card, through the sink, is taken by the real approvers and decides (the Slack path is the one place chat-slack is accepted)", async () => {
+    const r = await slackRig();
+    const { member } = r.people.people;
+    r.people.linkSlack(member);
+    // A medium plan pressed in Slack needs the person's last interactive sign-in inside the company's window.
+    r.people.signedInAgo(member, 60_000);
+    r.standing.set(member.developerId, "owner");
+    const { taskId } = await plannedTask(r);
+    const runtime = await r.app.runtimeFor(PEOPLE_ORG);
+    const found = (await runtime.inbound.clientGate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
+    const adapter = (await r.app.registry()).get("channel", "slack")!;
+    const posted = await postApprovalCard({ store: r.world.store, orgId: PEOPLE_ORG, now: () => r.world.clock.now, companyOf: async () => PEOPLE_ORG },
+      { channel: "slack", adapter, conversation, kind: "plan_approval", subject: { type: "workflow-document", id: taskId }, revision: found.revision, artifactDigest: found.artifactDigest, risk: "low", text: "ready", actions: [{ decision: "APPROVE", label: "Approve" }] });
+    await runtime.inbound.slackSink!.decision({
+      version: 1, channel: "slack", eventId: "EvPressLinked", conversation, actor: { channel: "slack", tenant: TENANT, userId: member.slackUserId! }, requestId: posted.requestId,
+      expectedRevision: found.revision, artifactDigest: found.artifactDigest, decision: "APPROVE", reason: "fine", receivedAt: "2026-11-12T10:00:00.000Z",
+    } as never);
+    expect(await decisionsOf(r, taskId)).toHaveLength(1);
+  });
+
   it("an unlinked account's press on a card is refused before the gate: nothing is decided", async () => {
     const r = await slackRig();
     r.standing.set(r.people.people.owner.developerId, "owner");
     const { taskId } = await plannedTask(r);
     const runtime = await r.app.runtimeFor(PEOPLE_ORG);
-    const found = (await runtime.inbound.gate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
+    const found = (await runtime.inbound.clientGate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
     const adapter = (await r.app.registry()).get("channel", "slack")!;
     const posted = await postApprovalCard({ store: r.world.store, orgId: PEOPLE_ORG, now: () => r.world.clock.now, companyOf: async () => PEOPLE_ORG },
       { channel: "slack", adapter, conversation, kind: "plan_approval", subject: { type: "workflow-document", id: taskId }, revision: found.revision, artifactDigest: found.artifactDigest, risk: "low", text: "ready", actions: [{ decision: "APPROVE", label: "Approve" }] });
@@ -311,7 +332,7 @@ describe("switch blocker 8: only the Slack path presents chat-slack", () => {
     r.standing.set(owner.developerId, "owner");
     const { taskId } = await plannedTask(r);
     const runtime = await r.app.runtimeFor(PEOPLE_ORG);
-    const found = (await runtime.inbound.gate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
+    const found = (await runtime.inbound.clientGate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
     const attemptWith = (method: string, token: string) => ({
       companyId: PEOPLE_ORG, kind: "workflow-document", subjectId: taskId, requestId: randomUUID(), outcome: "approve" as const, seen: { revision: found.revision, artifactDigest: found.artifactDigest },
       credentials: [{ method, token, claimedAccount: { provider: "slack", tenant: SLACK_TEAM, accountId: member.slackUserId! } }], reason: "fine",
@@ -323,6 +344,48 @@ describe("switch blocker 8: only the Slack path presents chat-slack", () => {
     expect(await runtime.inbound.clientGate!.decide(attemptWith(CHAT_SLACK_METHOD, JSON.stringify({ userId: "U0ANYONE01" })))).toMatchObject({ status: "refused", reason: "method_not_allowed" });
     // Every other method still goes through the client gate to the one gate.
     expect((await runtime.inbound.clientGate!.decide(attemptWith(BROWSER_SESSION_METHOD, owner.sessionId))).status).toBe("decided");
+  });
+
+  it("the chat-slack credential is refused wherever it stands among the credentials, including as a SECOND one next to a valid browser session", async () => {
+    const r = await rig();
+    const { member, owner } = r.people.people;
+    r.people.linkSlack(member);
+    r.standing.set(owner.developerId, "owner");
+    r.standing.set(member.developerId, "owner");
+    const { taskId } = await plannedTask(r);
+    const runtime = await r.app.runtimeFor(PEOPLE_ORG);
+    const found = (await runtime.inbound.clientGate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
+    const press = slackPressToken({ actor: { channel: "slack", tenant: SLACK_TEAM, userId: member.slackUserId! }, conversation: { channel: "slack", tenant: SLACK_TEAM, space: "C0CHAN", thread: "1.1" } });
+    const credentials = [
+      { method: BROWSER_SESSION_METHOD, token: owner.sessionId },
+      { method: CHAT_SLACK_METHOD, token: press, claimedAccount: { provider: "slack", tenant: SLACK_TEAM, accountId: member.slackUserId! } },
+    ];
+    for (const ordered of [credentials, [...credentials].reverse()]) {
+      const answer = await runtime.inbound.clientGate!.decide({ companyId: PEOPLE_ORG, kind: "workflow-document", subjectId: taskId, requestId: randomUUID(), outcome: "approve", seen: { revision: found.revision, artifactDigest: found.artifactDigest }, credentials: ordered, reason: "fine" });
+      expect(answer).toMatchObject({ status: "refused", reason: "method_not_allowed" });
+    }
+    expect(await decisionsOf(r, taskId)).toEqual([]);
+  });
+
+  it("the adapter every consumer sees refuses a client's chat-slack proof itself (a merge press, the second review and an automation take approvers from the registry, not the gate), and takes one inside the Slack path", async () => {
+    const r = await rig();
+    const { member } = r.people.people;
+    r.people.linkSlack(member);
+    r.standing.set(member.developerId, "owner");
+    const registered = (await r.app.registry()).require("approvers");
+    const request = { companyId: PEOPLE_ORG, requestId: randomUUID(), kind: "plan", subject: { type: "task", id: randomUUID() }, revision: 2, artifactDigest: "b".repeat(64), risk: "low" as const, outcome: "approve" as const };
+    const proof = { proofId: randomUUID(), method: CHAT_SLACK_METHOD, requestId: request.requestId, revision: 2, artifactDigest: request.artifactDigest, token: slackPressToken({ actor: { channel: "slack", tenant: SLACK_TEAM, userId: member.slackUserId! }, conversation: { channel: "slack", tenant: SLACK_TEAM, space: "C0CHAN", thread: "1.1" } }) };
+    expect(await registered.verify(request, proof)).toEqual({ approved: false, reason: "this way of deciding is only for a press in Slack" });
+    // The same proof is a real one for the real adapter (the refusal is the wrapper's, not the issuer's).
+    expect((await r.approvers.verify({ ...request, requestId: randomUUID() }, { ...proof, requestId: request.requestId })).approved).toBe(false);
+    const fresh = { ...request, requestId: randomUUID() };
+    expect((await r.approvers.verify(fresh, { ...proof, requestId: fresh.requestId })).approved).toBe(true);
+  });
+
+  it("the root does not expose the raw gate", async () => {
+    const r = await rig();
+    const inbound = (await r.app.runtimeFor(PEOPLE_ORG)).inbound as Record<string, unknown>;
+    expect(Object.keys(inbound)).not.toContain("gate");
   });
 
   it("no code in the root presents chat-slack except the Slack work", async () => {
@@ -515,7 +578,7 @@ describe("switch blocker 7 (callbacks): a worker's callback on a core-stamped ta
 
   it("a core task's artifact callback is answered by the core: the document is stored", async () => {
     const { r, job } = await started();
-    const route = createCoreCallbackRouter(r.app, (key) => r.world.store.get(key) as never);
+    const route = createCoreCallbackRouter(r.app, (key) => r.world.store.get(key));
     const text = planAnswer(planDocument({ title: "Greeting", why: [{ text: "Asked for.", author: "Maya" }], claims: [{ id: "1", text: "Add a greeting." }], decisions: [] }), { checks: { checks: [], none_reason: "Covered." } });
     const answer = await route(post(job.workspaceId, job.operationId, "artifacts", job.callbackCapability, { name: "plan.md", mediaType: "text/markdown", content: text }));
     expect(answer?.statusCode).toBe(200);
@@ -523,14 +586,14 @@ describe("switch blocker 7 (callbacks): a worker's callback on a core-stamped ta
 
   it("the core still checks the capability: a wrong one is refused by the core, not handed to Cloud", async () => {
     const { r, job } = await started();
-    const answer = await createCoreCallbackRouter(r.app, (key) => r.world.store.get(key) as never)(post(job.workspaceId, job.operationId, "events", "not-a-capability", { events: [] }));
+    const answer = await createCoreCallbackRouter(r.app, (key) => r.world.store.get(key))(post(job.workspaceId, job.operationId, "events", "not-a-capability", { events: [] }));
     expect(answer).toBeDefined();
     expect(answer!.statusCode).toBeGreaterThanOrEqual(400);
   });
 
   it("a task with no core stamp, an action the core does not serve, and any other path are Cloud's (undefined)", async () => {
     const { r, job, taskId } = await started();
-    const route = createCoreCallbackRouter(r.app, (key) => r.world.store.get(key) as never);
+    const route = createCoreCallbackRouter(r.app, (key) => r.world.store.get(key));
     expect(await route(post(job.workspaceId, job.operationId, "model-access", job.callbackCapability, {}))).toBeUndefined();
     expect(await route({ method: "POST", path: "/v1/app/projects", headers: {} })).toBeUndefined();
     // The same task with its stamp gone is a Cloud task.
@@ -585,7 +648,7 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     const runtime = await off.runtimeFor(PEOPLE_ORG);
     const principal = (await createCloudIdentityProvider(r.people.routes).getPrincipal(PEOPLE_ORG, owner.developerId))!;
     // The owner's decision, through the same gate, with the switch off.
-    const found = (await runtime.inbound.gate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
+    const found = (await runtime.inbound.clientGate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
     const decided = await runtime.inbound.clientGate!.decide({
       companyId: PEOPLE_ORG, kind: "workflow-document", subjectId: taskId, requestId: randomUUID(), outcome: "approve", seen: { revision: found.revision, artifactDigest: found.artifactDigest },
       credentials: [{ method: BROWSER_SESSION_METHOD, token: owner.sessionId }], reason: "fine",
@@ -615,13 +678,13 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     const store = r.world.store;
     // A root that cannot be built (the registry's points are missing), the switch off: still a retryable refusal, not a fall-through.
     const broken = createCloudApp({ env: {}, modules: () => { throw new Error("no clients"); }, serveStamped: true, context: () => r.world.context(), runtime: () => ({}) as never });
-    const answer = await createCoreCallbackRouter(broken, (key) => store.get(key) as never)(post(job.workspaceId, job.operationId, "events", job.callbackCapability, { events: [] }));
+    const answer = await createCoreCallbackRouter(broken, (key) => store.get(key))(post(job.workspaceId, job.operationId, "events", job.callbackCapability, { events: [] }));
     expect(answer?.statusCode).toBe(503);
     expect(answer?.headers["retry-after"]).toBe("5");
     // And the stamp is read whatever the in-use mark says: a core task started a moment ago is served with the switch off.
     const off = r.rebuild({ env: {}, serveStamped: true });
     await store.delete({ key: coreInUseKey(PEOPLE_ORG) });
-    const served = await createCoreCallbackRouter(off, (key) => store.get(key) as never)(post(job.workspaceId, job.operationId, "events", job.callbackCapability, { events: [] }));
+    const served = await createCoreCallbackRouter(off, (key) => store.get(key))(post(job.workspaceId, job.operationId, "events", job.callbackCapability, { events: [] }));
     // Answered by the core (whatever it says of an empty batch), neither handed to Cloud nor told to retry.
     expect(served).toBeDefined();
     expect(served!.statusCode).not.toBe(503);
@@ -639,14 +702,15 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     const { maintainer } = r.people.people;
     r.standing.set(maintainer.developerId, "maintainer");
     const { taskId } = await plannedTask(r);
-    const raw = (await r.app.registry()).require("approvers");
+    const raw = r.approvers;
     const seats = createSeatLimits();
     const wrapped = seats.wrap(raw);
     const request = () => ({ companyId: PEOPLE_ORG, requestId: randomUUID(), kind: "plan", subject: { type: "task", id: taskId }, revision: 1, artifactDigest: "b".repeat(64), risk: "low" as const, outcome: "approve" as const });
     const proofOf = (req: ReturnType<typeof request>) => ({ proofId: randomUUID(), method: BROWSER_SESSION_METHOD, requestId: req.requestId, revision: req.revision, artifactDigest: req.artifactDigest, token: maintainer.sessionId });
     const outside = request();
     expect(await wrapped.verify(outside, proofOf(outside))).toEqual({ approved: false, reason: SEAT_LIMIT_UNAVAILABLE });
-    const through = (details: unknown) => seats.gate({ decide: async () => { const req = request(); return await wrapped.verify(req, proofOf(req)); } } as never).decide({ requestId: "x", credentials: [], details } as never) as Promise<{ approved: boolean }>;
+    const heldGate = seats.gate({ decide: async () => { const req = request(); return await wrapped.verify(req, proofOf(req)); } }) as unknown as { decide(attempt: unknown): Promise<{ approved: boolean }> };
+    const through = (details: unknown) => heldGate.decide({ requestId: "x", credentials: [], details });
     expect((await through(undefined)).approved).toBe(true);
     expect((await through({ acknowledgedRunLimitUsd: 5 })).approved).toBe(false);
   });
@@ -657,7 +721,7 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     r.standing.set(maintainer.developerId, "maintainer");
     const { taskId } = await plannedTask(r);
     const seats = createSeatLimits();
-    const wrapped = seats.wrap((await r.app.registry()).require("approvers"));
+    const wrapped = seats.wrap(r.approvers);
     const verifyAfter = async (delayMs: number) => { await new Promise((resolve) => setTimeout(resolve, delayMs)); const req = { companyId: PEOPLE_ORG, requestId: randomUUID(), kind: "plan", subject: { type: "task", id: taskId }, revision: 1, artifactDigest: "b".repeat(64), risk: "low" as const, outcome: "approve" as const }; return await wrapped.verify(req, { proofId: randomUUID(), method: BROWSER_SESSION_METHOD, requestId: req.requestId, revision: 1, artifactDigest: req.artifactDigest, token: maintainer.sessionId }); };
     const gate = seats.gate({ decide: async (attempt: { delay: number }) => await verifyAfter(attempt.delay) } as never) as unknown as { decide(attempt: unknown): Promise<{ approved: boolean }> };
     const [limited, plain] = await Promise.all([gate.decide({ delay: 20, details: { closeAsAnswered: true } }), gate.decide({ delay: 5, details: undefined })]);

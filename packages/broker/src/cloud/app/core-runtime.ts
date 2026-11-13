@@ -36,8 +36,6 @@ export interface CoreInbound {
   slack?: (message: SlackRequestMessage) => Promise<void>;
   /** The Slack channel sink itself (a message, and a card's decision pressed in Slack); `slack` is its message intake. */
   slackSink?: ChannelInboundSink;
-  /** The decision gate the surfaces call (Cloud's approvers adapter under Code's gate), for the web decide routes and tests. */
-  gate?: ReturnType<typeof createDecisionService>["gate"];
   /** The same gate for client surfaces (the web decide routes, the API): it refuses a chat-slack credential, which only the Slack ingress's verified press may carry (slack-work.ts). */
   clientGate?: ReturnType<typeof createDecisionService>["gate"];
   /** Code's callback service for this company: what a worker of a core task posts to (events, artifacts, the result, the pull request, repository credentials). */

@@ -9,11 +9,12 @@
 //            medium plans inside the company's window and never anything higher (A6 gaps G1/G7, owner decision 144 for the card itself), and the gate says which.
 // `quick:` and `full:` at the start of a message choose the path, as today's ingress reads them; with neither, the core's Understand step chooses where it runs, and where
 // it does not the root passes `defaultPath: "QUICK"` (S3 item e; lane P5's shared intake rule replaces it).
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import type { createDecisionService } from "@rovara-code/broker";
 import { recordTaskThread, type ChannelWork } from "@rovara-code/broker/core/channel";
 import { taskSessionId } from "@rovara-code/broker/core/sessions";
-import type { ChannelDecision, ChannelInboundSink, DocumentStore, OrgId, Principal, SlackRequestMessage } from "@rovara-code/contracts";
+import type { Approvers, ChannelDecision, ChannelInboundSink, DocumentStore, OrgId, Principal, SlackRequestMessage } from "@rovara-code/contracts";
 import { inboundFromQueuedSlackRequest } from "../../plugins/channel/slack-cloud/index.js";
 import { CHAT_SLACK_METHOD } from "../adapters/people/methods.js";
 
@@ -66,10 +67,29 @@ export function slackPressToken(decision: Pick<ChannelDecision, "actor" | "conve
 
 type DecisionGateOf = ReturnType<typeof createDecisionService>["gate"];
 
+const pressContext = new AsyncLocalStorage<true>();
+
+/** Runs `work` as the Slack path's own decision: the one context in which a chat-slack proof is taken. Only `createCloudChannelWork`'s decide calls it. */
+const asSlackPress = <T>(work: () => Promise<T>): Promise<T> => pressContext.run(true, work);
+
 /**
- * The decision gate as a CLIENT surface may call it (the web decide routes, the API, a script): the same gate, but a credential of the chat-slack method is refused. That method is proved by
- * the Slack ingress's own verification of a press (its signature check), so only `createCloudChannelWork`, fed by the channel sink, may present it; a browser or an API client that sent the
- * same method with press fields of its choosing would be claiming a Slack press nobody verified. Every route that takes credentials from a client must be given this, never the raw gate.
+ * The approvers adapter as every consumer in the root sees it: a chat-slack proof is refused unless it comes inside the Slack path's own decision (`asSlackPress`). That method is proved by the
+ * Slack ingress's verification of a press (its signature check), so only `createCloudChannelWork`, fed by the channel sink, may present it. Enforced HERE, at the adapter, so that no consumer
+ * can take a client's chat-slack proof: not the decision gate, not a merge press, not the second review, not an automation. A browser or an API client that sent the same method with press fields of
+ * its choosing would be claiming a Slack press nobody verified. Everything else passes to the real adapter, and `requirement` is unchanged (a card is built from the methods it names).
+ */
+export function createClientFacingApprovers(approvers: Approvers): Approvers {
+  return {
+    requirement: (request) => approvers.requirement(request),
+    verify: async (request, proof) => proof.method === CHAT_SLACK_METHOD && pressContext.getStore() !== true
+      ? { approved: false, reason: "this way of deciding is only for a press in Slack" }
+      : await approvers.verify(request, proof),
+  };
+}
+
+/**
+ * The decision gate as a CLIENT surface may call it (the web decide routes, the API, a script): the same gate, with a chat-slack credential refused up front, whichever credential of the attempt it is
+ * (the adapter refuses it too, `createClientFacingApprovers`). Every route that takes credentials from a client is given this, never the raw gate (which the root does not expose).
  */
 export function createClientDecisionGate(gate: DecisionGateOf): DecisionGateOf {
   return {
@@ -97,10 +117,10 @@ export function createCloudChannelWork(deps: CloudChannelWorkDeps): ChannelWork 
     async decide({ orgId, card, decision, personId }) {
       const outcome = OUTCOME[decision.decision];
       if (outcome === undefined || (await deps.principalOf(orgId, personId)) === undefined) return { status: "refused" as const, reason: "invalid" };
-      const result = await deps.gate.decide({
+      const result = await asSlackPress(() => deps.gate.decide({
         companyId: orgId, kind: card.subject.type, subjectId: card.subject.id, requestId: card.requestId, outcome, seen: { revision: card.revision, artifactDigest: card.artifactDigest },
         credentials: [{ method: CHAT_SLACK_METHOD, token: slackPressToken(decision), claimedAccount: { provider: decision.actor.channel, tenant: decision.actor.tenant, accountId: decision.actor.userId } }], ...(decision.reason === undefined ? {} : { reason: decision.reason }),
-      });
+      }));
       return result.status === "refused" ? { status: "refused" as const, reason: (result as { reason: string }).reason } : { status: "decided" as const };
     },
   };

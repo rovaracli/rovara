@@ -23,6 +23,7 @@ import { GITHUB_ACTIONS_RUNNER_KIND, githubActionsCheckRunner, type GitHubAction
 import { createCloudApprovers, createCloudIdentityProvider, type CloudApproversDependencies, type CloudPeopleDependencies } from "../adapters/people/index.js";
 import { githubCodeHost } from "../../plugins/code-host/github/index.js";
 import { cloudAdmissionLevels, type LevelSources } from "./money.js";
+import { createClientFacingApprovers } from "./slack-work.js";
 import { cloudRefusalWords } from "./refusal-words.js";
 import { cloudPageNotices } from "./realtime.js";
 import { slackSwitchReadiness, type SlackSwitchFacts } from "./slack-switch.js";
@@ -133,7 +134,8 @@ export function cloudAdapterModules(deps: CloudModuleDeps): CloudAdapterModule[]
     }),
     cloudAdapter({ point: "metering", name: "cloud", lane: "A5", create: (_context, registry) => createCloudMetering({ store: registry.require("storage"), prices: deps.prices }) }),
     cloudAdapter({ point: "identity", name: "cloud", lane: "A6", create: () => createCloudIdentityProvider(deps.people) }),
-    cloudAdapter({ point: "approvers", name: "cloud", lane: "A6", create: () => createCloudApprovers(deps.approvers) }),
+    // Every consumer of the point sees A6 through `createClientFacingApprovers`: a chat-slack proof is taken only inside the Slack path's own decision.
+    cloudAdapter({ point: "approvers", name: "cloud", lane: "A6", create: () => createClientFacingApprovers(createCloudApprovers(deps.approvers)) }),
     cloudAdapter({ point: "model-keys", name: "secrets-manager", lane: "A3", create: () => createCloudModelKeyStore(deps.modelKeys) }),
     cloudAdapter({ point: "secrets", name: "secrets-manager", lane: "A3 (public)", create: () => createSecretsManagerSecretStore(deps.secrets) }),
     cloudAdapter({ point: "object-storage", name: "s3", lane: "A3 (public)", create: (context) => new S3ObjectStorage({ ...deps.objects, now: () => context.now().getTime() }) }),
