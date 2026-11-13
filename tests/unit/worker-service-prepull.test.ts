@@ -12,10 +12,10 @@ const list = catalogPrepullList(pinnedCatalog());
 const REGISTRY = "111122223333.dkr.ecr.us-west-2.amazonaws.com";
 
 describe("the shipped list", () => {
-  it("is where the worker image puts it, next to dist, and is valid (the pinned revision 5: the emulator and postgres@16)", async () => {
+  it("is where the worker image puts it, next to dist, and is valid (the pinned revision 6: the emulator and postgres@16)", async () => {
     expect(PREPULL_LIST_URL.pathname.endsWith("/packages/worker/service-catalog/prepull.json")).toBe(true);
     const loaded = await loadPrepullList();
-    expect(loaded.catalogRevision).toBe(5);
+    expect(loaded.catalogRevision).toBe(6);
     expect(loaded.images.map((image) => image.id)).toEqual(["local-aws@r1", "postgres@16"]);
     expect(loaded).toEqual(catalogPrepullList(shippedCatalog()));
   });

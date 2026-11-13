@@ -9,6 +9,14 @@
       "types": "./index.d.ts",
       "default": "./index.js"
     },
+    "./channel": {
+      "types": "./channel.d.ts",
+      "default": "./channel.js"
+    },
+    "./channel-slack-adapter": {
+      "types": "./channel-slack-adapter.d.ts",
+      "default": "./channel-slack-adapter.js"
+    },
     "./e2e/discovery": {
       "types": "./e2e/discovery.d.ts",
       "default": "./e2e/discovery.js"
@@ -17,9 +25,17 @@
       "types": "./e2e/execution-plan.d.ts",
       "default": "./e2e/execution-plan.js"
     },
+    "./fakes": {
+      "types": "./fakes.d.ts",
+      "default": "./fakes.js"
+    },
     "./local": {
       "types": "./local.d.ts",
       "default": "./local.js"
+    },
+    "./ports": {
+      "types": "./ports.d.ts",
+      "default": "./ports.js"
     },
     "./plugins/channel-slack": {
       "types": "./plugins/channel-slack.d.ts",
@@ -136,10 +152,6 @@
     "./core/work-events": {
       "types": "./core/work-events.d.ts",
       "default": "./core/work-events.js"
-    },
-    "./ports": {
-      "types": "./ports.d.ts",
-      "default": "./ports.js"
     }
   },
   "types": "./index.d.ts"

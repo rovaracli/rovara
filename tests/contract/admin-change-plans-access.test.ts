@@ -243,3 +243,13 @@ describe("the workspace limits (E19, FR-053)", () => {
     expect(plan.details).toMatchObject({ organizationCount: 28, over: 14 });
   });
 });
+
+describe("Code-only change kinds (spec 063 phase 063a)", () => {
+  // Cloud has no planner, sign-in client registry, MCP tool or CLI command for the sign-in client kinds yet, so planChange refuses them. When spec 063 is ported to Cloud, replace this with real plan tests.
+  it("refuses to plan register_sign_in_client and remove_sign_in_client, in fixed words", async () => {
+    const { deps, identity } = await harness();
+    const registration = { name: "Docs site", audience: "docs.example", redirectUris: ["https://docs.example.test/callback"], loopback: false };
+    await expect(planChange(deps, identity, { kind: "register_sign_in_client", clientId: "docs-site", registration })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("is not a change this AgentX can plan") as string });
+    await expect(planChange(deps, identity, { kind: "remove_sign_in_client", clientId: "docs-site" })).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("is not a change this AgentX can plan") as string });
+  });
+});

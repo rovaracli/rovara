@@ -20,6 +20,10 @@
     "./secrets-manager": {
       "types": "./secrets-manager.d.ts",
       "default": "./secrets-manager.js"
+    },
+    "./sqs": {
+      "types": "./sqs.d.ts",
+      "default": "./sqs.js"
     }
   },
   "types": "./index.d.ts"

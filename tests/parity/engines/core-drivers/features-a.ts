@@ -95,7 +95,18 @@ export const FEATURES_A_DRIVERS: Record<string, Driver> = {
         if (job === undefined) {
           const task = await ctx.readTask();
           const workflow = task?.workflow as { stage?: string; state?: string } | undefined;
-          if (workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING") { await ctx.decidePlan("approve"); continue; }
+          if (workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING") {
+            try {
+              await ctx.decidePlan("approve");
+            } catch (error) {
+              // Since the 0.5.17 pin (public #484 re-plans a Full task whose Understand is off) this task reaches its parts plan, and the core refuses to start an ordered work plan on a version 1.0.0 task
+              // ("ordered work plans are saved but this broker is not enabled to start them": parts run only on a 1.1.0 task, which Understand-first starts). Before, the task stalled earlier. It is the
+              // same difference (the core does not run the parts with Understand off), so the run stops here as a stall and the transitions show where. Any other refusal is still a failure.
+              if (ctx.runtime.app.flow.deps.understandFirst !== true && error instanceof Error && error.message === "the plan decision was not taken (refused)") return;
+              throw error;
+            }
+            continue;
+          }
           return; // stalled: the transitions show where
         }
         const mode = ctx.modeOf(job);

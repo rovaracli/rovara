@@ -5,7 +5,7 @@ export const FEATURES_A_DIFFERENCES: readonly KnownDifference[] = [
   {
     scenario: "parallel-parts", facet: "transitions",
     cause: [
-      "Core bug (same root as plan-changes-requested): with Understand off (the settings the composition root maps from Cloud), a Full task never gets past its first plan.",
+      "UPDATED for the 0.5.17 pin (public #484 fixed the re-plan stall described below, so the task now reaches its parts plan): with Understand off (the settings the composition root maps from Cloud) the core's task is a version 1.0.0 task, and core/work-breakdown/parallel-parts.ts workflowDependenciesAllowed lets an ordered work plan start only on a 1.1.0 task (Understand-first) or where the install sets workflowDependenciesEnabled, so the plan decision is refused (\"ordered work plans are saved but this broker is not enabled to start them\") and the run stops there (the driver treats exactly that refusal as the stall). Before the pin: Core bug (same root as plan-changes-requested): with Understand off (the settings the composition root maps from Cloud), a Full task never gets past its first plan.",
       "Approving the requirements writes PLAN/READY and a PLAN dispatch row for the design, but vendor/rovara-code/packages/broker/src/core/task-flow/stage-machine.ts:340 (runDispatchRow,",
       "`if (workflow.stage !== \"PLAN\" || workflow.state !== \"READY\" || assessment?.kind !== \"ready\") return stale();`) starts a plan only after an Understand assessment,",
       "so the row is resolved STALE and the task stays PLAN/READY for ever. Cloud's Full path writes requirements, design and coding plan, builds the parts and opens the pull request.",
