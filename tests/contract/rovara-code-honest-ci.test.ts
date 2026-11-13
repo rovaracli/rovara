@@ -6,12 +6,20 @@ import { MERGE_NOT_READY_MESSAGES as M, MergeTrackingItemSchema, type MergeTrack
 import { CI_STATE_WORDS } from "../../packages/broker/src/rovara-code/ci-state-words.js";
 import { mergeReadiness, type MergePullRequestFacts, type ReadinessInput } from "../../packages/broker/src/rovara-code/merge.js";
 import {
-  CI_UNREADABLE_AFTER_MS, DEFAULT_CI_MODE, NO_CI_GRACE_MS, ciAllowsReady, readCi, trackPullRequest, trackingItemOf, type ProjectCiMode,
+  CI_UNREADABLE_AFTER_MS, DEFAULT_CI_MODE, NO_CI_GRACE_MS, ciAllowsReady, ciCountsAsPassing, readCi, unreadableSinceOf, trackPullRequest, trackingItemOf, type ProjectCiMode,
 } from "../../packages/broker/src/rovara-code/merge-tracking.js";
 import { registerCodeMilestoneHandler } from "../../packages/broker/src/rovara-code/milestones.js";
+import { mergeViewOf } from "../../packages/broker/src/rovara-code/merge.js";
+import { mergeItemOf } from "../../packages/broker/src/decisions/merge-source.js";
+import { nextFor } from "../../packages/mcp/src/tools.js";
+import { plainState } from "../../packages/ui/src/screens/session/task-plain-state.js";
+import { codeSettingsKey } from "@rovara-code/contracts";
+import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { GH, HEAD_A as MERGE_HEAD, LOGIN, OLD_HEAD, mergeWorld } from "../support/rovara-code-merge-world.js";
 import { statusOf } from "../../packages/broker/src/plugins/code-host/github/mapping.js";
 import { HEAD_A, NOW, TASK_ID, status, world, type TrackingWorld } from "../support/rovara-code-tracking.js";
 import { TEST_ORG } from "../support/orgs.js";
+import { PRIYA } from "../support/agent-session-world.js";
 
 const MODES: ProjectCiMode[] = ["sandbox_only", "their_ci_watch", "their_ci_fix", "rovara_real_run"];
 const unregister: Array<() => void> = [];
@@ -259,5 +267,112 @@ describe("the words are one set everywhere a person reads them", () => {
       expect(text, file).toContain(CI_STATE_WORDS.none);
       expect(text, file).toContain(CI_STATE_WORDS.unreadable);
     }
+  });
+});
+
+// ---- review fixes (M1, M2, L1, L3, L4, gate-off identity)
+
+describe("M1: a pull request that was never a draft", () => {
+  const reviewers = (w: TrackingWorld) => w.db.set({ ...codeSettingsKey(TEST_ORG, "web"), allowSelfApproval: false, mergeMethod: "squash", codeReviewers: ["alice"], revision: 1 });
+  async function track(deps: Parameters<typeof world>[0], draft: boolean) {
+    const w = world(deps);
+    reviewers(w);
+    w.github.statuses.set(7, status({ draft, checks: [], headHasWorkflowFiles: false }));
+    await trackPullRequest(w.deps, TASK_ID);
+    w.setNow(NOW + NO_CI_GRACE_MS);
+    await trackPullRequest(w.deps, TASK_ID);
+    return w;
+  }
+  it("gate on, default mode: a non-draft no-CI pull request still gets its reviewers and readyAt; a draft gets none", async () => {
+    const open = await track({ deps: { honestCi: async () => true } }, false);
+    expect(itemOf(open)).toMatchObject({ ci: "none", draft: false });
+    expect(open.github.calls).toContain("reviewers:7:alice");
+    expect(itemOf(open)).toHaveProperty("readyAt");
+    const draft = await track({ deps: { honestCi: async () => true } }, true);
+    expect(draft.github.calls.filter((call) => call.startsWith("reviewers"))).toEqual([]);
+  });
+  it("gate off: a non-draft no-CI pull request gets its reviewers, as today", async () => {
+    expect((await track({}, false)).github.calls).toContain("reviewers:7:alice");
+  });
+  it("the task page says 'Ready to merge' only when the CI passed; a ready pull request with no CI is labelled so", () => {
+    const task = (ci: string) => ({ merge: { ready: true }, mergeTracking: [{ state: "open", ci, review: "approved" }] }) as never;
+    expect(plainState({ state: "ready_to_merge" }, task("passing")).label).toBe("Ready to merge");
+    expect(plainState({ state: "ready_to_merge" }, task("none")).label).not.toBe("Ready to merge");
+    expect(plainState({ state: "ready_to_merge" }, task("none")).label).toMatch(/no CI/iu);
+  });
+});
+
+describe("M2: the MCP words", () => {
+  const task = (ci: string[] | undefined) => ({
+    workflow: { stage: "WAIT_FOR_MERGE", state: "WAITING", revision: 3 }, merge: { ready: true }, ...(ci === undefined ? {} : { mergeTracking: ci.map((value) => ({ ci: value })) }),
+  }) as never;
+  it("says its checks passed only when every tracked pull request's checks passed; no CI is said as no CI", () => {
+    expect(nextFor(task(["passing"]))).toContain("its checks passed");
+    const none = nextFor(task(["passing", "none"]));
+    expect(none).not.toContain("checks passed");
+    expect(none).toContain(CI_STATE_WORDS.none);
+    expect(nextFor(task(undefined))).not.toContain("checks passed");
+  });
+});
+
+describe("L1: an approval of an earlier head carries over a clean sync only on passing CI (no CI only in sandbox_only, gate on)", () => {
+  it("the predicate", () => {
+    for (const mode of MODES) {
+      expect(ciCountsAsPassing("passing", mode, true)).toBe(true);
+      expect(ciCountsAsPassing("none", mode, true)).toBe(mode === "sandbox_only");
+      expect(ciCountsAsPassing("unreadable", mode, true)).toBe(false);
+      expect(ciCountsAsPassing("none", mode, false)).toBe(true);
+      expect(ciCountsAsPassing("pending", mode, false)).toBe(false);
+    }
+  });
+  it("through the merge view: gate off counts it (today), gate on counts it only in sandbox_only", async () => {
+    const w = mergeWorld();
+    await w.linkAll();
+    w.seedTracking({ ci: "none", approval: { githubUserId: GH.max, login: LOGIN.max, commitId: OLD_HEAD } });
+    const stored = w.db.get(taskKey(w.taskId))! as { workflow: { pullRequests: Array<Record<string, unknown>> } };
+    w.db.set({ ...stored, workflow: { ...stored.workflow, pullRequests: stored.workflow.pullRequests.map((entry) => ({ ...entry, syncedFrom: OLD_HEAD })) } });
+    const task = w.db.get(taskKey(w.taskId))! as never;
+    const items = [w.trackingOf({ repositoryId: "payments", number: 7 })!];
+    const view = (deps: Record<string, unknown>) => mergeViewOf({ ...w.deps, ...deps }, task, items, PRIYA);
+    expect(await view({})).toMatchObject({ ready: true });
+    expect(await view({ honestCi: async () => true })).toMatchObject({ ready: false, message: M.staleApproval });
+    expect(await view({ honestCi: async () => true, ciMode: () => "their_ci_fix" })).toMatchObject({ ready: false, message: M.staleApproval });
+    expect(await view({ honestCi: async () => true, ciMode: () => "sandbox_only" })).toMatchObject({ ready: true });
+    void MERGE_HEAD;
+  });
+});
+
+describe("L3: the unreadable wait is kept for the head it was seen on only", () => {
+  it("one rule for tracking and the press", () => {
+    const since = "2026-11-09T09:00:00.000Z";
+    expect(unreadableSinceOf({ headSha: HEAD_A, ciUnreadableSince: since }, HEAD_A)).toBe(Date.parse(since));
+    expect(unreadableSinceOf({ headSha: "b".repeat(40), ciUnreadableSince: since }, HEAD_A)).toBeUndefined();
+    expect(unreadableSinceOf({ headSha: HEAD_A }, HEAD_A)).toBeUndefined();
+    expect(unreadableSinceOf(undefined, HEAD_A)).toBeUndefined();
+  });
+});
+
+describe("L4 and gate-off identity: the merge card does not fold 'no CI' into 'passing'", () => {
+  const items = (ci: string[]) => ci.map((value, index) => ({ repositoryId: `r${String(index)}`, number: 1, state: "open", draft: false, ci: value, headSha: HEAD_A, baseBranch: "main" })) as never;
+  const task = { taskId: TASK_ID, orgId: TEST_ORG, project: "web", title: "t" } as never;
+  const workflowFor = (count: number) => ({
+    definitionVersion: "1.1.0", stage: "WAIT_FOR_MERGE", state: "WAITING", revision: 1, updatedAt: "2026-10-25T11:00:00.000Z",
+    pullRequests: Array.from({ length: count }, (_, index) => ({ repositoryId: `r${String(index)}`, number: 1, required: true, state: "OPEN", url: "https://github.com/a/b/pull/1", headSha: HEAD_A, candidateDigest: "c".repeat(64) })),
+  }) as never;
+  const cardCi = (ci: string[], honest: boolean) => (mergeItemOf(task, workflowFor(ci.length), items(ci), "ses_aaaaaaaaaaaaaaaaaaaa", "2026-10-25T12:00:00.000Z", honest) as { ci: string; contentVersion: string }).ci;
+  it("gate on: failing, then not readable, then still running, then no CI, then passing", () => {
+    expect(cardCi(["passing", "none"], true)).toBe("none");
+    expect(cardCi(["none", "unreadable"], true)).toBe("unreadable");
+    expect(cardCi(["none", "pending"], true)).toBe("pending");
+    expect(cardCi(["none", "failing"], true)).toBe("failing");
+    expect(cardCi(["passing"], true)).toBe("passing");
+  });
+  it("gate off: today's aggregation (no CI reads as passing) and the same contentVersion as before this lane", () => {
+    expect(cardCi(["none"], false)).toBe("passing");
+    const before = mergeItemOf(task, workflowFor(1), items(["none"]), "ses_aaaaaaaaaaaaaaaaaaaa", "2026-10-25T12:00:00.000Z") as { contentVersion: string };
+    const off = mergeItemOf(task, workflowFor(1), items(["none"]), "ses_aaaaaaaaaaaaaaaaaaaa", "2026-10-25T12:00:00.000Z", false) as { contentVersion: string };
+    const on = mergeItemOf(task, workflowFor(1), items(["none"]), "ses_aaaaaaaaaaaaaaaaaaaa", "2026-10-25T12:00:00.000Z", true) as { contentVersion: string };
+    expect(off.contentVersion).toBe(before.contentVersion);
+    expect(on.contentVersion).not.toBe(off.contentVersion);
   });
 });

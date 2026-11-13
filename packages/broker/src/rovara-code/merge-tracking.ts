@@ -49,6 +49,18 @@ export function ciAllowsReady(ci: MergeTrackingItem["ci"], mode: ProjectCiMode, 
   if (ci === "none" || ci === "unreadable") return mode === "sandbox_only";
   return false;
 }
+/**
+ * Whether CI counts as a pass where Rovara decides on its own: an approval of the head before a clean sync carries over, and a task page says "Ready". Gate off: today's rule (passing, or none). Gate on: passing, or
+ * no CI only where the mode says the project does not rely on CI (`sandbox_only`); unreadable CI never counts.
+ */
+export const ciCountsAsPassing = (ci: MergeTrackingItem["ci"], mode: ProjectCiMode, honest: boolean): boolean =>
+  ci === "passing" || (ci === "none" && (!honest || mode === "sandbox_only"));
+/** The wait for unreadable checks, kept for the head it was seen on only: a new head's checks are a new read. Shared by the tracking pass and the press. */
+export function unreadableSinceOf(item: Pick<MergeTrackingItem, "headSha" | "ciUnreadableSince"> | undefined, head: string): number | undefined {
+  if (item === undefined || item.headSha !== head || item.ciUnreadableSince === undefined) return undefined;
+  const since = Date.parse(item.ciUnreadableSince);
+  return Number.isFinite(since) ? since : undefined;
+}
 /** Whether a person may press Merge for a pull request with this CI state, and whether an approval of an earlier head carries over a clean sync. `none` is allowed (it is printed, and the person decides); `unreadable` never is. */
 export const ciAllowsMerge = (ci: MergeTrackingItem["ci"]): boolean => ci === "passing" || ci === "none";
 /** How many reviewers' permissions one pass looks up; more than this and the approval is not trusted. */
@@ -318,8 +330,7 @@ export function deriveTrackingFields(input: TrackingInputs): Omit<MergeTrackingI
     : prior?.lastRovaraPushAt === undefined ? undefined : Date.parse(prior.lastRovaraPushAt);
   const checksEverSeen = prior?.checksEverSeen === true || status.checks.length > 0;
   // The wait for unreadable checks is kept on the row, for this head only: a new head's checks are a new read. Only while the gate is on.
-  const unreadableSince = prior !== undefined && prior.headSha === status.headRevision && prior.ciUnreadableSince !== undefined ? Date.parse(prior.ciUnreadableSince) : undefined;
-  const ci = readCi(status, { checksEverSeen, lastRovaraPushAt, now, honest: input.honest, unreadableSince: Number.isFinite(unreadableSince) ? unreadableSince : undefined });
+  const ci = readCi(status, { checksEverSeen, lastRovaraPushAt, now, honest: input.honest, unreadableSince: unreadableSinceOf(prior, status.headRevision) });
   const today = new Date(now).toISOString().slice(0, 10);
   const reAsked = (prior?.review === "changes_requested" || prior?.review === "approved") && input.reviews.review === "requested";
   return {
@@ -681,7 +692,9 @@ async function trackOne(
   // GitHub refusing one of the two (a missing permission, an error) leaves that step undone and the item still written; a rate limit or a spent allowance goes on up.
   // Only while the task waits for the merge with nothing being changed or checked: a pull request whose code is being fixed, or merged with its base and not yet checked and reviewed again (owner
   // decision 67b), is not called ready, whatever its CI says.
-  const wantsReady = status.state === "open" && early.readyAt === undefined && early.headByRovara && ciAllowsReady(ci.ci, ciMode, honest)
+  const wantsReady = status.state === "open" && early.readyAt === undefined && early.headByRovara
+    // A draft is taken out of draft only where the mode allows it; a pull request that is not a draft cannot be kept back, so it gets its reviewers on passing CI or no CI.
+    && (status.draft ? ciAllowsReady(ci.ci, ciMode, honest) : ciAllowsMerge(ci.ci))
     && task.workflow.stage === "WAIT_FOR_MERGE" && task.workflow.state === "WAITING";
   let readyNow = false;
   let asked = false;
@@ -761,7 +774,7 @@ async function trackOne(
     for (const reviewer of reviewers) known.set(reviewer.login, await permission(reviewer.login));
     const members = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
     const counted = humanApprovalOf({
-      reviews: approvalReviews, headSha: status.headRevision, syncedFrom: pullRequest.syncedFrom, ciPassingOnHead: ciAllowsMerge(ci.ci), permissions: known,
+      reviews: approvalReviews, headSha: status.headRevision, syncedFrom: pullRequest.syncedFrom, ciPassingOnHead: ciCountsAsPassing(ci.ci, ciMode, honest), permissions: known,
       requesterGithubUserIds: await requesterGithubIds(members, task.orgId, task), linkedGithubUserIds: await linkedAmong(members, task.orgId, reviewers.map((reviewer) => reviewer.githubUserId)),
       excludedGithubUserIds: await nonWritersAmong(members, task.orgId, reviewers.map((reviewer) => reviewer.githubUserId)),
       allowSelfApproval: settings.allowSelfApproval,
