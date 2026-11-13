@@ -33,13 +33,13 @@ function checkerOutput(overrides: Record<string, string> = {}, extra: string[] =
   return [...extra, ...lines, "TSL SUMMARY pass=27 fail=0 pending=4"].join("\n") + "\n";
 }
 
-interface Setup { dir: string; bin: string; state: string; result: string; calls: string; log: string; vartmp: string; fixtures: string }
+interface Setup { dir: string; bin: string; state: string; result: string; marker: string; calls: string; log: string; vartmp: string; fixtures: string }
 
 function setup(): Setup {
   const dir = mkdtempSync(join(tmpdir(), "ec2-tsl-selftest-"));
   roots.push(dir);
-  const s: Setup = { dir, bin: join(dir, "bin"), state: join(dir, "state"), result: join(dir, "run", "tsl-selftest"), calls: join(dir, "calls"), log: join(dir, "log"), vartmp: join(dir, "vartmp"), fixtures: join(dir, "fixtures") };
-  for (const d of [s.bin, s.state, s.vartmp, s.fixtures]) mkdirSync(d);
+  const s: Setup = { dir, bin: join(dir, "bin"), state: join(dir, "state"), result: join(dir, "run", "tsl-selftest"), marker: join(dir, "volume", "tsl-selftest-marker"), calls: join(dir, "calls"), log: join(dir, "log"), vartmp: join(dir, "vartmp"), fixtures: join(dir, "fixtures") };
+  for (const d of [s.bin, s.state, s.vartmp, s.fixtures, join(dir, "volume")]) mkdirSync(d);
   for (const file of [s.calls, s.log]) writeFileSync(file, "");
   for (const file of ["containers_driver", "containers_ws", "networks_ws", "volumes_ws"]) writeFileSync(join(s.state, file), "");
   writeFileSync(join(s.fixtures, "checks.sh"), [
@@ -68,8 +68,12 @@ function setup(): Setup {
   tool("launcher", 'echo "launcher $*" >>"$CALLS_FILE"; exit "${WALLS_RC:-0}"');
   tool("docker", [
     'echo "docker $*" >>"$CALLS_FILE"',
+    // What exists when Docker is asked to MAKE something: the marker must already be on the volume (F1).
+    'if [[ "$1" == create || ( "$1" == network && "$2" == create ) ]]; then if [[ -e "$MARKER_FILE" ]]; then echo "$1 $2" >>"$STATE/made_with_marker"; else echo "$1 $2" >>"$STATE/made_without_marker"; fi; fi',
     '[[ -z "${DOCKER_DOWN:-}" ]] || exit 1',
     '[[ -z "${DOCKER_DOWN_AFTER_RUN:-}" || ! -e "$STATE/rule" ]] || exit 1',
+    '[[ -z "${DOCKER_DOWN_AFTER_RM:-}" || ! -e "$STATE/rm_asked" ]] || exit 1',
+    '[[ "$1" != rm ]] || : >"$STATE/rm_asked"',
     // Once the labelled objects are gone, Docker has taken their rules, routes and bridge away too (unless the test leaks them).
     'settle() { [[ -s "$STATE/networks_ws" || -s "$STATE/containers_ws" || -e "$STATE/tasknet_ours" ]] || { [[ -n "${LEAK_RULE:-}" ]] || rm -f "$STATE/rule" "$STATE/reorder"; [[ -n "${LEAK_IFACE:-}" || -n "${LATE_IFACE:-}" ]] || rm -f "$STATE/iface"; }; }',
     'trap settle EXIT',
@@ -130,6 +134,7 @@ function run(s: Setup, body: string, env: Record<string, string> = {}, tweak: (t
   const text = tweak(stage2
     .replaceAll("/var/tmp/", `${s.vartmp}/`)
     .replace("readonly TSL_RESULT_FILE=/run/agentx/tsl-selftest", `readonly TSL_RESULT_FILE=${s.result}`)
+    .replace("readonly TSL_MARKER_FILE=/mnt/workspace/.agentx-tsl-selftest-running", `readonly TSL_MARKER_FILE=${s.marker}`)
     .replace("readonly TSL_LAUNCHER=/usr/local/libexec/agentx-worker-start", `readonly TSL_LAUNCHER=${join(s.bin, "launcher")}`)
     .replace("readonly WORKER_ENV_FILE=/etc/agentx/worker.env", `readonly WORKER_ENV_FILE=${join(s.dir, "worker.env")}`));
   const file = join(s.dir, "stage2.sh");
@@ -144,7 +149,7 @@ function run(s: Setup, body: string, env: Record<string, string> = {}, tweak: (t
   ].join("\n");
   return spawnSync("bash", ["-c", script], {
     encoding: "utf8",
-    env: { PATH: `${s.bin}:/usr/bin:/bin:/usr/sbin:/sbin`, LOG_FILE: s.log, CALLS_FILE: s.calls, STATE: s.state, FIXTURES: s.fixtures, HOME: s.dir, TMPDIR: s.dir, ...env },
+    env: { PATH: `${s.bin}:/usr/bin:/bin:/usr/sbin:/sbin`, LOG_FILE: s.log, CALLS_FILE: s.calls, MARKER_FILE: s.marker, STATE: s.state, FIXTURES: s.fixtures, HOME: s.dir, TMPDIR: s.dir, ...env },
   });
 }
 const callsOf = (s: Setup) => readFileSync(s.calls, "utf8");
@@ -593,7 +598,73 @@ describe("condition 3, across launches (H2): Docker's data root is on the worksp
       expect(run(s, 'tsl_sweep_leftovers; echo "sweep=$?"', { [leak]: "1" }).stdout, leak).toContain("sweep=1");
       expect(logOf(s), leak).toContain(`could not be removed from the workspace volume (${part})`);
     }
-    expect(run(setup(), 'tsl_sweep_leftovers; echo "sweep=$?"', { DOCKER_DOWN: "1" }).stdout).toContain("sweep=1");
+  });
+
+  // F1 (89's release check): the sweep used to fail the boot of EVERY named worker when Docker answered a look with an error. It now runs, and can fail the boot on a Docker error, only when the self-test's marker is on the volume.
+  describe("F1: only a worker whose self-test may have left objects (the marker on the volume) can be failed by a Docker error", () => {
+    const sweep = 'tsl_sweep_leftovers; echo "sweep=$?"';
+    it("the self-test OFF (no marker), Docker erroring in the sweep: the boot continues, with a fixed word in the log and no Docker output", () => {
+      const s = setup();
+      const result = run(s, sweep, { DOCKER_DOWN: "1", AGENTX_ENVIRONMENT_KIND: "named" });
+      expect(result.stdout).toContain("sweep=0");
+      expect(logOf(s)).toContain("TS-L leftover look could not be completed (docker); no self-test marker is on the volume, so the boot continues");
+      // One look, bounded: it does not retry or sleep.
+      expect(callsOf(s).split("\n").filter((call) => call.startsWith("docker ps")).length).toBe(1);
+      expect(existsSync(s.marker)).toBe(false);
+    });
+
+    it("no marker and a labelled object FOUND: removed and read back; the boot fails only when it cannot be removed", () => {
+      for (const [leak, seed, part] of [["LEAK_CONTAINER", "containers_ws", "containers"], ["LEAK_NETWORK", "networks_ws", "networks"], ["LEAK_VOLUME", "volumes_ws", "volumes"]] as const) {
+        const s = setup();
+        writeFileSync(join(s.state, seed), "left\n");
+        expect(run(s, sweep, { [leak]: "1" }).stdout, leak).toContain("sweep=1");
+        expect(logOf(s), leak).toContain(`could not be removed from the workspace volume (${part})`);
+      }
+      const removable = setup();
+      writeFileSync(join(removable.state, "containers_driver"), "x1\n");
+      expect(run(removable, sweep).stdout).toContain("sweep=0");
+    });
+
+    it("no marker, an object found and then Docker erroring on the second look: fails (an object WAS found and is not proven gone)", () => {
+      const s = setup();
+      writeFileSync(join(s.state, "containers_ws"), "left\n");
+      // Docker answers the first look, then goes down once the object has been asked to be removed.
+      expect(run(s, sweep, { DOCKER_DOWN_AFTER_RM: "1" }, (text) => text).stdout).toContain("sweep=1");
+    });
+
+    it("the marker present: a Docker error fails the boot as before, the marker stays, and the log has the fixed word", () => {
+      const s = setup();
+      writeFileSync(s.marker, "running\n");
+      expect(run(s, sweep, { DOCKER_DOWN: "1" }).stdout).toContain("sweep=1");
+      expect(logOf(s)).toContain("could not be removed from the workspace volume (docker)");
+      expect(existsSync(s.marker)).toBe(true);
+    });
+
+    it("a crash mid-self-test (marker present, objects left that cannot be removed) fails the boot, and the marker stays for the next boot", () => {
+      const s = setup();
+      writeFileSync(s.marker, "running\n");
+      writeFileSync(join(s.state, "containers_ws"), "left\n");
+      writeFileSync(join(s.state, "networks_ws"), "n9\n");
+      expect(run(s, sweep, { LEAK_CONTAINER: "1" }).stdout).toContain("sweep=1");
+      expect(existsSync(s.marker)).toBe(true);
+    });
+
+    it("the marker present and the leftovers removable: the sweep passes and removes the marker (the volume is proven clean)", () => {
+      const s = setup();
+      writeFileSync(s.marker, "running\n");
+      writeFileSync(join(s.state, "containers_ws"), "left\n");
+      writeFileSync(join(s.state, "volumes_ws"), "v9\n");
+      expect(run(s, sweep).stdout).toContain("sweep=0");
+      expect(existsSync(s.marker)).toBe(false);
+      const clean = setup();
+      writeFileSync(clean.marker, "running\n");
+      expect(run(clean, sweep).stdout).toContain("sweep=0");
+      expect(existsSync(clean.marker)).toBe(false);
+    });
+
+    it("stage2_main still fails the boot with `tsl_leftover:` when the sweep returns 1", () => {
+      expect(stage2Main).toMatch(/tsl_sweep_leftovers \|\| fail "tsl_leftover: /u);
+    });
   });
 
   it("is the FIRST thing in the named block of stage2_main, before the function runner, the pulls, the walls and the self-test, and a failure fails the boot", () => {
@@ -819,5 +890,57 @@ describe("what the self-test pulls", () => {
     expect(postgres.length).toBeGreaterThan(0);
     expect(redis.length).toBeGreaterThan(0);
     expect(redis.every((entry) => entry.image.digest === undefined)).toBe(true);
+  });
+});
+
+describe("F1: the marker the self-test keeps on the workspace volume while it may have objects", () => {
+  it("is written BEFORE the first object is made, and removed after a clean read-back (a full run)", () => {
+    const s = setup();
+    expect(selfTest(s, STAGING).stdout).toContain("rc=0");
+    expect(parsedOf(s)).toMatchObject({ state: "ran" });
+    const withMarker = readFileSync(join(s.state, "made_with_marker"), "utf8").trim().split("\n");
+    expect(withMarker).toContain("create --label");
+    expect(withMarker).toContain("network create");
+    expect(existsSync(join(s.state, "made_without_marker"))).toBe(false);
+    expect(existsSync(s.marker)).toBe(false);
+  });
+
+  it("is removed after an early finish that read back clean (bundle missing, not a staging image, no time)", () => {
+    for (const env of [{ NO_BUNDLE: "1" }, { FLAVOR: "release" }]) {
+      const s = setup();
+      expect(selfTest(s, { ...STAGING, ...env }).stdout, JSON.stringify(env)).toContain("rc=0");
+      expect(existsSync(join(s.state, "made_without_marker")), JSON.stringify(env)).toBe(false);
+      expect(existsSync(s.marker), JSON.stringify(env)).toBe(false);
+    }
+  });
+
+  it("stays when the clean-up cannot be read back (return 75): the next boot's sweep is then strict", () => {
+    const s = setup();
+    expect(selfTest(s, { ...STAGING, LEAK_CONTAINER: "1" }).stdout).toContain("rc=75");
+    expect(existsSync(s.marker)).toBe(true);
+  });
+
+  it("is never written when nothing is made: switch off, refused (production), wrong account, no Docker, walls failed", () => {
+    const cases: Array<Record<string, string>> = [{ AGENTX_TSL_SELFTEST: "" }, { AGENTX_LOG_GROUP: "/agentx/production/worker" }, { ACCOUNT: "111122223333" }, { DOCKER_DOWN: "1" }, { WALLS_RC: "1" }];
+    for (const env of cases) {
+      const s = setup();
+      selfTest(s, { ...STAGING, ...env });
+      expect(existsSync(s.marker), JSON.stringify(env)).toBe(false);
+    }
+  });
+
+  it("a marker that cannot be written means nothing is made: `incomplete snapshot_failed`, no object, boot unaffected", () => {
+    const s = setup();
+    const result = selfTest(s, STAGING, checkerOutput(), (text) => text.replace(/readonly TSL_MARKER_FILE=\S+/u, `readonly TSL_MARKER_FILE=${join(s.dir, "no-such-dir", "marker")}`));
+    expect(result.stdout).toContain("rc=0");
+    expect(parsedOf(s)).toMatchObject({ state: "incomplete", reason: "snapshot_failed" });
+    expect(existsSync(join(s.state, "made_with_marker"))).toBe(false);
+    expect(existsSync(join(s.state, "made_without_marker"))).toBe(false);
+    expect(readdirSync(s.vartmp)).toEqual([]);
+  });
+
+  it("the marker sits on the workspace volume beside Docker's data root, and boot-stage2.sh's TS-L block is marked Cloud-only", () => {
+    expect(stage2).toContain("readonly TSL_MARKER_FILE=/mnt/workspace/.agentx-tsl-selftest-running");
+    expect(stage2).toMatch(/Cloud-only[^\n]*must not be ported to public code\/next/u);
   });
 });

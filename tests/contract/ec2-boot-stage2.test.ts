@@ -34,7 +34,7 @@ const MOVED_DECLARATIONS = [
 ] as const;
 
 // The opt-in TS-L self-test's functions (tests/contract/ec2-boot-tsl-selftest.test.ts): defined in stage 2, run only when a staging launch opts in.
-const TSL_SELFTEST_FUNCTIONS = ["tsl_past_deadline", "tsl_dk", "tsl_selftest_gate", "tsl_account_ok", "tsl_identity", "tsl_budget_seconds", "tsl_normalize", "tsl_snapshot", "tsl_remove_objects", "tsl_objects_gone", "tsl_sweep_leftovers", "tsl_cleanup", "tsl_readback", "tsl_readback_settled", "tsl_item", "tsl_pending_reason", "tsl_classify", "tsl_encode", "tsl_record", "tsl_run_checks", "tsl_extract_bundle", "tsl_finish_early", "run_tsl_selftest"];
+const TSL_SELFTEST_FUNCTIONS = ["tsl_past_deadline", "tsl_dk", "tsl_selftest_gate", "tsl_account_ok", "tsl_identity", "tsl_budget_seconds", "tsl_normalize", "tsl_snapshot", "tsl_remove_objects", "tsl_objects_gone", "tsl_sweep_leftovers", "tsl_cleanup", "tsl_readback", "tsl_readback_settled", "tsl_item", "tsl_pending_reason", "tsl_classify", "tsl_encode", "tsl_record", "tsl_run_checks", "tsl_extract_bundle", "tsl_marker_write", "tsl_marker_clear", "tsl_finish_early", "run_tsl_selftest"];
 const MOVED_FUNCTIONS = [
   "pull_contained_image",
   "pull_executor_image",

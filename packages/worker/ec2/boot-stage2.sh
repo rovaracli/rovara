@@ -958,7 +958,10 @@ PRIVATEALLOW
 #   3. CLEAN-UP IS PROVEN BEFORE THE WORKER TAKES WORK. After the checks (and after a timeout) every container, network, volume, bridge and rule they made is removed and READ BACK as gone: no labelled object; the same iptables and ip6tables rules in
 #      EVERY table (filter, nat, mangle, raw), nft ruleset, routes, ip rules and interfaces as before, compared IN ORDER; no scratch directory. The read-back is polled (about 15 s) between two clean-up rounds, so a bridge that goes a moment late is
 #      not a failure. If it still fails the boot FAILS (`fail`: the provisioner stops the session) before the worker unit is started. Docker's data root is on the workspace volume, so a failed clean-up would reach the next launch: therefore EVERY named
-#      boot, with the self-test off or on, first removes whatever carries the self-test's two fixed labels (below) and reads that back, and fails the boot if it cannot (tsl_sweep_leftovers).
+#      boot, with the self-test off or on, first looks for whatever carries the self-test's two fixed labels (below), removes it and reads that back (tsl_sweep_leftovers). The self-test keeps a MARKER on the workspace volume from before it makes its first
+#      object until its clean-up is read back clean (TSL_MARKER_FILE). With the marker there, a sweep that cannot prove the volume clean (a leftover that stays, or a Docker look that fails) fails the boot. Without it, no self-test can have left anything: a Docker
+#      look that fails is logged and the boot continues (a transient Docker error must not fail a worker that never ran the self-test, F1), and only a FOUND labelled object that cannot be removed fails the boot.
+#      Cloud-only: this whole TS-L block (with the staging account id below) must not be ported to public code/next.
 #   4. FIXED OUTPUT. The result is built only from fixed words (TSL_STATES, TSL_REASONS, the item ids) and the four identity values, each checked against its pattern (AMI id, boot-stage2 SHA-256, Docker version, instance id). No command output,
 #      host name or address is ever copied. At most 3,000 characters (the worker_start line is one log event). The worker checks the same shape (parseSelfTest). The result is written under /run (a reboot empties it) and the worker's launcher
 #      passes it only when it is there, so a restarted instance never reports an old result. `unusable` is recorded there but the boot has failed, so no worker_start ever carries it: the BootFailed reason does.
@@ -970,8 +973,11 @@ PRIVATEALLOW
 readonly TSL_SELFTEST_VARIABLE=AGENTX_TSL_SELFTEST
 readonly TSL_RESULT_VARIABLE=AGENTX_TEST_SERVICES_SELFTEST
 readonly TSL_RESULT_FILE=/run/agentx/tsl-selftest
+# On the workspace volume (beside Docker's data root, so it outlives a reboot as the objects do): written before the self-test makes any object, removed only after its clean-up is read back clean. It decides how strict the next boot's sweep is.
+readonly TSL_MARKER_FILE=/mnt/workspace/.agentx-tsl-selftest-running
 readonly TSL_LAUNCHER=/usr/local/libexec/agentx-worker-start
 readonly TSL_ALLOWED_ENVIRONMENT=staging
+# Cloud-only: boot-stage2.sh's TS-L block is not for public code/next with this account in it. The account is deliberately NOT a launch variable: it must be something the launch cannot fake.
 readonly TSL_ALLOWED_ACCOUNT=944937319445
 readonly TSL_FLAVOR_FILE=/opt/agentx/packages/cloud-contracts/dist/catalog-build-flavor.js
 readonly TSL_BUNDLE_DIR=/opt/agentx/packages/worker/ec2/tsl
@@ -1110,13 +1116,29 @@ tsl_objects_gone() {
   done
   return 0
 }
-# EVERY named boot, before anything else and whether or not the self-test is on: Docker's data root is on the workspace volume, so a self-test that failed its clean-up on an earlier instance would otherwise reach this launch. Removes what carries
-# the fixed labels, reads it back (one settle and retry), and returns 1 when it cannot, so the boot fails before any customer task can meet it.
+# EVERY named boot, before anything else and whether or not the self-test is on: Docker's data root is on the workspace volume, so a self-test that failed its clean-up on an earlier instance would otherwise reach this launch.
+# Strict when the self-test's marker is on the volume (it may have left objects): removes what carries the fixed labels, reads it back (one settle and retry), and returns 1 when it cannot, so the boot fails before any customer task can meet it;
+# the marker goes only when that read-back is clean. With no marker nothing can have been left: ONE bounded look (30 s, no retry loop). A look that errors is logged (a fixed word, no Docker text) and the boot goes on; an object that IS found is removed
+# and read back, and returns 1 only when it is still there or the second look fails.
 tsl_sweep_leftovers() {
-  TSL_HARD_DEADLINE=$((SECONDS + 90))
-  tsl_remove_objects
+  if [[ -e "$TSL_MARKER_FILE" ]]; then
+    TSL_HARD_DEADLINE=$((SECONDS + 90))
+    tsl_remove_objects
+    if tsl_objects_gone; then TSL_HARD_DEADLINE=""; rm -f "$TSL_MARKER_FILE" 2>/dev/null || true; return 0; fi
+    sleep 2
+    tsl_remove_objects
+    if tsl_objects_gone; then TSL_HARD_DEADLINE=""; rm -f "$TSL_MARKER_FILE" 2>/dev/null || true; return 0; fi
+    TSL_HARD_DEADLINE=""
+    log "TS-L self-test leftovers could not be removed from the workspace volume ($TSL_DIFF)"
+    return 1
+  fi
+  TSL_HARD_DEADLINE=$((SECONDS + 30))
   if tsl_objects_gone; then TSL_HARD_DEADLINE=""; return 0; fi
-  sleep 2
+  if [[ "$TSL_DIFF" == docker ]]; then
+    TSL_HARD_DEADLINE=""
+    log "TS-L leftover look could not be completed (docker); no self-test marker is on the volume, so the boot continues"
+    return 0
+  fi
   tsl_remove_objects
   if tsl_objects_gone; then TSL_HARD_DEADLINE=""; return 0; fi
   TSL_HARD_DEADLINE=""
@@ -1253,6 +1275,9 @@ tsl_extract_bundle() {
   chmod 0755 "$dir" && chmod 0444 "$dir"/* 2>/dev/null || true
   return 0
 }
+# The marker (TSL_MARKER_FILE): written (and synced) before the first object is made; a marker that cannot be written means nothing is made. Removed only after a clean read-back (never on a failed one: the next boot's sweep is then strict).
+tsl_marker_write() { (umask 077 && printf 'tsl-selftest\n' >"$TSL_MARKER_FILE") 2>/dev/null && { sync 2>/dev/null || true; }; }
+tsl_marker_clear() { rm -f "$TSL_MARKER_FILE" 2>/dev/null || true; }
 # Ends the self-test early: cleans up, proves it, records. Returns 0, or 75 when the read-back fails.
 tsl_finish_early() { # tsl_finish_early <state> <reason> <started>
   tsl_cleanup
@@ -1260,6 +1285,7 @@ tsl_finish_early() { # tsl_finish_early <state> <reason> <started>
     log "TS-L self-test: the clean-up could not be read back ($TSL_DIFF)"
     rm -f "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE"; tsl_record unusable cleanup_failed $((SECONDS - $3)); return 75
   }
+  tsl_marker_clear
   rm -f "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE"
   tsl_record "$1" "$2" $((SECONDS - $3))
   return 0
@@ -1284,6 +1310,8 @@ run_tsl_selftest() {
   if ! tsl_snapshot "$TSL_SNAPSHOT_BEFORE" || ! images=$(tsl_dk image ls -q --no-trunc 2>/dev/null) || ! printf '%s\n' "$images" | LC_ALL=C sort -u >"$TSL_IMAGES_BEFORE" || [[ ! -s "$TSL_IMAGES_BEFORE" ]]; then
     rm -rf "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE" "$TSL_WORK_DIR" "$out" "$host_out"; tsl_record incomplete snapshot_failed 0; return 0
   fi
+  # From here the self-test makes objects (the bundle container first): the marker goes on the volume BEFORE that, so a crash from here on makes the next boot's sweep strict. No marker, no objects.
+  if ! tsl_marker_write; then rm -rf "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE" "$TSL_WORK_DIR" "$out" "$host_out"; tsl_marker_clear; tsl_record incomplete snapshot_failed 0; return 0; fi
   tsl_extract_bundle "$TSL_WORK_DIR" || extract_rc=$?
   if ((extract_rc != 0)); then
     rm -f "$out" "$host_out"
@@ -1315,6 +1343,7 @@ run_tsl_selftest() {
       rm -f "$out" "$host_out" "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE"; tsl_record unusable cleanup_failed $((SECONDS - started)); return 75
     fi
   fi
+  tsl_marker_clear
   rm -f "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE" "$out" "$host_out"
   if [[ "$mode" == timeout ]]; then tsl_record incomplete budget $((SECONDS - started)); else tsl_record ran ok $((SECONDS - started)); fi
   return 0
