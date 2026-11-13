@@ -10,6 +10,7 @@
 // `quick:` and `full:` at the start of a message choose the path, as today's ingress reads them; with neither, the core's Understand step chooses where it runs, and where
 // it does not the root passes `defaultPath: "QUICK"` (S3 item e; lane P5's shared intake rule replaces it).
 import { createHash } from "node:crypto";
+import type { createDecisionService } from "@rovara-code/broker";
 import { recordTaskThread, type ChannelWork } from "@rovara-code/broker/core/channel";
 import { taskSessionId } from "@rovara-code/broker/core/sessions";
 import type { ChannelDecision, ChannelInboundSink, DocumentStore, OrgId, Principal, SlackRequestMessage } from "@rovara-code/contracts";
@@ -61,6 +62,23 @@ export function requestIdOf(text: string): string {
  */
 export function slackPressToken(decision: Pick<ChannelDecision, "actor" | "conversation">): string {
   return JSON.stringify({ userId: decision.actor.userId, userTeamId: decision.actor.tenant, workspaceTeamId: decision.conversation.tenant, enterpriseId: "", userEnterpriseId: "" });
+}
+
+type DecisionGateOf = ReturnType<typeof createDecisionService>["gate"];
+
+/**
+ * The decision gate as a CLIENT surface may call it (the web decide routes, the API, a script): the same gate, but a credential of the chat-slack method is refused. That method is proved by
+ * the Slack ingress's own verification of a press (its signature check), so only `createCloudChannelWork`, fed by the channel sink, may present it; a browser or an API client that sent the
+ * same method with press fields of its choosing would be claiming a Slack press nobody verified. Every route that takes credentials from a client must be given this, never the raw gate.
+ */
+export function createClientDecisionGate(gate: DecisionGateOf): DecisionGateOf {
+  return {
+    verifyPolicy: (companyId) => gate.verifyPolicy(companyId),
+    requirement: (companyId, kind, subjectId) => gate.requirement(companyId, kind, subjectId),
+    decide: async (attempt) => attempt.credentials.some((credential) => credential.method === CHAT_SLACK_METHOD)
+      ? { status: "refused", reason: "method_not_allowed", detail: "this way of deciding is only for a press in Slack" }
+      : await gate.decide(attempt),
+  };
 }
 
 export function createCloudChannelWork(deps: CloudChannelWorkDeps): ChannelWork {

@@ -27,7 +27,7 @@ import { cloudAutomationSwitch, stopAutomationsWhenOff, type AutomationStopDeps 
 import { cloudFlowOptions, type CoreInbound, type CoreRuntimeOptions, type CoreService, type CoreServiceName } from "./core-runtime.js";
 import type { CloudCompanySettings } from "./settings-mapping.js";
 import type { CloudModelFacts } from "./model-mapping.js";
-import { createCloudChannelWork, createSlackIntake, type StartTask } from "./slack-work.js";
+import { createClientDecisionGate, createCloudChannelWork, createSlackIntake, type StartTask } from "./slack-work.js";
 import type { CoreTaskEndedDeps } from "../rows/core-rows.js";
 import type { CloudAppOptions } from "./app.js";
 
@@ -184,12 +184,12 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
     const inboundOf = (flow: TaskFlow, gate: ReturnType<typeof createDecisionService>["gate"]): CoreInbound => {
       const slack = wiring.slack;
       const adapter = registry.get("channel", "slack") as CloudSlackChannel | undefined;
-      if (slack === undefined || adapter === undefined) return { gate };
+      if (slack === undefined || adapter === undefined) return { gate, clientGate: createClientDecisionGate(gate) };
       const start: StartTask = (caller, request) => flow.start(caller, request);
       // A plain message with Understand off has no step to choose its path: it starts as Quick, and the lighter flow sizes it from the diff (178/179; P5 replaces this default).
       const work = createCloudChannelWork({ store, now: nowMs, start, gate, principalOf: slack.principalOf, ...(flowOptions.understandFirst === true ? {} : { defaultPath: "QUICK" as const }), log: wiring.log });
       const sink = createCloudSlackSink({ adapter, store, now: nowMs, work, orgOfTeam: async (teamId) => { const org = await slack.orgOfTeam(teamId); return org === companyId ? org : undefined; }, standingOf: slack.standingOf, linkWords: slack.linkWords, log: wiring.log });
-      return { slack: createSlackIntake(sink), slackSink: sink, gate };
+      return { slack: createSlackIntake(sink), slackSink: sink, gate, clientGate: createClientDecisionGate(gate) };
     };
 
     return {

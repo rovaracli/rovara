@@ -3,6 +3,8 @@
 // standing the approvers adapter read and put on the verified approver. The decider's LIVE standing on a task is read by `deciderRole`, which Cloud has no reader for on the core path
 // yet (DEFERRED S3-CLOUD-WIRING-INPUTS): the test gives the same fixed standing the parity suite does.
 import { randomUUID } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { TaskAccess } from "@rovara-code/broker/core/task-flow";
 import { orgProjectCatalogKey, projectRevisionKey, type ApprovalDeciderRole as _Unused, type JsonValue, type ProjectDefinition } from "@rovara-code/contracts";
@@ -275,5 +277,38 @@ describe("F3: a person who is not a member of the company starts and decides not
       expectedRevision: found.revision, artifactDigest: found.artifactDigest, decision: "APPROVE", reason: "fine", receivedAt: "2026-11-12T10:00:00.000Z",
     } as never);
     expect(await decisionsOf(r, taskId)).toEqual([]);
+  });
+});
+
+describe("switch blocker 8: only the Slack path presents chat-slack", () => {
+  it("the gate a client surface is given refuses chat-slack and passes every other method", async () => {
+    const r = await rig();
+    const { member, owner } = r.people.people;
+    r.people.linkSlack(member);
+    r.standing.set(member.developerId, "owner");
+    r.standing.set(owner.developerId, "owner");
+    const { taskId } = await plannedTask(r);
+    const runtime = await r.app.runtimeFor(PEOPLE_ORG);
+    const found = (await runtime.inbound.gate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
+    const attemptWith = (method: string, token: string) => ({
+      companyId: PEOPLE_ORG, kind: "workflow-document", subjectId: taskId, requestId: randomUUID(), outcome: "approve" as const, seen: { revision: found.revision, artifactDigest: found.artifactDigest },
+      credentials: [{ method, token, claimedAccount: { provider: "slack", tenant: SLACK_TEAM, accountId: member.slackUserId! } }], reason: "fine",
+    });
+    const press = slackPressToken({ actor: { channel: "slack", tenant: SLACK_TEAM, userId: member.slackUserId! }, conversation: { channel: "slack", tenant: SLACK_TEAM, space: "C0CHAN", thread: "1.1" } });
+    expect(await runtime.inbound.clientGate!.decide(attemptWith(CHAT_SLACK_METHOD, press))).toMatchObject({ status: "refused", reason: "method_not_allowed" });
+    expect(await decisionsOf(r, taskId)).toEqual([]);
+    // A forged press made up by a client is the same refusal, whatever it says.
+    expect(await runtime.inbound.clientGate!.decide(attemptWith(CHAT_SLACK_METHOD, JSON.stringify({ userId: "U0ANYONE01" })))).toMatchObject({ status: "refused", reason: "method_not_allowed" });
+    // Every other method still goes through the client gate to the one gate.
+    expect((await runtime.inbound.clientGate!.decide(attemptWith(BROWSER_SESSION_METHOD, owner.sessionId))).status).toBe("decided");
+  });
+
+  it("no code in the root presents chat-slack except the Slack work", async () => {
+    const directory = join(import.meta.dirname, "../../packages/broker/src/cloud/app");
+    const offenders = readdirSync(directory).filter((name) => name.endsWith(".ts") && name !== "slack-work.ts").filter((name) => {
+      const code = readFileSync(join(directory, name), "utf8").split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/u.test(line)).join("\n");
+      return /CHAT_SLACK_METHOD|["']chat-slack["']/u.test(code);
+    });
+    expect(offenders).toEqual([]);
   });
 });

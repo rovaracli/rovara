@@ -14,6 +14,7 @@ import { channelTenantsBackfill, memoryResume, runDataMove, type MoveContext } f
 import { tenantRowKey } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
 import { AppSyncEventsPublisher } from "../../packages/broker/src/cloud-adapters/realtime-appsync/publisher.js";
 import { linkGithubMember } from "../../packages/broker/src/rovara-code/github-members.js";
+import { taskOwnerKey } from "../../packages/broker/src/developer/task-records.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa";
@@ -110,6 +111,17 @@ describe("WIRING: MergePeople from Cloud's member directory", () => {
     expect(await people.requestersOf(ORG, task())).toEqual(["1001"]);
     expect(await people.requestersOf(ORG, task({ startedBy: { developerId: PRIYA } }))).toEqual(["1001", "1002"]);
     expect(await people.requestersOf(ORG, task({ startedBy: { developerId: "d".repeat(64) } }))).toBe("unlinked");
+  });
+
+  it("a core task's owner KEY (a hash of its creator and its id) is not a person: it is left out, so the creator's linked account counts", async () => {
+    const people = await directory();
+    const core = (over: Record<string, unknown> = {}) => task({ taskId: "11111111-1111-4111-8111-111111111111", ownerId: taskOwnerKey(MAYA, "11111111-1111-4111-8111-111111111111"), ...over });
+    expect(await people.requestersOf(ORG, core())).toEqual(["1001"]);
+    // A task taken over carries the new owner's developer id, which still counts (and still needs an account).
+    expect(await people.requestersOf(ORG, core({ ownerId: PRIYA }))).toEqual(["1001", "1002"]);
+    expect(await people.requestersOf(ORG, core({ ownerId: "d".repeat(64) }))).toBe("unlinked");
+    // The owner key of ANOTHER creator's task is not this task's key: it is an unknown person.
+    expect(await people.requestersOf(ORG, core({ ownerId: taskOwnerKey(PRIYA, "11111111-1111-4111-8111-111111111111") }))).toBe("unlinked");
   });
 
   it("a person's account, and another company's link is nobody's", async () => {

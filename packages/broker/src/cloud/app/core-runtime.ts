@@ -38,6 +38,8 @@ export interface CoreInbound {
   slackSink?: ChannelInboundSink;
   /** The decision gate the surfaces call (Cloud's approvers adapter under Code's gate), for the web decide routes and tests. */
   gate?: ReturnType<typeof createDecisionService>["gate"];
+  /** The same gate for client surfaces (the web decide routes, the API): it refuses a chat-slack credential, which only the Slack ingress's verified press may carry (slack-work.ts). */
+  clientGate?: ReturnType<typeof createDecisionService>["gate"];
 }
 
 export interface CoreRuntime {
