@@ -12,7 +12,8 @@
 // Cost (no AWS call was made to measure; EventBridge Scheduler pricing is $1.00 per million invocations after 14 million free a month): the schedules themselves are free at any size this runs at. The cost of a
 // night is the worker's time for the whole suite once (design 7 estimates 45 minutes for each of 5 to 6 repositories), charged to the project, and none of it is incurred until a run can be started.
 import { SchedulerClient } from "@aws-sdk/client-scheduler";
-import { NIGHTLY_SOURCE, type OrgId, type TestEnvironment } from "@rovara-code/contracts";
+import { NIGHTLY_SOURCE, NightlyFireSchema, type OrgId, type TestEnvironment } from "@rovara-code/contracts";
+import { companyGatedEnv } from "../org/feature-rollout.js";
 import { scheduleSettingsFromEnvironment, type SchedulerPort } from "../triggers/schedules.js";
 import type { TestEnvRouteHooks } from "../aws/developer-routes/test-environment.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
@@ -66,5 +67,8 @@ export type TestEnvNightlyAnswer = NightlyFireOutcome | { outcome: "off" } | { o
 export async function fireTestEnvNightly(deps: TestEnvDeps, event: unknown, runs?: NightlyRunPort, env: NodeJS.ProcessEnv = process.env): Promise<TestEnvNightlyAnswer> {
   if (!testEnvironmentEnabled(env)) return { outcome: "off" };
   if (runs === undefined) return { outcome: "skipped", reason: "run_unavailable" };
+  // TE-A1: a fire for a company whose `testEnvironment` gate is off does nothing (a fire that does not read is left for `handleNightlyFire` to refuse). A read that fails is thrown: the scheduler retries the fire.
+  const fire = NightlyFireSchema.safeParse(event);
+  if (fire.success && !testEnvironmentEnabled(await companyGatedEnv(deps, fire.data.orgId, env, { throwOnReadFailure: true }))) return { outcome: "off" };
   return handleNightlyFire({ ...deps, runs }, event);
 }

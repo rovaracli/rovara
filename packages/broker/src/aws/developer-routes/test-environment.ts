@@ -15,6 +15,7 @@
 // a less-safe one also needs a second person, who confirms a card on the confirmation page (their fresh sign-in is recorded there) and whom `approveTestEnvironment` checks against the company's records. A DRAFT is
 // the sandbox tier with no services, accounts, preview, shared environment, video, traces or nightly run (a draft with more is refused when it is stored). A PROPOSAL on a project that already has an approved
 // environment also keeps what a person set there (tier, services, accounts, nightly run, production list), which can be less safe.
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { projectAllows, TestEnvApplyBodySchema, TestEnvApproveBodySchema, TestEnvCheckBodySchema, TestEnvEditBodySchema, TestEnvSeedBodySchema, TestEnvProposeBodySchema, TestEnvProveBodySchema, TestEnvRequestApprovalBodySchema, TestEnvDependenciesSchema, TestEnvironmentBodySchema, agentXError, testEnvApprovalRisk, testEnvDigest, testEnvIsProved, testEnvLessSafeChanges, testEnvSummaryOf, type AgentXError, type TestEnvDraft, type TestEnvRefusal, type TestEnvironment, type TestEnvironmentBody, type TestEnvironmentState, type OrgId } from "@rovara-code/contracts";
 import { EDITION_ENV_VAR } from "@agentx/cloud-contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
@@ -51,7 +52,7 @@ export const isTestEnvironmentPath = (pathname: string): boolean => TEST_ENV_PAT
 export interface TestEnvRouteHooks { onApproved?(orgId: OrgId, project: string, approved: TestEnvironment, approval?: { replayed: boolean }): Promise<void> }
 
 export function testEnvStoreOf(deps: DeveloperRouteDependencies): TestEnvDeps {
-  return { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }), ...(deps.fixtureStore === undefined ? {} : { fixtureStore: deps.fixtureStore }) };
+  return { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, ...(deps.env === undefined ? {} : { env: deps.env }), ...(deps.audit === undefined ? {} : { audit: deps.audit }), ...(deps.fixtureStore === undefined ? {} : { fixtureStore: deps.fixtureStore }) };
 }
 
 /** The store with the second-person check bound to the company's records, for an approval. Without the sign-in table there is no second person, and a less-safe approval is refused. */
@@ -114,7 +115,7 @@ async function currentDraft(deps: DeveloperRouteDependencies, orgId: OrgId, name
   const state = await setupDraftState({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, name, revision);
   if (state.status !== "ready" || state.pointer === undefined) return { status: "none", looked: false };
   // Test services: the dependencies the detectors found become proposed ones here, from the signed catalog (none without it, or with the switch off).
-  const catalog = testServicesEnabled() ? await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined) : undefined;
+  const catalog = testServicesEnabled(routeEnvOf(deps)) ? await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined) : undefined;
   const stored = await readTestEnvDraft(deps.documentClient, deps.tableName, orgId, name, state.pointer.taskId, deps.now(), { propose: { catalog, edition: process.env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: name } });
   if (stored === undefined) {
     // The look ran and no test environment came of it: one plain note for each cause, with what to do (TS-UX-1 item 6).
@@ -301,7 +302,7 @@ async function provedFromCheck(deps: DeveloperRouteDependencies, orgId: OrgId, n
 
 /** `/v1/app/projects/{name}/test-environment*`: the reply, or undefined when the switch is off or the path is not one of these. */
 export async function routeTestEnvironment(
-  deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, hooks: TestEnvRouteHooks = {}, env: NodeJS.ProcessEnv = process.env,
+  deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, hooks: TestEnvRouteHooks = {}, env: NodeJS.ProcessEnv = routeEnvOf(deps),
 ): Promise<StatusReply | undefined> {
   if (!testEnvironmentEnabled(env)) return undefined;
   const match = TEST_ENV_PATH.exec(url.pathname);

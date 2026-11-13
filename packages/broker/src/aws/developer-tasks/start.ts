@@ -5,6 +5,7 @@ import { PER_TASK_BUDGET_USD, type DeveloperTaskView, createWorkflowSnapshot } f
 import { SYSTEM_OWNER_REFUSAL, isSystemOwnerCaller } from "../../developer/system-owner.js";
 import { decideShare, type BoundChannel, type ShareDecision } from "../../developer/share.js";
 import type { SpendPath } from "../../org/budget.js";
+import { companyGatedEnv } from "../../org/feature-rollout.js";
 import { admitWork } from "../../spend/admission.js";
 import { estimateRun } from "../../spend/estimate.js";
 import { planningLimit, readProjectAi } from "../../spend/settings.js";
@@ -487,7 +488,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   if (full !== undefined) return refused(await limitError(deps, caller, full, limits));
 
   // Test environment (wire-testenv): the project's approved environment, if a task may use it, decides the checks the task is held to, and its revision is pinned with the task. Nothing while the switch is off.
-  const testEnv = asWorkflow ? await testEnvironmentForStart({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, { orgId: deps.orgId, project: request.project, taskId }) : {};
+  const testEnv = asWorkflow ? await testEnvironmentForStart({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, { orgId: deps.orgId, project: request.project, taskId }, await companyGatedEnv({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now() }, deps.orgId)) : {};
   const identity = developerTaskIdentity({ taskId, developerId: caller.developerId, provider: systemStart ? SYSTEM_OWNER_PROVIDER : caller.amr, developerName: caller.name, client }, deps.orgId);
   // A setup draft's preparation clones and checks out only (no devcontainer, no setup command, no readiness command), as an agent-step run's does.
   // Saved environments (SH25): only a task that USES the approved environment names its pin, so only its preparation may be told a saved image (never a setup draft, a thread or a registration). A setup agent's run asks for pins (P1) and never a saved image.

@@ -2,6 +2,7 @@
 // expressions the broker uses, and applies transactions all-or-nothing, as DynamoDB does.
 
 import { expect } from "vitest";
+import { ROLLOUT_FEATURE_NAMES } from "@agentx/cloud-contracts";
 import { assertDynamoExpressionAttributes, assertNoReservedWords } from "./validating-document-client.js";
 
 export { assertNoReservedWords };
@@ -65,6 +66,11 @@ export interface FakeDynamoDbOptions {
   indexKeys?: Record<string, { partition: string; sort?: string }>;
   /** Seeds the map order; two tables with different seeds order the same key set differently. Default: from the test's name. */
   seed?: number;
+  /**
+   * Company rollout gates (TE-A1). By default a company with no stored `FEATURE_ROLLOUT` row reads as having every gate ON, so the flows written before the gates (which switch an evidence feature on for the install
+   * and drive a company through it) keep testing the feature, not the rollout. "stored": the rows are the truth, as in production, where a company with no row has every gate off (the gate's own tests use it).
+   */
+  rolloutGates?: "all_on" | "stored";
 }
 
 /** The map order seed outside a test: fixed, so a failure reproduces run to run. */
@@ -102,6 +108,7 @@ export class FakeDynamoDb {
   private readonly eventual: boolean;
   private readonly seed: number;
   private readonly indexKeys: Record<string, { partition: string; sort?: string }>;
+  private readonly rolloutGatesStored: boolean;
   /** For eventual consistency: each written item's previous version (undefined: it did not exist), read once. */
   private readonly staleOnce = new Map<string, Item | undefined>();
 
@@ -111,6 +118,7 @@ export class FakeDynamoDb {
     this.eventual = options.consistency === "eventual";
     this.seed = options.seed ?? testSeed();
     this.indexKeys = options.indexKeys ?? {};
+    this.rolloutGatesStored = options.rolloutGates === "stored";
   }
 
   /** `value` with every map's attributes in this table's order (unchanged when map reordering is off). */
@@ -230,6 +238,10 @@ export class FakeDynamoDb {
         if (item === undefined && assumedDrivingTests && key.pk === "E2E_MODEL_ROUTES" && key.sk.startsWith("E2E_MODEL_ROUTE_CANARY#")) {
           const [, routeId, definitionDigest] = key.sk.split("#");
           item = { ...key, entityType: "E2E_MODEL_ROUTE_CANARY", test: "driving/v1", routeId, definitionDigest, recordedAt: "2026-10-23T10:00:00.000Z" };
+        }
+        // TE-A1: see FakeDynamoDbOptions.rolloutGates. Read-only: nothing is stored, so item counts and the company's own writes are untouched (a write finds no row and starts from revision 0).
+        if (item === undefined && !this.rolloutGatesStored && key.sk === "FEATURE_ROLLOUT" && key.pk.startsWith("ORG#")) {
+          item = { ...key, entityType: "FEATURE_ROLLOUT", orgId: key.pk.slice(4), gates: Object.fromEntries(ROLLOUT_FEATURE_NAMES.map((name) => [name, true])), revision: 1 };
         }
         return { Item: item === undefined ? undefined : this.readClone(item) };
       }

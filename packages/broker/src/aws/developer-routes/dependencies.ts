@@ -1,4 +1,5 @@
 import { logDeveloperEvent } from "../../developer/log.js";
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { branchGateOf } from "./branch-check.js";
 import { decisionRouteDepsOf } from "./decisions.js";
 import { pendingDecisionRefs } from "../../decisions/routes.js";
@@ -100,7 +101,7 @@ import { effectiveTaskOwner } from "../../developer/task-records.js";
 /** What the setup-draft routes (Plan 6 Task 10) need, from the developer API's dependencies and for one caller. */
 export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDependencies {
   return {
-    documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now,
+    documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, env: routeEnvOf(deps),
     starter: agentRunStarterOf(deps),
     projectFor: (who, rawName) => projectRoleForRoute(deps, who, rawName),
     requireNewWork: (who, project, role) => requireNewWorkAllowed(deps, who.orgId, project, role, "task"),
@@ -133,7 +134,7 @@ export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDe
     routedSeeds: (orgId, project, taskId) => routedSeedsOf(deps, orgId, project, taskId),
     // Owner decision 11 (one apply path): a draft's commands go to the test environment as its proposal, as the setup run's "Use this setup" does (`setup-agent.ts` confirmDepsOf).
     testEnvironment: {
-      on: testEnvironmentEnabled(process.env),
+      on: testEnvironmentEnabled(routeEnvOf(deps)),
       merge: async (who, project, environment) => mergeDraftWithApproved(environment, (await readApprovedTestEnvironment(testEnvStoreOf(deps), who.orgId, project))?.environment),
       // As the setup run's "Use this setup" does (`confirmSetupAgent`): the proposal, then the marker the wizard reads (after a person's edit) to show it as Rovara's. A newer press replaces an older edit pointer, so the
       // wizard shows the proposal just made.
@@ -365,7 +366,7 @@ export function sessionReadDependencies(deps: DeveloperRouteDependencies, caller
   // Plan 4's chain reads, messages, stop and retry, made for this request: the reads need the org of the person asking, which the broker doesn't have when it is built.
   const chainDeps = chainRouteDependenciesFor(deps, caller);
   return {
-    ...sessions, origin: new URL(deps.developer.issuer).origin,
+    ...sessions, ...(deps.env === undefined ? {} : { env: deps.env }), origin: new URL(deps.developer.issuer).origin,
     // UX2 slice 2 item 2: the caller's pending decision cards, for Home's one "needs you" count (none while the cards are off).
     pendingDecisions: async () => { const cards = decisionRouteDepsOf(deps, caller);return cards === undefined ? [] : pendingDecisionRefs(cards, caller); },
     ...(deps.handoff === undefined ? {} : { handoff: deps.handoff }),

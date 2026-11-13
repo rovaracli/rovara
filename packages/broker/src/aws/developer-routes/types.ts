@@ -115,6 +115,8 @@ export interface DeveloperApiConfiguration {
   slackRequestQueue?: SlackRequestQueue;
 }
 export interface DeveloperRouteDependencies {
+  /** TE-A1: the install switches as the caller's company sees them (`companyGatedEnv`: an evidence switch the company's gate does not turn on reads "0"). Set once per request, after the caller is known; routes read it with `routeEnvOf`. Absent: the process environment. */
+  env?: NodeJS.ProcessEnv | undefined;
   /** Test services (slice 1): the release's signed service image catalog (`serviceCatalogSourceOf`). The setup draft's dependency candidates become proposed dependencies only with it; without it none are proposed. */
   serviceCatalog?: ServiceCatalogSource;
   /** Company-approved extra images (switch `pj`): the digest lookup of a tag. Absent: the registry API over global fetch (`registryDigestResolver`). A test gives a fake. */

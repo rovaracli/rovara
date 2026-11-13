@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): retries, evidence jobs and the items each completed workflow step writes.
 
+import { companyGatedEnv } from "../../org/feature-rollout.js";
 import { OUTSIDE_RECHECK_NOT_ADOPTED, outsideRecheckOutcomeItem } from "../developer-tasks/continue-loop.js";
 import { createHash } from "node:crypto";
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
@@ -716,7 +717,7 @@ export async function completedWorkflowItems(
     const repositories = terminalStatus === "SUCCEEDED" && operation.kind === "task"
       ? setupDraftRepositoriesOf((await requireRecordProject(dependencies, task, task.project, task.startingRevision)).definition) : { names: [], urls: {} };
     return [...setupDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result, error: terminalError, repositories }, now),
-      ...testEnvDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result }, now)];
+      ...testEnvDraftEndItems(dependencies.tableName, task, operation, { status: terminalStatus, result }, now, await companyGatedEnv({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, task.orgId))];
   }
   // SH14: a setup run's result is its proposal and summary (or the fixed reason there is none), written with the result; a person's stop, if one was recorded, is passed so the end can tell it from a system cancel.
   if (task?.purpose === "setup_agent") {

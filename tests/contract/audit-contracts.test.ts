@@ -142,6 +142,8 @@ describe("the event catalog", () => {
       "project.test_env_changed", "project.fixture_set_approved", "project.fixture_set_rejected", "project.fixture_set_withdrawn", "project.test_health_setting_changed", "evidence.downloaded", "project.known_failing_marked", "project.known_failing_removed", "company.known_failing_policy_proposed", "company.known_failing_policy_changed", "company.known_failing_policy_refused", "company.second_review_choice_changed", "project.second_review_narrowed", "company.second_review_context_changed", "task.second_review_acknowledged", "task.working_branch_published", "task.recheck_requested", "task.design_sole_owner_exception", "company.second_review_mode_proposed", "company.second_review_mode_changed", "company.second_review_mode_refused", "company.second_review_mode_cancelled", "company.second_review_replay_recorded", "company.second_review_verdict_recorded", "company.second_review_verdict_withdrawn",
       // Runtime UI flags (lane U5)
       "company.ui_flags_changed",
+      // Company rollout gates (TE-A1)
+      "company.feature_rollout_changed",
       // Team record and lessons (learning v2, R1)
       "record.source_added", "record.source_changed", "record.source_removed", "record.tombstoned", "record.erased", "record.tracker_person_mapped", "record.tracker_person_unmapped", "record.tracker_autolink_changed", "lesson.mode_changed", "lesson.proposed",
       "lesson.activated", "lesson.approved", "lesson.edited", "lesson.rejected", "lesson.retired", "lesson.expired", "lesson.withdrawn", "lesson.refused",
@@ -249,6 +251,7 @@ describe("the event catalog", () => {
     "company.second_review_replay_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["runId", "cases", "passed"], sample: { runId: "run-1", cases: 50, passed: true } },
     "company.second_review_verdict_recorded": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model", "runId", "days", "findings", "agreed"], sample: { model: "openrouter:openai/gpt-5.5", runId: "run-1", days: 14, findings: 40, agreed: 20 } },
     "company.ui_flags_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["revision", "turnedOn", "turnedOff", "previews"], sample: { revision: 3, turnedOn: "look+nav", turnedOff: "none", previews: "same" } },
+    "company.feature_rollout_changed": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["revision", "turnedOn", "turnedOff"], sample: { revision: 3, turnedOn: "proofEvidence+verifyResults", turnedOff: "none" } },
     "company.second_review_verdict_withdrawn": { target: { kind: "org", id: "org_aaaaaaaaaaaaaaaaaaaa" }, keys: ["model"], sample: { model: "openrouter:openai/gpt-5.5" } },
     "task.work_refused": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["path", "cause"], sample: { path: "ci_fix_round", cause: "no_project_access" } },
     "task.working_branch_published": { target: { kind: "task", id: "00000000-0000-4000-8000-000000000001" }, keys: ["created"], sample: { created: true } },

@@ -18,6 +18,7 @@
 //   approve_design   Request changes (slice 2) is the same workflow decision; Approve stays the design review's own handler.
 //   NOT connected: spend requests (`decideSpendRequest` is reachable only through the decide page's fresh sign-in; a card press would decide one with no sign-in proof, so Home's own card stays), and
 //   dependency, E2E plan, feedback, autofix, setting and test-environment decisions (their endpoints live in hot task files and stay page-decided). An unregistered kind is refused `unsupported`.
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { recordsOf } from "../../test-env/fixture-lookup.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError, projectAllows } from "@rovara-code/contracts";
@@ -61,7 +62,7 @@ export const DECISION_PATH = /^\/v1\/app\/decisions(?:\/|$)/u;
 export const isDecisionPath = (pathname: string): boolean => DECISION_PATH.test(pathname);
 
 /** The card routes' dependencies for one caller, or undefined while the switch is off or where sessions, tasks or agents are not set up (fail closed). */
-export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, env: NodeJS.ProcessEnv = process.env, request: { decideCookie?: string | undefined; /** The outside approval a link or a press names (`apr_`/`spr_`): listed when its kind lets this person decide it. */ focusApprovalId?: string | undefined } = {}): DecisionRouteDependencies<DeveloperCaller> | undefined {
+export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, env: NodeJS.ProcessEnv = routeEnvOf(deps), request: { decideCookie?: string | undefined; /** The outside approval a link or a press names (`apr_`/`spr_`): listed when its kind lets this person decide it. */ focusApprovalId?: string | undefined } = {}): DecisionRouteDependencies<DeveloperCaller> | undefined {
   if (!decisionCardsEnabled(env)) return undefined;
   const sessions = sessionDependenciesOf(deps);
   const agents = deps.agents;

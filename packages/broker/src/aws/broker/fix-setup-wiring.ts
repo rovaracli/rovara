@@ -1,6 +1,7 @@
 // Setup and test health (SH17): what the auto-fix runner needs to turn an ask about the test environment into a Fix setup card. Exists only while `vx` is on: with it off this returns nothing, the runner has no
 // `fixSetup` port and the ask is exactly what it was. The cause is derived from the policy's own codes (never from text), and the tests a "Mark as known failing" could add come from the broker's evidence pack
 // of the task's current code (only while the proof switch gives a pack), never from the worker's words.
+import { companyGatedEnv } from "../../org/feature-rollout.js";
 import { failingOnOriginalTests, fixSetupCauseOf, recordFixSetup, FIX_SETUP_MARKABLE_CAUSE } from "../../test-env/fix-setup.js";
 import { nightlyOptionsFor, usableNightlyFailing, type NightlyHeadReader } from "../../test-env/nightly-usable.js";
 import { alreadyFailingForResults } from "../../test-env/known-failing.js";
@@ -28,6 +29,8 @@ export function fixSetupDependencies(dependencies: AwsBrokerDependencies, env: N
     async newFailingChecks(task, checkOriginal) {
       const digest = task.workflow?.candidate?.digest;
       if (digest === undefined || task.orgId === undefined) return [];
+      // TE-A1: the four results follow the company's `verifyResults` gate.
+      if (!verifyResultsEnabled(await companyGatedEnv({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, task.orgId, env))) return [];
       const pack = await packOf({ taskId: task.taskId, ownerKey: task.ownerKey, workspaceId: task.workspaceId }, digest);
       const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
       const fromPack = pack === undefined ? [] : newFailingCheckIds(pack, await alreadyFailingForResults(store, task.orgId, task.project, await nightlyOptionsFor(store, { taskId: task.taskId, orgId: task.orgId, project: task.project }, nightlyHead)));
@@ -42,6 +45,7 @@ export function fixSetupDependencies(dependencies: AwsBrokerDependencies, env: N
       async record(task, ask) {
         const cause = fixSetupCauseOf(ask.codes);
         if (cause === undefined || task.orgId === undefined) return;
+        if (!verifyResultsEnabled(await companyGatedEnv({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, task.orgId, env))) return;
         const digest = task.workflow?.candidate?.digest;
         const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
         let offer: ReturnType<typeof failingOnOriginalTests>;

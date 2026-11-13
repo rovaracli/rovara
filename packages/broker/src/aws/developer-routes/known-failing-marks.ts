@@ -4,6 +4,7 @@
 //             { action: "undo", requestId, name, checkId, markedBy, markedAt, epoch }   removes that one mark. It makes results stricter, so no second person is asked. Audited.
 // Marks are named by everything stored with them; a mark that was undone, changed or marked again since the list was shown answers CHANGE_STALE. The expiry of a mark by a passing nightly is not a route: it happens when a
 // nightly is recorded (`known-failing-undo.ts`). Answers are fixed words, booleans, numbers and the test ids a maintainer already sees on the Fix setup card.
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { z } from "zod";
 import { agentXError, projectAllows, type OrgId } from "@rovara-code/contracts";
 import { logDeveloperEvent } from "../../developer/log.js";
@@ -43,7 +44,7 @@ async function listOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller,
 }
 
 /** The reply, or undefined when the switch is off or the path is not this one. */
-export async function routeKnownFailingMarks(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = process.env): Promise<StatusReply | undefined> {
+export async function routeKnownFailingMarks(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = routeEnvOf(deps)): Promise<StatusReply | undefined> {
   if (!verifyResultsEnabled(env)) return undefined;
   const match = KNOWN_FAILING_MARKS_PATH.exec(url.pathname);
   if (match === null || (request.method !== "GET" && request.method !== "POST")) return undefined;

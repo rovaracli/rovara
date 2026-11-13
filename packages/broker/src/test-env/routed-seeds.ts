@@ -11,10 +11,10 @@ import { testServicesEnabled } from "./test-services-switch.js";
 type Send = { send(command: unknown): Promise<unknown> };
 
 export async function routedSeedsOf(
-  deps: { documentClient: Send; tableName: string; now: () => number; serviceCatalog?: ServiceCatalogSource | undefined },
+  deps: { documentClient: Send; tableName: string; now: () => number; serviceCatalog?: ServiceCatalogSource | undefined; env?: NodeJS.ProcessEnv | undefined },
   orgId: OrgId, project: string, taskId: string,
 ): Promise<RoutedSeed[]> {
-  if (!testEnvironmentEnabled() || !testServicesEnabled()) return [];
+  if (!testEnvironmentEnabled(deps.env) || !testServicesEnabled(deps.env)) return [];
   const catalog = await Promise.resolve(deps.serviceCatalog?.()).catch(() => undefined);
   const stored = await readTestEnvDraft(deps.documentClient, deps.tableName, orgId, project, taskId, deps.now(), { propose: { catalog, edition: process.env[EDITION_ENV_VAR] === "enterprise" ? "enterprise" : "public", projectId: project } });
   return stored?.routedSeeds ?? [];
