@@ -459,18 +459,20 @@ describe("the named TEST proof-only installation gate", () => {
     // authorizer's role gains dynamodb:BatchGetItem on the State table for the leading key DEVELOPER_NAME#* only, with the Null guard (the owner's name read on a session subscribe was refused). Checked first: with
     // infra/lib/control-plane.ts, infra/lib/realtime.ts and the named snapshot put back to v0.5.15's, this test and named-templates pass on v0.5.15's own pins. The named snapshot shows exactly that one attribute and
     // that one statement added. Legacy did not move.
+    // 2026-11-13 (TE-H4a, feat/te-h4a-evidence-record-tag, on integ/0516 574adbb27): the named and foreign digests (with and without the route) were retaken from the values the test reports, after ONE intended change:
+    // the artifacts bucket gains the lifecycle rule ExpireEvidenceRecord (365 days, prefix private/, tag rovara-retention=evidence-record). The named snapshot shows exactly that rule added. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "c1cb67860eacd4945cc9e31be8389f0c97b5b2d96dcc72717569c59290896ac3",
-        withoutRoute: "499c5d8dcd97f2ef40eb555fcd68089a4b539ab15221ea0ff92511a24346ab1f",
+        withRoute: "d1241e06b3c162b38432db630cbf968e5cf32e3af27d97631f992d224c3f6f14",
+        withoutRoute: "1a55b21b487a80784c73453d0c0ddb66d9c7698de6c3f90899ad3382fcd2dc07",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "83f42fd1e7483a6715220f6a55e4a9486fcb3df3cfbffbd00b832d6dd29c600b",
-        withoutRoute: "24683fc7b7d18dd0009289cfa6af4f0e17c23093beec66f903c09242f241e28d",
+        withRoute: "4d2a398167ad954544690a8c1fa4d02109614df51064fcae41a0876d53711383",
+        withoutRoute: "33a2b8966a6e02a6fd904a74539abf481dfa6d488cd04efa7a3d87267ba729e2",
       },
       {
         label: "legacy",

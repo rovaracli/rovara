@@ -1,4 +1,4 @@
-// Proof and evidence (wire-proof fix round 1): the pack carries the evidence-std retention tag like the tails, and erasing a person, archiving a project or closing a company deletes everything the evidence
+// Proof and evidence (wire-proof fix round 1; TE-H4a): the pack carries the evidence-record retention tag (one year; the tails keep evidence-std), and erasing a person, archiving a project or closing a company deletes everything the evidence
 // path stored for that scope (the pack and the tails), and nothing outside it.
 import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
@@ -99,14 +99,22 @@ const populate = () => bucket([
 const erase = (b: ReturnType<typeof bucket>, over: Record<string, unknown> = {}) => createEvidenceErase({ s3: b.s3, artifactBucketName: "bucket", ...table(), ...over });
 
 describe("the pack's retention", () => {
-  it("is tagged evidence-std like the output tails, so it expires with them", async () => {
+  it("is tagged evidence-record (one year), while the output tail keeps evidence-std, and erasing a person still deletes the pack (TE-H4a)", async () => {
     const b = bucket();
     const raw = JSON.stringify({ schemaVersion: 1, candidateDigest: DIGEST, checks: [{ checkId: "readiness:0", tests: { total: 1, passed: 1, failed: 0, skipped: 0, errored: 0, names: [{ name: "t", status: "passed" }], newTests: [] } }] });
     const prefix = "private/own1/ws1/op-1/";
     const actions = { artifacts: async () => [{ name: "evidence-raw.json", objectKey: `${prefix}evidence-raw.json` }], readArtifact: async (k: string) => (k.startsWith(prefix) ? raw : b.objects.get(k)?.body ?? "") };
     const entry = { id: "readiness:0", label: "pytest", source: "project" as const, before: "passed" as const, after: "passed" as const, class: "passing" as const, output: "", durationMs: 5, exitCode: 0 };
     expect(await keepEvidence({ actions, store: { s3: b.s3, artifactBucketName: "bucket" }, markStored: async () => undefined }, { orgId: ORG, task: { ownerKey: "own1", workspaceId: "ws1", taskId: "t1" }, operationId: "op-1", candidateDigest: DIGEST, checks: [entry] })).toMatchObject({ kept: true });
-    expect(b.objects.get(evidencePackKey({ ownerKey: "own1", workspaceId: "ws1", taskId: "t1" }, DIGEST))?.tagging).toBe("rovara-retention=evidence-std");
+    const packKey = evidencePackKey({ ownerKey: "own1", workspaceId: "ws1", taskId: "t1" }, DIGEST);
+    expect(b.objects.get(packKey)?.tagging).toBe("rovara-retention=evidence-record");
+    // erasure deletes by prefix, never by tag: a pack that now lives a year, and one written before this change (evidence-std), both go
+    const old = key("own1", "ws1", "evidence-pack", "t1", `${"e".repeat(64)}.json`);
+    b.objects.set(old, { body: "{}", tagging: "rovara-retention=evidence-std" });
+    expect([...b.objects.keys()].filter((k) => k.includes("/evidence-pack/"))).toHaveLength(2);
+    await erase(b).person(ORG, DEV);
+    expect([...b.objects.keys()].filter((k) => k.includes("/evidence-pack/"))).toEqual([]);
+    expect(b.objects.has(packKey)).toBe(false);
   });
 });
 

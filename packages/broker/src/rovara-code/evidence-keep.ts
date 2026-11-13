@@ -10,7 +10,7 @@
 import { PutObjectCommand } from "@aws-sdk/client-s3";
 import { EVIDENCE_NOT_TESTED_MAX, EVIDENCE_RAW_ARTIFACT, EVIDENCE_RAW_MAX_BYTES, EvidencePackSchema, EvidenceRawSchema, evidenceIsFor, type CheckEntry, type CheckKind, type EvidenceEnvironment, type EvidenceNotTested, type EvidencePack, type EvidenceRaw, type TestEnvProdDeny } from "@rovara-code/contracts";
 import type { TestProofActions } from "../developer/test-proof-lines.js";
-import { evidenceTagging, storeEvidenceArtifacts, type EvidenceArtifactStore } from "../aws/evidence-artifacts.js";
+import { evidencePackTagging, storeEvidenceArtifacts, type EvidenceArtifactStore } from "../aws/evidence-artifacts.js";
 import type { PinnedDependency } from "./dependency-evidence.js";
 import { buildEvidencePack, type EvidenceProblem } from "./evidence-pack.js";
 import { NO_PROD_DENY, guardPack, guardRaw } from "./evidence-guard.js";
@@ -125,7 +125,7 @@ export async function keepEvidence(deps: KeepEvidenceDeps, input: KeepEvidenceIn
     const checked = EvidencePackSchema.safeParse(pack);
     if (!checked.success) return { kept: false, reason: "invalid" };
     if (deps.late?.() === true) return { kept: false, reason: "fault" };
-    await deps.store.s3.send(new PutObjectCommand({ Bucket: deps.store.artifactBucketName, Key: evidencePackKey(input.task, input.candidateDigest), Body: JSON.stringify(checked.data), ContentType: "application/json", Metadata: { kind: "evidence-pack" }, Tagging: evidenceTagging("evidence-std") }));
+    await deps.store.s3.send(new PutObjectCommand({ Bucket: deps.store.artifactBucketName, Key: evidencePackKey(input.task, input.candidateDigest), Body: JSON.stringify(checked.data), ContentType: "application/json", Metadata: { kind: "evidence-pack" }, Tagging: evidencePackTagging() }));
     return { kept: true, problems: built.problems, guardedParts: guarded };
   } catch (error) {
     deps.log?.("evidence.keep_failed", { error: error instanceof Error ? error.name : "unknown" });

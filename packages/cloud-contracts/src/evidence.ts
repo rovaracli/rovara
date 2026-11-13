@@ -8,6 +8,12 @@ export const EVIDENCE_DEPENDENCY_LABEL_WORDS: Record<EvidenceDependencyLabel, st
   real: "real", real_project_image: "real (company-approved image)", company_approved: "company-approved image", rovara_local_aws: "Rovara local AWS", test_account: "test account",
   recorded_fake: "recorded fake", hand_written_fake: "hand-written fake", faked_by_tests: "faked by your tests", not_available: "not available",
 };
+/**
+ * TE-H4a (O20, O49): days the stored evidence pack (the small JSON record) is kept: one year. It is the expiry of the `ExpireEvidenceRecord` lifecycle rule (infra/lib/control-plane.ts), which no company setting
+ * can move (`evidenceRetentionDays` has no `evidence-record` entry). Videos and traces keep 14 days and screenshots, API samples and output tails 30 (EVIDENCE_RETENTION_DAYS in the Code contracts).
+ * It lives here for now; moving it into Code's `EVIDENCE_RETENTION_DAYS` is a deferred row.
+ */
+export const EVIDENCE_RECORD_RETENTION_DAYS = 365;
 const FAKE_LABELS: readonly EvidenceDependencyLabel[] = ["recorded_fake", "hand_written_fake"];
 
 /** The words of a label: "company-approved <service> image" names its service (owner Q9), and a fake that made up answers says how many. */
