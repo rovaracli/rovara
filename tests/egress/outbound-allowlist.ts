@@ -6,7 +6,7 @@
 
 export type OutboundCategory =
   | "customer-integration" | "model-provider" | "agent-egress-default" | "aws-service-principal" | "aws-endpoint" | "audit-timestamp" | "rovara-operated"
-  | "deploy-supply-chain" | "company-image-registry" | "benchmark-tooling" | "provenance-text" | "detector-comparison" | "host-refusal-list" | "doc-link" | "reserved-example";
+  | "deploy-supply-chain" | "price-data" | "company-image-registry" | "benchmark-tooling" | "provenance-text" | "detector-comparison" | "host-refusal-list" | "doc-link" | "reserved-example";
 
 export interface HostRule {
   hosts: readonly string[];
@@ -48,6 +48,10 @@ export const CATEGORY_TITLES: Readonly<Record<OutboundCategory, { title: string;
   "deploy-supply-chain": {
     title: "Fetched when the install is built or deployed",
     enterprise: "Reached by the release pipeline, the installer or the CLI at build or deploy time, not by a running install. The release bundle (task N2) carries every image the install runs, so a sealed install pulls nothing from these at run time.",
+  },
+  "price-data": {
+    title: "Price data the model proxy fetches",
+    enterprise: "The model proxy's guard (packages/model-proxy/src/rovara-guard.ts) fetches model prices once a day, over HTTPS, from AWS's public Price List and LiteLLM's public cost map, and only ever fills in or raises a price from the cost map and replaces a price from AWS's list; a source it cannot reach leaves the prices the image carries as they are. These two names are for that one read-only fetch (an HTTPS GET of a public file by the model proxy's guard) and nothing else: naming them here does not add either to any allow-list, and no other component (agent machines, the broker, workers) may use them under this entry. A sealed install either allows these two hosts for the model proxy or has the proxy container started with ROVARA_PRICE_REFRESH=0 (no install setting passes it in today), and then runs on the prices bundled in the proxy image and Rovara's override list.",
   },
   "company-image-registry": {
     title: "Registries company-approved test images are copied from",
@@ -108,7 +112,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["api.anthropic.com", "api.openai.com", "auth.openai.com", "chatgpt.com", "openrouter.ai"],
   },
   {
-    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve, and the GitHub hosts a ghcr.io image's blobs (pkg-containers.githubusercontent.com) and build tools' read-only downloads (raw, objects, release-assets, codeload) come from, each by exact name, and the evaluation dataset files the benchmark fetches from raw.githubusercontent.com. The wildcard over GitHub's content hosts (*.githubusercontent.com) is named in the hosted list's code only as an entry the install refuses (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15). (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.) (Docker Hub's registry host is also one of the spellings the vendored Code's owner image list reads as docker.io, in the file named for it.) (PyPI's two hosts are also where a worker reads wheel listings and wheels for the slice 4 function runner's arm64 wheel swap, in the file named for it; only when the runner is on, which nothing does in 0.5.15. A sealed Enterprise install must point that at its package mirror first.)", files: [...DEFAULT_ALLOW, "packages/worker/src/function-runner/wheel-index.ts", "infra/lib/agent-dns-firewall.ts", "packages/cloud-contracts/src/hosted-allow-domains.ts", "packages/worker/src/swebench/", "packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts", OWNER_IMAGE_LIST],
+    category: "agent-egress-default", why: "The default list of package, image and OS mirror hosts agent machines may resolve, and the GitHub hosts a ghcr.io image's blobs (pkg-containers.githubusercontent.com) and build tools' read-only downloads (raw, objects, release-assets, codeload) come from, each by exact name, and the evaluation dataset files the benchmark fetches from raw.githubusercontent.com. The model proxy's guard also reads LiteLLM's public cost map from raw.githubusercontent.com once a day: a read-only price refresh by the model proxy alone, not agent egress (the price-data category says how it is bounded; the guard file is named here only so the scan allows that one use). The wildcard over GitHub's content hosts (*.githubusercontent.com) is named in the hosted list's code only as an entry the install refuses (DEFAULT-ALLOW-LIST-EXFIL, 0.5.15). (GitHub's, Docker Hub's token and API hosts are also the company image registry allowlist's, in the file named for it.) (Docker Hub's registry host is also one of the spellings the vendored Code's owner image list reads as docker.io, in the file named for it.) (PyPI's two hosts are also where a worker reads wheel listings and wheels for the slice 4 function runner's arm64 wheel swap, in the file named for it; only when the runner is on, which nothing does in 0.5.15. A sealed Enterprise install must point that at its package mirror first.)", files: [...DEFAULT_ALLOW, "packages/worker/src/function-runner/wheel-index.ts", "infra/lib/agent-dns-firewall.ts", "packages/cloud-contracts/src/hosted-allow-domains.ts", "packages/worker/src/swebench/", "packages/cloud-contracts/src/company-image-mirror.ts", "packages/broker/src/test-env/company-images.ts", OWNER_IMAGE_LIST, "packages/model-proxy/src/rovara-guard.ts"],
     hosts: [
       "crates.io", "*.crates.io", "mcr.microsoft.com", "*.data.mcr.microsoft.com", "ghcr.io", "*.ghcr.io", "*.githubusercontent.com", "pkg-containers.githubusercontent.com", "raw.githubusercontent.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "codeload.github.com", "rubygems.org", "*.rubygems.org",
       "archive.ubuntu.com", "ports.ubuntu.com", "security.ubuntu.com", "deb.debian.org", "security.debian.org", "dl-cdn.alpinelinux.org", "auth.docker.io", "registry-1.docker.io",
@@ -127,6 +131,10 @@ export const HOST_RULES: readonly HostRule[] = [
   {
     category: "agent-egress-default", why: "The npm registry: in the default list, the setup draft's default allowed domain, and the registry an install uses for package-run MCP servers when it sets rovaraMcpPublicNpm and names none.", files: [...DEFAULT_ALLOW, "packages/worker/src/setup-draft.ts", "vendor/rovara-code/packages/contracts/src/e2e-native-recipes.ts", "infra/lib/private-mcp.ts"],
     hosts: ["registry.npmjs.org"],
+  },
+  {
+    category: "price-data", why: "AWS's public Price List host: the model proxy's guard reads the Bedrock model price offer file for its region once a day (AWS_PRICE_URL). The model proxy's read-only price refresh only; not egress for any other component (a hosted install's DNS firewall resolves this one exact name, as an AWS-owned public price host with nothing to upload to, so that refresh can reach it; hosted-allow-domains.ts). LiteLLM's cost map, the other source, is on raw.githubusercontent.com, which the default allow-list rule's list names (that rule names the guard file for it too, for the same read-only use).", files: ["packages/model-proxy/src/rovara-guard.ts", "packages/cloud-contracts/src/hosted-allow-domains.ts"],
+    hosts: ["pricing.us-east-1.amazonaws.com"],
   },
   {
     category: "aws-endpoint", why: "The wildcard for AWS API hosts, which is no longer in the default allow-list (a hosted install lists its own regional hosts instead, in infra/lib/agent-dns-firewall.ts, and refuses the wildcard there; DEFAULT-ALLOW-LIST-EXFIL, 0.5.15); the CloudWatch connector's host; the domain-suffix checks in the CLI.",

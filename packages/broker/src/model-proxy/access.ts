@@ -121,6 +121,12 @@ export interface ModelAccess {
    */
   keySpend(keyIds: readonly string[]): Promise<number>;
   /**
+   * How much of what the given keys have spent is an ESTIMATE, in USD (DECISIONS 172): a call to a model with no known price is settled at the dearest known rate of its provider, and a call cut
+   * before its cost was known at its whole hold, and the proxy's guard stamps that part in the key's metadata. Never more than the key's spend; 0 for a key with none. A display figure: a failure to
+   * read it leaves the cost shown without the word "estimated", never the cost itself unread. Absent on an access that cannot read it.
+   */
+  keyEstimatedSpend?(keyIds: readonly string[]): Promise<number>;
+  /**
    * Registers a company source: its key (when given) in the proxy's credential store, one proxy model per source model under
    * `sourceAlias`, removal of the source's aliases that are no longer listed, and the org team's `models`.
    */

@@ -1,6 +1,6 @@
 import { INFERENCE_PATHS, MODEL_PROXY_URL_PARAMETER } from "@rovara-code/contracts";
 import { MODEL_PROXY_INFERENCE_PORT, modelProxyTaskRoleName } from "@agentx/cloud-contracts";
-import { ROVARA_GUARD_ENV, ROVARA_GUARD_PACKED, litellmConfig, litellmStartCommand } from "@agentx/model-proxy";
+import { ROVARA_GUARD_ENV, ROVARA_GUARD_PACKED, litellmConfig, litellmStartCommand, type LitellmModelPrices } from "@agentx/model-proxy";
 import {
   Duration,
   Fn,
@@ -79,8 +79,8 @@ export interface ModelProxyProps {
   subnetIds: string[];
   /** Security groups whose members may call the proxy, in both directions: the worker group. (The Slack orchestrator's group has its own rules in its stack.) */
   clientSecurityGroupIds: string[];
-  /** Bedrock model ids as Pi's catalog names them; the proxy serves exactly these (ruling R21). */
-  models: ReadonlyArray<{ id: string }>;
+  /** Bedrock model ids as Pi's catalog names them; the proxy serves exactly these (ruling R21). `prices` only for a model LiteLLM's cost map lacks. */
+  models: ReadonlyArray<{ id: string; prices?: LitellmModelPrices }>;
   /** Enterprise installs: the ranges the proxy's tasks may reach over HTTPS (the VPC's endpoints and what the customer approved). Absent: HTTPS to the whole internet, as before. */
   privateEgressCidrs?: readonly string[];
   /**

@@ -79,6 +79,52 @@ export function bedrockClaudeModelIds(geography = "us"): string[] {
     .filter((id) => id.startsWith(prefix) && !RETIRED_BEDROCK_CLAUDE_MODELS.has(id.slice(geography.length + 1))).sort();
 }
 
+/** Prices as the proxy's config writes them: USD per token. */
+export interface BedrockProxyPrices {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  tiers?: ReadonlyArray<{ inputTokensAbove: number; input: number; output: number; cacheRead?: number; cacheWrite?: number }>;
+  maxInputTokens: number;
+  maxOutputTokens: number;
+}
+
+/**
+ * DECISIONS 172 (d): Rovara's small override list of VERIFIED prices for models LiteLLM's bundled cost map (v1.105.1) lacks, by foundation model id: what a call costs until the
+ * proxy's daily refresh from AWS's price list reaches them (an install with no route to the price list never does). Never a model nobody has verified: a model with no price at all is
+ * held and settled at a cautious estimate, flagged estimated. Each value is AWS's own: Price List API, offer AmazonBedrockFoundationModels, publication 2026-11-09T22:43:12Z,
+ * identical in us-east-1, us-west-2, eu-central-1 and eu-west-1 (and ap-northeast-1 and ap-southeast-2 for Haiku 5.5), usage types ..._input_tokens_standard (a geographic profile:
+ * us., eu., ...), ..._output_tokens_standard, ..._cache_read_tokens_standard, ..._cache_write_tokens_standard, the same with _long_ctx_, and the _global_standard rows for the
+ * global. profile. The long-context tier of Haiku 5.5 is five times the standard rate; its size, 100,000 input tokens, is the Pi catalog's (the price list does not give it). The
+ * guard's refresh replaces these when AWS changes them. Context and output limits are the Pi catalog's.
+ */
+export const BEDROCK_PRICE_OVERRIDES: Readonly<Record<string, { geographic: BedrockProxyPrices; global: BedrockProxyPrices }>> = {
+  "anthropic.claude-haiku-5-5": {
+    geographic: { input: 1.1e-7, output: 5.5e-7, cacheRead: 1.1e-8, cacheWrite: 1.375e-7, tiers: [{ inputTokensAbove: 100_000, input: 5.5e-7, output: 2.75e-6, cacheRead: 5.5e-8, cacheWrite: 6.875e-7 }], maxInputTokens: 1_000_000, maxOutputTokens: 128_000 },
+    global: { input: 1e-7, output: 5e-7, cacheRead: 1e-8, cacheWrite: 1.25e-7, tiers: [{ inputTokensAbove: 100_000, input: 5e-7, output: 2.5e-6, cacheRead: 5e-8, cacheWrite: 6.25e-7 }], maxInputTokens: 1_000_000, maxOutputTokens: 128_000 },
+  },
+  "anthropic.claude-fable-5-2": {
+    geographic: { input: 8.8e-6, output: 4.4e-5, cacheRead: 2.2e-7, cacheWrite: 1.1e-5, maxInputTokens: 1_000_000, maxOutputTokens: 128_000 },
+    global: { input: 8e-6, output: 4e-5, cacheRead: 2e-7, cacheWrite: 1e-5, maxInputTokens: 1_000_000, maxOutputTokens: 128_000 },
+  },
+};
+
+/** The verified override for a Bedrock profile id (`us.anthropic.claude-haiku-5-5`): the global. profile's prices for a global. id, the geographic ones for any other geography; undefined when none is listed. */
+export function bedrockPriceOverride(id: string): BedrockProxyPrices | undefined {
+  const foundation = id.slice(id.indexOf(".") + 1);
+  const listed = BEDROCK_PRICE_OVERRIDES[foundation];
+  return listed === undefined ? undefined : id.startsWith("global.") ? listed.global : listed.geographic;
+}
+
+/** The proxy's models for a geography: every id of bedrockClaudeModelIds, and the verified override's prices (marked as an override) for the few that have one. */
+export function bedrockProxyModels(geography = "us"): Array<{ id: string; prices?: BedrockProxyPrices & { override: true } }> {
+  return bedrockClaudeModelIds(geography).map((id) => {
+    const prices = bedrockPriceOverride(id);
+    return prices === undefined ? { id } : { id, prices: { ...prices, override: true as const } };
+  });
+}
+
 /**
  * Claude models the installed Pi catalog still names but Amazon Bedrock has retired, so the proxy must not offer them.
  * Found on the 2026-10-20 staging check: the us. profile answered ResourceNotFoundException (end of life).

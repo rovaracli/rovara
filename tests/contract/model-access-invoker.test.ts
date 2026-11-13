@@ -74,6 +74,15 @@ describe("ModelAccessInvoker", () => {
     expect((await failure(wrong.invoker.keySpend(ids))).code).toBe("MODEL_PROXY_UNAVAILABLE");
   });
 
+  it("asks for the estimated part of the keys' spend, and a key list that is empty needs no invoke", async () => {
+    const ids = ["a".repeat(64), "b".repeat(64)];
+    const { invoker, sent } = invokerWith(async () => answer({ ok: true, result: 0.4 }));
+    expect(await invoker.keyEstimatedSpend(ids)).toBe(0.4);
+    expect(await invoker.keyEstimatedSpend([])).toBe(0);
+    expect(sent.map(payloadOf)).toEqual([{ op: "keyEstimatedSpend", args: { keyIds: ids } }]);
+    expect((await failure(invokerWith(async () => answer({ ok: true, result: -1 })).invoker.keyEstimatedSpend(ids))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+  });
+
   it("sends a key request with no developer as one with no developerId", async () => {
     const { invoker, sent } = invokerWith(async () => answer({ ok: true, result: { key: "sk-v", expiresAt: 99 } }));
     await invoker.mintKey({ orgId: ORG, developerId: undefined, purpose: "task", refId: "op-1", maxBudgetUsd: 25, ttlSeconds: 300 });

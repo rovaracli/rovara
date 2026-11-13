@@ -129,6 +129,18 @@ cuts = [cut(P0, "messages", "anth-slow", key), cut(P1, "chat", "oai-slow", key),
 charged, held, holds = settled(token)
 check("cut_streams_charged_in_full", cuts == ["200"] * 3 and held == 0 and holds == 0 and charged > 3 * 4_000, cuts=cuts, charged=charged)
 
+# 2b. a cut stream's charge is an estimate: it is stamped in the key's metadata, where the broker reads it through /key/info (DECISIONS 172)
+def estimated_stamp(key, want, wait=40):
+    end, got = time.time() + wait, None
+    while time.time() < end:
+        s, _, b = post_get(f"/key/info?key={key}")
+        got = ((json.loads(b).get("info") or {}).get("metadata") or {}).get("rovara_estimated_micros") if s == 200 else None
+        if got == want: return got
+        time.sleep(2)
+    return got
+stamped = estimated_stamp(key, charged)
+check("estimated_charge_stamped_in_key_metadata", stamped == charged, stamped=stamped, charged=charged)
+
 # 3. an error answer is not billed: the hold is released
 key, token = mint(100.0)
 s, _, _ = post(P1, *body("chat", "oai-fail", False), key)
@@ -180,6 +192,16 @@ sql(f"UPDATE rovara_budget.keys SET held_micros = held_micros + 500000 WHERE key
 s, _, _ = post(P1, *body("chat", "oai", False), key)
 after, held, holds = settled(token)
 check("orphan_becomes_spent", s == 200 and held == 0 and holds == 0 and after >= before + 500000, before=before, after=after)
+
+# 6b. an orphan of an overrun call (it held only the room that was left, its worst case was more) is charged its worst case, not that room (DECISIONS 165, 172; money review M1)
+key, token = mint(1.0)
+post(P0, *body("chat", "oai", False), key)
+before, _, _ = settled(token)
+sql(f"INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, worst_micros, expires_at) VALUES ('overrun-{token[:8]}', '{token}', 100000, 900000, now() - interval '1 second')")
+sql(f"UPDATE rovara_budget.keys SET held_micros = held_micros + 100000 WHERE key_hash = '{token}'")
+s, _, _ = post(P1, *body("chat", "oai", False), key)
+after, held, holds = settled(token)
+check("overrun_orphan_charged_worst_case", s == 200 and held == 0 and holds == 0 and after >= before + 900000, before=before, after=after, held=held, holds=holds)
 
 print(json.dumps({"failed": FAILED}), flush=True)
 sys.exit(1 if FAILED else 0)

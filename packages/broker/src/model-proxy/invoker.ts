@@ -68,6 +68,11 @@ export class ModelAccessInvoker implements ModelAccess {
     return this.parseResult(await this.invoke({ op: "keySpend", args: { keyIds: [...keyIds] } }), KeySpendResultSchema);
   }
 
+  async keyEstimatedSpend(keyIds: readonly string[]): Promise<number> {
+    if (keyIds.length === 0) return 0;
+    return this.parseResult(await this.invoke({ op: "keyEstimatedSpend", args: { keyIds: [...keyIds] } }), KeySpendResultSchema);
+  }
+
   async mintKey(input: MintKeyInput): Promise<MintedKey> {
     const { orgId, developerId, purpose, refId, maxBudgetUsd, ttlSeconds, models, tags } = input;
     const args = {
