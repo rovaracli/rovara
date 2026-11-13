@@ -133,7 +133,7 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["registry.npmjs.org"],
   },
   {
-    category: "price-data", why: "AWS's public Price List host: the model proxy's guard reads the Bedrock model price offer file for its region once a day (AWS_PRICE_URL). The model proxy's read-only price refresh only; not egress for any other component. LiteLLM's cost map, the other source, is on raw.githubusercontent.com, which the default allow-list rule's list names (that rule names the guard file for it too, for the same read-only use).", files: ["packages/model-proxy/src/rovara-guard.ts"],
+    category: "price-data", why: "AWS's public Price List host: the model proxy's guard reads the Bedrock model price offer file for its region once a day (AWS_PRICE_URL). The model proxy's read-only price refresh only; not egress for any other component (a hosted install's DNS firewall resolves this one exact name, as an AWS-owned public price host with nothing to upload to, so that refresh can reach it; hosted-allow-domains.ts). LiteLLM's cost map, the other source, is on raw.githubusercontent.com, which the default allow-list rule's list names (that rule names the guard file for it too, for the same read-only use).", files: ["packages/model-proxy/src/rovara-guard.ts", "packages/cloud-contracts/src/hosted-allow-domains.ts"],
     hosts: ["pricing.us-east-1.amazonaws.com"],
   },
   {
