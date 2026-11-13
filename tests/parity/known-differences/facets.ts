@@ -70,13 +70,13 @@ export const FACETS_DIFFERENCES: readonly KnownDifference[] = [
   },
   {
     scenario: "parallel-parts", facet: "messages",
-    cause: "Consequence of parallel-parts' transitions (features lane): Cloud's Full path asks for the requirements, the design and the coding plan (needs_you=3) and opens the PR; the core stops after its first document (needs_you=1).",
-    owner: "features lane's transitions entry",
+    cause: "The core's needs-you notices only; Cloud's Full path also posts each phase and the pull request (decision 143b milestones, S0-143b).",
+    owner: "S0-143b",
   },
   {
     scenario: "parallel-parts", facet: "audit",
-    cause: "Consequence of parallel-parts' transitions: the core stops before the pull request, so no pull_request.opened (Cloud records one).",
-    owner: "features lane's transitions entry",
+    cause: "The general audit vocabulary differences (see the other audit entries): the core's task.started and approval.decided have no Cloud audit type.",
+    owner: "facets lane / A7 event map",
   },
   {
     scenario: "features-a-parallel-parts-understand", facet: "messages",

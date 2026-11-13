@@ -111,6 +111,11 @@ describe("S3 item 5: the end of a core task by a merge reaches Cloud's end handl
     expect(ended.map((entry) => [entry.outcome, entry.task["taskId"], entry.task["orgId"]])).toEqual([["merged", taskId, FAKE_COMPANY]]);
   });
 
+  it("the flow starts ordered work plans on a 1.0.0 task: the root's settings mapping reaches it (G3)", async () => {
+    const { app } = harness();
+    expect((await app.runtimeFor(FAKE_COMPANY)).flow.deps.workflowDependenciesEnabled).toBe(true);
+  });
+
   it("the flow tells the same handler of a close (taskEnded is the root's, not unset)", async () => {
     const { app } = harness();
     expect((await app.runtimeFor(FAKE_COMPANY)).flow.deps.taskEnded).toBeTypeOf("function");

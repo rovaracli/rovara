@@ -75,6 +75,19 @@ describe("S0-Q2: the plan's self-check, automatic fixing, lessons, live steer, l
     expect(mapCloudSettings(settingsOf({}, undefined)).flowOptions.liveSteer).toBe(false);
   });
 
+  it("ordered work plans start on a version 1.0.0 task whatever the Understand setting (switch blocker G3)", () => {
+    expect(mapCloudSettings(settingsOf({}, undefined)).flowOptions).toMatchObject({ understandFirst: false, workflowDependenciesEnabled: true });
+    expect(mapCloudSettings(settingsOf({ ROVARA_CODE_V2_FOR_NEW_ORGS: "true" }, ["plan_critic"])).flowOptions.workflowDependenciesEnabled).toBe(true);
+  });
+
+  it.each([[undefined, true], ["", true], ["true", true], ["0", true], ["false", false], ["FALSE", true]] as const)("the lighter flow (178), LIGHTER_FLOW_ENABLED=%j: on by default, off only for exactly false (on: %s)", (value, on) => {
+    const env: Record<string, string> = value === undefined ? {} : { LIGHTER_FLOW_ENABLED: value };
+    const mapped = mapCloudSettings(settingsOf(env, undefined));
+    expect(mapped.lighterFlow).toBe(on);
+    // Not a flow option of the core at this pin: it is answered here and never passed on as an unknown option.
+    expect(mapped.flowOptions).not.toHaveProperty("lighterFlow");
+  });
+
   it("workspace limits are the company's own, or the core's defaults stand", () => {
     expect(mapCloudSettings(settingsOf({}, undefined, { workspaceLimits: { member: 3, organization: 20 } })).flowOptions.limits).toEqual({ member: 3, organization: 20 });
     expect(mapCloudSettings(settingsOf({}, undefined)).flowOptions).not.toHaveProperty("limits");

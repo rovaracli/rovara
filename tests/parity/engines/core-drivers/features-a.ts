@@ -76,7 +76,7 @@ const phaseOf = (job: WorkerInvocation): "requirements" | "design" | "plan" => {
   return phase === "REQUIREMENTS" ? "requirements" : phase === "DESIGN" ? "design" : "plan";
 };
 
-interface Dependencies { approval: { graphDigest: string; runId: string; workflowRevision: number }; sequenceStart: number }
+interface Dependencies { approval: { graphDigest: string; runId: string; workflowRevision: number }; sequenceStart: number; /** Present only on a 1.1.0 task (Rovara Code v2): the core builds parts side by side. A 1.0.0 task runs one part at a time. */ parallel?: unknown }
 
 export const FEATURES_A_DRIVERS: Record<string, Driver> = {
   "feature:parallel-parts": {
@@ -145,9 +145,17 @@ export const FEATURES_A_DRIVERS: Record<string, Driver> = {
         const afterAB = model.commit("work", PART_FILES[PART_B]!);
         const treeA = model.revision(afterA).tree;
         const treeAB = model.revision(afterAB).tree;
-        await ctx.callback(coding, "events", { events: [event(PART_A, "STARTED", base), event(PART_B, "STARTED", base)] });
-        await ctx.callback(coding, "events", { events: [event(PART_A, "IMPLEMENTED", base, { candidateTreeSha: treeA, integratedTreeSha: treeA })] });
-        await ctx.callback(coding, "events", { events: [event(PART_B, "IMPLEMENTED", base, { candidateTreeSha: treeAB, integratedTreeSha: treeAB })] });
+        if (dependencies.parallel !== undefined) {
+          await ctx.callback(coding, "events", { events: [event(PART_A, "STARTED", base), event(PART_B, "STARTED", base)] });
+          await ctx.callback(coding, "events", { events: [event(PART_A, "IMPLEMENTED", base, { candidateTreeSha: treeA, integratedTreeSha: treeA })] });
+          await ctx.callback(coding, "events", { events: [event(PART_B, "IMPLEMENTED", base, { candidateTreeSha: treeAB, integratedTreeSha: treeAB })] });
+        } else {
+          // A version 1.0.0 task (Understand off, the settings the root maps from Cloud, with the install's dependencies switch on): the core runs one part at a time, each on the tree the one before ended on.
+          await ctx.callback(coding, "events", { events: [event(PART_A, "STARTED", base)] });
+          await ctx.callback(coding, "events", { events: [event(PART_A, "IMPLEMENTED", base, { candidateTreeSha: treeA })] });
+          await ctx.callback(coding, "events", { events: [event(PART_B, "STARTED", treeA)] });
+          await ctx.callback(coding, "events", { events: [event(PART_B, "IMPLEMENTED", treeA, { candidateTreeSha: treeAB })] });
+        }
         await ctx.callback(coding, "events", { events: [event(PART_C, "STARTED", treeAB)] });
         ctx.task.commit = model.commit("work", PART_FILES[PART_C]!);
         ctx.task.tree = model.revision(ctx.task.commit).tree;

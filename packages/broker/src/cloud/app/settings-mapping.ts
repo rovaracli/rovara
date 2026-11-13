@@ -38,6 +38,12 @@ export interface CloudCompanySettings {
   liveSteer: boolean;
   /** The company's open-workspace limits (its WORKSPACE_LIMITS setting, else the stack parameters). Undefined: the core's own defaults stand. */
   workspaceLimits?: { member: number; organization: number } | undefined;
+  /**
+   * The lighter flow (decisions 178 and 179): a small change skips the planning steps and gets one quick check. ON by default, for everyone; `LIGHTER_FLOW_ENABLED` is the switch back, and only the exact word
+   * "false" turns it off (the same rule as `pc`). The core has no option of this name yet: the flow-P lanes (P1, P2) name it, and until a vendor re-pin carries it `mapCloudSettings` answers it
+   * in `lighterFlow` and does not pass it to the flow.
+   */
+  lighterFlow: boolean;
   /** Cloud serves a connector write behind a person's approval (its approvers adapter is registered), so the core's rule may say yes. */
   connectorWritesBehindApproval: boolean;
 }
@@ -53,7 +59,9 @@ export interface UnmappedSetting {
 
 export interface CoreSettings {
   /** The flow options, to be spread into `createCoreRuntime`'s `flowOptions`. */
-  flowOptions: Required<Pick<RegistryTaskFlowOptions, "understandFirst" | "planCheck" | "planSelfCheck" | "autofix" | "liveSteer">> & Pick<RegistryTaskFlowOptions, "limits">;
+  flowOptions: Required<Pick<RegistryTaskFlowOptions, "understandFirst" | "planCheck" | "planSelfCheck" | "autofix" | "liveSteer" | "workflowDependenciesEnabled">> & Pick<RegistryTaskFlowOptions, "limits">;
+  /** Whether the lighter flow is on for this company (178: default ON). Not a flow option until the flow-P lanes are in the pin. */
+  lighterFlow: boolean;
   /** The project rules for the core's chains and custom agents. */
   projectRules: { allowConnectorWrites: boolean };
   /** Whether lessons are on (the core's `lessonsEnabled`). */
@@ -85,6 +93,7 @@ export function cloudSettingsFromEnvironment(
     autofix: { enabled: env["AUTOFIX_ENABLED"]?.trim().toLowerCase() !== "false", capUsd: Number.isFinite(cap) && cap >= 0 ? cap : Number.NaN, roundEstimateUsd: AUTOFIX_ROUND_ESTIMATE_USD },
     lessons: learnedLessonsEnabled(env),
     liveSteer: env["LIVE_STEER_ENABLED"] === "1",
+    lighterFlow: env["LIGHTER_FLOW_ENABLED"] !== "false",
     ...(company.workspaceLimits === undefined ? {} : { workspaceLimits: company.workspaceLimits }),
     connectorWritesBehindApproval: company.connectorWritesBehindApproval,
   };
@@ -103,8 +112,12 @@ export function mapCloudSettings(settings: CloudCompanySettings): CoreSettings {
       // The core's default is ON (core/build-step/autofix.ts reads `enabled !== false`); Cloud's is its own switch, so it is always stated.
       autofix: { enabled: settings.autofix.enabled, capUsd: settings.autofix.capUsd, roundEstimateUsd: settings.autofix.roundEstimateUsd },
       liveSteer: settings.liveSteer,
+      // Switch blocker G3 (0517-REPIN-PARTS-NEED-V2): Cloud's Quick/Full journey starts with Understand OFF (a 1.0.0 task), and the core starts an ordered work plan (parts) on a 1.0.0 task only where the
+      // install says so. Always on: an ordered plan is saved and started, as Cloud's own path does, whatever the Understand setting.
+      workflowDependenciesEnabled: true,
       ...(settings.workspaceLimits === undefined ? {} : { limits: { member: settings.workspaceLimits.member, organization: settings.workspaceLimits.organization } }),
     },
+    lighterFlow: settings.lighterFlow,
     projectRules: { allowConnectorWrites: settings.connectorWritesBehindApproval },
     lessonsEnabled: () => settings.lessons,
   };
