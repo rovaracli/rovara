@@ -126,9 +126,17 @@ async def main():
     await ledger.take("mq-0", "mq-call-0", 5_000_000, 900_000, CAP, True, ("org-q", "2026-11", 4_000_000, 0))
     await ledger.settle("mq-call-0", 30_000, True)
     out["cheap_release"] = {"row": month_row("org-q", "2026-11"), "next": (await ledger.take("mq-1", "mq-call-1", 5_000_000, 900_000, CAP, True, ("org-q", "2026-11", 4_000_000, 0)))[0]}
-    # the slot is taken and nothing is in flight (its call crashed and was never swept): the answer is the month's room, not "month" and not a wait
+    # the slot is set and nothing is in flight (its call crashed before settling and was never swept) and the month is not over: the take clears the stale slot and goes on
     sql("INSERT INTO rovara_budget.org_months (org, month, over_used) VALUES ('org-o', '2026-11', true);")
     out["orphan_slot"] = await ledger.take("mo-0", "mo-call-0", 5_000_000, 900_000, CAP, True, ("org-o", "2026-11", 4_000_000, 0))
+    out["orphan_slot_row"] = month_row("org-o", "2026-11")
+    # a stale slot with the month's spend over its cap is not cleared: the month is spent
+    sql("INSERT INTO rovara_budget.org_months (org, month, over_used, charged_micros) VALUES ('org-p', '2026-11', true, 5000000);")
+    out["stale_over"] = (await ledger.take("mp-0", "mp-call-0", 5_000_000, 900_000, CAP, True, ("org-p", "2026-11", 4_000_000, 0)))[0]
+    # a stale slot, and a call that needs none: the slot is cleared too
+    sql("INSERT INTO rovara_budget.org_months (org, month, over_used) VALUES ('org-h', '2026-11', true);")
+    out["stale_fits"] = await ledger.take("mh-0", "mh-call-0", 10_000, 0, CAP, True, ("org-h", "2026-11", 4_000_000, 0))
+    out["stale_fits_row"] = month_row("org-h", "2026-11")
     # defensive: the slot's call is in flight (a hold with the slot set) while the month's held is smaller than the call's worst case: wait, do not offer a hint
     sql("INSERT INTO rovara_budget.org_months (org, month, over_used) VALUES ('org-w', '2026-11', true);")
     sql("INSERT INTO rovara_budget.keys (key_hash, held_micros) VALUES ('mw-holder', 1);")
@@ -163,7 +171,7 @@ type Row = { charged_micros: string; held_micros: string; estimated_micros: stri
 type MonthRow = { held_micros: string; charged_micros: string; over_used: string };
 type Out = { cut: { verdict: string; held: string; after: Row }; known: Row; fits: Row; orphan: { after: Row; holds: number }; start: { after: Row; holds: number }; old: { settled: Row; swept: Row }; twice: Row;
   slot: string[]; slot_row: MonthRow; slot_other_company: string[]; slot_next_month: string[]; fits_but_month: string[]; blocked: string[]; blocked_known: string[]; blocked_known_row: MonthRow; none: string[]; none_row: MonthRow;
-  inflight: string[]; cheap_release: { row: MonthRow; next: string }; orphan_slot: [string, number]; slot_in_flight: [string, number]; released: { second_while_held: string; row: MonthRow; third: string }; kept: { row: MonthRow; next: string }; swept: MonthRow; month_known: { held: MonthRow; settled: MonthRow }; retried: { verdict: string; failed: number } };
+  inflight: string[]; cheap_release: { row: MonthRow; next: string }; orphan_slot: [string, number | null]; orphan_slot_row: MonthRow; stale_over: string; stale_fits: [string, null]; stale_fits_row: MonthRow; slot_in_flight: [string, number]; released: { second_while_held: string; row: MonthRow; third: string }; kept: { row: MonthRow; next: string }; swept: MonthRow; month_known: { held: MonthRow; settled: MonthRow }; retried: { verdict: string; failed: number } };
 
 describe.skipIf(!usable)("the budget ledger's SQL against a real Postgres (docker)", () => {
   it("charges the worst case of an overrun call whose cost is never known, by settle, by the sweep of its key and by the start-up sweep; an older hold keeps its reserved charge", () => {
@@ -216,7 +224,11 @@ describe.skipIf(!usable)("the budget ledger's SQL against a real Postgres (docke
       expect(out.released).toEqual({ second_while_held: "held", row: month("0", "0", "f"), third: "ok" });   // a failed call (cost 0) gives the slot back
       expect(out.cheap_release).toEqual({ row: month("0", "30000", "f"), next: "ok" });
       expect(out.slot_in_flight[0]).toBe("held");
-      expect(out.orphan_slot).toEqual(["slot", 100000]);
+      expect(out.orphan_slot).toEqual(["ok", null]);                                 // self-healed, and it took the slot itself (the call overruns its key)
+      expect(out.orphan_slot_row).toEqual(month("5000000", "0", "t"));
+      expect(out.stale_over).toBe("month");
+      expect(out.stale_fits).toEqual(["ok", null]);
+      expect(out.stale_fits_row).toEqual(month("10000", "0", "f"));
       expect(out.kept).toEqual({ row: month("0", "5000000", "t"), next: "month" });  // a whole-hold settle keeps it, and charges the month its worst case
       expect(out.swept).toEqual(month("0", "5000000", "t"));
       expect(out.month_known).toEqual({ held: month("100000", "0", "f"), settled: month("0", "34000", "f") });

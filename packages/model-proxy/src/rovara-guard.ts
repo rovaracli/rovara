@@ -325,23 +325,25 @@ _SQL_ENSURE_MONTH = "INSERT INTO rovara_budget.org_months (org, month) VALUES ($
 # and nothing else is held (DECISIONS 165), and it holds only the room that is left. After that call settles over the cap, every take is refused.
 # DECISIONS 180: $8 company, $9 month 'YYYY-MM', $10 the month's cap, $11 LiteLLM's spend for it (NULL company: no month). Every call adds its worst case to the month's held. The month
 # used is GREATEST(charged, $11) + held. An estimated call whose worst case fits what is left of the month needs nothing; one that could pass the month's cap, whether it fits its key
-# or overruns it, goes ahead only by taking the month's single slot (over_used), and none goes ahead once the month is used up.
+# or overruns it, goes ahead only by taking the month's single slot (over_used), and none goes ahead once the month is used up. A slot that is set while no call in flight holds it and the
+# month's spend is not over its cap (its call crashed before settling or being swept) is stale: the take clears it in the same statement.
 _SQL_TAKE = (
     "WITH q AS (SELECT key_hash,"
     " (GREATEST(charged_micros, $3::bigint) + held_micros + $2::bigint <= $4::bigint) AS fits,"
     " ($7::boolean AND GREATEST(charged_micros, $3::bigint) < $4::bigint AND held_micros = 0) AS overrun,"
     " LEAST($2::bigint, GREATEST($4::bigint - GREATEST(charged_micros, $3::bigint), 0)) AS room"
     " FROM rovara_budget.keys WHERE key_hash = $1::text FOR UPDATE),"
-    " m AS (SELECT GREATEST(charged_micros, $11::bigint) + held_micros AS used, over_used FROM rovara_budget.org_months"
+    " m AS (SELECT GREATEST(charged_micros, $11::bigint) + held_micros AS used, GREATEST(charged_micros, $11::bigint) AS settled, over_used,"
+    " EXISTS (SELECT 1 FROM rovara_budget.holds h WHERE h.org = $8::text AND h.month = $9::text AND h.slot) AS inflight FROM rovara_budget.org_months"
     " WHERE org = $8::text AND month = $9::text AND EXISTS (SELECT 1 FROM q) FOR UPDATE),"
     " g AS (SELECT q.key_hash, q.fits, q.overrun, q.room,"
     " ($8::text IS NOT NULL AND $7::boolean AND COALESCE(m.used, 0) >= $10::bigint) AS blocked,"
     " ($8::text IS NOT NULL AND $7::boolean AND COALESCE(m.used, 0) + $2::bigint > $10::bigint) AS needs_slot,"
-    " COALESCE(m.over_used, false) AS slot_taken FROM q LEFT JOIN m ON true),"
+    " (COALESCE(m.over_used, false) AND (m.inflight OR m.settled > $10::bigint)) AS slot_taken FROM q LEFT JOIN m ON true),"
     " k AS (UPDATE rovara_budget.keys t SET held_micros = t.held_micros + CASE WHEN g.fits THEN $2::bigint ELSE g.room END, updated_at = now()"
     " FROM g WHERE t.key_hash = g.key_hash AND (g.fits OR g.overrun) AND NOT g.blocked AND NOT (g.needs_slot AND g.slot_taken)"
-    " RETURNING t.key_hash, CASE WHEN g.fits THEN $2::bigint ELSE g.room END AS reserved, g.needs_slot),"
-    " o AS (UPDATE rovara_budget.org_months o SET held_micros = o.held_micros + $2::bigint, over_used = o.over_used OR k.needs_slot, updated_at = now()"
+    " RETURNING t.key_hash, CASE WHEN g.fits THEN $2::bigint ELSE g.room END AS reserved, g.needs_slot, g.slot_taken),"
+    " o AS (UPDATE rovara_budget.org_months o SET held_micros = o.held_micros + $2::bigint, over_used = k.needs_slot OR k.slot_taken, updated_at = now()"
     " FROM k WHERE o.org = $8::text AND o.month = $9::text RETURNING 1 AS ok)"
     " INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, worst_micros, org, month, slot, month_cap, expires_at)"
     " SELECT $5::text, key_hash, reserved, $2::bigint, $8::text, $9::text, needs_slot, $10::bigint, now() + make_interval(secs => $6::int) FROM k RETURNING call_id")
