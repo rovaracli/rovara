@@ -215,7 +215,8 @@ describe("a run-limit pause asks for more", () => {
     const prepare = t.operations(workspaceId).find((operation) => operation.kind === "prepare")!;
     expect(t.outboxOf(prepare.id)).toBeUndefined();
     // The member's workspace counter lists the tasks holding a slot.
-    const charged = () => t.db.find((item) => item.tasks instanceof Set && (item.tasks as Set<string>).has(started.taskId)).length;
+    // Both forms (S2): a marker beside the member counter, or the counter's old `tasks` set.
+    const charged = () => t.db.find((item) => (item.tasks instanceof Set && (item.tasks as Set<string>).has(started.taskId)) || (item.entityType === "DEVELOPER_LIMIT_TASK" && item.taskId === started.taskId)).length;
     expect(charged()).toBe(0);
     // The payer is the person who asked for the run: they may raise their own run's limit.
     await t.decide(MAYA, request!.spendRequestId);

@@ -8,6 +8,7 @@ import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace } from "../support/slack-bro
 import { TEST_ORG } from "../support/orgs.js";
 import { readSplitParts } from "../support/split-source.js";
 import { orgLimitKey, projectMemberKey, projectPk } from "@rovara-code/contracts";
+import { counterView } from "../support/limit-charges.js";
 
 const start = (overrides: Record<string, unknown> = {}) => ({ requestId: randomUUID(), project: "payments", instructions: "Fix the flaky retry test", client: "claude-code", ...overrides });
 const workspaces = (db: { find(predicate: (item: Record<string, unknown>) => boolean): unknown[] }) => db.find((item) => item.entityType === "WORKSPACE");
@@ -28,7 +29,7 @@ describe("POST /v1/dev/tasks (FR-018)", () => {
     expect(db.get(`WORKSPACE#${record.workspaceId}`, "DEVELOPER_TASK")).toMatchObject({ taskId: task.taskId, pendingPrompt: "Fix the flaky retry test", conversationId: record.conversationId });
     expect(db.get(`WORKSPACE#${record.workspaceId}`, `CONVERSATION#${record.conversationId}`)).toMatchObject({ entityType: "CONVERSATION" });
     expect(db.find((item) => item.entityType === "OUTBOX" && item.workspaceId === record.workspaceId).map((item) => (item.invocation as { kind: string }).kind)).toEqual(["prepare"]);
-    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1, tasks: new Set([task.taskId]) });
+    expect(counterView(db, { pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: `MEMBER#${MAYA.slackUserId}` })).toEqual({ count: 1, tasks: [task.taskId] });
     expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), "ORGANIZATION")).toMatchObject({ count: 1 });
     expect(db.find((item) => item.pk === `TASK#${task.taskId}`)).toEqual([expect.objectContaining({ origin: "ai_tool", action: "start", phase: "accepted", requestText: "Fix the flaky retry test", client: "Claude Code" })]);
   });
@@ -304,7 +305,7 @@ describe("the start's transaction and the workspace limit (FR-020, R6)", () => {
     expect(response.status).toBe(200);
     const taskId = (response.body.task as { taskId: string }).taskId;
     expect(db.get(`DEVTASK#${taskId}`, "META")).toBeDefined();
-    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`)).toMatchObject({ count: 1, tasks: new Set([taskId]) });
+    expect(counterView(db, { pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: `MEMBER#${MAYA.slackUserId}` })).toEqual({ count: 1, tasks: [taskId] });
     expect(workspaces(db)).toHaveLength(1);
     expect(refusals(db)).toHaveLength(0);
   });

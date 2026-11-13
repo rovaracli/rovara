@@ -493,11 +493,11 @@ describe("mintOperationKey: reserving before the key is handed out", () => {
   it("records the key on the task and the operation, in one write", async () => {
     const t = setup();
     seedTask(t);
-    const key = minted(await reserving(t, taskInput({ recordOn: [{ key: taskKey("task-1"), knownCount: 0 }, { key: OPERATION_KEY }] })));
+    const key = minted(await reserving(t, taskInput({ recordOn: [{ key: taskKey("task-1"), knownIds: [] }, { key: OPERATION_KEY }] })));
     expect((t.db.get(taskKey("task-1")) as { modelKeyIds?: string[] }).modelKeyIds).toEqual([key.keyId]);
     expect((t.db.get(OPERATION_KEY) as { modelKeyIds?: string[] }).modelKeyIds).toEqual([key.keyId]);
     // The next key follows it on both.
-    const second = minted(await reserving(t, taskInput({ taskKeyIds: [key.keyId], recordOn: [{ key: taskKey("task-1"), knownCount: 1 }, { key: OPERATION_KEY }] })));
+    const second = minted(await reserving(t, taskInput({ taskKeyIds: [key.keyId], recordOn: [{ key: taskKey("task-1"), knownIds: [key.keyId] }, { key: OPERATION_KEY }] })));
     expect((t.db.get(taskKey("task-1")) as { modelKeyIds?: string[] }).modelKeyIds).toEqual([key.keyId, second.keyId]);
     expect((t.db.get(OPERATION_KEY) as { modelKeyIds?: string[] }).modelKeyIds).toEqual([key.keyId, second.keyId]);
   });
@@ -656,7 +656,7 @@ describe("mintOperationKey: when a step fails", () => {
     const t = setup();
     seedTask(t);
     t.access.mintKey.mockRejectedValueOnce(new Error("boom"));
-    await rejection(reserving(t, taskInput({ recordOn: [{ key: taskKey("task-1"), knownCount: 0 }] })));
+    await rejection(reserving(t, taskInput({ recordOn: [{ key: taskKey("task-1"), knownIds: [] }] })));
     expect(t.counter(WEB)).toBeUndefined();
     expect(t.db.find((item) => item.entityType === "MODEL_KEY")).toEqual([]);
   });
@@ -690,7 +690,7 @@ describe("mintOperationKey: when a step fails", () => {
     const t = setup();
     seedTask(t);
     t.db.injectFault({ command: "TransactWriteCommand", match: (input) => JSON.stringify(input).includes("modelKeyIds"), error: { name: "InternalServerError" } });
-    await rejection(reserving(t, taskInput({ recordOn: [{ key: taskKey("task-1"), knownCount: 0 }, { key: OPERATION_KEY }] })));
+    await rejection(reserving(t, taskInput({ recordOn: [{ key: taskKey("task-1"), knownIds: [] }, { key: OPERATION_KEY }] })));
     const keyId = keyIdOf(t.access.mintedKeys()[0]!);
     expect(t.access.blockKey).toHaveBeenCalledWith(keyId);
     expect(t.db.get(modelKeyKey(TEST_ORG, keyId))).toMatchObject({ finalized: true, reserved: true });
@@ -701,7 +701,7 @@ describe("mintOperationKey: when a step fails", () => {
   it("answers raced, with the key blocked and finalized and nothing recorded, when another mint recorded first", async () => {
     const t = setup();
     seedTask(t, "task-1", { modelKeyIds: ["f".repeat(64)] });
-    const outcome = await reserving(t, taskInput({ recordOn: [{ key: taskKey("task-1"), knownCount: 0 }, { key: OPERATION_KEY }] }));
+    const outcome = await reserving(t, taskInput({ recordOn: [{ key: taskKey("task-1"), knownIds: [] }, { key: OPERATION_KEY }] }));
     expect(outcome).toEqual({ outcome: "raced" });
     const keyId = keyIdOf(t.access.mintedKeys()[0]!);
     expect(t.access.blockKey).toHaveBeenCalledWith(keyId);
@@ -714,7 +714,7 @@ describe("mintOperationKey: when a step fails", () => {
   it("revokes a key that no ledger is keeping when it cannot be recorded", async () => {
     const t = setup();
     seedTask(t, "task-1", { modelKeyIds: ["f".repeat(64)] });
-    const outcome = await capping(t, taskInput({ recordOn: [{ key: taskKey("task-1"), knownCount: 0 }] }));
+    const outcome = await capping(t, taskInput({ recordOn: [{ key: taskKey("task-1"), knownIds: [] }] }));
     expect(outcome).toEqual({ outcome: "raced" });
     expect(t.access.revokeKey).toHaveBeenCalledWith(t.access.mintedKeys()[0]);
     expect(t.access.blockKey).not.toHaveBeenCalled();

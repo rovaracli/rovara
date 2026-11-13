@@ -384,6 +384,8 @@ describe("a developer task whose setup failed (#213)", () => {
     const counter = member(db, MAYA.slackUserId!) as { count: number; tasks?: Set<string> };
     expect(counter.count).toBe(0);
     expect(counter.tasks?.has(taskId) ?? false).toBe(false);
+    // S2: the marker beside the counter is gone too.
+    expect(db.find((item) => item.entityType === "DEVELOPER_LIMIT_TASK" && item.taskId === taskId)).toEqual([]);
     expect(organization(db)).toMatchObject({ count: 0 });
     expect(db.get(`DEVTASK#${taskId}`, "META")).not.toHaveProperty("closedAt");
   });

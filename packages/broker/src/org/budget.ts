@@ -405,23 +405,32 @@ export async function taskSpendBaseline(deps: BudgetDependencies, keyIds: readon
 }
 
 /**
+ * The one write of a record's `modelKeyIds` (convergence lane A5, owner decision 60 item S2: no list append and no `size` on Code's document store). The
+ * whole list is written, the keys the caller read plus the new one, only while the record still holds exactly the list read: none (`attribute_not_exists`,
+ * on a record that exists) or that same list (`=`). That is the old `size(#ids) = :count` fence made exact: two mints that raced cannot both be given the
+ * task's whole remainder, and a list that was emptied and refilled to the same length in between is not overwritten either. The stored shape (a list of
+ * token ids, in mint order) is unchanged, so readers and stored rows need no migration.
+ */
+export function modelKeyIdsWrite(knownIds: readonly string[], keyId: string): { UpdateExpression: string; ConditionExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown> } {
+  return {
+    UpdateExpression: "SET #ids = :next",
+    ConditionExpression: knownIds.length === 0 ? "attribute_exists(pk) AND attribute_not_exists(#ids)" : "#ids = :known",
+    ExpressionAttributeNames: { "#ids": "modelKeyIds" },
+    ExpressionAttributeValues: { ":next": [...knownIds, keyId], ...(knownIds.length === 0 ? {} : { ":known": [...knownIds] }) },
+  };
+}
+
+/**
  * Notes a minted key on the record that owns it (a task, or the operation of Slack work), so the next mint counts its spend.
- * `knownCount` is how many keys the record held when the caller read it: the write happens only if it still holds that many,
+ * `knownIds` are the keys the record held when the caller read it: the write happens only if it still holds exactly those (`modelKeyIdsWrite`),
  * so two mints that raced cannot both be given the task's whole remainder. Answers false when another mint recorded first.
  *
  * Never delete or revoke task keys before the task closes: their spend is the task's cumulative count (ruling R30), and a
  * key the proxy no longer knows makes `keySpend` fail closed.
  */
-export async function recordMintedKey(deps: BudgetDependencies, key: OrgKey | { pk: string; sk: string }, keyId: string, knownCount: number): Promise<boolean> {
+export async function recordMintedKey(deps: BudgetDependencies, key: OrgKey | { pk: string; sk: string }, keyId: string, knownIds: readonly string[]): Promise<boolean> {
   try {
-    await deps.documentClient.send(new UpdateCommand({
-      TableName: deps.tableName,
-      Key: key,
-      UpdateExpression: "SET #ids = list_append(if_not_exists(#ids, :none), :id)",
-      ConditionExpression: knownCount === 0 ? "attribute_exists(pk) AND attribute_not_exists(#ids)" : "size(#ids) = :count",
-      ExpressionAttributeNames: { "#ids": "modelKeyIds" },
-      ExpressionAttributeValues: { ":none": [], ":id": [keyId], ...(knownCount === 0 ? {} : { ":count": knownCount }) },
-    }));
+    await deps.documentClient.send(new UpdateCommand({ TableName: deps.tableName, Key: key, ...modelKeyIdsWrite(knownIds, keyId) }));
     return true;
   } catch (error) {
     if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;

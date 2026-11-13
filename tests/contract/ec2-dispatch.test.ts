@@ -11,7 +11,7 @@ import { planDocumentInstructions } from "../../packages/broker/src/aws/broker-s
 import type { FeatureE2EPlanningContext } from "../../packages/broker/src/e2e/feature-plan-planning-context.js";
 import type { DurableOutboxRecord, Ec2OutboxRecord } from "../../packages/broker/src/aws/lambda.js";
 import { appendOperationEvent } from "../../packages/broker/src/aws/operation-events.js";
-import { SessionManager, workspaceBinding } from "../../packages/broker/src/aws/sessions.js";
+import { SessionManager, parkedOutboxIds, workspaceBinding } from "../../packages/broker/src/aws/sessions.js";
 import { verifyInvokeAuthorization, invocationMatchesClaims } from "../../packages/worker/src/invoke-auth.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { TEST_ORG } from "../support/orgs.js";
@@ -2418,9 +2418,9 @@ describe("ec2-ebs delivery through the real session manager", () => {
 
     await expect(handler({ Records: [message] })).resolves.toEqual({ batchItemFailures: [] });
     expect(fixture.db.get(`OUTBOX#${fixture.record.id}`, "OUTBOX")).toMatchObject({ status: "WAITING_FOR_SESSION" });
-    expect(fixture.db.get(...Object.values(workspaceSessionKey(fixture.record.workspaceId)) as [string, string])).toMatchObject({
-      state: "PROVISIONING", generation: 1, waitingOutboxIds: new Set([fixture.record.id]),
-    });
+    expect(fixture.db.get(...Object.values(workspaceSessionKey(fixture.record.workspaceId)) as [string, string])).toMatchObject({ state: "PROVISIONING", generation: 1 });
+    // S2: parked as a marker beside the session (or, on rows from before, in its old set).
+    expect(await parkedOutboxIds(fixture.db, "state", fixture.record.workspaceId, fixture.db.get(...Object.values(workspaceSessionKey(fixture.record.workspaceId)) as [string, string]))).toEqual([fixture.record.id]);
     expect(start).toHaveBeenCalledOnce();
 
     await expect(handler({ Records: [{ ...message, messageId: "readiness-duplicate" }] })).resolves.toEqual({ batchItemFailures: [] });
@@ -2429,9 +2429,9 @@ describe("ec2-ebs delivery through the real session manager", () => {
     expect(markDelivered).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
     expect(fixture.db.get(`OUTBOX#${fixture.record.id}`, "OUTBOX")).toMatchObject({ status: "WAITING_FOR_SESSION" });
-    expect(fixture.db.get(...Object.values(workspaceSessionKey(fixture.record.workspaceId)) as [string, string])).toMatchObject({
-      state: "PROVISIONING", generation: 1, waitingOutboxIds: new Set([fixture.record.id]),
-    });
+    expect(fixture.db.get(...Object.values(workspaceSessionKey(fixture.record.workspaceId)) as [string, string])).toMatchObject({ state: "PROVISIONING", generation: 1 });
+    // S2: parked as a marker beside the session (or, on rows from before, in its old set).
+    expect(await parkedOutboxIds(fixture.db, "state", fixture.record.workspaceId, fixture.db.get(...Object.values(workspaceSessionKey(fixture.record.workspaceId)) as [string, string]))).toEqual([fixture.record.id]);
     expect(fixture.db.find((item) => item.entityType === "EVENT" && item.operationId === fixture.record.operationId)).toHaveLength(1);
   });
 });

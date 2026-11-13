@@ -20,6 +20,7 @@ import { WorkflowSnapshotSchema, openReviewFindings, type WorkflowSnapshot } fro
 import { FEEDBACK_REVIEW_RETRY_ACTION, workflowDocumentName, workflowDocumentType, workflowMessage, type WorkflowMessage, type WorkflowMessageContext } from "../../packages/broker/src/developer/workflow-messages.js";
 import { planUnreadableCategory } from "../../packages/broker/src/developer/plan-check-summary.js";
 import { briefLength, visibleSlackText } from "./strict-slack.js";
+import { heldTasks } from "./limit-charges.js";
 
 /**
  * Words nothing AgentX shows in Slack may use (the suite's global constraint 5). Internal nouns in any case; status words
@@ -116,21 +117,23 @@ function checkSlot(journey: JourneyView): string[] {
     if (workspace?.activeOperationId != null || (workspace?.status === "CLOSING" && workspace.closeOperationId !== undefined)) return [];
     const charge = task.charge as { member?: { pk: string; sk: string } } | undefined;
     const member = charge?.member === undefined ? undefined : journey.db.get(charge.member.pk, charge.member.sk);
-    const held = (member?.tasks as Set<string> | undefined)?.has(String(task.taskId)) === true;
+    // Both forms (S2): the marker beside the counter, or the counter's old `tasks` set.
+    const held = (member?.tasks as Set<string> | undefined)?.has(String(task.taskId)) === true
+      || (charge?.member !== undefined && journey.db.get(charge.member.pk, `TASK#${String(task.taskId)}`) !== undefined);
     return [
       ...(held ? [`INV-SLOT: finished task ${String(task.taskId)} still holds an open-task slot`] : []),
       ...(workspace !== undefined && workspace.status !== "CLOSED" ? [`INV-SLOT: finished task ${String(task.taskId)}'s workspace is still ${String(workspace.status)}`] : []),
     ];
   });
   // The counters agree with what they hold: a member's count is its tasks and threads, an organization's is its members'.
-  const counters = journey.db.find((item) => typeof item.pk === "string" && (item.pk.includes("#SLACK_LIMIT#") || item.pk.startsWith("DEVELOPER_LIMIT#")));
+  const counters = journey.db.find((item) => typeof item.pk === "string" && (item.pk.includes("#SLACK_LIMIT#") || item.pk.startsWith("DEVELOPER_LIMIT#")) && item.entityType !== "DEVELOPER_LIMIT_TASK");
   const organizationOf = (item: Item) => (String(item.pk).includes("#SLACK_LIMIT#") ? String(item.pk) : "DEVELOPER_LIMIT#ORGANIZATION");
   const sums = new Map<string, number>();
   for (const item of counters) {
     const count = typeof item.count === "number" ? item.count : 0;
     if (count < 0) violations.push(`INV-SLOT: counter ${String(item.pk)}/${String(item.sk)} is below zero (${count})`);
     if (item.sk === "ORGANIZATION") continue;
-    const held = ((item.tasks as Set<string> | undefined)?.size ?? 0) + ((item.threads as unknown[] | undefined)?.length ?? 0);
+    const held = heldTasks(journey.db, { pk: String(item.pk), sk: String(item.sk) }).length + ((item.threads as unknown[] | undefined)?.length ?? 0);
     if (count !== held) violations.push(`INV-SLOT: member counter ${String(item.pk)}/${String(item.sk)} counts ${count} but holds ${held}`);
     sums.set(organizationOf(item), (sums.get(organizationOf(item)) ?? 0) + count);
   }

@@ -12,6 +12,7 @@ import { OMAR } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { NAME, draftBody, setupWizardBench, type Bench } from "../support/setup-wizard-testenv.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
+import { heldTasks } from "../support/limit-charges.js";
 
 // The head of the default branch comes from the code host in production; here it is a fixed commit. Everything else is the real broker.
 const HEAD = "d".repeat(40);
@@ -156,7 +157,8 @@ describe("with nh and the test environment on", () => {
     expect(counters().filter((item) => item.pk === `DEVELOPER_LIMIT#${system}`)).toHaveLength(1);
     // the night's task is counted on the system owner's counter, and on no person's
     const night = nightlyTasks(t)[0]!.taskId;
-    expect(counters().filter((item) => item.tasks?.has(night) === true).map((item) => item.pk)).toEqual([`DEVELOPER_LIMIT#${system}`]);
+    // S2: either form (a marker beside the counter, or an entry of its old `tasks` set).
+    expect(counters().filter((item) => heldTasks(t.db, { pk: item.pk, sk: "MEMBER" }).includes(night)).map((item) => item.pk)).toEqual([`DEVELOPER_LIMIT#${system}`]);
     await t.callback(task.workspaceId, own.id, "nightly-result", { result: resultFor(slot) });
     await t.finish(task.workspaceId, own.id, "SUCCEEDED", { result: { conversationId: randomUUID(), reopened: false, workflowMode: "CHECKS" } });
     // The night is over: its slot is free for the next automatic run of the project, which the one-at-a-time limit would otherwise refuse.

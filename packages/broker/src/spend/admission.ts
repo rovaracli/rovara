@@ -16,7 +16,7 @@ import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dy
 import { type TransactItem, failedIndexes } from "../agents/table-writes.js";
 import type { MintTags, MintedKey } from "../model-proxy/access.js";
 import {
-  MINIMUM_REMAINING_USD, budgetExceeded, clean, dollars, ensureSynced, figuresFor, keyIdOf, mintKeyHealing, orgBudgetExceeded, recordMintedKey, remaining, viaProxy,
+  MINIMUM_REMAINING_USD, budgetExceeded, clean, dollars, ensureSynced, figuresFor, keyIdOf, mintKeyHealing, modelKeyIdsWrite, orgBudgetExceeded, recordMintedKey, remaining, viaProxy,
   type AdmissionDependencies, type BudgetDependencies, type SpendPath,
 } from "../org/budget.js";
 import { admitMachineTime, admitTrial, monthOf } from "../org/trial.js";
@@ -224,10 +224,11 @@ export interface MintOperationKeyInput {
   /** The task a refusal pauses (the `budgetPause` is written on `key`); none for work with no task. */
   pause?: { taskId: string; key: { pk: string; sk: string }; operationId?: string | undefined } | undefined;
   /**
-   * Where the minted key is recorded, in one write: the task (with how many keys it held when the caller read it, so two mints that raced cannot both be given
-   * the whole remainder) and the operation. Nothing is recorded when absent.
+   * Where the minted key is recorded, in one write: the task (with the keys it held when the caller read it, `knownIds`, so two mints that raced cannot both be
+   * given the whole remainder) and the operation. A record without `knownIds` is read just before the write and is never given up because another key was
+   * recorded on it meanwhile (the old unconditional list append). Nothing is recorded when absent.
    */
-  recordOn?: ReadonlyArray<{ key: { pk: string; sk: string }; knownCount?: number | undefined }> | undefined;
+  recordOn?: ReadonlyArray<{ key: { pk: string; sk: string }; knownIds?: readonly string[] | undefined }> | undefined;
   /** Internal native source conditions, merged into the same key-record transaction. */
   guardRecord?: ((items: readonly TransactItem[]) => TransactItem[]) | undefined;
 }
@@ -359,29 +360,48 @@ async function closeUnrecorded(deps: MintOperationDependencies, minted: MintedKe
   await finalizeKey(deps.ledger, orgId, keyId).catch((error: unknown) => logLine({ event: "budget.reservation_not_released", keyId, errorName: errorName(error) }));
 }
 
+/** How often a write to records whose list the caller did not fence (`knownIds` absent) is sent again after another key was recorded on one of them meanwhile. */
+const UNFENCED_RECORD_TRIES = 5;
+
+/** The `modelKeyIds` a record holds now (a consistent read): undefined when the record is missing, `[]` when it has none. */
+async function storedKeyIds(deps: BudgetDependencies, key: { pk: string; sk: string }): Promise<string[] | undefined> {
+  const item = ((await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
+  if (item === undefined) return undefined;
+  const ids = item["modelKeyIds"];
+  return Array.isArray(ids) ? ids.map(String) : [];
+}
+
+const sameIds = (a: readonly string[] | undefined, b: readonly string[] | undefined): boolean =>
+  a !== undefined && b !== undefined && a.length === b.length && a.every((id, index) => id === b[index]);
+
 /**
- * Notes the key on every record that owns it, in one write. False when a record no longer holds the count the caller read (another mint recorded first). A
- * single record is written as `recordMintedKey` always did.
+ * Notes the key on every record that owns it, in one write (S2: the whole list, fenced on the exact list, `modelKeyIdsWrite`; no list append). False when a
+ * record no longer holds the keys the caller read (another mint recorded first), or a guard or a record's existence fails. A record the caller did not fence
+ * (`knownIds` absent; the old code appended to it unconditionally) is fenced on the list read just before the write: when only such a list moved meanwhile,
+ * the write is sent again with the fresh list (at most UNFENCED_RECORD_TRIES times), so a concurrent key on it is never lost and never makes this mint lose.
+ * A single fenced record is written as `recordMintedKey` always did.
  */
-async function recordKey(deps: BudgetDependencies, recordOn: NonNullable<MintOperationKeyInput["recordOn"]>, keyId: string, guardRecord?: MintOperationKeyInput["guardRecord"]): Promise<boolean> {
+export async function recordKey(deps: BudgetDependencies, recordOn: NonNullable<MintOperationKeyInput["recordOn"]>, keyId: string, guardRecord?: MintOperationKeyInput["guardRecord"]): Promise<boolean> {
   const [only] = recordOn;
   if (only === undefined) return true;
-  if (guardRecord === undefined && recordOn.length === 1 && only.knownCount !== undefined) return recordMintedKey(deps, only.key, keyId, only.knownCount);
-  const items: TransactItem[] = recordOn.map(({ key, knownCount }) => ({
-    Update: {
-      TableName: deps.tableName, Key: key,
-      UpdateExpression: "SET #ids = list_append(if_not_exists(#ids, :none), :id)",
-      ConditionExpression: knownCount === undefined ? "attribute_exists(pk)" : knownCount === 0 ? "attribute_exists(pk) AND attribute_not_exists(#ids)" : "size(#ids) = :count",
-      ExpressionAttributeNames: { "#ids": "modelKeyIds" },
-      ExpressionAttributeValues: { ":none": [], ":id": [keyId], ...(knownCount === undefined || knownCount === 0 ? {} : { ":count": knownCount }) },
-    },
-  }));
-  try {
-    await deps.documentClient.send(new TransactWriteCommand({ TransactItems: guardRecord === undefined ? items : guardRecord(items) }));
-    return true;
-  } catch (error) {
-    if (failedIndexes(error) !== undefined) return false;
-    throw error;
+  if (guardRecord === undefined && recordOn.length === 1 && only.knownIds !== undefined) return recordMintedKey(deps, only.key, keyId, only.knownIds);
+  for (let attempt = 0; ; attempt += 1) {
+    // The list each record is fenced on: the caller's, or the one stored now (none for a missing record, whose "exists" condition then fails, as before).
+    const fences = await Promise.all(recordOn.map(async ({ key, knownIds }) => knownIds ?? (await storedKeyIds(deps, key)) ?? []));
+    const items: TransactItem[] = recordOn.map(({ key }, index) => ({ Update: { TableName: deps.tableName, Key: key, ...modelKeyIdsWrite(fences[index]!, keyId) } }));
+    try {
+      await deps.documentClient.send(new TransactWriteCommand({ TransactItems: guardRecord === undefined ? items : guardRecord(items) }));
+      return true;
+    } catch (error) {
+      if (failedIndexes(error) === undefined) throw error;
+      // Was it only an unfenced record's list that moved? Then the old append would have succeeded: send it again. A fenced list that moved is a lost race,
+      // and nothing moved means a guard or a missing record refused it: both are false, as before.
+      if (attempt + 1 >= UNFENCED_RECORD_TRIES) return false;
+      const now = await Promise.all(recordOn.map(({ key }) => storedKeyIds(deps, key)));
+      const fencedMoved = recordOn.some(({ knownIds }, index) => knownIds !== undefined && !sameIds(knownIds, now[index]));
+      const unfencedMoved = recordOn.some(({ knownIds }, index) => knownIds === undefined && now[index] !== undefined && !sameIds(fences[index], now[index]));
+      if (fencedMoved || !unfencedMoved) return false;
+    }
   }
 }
 

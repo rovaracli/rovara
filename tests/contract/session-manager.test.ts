@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { Ec2RuntimeBinding } from "@rovara-code/contracts";
-import { SessionManager, sessionFromItem } from "../../packages/broker/src/aws/sessions.js";
+import { SessionManager, parkedOutboxIds } from "../../packages/broker/src/aws/sessions.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const PROVISIONER = "arn:aws:states:us-east-1:111122223333:stateMachine:provisioner";
@@ -101,7 +101,8 @@ describe("session manager: first provisioning", () => {
     });
     expect(session()).toMatchObject({ state: "PROVISIONING", sessionState: "PROVISIONING", generation: 1 });
     expect(session()!.executionArn).toBe(`arn:aws:states:us-east-1:111122223333:execution:provisioner:ws-${workspaceId}-gen-1`);
-    expect(sessionFromItem(session()!).waitingOutboxIds).toEqual([outboxId]);
+    // S2: parked as a marker beside the session, read with the session.
+    expect(await parkedOutboxIds(db, "state", workspaceId, session())).toEqual([outboxId]);
     expect(db.get(`OUTBOX#${outboxId}`, "OUTBOX")).toMatchObject({ status: "WAITING_FOR_SESSION" });
   });
 

@@ -9,6 +9,7 @@ import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/ta
 import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import type { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { SLACK_TEAM } from "../support/slack-broker.js";
+import { dropHeldTask } from "../support/limit-charges.js";
 
 async function finished(options: { memberLimit?: number } = {}) {
   const harness = await createDeveloperTaskBroker(options);
@@ -263,7 +264,7 @@ describe("closing a task: repeats, races and audit records (R12, R15)", () => {
     // An earlier release took this task's slot back, but the close itself never landed.
     const counter = db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId}`) as Record<string, unknown>;
     counter.count = 0;
-    delete counter.tasks;
+    dropHeldTask(db, { pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: `MEMBER#${MAYA.slackUserId}` }, taskId);
     (organization(db) as Record<string, unknown>).count = 0;
     const record = db.get(`DEVTASK#${taskId}`, "META") as unknown as DeveloperTaskRecord;
     const logged = vi.spyOn(console, "log").mockImplementation(() => {});

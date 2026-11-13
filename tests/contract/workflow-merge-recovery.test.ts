@@ -417,6 +417,19 @@ describe("workflow merge recovery outcomes", () => {
     expect(h.db.get(RECOVERY_PK, `TASK#${taskId}`)).not.toHaveProperty("indexExpiresAt");
   });
 
+  it("does not retire a closed task whose slot marker (S2) is still beside its counter", async () => {
+    const taskId = uuid(1);
+    const h = harness({ reconcile: async () => ({ kind: "TERMINAL", release: "confirmed" }) });
+    h.db.set(taskRecord(taskId, { closedAt: new Date(h.now()).toISOString() }));
+    h.db.set({ pk: `WORKSPACE#workspace-${taskId}`, sk: "META", status: "CLOSED" });
+    h.db.set({ pk: slackLimitPk(TEST_ORG, "team"), sk: `MEMBER#${taskId}`, count: 1 });
+    h.db.set({ pk: slackLimitPk(TEST_ORG, "team"), sk: "ORGANIZATION", count: 1 });
+    h.db.set({ pk: slackLimitPk(TEST_ORG, "team"), sk: `TASK#${taskId}`, entityType: "DEVELOPER_LIMIT_TASK", taskId, memberSk: `MEMBER#${taskId}`, chargedAt: "x" });
+    await enroll(h.db, taskId, h.now() - 1);
+    await runDueWorkflowMergeRecovery(h.dependencies);
+    expect(h.db.get(RECOVERY_PK, `TASK#${taskId}`)).not.toMatchObject({ recoveryStatus: "RETIRED" });
+  });
+
   it("retires an already closed task only after its workspace and both charged counters prove cleanup", async () => {
     const taskId = uuid(1);
     const h = harness({ reconcile: async () => ({ kind: "TERMINAL", release: "confirmed" }) });
@@ -429,7 +442,7 @@ describe("workflow merge recovery outcomes", () => {
       TransactItems: releaseItems(TABLE, {
         member: { pk: slackLimitPk(TEST_ORG, "team"), sk: `MEMBER#${taskId}` },
         organization: { pk: slackLimitPk(TEST_ORG, "team"), sk: "ORGANIZATION" },
-      }, taskId),
+      }, taskId, "set"),
     }));
     expect(h.db.get(slackLimitPk(TEST_ORG, "team"), `MEMBER#${taskId}`)).not.toHaveProperty("tasks");
     await enroll(h.db, taskId, h.now() - 1);

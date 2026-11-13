@@ -12,6 +12,7 @@ import { developerIdForSlackUser } from "../../../packages/broker/src/aws/admin-
 import { CLOSED_REPLY } from "../../../packages/broker/src/developer/share-messages.js";
 import { SLACK_TEAM } from "../../support/slack-broker.js";
 import { seedMembership } from "../../support/developer-task-broker.js";
+import { counterView } from "../../support/limit-charges.js";
 import { createWorkflowE2E, type WorkflowE2E } from "../../support/workflow-e2e.js";
 import { EDITS, FIXED, MERGED, PLAN, TEAMMATE, actionIds, atPlanReview, editsOrFix, journeySuite, openDraftPr, runs, said } from "../../support/workflow-e2e-journeys.js";
 
@@ -421,10 +422,8 @@ describe("Suite 8: merge and close", () => {
   describe("8.12 a finished task gives back its open-task slot and its workspace (0.2.12 live test)", () => {
     const MEMBER = { pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: `MEMBER#${OWNER}` };
     const ORGANIZATION = { pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: "ORGANIZATION" };
-    const counter = (e2e: WorkflowE2E, key: { pk: string; sk: string }) => {
-      const item = e2e.db.get(key.pk, key.sk);
-      return { count: item?.count, tasks: [...((item?.tasks as Set<string> | undefined) ?? [])].sort() };
-    };
+    // Both forms (S2): the markers beside the counter, and its old `tasks` set.
+    const counter = (e2e: WorkflowE2E, key: { pk: string; sk: string }) => counterView(e2e.db, key);
     const tasks = (e2e: WorkflowE2E) => e2e.db.find((item) => String(item.pk).startsWith("DEVTASK#") && item.sk === "META");
     const taskById = (e2e: WorkflowE2E, taskId: string) => e2e.db.get(`DEVTASK#${taskId}`, "META")!;
     const workspaceOf = (e2e: WorkflowE2E, taskId: string) => e2e.db.get(`WORKSPACE#${String(taskById(e2e, taskId).workspaceId)}`, "META")!;

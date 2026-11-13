@@ -412,7 +412,7 @@ async function answerModelAccess(dependencies: AwsBrokerDependencies, request: A
         taskKeyIds, budgetBaselineUsd: task.budgetBaselineUsd ?? 0,
         // Task 31: with agents set up, the key is held on every budget the task counts against, recorded on the operation as well as the task, and a refusal
         // pauses the task with the scope that is full.
-        ...(payment === undefined ? { recordOn: [{ key: taskKey(task.taskId), knownCount: taskKeyIds.length }] } : {
+        ...(payment === undefined ? { recordOn: [{ key: taskKey(task.taskId), knownIds: taskKeyIds }] } : {
           agentName: task.agent?.name ?? ROVARA_CODE_NAME,
           tags: mintTagsFor({ ...payment, origin: payment.origin ?? "cli", taskId: task.taskId, operationId: current.id, stepId: current.programStepId, ...(chainTag === undefined ? {} : { chain: chainTag }) }),
           scopes: payment.scopes,
@@ -424,7 +424,7 @@ async function answerModelAccess(dependencies: AwsBrokerDependencies, request: A
           ...(testCapUsd === undefined ? {} : { testCapUsd }),
           ...(stepBudgetUsd === undefined ? {} : { stepBudgetUsd }),
           ...(current.workflowMode === "PLAN_CRITIQUE" || current.planRevision === true ? {} : { pause: { taskId: task.taskId, key: taskKey(task.taskId), operationId: current.id } }),
-          recordOn: [{ key: taskKey(task.taskId), knownCount: taskKeyIds.length }, { key: operationKey(current.workspaceId, current.id) }],
+          recordOn: [{ key: taskKey(task.taskId), knownIds: taskKeyIds }, { key: operationKey(current.workspaceId, current.id) }],
         }),
       };
     }
@@ -449,7 +449,7 @@ async function answerModelAccess(dependencies: AwsBrokerDependencies, request: A
       orgId: current.orgId, developerId: keyed, refId: current.id,
       ...(route === undefined ? {} : { route }),
       runLimitUsd: PER_TASK_BUDGET_USD, stopAtUsd: PER_TASK_BUDGET_USD, taskKeyIds, budgetBaselineUsd: 0,
-      recordOn: [{ key: operationKey(current.workspaceId, current.id), knownCount: taskKeyIds.length }],
+      recordOn: [{ key: operationKey(current.workspaceId, current.id), knownIds: taskKeyIds }],
       ...(slack === undefined ? {} : {
         agentName: ROVARA_CODE_NAME,
         tags: mintTagsFor({ ...slack, origin: "slack", operationId: current.id, stepId: current.programStepId }),

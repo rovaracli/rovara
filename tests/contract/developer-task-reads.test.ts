@@ -7,6 +7,7 @@ import { NEXT_STEPS } from "../../packages/mcp/src/index.js";
 import { MAYA, OMAR, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { readSplitSource } from "../support/split-source.js";
+import { counterView, setHeldTasks } from "../support/limit-charges.js";
 
 const PLANTED = "xoxb-2222222222-planted-secret";
 const DIFF = ["## demo", "", "### status", " M src/retry.ts", "### diff", "diff --git a/src/retry.ts b/src/retry.ts", "--- a/src/retry.ts", "+++ b/src/retry.ts", "@@ -1 +1,2 @@", "-old", "+new", "+more"].join("\n");
@@ -219,7 +220,8 @@ describe("the index row follows the task (R4)", () => {
     // The close gave its slot back; a Slack thread workspace took it, so the limit is still reached (a closed task still
     // counted would be given back by the start itself).
     const member = harness.db.get(record.charge.member.pk, record.charge.member.sk)!;
-    harness.db.set({ ...member, tasks: new Set([ids[1], ids[2]]), threads: ["T0BSHLLUGBD/C0123456789/1695500000.000001"] });
+    harness.db.set({ ...member, threads: ["T0BSHLLUGBD/C0123456789/1695500000.000001"] });
+    setHeldTasks(harness.db, record.charge.member, [ids[1]!, ids[2]!]);
     expect(((await harness.dev(MAYA, "GET", `/v1/dev/tasks/${ids[0]}`)).body.task as { status: string }).status).toBe("CLOSED");
     expect(harness.db.get(`DEVELOPER#${MAYA.developerId}`, `TASK#${record.createdAt}#${ids[0]}`)).toMatchObject({ status: "CLOSED" });
     const message = await limited();
@@ -238,8 +240,7 @@ describe("the index row follows the task (R4)", () => {
     harness.db.set({ ...record, closedAt: new Date().toISOString() });
     const started = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "four" });
     const fourth = (started.body.task as { taskId: string }).taskId;
-    const member = harness.db.get(record.charge.member.pk, record.charge.member.sk)!;
-    expect({ count: member.count, tasks: [...(member.tasks as Set<string>)].sort() }).toEqual({ count: 3, tasks: [ids[1], ids[2], fourth].sort() });
+    expect(counterView(harness.db, record.charge.member)).toEqual({ count: 3, tasks: [ids[1], ids[2], fourth].sort() });
     expect(harness.db.get(record.charge.organization.pk, record.charge.organization.sk)?.count).toBe(3);
     // The limit is reached again by open tasks: nothing more is given back.
     const refused = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "five" });

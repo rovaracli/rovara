@@ -54,11 +54,13 @@ const entityOf = (key: CounterKey) => (isSlackLimitPk(key.pk) ? "SLACK_LIMIT" : 
 
 // ---- The charge marker (convergence lane A5, owner decision 60 item S2) ----
 //
-// READERS ONLY (release 0.5.18, DECISIONS 152a: readers ship before writers). Cloud records a charged task in a string set `tasks` on the member counter
-// and still does, in this release. Code's core records one marker item beside the counter, `TASK#<taskId>` (`core/task-flow/keys.ts` `chargeMarkerKey`), and
-// the S2 release (0.5.19) moves Cloud's writers and its stored sets to the same markers. So that a rollback from 0.5.19 to this release leaves no slot
-// that nothing can free, every reader and releaser here handles a task in EITHER form: a release frees the form the task was charged in (`chargeFormOf`), a
-// charge is refused for a task already holding a slot in either form, and the lists of charged tasks merge both. This release writes the set form only.
+// A charged task used to be recorded in a string set `tasks` on the member counter and tested with `contains`. Code's document store has no sets, so a
+// charged task is now one marker item beside the member counter, written with `attribute_not_exists(pk)` and deleted on release: the same key as Code's
+// core (`core/task-flow/keys.ts` `chargeMarkerKey`), so a slot Cloud charged is one Code's core can release after the switch. The marker also names the
+// member counter's sort key (`memberSk`): a Slack team's member counters share one partition, so the key alone does not say whose slot it is.
+//
+// Until the one-time migration (scripts/migrate-s2-marker-rows.ts) has run, counters may still hold old `tasks` sets. Every reader here reads both
+// forms; a charge is refused for a task in either form; a release frees the form the task was charged in (`chargeFormOf`). The count itself is unchanged.
 
 /** The marker's entity type: Code's core writes the same one. */
 export const LIMIT_TASK_ENTITY = "DEVELOPER_LIMIT_TASK";
@@ -68,16 +70,16 @@ export const LIMIT_TASK_SK_PREFIX = "TASK#";
 /** The marker that says a task holds a slot of this member's counter (Code's core `chargeMarkerKey`). */
 export const chargeMarkerKey = (charge: Pick<WorkspaceCharge, "member">, taskId: string): CounterKey => ({ pk: charge.member.pk, sk: `${LIMIT_TASK_SK_PREFIX}${taskId}` });
 
-/** Which stored form a task's charge is in: a marker item (written by the S2 release and by Code's core), or an entry of the member counter's `tasks` set (what this release writes). */
+/** Which stored form a task's charge is in: a marker item (written by this code), or an entry of the member counter's old `tasks` set. */
 export type ChargeForm = "marker" | "set";
 
 /**
- * The same conditions as a Slack thread's charge, at positions 0 (organization), 1 (member) and 2 (a check that the task has no marker): chargeConflict
- * reads them by position. The task goes in the string set `tasks` (this release's form); the member item's condition also requires `NOT contains(#tasks,
- * :taskId)`, and the check at position 2 requires that no marker holds the task, so a repeated charge of one task, in either form, cancels the whole
- * transaction instead of counting twice. The Slack limit refusal reads every `threads` entry as a thread subject, so tasks never go there.
+ * The same conditions as a Slack thread's charge, at positions 0 (organization), 1 (member) and 2 (the task's marker): chargeConflict reads them by
+ * position. The marker is new only if absent, so a repeated charge of one task cancels the whole transaction instead of counting twice. The member's
+ * condition also refuses a task still in the counter's old `tasks` set (charged before the switch to markers), for the same reason. The Slack limit
+ * refusal reads every `threads` entry as a thread subject, so tasks never go there.
  */
-export function chargeItems(tableName: string, charge: WorkspaceCharge, limits: { member: number; organization: number }, taskId: string): TransactItems {
+export function chargeItems(tableName: string, charge: WorkspaceCharge, limits: { member: number; organization: number }, taskId: string, chargedAt: string = new Date().toISOString()): TransactItems {
   return [
     { Update: {
       TableName: tableName,
@@ -90,12 +92,16 @@ export function chargeItems(tableName: string, charge: WorkspaceCharge, limits: 
     { Update: {
       TableName: tableName,
       Key: charge.member,
-      UpdateExpression: "SET #count = if_not_exists(#count, :zero) + :one, entityType = :entity ADD #tasks :task",
+      UpdateExpression: "SET #count = if_not_exists(#count, :zero) + :one, entityType = :entity",
       ConditionExpression: "(attribute_not_exists(#count) OR #count < :limit) AND NOT contains(#tasks, :taskId)",
       ExpressionAttributeNames: { "#count": "count", "#tasks": "tasks" },
-      ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":limit": limits.member, ":entity": entityOf(charge.member), ":task": new Set([taskId]), ":taskId": taskId },
+      ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":limit": limits.member, ":entity": entityOf(charge.member), ":taskId": taskId },
     } },
-    { ConditionCheck: { TableName: tableName, Key: chargeMarkerKey(charge, taskId), ConditionExpression: "attribute_not_exists(pk)" } },
+    { Put: {
+      TableName: tableName,
+      Item: { ...chargeMarkerKey(charge, taskId), entityType: LIMIT_TASK_ENTITY, taskId, memberSk: charge.member.sk, chargedAt },
+      ConditionExpression: "attribute_not_exists(pk)",
+    } },
   ];
 }
 

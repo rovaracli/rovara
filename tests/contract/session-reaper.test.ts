@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { Ec2RuntimeBinding } from "@rovara-code/contracts";
-import { SessionManager } from "../../packages/broker/src/aws/sessions.js";
+import { SessionManager, parkedOutboxIds } from "../../packages/broker/src/aws/sessions.js";
 import { createReaperHandler, readRecycleMarks, type ReaperDependencies, type StopProgress } from "../../packages/broker/src/aws/session-reaper.js";
 import { PRIVATE_ADDRESS_NOTHING_OPEN } from "@agentx/cloud-contracts";
 import { COMPUTE_LOST_ERROR } from "../../packages/broker/src/aws/compute-lost.js";
@@ -157,7 +157,8 @@ describe("idle reaper", () => {
     expect(report.stopped).toEqual([workspaceId]);
     expect(report.restarted).toEqual([workspaceId]);
     expect(sessionOf(db, workspaceId)).toMatchObject({ state: "PROVISIONING", generation: 2, volumeId: "vol-0123456789abcdef0" });
-    expect([...(sessionOf(db, workspaceId).waitingOutboxIds as Set<string>)]).toEqual([outboxId]);
+    // S2: parked as a marker beside the session (or in its old set).
+    expect(await parkedOutboxIds(db as never, "state", workspaceId, sessionOf(db, workspaceId))).toEqual([outboxId]);
     expect(start.mock.calls[0]![0].name).toBe(`ws-${workspaceId}-gen-2`);
   });
 

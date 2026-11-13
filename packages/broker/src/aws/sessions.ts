@@ -125,10 +125,11 @@ const SESSION_ENTITY = "SESSION";
 
 // ---- Parked deliveries (convergence lane A5, owner decision 60 item S2) ----
 //
-// READERS ONLY (release 0.5.18, DECISIONS 152a). An outbox record that waits for the workspace's compute is an entry of the SESSION item's string set
-// `waitingOutboxIds`, and this release still parks it there. The S2 release (0.5.19) parks each record as one marker item in the workspace's partition
-// instead (Code's document store has no sets) and moves the stored sets to markers. So that a rollback from 0.5.19 to this release strands no parked
-// delivery, every read here merges both forms and every release removes the record from both.
+// An outbox record that waits for the workspace's compute used to be an entry of the SESSION item's string set `waitingOutboxIds`. Code's document store
+// has no sets, so each parked record is now one marker item in the workspace's partition, written in the same transaction as the session change that
+// parks it (which is conditional on the session's state and generation, as the set's ADD was) and deleted when it is released. Until the one-time
+// migration (scripts/migrate-s2-marker-rows.ts) has run, a SESSION item may still hold the old set: every read merges both, and every release removes
+// the record from both, so either form works.
 
 /** The marker's entity type and its sort-key prefix in the workspace's partition. */
 export const SESSION_WAITING_ENTITY = "SESSION_WAITING";
@@ -137,7 +138,7 @@ export const SESSION_WAITING_SK_PREFIX = "SESSION_WAITING#";
 /** The marker of one parked outbox record of a workspace's session. */
 export const sessionWaitingKey = (workspaceId: string, outboxId: string): { pk: string; sk: string } => ({ pk: `WORKSPACE#${workspaceId}`, sk: `${SESSION_WAITING_SK_PREFIX}${outboxId}` });
 
-/** The marker item the S2 release's park writes (this release only reads and deletes it; the shape is kept here so the readers and the writer agree). */
+/** The marker item a park writes. Written without a condition: parking a record twice is one marker, as adding it to the set twice was one entry. */
 export function sessionWaitingItem(workspaceId: string, outboxId: string, parkedAt: string): Record<string, unknown> {
   return { ...sessionWaitingKey(workspaceId, outboxId), entityType: SESSION_WAITING_ENTITY, workspaceId, outboxId, parkedAt };
 }
@@ -227,7 +228,8 @@ export class SessionManager {
             availabilityZone: placement.availabilityZone,
             subnetId: placement.subnetId,
           };
-          const sessionWrite = (park: boolean) => session === undefined
+          // The park itself is its own marker row (writeWithOutbox), so the session write is the same with or without one.
+          const sessionWrite = () => session === undefined
             ? { Put: {
                 TableName: this.dependencies.tableName,
                 Item: {
@@ -236,17 +238,15 @@ export class SessionManager {
                   workspaceId,
                   ...provisioning,
                   [WORKSPACE_SESSION_STATE_INDEX.partitionKey]: provisioning.state,
-                  ...(park ? { waitingOutboxIds: new Set([waitingOutboxId]) } : {}),
                 },
                 ConditionExpression: "attribute_not_exists(pk)",
               } }
             : { Update: this.update(workspaceId, {
                 set: { ...provisioning },
                 remove: ["instanceId", "privateIp", "launchedAt", "readyAt", "executionArn"],
-                ...(park ? { addWaiting: waitingOutboxId } : {}),
                 when: { state, generation: session.generation },
               }) };
-          if (!(await this.writeWithOutbox(sessionWrite, waitingOutboxId))) continue;
+          if (!(await this.writeWithOutbox(workspaceId, sessionWrite, waitingOutboxId))) continue;
           const started = await this.get(workspaceId);
           if (started?.state === "PROVISIONING" && started.generation === generation) await this.startProvisioning(started, binding);
           return { ready: false, generation, state: "PROVISIONING" };
@@ -256,10 +256,8 @@ export class SessionManager {
           const current = session!;
           if (waitingOutboxId !== undefined) {
             // Nothing changes on the session unless the record is parked.
-            const parked = await this.writeWithOutbox((park) => (park ? { Update: this.update(workspaceId, {
-              addWaiting: waitingOutboxId,
-              when: { state, generation: current.generation },
-            }) } : undefined), waitingOutboxId);
+            // The park's marker is written with a check that the session is still in this state and generation (the old set's ADD had the same condition).
+            const parked = await this.writeWithOutbox(workspaceId, (park) => (park ? { ConditionCheck: this.stillIn(workspaceId, { state, generation: current.generation }) } : undefined), waitingOutboxId);
             if (!parked) continue;
           }
           // A provisioning whose start failed before its execution was recorded is started again;
@@ -605,6 +603,7 @@ export class SessionManager {
    * undefined means there is nothing to write.
    */
   private async writeWithOutbox(
+    workspaceId: string,
     sessionWrite: (park: boolean) => Record<string, unknown> | undefined,
     waitingOutboxId: string | undefined,
   ): Promise<boolean> {
@@ -615,6 +614,7 @@ export class SessionManager {
     if (waitingOutboxId === undefined) return alone();
     const parked = await this.conditional({ transaction: [
       sessionWrite(true)!,
+      { Put: { TableName: this.dependencies.tableName, Item: sessionWaitingItem(workspaceId, waitingOutboxId, this.now()) } },
       { Update: {
         TableName: this.dependencies.tableName,
         Key: outboxKey(waitingOutboxId),
@@ -637,7 +637,6 @@ export class SessionManager {
   private update(workspaceId: string, change: {
     set?: Partial<Record<keyof WorkspaceSession, unknown>>;
     remove?: Array<keyof WorkspaceSession>;
-    addWaiting?: string;
     addPingFailure?: boolean;
     when: { state: WorkspaceSessionState; generation: number };
     require?: Array<keyof WorkspaceSession>;
@@ -658,12 +657,9 @@ export class SessionManager {
     const clauses = [
       ...(sets.length === 0 ? [] : [`SET ${sets.join(", ")}`]),
       ...(change.remove === undefined || change.remove.length === 0 ? [] : [`REMOVE ${change.remove.join(", ")}`]),
-      ...(change.addWaiting === undefined && !change.addPingFailure ? [] : [
-        `ADD ${[...(change.addWaiting === undefined ? [] : ["waitingOutboxIds :waiting"]), ...(change.addPingFailure ? ["pingFailures :one"] : [])].join(", ")}`,
-      ]),
+      ...(change.addPingFailure ? ["ADD pingFailures :one"] : []),
     ];
     if (change.addPingFailure) values[":one"] = 1;
-    if (change.addWaiting !== undefined) values[":waiting"] = new Set([change.addWaiting]);
     const required = (change.require ?? []).map((field) => ` AND attribute_exists(${field})`).join("");
     return {
       TableName: this.dependencies.tableName,
@@ -678,6 +674,17 @@ export class SessionManager {
   /** Releases one parked record on its own, in both forms (`unparkItems`). */
   private async unpark(workspaceId: string, outboxId: string): Promise<void> {
     await this.dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: unparkItems(this.dependencies.tableName, workspaceId, outboxId) }));
+  }
+
+  /** A check that the session is still in this state and generation: the condition a park's marker is written under. */
+  private stillIn(workspaceId: string, when: { state: WorkspaceSessionState; generation: number }): Record<string, unknown> {
+    return {
+      TableName: this.dependencies.tableName,
+      Key: workspaceSessionKey(workspaceId),
+      ConditionExpression: "#state = :whenState AND #generation = :whenGeneration",
+      ExpressionAttributeNames: { "#state": "state", "#generation": "generation" },
+      ExpressionAttributeValues: { ":whenState": when.state, ":whenGeneration": when.generation },
+    };
   }
 
   /** Runs a conditional update or transaction; false when its condition did not hold. */

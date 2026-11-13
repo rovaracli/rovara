@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { limitMessage } from "../../packages/slack-service/src/messages.js";
 import { MAYA, createDeveloperTaskBroker, grantProject, type Developer } from "../support/developer-task-broker.js";
 import { SLACK_CHANNEL, SLACK_TEAM, serviceCall } from "../support/slack-broker.js";
+import { heldTasks } from "../support/limit-charges.js";
 
 const thread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000001" };
 const TODAY = "You already have 3 AgentX workspaces, the most one person can have, so I can't start a new one. Continue in one of your existing threads instead:";
@@ -75,7 +76,9 @@ describe("a Slack thread at the limit first gives back slots finished tasks stil
     expect(opened.body).toMatchObject({ outcome: "WORKSPACE", created: true });
     const member = db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `MEMBER#${MAYA.slackUserId!}`)!;
     expect(member.count).toBe(3);
-    expect((member.tasks as Set<string>).has(String(task.taskId))).toBe(false);
+    // S2: the slot was a marker beside the counter (or, on older rows, an entry of its `tasks` set); it is gone in both forms.
+    expect(heldTasks(db, { pk: slackLimitPk(TEST_ORG, SLACK_TEAM), sk: `MEMBER#${MAYA.slackUserId!}` })).not.toContain(String(task.taskId));
+    expect(db.get(slackLimitPk(TEST_ORG, SLACK_TEAM), `TASK#${String(task.taskId)}`)).toBeUndefined();
     expect(db.get(`WORKSPACE#${String(task.workspaceId)}`, "META")?.status).toBe("CLOSED");
     expect(deleteEc2Session).toHaveBeenCalledWith(task.workspaceId);
   });

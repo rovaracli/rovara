@@ -486,8 +486,8 @@ describe("POST /v1/app/projects/{name}/setup-check: the request id", () => {
 describe("the setup check's workspace and slot (final review I3)", () => {
   /** Every workspace item that is not closed. */
   const openWorkspaces = (h: Harness) => h.db.find((item) => item.sk === "META" && String(item.pk).startsWith("WORKSPACE#") && item.entityType === "WORKSPACE" && item.status !== "CLOSED");
-  /** The slots the people's counters hold (the member counter is the one with a set of holders; the org's counter moves with it). */
-  const heldSlots = (h: Harness) => h.db.find((item) => (item.entityType === "SLACK_LIMIT" || item.entityType === "DEVELOPER_LIMIT") && item.tasks !== undefined)
+  /** The slots the people's counters hold (the member counters, `MEMBER` or `MEMBER#<user>`; the org's counter moves with them). */
+  const heldSlots = (h: Harness) => h.db.find((item) => (item.entityType === "SLACK_LIMIT" || item.entityType === "DEVELOPER_LIMIT") && (item.sk === "MEMBER" || String(item.sk).startsWith("MEMBER#")))
     .reduce((total, item) => total + (typeof item.count === "number" ? item.count : 0), 0);
 
   it("takes a slot while checking, so a person at their limit cannot start a task meanwhile, and gives it back when the check succeeds", async () => {
