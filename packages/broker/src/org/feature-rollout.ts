@@ -9,9 +9,11 @@
 // default (on for the four features that have an install switch, so a missing row follows the install switch; off for the three not built yet). A stored value that is not the boolean true reads as off. A name outside the closed list
 // (contracts/feature-rollout.ts) is never stored and never sent.
 //
-// A READ THAT FAILS is handled by the caller's choice (`onReadFailure`): "off" (the default: every gated feature off, fail closed, for what only shows something), "throw" (RUNTIME_UNAVAILABLE, for a path that starts or keeps work, so
-// its queue or caller tries again instead of silently doing less) or "default" (the catalog default, for the per-request dispatch, so an outage never makes a route stricter or looser than a company that never chose). Each logs
-// without the company's data. A row that is there but cannot be read counts as off for what it cannot read.
+// A READ THAT FAILS is handled by the caller's choice (`onReadFailure`): "off" (the default: every gated feature off, fail closed, for what only shows something) or "throw" (for a path that starts or keeps work, so its queue or
+// caller tries again instead of silently doing less). A temporary AWS error (a throttle) is rethrown AS ITSELF, marked as a gate failure, so every caller that already retries a throttle (the first task's queuing, the HTTP 503
+// answer) retries this one and never records the work as failed; any other failure is RUNTIME_UNAVAILABLE in fixed words. The per-request dispatch makes an `unavailableEnv`: a gated route answers 503 RUNTIME_UNAVAILABLE the moment
+// it reads a gated switch (never the catalog default, which could turn a company's explicit off into on), and a route that reads none is untouched. Each logs without the company's data. A row that is there but cannot be read counts as
+// off for what it cannot read.
 //
 // ONE READ A REQUEST: a request makes a `GateReader` (`createGateReader`) and puts it on the dependencies it hands on (`gates`); every helper below reads a company once through it. There is no cache between requests, so a change
 // is the next request's read.
@@ -21,6 +23,7 @@ import {
   type AuditEventInput, type FeatureRolloutAnswer, type RolloutFeatureName,
 } from "@agentx/cloud-contracts";
 import { agentXError, liveInteractionFlagOn, type OrgId } from "@rovara-code/contracts";
+import { isTemporaryAwsError } from "../aws/broker-shared.js";
 import { auditCompanyFeatureRolloutChanged, auditOccurrence } from "../audit/events.js";
 import { flushAuditEvents } from "../audit/flush.js";
 import { auditPending, type AuditRuntime } from "../audit/outbox.js";
@@ -122,11 +125,22 @@ export async function readFeatureRolloutFresh(deps: FeatureRolloutDeps, orgId: O
 export const readFeatureRollout = (deps: FeatureRolloutDeps, orgId: OrgId): Promise<FeatureRolloutSettings> => deps.gates === undefined ? readFeatureRolloutFresh(deps, orgId) : deps.gates.read(orgId);
 
 /** What a read that fails does (see the header). */
-export type GateReadFailure = "off" | "throw" | "default";
+export type GateReadFailure = "off" | "throw";
 const UNREADABLE_WORDS = "This company's settings could not be read. Try again.";
+const GATE_FAILURE = Symbol.for("rovara.featureRollout.gateReadFailed");
+
+/** What `onReadFailure: "throw"` throws for a failed read: the temporary AWS error itself (marked), or RUNTIME_UNAVAILABLE in fixed words. */
+function gateReadError(error: unknown): unknown {
+  if (isTemporaryAwsError(error)) {
+    Object.defineProperty(error, GATE_FAILURE, { value: true, enumerable: false });
+    return error;
+  }
+  return agentXError("RUNTIME_UNAVAILABLE", UNREADABLE_WORDS);
+}
 
 /** Whether an error is the one a gate read that failed gives with `onReadFailure: "throw"` (so a caller can let it through to its retry instead of treating it as its own failure). */
-export const isGateUnavailable = (error: unknown): boolean => typeof error === "object" && error !== null && (error as { code?: unknown }).code === "RUNTIME_UNAVAILABLE" && typeof (error as { message?: unknown }).message === "string" && (error as Error).message.endsWith(UNREADABLE_WORDS);
+export const isGateUnavailable = (error: unknown): boolean => typeof error === "object" && error !== null
+  && ((error as Record<symbol, unknown>)[GATE_FAILURE] === true || ((error as { code?: unknown }).code === "RUNTIME_UNAVAILABLE" && typeof (error as { message?: unknown }).message === "string" && (error as Error).message.endsWith(UNREADABLE_WORDS)));
 
 /**
  * The environment a company's code reads its install switches from: every gated variable that is not on for this company is "0". Nothing is read when the install has none of them on. No company turns every gated variable off.
@@ -136,23 +150,39 @@ export async function companyGatedEnv(deps: FeatureRolloutDeps, orgId: OrgId | u
   const installOn = GATED_VARIABLES.filter(([, variable]) => liveInteractionFlagOn(env[variable]));
   if (installOn.length === 0) return env;
   let settings: FeatureRolloutSettings | undefined;
-  let failed = false;
   if (orgId !== undefined) {
     try { settings = await readFeatureRollout(deps, orgId); }
-    catch {
-      failed = true;
+    catch (error) {
       logDeveloperEvent({ event: "developer.feature_rollout_read_failed" });
-      if (options.onReadFailure === "throw") throw agentXError("RUNTIME_UNAVAILABLE", UNREADABLE_WORDS);
+      if (options.onReadFailure === "throw") throw gateReadError(error);
     }
   }
   const gated: NodeJS.ProcessEnv = { ...env };
-  // A failed read follows the catalog default only where the caller asked for it; otherwise (and with no company at all) nothing is on.
-  const noRow = failed && options.onReadFailure === "default";
   for (const [name, variable] of installOn) {
-    const on = settings !== undefined ? rolloutGateOn(name, settings.gates[name]) : noRow ? rolloutGateOn(name, undefined) : false;
+    // A failed read (with "off") or no company at all: nothing is on.
+    const on = settings !== undefined && rolloutGateOn(name, settings.gates[name]);
     if (!on) gated[variable] = "0";
   }
   return gated;
+}
+
+/**
+ * The environment of a request whose gate read failed: reading a gated switch (`PROOF_EVIDENCE_ENABLED`, `VERIFY_RESULTS_ENABLED`, `TEST_ENVIRONMENT_ENABLED`, `TEST_SERVICES_ENABLED`) throws RUNTIME_UNAVAILABLE (a 503) and logs one counter
+ * line (`developer.feature_rollout_unavailable`, the gate's name, nothing else); every other variable reads as it did, and a spread of it is safe. So a gated route fails instead of guessing a company's choice, and a route that
+ * reads no gated switch is untouched.
+ */
+export function unavailableEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const gateOf = new Map<string, RolloutFeatureName>(GATED_VARIABLES.map(([name, variable]) => [variable, name]));
+  const rest: NodeJS.ProcessEnv = { ...env };
+  for (const variable of gateOf.keys()) delete rest[variable];
+  return new Proxy(rest, {
+    get(target, property) {
+      const gate = typeof property === "string" ? gateOf.get(property) : undefined;
+      if (gate === undefined) return Reflect.get(target, property) as string | undefined;
+      logDeveloperEvent({ event: "developer.feature_rollout_unavailable", gate });
+      throw agentXError("RUNTIME_UNAVAILABLE", UNREADABLE_WORDS);
+    },
+  });
 }
 
 /** The environment a route reads its install switches from: the one the request was given (the caller's company's, `companyGatedEnv`), else the process's. */
@@ -162,10 +192,10 @@ export const routeEnvOf = (deps: { env?: NodeJS.ProcessEnv | undefined }): NodeJ
 export async function companyFeatureOn(deps: FeatureRolloutDeps, orgId: OrgId | undefined, name: RolloutFeatureName, env: NodeJS.ProcessEnv = process.env, options: { onReadFailure?: GateReadFailure } = {}): Promise<boolean> {
   if (orgId === undefined || !installSwitchOn(name, env)) return false;
   try { return rolloutGateOn(name, (await readFeatureRollout(deps, orgId)).gates[name]); }
-  catch {
+  catch (error) {
     logDeveloperEvent({ event: "developer.feature_rollout_read_failed" });
-    if (options.onReadFailure === "throw") throw agentXError("RUNTIME_UNAVAILABLE", UNREADABLE_WORDS);
-    return options.onReadFailure === "default" ? rolloutGateOn(name, undefined) : false;
+    if (options.onReadFailure === "throw") throw gateReadError(error);
+    return false;
   }
 }
 

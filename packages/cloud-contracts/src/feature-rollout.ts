@@ -1,8 +1,9 @@
 // Company rollout gates (TE-A1): an evidence feature is turned on for one company at a time, and turned back off for one company at a time.
 //
 // EFFECTIVE = the install's switch is exactly "1" AND the company's gate is on. The install switch stays the emergency off for everyone; a company gate off is instant for that company only. A company that
-// never chose has no stored value, which reads as the catalog default (`defaultOn`, off for every feature today). A stored value that is anything but the boolean true reads as off.
-// Gates are for staging, the pilot and the rollout. When the release default flips to on for everyone (decision 116 spirit), a feature's `defaultOn` flips here and a company's stored false remains its rollback.
+// never chose has no stored value, which reads as the catalog default (`defaultOn`): ON for the four features that already have an install switch (a missing row follows the install switch, as before the gates), OFF for the three
+// named for lanes not built yet (they need a stored on). A stored value that is anything but the boolean true reads as off.
+// Gates are for staging, the pilot and the rollout, and a stored false is a company's rollback. A later release flips a new feature's `defaultOn` here when it goes on for everyone (decision 116 spirit).
 //
 // Browser-safe (the admin screen reads the names and the shapes). The closed list of names is the only place that says which gates exist: a name outside it is refused everywhere (the route, the store).
 import { z } from "zod";
@@ -48,7 +49,8 @@ export function rolloutDefaultOn(name: RolloutFeatureName): boolean {
 
 /**
  * Whether the company's gate is on, from what is stored for it: nothing stored takes the default, exactly the boolean true is on, and anything else (false, a string, a number) is off.
- * A caller that could not read the store does not call this: it treats the gate as off.
+ * A caller that could not read the store does not call this, and never guesses the answer from the default: a display read treats the feature as off, a path that starts or keeps work throws (RUNTIME_UNAVAILABLE) so it is retried,
+ * and a gated route answers 503 (`unavailableEnv` in broker/org/feature-rollout.ts).
  */
 export function rolloutGateOn(name: RolloutFeatureName, stored: unknown): boolean {
   return stored === undefined ? rolloutDefaultOn(name) : stored === true;

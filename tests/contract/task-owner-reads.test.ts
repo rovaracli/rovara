@@ -84,12 +84,9 @@ const ROWS: readonly Row[] = [
   // Proof and evidence (wire-proof): the task's principal (`ownerKey`) names the object prefixes the evidence is read and kept under (the worker's raw file under its operation, the pack and the stored output tails under the task); it decides nothing about who owns the task. Who may READ it is `resolveTaskAccess`, in the download route.
   ["aws/broker/evidence-wiring.ts", "keepEvidenceAfterChecks", "principal", ".ownerKey"],
   // Setup and test health (SH17): the Fix setup port reads the task's principal only to name the evidence pack's object prefix (the broker's own pack of the task's current code); it decides nothing about who owns the task.
-  ["aws/broker/fix-setup-wiring.ts", "fixSetupDependencies>record", "principal", ".ownerKey"],
-  ["aws/broker/fix-setup-wiring.ts", "fixSetupDependencies>newFailingChecks", "principal", ".ownerKey"],
   ["aws/task-evidence-download.ts", "routeEvidenceDownload>authorize", "principal", ".ownerKey"],
-  // TE-A1: the evidence key of a task record (the principal names the object prefix; the company the gate is read for rides beside it), and the testing view's hand-over of the same key to the evidence port; neither decides who owns the task.
+  // TE-A1: the evidence key of a task record (the principal names the object prefix; the company the gate is read for rides beside it); the Fix setup wiring and the testing view hand it to the evidence port through this one function, and it decides nothing about who owns the task.
   ["aws/developer-tasks/evidence-port.ts", "evidenceKeyOf", "principal", ".ownerKey"],
-  ["aws/developer-tasks/testing-view.ts", "loadTestingView", "principal", ".ownerKey"],
   ["rovara-code/evidence-keep.ts", "evidencePackKey", "principal", ".ownerKey"],
   ["rovara-code/evidence-keep.ts", "keepEvidence", "principal", ".ownerKey"],
   ["rovara-code/evidence-keep.ts", "readRaw", "principal", ".ownerKey"],

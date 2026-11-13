@@ -45,9 +45,10 @@ async function listOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller,
 
 /** The reply, or undefined when the switch is off or the path is not this one. */
 export async function routeKnownFailingMarks(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = routeEnvOf(deps)): Promise<StatusReply | undefined> {
-  if (!verifyResultsEnabled(env)) return undefined;
+  // The path first: a request for any other path reads no gated switch (TE-A1).
   const match = KNOWN_FAILING_MARKS_PATH.exec(url.pathname);
-  if (match === null || (request.method !== "GET" && request.method !== "POST")) return undefined;
+  if (match === null || !verifyResultsEnabled(env)) return undefined;
+  if ((request.method !== "GET" && request.method !== "POST")) return undefined;
   const { name, role } = await projectRoleForRoute(deps, caller, match[1]!);
   if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", "Only a project maintainer can see or change the known-failing tests.");
   if (request.method === "GET") return new StatusReply(200, await listOf(deps, caller, name));

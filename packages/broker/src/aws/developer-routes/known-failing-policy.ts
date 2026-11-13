@@ -79,7 +79,8 @@ async function stateOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller
 
 /** The reply, or undefined when the switch is off or the path is not this one. */
 export async function routeKnownFailingPolicy(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = routeEnvOf(deps)): Promise<StatusReply | undefined> {
-  if (!verifyResultsEnabled(env) || url.pathname !== KNOWN_FAILING_POLICY_PATH) return undefined;
+  // The path first: a request for any other path reads no gated switch (TE-A1).
+  if (url.pathname !== KNOWN_FAILING_POLICY_PATH || !verifyResultsEnabled(env)) return undefined;
   if (request.method === "GET") return new StatusReply(200, await stateOf(deps, caller));
   if (request.method !== "POST") return undefined;
   // Defence in depth: the entry file refuses a token before this, and so does this.

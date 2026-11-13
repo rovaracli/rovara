@@ -69,9 +69,9 @@ const signedInAtOf = async (deps: DeveloperRouteDependencies, caller: DeveloperC
 };
 
 export async function routeFixtures(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = routeEnvOf(deps)): Promise<StatusReply | undefined> {
-  if (!testServicesEnabled(env) || deps.fixtureStore === undefined) return undefined;
+  // The path first: a request for any other path reads no gated switch (TE-A1).
   const match = FIXTURE_PATH.exec(url.pathname);
-  if (match === null) return undefined;
+  if (match === null || deps.fixtureStore === undefined || !testServicesEnabled(env)) return undefined;
   const digest = match[2];
   const action = match[3] as FixtureDecisionAction | undefined;
   const wanted = digest === undefined ? "POST" : action === undefined ? "GET" : "POST";

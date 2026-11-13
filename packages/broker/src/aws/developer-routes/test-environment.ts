@@ -304,9 +304,9 @@ async function provedFromCheck(deps: DeveloperRouteDependencies, orgId: OrgId, n
 export async function routeTestEnvironment(
   deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, hooks: TestEnvRouteHooks = {}, env: NodeJS.ProcessEnv = routeEnvOf(deps),
 ): Promise<StatusReply | undefined> {
-  if (!testEnvironmentEnabled(env)) return undefined;
+  // The path first: a request for any other path reads no gated switch (TE-A1).
   const match = TEST_ENV_PATH.exec(url.pathname);
-  if (match === null) return undefined;
+  if (match === null || !testEnvironmentEnabled(env)) return undefined;
   const action = match[2];
   if ((action === undefined) !== (request.method === "GET")) return undefined;
   const { name, role } = await projectRoleForRoute(deps, caller, match[1]!);

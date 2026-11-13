@@ -1,6 +1,7 @@
 // Setup and test health (SH17): what the auto-fix runner needs to turn an ask about the test environment into a Fix setup card. Exists only while `vx` is on: with it off this returns nothing, the runner has no
 // `fixSetup` port and the ask is exactly what it was. The cause is derived from the policy's own codes (never from text), and the tests a "Mark as known failing" could add come from the broker's evidence pack
 // of the task's current code (only while the proof switch gives a pack), never from the worker's words.
+import { evidenceKeyOf } from "../developer-tasks/evidence-port.js";
 import type { OrgId } from "@rovara-code/contracts";
 import { companyGatedEnv } from "../../org/feature-rollout.js";
 import { failingOnOriginalTests, fixSetupCauseOf, recordFixSetup, FIX_SETUP_MARKABLE_CAUSE } from "../../test-env/fix-setup.js";
@@ -32,7 +33,7 @@ export function fixSetupDependencies(dependencies: AwsBrokerDependencies, env: N
       if (digest === undefined || task.orgId === undefined) return [];
       // TE-A1: the four results follow the company's `verifyResults` gate.
       if (!verifyResultsEnabled(await companyGatedEnv({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, task.orgId, env))) return [];
-      const pack = await packOf({ taskId: task.taskId, ownerKey: task.ownerKey, workspaceId: task.workspaceId, orgId: task.orgId }, digest);
+      const pack = await packOf(evidenceKeyOf(task), digest);
       const store = { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now };
       const fromPack = pack === undefined ? [] : newFailingCheckIds(pack, await alreadyFailingForResults(store, task.orgId, task.project, await nightlyOptionsFor(store, { taskId: task.taskId, orgId: task.orgId, project: task.project }, nightlyHead)));
       // A TEST check (by the task's own check list) that failed on the original code that the pack does not name (or there is no pack for this code) has no per-test data: nothing about its failures is confirmed (M2), the same answer the result classifier gives. Another or an unknown kind keeps the old rule.
@@ -54,7 +55,7 @@ export function fixSetupDependencies(dependencies: AwsBrokerDependencies, env: N
           // Only tests the broker's own evidence pack AND the project's last nightly baseline both call failing are ever offered (the nightly set is empty when unknown or truncated: then nothing is offered).
           const port = readPack === undefined ? evidenceRouteDependencies(dependencies, env).evidence : undefined;
           const reader: PackReader | undefined = readPack ?? (port === undefined ? undefined : (key, at) => port.pack(key, at));
-          const pack = await reader?.({ taskId: task.taskId, ownerKey: task.ownerKey, workspaceId: task.workspaceId, orgId: task.orgId }, digest).catch(() => undefined);
+          const pack = await reader?.(evidenceKeyOf(task), digest).catch(() => undefined);
           const nightly = (await usableNightlyFailing(store, task.orgId, task.project, await nightlyOptionsFor(store, { taskId: task.taskId, orgId: task.orgId, project: task.project }, nightlyHead)).catch(() => undefined)) ?? [];
           offer = failingOnOriginalTests(pack, nightly);
         }

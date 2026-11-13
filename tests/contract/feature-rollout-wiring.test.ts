@@ -169,7 +169,7 @@ describe("through the broker's route dispatcher (a company's gate decides what i
     expect((await t.web(OMAR, "GET", POLICY)).status).toBe(404);
   });
 
-  const failGateReads = (db: FakeDynamoDb) => db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { sk?: string } | undefined)?.sk === "FEATURE_ROLLOUT", error: { name: "ProvisionedThroughputExceededException", message: "throttled" }, times: 10 });
+  const failGateReads = (db: FakeDynamoDb) => db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { sk?: string } | undefined)?.sk === "FEATURE_ROLLOUT", error: { name: "ProvisionedThroughputExceededException", message: "throttled" }, times: 1 });
 
   it("a request reads the company's gates once, and the next request reads again (no cache between requests)", async () => {
     const t = await setupWizardBench({});
@@ -183,20 +183,40 @@ describe("through the broker's route dispatcher (a company's gate decides what i
     expect(gateReads).toBe(2);
   });
 
-  it("a gate that cannot be read for a request follows the catalog default (the install switch), and is logged: a route is neither lost nor opened up by an outage", async () => {
+  it("a gated route answers 503 RUNTIME_UNAVAILABLE when the request's gate could not be read: an explicit per-company OFF is never turned into ON, and a counter line says so", async () => {
     const t = await setupWizardBench({});
     process.env.VERIFY_RESULTS_ENABLED = "1";
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     setGates(t.db, { ...GATES_ON, verifyResults: false });
     expect((await t.web(OMAR, "GET", POLICY)).status).toBe(404);
     failGateReads(t.db);
+    const outage = await t.web(OMAR, "GET", POLICY);
+    expect(outage.status).toBe(503);
+    expect(JSON.stringify(outage.body)).toContain("RUNTIME_UNAVAILABLE");
+    // The company's own row says on: still 503 while the read fails (never the answer a stale guess would give), and 200 once it reads.
+    setGates(t.db, { ...GATES_ON, verifyResults: true });
+    failGateReads(t.db);
+    expect((await t.web(OMAR, "GET", POLICY)).status).toBe(503);
     expect((await t.web(OMAR, "GET", POLICY)).status).toBe(200);
     const lines = log.mock.calls.map((call) => String(call[0]));
     log.mockRestore();
-    expect(lines.some((line) => line.includes("feature_rollout_read_failed"))).toBe(true);
+    const counters = lines.filter((line) => line.includes("feature_rollout_unavailable"));
+    expect(counters.length).toBeGreaterThanOrEqual(2);
+    expect(counters[0]).toContain("verifyResults");
+    expect(counters.join("")).not.toContain(TEST_ORG);
   });
 
-  it("the browser save of setup and test commands stays refused where the test environment is on, and never gets looser when the gate cannot be read", async () => {
+  it("a route that reads no gate is untouched by a failed gate read", async () => {
+    const t = await setupWizardBench({});
+    process.env.VERIFY_RESULTS_ENABLED = "1";
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    failGateReads(t.db);
+    const me = await t.web(OMAR, "GET", "/v1/app/me");
+    log.mockRestore();
+    expect(me.status).toBe(200);
+  });
+
+  it("the browser save of setup and test commands is refused while the test environment is on, open to a company that turned it off, and a 503 (never open, never saved) when the gate cannot be read", async () => {
     const t = await setupWizardBench({});
     process.env.TEST_ENVIRONMENT_ENABLED = "1";
     let n = 0;
@@ -207,14 +227,16 @@ describe("through the broker's route dispatcher (a company's gate decides what i
     // The company turned it off: the old save path is open to it (it is not this refusal).
     setGates(t.db, { ...GATES_ON, testEnvironment: false });
     expect(refused(await save())).toBe(false);
-    // Its row cannot be read: the refusal holds (the catalog default is on), so a failed read never opens the save.
+    // Its row cannot be read: the save is answered 503 and nothing is saved (a failed read never opens the save).
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     failGateReads(t.db);
+    const revisionBefore = t.db.find((item) => item.entityType === "PROJECT").length;
     // (The save with the gate off went through, so the project is at revision 2.)
     const third = await save(2);
-    expect(refused(third)).toBe(true);
-    expect(third.status).toBe(400);
     log.mockRestore();
+    expect(third.status).toBe(503);
+    expect(refused(third)).toBe(false);
+    expect(t.db.find((item) => item.entityType === "PROJECT")).toHaveLength(revisionBefore);
   });
 
   it("the Preview features route is found for an owner in a browser, and refused to a member and to a token", async () => {
@@ -298,22 +320,29 @@ describe("a gate that cannot be read is RUNTIME_UNAVAILABLE where work starts or
     expect(tasks(t.db)).toHaveLength(before);
   });
 
-  it("dispatching a run (the task's plan and capture) throws RUNTIME_UNAVAILABLE and sends nothing: the run waits in the queue for its retry instead of going out without them", async () => {
+  it("dispatching a run: a gate read that fails does NOT fail the prepare (it is told to be sent again, nothing is recorded), and the retried callback queues the run", async () => {
     const t = await setupWizardBench({});
     process.env.TEST_ENVIRONMENT_ENABLED = "1";
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     expect((await t.ask()).status).toBe(202);
     const task = taskOf(t);
     const prepare = t.operations(task.workspaceId).find((operation) => operation.kind === "prepare")!;
-    // Finishing the preparation reads the company's gate twice: the setup draft's end items (first), then the dispatch of the run (second). Only the second read fails, so it is the dispatch that is under test.
+    // Finishing the preparation reads the company's gate twice: the setup draft's end items (first), then the dispatch of the run (second). Only the second read fails, once: a DynamoDB throttle.
     let seen = 0;
     t.db.injectFault({ command: "GetCommand", match: (input) => (input.Key as { sk?: string } | undefined)?.sk === "FEATURE_ROLLOUT" && (seen += 1) >= 2, error: { name: "ProvisionedThroughputExceededException", message: "throttled" }, times: 1 });
+    const first = await t.finish(task.workspaceId, prepare.id, "SUCCEEDED", PREPARED).catch((caught: unknown) => caught as Error);
+    // The worker is told to try again; the prepare is not recorded as FAILED ("close this task and start a new one") and no run was sent.
+    expect(first).toBeInstanceOf(Error);
+    expect((first as Error).message).toContain("send the result again");
+    expect(t.operations(task.workspaceId).find((operation) => operation.id === prepare.id)!.status).not.toBe("FAILED");
+    expect(t.operations(task.workspaceId).some((operation) => operation.kind === "task")).toBe(false);
+    // The retried callback reads the gate and queues the run.
     await t.finish(task.workspaceId, prepare.id, "SUCCEEDED", PREPARED);
     const lines = log.mock.calls.map((call) => String(call[0]));
     log.mockRestore();
     expect(seen).toBeGreaterThanOrEqual(2);
-    // The run was not sent without its plan: no run operation exists, and the failure was logged for the retry.
-    expect(t.operations(task.workspaceId).some((operation) => operation.kind === "task")).toBe(false);
+    expect(t.operations(task.workspaceId).find((operation) => operation.id === prepare.id)!.status).toBe("SUCCEEDED");
+    expect(t.operations(task.workspaceId).some((operation) => operation.kind === "task")).toBe(true);
     expect(lines.some((line) => line.includes("feature_rollout_read_failed"))).toBe(true);
   });
 
@@ -328,7 +357,7 @@ describe("a gate that cannot be read is RUNTIME_UNAVAILABLE where work starts or
     failGateReads(t.db);
     const error = await t.finish(task.workspaceId, own.id, "SUCCEEDED", { result: { conversationId: randomUUID(), reopened: false, workflowMode: "SETUP_DRAFT" } }).catch((caught: unknown) => caught as Error);
     log.mockRestore();
+    // A DynamoDB throttle reaches the worker as the temporary-error 503 it always did (RUNTIME_UNAVAILABLE), to be sent again.
     expect((error as Error).message).toContain("RUNTIME_UNAVAILABLE");
-    expect((error as Error).message).toContain("settings could not be read");
   });
 });

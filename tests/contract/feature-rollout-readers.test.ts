@@ -175,7 +175,7 @@ describe("helpers whose environment defaults to process.env", () => {
 
 describe("the entry points that have a company gate its environment", () => {
   const MARKERS: Array<[string, RegExp, string]> = [
-    ["aws/developer-routes.ts", /deps = \{ \.\.\.deps, gates, env: await companyGatedEnv\(/u, "every HTTP route: the request's environment is the caller's company's, set once after the caller is known"],
+    ["aws/developer-routes.ts", /const requestEnv = await companyGatedEnv\(/u, "every HTTP route: the request's environment is the caller's company's, set once after the caller is known"],
     ["aws/broker/task-operations.ts", /const gatedEnv = await companyGatedEnv\(/u, "a task's run: the plan, the evidence capture and the setup detection"],
     ["aws/broker/evidence-wiring.ts", /gatedEvidencePort\(createEvidencePort/u, "the evidence port every task route, Slack press and pull request rewrite reads"],
     ["aws/broker/evidence-wiring.ts", /const gated = await companyGatedEnv\(/u, "keeping the evidence of a finished check run"],
@@ -190,7 +190,7 @@ describe("the entry points that have a company gate its environment", () => {
     ["aws/developer-tasks/start.ts", /onReadFailure: "throw"/u, "a task start throws RUNTIME_UNAVAILABLE on a gate it cannot read (M3)"],
     ["aws/broker/workflow-items.ts", /onReadFailure: "throw"/u, "a setup draft's end throws RUNTIME_UNAVAILABLE on a gate it cannot read (M3)"],
     ["aws/broker/evidence-wiring.ts", /onReadFailure: "throw"/u, "keeping evidence throws RUNTIME_UNAVAILABLE on a gate it cannot read (M3)"],
-    ["aws/developer-routes.ts", /onReadFailure: "default"/u, "the per-request dispatch follows the catalog default on a gate it cannot read (M3)"],
+    ["aws/developer-routes.ts", /return unavailableEnv\(/u, "the per-request dispatch hands a gated route an environment that answers 503 when it cannot read the gate (never the catalog default)"],
   ];
   for (const [file, marker, what] of MARKERS) {
     it(`${file}: ${what}`, () => { expect(read(file)).toMatch(marker); });

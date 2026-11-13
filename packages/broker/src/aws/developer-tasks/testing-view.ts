@@ -2,6 +2,7 @@
 // returns undefined without a read, and every caller leaves its text as it was. Everything it reads is a stored field: the workflow, the broker's evidence pack, the project's already-failing set (the nightly
 // baseline and a maintainer's marks, `alreadyFailingForResults`), the follow-up full run and the stored ask. The view is a classifier answer (SH5) plus rows (`rovara-code/testing-section.ts`); anything that is
 // not decided, or does not fit the contract, is `undefined`, and an undecided result is never guessed.
+import { evidenceKeyOf } from "./evidence-port.js";
 import type { OrgId } from "@rovara-code/contracts";
 import { AUTO_FIX_DEFAULT_CAP_USD, wholeTaskSpendUsd, type EvidencePack, type TestingView } from "@rovara-code/contracts";
 import { autoFixAskCard, type AutoFixBudget, type WorkflowSnapshot } from "@agentx/cloud-contracts";
@@ -58,7 +59,7 @@ export async function loadTestingView(deps: TestingViewDeps, task: DeveloperTask
     const ask = blocked ? AutoFixAskSchema.safeParse(task.autofixAsk) : undefined;
     const asked = ask?.success === true && ask.data.workflowRevision === workflow.revision ? ask.data : undefined;
     if (blocked && asked === undefined && autofixOn(env)) return undefined;
-    const evidence = await deps.evidence?.pack({ taskId: task.taskId, ownerKey: task.ownerKey, workspaceId: task.workspaceId, orgId: task.orgId }, digest).catch(() => undefined);
+    const evidence = await deps.evidence?.pack(evidenceKeyOf(task), digest).catch(() => undefined);
     const fullSuite = await fullSuiteOf(deps, task, evidence, digest);
     if (fullSuite === "failed") return undefined;
     const store = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };

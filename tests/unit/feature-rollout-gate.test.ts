@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { BROKER_SETTINGS, ROLLOUT_FEATURE_CATALOG, orgFeatureRolloutKey, rolloutGateOn } from "@agentx/cloud-contracts";
 import type { OrgId } from "@rovara-code/contracts";
-import { companyFeatureOn, companyGatedEnv, createGateReader, effectiveFeature, installSwitchOn, ROLLOUT_INSTALL_VARIABLE, settingsFromItem } from "../../packages/broker/src/org/feature-rollout.js";
+import { isTemporaryAwsError } from "../../packages/broker/src/aws/broker-shared.js";
+import { companyFeatureOn, companyGatedEnv, createGateReader, effectiveFeature, installSwitchOn, isGateUnavailable, ROLLOUT_INSTALL_VARIABLE, settingsFromItem, unavailableEnv } from "../../packages/broker/src/org/feature-rollout.js";
 import { proofEvidenceEnabled } from "../../packages/broker/src/proof/switch.js";
 import { testEnvironmentEnabled } from "../../packages/broker/src/test-env/switch.js";
 import { testServicesEnabled } from "../../packages/broker/src/test-env/test-services-switch.js";
@@ -161,13 +162,31 @@ describe("the gated environment", () => {
     expect(readers(await companyGatedEnv(store({ proofEvidence: true }).deps, undefined, ON, { onReadFailure: "throw" }))).toEqual(ALL_OFF);
   });
 
-  it("a read that fails with onReadFailure \"default\" follows the catalog default: the four existing features follow the install, and the log says so", async () => {
+  it("a read that fails with a temporary AWS error is rethrown as that error (so every caller that retries a throttle retries this), marked as a gate failure", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    expect(readers(await companyGatedEnv(brokenStore(), ORG_A, ON, { onReadFailure: "default" }))).toEqual(ALL_ON);
-    expect(readers(await companyGatedEnv(brokenStore(), ORG_A, { PROOF_EVIDENCE_ENABLED: "0", VERIFY_RESULTS_ENABLED: "1" }, { onReadFailure: "default" }))).toEqual({ ...ALL_OFF, verify: true });
-    const lines = log.mock.calls.map((call) => String(call[0]));
+    const throttle = Object.assign(new Error("throttled"), { name: "ProvisionedThroughputExceededException" });
+    const error = await companyGatedEnv({ documentClient: { send: async () => { throw throttle; } }, tableName: "state", now: () => 0 }, ORG_A, ON, { onReadFailure: "throw" }).catch((caught: unknown) => caught);
     log.mockRestore();
-    expect(lines.some((line) => line.includes("feature_rollout_read_failed"))).toBe(true);
+    expect(error).toBe(throttle);
+    expect(isGateUnavailable(error)).toBe(true);
+    expect(isTemporaryAwsError(error)).toBe(true);
+    expect(isGateUnavailable(new Error("throttled"))).toBe(false);
+  });
+
+  it("an unavailable environment throws RUNTIME_UNAVAILABLE when a gated switch is read, says which gate in one counter line, and lets every other variable and a spread through", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const env = unavailableEnv({ ...ON, OTHER: "x" });
+    expect(env["OTHER"]).toBe("x");
+    expect({ ...env }["OTHER"]).toBe("x");
+    for (const read of [proofEvidenceEnabled, verifyResultsEnabled, testEnvironmentEnabled, testServicesEnabled]) {
+      let thrown: unknown;
+      try { read(env); } catch (caught) { thrown = caught; }
+      expect(thrown, read.name).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    }
+    const lines = log.mock.calls.map((call) => JSON.parse(String(call[0])) as { event: string; gate: string });
+    log.mockRestore();
+    expect(lines.map((line) => line.event)).toEqual(Array(4).fill("developer.feature_rollout_unavailable"));
+    expect(lines.map((line) => line.gate)).toEqual(["proofEvidence", "verifyResults", "testEnvironment", "testServices"]);
   });
 
   it("reads nothing when the install has every gated switch off", async () => {

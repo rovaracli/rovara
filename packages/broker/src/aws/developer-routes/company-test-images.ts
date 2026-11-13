@@ -104,7 +104,8 @@ async function stateOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller
 
 /** The reply, or undefined when a switch is off or the path is not this file's. */
 export async function routeCompanyTestImages(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = routeEnvOf(deps)): Promise<StatusReply | undefined> {
-  if (!companyTestImagesEnabled(env) || url.pathname !== COMPANY_TEST_IMAGES_PATH) return undefined;
+  // The path first: a request for any other path reads no gated switch (TE-A1).
+  if (url.pathname !== COMPANY_TEST_IMAGES_PATH || !companyTestImagesEnabled(env)) return undefined;
   if (request.method !== "GET" && request.method !== "POST") return undefined;
   const imageDeps = companyImageDepsOf(deps, env);
   const orgId: OrgId = caller.orgId;

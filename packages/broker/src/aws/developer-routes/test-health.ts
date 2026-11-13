@@ -49,9 +49,9 @@ async function stateOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: str
 
 /** The reply, or undefined when the switch is off or the path is not this one. */
 export async function routeTestHealth(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = routeEnvOf(deps)): Promise<StatusReply | undefined> {
-  if (!healthWiringOn(env)) return undefined;
+  // The path first: a request for any other path reads no gated switch (TE-A1).
   const match = TEST_HEALTH_PATH.exec(url.pathname);
-  if (match === null) return undefined;
+  if (match === null || !healthWiringOn(env)) return undefined;
   if (request.method !== "GET" && request.method !== "POST") return undefined;
   const { name, role } = await projectRoleForRoute(deps, caller, match[1]!);
   if (request.method === "GET") return new StatusReply(200, await stateOf(deps, caller.orgId, name));
