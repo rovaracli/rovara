@@ -31,6 +31,16 @@ export class RealtimeEvents extends Construct {
     }, Duration.seconds(10));
     // Exactly what it reads: sessions, shares, followers' grants, Task People entries and the org's catalog by key or one partition, and the token key's public half.
     this.authorizer.addToRolePolicy(new iam.PolicyStatement({ actions: ["dynamodb:GetItem", "dynamodb:Query"], resources: [props.state.tableArn] }));
+    // REALTIME-NAME-IAM (0.5.15.1): a session subscribe resolves the owner's name (resolveSessionAccess to replacementNames), which reads the DEVELOPER_NAME# rows with one BatchGetItem (readNameItems,
+    // chosen-name.ts). Without this statement DynamoDB refused it and the owner read "A member" (name_resolver_unavailable, found live on 0.5.15). BatchGetItem on that one partition only, with the Null guard.
+    this.authorizer.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:BatchGetItem"],
+      resources: [props.state.tableArn],
+      conditions: {
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["DEVELOPER_NAME#*"] },
+        Null: { "dynamodb:LeadingKeys": "false" },
+      },
+    }));
     this.authorizer.addToRolePolicy(new iam.PolicyStatement({ actions: ["kms:GetPublicKey"], resources: [props.tokenKey.keyArn] }));
     props.allowPublicKeyRead(this.authorizer.role!);
 

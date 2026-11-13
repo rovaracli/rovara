@@ -55,7 +55,8 @@ export interface DeveloperTaskActions {
   /** Whether the exact operation already owns a committed candidate source export. */
   workflowCandidateSourceExportDigest(workspaceId: string, operationId: string): Promise<string | undefined>;
   /** At most `limit` events, newest first. Unchecked: callers must load the owned task and check project access first. */
-  eventsNewestFirst(operationId: string, limit: number): Promise<StoredEvent[]>;
+  /** `workspaceId`: where a core task's events are kept (D18); a Cloud task's are found without it. */
+  eventsNewestFirst(operationId: string, limit: number, workspaceId?: string): Promise<StoredEvent[]>;
   /** The operation's artifacts, across all pages. Unchecked: callers must load the owned task and check project access first. */
   artifacts(workspaceId: string, operationId: string): Promise<StoredArtifact[]>;
   /** The first `maxBytes` of an artifact. Unchecked: callers must load the owned task and check project access first. */

@@ -19,6 +19,7 @@ import { deriveTaskStatus, recentTaskEvents, taskKey, taskPointerKey, tryEffecti
 import { notifySessionChange } from "./notice-sink.js";
 import { taskStatusOf } from "./task-status.js";
 import { queueAttention } from "../notifications/attention.js";
+import { coreOperationEvents } from "../cloud/rows/core-rows.js";
 import { settleSteerDeliveriesFor } from "./steer.js";
 import { AgentSessionStore, sessionEventItem } from "./store.js";
 
@@ -199,8 +200,10 @@ const taskSpend = async (deps: SummaryDependencies, orgId: OrgId, taskId: string
 };
 
 /** The newest readable line of an operation's events, redacted and cut. */
-async function peekOf(deps: SummaryDependencies, operationId: string): Promise<string | undefined> {
-  const rows = await queryPrefix(deps, `OPERATION#${operationId}`, "EVENT#", { limit: 50, newestFirst: true });
+async function peekOf(deps: SummaryDependencies, operationId: string, workspaceId: string): Promise<string | undefined> {
+  const cloudRows = await queryPrefix(deps, `OPERATION#${operationId}`, "EVENT#", { limit: 50, newestFirst: true });
+  // An operation of a core task keeps its events under its workspace (D18): looked for only where Cloud's own partition has none.
+  const rows = cloudRows.length > 0 ? cloudRows : await coreOperationEvents(deps, workspaceId, operationId, { limit: 50, newestFirst: true });
   const events: StoredEvent[] = rows.flatMap((row) => typeof row["sequence"] === "number" && typeof row["type"] === "string" && typeof row["timestamp"] === "string"
     ? [{ sequence: row["sequence"], type: row["type"], timestamp: row["timestamp"], payload: row["payload"] }] : []);
   const line = recentTaskEvents(events, 1)[0]?.text;
@@ -382,7 +385,7 @@ async function taskState(deps: SummaryDependencies, session: AgentSessionRecord,
     if ((workflow?.stage === "PLAN_REVIEW" || workflow?.stage === "UNDERSTAND") && workflow.state === "WAITING" && !needsPeople.includes(waitingOwner)) needsPeople.push(waitingOwner);
   }
   // An event log that can't be read keeps the peek the summary had: a failed read is not a reason to blank it.
-  const peek = derived.current === undefined ? undefined : await peekOf(deps, derived.current.id).catch((error: unknown) => {
+  const peek = derived.current === undefined ? undefined : await peekOf(deps, derived.current.id, task.workspaceId).catch((error: unknown) => {
     log(deps, { event: "agent_session.peek_unreadable", sessionId: session.sessionId, error: error instanceof Error ? error.name : "unknown" });
     return session.summary.peek;
   });

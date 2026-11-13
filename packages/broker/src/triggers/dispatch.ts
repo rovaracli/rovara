@@ -4,6 +4,7 @@
 //   often it arrives); 4. the trigger's allowance for the hour; 5. the org's allowance for the day; 6. the start, as the owner the run needs. A refusal is recorded by its code, never by
 //   its words; a fault that may pass is thrown after the other triggers have been tried, so the vendor sends the event again and the identity makes the repeat harmless.
 // Nothing in a log line is text the sender wrote: only ids, an outcome and a code.
+import { AUTOMATIONS_OFF_MESSAGE } from "../chains/automations-gate.js";
 import { createHash } from "node:crypto";
 import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, CHAIN_MAX_CONCURRENT_RUNS, INDEX_EXPIRY_ATTRIBUTE, ORG_MAX_AUTONOMOUS_RUNS_PER_DAY, TRIGGER_SUBJECT_GUARD_MINUTES, TRIGGER_MAX_RUNS_PER_HOUR, TriggerEventSchema, agentXError, isBuiltinAgentId, orgAutonomousKey, triggerRateKey, triggerSubjectKey, triggerSummary as eventSummary, type AgentId, type ChainRunStartedBy, type EventSource, type OrgId, type TriggerEvent, type TriggerOutcome } from "@rovara-code/contracts";
@@ -268,6 +269,8 @@ export interface AutonomousSource {
 /** Starts a chain trigger's run: a member's chain runs as its member; a project's, as the maintainer who turned the trigger on (who answers for what it does). Either is read as whoever a merged developer became. */
 export async function startChainFor(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, identity: string, source: AutonomousSource): Promise<{ runId: string }> {
   if (trigger.target.kind !== "chain") throw new Error("not a chain trigger");
+  // Owner decision 143(c): a chain trigger starts nothing while automations are off.
+  if (deps.automations?.enabled() === false) throw agentXError("NOT_AVAILABLE_HERE", AUTOMATIONS_OFF_MESSAGE);
   // srv/automations (E-52): a run nobody watches starts only under an enforced dollar cap. Without the spend engine's admission the runner would not hold it to the
   // chain's monthly budget, so it is refused (a final refusal, recorded as the trigger's activity), never started unchecked.
   if (deps.chainRuns?.admission === undefined) throw agentXError("CHAIN_BUDGET_REQUIRED", "This chain can't start a run on its own here: spend limits are not enforced in this deployment.");
@@ -287,6 +290,8 @@ export async function startChainFor(deps: TriggerDispatchDependencies, orgId: Or
 /** Starts an agent trigger's task, as the agent's owner (for a built-in, the maintainer who turned the trigger on), paid by the agent. */
 export async function startAgentFor(deps: TriggerDispatchDependencies, orgId: OrgId, trigger: TriggerRecord, identity: string, source: AutonomousSource): Promise<{ taskId: string }> {
   if (trigger.target.kind !== "agent") throw new Error("not an agent trigger");
+  // Owner decision 143(c): an agent trigger starts nothing while automations are off.
+  if (deps.automations?.enabled() === false) throw agentXError("NOT_AVAILABLE_HERE", AUTOMATIONS_OFF_MESSAGE);
   if (deps.chainRuns === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "runs are not set up in this deployment");
   const agentId: AgentId = trigger.target.agentId;
   const record = isBuiltinAgentId(agentId) ? await deps.store.ensureBuiltinSettings(orgId, agentId) : await deps.store.get(orgId, agentId);

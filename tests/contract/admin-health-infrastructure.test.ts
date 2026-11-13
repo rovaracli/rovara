@@ -347,6 +347,14 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/aws/private-address-launch-record.ts",
       // Customer test accounts (TA2, test-access/dynamo-store.ts): the one-use connection token item (its expiry plus a day) and the polling-fallback item (while `polling`, its deadline plus an hour). Neither is a record of the connection, which carries no expiry here.
       "packages/broker/src/test-access/dynamo-store.ts",
+      // Convergence S0, D12 (retention): the retention-review migration reads and removes the core's expiry (it deletes none); it does not write one. Wrapper proof: tests/unit/cloud-app-retention.test.ts.
+      "packages/broker/src/cloud/migrations/plugins/retention-review.ts",
+      // Convergence S0, D12: the migration list only names the `indexExpiresAt` scan for the retention-review migration (reads and removes the expiry only). Wrapper proof: tests/unit/cloud-app-retention.test.ts.
+      "packages/broker/src/cloud/migrations/index.ts",
+      // Convergence S0, D12: the retention wrapper (cloudRetentionStore, applied to every storage module in cloud/app/registry.ts) strips the core's expiry from every kind Cloud does not already expire; the file names the attribute in comments and strips it. Tested in tests/unit/cloud-app-retention.test.ts.
+      "packages/broker/src/cloud/app/retention.ts",
+      // Convergence S0, D12: names the TTL attribute for the core's DynamoDB store; safe only because the retention.ts wrapper strips the core's expiry from the extra kinds (approvals, decisions, proof markers); proof: tests/unit/cloud-app-retention.test.ts and tests/unit/cloud-app.test.ts ("stores through Cloud's retention rule").
+      "packages/broker/src/cloud/app/cloud-modules.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

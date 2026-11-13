@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): createAwsBrokerHandler: the request router.
 
+import { stopTriggerTasksWhenOff } from "../../chains/automations-stop.js";
 import { outsidePushTarget } from "../../rovara-code/outside-push.js";
 import { attentionDeliveryOf } from "./attention-wiring.js";
 import { deliverAttention } from "../../notifications/attention.js";
@@ -438,7 +439,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       try {
         const chainDependencies = chainRunnerDependenciesOf(dependencies, tasks, agents);
         if (chainDependencies === undefined) return json({ skipped: true }, "chain-sweep");
-        const runs = await sweepChainRuns(chainDependencies, Date.now());
+        const swept = await sweepChainRuns(chainDependencies, Date.now());
+        // Owner decision 143(c): with automations off, the tasks a trigger started on its own are stopped too (at a safe point). Reported only then, so the answer is unchanged while they are on.
+        const triggerStop = chainDependencies.automations?.enabled() === false ? await stopTriggerTasksWhenOff(chainDependencies).catch(() => ({ failed: 1 })) : undefined;
+        const runs = triggerStop === undefined ? swept : { ...swept, automationStop: triggerStop };
         // Plan 4 Task 26: the same sweep drains up to 10 schedule dead letters and repairs schedules still pending; its part never changes what the sweep of runs answers where schedules are not set up.
         const deadLetters = dependencies.agents?.scheduleDeadLetters;
         if (chainDependencies.triggerSchedules === undefined && deadLetters === undefined) return json(runs, "chain-sweep");

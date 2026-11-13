@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): queued first tasks, terminal results, GitHub workflow events, merge recovery.
 
+import { coreOperationEvents } from "../../cloud/rows/core-rows.js";
 import { type prepareTurnModelFallback, type prepareTaskModelFallback, joinTaskModelFallback } from "../../model-selection/fallback-record.js";
 import { createHash, randomUUID } from "node:crypto";
 import { GetCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
@@ -268,9 +269,11 @@ export const TASK_POINTER_KINDS: ReadonlySet<string> = new Set(["prepare", "task
 export const cancelledTargetStatus = (cancelStatus: OperationStatus): OperationStatus => (cancelStatus === "SUCCEEDED" ? "CANCELLED" : "INTERRUPTED");
 
 /** At most `limit` of an operation's events, newest first, across pages. */
-export async function operationEventsNewestFirst(dependencies: AwsBrokerDependencies, operationId: string, limit: number): Promise<StoredEvent[]> {
-  const items = await queryAllItems(dependencies, `OPERATION#${operationId}`, "EVENT#", { limit, newestFirst: true });
-  return items.filter((item) => item.entityType === "EVENT").map((item) => parseStoredEvent(item));
+export async function operationEventsNewestFirst(dependencies: AwsBrokerDependencies, operationId: string, limit: number, workspaceId?: string): Promise<StoredEvent[]> {
+  const items = (await queryAllItems(dependencies, `OPERATION#${operationId}`, "EVENT#", { limit, newestFirst: true })).filter((item) => item.entityType === "EVENT");
+  // An operation of a core task keeps its events under its workspace (D18): looked for only where Cloud's own partition has none.
+  const found = items.length > 0 || workspaceId === undefined ? items : await coreOperationEvents(dependencies, workspaceId, operationId, { limit, newestFirst: true });
+  return found.map((item) => parseStoredEvent(item));
 }
 
 /**
@@ -341,7 +344,7 @@ export async function completedTurnItems(
     return [];
   }
   // A task's summary is its last assistant message; a publish's is its pull request.
-  const events = ended.operation.kind === "task" ? (await operationEventsNewestFirst(dependencies, ended.operation.id, 500)).reverse() : [];
+  const events = ended.operation.kind === "task" ? (await operationEventsNewestFirst(dependencies, ended.operation.id, 500, ended.operation.workspaceId)).reverse() : [];
   let item: Record<string, unknown>;
   try {
     item = completedTurn({ task, pointer, operation: ended.operation, status: ended.status, events, now });
