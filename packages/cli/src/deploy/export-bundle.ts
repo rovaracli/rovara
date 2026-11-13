@@ -192,7 +192,7 @@ function accessDeployerStatements(scope: { env: string; partition: string; regio
     `arn:${partition}:iam::${account}:role/${environmentCloudFormationRoleName(env)}`,
     `arn:${partition}:iam::${account}:role/${environmentOperatorRoleName(env)}`,
   ];
-  // 0.5.17: and the deploy role's own boundary (agentx-<env>-deploy-boundary), the second managed policy the stack creates.
+  // 0.5.17: and the deploy role's own boundary (agentx-<env>--deploy-boundary), the second managed policy the stack creates.
   const boundaryArns = [defaultBoundaryArn({ env, partition, account }), deployRoleBoundaryArn({ env, partition, account })];
   const bucketArn = `arn:${partition}:s3:::${environmentStackName(env, "access")}-*`;
   const serviceLinkedRoleArn = `arn:${partition}:iam::${account}:role/aws-service-role/*`;
@@ -527,7 +527,7 @@ pull-through cache rule, and the two IAM roles every later stack needs.
   environment.
 - \`agentx-${env}-boundary\` (only when no permissions boundary ARN is given): the default
   permission boundary applied to the operator role and every role the later stacks create.
-- \`agentx-${env}-deploy-boundary\` (only when no permissions boundary ARN is given): the
+- \`agentx-${env}--deploy-boundary\` (only when no permissions boundary ARN is given): the
   CloudFormation role's own boundary: the default one plus the Certificate Manager and Route 53
   actions its certificate and DNS record grants need, which no other role's boundary allows. A
   company boundary given instead must allow those actions too (see \`policies/deploy-role-boundary.json\`).

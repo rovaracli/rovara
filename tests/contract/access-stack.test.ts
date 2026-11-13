@@ -128,7 +128,7 @@ describe("access stack", () => {
     expect(managedPolicies.map(([id]) => id).sort()).toEqual(["DefaultPermissionsBoundary", "DeployRolePermissionsBoundary"]);
     const [, policy] = managedPolicies.find(([id]) => id === "DeployRolePermissionsBoundary")!;
     expect(policy.Condition).toBe("UseDefaultBoundary");
-    expect(policy.Properties.ManagedPolicyName).toBe("agentx-staging-deploy-boundary");
+    expect(policy.Properties.ManagedPolicyName).toBe("agentx-staging--deploy-boundary");
     expect(policy.Properties.Path).toBe("/agentx/staging/");
     const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
     expect(statements.every((st) => st.Sid === undefined)).toBe(true);

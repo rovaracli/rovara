@@ -2,7 +2,7 @@
 // 0.5.15 found that out on staging: ModelProxyTlsDeployPolicy's acm and route53 actions were outside agentx-<env>-boundary, and the older checks missed it because they read only the
 // roles' inline policies and skipped the custom domain's statements.
 //
-// The fix (review M-1): the deploy role gets a boundary of its own, agentx-<env>-deploy-boundary (deployRoleBoundaryStatements: the default boundary plus the acm/route53 ceiling and ECR's
+// The fix (review M-1): the deploy role gets a boundary of its own, agentx-<env>--deploy-boundary (deployRoleBoundaryStatements: the default boundary plus the acm/route53 ceiling and ECR's
 // service-linked role), and the default boundary, the ceiling of every role the deploy creates, keeps no acm or route53 action at all.
 //
 // The general guard: synthesize the access stack in every shape that changes a role's grants (plain, hosted cloud with its custom domain and the Team record, model proxy TLS with a requested
@@ -16,8 +16,9 @@ import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import {
-  BOUNDARY_APPSYNC_NAMESPACE_ACTIONS, DEPLOY_ROLE_BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS, defaultBoundaryArn, defaultBoundaryStatements, deployRoleBoundaryArn, deployRoleBoundaryStatements, serviceRoleStatements as serviceStatementsFor, type PolicyStatementJson,
+  BOUNDARY_APPSYNC_NAMESPACE_ACTIONS, DEPLOY_ROLE_BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS, defaultBoundaryArn, defaultBoundaryStatements, deployRoleBoundaryArn, deployRoleBoundaryName, deployRoleBoundaryStatements, serviceRoleStatements as serviceStatementsFor, type PolicyStatementJson,
 } from "../../infra/lib/access-policies.js";
+import { EnvironmentNameSchema, defaultBoundaryName } from "@rovara-code/contracts";
 import { MODEL_PROXY_TLS_CONTEXT_KEYS as T, MODEL_PROXY_TLS_PREVIOUS_CONTEXT_KEYS as P } from "../../infra/lib/model-proxy-tls.js";
 import { evaluate, type CfnContext } from "../support/cfn-evaluate.js";
 import { simulateIam, type IamStatement } from "../support/iam-simulate.js";
@@ -295,4 +296,26 @@ describe("only the deploy role is granted any acm or route53 action", () => {
       }
     }
   }, 400_000);
+});
+
+describe("the deploy role's boundary name can never be another environment's default boundary name (re-review L1)", () => {
+  // IAM managed policy names are unique per account whatever the path, so agentx-x-deploy-boundary would clash with the default boundary of an environment named x-deploy.
+  it("is agentx-<env>--deploy-boundary, and the only environment whose default boundary would carry that name is refused", () => {
+    expect(deployRoleBoundaryName("staging")).toBe("agentx-staging--deploy-boundary");
+    for (const env of ["staging", "production", "x", "agentxlivetest123", "a".repeat(20), "x-deploy", "deploy"]) {
+      expect(EnvironmentNameSchema.safeParse(env).success, env).toBe(true);
+      const name = deployRoleBoundaryName(env);
+      // The default boundary is agentx-<other>-boundary: the one <other> that would produce this name.
+      const other = name.slice("agentx-".length, -"-boundary".length);
+      expect(defaultBoundaryName(other)).toBe(name);
+      expect(EnvironmentNameSchema.safeParse(other).success, `${other} must not be an environment name`).toBe(false);
+      // And no valid environment's default boundary equals it, the tricky neighbours included.
+      for (const neighbour of [env, `${env}-deploy`, `${env}-d`, "deploy"]) {
+        if (EnvironmentNameSchema.safeParse(neighbour).success) expect(defaultBoundaryName(neighbour), neighbour).not.toBe(name);
+      }
+    }
+    // The clash the old name had: x's deploy boundary was x-deploy's default boundary.
+    expect(defaultBoundaryName("x-deploy")).toBe("agentx-x-deploy-boundary");
+    expect(deployRoleBoundaryName("x")).not.toBe("agentx-x-deploy-boundary");
+  });
 });

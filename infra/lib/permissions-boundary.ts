@@ -76,7 +76,7 @@ const applied = new WeakMap<Stack, PermissionsBoundaryParameter>();
 const OWN_BOUNDARIES = new WeakMap<iam.CfnRole, string>();
 
 /**
- * 0.5.17 (review M-1): gives one role its own boundary instead of the stack's effective boundary. The access stack's deploy role uses it for `agentx-<env>-deploy-boundary` (the default
+ * 0.5.17 (review M-1): gives one role its own boundary instead of the stack's effective boundary. The access stack's deploy role uses it for `agentx-<env>--deploy-boundary` (the default
  * boundary plus the Certificate Manager and Route 53 ceiling its own grants need), so the default boundary, which every role the deploy creates carries, stays without them. The aspect still
  * refuses a role that sets PermissionsBoundary itself.
  */

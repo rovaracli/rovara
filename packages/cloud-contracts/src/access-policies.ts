@@ -581,9 +581,13 @@ export function defaultBoundaryArn(scope: Pick<PolicyScope, "env" | "partition" 
   return `arn:${scope.partition}:iam::${scope.account}:policy${environmentRolePath(scope.env)}${defaultBoundaryName(scope.env)}`;
 }
 
-/** The deploy (CloudFormation service) role's own boundary (0.5.17): `agentx-<env>-deploy-boundary`, under the environment's path. Not matched by the broker grant policies' `agentx-<env>-broker-*`. */
+/**
+ * The deploy (CloudFormation service) role's own boundary (0.5.17): `agentx-<env>--deploy-boundary`, under the environment's path. Not matched by the broker grant policies' `agentx-<env>-broker-*`.
+ * The doubled hyphen is on purpose (re-review L1): IAM policy names are unique per account whatever their path, and `agentx-<env>-deploy-boundary` would be the DEFAULT boundary's name of an
+ * environment called `<env>-deploy`. An environment name never holds `--` (EnvironmentNameSchema), so no environment's default boundary, `agentx-<name>-boundary`, can take this name.
+ */
 export function deployRoleBoundaryName(env: string): string {
-  return `agentx-${env}-deploy-boundary`;
+  return `agentx-${env}--deploy-boundary`;
 }
 
 export function deployRoleBoundaryArn(scope: Pick<PolicyScope, "env" | "partition" | "account">): string {
@@ -844,7 +848,7 @@ export function deployRoleBoundaryStatements(scope: Pick<PolicyScope, "env" | "p
       case "AppSyncEvents": return { ...statement, Action: withBoundaryNamespacePattern(statement.Action) };
       case "AppSyncEventsCreate": return { ...statement, Sid: "UnscopedInRegion", Action: [...statement.Action, ...regionHeld.Action] };
       case "ServiceLinkedRoles": return { ...statement, Condition: { StringLike: { "iam:AWSServiceName": [...SERVICE_LINKED_ROLE_SERVICES, ECR_TEMPLATE_SERVICE] } } };
-      // Both boundaries in one ARN pattern (agentx-<env>-*boundary: agentx-<env>-boundary and agentx-<env>-deploy-boundary), for room; a wider Deny refuses more, never less.
+      // Both boundaries in one ARN pattern (agentx-<env>-*boundary: agentx-<env>-boundary and agentx-<env>--deploy-boundary), for room; a wider Deny refuses more, never less.
       case "DenyBoundaryChanges": return { ...statement, Resource: defaultBoundaryArn(scope).replace(/agentx-([^/]+)-boundary$/u, "agentx-$1-*boundary") };
       default: return statement;
     }

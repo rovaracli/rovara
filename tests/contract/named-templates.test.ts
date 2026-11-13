@@ -271,7 +271,7 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // moved), and the CLI stops passing it (tests/contract/callback-key-param-upgrade.test.ts). The legacy install's snapshot is not touched: its frozen template keeps the parameter and its variable.
 // No other snapshot moved.
 // 2026-11-12 (fix/0517-tls-boundary, MODEL-PROXY-TLS-BOUNDARY-BLOCKER, review M-1): the agentx-staging-access snapshot was re-recorded for one added managed policy, DeployRolePermissionsBoundary
-// (agentx-staging-deploy-boundary), and the deploy role's PermissionsBoundary else branch now naming it. The default boundary itself did not move.
+// (agentx-staging--deploy-boundary), and the deploy role's PermissionsBoundary else branch now naming it. The default boundary itself did not move.
 describe("named environment templates", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   for (const stack of stacks) {

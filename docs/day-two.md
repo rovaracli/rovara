@@ -88,6 +88,11 @@ Without `--to`, it upgrades to the release of the `agentx` you run. So
 The access stack deploys first, so the CloudFormation role can create the broker's
 `agentx-<env>-broker-*` managed policies before the control plane needs them.
 
+Upgrading to 0.5.17 or later from an earlier release also gives the CloudFormation role its own permissions boundary,
+`agentx-<env>--deploy-boundary`, changed in place. Whoever deploys the access stack needs `iam:CreatePolicy` on that
+policy and `iam:PutRolePermissionsBoundary` on `agentx-<env>-cloudformation`. See
+[the model proxy TLS notes](architecture/model-proxy-tls.md#0517-upgrade-and-runbook-notes-the-deploy-roles-own-boundary).
+
 It prints the release notes, then deploys each stack in turn. For each stack it shows the change
 set (or, for a cdk environment, `cdk diff`), lists IAM changes on their own, and asks before
 deploying. It stops before any change that replaces or deletes a table, user pool, bucket, KMS
