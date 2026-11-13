@@ -105,7 +105,7 @@ describe("the service role and the default boundary are untouched", () => {
     const services = statements.find((statement) => statement.Sid === "Services")!.Action;
     expect(services).toEqual(expect.arrayContaining(["s3:*", "kms:*", "dynamodb:*"]));
   });
-  it("the default boundary is 6,026 of 6,144 in the worst case (6,086 before the two role list actions became the one iam:List*RolePolicies pattern, exactly those two, saving 60; 6,014 before 0.5.15's company image mirror role was named in the lookup list, 72 for its one exact ARN; integ/054 tightened it from 6,048 to 5,585; TR-SWITCH-B1/B2 added 429 for the Team record's three services, Glue reads, GetDataAccess, the vector role and the sharing Deny)", () => {
-    expect(size(withoutSids(defaultBoundaryStatements(scope("a".repeat(20)))))).toBe(6026);
+  it("the default boundary is 5,663 of 6,144 in the worst case (6,026 before 0.5.18 named the role, role lookup and managed-policy actions with exact patterns and merged the two Denies on \"*\", saving 363; 6,086 before the two role list actions became the one iam:List*RolePolicies pattern, exactly those two, saving 60; 6,014 before 0.5.15's company image mirror role was named in the lookup list, 72 for its one exact ARN; integ/054 tightened it from 6,048 to 5,585; TR-SWITCH-B1/B2 added 429 for the Team record's three services, Glue reads, GetDataAccess, the vector role and the sharing Deny)", () => {
+    expect(size(withoutSids(defaultBoundaryStatements(scope("a".repeat(20)))))).toBe(5663);
   });
 });

@@ -150,16 +150,24 @@ describe("the deploy role's grants for the custom domain (access stack)", () => 
     const role = resourcesOf(json, "AWS::IAM::Role").find(([id]) => id === "CloudFormationServiceRole")![1];
     return serviceRoleWithSids((role.Properties.Policies as Array<{ PolicyDocument: { Statement: Array<Record<string, unknown>> } }>)[0]!.PolicyDocument.Statement);
   };
-  /** The custom domain's statements as the role has them for these parameter values (an Fn::If that holds NoValue grants nothing). */
-  const granted = (json: Json, parameters: Record<string, string>) => statements(json)
-    .filter((statement) => JSON.stringify(statement).includes("CustomDomainEnabled"))
-    .map((statement) => evaluate(literal(statement), { parameters, conditions: json.Conditions, pseudo: { "AWS::Partition": "aws", "AWS::Region": "us-west-2", "AWS::AccountId": "944937319445" } }))
-    .filter((statement) => statement !== undefined) as Array<{ Sid: string; Action: string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>> }>;
+  /** The custom domain's statements as the role has them for these parameter values: since 0.5.18, the managed policy CustomDomainDeployPolicy, which exists only under CustomDomainEnabled. */
+  const granted = (json: Json, parameters: Record<string, string>) => {
+    const policy = json.Resources.CustomDomainDeployPolicy;
+    if (policy === undefined || !(evaluate({ Condition: policy.Condition }, { parameters, conditions: json.Conditions }) as boolean)) return [];
+    return (evaluate(literal((policy.Properties.PolicyDocument as { Statement: unknown }).Statement), { parameters, conditions: json.Conditions, pseudo: { "AWS::Partition": "aws", "AWS::Region": "us-west-2", "AWS::AccountId": "944937319445" } }) as unknown[])
+      .filter((statement) => statement !== undefined) as Array<{ Sid: string; Action: string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>> }>;
+  };
 
   it("grants nothing for it by default, and nothing at all to an environment that is not the hosted cloud", () => {
     expect(granted(access, off)).toEqual([]);
-    // Six statements (seven before 0.5.17 merged GetChange into the zone list) exist in the template, each behind the condition: the cloud access stack carries them, and the plain one does not.
-    expect(statements(access).filter((statement) => JSON.stringify(statement).includes("CustomDomainEnabled"))).toHaveLength(6);
+    // 0.5.18: the six statements (seven before 0.5.17 merged GetChange into the zone list) are the managed policy CustomDomainDeployPolicy, behind the condition and attached to the deploy role alone;
+    // the role's inline policy has none of them. The cloud access stack carries the policy, and the plain one does not.
+    const policy = access.Resources.CustomDomainDeployPolicy!;
+    expect(policy.Condition).toBe("CustomDomainEnabled");
+    expect(policy.Properties.Roles).toEqual([{ Ref: "CloudFormationServiceRole" }]);
+    expect((policy.Properties.PolicyDocument as { Statement: unknown[] }).Statement).toHaveLength(6);
+    expect(JSON.stringify(statements(access))).not.toMatch(/"(acm|route53):|CustomDomain/u);
+    expect(plainAccess.Resources.CustomDomainDeployPolicy).toBeUndefined();
     expect(JSON.stringify(statements(plainAccess))).not.toContain("acm:");
     expect(JSON.stringify(statements(plainAccess))).not.toContain("route53:");
   });
@@ -212,13 +220,11 @@ describe("the deploy role's grants for the custom domain (access stack)", () => 
 describe("adding, removing and re-adding the domain never leaves a resource without the grants to change it", () => {
   const POSITIONS = { on: { name: DOMAIN, zone: ZONE }, off: { name: "", zone: "" } } as const;
   type Place = keyof typeof POSITIONS;
+  /** How many custom-domain statements the deploy role holds with these parameters: CustomDomainDeployPolicy's, when it exists (0.5.18). */
   const accessGrants = (place: Place) => {
-    const role = resourcesOf(access, "AWS::IAM::Role").find(([id]) => id === "CloudFormationServiceRole")![1];
+    const policy = access.Resources.CustomDomainDeployPolicy!;
     const parameters = { CustomDomainName: POSITIONS[place].name, CustomDomainHostedZoneId: POSITIONS[place].zone };
-    return (role.Properties.Policies as Array<{ PolicyDocument: { Statement: unknown[] } }>)[0]!.PolicyDocument.Statement
-      .filter((statement) => JSON.stringify(statement).includes("CustomDomainEnabled"))
-      .map((statement) => evaluate(literal(statement), { parameters, conditions: access.Conditions, pseudo: { "AWS::Partition": "aws", "AWS::Region": "us-west-2", "AWS::AccountId": "944937319445" } }))
-      .filter((statement) => statement !== undefined).length;
+    return evaluate({ Condition: policy.Condition }, { parameters, conditions: access.Conditions }) ? (policy.Properties.PolicyDocument as { Statement: unknown[] }).Statement.length : 0;
   };
   /** The custom domain's resources the control plane has with these parameters (conditions evaluated on the template's own definition). */
   const controlResources = (place: Place) => Object.entries(control.Resources).filter(([, resource]) => resource.Condition === "CustomDomainEnabled"
