@@ -52,7 +52,7 @@ RUN npx tsc -b packages/cloud-contracts packages/verifier packages/worker --pret
 RUN if [ "$CATALOG_FLAVOR" = staging ]; then \
       node_modules/.bin/esbuild --loader:.txt=ts --format=esm --platform=node --target=node22 --log-level=warning --outfile=packages/worker/ec2/tsl/live.mjs packages/worker/ec2/tsl/live-driver.ts.txt \
       && test -s packages/worker/ec2/tsl/live.mjs; \
-    else rm -rf packages/worker/ec2/tsl; fi
+    else rm -rf packages/worker/ec2/tsl packages/worker/ec2/su1; fi
 RUN npm prune --omit=dev --workspaces
 
 # The Docker CLI and Compose plugin, which run a project's devcontainer through the EC2 host's

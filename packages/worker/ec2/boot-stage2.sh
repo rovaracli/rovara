@@ -631,6 +631,9 @@ if [[ "$test_services_run_dir" == true ]]; then args+=(--volume "$TEST_SERVICES_
 # The opt-in TS-L self-test's result for THIS boot (stage 2 writes it under /run, which a reboot empties, so a restarted instance never reports an old one): one line of at most 3,000 characters in its one written form, else nothing.
 tsl_selftest_result=$(head -c 3001 /run/agentx/tsl-selftest 2>/dev/null | tr -d '\r\n' || true)
 if named_environment && [[ ${#tsl_selftest_result} -gt 0 && ${#tsl_selftest_result} -le 3000 && "$tsl_selftest_result" == '{"v":1,'* ]]; then args+=(--env "AGENTX_TEST_SERVICES_SELFTEST=$tsl_selftest_result"); fi
+# SU-1 has its own event; the worker strictly parses this single environment value.
+su1_result=$(head -c 3001 /run/agentx/su1-check 2>/dev/null | tr -d '\r\n' || true)
+if named_environment && [[ ${#su1_result} -gt 0 && ${#su1_result} -le 3000 && "$su1_result" == '{"v":1,'* ]]; then args+=(--env "AGENTX_SU1_CHECK_RESULT=$su1_result"); fi
 args+=(--volume "$DOCKER_SOCKET:$DOCKER_SOCKET" --group-add "$docker_gid" --log-driver awslogs --log-opt awslogs-region="$(sed -n 's/^AWS_REGION=//p' "$WORKER_ENV_FILE")" --log-opt awslogs-group="$(cat /etc/agentx/log-group)" --log-opt awslogs-stream="$(sed -n 's/^AGENTX_WORKSPACE_ID=//p' "$WORKER_ENV_FILE")/$(sed -n 's/^AGENTX_SESSION_GENERATION=//p' "$WORKER_ENV_FILE")/$(cat /etc/agentx/instance-id)" "$worker_image")
 exec "$docker" "${args[@]}"
 LAUNCHER
@@ -1017,7 +1020,7 @@ tsl_dk() {
 # The opt-in gate. Sets TSL_GATE to off (nothing at all happens and nothing is recorded), refused (recorded, nothing runs) or on.
 tsl_selftest_gate() {
   TSL_GATE=off; TSL_GATE_REASON=""; TSL_ENVIRONMENT=""
-  [[ "${AGENTX_TSL_SELFTEST:-}" == 1 ]] || return 0
+  [[ "${1-${AGENTX_TSL_SELFTEST:-}}" == 1 ]] || return 0
   if [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]]; then TSL_ENVIRONMENT=${BASH_REMATCH[1]}; fi
   if [[ "${AGENTX_ENVIRONMENT_KIND:-}" != named ]]; then TSL_GATE=refused; TSL_GATE_REASON=not_named; return 0; fi
   if [[ "$TSL_ENVIRONMENT" != "$TSL_ALLOWED_ENVIRONMENT" ]]; then TSL_GATE=refused; TSL_GATE_REASON=not_staging; return 0; fi
@@ -1025,22 +1028,22 @@ tsl_selftest_gate() {
 }
 # The account: the registry account of the worker image AND the account in the instance identity document (IMDSv2) must both be the staging account. An identity document that cannot be read is a refusal, never a pass.
 tsl_account_ok() {
-  local registry=${AGENTX_WORKER_IMAGE:-} token doc account
+  local registry=${AGENTX_WORKER_IMAGE:-} token doc account allowed=${1:-$TSL_ALLOWED_ACCOUNT}
   registry=${registry%%/*}
-  [[ "${registry%%.*}" == "$TSL_ALLOWED_ACCOUNT" ]] || return 1
+  [[ "${registry%%.*}" == "$allowed" ]] || return 1
   token=$(curl -fsS --connect-timeout 2 --max-time 3 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null) || return 1
   doc=$(curl -fsS --connect-timeout 2 --max-time 3 -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/dynamic/instance-identity/document 2>/dev/null) || return 1
   account=$(printf '%s' "$doc" | sed -n 's/.*"accountId" *: *"\([0-9]\{12\}\)".*/\1/p' | head -n1)
-  [[ "$account" == "$TSL_ALLOWED_ACCOUNT" ]]
+  [[ "$account" == "$allowed" ]]
 }
 # The four identity values, each only in its one written form, else `unknown`: AMI id (instance metadata), boot-stage2 SHA-256 (the launch's, which boot.sh already checked against the file it sourced), Docker version, instance id.
 tsl_identity() {
-  local ami="" version=""
+  local ami="" version="" docker_command=${2:-tsl_dk}
   TSL_AMI=unknown; TSL_BOOT2=unknown; TSL_DOCKER=unknown; TSL_INSTANCE=unknown
   if declare -F imds_once >/dev/null; then ami=$(imds_once ami-id 2>/dev/null | head -n1) || ami=""; fi
   [[ "$ami" =~ ^ami-[0-9a-f]{8,17}$ ]] && TSL_AMI=$ami
   [[ "${AGENTX_BOOT_STAGE2_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] && TSL_BOOT2=$AGENTX_BOOT_STAGE2_SHA256
-  version=$(tsl_dk version --format '{{.Server.Version}}' 2>/dev/null | head -n1) || version=""
+  version=$("$docker_command" version --format '{{.Server.Version}}' 2>/dev/null | head -n1) || version=""
   [[ "$version" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){0,3}(-[a-z0-9.]{1,12})?$ ]] && TSL_DOCKER=$version
   [[ "${1:-}" =~ ^i-[0-9a-f]{8,17}$ ]] && TSL_INSTANCE=$1
   return 0
@@ -1058,30 +1061,31 @@ tsl_budget_seconds() {
 tsl_normalize() { sed -E 's/ (expires|valid_lft|preferred_lft|age) [0-9a-z.]+//g; s/ ?(counter )?packets [0-9]+ bytes [0-9]+//g; s/ ?\[[0-9]+:[0-9]+\]//g'; }
 # What the host looks like, as text IN ORDER (never sorted: a rule moved below an ACCEPT is a different firewall): every table of iptables (filter, nat, mangle, raw) and, where it is usable, ip6tables; the nft ruleset (stateless) when nft is
 # there; routes of every table, ip rules and the interface names. Fails (returns 1) when anything that should be readable was not: an unread table proves nothing.
+tsl_snapshot_command() { local seconds=$1; shift; timeout --kill-after=3s "${seconds}s" "$@"; }
 tsl_snapshot() {
-  local out=$1 table text tool
+  local out=$1 table text tool snapshot_command=${2:-tsl_snapshot_command}
   tsl_past_deadline && return 1
   : >"$out" || return 1
   for tool in iptables ip6tables; do
-    if [[ "$tool" == ip6tables ]] && ! { command -v ip6tables >/dev/null 2>&1 && ip6tables -S INPUT >/dev/null 2>&1; }; then continue; fi
+    if [[ "$tool" == ip6tables ]] && ! { command -v ip6tables >/dev/null 2>&1 && "$snapshot_command" 10 ip6tables -S INPUT >/dev/null 2>&1; }; then continue; fi
     for table in filter nat mangle raw; do
       tsl_past_deadline && return 1
       # filter and nat must be readable; a table the kernel does not have (raw and mangle are loaded on demand) cannot hold a rule, and is recorded as such (the same before and after, unless a leftover loaded it).
-      text=$(timeout --kill-after=3s 10s "$tool" -t "$table" -S 2>/dev/null) || { if [[ "$table" == filter || ( "$tool" == iptables && "$table" == nat ) ]]; then return 1; fi; text=unreadable; }
+      text=$("$snapshot_command" 10 "$tool" -t "$table" -S 2>/dev/null) || { if [[ "$table" == filter || ( "$tool" == iptables && "$table" == nat ) ]]; then return 1; fi; text=unreadable; }
       printf '%s\n' "$text" | tsl_normalize | sed "s/^/$tool:$table /" >>"$out"
     done
   done
   if command -v nft >/dev/null 2>&1; then
-    text=$(timeout --kill-after=3s 10s nft -s list ruleset 2>/dev/null) || return 1
+    text=$("$snapshot_command" 10 nft -s list ruleset 2>/dev/null) || return 1
     printf '%s\n' "$text" | tsl_normalize | sed 's/^/nft /' >>"$out"
   fi
-  text=$(timeout --kill-after=3s 10s ip -4 route show table all 2>/dev/null) || return 1
+  text=$("$snapshot_command" 10 ip -4 route show table all 2>/dev/null) || return 1
   printf '%s\n' "$text" | tsl_normalize | sed 's/^/route4 /' >>"$out"
-  text=$(timeout --kill-after=3s 10s ip -6 route show table all 2>/dev/null) || text=""
+  text=$("$snapshot_command" 10 ip -6 route show table all 2>/dev/null) || text=""
   printf '%s\n' "$text" | tsl_normalize | sed 's/^/route6 /' >>"$out"
-  text=$(timeout --kill-after=3s 10s ip rule show 2>/dev/null) || return 1
+  text=$("$snapshot_command" 10 ip rule show 2>/dev/null) || return 1
   printf '%s\n' "$text" | tsl_normalize | sed 's/^/rule /' >>"$out"
-  text=$(timeout --kill-after=3s 10s ip -o link show 2>/dev/null) || return 1
+  text=$("$snapshot_command" 10 ip -o link show 2>/dev/null) || return 1
   printf '%s\n' "$text" | awk '{ n = $2; sub(/@.*/, "", n); sub(/:$/, "", n); print "link " n }' >>"$out"
 }
 # Removes the Docker OBJECTS the self-test made: containers (and their anonymous volumes), networks and volumes carrying either fixed label. Best effort; the looks below decide. Safe to run twice, and on a volume a failed self-test left behind.
@@ -1176,7 +1180,7 @@ tsl_readback_settled() {
   local tries=${TSL_SETTLE_TRIES:-15} i
   [[ "$tries" =~ ^[0-9]{1,2}$ ]] && ((10#$tries >= 1)) || tries=15
   for ((i = 1; i <= 10#$tries; i++)); do
-    tsl_readback && return 0
+    "${1:-tsl_readback}" && return 0
     tsl_past_deadline && return 1
     ((i == 10#$tries)) || sleep 1
   done
@@ -1349,9 +1353,171 @@ run_tsl_selftest() {
   return 0
 }
 
+# SU-1: Cloud-only, staging-only and off by default. Shares TS-L's independently
+# checked environment/account gate and ordered host snapshot. Only labelled test
+# objects are removed. A durable marker makes a crashed run's next boot strict.
+readonly SU1_RESULT_FILE=/run/agentx/su1-check
+readonly SU1_MARKER_FILE=/mnt/workspace/.agentx-su1-check-running
+readonly SU1_LOCK_FILE=/run/lock/agentx-su1-check.lock
+readonly SU1_LABEL=agentx.su1-check
+readonly SU1_BUNDLE_DIR=/opt/agentx/packages/worker/ec2/su1
+readonly SU1_STATES="ran refused incomplete unusable"
+readonly SU1_STATUSES="pass fail pending incomplete"
+readonly SU1_REASONS="ok not_named not_staging wrong_account not_staging_image no_time budget docker_unavailable walls_failed bundle_missing snapshot_failed cleanup_failed check_failed no_result needs_model_run"
+readonly SU1_ITEM_IDS="1 2 3 4 5 6 7 8 9 10 11"
+readonly SU1_RESERVE_S=150
+SU1_HARD_DEADLINE=0; SU1_DIFF=""; SU1_RESULTS=""
+
+# Every command, including snapshots and Docker, must finish inside the hard
+# deadline, with two seconds left for TERM->KILL. Never start past that bound.
+su1_command() {
+  local cap=$1 left=$((SU1_HARD_DEADLINE - SECONDS - 2)); shift
+  ((left > 0)) || return 124
+  ((cap <= left)) || cap=$left
+  timeout --kill-after=2s "${cap}s" "$@"
+}
+su1_dk() { su1_command 15 docker "$@"; }
+su1_budget_seconds() {
+  local want=${SU1_CHECK_BUDGET_S:-170} left
+  [[ "$want" =~ ^[0-9]{2,3}$ ]] && ((10#$want >= 45 && 10#$want <= 300)) && want=$((10#$want)) || want=170
+  left=$(( ${BOOT_DEADLINE:-$SECONDS} - SECONDS - SU1_RESERVE_S ))
+  ((left >= want)) || want=$left
+  printf '%s\n' "$want"
+}
+su1_remove_objects() {
+  local ids kind
+  ids=$(su1_dk ps -a -q --filter "label=$SU1_LABEL" 2>/dev/null) || ids=""
+  # shellcheck disable=SC2086
+  [[ -z "$ids" ]] || su1_dk rm -f -v $ids >/dev/null 2>&1 || true
+  for kind in network volume; do
+    ids=$(su1_dk "$kind" ls -q --filter "label=$SU1_LABEL" 2>/dev/null) || ids=""
+    # shellcheck disable=SC2086
+    [[ -z "$ids" ]] || su1_dk "$kind" rm $ids >/dev/null 2>&1 || true
+  done
+}
+su1_objects_gone() {
+  local ids kind
+  SU1_DIFF=""
+  ids=$(su1_dk ps -a -q --filter "label=$SU1_LABEL" 2>/dev/null) || { SU1_DIFF=docker; return 1; }
+  [[ -z "$ids" ]] || { SU1_DIFF=containers; return 1; }
+  for kind in network volume; do
+    ids=$(su1_dk "$kind" ls -q --filter "label=$SU1_LABEL" 2>/dev/null) || { SU1_DIFF=docker; return 1; }
+    [[ -z "$ids" ]] || { SU1_DIFF=objects; return 1; }
+  done
+}
+su1_erase_files() {
+  local dir
+  rm -f "$SU1_LOCK_FILE" /var/tmp/agentx-su1-check.lock
+  for dir in /var/tmp/su1-boot.*; do [[ ! -e "$dir" ]] || rm -rf "$dir"; done
+}
+su1_files_gone() {
+  local dir
+  [[ ! -e "$SU1_LOCK_FILE" && ! -e /var/tmp/agentx-su1-check.lock ]] || return 1
+  for dir in /var/tmp/su1-boot.*; do [[ ! -e "$dir" ]] || return 1; done
+}
+su1_sweep_leftovers() {
+  local SU1_HARD_DEADLINE=$((SECONDS + 90))
+  ((SU1_HARD_DEADLINE <= ${BOOT_DEADLINE:-$SU1_HARD_DEADLINE})) || SU1_HARD_DEADLINE=$BOOT_DEADLINE
+  if [[ ! -e "$SU1_MARKER_FILE" ]]; then
+    # No previous run: a transient Docker error is logged, never a boot failure.
+    if su1_objects_gone; then su1_erase_files; su1_files_gone; return $?; fi
+    if [[ "$SU1_DIFF" == docker ]]; then log "SU-1 leftover look unavailable; no marker, boot continues"; return 0; fi
+  fi
+  su1_remove_objects; su1_erase_files
+  if ! su1_objects_gone || ! su1_files_gone; then
+    su1_command 2 sleep 1 || true
+    su1_remove_objects; su1_erase_files
+    su1_objects_gone && su1_files_gone || return 1
+  fi
+  rm -f "$SU1_MARKER_FILE"
+  [[ ! -e "$SU1_MARKER_FILE" ]]
+}
+su1_classify() {
+  local out=$1 id status why
+  SU1_RESULTS=""
+  for id in $SU1_ITEM_IDS; do
+    status=incomplete; why=no_result
+    if [[ "$id" == 9 || "$id" == 10 ]]; then status=pending; why=needs_model_run
+    elif [[ -f "$out" ]]; then
+      # Only fixed words survive. Missing or duplicate rows are incomplete.
+      case "$(awk -v n="$id" '$1 == "SU1" && $2 == n && ($3 == "PASS" || $3 == "FAIL") { count++; s=$3 } END { if (count == 1) print s }' "$out")" in
+        PASS) status=pass; why=ok ;;
+        FAIL) status=fail; why=check_failed ;;
+      esac
+    fi
+    SU1_RESULTS="${SU1_RESULTS}${SU1_RESULTS:+,}\"$id:$status:$why\""
+  done
+}
+su1_record() {
+  local state=$1 reason=$2 secs=$3 line
+  [[ " $SU1_STATES " == *" $state "* && " $SU1_REASONS " == *" $reason "* && "$secs" =~ ^[0-9]{1,4}$ ]] || return 0
+  printf -v line '{"v":1,"state":"%s","reason":"%s","ami":"%s","boot2":"%s","docker":"%s","instance":"%s","secs":%s,"items":[%s]}' "$state" "$reason" "$TSL_AMI" "$TSL_BOOT2" "$TSL_DOCKER" "$TSL_INSTANCE" "$secs" "$SU1_RESULTS"
+  ((${#line} <= 3000)) || return 0
+  install -d -m 0700 "$(dirname "$SU1_RESULT_FILE")" 2>/dev/null || return 0
+  (umask 077; printf '%s\n' "$line" >"$SU1_RESULT_FILE") 2>/dev/null || true
+}
+su1_readback() {
+  su1_objects_gone && su1_files_gone || return 1
+  tsl_snapshot "$SU1_AFTER" su1_command && cmp -s "$SU1_BEFORE" "$SU1_AFTER"
+}
+su1_finish() {
+  local state=$1 reason=$2 started=$3 TSL_HARD_DEADLINE=$SU1_HARD_DEADLINE TSL_SETTLE_TRIES=${SU1_SETTLE_TRIES:-15}
+  su1_remove_objects; su1_erase_files
+  if ! tsl_readback_settled su1_readback; then
+    su1_remove_objects; su1_erase_files
+    if ! tsl_readback_settled su1_readback; then
+      su1_record unusable cleanup_failed $((SECONDS - started))
+      rm -f "$SU1_BEFORE" "$SU1_AFTER"; return 75
+    fi
+  fi
+  rm -f "$SU1_MARKER_FILE" "$SU1_BEFORE" "$SU1_AFTER"
+  [[ ! -e "$SU1_MARKER_FILE" ]] || { su1_record unusable cleanup_failed $((SECONDS - started)); return 75; }
+  su1_record "$state" "$reason" $((SECONDS - started))
+}
+run_su1_check() {
+  local instance_id=$1 budget started=$SECONDS dir id rc=0 run_s state=ran reason=ok
+  local SU1_HARD_DEADLINE=${BOOT_DEADLINE:-$SECONDS} SU1_BEFORE="" SU1_AFTER="" SU1_RESULTS=""
+  local TSL_GATE TSL_GATE_REASON TSL_ENVIRONMENT TSL_AMI=unknown TSL_BOOT2=unknown TSL_DOCKER=unknown TSL_INSTANCE=unknown TSL_HARD_DEADLINE=""
+  tsl_selftest_gate "${AGENTX_SU1_CHECK:-}"
+  [[ "$TSL_GATE" != off ]] || return 0
+  su1_classify /dev/null
+  if [[ "$TSL_GATE" == refused ]]; then su1_record refused "$TSL_GATE_REASON" 0; return 0; fi
+  budget=$(su1_budget_seconds)
+  if ((budget < 45)); then su1_record incomplete no_time 0; return 0; fi
+  SU1_HARD_DEADLINE=$((SECONDS + budget + SU1_RESERVE_S)); TSL_HARD_DEADLINE=$SU1_HARD_DEADLINE
+  if ! tsl_account_ok "$TSL_ALLOWED_ACCOUNT"; then su1_record refused wrong_account 0; return 0; fi
+  tsl_identity "$instance_id" su1_dk
+  if ! su1_dk version >/dev/null 2>&1; then su1_record incomplete docker_unavailable 0; return 0; fi
+  if ! su1_command 60 "$TSL_LAUNCHER" --walls-only >/dev/null 2>&1; then su1_record incomplete walls_failed 0; return 0; fi
+  SU1_BEFORE=$(mktemp) && SU1_AFTER=$(mktemp) && dir=$(mktemp -d /var/tmp/su1-boot.XXXXXX) || { su1_record incomplete snapshot_failed 0; return 0; }
+  if ! tsl_snapshot "$SU1_BEFORE" su1_command; then
+    rm -rf "$dir"; rm -f "$SU1_BEFORE" "$SU1_AFTER"; su1_record incomplete snapshot_failed 0; return 0
+  fi
+  if ! (umask 077; printf 'su1-check\n' >"$SU1_MARKER_FILE") || ! su1_command 5 sync; then
+    rm -rf "$dir"; rm -f "$SU1_BEFORE" "$SU1_AFTER"; su1_record incomplete snapshot_failed 0; return 0
+  fi
+  # The marker precedes the first object, including the bundle container.
+  id=$(su1_dk create --label "$SU1_LABEL=boot" "$AGENTX_WORKER_IMAGE" 2>/dev/null) || { su1_finish incomplete bundle_missing "$started"; return $?; }
+  if ! su1_dk cp "$id:$TSL_FLAVOR_FILE" "$dir/flavor.js" >/dev/null 2>&1 || ! grep -Fq 'CATALOG_BUILD_FLAVOR = "staging";' "$dir/flavor.js"; then
+    su1_finish refused not_staging_image "$started"; return $?
+  fi
+  if ! su1_dk cp "$id:$SU1_BUNDLE_DIR/setup-agent-su1.sh" "$dir/s.sh" >/dev/null 2>&1; then su1_finish incomplete bundle_missing "$started"; return $?; fi
+  su1_dk rm -f "$id" >/dev/null 2>&1 || true
+  run_s=$((SU1_HARD_DEADLINE - SECONDS - SU1_RESERVE_S - 2))
+  ((run_s <= budget)) || run_s=$budget
+  if ((run_s < 10)); then su1_finish incomplete no_time "$started"; return $?; fi
+  # Default timeout process group is intentional: TERM then KILL covers every
+  # checker descendant. The copied script's two inner layers use --foreground.
+  SU1_TIMEOUT_SECONDS=$run_s SU1_DOCKER_TIMEOUT_SECONDS=15 timeout --kill-after=2s "${run_s}s" bash "$dir/s.sh" >"$dir/out" 2>/dev/null || rc=$?
+  su1_classify "$dir/out"
+  if ((rc == 124 || rc == 137)); then state=incomplete; reason=budget
+  elif ((rc != 0 && rc != 1)); then state=incomplete; reason=no_result; fi
+  su1_finish "$state" "$reason" "$started"
+}
+
 # What boot.sh's main did after the worker image was pulled, in the same order, with the same BOOT_STEP labels.
 stage2_main() {
-  local region=$1 instance_id=$2 tsl_status
+  local region=$1 instance_id=$2 tsl_status su1_status
   BOOT_STEP="download the worker image"
   if [[ "$CONTAINED_RUNTIME_AVAILABLE_BOOT" == true ]]; then pull_contained_image || true; fi
   pull_executor_image || true
@@ -1360,6 +1526,7 @@ stage2_main() {
   if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then
     # FIRST, on every named boot (the self-test off or on): what a failed TS-L self-test left on the workspace volume's Docker data root must not meet this launch (tsl_sweep_leftovers).
     tsl_sweep_leftovers || fail "tsl_leftover: TS-L self-test leftovers on the workspace volume could not be removed; this worker is stopped before it takes any work (README: recovery)"
+    su1_sweep_leftovers || fail "su1_leftover: SU-1 leftovers could not be removed; this worker is stopped before taking work (README: recovery)"
     install_function_runner_runsc || true
     if pull_catalog_images "$region"; then
       write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"
@@ -1383,6 +1550,9 @@ stage2_main() {
     run_tsl_selftest "$instance_id" || tsl_status=$?
     ((tsl_status == 0)) || fail "tsl_leftover: the TS-L self-test left test objects on this worker and it is unusable (cleanup_failed); it is stopped before it takes any work (README: recovery)"
   fi
+  su1_status=0
+  run_su1_check "$instance_id" || su1_status=$?
+  ((su1_status == 0)) || fail "su1_leftover: SU-1 cleanup_failed; this worker is stopped before taking work (README: recovery)"
   systemctl enable --now "$WORKER_UNIT"
   log "worker started"
   start_e2e_qualification "$region" "$instance_id" || log "the E2E qualification did not start"

@@ -1,3 +1,4 @@
+import { SU1_CHECK_RESULT_ENVIRONMENT, su1CheckEvent } from "./su1-check.js";
 // Test services, slice 1 (design test-services.md 4.0 and 8; round plan ROUND-2026-11-03-test-services-hookup.md, s1-worker-round T1): the orchestrator that turns a task's pinned dependency plan into a running set of real
 // services for the whole task, and puts the pieces built earlier together:
 //
@@ -268,6 +269,8 @@ export function testServicesConfigFromEnvironment(
  */
 export async function testServicesAtWorkerBoot(input: { rootPath: string; config?: TestServicesConfig | undefined; environment?: NodeJS.ProcessEnv; docker?: DockerCli; log?: (event: Record<string, unknown>) => void }): Promise<void> {
   const log = input.log ?? defaultLog;
+  const su1 = su1CheckEvent((input.environment ?? process.env)[SU1_CHECK_RESULT_ENVIRONMENT]);
+  if (su1 !== undefined) log(su1);
   try {
     const config = input.config ?? testServicesConfigFromEnvironment(input.environment ?? process.env, input.docker ?? createDockerCli());
     if (config === undefined) {

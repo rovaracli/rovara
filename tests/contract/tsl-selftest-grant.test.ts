@@ -36,7 +36,7 @@ describe("the steps function's read of the TS-L self-test switch", () => {
       expect(statements, env).toHaveLength(1);
       expect(statements[0]!.Action, env).toBe("ssm:GetParameter");
       expect(statements[0]!.Effect, env).toBe("Allow");
-      expect(arnText(statements[0]!.Resource), env).toBe(`arn::ssm:::parameter/agentx/${env}/tsl-selftest`);
+      expect((statements[0]!.Resource as unknown[]).map(arnText), env).toEqual([`arn::ssm:::parameter/agentx/${env}/tsl-selftest`, `arn::ssm:::parameter/agentx/${env}/su1-check`]);
       // It is attached to the steps function's role, and to no other.
       const roles = policy.Properties.Roles as Array<{ Ref: string }>;
       expect(roles, env).toHaveLength(1);

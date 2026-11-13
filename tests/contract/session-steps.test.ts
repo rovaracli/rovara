@@ -146,6 +146,27 @@ describe("session steps", () => {
       expect(never).not.toHaveBeenCalled();
     });
 
+    it("carries the SU-1 check switch only when it is on, for a named staging launch", async () => {
+      const userData = async (overrides: Partial<SessionStepsDependencies>) => gunzipSync(Buffer.from((await launch(setup(undefined, { modelProxyRequired: true, ...overrides }, named(proxyUrl)).handler)).userData, "base64")).toString("utf8");
+      const asked = vi.fn(async () => true);
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", su1CheckOn: asked })).toContain("\nexport AGENTX_SU1_CHECK='1'\n");
+      expect(asked).toHaveBeenCalledTimes(1);
+      // With an internal address list too.
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", su1CheckOn: async () => true, privateAddresses: async () => listed(["10.20.0.15:443"]) })).toMatch(/export AGENTX_PRIVATE_ADDRESSES='10\.20\.0\.15:443'\nexport AGENTX_SU1_CHECK='1'\n/);
+      // Off, no reader, a reader that fails, and another environment's prefix: nothing is carried.
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", su1CheckOn: async () => false })).not.toContain("AGENTX_SU1_CHECK");
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/" })).not.toContain("AGENTX_SU1_CHECK");
+      expect(await userData({ workerSettingsPrefix: "/agentx/staging/", su1CheckOn: async () => { throw new Error("boom"); } })).not.toContain("AGENTX_SU1_CHECK");
+      expect(await userData({ workerSettingsPrefix: "/agentx/production/", su1CheckOn: async () => true })).not.toContain("AGENTX_SU1_CHECK");
+      // A named launch with no prefix given carries nothing either.
+      expect(await userData({ su1CheckOn: async () => true })).not.toContain("AGENTX_SU1_CHECK");
+      // The legacy launch never reads it.
+      const never = vi.fn(async () => true);
+      const legacy = setup(undefined, { workerSettingsPrefix: "/agentx/staging/", su1CheckOn: never });
+      expect(gunzipSync(Buffer.from((await launch(legacy.handler)).userData, "base64")).toString("utf8")).not.toContain("AGENTX_SU1_CHECK");
+      expect(never).not.toHaveBeenCalled();
+    });
+
     // Review L2: the launch records the revision its worker read, before it returns the user data; a launch with nothing open records that; a failed record fails the launch; the legacy launch records nothing.
     it("records the list revision a named launch read (or that nothing is open) before returning its user data", async () => {
       const calls: string[] = [];

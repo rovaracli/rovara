@@ -94,6 +94,22 @@ export async function readTslSelftestOn(ssm: { send(command: GetParameterCommand
   }
 }
 
+/** SU-1 uses the same exact staging prefix and fail-closed opt-in as TS-L. */
+export const SU1_CHECK_BOOT_VARIABLE = "AGENTX_SU1_CHECK";
+export const SU1_CHECK_PARAMETER = "su1-check";
+export async function readSu1CheckOn(ssm: { send(command: GetParameterCommand): Promise<{ Parameter?: { Value?: string } }> }, name: string, log: (line: string) => void = console.error): Promise<boolean> {
+  try {
+    const value = (await ssm.send(new GetParameterCommand({ Name: name }))).Parameter?.Value;
+    if (value === "true") return true;
+    if (value !== "false") log(JSON.stringify({ component: "session-steps", event: "su1_check.switch_unreadable", level: "error", reason: "value" }));
+    return false;
+  } catch (error) {
+    if (error instanceof Error && error.name === "ParameterNotFound") return false;
+    log(JSON.stringify({ component: "session-steps", event: "su1_check.switch_unreadable", level: "error", errorName: error instanceof Error ? error.name : "unknown" }));
+    return false;
+  }
+}
+
 /** The switch as a launch holds it: present only when the operator's parameter said `true`; `settingsPrefix` is the install's worker settings prefix. */
 export interface TslSelftestSwitch { settingsPrefix: string }
 
@@ -101,7 +117,7 @@ export interface TslSelftestSwitch { settingsPrefix: string }
  * The user data, with the list (and the install's reserved and routed ranges, for the worker's own checks) when there is one, and the TS-L self-test variable when `tslSelftest` is given for a named environment whose
  * settings prefix is exactly staging's (anything else leaves it out: the boot's own gate then never sees it). With neither it is exactly `ec2WorkerUserData`'s.
  */
-export function workerUserDataWithPrivateAddresses(config: Ec2WorkerBootConfig, bootScript: string, entries: readonly string[], ranges: { reservedCidrs?: readonly string[]; routedCidrs?: readonly string[] } = {}, tslSelftest?: TslSelftestSwitch): string {
+export function workerUserDataWithPrivateAddresses(config: Ec2WorkerBootConfig, bootScript: string, entries: readonly string[], ranges: { reservedCidrs?: readonly string[]; routedCidrs?: readonly string[] } = {}, tslSelftest?: TslSelftestSwitch, su1Check?: TslSelftestSwitch): string {
   const exports: string[] = [];
   if (entries.length > 0) {
     const value = entries.join(",");
@@ -116,6 +132,7 @@ export function workerUserDataWithPrivateAddresses(config: Ec2WorkerBootConfig, 
     }
   }
   if (tslSelftest !== undefined && config.environmentKind === "named" && tslSelftest.settingsPrefix === TSL_SELFTEST_ALLOWED_PREFIX) exports.push(`export ${TSL_SELFTEST_BOOT_VARIABLE}='1'`);
+  if (su1Check !== undefined && config.environmentKind === "named" && su1Check.settingsPrefix === TSL_SELFTEST_ALLOWED_PREFIX) exports.push(`export ${SU1_CHECK_BOOT_VARIABLE}='1'`);
   if (exports.length === 0) return ec2WorkerUserData(config, bootScript);
   const lines = ec2WorkerBootScript(config, bootScript).split("\n");
   // Line 0 is the interpreter, line 1 the header; the configuration's exports follow, and these join them.

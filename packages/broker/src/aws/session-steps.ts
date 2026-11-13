@@ -9,7 +9,7 @@ import { MODEL_PROXY_URL_PARAMETER, WORKER_FEATURES_MAX, WORKER_FEATURE_MAX_CHAR
 import { requiredEnvironment } from "./lambda.js";
 import { testServicesEnabled } from "../test-env/test-services-switch.js";
 import { readWorkerSettings, type WorkerSettings } from "./worker-settings-read.js";
-import { NO_PRIVATE_ADDRESS_LIST, TSL_SELFTEST_ALLOWED_PREFIX, TSL_SELFTEST_PARAMETER, launchPrivateAddresses, readPrivateAddressesOff, readTslSelftestOn, workerUserDataWithPrivateAddresses, type PrivateAddressLaunch } from "./private-address-launch.js";
+import { NO_PRIVATE_ADDRESS_LIST, SU1_CHECK_PARAMETER, readSu1CheckOn, TSL_SELFTEST_ALLOWED_PREFIX, TSL_SELFTEST_PARAMETER, launchPrivateAddresses, readPrivateAddressesOff, readTslSelftestOn, workerUserDataWithPrivateAddresses, type PrivateAddressLaunch } from "./private-address-launch.js";
 import { recordPrivateAddressLaunch } from "./private-address-launch-record.js";
 import { privateAddressRouteInstallOf } from "../org/private-address-install.js";
 
@@ -80,6 +80,8 @@ export interface SessionStepsDependencies {
   workerSettingsPrefix?: string;
   /** M1: the operator's switch for the TS-L worker self-test (SSM parameter `tsl-selftest`; only `true` is on). Wired for the staging install only, and asked only for a named environment's launch. Absent, or false: nothing is carried. */
   tslSelftestOn?: () => Promise<boolean>;
+  /** SU-1 boot check, staging-only and off unless the exact parameter value is true. */
+  su1CheckOn?: () => Promise<boolean>;
 }
 
 /** The SSM parameter (under the worker settings prefix) that turns every company's internal address list off at launch. */
@@ -150,12 +152,13 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
     const step = SessionStepSchema.parse(event);
     switch (step.action) {
       case "launchConfiguration": {
-        const [settings, invokePublicKey, privateAddresses, tslSelftestOn] = await Promise.all([
+        const [settings, invokePublicKey, privateAddresses, tslSelftestOn, su1CheckOn] = await Promise.all([
           dependencies.workerSettings(), dependencies.invokePublicKey(),
           // Only a named environment's stage 2 applies the list; the legacy boot never reads it, so its launch never reads or carries one.
           dependencies.modelProxyRequired && dependencies.privateAddresses !== undefined ? launchListOf(dependencies, step.workspaceId) : Promise.resolve(NO_PRIVATE_ADDRESS_LIST),
           // M1: the self-test switch, only for a named environment whose install wired it (staging). A reader that fails is off.
           dependencies.modelProxyRequired && dependencies.tslSelftestOn !== undefined ? dependencies.tslSelftestOn().catch(() => false) : Promise.resolve(false),
+          su1CheckWiredFor(dependencies.modelProxyRequired === true, dependencies.workerSettingsPrefix ?? "") && dependencies.su1CheckOn !== undefined ? dependencies.su1CheckOn().catch(() => false) : Promise.resolve(false),
         ]);
         if (dependencies.modelProxyRequired && !settings.modelProxyUrl) {
           throw new Error(`The model proxy URL is missing: this environment's workers have no provider keys or Bedrock access, and the SSM parameter ${MODEL_PROXY_URL_PARAMETER} is not set. Deploy the control plane's model proxy first.`);
@@ -190,7 +193,7 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
           // The boot pre-pulls the catalog images only when test services (`tx`) are on; nothing is told to a launch with them off.
           ...(dependencies.modelProxyRequired && dependencies.testServices === true ? { testServices: true as const } : {}),
           logGroupName: dependencies.logGroupName,
-        }, dependencies.bootScript(dependencies.modelProxyRequired ? "named" : "legacy"), privateAddresses.entries, privateAddresses, tslSelftestOn && dependencies.workerSettingsPrefix !== undefined ? { settingsPrefix: dependencies.workerSettingsPrefix } : undefined);
+        }, dependencies.bootScript(dependencies.modelProxyRequired ? "named" : "legacy"), privateAddresses.entries, privateAddresses, tslSelftestOn && dependencies.workerSettingsPrefix !== undefined ? { settingsPrefix: dependencies.workerSettingsPrefix } : undefined, su1CheckOn && dependencies.workerSettingsPrefix !== undefined ? { settingsPrefix: dependencies.workerSettingsPrefix } : undefined);
         // Already base64 gzip, the form RunInstances takes (#229).
         return { userData };
       }
@@ -246,6 +249,9 @@ const workerSettingsPrefix = process.env.WORKER_SETTINGS_PREFIX ?? "";
 export function tslSelftestWiredFor(namedEnvironment: boolean, settingsPrefix: string): boolean {
   return namedEnvironment && settingsPrefix === TSL_SELFTEST_ALLOWED_PREFIX;
 }
+export function su1CheckWiredFor(namedEnvironment: boolean, settingsPrefix: string): boolean {
+  return tslSelftestWiredFor(namedEnvironment, settingsPrefix);
+}
 const tslSelftestWired = tslSelftestWiredFor(modelProxyRequired, workerSettingsPrefix);
 
 const stateClient = DynamoDBDocumentClient.from(new DynamoDBClient(awsClientConfiguration));
@@ -282,5 +288,5 @@ export const handler = createSessionStepsHandler({
   recordPrivateAddressLaunch: (input) => recordPrivateAddressLaunch({ documentClient: stateClient, tableName: stateTableName }, input),
   // Unset (ParameterNotFound): lists apply. `true`: off. Any other answer, or a read that fails, is treated as off (readPrivateAddressesOff).
   privateAddressesOff: () => readPrivateAddressesOff(ssm, `${requiredEnvironment("WORKER_SETTINGS_PREFIX")}${PRIVATE_ADDRESSES_OFF_PARAMETER}`),
-  ...(tslSelftestWired ? { workerSettingsPrefix, tslSelftestOn: () => readTslSelftestOn(ssm, `${workerSettingsPrefix}${TSL_SELFTEST_PARAMETER}`) } : {}),
+  ...(tslSelftestWired ? { workerSettingsPrefix, su1CheckOn: () => readSu1CheckOn(ssm, `${workerSettingsPrefix}${SU1_CHECK_PARAMETER}`), tslSelftestOn: () => readTslSelftestOn(ssm, `${workerSettingsPrefix}${TSL_SELFTEST_PARAMETER}`) } : {}),
 });
