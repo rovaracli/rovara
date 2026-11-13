@@ -317,7 +317,7 @@ message text only, never repository content, and waits at most the classifier's 
 (`AGENTX_GATE_CLASSIFIER_TIMEOUT_MS`), capped at 4 seconds. There is no separate routing model setting.
 
 - **Question**: the chat agent answers in the thread, as for `chat:`. No task is created.
-- **Small change**: a card says "Looks like a small change. I'll use Quick." with **Start** (Quick),
+- **Small change**: a card says "This looks like a small, clear change, so I'll do it as a quick change" with **Start** (Quick),
   **Use Full instead** and **Just answer**.
 - **Large change**: a card suggests Full (requirements, design, then a coding plan) with **Start**
   (Full), **Use Quick instead** and **Just answer**.

@@ -60,7 +60,7 @@ describe("D18: operation events", () => {
   const coreEvent = (n: number) => ({ pk: `WORKSPACE#${W}`, sk: `EVENT#${OP}#${String(n).padStart(10, "0")}`, entityType: "OPERATION_EVENT", operationId: OP, sequence: n, type: "progress", timestamp: `2026-11-12T10:00:0${n}.000Z`, payload: { message: `core ${n}` } });
 
   it("the core's key is the one its callback writes (drift guard against the vendored code)", () => {
-    const source = readFileSync(new URL("../../vendor/rovara-code/packages/broker/src/local/app/callbacks.ts", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../../vendor/rovara-code/packages/broker/src/services/callbacks.ts", import.meta.url), "utf8");
     expect(source).toContain("sk: `EVENT#${operation.id}#${String(last - parsed.length + index + 1).padStart(10, \"0\")}`, entityType: \"OPERATION_EVENT\"");
   });
 
