@@ -6,6 +6,7 @@ import { prepareSecondReview } from "../../rovara-code/second-review-start.js";
 import { learnedContextForOperation } from "./lessons-dispatch.js";
 import { companyOnlyBlockFor, standingInputFor } from "../../instructions/dispatch-input.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
+import { companyGatedEnv } from "../../org/feature-rollout.js";
 import { readTurnActorChecks } from "../../model-selection/turn-authority.js";
 import { turnStagesForMode, prepareTurnModelPolicy } from "../../model-selection/turn-policy.js";
 import { reviewFailures, criticFailures } from "../../model-selection/task-failures.js";
@@ -334,6 +335,8 @@ export async function taskOperationParts(
   // The caller's org when there is one (a Slack thread's is its team's); a background writer reads it from the record.
   const orgId = input.orgId ?? await orgOfRecord(dependencies, workspace);
   const settings = await requireLatestProject(dependencies, orgId, workspace.projectName);
+  // TE-A1: what this company has on. The install switches the task's evidence and test-setup readers see are the install's only where this company's gate is on.
+  const gatedEnv = await companyGatedEnv({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId);
   const resolvedModel:Awaited<ReturnType<typeof resolveProjectModel>> = input.workflowMode === "CHECKS" ? {} : await resolveProjectModel(dependencies, orgId, settings);
   const task = await workspaceTask(dependencies, workspace.id);
   // #341: a task whose owner connected a working ChatGPT plan runs on it; `model` stays the default it falls back to.
@@ -550,10 +553,10 @@ export async function taskOperationParts(
   if (contextToolsOn && dependencies.contextSources?.prewarm !== undefined) await prewarmStageServers({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, prewarm: dependencies.contextSources.prewarm }, orgId, workspace.projectName, input.workflowMode);
   // Test environment (wire-testenv): the plan of the environment this task pinned, for a verification run whose first commands are the environment's checks. Nothing while the switch is off.
   const testEnvironment = input.workflowMode === "CHECKS" && task !== undefined && input.readiness !== undefined
-    ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog, ...fixtureStoreForRoutes(dependencies) }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness })
+    ? await testEnvPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog, ...fixtureStoreForRoutes(dependencies, gatedEnv) }, { orgId, project: workspace.projectName, taskId: task.taskId, readiness: input.readiness }, gatedEnv)
     // Test services: a coding run is sent the plan too, but only when the task's environment has dependencies (the working sandbox gets them while the agent codes); nothing otherwise and nothing with `tx` off.
     : input.workflowMode === "IMPLEMENT" && task !== undefined
-      ? await testEnvImplementPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog, ...fixtureStoreForRoutes(dependencies) }, { orgId, project: workspace.projectName, taskId: task.taskId }) : undefined;
+      ? await testEnvImplementPlanFor({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, serviceCatalog: dependencies.serviceCatalog, ...fixtureStoreForRoutes(dependencies, gatedEnv) }, { orgId, project: workspace.projectName, taskId: task.taskId }, gatedEnv) : undefined;
   // Test services (slice 3): the fixture sets the plan names are kept on the operation, so the `fixture-set` callback delivers those and no other set (and the capability has the action only then).
   const fixtureDigests = fixtureDigestsOfPlan(testEnvironment);
   if (fixtureDigests.length > 0) operation.fixtureSetDigests = fixtureDigests;
@@ -561,7 +564,7 @@ export async function taskOperationParts(
   const companyImageIds = companyImageIdsOfPlan(testEnvironment);
   if (companyImageIds.length > 0) operation.companyImageIds = companyImageIds;
   // SH30 + SR-3 (switch `sp`): the company recipes a setup draft is offered, recorded on this operation (id and revision) so the run's reported recipe sources are intersected with what was sent. Nothing while `sp` is off.
-  const recipeOffers = input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? await setupRecipeOffersFor(dependencies, orgId, workspace.projectName) : [];
+  const recipeOffers = input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled(gatedEnv) ? await setupRecipeOffersFor(dependencies, orgId, workspace.projectName) : [];
   if (recipeOffers.length > 0) operation.setupRecipeOffers = recordedOffersOf(recipeOffers);
   const nightlyRun = isNightlyOperation(task, input.workflowMode) && task?.nightlyRun !== undefined
     ? await nightlyRunPayloadOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, workspace.projectName, task.nightlyRun) : undefined;
@@ -599,7 +602,7 @@ export async function taskOperationParts(
       // Meta repo lane B: a setup proposal run is told which repository is the project's meta repository, so it looks there for the team's rules, specs and runbooks.
       ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && metaRepositoryOf(settings.definition) !== undefined ? { setupMetaRepo: metaRepositoryOf(settings.definition)!.name } : {}),
       // Test environment (wire-testenv): the setup draft also runs the environment detectors over the default branch. A worker without "task.testEnvDetect.v1" is sent the run without the field at delivery (no environment draft is made, and the omission is logged).
-      ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled() ? { testEnvDetect: true as const } : {}),
+      ...(input.workflowMode === "SETUP_DRAFT" && !diagnosing && testEnvironmentEnabled(gatedEnv) ? { testEnvDetect: true as const } : {}),
       ...(recipeOffers.length > 0 ? { testEnvRecipes: recipeOffers } : {}),
       // SH14: the limits the setup run started with, read again through the contract (a damaged value is held to the defaults). A worker without "task.setupAgent.v1" is refused the run at delivery, never sent it without the field.
       ...(input.workflowMode === "SETUP_AGENT" ? { setupAgent: setupAgentWireOf(task) } : {}),
@@ -631,7 +634,7 @@ export async function taskOperationParts(
       // Plan 6 Task 15: the run fixes a pull request that is already open; a worker without "task.workflowFix" is refused the run at delivery, never sent it without the field.
       ...(input.workflowFix === undefined ? {} : { workflowFix: input.workflowFix }),
       // Proof and evidence: a verification run that has project checks also reads their test reports, only while the proof switch is on. A worker without "task.evidenceCapture.v1" is sent the run without the field at delivery (no evidence is captured, and the omission is logged).
-      ...(input.workflowMode === "CHECKS" && (input.readiness?.length ?? 0) > 0 && proofEvidenceEnabled() ? { evidenceCapture: true as const } : {}),
+      ...(input.workflowMode === "CHECKS" && (input.readiness?.length ?? 0) > 0 && proofEvidenceEnabled(gatedEnv) ? { evidenceCapture: true as const } : {}),
       // Test environment (wire-testenv): a worker without "task.testEnvironment.v1" is refused the run at delivery, never sent it without the field.
       ...(testEnvironment === undefined ? {} : { testEnvironment }),
       // Stop & redirect (keep the plan): the owner's instruction, framed by the worker. A worker without "task.ownerRedirect.v1" is refused the run at delivery, never sent it without the field.

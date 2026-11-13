@@ -37,6 +37,8 @@ export interface SessionDeciding {
 }
 
 export interface SessionReadDependencies extends SessionTakeOverDependencies {
+  /** The install switches as the caller's company has them (TE-A1). Absent: the process environment. */
+  env?: NodeJS.ProcessEnv | undefined;
   /** Plan 5 Task 13: Plan 3's cancel, workflow retry and run start for the signed-in person. Without it stop and retry of a task session answer `RUNTIME_UNAVAILABLE`. */
   control?: SessionControlHost | undefined;
   /** Plan 5 Task 13: Plan 4's chain cancel and retry with the session actor (`chainControlFor`, built for each request). Without it a chain session is neither stopped nor retried, and nothing is written. */

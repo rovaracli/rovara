@@ -11,6 +11,7 @@ import { testingViewOf } from "../../rovara-code/testing-section.js";
 import { alreadyFailingForResults } from "../../test-env/known-failing.js";
 import { nightlyOptionsFor, type NightlyHeadReader } from "../../test-env/nightly-usable.js";
 import { verifyResultsEnabled } from "../../verification/switch.js";
+import { companyGatedEnv } from "../../org/feature-rollout.js";
 import type { FullSuiteState } from "../../verification/result.js";
 
 export interface TestingViewDeps {
@@ -44,6 +45,8 @@ export async function fullSuiteOf(deps: TestingViewDeps, task: DeveloperTaskReco
 /** The Testing view of the task's current code, or undefined (switch off, version 1 task, not decided yet, a failed full run, or a view the contract refuses). Never throws. */
 export async function loadTestingView(deps: TestingViewDeps, task: DeveloperTaskRecord, workflow: WorkflowSnapshot, env: NodeJS.ProcessEnv = process.env): Promise<TestingView | undefined> {
   if (!verifyResultsEnabled(env) || workflow.definitionVersion !== "1.1.0") return undefined;
+  // TE-A1: the four results are shown only for a company whose `verifyResults` gate is on.
+  if (!verifyResultsEnabled(await companyGatedEnv({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task.orgId, env))) return undefined;
   const digest = workflow.candidate?.digest;
   if (digest === undefined) return undefined;
   try {

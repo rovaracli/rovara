@@ -4,6 +4,7 @@
 import type { DeveloperTaskView } from "@agentx/cloud-contracts";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 import { taskStartNotice } from "../../test-env/health.js";
+import { companyGatedEnv } from "../../org/feature-rollout.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 
 /** How long a start or a read waits for the notice. */
@@ -17,7 +18,9 @@ export async function withTestingNotice(
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const timeout = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); });
-    const notice = await Promise.race([taskStartNotice({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, task.orgId, task.project, env), timeout]);
+    // TE-A1: the notice follows the company's gates (the whole read is inside the bound: a slow gate read shows no banner, as a slow health read does).
+    const store = { documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now };
+    const notice = await Promise.race([companyGatedEnv(store, task.orgId, env).then((gated) => taskStartNotice(store, task.orgId!, task.project, gated)), timeout]);
     return notice?.banner === undefined ? view : { ...view, testingNotice: { state: notice.banner.state, text: notice.banner.text } };
   } catch {
     return view;

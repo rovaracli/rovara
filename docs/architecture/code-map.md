@@ -401,6 +401,7 @@ No single test lists every broker read.
 | `design-resolve-retry.ts` | Design review stage, DR7 slice B2: the owner's Retry of a planner run that BLOCKED while it was answering a design review's findings (a rule file that could not be verified, a leftover program, a run that failed). |
 | `design-spec.ts` | Design review stage, DR7 slice C (DR12 wiring): the spec step's view of the design. |
 | `error-ref.ts` | Live interaction F1: the ErrorRef a task view carries, so the app can offer "Fix with agent" for an error it shows. |
+| `evidence-gate.ts` | Company rollout gate (TE-A1) on the evidence port: the port is the install's, every read is for one task of one company; a company whose `proofEvidence` gate is not on is shown nothing. |
 | `evidence-port.ts` | Proof and evidence (wire-proof): what the task routes need to show a task's evidence: the pack kept for the task's current code (rovara-code/evidence-keep.ts), as the pull request shows it (counts, a link) and as the... |
 | `evidence-risk-input.ts` | Proof and evidence P4: the evidence's part of a pull request's risk, read where the risk is judged (publication, a pushed fix, a description rewrite). |
 | `feedback-capture.ts` | (No header comment.) Exports `startTaskWorkflowFeedbackReviewFromWebhook`, `FEEDBACK_REVIEW_RETRY_BUSY`, `FEEDBACK_REVIEW_RETRY_CHANGED`. |
@@ -460,6 +461,7 @@ No single test lists every broker read.
 | `design-review-company.ts` | Design review (DR-FU4): `/v1/app/org/design-review`, the company's How we work card for design review, for company owners and admins only. |
 | `design-review.ts` | Design review stage, DR7 slice C: the routes and the decision cards of a design under review, and the ports the design review's handlers need. |
 | `fixtures.ts` | Test services, slice 3 (s3-fakes-store): the routes for a hand-written fake (a FixtureSet v2) and its review. |
+| `feature-rollout.ts` | Company rollout gates (TE-A1): the owner's and admin's "Preview features" route (`/v1/app/org/feature-rollout`). |
 | `test-access.ts` | Customer test AWS account (lane TA2): the connect routes (`/v1/app/test-access/connections`): start, read, type the account id, confirm, test, tick, suspend, disconnect. Behind `ta` and `deps.testAccess`; a browser session only. |
 | `identity-lambda.ts` | (No header comment.) Exports `errorName`, `SLACK_UNAVAILABLE`, `channelMembersThroughLambda`. |
 | `insights.ts` | Insights (srv/insights-reads, switch INSIGHTS_ENABLED): the wiring of `/v1/app/insights*` and `/v1/app/org/insights-access` into the route dispatcher. |

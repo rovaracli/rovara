@@ -25,6 +25,7 @@
   "packages/cloud-contracts/src/developer-tasks.ts",
   "packages/cloud-contracts/src/developer-web.ts",
   "packages/cloud-contracts/src/evidence.ts",
+  "packages/cloud-contracts/src/feature-rollout.ts",
   "packages/cloud-contracts/src/finished-as.ts",
   "packages/cloud-contracts/src/home.ts",
   "packages/cloud-contracts/src/invite-creation.ts",

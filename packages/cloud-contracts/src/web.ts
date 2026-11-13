@@ -96,6 +96,7 @@ export * from "./app-known-failing.js";
 export * from "./task-stop-enrollment.js";
 
 export * from "./task-stop-start-preview.js";
+export * from "./feature-rollout.js";
 export * from "./ui-flags.js";
 export { SIGNED_OUT_REASONS, isSignedOutReason, type SignedOutReason } from "./sign-in-reasons.js";
 // Names defined here that the browser entry used to reach through a re-export file the contracts now take from Rovara Code (convergence W0-3).

@@ -7,6 +7,7 @@
 //             { action: "approve", changeId }              a different admin approves turning it off, signed in within the last 10 minutes (REAUTH_REQUIRED otherwise). The company's sole-owner exception does NOT apply: a company of one that turned it on keeps it on until a second admin joins.
 // The rules are the shared sole-owner switch's (lessons/sole-owner-switch.ts), through `org/known-failing-policy.ts`: every write is conditional on the value it was made against and fenced on the membership the decision
 // rested on; an unreadable setting counts as "always two people". Answers are fixed words, booleans and ids.
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { agentXError, type OrgId } from "@rovara-code/contracts";
@@ -77,7 +78,7 @@ async function stateOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller
 }
 
 /** The reply, or undefined when the switch is off or the path is not this one. */
-export async function routeKnownFailingPolicy(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = process.env): Promise<StatusReply | undefined> {
+export async function routeKnownFailingPolicy(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = routeEnvOf(deps)): Promise<StatusReply | undefined> {
   if (!verifyResultsEnabled(env) || url.pathname !== KNOWN_FAILING_POLICY_PATH) return undefined;
   if (request.method === "GET") return new StatusReply(200, await stateOf(deps, caller));
   if (request.method !== "POST") return undefined;

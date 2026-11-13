@@ -82,7 +82,7 @@ type ProjectOverviewKeyOrg = SessionReadCaller["orgId"];
 
 /** KF-1: how many tests are marked as already failing, only while `vx` is on. A list that cannot be read leaves the block out and never fails the page. */
 async function knownFailingOf(deps: ProjectOverviewDependencies, orgId: ProjectOverviewKeyOrg, project: string): Promise<ProjectOverview["knownFailing"]> {
-  if (!verifyResultsEnabled()) return undefined;
+  if (!verifyResultsEnabled(deps.env)) return undefined;
   const row = await readKnownFailingRow({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, project);
   return row === undefined ? undefined : { count: row.marks.length };
 }

@@ -7,6 +7,7 @@
 //           { action: "revoke", imageId, expectedRevision }                  revoke an approved image, or dismiss a waiting one.
 // The authority is `org/company-test-images.ts` (fresh sign-in read from the stored session, audited in the write's own transaction); this file builds its dependencies. Answers are ids, digests, fixed words and the image an
 // admin must read to approve it; never an error text from a registry.
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { z } from "zod";
 import { EDITION_ENV_VAR, isFunctionRunnerEntry } from "@agentx/cloud-contracts";
 import { agentXError, type OrgId } from "@rovara-code/contracts";
@@ -49,7 +50,7 @@ const BodySchema = z.discriminatedUnion("action", [
 const resolverOf = (deps: DeveloperRouteDependencies): CompanyImageDigestResolver => deps.companyImageResolver ?? registryDigestResolver();
 
 /** Everything `org/company-test-images.ts` needs, built from this request's dependencies. ONE clock: the stored session's freshness and every row's time read `deps.now()`. */
-export function companyImageDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.ProcessEnv = process.env): CompanyImageDeps {
+export function companyImageDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.ProcessEnv = routeEnvOf(deps)): CompanyImageDeps {
   const signInTableName = deps.developer?.signInTableName;
   if (signInTableName === undefined || signInTableName === "") throw agentXError("RUNTIME_UNAVAILABLE", "Company images are not available here.");
   const table = { documentClient: deps.documentClient, tableName: deps.tableName };
@@ -102,7 +103,7 @@ async function stateOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller
 }
 
 /** The reply, or undefined when a switch is off or the path is not this file's. */
-export async function routeCompanyTestImages(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = process.env): Promise<StatusReply | undefined> {
+export async function routeCompanyTestImages(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = routeEnvOf(deps)): Promise<StatusReply | undefined> {
   if (!companyTestImagesEnabled(env) || url.pathname !== COMPANY_TEST_IMAGES_PATH) return undefined;
   if (request.method !== "GET" && request.method !== "POST") return undefined;
   const imageDeps = companyImageDepsOf(deps, env);

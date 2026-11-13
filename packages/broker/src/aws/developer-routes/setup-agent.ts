@@ -1,6 +1,7 @@
 // Setup agent routes (sh-setup-wire, SH14; design setup-test-health 3.4): `/v1/app/projects/{name}/setup-agent`, `.../stop`, `.../command` and `.../journal`. They exist only while the `su` switch is on and, with
 // it off, `routeSetupAgent` answers undefined at once and the path falls through as any unknown path does (nothing is read, nothing is written). Everything the routes decide is in
 // `rovara-code/setup-agent.ts` (start, stop, state), `setup-command.ts` (a person's command) and `setup-journal.ts`; this file builds their dependencies from the developer API's.
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { agentXError, ROVARA_CODE_AGENT_ID, projectAllows, type Payer } from "@rovara-code/contracts";
 import { resolveRunPayer, startAgentRun } from "../../agents/runs.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
@@ -73,7 +74,7 @@ export function setupLimitsDepsOf(deps: DeveloperRouteDependencies): SetupLimits
 }
 
 /** The setup routes' dependencies for this install (the `su` switch is read from the environment, as every switch is). */
-export function setupAgentDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.ProcessEnv = process.env): SetupAgentDependencies {
+export function setupAgentDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.ProcessEnv = routeEnvOf(deps)): SetupAgentDependencies {
   const starter = setupAgentStarterOf(deps);
   return {
     documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now, enabled: setupAgentEnabled(env), starter,
@@ -102,7 +103,7 @@ export function setupAgentDepsOf(deps: DeveloperRouteDependencies, env: NodeJS.P
  * Routes a setup-agent request, or answers undefined when the path is not one or the switch is off. A browser session or a token may call them: every route checks that the caller is a project
  * maintainer (`edit_settings`), and a person's command and a stop are the maintainer's own acts.
  */
-export async function routeSetupAgent(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = process.env): Promise<StatusReply | object | undefined> {
+export async function routeSetupAgent(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = routeEnvOf(deps)): Promise<StatusReply | object | undefined> {
   const match = SETUP_AGENT_PATH.exec(url.pathname);
   const company = COMPANY_LOCKS_PATH.exec(url.pathname);
   if ((match === null && company === null) || !setupAgentEnabled(env)) return undefined;

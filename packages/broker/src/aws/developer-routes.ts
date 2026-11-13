@@ -12,6 +12,8 @@ import { SPEC_CHOICE_ROUTE, SPEC_PAGE_CHOICES, routeSpecChoice } from "./develop
 import { getInstallInfo } from "./developer-routes/install.js";
 import { isSsoRoute, routeSsoRequest } from "./developer-routes/sso.js";
 import { isCompanyDomainsRoute, routeCompanyDomains } from "./developer-routes/company-domains.js";
+import { companyGatedEnv, routeEnvOf } from "../org/feature-rollout.js";
+import { FEATURE_ROLLOUT_BROWSER_MESSAGE, FEATURE_ROLLOUT_PATH, routeFeatureRollout } from "./developer-routes/feature-rollout.js";
 import { UI_FLAGS_BROWSER_MESSAGE, UI_FLAGS_PATH, routeUiFlags } from "./developer-routes/ui-flags.js";
 import { COMPANIES_PATH, routeCompanies } from "./developer-routes/companies.js";
 import { companySwitcherEnabled } from "../org/companies/switch.js";
@@ -366,6 +368,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (url.pathname === COMPANIES_PATH && request.method === "POST" && companySwitcherEnabled() && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", COMPANY_SWITCH_MACHINE_MESSAGE);
   // Runtime UI flags (lane U5): browser-only for both methods, refused before any read.
   if (url.pathname === UI_FLAGS_PATH && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", UI_FLAGS_BROWSER_MESSAGE);
+  // Company rollout gates (TE-A1): browser-only for both methods, refused before any read.
+  if (url.pathname === FEATURE_ROLLOUT_PATH && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", FEATURE_ROLLOUT_BROWSER_MESSAGE);
   // Review groups (owner decision 9): changing a project's groups, and claiming, releasing or reassigning a review, are browser-only; refused before any read.
   if (isReviewGroupsWrite(request.method, url.pathname) && authenticated?.caller.browserSession !== true) throw agentXError("FORBIDDEN", REVIEW_GROUPS_BROWSER_MESSAGE);
   // The one-time review-default notice (reading it and dismissing it) is browser-only, like the other company settings.
@@ -480,6 +484,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   // Never request.jwtClaims: no API Gateway authorizer runs on /v1/dev/* (D17).
   // UX5b: a script token (`Bearer rvst_…`) is checked, with its closed list of routes, by its own module; every other bearer is a sign-in token.
   const caller = authenticated?.caller ?? (isScriptTokenHeader(request.headers.authorization) ? await authenticateScriptToken(deps, request, url) : await authenticateDeveloper(deps, await deps.developer.verifyAccessToken(request.headers.authorization)));
+  // TE-A1: from here every route reads the install's evidence switches as this caller's company has them (a company whose gate is off sees the switch off). Nothing is read while the install has none of them on.
+  deps = { ...deps, env: await companyGatedEnv({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, caller.orgId, deps.env ?? process.env) };
   // I2: before any route is matched, an Auditor is held to its allow-list (the audit log, its exports, its own identity). Nothing below this line runs for it otherwise.
   requireAuditorRoute(caller, request.method, url.pathname);
   // Lane C6: only the trusted cookie adapter supplies authenticated; source guards share the handlers' paths.
@@ -519,7 +525,7 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isDecisionPath(url.pathname)) {
     // The outside approval named by the card page's read (`?approval=`) or by a press on its card (the path).
     const focusApprovalId = /^\/v1\/app\/decisions\/approve_request\/((?:apr|spr)_[0-9a-z]{20})\//u.exec(url.pathname)?.[1] ?? (/^(?:apr|spr)_[0-9a-z]{20}$/u.test(url.searchParams.get("approval") ?? "") ? url.searchParams.get("approval")! : undefined);
-    const cardDeps = decisionRouteDepsOf(deps, caller, process.env, { decideCookie: cookieOf(request.headers, DECIDE_COOKIE), focusApprovalId });
+    const cardDeps = decisionRouteDepsOf(deps, caller, routeEnvOf(deps), { decideCookie: cookieOf(request.headers, DECIDE_COOKIE), focusApprovalId });
     if (cardDeps !== undefined) {
       const answer = await routeDecisionCards(cardDeps, caller, { method: request.method, pathname: url.pathname, searchParams: url.searchParams, body: request.method === "POST" ? jsonBody(request) : undefined });
       if (answer !== undefined) return answer;
@@ -536,6 +542,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (isCompanyDomainsRoute(url.pathname)) return routeCompanyDomains(deps, caller, request, url.pathname);
   // Runtime UI flags (lane U5): the owner's and admin's company screens.
   if (url.pathname === UI_FLAGS_PATH) return routeUiFlags(deps, caller, request, url.pathname);
+  // Company rollout gates (TE-A1): the owner's and admin's preview features.
+  if (url.pathname === FEATURE_ROLLOUT_PATH) return routeFeatureRollout(deps, caller, request, url.pathname);
   // Company memberships (switch `cw`): the caller's own companies and the browser session's switch.
   if (url.pathname === COMPANIES_PATH) return routeCompanies(deps, caller, request, url.pathname);
   if (request.method === "GET" && url.pathname === "/v1/app/me") {

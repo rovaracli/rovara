@@ -456,6 +456,11 @@ export function orgUiFlagsKey(orgId: OrgId): OrgKey {
   return { pk: orgPk(orgId), sk: "UI_FLAGS" };
 }
 
+/** The company's rollout gates (TE-A1): `ORG#<org>` / `FEATURE_ROLLOUT`. One row, a map of known gate names to on/off, fenced by `revision`. Absent until the company first changes one: every gate takes its catalog default (off). */
+export function orgFeatureRolloutKey(orgId: OrgId): OrgKey {
+  return { pk: orgPk(orgId), sk: "FEATURE_ROLLOUT" };
+}
+
 /**
  * Agent publish requests (experience decision 24): the org's index of every request, newest last (`<createdAt>#<approvalId>`), which the request lists read. The
  * approval record is the request; this item names it so a list needs no scan of the approvals.

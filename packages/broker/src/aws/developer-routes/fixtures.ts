@@ -9,6 +9,7 @@
 // H1: a set belongs to ONE PROJECT. Its row, its store id and its object key name the project it was submitted for; every path above reads and decides only the set of the project in the URL (the role is read for that
 // project), so a maintainer of project B cannot read, approve, reject or withdraw project A's set by its digest. A set of another project, of another org and a digest nobody holds are answered alike (`answer set not found`).
 // The schemaSynth flag, the production list and the sign-in rule are computed from the ROW's project (which is the URL's, or the row was not found).
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { z } from "zod";
 import { auditOccurrence, auditProjectFixtureSetDecided } from "../../audit/events.js";
 import { recordAuditEventDurably } from "../../audit/flush.js";
@@ -67,7 +68,7 @@ const signedInAtOf = async (deps: DeveloperRouteDependencies, caller: DeveloperC
   return Number.isFinite(at) ? new Date(at) : undefined;
 };
 
-export async function routeFixtures(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = process.env): Promise<StatusReply | undefined> {
+export async function routeFixtures(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = routeEnvOf(deps)): Promise<StatusReply | undefined> {
   if (!testServicesEnabled(env) || deps.fixtureStore === undefined) return undefined;
   const match = FIXTURE_PATH.exec(url.pathname);
   if (match === null) return undefined;

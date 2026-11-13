@@ -4,6 +4,7 @@
 //   blockedByEnvironmentHook       a task whose auto-fix gave up on environment faults (the end of "Blocked by environment")
 //   setupProvedHook                an approved, proved environment revision
 //   healthPortsOf                  the card (SH17's records, versioned; none while `vx` is off) and proposed-task ports
+import { companyGatedEnv } from "../org/feature-rollout.js";
 import type { AutoFixCode } from "@agentx/cloud-contracts";
 import type { OrgId, TestingBlockedReason } from "@rovara-code/contracts";
 import { RESULT_RULES } from "../verification/result.js";
@@ -23,7 +24,9 @@ export const healthPortsOf = (deps: TestEnvDeps, env: NodeJS.ProcessEnv = proces
 export const healthWiringOn = (env: NodeJS.ProcessEnv = process.env): boolean => nightlyHealthEnabled(env) && testEnvironmentEnabled(env);
 
 /** Records a finished nightly run; while `nh` is on the project's health follows it. With `nh` off this is `recordNightlyResult` exactly. */
-export function recordNightlyResultWithHealth(deps: TestEnvDeps, maps: MapStore, input: { orgId: OrgId; project: string; result: unknown; coverageMap?: unknown }, env: NodeJS.ProcessEnv = process.env): ReturnType<typeof recordNightlyResult> {
+export async function recordNightlyResultWithHealth(deps: TestEnvDeps, maps: MapStore, input: { orgId: OrgId; project: string; result: unknown; coverageMap?: unknown }, installEnv: NodeJS.ProcessEnv = process.env): ReturnType<typeof recordNightlyResult> {
+  // TE-A1: the health and the known-failing expiry follow the company's gates (`verifyResults`, `testEnvironment`); the nightly itself is always recorded.
+  const env = await companyGatedEnv(deps, input.orgId, installEnv, { throwOnReadFailure: true });
   return recordNightlyResult(deps, maps, input, nightlyListeners(nightlyHealthListener(deps, healthPortsOf(deps, env), env), knownFailingExpiryListener(deps, env)));
 }
 
@@ -59,18 +62,19 @@ async function retried<T>(run: () => Promise<T>): Promise<T> {
 /** For the auto-fix runner: when it gives up on a task and the faults are the environment's, the project's blocked-task count goes up. Advisory: the caller ignores a failure. */
 export function blockedByEnvironmentHook(deps: TestEnvDeps, env: NodeJS.ProcessEnv = process.env): ((task: { taskId: string; orgId?: OrgId | undefined; project: string }, codes: readonly AutoFixCode[]) => Promise<void>) | undefined {
   if (!healthWiringOn(env)) return undefined;
-  const ports = healthPortsOf(deps);
   return async (task, codes) => {
     const orgId = task.orgId;
     if (orgId === undefined) return;
-    for (const reason of blockedReasonsOf(codes)) await retried(() => noteBlockedTask(deps, ports, { orgId, project: task.project, taskId: task.taskId, reason }));
+    // TE-A1: the company's gates, read inside the retry (a throttled read is tried again, never taken for "off").
+    for (const reason of blockedReasonsOf(codes)) await retried(async () => { const gated = await companyGatedEnv(deps, orgId, env, { throwOnReadFailure: true }); if (healthWiringOn(gated)) await noteBlockedTask(deps, healthPortsOf(deps, gated), { orgId, project: task.project, taskId: task.taskId, reason }); });
   };
 }
 
 /** For the approval route: an approved (so proved) revision brings a project that needs repair back to healthy. */
 export function setupProvedHook(deps: TestEnvDeps, env: NodeJS.ProcessEnv = process.env): ((orgId: OrgId, project: string) => Promise<void>) | undefined {
   if (!healthWiringOn(env)) return undefined;
-  const ports = healthPortsOf(deps);
-  return async (orgId, project) => { await retried(() => noteSetupProved(deps, ports, { orgId, project })); };
+  return async (orgId, project) => {
+    await retried(async () => { const gated = await companyGatedEnv(deps, orgId, env, { throwOnReadFailure: true }); if (healthWiringOn(gated)) await noteSetupProved(deps, healthPortsOf(deps, gated), { orgId, project }); });
+  };
 }
 

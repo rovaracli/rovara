@@ -487,12 +487,12 @@ describe("the one-line hunks in the shared files", () => {
     expect(read("packages/broker/src/aws/broker/task-operations.ts")).toContain("if (fixtureDigests.length > 0) operation.fixtureSetDigests = fixtureDigests;");
     expect(read("packages/broker/src/aws/broker/workspace-preparation.ts")).toContain("fixtureDigests.length > 0 ? { fixtureDelivery: true } : {}");
     expect(read("packages/broker/src/aws/ec2-delivery.ts")).toContain("dependency.backing === \"fake\"");
-    expect(read("packages/broker/src/aws/broker/evidence-wiring.ts")).toContain("...fixtureStoreForRoutes(dependencies)");
+    expect(read("packages/broker/src/aws/broker/evidence-wiring.ts")).toContain("...fixtureStoreForRoutes(dependencies, gated)");
   });
   it("hands the fixture store (the install's factory) to the routes that approve and plan a fake, and to the callback, the task's plan and the evidence", () => {
     expect(read("packages/broker/src/aws/broker/handler.ts")).toContain("...fixtureStoreForRoutes(dependencies),");
     expect(read("packages/broker/src/aws/broker/callbacks.ts")).toContain("...fixtureStoreForRoutes(dependencies) }, operation, body)");
-    expect(read("packages/broker/src/aws/broker/task-operations.ts")).toContain("serviceCatalog: dependencies.serviceCatalog, ...fixtureStoreForRoutes(dependencies) }");
+    expect(read("packages/broker/src/aws/broker/task-operations.ts")).toContain("serviceCatalog: dependencies.serviceCatalog, ...fixtureStoreForRoutes(dependencies, gatedEnv) }");
     expect(read("packages/broker/src/aws/developer-routes/test-environment.ts")).toContain("{ fixtureStore: deps.fixtureStore }");
     expect(read("packages/broker/src/aws/developer-routes/types.ts")).toContain("fixtureStore?: (denyFor");
   });

@@ -1178,6 +1178,18 @@ export function auditCompanyUiFlagsChanged(input: AuditBuilderBase & { revision:
   });
 }
 
+// Company rollout gates (TE-A1) -------------------------------------------------------------------------------------------
+
+/**
+ * `occurrence`: `auditOccurrence(org, revision)`: the new revision of the company's gates, so a replay of one write is one event. An owner or admin turned evidence features on or off for the company. `turnedOn` and `turnedOff` are
+ * gate names (a closed list of plain words) joined by `+`, or `none`. The target is the company.
+ */
+export function auditCompanyFeatureRolloutChanged(input: AuditBuilderBase & { revision: number; turnedOn: readonly string[]; turnedOff: readonly string[] }): AuditEventInput {
+  return build("company.feature_rollout_changed", input, { kind: "org", id: input.orgId }, {
+    revision: input.revision, turnedOn: input.turnedOn.length === 0 ? "none" : input.turnedOn.join("+"), turnedOff: input.turnedOff.length === 0 ? "none" : input.turnedOff.join("+"),
+  });
+}
+
 // Agent publish requests (experience decision 24, owner decision 91) ---------------------------------------------------------------------
 
 export type AgentPublicationAuditAction = Extract<AuditAction, `agent_publication.${string}`>;
