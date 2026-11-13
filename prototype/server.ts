@@ -22,7 +22,7 @@ const SESSION_COOKIE = "rovara_prototype_session";
 const SCOPES = process.env.ROVARA_SCOPES ?? "projects:members projects:create";
 
 interface Access { developerId: string; displayName: string; administrator: boolean; projects: Array<{ name: string; access: string }>; notices: string[] }
-interface Session { accessToken: string; refreshToken?: string; access: Access; csrf: string; signedInAt: string }
+interface Session { accessToken: string; refreshToken?: string; access: Access; csrf: string; signedInAt: string; /** Onboarding creations by requestId, so a retried request answers the same project. */ created?: Record<string, { name: string; at: string }> }
 const pendingSignIns = new Map<string, { verifier: string; returnTo: string; at: number }>();
 // Kept in a private file when PROTOTYPE_SESSIONS_FILE is set, so restarting the prototype keeps people signed in.
 const SESSIONS_FILE = process.env.PROTOTYPE_SESSIONS_FILE;
@@ -167,6 +167,22 @@ async function codeProject(session: Session, name: string): Promise<CodeProject 
   return response.ok ? await response.json() as CodeProject : undefined;
 }
 
+/** Spec 065b: the GitHub accounts Rovara Code's GitHub App is installed on, and the repositories each lets it reach. */
+interface CodeRepositories {
+  installations: Array<{ installationId: number; accountLogin: string; accountType: string; repositorySelection: string; status: string; repositories: Array<{ fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string }> }>;
+}
+
+/** The repositories the person's projects already use (owner/name, lowercase), to mark them in the picker. */
+async function usedRepositories(session: Session): Promise<Map<string, string>> {
+  const used = new Map<string, string>();
+  for (const project of session.access.projects) {
+    for (const repository of (await codeProject(session, project.name))?.repositories ?? []) {
+      if (repository.fullName !== undefined) used.set(repository.fullName.toLowerCase(), project.name);
+    }
+  }
+  return used;
+}
+
 /** A project as the app's admin screens list it (AppProjectSummarySchema). */
 async function summary(session: Session, name: string, access: string) {
   const code = await codeProject(session, name);
@@ -237,6 +253,35 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       return answer === undefined ? send(res, 404, { error: { code: "PROJECT_NOT_FOUND", message: "That project doesn't exist, or you can't use it." } }) : send(res, 200, answer);
     }
     const ended = () => send(res, 401, { error: { code: "AUTH_REQUIRED", message: "Your Rovara sign-in ended. Sign in again." } });
+    // Step 4 (spec 065b): onboarding creates a project in Rovara Code from a repository its GitHub App can reach.
+    if ((url.pathname === "/v1/web/github/installations" || url.pathname === "/v1/web/github/repositories") && method === "GET") {
+      const response = await codeFetch(session, "/v1/dev/client/repositories");
+      const body = await response.json() as CodeRepositories & { error?: unknown };
+      if (!response.ok) return send(res, response.status, body);
+      if (url.pathname === "/v1/web/github/installations") {
+        return send(res, 200, { installations: body.installations.map(({ repositories: _, ...installation }) => installation) });
+      }
+      const installation = body.installations.find((entry) => String(entry.installationId) === url.searchParams.get("installation"));
+      if (installation === undefined) return send(res, 404, { error: { code: "NOT_FOUND", message: "That GitHub account isn't connected." } });
+      const used = await usedRepositories(session);
+      return send(res, 200, { repositories: installation.repositories.map((repository) => ({ ...repository, ...(used.has(repository.fullName.toLowerCase()) ? { project: used.get(repository.fullName.toLowerCase()) } : {}) })) });
+    }
+    if (url.pathname === "/v1/web/projects" && method === "POST") {
+      const body = JSON.parse(await readBody(req) || "{}") as { requestId?: string; repository?: string; name?: string; setupCommand?: string; testCommand?: string; setupCommands?: string[]; testCommands?: string[] };
+      const earlier = body.requestId === undefined ? undefined : session.created?.[body.requestId];
+      if (earlier !== undefined) return send(res, 200, { duplicate: true, project: { definition: { name: earlier.name }, registeredAt: earlier.at } });
+      const list = (single?: string, many?: string[]) => many ?? (single?.trim() ? [single.trim()] : undefined);
+      const setupCommands = list(body.setupCommand, body.setupCommands), testCommands = list(body.testCommand, body.testCommands);
+      const response = await codeFetch(session, "/v1/dev/client/projects", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repository: body.repository, ...(body.name ? { name: body.name } : {}), ...(setupCommands ? { setupCommands } : {}), ...(testCommands ? { testCommands } : {}) }),
+      });
+      const created = await response.json() as { name?: string; error?: unknown };
+      if (!response.ok || created.name === undefined) return send(res, response.ok ? 502 : response.status, created);
+      const at = new Date().toISOString();
+      if (body.requestId !== undefined) { session.created = { ...session.created, [body.requestId]: { name: created.name, at } }; saveSessions(); }
+      return send(res, 201, { duplicate: false, project: { definition: { name: created.name }, registeredAt: at } });
+    }
     if (url.pathname === "/v1/web/projects" && method === "GET") {
       const access = await freshAccess(session);
       if (access === undefined) return ended();
