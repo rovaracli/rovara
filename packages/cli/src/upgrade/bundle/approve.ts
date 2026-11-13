@@ -8,6 +8,7 @@ import { ApprovalRecordSchema, BUNDLE_MANIFEST_FILE, BUNDLE_PUBLIC_DEPLOYED_KIND
 import { agentXError } from "@rovara-code/contracts";
 import type { BuiltBundle } from "./build-at-approval.js";
 import type { VerifiedBundle } from "./verify.js";
+import { rollbackDirection, ROLLBACK_FLOORS, ROLLBACK_FLOORS_DECLARED_THROUGH, type RollbackFloor } from "../target.js";
 
 export interface ApprovalStore {
   /** Writes an object and returns the version id the bucket gave it. */
@@ -16,8 +17,17 @@ export interface ApprovalStore {
   remove(key: string): Promise<void>;
 }
 
-export async function approveBundle(input: { bundle: VerifiedBundle; approvedBy: string; parameters: unknown; rollback: boolean; store: ApprovalStore; now: () => number; /** An Enterprise install: the build made at this approval and the recorded settings it used. The bundle's own templates are then not placed at all. */ built?: { build: BuiltBundle; settings: SynthSettings } }): Promise<ApprovalRecord> {
+/** What a rollback approval is checked against (target.ts rollbackDirection): the install, the version it records and the highest it ever ran. */
+export interface BundleRollbackGuard { env: string; installedVersion: string; highWater: string | undefined; floors?: readonly RollbackFloor[]; declaredThrough?: string }
+
+export async function approveBundle(input: { bundle: VerifiedBundle; approvedBy: string; parameters: unknown; rollback: boolean; store: ApprovalStore; now: () => number; /** An Enterprise install: the build made at this approval and the recorded settings it used. The bundle's own templates are then not placed at all. */ built?: { build: BuiltBundle; settings: SynthSettings }; /** Required with `rollback`: the floors are checked before anything is placed. */ rollbackGuard?: BundleRollbackGuard }): Promise<ApprovalRecord> {
   const { bundle } = input;
+  // `--rollback` approves moving back, never under a floor of a release the install ever ran: the same guard as agentx upgrade --rollback-to, before any file is placed.
+  if (input.rollback) {
+    const guard = input.rollbackGuard;
+    if (guard === undefined) throw agentXError("CONFIG_INVALID", "a rollback approval needs the install's recorded and highest versions to check the rollback floors; nothing was approved");
+    rollbackDirection(guard.env, guard.installedVersion, bundle.manifest.version, guard.floors ?? ROLLBACK_FLOORS, guard.declaredThrough ?? ROLLBACK_FLOORS_DECLARED_THROUGH, guard.highWater);
+  }
   const parameters = ApprovalRecordSchema.shape.parameters.safeParse(input.parameters ?? {});
   if (!parameters.success) throw agentXError("CONFIG_INVALID", "the parameters file must be {\"<stack part>\": {\"<ParameterName>\": \"<value>\"}} for foundation, identity, runtime, control-plane or slack");
   // The files placed: the signed lineage always; then either the bundle's own deployable files (Public), or only release.json and the build made for this install (Enterprise).

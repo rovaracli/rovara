@@ -9,12 +9,13 @@ import type { ParameterStore } from "../../environments/parameter-store.js";
 import type { EnvironmentSettings } from "../../environments/settings.js";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { approveBundle, type ApprovalStore } from "./approve.js";
+import { approveBundle, type ApprovalStore, type BundleRollbackGuard } from "./approve.js";
 import { buildAtApproval, requiredParts, type BuiltBundle } from "./build-at-approval.js";
 import { summariseBuild } from "./build-summary.js";
 import { readSynthSettings } from "./synth-settings.js";
 import type { SynthRunner } from "./synth-run.js";
 import type { VerifiedBundle } from "./verify.js";
+import { rollbackDirection, ROLLBACK_FLOORS, ROLLBACK_FLOORS_DECLARED_THROUGH } from "../target.js";
 
 export interface ApproveEnterpriseInput {
   bundle: VerifiedBundle;
@@ -27,6 +28,8 @@ export interface ApproveEnterpriseInput {
   approvedBy: string;
   parameters: unknown;
   rollback: boolean;
+  /** Required with `rollback` (approve.ts). */
+  rollbackGuard?: BundleRollbackGuard;
   now: () => number;
   yes: boolean;
   interactive: boolean;
@@ -52,6 +55,12 @@ export async function installIsEnterprise(store: ParameterStore, env: string): P
 export async function approveEnterpriseBundle(input: ApproveEnterpriseInput): Promise<{ record: ApprovalRecord; build: BuiltBundle }> {
   const { bundle, install, store } = input;
   if (!(await installIsEnterprise(store, install.env))) throw agentXError("CONFIG_INVALID", `${install.env} is not recorded as an Enterprise install; a build made at approval is for Enterprise installs only. Nothing was approved`);
+  // A rollback under a floor is refused before anything is built (approveBundle checks it again before the approval is written).
+  if (input.rollback) {
+    const guard = input.rollbackGuard;
+    if (guard === undefined) throw agentXError("CONFIG_INVALID", "a rollback approval needs the install's recorded and highest versions to check the rollback floors; nothing was approved");
+    rollbackDirection(guard.env, guard.installedVersion, bundle.manifest.version, guard.floors ?? ROLLBACK_FLOORS, guard.declaredThrough ?? ROLLBACK_FLOORS_DECLARED_THROUGH, guard.highWater);
+  }
   await input.beforeBuild?.();
   const settings = await readSynthSettings(store, install);
   const build = await buildAtApproval({ bundle, settings, runner: input.runner });
@@ -78,7 +87,7 @@ export async function approveEnterpriseBundle(input: ApproveEnterpriseInput): Pr
   const again = await readSynthSettings(store, install);
   if (synthSettingsSha256(again) !== build.settingsSha256) throw agentXError("CONFIG_INVALID", "the recorded build settings changed while the build was made; run agentx bundle approve again. Nothing was approved");
 
-  const record = await approveBundle({ bundle, approvedBy: input.approvedBy, parameters: input.parameters, rollback: input.rollback, store: input.approvalStore, now: input.now, built: { build, settings } });
+  const record = await approveBundle({ bundle, approvedBy: input.approvedBy, parameters: input.parameters, rollback: input.rollback, store: input.approvalStore, now: input.now, built: { build, settings }, ...(input.rollbackGuard === undefined ? {} : { rollbackGuard: input.rollbackGuard }) });
   return { record, build };
 }
 

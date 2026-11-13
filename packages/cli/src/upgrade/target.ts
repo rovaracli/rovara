@@ -60,35 +60,52 @@ export function upgradeDirection(env: string, current: string, target: string): 
  */
 export interface RollbackFloor { /** The release that wrote the data. */ release: string; /** The oldest release that can run on that data. */ floor: string; /** What the release wrote, for the refusal. */ reason: string }
 
-export const ROLLBACK_FLOORS: readonly RollbackFloor[] = [];
+export const ROLLBACK_FLOORS: readonly RollbackFloor[] = [
+  // 0.5.15 dropped the control plane's CallbackSigningKey parameter (parameters.ts): this agentx no longer sends it, and 0.5.14's template
+  // has no default for it, so this agentx cannot deploy 0.5.14 or older. (The 0.5.14 CLI itself still can: rollback-0515-to-0514.sh.)
+  { release: "0.5.15", floor: "0.5.15", reason: "removed the control plane's CallbackSigningKey parameter, which every older template needs and this agentx no longer sends" },
+];
 
 /**
- * The newest release whose floor this agentx knows: this source's own release. Bump it in every release (the release checklist and
- * docs/operations/rollback.md say so). A rollback from a newer installed release is refused, because that release may have declared a
- * floor this agentx has never seen; run the rollback with the installed release's agentx (or a newer one) instead. Forgetting the bump
- * only refuses, never allows.
+ * The newest release whose floor this agentx knows: this source's own release. Bump it in every release (docs/releases.md, "Rolling a
+ * release back"; scripts/release/pack-cli.ts refuses to pack a release whose x.y.z is not this). A rollback from an environment that ever
+ * ran a newer release is refused, because that release may have declared a floor this agentx has never seen; run the rollback with that
+ * release's agentx (or a newer one) instead. Forgetting the bump only refuses, never allows.
  */
 export const ROLLBACK_FLOORS_DECLARED_THROUGH = "0.5.17";
 
+/** The release's own check (scripts/release/pack-cli.ts): a release whose x.y.z is not ROLLBACK_FLOORS_DECLARED_THROUGH forgot the bump, so its packed agentx would refuse to roll its own release back. */
+export function assertRollbackFloorsDeclaredFor(version: string, declaredThrough: string = ROLLBACK_FLOORS_DECLARED_THROUGH): void {
+  const base = /^(\d+\.\d+\.\d+)(?:-.*)?$/.exec(version)?.[1];
+  if (base === undefined || base !== declaredThrough) {
+    throw new Error(`release ${version}: ROLLBACK_FLOORS_DECLARED_THROUGH in packages/cli/src/upgrade/target.ts is ${declaredThrough}; set it to ${base ?? "this release's x.y.z"} (and add a ROLLBACK_FLOORS entry if this release writes data an older one cannot read), then tag again`);
+  }
+}
+
 /**
- * `agentx upgrade --rollback-to`: the only way an environment moves back. The target must be older than the recorded version, no
- * newer than any floor a release between them declared, and this agentx must know every such release.
+ * `agentx upgrade --rollback-to` and `agentx bundle approve --rollback`: the only ways an environment moves back. The target must be
+ * older than the recorded version. The floors and the releases this agentx knows are checked against the highest release the environment
+ * ever ran (`highWater`, environments/release-high-water.ts; the recorded version when none is recorded), not just the current one, so two
+ * rollbacks in a row never step under a floor the first one passed.
  */
-export function rollbackDirection(env: string, current: string, target: string, floors: readonly RollbackFloor[] = ROLLBACK_FLOORS, declaredThrough: string = ROLLBACK_FLOORS_DECLARED_THROUGH): "older" {
+export function rollbackDirection(env: string, current: string, target: string, floors: readonly RollbackFloor[] = ROLLBACK_FLOORS, declaredThrough: string = ROLLBACK_FLOORS_DECLARED_THROUGH, highWater?: string): "older" {
   if (!RELEASE_VERSION_PATTERN.test(current)) {
     throw agentXError("CONFIG_INVALID", `environment ${env}'s settings record version "${current}", not a release, so agentx upgrade --rollback-to cannot tell whether ${target} is older; nothing was changed`);
   }
   const order = compareVersions(current, target);
   if (order === 0) throw agentXError("CONFIG_INVALID", `environment ${env} already runs ${target}; --rollback-to moves only to an older release. To finish an upgrade that stopped, run agentx upgrade without --rollback-to; nothing was changed`);
   if (order < 0) throw agentXError("CONFIG_INVALID", `release ${target} is newer than ${current}, which environment ${env} runs; --rollback-to moves only to an older release. Run agentx upgrade --to ${target} instead; nothing was changed`);
-  if (compareVersions(current, declaredThrough) > 0) {
-    throw agentXError("CONFIG_INVALID", `environment ${env} runs ${current}, newer than every release this agentx knows (through ${declaredThrough}), so it cannot tell whether ${current} wrote data ${target} cannot read. Run the rollback with release ${current}'s agentx or a newer one (with --source <checkout of v${target}> on a cdk install); nothing was changed`);
+  // The highest release the environment ever ran: never below the recorded one.
+  const top = highWater !== undefined && RELEASE_VERSION_PATTERN.test(highWater) && compareVersions(highWater, current) > 0 ? highWater : current;
+  const ran = top === current ? `runs ${current}` : `has run ${top} (it runs ${current} now)`;
+  if (compareVersions(top, declaredThrough) > 0) {
+    throw agentXError("CONFIG_INVALID", `environment ${env} ${ran}, newer than every release this agentx knows (through ${declaredThrough}), so it cannot tell whether ${top} wrote data ${target} cannot read. Run the rollback with release ${top}'s agentx or a newer one (with --source <checkout of v${target}> on a cdk install); nothing was changed`);
   }
   const blocking = floors
-    .filter((entry) => compareVersions(entry.release, target) > 0 && compareVersions(entry.release, current) <= 0 && compareVersions(target, entry.floor) < 0)
+    .filter((entry) => compareVersions(entry.release, target) > 0 && compareVersions(entry.release, top) <= 0 && compareVersions(target, entry.floor) < 0)
     .sort((a, b) => compareVersions(b.floor, a.floor))[0];
   if (blocking !== undefined) {
-    throw agentXError("CONFIG_INVALID", `release ${blocking.release} ${blocking.reason}, so no release older than ${blocking.floor} can run on environment ${env}'s data; ${target} is below that floor. Roll back to ${blocking.floor} or later, or fix forward; nothing was changed`);
+    throw agentXError("CONFIG_INVALID", `release ${blocking.release} ${blocking.reason}, so environment ${env}, which ${ran}, rolls back no lower than ${blocking.floor}; ${target} is below that floor. Roll back to ${blocking.floor} or later, or fix forward; nothing was changed`);
   }
   return "older";
 }

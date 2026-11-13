@@ -138,10 +138,13 @@ runs, naming both, because a newer release may have written data an older one ca
 release is fine (a re-run). It also refuses every prerelease (such as `1.4.0-rc.1`). To move back on
 purpose, name the release with `--rollback-to <x.y.z>` instead of `--to` (on the cdk engine, with
 `--source <checkout of v<x.y.z>>`). It is refused unless that release is older than the recorded one,
-and refused below a floor a newer release declared (one that wrote data older releases cannot read).
-Every change is shown and confirmed exactly as for an upgrade, `--yes` works the same, the data guard
-still stops on a deleted table unless you name it with `--allow-replace`, and the settings then record
-the release you rolled back to. See "Rolling a release back" in [releases.md](releases.md).
+below a floor declared by any release the environment ever ran (recorded in
+`/agentx/<env>/release-high-water`), or when the older templates would not take the parameters this
+agentx sends; all of that is checked before any stack changes. Every change is shown and confirmed
+exactly as for an upgrade, `--yes` works the same, the data guard still stops on a deleted table unless
+you name it with `--allow-replace`, and the settings then record the release you rolled back to. Values
+the older templates drop are listed with the `config set` line to re-apply each after the next upgrade.
+See "Rolling a release back" in [releases.md](releases.md).
 
 **The operator role and the access stack.** The operator role cannot change the access stack.
 Under it, `upgrade` compares the deployed access template with the release's. If they are the

@@ -19,6 +19,7 @@ import type { CallerIdentity, StackDescription, StackReader } from "../environme
 import { withEnvironmentLock, type LockRecord } from "../environments/lock.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
+import { raiseReleaseHighWater, readReleaseHighWater, releaseHighWaterParameter } from "../environments/release-high-water.js";
 import { activeHintLine, ensureGithubWebhook, missingEventsLine } from "../github/webhook-setup.js";
 import { isOperatorRole } from "../init/commands.js";
 import type { InitSecrets } from "../init/context.js";
@@ -310,10 +311,17 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     throw agentXError("CONFIG_INVALID", `--rollback-to ${options.rollbackTo} does not match the release given, which is ${target} (${options.releaseDir !== undefined ? "--release" : "the --source checkout's tag"}); pass the release you mean; nothing was changed`);
   }
   const floors = deps.rollbackFloors ?? { floors: ROLLBACK_FLOORS, declaredThrough: ROLLBACK_FLOORS_DECLARED_THROUGH };
-  // The direction guard: a plain upgrade never moves back; only --rollback-to does, and only to an older release above every floor.
-  const checkDirection = (current: string): "same" | "newer" | "older" => (options.rollbackTo === undefined ? upgradeDirection(env, current, target) : rollbackDirection(env, current, target, floors.floors, floors.declaredThrough));
+  // The direction guard: a plain upgrade never moves back; only --rollback-to does, and only to an older release above every floor of every
+  // release the environment ever ran (the high-water mark, read again under the lock).
+  const rollback = options.rollbackTo !== undefined;
+  const checkDirection = async (current: string): Promise<"same" | "newer" | "older"> => (!rollback ? upgradeDirection(env, current, target)
+    : rollbackDirection(env, current, target, floors.floors, floors.declaredThrough, await readReleaseHighWater(deps.store, env)));
   // Checked here to fail fast, and again under the lock, where it counts.
-  checkDirection(first.version);
+  await checkDirection(first.version);
+  // A cdk rollback to a release that names no embedder image would keep the newer release's image running under the older code: name it.
+  if (rollback && first.engine === "cdk" && release.manifest.images.embedder === undefined && options.images?.embedder === undefined && await teamRecordRecordedOrUnknown(deps.store, env)) {
+    throw agentXError("CONFIG_INVALID", `release ${target} names no embedder image, and ${env} records the Team record as on (or it could not be read), so the rollback would keep the embedder of ${first.version}; pass --embedder-image <release ${target}'s embedder, pinned by digest in your registry>; nothing was changed`);
+  }
   if (options.exportDir !== undefined) return exportUpgrade({ options, deps, settings: first, release, dir: options.exportDir });
 
   // Question 3 under concurrency: another upgrade may finish between the read above and this lock,
@@ -329,7 +337,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     if (settings.engine !== first.engine) {
       throw agentXError("CONFIG_INVALID", `environment ${env}'s settings changed to the ${settings.engine} engine while agentx upgrade was starting; run agentx upgrade again`);
     }
-    const direction = checkDirection(settings.version);
+    const direction = await checkDirection(settings.version);
     deps.write(direction === "same" ? `Environment ${env} already runs ${target}; checking that every stack is on it`
       : direction === "older" ? `Rolling back ${env} from ${settings.version} to ${target} (${settings.engine} engine): every change is shown and confirmed as for an upgrade`
         : `Upgrading ${env} from ${settings.version} to ${target} (${settings.engine} engine)`);
@@ -349,7 +357,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     }
 
     const allowReplace = new Set(options.allowReplace);
-    const review = upgradeConfirm({ write: deps.write, ask: deps.ask, yes: options.yes, allowReplace });
+    const review = upgradeConfirm({ write: deps.write, ask: deps.ask, yes: options.yes, allowReplace, stopped: (stackName) => stoppedBefore(stackName, options.rollbackTo) });
     // Prepared before the dropped keys are named: the cdk engine's synth of the source (issue 152)
     // says which parameters the deploy can send, and so which it drops.
     // The embedder image the stack runs now, for a release that names none (a --source or --worker-image upgrade): kept, not refused. Read live, as the answers are.
@@ -377,8 +385,14 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     try {
       const declaredBy = prepared.declaredParameters;
       const declared = (part: DeployPart) => (declaredBy === undefined ? templateParameterNames(release, part, env) : declaredBy(part));
-      for (const entry of await droppedConfigKeys({ declared, env, parts, stacks: deps.stacks })) {
-        deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the upgrade drops it; ${entry.instead === undefined ? "nothing replaces it" : `instead, ${entry.instead}`}`);
+      const dropped = await droppedConfigKeys({ declared, env, parts, stacks: deps.stacks });
+      for (const entry of dropped) {
+        deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the ${rollback ? "rollback" : "upgrade"} drops it; ${entry.instead === undefined ? "nothing replaces it" : `instead, ${entry.instead}`}`);
+      }
+      // A value an older template does not declare is gone from the stack; rolling forward again deploys the newer template's default, not it.
+      if (rollback && dropped.length > 0) {
+        deps.write(`WARNING: rolling back drops ${dropped.length === 1 ? "this value" : "these values"}, and rolling forward again does NOT bring ${dropped.length === 1 ? "it" : "them"} back (the newer release's default is deployed instead). After the next upgrade, re-apply ${dropped.length === 1 ? "it" : "each"}:`);
+        for (const entry of dropped) deps.write(`  agentx --env ${env} config set ${entry.key} ${entry.value}`);
       }
       for (const line of await forcedNotes({ env, from: settings.version, to: target, stacks: deps.stacks })) deps.write(line);
 
@@ -401,9 +415,18 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
           throw agentXError("CONFIG_INVALID", hint === undefined ? refusal : `${refusal} ${hint}`);
         }
         if (!options.yes && !/^y(es)?$/i.test((await deps.ask(`Deploy ${request.stackName}? [y/N] `)).trim())) {
-          throw agentXError("CONFIG_INVALID", `upgrade stopped before ${request.stackName}: nothing in it changed. Stacks upgraded before it keep the new release; run agentx upgrade again to continue`);
+          throw agentXError("CONFIG_INVALID", stoppedBefore(request.stackName, options.rollbackTo));
         }
       });
+      // A rollback first records the release it leaves as the high-water mark (never lowered), so the next rollback still meets its floors.
+      // It must be recorded: without it a second rollback could step under a floor this one passed.
+      if (rollback) {
+        try {
+          await raiseReleaseHighWater(deps.store, env, settings.version);
+        } catch (error) {
+          throw agentXError("CONFIG_INVALID", `the rollback could not record ${settings.version} as ${releaseHighWaterParameter(env)} (${plainMessage(error)}), so it stopped before anything changed. The operator role cannot write that parameter until its access stack grants it; run the rollback with admin credentials`);
+        }
+      }
       try {
         // The lock is this command's, in deps.store, where the settings live; deployEnvironment
         // checks that and writes the new settings there.
@@ -416,6 +439,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
           ...(declaredBy === undefined ? {} : { declaredParameters: declaredBy }),
           ...(settings.engine === "cdk" && prepared.ensurePassRole !== undefined ? { ensurePassRole: prepared.ensurePassRole } : {}),
           ...(settings.engine === "cdk" && prepared.publishEmbedderImage !== undefined ? { afterAccess: prepared.publishEmbedderImage } : {}),
+          ...(rollback ? { checkParametersFirst: true } : {}),
           now: deps.now,
         });
       } catch (error) {
@@ -430,16 +454,30 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     if (bundle !== undefined) await recordInstalledBundle({ store: deps.store, env, now: deps.now(), version: target, bundleId: bundle.bundleId });
     // M-1: every stack deployed, so the control plane removed the previous name's pieces under the grants this upgrade kept for them; the next upgrade drops those grants.
     if (settings.engine === "cdk" && await clearModelProxyTlsPrevious(deps.store, env)) deps.write("Model proxy TLS: the previous name's record, validation record and certificate were removed; the next upgrade drops the deploy grants that removed them");
+    // An upgrade raises the high-water mark to the release it installed (a rollback leaves it). Every stack is already on it, so a refusal here only warns.
+    if (!rollback) {
+      try { await raiseReleaseHighWater(deps.store, env, target); } catch (error) {
+        deps.write(`WARNING: ${releaseHighWaterParameter(env)} could not be raised to ${target} (${plainMessage(error)}); a later rollback then checks floors only from the version it finds recorded. With the operator role this needs a grant in the access stack; run agentx upgrade again with admin credentials to record it`);
+      }
+    }
     return { settings, parts };
   });
 
-  const finished = await finishUpgrade({ env, from: settings.version, target, parts, deps });
+  const finished = await finishUpgrade({ env, from: settings.version, target, parts, deps, ...(rollback ? { rollback: true } : {}) });
   return options.rollbackTo === undefined ? finished : { ...finished, rolledBack: true };
 }
 
+/** A declined stack: what changed, and how to go on (an upgrade and a rollback each re-run themselves). */
+export function stoppedBefore(stackName: string, rollbackTo?: string): string {
+  return rollbackTo === undefined
+    ? `upgrade stopped before ${stackName}: nothing in it changed. Stacks upgraded before it keep the new release; run agentx upgrade again to continue`
+    : `rollback stopped before ${stackName}: nothing in it changed. Stacks rolled back before it already run ${rollbackTo}; run agentx upgrade --rollback-to ${rollbackTo} again to continue`;
+}
+
 /** After the stacks are on the target: the GitHub webhook (outside the lock, since it changes only GitHub's hook and the App secret), then doctor. */
-async function finishUpgrade(input: { env: string; from: string; target: string; parts: DeployPart[]; deps: UpgradeDependencies }): Promise<UpgradeResult> {
+async function finishUpgrade(input: { env: string; from: string; target: string; parts: DeployPart[]; deps: UpgradeDependencies; rollback?: true }): Promise<UpgradeResult> {
   const { env, from, target, parts, deps } = input;
+  const done = input.rollback === true ? "rolled back" : "upgraded";
   await setUpGithubWebhook(env, deps);
 
   deps.write("Checking the environment with agentx doctor");
@@ -447,11 +485,11 @@ async function finishUpgrade(input: { env: string; from: string; target: string;
   try {
     report = await deps.doctor(env);
   } catch (error) {
-    throw agentXError("CONFIG_INVALID", `upgraded ${env} to ${target}, but doctor could not run: ${plainMessage(error)}; run agentx doctor`);
+    throw agentXError("CONFIG_INVALID", `${done} ${env} to ${target}, but doctor could not run: ${plainMessage(error)}; run agentx doctor`);
   }
   deps.write(reportText(report).trimEnd());
   if (report.failed > 0) {
-    throw agentXError("CONFIG_INVALID", `upgraded ${env} to ${target}, but ${report.failed} doctor ${report.failed === 1 ? "check" : "checks"} failed; fix what each one names, then run agentx doctor again`);
+    throw agentXError("CONFIG_INVALID", `${done} ${env} to ${target}, but ${report.failed} doctor ${report.failed === 1 ? "check" : "checks"} failed; fix what each one names, then run agentx doctor again`);
   }
   return { env, from, to: target, parts, doctor: { failed: report.failed, warned: report.warned } };
 }
@@ -470,6 +508,9 @@ async function runBuiltBundleUpgrade(input: { options: UpgradeOptions; deps: Upg
   const outcome = await deps.approveAndDeploy({ bundle, settings: first, yes: options.approveBuild === true });
   if (outcome.status !== "done") {
     throw agentXError("CONFIG_INVALID", `the deployer did not finish (${outcome.status}); stacks done so far: ${outcome.done.length === 0 ? "none" : outcome.done.join(", ")}. Run agentx upgrade again; the approval stands`);
+  }
+  try { await raiseReleaseHighWater(deps.store, first.env, target); } catch (error) {
+    deps.write(`WARNING: ${releaseHighWaterParameter(first.env)} could not be raised to ${target} (${plainMessage(error)}); a later rollback then checks floors only from the version it finds recorded`);
   }
   return finishUpgrade({ env: first.env, from: first.version, target, parts: outcome.done as DeployPart[], deps });
 }
