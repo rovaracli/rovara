@@ -7,8 +7,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProjectCommand } from "@rovara-code/contracts";
 import { FRESH_ROUND_FIRST_LINE } from "../../packages/worker/src/check-round-kind.js";
 import { FRESH_NOT_RUN_SENTENCES, freshSandboxArgProblems, type FreshCandidateRepository } from "../../packages/worker/src/fresh-check-sandbox.js";
-import { STOP_SANDBOX_PROGRAMS_SCRIPT, createFreshCheckRunners, stopWorkingSandboxPrograms, withFreshCheckRound, type FreshCheckRoundInput } from "../../packages/worker/src/fresh-check-round.js";
+import { createFreshCheckRunners, restartWorkingSandbox, withFreshCheckRound, type FreshCheckRoundInput } from "../../packages/worker/src/fresh-check-round.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "../../packages/worker/src/git.js";
+import { FAKE_TINI_PID, PRISTINE_TOP, STATE_FORMAT, answerSandboxRestart } from "../support/fake-sandbox-restart.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 import { CheckNotRunError, runChecks, type CheckRunners } from "../../packages/worker/src/verification/checks.js";
 
@@ -31,7 +32,7 @@ beforeEach(() => {
 });
 afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
-interface FakeOptions { runExit?: number; rmFails?: boolean; remaining?: number; holdRun?: Promise<void>; onRun?: () => void; answer?: (text: string) => { exitCode: number; stdout?: string } }
+interface FakeOptions { runExit?: number; rmFails?: boolean; holdRun?: Promise<void>; onRun?: () => void; answer?: (text: string) => { exitCode: number; stdout?: string } }
 interface Seen { args: string[] }
 function fakeDocker(options: FakeOptions = {}) {
   const calls: Seen[] = [];
@@ -51,7 +52,6 @@ function fakeDocker(options: FakeOptions = {}) {
       if (verb === "rm") { if (options.rmFails !== true) state.up.delete(args[args.length - 1]!); return Promise.resolve({ exitCode: options.rmFails === true ? 1 : 0, stdout: "", stderr: "" }); }
       if (verb === "exec") {
         const text = args.join(" ");
-        if (text.includes("REMAINING:")) return Promise.resolve({ exitCode: options.remaining === undefined ? 0 : 0, stdout: `REMAINING:${String(options.remaining ?? 0)}\n`, stderr: "" });
         if (text.includes("kill")) return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
         const answer = (options.answer ?? (() => ({ exitCode: 0, stdout: "ok\n" })))(text);
         return Promise.resolve({ exitCode: answer.exitCode, stdout: answer.stdout ?? "", stderr: "" });
@@ -285,20 +285,40 @@ describe("H1b: nothing the agent left running may act during the round", () => {
     for (let round = 0; round < 2; round += 1) await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, runners, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(count).toBe(2);
   });
-  it("stopWorkingSandboxPrograms runs the stop script in the WORKING sandbox and fails closed unless nothing is left", async () => {
+  it("restartWorkingSandbox restarts the sandbox with no grace period and takes the verdict from the host, never from the container: no exec, no stdout of the sandbox", async () => {
     const calls: string[][] = [];
-    const docker = (remaining: number, exitCode = 0): DockerCli => ({ run: (args) => { calls.push([...args]); return Promise.resolve({ exitCode, stdout: `REMAINING:${String(remaining)}\n`, stderr: "" }); } });
-    await stopWorkingSandboxPrograms(docker(0), WORKING);
-    expect(calls).toEqual([["exec", WORKING, "sh", "-c", STOP_SANDBOX_PROGRAMS_SCRIPT]]);
-    await expect(stopWorkingSandboxPrograms(docker(2), WORKING)).rejects.toThrow(/could not be stopped/u);
-    await expect(stopWorkingSandboxPrograms(docker(0, 1), WORKING)).rejects.toThrow(/could not be stopped/u);
-    await expect(stopWorkingSandboxPrograms({ run: () => Promise.resolve({ exitCode: 0, stdout: "", stderr: "" }) }, WORKING)).rejects.toThrow();
+    const docker: DockerCli = { run: (args) => { calls.push([...args]); return Promise.resolve(answerSandboxRestart(args)!); } };
+    await restartWorkingSandbox(docker, WORKING);
+    expect(calls).toEqual([["restart", "--time", "0", WORKING], ["inspect", "--format", STATE_FORMAT, WORKING], ["top", WORKING, "-eo", "pid,ppid,args"]]);
+    expect(calls.some((call) => call[0] === "exec")).toBe(false);
   });
-  it("the stop script keeps by PID and start time, never by a command line (the behaviour itself is tested in worker-stop-sandbox-programs-script.test.ts)", () => {
-    expect(STOP_SANDBOX_PROGRAMS_SCRIPT).not.toMatch(/cmdline/u);
-    expect(STOP_SANDBOX_PROGRAMS_SCRIPT).toContain('[ "$pid" = 1 ] && continue');
-    expect(STOP_SANDBOX_PROGRAMS_SCRIPT).toContain('[ "$pid" = "$keep" ] && continue');
-    expect(STOP_SANDBOX_PROGRAMS_SCRIPT).toContain("${20:-0}");
+  const withTop = (top: string, extra: Partial<Record<"restart" | "inspect", { exitCode: number; stdout: string; stderr: string }>> = {}): DockerCli => ({
+    run: (args) => Promise.resolve(args[0] === "restart" ? extra.restart ?? answerSandboxRestart(args)! : args[0] === "inspect" ? extra.inspect ?? answerSandboxRestart(args)! : answerSandboxRestart(args, top)!),
+  });
+  const rows = (...lines: string[]) => `PID PPID COMMAND\n${lines.join("\n")}\n`;
+  const TINI = `${String(FAKE_TINI_PID)} 0 /usr/bin/tini -- sleep infinity`;
+  const SLEEP = `${String(FAKE_TINI_PID + 1)} ${String(FAKE_TINI_PID)} sleep infinity`;
+  it("restartWorkingSandbox fails closed on anything but exactly tini and its sleep, matched by host-side PIDs", async () => {
+    await restartWorkingSandbox(withTop(PRISTINE_TOP), WORKING);
+    const bad: Array<[string, string]> = [
+      ["an extra process", rows(TINI, SLEEP, `${String(FAKE_TINI_PID + 2)} ${String(FAKE_TINI_PID)} bash`)],
+      ["an extra process under the sleep", rows(TINI, SLEEP, `${String(FAKE_TINI_PID + 2)} ${String(FAKE_TINI_PID + 1)} bash`)],
+      ["only tini", rows(TINI)],
+      ["nothing", rows()],
+      ["no header-only garbage", "not a table"],
+      ["the sleep is not tini's child", rows(TINI, `${String(FAKE_TINI_PID + 1)} 1 sleep infinity`)],
+      ["the first row is not the container's PID 1", rows(`${String(FAKE_TINI_PID + 7)} 0 /usr/bin/tini -- sleep infinity`, `${String(FAKE_TINI_PID + 8)} ${String(FAKE_TINI_PID + 7)} sleep infinity`)],
+      ["the child is not the sleep", rows(TINI, `${String(FAKE_TINI_PID + 1)} ${String(FAKE_TINI_PID)} bash -c loop`)],
+      ["two sleeps", rows(TINI, SLEEP, `${String(FAKE_TINI_PID + 3)} ${String(FAKE_TINI_PID)} sleep infinity`)],
+      ["tini that is not tini", rows(`${String(FAKE_TINI_PID)} 0 /bin/bash`, SLEEP)],
+    ];
+    for (const [name, top] of bad) await expect(restartWorkingSandbox(withTop(top), WORKING), name).rejects.toThrow(/could not be stopped/u);
+    await expect(restartWorkingSandbox(withTop(PRISTINE_TOP, { restart: { exitCode: 1, stdout: "", stderr: "x" } }), WORKING)).rejects.toThrow(/could not be stopped/u);
+    await expect(restartWorkingSandbox(withTop(PRISTINE_TOP, { inspect: { exitCode: 0, stdout: "false 0\n", stderr: "" } }), WORKING)).rejects.toThrow(/could not be stopped/u);
+    await expect(restartWorkingSandbox(withTop(PRISTINE_TOP, { inspect: { exitCode: 0, stdout: "true abc\n", stderr: "" } }), WORKING)).rejects.toThrow(/could not be stopped/u);
+    // a container's PID 1 is never host PID 0 or 1: a state that says so is not a sandbox we can look at
+    for (const pid of ["0", "1"]) await expect(restartWorkingSandbox(withTop(rows(`${pid} 0 /usr/bin/tini -- sleep infinity`, `9 ${pid} sleep infinity`), { inspect: { exitCode: 0, stdout: `true ${pid}\n`, stderr: "" } }), WORKING), pid).rejects.toThrow(/could not be stopped/u);
+    await expect(restartWorkingSandbox({ run: () => Promise.reject(new Error("docker gone")) }, WORKING)).rejects.toThrow(/could not be stopped/u);
   });
 });
 
@@ -370,6 +390,15 @@ describe("H1b (2): the round is pinned to the candidate that was recorded", () =
     expect(called).toBe(false);
     expect(fake.calls).toEqual([]);
     expect(exportsLeft()).toEqual([]);
+  });
+  it("duplicates are refused on either side: [A, A] is not [A, B], and a record with a repeat is no record", async () => {
+    const fake = fakeDocker();
+    const other = { ...candidate, repositoryId: "other", directory: candidate.directory };
+    for (const [current, pinned] of [[[candidate, candidate], [candidate, other]], [[candidate, other], [candidate, candidate]], [[candidate, candidate], [candidate, candidate]]] as const) {
+      const result = await withFreshCheckRound(input(fake.docker, { candidate: () => Promise.resolve(current), pinned: () => current === pinned ? pinned : pinned }), () => Promise.resolve(1));
+      expect(result, JSON.stringify([current.length, pinned.length])).toMatchObject({ kind: "not_run", reason: "candidate_moved" });
+    }
+    expect(fake.calls).toEqual([]);
   });
   it("a round with nothing recorded is not run", async () => {
     const fake = fakeDocker();

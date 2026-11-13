@@ -24,6 +24,7 @@ import { commitCandidateWorktree, readCandidateRepositories } from "../../packag
 import { CHECKS_MESSAGE_TYPE, checksArtifactContent, compactCheckReport } from "../../packages/worker/src/verification/extension.js";
 import { AgentFilesRestoreError, type OriginalCode } from "../../packages/worker/src/verification/original-code.js";
 import * as buildSourceExport from "../../packages/worker/src/e2e-build-source-export.js";
+import { answerSandboxRestart } from "../support/fake-sandbox-restart.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 import { createFixtureDirectory } from "../fixtures/index.js";
 import { FAUX_MODEL, fauxModelRuntime } from "../support/faux-model.js";
@@ -1741,7 +1742,8 @@ describe("TE-B1-fresh: the coding run's final round with the freshCheckRound gat
     const docker: DockerCli = { run: async (args) => {
       calls.push([...args]);
       if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
-      if (args[0] === "exec" && args.join(" ").includes("REMAINING:")) return { exitCode: 0, stdout: "REMAINING:0\n", stderr: "" };
+      const restarted = answerSandboxRestart(args);
+      if (restarted !== undefined) return restarted;
       return { exitCode: 0, stdout: "", stderr: "" };
     } };
     return { docker, calls };
@@ -1761,7 +1763,7 @@ describe("TE-B1-fresh: the coding run's final round with the freshCheckRound gat
     const run = await runTask({
       steps: [bash("make-change", "c1"), bash("pytest tests/te-b1-marker", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)],
       workflowMode: "IMPLEMENT", readiness: [], rootPath, shell, originalCode,
-      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }) },
+      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }), freshPtraceScope: () => Promise.resolve(1) },
     });
     expect(run.failure).toBeUndefined();
     expect(state.runs).toBe(1);
@@ -1779,18 +1781,40 @@ describe("TE-B1-fresh: the coding run's final round with the freshCheckRound gat
     expect(existsSync(parent) ? (await readdir(parent)).filter((name) => name !== "scratch") : []).toEqual([]);
   });
 
-  it("a program that moved HEAD to another commit for the export (and would put it back after) cannot change what the round checks: the round is not run", async () => {
+  it("the working sandbox is stopped BEFORE the candidate is committed and read: what a leftover program wrote during the stop is part of the candidate, not a change under it", async () => {
     const fake = fakeDocker();
     const rootPath = await gitWorkspaceRoot();
     const repository = join(rootPath, "app");
     const originalCode: OriginalCode = { async run(work) { return work(); } };
     const shell = scriptedShell({}, async (command) => { if (command === "make-change") await writeFile(join(rootPath, "app/notes.md"), "note\n"); });
+    let stops = 0;
     const run = await runTask({
       steps: [bash("make-change", "c1"), bash("pytest tests/te-b1-marker", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)],
       workflowMode: "IMPLEMENT", readiness: [], rootPath, shell, originalCode,
-      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }),
-        // the survivor acts exactly when the quiesce runs: HEAD moves to B
-        stopBeforeReading: { stopWorkspaceProcesses: async () => { await writeFile(join(repository, "evil.txt"), "B\n"); execFileSync("git", ["-C", repository, "-c", "user.name=x", "-c", "user.email=x@x.invalid", "add", "."]); execFileSync("git", ["-C", repository, "-c", "user.name=x", "-c", "user.email=x@x.invalid", "commit", "-qm", "B"]); } } },
+      // the first stop is the one before the candidate is read: a survivor writes late.txt as it happens
+      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }), freshPtraceScope: () => Promise.resolve(1),
+        stopBeforeReading: { stopWorkspaceProcesses: async () => { stops += 1; if (stops === 1) await writeFile(join(repository, "late.txt"), "late\n"); } } },
+    });
+    expect(run.failure).toBeUndefined();
+    // committed with the candidate (the commit came after the stop), and the round ran on it
+    expect(execFileSync("git", ["-C", repository, "show", "HEAD:late.txt"], { encoding: "utf8" })).toBe("late\n");
+    expect(stops).toBeGreaterThanOrEqual(2);
+    expect(run.report).toMatchObject({ source: "agent_commands", status: "verified" });
+  });
+
+  it("a program that moved HEAD to another commit after the candidate was recorded (and would put it back after) cannot change what the round checks: the round is not run", async () => {
+    const fake = fakeDocker();
+    const rootPath = await gitWorkspaceRoot();
+    const repository = join(rootPath, "app");
+    const originalCode: OriginalCode = { async run(work) { return work(); } };
+    const shell = scriptedShell({}, async (command) => { if (command === "make-change") await writeFile(join(rootPath, "app/notes.md"), "note\n"); });
+    let stops = 0;
+    const run = await runTask({
+      steps: [bash("make-change", "c1"), bash("pytest tests/te-b1-marker", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], rootPath, shell, originalCode,
+      // the second stop is the round's own, after the candidate was recorded: the survivor moves HEAD to B exactly then
+      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }), freshPtraceScope: () => Promise.resolve(1),
+        stopBeforeReading: { stopWorkspaceProcesses: async () => { stops += 1; if (stops !== 2) return; await writeFile(join(repository, "evil.txt"), "B\n"); execFileSync("git", ["-C", repository, "-c", "user.name=x", "-c", "user.email=x@x.invalid", "add", "."]); execFileSync("git", ["-C", repository, "-c", "user.name=x", "-c", "user.email=x@x.invalid", "commit", "-qm", "B"]); } } },
     });
     const finalExecs = fake.calls.filter((args) => args[0] === "exec" && args.join(" ").includes("te-b1-marker") && args.some((arg) => arg.startsWith("agentx-fresh-")));
     expect(finalExecs).toEqual([]);

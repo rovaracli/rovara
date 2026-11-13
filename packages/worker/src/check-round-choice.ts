@@ -9,7 +9,9 @@
 //   - Anything else is today's behaviour: the working runners for both.
 import type { ProjectCommand } from "@rovara-code/contracts";
 import type { CheckRoundKind } from "./check-round-kind.js";
-import { createFreshCheckRunners, stopWorkingSandboxPrograms, type FreshEvidenceSource, type FreshRoundHooks } from "./fresh-check-round.js";
+import { readFile } from "node:fs/promises";
+import { createFreshCheckRunners, restartWorkingSandbox, type FreshEvidenceSource, type FreshRoundHooks } from "./fresh-check-round.js";
+import { FreshQuiesceError } from "./fresh-check-sandbox.js";
 import type { FreshCandidateRepository } from "./fresh-check-sandbox.js";
 import type { DockerCli } from "./swebench/containers.js";
 import { withTestServices, type TestServicesRun } from "./test-services-run.js";
@@ -93,13 +95,27 @@ export function checkRoundRunners(input: {
   return { kind: "working", beforeKind: "working", final: input.base, before: input.base };
 }
 
+const YAMA_PTRACE_SCOPE = "/proc/sys/kernel/yama/ptrace_scope";
+
+/** The kernel's yama ptrace_scope as a number, or undefined when it cannot be read or is not a number (no yama is "cannot be read"). `read` is a test seam. */
+export async function ptraceScopeFromProc(read: () => Promise<string> = () => readFile(YAMA_PTRACE_SCOPE, "utf8")): Promise<number | undefined> {
+  const text = await read().catch(() => undefined);
+  if (text === undefined || !/^\s*\d+\s*$/u.test(text)) return undefined;
+  return Number(text);
+}
+
 /**
- * H1b: what runs before every fresh round so nothing the agent left running can act during it: the worker's own leftover processes (workspace-processes.ts, as publication and CHECKS mode do), then every program in the working sandbox
- * (the sandbox itself stays: the agent may get an extra turn in it). It fails closed: a rejection makes the round "not run".
+ * H1b: what runs before every fresh round so nothing the agent left running can act during it: the worker's own leftover processes (workspace-processes.ts, as publication and CHECKS mode do), then the working sandbox is RESTARTED and checked from
+ * the host (`restartWorkingSandbox`: the kernel kills every process of the sandbox, whatever it hides behind; the sandbox itself comes back for the agent's extra turn). It fails closed: a rejection makes the round "not run".
+ *
+ * PTRACE (the working sandbox's seccomp profile is Docker's default: this code defines none, so no ptrace or process_vm_* denial can be added here): the restart means nothing the agent started can outlive it, so ptrace between programs cannot keep a program
+ * alive. Even so, a worker whose kernel lets same-user programs trace each other (yama ptrace_scope 0) or cannot say is refused for fresh rounds (`ptrace_unrestricted`), checked at each round before anything is restarted.
  */
-export function quietWorkingPlace(input: { docker: DockerCli; rootPath: string; sandboxName: string | undefined; stopProcesses?: (rootPath: string) => Promise<unknown> }): (signal: AbortSignal) => Promise<void> {
+export function quietWorkingPlace(input: { docker: DockerCli; rootPath: string; sandboxName: string | undefined; stopProcesses?: (rootPath: string) => Promise<unknown>; ptraceScope?: () => Promise<number | undefined> }): (signal: AbortSignal) => Promise<void> {
   return async (signal) => {
     await (input.stopProcesses ?? ((root: string) => stopWorkspaceProcesses({ rootPath: root })))(input.rootPath);
-    if (input.sandboxName !== undefined) await stopWorkingSandboxPrograms(input.docker, input.sandboxName, signal);
+    const scope = await (input.ptraceScope ?? (() => ptraceScopeFromProc()))().catch(() => undefined);
+    if (scope === undefined || !Number.isSafeInteger(scope) || scope < 1) throw new FreshQuiesceError("ptrace_unrestricted");
+    if (input.sandboxName !== undefined) await restartWorkingSandbox(input.docker, input.sandboxName, signal);
   };
 }

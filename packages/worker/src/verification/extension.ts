@@ -41,6 +41,11 @@ export interface VerificationOptions {
    * that moved HEAD to another commit for the export and back afterwards cannot make the round check something else.
    */
   pinCandidate?: (identity: string) => void;
+  /**
+   * TE-B1-fresh: runs on each settle BEFORE the worktree is committed and the candidate identity is read: it stops whatever the agent left running, so no program can change the code between the commit and the checks. A rejection is
+   * an error report for this settle (the agent's work is not checked on a candidate that could still be moving).
+   */
+  beforeCandidate?: () => Promise<void>;
   /** Clears the worker's candidate binding when preparation fails or the check changes the candidate. */
   onCandidateDrift?: () => void;
   /**
@@ -151,6 +156,7 @@ export function verificationExtension(options: VerificationOptions): InlineExten
           }
           if (event.outcome !== "completed" || options.signal.aborted) return report(unverified("stopped", claim));
           await recorder.settled();
+          await options.beforeCandidate?.();
           await options.prepareCandidate?.();
           const candidateBefore = options.candidateIdentity === undefined ? undefined : await options.candidateIdentity();
           if (candidateBefore !== undefined) options.pinCandidate?.(candidateBefore);

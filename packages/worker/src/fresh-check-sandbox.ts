@@ -17,7 +17,7 @@ import { privateAddressHostArgs } from "./private-address-hosts.js";
 import { SANDBOX_INIT, TASK_SANDBOX_NETWORK, TASK_SANDBOX_USER, taskSandboxRunArgs, workspaceKey } from "./task-sandbox.js";
 
 /** Why a fresh round did not run. Fixed codes: nothing a repository, git or docker printed is ever repeated. */
-export type FreshNotRunReason = "export_failed" | "tree_changed" | "too_large" | "no_space" | "corrupt" | "quiesce_failed" | "candidate_moved" | "sandbox_failed" | "no_image" | "not_prepared" | "stopped";
+export type FreshNotRunReason = "export_failed" | "tree_changed" | "too_large" | "no_space" | "corrupt" | "quiesce_failed" | "ptrace_unrestricted" | "candidate_moved" | "sandbox_failed" | "no_image" | "not_prepared" | "stopped";
 
 /** The words the check shows for each reason. Each starts with "not run", and none says "sealed". */
 export const FRESH_NOT_RUN_SENTENCES: Readonly<Record<FreshNotRunReason, string>> = {
@@ -27,12 +27,18 @@ export const FRESH_NOT_RUN_SENTENCES: Readonly<Record<FreshNotRunReason, string>
   no_space: "not run: there is not enough free disk space for a fresh check sandbox",
   corrupt: "not run: the committed code could not be read safely (an object is missing or does not match its id)",
   quiesce_failed: "not run: programs the agent left running could not be stopped, so the fresh check sandbox did not start",
+  ptrace_unrestricted: "not run: this worker does not stop programs from tracing each other (the kernel's ptrace_scope is below 1), so the fresh check sandbox did not start",
   candidate_moved: "not run: the candidate is not the commit and tree the checks were planned for, so the fresh check sandbox did not start",
   sandbox_failed: "not run: the fresh check sandbox could not start (the container did not start)",
   no_image: "not run: the fresh check sandbox could not start (no sandbox image is configured)",
   not_prepared: "not run: the fresh check sandbox could not be prepared (the project's setup did not finish)",
   stopped: "not run: the task was stopped before the fresh check sandbox was ready",
 };
+
+/** Thrown by the quiesce step with the reason the round is "not run" for. */
+export class FreshQuiesceError extends Error {
+  constructor(readonly reason: "quiesce_failed" | "ptrace_unrestricted", detail: string = reason) { super(detail); }
+}
 
 /** Marks a container as a fresh check sandbox (beside the task's own labels, which the leftover sweep at worker start uses to remove it). */
 export const FRESH_SANDBOX_ROUND_LABEL = "rovara.check-round=fresh";

@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { freshSandboxArgProblems } from "../../packages/worker/src/fresh-check-sandbox.js";
-import { STOP_SANDBOX_PROGRAMS_SCRIPT } from "../../packages/worker/src/fresh-check-round.js";
 
 const NODE_DIR = dirname(process.execPath);
 const SCRIPT = new URL("../../scripts/linux-check-fresh-round.sh", import.meta.url).pathname;
@@ -15,7 +14,7 @@ beforeEach(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), "fresh-script-"
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
 /** Fake tools in `dir/bin`. `docker` logs its arguments (one JSON array a line) and answers by verb; `visible` makes `docker exec ... test -e <path>` succeed (a sandbox that can see the working root). */
-function fakeTools(options: { visible?: boolean; rootUid?: string } = {}) {
+function fakeTools(options: { visible?: boolean; rootUid?: string; extraProcess?: boolean; heartbeatAfter?: boolean } = {}) {
   const bin = join(dir, "bin");
   mkdirSync(bin);
   const log = join(dir, "docker.log");
@@ -30,17 +29,21 @@ const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
 const verb = args[0];
 const stateFile = ${JSON.stringify(join(dir, "stopped.flag"))};
+const counterFile = ${JSON.stringify(join(dir, "beat.count"))};
 const out = (text, code = 0) => { process.stdout.write(text); process.exit(code); };
 if (verb === "network" && args[1] === "inspect") { if (args.includes("--format")) out("false\\n"); out("[]\\n"); }
 if (verb === "network") out("");
-if (verb === "inspect" && args.some((a) => a.includes("State.Running"))) out("true\\n");
+if (verb === "restart") { fs.writeFileSync(stateFile, "1"); out(""); }
+if (verb === "top") out("PID PPID COMMAND\\n4242 0 /usr/bin/tini -- sleep infinity\\n4243 4242 sleep infinity\\n" + ${JSON.stringify(options.extraProcess === true ? "4300 4242 bash\n" : "")});
+if (verb === "inspect" && args.some((a) => a.includes("State.Running"))) out("true 4242\\n");
 if (verb === "inspect") out(args.join(" ").includes("IPAddress") ? (args.some((a) => a.endsWith("-open-a")) ? "172.30.9.2\\n" : "172.30.0.2\\n") : args.some((a) => a.includes("range")) ? "agentx-task\\n" : "");
 if (verb === "container" && args[1] === "inspect") process.exit(1);
 if (verb === "exec") {
   const text = args.join(" ");
   if (args.includes("--detach")) out("");
-  if (text.includes("REMAINING:")) { fs.writeFileSync(stateFile, "1"); out("REMAINING:0\\n"); }
-  if (text.includes("LEFT:")) out(fs.existsSync(stateFile) ? "LEFT:0\\n" : "LEFT:6\\n");
+  if (text.includes("hb-zleader")) { const n = fs.existsSync(counterFile) ? Number(fs.readFileSync(counterFile, "utf8")) : 0; if (!fs.existsSync(stateFile) || ${JSON.stringify(options.heartbeatAfter === true)}) fs.writeFileSync(counterFile, String(n + 1)); out(String(n) + "\\n"); }
+  if (text.includes("fresh-leftovers/infinity")) out("while :; do :; done\\n");
+  if (text.includes("LEFT:")) out(fs.existsSync(stateFile) ? "LEFT:0\\n" : "LEFT:4\\n");
   if (text.includes("id -u")) out(${JSON.stringify(options.rootUid ?? "1000")} + "\\n");
   if (text.includes("CapEff")) out("CapEff:0000000000000000\\n");
   if (text.includes("NoNewPrivs")) out("NoNewPrivs:1\\n");
@@ -103,17 +106,22 @@ describe("scripts/linux-check-fresh-round.sh", () => {
     const result = run(tools);
     expect(existsSync(join(result.base, "workspace"))).toBe(false);
   });
-  it("carries the very stop script the worker runs in the working sandbox (the two copies cannot drift)", () => {
-    expect(readFileSync(SCRIPT, "utf8")).toContain(`STOP_SCRIPT='${STOP_SANDBOX_PROGRAMS_SCRIPT}'`);
-    expect(STOP_SANDBOX_PROGRAMS_SCRIPT).not.toContain("'");
-  });
-  it("FAILS (exit 1) when the stop script leaves a program running", () => {
+  it("FR6 reads the verdict from the host: the restart is made, and the host's own view (docker inspect and top) is consulted, not the container's output", () => {
     const tools = fakeTools();
-    writeFileSync(join(dir, "bin", "docker-leaving"), "");
-    // a daemon that never dies: the fake keeps answering LEFT:2
-    const source = readFileSync(join(tools.bin, "docker"), "utf8").replace('fs.writeFileSync(stateFile, "1"); ', "");
-    writeFileSync(join(tools.bin, "docker"), source);
-    const result = run(tools);
+    run(tools);
+    const calls = dockerCalls(tools.log);
+    const restart = calls.findIndex((args) => args[0] === "restart");
+    expect(calls[restart]).toEqual(["restart", "--time", "0", expect.stringMatching(/^agentx-fresh-linuxcheck-working-/u)]);
+    expect(calls.slice(restart).some((args) => args[0] === "top")).toBe(true);
+    expect(calls.slice(restart).some((args) => args[0] === "inspect" && args.some((arg) => arg.includes("State.Pid")))).toBe(true);
+  });
+  it("FAILS (exit 1) when the host still sees a program after the restart", () => {
+    const result = run(fakeTools({ extraProcess: true }));
+    expect(result.stdout).toMatch(/FRESH FR6 FAIL/u);
+    expect(result.status).toBe(1);
+  });
+  it("FAILS (exit 1) when a probe is still heartbeating after the restart", () => {
+    const result = run(fakeTools({ heartbeatAfter: true }));
     expect(result.stdout).toMatch(/FRESH FR6 FAIL/u);
     expect(result.status).toBe(1);
   });

@@ -21,7 +21,7 @@ import { matchTestCommand, type ProjectCommand } from "@rovara-code/contracts";
 import { tailCollector } from "./collected-process.js";
 import { FRESH_ROUND_FIRST_LINE } from "./check-round-kind.js";
 import { containerBashOperations, runContainerCommand, type ContainerExec } from "./devcontainer.js";
-import { FRESH_NOT_RUN_SENTENCES, exportCandidateForFreshRound, freshSandboxArgProblems, freshSandboxRunArgs, freshSandboxSuffix, removeFreshExport, type FreshCandidateRepository, type FreshNotRunReason } from "./fresh-check-sandbox.js";
+import { FRESH_NOT_RUN_SENTENCES, FreshQuiesceError, exportCandidateForFreshRound, freshSandboxArgProblems, freshSandboxRunArgs, freshSandboxSuffix, removeFreshExport, type FreshCandidateRepository, type FreshNotRunReason } from "./fresh-check-sandbox.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
 import { sandboxCommandOptions } from "./task-sandbox.js";
 import { ensureTaskNetwork } from "./task-network.js";
@@ -64,8 +64,8 @@ export interface FreshCheckRoundInput {
   setupBudgetMs?: number;
   signal?: AbortSignal;
   /**
-   * Stops whatever the agent left running before anything is read or started (H1b): the host's leftover processes and the working sandbox's programs. It runs first, every round. A rejection is "not run: programs the agent left
-   * running could not be stopped"; the round never starts over a program that may still act.
+   * Stops whatever the agent left running before anything is read or started (H1b): the host's leftover processes, and the working sandbox, which is restarted and checked from the host. It runs first, every round. A rejection is "not run"
+   * (a `FreshQuiesceError` names its own reason, any other error is `quiesce_failed`); the round never starts over a program that may still act.
    */
   quiesce?: ((signal: AbortSignal) => Promise<void>) | undefined;
   /**
@@ -92,7 +92,9 @@ function samePinned(current: readonly FreshPinnedCandidate[], pinned: readonly F
   if (current.length !== pinned.length || pinned.length === 0) return false;
   const key = (item: FreshPinnedCandidate) => `${item.repositoryId}\0${item.commitSha}\0${item.treeSha}`;
   const wanted = new Set(pinned.map(key));
-  return wanted.size === pinned.length && current.every((item) => wanted.has(key(item)));
+  const seen = new Set(current.map(key));
+  // a duplicate on either side is refused: two copies of one repository are not two repositories
+  return wanted.size === pinned.length && seen.size === current.length && current.every((item) => wanted.has(key(item)));
 }
 
 export type FreshRoundResult<T> = { kind: "ran"; value: T } | { kind: "not_run"; reason: FreshNotRunReason; sentence: string };
@@ -158,7 +160,7 @@ export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round:
   let roundDone = false;
   try {
     if (input.quiesce !== undefined) {
-      try { await input.quiesce(signal); } catch { return notRun(signal.aborted ? "stopped" : "quiesce_failed"); }
+      try { await input.quiesce(signal); } catch (error) { return notRun(signal.aborted ? "stopped" : error instanceof FreshQuiesceError ? error.reason : "quiesce_failed"); }
     }
     try { await (input.ensureNetwork ?? ensureTaskNetwork)(input.docker); } catch { return notRun("sandbox_failed"); }
     const repositories = await input.candidate().catch(() => undefined);
@@ -219,46 +221,39 @@ async function removeContainer(docker: DockerCli, name: string, taskId: string, 
 }
 
 /**
- * Every program the agent left running in the WORKING sandbox, stopped without stopping the sandbox itself (the agent may get an extra turn in it). What is kept is chosen by PID and start time, never by anything a program can set about
- * itself (its command line, its name, its title): PID 1 (tini), this script, and the sandbox's own `sleep infinity`, which is the OLDEST child of PID 1 (field 22 of /proc/<pid>/stat, the start time; the container started it first, and a program
- * the agent starts is always younger). Everything else is frozen (SIGSTOP, so nothing can fork or respawn while the rest are killed) and then killed (SIGKILL), whatever its command line says, empty or unreadable included. Up to three
- * passes; it prints `REMAINING:<n>` for what a last pass still had to kill, and anything but 0 fails the round closed. Pure `sh` and /proc, so it needs no tool the image may lack. `PROC_ROOT` is a test seam (default /proc).
- * No single quote may appear in it: scripts/linux-check-fresh-round.sh carries the same text inside single quotes (a unit test keeps the two equal).
+ * Stops everything the agent left running in the WORKING sandbox by RESTARTING it (`docker restart --time 0`): the kernel kills every process of a PID namespace when its PID 1 exits, so nothing the agent started (a thread whose main
+ * thread has exited, a fork-hopper that wins a listing race, a program that hides its name) can survive, and nothing needs to be found first. The container, its volume, its masks and its network stay as they are, so the agent's next turn
+ * finds the same sandbox.
+ *
+ * IS A RESTART SAFE? Nothing the worker depends on lives in the sandbox's memory across a round: a command is its own `docker exec` in its own process group (no session or shell is kept), the file tools run one helper per call, the Python user
+ * site and every file are on the volume, the container's own writable layer survives a restart, and the masks are empty tmpfs mounts made again at start. Test services are not combined with a fresh round (a plan with dependencies keeps its sealed
+ * path), so no service is attached to the sandbox.
+ *
+ * THE VERDICT COMES FROM THE HOST, never from the container: after the restart the sandbox's state and the host's process listing of it (`docker top`, host-side PIDs) must show exactly tini (the PID `State.Pid` names) and one child of it, `sleep infinity`.
+ * Anything else, or an answer that cannot be read, rejects, and the round is not run.
  */
-export const STOP_SANDBOX_PROGRAMS_SCRIPT = [
-  'P=${PROC_ROOT:-/proc}',
-  'keep=""; best=""',
-  'for p in "$P"/[0-9]*; do',
-  '  pid=${p#"$P"/}',
-  '  set -- $(sed "s/^.*) //" "$p/stat" 2>/dev/null)',
-  '  [ "$2" = 1 ] || continue',
-  '  if [ -z "$best" ] || [ "${20:-0}" -lt "$best" ]; then best=${20:-0}; keep=$pid; fi',
-  'done',
-  'pass=0; n=0',
-  'while [ "$pass" -lt 3 ]; do',
-  '  n=0; list=""',
-  '  for p in "$P"/[0-9]*; do',
-  '    pid=${p#"$P"/}',
-  '    [ "$pid" = 1 ] && continue',
-  '    [ "$pid" = "$$" ] && continue',
-  '    [ "$pid" = "$keep" ] && continue',
-  '    set -- $(sed "s/^.*) //" "$p/stat" 2>/dev/null)',
-  '    [ -z "$1" ] && continue',
-  '    [ "$1" = Z ] && continue',
-  '    list="$list $pid"; n=$((n+1))',
-  '  done',
-  '  [ "$n" -eq 0 ] && break',
-  '  for pid in $list; do kill -STOP "$pid" 2>/dev/null; done',
-  '  for pid in $list; do kill -9 "$pid" 2>/dev/null; done',
-  '  pass=$((pass+1))',
-  'done',
-  'echo "REMAINING:$n"',
-].join("\n");
-
-/** Runs `STOP_SANDBOX_PROGRAMS_SCRIPT` in the working sandbox and fails (throws) unless nothing else is left running. */
-export async function stopWorkingSandboxPrograms(docker: DockerCli, container: string, signal?: AbortSignal): Promise<void> {
-  const result = await docker.run(["exec", container, "sh", "-c", STOP_SANDBOX_PROGRAMS_SCRIPT], { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(signal === undefined ? {} : { signal }) });
-  if (result.exitCode !== 0 || !/(^|\n)REMAINING:0\s*$/u.test(result.stdout)) throw new Error("programs the agent left running could not be stopped");
+export async function restartWorkingSandbox(docker: DockerCli, container: string, signal?: AbortSignal): Promise<void> {
+  const fail = (): never => { throw new Error("programs the agent left running could not be stopped"); };
+  const options = { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(signal === undefined ? {} : { signal }) };
+  const restarted = await docker.run(["restart", "--time", "0", container], options).catch(() => undefined);
+  if (restarted === undefined || restarted.exitCode !== 0) return fail();
+  const state = await docker.run(["inspect", "--format", "{{.State.Running}} {{.State.Pid}}", container], options).catch(() => undefined);
+  const stateMatch = state === undefined || state.exitCode !== 0 ? null : /^true (\d+)\s*$/u.exec(state.stdout);
+  const tini = stateMatch === null ? 0 : Number(stateMatch[1]);
+  if (!Number.isSafeInteger(tini) || tini < 2) return fail();
+  const top = await docker.run(["top", container, "-eo", "pid,ppid,args"], options).catch(() => undefined);
+  if (top === undefined || top.exitCode !== 0) return fail();
+  const lines = top.stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  if (lines.length !== 3 || !/^PID\s+PPID\s+/iu.test(lines[0]!)) return fail();
+  const rows = lines.slice(1).map((line) => /^(\d+)\s+(\d+)\s+(.*)$/u.exec(line));
+  if (rows.some((row) => row === null)) return fail();
+  const found = rows as RegExpExecArray[];
+  // by PID, not by order: tini is the row of the container's PID 1 (host PID `State.Pid`) and runs `sleep infinity`; the other row is its one child, the sleep
+  const tiniRows = found.filter((row) => Number(row[1]) === tini);
+  const otherRows = found.filter((row) => Number(row[1]) !== tini);
+  const isTini = tiniRows.length === 1 && /(^|\/)tini(\s|$)/u.test(tiniRows[0]![3]!);
+  const isSleep = otherRows.length === 1 && Number(otherRows[0]![2]) === tini && otherRows[0]![3]!.trim() === "sleep infinity";
+  if (!isTini || !isSleep) return fail();
 }
 
 /** Where the checks' reports of the last fresh round are read from, and the way to remove them (H1c). */

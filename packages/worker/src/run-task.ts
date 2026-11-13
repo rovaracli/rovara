@@ -172,6 +172,8 @@ export interface TaskInvocationDependencies {
   freshCheckRound?: (invocation: Extract<WorkerInvocation, { kind: "task" }>) => FreshCheckRoundSeam | undefined;
   /** The sealed round is cleared for production (the TS-L worker self-test passed). Default: false (fail closed): a round with test services is then labelled `working`, never `sealed`; its runners are today's sealed path either way. */
   sealedRoundCleared?: () => boolean;
+  /** The kernel's yama ptrace_scope, as a fresh round reads it (a fresh round is refused below 1); tests supply one. Default: /proc/sys/kernel/yama/ptrace_scope. */
+  freshPtraceScope?: () => Promise<number | undefined>;
   /** Each check round's budget; tests supply short ones. Default: CHECK_ROUND_BUDGET_MS (P-3). */
   checkBudgetMs?: () => number;
   /** D-16: the original code for before results; tests supply a fake. Default: each repository's preparation commit. */
@@ -402,7 +404,7 @@ async function runTask(
   // TE-B1-fresh: which kind of round this task's official checks are (check-round-kind.ts). A dev container, the local shell and a task with test services are never moved to the fresh round.
   const freshSeam = dependencies.freshCheckRound?.(invocation);
   const roundKind = chooseCheckRound({ freshGate: freshSeam !== undefined, testServices: testServices !== undefined, sealedCleared: sealedRoundClearedFrom(dependencies.sealedRoundCleared), devcontainer: devcontainer !== undefined, sandbox: sandbox !== undefined, candidateCommitted: mode === "IMPLEMENT" || mode === "CHECKS" });
-  const quiesceWorkingPlace = quietWorkingPlace({ docker: fileToolsDocker, rootPath: canonicalRoot, sandboxName: sandbox?.name, ...(dependencies.stopBeforeReading?.stopWorkspaceProcesses === undefined ? {} : { stopProcesses: dependencies.stopBeforeReading.stopWorkspaceProcesses }) });
+  const quiesceWorkingPlace = quietWorkingPlace({ docker: fileToolsDocker, rootPath: canonicalRoot, sandboxName: sandbox?.name, ...(dependencies.stopBeforeReading?.stopWorkspaceProcesses === undefined ? {} : { stopProcesses: dependencies.stopBeforeReading.stopWorkspaceProcesses }), ...(dependencies.freshPtraceScope === undefined ? {} : { ptraceScope: dependencies.freshPtraceScope }) });
   const freshWiring = (onProgress: (line: string) => void, keepExport: boolean) => freshSeam === undefined ? undefined : {
     seam: freshSeam, docker: fileToolsDocker, rootPath: canonicalRoot, taskId: invocation.operationId, image: sandboxImageOf(dependencies.taskShell), onProgress, keepExport,
     // H1b: nothing the agent left running may act while the round runs: the worker's leftover processes and the working sandbox's programs are stopped first, every round (CHECKS mode does the former at its start, run-task.ts above).
@@ -803,6 +805,8 @@ async function runTask(
     // The before results are measured on the original code: the working runners, never the fresh round's (there is no candidate to export there).
     beforeRunners: chosenRound.before,
     pinCandidate: (identity) => { chosenRound.evidence?.pin(pinnedOf(identity)); },
+    // The working sandbox is restarted BEFORE the candidate is committed and read, so a program the agent left running cannot change the candidate the round is pinned to (the round restarts it again just before it starts).
+    ...(chosenRound.kind === "fresh_unsealed" ? { beforeCandidate: () => quiesceWorkingPlace(verificationStop.signal) } : {}),
     budgetMs: checkBudgetMs,
     signal: verificationStop.signal,
     recorder,
@@ -1113,6 +1117,8 @@ async function runTask(
         reportedChecksCandidate = undefined;
         return;
       }
+      // a fresh round: the working sandbox is stopped before the candidate is read
+      if (chosenRound.kind === "fresh_unsealed") await quiesceWorkingPlace(verificationStop.signal);
       const candidateBefore = await readCandidateRepositories(repositories);
       if (candidateBefore.length !== 1 || candidateBefore[0]?.treeSha !== retainedTreeSha) {
         throw agentXError("OPERATION_INTERRUPTED", "workspace changed before the retained ordered-work candidate could be checked");

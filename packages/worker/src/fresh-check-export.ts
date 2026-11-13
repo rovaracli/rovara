@@ -36,7 +36,7 @@ export interface FreshExportCaps {
   /** One entry's name, in bytes. */
   maxNameBytes: number;
 }
-export const FRESH_EXPORT_CAPS: Readonly<FreshExportCaps> = { maxFiles: 100_000, maxTotalBytes: 1024 ** 3, maxFileBytes: 100 * 1024 ** 2, diskMarginBytes: 256 * 1024 ** 2, maxTreeEntries: 400_000, maxTreeBytes: 16 * 1024 ** 2, maxTreeBytesTotal: 64 * 1024 ** 2, maxNameBytes: 255 };
+export const FRESH_EXPORT_CAPS: Readonly<FreshExportCaps> = { maxFiles: 100_000, maxTotalBytes: 1024 ** 3, maxFileBytes: 100 * 1024 ** 2, diskMarginBytes: 256 * 1024 ** 2, maxTreeEntries: 200_000, maxTreeBytes: 4 * 1024 ** 2, maxTreeBytesTotal: 32 * 1024 ** 2, maxNameBytes: 255 };
 
 const SHA1 = /^[a-f0-9]{40}$/u;
 const GIT_FLAGS = ["-c", "core.attributesFile=/dev/null"] as const;
@@ -181,13 +181,16 @@ async function withBorrowedObjects<T>(scratchRoot: string, repositoryRoot: strin
 interface FileEntry { path: string; mode: string; sha: string }
 
 /** The entries of a tree object's bytes (already hash-checked): `<mode> <name>\0<20 raw bytes>` each. */
-function treeEntries(bytes: Buffer, maxNameBytes: number): Array<{ mode: string; name: string; sha: string }> {
+function treeEntries(bytes: Buffer, maxNameBytes: number, budget: { left: number }): Array<{ mode: string; name: string; sha: string }> {
   const entries: Array<{ mode: string; name: string; sha: string }> = [];
   let offset = 0;
   while (offset < bytes.length) {
     const space = bytes.indexOf(0x20, offset);
     const nul = space < 0 ? -1 : bytes.indexOf(0x00, space);
     if (space < 0 || nul < 0 || nul + 21 > bytes.length) throw new FreshExportError("corrupt", "a tree is not well formed");
+    // the entry budget is spent as entries are parsed, so an entry-heavy tree stops the parse early instead of becoming a huge array
+    budget.left -= 1;
+    if (budget.left < 0) throw new FreshExportError("too_large", "too many tree entries");
     if (nul - space - 1 > maxNameBytes) throw new FreshExportError("export_failed", "a tree entry has a name over the name cap");
     entries.push({ mode: bytes.subarray(offset, space).toString("latin1"), name: bytes.subarray(space + 1, nul).toString("utf8"), sha: bytes.subarray(nul + 1, nul + 21).toString("hex") });
     offset = nul + 21;
@@ -229,6 +232,7 @@ async function walkAndWrite(gitDir: string, input: { commitSha: string; treeSha:
   const skipped: FreshSkippedEntry[] = [];
   const parsed = new Map<string, Array<{ mode: string; name: string; sha: string }>>();
   let entriesSeen = 0;
+  const parseBudget = { left: caps.maxTreeEntries };
   let treeBytes = 0;
   let level: Array<{ sha: string; prefix: string }> = [{ sha: input.treeSha, prefix: "" }];
   while (level.length > 0) {
@@ -241,7 +245,7 @@ async function walkAndWrite(gitDir: string, input: { commitSha: string; treeSha:
       }
       const sinks = unread.map(() => collector(caps.maxTreeBytes));
       await readVerified(gitDir, unread.map((sha, at) => ({ sha, type: "tree" as const, sink: sinks[at]! })), input.signal);
-      for (const [at, sha] of unread.entries()) parsed.set(sha, treeEntries(sinks[at]!.bytes(), caps.maxNameBytes));
+      for (const [at, sha] of unread.entries()) parsed.set(sha, treeEntries(sinks[at]!.bytes(), caps.maxNameBytes, parseBudget));
     }
     const next: Array<{ sha: string; prefix: string }> = [];
     for (const tree of level) {

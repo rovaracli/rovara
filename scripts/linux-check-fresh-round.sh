@@ -6,8 +6,9 @@
 #   FR3 the export (committed files only) IS what the sandbox sees at the working root's path, and it can write there;
 #   FR4 the sandbox is on one network only;
 #   FR5 the working sandbox cannot connect to the fresh one on the walled bridge (inter-container traffic off), which is why the working sandbox is not paused; a control network WITH inter-container traffic shows the probe can connect;
-#   FR6 the stop script the worker runs in the WORKING sandbox before a fresh round (STOP_SANDBOX_PROGRAMS_SCRIPT in fresh-check-round.ts; a unit test keeps the two copies equal) kills what the agent left running (a plain background program and a setsid
-#       daemon) and leaves the sandbox itself running;
+#   FR6 RESTARTING the working sandbox (`docker restart --time 0`, what the worker does before a fresh round) kills every program the agent left running, including the two that escape an in-container stop script (a thread whose main thread exited
+#       alone and shows as a zombie leader, and a fork-hopper that wins a listing race), a PATH-renamed bash and a node process with an empty title; the verdict is taken from the HOST (`docker inspect` and `docker top`: exactly tini and its
+#       `sleep infinity`, matched by host PIDs), never from the container's output; the sandbox and its volume stay;
 #   FR7 after the round the container is gone, and so is the export.
 # Output: one line per check, `FRESH <id> PASS|FAIL <name> | <detail>`, then `FRESH SUMMARY pass=<p> fail=<f>`. Exit 0 only when every line is PASS, 1 on any FAIL, 2 on a usage or setup error.
 #
@@ -113,35 +114,6 @@ verdict FR3 the_export_is_the_root "$FAILS" "the committed file is at the workin
 NETS=$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$NAME" 2>/dev/null | tr -s ' ' | sed 's/ *$//')
 verdict FR4 one_network "$([[ "$NETS" == "$NET" ]] || printf 'networks are: %s' "$NETS")" "only $NET"
 
-# the stop script the worker runs in the working sandbox (kept equal to STOP_SANDBOX_PROGRAMS_SCRIPT by tests/unit/linux-check-fresh-round-script.test.ts)
-STOP_SCRIPT='P=${PROC_ROOT:-/proc}
-keep=""; best=""
-for p in "$P"/[0-9]*; do
-  pid=${p#"$P"/}
-  set -- $(sed "s/^.*) //" "$p/stat" 2>/dev/null)
-  [ "$2" = 1 ] || continue
-  if [ -z "$best" ] || [ "${20:-0}" -lt "$best" ]; then best=${20:-0}; keep=$pid; fi
-done
-pass=0; n=0
-while [ "$pass" -lt 3 ]; do
-  n=0; list=""
-  for p in "$P"/[0-9]*; do
-    pid=${p#"$P"/}
-    [ "$pid" = 1 ] && continue
-    [ "$pid" = "$$" ] && continue
-    [ "$pid" = "$keep" ] && continue
-    set -- $(sed "s/^.*) //" "$p/stat" 2>/dev/null)
-    [ -z "$1" ] && continue
-    [ "$1" = Z ] && continue
-    list="$list $pid"; n=$((n+1))
-  done
-  [ "$n" -eq 0 ] && break
-  for pid in $list; do kill -STOP "$pid" 2>/dev/null; done
-  for pid in $list; do kill -9 "$pid" 2>/dev/null; done
-  pass=$((pass+1))
-done
-echo "REMAINING:$n"'
-
 # FR5: inter-container traffic. A listener in the fresh sandbox; a stand-in working sandbox on the same network tries to connect.
 FAILS=""
 docker run --detach --name "$WORKING" --network "$NET" --user 1000:1000 --entrypoint /usr/bin/tini "$IMAGE" -- sleep infinity >/dev/null 2>&1 || FAILS="$FAILS the stand-in working sandbox did not start;"
@@ -171,28 +143,60 @@ else
 fi
 verdict FR5 working_sandbox_cannot_reach_the_fresh_one "$FAILS" "blocked on $NET (enable_icc=$ICC), connected on the control network: no pause needed"
 
-# FR6: the stop script, in the stand-in working sandbox (still up from FR5): every leftover dies, however it disguises itself (a command line of "sleep infinity", a renamed bash, node's process.title as "sleep infinity" and as ""), and the
-# sandbox's own `sleep infinity` and the sandbox stay. Leftovers are told apart here by an environment marker only, never by command line.
+# FR6: restart the stand-in working sandbox (still up from FR5) with leftovers running in it, and look from the host.
 FAILS=""
 LDIR=/tmp/fresh-leftovers
 docker exec "$WORKING" sh -c "mkdir -p $LDIR/bin && ln -sf \$(command -v bash) $LDIR/bin/sleep && printf 'while :; do :; done\n' > $LDIR/infinity" >/dev/null 2>&1
-docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" sh -c 'exec sleep 777' >/dev/null 2>&1
-docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" sh -c 'setsid sleep 778 </dev/null >/dev/null 2>&1 &' >/dev/null 2>&1
+# H1: the main thread exits alone (SYS_exit, not exit_group); a worker thread keeps running and heartbeats; the process shows as a zombie
+docker exec -i "$WORKING" sh -c "cat > $LDIR/zleader.py" >/dev/null 2>&1 <<'PY'
+import ctypes, os, threading, time
+def beat():
+    i = 0
+    while True:
+        i += 1
+        with open("/tmp/hb-zleader", "w") as f: f.write(str(i))
+        time.sleep(0.2)
+threading.Thread(target=beat).start()
+time.sleep(0.5)
+number = {"x86_64": 60, "aarch64": 93}[os.uname().machine]
+ctypes.CDLL(None).syscall(number, 0)
+PY
+# H2: a fork-hopper: every generation forks, the parent exits at once, the child heartbeats and hops again
+docker exec -i "$WORKING" sh -c "cat > $LDIR/hop.py" >/dev/null 2>&1 <<'PY'
+import os, time
+while True:
+    if os.fork() > 0: os._exit(0)
+    open("/tmp/hb-hop", "w").write(str(time.time()))
+    time.sleep(0.05)
+PY
+docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" python3 "$LDIR/zleader.py" >/dev/null 2>&1
+docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" python3 "$LDIR/hop.py" >/dev/null 2>&1
 docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" sh -c "cd $LDIR && PATH=$LDIR/bin:\$PATH exec sleep infinity" >/dev/null 2>&1
-docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" node -e 'process.title = "sleep infinity"; setInterval(() => {}, 1000)' >/dev/null 2>&1
+docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" sh -c 'setsid sleep 778 </dev/null >/dev/null 2>&1 &' >/dev/null 2>&1
 docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" node -e 'process.title = ""; setInterval(() => {}, 1000)' >/dev/null 2>&1
-docker exec --detach -e FRESH_LEFTOVER_MARK=1 "$WORKING" sh -c 'command -v perl >/dev/null && exec perl -e "\$0 = q(sleep infinity); sleep 1 while 1"' >/dev/null 2>&1
 sleep "$SETTLE"
 sleep 1
-COUNT_LEFTOVERS='n=0; for p in /proc/[0-9]*; do if tr "\0" "\n" < "$p/environ" 2>/dev/null | grep -qx FRESH_LEFTOVER_MARK=1; then n=$((n+1)); fi; done; echo "LEFT:$n"'
+COUNT_LEFTOVERS='n=0; for p in /proc/[0-9]*; do if grep -aq FRESH_LEFTOVER_MARK=1 "$p/environ" 2>/dev/null; then n=$((n+1)); fi; done; echo "LEFT:$n"'
+beat() { docker exec "$WORKING" sh -c 'cat /tmp/hb-zleader /tmp/hb-hop 2>/dev/null; echo' 2>&1 | tr -d '[:space:]'; }
 BEFORE=$(docker exec "$WORKING" sh -c "$COUNT_LEFTOVERS" 2>&1 | tr -d '[:space:]')
-case "$BEFORE" in LEFT:[5-9]|LEFT:[1-9][0-9]) ;; *) FAILS="$FAILS the leftovers were not running before the stop ($BEFORE);" ;; esac
-STOPPED=$(docker exec "$WORKING" sh -c "$STOP_SCRIPT" 2>&1 | tr -d '[:space:]')
-[[ "$STOPPED" == "REMAINING:0" ]] || FAILS="$FAILS the stop script said $STOPPED;"
+case "$BEFORE" in LEFT:[3-9]|LEFT:[1-9][0-9]) ;; *) FAILS="$FAILS the leftovers were not running before the restart ($BEFORE);" ;; esac
+BEAT1=$(beat); sleep 1; BEAT2=$(beat)
+[[ -n "$BEAT1" && "$BEAT1" != "$BEAT2" ]] || FAILS="$FAILS the zombie-leader and hopper probes were not running before the restart;"
+docker restart --time 0 "$WORKING" >/dev/null 2>&1 || FAILS="$FAILS the restart failed;"
+# the verdict from the HOST: the sandbox is running, and its processes are exactly tini (host PID = State.Pid) and one child, `sleep infinity`
+STATE=$(docker inspect --format '{{.State.Running}} {{.State.Pid}}' "$WORKING" 2>/dev/null)
+TINI=${STATE#true }
+TOP=$(docker top "$WORKING" -eo pid,ppid,args 2>/dev/null)
+ROWS=$(printf '%s\n' "$TOP" | sed 1d | grep -c .)
+[[ "$STATE" == true\ [0-9]* && "$ROWS" == 2 ]] || FAILS="$FAILS the host sees $ROWS processes after the restart (state: $STATE);"
+printf '%s\n' "$TOP" | sed 1d | awk -v t="$TINI" '$1 == t && $3 ~ /tini/ {a++} $2 == t && $3 == "sleep" && $4 == "infinity" && NF == 4 {b++} END {exit !(a == 1 && b == 1)}' || FAILS="$FAILS the host's process list is not exactly tini and its sleep;"
+sleep 1
 AFTER=$(docker exec "$WORKING" sh -c "$COUNT_LEFTOVERS" 2>&1 | tr -d '[:space:]')
-[[ "$AFTER" == "LEFT:0" ]] || FAILS="$FAILS the leftovers are still running ($AFTER);"
-[[ "$(docker inspect --format '{{.State.Running}}' "$WORKING" 2>/dev/null)" == "true" ]] || FAILS="$FAILS the sandbox itself stopped;"
-verdict FR6 leftover_programs_stopped_sandbox_stays "$FAILS" "$BEFORE disguised leftovers (renamed bash, node titles, setsid) were killed; the sandbox and its own sleep are still running"
+[[ "$AFTER" == "LEFT:0" ]] || FAILS="$FAILS leftovers are still running after the restart ($AFTER);"
+BEAT3=$(beat); sleep 1; BEAT4=$(beat)
+[[ "$BEAT3" == "$BEAT4" ]] || FAILS="$FAILS a probe is still heartbeating after the restart;"
+[[ "$(docker exec "$WORKING" sh -c "cat $LDIR/infinity" 2>&1)" == "while :; do :; done" ]] || FAILS="$FAILS the sandbox's own files did not survive the restart;"
+verdict FR6 restart_kills_every_leftover "$FAILS" "$BEFORE leftovers (zombie leader, fork-hopper, renamed bash, setsid daemon, empty-title node) were running; after the restart the host sees only tini and its sleep, and nothing heartbeats"
 
 # FR7: the container and the export are gone after the round
 FAILS=""

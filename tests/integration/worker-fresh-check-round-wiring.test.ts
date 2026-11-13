@@ -11,6 +11,7 @@ import type { WorkerEvent } from "../../packages/worker/src/events.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
 import { projectCheckKey } from "../../packages/worker/src/verification/check-history.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
+import { PRISTINE_TOP, answerSandboxRestart } from "../support/fake-sandbox-restart.js";
 import { createFixtureDirectory } from "../fixtures/index.js";
 import { FAUX_MODEL } from "../support/faux-model.js";
 import { git } from "../support/test-proof-fixture.js";
@@ -39,15 +40,17 @@ async function workspace(): Promise<string> {
   return rootPath;
 }
 
+let topOf = (): string => PRISTINE_TOP;
 function fakeDocker(exitOf: (text: string, container: string) => number = () => 0, onExec?: (text: string, calls: string[][]) => void) {
   const calls: string[][] = [];
   const docker: DockerCli = {
     run: async (args) => {
       calls.push([...args]);
+      const restarted = answerSandboxRestart(args, topOf());
+      if (restarted !== undefined) return restarted;
       if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
       if (args[0] === "exec") {
         const text = args.join(" ");
-        if (text.includes("REMAINING:")) return { exitCode: 0, stdout: "REMAINING:0\n", stderr: "" };
         if (text.includes("kill")) return { exitCode: 0, stdout: "", stderr: "" };
         onExec?.(text, calls);
         return { exitCode: exitOf(text, args.find((arg) => arg.startsWith("agentx-task-") || arg.startsWith("agentx-fresh-")) ?? ""), stdout: "", stderr: "" };
@@ -67,7 +70,7 @@ async function checksRun(rootPath: string, fake: ReturnType<typeof fakeDocker>, 
   const events: WorkerEvent[] = [];
   const artifacts: Array<{ name: string; content: string }> = [];
   const result = await runTaskInvocation(invocation, {
-    rootPath, model: FAUX_MODEL, taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE },
+    rootPath, model: FAUX_MODEL, taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshPtraceScope: () => Promise.resolve(1),
     eventSink: async (batch) => { events.push(...batch); }, artifactSink: async (artifact) => { artifacts.push(artifact); }, ...extra,
   });
   return { result, events, artifacts };
@@ -167,8 +170,8 @@ describe("H1c: the fresh round's evidence comes from its export", () => {
     expect(raw).toBeDefined();
     expect(raw!.content).toContain("from-the-export");
     expect(raw!.content).not.toContain("planted-in-the-working-tree");
-    // the working sandbox is quieted again before the scanner baseline runs there (once for the round, once for the baseline)
-    expect(fake.calls.filter((args) => args[0] === "exec" && args.join(" ").includes("REMAINING:"))).toHaveLength(2);
+    // the working sandbox is restarted again before the scanner baseline runs there (once for the round, once for the baseline)
+    expect(fake.calls.filter((args) => args[0] === "restart")).toHaveLength(2);
     const parent = join(rootPath, ".agentx", "fresh-check");
     expect(existsSync(parent) ? readdirSync(parent).filter((name) => name !== "scratch") : []).toEqual([]);
   });
@@ -193,18 +196,27 @@ describe("H1c: the fresh round's evidence comes from its export", () => {
   });
 });
 
-describe("H1b: the leftover programs are stopped before the fresh round", () => {
-  it("the working sandbox's stop script runs before the fresh container starts, and a sandbox that still holds programs makes the check 'not run'", async () => {
+describe("H1b: the working sandbox is restarted and checked from the host before the fresh round", () => {
+  it("the restart comes after the working sandbox starts and before the fresh container starts; a sandbox the host still sees extra programs in makes the check 'not run'; a worker that lets programs trace each other refuses the round", async () => {
     const rootPath = await workspace();
     const fake = fakeDocker();
     await checksRun(rootPath, fake, { freshCheckRound: () => ({ setup: [] }), stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
-    const order = fake.calls.filter((args) => args[0] === "run" || (args[0] === "exec" && args.join(" ").includes("REMAINING:"))).map((args) => (args[0] === "run" ? (args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-") ? "fresh start" : "working start") : "stop programs"));
-    expect(order).toEqual(["working start", "stop programs", "fresh start"]);
-    const refusing = fakeDocker();
-    const stuck: DockerCli = { run: (args, options) => (args[0] === "exec" && args.join(" ").includes("REMAINING:") ? Promise.resolve({ exitCode: 0, stdout: "REMAINING:2\n", stderr: "" }) : refusing.docker.run(args, options)) };
-    const { result } = await checksRun(await workspace(), { docker: stuck, calls: refusing.calls }, { freshCheckRound: () => ({ setup: [] }), stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
-    expect(result.checks!.checks[0]).toMatchObject({ after: "not_run" });
-    expect(result.checks!.checks[0]!.output).toContain("programs the agent left running could not be stopped");
-    expect(refusing.calls.some((args) => args[0] === "run" && args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-"))).toBe(false);
+    const order = fake.calls.filter((args) => args[0] === "run" || args[0] === "restart").map((args) => (args[0] === "restart" ? "restart" : args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-") ? "fresh start" : "working start"));
+    expect(order).toEqual(["working start", "restart", "fresh start"]);
+    // the verdict is the host's: no exec of any stop script, in either direction
+    expect(fake.calls.some((args) => args[0] === "exec" && args.join(" ").includes("/proc"))).toBe(false);
+    const previous = topOf;
+    topOf = () => `${PRISTINE_TOP}4300 4242 bash\n`;
+    try {
+      const refusing = fakeDocker();
+      const { result } = await checksRun(await workspace(), refusing, { freshCheckRound: () => ({ setup: [] }), stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
+      expect(result.checks!.checks[0]).toMatchObject({ after: "not_run" });
+      expect(result.checks!.checks[0]!.output).toContain("programs the agent left running could not be stopped");
+      expect(refusing.calls.some((args) => args[0] === "run" && args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-"))).toBe(false);
+    } finally { topOf = previous; }
+    const open = fakeDocker();
+    const { result } = await checksRun(await workspace(), open, { freshCheckRound: () => ({ setup: [] }), freshPtraceScope: () => Promise.resolve(0), stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
+    expect(result.checks!.checks[0]!.output).toContain("ptrace_scope");
+    expect(open.calls.some((args) => args[0] === "restart")).toBe(false);
   });
 });

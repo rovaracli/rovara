@@ -164,6 +164,9 @@ describe("the clean export of the candidate commit", () => {
   });
   it("the lane's own caps are 100,000 files, 1 GiB in all and 100 MiB a file", () => {
     expect(FRESH_EXPORT_CAPS).toMatchObject({ maxFiles: 100_000, maxTotalBytes: 1024 ** 3, maxFileBytes: 100 * 1024 ** 2 });
+    expect(FRESH_EXPORT_CAPS.maxTreeBytes).toBeLessThanOrEqual(4 * 1024 ** 2);
+    expect(FRESH_EXPORT_CAPS.maxTreeBytesTotal).toBeLessThanOrEqual(32 * 1024 ** 2);
+    expect(FRESH_EXPORT_CAPS.maxTreeEntries).toBeLessThanOrEqual(200_000);
   });
 
   // H1a: the object store is agent-writable. Every swap below keeps the id and changes the bytes; git itself answers them with exit 0.
@@ -266,6 +269,34 @@ describe("the clean export of the candidate commit", () => {
       expect(exported).toEqual({ ok: false, reason: "too_large" });
     } finally { clearInterval(sampler); }
     expect(peak - before).toBeLessThan(96 * 1024 * 1024);
+    expect(left()).toEqual([]);
+  });
+  it("a 16 MiB tree of tiny entries is refused unread, and parsing an entry-heavy tree stops at the entry budget: memory stays small", async () => {
+    const repo = emptyRepository();
+    const unit = Buffer.concat([Buffer.from("100644 a\0"), Buffer.alloc(20, 7)]);
+    const count = Math.floor((16 * 1024 * 1024) / unit.length);
+    const bytes = Buffer.alloc(count * unit.length);
+    for (let index = 0; index < count; index += 1) unit.copy(bytes, index * unit.length);
+    const heavy = looseObject(repo, "tree", bytes);
+    const rootTree = looseObject(repo, "tree", treeOf([{ mode: "40000", name: "d0", sha: heavy }]));
+    const commit = commitOf(repo, rootTree);
+    const measure = async (caps: Parameters<typeof exportCandidateForFreshRound>[0]["caps"]) => {
+      const before = process.memoryUsage().rss;
+      let peak = before;
+      const sampler = setInterval(() => { peak = Math.max(peak, process.memoryUsage().rss); }, 2);
+      try {
+        const exported = await exportCandidateForFreshRound({ rootPath: root, taskId: "t1", signal: signal(), repositories: [{ repositoryId: "repo", path: "repo", directory: repo, commitSha: commit, treeSha: rootTree }], caps });
+        return { exported, growth: peak - before };
+      } finally { clearInterval(sampler); }
+    };
+    // by the lane's own caps: refused by size before it is read
+    const sized = await measure(undefined);
+    expect(sized.exported).toEqual({ ok: false, reason: "too_large" });
+    expect(sized.growth).toBeLessThan(96 * 1024 * 1024);
+    // with the size caps lifted (a tree this size could be admitted by a later change), the entry budget stops the parse early
+    const parsed = await measure({ maxTreeBytes: 64 * 1024 * 1024, maxTreeBytesTotal: 64 * 1024 * 1024, maxTreeEntries: 1_000 });
+    expect(parsed.exported).toEqual({ ok: false, reason: "too_large" });
+    expect(parsed.growth).toBeLessThan(96 * 1024 * 1024);
     expect(left()).toEqual([]);
   });
   it("a tree is read once however many times it is referenced, and the bytes of all trees are capped", async () => {
