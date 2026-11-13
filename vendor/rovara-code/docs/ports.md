@@ -150,10 +150,50 @@ so a consumer is idempotent.**
 `DocumentStore.transact`, so the message exists if and only if the state change commits. `relay({ companyId })` hands that company's
 pending messages to their queues, oldest first, then marks them. The pending index partition is per company, so a relay reads only its
 own rows. The outbox id travels as the attribute `outboxId` and, scoped by company, as the queue's `dedupeId`: a crash between the
-hand-over and the mark means a second hand-over, which a queue with `dedupe` drops inside its window and a consumer drops by `outboxId`
-otherwise. A message that fails `maxAttempts` times is set aside as `DEAD` (reported, off the index); handed-over rows carry an
+hand-over and the mark means a second hand-over, which a queue with `dedupe` drops inside its window; otherwise the consumer must be idempotent on its operation (the dispatch consumer claims it with a
+conditional write and drops an ended or running one), and `outboxId` identifies the copies. A message that fails `maxAttempts` times is set aside as `DEAD` (reported, off the index); handed-over rows carry an
 `expiresAt`. Messages of one ordered group keep their order only if one relay runs at a time. `createTransactionalOutbox` is written
 once over the two ports; the store must keep `OUTBOX_PENDING_INDEX`.
+
+**SQS adapter (lane A2, `packages/aws-adapters/src/sqs`, `@rovara/aws-adapters/sqs`; public, opt-in, never Code's default).**
+`SqsQueueService` implements `Queue` on queues the deployment declares (settings `queues: { <name>: { url, deadLetterUrl? } }`, `region`,
+`endpoint`); it creates and changes no queue. At first use it reads the queue's attributes and takes its visibility timeout, redrive policy
+(`maxReceiveCount`; `deadLetterUrl`, read back, must be a queue of the same kind and the one a redrive policy names) and size limit from SQS, and `queue(name, options)` throws for options that differ.
+It passes `runQueueConformance` in both modes, and the outbox suite over the DynamoDB store and either mode.
+- **Which mode, and why.** The mode is the queue's: a URL ending `.fifo` is FIFO. *Standard* is the default for task dispatch, because the
+  core already works with the weakest queue (at least once, no order, no duplicate suppression) and standard has no per-group throughput
+  cap; its consumers are idempotent on the operation. *FIFO* is for a use that needs order inside a group (`groupId`) or the 5 minute duplicate
+  window. Capabilities: standard `ordered false, dedupe false, maxDelaySeconds 900`; FIFO `ordered true, dedupe true, maxDelaySeconds 0`
+  (SQS refuses a per-message delay on FIFO). Both: `detectsStaleHandle false, deadLettersById false`.
+- **FIFO details.** A message with no `groupId` gets a solo group, hidden on receive: named after the SHA-256 of its `dedupeId` when it has one
+  (so two sends of one id share a group and SQS drops the second even when the queue's `DeduplicationScope` is `messageGroup`), otherwise a group of
+  its own (no order owed to any other message). A queue with that scope reports `dedupe: false` (SQS keeps a repeat sent in another explicit
+  group); its solo-group messages are still suppressed. The `dedupeId` is sent as its SHA-256 hex (SQS wants 128 characters of a narrow set); no
+  `dedupeId` gets a fresh one. SQS does not say a send
+  was a duplicate, so `duplicate: true` is reported only for a repeat this process sent inside the window. An ordered queue is received one
+  message per request, because a FIFO request can return several messages of one group.
+- **Size.** SQS limits body plus attributes (names, type name, values) to 256 KiB, the port limits the body alone. The adapter refuses the
+  total before sending, and a queue with a smaller `MaximumMessageSize` is honoured. A message carries at most 9 attributes of its own
+  (SQS's 10, one kept for the dead-letter marker). U+FFFE and U+FFFF in a body are written as JSON escapes; other text SQS refuses
+  (control characters, an unpaired surrogate) in an attribute, group or reason is refused.
+- **Poison and dead letters.** SQS's redrive policy moves a message after `maxReceiveCount` receives and keeps its id. A body that is not
+  JSON is not delivered (reported to `onMalformed`) and ends in the dead letters the same way. `deadLetter(handle, reason)` sends the message
+  to the declared dead-letter queue with a marker attribute (reason, time, original id, count) and then deletes it, so a crash leaves it on both
+  queues, never neither; it needs the body, so only a delivery this process made (bounded memory) can be dead-lettered, and any other handle
+  answers false. `listDeadLetters` is a sample of one receive (at most 10, no cursor); `redrive` and `discardDeadLetter` by id scan up to
+  `deadLetterScanLimit` (100) messages, keeping the others hidden until the scan ends and then putting them back; `redrive` extends the found message's
+  hide first and sends nothing if SQS no longer knows its handle. For a large dead-letter queue use SQS's own redrive.
+- **Stale handles.** SQS answers true to an `ack` with the earlier handle of a message received again (and removes nothing); the core's
+  consumers are idempotent for this reason.
+- **Errors.** `SqsQueueError` names the call and SQS's error name, never SQS's text; `retryable` is false for refusals that will not change.
+
+**Outbox triggers on AWS (`sqs/outbox-relay.ts`; ports only).** `createOutboxRelayHook` is a change-feed consumer for the store's existing
+stream reader: an INSERT of a `PENDING` outbox row makes it call `relay({ companyId, ids })` for exactly the new rows, once per company in a batch.
+The relay's own updates (attempt counts, the move to `QUEUED`) are MODIFY records and start nothing. `createOutboxBackstop` is the scheduled
+run: one `relay({ companyId })` per company from a supplied list, sequentially, within an optional time budget (the rest is `deferred` to the
+next run), and one company's failure does not stop the others. The stream is never the only way a message reaches its queue: a missed record,
+a hook error or a failed hand-over is picked up by the backstop, and a row that keeps failing is set aside as `DEAD` by the outbox. Both are
+at least once; neither orders messages across calls, so nothing may rely on the outbox for order across overlapping relays.
 
 ## Local adapters (SQLite)
 
@@ -224,7 +264,7 @@ with `removeConsumer(name)`.
 `WorkerMachines`: `start` (idempotent on `machineKey`, wakes a stopped machine), `stop` (keeps the volume), `terminate`, `health`
 (never throws for an unknown machine) and `deliver` (a `WorkerInvocation`, idempotent on `operationId`; `MachineError` codes
 `not_ready`, `not_found`, `unauthorized`, `rejected`, `unavailable`). `capabilities` says whether it isolates, keeps a volume, can
-stop, and how many machines it allows. The job's answer comes back through the broker's callback API, not through this port. One lane
+stop, and how many machines it allows. The job's answer comes back through the broker's callback API, not through this port. A machine that is lost after the delivery (`terminated`, `stopped`, `stopping` or `unhealthy` for longer than `runLostGraceSeconds`, 120 s by default) ends the operation on it INTERRUPTED (`sweepLostRuns`, run by the local app's tick; a watch row written with the hand-over names the operation, its fence and its machine), and the task then follows the path of any interrupted step. One lane
 each: EC2, local Docker, this machine.
 
 ## Policy seams
@@ -242,6 +282,8 @@ Each has a Code default (`policy-defaults.ts`) and a suite in `policy-conformanc
 **The per-step model rule has its own small seam** (`ModelSelectionSeams`, `core/model-selection/service.ts`): which models the install could serve, whether one can be called now, which is the install's own, and how a call to one is routed (the proxy alias and request format). Code answers it from its model providers and key store (`local/app/model-selection.ts`); the hosted product answers it from its model sources. The choice function (`resolveStageModel`), the setting's row (`MODEL_SELECTION_POLICY`, the hosted layout), the record of refused models (`MODEL_USABILITY`) and the price lookup (`ModelPrices`) are shared; a price is the model provider's own table, else the catalog's list price, a cap never assumes less than the catalog's list price, and a model with no price in dollars is not offered where a cap applies.
 
 **What a host that adopts the model rule must keep.** The read and choose path is shared. The owner's write path (`apply`) is for ONE owner on one install: it checks a fresh page session, the revision it was drawn at and the approvers port's *requirement* (never a proof, and it has no request receipt, second-person confirmation or preview across projects), so a host with several people keeps its own writer for the policy row, or adds those here before it writes through this one. A host also passes the two things that are its own: `defaultReviewDefault` (what a policy that does not say reads as: `install-model` for Code, `different-company` for a host whose rule that is) and `capApplies` (a host that always holds a budget passes `() => true`). The worker's calls reach the task's cost ledger through the `Metering` it hands the model proxy (`LocalApp.meter` in Code): a host whose proxy spend is read elsewhere must make that spend readable to `grant`'s budget the same way.
+
+**A `task.start` admission request names the task's path.** `AdmissionRequest.taskStart?` (`AdmissionTaskStart`) is set on `task.start` only: `{ workflow, path?: "QUICK" | "FULL", pathFrom?: "request" | "understand", designFirst? }`, so a host can set a different minimum room for each path. A task that understands first and was not told a path has no `path` yet (`pathFrom: "understand"`). It is optional and additive; Code's default allow-all ignores it, and other actions (`machine.start`, `model.call`) do not carry it.
 
 **An `Admission` adapter declares `enforcesCost`.** `enforcesCost?: boolean` on the `Admission` interface says whether the adapter refuses or holds back a request whose `estimate.cost` is more than its remaining allowance. Rovara starts work with no one present (triggers, schedules, chain steps) only where the registered admission declares `enforcesCost: true`: only an explicit `true` counts, a missing value means `false`, and the adapter's name is never looked at (`admissionEnforcesCost` in `core/automation/run-seam.ts` is the one rule). An adapter that ignores the estimate (an allow-list, a logger, a rate limiter) leaves it unset or `false`. Code's default allow-all declares `false` explicitly, and the conformance suite (`runAdmissionConformance`) requires every adapter to declare it, and an adapter that declares `true` to refuse a request over its allowance. This is an additive change to a plug-in interface (decision 79): existing adapters keep working and are simply treated as not enforcing until they declare it; the owner decides it alone (decision 63), and the plug-in author is told.
 

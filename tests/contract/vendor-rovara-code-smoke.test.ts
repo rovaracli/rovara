@@ -36,6 +36,9 @@ describe("Cloud code importing the pinned copy of Rovara Code", () => {
     const shared = Object.keys(codeContracts).filter((name) => typeof (codeContracts as Record<string, unknown>)[name] === "function" && typeof (cloudContracts as Record<string, unknown>)[name] === "function");
     expect(shared.length).toBeGreaterThan(10);
     const cloudDefined = Object.keys(cloudNames).filter((name) => typeof (cloudNames as Record<string, unknown>)[name] === "function" && typeof (codeContracts as Record<string, unknown>)[name] === "function");
-    expect(cloudDefined.filter((name) => (cloudNames as Record<string, unknown>)[name] === (codeContracts as Record<string, unknown>)[name])).toEqual([]);
+    // The one exception: smart intake, whose Cloud bridge copy was retired by the 0.5.17 pin (packages/cloud-contracts/src/smart-intake.ts now re-exports Code's own functions, which the
+    // duplicate-names test allows). Any other name that is the very same function in both is a new alias, and fails here.
+    const reExportedFromCode = ["isThreadContinuation", "quickAutoStartedMessage", "smallTalkOf", "smallTalkReply", "threadContinuationItems", "threadContinuationKey", "threadContinuationOf", "threadContinuationPersonItem", "threadContinuationThreadUpdate"];
+    expect(cloudDefined.filter((name) => (cloudNames as Record<string, unknown>)[name] === (codeContracts as Record<string, unknown>)[name]).sort()).toEqual(reExportedFromCode);
   });
 });

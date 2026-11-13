@@ -305,6 +305,8 @@ export const CORE_AUDIT_EVENT_MAP: Readonly<Record<string, EventMapping>> = {
     facts: { number: fact(({ details }) => pullNumber(details), COUNT), method: oneOf("method", "squash", "merge", "rebase") }, org: pullRequestOrg, related: ({ details }) => [text(get(details, "requestId"))],
   }),
   "pull_request.opened": same("pull_request.opened", pullRequestTarget, { facts: { number: fact(({ details }) => pullNumber(details), COUNT) }, org: pullRequestOrg, related: taskRelated }),
+  // Written by the core's merge tracking since the 0.5.17 pin (public PR #493): the repository in `details` is already the key (`owner/name`), so its id matches the other two events of the pull request. The host's login for who merged stays out (an unmapped detail).
+  "pull_request.merged": same("pull_request.merged", pullRequestTarget, { facts: { number: fact(({ details }) => pullNumber(details), COUNT) }, org: pullRequestOrg, related: taskRelated }),
 
   // Saved project images: one ledger event for the registry's changes, one for the setting.
   ...Object.fromEntries(SAVED_ENV_CHANGES.map((change) => [`saved_env.${change}`, same("saved_env.changed", { name: "project" }, {

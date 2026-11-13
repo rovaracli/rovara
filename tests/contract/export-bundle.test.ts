@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
-import { defaultBoundaryArn } from "@agentx/cloud-contracts";
+import { defaultBoundaryArn, deployRoleBoundaryArn } from "@agentx/cloud-contracts";
 import { environmentCloudFormationRoleName, environmentOperatorRoleName, type ReleaseManifest } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import type { DeployAnswers } from "../../packages/cli/src/deploy/deploy-environment.js";
@@ -175,6 +175,7 @@ describe("writeExportBundle", () => {
       "parameters/slack.json",
       "policies/access-deployer.json",
       "policies/default-boundary.json",
+      "policies/deploy-role-boundary.json",
       "policies/operator-role.json",
       "policies/service-role.json",
       "templates/access.template.json",
@@ -475,6 +476,10 @@ describe("writeExportBundle", () => {
 
     const defaultBoundary = await readJson("policies/default-boundary.json");
     expect(defaultBoundary.Statement.some((s) => s.Sid === "Services")).toBe(true);
+    // 0.5.17: the deploy role's own boundary, the only one with the Certificate Manager and Route 53 ceiling.
+    const deployBoundary = await readJson("policies/deploy-role-boundary.json");
+    expect(JSON.stringify(deployBoundary)).toContain("route53:ChangeResourceRecordSets");
+    expect(JSON.stringify(defaultBoundary)).not.toMatch(/"(acm|route53):/u);
 
     // --- Item 2: the access-deployer's role actions are scoped to the two real role ARNs — never
     // PassRole, DeleteRolePermissionsBoundary, UpdateAssumeRolePolicy, CreateServiceLinkedRole (that
@@ -493,7 +498,8 @@ describe("writeExportBundle", () => {
     // The managed-policy actions are scoped to the exact boundary ARN, not a path wildcard.
     const boundaryArn = defaultBoundaryArn({ env: ENV, partition: "aws", account: ACCOUNT });
     const iamManagedPolicy = accessDeployer.Statement.find((s) => s.Sid === "IamManagedPolicy")!;
-    expect([iamManagedPolicy.Resource].flat()).toEqual([boundaryArn]);
+    // 0.5.17: and the deploy role's own boundary, the stack's second managed policy.
+    expect([iamManagedPolicy.Resource].flat()).toEqual([boundaryArn, deployRoleBoundaryArn({ env: ENV, partition: "aws", account: ACCOUNT })]);
     expect(iamManagedPolicy.Action.some((a) => a.includes("*"))).toBe(false);
 
     // iam:PassRole is never granted anywhere in this policy, and secretsmanager: actions (both
