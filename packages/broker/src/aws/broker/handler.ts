@@ -7,7 +7,7 @@ import { deliverAttention } from "../../notifications/attention.js";
 import { sweepAttentionDms } from "../../notifications/attention-dm-sweep.js";
 import { fixtureStoreForRoutes } from "../../test-env/fixture-store-aws.js";
 import { noteInvokedFunctionArn } from "../../test-env/lambda-identity.js";
-import { EVIDENCE_RESUME_BUDGET_MS, evidenceEraseOf, resumeEvidence } from "./evidence-wiring.js";
+import { EVIDENCE_RESUME_BUDGET_MS, evidenceEraseOf, resumeCoreEvidence, resumeEvidence } from "./evidence-wiring.js";
 import { runCompanyDomainRecheck } from "../../org/company-domains/recheck.js";
 import { TaskStopReadinessError } from "../../org/task-stop-enrollment-common.js";
 import { decisionCardsEnabled } from "../../proof/switch.js";
@@ -481,6 +481,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         const evidence = await resumeEvidence(dependencies, EVIDENCE_RESUME_BUDGET_MS).catch((error: unknown) => {
           console.log(JSON.stringify({ component: "broker", event: "evidence.erase_resume_failed", error: error instanceof Error ? error.name : "unknown" }));
           return { pending: 0, finished: 0 };
+        });
+        // Convergence S0: the same for the core's tasks (a person's erase that stopped on its budget saved a cursor; its evidence is finished here, not behind any switch). Its own small share.
+        await resumeCoreEvidence(dependencies).catch((error: unknown) => {
+          console.log(JSON.stringify({ component: "broker", event: "evidence.core_erase_resume_failed", error: error instanceof Error ? error.name : "unknown" }));
         });
         // TE-4: saved or held setup commands waiting on a check are settled here too, so a check that ended with no result callback (or never) is acted on and its sender told. Its own small budget; a fault only means the next minute tries again.
         const settingsProofs = await sweepSettingsProofs(developerRouteDependencies, { limit: 25, budgetMs: 5_000 }).catch(() => ({ settled: 0, left: 0 }));

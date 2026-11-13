@@ -188,8 +188,10 @@ export async function eraseAuditSubject(deps: AuditEraseDeps, request: AuditEras
     await deps.eraseLearning(orgId, developerId);
   } catch (error) {
     // The error's name only: the learning items hold correction text.
-    deps.log({ event: "audit.erase_learning_failed", level: "error", orgId, error: errorName(error) });
-    throw agentXError("RUNTIME_UNAVAILABLE", "The details are erased, but their suggested-rule data could not be cleared just now. Send the same request again.");
+    // The person-erasure step also deletes stored test evidence (Cloud's walk and the core's); an unfinished one is told apart so the person is not sent to look at suggested rules.
+    const evidence = ["EvidenceEraseUnfinished", "CorePersonEraseUnfinished"].includes(errorName(error));
+    deps.log({ event: evidence ? "audit.erase_evidence_failed" : "audit.erase_learning_failed", level: "error", orgId, error: errorName(error) });
+    throw agentXError("RUNTIME_UNAVAILABLE", evidence ? "The details are erased, but their stored test evidence could not be cleared just now. Send the same request again." : "The details are erased, but their suggested-rule data could not be cleared just now. Send the same request again.");
   }
   return result;
 }

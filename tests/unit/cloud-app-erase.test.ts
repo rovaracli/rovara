@@ -3,16 +3,20 @@
 // (the store and the object storage), never the registry or a switch: a task keeps its engine after the switch is turned off. Core task records carry `companyId` only
 // (vendor core task-flow/start.ts), so they are seeded that way; Cloud's own walk (`orgId` only) is shown to skip them.
 import { randomUUID } from "node:crypto";
-import { DeleteObjectsCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import { DeleteObjectsCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
+import { PutItemCommand } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it, vi } from "vitest";
 import { createOwnerTaskAccess } from "@rovara-code/broker/core/task-flow";
-import type { AdapterRegistry, ObjectStorage, OrgId } from "@rovara-code/contracts";
+import { createDynamoStoreFromSettings } from "@rovara-code/aws-adapters/dynamodb";
+import type { AdapterRegistry, DocumentStore, ObjectStorage, OrgId } from "@rovara-code/contracts";
+import { FakeDynamoDb } from "../../vendor/rovara-code/tests/support/ports/dynamodb-fake.js";
+import { FakeS3 } from "../../vendor/rovara-code/tests/support/ports/aws-fakes.js";
 import { evidencePrefixesOf as codePrefixesOf, eraseTaskEvidence } from "../../vendor/rovara-code/packages/broker/src/core/proof/evidence-erase.js";
 import { createEvidenceErase, evidencePrefixesOf as cloudPrefixesOf } from "../../packages/broker/src/rovara-code/evidence-erase.js";
 import { personErasureStep } from "../../packages/broker/src/aws/broker/evidence-wiring.js";
 import {
-  CorePersonEraseUnfinished, corePersonEraseOf, createCloudApp, erasePersonOnCore, readCoreEngineFlags, stampForNewTask, stampItem, type CloudApp, type CoreErasePorts, type PersonEraseOnCoreReport,
+  CORE_ERASE_PENDING_PK, CorePersonEraseUnfinished, coreErasePortsOf, corePersonEraseOf, createCloudApp, erasePersonOnCore, readCoreEngineFlags, resumeCoreEvidenceErase, stampForNewTask, stampItem, type CloudApp, type CoreErasePorts, type PersonEraseOnCoreReport,
 } from "../../packages/broker/src/cloud/app/index.js";
 import { FAKE_COMPANY, createFakeWorld, type FakeWorld } from "../support/cloud-core-fakes.js";
 
@@ -21,7 +25,7 @@ const PERSON = "a".repeat(64);
 const OTHER_PERSON = "b".repeat(64);
 const PACK_NAME = `${"c".repeat(64)}.json`;
 const TAIL_NAME = "d".repeat(64);
-const NONE: PersonEraseOnCoreReport = { tasks: 0, erased: 0, cloudStamped: 0, skipped: 0, refused: 0, incomplete: 0 };
+const NONE: PersonEraseOnCoreReport = { tasks: 0, erased: 0, cloudStamped: 0, skipped: 0, missingRecord: 0, refused: 0, incomplete: 0, complete: true };
 
 interface Seeded { taskId: string; ownerKey: string; workspaceId: string }
 
@@ -47,22 +51,32 @@ interface SeedInput {
   indexCompany?: string;
   /** Replaces the owner key (a malformed one is refused). */
   ownerKey?: string;
+  /** The record's shape: the core's start writes `companyId` only, Cloud's records `orgId`. Default: the core's when the stamp is `core`. */
+  shape?: "core" | "cloud";
+  /** No task record at all (it expired, or was never written). */
+  noRecord?: boolean;
 }
 
 /**
  * A task of a person: the index row, the task record, optionally an engine stamp, and the two evidence objects (a pack and an output tail). A core-stamped record is shaped
  * as the core's start writes it (`companyId` only, no `orgId`); Cloud's own record names its company as `orgId`.
  */
-async function seedTask(world: FakeWorld, objects: ObjectStorage, input: SeedInput): Promise<Seeded> {
+async function seedRecords(world: FakeWorld, input: SeedInput, store: DocumentStore = world.store): Promise<Seeded> {
   const company = input.company ?? FAKE_COMPANY;
   const seeded = { taskId: randomUUID(), ownerKey: input.ownerKey ?? randomUUID().replaceAll("-", "").repeat(2), workspaceId: randomUUID() };
-  const owner = input.stamp === "core" ? { companyId: company } : { orgId: company };
-  await world.store.put({ item: { pk: `DEVELOPER#${input.person}`, sk: `TASK#2026-11-12T10:00:00.000Z#${seeded.taskId}`, entityType: "DEVELOPER_TASK_INDEX", taskId: seeded.taskId, orgId: input.indexCompany ?? company } });
-  await world.store.put({ item: { pk: `DEVTASK#${seeded.taskId}`, sk: "META", entityType: "DEVELOPER_TASK", taskId: seeded.taskId, developerId: input.creator ?? input.person, ...owner, ownerKey: seeded.ownerKey, workspaceId: seeded.workspaceId } });
+  const shape = input.shape ?? (input.stamp === "core" ? "core" : "cloud");
+  const owner = shape === "core" ? { companyId: company } : { orgId: company };
+  await store.put({ item: { pk: `DEVELOPER#${input.person}`, sk: `TASK#2026-11-12T10:00:00.000Z#${seeded.taskId}`, entityType: "DEVELOPER_TASK_INDEX", taskId: seeded.taskId, orgId: input.indexCompany ?? company } });
+  if (input.noRecord !== true) await store.put({ item: { pk: `DEVTASK#${seeded.taskId}`, sk: "META", entityType: "DEVELOPER_TASK", taskId: seeded.taskId, developerId: input.creator ?? input.person, ...owner, ownerKey: seeded.ownerKey, workspaceId: seeded.workspaceId } });
   if (input.stamp !== "none") {
     const flags = readCoreEngineFlags(input.stamp === "core" ? { CLOUD_CORE_ENGINE: "on" } : {});
-    await world.store.put({ item: stampItem(company, seeded.taskId, stampForNewTask(flags, company, new Date(world.clock.now))).item });
+    await store.put({ item: stampItem(company, seeded.taskId, stampForNewTask(flags, company, new Date(world.clock.now))).item });
   }
+  return seeded;
+}
+
+async function seedTask(world: FakeWorld, objects: ObjectStorage, input: SeedInput): Promise<Seeded> {
+  const seeded = await seedRecords(world, input);
   for (const key of keysOf(seeded)) await objects.put(key, new TextEncoder().encode("{}"), { contentType: "application/json", metadata: {}, retention: "evidence-std" });
   return seeded;
 }
@@ -103,7 +117,7 @@ describe("erasePersonOnCore", () => {
 
     const report = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON });
 
-    expect(report).toEqual({ tasks: 5, erased: 2, cloudStamped: 2, skipped: 1, refused: 0, incomplete: 0 });
+    expect(report).toEqual({ tasks: 5, erased: 2, cloudStamped: 2, skipped: 1, missingRecord: 0, refused: 0, incomplete: 0, complete: true });
     expect(await leftOf(registry, mine)).toBe(0);
     expect(await leftOf(registry, second)).toBe(0);
     expect(await leftOf(registry, theirs)).toBe(2);
@@ -178,7 +192,7 @@ describe("erasePersonOnCore", () => {
     const bad = await seed({ person: PERSON, stamp: "core", ownerKey: "owner.not-a-plain-id" });
     const fine = await seed({ person: PERSON, stamp: "core" });
     const report = await corePersonEraseOf(ports).person(FAKE_COMPANY, PERSON);
-    expect(report).toEqual({ tasks: 2, erased: 1, cloudStamped: 0, skipped: 0, refused: 1, incomplete: 0 });
+    expect(report).toEqual({ tasks: 2, erased: 1, cloudStamped: 0, skipped: 0, missingRecord: 0, refused: 1, incomplete: 0, complete: true });
     expect(await leftOf(registry, fine)).toBe(0);
     expect(await leftOf(registry, bad)).toBe(2);
     expect(logs).toEqual([{ component: "broker", event: "core_person_erase.refused", tasks: 2, refused: 1 }]);
@@ -309,5 +323,215 @@ describe("corePersonEraseOf and the person-erasure step", () => {
     const core = { person: vi.fn(async () => NONE) };
     await expect(personErasureStep(undefined, { person: async () => { throw new Error("cloud unfinished"); } }, undefined, core)(ORG, PERSON)).rejects.toThrow("cloud unfinished");
     expect(core.person).not.toHaveBeenCalled();
+  });
+});
+
+describe("which tasks are the core's", () => {
+  it("a record with companyId and no orgId and no stamp is the core's (the net under a start that wrote no stamp); a `cloud` stamp wins over the record's shape", async () => {
+    const { registry, ports, seed } = await setup();
+    const unstampedCore = await seed({ person: PERSON, stamp: "none", shape: "core" });
+    const cloudStampedCoreShaped = await seed({ person: PERSON, stamp: "cloud", shape: "core" });
+    const unstampedCloud = await seed({ person: PERSON, stamp: "none", shape: "cloud" });
+    const report = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON });
+    expect(report).toMatchObject({ tasks: 3, erased: 1, cloudStamped: 2, incomplete: 0, complete: true });
+    expect(await leftOf(registry, unstampedCore)).toBe(0);
+    expect(await leftOf(registry, cloudStampedCoreShaped)).toBe(2);
+    expect(await leftOf(registry, unstampedCloud)).toBe(2);
+  });
+
+  it("a core task whose record is missing or expired is counted and logged as counts only, and does not hold the request open", async () => {
+    const { registry, ports, logs, seed } = await setup();
+    const gone = await seed({ person: PERSON, stamp: "core", noRecord: true });
+    const fine = await seed({ person: PERSON, stamp: "core" });
+    const report = await corePersonEraseOf(ports).person(FAKE_COMPANY, PERSON);
+    expect(report).toMatchObject({ tasks: 2, erased: 1, missingRecord: 1, incomplete: 0, complete: true });
+    expect(await leftOf(registry, fine)).toBe(0);
+    expect(await leftOf(registry, gone)).toBe(2);
+    expect(logs).toEqual([{ component: "broker", event: "core_person_erase.skipped", tasks: 2, missingRecord: 1 }]);
+  });
+});
+
+/** An object store that is a set of keys, whose every delete takes `cost` ms of a clock the test owns: for many tasks and a small budget. */
+function slowObjects(keys: Set<string>, clock: { at: number }, cost: number) {
+  const calls = { deletes: 0 };
+  const objects: CoreErasePorts["objects"] = {
+    async deletePrefix(prefix) { calls.deletes += 1; clock.at += cost; for (const key of [...keys]) if (key.startsWith(prefix)) keys.delete(key); return true; },
+  };
+  return { objects, calls };
+}
+
+describe("a budget, a cursor and the every-minute resume", () => {
+  const MANY = 230;
+  async function many() {
+    const world = createFakeWorld();
+    const clock = { at: 1_000_000 };
+    const keys = new Set<string>();
+    for (let index = 0; index < MANY; index += 1) {
+      const task = await seedRecords(world, { person: PERSON, stamp: "core" });
+      for (const key of keysOf(task)) keys.add(key);
+    }
+    const slow = slowObjects(keys, clock, 5);
+    const ports: CoreErasePorts = { store: world.store, objects: slow.objects, now: () => clock.at };
+    return { world, clock, keys, ports, slow };
+  }
+  const pendingOf = async (world: FakeWorld) => await world.store.get({ pk: CORE_ERASE_PENDING_PK, sk: `${FAKE_COMPANY}|${PERSON}` });
+
+  it("never reports done early, moves forward on each repeat, and ends with the pending item gone", async () => {
+    const { world, keys, ports } = await many();
+    const queries = vi.spyOn(world.store, "query");
+    let runs = 0;
+    let last = keys.size;
+    for (;;) {
+      runs += 1;
+      expect(runs).toBeLessThan(40);
+      const report = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 250 });
+      // Done exactly when nothing is left: never earlier.
+      expect(report.complete).toBe(keys.size === 0);
+      if (report.complete) break;
+      expect(keys.size).toBeLessThan(last);
+      last = keys.size;
+      expect((await pendingOf(world))?.cursor).toEqual(expect.stringContaining("TASK#"));
+    }
+    expect(runs).toBeGreaterThan(3);
+    expect(await pendingOf(world)).toBeUndefined();
+    // The repeats read from the saved cursor, not from the start of the index.
+    expect(queries.mock.calls.some(([request]) => request.sk?.op === "gt")).toBe(true);
+  });
+
+  it("with no time at all it deletes nothing, saves a pending item, and the person-erase call fails so the request is repeated", async () => {
+    const { world, ports, keys, slow } = await many();
+    const report = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 0 });
+    expect(report).toMatchObject({ erased: 0, complete: false });
+    expect(slow.calls.deletes).toBe(0);
+    expect(keys.size).toBe(MANY * 2);
+    expect(await pendingOf(world)).toMatchObject({ companyId: FAKE_COMPANY, developerId: PERSON });
+    await expect(corePersonEraseOf(ports, 0).person(FAKE_COMPANY, PERSON)).rejects.toBeInstanceOf(CorePersonEraseUnfinished);
+  });
+
+  it("the every-minute resume finishes what a request left, from the cursor, and clears the pending item", async () => {
+    const { world, ports, keys, clock } = await many();
+    const first = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 250 });
+    expect(first.complete).toBe(false);
+    const left = keys.size;
+    expect(left).toBeGreaterThan(0);
+    const out = await resumeCoreEvidenceErase(ports, { millis: 60_000 });
+    expect(out).toEqual({ pending: 1, finished: 1 });
+    expect(keys.size).toBe(0);
+    expect(await pendingOf(world)).toBeUndefined();
+    expect(clock.at).toBeGreaterThan(1_000_000);
+    // Nothing pending: the resume does nothing.
+    expect(await resumeCoreEvidenceErase(ports, { millis: 60_000 })).toEqual({ pending: 0, finished: 0 });
+  });
+
+  it("a resume with too little time left leaves the item for the next minute", async () => {
+    const { world, ports, keys } = await many();
+    await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 250 });
+    expect(await resumeCoreEvidenceErase(ports, { millis: 100 })).toEqual({ pending: 1, finished: 0 });
+    expect(keys.size).toBeGreaterThan(0);
+    expect(await pendingOf(world)).toBeDefined();
+  });
+
+  it("a task that did not finish keeps the cursor before it: the next run does it again, and the walk is not complete", async () => {
+    const { world, ports, keys } = await many();
+    const real = ports.objects.deletePrefix.bind(ports.objects);
+    let failing = true;
+    vi.spyOn(ports.objects, "deletePrefix").mockImplementation(async (prefix) => (failing ? false : real(prefix)));
+    const stuck = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 10_000 });
+    expect(stuck).toMatchObject({ complete: false, erased: 0 });
+    expect(stuck.incomplete).toBeGreaterThan(0);
+    expect(keys.size).toBe(MANY * 2);
+    failing = false;
+    expect((await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 10_000 })).complete).toBe(true);
+    expect(keys.size).toBe(0);
+    expect(await pendingOf(world)).toBeUndefined();
+  });
+});
+
+/** The real vendored adapters (DynamoDB store, S3 object storage) over the vendored fakes of the two clients. */
+async function realWorld() {
+  const table = new FakeDynamoDb({ tableName: "State" });
+  const s3 = new FakeS3({ bucket: "artifact-bucket" });
+  const store = createDynamoStoreFromSettings({ tableName: "State" }, table);
+  const world = createFakeWorld();
+  const logs: Array<Record<string, unknown>> = [];
+  const send = (command: unknown) => s3.send(command);
+  const ports = coreErasePortsOf({ dynamo: table, tableName: "State", s3: { send } as never, bucket: "artifact-bucket", log: (entry) => logs.push(entry) });
+  const put = async (task: Seeded) => { for (const key of keysOf(task)) await s3.send(new PutObjectCommand({ Bucket: "artifact-bucket", Key: key, Body: new TextEncoder().encode("{}") })); };
+  const seed = async (input: SeedInput) => { const task = await seedRecords(world, input, store); await put(task); return task; };
+  return { table, s3, store, ports, logs, seed, send, left: (task: Seeded) => keysOf(task).filter((key) => s3.objects.has(key)).length };
+}
+
+describe("over the real DynamoDB and S3 adapters", () => {
+  it("erases a core task's evidence in the artifact bucket at the exact keys (no key prefix), reading the State table, and keeps the rest", async () => {
+    const { s3, ports, seed, left } = await realWorld();
+    const mine = await seed({ person: PERSON, stamp: "core" });
+    const cloud = await seed({ person: PERSON, stamp: "none" });
+    const theirs = await seed({ person: OTHER_PERSON, stamp: "core" });
+    expect(await corePersonEraseOf(ports).person(FAKE_COMPANY, PERSON)).toMatchObject({ erased: 1, cloudStamped: 1, complete: true });
+    expect([left(mine), left(cloud), left(theirs)]).toEqual([0, 2, 2]);
+    // Every call went to the artifact bucket, and every key asked for starts at `private/` (the layout Cloud writes): nothing was prefixed.
+    const prefixes = s3.calls.flatMap((call) => (typeof call.input.Prefix === "string" ? [call.input.Prefix] : []));
+    expect(prefixes.length).toBeGreaterThan(0);
+    for (const prefix of prefixes) expect(prefix.startsWith("private/")).toBe(true);
+    expect(new Set(s3.calls.map((call) => call.input.Bucket))).toEqual(new Set(["artifact-bucket"]));
+  });
+
+  it("a batch delete that reports errors is a failure (counted incomplete), not a round to repeat", async () => {
+    const { table, s3, send, seed, left, logs } = await realWorld();
+    const task = await seed({ person: PERSON, stamp: "core" });
+    const failing = coreErasePortsOf({ dynamo: table, tableName: "State", bucket: "artifact-bucket", log: (entry) => logs.push(entry),
+      s3: { async send(command: unknown) { const answer = await send(command); return command instanceof DeleteObjectsCommand ? { ...(answer as object), Errors: [{ Key: "x", Code: "AccessDenied" }] } : answer; } } as never });
+    const before = s3.calls.length;
+    const report = await erasePersonOnCore({ ports: failing, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 10_000 });
+    expect(report).toMatchObject({ erased: 0, incomplete: 1, complete: false });
+    // It stopped at the first answer with errors: one list and one delete per prefix, not a hundred rounds.
+    expect(s3.calls.length - before).toBeLessThanOrEqual(6);
+    expect(JSON.stringify(report)).not.toContain("AccessDenied");
+    // The objects the fake deleted before the error was reported are gone, the task is still not reported done, and a clean run finishes it.
+    expect(left(task)).toBeLessThanOrEqual(2);
+    expect((await erasePersonOnCore({ ports: coreErasePortsOf({ dynamo: table, tableName: "State", s3: { send } as never, bucket: "artifact-bucket" }), companyId: FAKE_COMPANY, developerId: PERSON })).complete).toBe(true);
+  });
+
+  it("an item the store cannot read is logged without the person or the task", async () => {
+    const { table, ports, logs, seed } = await realWorld();
+    await seed({ person: PERSON, stamp: "core" });
+    // A set attribute cannot be represented by the port (decision 60): the store leaves the item out and tells `onUnreadable`.
+    await table.send(new PutItemCommand({ TableName: "State", Item: { pk: { S: `DEVELOPER#${PERSON}` }, sk: { S: `TASK#2026-11-12T11:00:00.000Z#${randomUUID()}` }, tags: { SS: ["a"] } } }) as never);
+    await corePersonEraseOf(ports).person(FAKE_COMPANY, PERSON);
+    const unreadable = logs.filter((entry) => entry.event === "core_person_erase.unreadable_item");
+    expect(unreadable).toEqual([{ component: "broker", event: "core_person_erase.unreadable_item" }]);
+    expect(JSON.stringify(logs)).not.toContain(PERSON);
+  });
+
+  /** Cloud's walk speaks lib-dynamodb commands; this answers the few it sends from the same store the core's walk reads. */
+  function documentClientOver(store: DocumentStore) {
+    return { async send(command: unknown): Promise<unknown> {
+      if (command instanceof GetCommand) return { Item: await store.get(command.input.Key as { pk: string; sk: string }) };
+      if (command instanceof PutCommand) { await store.put({ item: command.input.Item as { pk: string; sk: string } }); return {}; }
+      if (command instanceof DeleteCommand) { await store.delete({ key: command.input.Key as { pk: string; sk: string } }); return {}; }
+      if (command instanceof QueryCommand) {
+        const values = command.input.ExpressionAttributeValues as Record<string, string>;
+        const start = (command.input.ExclusiveStartKey as { c?: string } | undefined)?.c;
+        if (typeof values[":prefix"] !== "string") return { Items: [] };
+        const page = await store.query({ pk: values[":pk"]!, sk: { op: "beginsWith", prefix: values[":prefix"] }, ...(command.input.Limit === undefined ? {} : { limit: command.input.Limit }), ...(start === undefined ? {} : { cursor: start }) });
+        return { Items: page.items, ...(page.cursor === undefined ? {} : { LastEvaluatedKey: { c: page.cursor } }) };
+      }
+      throw new Error("unexpected command");
+    } };
+  }
+
+  it("Cloud and core tasks of one person, through the person-erasure step with both real walks: each walk erases its own, nothing else", async () => {
+    const { store, ports, seed, left, send } = await realWorld();
+    // Cloud's walk starts only for an org that kept evidence.
+    await store.put({ item: { pk: `EVIDENCE_STORED#${FAKE_COMPANY}`, sk: "META", entityType: "EVIDENCE_STORED", orgId: FAKE_COMPANY } });
+    const cloudTask = await seed({ person: PERSON, stamp: "none", shape: "cloud" });
+    const coreTask = await seed({ person: PERSON, stamp: "core" });
+    const coreUnstamped = await seed({ person: PERSON, stamp: "none", shape: "core" });
+    const theirs = await seed({ person: OTHER_PERSON, stamp: "core" });
+    const theirsCloud = await seed({ person: OTHER_PERSON, stamp: "none", shape: "cloud" });
+    const cloudWalk = createEvidenceErase({ s3: { send } as never, artifactBucketName: "artifact-bucket", documentClient: documentClientOver(store), tableName: "State" });
+    await personErasureStep(undefined, cloudWalk, undefined, corePersonEraseOf(ports))(FAKE_COMPANY as OrgId, PERSON);
+    expect([left(cloudTask), left(coreTask), left(coreUnstamped)]).toEqual([0, 0, 0]);
+    expect([left(theirs), left(theirsCloud)]).toEqual([2, 2]);
   });
 });

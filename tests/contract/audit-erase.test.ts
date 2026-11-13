@@ -183,6 +183,19 @@ describe("eraseAuditSubject and the learning loop (B7)", () => {
   });
 });
 
+describe("an unfinished evidence erase is told apart from the learning clean-up", () => {
+  it.each(["EvidenceEraseUnfinished", "CorePersonEraseUnfinished"])("%s: the person is told stored test evidence was not cleared (not suggested-rule data), the request is to be sent again, and the log names the evidence step", async (name) => {
+    const b = bench();
+    await b.seedKeys(A);
+    const deps: AuditEraseDeps = { ...b.erase, eraseLearning: async () => { throw Object.assign(new Error("SECRET-KEY private/abc"), { name }); } };
+    const error = await eraseAuditSubject(deps, request()).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("stored test evidence") });
+    expect((error as Error).message).not.toContain("suggested-rule");
+    expect(JSON.stringify(b.logs)).toContain("audit.erase_evidence_failed");
+    expect(JSON.stringify(b.logs)).not.toContain("SECRET-KEY");
+  });
+});
+
 describe("the learning erase hook is required", () => {
   it("a wiring that forgot it fails loudly after the details are erased, and never reads as nothing to erase", async () => {
     const b = bench();
