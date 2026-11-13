@@ -3,7 +3,7 @@ import { refuseReplayCopy } from "../../developer/eval-copy.js";
 import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError, CLOSE_MESSAGES, DeveloperPullRequestRequestSchema, DeveloperTaskCloseRequestSchema, PullRequestResultSchema, WorkspaceClosePreflightResultSchema, agentXError, sharedTaskKey, workspaceSessionKey, type Operation } from "@rovara-code/contracts";
 import { type DeveloperCloseResponse, type DeveloperPullRequestResponse } from "@agentx/cloud-contracts";
-import { releaseConflict, releaseItems } from "../../developer/limits.js";
+import { chargeFormOf, releaseConflict, releaseItems, type ChargeForm } from "../../developer/limits.js";
 import {
   aiToolTurn,
   developerTaskIdentity,
@@ -185,9 +185,11 @@ export async function finishTaskClose(
   let release = true;
   let lastError: unknown;
   for (let attempt = 0; attempt < CLOSE_ATTEMPTS; attempt += 1) {
+    // The form the slot was charged in (a marker, or the counter's old `tasks` set), read again on each try.
+    const form: ChargeForm | undefined = release ? await chargeFormOf(deps.documentClient, deps.tableName, task.charge, task.taskId) : undefined;
     try {
-      // First, at positions 0 and 1: releaseConflict reads the cancellation reasons by position.
-      await deps.actions.transact([...(release ? releaseItems(deps.tableName, task.charge, task.taskId) : []), ...closing(current)]);
+      // First (positions 0 to 2): releaseConflict reads the cancellation reasons by position.
+      await deps.actions.transact([...(form !== undefined ? releaseItems(deps.tableName, task.charge, task.taskId, form) : []), ...closing(current)]);
       await endAgentRunOfClosedTask(deps, task);
       await tellClosedTaskEnd(deps, task);
       await settleTaskOutcomes(outcomeDepsOf({ documentClient: deps.documentClient, tableName: deps.tableName }), task, new Date().toISOString());
@@ -210,7 +212,7 @@ export async function finishTaskClose(
       }
       if (!release) throw error;
       // Rethrows anything but counters that no longer hold this task.
-      await releaseConflict(deps.documentClient, deps.tableName, task.charge, task.taskId, error);
+      await releaseConflict(deps.documentClient, deps.tableName, task.charge, task.taskId, error, form ?? "set");
       console.log(JSON.stringify({ component: "broker", event: "developer.task_release_already_released", taskId: task.taskId }));
       release = false;
     }

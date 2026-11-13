@@ -191,7 +191,7 @@ async function dispatchHeldStart(deps: DeveloperTaskRouteDependencies, task: Dev
   const limits = await readWorkspaceLimits(deps.documentClient, deps.tableName, deps.orgId, deps.actions.limitDefaults);
   const charge = task.charge ?? developerCharge({ orgId: deps.orgId, teamId: deps.slackTeamId, slackUserId: task.slackUserId, developerId: task.developerId });
   const items: TransactItems = [
-    // First, at positions 0 and 1: chargeConflict reads the cancellation reasons by position.
+    // First, at positions 0 to 2: chargeConflict reads the cancellation reasons by position.
     ...chargeItems(deps.tableName, charge, limits, task.taskId),
     ...outbox,
     putNew(deps.tableName, { ...setupWatchKey(workspace.createdAt, workspace.id), entityType: "SETUP_WATCH", workspaceId: workspace.id, operationId: held.operationId, taskId: task.taskId, createdAt: workspace.createdAt }),

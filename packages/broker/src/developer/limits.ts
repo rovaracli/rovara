@@ -52,14 +52,30 @@ export function developerCharge(input: { orgId: OrgId; teamId?: string | undefin
 
 const entityOf = (key: CounterKey) => (isSlackLimitPk(key.pk) ? "SLACK_LIMIT" : "DEVELOPER_LIMIT");
 
+// ---- The charge marker (convergence lane A5, owner decision 60 item S2) ----
+//
+// READERS ONLY (release 0.5.18, DECISIONS 152a: readers ship before writers). Cloud records a charged task in a string set `tasks` on the member counter
+// and still does, in this release. Code's core records one marker item beside the counter, `TASK#<taskId>` (`core/task-flow/keys.ts` `chargeMarkerKey`), and
+// the S2 release (0.5.19) moves Cloud's writers and its stored sets to the same markers. So that a rollback from 0.5.19 to this release leaves no slot
+// that nothing can free, every reader and releaser here handles a task in EITHER form: a release frees the form the task was charged in (`chargeFormOf`), a
+// charge is refused for a task already holding a slot in either form, and the lists of charged tasks merge both. This release writes the set form only.
+
+/** The marker's entity type: Code's core writes the same one. */
+export const LIMIT_TASK_ENTITY = "DEVELOPER_LIMIT_TASK";
+/** The sort-key prefix of the markers in a counter's partition. */
+export const LIMIT_TASK_SK_PREFIX = "TASK#";
+
+/** The marker that says a task holds a slot of this member's counter (Code's core `chargeMarkerKey`). */
+export const chargeMarkerKey = (charge: Pick<WorkspaceCharge, "member">, taskId: string): CounterKey => ({ pk: charge.member.pk, sk: `${LIMIT_TASK_SK_PREFIX}${taskId}` });
+
+/** Which stored form a task's charge is in: a marker item (written by the S2 release and by Code's core), or an entry of the member counter's `tasks` set (what this release writes). */
+export type ChargeForm = "marker" | "set";
+
 /**
- * The same conditions as a Slack thread's charge. The task goes in a string set `tasks`; the
- * Slack limit refusal reads every `threads` entry as a thread subject, so tasks never go there.
- *
- * Self-guarding (fix round 1): the member item's condition also requires `NOT contains(#tasks,
- * :taskId)`, so a repeated charge of the same task cancels the whole transaction instead of
- * incrementing the count a second time. Callers classify a `TransactionCanceledException` with
- * chargeConflict.
+ * The same conditions as a Slack thread's charge, at positions 0 (organization), 1 (member) and 2 (a check that the task has no marker): chargeConflict
+ * reads them by position. The task goes in the string set `tasks` (this release's form); the member item's condition also requires `NOT contains(#tasks,
+ * :taskId)`, and the check at position 2 requires that no marker holds the task, so a repeated charge of one task, in either form, cancels the whole
+ * transaction instead of counting twice. The Slack limit refusal reads every `threads` entry as a thread subject, so tasks never go there.
  */
 export function chargeItems(tableName: string, charge: WorkspaceCharge, limits: { member: number; organization: number }, taskId: string): TransactItems {
   return [
@@ -79,27 +95,43 @@ export function chargeItems(tableName: string, charge: WorkspaceCharge, limits: 
       ExpressionAttributeNames: { "#count": "count", "#tasks": "tasks" },
       ExpressionAttributeValues: { ":zero": 0, ":one": 1, ":limit": limits.member, ":entity": entityOf(charge.member), ":task": new Set([taskId]), ":taskId": taskId },
     } },
+    { ConditionCheck: { TableName: tableName, Key: chargeMarkerKey(charge, taskId), ConditionExpression: "attribute_not_exists(pk)" } },
   ];
 }
 
 /**
- * Releases what chargeItems took. The caller's transaction also marks the task closed, once.
- *
- * Self-guarding (fix round 1): the member item's condition also requires `contains(#tasks,
- * :taskId)`, so a repeated release of the same task (the task is no longer in the set) cancels
- * the whole transaction instead of decrementing the count a second time. Callers classify a
- * `TransactionCanceledException` with releaseConflict.
+ * Releases what chargeItems (or the old set form) took. The caller's transaction also marks the task closed, once. `form` is what `chargeFormOf` read:
+ *  - `marker`: positions 0 (organization), 1 (member) and 2 (the marker, which must still exist): a repeated release fails at the marker instead of
+ *    decrementing twice.
+ *  - `set` (a task charged before markers, or one already released): positions 0 and 1, the member's condition requiring the task in the old `tasks` set,
+ *    which the update deletes it from, exactly as before.
+ * Callers classify a `TransactionCanceledException` with releaseConflict, passing the same form.
  */
-export function releaseItems(tableName: string, charge: WorkspaceCharge, taskId: string): TransactItems {
+export function releaseItems(tableName: string, charge: WorkspaceCharge, taskId: string, form: ChargeForm): TransactItems {
+  const organization = { Update: {
+    TableName: tableName,
+    Key: charge.organization,
+    UpdateExpression: "SET #count = #count - :one",
+    ConditionExpression: "#count >= :one",
+    ExpressionAttributeNames: { "#count": "count" },
+    ExpressionAttributeValues: { ":one": 1 },
+  } };
+  if (form === "marker") {
+    return [
+      organization,
+      { Update: {
+        TableName: tableName,
+        Key: charge.member,
+        UpdateExpression: "SET #count = #count - :one",
+        ConditionExpression: "#count >= :one",
+        ExpressionAttributeNames: { "#count": "count" },
+        ExpressionAttributeValues: { ":one": 1 },
+      } },
+      { Delete: { TableName: tableName, Key: chargeMarkerKey(charge, taskId), ConditionExpression: "attribute_exists(pk)" } },
+    ];
+  }
   return [
-    { Update: {
-      TableName: tableName,
-      Key: charge.organization,
-      UpdateExpression: "SET #count = #count - :one",
-      ConditionExpression: "#count >= :one",
-      ExpressionAttributeNames: { "#count": "count" },
-      ExpressionAttributeValues: { ":one": 1 },
-    } },
+    organization,
     { Update: {
       TableName: tableName,
       Key: charge.member,
@@ -109,6 +141,56 @@ export function releaseItems(tableName: string, charge: WorkspaceCharge, taskId:
       ExpressionAttributeValues: { ":one": 1, ":task": new Set([taskId]), ":taskId": taskId },
     } },
   ];
+}
+
+const readItem = async (client: Client, tableName: string, key: CounterKey): Promise<Record<string, unknown> | undefined> =>
+  ((await client.send(new GetCommand({ TableName: tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
+
+const hasMarker = async (client: Client, tableName: string, charge: Pick<WorkspaceCharge, "member">, taskId: string): Promise<boolean> =>
+  (await readItem(client, tableName, chargeMarkerKey(charge, taskId)))?.["entityType"] === LIMIT_TASK_ENTITY;
+
+/** Whether the member counter's old `tasks` set holds the task. */
+const inOldSet = async (client: Client, tableName: string, member: CounterKey, taskId: string): Promise<boolean> => {
+  const tasks = (await readItem(client, tableName, member))?.["tasks"];
+  return tasks instanceof Set && tasks.has(taskId);
+};
+
+/**
+ * Which form to release a task's charge in: `marker` when its marker exists, else `set` (the old form; a task in neither form was already released,
+ * and the set form's condition then fails as a repeated release always did). A consistent read, made just before the release's transaction.
+ */
+export async function chargeFormOf(client: Client, tableName: string, charge: Pick<WorkspaceCharge, "member">, taskId: string): Promise<ChargeForm> {
+  return (await hasMarker(client, tableName, charge, taskId)) ? "marker" : "set";
+}
+
+/** Whether the task still holds a slot of this member counter, in either form. */
+export async function isTaskCharged(client: Client, tableName: string, charge: Pick<WorkspaceCharge, "member">, taskId: string): Promise<boolean> {
+  return (await hasMarker(client, tableName, charge, taskId)) || (await inOldSet(client, tableName, charge.member, taskId));
+}
+
+/**
+ * The tasks that hold a slot of this member counter, in either form: the old `tasks` set and the markers that name this counter. A marker with no
+ * `memberSk` (written by Code's core before it named one) counts only on a per-member partition (`DEVELOPER_LIMIT#`), where the key alone is the member's.
+ * At most `limit` ids, in no particular order.
+ */
+export async function chargedTaskIds(client: Client, tableName: string, member: CounterKey, limit = 1_000): Promise<string[]> {
+  const ids = new Set<string>();
+  const tasks = (await readItem(client, tableName, member))?.["tasks"];
+  if (tasks instanceof Set) for (const id of tasks) if (typeof id === "string") ids.add(id);
+  let start: Record<string, unknown> | undefined;
+  do {
+    const page = (await client.send(new QueryCommand({
+      TableName: tableName, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ConsistentRead: true,
+      ExpressionAttributeValues: { ":pk": member.pk, ":prefix": LIMIT_TASK_SK_PREFIX }, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+    }))) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown> };
+    for (const item of page.Items ?? []) {
+      if (item["entityType"] !== LIMIT_TASK_ENTITY || typeof item["taskId"] !== "string") continue;
+      const memberSk = item["memberSk"];
+      if (memberSk === member.sk || (memberSk === undefined && !isSlackLimitPk(member.pk))) ids.add(item["taskId"]);
+    }
+    start = page.LastEvaluatedKey;
+  } while (start !== undefined && ids.size < limit);
+  return [...ids].slice(0, limit);
 }
 
 /**
@@ -145,57 +227,43 @@ const cancellationReasons = (error: unknown): Array<{ Code?: string }> | undefin
   return Array.isArray(reasons) ? reasons as Array<{ Code?: string }> : undefined;
 };
 
-const hasTask = async (client: Client, tableName: string, member: CounterKey, taskId: string): Promise<boolean> => {
-  const response = await client.send(new GetCommand({ TableName: tableName, Key: member, ConsistentRead: true })) as { Item?: { tasks?: Set<string> } };
-  return response.Item?.tasks?.has(taskId) === true;
-};
+const conditionFailed = (reasons: Array<{ Code?: string }>, position: number): boolean => reasons[position]?.Code === "ConditionalCheckFailed";
 
 export type ChargeConflict = "already_charged" | "member" | "organization";
 
 /**
- * Classifies a `chargeItems` transaction's `TransactionCanceledException`, so a caller (Tasks 8 and
- * 12) can tell a repeat charge of the same task (already applied; treat as success) apart from a
- * genuine limit refusal. Reads `error.CancellationReasons` positionally, the way
- * packages/broker/src/developer/store.ts's classifyRotationFailure does (chargeItems' TransactItems
- * are [organization, member], in that order).
+ * Classifies a `chargeItems` transaction's `TransactionCanceledException`, so a caller can tell a repeat charge of the same task (already applied; treat
+ * as success) apart from a genuine limit refusal. Reads `error.CancellationReasons` by position ([organization, member, marker]).
  *
- * The repeat check comes first and wins outright (fix round 2): when a task was already charged,
- * the member item's condition fails regardless of the organization's state, and by the time a
- * caller retries, some other member may well have since pushed the organization item to its own
- * limit too -- both items can report ConditionalCheckFailed at once. Checking the organization
- * first (as fix round 1 did) would then wrongly refuse a task that already holds its slot. So: if
- * the member item failed and a re-read shows the task is already in `tasks`, that is
- * "already_charged", whatever the organization item says. Only once that is ruled out does the
- * organization item's failure mean "organization" full, and the member item's own failure (not a
- * repeat) mean "member" full. Anything else -- a missing CancellationReasons array, or neither item
- * reporting ConditionalCheckFailed -- is an unmodeled failure and is rethrown, not folded into any
- * outcome, so the caller can retry.
+ * The repeat check comes first and wins outright: when a task was already charged, its marker (or, for a task charged before markers, the member's
+ * `tasks` condition) fails regardless of the counters' state, and by the time a caller retries some other member may have pushed the organization to its
+ * limit too. So: a failed marker whose marker a re-read finds, or a failed member item whose task a re-read finds in the old set, is "already_charged",
+ * whatever the organization item says. Only then does the organization item's failure mean "organization" full, and the member item's own failure
+ * "member" full. Anything else (no CancellationReasons, or no charge item failed) is rethrown as the caller's exact error object, never a wrapper:
+ * developer-tasks.ts's chargeFailure tells "not a charge failure" apart from a failed re-read by identity.
  */
 export async function chargeConflict(client: Client, tableName: string, charge: WorkspaceCharge, taskId: string, error: unknown): Promise<ChargeConflict> {
   const reasons = cancellationReasons(error);
-  // Rethrow the caller's exact error object, never a wrapper: developer-tasks.ts's chargeFailure
-  // tells "not a charge failure" apart from a failed re-read by comparing identity.
   if (reasons === undefined) throw error;
-  const memberFailed = reasons[1]?.Code === "ConditionalCheckFailed";
-  if (memberFailed && (await hasTask(client, tableName, charge.member, taskId))) return "already_charged";
-  if (reasons[0]?.Code === "ConditionalCheckFailed") return "organization";
+  const memberFailed = conditionFailed(reasons, 1);
+  if (conditionFailed(reasons, 2) && (await hasMarker(client, tableName, charge, taskId))) return "already_charged";
+  if (memberFailed && (await inOldSet(client, tableName, charge.member, taskId))) return "already_charged";
+  if (conditionFailed(reasons, 0)) return "organization";
   if (memberFailed) return "member";
-  // The same exact error object, for chargeFailure's identity check (see above).
   throw error;
 }
 
 export type ReleaseConflict = "already_released";
 
 /**
- * Classifies a `releaseItems` transaction's `TransactionCanceledException`. The member item's
- * `contains(#tasks, :taskId)` clause no longer holds once a first release has already removed the
- * task, so a repeat release fails there; a consistent re-read confirms the task is genuinely gone
- * before reporting "already_released", rather than folding some other, unmodeled member-condition
- * failure into it. Anything else is rethrown so the caller can retry.
+ * Classifies a `releaseItems` transaction's `TransactionCanceledException` for the form it was built in. A repeat release fails at the marker (marker
+ * form) or at the member's `contains` (set form). A consistent re-read must then find the task in neither form before this says "already_released":
+ * a task still charged (or one the migration moved from the set to a marker between the form read and the release) is the caller's error to retry,
+ * rethrown as the same object. Anything else is rethrown too.
  */
-export async function releaseConflict(client: Client, tableName: string, charge: WorkspaceCharge, taskId: string, error: unknown): Promise<ReleaseConflict> {
+export async function releaseConflict(client: Client, tableName: string, charge: WorkspaceCharge, taskId: string, error: unknown, form: ChargeForm): Promise<ReleaseConflict> {
   const reasons = cancellationReasons(error);
-  if (reasons === undefined || reasons[1]?.Code !== "ConditionalCheckFailed") throw error;
-  if (await hasTask(client, tableName, charge.member, taskId)) throw error;
+  if (reasons === undefined || !conditionFailed(reasons, form === "marker" ? 2 : 1)) throw error;
+  if (await isTaskCharged(client, tableName, charge, taskId)) throw error;
   return "already_released";
 }
