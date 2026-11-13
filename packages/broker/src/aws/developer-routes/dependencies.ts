@@ -134,7 +134,8 @@ export function setupDraftDepsOf(deps: DeveloperRouteDependencies): SetupDraftDe
     routedSeeds: (orgId, project, taskId) => routedSeedsOf(deps, orgId, project, taskId),
     // Owner decision 11 (one apply path): a draft's commands go to the test environment as its proposal, as the setup run's "Use this setup" does (`setup-agent.ts` confirmDepsOf).
     testEnvironment: {
-      on: testEnvironmentEnabled(routeEnvOf(deps)),
+      // Read when asked, not when the dependencies are built: during a gate outage (TE-A1) building them must not fail a route that never asks.
+      get on() { return testEnvironmentEnabled(routeEnvOf(deps)); },
       merge: async (who, project, environment) => mergeDraftWithApproved(environment, (await readApprovedTestEnvironment(testEnvStoreOf(deps), who.orgId, project))?.environment),
       // As the setup run's "Use this setup" does (`confirmSetupAgent`): the proposal, then the marker the wizard reads (after a person's edit) to show it as Rovara's. A newer press replaces an older edit pointer, so the
       // wizard shows the proposal just made.

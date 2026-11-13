@@ -2,6 +2,7 @@
 // words as for a project that is not there. What the reader may do (`you`) comes from their role; the month's money (`budget`) is read, and is in the answer, only for a role that may see the
 // project's spend (a maintainer), so no one else learns what the project spends or merges; the agents are the roster's, as the reader may see them; and `running` is the Live wall's `team`
 // filter for this project, so each session in it passed the reader's own access check. Reads are bounded: one page of tiles, the roster capped, and four single-item reads.
+import { isGateUnavailable } from "../org/feature-rollout.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXNameSchema, LIVE_PAGE_MAX, PROJECT_OVERVIEW_AGENTS_MAX, PROJECT_ROSTER_LIST_MAX, ProjectOverviewSchema, agentXError, projectAllows, projectMetaKey, projectMonthStatsKey, type ProjectOverview, type ProjectRole } from "@rovara-code/contracts";
 import { OrgRoleSchema, orgMemberKey, scopeKey, spendCounterKey, type BudgetScope } from "@agentx/cloud-contracts";
@@ -80,11 +81,17 @@ async function budgetOf(deps: ProjectOverviewDependencies, orgId: ProjectOvervie
 }
 type ProjectOverviewKeyOrg = SessionReadCaller["orgId"];
 
-/** KF-1: how many tests are marked as already failing, only while `vx` is on. A list that cannot be read leaves the block out and never fails the page. */
+/** KF-1: how many tests are marked as already failing, only while `vx` is on. A list that cannot be read, or a company gate that could not be read (TE-A1, RUNTIME_UNAVAILABLE), leaves the block out and never fails the page. */
 async function knownFailingOf(deps: ProjectOverviewDependencies, orgId: ProjectOverviewKeyOrg, project: string): Promise<ProjectOverview["knownFailing"]> {
-  if (!verifyResultsEnabled(deps.env)) return undefined;
-  const row = await readKnownFailingRow({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, project);
-  return row === undefined ? undefined : { count: row.marks.length };
+  try {
+    if (!verifyResultsEnabled(deps.env)) return undefined;
+    const row = await readKnownFailingRow({ documentClient: deps.documentClient, tableName: deps.tableName }, orgId, project);
+    return row === undefined ? undefined : { count: row.marks.length };
+  } catch (error) {
+    // Only the gate's own failure is the promise made above; any other fault is not swallowed here.
+    if (isGateUnavailable(error)) return undefined;
+    throw error;
+  }
 }
 
 /** v1.2 learning loop: the maintainer's block. A learning problem leaves the block out and never fails the page; the error's name only is logged. */

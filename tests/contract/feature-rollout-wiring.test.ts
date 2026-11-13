@@ -5,7 +5,7 @@ import { WorkflowSnapshotSchema, createWorkflowSnapshot, orgFeatureRolloutKey, t
 import type { OrgId } from "@rovara-code/contracts";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { keepEvidenceAfterChecks } from "../../packages/broker/src/aws/broker/evidence-wiring.js";
-import { createGateReader, isGateUnavailable } from "../../packages/broker/src/org/feature-rollout.js";
+import { createGateReader, isGateUnavailable, unavailableEnv } from "../../packages/broker/src/org/feature-rollout.js";
 import { fixSetupDependencies } from "../../packages/broker/src/aws/broker/fix-setup-wiring.js";
 import { gatedEvidencePort } from "../../packages/broker/src/aws/developer-tasks/evidence-gate.js";
 import { evidenceRiskOfTask } from "../../packages/broker/src/aws/developer-tasks/evidence-risk-input.js";
@@ -14,6 +14,7 @@ import { loadTestingView, type TestingViewDeps } from "../../packages/broker/src
 import type { DeveloperTaskRecord } from "../../packages/broker/src/developer/task-records.js";
 import { PROOF_WORDS } from "../../packages/broker/src/org/settings-proof.js";
 import { MAYA, OMAR } from "../support/developer-task-broker.js";
+import { knownFailingKey } from "../../packages/broker/src/test-env/known-failing.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { setupWizardBench } from "../support/setup-wizard-testenv.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
@@ -96,6 +97,22 @@ describe("the evidence port", () => {
     const gated = gatedEvidencePort(base().port, { documentClient: { send: async () => { throw new Error("down"); } }, tableName: "state", now: () => 0 }, INSTALL_ON);
     expect(await gated.pack(key(ORG_A), "d")).toBeUndefined();
     log.mockRestore();
+  });
+
+  it("a proof gate that could not be read with a security check expected is 'evidence unavailable' (risk at least medium), never undefined and never low; a gate that is really off is still no signal (M1)", async () => {
+    const s = store([[ORG_A, { proofEvidence: true }], [ORG_B, { proofEvidence: false }]]);
+    const empty: EvidencePort = { ...base().port, pack: async () => undefined };
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const throttled = { documentClient: { send: async () => { throw Object.assign(new Error("throttled"), { name: "ProvisionedThroughputExceededException" }); } }, tableName: "state", now: () => 0 };
+    const down = gatedEvidencePort(empty, throttled, INSTALL_ON);
+    expect(await evidenceRiskOfTask(down, key(ORG_A), "d", ["security"], true)).toEqual({ highNewFindings: 0, evidenceUnavailable: true });
+    // Without a security check nothing is expected of the evidence, so a failed read is no signal, as a missing pack is none.
+    expect(await evidenceRiskOfTask(down, key(ORG_A), "d", [], true)).toBeUndefined();
+    // What is shown (the pack, the lines) stays off on a failed read; only the risk reads it as unavailable.
+    expect(await down.pack(key(ORG_A), "d")).toBeUndefined();
+    log.mockRestore();
+    const real = gatedEvidencePort(empty, s.deps, INSTALL_ON);
+    expect(await evidenceRiskOfTask(real, key(ORG_B), "d", ["security"], true)).toBeUndefined();
   });
 
   it("a company whose gate is off is not marked 'evidence unavailable' (the risk is as with the switch off); one whose gate is on and has no pack is", async () => {
@@ -237,6 +254,32 @@ describe("through the broker's route dispatcher (a company's gate decides what i
     expect(third.status).toBe(503);
     expect(refused(third)).toBe(false);
     expect(t.db.find((item) => item.entityType === "PROJECT")).toHaveLength(revisionBefore);
+  });
+
+  it("the project overview page stays 200 during a gate outage and only leaves its Known-failing block out (M2)", async () => {
+    const t = await setupWizardBench({});
+    process.env.VERIFY_RESULTS_ENABLED = "1";
+    t.db.set({ ...knownFailingKey(TEST_ORG, "web"), entityType: "TEST_ENV_KNOWN_FAILING", orgId: TEST_ORG, project: "web", version: 1, updatedAt: NOW, marks: [{ name: "t::a", checkId: "unit", markedBy: "dev_a", markedAt: NOW, epoch: 1 }] });
+    const overview = () => t.web(OMAR, "GET", "/v1/app/projects/web/overview");
+    const normal = await overview();
+    expect(normal.status).toBe(200);
+    expect(normal.body).toMatchObject({ knownFailing: { count: 1 } });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    failGateReads(t.db);
+    const outage = await overview();
+    log.mockRestore();
+    expect(outage.status).toBe(200);
+    expect(outage.body).not.toHaveProperty("knownFailing");
+    expect(outage.body).toHaveProperty("project");
+  });
+
+  it("the setup draft dependencies are built during a gate outage and only throw when the test-environment switch is read (low 1)", async () => {
+    const { setupDraftDepsOf } = await import("../../packages/broker/src/aws/developer-routes/dependencies.js");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const deps = { documentClient: new FakeDynamoDb(), tableName: "state", now: () => 0, env: unavailableEnv({ TEST_ENVIRONMENT_ENABLED: "1" }) } as never;
+    const built = setupDraftDepsOf(deps);
+    expect(() => built.testEnvironment?.on).toThrow(/settings could not be read/);
+    log.mockRestore();
   });
 
   it("the Preview features route is found for an owner in a browser, and refused to a member and to a token", async () => {
