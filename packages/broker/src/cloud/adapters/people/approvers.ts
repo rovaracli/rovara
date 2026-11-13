@@ -15,7 +15,7 @@ import { APPROVAL_DECISION_KINDS, isWriterOrgRole, type ApprovalDeciderRole, typ
 import { evaluateApprovalPlace, type PlaceDependencies } from "../../../approval-place/evaluate.js";
 import { approversRequired, secondPersonOutcome, type ApprovalEligibility, type ApprovalLevels } from "../../../org/approval-by-risk.js";
 import { AUDITOR_REFUSED } from "../../../org/auditor.js";
-import { BROWSER_STEP_UP_METHOD, CLOUD_APPROVAL_METHODS, CLOUD_REJECT_METHODS, CLOUD_STRONG_METHODS, PLACE_OF_METHOD, isCloudApprovalMethod, type CloudApprovalMethod } from "./methods.js";
+import { BROWSER_STEP_UP_METHOD, CLOUD_APPROVAL_METHODS, CLOUD_REJECT_METHODS, CLOUD_STRONG_METHODS, PLACE_OF_METHOD, STANDING_ROLE_PREFIX, isCloudApprovalMethod, type CloudApprovalMethod } from "./methods.js";
 
 /** The person a proof's token stands for, as the issuer read it live: their id, session, sign-in method, company and role NOW, and (for a Slack press) the Slack user. */
 export interface CloudDecider {
@@ -137,7 +137,7 @@ export function createCloudApprovers(deps: CloudApproversDependencies): Approver
       }
 
       used.add(proofKey);
-      const approver: Principal = { companyId: decider.orgId, personId: decider.developerId, displayName: decider.name, roles: [decider.orgRole], provider: decider.amr, methods: [decider.amr] };
+      const approver: Principal = { companyId: decider.orgId, personId: decider.developerId, displayName: decider.name, roles: [decider.orgRole, `${STANDING_ROLE_PREFIX}${role}`], provider: decider.amr, methods: [decider.amr] };
       return { approved: true, approver, method: proof.method, proofId: proof.proofId };
     },
   };

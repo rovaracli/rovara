@@ -75,12 +75,15 @@ describe("S0-Q2: the plan's self-check, automatic fixing, lessons, live steer, l
     expect(mapCloudSettings(settingsOf({}, undefined)).flowOptions.liveSteer).toBe(false);
   });
 
-  it("ordered work plans start on a version 1.0.0 task whatever the Understand setting (switch blocker G3)", () => {
-    expect(mapCloudSettings(settingsOf({}, undefined)).flowOptions).toMatchObject({ understandFirst: false, workflowDependenciesEnabled: true });
-    expect(mapCloudSettings(settingsOf({ ROVARA_CODE_V2_FOR_NEW_ORGS: "true" }, ["plan_critic"])).flowOptions.workflowDependenciesEnabled).toBe(true);
+  it("ordered work plans start on a 1.0.0 task only where Cloud's own rule allows it: the wd switch, or a Rovara Code v2 install (rv)", () => {
+    const parts = (env: Record<string, string>) => mapCloudSettings(settingsOf(env, undefined)).flowOptions.workflowDependenciesEnabled;
+    expect(parts({})).toBe(false);
+    expect(parts({ AGENTX_WORKFLOW_DEPENDENCIES_ENABLED: "true" })).toBe(true);
+    expect(parts({ AGENTX_WORKFLOW_DEPENDENCIES_ENABLED: "1" })).toBe(false);
+    expect(parts({ AGENTX_ROVARA_CODE_V2_ENABLED: "true" })).toBe(true);
   });
 
-  it.each([[undefined, true], ["", true], ["true", true], ["0", true], ["false", false], ["FALSE", true]] as const)("the lighter flow (178), LIGHTER_FLOW_ENABLED=%j: on by default, off only for exactly false (on: %s)", (value, on) => {
+  it.each([[undefined, true], ["", true], ["true", true], ["0", true], ["false", false], ["FALSE", false], [" False ", false]] as const)("the lighter flow (178), LIGHTER_FLOW_ENABLED=%j: on by default, off only for the word false in any case, trimmed (on: %s)", (value, on) => {
     const env: Record<string, string> = value === undefined ? {} : { LIGHTER_FLOW_ENABLED: value };
     const mapped = mapCloudSettings(settingsOf(env, undefined));
     expect(mapped.lighterFlow).toBe(on);

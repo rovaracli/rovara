@@ -11,6 +11,7 @@ import {
   CORE_JOBS, cloudActorFor, cloudAdapter, cloudCoreRuntime, cloudSettingsFromEnvironment, createCloudApp, scheduleEventOf, type CloudApp, type CloudCoreWiring,
 } from "../../packages/broker/src/cloud/app/index.js";
 import { bindChannelSpace, decisionRefusalWords, postApprovalCard } from "@rovara-code/broker/core/channel";
+import { STANDING_ROLE_PREFIX } from "../../packages/broker/src/cloud/adapters/people/methods.js";
 import { CloudSlackChannel } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
 import { createCloudAdmission } from "../../packages/broker/src/cloud-adapters/money/index.js";
 import { CORE_ADMISSION_ACTIONS } from "../../packages/broker/src/cloud/app/cloud-modules.js";
@@ -31,7 +32,7 @@ async function registerProject(world: FakeWorld): Promise<void> {
 
 interface Harness { world: FakeWorld; app: CloudApp; ended: Array<{ task: Record<string, unknown>; outcome: string }>; logs: Array<Record<string, unknown>> }
 
-function harness(options: { slack?: boolean; wiring?: Partial<CloudCoreWiring>; slackFetch?: typeof fetch; approvers?: Approvers } = {}): Harness {
+function harness(options: { slack?: boolean; wiring?: Partial<CloudCoreWiring>; slackFetch?: typeof fetch; approvers?: Approvers; settingsEnv?: Record<string, string> } = {}): Harness {
   const world = createFakeWorld();
   // The real Cloud admission adapter (not the recording wrapper), so the hold sweep is the adapter's own.
   const admission = cloudAdapter({
@@ -44,7 +45,7 @@ function harness(options: { slack?: boolean; wiring?: Partial<CloudCoreWiring>; 
   const ended: Harness["ended"] = [];
   const logs: Harness["logs"] = [];
   const wiring: CloudCoreWiring = {
-    settings: () => cloudSettingsFromEnvironment({}, { recipeStepKinds: undefined, connectorWritesBehindApproval: false }),
+    settings: () => cloudSettingsFromEnvironment(options.settingsEnv ?? {}, { recipeStepKinds: undefined, connectorWritesBehindApproval: false }),
     callbackSigningKey: Buffer.alloc(32, 7), repositoryGrantKey: Buffer.alloc(32, 5), repositoryCredential: async () => ({ token: "unused" }), access: createOwnerTaskAccess(),
     now: () => new Date(world.clock.now), log: (entry) => logs.push(entry),
     people: soleOwnerPeople, codeSettings: fixedCodeSettings(),
@@ -111,9 +112,10 @@ describe("S3 item 5: the end of a core task by a merge reaches Cloud's end handl
     expect(ended.map((entry) => [entry.outcome, entry.task["taskId"], entry.task["orgId"]])).toEqual([["merged", taskId, FAKE_COMPANY]]);
   });
 
-  it("the flow starts ordered work plans on a 1.0.0 task: the root's settings mapping reaches it (G3)", async () => {
-    const { app } = harness();
-    expect((await app.runtimeFor(FAKE_COMPANY)).flow.deps.workflowDependenciesEnabled).toBe(true);
+  it("the flow starts ordered work plans on a 1.0.0 task only where Cloud's switch says so: the root's settings mapping reaches it (G3)", async () => {
+    expect((await harness().app.runtimeFor(FAKE_COMPANY)).flow.deps.workflowDependenciesEnabled).toBe(false);
+    const on = harness({ settingsEnv: { AGENTX_WORKFLOW_DEPENDENCIES_ENABLED: "true" } });
+    expect((await on.app.runtimeFor(FAKE_COMPANY)).flow.deps.workflowDependenciesEnabled).toBe(true);
   });
 
   it("the flow tells the same handler of a close (taskEnded is the root's, not unset)", async () => {
@@ -160,9 +162,22 @@ describe("S3 item 4: Slack inbound goes through the root into the core", () => {
     expect(posts.join("\n")).toContain("Link your account in Rovara first.");
   });
 
+  it("the sink is pinned to the runtime's own company: a Slack team bound to another company starts nothing here, and no card goes to it", async () => {
+    const h = harness({ slack: true, wiring: { slack: { ...slackWiring(true).slack!, orgOfTeam: async () => "org_s3other000000000000z" } } });
+    await registerProject(h.world);
+    await bindChannelSpace({ store: h.world.store, orgId: FAKE_COMPANY, now: () => h.world.clock.now }, { channel: "slack", tenant: TENANT, space: SPACE }, "payments");
+    // The channel is bound under the other company too, so only the pin stands between the message and a task.
+    await bindChannelSpace({ store: h.world.store, orgId: "org_s3other000000000000z", now: () => h.world.clock.now }, { channel: "slack", tenant: TENANT, space: SPACE }, "payments");
+    const runtime = await h.app.runtimeFor(FAKE_COMPANY);
+    await runtime.inbound.slack!(request("quick: Add a greet function", "EvPin"));
+    expect((await runtime.flow.list({ principal: localOwnerPrincipal({ companyId: FAKE_COMPANY }), client: "test" })).tasks).toHaveLength(0);
+  });
+
   it("with no Slack adapter registered, or no Slack wiring, there is no inbound", async () => {
-    expect((await harness({ wiring: slackWiring(true) }).app.runtimeFor(FAKE_COMPANY)).inbound).toEqual({});
-    expect((await harness({ slack: true }).app.runtimeFor(FAKE_COMPANY)).inbound).toEqual({});
+    for (const none of [await harness({ wiring: slackWiring(true) }).app.runtimeFor(FAKE_COMPANY), await harness({ slack: true }).app.runtimeFor(FAKE_COMPANY)]) {
+      expect(none.inbound.slack).toBeUndefined();
+      expect(none.inbound.slackSink).toBeUndefined();
+    }
   });
 
   const press = (requestId: string, digest: string, decision: "APPROVE" | "REJECT") => ({
@@ -199,12 +214,29 @@ describe("S3 item 4: Slack inbound goes through the root into the core", () => {
   });
 });
 
-describe("S3: who decides as the task's owner is Cloud's rule", () => {
+describe("S3: who decides as the task's owner is Cloud's rule (cloudActorFor)", () => {
   const OTHER = "b".repeat(64);
-  it("the task's owner decides as the owner, anyone else as a project approver, and an id the engine does not know is nobody", () => {
-    expect(cloudActorFor({ personId: MAYA }, { ownerId: MAYA })).toEqual({ actorId: MAYA, role: "TASK_OWNER" });
-    expect(cloudActorFor({ personId: OTHER }, { ownerId: MAYA })).toEqual({ actorId: OTHER, role: "PROJECT_ADMIN" });
-    expect(cloudActorFor({ personId: "not-a-developer-id" }, { ownerId: MAYA })).toBeUndefined();
+  const standing = (role: string, personId = OTHER) => ({ personId, roles: ["admin", `${STANDING_ROLE_PREFIX}${role}`] });
+  const quick = { ownerId: "o".repeat(64), path: "QUICK" as const };
+  const full = (reviewPhase: "REQUIREMENTS" | "DESIGN" | "IMPLEMENTATION_PLAN") => ({ ownerId: "o".repeat(64), path: "FULL" as const, reviewPhase });
+
+  it("an owner and a co-owner decide as TASK_OWNER under the owner's id; a maintainer as PROJECT_ADMIN under their own", () => {
+    expect(cloudActorFor(standing("owner"), quick)).toEqual({ actorId: quick.ownerId, role: "TASK_OWNER" });
+    expect(cloudActorFor(standing("co-owner"), quick)).toEqual({ actorId: quick.ownerId, role: "TASK_OWNER" });
+    expect(cloudActorFor(standing("maintainer"), quick)).toEqual({ actorId: OTHER, role: "PROJECT_ADMIN" });
+  });
+
+  it("a maintainer decides the coding plan only, never the requirements or the design of a Full task; an owner decides each", () => {
+    expect(cloudActorFor(standing("maintainer"), full("IMPLEMENTATION_PLAN"))).toEqual({ actorId: OTHER, role: "PROJECT_ADMIN" });
+    expect(cloudActorFor(standing("maintainer"), full("REQUIREMENTS"))).toBeUndefined();
+    expect(cloudActorFor(standing("maintainer"), full("DESIGN"))).toBeUndefined();
+    expect(cloudActorFor(standing("owner"), full("DESIGN"))).toEqual({ actorId: quick.ownerId, role: "TASK_OWNER" });
+  });
+
+  it("every other standing, an approver with none named, a company role alone, and an id the engine does not know are nobody", () => {
+    for (const role of ["contributor", "collaborator", "viewer", "none", "something-new"]) expect(cloudActorFor(standing(role), quick), role).toBeUndefined();
+    expect(cloudActorFor({ personId: OTHER, roles: ["owner"] }, quick)).toBeUndefined();
+    expect(cloudActorFor({ personId: "not-a-developer-id", roles: [`${STANDING_ROLE_PREFIX}owner`] }, quick)).toBeUndefined();
   });
 });
 

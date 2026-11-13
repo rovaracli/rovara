@@ -28,6 +28,8 @@ export interface CloudCompanySettings {
    * (the journey install): no plan check step is known, so a task starts on the plan step.
    */
   recipeStepKinds: readonly string[] | undefined;
+  /** `wd` (AGENTX_WORKFLOW_DEPENDENCIES_ENABLED): exactly "true". Cloud lets a version 1 task start its approved ordered plan only with this on (rovara-code/parallel-parts.ts `workflowDependenciesAllowed`). */
+  workflowDependencies: boolean;
   /** `pc` (PLAN_SELF_CHECK_ENABLED): on unless exactly "false". */
   planSelfCheck: boolean;
   /** `fx` (AUTOFIX_ENABLED) and AUTOFIX_CAP_USD. `capUsd` NaN: Cloud's policy asks instead of acting; the core reads it the same way. */
@@ -39,8 +41,8 @@ export interface CloudCompanySettings {
   /** The company's open-workspace limits (its WORKSPACE_LIMITS setting, else the stack parameters). Undefined: the core's own defaults stand. */
   workspaceLimits?: { member: number; organization: number } | undefined;
   /**
-   * The lighter flow (decisions 178 and 179): a small change skips the planning steps and gets one quick check. ON by default, for everyone; `LIGHTER_FLOW_ENABLED` is the switch back, and only the exact word
-   * "false" turns it off (the same rule as `pc`). The core has no option of this name yet: the flow-P lanes (P1, P2) name it, and until a vendor re-pin carries it `mapCloudSettings` answers it
+   * The lighter flow (decisions 178 and 179): a small change skips the planning steps and gets one quick check. ON by default, for everyone; `LIGHTER_FLOW_ENABLED` is the switch back, and only the word
+   * "false" (any case, trimmed) turns it off (the same rule as `fx`). The core has no option of this name yet: the flow-P lanes (P1, P2) name it, and until a vendor re-pin carries it `mapCloudSettings` answers it
    * in `lighterFlow` and does not pass it to the flow.
    */
   lighterFlow: boolean;
@@ -86,6 +88,7 @@ export function cloudSettingsFromEnvironment(
   const cap = env["AUTOFIX_CAP_USD"] === undefined ? AUTO_FIX_DEFAULT_CAP_USD : Number(env["AUTOFIX_CAP_USD"]);
   return {
     rovaraCodeV2Live: rovaraCodeV2LiveFromEnvironment(env),
+    workflowDependencies: env["AGENTX_WORKFLOW_DEPENDENCIES_ENABLED"] === "true",
     recipeStepKinds: company.recipeStepKinds,
     // aws/broker.ts:639: only the exact word "false" turns the plan self-check off.
     planSelfCheck: env["PLAN_SELF_CHECK_ENABLED"] !== "false",
@@ -93,7 +96,8 @@ export function cloudSettingsFromEnvironment(
     autofix: { enabled: env["AUTOFIX_ENABLED"]?.trim().toLowerCase() !== "false", capUsd: Number.isFinite(cap) && cap >= 0 ? cap : Number.NaN, roundEstimateUsd: AUTOFIX_ROUND_ESTIMATE_USD },
     lessons: learnedLessonsEnabled(env),
     liveSteer: env["LIVE_STEER_ENABLED"] === "1",
-    lighterFlow: env["LIGHTER_FLOW_ENABLED"] !== "false",
+    // Case-insensitive and trimmed, as `fx` (AUTOFIX_ENABLED) is read: an operator's " False " is off.
+    lighterFlow: env["LIGHTER_FLOW_ENABLED"]?.trim().toLowerCase() !== "false",
     ...(company.workspaceLimits === undefined ? {} : { workspaceLimits: company.workspaceLimits }),
     connectorWritesBehindApproval: company.connectorWritesBehindApproval,
   };
@@ -112,9 +116,9 @@ export function mapCloudSettings(settings: CloudCompanySettings): CoreSettings {
       // The core's default is ON (core/build-step/autofix.ts reads `enabled !== false`); Cloud's is its own switch, so it is always stated.
       autofix: { enabled: settings.autofix.enabled, capUsd: settings.autofix.capUsd, roundEstimateUsd: settings.autofix.roundEstimateUsd },
       liveSteer: settings.liveSteer,
-      // Switch blocker G3 (0517-REPIN-PARTS-NEED-V2): Cloud's Quick/Full journey starts with Understand OFF (a 1.0.0 task), and the core starts an ordered work plan (parts) on a 1.0.0 task only where the
-      // install says so. Always on: an ordered plan is saved and started, as Cloud's own path does, whatever the Understand setting.
-      workflowDependenciesEnabled: true,
+      // Switch blocker G3 (0517-REPIN-PARTS-NEED-V2): with Understand off a task is version 1.0.0, and the core starts an ordered work plan (parts) on a 1.0.0 task only where the install says so.
+      // Cloud's own rule is `workflowDependenciesAllowed`: the `wd` switch, or a Rovara Code v2 task (`rv` live). The core gets the same: on only where either is on, never always.
+      workflowDependenciesEnabled: settings.workflowDependencies || settings.rovaraCodeV2Live,
       ...(settings.workspaceLimits === undefined ? {} : { limits: { member: settings.workspaceLimits.member, organization: settings.workspaceLimits.organization } }),
     },
     lighterFlow: settings.lighterFlow,

@@ -31,7 +31,7 @@ const realModules = (overrides: Partial<CloudModuleDeps> = {}) => {
     tableName: "state",
     queue: { settings: { region: "us-west-2", queues: { "task-dispatch": { url: "https://sqs.us-west-2.amazonaws.com/123456789012/task-dispatch" } } }, client: sqs.client as never },
     workerMachines: {
-      companyId: COMPANY, sessions: {}, companyOfWorkspace: async () => COMPANY, binding: async () => undefined, stopInstance: async () => ({ gone: true }),
+      companyId: COMPANY, sessions: { get: async () => undefined, ensureSession: async () => undefined, deleteSession: async () => undefined, claimStop: async () => undefined, markStopped: async () => undefined }, companyOfWorkspace: async () => COMPANY, binding: async () => undefined, stopInstance: async () => ({ gone: true }),
       sign: async () => new Uint8Array(), post: async () => ({ status: 200, body: "" }), ping: async () => undefined,
     },
     checkRunners: { githubActions: { getPullRequestStatus: async () => { throw new Error("unused"); }, getJobLogTail: async () => undefined } },
@@ -40,12 +40,38 @@ const realModules = (overrides: Partial<CloudModuleDeps> = {}) => {
   return { sqs, deps, modules: cloudAdapterModules(deps).filter((module) => (OWED as readonly string[]).includes(module.point)) };
 };
 
+describe("S3 item 7: a hollow input is refused at create, never taken for wired", () => {
+  const create = async (overrides: Partial<CloudModuleDeps>, point: string) => {
+    const world = createFakeWorld();
+    const module = realModules(overrides).modules.find((entry) => entry.point === point)!;
+    return await module.create(world.context(), { get: () => undefined, require: () => { throw new Error("none"); }, names: () => [] } as never);
+  };
+
+  it("a queue map without the core's dispatch queue", async () => {
+    await expect(create({ queue: { settings: { region: "us-west-2", queues: { other: { url: "https://sqs.us-west-2.amazonaws.com/123456789012/other" } } } } }, "queue")).rejects.toThrow(/queues\.task-dispatch/);
+    await expect(create({ queue: { settings: { region: "us-west-2" } } }, "queue")).rejects.toThrow(/hollow/);
+  });
+
+  it("machines with nothing behind them", async () => {
+    await expect(create({ workerMachines: {} as never }, "worker-machines")).rejects.toThrow(/hollow/);
+    const real = realModules().deps.workerMachines!;
+    await expect(create({ workerMachines: { ...real, sign: undefined } as never }, "worker-machines")).rejects.toThrow(/sign/);
+    await expect(create({ workerMachines: { ...real, sessions: {} } as never }, "worker-machines")).rejects.toThrow(/workerMachines\.sessions/);
+    await expect(create({ workerMachines: { ...real, companyId: "" } }, "worker-machines")).rejects.toThrow(/companyId/);
+  });
+
+  it("check runners with no client", async () => {
+    await expect(create({ checkRunners: { githubActions: {} as never } }, "check-runner")).rejects.toThrow(/getPullRequestStatus/);
+    await expect(create({ checkRunners: { codeBuild: {} as never } }, "check-runner")).rejects.toThrow(/status/);
+  });
+});
+
 describe("S3 item 7: the owed registry points are modules", () => {
   it("the audit sink is always registered; the other three only when the deployment gives their clients", () => {
     const bare = cloudAdapterModules({ tableName: "state" } as unknown as CloudModuleDeps).filter((module) => (OWED as readonly string[]).includes(module.point));
     expect(bare.map((module) => `${module.point}/${module.name}`)).toEqual(["audit-sink/cloud"]);
     expect(realModules().modules.map((module) => `${module.point}/${module.name}`).sort()).toEqual(["audit-sink/cloud", "check-runner/github-actions", "queue/sqs", "worker-machines/ec2"]);
-    expect(realModules({ checkRunners: { codeBuild: {} as never } }).modules.map((module) => module.name)).toContain("codebuild");
+    expect(realModules({ checkRunners: { codeBuild: { status: async () => undefined } as never } }).modules.map((module) => module.name)).toContain("codebuild");
   });
 
   it("owedPoints names exactly the points the module list leaves empty", () => {

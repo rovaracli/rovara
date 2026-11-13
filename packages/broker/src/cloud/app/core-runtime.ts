@@ -7,7 +7,7 @@
 // `app.ts`), which is not exported and carries laptop rules (`fixedCodeSettings`, `soleOwnerPeople`). Cloud needs the same joins with its own company
 // settings and people. Until Code exports a service layer for them (open question S0-Q1 in the lane report), each is a `CoreService` the deployment
 // supplies; `serviceGaps` names the ones missing so the switch cannot be turned on for an area whose service is not wired.
-import { RepositoryGrantService } from "@rovara-code/broker";
+import { RepositoryGrantService, type createDecisionService } from "@rovara-code/broker";
 import { createStoreProjectSource, createTaskFlowFromRegistry, type RegistryTaskFlowOptions, type StartExtras, type StartExtrasInput, type TaskAccess, type TaskFlow } from "@rovara-code/broker/core/task-flow";
 import type { AdapterRegistry, ChannelInboundSink, OrgId, SlackRequestMessage } from "@rovara-code/contracts";
 import { stampForNewTask, stampItem } from "./engine-stamp.js";
@@ -36,6 +36,8 @@ export interface CoreInbound {
   slack?: (message: SlackRequestMessage) => Promise<void>;
   /** The Slack channel sink itself (a message, and a card's decision pressed in Slack); `slack` is its message intake. */
   slackSink?: ChannelInboundSink;
+  /** The decision gate the surfaces call (Cloud's approvers adapter under Code's gate), for the web decide routes and tests. */
+  gate?: ReturnType<typeof createDecisionService>["gate"];
 }
 
 export interface CoreRuntime {

@@ -12,7 +12,7 @@
 import { createHash } from "node:crypto";
 import { recordTaskThread, type ChannelWork } from "@rovara-code/broker/core/channel";
 import { taskSessionId } from "@rovara-code/broker/core/sessions";
-import type { ChannelInboundSink, DocumentStore, OrgId, Principal, SlackRequestMessage } from "@rovara-code/contracts";
+import type { ChannelDecision, ChannelInboundSink, DocumentStore, OrgId, Principal, SlackRequestMessage } from "@rovara-code/contracts";
 import { inboundFromQueuedSlackRequest } from "../../plugins/channel/slack-cloud/index.js";
 import { CHAT_SLACK_METHOD } from "../adapters/people/methods.js";
 
@@ -48,6 +48,15 @@ export function requestIdOf(text: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${((parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+/**
+ * The chat-slack credential's token: the press fields A6's issuer reads (`adapters/people/issuers.ts` `SlackPressTokenSchema`, strict JSON), from the fields the channel sink already
+ * verified (the actor's workspace is the conversation's, which `createChannelSink` checks before any work is done). A channel adapter's ActorRef carries no Enterprise Grid ids, so both are
+ * empty and equal, which the issuer's own rule takes as "no enterprise"; an Enterprise Grid install needs them carried (DEFERRED S3-SLACK-ENTERPRISE-GRID).
+ */
+export function slackPressToken(decision: Pick<ChannelDecision, "actor" | "conversation">): string {
+  return JSON.stringify({ userId: decision.actor.userId, userTeamId: decision.actor.tenant, workspaceTeamId: decision.conversation.tenant, enterpriseId: "", userEnterpriseId: "" });
+}
+
 export function createCloudChannelWork(deps: CloudChannelWorkDeps): ChannelWork {
   const log: Log = deps.log ?? (() => undefined);
   return {
@@ -66,7 +75,7 @@ export function createCloudChannelWork(deps: CloudChannelWorkDeps): ChannelWork 
       if (outcome === undefined || (await deps.principalOf(orgId, personId)) === undefined) return { status: "refused" as const, reason: "invalid" };
       const result = await deps.gate.decide({
         companyId: orgId, kind: card.subject.type, subjectId: card.subject.id, requestId: card.requestId, outcome, seen: { revision: card.revision, artifactDigest: card.artifactDigest },
-        credentials: [{ method: CHAT_SLACK_METHOD, token: decision.eventId, claimedAccount: { provider: decision.actor.channel, tenant: decision.actor.tenant, accountId: decision.actor.userId } }], ...(decision.reason === undefined ? {} : { reason: decision.reason }),
+        credentials: [{ method: CHAT_SLACK_METHOD, token: slackPressToken(decision), claimedAccount: { provider: decision.actor.channel, tenant: decision.actor.tenant, accountId: decision.actor.userId } }], ...(decision.reason === undefined ? {} : { reason: decision.reason }),
       });
       return result.status === "refused" ? { status: "refused" as const, reason: (result as { reason: string }).reason } : { status: "decided" as const };
     },

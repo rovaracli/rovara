@@ -20,6 +20,7 @@ import type { CodeSettingsReader, MergePeople } from "@rovara-code/broker/core/m
 import { ticketMomentsOnChange } from "@rovara-code/broker/core/ticket-updates";
 import type { RegistryTaskFlowOptions, TaskFlow } from "@rovara-code/broker/core/task-flow";
 import type { AdapterRegistry, Admission, OrgId, Principal, WorkflowSnapshot } from "@rovara-code/contracts";
+import { STANDING_ROLE_PREFIX } from "../adapters/people/methods.js";
 import { createCloudSlackSink, type CloudSlackChannel } from "../../plugins/channel/slack-cloud/index.js";
 import { coreTaskEndWiring } from "./task-end.js";
 import { cloudAutomationSwitch, stopAutomationsWhenOff, type AutomationStopDeps } from "./automation.js";
@@ -33,14 +34,24 @@ import type { CloudAppOptions } from "./app.js";
 /** A developer id as Cloud keeps it: 64 lower-case hex. The core's workflow engine knows a person by nothing else. */
 const DEVELOPER_ID = /^[a-f0-9]{64}$/u;
 
+/** Whether the document waiting now is a coding plan (not the requirements or the design of a Full task): `currentDocumentType` of the core's workflow subject. */
+const codingPlanWaiting = (workflow: Pick<WorkflowSnapshot, "path" | "reviewPhase">): boolean => workflow.path === "QUICK" || workflow.reviewPhase === "IMPLEMENTATION_PLAN";
+
 /**
- * Who decides as the task's owner (the decision service's `workflowSubject.actorFor`). Code's default knows only its one local owner, so every Cloud approver would read as a project approver.
- * Cloud's rule: the person who owns the task decides as the owner, anyone else as a project approver. Whether a person may decide AT ALL (a member, a writer, a maintainer or owner of this task,
- * the place and the risk) is the approvers adapter's live check (A6 `deciderRole`, `evaluateApprovalPlace`), which runs before this mapping; this only names the role the engine records.
+ * Who decides as the task's owner (the decision service's `workflowSubject.actorFor`). Code's default knows only its one local owner. Cloud's rule reads the decider's LIVE standing, which the
+ * approvers adapter (A6) read and checked before this mapping and put on the verified approver (`standing:<role>`, `STANDING_ROLE_PREFIX`):
+ *   - the task's owner, and a co-owner, decide as TASK_OWNER, recorded under the owner's id (as v2 records a co-owner's decision: the engine knows one owner);
+ *   - a project maintainer decides as PROJECT_ADMIN, and only the coding plan: never the requirements or the design of a Full task;
+ *   - anyone else, or an approver whose standing is not named, is nobody (fail closed).
+ * Still owed (DEFERRED S3-MAINTAINER-SEAT-LIMITS, a switch-on blocker): a maintainer may not close as answered, skip, or acknowledge a run limit (v2's seat limits), which need the decision's
+ * details and the approver together; the gate gives `checkDecision` the attempt but not the approver.
  */
-export function cloudActorFor(approver: Pick<Principal, "personId">, workflow: Pick<WorkflowSnapshot, "ownerId">): { actorId: string; role: "TASK_OWNER" | "PROJECT_ADMIN" } | undefined {
+export function cloudActorFor(approver: Pick<Principal, "personId" | "roles">, workflow: Pick<WorkflowSnapshot, "ownerId" | "path" | "reviewPhase">): { actorId: string; role: "TASK_OWNER" | "PROJECT_ADMIN" } | undefined {
   if (!DEVELOPER_ID.test(approver.personId)) return undefined;
-  return approver.personId === workflow.ownerId ? { actorId: workflow.ownerId, role: "TASK_OWNER" } : { actorId: approver.personId, role: "PROJECT_ADMIN" };
+  const standing = approver.roles.find((role) => role.startsWith(STANDING_ROLE_PREFIX))?.slice(STANDING_ROLE_PREFIX.length);
+  if (standing === "owner" || standing === "co-owner") return { actorId: workflow.ownerId, role: "TASK_OWNER" };
+  if (standing === "maintainer" && codingPlanWaiting(workflow)) return { actorId: approver.personId, role: "PROJECT_ADMIN" };
+  return undefined;
 }
 
 /** Cloud's Slack, for the channel sink: the company of a team, the person behind a Slack account, the person as the core knows them and the words that finish linking. */
@@ -76,7 +87,7 @@ export interface CloudCoreWiring {
   sessionFacts: SessionServiceOptions["facts"];
   /** Cloud's words and rules for the notice a person gets (the footer, the page link, who may be told, their address). */
   notices?: Pick<NoticeServiceOptions, "footer" | "link" | "access" | "address" | "urgent" | "emailLinks">;
-  /** The chat adapters' rules (owner decision 131): which company a tenant is, and whether the person is served now. Used for the thread notices. */
+  /** The chat adapters' rules (owner decision 131): which company a tenant is, and whether the person is served now. Used for the thread notices. The runtime pins both to its own company. */
   channels?: { companyOf?: ChannelCompanyOf; isMember?: ChannelMemberRule; taskUrl?: (taskId: string) => string | undefined; footer?: string };
   /** Cloud's Slack inbound. Absent: no inbound wiring (Slack keeps going through Cloud's own path). */
   slack?: CloudSlackInbound;
@@ -123,6 +134,8 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
       taskEnded: end.onClose,
     };
 
+    // A chat tenant counts only when it is THIS company's: another company's tenant (or nobody's) is never sent to or served by this runtime (owner decision 131).
+    const pinnedCompanyOf: ChannelCompanyOf | undefined = wiring.channels?.companyOf === undefined ? undefined : async (where) => { const org = await wiring.channels!.companyOf!(where); return org === companyId ? org : undefined; };
     // Built once per flow (the services and the inbound share one decision gate).
     let composed: { flow: TaskFlow; services: Partial<Record<CoreServiceName, CoreService>>; inbound: CoreInbound } | undefined;
     const compose = (flow: TaskFlow): { services: Partial<Record<CoreServiceName, CoreService>>; inbound: CoreInbound } => {
@@ -132,7 +145,7 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
         store, registry, now: wiring.now, log: wiring.log, ...(wiring.notices ?? {}),
         doneToldInThread: () => registry.names("channel").length > 0,
         planCarded: planCardPosted({ store, now: nowMs }),
-        ...(wiring.channels?.companyOf === undefined ? {} : { companyOf: wiring.channels.companyOf }),
+        ...(pinnedCompanyOf === undefined ? {} : { companyOf: pinnedCompanyOf }),
       });
       const decisions = createDecisionService({
         flow: flow.deps, blobs: registry.require("object-storage"), store, approvers: registry.require("approvers"), audit: registry.require("audit-sink"), companyId,
@@ -144,7 +157,7 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
         // The plan's approval card by risk (low and medium: Approve in the thread; high: a pointer to the web with a fresh sign-in) and the milestone lines, registered before any milestone is written.
         milestones.register(channelThreadHandler({
           store, registry, now: nowMs, plan: { gate: decisions.gate }, log: (event, fields) => wiring.log({ component: "channel_thread", event, ...fields }),
-          ...(wiring.channels?.companyOf === undefined ? {} : { companyOf: wiring.channels.companyOf }),
+          ...(pinnedCompanyOf === undefined ? {} : { companyOf: pinnedCompanyOf }),
           ...(wiring.channels?.isMember === undefined ? {} : { isMember: wiring.channels.isMember }),
           ...(wiring.channels?.taskUrl === undefined ? {} : { taskUrl: wiring.channels.taskUrl }),
           ...(wiring.channels?.footer === undefined ? {} : { footer: wiring.channels.footer }),
@@ -168,14 +181,14 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
       return composed;
     };
 
-    const inboundOf = (flow: TaskFlow, gate: Parameters<typeof createCloudChannelWork>[0]["gate"]): CoreInbound => {
+    const inboundOf = (flow: TaskFlow, gate: ReturnType<typeof createDecisionService>["gate"]): CoreInbound => {
       const slack = wiring.slack;
       const adapter = registry.get("channel", "slack") as CloudSlackChannel | undefined;
-      if (slack === undefined || adapter === undefined) return {};
+      if (slack === undefined || adapter === undefined) return { gate };
       const start: StartTask = (caller, request) => flow.start(caller, request);
       const work = createCloudChannelWork({ store, now: nowMs, start, gate, principalOf: slack.principalOf, log: wiring.log });
-      const sink = createCloudSlackSink({ adapter, store, now: nowMs, work, orgOfTeam: slack.orgOfTeam, standingOf: slack.standingOf, linkWords: slack.linkWords, log: wiring.log });
-      return { slack: createSlackIntake(sink), slackSink: sink };
+      const sink = createCloudSlackSink({ adapter, store, now: nowMs, work, orgOfTeam: async (teamId) => { const org = await slack.orgOfTeam(teamId); return org === companyId ? org : undefined; }, standingOf: slack.standingOf, linkWords: slack.linkWords, log: wiring.log });
+      return { slack: createSlackIntake(sink), slackSink: sink, gate };
     };
 
     return {

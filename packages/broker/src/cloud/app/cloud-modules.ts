@@ -49,6 +49,18 @@ export const CORE_ADMISSION_ACTIONS: Readonly<Record<string, CloudActionRule>> =
   "learning.call": { kind: "hold", unknownCostUsd: 2 },
 };
 
+const isFunction = (value: unknown): boolean => typeof value === "function";
+const refuseHollow = (what: string, missing: readonly string[]): never => { throw new Error(`the ${what} input is hollow: ${missing.join(", ")} missing`); };
+
+/** A module's input that names the right things, or the module refuses at create (a hollow input must not look wired). */
+function requireFunctions(what: string, value: object | undefined, names: readonly string[]): void {
+  const missing = names.filter((name) => !isFunction((value as Record<string, unknown> | undefined)?.[name]));
+  if (missing.length > 0) refuseHollow(what, missing);
+}
+
+/** The core's dispatch queue (`TaskFlowDeps.dispatchQueue`'s default): a queue map without it would let the registry look complete while no task could be dispatched. */
+export const CORE_DISPATCH_QUEUE = "task-dispatch";
+
 /** The State table's indexes the core reads (the dispatch due index, the workspace index and the outbox's planned index). */
 export function stateTableIndexes(): IndexDefinition[] {
   return TASK_FLOW_INDEXES.map((index) => (index.name === WORKFLOW_DISPATCH_DUE_INDEX.name ? { name: index.name, partitionAttribute: WORKFLOW_DISPATCH_DUE_INDEX.partitionKey, sortAttribute: WORKFLOW_DISPATCH_DUE_INDEX.sortKey } : index));
@@ -95,10 +107,26 @@ export function cloudAdapterModules(deps: CloudModuleDeps): CloudAdapterModule[]
     // A7: Cloud's audit ledger sink over the registry's store (asked at `record`, so the retention-wrapped adapter is the one used). `onInvalid: "skip"`: a malformed core event is dropped
     // with a log line (`audit.record_invalid`), never thrown into a task's transaction (A7 note).
     cloudAdapter({ point: "audit-sink", name: "cloud", lane: "A7", create: (context, registry) => createCloudAuditSink({ store: () => registry.require("storage"), now: () => context.now().getTime(), onInvalid: "skip", log: context.log }) }),
-    ...(deps.queue === undefined ? [] : [cloudAdapter({ point: "queue", name: "sqs", lane: "A2", create: (context) => createSqsQueueServiceFromSettings(deps.queue!.settings, deps.queue!.client, () => context.now().getTime()) })]),
-    ...(deps.workerMachines === undefined ? [] : [cloudAdapter({ point: "worker-machines", name: "ec2", lane: "A4", create: () => new SessionWorkerMachines(deps.workerMachines!) })]),
-    ...(deps.checkRunners?.githubActions === undefined ? [] : [cloudAdapter({ point: "check-runner", name: GITHUB_ACTIONS_RUNNER_KIND, lane: "A9", create: () => ({ kind: GITHUB_ACTIONS_RUNNER_KIND, create: () => githubActionsCheckRunner(deps.checkRunners!.githubActions!) }) })]),
-    ...(deps.checkRunners?.codeBuild === undefined ? [] : [cloudAdapter({ point: "check-runner", name: CODEBUILD_RUNNER_KIND, lane: "A9", create: () => ({ kind: CODEBUILD_RUNNER_KIND, create: ({ allowedRepositories }) => codeBuildCheckRunner({ gateway: deps.checkRunners!.codeBuild!, allowedRepositories }) }) })]),
+    ...(deps.queue === undefined ? [] : [cloudAdapter({ point: "queue", name: "sqs", lane: "A2", create: (context) => {
+      const queues = (deps.queue!.settings as { queues?: Record<string, unknown> }).queues;
+      if (queues === undefined || typeof queues !== "object" || queues[CORE_DISPATCH_QUEUE] === undefined) refuseHollow("queue", [`queues.${CORE_DISPATCH_QUEUE}`]);
+      return createSqsQueueServiceFromSettings(deps.queue!.settings, deps.queue!.client, () => context.now().getTime());
+    } })]),
+    ...(deps.workerMachines === undefined ? [] : [cloudAdapter({ point: "worker-machines", name: "ec2", lane: "A4", create: () => {
+      const given = deps.workerMachines!;
+      requireFunctions("workerMachines", given, ["companyOfWorkspace", "binding", "stopInstance", "sign", "post", "ping"]);
+      requireFunctions("workerMachines.sessions", given.sessions, ["get", "ensureSession", "deleteSession", "claimStop", "markStopped"]);
+      if (typeof given.companyId !== "string" || given.companyId === "") refuseHollow("workerMachines", ["companyId"]);
+      return new SessionWorkerMachines(given);
+    } })]),
+    ...(deps.checkRunners?.githubActions === undefined ? [] : [cloudAdapter({ point: "check-runner", name: GITHUB_ACTIONS_RUNNER_KIND, lane: "A9", create: () => {
+      requireFunctions("checkRunners.githubActions", deps.checkRunners!.githubActions, ["getPullRequestStatus", "getJobLogTail"]);
+      return { kind: GITHUB_ACTIONS_RUNNER_KIND, create: () => githubActionsCheckRunner(deps.checkRunners!.githubActions!) };
+    } })]),
+    ...(deps.checkRunners?.codeBuild === undefined ? [] : [cloudAdapter({ point: "check-runner", name: CODEBUILD_RUNNER_KIND, lane: "A9", create: () => {
+      requireFunctions("checkRunners.codeBuild", deps.checkRunners!.codeBuild, ["status"]);
+      return { kind: CODEBUILD_RUNNER_KIND, create: ({ allowedRepositories }) => codeBuildCheckRunner({ gateway: deps.checkRunners!.codeBuild!, allowedRepositories }) };
+    } })]),
     cloudAdapter({
       point: "admission", name: "cloud", lane: "A5",
       create: (_context, registry) => createCloudAdmission({ store: registry.require("storage"), levels: cloudAdmissionLevels(deps.levels), actions: CORE_ADMISSION_ACTIONS, words: cloudRefusalWords }),

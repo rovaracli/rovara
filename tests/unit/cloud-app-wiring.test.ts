@@ -215,14 +215,14 @@ describe("WIRING: Cloud's ChannelWork and the Slack intake", () => {
   });
 
   const card = { subject: { type: "plan_approval", id: "t1" }, requestId: "req-1", revision: 2, artifactDigest: "d".repeat(64) } as never;
-  const decision = (value: string): ChannelDecision => ({ eventId: "EvD", actor: { channel: "slack", tenant: "T0TEAM", userId: "U0MAYA" }, decision: value, reason: "fine" }) as unknown as ChannelDecision;
+  const decision = (value: string): ChannelDecision => ({ eventId: "EvD", actor: { channel: "slack", tenant: "T0TEAM", userId: "U0MAYA" }, conversation: { channel: "slack", tenant: "T0TEAM", space: "C0CHAN", thread: "1695500000.000001" }, decision: value, reason: "fine" }) as unknown as ChannelDecision;
 
   it("a decision goes to the gate with the Slack chat credential, bound to what the card showed", async () => {
     const { w, gate } = work();
     expect(await w.decide({ orgId: ORG, card, decision: decision("APPROVE"), personId: MAYA, projectName: "payments" })).toEqual({ status: "decided" });
     expect(gate.decide).toHaveBeenCalledWith(expect.objectContaining({
       companyId: ORG, kind: "plan_approval", subjectId: "t1", requestId: "req-1", outcome: "approve", seen: { revision: 2, artifactDigest: "d".repeat(64) },
-      credentials: [{ method: "chat-slack", token: "EvD", claimedAccount: { provider: "slack", tenant: "T0TEAM", accountId: "U0MAYA" } }],
+      credentials: [{ method: "chat-slack", token: JSON.stringify({ userId: "U0MAYA", userTeamId: "T0TEAM", workspaceTeamId: "T0TEAM", enterpriseId: "", userEnterpriseId: "" }), claimedAccount: { provider: "slack", tenant: "T0TEAM", accountId: "U0MAYA" } }],
     }));
   });
 
