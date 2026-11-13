@@ -538,6 +538,17 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     expect(await r.world.store.get(coreInUseKey(PEOPLE_ORG))).toMatchObject({ entityType: "CORE_ENGINE_IN_USE", orgId: PEOPLE_ORG });
   });
 
+  it("L-b: a mark that cannot be written (a throttled table) leaves the start on Cloud's path: nothing is started on the core", async () => {
+    const r = await rig();
+    const principal = (await createCloudIdentityProvider(r.people.routes).getPrincipal(PEOPLE_ORG, r.people.people.owner.developerId))!;
+    const put = r.world.store.put.bind(r.world.store);
+    r.world.store.put = (async (request: Parameters<typeof put>[0]) => { if (request.item["entityType"] === "CORE_ENGINE_IN_USE") throw new Error("ThrottlingException"); return await put(request); });
+    const hook = createCoreIntentHook({ app: r.app, principalOf: async () => principal, origin: "https://x.test", now: () => r.world.clock.now, log: () => undefined, taskStop: async () => ({ enrolled: false, fence: [] }) });
+    const started = await hook.start({ caller: { orgId: PEOPLE_ORG, developerId: r.people.people.owner.developerId } as never, request: { requestId: randomUUID(), project: "payments", input: { text: "Add a greeting." }, source: "app", path: "QUICK" }, ownedTask: async (_who, taskId) => ({ taskId }) as never });
+    expect(started).toBeUndefined();
+    expect((await (await r.app.runtimeFor(PEOPLE_ORG)).flow.list({ principal, client: "app" })).tasks).toHaveLength(0);
+  });
+
   it("L-3: the mark is written once per company by a conditional put outside the start's transaction: a burst of starts, and an existing mark, cause no further write", async () => {
     const r = await rig();
     const principal = (await createCloudIdentityProvider(r.people.routes).getPrincipal(PEOPLE_ORG, r.people.people.owner.developerId))!;
@@ -628,6 +639,45 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     const r = await rig();
     const off = r.rebuild({ env: {}, serveStamped: true });
     expect(await createCoreCallbackRouter(off, (key) => r.world.store.get(key) as never)(post(randomUUID(), randomUUID(), "events", "x", {}))).toBeUndefined();
+  });
+
+  it("HIGH: one browser session decides on two tasks, and one Slack user decides twice (a reusable method is not spent by its first decision); the step-up stays single-use", async () => {
+    const r = await rig({ slack: true });
+    const { owner } = r.people.people;
+    r.standing.set(owner.developerId, "owner");
+    const first = await plannedTask(r);
+    const second = await plannedTask(r);
+    expect((await press(r, first.taskId, owner, BROWSER_SESSION_METHOD)).status).toBe("decided");
+    expect((await press(r, second.taskId, owner, BROWSER_SESSION_METHOD)).status, "the same session, a second task").toBe("decided");
+    // Slack: the same linked user answers two cards, through the sink (the one path that presents chat-slack).
+    const { member } = r.people.people;
+    r.people.linkSlack(member);
+    r.people.signedInAgo(member, 60_000);
+    r.standing.set(member.developerId, "owner");
+    await bindChannelSpace({ store: r.world.store, orgId: PEOPLE_ORG, now: () => r.world.clock.now }, { channel: "slack", tenant: SLACK_TEAM, space: "C0CHAN" }, "payments");
+    const runtime = await r.app.runtimeFor(PEOPLE_ORG);
+    const adapter = (await r.app.registry()).get("channel", "slack")!;
+    const slackDecide = async (taskId: string, eventId: string) => {
+      const found = (await runtime.inbound.clientGate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
+      const conversation = { channel: "slack", tenant: SLACK_TEAM, space: "C0CHAN", thread: "1695500000.000001" } as const;
+      const card = await postApprovalCard({ store: r.world.store, orgId: PEOPLE_ORG, now: () => r.world.clock.now, companyOf: async () => PEOPLE_ORG },
+        { channel: "slack", adapter, conversation, kind: "plan_approval", subject: { type: "workflow-document", id: taskId }, revision: found.revision, artifactDigest: found.artifactDigest, risk: "low", text: "ready", actions: [{ decision: "APPROVE", label: "Approve" }] });
+      await runtime.inbound.slackSink!.decision({ version: 1, channel: "slack", eventId, conversation, actor: { channel: "slack", tenant: SLACK_TEAM, userId: member.slackUserId! }, requestId: card.requestId, expectedRevision: found.revision, artifactDigest: found.artifactDigest, decision: "APPROVE", reason: "fine", receivedAt: "2026-11-12T10:00:00.000Z" } as never);
+    };
+    const third = await plannedTask(r);
+    const fourth = await plannedTask(r);
+    await slackDecide(third.taskId, "EvReuse1");
+    await slackDecide(fourth.taskId, "EvReuse2");
+    expect(await decisionsOf(r, third.taskId), "the Slack user's first card").toHaveLength(1);
+    expect(await decisionsOf(r, fourth.taskId), "the same Slack user, a second card").toHaveLength(1);
+    // The filter itself: reusable methods lose their spent-once marker in a decision's transaction, the step-up keeps it, and a non-decision transaction is untouched.
+    const seen: unknown[][] = [];
+    const store = createSeatLimits().fenceStore({ transact: async (items: unknown[]) => { seen.push(items); return { applied: true, failed: [] }; } } as never) as unknown as { transact(items: unknown[]): Promise<unknown> };
+    const spent = (method: string) => ({ kind: "put", item: { entityType: "APPROVAL_PROOF_SPENT", method } });
+    await store.transact([{ kind: "put", item: { entityType: "APPROVAL_DECISION" } }, spent("browser-session"), spent("api-token"), spent("chat-slack"), spent("browser-step-up")]);
+    await store.transact([spent("browser-session")]);
+    expect(seen[0]!.map((item) => (item as { item: { method?: string } }).item.method)).toEqual([undefined, "browser-step-up"]);
+    expect(seen[1]).toHaveLength(1);
   });
 
   it("M-1: two credentials of one person put ONE member check in the decision's transaction (a transaction names an item once)", async () => {

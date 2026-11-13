@@ -87,13 +87,14 @@ export function createCoreIntentHook(deps: CoreIntentHookDeps): CoreIntentHook {
       let runtime;
       try {
         runtime = await deps.app.runtimeFor(caller.orgId);
+        // The company's in-use mark is written before the start that stamps a task; a write that fails (a throttled table) is a root that cannot serve now, and the start goes on Cloud's path.
+        await ensureCoreInUse(runtime.flow.deps.store, caller.orgId);
       } catch (error) {
         // A root that cannot be built (a point is empty, a client failed) leaves the switch effectively off: the start goes on Cloud's path, and a person is never refused for it.
         deps.log({ event: "core_entry.runtime_unavailable", component: "cloud_core", error: error instanceof Error ? error.name : "unknown" });
         return undefined;
       }
       const principal = await deps.principalOf(caller);
-      await ensureCoreInUse(runtime.flow.deps.store, caller.orgId);
       const started = await withStartFence(stop.fence, async () => await runtime.flow.start({ principal, client: request.source }, {
         requestId: request.requestId, project: request.project, instructions: request.input.text, workflow: true, client: request.source,
         ...(request.path === undefined ? {} : { workflowPath: request.path }),
@@ -174,7 +175,7 @@ export function isCoreSlackPressEvent(event: unknown): event is CoreSlackPressRe
 
 const PRESS_VALUE = z.object({ r: z.string().uuid(), v: z.number().int().positive(), d: z.string().regex(/^[a-f0-9]{64}$/u), o: z.enum(["APPROVE", "REQUEST_CHANGES", "REJECT", "SKIP"]) }).strict();
 const PRESS_SHAPE = z.object({
-  actionId: z.string().min(1).max(200), value: z.string().min(1).max(2_000), userId: z.string().min(1).max(64), userTeamId: z.string().max(64), workspaceTeamId: z.string().max(64),
+  actionId: z.string().min(1).max(200), value: z.string().min(1).max(2_000), userId: z.string().min(1).max(64), userTeamId: z.string().max(64), workspaceTeamId: z.string().max(64), enterpriseId: z.string().max(64), userEnterpriseId: z.string().max(64),
   teamId: z.string().min(1).max(64), channelId: z.string().min(1).max(64), threadTs: z.string().min(1).max(64), messageTs: z.string().max(64), actionTs: z.string().max(64).optional(),
 }).strict();
 
@@ -182,6 +183,8 @@ const PRESS_SHAPE = z.object({
 export type CoreSlackPressAnswer = { enabled: false } | { enabled: true; text: string };
 
 export const PRESS_TAKEN_WORDS = "Got it. Your answer is being recorded; I will post in the thread.";
+/** What a guest (a Slack Connect member of another workspace) or a press that does not agree with itself is told: only a member of the workspace the card is in may answer it. */
+export const PRESS_GUEST_WORDS = "Only a member of this Slack workspace can answer this from Slack. Open the task in Rovara to decide it there.";
 export const PRESS_FAILED_WORDS = "I couldn't take that answer. Open the task in Rovara and decide there.";
 
 export interface CoreSlackPressDeps {
@@ -205,6 +208,10 @@ export function createCoreSlackPressConsumer(deps: CoreSlackPressDeps): (press: 
     try { value = PRESS_VALUE.parse(JSON.parse(press.value)); } catch { return { enabled: false }; }
     // The button and what it carries must agree, so a press cannot be altered into another decision.
     if (press.actionId !== `${CORE_CARD_ACTION_PREFIX}${value.o}`) return { enabled: false };
+    // Cloud's own guest rule for a press (`chatGptActionHandler`, `resolveSlackDecisionCaller`): the person is a member of the workspace the card is in (not a Slack Connect guest from another one), the
+    // press names no other workspace than the thread's, and the two Enterprise Grid ids agree. A press that does not hold together decides nothing. An Enterprise Grid press (both ids set) cannot be carried
+    // by a channel adapter's ActorRef yet (DEFERRED S3-SLACK-ENTERPRISE-GRID), so the issuer could not find its install; it is refused here, in words, rather than reaching the gate to be refused there.
+    if (press.userTeamId !== press.teamId || (press.workspaceTeamId !== "" && press.workspaceTeamId !== press.teamId) || press.userEnterpriseId !== press.enterpriseId || press.enterpriseId !== "") return { enabled: true, text: PRESS_GUEST_WORDS };
     const orgId = await deps.orgOfTeam(press.teamId).catch(() => undefined);
     if (orgId === undefined) return { enabled: false };
     let sink;
@@ -218,7 +225,7 @@ export function createCoreSlackPressConsumer(deps: CoreSlackPressDeps): (press: 
     try {
       await sink.decision({
         version: 1, channel: "slack", eventId: `press-${press.actionTs ?? press.messageTs}-${press.userId}`.slice(0, 120), conversation: { channel: "slack", tenant: press.teamId, space: press.channelId, thread: press.threadTs },
-        actor: { channel: "slack", tenant: press.workspaceTeamId === "" ? press.teamId : press.workspaceTeamId, userId: press.userId }, requestId: value.r, expectedRevision: value.v, artifactDigest: value.d,
+        actor: { channel: "slack", tenant: press.userTeamId, userId: press.userId }, requestId: value.r, expectedRevision: value.v, artifactDigest: value.d,
         decision: value.o, reason: "Pressed on its card in Slack.", receivedAt: new Date().toISOString(),
       });
       return { enabled: true, text: PRESS_TAKEN_WORDS };

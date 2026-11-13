@@ -16,7 +16,13 @@ import { recordTaskThread, type ChannelWork } from "@rovara-code/broker/core/cha
 import { taskSessionId } from "@rovara-code/broker/core/sessions";
 import type { Approvers, ChannelDecision, ChannelInboundSink, DocumentStore, OrgId, Principal, SlackRequestMessage } from "@rovara-code/contracts";
 import { inboundFromQueuedSlackRequest } from "../../plugins/channel/slack-cloud/index.js";
-import { CHAT_SLACK_METHOD } from "../adapters/people/methods.js";
+import { API_TOKEN_METHOD, BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD } from "../adapters/people/methods.js";
+
+/**
+ * The credentials that stay good for many decisions: a signed-in browser session, a developer token and a Slack user are the same person deciding again (Cloud's own approvals never spent them). Kept here,
+ * with the one other place that names the chat-slack method, so the root has one list of the methods it knows by name (seat-limits.ts applies it to the gate's store).
+ */
+export const REUSABLE_METHODS: readonly string[] = [BROWSER_SESSION_METHOD, API_TOKEN_METHOD, CHAT_SLACK_METHOD];
 
 type Log = (entry: Record<string, unknown>) => void;
 

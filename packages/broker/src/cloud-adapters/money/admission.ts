@@ -52,6 +52,8 @@ export interface RefusalCircumstance {
   spentUsd?: number;
   committedUsd?: number;
   projectName?: string;
+  /** The action that was asked (a refusal for an action nobody listed names it, so a host can say what that kind of work needs). */
+  action?: string;
 }
 
 export interface CloudAdmissionOptions {
@@ -239,7 +241,7 @@ export class CloudAdmission implements Admission {
 
   /** A refusal, in the host's words when it gave some. */
   private refuse(request: AdmissionRequest, circumstance: RefusalCircumstance): Extract<AdmissionDecision, { allowed: false }> {
-    return refusedAs(this.options.words, { ...circumstance, ...(request.projectName === undefined ? {} : { projectName: request.projectName }) });
+    return refusedAs(this.options.words, { ...circumstance, ...(request.projectName === undefined ? {} : { projectName: request.projectName }), action: request.action });
   }
 
   /** The decision and the steps for a request, from the counters as they are now. A refusal has no steps. */

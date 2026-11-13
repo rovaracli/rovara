@@ -522,6 +522,27 @@ describe("two members are merged", () => {
       expect(w.taskOf(mine.taskId)).not.toHaveProperty("payer");
     });
 
+    it("L-a: the write's condition holds a task to its own company: a core row (no orgId) that gains another company's orgId between the read and the write is not handed on, whatever its companyId says", async () => {
+      const { w } = setup();
+      const solo = soloTask(w);
+      const { orgId, ...record } = w.taskOf(solo.taskId) as unknown as Record<string, unknown>;
+      void orgId;
+      w.db.delete(taskKey(solo.taskId));
+      w.db.set({ ...record, companyId: ORG_A });
+      const viewed = viewCoreTaskRowsClient(w.db) as unknown as { send(command: unknown): Promise<unknown> };
+      let flipped = false;
+      const racing = { send: async (command: { input?: { Key?: { pk?: string; sk?: string } } }) => {
+        const answer = await viewed.send(command);
+        // The moment the merge has read the task, another company's `orgId` lands on the row.
+        if (!flipped && command.input?.Key?.pk === taskKey(solo.taskId).pk && command.input.Key.sk === "META") { flipped = true; w.db.set({ ...(w.db.get(taskKey(solo.taskId)) as object), orgId: ORG_B }); }
+        return answer;
+      } };
+      const before = structuredClone(w.taskOf(solo.taskId));
+      await onMembersMerged({ ...w.deps, documentClient: racing }, { orgId: ORG_A, survivorId: ARJUN, duplicateId: ZED }).catch(() => undefined);
+      expect(flipped).toBe(true);
+      expect(w.taskOf(solo.taskId)).toEqual({ ...before, orgId: ORG_B });
+    });
+
     it("moves the session's payer copy with it", async () => {
       const { w, zedsOwn, followed } = setup();
       w.db.set({ ...w.get(agentSessionKey(ORG_A, zedsOwn.sessionId, "META"))!, payer: { kind: "member", developerId: ZED } });

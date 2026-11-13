@@ -365,8 +365,8 @@ async function taskPlan(deps: SessionLifecycleDeps, orgId: OrgId, taskId: string
   const items: TransactItem[] = [{
     Update: {
       TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: `SET ${sets.join(", ")}`,
-      // A core task's record names its company `companyId`; a Cloud task's, `orgId`. Either is the caller's org or the task is not this merge's.
-      ConditionExpression: `attribute_exists(pk) AND (orgId = :org OR companyId = :org) AND ${fence.expression}`, ExpressionAttributeNames: fence.names,
+      // A core task's record names its company `companyId` and has no `orgId`; a Cloud task's has `orgId`. A row with an `orgId` is judged by it alone (a `companyId` never overrides it).
+      ConditionExpression: `attribute_exists(pk) AND (orgId = :org OR (attribute_not_exists(orgId) AND companyId = :org)) AND ${fence.expression}`, ExpressionAttributeNames: fence.names,
       ExpressionAttributeValues: { ...fence.values, ":at": at, ":org": orgId, ...(handedOn === undefined ? {} : { ":currentOwner": handedOn }), ...(onRecord === undefined ? {} : { ":payer": onRecord }) },
     },
   }];

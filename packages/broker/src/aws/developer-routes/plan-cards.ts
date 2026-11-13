@@ -186,12 +186,13 @@ export function planCardHandler(deps: DeveloperRouteDependencies, caller: Develo
       if (now === "stale") return { kind: "refused", reason: "stale" };
       if (input.card.risk !== "high") return approvePlan(deps, caller, who, input, now);
       if (who.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
-      // S3: a task the core runs is decided by the core's own gate, which verifies the decide-grade sign-in itself (the `browser-step-up` method: this person, this card, unused, within 10 minutes). The card does
-      // not claim it first, so it is claimed once, by the decision.
+      // S3: a task the core runs is decided by the core's own gate, which verifies the decide-grade sign-in itself (the `browser-step-up` method: this person, this card, unused, within 10 minutes). The card
+      // still does everything else around it: without the sign-in it makes the `card_decision` record and answers REAUTH with the decide sign-in; with it, the decision is the core's and the session is
+      // left for the gate to spend (`claim: false`); after the decision applies, the record is approved with the session's proof (the audit event) and the session deleted, as for any card.
       const core = coreTaskRoutes();
       if (core !== undefined && await core.owns(who, now.task.taskId)) {
-        if (decideCookie === undefined) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
-        return await approvePlan(deps, caller, who, input, now, false, decideCookie);
+        return withCardDecideGrade(deps, who, decideCookie, { cardId: input.card.id, taskId: now.task.taskId, contentVersion: input.item.contentVersion, openPath: input.item.openPath },
+          async () => ({ applied: true, result: await approvePlan(deps, caller, who, input, now, false, decideCookie) }), { claim: false });
       }
       return withCardDecideGrade(deps, who, decideCookie, { cardId: input.card.id, taskId: now.task.taskId, contentVersion: input.item.contentVersion, openPath: input.item.openPath },
         async () => ({ applied: true, result: await approvePlan(deps, caller, who, input, now, true) }));

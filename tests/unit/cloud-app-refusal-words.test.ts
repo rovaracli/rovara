@@ -3,11 +3,12 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { MemoryDocumentStore } from "@rovara-code/broker/ports";
+import { startUnattendedRun } from "@rovara-code/broker/core/automation";
 import { chainBudgetExceededMessage, projectArchivedMessage } from "@rovara-code/contracts";
 import { spendCounterKey } from "../../packages/cloud-contracts/src/org-scoped-keys.js";
 import { createCloudAdmission, monthOfMs, type AdmissionLevel, type RefusalCircumstance } from "../../packages/broker/src/cloud-adapters/money/index.js";
 import {
-  CORE_ADMISSION_ACTIONS, CORE_ADMISSION_REFUSAL_CODES, CORE_START_REFUSAL_CODES, INSTALL_FAULT_WORDS, cloudRefusalWords, cloudWordsForCoreRefusal,
+  AUTOMATION_NOT_ON_CORE_WORDS, CORE_ADMISSION_ACTIONS, CORE_ADMISSION_REFUSAL_CODES, CORE_START_REFUSAL_CODES, INSTALL_FAULT_WORDS, cloudRefusalWords, cloudWordsForCoreRefusal,
 } from "../../packages/broker/src/cloud/app/index.js";
 import { budgetExceeded, orgBudgetExceeded } from "../../packages/broker/src/org/budget.js";
 import { machineTimeExceeded, trialLocked } from "../../packages/broker/src/org/trial.js";
@@ -120,6 +121,21 @@ describe("S0-143d: through A5's own decision, with the words the root registers"
     const admission = createCloudAdmission({ store, now: () => NOW, levels: async () => [], actions: CORE_ADMISSION_ACTIONS, words: cloudRefusalWords });
     const decision = await admission.admit({ companyId: A, idempotencyKey: "k", action: "something.new" });
     expect(decision).toEqual({ allowed: false, code: "admission_action_unknown", message: INSTALL_FAULT_WORDS });
+  });
+
+  it("automation.run is refused in a clear sentence (the core's unattended run has no payer facts here, and automations stay on Cloud's own engine), and the unattended door starts nothing", async () => {
+    const store = new MemoryDocumentStore();
+    const admission = createCloudAdmission({ store, now: () => NOW, levels: async () => [], actions: CORE_ADMISSION_ACTIONS, words: cloudRefusalWords });
+    const decision = await admission.admit({ companyId: A, idempotencyKey: "automation.run#r", action: "automation.run", projectName: "payments", subject: { type: "run", id: "r" } });
+    expect(decision).toEqual({ allowed: false, code: "admission_action_unknown", message: AUTOMATION_NOT_ON_CORE_WORDS });
+    expect(Object.keys(CORE_ADMISSION_ACTIONS)).not.toContain("automation.run");
+    // Through the core's own unattended door, with the automation switch on: the run is refused and the starter is never asked.
+    let started = 0;
+    await expect(startUnattendedRun({
+      automation: { enabled: () => true }, companyId: A, admission, audit: { stage: () => [], record: async () => undefined }, enforces: { dollars: true }, now: () => NOW,
+      starter: { start: async () => { started += 1; return { taskId: "t", duplicate: false }; }, read: async () => undefined },
+    }, { requestId: "11111111-1111-4111-8111-111111111111", project: "payments", agent: { agentId: "rovara-code" }, input: { text: "x" }, origin: "schedule", limits: { maxRunUsd: 1 } } as never)).rejects.toThrow();
+    expect(started).toBe(0);
   });
 
   it("without the host's words A5 keeps its own sentence (the adapter alone is unchanged)", async () => {

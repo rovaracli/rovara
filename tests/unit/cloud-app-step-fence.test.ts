@@ -3,8 +3,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryDocumentStore } from "@rovara-code/broker/ports";
 import type { TaskAccess } from "@rovara-code/broker/core/task-flow";
-import { when, type TransactItem } from "@rovara-code/contracts";
-import { STEP_FENCE_TRIPPED_WORDS, markStepFence, retryOnFenceTrip } from "../../packages/broker/src/cloud/app/index.js";
+import { agentXError, when, type TransactItem } from "@rovara-code/contracts";
+import { STEP_FENCE_TRIPPED_WORDS, STEP_OWNER_CHANGED_WORDS, markStepFence, retryOnFenceTrip } from "../../packages/broker/src/cloud/app/index.js";
 import { allowAll, plannedTask, press, rig } from "../support/cloud-core-rig.js";
 import { BROWSER_SESSION_METHOD } from "../../packages/broker/src/cloud/adapters/people/index.js";
 
@@ -36,17 +36,17 @@ describe("retryOnFenceTrip", () => {
 const logs: Array<Record<string, unknown>> = [];
 
 describe("through the real flow: a plan sent back for changes, whose re-planning step fence trips", () => {
-  async function sentBackWith(withItems: (armed: () => boolean) => TaskAccess["checkStep"]) {
+  async function sentBackWith(withItems: (armed: () => boolean, disarm: () => void) => TaskAccess["checkStep"]) {
     // The fence trips only once the plan is sent back: planning itself is an ordinary step.
     let armed = false;
-    const r = await rig({ access: { ...allowAll, checkStep: withItems(() => armed) }, log: (entry) => logs.push(entry) });
+    const r = await rig({ access: { ...allowAll, checkStep: withItems(() => armed, () => { armed = false; }) }, log: (entry) => logs.push(entry) });
     r.standing.set(r.people.people.owner.developerId, "owner");
     const { taskId, owner } = await plannedTask(r);
     armed = true;
     const answer = await press(r, taskId, owner, BROWSER_SESSION_METHOD, "request_changes" as never);
     expect(answer.status, JSON.stringify(answer)).toBe("decided");
     const flow = (await r.app.runtimeFor(r.people.people.owner.orgId)).flow;
-    return { r, flow, taskId };
+    return { r, flow, taskId, disarm: () => { armed = false; } };
   }
 
   it("a tripped fence is retried by the sweep (rescheduled, not dropped as stale), and the workflow is not left waiting for a step nobody will start", async () => {
@@ -55,6 +55,21 @@ describe("through the real flow: a plan sent back for changes, whose re-planning
     const report = await flow.sweepOnce();
     expect(report.stale, JSON.stringify(report)).toBe(0);
     expect(report.failed + report.blocked).toBeGreaterThan(0);
+  });
+
+  it("L-c: a step check that answers WORKSPACE_BUSY (an owner changing between its reads) is rescheduled by the dispatch sweep, not dropped as stale and not blocked: once the check passes, the step starts", async () => {
+    const { r, flow, disarm } = await sentBackWith((armed) => async () => {
+      if (armed()) throw agentXError("WORKSPACE_BUSY", STEP_OWNER_CHANGED_WORDS);
+      return { allowed: true };
+    });
+    const first = await flow.sweepOnce();
+    expect(first, JSON.stringify(first)).toMatchObject({ stale: 0, blocked: 0, started: 0 });
+    expect(first.failed).toBe(1);
+    // The row is still due after its backoff, and the workflow is not blocked.
+    disarm();
+    r.world.clock.advance(3_600);
+    const second = await flow.sweepOnce();
+    expect(second, JSON.stringify(second)).toMatchObject({ stale: 0, blocked: 0, started: 1 });
   });
 
   it("the control: the same failing condition, unmarked, is dropped as stale (the silent drop this fixes)", async () => {

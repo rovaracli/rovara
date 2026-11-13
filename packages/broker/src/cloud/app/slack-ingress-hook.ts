@@ -46,6 +46,9 @@ export interface CoreSlackPress {
   userId: string;
   userTeamId: string;
   workspaceTeamId: string;
+  /** The payload's Enterprise Grid ids (empty outside a grid): carried so the broker's rules see them. */
+  enterpriseId: string;
+  userEnterpriseId: string;
   teamId: string;
   channelId: string;
   threadTs: string;
@@ -56,7 +59,7 @@ export interface CoreSlackPress {
 export interface CoreSlackPressRequestEvent { source: "agentx.slack-ingress"; action: typeof CORE_SLACK_PRESS_ACTION; press: CoreSlackPress }
 
 /** What the interactivity handler needs of Slack's own press, structurally (the real type is `SlackBlockAction`). */
-interface PressedAction { actionId: string; value: string; userId: string; userTeamId: string; workspaceTeamId: string; thread: { teamId: string; channelId: string; threadTs: string }; messageTs: string; actionTs?: string | undefined; responseUrl: string }
+interface PressedAction { actionId: string; value: string; userId: string; userTeamId: string; workspaceTeamId: string; enterpriseId: string; userEnterpriseId: string; thread: { teamId: string; channelId: string; threadTs: string }; messageTs: string; actionTs?: string | undefined; responseUrl: string }
 
 export interface CorePressHandlerDeps {
   /** The ingress's direct broker invoke. */
@@ -77,7 +80,7 @@ export function corePressHandler(deps: CorePressHandlerDeps): { matches(actionId
     matches: (actionId) => actionId.startsWith(CORE_CARD_ACTION_PREFIX),
     async handle(action) {
       const press: CoreSlackPress = {
-        actionId: action.actionId, value: action.value, userId: action.userId, userTeamId: action.userTeamId, workspaceTeamId: action.workspaceTeamId,
+        actionId: action.actionId, value: action.value, userId: action.userId, userTeamId: action.userTeamId, workspaceTeamId: action.workspaceTeamId, enterpriseId: action.enterpriseId, userEnterpriseId: action.userEnterpriseId,
         teamId: action.thread.teamId, channelId: action.thread.channelId, threadTs: action.thread.threadTs, messageTs: action.messageTs, ...(action.actionTs === undefined ? {} : { actionTs: action.actionTs }),
       };
       const answer = await deps.invokeBroker({ source: "agentx.slack-ingress", action: CORE_SLACK_PRESS_ACTION, press }, CORE_PRESS_TIMEOUT_MS);
