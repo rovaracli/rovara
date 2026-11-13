@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ActorIdSchema, CandidateManifestSchema, CI_FIX_PROBLEMS_MAX, E2EWorkflowProgressSchema, FEEDBACK_STOPPED_REASON, FeedbackCiFailuresSchema, FeedbackThreadObservationsSchema, FixSourceSchema, type ForwardReader, isStepNotRunReason, NO_CODE_CHANGED_REASON, NoChangeFindingsSchema, openSecondReviewFindings, PROGRAM_ROUNDS_MAX, readerOf, reviewCleared, RiskAssessmentSchema, StepIdSchema, SYNC_FAILURES_MAX, UNDERSTAND_ANSWER_PENDING_MESSAGE, UNDERSTAND_TIMED_OUT_MESSAGE, UNDERSTAND_UNREADABLE_MESSAGE, VerificationResultsSchema, WORKFLOW_ACCEPTED_FINDINGS_MAX, WORKFLOW_AUTO_PUBLISH_FAILED_MESSAGE, WORKFLOW_REGRESSED_CHECK_MAX, WORKFLOW_REGRESSED_CHECKS_MAX, WorkflowAcceptedFindingSchema, WorkflowArtifactSchema, WorkflowCanvasCloseoutAttemptSchema, WorkflowCanvasCloseoutSchema, WorkflowCanvasLineageSchema, WorkflowCheckPolicySchema, WorkflowCritiqueSchema, WorkflowDecisionRecordSchema, WorkflowDependencyApprovalSchema, WorkflowDesignReviewSchema, WorkflowFeedbackApprovalBindingSchema, WorkflowFeedbackDecisionSchema, WorkflowFeedbackNoteSchema, WorkflowFeedbackReviewRefSchema, WorkflowFeedbackReviewSchema, WorkflowFeedbackShownSchema, WorkflowFixRoundsSchema, WorkflowIntentSchema, workflowIsReviewOnly, WorkflowPathSchema, WorkflowProgramSchema, WorkflowPullRequestSchema, WorkflowPullRequestUpdateFailureSchema, WorkflowReviewBaseSchema, WorkflowReviewPhaseSchema, WorkflowReviewReportSchema, WorkflowSecondReviewBlockSchema, WorkflowStageSchema, WorkflowStateSchema, WorkflowVerificationRetrySchema, WorkItemProgressV1Schema } from "@rovara-code/contracts";
 import { WorkflowBranchSyncSchema } from "./rovara-code.js";
+import { WorkflowFlowSchema } from "./task-flow-tier.js";
 // Code's own since the vendor pin 0e340c0e (one name, one owner): re-exported, not defined here.
 export { BASE_MERGED_RETRY_REASON, BASE_MERGED_RETRIES_PER_DAY, BASE_MERGED_RECHECKING_MILESTONE, BASE_MERGED_NEEDS_YOU_MILESTONE } from "@rovara-code/contracts";
 
@@ -183,6 +184,8 @@ export const WorkflowSnapshotShapeSchema = z.object({
   critique: WorkflowCritiqueSchema.optional(),
   /** Design review stage (DR6; 1.1.0 and the Full path only): the fresh-context reviewers' record for the task's design, beside `critique`. Absent when design review is off. */
   designReview: WorkflowDesignReviewSchema.optional(),
+  /** The lighter flow (0.5.18 reader, both versions; nothing writes it yet): the tier of the change, the steps skipped and the quick checks. The same shape as Rovara Code's `flow` (`task-flow-tier.ts`). */
+  flow: WorkflowFlowSchema.optional(),
   /** Rovara Code v2 (1.1.0 only): the risk level of the pull request's code. */
   risk: RiskAssessmentSchema.optional(),
   /** Both versions: how many fix rounds of each kind ran, and which kind the round now running is. */
@@ -248,6 +251,8 @@ export const WorkflowSnapshotShapeSchema = z.object({
     if (workflow.outcome === "ANSWERED") context.addIssue({ code: "custom", path: ["outcome"], message: "this outcome needs definition version 1.1.0" });
     if (workflow.artifacts.some((artifact) => artifact.type === "answer")) context.addIssue({ code: "custom", path: ["artifacts"], message: "an answer needs definition version 1.1.0" });
     for (const field of ["intent", "critique", "risk", "designReview"] as const) {
+      // The lighter flow's record lets a design review sit on a task of either version: only the one that carries `flow`.
+      if (field === "designReview" && workflow.flow !== undefined) continue;
       if (workflow[field] !== undefined) context.addIssue({ code: "custom", path: [field], message: `${field} needs definition version 1.1.0` });
     }
     if (workflow.program?.steps.some((step) => step.kind === "plan_critic") === true) {
@@ -256,7 +261,8 @@ export const WorkflowSnapshotShapeSchema = z.object({
     if (workflow.reviews?.some((review) => review.risk !== undefined) === true) context.addIssue({ code: "custom", path: ["reviews"], message: "a review's risk level needs definition version 1.1.0" });
   }
   if (workflow.designReview !== undefined) {
-    if (workflow.path !== "FULL") context.addIssue({ code: "custom", path: ["designReview"], message: "design review runs on the Full path" });
+    // The lighter flow may ask for a design review on a Quick path: only a task that carries its `flow` record.
+    if (workflow.path !== "FULL" && workflow.flow === undefined) context.addIssue({ code: "custom", path: ["designReview"], message: "design review runs on the Full path" });
     if (new TextEncoder().encode(JSON.stringify(workflow.designReview)).length > 150_000) context.addIssue({ code: "custom", path: ["designReview"], message: "the design review record is too large to keep" });
   }
   if (workflow.fixProblems !== undefined && workflow.fixSource === undefined) {
