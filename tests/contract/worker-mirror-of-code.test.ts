@@ -65,6 +65,8 @@ const KNOWN: Readonly<Record<string, readonly Known[]>> = {
     { reason: "TE-B9 (public PR #510), not in Code's pin yet: the verifying snapshot names the base", line: "snapshotTree(git, newHead, input.baseCommitSha)" },
   ],
   "publish.ts": [
+    { reason: "FIX-RUNNER-ABORT-JOIN (public PR #546), not in Code's pin yet: the unconfirmed-stop error import", line: 'import { RunnerKillUnconfirmedError } from "./collected-process.js";' },
+    { reason: "FIX-RUNNER-ABORT-JOIN (public PR #546), not in Code's pin yet: the readiness run rethrows an unconfirmed stop instead of recording a failed check", line: "if (error instanceof RunnerKillUnconfirmedError) throw error;" },
     { reason: "Cloud imports `WorkerInvocation` from its own contracts", line: 'import { ROVARA_NEVER_COMMIT_EXCLUDE, type WorkerInvocation } from "@agentx/cloud-contracts";' },
     { reason: "TE-B9 (public PR #510), not in Code's pin yet: the guard imports", line: 'import { assertNoRovaraWorkingFiles, unstageRovaraWorkingFiles } from "./never-commit-guard.js";' },
     { reason: "TE-B9 (public PR #510), not in Code's pin yet: the reviewed publication's tree is computed with the task's base", line: "temporaryIndexTree({ directory: git.directory }, pinnedBase)" },
