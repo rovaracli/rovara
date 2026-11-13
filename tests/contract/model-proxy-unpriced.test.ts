@@ -46,13 +46,18 @@ ns["SETTLE_GRACE_SECONDS"] = 0.01
 class Ledger:
     """The Postgres ledger's meaning, in memory: a take against the cap (an ESTIMATED hold that does not fit goes ahead once, while the key has not overrun and nothing else is held,
     holding only the room that is left: DECISIONS 165), and a settle that records the charge and whether it is an estimate."""
-    def __init__(self): self.rows, self.holds, self.settled, self.worsts = {}, {}, [], {}
-    async def take(self, key, call_id, worst, spent, cap, estimated=False):
+    def __init__(self): self.rows, self.holds, self.settled, self.worsts, self.slots, self.gates = {}, {}, [], {}, set(), {}
+    async def take(self, key, call_id, worst, spent, cap, estimated=False, month_gate=None):
         row = self.rows.setdefault(key, {"charged": 0, "held": 0})
         known = max(row["charged"], spent)
         self.worsts[call_id] = worst
+        self.gates[call_id] = month_gate[0] if month_gate else None
         if known + row["held"] + worst <= cap: reserve = worst
-        elif estimated and known < cap and row["held"] == 0: reserve = min(worst, max(cap - known, 0))
+        elif estimated and known < cap and row["held"] == 0:
+            gate = month_gate[0] if month_gate else "none"
+            if gate == "blocked" or (gate == "slot" and month_gate[1:] in self.slots): return "month", row["charged"]
+            if gate == "slot": self.slots.add(month_gate[1:])
+            reserve = min(worst, max(cap - known, 0))
         else: return ("exceeded" if known + worst > cap else "held"), row["charged"]
         row["held"] += reserve; self.holds[call_id] = (key, reserve); return "ok", None
     async def settle(self, call_id, cost, estimated=False):
@@ -64,7 +69,9 @@ ledger = ns["_LEDGER"] = Ledger()
 guard = ns["RovaraGuard"]()
 
 class Key:
-    def __init__(self, cap, token="k1"): self.max_budget, self.spend, self.token = cap, 0.0, token
+    def __init__(self, cap, token="k1", team=None):
+        self.max_budget, self.spend, self.token = cap, 0.0, token
+        if team: self.team_id, self.team_max_budget, self.team_spend = team["id"], team["cap"], team["spend"]
 
 async def fetch_for(sources):
     def fetch(url, host):
@@ -73,6 +80,25 @@ async def fetch_for(sources):
     return fetch
 
 async def run(step, n):
+    if step["op"] == "redirect":
+        try: ns["_NoRedirect"]().redirect_request(None, None, 302, "Found", {}, "https://elsewhere.example/x"); return {"refused": False}
+        except Exception as e: return {"refused": True, "error": type(e).__name__}
+    if step["op"] == "fetch":
+        import time as _t
+        class Reply:
+            def __init__(self): self.left = step.get("body", "{}").encode()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def geturl(self): return step.get("final_url", step["url"])
+            def read(self, n=-1):
+                if step.get("delay"): _t.sleep(step["delay"])
+                chunk, self.left = self.left[:n], self.left[n:]
+                return chunk
+        class Opener:
+            def open(self, request, timeout=None): return Reply()
+        for name, value in step.get("limits", {}).items(): ns[name] = value
+        try: return {"fetched": ns["_fetch_json"](step["url"], step["host"], opener=Opener())}
+        except Exception as e: return {"error": type(e).__name__, "detail": str(e)}
     if step["op"] == "refresh":
         result = await ns["_refresh_prices"](await fetch_for(step["sources"]))
         return {"refresh": result, "entries": {k: litellm.model_cost.get(k) for k in step.get("inspect", [])}}
@@ -80,10 +106,10 @@ async def run(step, n):
     if step.get("max_tokens") is not None: data["max_tokens"] = step["max_tokens"]
     before = len(ledger.settled)
     try:
-        await guard.async_pre_call_hook(Key(step.get("cap", 100.0)), None, data, "acompletion")
+        await guard.async_pre_call_hook(Key(step.get("cap", 100.0), step.get("token", "k1"), step.get("team")), None, data, "acompletion")
     except ProxyException as e:
-        return {"status": int(e.code), "type": e.type}
-    out = {"status": 200, "held": ledger.worsts["call-%d" % n], "reserved": ledger.holds["call-%d" % n][1], "prices": list(ns["_hold_prices"](step["model"]))[1:]}
+        return {"status": int(e.code), "type": e.type, **({"message": e.message} if step.get("want_message") else {})}
+    out = {"status": 200, "held": ledger.worsts["call-%d" % n], "reserved": ledger.holds["call-%d" % n][1], "prices": list(ns["_hold_prices"](step["model"]))[1:], "gate": ledger.gates["call-%d" % n]}
     if "usage" in step or "cost" in step or step.get("cut"):
         if step.get("cut"): await guard.async_post_call_failure_hook(data, Exception("cut"), None); await guard._finish("call-%d" % n, None, True)
         else: await guard.async_log_success_event({"litellm_call_id": "call-%d" % n, "response_cost": step.get("cost")}, {"usage": step["usage"]} if "usage" in step else None, None, None)
@@ -96,7 +122,7 @@ json.dump(asyncio.run(main()), sys.stdout)
 `;
 
 type Step = Record<string, unknown>;
-type Result = { status?: number; type?: string; held?: number; reserved?: number; prices?: boolean[]; settled?: { micros: number; estimated: boolean; whole_hold: boolean } | null; refresh?: Record<string, string>; entries?: Record<string, Record<string, number> | null> };
+type Result = { gate?: string | null; message?: string; refused?: boolean; error?: string; detail?: string; fetched?: unknown; status?: number; type?: string; held?: number; reserved?: number; prices?: boolean[]; settled?: { micros: number; estimated: boolean; whole_hold: boolean } | null; refresh?: Record<string, string>; entries?: Record<string, Record<string, number> | null> };
 
 function run(scenario: { deployments: unknown[]; model_cost: Record<string, unknown>; steps: Step[]; min_models?: number }): Result[] {
   const directory = mkdtempSync(join(tmpdir(), "rovara-guard-unpriced-"));
@@ -152,6 +178,22 @@ describe("a model with no price is held and settled cautiously, never refused", 
     expect(calls[0]!.settled).toMatchObject({ estimated: true, whole_hold: false });
     expect(calls[0]!.settled!.micros).toBeGreaterThan(0);
     expect(calls[1]!.settled).toEqual({ micros: calls[1]!.held, estimated: true, whole_hold: true });
+  });
+
+  itPython("charges cache read and write tokens at the input rate when it replaces LiteLLM's missing cost", () => {
+    const [call] = run({ deployments: [NEW_CLAUDE], model_cost: KNOWN, steps: [{ op: "call", model: "us.anthropic.claude-haiku-9", max_tokens: 1000, cost: null, usage: { prompt_tokens: 100, completion_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 500 } }] });
+    // (100 + 1,000 + 500) x $11 per million + 10 x $41.25 per million = $0.0180125: cached tokens are not free.
+    expect(call!.settled).toMatchObject({ estimated: true, whole_hold: false });
+    expect(call!.settled!.micros).toBeGreaterThanOrEqual(18_012);
+    expect(call!.settled!.micros).toBeLessThanOrEqual(18_014);
+  });
+
+  itPython("charges the whole hold, flagged estimated, when the provider reports usage of all zeros and LiteLLM has no cost, not $0", () => {
+    const calls = run({ deployments: [NEW_CLAUDE], model_cost: KNOWN, steps: [
+      { op: "call", model: "us.anthropic.claude-haiku-9", max_tokens: 1000, cost: null, usage: { prompt_tokens: 0, completion_tokens: 0 } },
+      { op: "call", model: "us.anthropic.claude-haiku-9", max_tokens: 1000, cost: 0, usage: { prompt_tokens: 0, completion_tokens: 0, cache_read_input_tokens: 0 } },
+    ] });
+    for (const call of calls) expect(call.settled).toEqual({ micros: call.held, estimated: true, whole_hold: true });
   });
 
   itPython("puts the estimate in LiteLLM's cost map at the dearest known rate with cached tokens at that rate too (left out, LiteLLM counts them as free)", () => {
@@ -307,11 +349,11 @@ describe("fresh prices: LiteLLM's upstream cost map", () => {
     { op: "refresh", sources: { [GITHUB]: map }, inspect: ["us.anthropic.claude-sonnet-4-6", "bedrock/us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-haiku-9"] },
   ] })[0]!;
 
-  itPython("registers a validated map: a price that moved, a model the image's map lacks, and the router's copy for a deployment", () => {
-    const fresh = scenario(upstream({ "us.anthropic.claude-sonnet-4-6": { ...KNOWN["us.anthropic.claude-sonnet-4-6"], input_cost_per_token: 2.2e-6 }, "us.anthropic.claude-haiku-9": { litellm_provider: "bedrock", mode: "chat", input_cost_per_token: 7e-7, output_cost_per_token: 3e-6 } }));
+  itPython("registers a validated map: a price that was raised, a model the image's map lacks, and the router's copy for a deployment", () => {
+    const fresh = scenario(upstream({ "us.anthropic.claude-sonnet-4-6": { ...KNOWN["us.anthropic.claude-sonnet-4-6"], input_cost_per_token: 4.4e-6 }, "us.anthropic.claude-haiku-9": { litellm_provider: "bedrock", mode: "chat", input_cost_per_token: 7e-7, output_cost_per_token: 3e-6 } }));
     expect(fresh.refresh!.litellm).toBe("ok");
-    expect(fresh.entries!["us.anthropic.claude-sonnet-4-6"]!.input_cost_per_token).toBe(2.2e-6);
-    expect(fresh.entries!["bedrock/us.anthropic.claude-sonnet-4-6"]!.input_cost_per_token).toBe(2.2e-6);
+    expect(fresh.entries!["us.anthropic.claude-sonnet-4-6"]!.input_cost_per_token).toBe(4.4e-6);
+    expect(fresh.entries!["bedrock/us.anthropic.claude-sonnet-4-6"]!.input_cost_per_token).toBe(4.4e-6);
     expect(fresh.entries!["us.anthropic.claude-haiku-9"]!.input_cost_per_token).toBe(7e-7);
   });
 
@@ -331,10 +373,110 @@ describe("fresh prices: LiteLLM's upstream cost map", () => {
     }
   });
 
+  const filler = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`filler-${String(i)}`, { litellm_provider: "openai", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 }]));
+  const withFiller = { ...KNOWN, ...filler };
+
+  itPython("only fills a missing price or raises one: an upstream map that lowers a served model's price, or any other model's, changes nothing; a price it raises on one rate keeps the other", () => {
+    const sonnet = KNOWN["us.anthropic.claude-sonnet-4-6"];
+    const [fresh] = run({ deployments: [deployment("us.anthropic.claude-sonnet-4-6", "bedrock/us.anthropic.claude-sonnet-4-6"), deployment("gpt-5-pro", "gpt-5-pro")], model_cost: withFiller, steps: [
+      { op: "refresh", sources: { [GITHUB]: { ...withFiller,
+        "us.anthropic.claude-sonnet-4-6": { ...sonnet, input_cost_per_token: 3.9e-6, output_cost_per_token: 1e-5 },     // input raised, output lowered
+        "gpt-5-pro": { ...KNOWN["gpt-5-pro"], input_cost_per_token: 1.5e-6, output_cost_per_token: 1.2e-5 },            // lowered ten-fold
+        "us.anthropic.claude-opus-4-8": { ...KNOWN["us.anthropic.claude-opus-4-8"], input_cost_per_token: 5.5e-7, output_cost_per_token: 2.75e-6 },
+      } }, inspect: ["us.anthropic.claude-sonnet-4-6", "bedrock/us.anthropic.claude-sonnet-4-6", "gpt-5-pro", "us.anthropic.claude-opus-4-8"] },
+    ] });
+    expect(fresh!.refresh!.litellm).toBe("ok");
+    for (const key of ["us.anthropic.claude-sonnet-4-6", "bedrock/us.anthropic.claude-sonnet-4-6"]) {
+      expect(fresh!.entries![key]?.input_cost_per_token ?? 3.9e-6, key).toBe(3.9e-6);
+      expect(fresh!.entries![key]?.output_cost_per_token ?? 1.65e-5, key).toBe(1.65e-5);
+    }
+    expect(fresh!.entries!["gpt-5-pro"]).toMatchObject({ input_cost_per_token: 1.5e-5, output_cost_per_token: 1.2e-4 });
+    expect(fresh!.entries!["us.anthropic.claude-opus-4-8"]).toMatchObject({ input_cost_per_token: 5.5e-6, output_cost_per_token: 2.75e-5 });
+  });
+
+  itPython("rejects an upstream price of zero for a served model: its entry is not registered, and the model stays held at an estimate", () => {
+    const zero = { litellm_provider: "bedrock", mode: "chat", input_cost_per_token: 0, output_cost_per_token: 0 };
+    const [fresh, call] = run({ deployments: [NEW_CLAUDE, deployment("us.anthropic.claude-sonnet-4-6", "bedrock/us.anthropic.claude-sonnet-4-6")], model_cost: withFiller, steps: [
+      { op: "refresh", sources: { [GITHUB]: { ...withFiller, "us.anthropic.claude-haiku-9": zero, "us.anthropic.claude-sonnet-4-6": { ...KNOWN["us.anthropic.claude-sonnet-4-6"], input_cost_per_token: 0, output_cost_per_token: 1.65e-5 } } }, inspect: ["us.anthropic.claude-haiku-9", "us.anthropic.claude-sonnet-4-6", "bedrock/us.anthropic.claude-haiku-9"] },
+      { op: "call", model: "us.anthropic.claude-haiku-9", max_tokens: 1000 },
+    ] });
+    expect(fresh!.refresh!.litellm).toBe("ok");
+    expect(fresh!.entries!["us.anthropic.claude-haiku-9"]).toBeNull();
+    expect(fresh!.entries!["bedrock/us.anthropic.claude-haiku-9"]?.input_cost_per_token ?? 1.1e-5).toBeGreaterThan(0);
+    expect(fresh!.entries!["us.anthropic.claude-sonnet-4-6"]!.input_cost_per_token).toBe(3.3e-6);
+    expect(call).toMatchObject({ status: 200, prices: [true] });
+  });
+
+  itPython("never overwrites Rovara's verified override from the upstream map, whether the upstream price is lower or higher", () => {
+    const override = deployment("us.anthropic.claude-haiku-5-5", "bedrock/us.anthropic.claude-haiku-5-5", { input_cost_per_token: 1.1e-7, output_cost_per_token: 5.5e-7, rovara_price_override: true, id: "dep-haiku" });
+    const model_cost = { ...withFiller, "dep-haiku": { input_cost_per_token: 1.1e-7, output_cost_per_token: 5.5e-7 } };
+    const haiku = (input: number, output: number) => ({ ...withFiller, "us.anthropic.claude-haiku-5-5": { litellm_provider: "bedrock", mode: "chat", input_cost_per_token: input, output_cost_per_token: output } });
+    const [lower, higher] = run({ deployments: [override], model_cost, steps: [
+      { op: "refresh", sources: { [GITHUB]: haiku(2e-8, 1e-7) }, inspect: ["dep-haiku", "us.anthropic.claude-haiku-5-5", "bedrock/us.anthropic.claude-haiku-5-5"] },
+      { op: "refresh", sources: { [GITHUB]: haiku(9e-7, 4e-6) }, inspect: ["dep-haiku", "us.anthropic.claude-haiku-5-5", "bedrock/us.anthropic.claude-haiku-5-5"] },
+    ] });
+    for (const step of [lower!, higher!]) {
+      expect(step.refresh!.litellm).toBe("ok");
+      expect(step.entries!["dep-haiku"]).toMatchObject({ input_cost_per_token: 1.1e-7, output_cost_per_token: 5.5e-7 });
+      for (const key of ["us.anthropic.claude-haiku-5-5", "bedrock/us.anthropic.claude-haiku-5-5"]) expect(step.entries![key]?.input_cost_per_token ?? 1.1e-7, key).toBe(1.1e-7);
+    }
+  });
+
   itPython("falls back when the source cannot be reached or answers something that is not JSON", () => {
     const refreshed = run({ deployments: [NEW_CLAUDE], model_cost: KNOWN, steps: [{ op: "refresh", sources: {}, inspect: ["us.anthropic.claude-sonnet-4-6"] }] })[0]!;
     expect(refreshed.refresh!.litellm).toBe("OSError");
     expect(refreshed.entries!["us.anthropic.claude-sonnet-4-6"]!.input_cost_per_token).toBe(3.3e-6);
+  });
+});
+
+describe("the company's month (DECISIONS 180)", () => {
+  const team = (spend: number, cap = 1000) => ({ id: "org-1", cap, spend });
+  const small = (step: Step): Step => ({ op: "call", model: "mystery", cap: 0.01, want_message: true, ...step });
+
+  itPython("lets one estimated call from the company's keys pass the month's cap and refuses the next, from another key, as the company's budget being spent", () => {
+    // The month has $1 and $0.5 spent; the call's worst case (about $11.5) could pass it.
+    const calls = run({ deployments: [deployment("mystery", "mystery")], model_cost: KNOWN, steps: [
+      small({ token: "k1", team: team(0.5, 1) }), small({ token: "k2", team: team(0.5, 1) }),
+    ] });
+    expect(calls[0]).toMatchObject({ status: 200, gate: "slot" });
+    expect(calls[1]).toMatchObject({ status: 422, type: "budget_exceeded" });
+    expect(calls[1]!.message).toMatch(/^Budget has been exceeded! Team=org-1 /u);   // the shape the worker reads as the company's month (model-runtime budget.ts)
+  });
+
+  itPython("refuses an estimated call that would go over its key's cap when the month is already at its cap", () => {
+    const [call] = run({ deployments: [deployment("mystery", "mystery")], model_cost: KNOWN, steps: [small({ team: team(1, 1) })] });
+    expect(call).toMatchObject({ status: 422, type: "budget_exceeded" });
+    expect(call!.message).toMatch(/^Budget has been exceeded! Team=org-1 /u);
+  });
+
+  itPython("takes no slot for a call whose worst case cannot pass the month; and a key with no company month keeps the one-call rule of DECISIONS 165", () => {
+    const calls = run({ deployments: [deployment("mystery", "mystery")], model_cost: KNOWN, steps: [
+      small({ token: "k1", team: team(0, 100_000) }), small({ token: "k2", team: team(0, 100_000) }), small({ token: "k3" }),
+    ] });
+    expect(calls.map((call) => call.status)).toEqual([200, 200, 200]);
+    expect(calls.map((call) => call.gate)).toEqual(["none", "none", null]);
+  });
+});
+
+describe("fetching a price file", () => {
+  const fetchStep = (extra: Step = {}): Step => ({ op: "fetch", url: "https://raw.githubusercontent.com/BerriAI/litellm/main/x.json", host: "raw.githubusercontent.com", body: "{\"a\": 1}", ...extra });
+  const one = (step: Step) => run({ deployments: [], model_cost: {}, steps: [step] })[0]!;
+
+  itPython("reads a price file from the fixed host", () => {
+    expect(one(fetchStep())).toEqual({ fetched: { a: 1 } });
+  });
+
+  itPython("refuses a redirect, and a reply whose final address is not the fixed https host", () => {
+    expect(one({ op: "redirect" })).toMatchObject({ refused: true });
+    expect(one(fetchStep({ final_url: "https://elsewhere.example/x.json" }))).toMatchObject({ error: "ValueError" });
+    expect(one(fetchStep({ final_url: "http://raw.githubusercontent.com/x.json" }))).toMatchObject({ error: "ValueError" });
+  });
+
+  itPython("stops a reply that is still coming after the total deadline, and a LiteLLM map over its own smaller size cap", () => {
+    expect(one(fetchStep({ delay: 0.06, body: "{\"a\": \"" + "x".repeat(200_000) + "\"}", limits: { PRICE_FETCH_DEADLINE_SECONDS: 0.1 } }))).toMatchObject({ error: "ValueError", detail: expect.stringContaining("deadline") as string });
+    expect(one(fetchStep({ body: "{\"a\": \"" + "x".repeat(2_000) + "\"}", limits: { LITELLM_MAP_MAX_BYTES: 1_000 } }))).toMatchObject({ error: "ValueError", detail: expect.stringContaining("too large") as string });
+    // The size cap is the LiteLLM map's own: the same body from the price list's host is read (its cap is the larger PRICE_FILE_MAX_BYTES).
+    expect(one(fetchStep({ url: "https://pricing.us-east-1.amazonaws.com/x.json", host: "pricing.us-east-1.amazonaws.com", final_url: "https://pricing.us-east-1.amazonaws.com/x.json", body: "{\"a\": \"" + "x".repeat(2_000) + "\"}", limits: { LITELLM_MAP_MAX_BYTES: 1_000 } }))).toMatchObject({ fetched: { a: expect.any(String) as string } });
   });
 });
 

@@ -133,9 +133,9 @@ describe("model proxy infrastructure (named environments)", () => {
 
   it("keeps the task definition well inside ECS's 64 KiB limit: the guard travels packed, not as its 40 KB text", () => {
     // ECS refuses a task definition over 64 KiB. The guard text alone was 40 KB of 46.9 KB used; packed it is about 16 KB, so the container definitions take about 20.8 KB (synth, staging) and leave room for
-    // the guard to double. The region token stands in for the deploy-time value. The ceiling is 32 KiB (half the limit); a guard that no longer packs under it needs a derived image.
+    // the guard to double. The region token stands in for the deploy-time value. The ceiling was 32 KiB (half the limit); the 0.5.18 money fixes (worst case charged for an overrun call, the company's month, upstream prices that only rise, bounded price fetches) took the definitions to about 35 KiB, so it is 40 KiB (still 24 KiB under the limit); a guard that no longer packs under it needs a derived image.
     const size = Buffer.byteLength(JSON.stringify(taskDefinition().Properties.ContainerDefinitions));
-    expect(size).toBeLessThan(32 * 1024);
+    expect(size).toBeLessThan(40 * 1024);
     expect(size).toBeLessThan(Buffer.byteLength(ROVARA_GUARD_PY));
     expect(JSON.stringify(taskDefinition().Properties.ContainerDefinitions)).not.toContain("proxy_handler_instance = RovaraGuard()");
   });

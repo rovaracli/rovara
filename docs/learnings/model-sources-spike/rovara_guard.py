@@ -13,8 +13,11 @@
    No model is refused for lack of a price (DECISIONS 172): a model with no known price is held at a cautious estimate (the dearest known
    rate of its provider, times CAUTION_FACTOR) and settled at the dearest known rate, flagged estimated, never at $0. Its worst case is a guess,
    so it never refuses a call the task could still afford one call of (DECISIONS 165): it goes ahead once while the key has not overrun, and
-   every call after the overrun is refused. Prices are refreshed
-   daily from AWS's public Price List files and LiteLLM's upstream cost map (validated, with the image's bundled map as the fallback).
+   every call after the overrun is refused. An overrun call whose cost never becomes known is charged its worst case, not the room it held (money review M1), and
+   the company's month has a say too (DECISIONS 180): an estimated call that could pass the month's cap takes the month's single slot (one row per company and month),
+   and none goes over a key's cap once the month is at its cap. Prices are refreshed
+   daily from AWS's public Price List files and LiteLLM's upstream cost map (validated; it may only fill in or raise a price, never lower one or replace a verified override;
+   the image's bundled map is the fallback).
 """
 import asyncio, json, os, sys, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -248,7 +251,9 @@ PRICE_REFRESH_ENABLED = os.environ.get("ROVARA_PRICE_REFRESH") != "0"
 PRICE_REFRESH_SECONDS = 24 * 3600
 PRICE_RETRY_SECONDS = 3600
 PRICE_FETCH_TIMEOUT_SECONDS = 20
-PRICE_FILE_MAX_BYTES = 64_000_000
+PRICE_FILE_MAX_BYTES = 64_000_000   # AWS's price list for one region
+LITELLM_MAP_MAX_BYTES = 16_000_000  # LiteLLM's cost map is a few MB
+PRICE_FETCH_DEADLINE_SECONDS = 60   # the whole read of one price file, however slowly it arrives
 MIN_MAP_MODELS = 500                # an upstream cost map with fewer models than this is not the cost map
 LONG_CONTEXT_ABOVE_TOKENS = 100_000  # AWS's price list names a long-context tier but not its size; the Pi catalog and pi.dev give 100,000 for Haiku 5.5
 AWS_PRICE_URL = "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonBedrockFoundationModels/current/{region}/index.json"
@@ -268,39 +273,57 @@ _SCHEMA = (
     "CREATE INDEX IF NOT EXISTS holds_key ON rovara_budget.holds (key_hash, expires_at)",
     # How much of what a key was charged is an estimate (a model with no known price, a cut call's whole hold): shown as "estimated" wherever the cost is.
     "ALTER TABLE rovara_budget.keys ADD COLUMN IF NOT EXISTS estimated_micros bigint NOT NULL DEFAULT 0",
+    # The worst case of the call a hold is for. An overrun call (DECISIONS 165) holds only the room that is left, so a call cut before its cost is known would be charged
+    # that small room; it is charged the worst case instead (never less than the hold). Nullable and additive: a hold written without it (an older guard replica) is charged
+    # its reserved amount, as before.
+    "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS worst_micros bigint",
+    # One row per company and month: whether that month's cap has been passed by an overrun call (DECISIONS 180). A new table, so a guard that does not know it still works.
+    "CREATE TABLE IF NOT EXISTS rovara_budget.org_months (org text NOT NULL, month text NOT NULL, over_used boolean NOT NULL DEFAULT false,"
+    " updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (org, month))",
 )
-# An orphan (older than HOLD_SECONDS) leaves the holds and is added to what its key has been charged. One statement: a hold is moved once.
+# An orphan (older than HOLD_SECONDS) leaves the holds and is added to what its key has been charged: the worst case of its call when that is more than the room it held
+# (an overrun call), else what it held. One statement: a hold is moved once. What leaves "held" is always what was reserved.
+_SQL_OWED = "GREATEST(reserved_micros, COALESCE(worst_micros, reserved_micros))"
 _SQL_SWEEP = (
-    "WITH gone AS (DELETE FROM rovara_budget.holds WHERE key_hash = $1::text AND expires_at < now() RETURNING reserved_micros),"
-    " s AS (SELECT COALESCE(SUM(reserved_micros), 0)::bigint AS n FROM gone)"
-    " UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.n, held_micros = k.held_micros - s.n, updated_at = now()"
+    f"WITH gone AS (DELETE FROM rovara_budget.holds WHERE key_hash = $1::text AND expires_at < now() RETURNING reserved_micros, worst_micros),"
+    f" s AS (SELECT COALESCE(SUM(reserved_micros), 0)::bigint AS n, COALESCE(SUM({_SQL_OWED}), 0)::bigint AS owed FROM gone)"
+    " UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.owed, held_micros = k.held_micros - s.n, updated_at = now()"
     " FROM s WHERE k.key_hash = $1::text AND s.n > 0")
 _SQL_SWEEP_ALL = (
-    "WITH gone AS (DELETE FROM rovara_budget.holds WHERE expires_at < now() RETURNING key_hash, reserved_micros),"
-    " s AS (SELECT key_hash, SUM(reserved_micros)::bigint AS n FROM gone GROUP BY key_hash)"
-    " UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.n, held_micros = k.held_micros - s.n, updated_at = now()"
+    f"WITH gone AS (DELETE FROM rovara_budget.holds WHERE expires_at < now() RETURNING key_hash, reserved_micros, worst_micros),"
+    f" s AS (SELECT key_hash, SUM(reserved_micros)::bigint AS n, SUM({_SQL_OWED})::bigint AS owed FROM gone GROUP BY key_hash)"
+    " UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.owed, held_micros = k.held_micros - s.n, updated_at = now()"
     " FROM s WHERE k.key_hash = s.key_hash")
 _SQL_FORGET = "DELETE FROM rovara_budget.keys WHERE held_micros = 0 AND updated_at < now() - interval '45 days'"
+_SQL_FORGET_MONTHS = "DELETE FROM rovara_budget.org_months WHERE updated_at < now() - interval '120 days'"
 _SQL_ENSURE = "INSERT INTO rovara_budget.keys (key_hash) VALUES ($1::text) ON CONFLICT (key_hash) DO NOTHING"
 # The take: the key's row is locked (FOR UPDATE), so two replicas taking at once are serialised and the second sees the first's hold. $7 is an ESTIMATED hold (a model with
 # no known price; its worst case is a guess): when it does not fit the room it goes ahead anyway, once, while the key has not overrun its budget and nothing else is held
 # (DECISIONS 165: the cap may be exceeded by at most one call), and it holds only the room that is left. After that call settles over the cap, every take is refused.
+# DECISIONS 180: the company's month has a say too. $8 is the month's gate for an estimated call: 'none' (no company month known, or this call cannot pass the month's cap), 'blocked' (the
+# month is already at or over its cap: no overrun), 'slot' (this call could pass the month's cap: it goes ahead only by taking the month's single slot, a row per company and month
+# that the first taker sets and every later one finds set; the row's own lock serialises two keys of one company taking at once). $9 is the company, $10 the month, 'YYYY-MM'.
 _SQL_TAKE = (
     "WITH q AS (SELECT key_hash,"
     " (GREATEST(charged_micros, $3::bigint) + held_micros + $2::bigint <= $4::bigint) AS fits,"
-    " ($7::boolean AND GREATEST(charged_micros, $3::bigint) < $4::bigint AND held_micros = 0) AS overrun,"
+    " ($7::boolean AND $8::text <> 'blocked' AND GREATEST(charged_micros, $3::bigint) < $4::bigint AND held_micros = 0) AS overrun,"
     " LEAST($2::bigint, GREATEST($4::bigint - GREATEST(charged_micros, $3::bigint), 0)) AS room"
     " FROM rovara_budget.keys WHERE key_hash = $1::text FOR UPDATE),"
+    " o AS (INSERT INTO rovara_budget.org_months (org, month, over_used) SELECT $9::text, $10::text, true FROM q"
+    " WHERE q.overrun AND NOT q.fits AND $8::text = 'slot'"
+    " ON CONFLICT (org, month) DO UPDATE SET over_used = true, updated_at = now() WHERE NOT rovara_budget.org_months.over_used RETURNING 1 AS got),"
     " k AS (UPDATE rovara_budget.keys t SET held_micros = t.held_micros + CASE WHEN q.fits THEN $2::bigint ELSE q.room END, updated_at = now()"
-    " FROM q WHERE t.key_hash = q.key_hash AND (q.fits OR q.overrun)"
+    " FROM q WHERE t.key_hash = q.key_hash AND (q.fits OR (q.overrun AND ($8::text <> 'slot' OR EXISTS (SELECT 1 FROM o))))"
     " RETURNING t.key_hash, CASE WHEN q.fits THEN $2::bigint ELSE q.room END AS reserved)"
-    " INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, expires_at)"
-    " SELECT $5::text, key_hash, reserved, now() + make_interval(secs => $6::int) FROM k RETURNING call_id")
+    " INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, worst_micros, expires_at)"
+    " SELECT $5::text, key_hash, reserved, $2::bigint, now() + make_interval(secs => $6::int) FROM k RETURNING call_id")
 _SQL_READ = "SELECT charged_micros, held_micros FROM rovara_budget.keys WHERE key_hash = $1::text"
-# Settle: the hold leaves and its key is charged the call's cost ($2), or the whole hold when $2 is negative, and $3 says the charge is an estimate. Settling twice charges once.
+_SQL_MONTH_READ = "SELECT over_used FROM rovara_budget.org_months WHERE org = $1::text AND month = $2::text"
+# Settle: the hold leaves and its key is charged the call's cost ($2), or the whole worst case when $2 is negative (the room it held, or the call's worst case when that is more:
+# an overrun call), and $3 says the charge is an estimate. Settling twice charges once.
 _SQL_SETTLE = (
-    "WITH h AS (DELETE FROM rovara_budget.holds WHERE call_id = $1::text RETURNING key_hash, reserved_micros),"
-    " c AS (SELECT key_hash, reserved_micros, CASE WHEN $2::bigint < 0 THEN reserved_micros ELSE $2::bigint END AS cost FROM h)"
+    "WITH h AS (DELETE FROM rovara_budget.holds WHERE call_id = $1::text RETURNING key_hash, reserved_micros, worst_micros),"
+    f" c AS (SELECT key_hash, reserved_micros, CASE WHEN $2::bigint < 0 THEN {_SQL_OWED} ELSE $2::bigint END AS cost FROM h)"
     " UPDATE rovara_budget.keys k SET held_micros = k.held_micros - c.reserved_micros, charged_micros = k.charged_micros + c.cost,"
     " estimated_micros = k.estimated_micros + CASE WHEN $3::boolean THEN c.cost ELSE 0 END, updated_at = now()"
     " FROM c WHERE k.key_hash = c.key_hash RETURNING k.charged_micros, k.key_hash, k.estimated_micros")
@@ -335,26 +358,36 @@ class _PostgresLedger:
                             await db.execute_raw(statement)     # the other replica created it in the same instant: IF NOT EXISTS holds now
                     await db.execute_raw(_SQL_SWEEP_ALL)
                     await db.execute_raw(_SQL_FORGET)
+                    await db.execute_raw(_SQL_FORGET_MONTHS)
                     self._ready = True
         return db
 
-    async def take(self, key, call_id, worst, spent, cap, estimated=False):
-        """('ok' | 'exceeded' | 'held', charged micros): held; the spend leaves no room for this call; only other calls' holds are in the way."""
+    async def take(self, key, call_id, worst, spent, cap, estimated=False, month_gate=None):
+        """('ok' | 'exceeded' | 'held' | 'month', charged micros): held; the spend leaves no room for this call; only other calls' holds are in the way; the company's month
+        is used up (DECISIONS 180). month_gate is (gate, company, 'YYYY-MM') for an estimated call, see _SQL_TAKE."""
         db = await self._db()
+        gate, org, month = month_gate or ("none", None, None)
         try:
             await db.execute_raw(_SQL_ENSURE, key)
             await db.execute_raw(_SQL_SWEEP, key)
-            if await db.query_raw(_SQL_TAKE, key, worst, spent, cap, call_id, HOLD_SECONDS, bool(estimated)):
+            if await db.query_raw(_SQL_TAKE, key, worst, spent, cap, call_id, HOLD_SECONDS, bool(estimated), gate, org, month):
                 return "ok", None
             rows = await db.query_raw(_SQL_READ, key)
+            month_used = False
+            if estimated and gate == "blocked":
+                month_used = True
+            elif estimated and gate == "slot":
+                month_used = any(str(r["over_used"]).lower() in ("true", "t", "1") for r in await db.query_raw(_SQL_MONTH_READ, org, month))
         except Exception:
             self._ready = False                             # the tables are created again on the next call if they went
             raise
         charged = int(rows[0]["charged_micros"]) if rows else 0
+        if month_used and max(charged, spent) + worst > cap:
+            return "month", charged                         # the call did not fit its key's room, and the month has no room for it to go over
         return ("exceeded" if max(charged, spent) + worst > cap else "held"), charged
 
     async def settle(self, call_id, cost, estimated=False):
-        """Ends a hold: its key is charged cost micro-dollars, or the whole hold when cost is None; 'estimated' adds the charge to what is shown as estimated."""
+        """Ends a hold: its key is charged cost micro-dollars, or the whole worst case of the call when cost is None; 'estimated' adds the charge to what is shown as estimated."""
         db = await self._db()
         try:
             rows = await db.query_raw(_SQL_SETTLE, call_id, -1 if cost is None else cost, bool(estimated))
@@ -564,18 +597,19 @@ def _usage_tokens(kwargs, response_obj):
 
 def _settled_cost(state, cost, tokens, alias):
     """(cost in USD or None for the whole hold, estimated): LiteLLM's cost when it priced the call; otherwise what the provider's reported usage costs at
-    the dearest known rate of the model's family, flagged estimated; the whole hold, flagged estimated, when the provider reported no usage. A call that
-    used tokens never settles at $0."""
+    the dearest known rate of the model's family, flagged estimated (cache tokens at the input rate); the whole hold, flagged estimated, when the provider reported no usage
+    or usage of all zeros. A call that used tokens never settles at $0."""
     if cost is not None and cost > 0:
         return cost, bool(state.get("estimated"))
     if tokens is None:
         return None, True                                   # no usage reported, no cost: the whole hold
     prompt, completion, read, write = tokens
-    if prompt + completion <= 0:
-        return 0.0, False
+    if prompt + completion + read + write <= 0:
+        return None, True                                   # usage of all zeros is no usage: a call that answered is never settled at $0, it is charged the whole hold
     deployment = next(iter(_deployments_of(alias)), None)
     rate_in, rate_out, per_call = _dearest_known(_model_label(deployment) or alias)
-    return max(prompt, 0) * rate_in + max(completion, 0) * rate_out + per_call, True
+    # Cache reads and writes are charged at the input rate (the dearest input-side rate of the family already includes its cache-write rates): cached tokens are not free.
+    return max(prompt, 0) * rate_in + max(completion, 0) * rate_out + (max(read, 0) + max(write, 0)) * rate_in + per_call, True
 
 
 # ---------------------------------------------------------------- 4a. fresh prices: AWS's price list, LiteLLM's upstream cost map
@@ -742,34 +776,85 @@ def _bundled_prices():
     return _BUNDLED
 
 
+def _raise_only(fresh, current):
+    """The upstream entry with every cost no lower than the one already known: the upstream map may fill a missing price or raise one, never lower it
+    (only AWS's price list, or a verified override, may lower a price)."""
+    out = dict(fresh)
+    for name, known in (current or {}).items():
+        if "cost" in name and _is_number(known) and known > 0 and _is_number(out.get(name)) and out[name] < known:
+            out[name] = known
+    return out
+
+
+def _zero_priced(entry):
+    """Whether an upstream entry carries a base price that is zero or negative: for a model this proxy serves that is a gap or a free tier, not a price."""
+    return any(name in entry and (not _is_number(entry[name]) or entry[name] <= 0) for name in ("input_cost_per_token", "output_cost_per_token"))
+
+
 def _apply_cost_map(candidate):
     """Registers a validated upstream cost map, and refreshes the entry LiteLLM's router copied for each deployment (it copies at start, so it would stay stale).
-    A deployment with prices of its own, and a model this guard holds an estimate for until a price appears, are handled by the same rule as a bundled price."""
+    The upstream map only fills in a missing price or raises one: it never lowers a price, never replaces Rovara's verified override (rovara_price_override), and a price
+    of zero for a model this proxy serves is not registered. A deployment with prices of its own, and a model this guard holds an estimate for until a price
+    appears, are handled by the same rule as a bundled price."""
     import litellm
     from litellm.proxy.proxy_server import llm_router
-    entries = {k: v for k, v in candidate.items() if k != "sample_spec" and isinstance(v, dict)}
-    litellm.register_model(entries)
-    for deployment in (llm_router.get_model_list() if llm_router is not None else None) or []:
+    deployments = (llm_router.get_model_list() if llm_router is not None else None) or []
+    served, protected, current = set(), set(), []
+    for deployment in deployments:
         model = (deployment.get("litellm_params") or {}).get("model")
-        if not isinstance(model, str) or _own_prices(deployment):
+        if not isinstance(model, str):
+            continue
+        served |= {model, _stripped(model)}
+        if (deployment.get("model_info") or {}).get("rovara_price_override") is True:
+            protected |= {model, _stripped(model), *_price_keys(deployment)}
+    entries = {}
+    for key, value in candidate.items():
+        if key == "sample_spec" or not isinstance(value, dict) or key in protected or (key in served and _zero_priced(value)):
+            continue
+        entries[key] = _raise_only(value, litellm.model_cost.get(key))
+    for deployment in deployments:
+        current.append(_current_entry(deployment))          # before the register below changes what the cost map holds
+    litellm.register_model(entries)
+    for deployment, known in zip(deployments, current):
+        model = (deployment.get("litellm_params") or {}).get("model")
+        if not isinstance(model, str) or _own_prices(deployment) or model in protected:
             continue
         fresh = entries.get(model) or entries.get(_stripped(model))
         if fresh is not None and _is_number(fresh.get("input_cost_per_token")) and fresh["input_cost_per_token"] > 0:
+            fresh = _raise_only(fresh, known)
             litellm.register_model({key: dict(fresh) for key in _price_keys(deployment)})
             for key in _price_keys(deployment):
                 _ESTIMATED.pop(key, None)
     _CAUTION_CACHE.clear()
 
 
-def _fetch_json(url, host):
-    """One fixed https host, a time limit and a size limit. Run in a thread (urllib blocks)."""
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A price source that answers with a redirect is refused: the fixed host is the only place a price may come from."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("a price source answered with a redirect")
+
+
+def _fetch_json(url, host, opener=None):
+    """One fixed https host (no redirect, and the final address checked), a total deadline for the whole read and a size limit (smaller for LiteLLM's map). Run in a thread (urllib blocks)."""
     if not url.startswith(f"https://{host}/"):
         raise ValueError("not a price source")
-    with urllib.request.urlopen(urllib.request.Request(url, headers={"user-agent": "rovara-price-refresh"}), timeout=PRICE_FETCH_TIMEOUT_SECONDS) as reply:
-        body = reply.read(PRICE_FILE_MAX_BYTES + 1)
-    if len(body) > PRICE_FILE_MAX_BYTES:
-        raise ValueError("the price file is too large")
-    return json.loads(body)
+    limit = LITELLM_MAP_MAX_BYTES if host == "raw.githubusercontent.com" else PRICE_FILE_MAX_BYTES
+    deadline = _time.monotonic() + PRICE_FETCH_DEADLINE_SECONDS
+    opener = opener or urllib.request.build_opener(_NoRedirect)
+    body = bytearray()
+    with opener.open(urllib.request.Request(url, headers={"user-agent": "rovara-price-refresh"}), timeout=PRICE_FETCH_TIMEOUT_SECONDS) as reply:
+        if not str(reply.geturl()).startswith(f"https://{host}/"):
+            raise ValueError("the price source answered from another address")
+        while True:
+            chunk = reply.read(65_536)
+            if not chunk:
+                break
+            body += chunk
+            if len(body) > limit:
+                raise ValueError("the price file is too large")
+            if _time.monotonic() > deadline:
+                raise ValueError("the price file did not arrive before its deadline")
+    return json.loads(bytes(body))
 
 
 async def _refresh_prices(fetch=None):
@@ -873,6 +958,19 @@ def _timed_out(exc):
     return getattr(exc, "status_code", None) in (408, 499) or "Timeout" in name or "Cancelled" in name
 
 
+def _month_gate(user_api_key_dict, worst):
+    """DECISIONS 180: (gate, company, 'YYYY-MM') for an estimated call, or None when the key knows no company month cap (then only the key's own rule holds).
+    'blocked': the company's month is at or over its cap. 'slot': the call's worst case could pass the month's cap. 'none': it cannot."""
+    org = getattr(user_api_key_dict, "team_id", None)
+    cap = getattr(user_api_key_dict, "team_max_budget", None)
+    if not isinstance(org, str) or not org or not _is_number(cap) or cap <= 0:
+        return None
+    month_limit = int(math.floor(float(cap) * _MICROS + 1e-6))
+    month_spent = _micros_up(getattr(user_api_key_dict, "team_spend", 0) or 0)
+    gate = "blocked" if month_spent >= month_limit else ("slot" if month_spent + worst > month_limit else "none")
+    return gate, org, _time.strftime("%Y-%m", _time.gmtime())
+
+
 class RovaraGuard(CustomLogger):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -916,11 +1014,16 @@ class RovaraGuard(CustomLogger):
         call_id = data.get("litellm_call_id")
         if not isinstance(call_id, str) or not call_id:
             call_id = data["litellm_call_id"] = str(_uuid.uuid4())
+        gate = _month_gate(user_api_key_dict, worst) if estimated else None
         try:
-            verdict, charged = await _LEDGER.take(key, call_id, worst, spent, limit, estimated)
+            verdict, charged = await (_LEDGER.take(key, call_id, worst, spent, limit, estimated, month_gate=gate) if gate is not None else _LEDGER.take(key, call_id, worst, spent, limit, estimated))
         except Exception as e:
             print(f"rovara_guard: budget hold failed ({type(e).__name__}); the call is refused", file=sys.stderr, flush=True)
             raise _proxy_error(route, 503, "budget_unavailable", "the task budget could not be checked; try again shortly")
+        if verdict == "month":
+            # DECISIONS 180: the shape the worker reads as "the company's month is spent" (model-runtime budget.ts: Team=).
+            raise _proxy_error(route, 422, "budget_exceeded", f"Budget has been exceeded! Team={gate[1]} Max budget: {float(getattr(user_api_key_dict, 'team_max_budget', 0) or 0):.6f}, "
+                               f"this call could cost up to {worst / _MICROS:.6f}")
         if verdict == "exceeded" and estimated and max(charged or 0, spent) < limit:
             verdict = "held"                                # an estimated hold the room cannot take while the task has not overrun: only an earlier call's hold is in the way
         if verdict == "exceeded":
