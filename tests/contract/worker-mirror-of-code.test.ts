@@ -3,7 +3,7 @@
 // KNOWN differences below, named by a line it holds. A new difference (Code's next change not mirrored, or a Cloud edit that was not meant) fails here until it is mirrored or listed with its reason. A listed
 // difference that no longer exists fails too, so the list never goes stale.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -40,6 +40,30 @@ const KNOWN: Readonly<Record<string, readonly Known[]>> = {
     { reason: "Code only: the mongodb helper family", line: "mongodb: { prepare: () => ({ env: [] }) }," },
     { reason: "Cloud only (switch `pj`): `companyImageOf`", line: "function companyImageOf(reference: string, registry: string): string {" },
     { reason: "Cloud and Code differ in which image a helper starts (company image reference against imageReferences)", line: "plans.push({ request, index, entry, name: plainName(request.name)" },
+  ],
+  // TE-B9 (O38, public PR #510): the never-commit rule for Rovara's own working files. Cloud has it first (the pin does not carry it yet); the TE-B9 lines below leave the list when the pin is refreshed past that PR.
+  "isolated-git.ts": [
+    { reason: "TE-B9, not in Code's pin yet: the list import", line: 'import { ROVARA_NEVER_COMMIT_EXCLUDE } from "./never-commit-list.js";' },
+    { reason: "TE-B9, not in Code's pin yet: the note above the snapshot's excludes", line: "// TE-B9: every snapshot also leaves out Rovara's own working files" },
+    { reason: "TE-B9, not in Code's pin yet: the first `add --all` form excludes the list", line: '...ROVARA_NEVER_COMMIT_EXCLUDE, ...hidden], { index' },
+    { reason: "TE-B9, not in Code's pin yet: the pathspec-file form excludes the list", line: "...ROVARA_NEVER_COMMIT_EXCLUDE, ...hidden, ...gitlinks" },
+    { reason: "Cloud's wording of the lessons-replay note (older than Code's)", line: "Lane 7 (lessons replay, the file arm)" },
+  ],
+  "publish.ts": [
+    { reason: "Cloud imports `WorkerInvocation` from its own contracts", line: 'import { type WorkerInvocation } from "@agentx/cloud-contracts";' },
+    { reason: "TE-B9, not in Code's pin yet: the guard and list imports", line: 'import { assertNoRovaraWorkingFiles, unstageRovaraWorkingFiles } from "./never-commit-guard.js";' },
+    { reason: "TE-B9, not in Code's pin yet: the final check on the commit about to be pushed", line: "await assertNoRovaraWorkingFiles(git, commit, publicationBase);" },
+    { reason: "TE-B9, not in Code's pin yet: the ordinary publication's add excludes the list and takes a force-added working file out of the index", line: "...ROVARA_NEVER_COMMIT_EXCLUDE]);" },
+  ],
+  "maintain-pull-request.ts": [
+    { reason: "Cloud imports `WorkerInvocation` from its own contracts", line: 'import { type WorkerInvocation } from "@agentx/cloud-contracts";' },
+    { reason: "TE-B9, not in Code's pin yet: the guard and list imports", line: 'import { assertPushCarriesNoRovaraWorkingFiles, unstageRovaraWorkingFiles } from "./never-commit-guard.js";' },
+    { reason: "Cloud only: `workflowAdopt` (Continue in your own tool: a Recheck of a head pushed outside Rovara) joins the workflow-task branch", line: "invocation.payload.workflowAdopt !== undefined) {" },
+    { reason: "Cloud only: `workflowAdopt` returns the adoption before anything is merged or pushed", line: "if (invocation.payload.workflowAdopt !== undefined) return adoptOutsideHead(" },
+    { reason: "TE-B9, not in Code's pin yet: a fix round's add excludes the list and unstages a force-added working file", line: 'CANDIDATE_EXCLUDE_PYTHON_USER_SITE_PATHSPEC, ...ROVARA_NEVER_COMMIT_EXCLUDE]);' },
+    { reason: "Cloud only: `adoptOutsideHead`", line: "async function adoptOutsideHead(" },
+    { reason: "Cloud's wording of the push note (names the CodeBuild validation branch)", line: "a CodeBuild validation branch) goes through here" },
+    { reason: "TE-B9, not in Code's pin yet: every push also carries none of Rovara's working files", line: 'await assertPushCarriesNoRovaraWorkingFiles((args) => git(directory, args), "HEAD");' },
   ],
   "service-usage-record.ts": [
     { reason: "Cloud only: the front's markers (test-services-front-markers.ts)", line: 'import { frontMarkerOfLedger, frontMarkerWord } from "@agentx/cloud-contracts";' },
@@ -86,5 +110,20 @@ describe("Cloud's copies of Code's worker files", () => {
     const drifted = cloud.replace("export const REPO_ENDPOINT_NAMES_MAX = 128;", "export const REPO_ENDPOINT_NAMES_MAX = 129;");
     expect(drifted).not.toBe(cloud);
     expect(hunks(drifted, normalise(readFileSync(join(CODE, "service-env.ts"), "utf8"))).length).toBeGreaterThan(0);
+  });
+});
+
+describe("TE-B9: the never-commit files the pin does not carry yet", () => {
+  const PENDING = ["never-commit-guard.ts"] as const;
+  it.each(PENDING)("%s is Cloud's own until the pin carries Code's copy (then list its differences above and delete never-commit-list.ts)", (file) => {
+    expect(existsSync(join(CODE, file)), `${file} is in the pin now: move it to KNOWN, import the list from @rovara-code/contracts and delete packages/worker/src/never-commit-list.ts`).toBe(false);
+    expect(existsSync(join(CLOUD, file))).toBe(true);
+  });
+  it("the list copy is Code's contracts file, word for word, once the pin has it", () => {
+    const code = "vendor/rovara-code/packages/contracts/src/never-commit.ts";
+    expect(existsSync(code), "the pin carries never-commit.ts: delete packages/worker/src/never-commit-list.ts and import from @rovara-code/contracts").toBe(false);
+    // Until then: the copy is the file public PR #510 adds, behind a three-line note. Its content is the list; a change here must be made in Code first.
+    const copy = readFileSync(join(CLOUD, "never-commit-list.ts"), "utf8");
+    expect(copy.split("\n").slice(0, 3).join("\n")).toContain("CLOUD COPY of Code's");
   });
 });
