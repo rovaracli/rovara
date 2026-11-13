@@ -48,6 +48,44 @@
 set -u
 export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# Total wall-clock cap, INCLUDING cleanup and the final KILL grace. Decimal
+# seconds only: SU1_TIMEOUT_SECONDS defaults to 300 (10..900), and
+# SU1_DOCKER_TIMEOUT_SECONDS defaults to 60 (1..60). Invalid values exit 2.
+# An overall timeout exits 124 (TERM) or 137 (KILL); ordinary exits are unchanged.
+# The last eight seconds are reserved: six for best-effort cleanup, one for
+# an inner TERM->KILL, and one for the supervisor's final KILL. A hard kill
+# may leave Docker objects (not clients); the next run's label sweep repairs
+# them. No extra files are created. Both timeout layers stay in the caller's
+# process group so an outer group TERM/KILL reaches every child.
+SU1_TIMEOUT_SECONDS=${SU1_TIMEOUT_SECONDS-300}
+SU1_DOCKER_TIMEOUT_SECONDS=${SU1_DOCKER_TIMEOUT_SECONDS-60}
+if [[ ! "$SU1_TIMEOUT_SECONDS" =~ ^[1-9][0-9]{0,2}$ ]] ||
+   [[ $SU1_TIMEOUT_SECONDS -lt 10 || $SU1_TIMEOUT_SECONDS -gt 900 ]]; then
+  printf 'SU1 ERROR SU1_TIMEOUT_SECONDS wants seconds from 10 to 900\n'; exit 2
+fi
+if [[ ! "$SU1_DOCKER_TIMEOUT_SECONDS" =~ ^[1-9][0-9]?$ ]] ||
+   [[ $SU1_DOCKER_TIMEOUT_SECONDS -gt 60 ]]; then
+  printf 'SU1 ERROR SU1_DOCKER_TIMEOUT_SECONDS wants seconds from 1 to 60\n'; exit 2
+fi
+export SU1_TIMEOUT_SECONDS SU1_DOCKER_TIMEOUT_SECONDS
+
+# Export one function rather than re-entering through a caller-set environment
+# marker (which could accidentally bypass the supervisor). No new session or
+# process group is created, and the original arguments/exit status are kept.
+su1_main() {
+set -u
+SU1_END=$((SECONDS + SU1_TIMEOUT_SECONDS - 2))
+SU1_CLEANING=0
+
+dk() {
+  local remaining=$((SU1_END - SECONDS - 1)) limit=$SU1_DOCKER_TIMEOUT_SECONDS
+  # Cleanup shares the hard deadline but can spend the reserved six seconds.
+  if [[ $SU1_CLEANING -eq 0 ]]; then remaining=$((remaining - 6)); fi
+  [[ $remaining -gt 0 ]] || return 124
+  (( limit <= remaining )) || limit=$remaining
+  timeout --foreground --kill-after=1 "$limit" "$DOCKER" "$@"
+}
+
 EXPECT_SHA=""
 EXPECT_LEFT_WS=""
 EXPECT_SURVIVOR=""
@@ -108,18 +146,18 @@ PROBE_END
 
 # ---- cleanup: everything this run started, by its label
 cleanup() {
+  SU1_CLEANING=1
   [[ -n "${DOCKER:-}" && -x "${DOCKER:-}" ]] || return 0
   local ids
-  ids=$("$DOCKER" ps -a -q --filter "label=$SU1_LABEL" 2>/dev/null) || ids=""
-  [[ -z "$ids" ]] || "$DOCKER" rm -f $ids >/dev/null 2>&1
-  ids=$("$DOCKER" network ls -q --filter "label=$SU1_LABEL" 2>/dev/null) || ids=""
-  [[ -z "$ids" ]] || "$DOCKER" network rm $ids >/dev/null 2>&1
+  ids=$(dk ps -a -q --filter "label=$SU1_LABEL" 2>/dev/null) || ids=""
+  [[ -z "$ids" ]] || dk rm -f $ids >/dev/null 2>&1
+  ids=$(dk network ls -q --filter "label=$SU1_LABEL" 2>/dev/null) || ids=""
+  [[ -z "$ids" ]] || dk network rm $ids >/dev/null 2>&1
   return 0
 }
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT TERM HUP
 
-dk() { "$DOCKER" "$@"; }
 field() { printf '%s\n' "$1" | awk -v l="$2" '$1==l{print $2; exit}'; }               # status word of a probe line
 rcode_of() { printf '%s\n' "$1" | sed -n "s/^$2 answer rcode=\([0-9]*\) an=.*/\1/p" | head -1; }
 an_of() { printf '%s\n' "$1" | sed -n "s/^$2 answer rcode=[0-9]* an=\([0-9]*\).*/\1/p" | head -1; }
@@ -138,7 +176,7 @@ pkts() { iptables -L DOCKER-USER -n -v -x 2>/dev/null | grep -E -m1 -- "$1" | aw
 
 # ---- host facts
 HOST=$(hostname 2>/dev/null || echo unknown)
-printf 'SU1 START run=%s host=%s kernel=%s docker=%s image=%s sandbox_image_set=%s\n' "$RUN" "$HOST" "$(uname -r)" "$([[ -n "$DOCKER" ]] && "$DOCKER" version --format '{{.Server.Version}}' 2>/dev/null || echo none)" "$([[ -n "$WORKER_IMAGE" ]] && echo yes || echo no)" "$([[ -n "$SANDBOX_IMAGE" ]] && echo yes || echo no)"
+printf 'SU1 START run=%s host=%s kernel=%s docker=%s image=%s sandbox_image_set=%s\n' "$RUN" "$HOST" "$(uname -r)" "$([[ -n "$DOCKER" ]] && dk version --format '{{.Server.Version}}' 2>/dev/null || echo none)" "$([[ -n "$WORKER_IMAGE" ]] && echo yes || echo no)" "$([[ -n "$SANDBOX_IMAGE" ]] && echo yes || echo no)"
 
 READY=1
 if [[ $EUID -ne 0 ]]; then READY=0; REASON="not root"; fi
@@ -175,7 +213,7 @@ else
 fi
 
 # ---- the throwaway runs: two networks, a helper on each
-used_subnets=$({ dk network ls -q 2>/dev/null | xargs -r "$DOCKER" network inspect --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null; ip -4 route 2>/dev/null | awk '{print $1}'; } | tr ' ' '\n')
+used_subnets=$({ net_ids=$(dk network ls -q 2>/dev/null); for net_id in $net_ids; do dk network inspect --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' "$net_id" 2>/dev/null; done; ip -4 route 2>/dev/null | awk '{print $1}'; } | tr ' ' '\n')
 SLOT_A=""; SLOT_B=""; SLOT_HELD=""
 # check 8 after a kill and a restart: the killed run's slot must be free again, and the first throwaway run takes exactly that slot to show it is reused
 if [[ -n "$EXPECT_SLOT" ]]; then
@@ -204,7 +242,7 @@ sleep 3
 A="172.29.$SLOT_A"; B="172.29.$SLOT_B"
 
 probe() { # probe <net> <ip> <dns> <config-json>   -> prints the probe's lines
-  timeout 60 "$DOCKER" run --rm --label "$SU1_LABEL" --network "$1" --ip "$2" --dns "$3" --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges --read-only \
+  dk run --rm --label "$SU1_LABEL" --network "$1" --ip "$2" --dns "$3" --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges --read-only \
     --pids-limit 64 --memory 128m --memory-swap 128m --cpus 0.5 --entrypoint "$NODE" "$WORKER_IMAGE" -e "$PROBE_JS" "$4" 2>&1
 }
 t() { printf '{"label":"%s","kind":"%s"%s}' "$1" "$2" "${3:+,$3}"; }   # t <label> <kind> <json members>
@@ -398,3 +436,9 @@ fi
 
 printf 'SU1 SUMMARY pass=%s fail=%s total=11 run=%s host=%s\n' "$PASS" "$FAIL" "$RUN" "$HOST"
 [[ $FAIL -eq 0 ]]
+
+}
+export -f su1_main
+# The cap includes the one-second escalation; never use timeout's default
+# separate process group here. This also bounds non-Docker work in the script.
+exec timeout --foreground --kill-after=1 "$((SU1_TIMEOUT_SECONDS - 1))" /bin/bash -c 'su1_main "$@"' su1 "$@"

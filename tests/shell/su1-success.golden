@@ -1,0 +1,13 @@
+SU1 START run=010203040506 host=fixture-host kernel=fixture-kernel docker=25.fixture image=yes sandbox_image_set=yes
+SU1 1 PASS br_netfilter | recorded host=fixture-host kernel=fixture-kernel docker=25.fixture br_netfilter=loaded bridge-nf-call-iptables=1
+SU1 2 PASS docker_user_order | order ok with a run live; DOCKER-USER digest=f44a1010d36fce6c4b922bacb9fa01f243b320b19daf47a5f9829fe338f5c19b (rerun with --expect-docker-user-sha after a Docker restart and after a host restart)
+SU1 3 PASS helper_reply_path | sandbox 172.29.250.3 got a NOERROR answer for registry.npmjs.org from 172.29.250.2 over UDP and TCP; the helper runs as uid 1000 and bound :53
+SU1 4 PASS sandbox_walls | gateway (any of 7 probes), the host's addresses, the VPC and its resolvers, 172.29.249.2:53 of a second run and the helper off port 53 all timed out (dropped); 169.254.169.254 not open; 15 probes; counters moved
+SU1 5 PASS dns_answers | public name NOERROR, su1-010203040506.invalid rcode=3 unchanged over UDP and TCP and listed in blocked.json (a REFUSED answer cannot be produced read-only)
+SU1 6 PASS no_fallback | resolv.conf is 127.0.0.11 with ExtServers [172.29.250.2] only; only 172.29.250.3 is served (172.29.250.4 is not); with the helper stopped nothing resolves (timeout)
+SU1 7 PASS bridges | bridges rvbs250 and rvbs249 exist (named as boot.sh walls rvb*); 0 verifier bridge(s) compared, counters unchanged (none present: run again while a verifier run is live on another worker to compare)
+SU1 8 PASS leftover_sweep | 0 setup helper(s) and 0 setup network(s) of the worker, none orphaned: none; for the full check kill the worker mid-run, restart it, then rerun with --expect-no-leftovers-for LABEL --expect-survivor NETWORK --expect-slot-free N, taking LABEL, NETWORK and N from this line before the kill
+SU1 9 FAIL budget_with_zero_cost_proxy | not judged here: needs a live setup run on a proxy-routed model; judged by setup-agent-su1-report.ts with --evidence9 and the answer of that run
+SU1 10 FAIL stale_untracked_project_json | not judged here: needs a live setup run that wrote an untracked kalmius/project.json; judged by setup-agent-su1-report.ts with --evidence10, the answer of that run, and --stale-marker
+SU1 11 PASS public_ip_egress | no TLS handshake with 1.1.1.1 or 8.8.8.8 for an unlisted server name (pub_ip_tls_1=timeout pub_ip_tls_2=timeout pub_ip_tcp_1=timeout ); egress to unlisted sites is enforced below the DNS watcher
+SU1 SUMMARY pass=9 fail=2 total=11 run=010203040506 host=fixture-host
