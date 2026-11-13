@@ -46,24 +46,32 @@ ns["SETTLE_GRACE_SECONDS"] = 0.01
 class Ledger:
     """The Postgres ledger's meaning, in memory: a take against the cap (an ESTIMATED hold that does not fit goes ahead once, while the key has not overrun and nothing else is held,
     holding only the room that is left: DECISIONS 165), and a settle that records the charge and whether it is an estimate."""
-    def __init__(self): self.rows, self.holds, self.settled, self.worsts, self.slots, self.gates = {}, {}, [], {}, set(), {}
+    def __init__(self): self.rows, self.holds, self.settled, self.worsts, self.months, self.gates = {}, {}, [], {}, {}, {}
     async def take(self, key, call_id, worst, spent, cap, estimated=False, month_gate=None):
         row = self.rows.setdefault(key, {"charged": 0, "held": 0})
         known = max(row["charged"], spent)
         self.worsts[call_id] = worst
-        self.gates[call_id] = month_gate[0] if month_gate else None
+        self.gates[call_id] = bool(month_gate)
+        mrow, in_month = None, True
+        if month_gate:
+            org, month, month_limit, month_spent = month_gate
+            mrow = self.months.setdefault((org, month), {"held": 0, "charged": 0, "over": False})
+            used = max(mrow["charged"], month_spent) + mrow["held"]
+            in_month = not estimated or used + worst <= month_limit
+            if estimated and used >= month_limit: return "month", row["charged"]
         if known + row["held"] + worst <= cap: reserve = worst
-        elif estimated and known < cap and row["held"] == 0:
-            gate = month_gate[0] if month_gate else "none"
-            if gate == "blocked" or (gate == "slot" and month_gate[1:] in self.slots): return "month", row["charged"]
-            if gate == "slot": self.slots.add(month_gate[1:])
-            reserve = min(worst, max(cap - known, 0))
+        elif estimated and known < cap and row["held"] == 0: reserve = min(worst, max(cap - known, 0))
         else: return ("exceeded" if known + worst > cap else "held"), row["charged"]
-        row["held"] += reserve; self.holds[call_id] = (key, reserve); return "ok", None
+        if mrow is not None:
+            if not in_month and mrow["over"]: return "slot", max(month_limit - used, 0)
+            mrow["held"] += worst
+            if not in_month: mrow["over"] = True
+        row["held"] += reserve; self.holds[call_id] = (key, reserve, worst, (month_gate[0], month_gate[1]) if month_gate else None); return "ok", None
     async def settle(self, call_id, cost, estimated=False):
-        key, reserved = self.holds.pop(call_id)
+        key, reserved, worst, month_key = self.holds.pop(call_id)
         charge = reserved if cost is None else cost
         row = self.rows[key]; row["held"] -= reserved; row["charged"] += charge
+        if month_key: self.months[month_key]["held"] -= worst; self.months[month_key]["charged"] += charge
         self.settled.append({"micros": charge, "estimated": bool(estimated), "whole_hold": cost is None})
 ledger = ns["_LEDGER"] = Ledger()
 guard = ns["RovaraGuard"]()
@@ -108,7 +116,7 @@ async def run(step, n):
     try:
         await guard.async_pre_call_hook(Key(step.get("cap", 100.0), step.get("token", "k1"), step.get("team")), None, data, "acompletion")
     except ProxyException as e:
-        return {"status": int(e.code), "type": e.type, **({"message": e.message} if step.get("want_message") else {})}
+        return {"status": int(e.code), "type": e.type, **({"message": e.message, "headers": e.headers} if step.get("want_message") else {})}
     out = {"status": 200, "held": ledger.worsts["call-%d" % n], "reserved": ledger.holds["call-%d" % n][1], "prices": list(ns["_hold_prices"](step["model"]))[1:], "gate": ledger.gates["call-%d" % n]}
     if "usage" in step or "cost" in step or step.get("cut"):
         if step.get("cut"): await guard.async_post_call_failure_hook(data, Exception("cut"), None); await guard._finish("call-%d" % n, None, True)
@@ -122,7 +130,7 @@ json.dump(asyncio.run(main()), sys.stdout)
 `;
 
 type Step = Record<string, unknown>;
-type Result = { gate?: string | null; message?: string; refused?: boolean; error?: string; detail?: string; fetched?: unknown; status?: number; type?: string; held?: number; reserved?: number; prices?: boolean[]; settled?: { micros: number; estimated: boolean; whole_hold: boolean } | null; refresh?: Record<string, string>; entries?: Record<string, Record<string, number> | null> };
+type Result = { gate?: boolean; headers?: Record<string, string>; message?: string; refused?: boolean; error?: string; detail?: string; fetched?: unknown; status?: number; type?: string; held?: number; reserved?: number; prices?: boolean[]; settled?: { micros: number; estimated: boolean; whole_hold: boolean } | null; refresh?: Record<string, string>; entries?: Record<string, Record<string, number> | null> };
 
 function run(scenario: { deployments: unknown[]; model_cost: Record<string, unknown>; steps: Step[]; min_models?: number }): Result[] {
   const directory = mkdtempSync(join(tmpdir(), "rovara-guard-unpriced-"));
@@ -180,12 +188,19 @@ describe("a model with no price is held and settled cautiously, never refused", 
     expect(calls[1]!.settled).toEqual({ micros: calls[1]!.held, estimated: true, whole_hold: true });
   });
 
-  itPython("charges cache read and write tokens at the input rate when it replaces LiteLLM's missing cost", () => {
-    const [call] = run({ deployments: [NEW_CLAUDE], model_cost: KNOWN, steps: [{ op: "call", model: "us.anthropic.claude-haiku-9", max_tokens: 1000, cost: null, usage: { prompt_tokens: 100, completion_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 500 } }] });
-    // (100 + 1,000 + 500) x $11 per million + 10 x $41.25 per million = $0.0180125: cached tokens are not free.
-    expect(call!.settled).toMatchObject({ estimated: true, whole_hold: false });
-    expect(call!.settled!.micros).toBeGreaterThanOrEqual(18_012);
-    expect(call!.settled!.micros).toBeLessThanOrEqual(18_014);
+  itPython("charges cached tokens once, at the input rate, whichever way the usage counts them: inside prompt_tokens (LiteLLM's own usage on the OpenAI, Anthropic and Bedrock routes) or beside input_tokens (Anthropic's)", () => {
+    const usages = [
+      { prompt_tokens: 1600, completion_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 500 },     // LiteLLM's usage on the Anthropic and Bedrock routes
+      { prompt_tokens: 1600, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 1000 } },                      // OpenAI's
+      { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 1000, cache_creation_input_tokens: 500 },           // Anthropic's own
+    ];
+    const calls = run({ deployments: [NEW_CLAUDE], model_cost: KNOWN, steps: usages.map((usage) => ({ op: "call", model: "us.anthropic.claude-haiku-9", max_tokens: 1000, cost: null, usage })) });
+    for (const call of calls) {
+      // 1,600 input tokens x $11 per million + 10 x $41.25 per million = $0.0180125: the cached ones are charged, and only once.
+      expect(call.settled).toMatchObject({ estimated: true, whole_hold: false });
+      expect(call.settled!.micros).toBeGreaterThanOrEqual(18_012);
+      expect(call.settled!.micros).toBeLessThanOrEqual(18_014);
+    }
   });
 
   itPython("charges the whole hold, flagged estimated, when the provider reports usage of all zeros and LiteLLM has no cost, not $0", () => {
@@ -394,6 +409,23 @@ describe("fresh prices: LiteLLM's upstream cost map", () => {
     expect(fresh!.entries!["us.anthropic.claude-opus-4-8"]).toMatchObject({ input_cost_per_token: 5.5e-6, output_cost_per_token: 2.75e-5 });
   });
 
+  itPython("replaces the guard's own estimate with a real upstream price, however much lower: the model is then priced at it, no longer estimated, with none of the estimate's cache rates left", () => {
+    const upstreamPrice = { litellm_provider: "openai", mode: "chat", input_cost_per_token: 2e-7, output_cost_per_token: 8e-7 };
+    const [estimated, refreshed, priced] = run({ deployments: [NEW_OPENAI], model_cost: withFiller, steps: [
+      { op: "call", model: "gpt-new", max_tokens: 1000 },
+      { op: "refresh", sources: { [GITHUB]: { ...withFiller, "gpt-new": upstreamPrice } }, inspect: ["gpt-new", "openai/gpt-new"] },
+      { op: "call", model: "gpt-new", max_tokens: 1000 },
+    ] });
+    expect(estimated).toMatchObject({ status: 200, prices: [true] });
+    expect(refreshed!.refresh!.litellm).toBe("ok");
+    for (const key of ["gpt-new", "openai/gpt-new"]) {
+      expect(refreshed!.entries![key], key).toMatchObject({ input_cost_per_token: 2e-7, output_cost_per_token: 8e-7 });
+      expect(Object.keys(refreshed!.entries![key]!), key).not.toContain("cache_read_input_token_cost");
+    }
+    expect(priced).toMatchObject({ status: 200, prices: [false] });
+    expect(priced!.held).toBeLessThan(2_000);                      // 1,000 tokens at $0.80 per million, not at the estimate's $180
+  });
+
   itPython("rejects an upstream price of zero for a served model: its entry is not registered, and the model stays held at an estimate", () => {
     const zero = { litellm_provider: "bedrock", mode: "chat", input_cost_per_token: 0, output_cost_per_token: 0 };
     const [fresh, call] = run({ deployments: [NEW_CLAUDE, deployment("us.anthropic.claude-sonnet-4-6", "bedrock/us.anthropic.claude-sonnet-4-6")], model_cost: withFiller, steps: [
@@ -432,29 +464,40 @@ describe("fresh prices: LiteLLM's upstream cost map", () => {
 describe("the company's month (DECISIONS 180)", () => {
   const team = (spend: number, cap = 1000) => ({ id: "org-1", cap, spend });
   const small = (step: Step): Step => ({ op: "call", model: "mystery", cap: 0.01, want_message: true, ...step });
+  const mystery = [deployment("mystery", "mystery")];
+  const CHEAP = { cost: 0.001, usage: { prompt_tokens: 10, completion_tokens: 10 } };      // the call that took the slot is over and cost little: the month has room again, but no slot
 
-  itPython("lets one estimated call from the company's keys pass the month's cap and refuses the next, from another key, as the company's budget being spent", () => {
-    // The month has $1 and $0.5 spent; the call's worst case (about $11.5) could pass it.
-    const calls = run({ deployments: [deployment("mystery", "mystery")], model_cost: KNOWN, steps: [
-      small({ token: "k1", team: team(0.5, 1) }), small({ token: "k2", team: team(0.5, 1) }),
-    ] });
-    expect(calls[0]).toMatchObject({ status: 200, gate: "slot" });
-    expect(calls[1]).toMatchObject({ status: 422, type: "budget_exceeded" });
-    expect(calls[1]!.message).toMatch(/^Budget has been exceeded! Team=org-1 /u);   // the shape the worker reads as the company's month (model-runtime budget.ts)
+  itPython("lets one estimated call from the company's keys pass the month's cap; the next, from another key, is refused like an overrun of its key, with the output limit the month's room pays for", () => {
+    // The month has $5 and nothing spent; the call's worst case (about $11.5) could pass it: the first call takes the month's one slot, and costs $0.001.
+    const calls = run({ deployments: mystery, model_cost: KNOWN, steps: [small({ token: "k1", team: team(0, 5), ...CHEAP }), small({ token: "k2", team: team(0, 5) })] });
+    expect(calls[0]).toMatchObject({ status: 200, gate: true });
+    expect(calls[1]).toMatchObject({ status: 422, type: "budget_max_tokens" });
+    expect(Number(calls[1]!.headers!["x-rovara-max-tokens"])).toBeGreaterThanOrEqual(4096);
+    expect(calls[1]!.message).not.toContain("Team=");
   });
 
-  itPython("refuses an estimated call that would go over its key's cap when the month is already at its cap", () => {
-    const [call] = run({ deployments: [deployment("mystery", "mystery")], model_cost: KNOWN, steps: [small({ team: team(1, 1) })] });
-    expect(call).toMatchObject({ status: 422, type: "budget_exceeded" });
-    expect(call!.message).toMatch(/^Budget has been exceeded! Team=org-1 /u);
+  itPython("says the company's month is spent (Team=) only when it is at its cap; with a slot taken and almost no room left it is the plain budget_exceeded of the key", () => {
+    const [blocked] = run({ deployments: mystery, model_cost: KNOWN, steps: [small({ team: team(1, 1) })] });
+    expect(blocked).toMatchObject({ status: 422, type: "budget_exceeded" });
+    expect(blocked!.message).toMatch(/^Budget has been exceeded! Team=org-1 /u);
+    const [first, second] = run({ deployments: mystery, model_cost: KNOWN, steps: [small({ token: "k1", team: team(0.5, 1), ...CHEAP }), small({ token: "k2", team: team(0.5, 1) })] });
+    expect(first).toMatchObject({ status: 200 });
+    expect(second).toMatchObject({ status: 422, type: "budget_exceeded" });
+    expect(second!.message).toMatch(/^Budget has been exceeded! Key=/u);
   });
 
-  itPython("takes no slot for a call whose worst case cannot pass the month; and a key with no company month keeps the one-call rule of DECISIONS 165", () => {
-    const calls = run({ deployments: [deployment("mystery", "mystery")], model_cost: KNOWN, steps: [
+  itPython("takes no slot for calls whose worst cases together fit the month, and a key with no company month keeps the one-call rule of DECISIONS 165", () => {
+    const calls = run({ deployments: mystery, model_cost: KNOWN, steps: [
       small({ token: "k1", team: team(0, 100_000) }), small({ token: "k2", team: team(0, 100_000) }), small({ token: "k3" }),
     ] });
     expect(calls.map((call) => call.status)).toEqual([200, 200, 200]);
-    expect(calls.map((call) => call.gate)).toEqual(["none", "none", null]);
+    expect(calls.map((call) => call.gate)).toEqual([true, true, false]);
+  });
+
+  itPython("counts the held worst case of calls in flight against the month: four estimated calls on a month with room for two get two", () => {
+    // Each call's worst case is about $11.5; the month has $30 and nothing spent: two fit (23), the third could pass the month and takes its one slot, the fourth is refused.
+    const calls = run({ deployments: mystery, model_cost: KNOWN, steps: [1, 2, 3, 4].map((n) => small({ token: `k${String(n)}`, team: team(0, 30) })) });
+    expect(calls.map((call) => call.status)).toEqual([200, 200, 200, 422]);
   });
 });
 

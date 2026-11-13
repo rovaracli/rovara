@@ -265,7 +265,7 @@ exec(compile(text[text.index("# ------------------------------------------------
 class Ledger:
     """The Postgres ledger's meaning, in memory. clock is moved by the scenarios to age holds."""
     def __init__(self): self.keys, self.holds, self.clock, self.lock = {}, {}, 0.0, asyncio.Lock()
-    async def take(self, key, call_id, worst, spent, cap, estimated=False):   # an estimated hold's overrun rule: tests/contract/model-proxy-unpriced.test.ts
+    async def take(self, key, call_id, worst, spent, cap, estimated=False, month_gate=None):   # an estimated hold's overrun rule: tests/contract/model-proxy-unpriced.test.ts
         await asyncio.sleep(random.random() / 1000)         # replicas reach the database in any order
         async with self.lock:
             row = self.keys.setdefault(key, {"charged": 0, "held": 0})

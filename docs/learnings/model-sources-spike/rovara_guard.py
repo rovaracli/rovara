@@ -277,61 +277,94 @@ _SCHEMA = (
     # that small room; it is charged the worst case instead (never less than the hold). Nullable and additive: a hold written without it (an older guard replica) is charged
     # its reserved amount, as before.
     "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS worst_micros bigint",
-    # One row per company and month: whether that month's cap has been passed by an overrun call (DECISIONS 180). A new table, so a guard that does not know it still works.
+    # The company's month as a ledger (DECISIONS 180): what its calls hold and were charged, and whether its one overrun call has been let through. A hold knows its company,
+    # month and whether it took the month's slot. All additive; a guard that does not know them still works.
     "CREATE TABLE IF NOT EXISTS rovara_budget.org_months (org text NOT NULL, month text NOT NULL, over_used boolean NOT NULL DEFAULT false,"
     " updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (org, month))",
+    "ALTER TABLE rovara_budget.org_months ADD COLUMN IF NOT EXISTS held_micros bigint NOT NULL DEFAULT 0",
+    "ALTER TABLE rovara_budget.org_months ADD COLUMN IF NOT EXISTS charged_micros bigint NOT NULL DEFAULT 0",
+    "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS org text",
+    "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS month text",
+    "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS slot boolean",
 )
-# An orphan (older than HOLD_SECONDS) leaves the holds and is added to what its key has been charged: the worst case of its call when that is more than the room it held
-# (an overrun call), else what it held. One statement: a hold is moved once. What leaves "held" is always what was reserved.
+# An orphan (older than HOLD_SECONDS) leaves the holds and is added to what its key and its company's month have been charged: the worst case of its call when that is more than the
+# room it held (an overrun call), else what it held. One statement per sweep: a hold is moved once. What leaves "held" is what was reserved (key) or the worst case (month). A swept slot stays taken.
 _SQL_OWED = "GREATEST(reserved_micros, COALESCE(worst_micros, reserved_micros))"
 _SQL_SWEEP = (
-    f"WITH gone AS (DELETE FROM rovara_budget.holds WHERE key_hash = $1::text AND expires_at < now() RETURNING reserved_micros, worst_micros),"
-    f" s AS (SELECT COALESCE(SUM(reserved_micros), 0)::bigint AS n, COALESCE(SUM({_SQL_OWED}), 0)::bigint AS owed FROM gone)"
-    " UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.owed, held_micros = k.held_micros - s.n, updated_at = now()"
-    " FROM s WHERE k.key_hash = $1::text AND s.n > 0")
+    "WITH gone AS (DELETE FROM rovara_budget.holds WHERE key_hash = $1::text AND expires_at < now() RETURNING reserved_micros, worst_micros, org, month),"
+    f" s AS (SELECT COALESCE(SUM(reserved_micros), 0)::bigint AS n, COALESCE(SUM({_SQL_OWED}), 0)::bigint AS owed FROM gone),"
+    " k AS (UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.owed, held_micros = k.held_micros - s.n, updated_at = now()"
+    " FROM s WHERE k.key_hash = $1::text AND s.n > 0 RETURNING 1 AS ok),"
+    f" mm AS (SELECT org, month, SUM(COALESCE(worst_micros, reserved_micros))::bigint AS w, SUM({_SQL_OWED})::bigint AS owed FROM gone WHERE org IS NOT NULL GROUP BY org, month)"
+    " UPDATE rovara_budget.org_months o SET held_micros = o.held_micros - mm.w, charged_micros = o.charged_micros + mm.owed, updated_at = now()"
+    " FROM mm, (SELECT count(*) AS n FROM k) kk WHERE o.org = mm.org AND o.month = mm.month")
 _SQL_SWEEP_ALL = (
-    f"WITH gone AS (DELETE FROM rovara_budget.holds WHERE expires_at < now() RETURNING key_hash, reserved_micros, worst_micros),"
-    f" s AS (SELECT key_hash, SUM(reserved_micros)::bigint AS n, SUM({_SQL_OWED})::bigint AS owed FROM gone GROUP BY key_hash)"
-    " UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.owed, held_micros = k.held_micros - s.n, updated_at = now()"
-    " FROM s WHERE k.key_hash = s.key_hash")
+    "WITH gone AS (DELETE FROM rovara_budget.holds WHERE expires_at < now() RETURNING key_hash, reserved_micros, worst_micros, org, month),"
+    f" s AS (SELECT key_hash, SUM(reserved_micros)::bigint AS n, SUM({_SQL_OWED})::bigint AS owed FROM gone GROUP BY key_hash),"
+    " k AS (UPDATE rovara_budget.keys k SET charged_micros = k.charged_micros + s.owed, held_micros = k.held_micros - s.n, updated_at = now()"
+    " FROM s WHERE k.key_hash = s.key_hash RETURNING 1 AS ok),"
+    f" mm AS (SELECT org, month, SUM(COALESCE(worst_micros, reserved_micros))::bigint AS w, SUM({_SQL_OWED})::bigint AS owed FROM gone WHERE org IS NOT NULL GROUP BY org, month)"
+    " UPDATE rovara_budget.org_months o SET held_micros = o.held_micros - mm.w, charged_micros = o.charged_micros + mm.owed, updated_at = now()"
+    " FROM mm, (SELECT count(*) AS n FROM k) kk WHERE o.org = mm.org AND o.month = mm.month")
 _SQL_FORGET = "DELETE FROM rovara_budget.keys WHERE held_micros = 0 AND updated_at < now() - interval '45 days'"
-_SQL_FORGET_MONTHS = "DELETE FROM rovara_budget.org_months WHERE updated_at < now() - interval '120 days'"
+_SQL_FORGET_MONTHS = "DELETE FROM rovara_budget.org_months WHERE held_micros = 0 AND updated_at < now() - interval '120 days'"
 _SQL_ENSURE = "INSERT INTO rovara_budget.keys (key_hash) VALUES ($1::text) ON CONFLICT (key_hash) DO NOTHING"
-# The take: the key's row is locked (FOR UPDATE), so two replicas taking at once are serialised and the second sees the first's hold. $7 is an ESTIMATED hold (a model with
-# no known price; its worst case is a guess): when it does not fit the room it goes ahead anyway, once, while the key has not overrun its budget and nothing else is held
-# (DECISIONS 165: the cap may be exceeded by at most one call), and it holds only the room that is left. After that call settles over the cap, every take is refused.
-# DECISIONS 180: the company's month has a say too. $8 is the month's gate for an estimated call: 'none' (no company month known, or this call cannot pass the month's cap), 'blocked' (the
-# month is already at or over its cap: no overrun), 'slot' (this call could pass the month's cap: it goes ahead only by taking the month's single slot, a row per company and month
-# that the first taker sets and every later one finds set; the row's own lock serialises two keys of one company taking at once). $9 is the company, $10 the month, 'YYYY-MM'.
+_SQL_ENSURE_MONTH = "INSERT INTO rovara_budget.org_months (org, month) VALUES ($1::text, $2::text) ON CONFLICT (org, month) DO NOTHING"
+# The take: the key's row is locked (FOR UPDATE), then the company's month row (always in that order), so two replicas taking at once are serialised and the second sees the first's hold.
+# $7 is an ESTIMATED hold (a model with no known price; its worst case is a guess): when it does not fit the room it goes ahead anyway, once, while the key has not overrun its budget
+# and nothing else is held (DECISIONS 165), and it holds only the room that is left. After that call settles over the cap, every take is refused.
+# DECISIONS 180: $8 company, $9 month 'YYYY-MM', $10 the month's cap, $11 LiteLLM's spend for it (NULL company: no month). Every call adds its worst case to the month's held. The month
+# used is GREATEST(charged, $11) + held. An estimated call whose worst case fits what is left of the month needs nothing; one that could pass the month's cap, whether it fits its key
+# or overruns it, goes ahead only by taking the month's single slot (over_used), and none goes ahead once the month is used up.
 _SQL_TAKE = (
     "WITH q AS (SELECT key_hash,"
     " (GREATEST(charged_micros, $3::bigint) + held_micros + $2::bigint <= $4::bigint) AS fits,"
-    " ($7::boolean AND $8::text <> 'blocked' AND GREATEST(charged_micros, $3::bigint) < $4::bigint AND held_micros = 0) AS overrun,"
+    " ($7::boolean AND GREATEST(charged_micros, $3::bigint) < $4::bigint AND held_micros = 0) AS overrun,"
     " LEAST($2::bigint, GREATEST($4::bigint - GREATEST(charged_micros, $3::bigint), 0)) AS room"
     " FROM rovara_budget.keys WHERE key_hash = $1::text FOR UPDATE),"
-    " o AS (INSERT INTO rovara_budget.org_months (org, month, over_used) SELECT $9::text, $10::text, true FROM q"
-    " WHERE q.overrun AND NOT q.fits AND $8::text = 'slot'"
-    " ON CONFLICT (org, month) DO UPDATE SET over_used = true, updated_at = now() WHERE NOT rovara_budget.org_months.over_used RETURNING 1 AS got),"
-    " k AS (UPDATE rovara_budget.keys t SET held_micros = t.held_micros + CASE WHEN q.fits THEN $2::bigint ELSE q.room END, updated_at = now()"
-    " FROM q WHERE t.key_hash = q.key_hash AND (q.fits OR (q.overrun AND ($8::text <> 'slot' OR EXISTS (SELECT 1 FROM o))))"
-    " RETURNING t.key_hash, CASE WHEN q.fits THEN $2::bigint ELSE q.room END AS reserved)"
-    " INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, worst_micros, expires_at)"
-    " SELECT $5::text, key_hash, reserved, $2::bigint, now() + make_interval(secs => $6::int) FROM k RETURNING call_id")
+    " m AS (SELECT GREATEST(charged_micros, $11::bigint) + held_micros AS used, over_used FROM rovara_budget.org_months"
+    " WHERE org = $8::text AND month = $9::text AND EXISTS (SELECT 1 FROM q) FOR UPDATE),"
+    " g AS (SELECT q.key_hash, q.fits, q.overrun, q.room,"
+    " ($8::text IS NOT NULL AND $7::boolean AND COALESCE(m.used, 0) >= $10::bigint) AS blocked,"
+    " ($8::text IS NOT NULL AND $7::boolean AND COALESCE(m.used, 0) + $2::bigint > $10::bigint) AS needs_slot,"
+    " COALESCE(m.over_used, false) AS slot_taken FROM q LEFT JOIN m ON true),"
+    " k AS (UPDATE rovara_budget.keys t SET held_micros = t.held_micros + CASE WHEN g.fits THEN $2::bigint ELSE g.room END, updated_at = now()"
+    " FROM g WHERE t.key_hash = g.key_hash AND (g.fits OR g.overrun) AND NOT g.blocked AND NOT (g.needs_slot AND g.slot_taken)"
+    " RETURNING t.key_hash, CASE WHEN g.fits THEN $2::bigint ELSE g.room END AS reserved, g.needs_slot),"
+    " o AS (UPDATE rovara_budget.org_months o SET held_micros = o.held_micros + $2::bigint, over_used = o.over_used OR k.needs_slot, updated_at = now()"
+    " FROM k WHERE o.org = $8::text AND o.month = $9::text RETURNING 1 AS ok)"
+    " INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, worst_micros, org, month, slot, expires_at)"
+    " SELECT $5::text, key_hash, reserved, $2::bigint, $8::text, $9::text, needs_slot, now() + make_interval(secs => $6::int) FROM k RETURNING call_id")
 _SQL_READ = "SELECT charged_micros, held_micros FROM rovara_budget.keys WHERE key_hash = $1::text"
-_SQL_MONTH_READ = "SELECT over_used FROM rovara_budget.org_months WHERE org = $1::text AND month = $2::text"
+_SQL_MONTH_READ = "SELECT charged_micros, held_micros, over_used FROM rovara_budget.org_months WHERE org = $1::text AND month = $2::text"
 # Settle: the hold leaves and its key is charged the call's cost ($2), or the whole worst case when $2 is negative (the room it held, or the call's worst case when that is more:
-# an overrun call), and $3 says the charge is an estimate. Settling twice charges once.
+# an overrun call), and $3 says the charge is an estimate. The company's month moves the call's worst case from held to charged, and takes its slot back when the call that held
+# it cost nothing (a failed call). Settling twice charges once.
 _SQL_SETTLE = (
-    "WITH h AS (DELETE FROM rovara_budget.holds WHERE call_id = $1::text RETURNING key_hash, reserved_micros, worst_micros),"
-    f" c AS (SELECT key_hash, reserved_micros, CASE WHEN $2::bigint < 0 THEN {_SQL_OWED} ELSE $2::bigint END AS cost FROM h)"
-    " UPDATE rovara_budget.keys k SET held_micros = k.held_micros - c.reserved_micros, charged_micros = k.charged_micros + c.cost,"
+    "WITH h AS (DELETE FROM rovara_budget.holds WHERE call_id = $1::text RETURNING key_hash, reserved_micros, worst_micros, org, month, slot),"
+    f" c AS (SELECT key_hash, reserved_micros, COALESCE(worst_micros, reserved_micros) AS worst, org, month, slot, CASE WHEN $2::bigint < 0 THEN {_SQL_OWED} ELSE $2::bigint END AS cost FROM h),"
+    " k AS (UPDATE rovara_budget.keys k SET held_micros = k.held_micros - c.reserved_micros, charged_micros = k.charged_micros + c.cost,"
     " estimated_micros = k.estimated_micros + CASE WHEN $3::boolean THEN c.cost ELSE 0 END, updated_at = now()"
-    " FROM c WHERE k.key_hash = c.key_hash RETURNING k.charged_micros, k.key_hash, k.estimated_micros")
+    " FROM c WHERE k.key_hash = c.key_hash RETURNING k.charged_micros, k.key_hash, k.estimated_micros),"
+    " o AS (UPDATE rovara_budget.org_months o SET held_micros = o.held_micros - c.worst, charged_micros = o.charged_micros + c.cost,"
+    " over_used = o.over_used AND NOT (COALESCE(c.slot, false) AND c.cost = 0), updated_at = now()"
+    " FROM c, (SELECT count(*) AS n FROM k) kk WHERE c.org IS NOT NULL AND o.org = c.org AND o.month = c.month RETURNING 1 AS ok)"
+    " SELECT charged_micros, key_hash, estimated_micros FROM k")
 # The broker reads a key's spend through LiteLLM's /key/info only, so the estimated part of it travels there, in the key's metadata (monotonic: the largest value wins, whichever
 # replica stamps last). Only ever stamped when a charge was an estimate.
 _SQL_STAMP = (
     "UPDATE \"LiteLLM_VerificationToken\" SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('rovara_estimated_micros', $2::bigint)"
     " WHERE token = $1::text AND COALESCE((metadata->>'rovara_estimated_micros')::bigint, -1) < $2::bigint")
+
+
+async def _retrying(call):
+    """Runs a database call, once more when Postgres picked it as the victim of a deadlock (40P01): the ledger's statements lock a key row and then a month row, but two sweeps can meet."""
+    try:
+        return await call()
+    except Exception as e:
+        if "40P01" in str(e) or "deadlock detected" in str(e):
+            return await call()
+        raise
 
 
 class _PostgresLedger:
@@ -356,41 +389,43 @@ class _PostgresLedger:
                             await db.execute_raw(statement)
                         except Exception:
                             await db.execute_raw(statement)     # the other replica created it in the same instant: IF NOT EXISTS holds now
-                    await db.execute_raw(_SQL_SWEEP_ALL)
+                    await _retrying(lambda: db.execute_raw(_SQL_SWEEP_ALL))
                     await db.execute_raw(_SQL_FORGET)
                     await db.execute_raw(_SQL_FORGET_MONTHS)
                     self._ready = True
         return db
 
     async def take(self, key, call_id, worst, spent, cap, estimated=False, month_gate=None):
-        """('ok' | 'exceeded' | 'held' | 'month', charged micros): held; the spend leaves no room for this call; only other calls' holds are in the way; the company's month
-        is used up (DECISIONS 180). month_gate is (gate, company, 'YYYY-MM') for an estimated call, see _SQL_TAKE."""
+        """('ok' | 'exceeded' | 'held' | 'month' | 'slot', micros): held; the spend leaves no room for this call; only other calls' holds are in the way; the company's month is used up
+        (DECISIONS 180); the call could pass the month's cap and its one slot is taken (then the micros are the month's room left). month_gate: (company, 'YYYY-MM', cap, spend) or None."""
         db = await self._db()
-        gate, org, month = month_gate or ("none", None, None)
+        org, month, month_cap, month_spent = month_gate or (None, None, 1 << 62, 0)
         try:
             await db.execute_raw(_SQL_ENSURE, key)
-            await db.execute_raw(_SQL_SWEEP, key)
-            if await db.query_raw(_SQL_TAKE, key, worst, spent, cap, call_id, HOLD_SECONDS, bool(estimated), gate, org, month):
+            if org is not None:
+                await db.execute_raw(_SQL_ENSURE_MONTH, org, month)
+            await _retrying(lambda: db.execute_raw(_SQL_SWEEP, key))
+            if await _retrying(lambda: db.query_raw(_SQL_TAKE, key, worst, spent, cap, call_id, HOLD_SECONDS, bool(estimated), org, month, month_cap, month_spent)):
                 return "ok", None
             rows = await db.query_raw(_SQL_READ, key)
-            month_used = False
-            if estimated and gate == "blocked":
-                month_used = True
-            elif estimated and gate == "slot":
-                month_used = any(str(r["over_used"]).lower() in ("true", "t", "1") for r in await db.query_raw(_SQL_MONTH_READ, org, month))
+            months = await db.query_raw(_SQL_MONTH_READ, org, month) if estimated and org is not None else []
         except Exception:
             self._ready = False                             # the tables are created again on the next call if they went
             raise
+        if months:
+            used = max(int(months[0]["charged_micros"]), month_spent) + int(months[0]["held_micros"])
+            if used >= month_cap:
+                return "month", used
+            if used + worst > month_cap and str(months[0]["over_used"]).lower() in ("true", "t", "1"):
+                return "slot", month_cap - used
         charged = int(rows[0]["charged_micros"]) if rows else 0
-        if month_used and max(charged, spent) + worst > cap:
-            return "month", charged                         # the call did not fit its key's room, and the month has no room for it to go over
         return ("exceeded" if max(charged, spent) + worst > cap else "held"), charged
 
     async def settle(self, call_id, cost, estimated=False):
         """Ends a hold: its key is charged cost micro-dollars, or the whole worst case of the call when cost is None; 'estimated' adds the charge to what is shown as estimated."""
         db = await self._db()
         try:
-            rows = await db.query_raw(_SQL_SETTLE, call_id, -1 if cost is None else cost, bool(estimated))
+            rows = await _retrying(lambda: db.query_raw(_SQL_SETTLE, call_id, -1 if cost is None else cost, bool(estimated)))
         except Exception:
             self._ready = False
             raise
@@ -592,6 +627,8 @@ def _usage_tokens(kwargs, response_obj):
     cached = (details.get("cached_tokens") if isinstance(details, dict) else getattr(details, "cached_tokens", None)) if details is not None else None
     read = get("cache_read_input_tokens") if _is_number(get("cache_read_input_tokens")) else cached
     write = get("cache_creation_input_tokens")
+    if _is_number(get("prompt_tokens")):
+        read = write = 0                                    # LiteLLM's usage (and OpenAI's) counts cached tokens inside prompt_tokens; only Anthropic's own input_tokens leaves them out
     return tuple(int(v) if _is_number(v) and v > 0 else 0 for v in (prompt, completion, read, write))
 
 
@@ -608,7 +645,7 @@ def _settled_cost(state, cost, tokens, alias):
         return None, True                                   # usage of all zeros is no usage: a call that answered is never settled at $0, it is charged the whole hold
     deployment = next(iter(_deployments_of(alias)), None)
     rate_in, rate_out, per_call = _dearest_known(_model_label(deployment) or alias)
-    # Cache reads and writes are charged at the input rate (the dearest input-side rate of the family already includes its cache-write rates): cached tokens are not free.
+    # Cached tokens are charged at the input rate once: read and write are only non-zero when the provider's usage counts them apart from the input tokens.
     return max(prompt, 0) * rate_in + max(completion, 0) * rate_out + (max(read, 0) + max(write, 0)) * rate_in + per_call, True
 
 
@@ -791,6 +828,11 @@ def _zero_priced(entry):
     return any(name in entry and (not _is_number(entry[name]) or entry[name] <= 0) for name in ("input_cost_per_token", "output_cost_per_token"))
 
 
+def _is_guess(key):
+    """Whether the cost map's entry for a key is this guard's own estimate, not a price."""
+    return key in _ESTIMATED or _stripped(key) in _ESTIMATED
+
+
 def _apply_cost_map(candidate):
     """Registers a validated upstream cost map, and refreshes the entry LiteLLM's router copied for each deployment (it copies at start, so it would stay stale).
     The upstream map only fills in a missing price or raises one: it never lowers a price, never replaces Rovara's verified override (rovara_price_override), and a price
@@ -807,13 +849,20 @@ def _apply_cost_map(candidate):
         served |= {model, _stripped(model)}
         if (deployment.get("model_info") or {}).get("rovara_price_override") is True:
             protected |= {model, _stripped(model), *_price_keys(deployment)}
-    entries = {}
+    entries, replaced = {}, set()
     for key, value in candidate.items():
         if key == "sample_spec" or not isinstance(value, dict) or key in protected or (key in served and _zero_priced(value)):
             continue
-        entries[key] = _raise_only(value, litellm.model_cost.get(key))
-    for deployment in deployments:
-        current.append(_current_entry(deployment))          # before the register below changes what the cost map holds
+        guess = _is_guess(key) and _is_number(value.get("input_cost_per_token")) and value["input_cost_per_token"] > 0
+        entries[key] = value if guess else _raise_only(value, litellm.model_cost.get(key))   # a real price replaces the guard's guess, however much lower
+        if guess:
+            replaced.add(key)
+    for deployment in deployments:                           # before the register below changes what the cost map holds
+        keys = _price_keys(deployment)
+        current.append(None if any(_is_guess(k) for k in keys) else _current_entry(deployment))
+    for key in replaced:
+        litellm.model_cost.pop(key, None)                    # so none of the guess's cache rates survive the merge
+        _ESTIMATED.pop(key, None)
     litellm.register_model(entries)
     for deployment, known in zip(deployments, current):
         model = (deployment.get("litellm_params") or {}).get("model")
@@ -822,6 +871,9 @@ def _apply_cost_map(candidate):
         fresh = entries.get(model) or entries.get(_stripped(model))
         if fresh is not None and _is_number(fresh.get("input_cost_per_token")) and fresh["input_cost_per_token"] > 0:
             fresh = _raise_only(fresh, known)
+            if known is None:
+                for key in _price_keys(deployment):
+                    litellm.model_cost.pop(key, None)
             litellm.register_model({key: dict(fresh) for key in _price_keys(deployment)})
             for key in _price_keys(deployment):
                 _ESTIMATED.pop(key, None)
@@ -958,17 +1010,15 @@ def _timed_out(exc):
     return getattr(exc, "status_code", None) in (408, 499) or "Timeout" in name or "Cancelled" in name
 
 
-def _month_gate(user_api_key_dict, worst):
-    """DECISIONS 180: (gate, company, 'YYYY-MM') for an estimated call, or None when the key knows no company month cap (then only the key's own rule holds).
-    'blocked': the company's month is at or over its cap. 'slot': the call's worst case could pass the month's cap. 'none': it cannot."""
+def _month_gate(user_api_key_dict):
+    """DECISIONS 180: (company, 'YYYY-MM', the month's cap, LiteLLM's spend for it) for a key of a company, else None. The month is LiteLLM's budget window: its "1mo" reset
+    lands on the 1st at 00:00 UTC (no timezone or reset time is configured), the calendar month in UTC. Every call is counted in it; only estimated ones are gated."""
     org = getattr(user_api_key_dict, "team_id", None)
-    cap = getattr(user_api_key_dict, "team_max_budget", None)
-    if not isinstance(org, str) or not org or not _is_number(cap) or cap <= 0:
+    if not isinstance(org, str) or not org:
         return None
-    month_limit = int(math.floor(float(cap) * _MICROS + 1e-6))
-    month_spent = _micros_up(getattr(user_api_key_dict, "team_spend", 0) or 0)
-    gate = "blocked" if month_spent >= month_limit else ("slot" if month_spent + worst > month_limit else "none")
-    return gate, org, _time.strftime("%Y-%m", _time.gmtime())
+    cap = getattr(user_api_key_dict, "team_max_budget", None)
+    month_cap = int(math.floor(float(cap) * _MICROS + 1e-6)) if _is_number(cap) and cap > 0 else 1 << 62
+    return org, _time.strftime("%Y-%m", _time.gmtime()), month_cap, _micros_up(getattr(user_api_key_dict, "team_spend", 0) or 0)
 
 
 class RovaraGuard(CustomLogger):
@@ -1014,22 +1064,24 @@ class RovaraGuard(CustomLogger):
         call_id = data.get("litellm_call_id")
         if not isinstance(call_id, str) or not call_id:
             call_id = data["litellm_call_id"] = str(_uuid.uuid4())
-        gate = _month_gate(user_api_key_dict, worst) if estimated else None
+        gate = _month_gate(user_api_key_dict)
         try:
-            verdict, charged = await (_LEDGER.take(key, call_id, worst, spent, limit, estimated, month_gate=gate) if gate is not None else _LEDGER.take(key, call_id, worst, spent, limit, estimated))
+            verdict, charged = await _LEDGER.take(key, call_id, worst, spent, limit, estimated, month_gate=gate)
         except Exception as e:
             print(f"rovara_guard: budget hold failed ({type(e).__name__}); the call is refused", file=sys.stderr, flush=True)
             raise _proxy_error(route, 503, "budget_unavailable", "the task budget could not be checked; try again shortly")
         if verdict == "month":
-            # DECISIONS 180: the shape the worker reads as "the company's month is spent" (model-runtime budget.ts: Team=).
-            raise _proxy_error(route, 422, "budget_exceeded", f"Budget has been exceeded! Team={gate[1]} Max budget: {float(getattr(user_api_key_dict, 'team_max_budget', 0) or 0):.6f}, "
-                               f"this call could cost up to {worst / _MICROS:.6f}")
-        if verdict == "exceeded" and estimated and max(charged or 0, spent) < limit:
+            # DECISIONS 180: the company's month is used up: the shape the worker reads as that (model-runtime budget.ts: Team=).
+            raise _proxy_error(route, 422, "budget_exceeded", f"Budget has been exceeded! Team={gate[0]} Max budget: {gate[2] / _MICROS:.6f}, this call could cost up to {worst / _MICROS:.6f}")
+        month_room = None
+        if verdict == "slot":
+            verdict, month_room = "exceeded", charged       # the month's one slot is taken: like a key with no room, but the room is the month's
+        if verdict == "exceeded" and estimated and month_room is None and max(charged or 0, spent) < limit:
             verdict = "held"                                # an estimated hold the room cannot take while the task has not overrun: only an earlier call's hold is in the way
         if verdict == "exceeded":
             asked = max([int(v) for v in (data.get("max_tokens"), data.get("max_output_tokens"), data.get("max_completion_tokens"))
                          if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0] or [0])
-            fits = _affordable_output(data, prices, limit - max(charged or 0, spent))
+            fits = _affordable_output(data, prices, month_room if month_room is not None else limit - max(charged or 0, spent))
             if fits is not None and (asked == 0 or fits < asked):
                 # The room left cannot pay for the output limit asked, but can for a smaller one: say which, so the worker sends the call again with it
                 # instead of ending the task while the budget still has room for useful work.
