@@ -54,6 +54,12 @@ function sessionOf(req: IncomingMessage): Session | undefined {
   const id = (req.headers.cookie ?? "").split(";").map((part) => part.trim().split("=")).find(([name]) => name === SESSION_COOKIE)?.[1];
   return id === undefined ? undefined : sessions.get(id);
 }
+async function readBody(req: IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 const sameText = (a: string, b: string) => a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 /** Only an app path may be returned to, as the app's own returnPath allows. */
@@ -103,6 +109,37 @@ async function accessCheck(accessToken: string): Promise<Access | undefined> {
   return response.ok ? await response.json() as Access : undefined;
 }
 
+/** A new access token from the session's refresh token (tokens last an hour); false when the sign-in has ended. */
+async function refresh(session: Session): Promise<boolean> {
+  if (session.refreshToken === undefined) return false;
+  const response = await fetch(`${CODE}/v1/auth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", authorization: `Basic ${Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64")}` },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: session.refreshToken }),
+  });
+  const tokens = await response.json() as { access_token?: string; refresh_token?: string };
+  if (!response.ok || tokens.access_token === undefined) return false;
+  session.accessToken = tokens.access_token;
+  if (tokens.refresh_token !== undefined) session.refreshToken = tokens.refresh_token;
+  saveSessions();
+  return true;
+}
+
+/** A call to Rovara Code as the person, refreshing their token once when it has expired. */
+async function codeFetch(session: Session, path: string, init: RequestInit = {}): Promise<Response> {
+  const call = () => fetch(`${CODE}${path}`, { ...init, headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${session.accessToken}` } });
+  const first = await call();
+  return first.status === 401 && await refresh(session) ? call() : first;
+}
+
+/** The access check as the person, refreshing first when needed; undefined when their sign-in has ended. */
+async function freshAccess(session: Session): Promise<Access | undefined> {
+  const response = await codeFetch(session, "/v1/dev/access", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  if (!response.ok) return undefined;
+  session.access = await response.json() as Access;
+  return session.access;
+}
+
 /** GET /v1/app/me, as the app reads it (AppMeResponseSchema). One fixed org until orgs are built. */
 function me(session: Session) {
   return {
@@ -126,9 +163,20 @@ interface CodeProject { latestRevision: number; repositories: Array<{ name: stri
 
 /** Spec 065: the project as Rovara Code answers it for this person; undefined while that route isn't there. */
 async function codeProject(session: Session, name: string): Promise<CodeProject | undefined> {
-  const response = await fetch(`${CODE}/v1/dev/client/projects/${encodeURIComponent(name)}`, { headers: { authorization: `Bearer ${session.accessToken}` } });
+  const response = await codeFetch(session, `/v1/dev/client/projects/${encodeURIComponent(name)}`);
   return response.ok ? await response.json() as CodeProject : undefined;
 }
+
+/** A project as the app's admin screens list it (AppProjectSummarySchema). */
+async function summary(session: Session, name: string, access: string) {
+  const code = await codeProject(session, name);
+  return {
+    name, status: "active", latestRevision: code?.latestRevision ?? 1, myRole: roleOf(access), setup: { status: "unchecked" },
+    repositories: (code?.repositories ?? []).map((repository) => ({ name: repository.name, fullName: repository.fullName ?? repository.name, defaultBranch: repository.defaultBranch })),
+  };
+}
+
+const ROLE_OF_MEMBER: Record<string, string> = { administrator: "maintainer", developer: "contributor" };
 
 function overview(session: Session, name: string, code: CodeProject | undefined) {
   const project = session.access.projects.find((entry) => entry.name === name);
@@ -152,7 +200,7 @@ function nav(session: Session) {
     projects: session.access.projects.slice(0, 50).map((project) => ({ name: project.name, agents: [] })),
     shared: { agents: [], sessions: [] },
     // Off until each is built in the prototype.
-    features: { localAgents: false, usage: false, admin: false, chains: false, notices: false, describe: false },
+    features: { localAgents: false, usage: false, admin: session.access.administrator, chains: false, notices: false, describe: false },
   };
 }
 
@@ -177,20 +225,54 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (url.pathname === "/v1/web/me" && method === "GET") return send(res, 200, me(session));
     if (url.pathname === "/v1/web/nav" && method === "GET") {
       // Step 2: projects come from Rovara Code each time, so a grant or revoke shows on the next load.
-      const fresh = await accessCheck(session.accessToken);
-      if (fresh === undefined) return send(res, 401, { error: { code: "AUTH_REQUIRED", message: "Your Rovara sign-in ended. Sign in again." } });
-      session.access = fresh;
+      if (await freshAccess(session) === undefined) return send(res, 401, { error: { code: "AUTH_REQUIRED", message: "Your Rovara sign-in ended. Sign in again." } });
       return send(res, 200, nav(session));
     }
     if (url.pathname === "/v1/web/home" && method === "GET") return send(res, 200, { cards: [], total: 0 });
     const overviewPath = /^\/v1\/web\/projects\/([^/]+)\/overview$/.exec(url.pathname);
     if (overviewPath !== null && method === "GET") {
-      const fresh = await accessCheck(session.accessToken);
-      if (fresh === undefined) return send(res, 401, { error: { code: "AUTH_REQUIRED", message: "Your Rovara sign-in ended. Sign in again." } });
-      session.access = fresh;
+      if (await freshAccess(session) === undefined) return send(res, 401, { error: { code: "AUTH_REQUIRED", message: "Your Rovara sign-in ended. Sign in again." } });
       const name = decodeURIComponent(overviewPath[1]!);
       const answer = overview(session, name, await codeProject(session, name));
       return answer === undefined ? send(res, 404, { error: { code: "PROJECT_NOT_FOUND", message: "That project doesn't exist, or you can't use it." } }) : send(res, 200, answer);
+    }
+    const ended = () => send(res, 401, { error: { code: "AUTH_REQUIRED", message: "Your Rovara sign-in ended. Sign in again." } });
+    if (url.pathname === "/v1/web/projects" && method === "GET") {
+      const access = await freshAccess(session);
+      if (access === undefined) return ended();
+      return send(res, 200, { projects: await Promise.all(access.projects.map((project) => summary(session, project.name, project.access))) });
+    }
+    const projectPath = /^\/v1\/web\/projects\/([^/]+)(\/members(?:\/([^/]+))?)?$/.exec(url.pathname);
+    if (projectPath !== null) {
+      const access = await freshAccess(session);
+      if (access === undefined) return ended();
+      const name = decodeURIComponent(projectPath[1]!);
+      const mine = access.projects.find((project) => project.name === name);
+      if (mine === undefined) return send(res, 404, { error: { code: "PROJECT_NOT_FOUND", message: "That project doesn't exist, or you can't use it." } });
+      if (projectPath[2] === undefined && method === "GET") {
+        return send(res, 200, { ...await summary(session, name, mine.access), settings: { setupCommands: [], testCommands: [], devcontainer: null, allowedDomains: [] }, createdAt: "", createdBy: { developerId: "", name: "" } });
+      }
+      const members = `/v1/dev/client/projects/${encodeURIComponent(name)}/members`;
+      if (projectPath[3] === undefined && method === "GET") {
+        const response = await codeFetch(session, members);
+        const body = await response.json() as { members?: Array<{ developerId: string; name: string; role: string }>; error?: { code: string; message: string } };
+        if (!response.ok) return send(res, response.status, body);
+        return send(res, 200, { members: (body.members ?? []).map((member) => ({ developerId: member.developerId, name: member.name, role: ROLE_OF_MEMBER[member.role] ?? "contributor", source: "grant" })) });
+      }
+      if (projectPath[3] !== undefined && (method === "PUT" || method === "DELETE")) {
+        const who = decodeURIComponent(projectPath[3]);
+        if (method === "PUT") {
+          const body = JSON.parse(await readBody(req) || "{}") as { role?: string };
+          // Rovara Code grants contributors; maintainers are a project's administrators, made there.
+          if (body.role !== undefined && body.role !== "contributor") return send(res, 400, { error: { code: "CONFIG_INVALID", message: "Only contributors can be added here for now." } });
+        }
+        const response = await codeFetch(session, `${members}/${encodeURIComponent(who)}`, { method });
+        const answer = await response.json() as { developerId?: string; outcome?: string; error?: unknown };
+        if (!response.ok) return send(res, response.status, answer);
+        return method === "PUT"
+          ? send(res, 200, { member: { developerId: answer.developerId, role: "contributor" } })
+          : send(res, 200, { developerId: answer.developerId, removed: answer.outcome === "revoked" });
+      }
     }
     console.log(JSON.stringify({ event: "not_in_prototype", method, path: url.pathname }));
     return notBuilt(res, url.pathname.replace("/v1/web/", "/v1/app/"));
