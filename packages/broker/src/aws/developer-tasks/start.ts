@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { coreFamilyCounters } from "../../cloud/rows/core-rows.js";
-import { CHANNEL_PRIVACY_NOT_SET_UP, PRIVATE_CHANNEL_NOT_A_MEMBER, AgentXError, DEVELOPER_INSTRUCTIONS_MAX_BYTES, codingRequestText, DEVELOPER_EVENTS_DEFAULT, SlackChannelIdSchema, StartDeveloperTaskRequestSchema, agentXError, cleanClientName, SCRIPT_TOKEN_CLIENT_NAME, sharedTaskKey, ROVARA_CODE_AGENT_ID, ROVARA_CODE_V2_FOR_NEW_ORGS, newPrefixedId, sessionSurfaceKey, WORKFLOW_PATH_REQUIRED, AUTOMATIC_RUNS_AT_ONCE, isSystemOwnerId, systemOwnerIdOf, SYSTEM_OWNER_PROVIDER, type SessionBinding } from "@rovara-code/contracts";
+import { CHANNEL_PRIVACY_NOT_SET_UP, PRIVATE_CHANNEL_NOT_A_MEMBER, AgentXError, DEVELOPER_INSTRUCTIONS_MAX_BYTES, codingRequestText, DEVELOPER_EVENTS_DEFAULT, SlackChannelIdSchema, StartDeveloperTaskRequestSchema, agentXError, cleanClientName, SCRIPT_TOKEN_CLIENT_NAME, sharedTaskKey, ROVARA_CODE_AGENT_ID, PROCESS_START_REFUSED_MESSAGE, ROVARA_CODE_V2_FOR_NEW_ORGS, newPrefixedId, sessionSurfaceKey, WORKFLOW_PATH_REQUIRED, AUTOMATIC_RUNS_AT_ONCE, isSystemOwnerId, systemOwnerIdOf, SYSTEM_OWNER_PROVIDER, type SessionBinding } from "@rovara-code/contracts";
 import { PER_TASK_BUDGET_USD, type DeveloperTaskView, createWorkflowSnapshot } from "@agentx/cloud-contracts";
+import { projectProcessOf } from "../../playbook/project-process.js";
 import { SYSTEM_OWNER_REFUSAL, isSystemOwnerCaller } from "../../developer/system-owner.js";
 import { decideShare, type BoundChannel, type ShareDecision } from "../../developer/share.js";
 import type { SpendPath } from "../../org/budget.js";
@@ -315,9 +316,19 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
   let prepared: PreparedRun | undefined;
   if (deps.agentRuns !== undefined) {
     try {
+      // "How we work": a person's own start that names no agent (the CLI's `session start`, the AI tools' `agentx_start*` and a script token's start all arrive here) runs the project's process, as
+      // the app's and Slack's start do through `startCodeIntent`. Only the id is named, so the run pins the layer's current published version as it starts. A pointer that no longer holds refuses with the
+      // web's words and never runs the built-in instead. A start that names an agent (and every start that comes through `startAgentRun`, which always names one) keeps the agent it named.
+      const process = run === undefined && request.agent === undefined
+        ? await projectProcessOf({ documentClient: deps.documentClient, tableName: deps.tableName, store: deps.agentRuns.store }, deps.orgId, request.project).catch((error: unknown) => {
+          if (error instanceof AgentXError && error.code === "PROCESS_UNAVAILABLE") throw agentXError("PROCESS_UNAVAILABLE", PROCESS_START_REFUSED_MESSAGE);
+          throw error;
+        })
+        : undefined;
+      const processAgent = process?.kind === "project_process" ? { agentId: process.agentId } : undefined;
       prepared = await prepareRun(deps.agentRuns, {
         orgId: deps.orgId, project: request.project, projectRevision: project.definition.revision, input: request.input ?? { text: request.instructions },
-        ...(request.agent === undefined ? {} : { agent: { agentId: request.agent.agentId, ...(request.agent.version === undefined ? {} : { version: request.agent.version }) } }),
+        ...(request.agent === undefined ? processAgent === undefined ? {} : { agent: processAgent } : { agent: { agentId: request.agent.agentId, ...(request.agent.version === undefined ? {} : { version: request.agent.version }) } }),
         origin: run?.origin ?? (client === SLACK_CLIENT_NAME ? "slack" : "cli"),
         ...(run?.autonomous === true ? {} : { caller, role: access.role }),
         ...(run === undefined ? { startedBy: { developerId: caller.developerId } } : run.startedBy === undefined ? {} : { startedBy: run.startedBy }),
@@ -328,7 +339,7 @@ export async function startTask(deps: DeveloperTaskRouteDependencies, caller: De
         ...(run?.runLimitUsd === undefined ? {} : { runLimitUsd: run.runLimitUsd }),
         ...(run?.resultContract === undefined ? {} : { resultContract: run.resultContract }),
         ...(run?.versionApproved === true ? { versionApproved: true as const } : {}),
-        ...(run?.codeIntent === undefined ? {} : { allowProcessLayer: true as const }),
+        ...(run?.codeIntent === undefined && processAgent === undefined ? {} : { allowProcessLayer: true as const }),
         repositories: project.definition.repositories.map((repository) => ({ name: repository.name, url: repository.url, ...(repository.installationId === undefined ? {} : { installationId: repository.installationId }) })),
         ...(project.definition.models === undefined ? {} : { projectApproved: project.definition.models.approved }),
       });
