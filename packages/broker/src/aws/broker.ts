@@ -564,7 +564,7 @@ const teamRecord = createTeamRecordRuntime({ env: process.env, documentClient, c
 const personEvidenceErase = createEvidenceErase({ s3, artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"), documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME") });
 // Convergence S0: and the evidence of the tasks Rovara Code's core ran for the person (cloud/app/erase.ts). Not behind the switch: a task keeps its engine after the switch is turned off, so the walk reads each task's own
 // stamp. It uses the same State table and bucket as the line above (reads, and prefix deletes under `private/<owner>/<workspace>/evidence*/<task>/`), so it needs no grant of its own.
-const personCoreErase = corePersonEraseOf(coreEvidencePorts({ s3, artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"), tableName: requiredEnvironment("STATE_TABLE_NAME") }));
+const personCoreErase = corePersonEraseOf(coreEvidencePorts({ s3, artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"), tableName: requiredEnvironment("STATE_TABLE_NAME"), documentClient }));
 
 // Erasing a person's details (Task 15): the tombstone goes in the keys table with the audit.subject_erased event, in one transaction made
 // with the broker's own client; the export files are deleted by the export function (its role holds that grant), which the broker asks.

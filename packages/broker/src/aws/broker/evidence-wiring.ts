@@ -10,9 +10,7 @@ import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { createEvidenceErase, markEvidenceStored, resumeEvidenceErase, type EvidenceErase } from "../../rovara-code/evidence-erase.js";
 import { keepEvidence, policyKindsOf, type KeepEvidenceResult } from "../../rovara-code/evidence-keep.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { CORE_ERASE_RESUME_BUDGET_MS, coreErasePortsOf, resumeCoreEvidenceErase, type CoreErasePorts, type CorePersonErase } from "../../cloud/app/erase.js";
-import { awsClientConfiguration } from "./runtime-clients.js";
 import { evidenceEnvironmentOf } from "../../test-env/evidence-line.js";
 import { developerTaskActions } from "./dependency-wiring.js";
 import { createEvidencePort, type EvidencePort } from "../developer-tasks/evidence-port.js";
@@ -94,21 +92,15 @@ export function resumeEvidence(dependencies: Pick<AwsBrokerDependencies, "s3" | 
 }
 
 /**
- * The core's person erase and its resume read the State table and delete under `private/<owner>/<workspace>/evidence*` in the artifact bucket: the same table and bucket, and the same
- * grants, as Cloud's own evidence erase above (`ARTIFACT_BUCKET_NAME`, no key prefix). One set of ports per table and bucket, made on first use.
+ * The core's person erase and its resume read the State table and delete under `private/<owner>/<workspace>/evidence*` in the artifact bucket: the same table, client, bucket and grants as Cloud's
+ * own evidence erase above (`ARTIFACT_BUCKET_NAME`, no key prefix). The vendored DynamoDB store speaks plain commands, which the broker's own document client sends as they are (it adds
+ * marshalling only for its own commands), so no second client is made: a test that fakes the document client fakes this too, and a real call stays blocked there.
  */
-const corePorts = new Map<string, CoreErasePorts>();
-export function coreEvidencePorts(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "tableName">): CoreErasePorts {
-  const id = `${dependencies.tableName}|${dependencies.artifactBucketName}`;
-  let ports = corePorts.get(id);
-  if (ports === undefined) {
-    ports = coreErasePortsOf({ dynamo: new DynamoDBClient(awsClientConfiguration), tableName: dependencies.tableName, s3: dependencies.s3, bucket: dependencies.artifactBucketName, log: (entry) => console.log(JSON.stringify(entry)) });
-    corePorts.set(id, ports);
-  }
-  return ports;
+export function coreEvidencePorts(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "tableName" | "documentClient">): CoreErasePorts {
+  return coreErasePortsOf({ dynamo: { send: (command) => dependencies.documentClient.send(command as never) }, tableName: dependencies.tableName, s3: dependencies.s3, bucket: dependencies.artifactBucketName, log: (entry) => console.log(JSON.stringify(entry)) });
 }
 
 /** The scheduled run's share for the core walks a request left unfinished (its own, next to `resumeEvidence`'s). */
-export function resumeCoreEvidence(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "tableName">, millis: number = CORE_ERASE_RESUME_BUDGET_MS): Promise<{ pending: number; finished: number }> {
+export function resumeCoreEvidence(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "tableName" | "documentClient">, millis: number = CORE_ERASE_RESUME_BUDGET_MS): Promise<{ pending: number; finished: number }> {
   return resumeCoreEvidenceErase(coreEvidencePorts(dependencies), { millis });
 }
