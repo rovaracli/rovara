@@ -1,5 +1,5 @@
-// R18 (Cloud mirror): the lighter flow's `flow` record, readers only. Cloud keeps its own copy of Code's shape (`task-flow-tier.ts`) until the vendor pin carries Code's;
-// the finding `scale` comes from the vendored Code schemas (Cloud has no finding schema of its own), so those checks run only once the pin has it.
+// R18 (Cloud mirror): the lighter flow's `flow` record, readers only. Since the 0.5.18 vendor pin (public PR #557) the shape is Code's own:
+// `task-flow-tier.ts` in cloud-contracts re-exports it, and the finding `scale` comes from the vendored Code schemas (Cloud has no finding schema of its own).
 import { describe, expect, it } from "vitest";
 import * as vendored from "@rovara-code/contracts";
 import {
@@ -178,12 +178,12 @@ describe("a workflow snapshot with a flow record", () => {
 
 
 describe("Cloud reads what Code writes", () => {
-  const codeFlow = (vendored as { WorkflowFlowSchema?: { safeParse: (value: unknown) => { success: boolean } } }).WorkflowFlowSchema;
+  const codeFlow = (vendored as { WorkflowFlowSchema: { safeParse: (value: unknown) => { success: boolean } } }).WorkflowFlowSchema;
   const codeShape = (vendored as { WorkflowSnapshotShapeSchema: { safeParse: (value: unknown) => { success: boolean } } }).WorkflowSnapshotShapeSchema;
 
-  it.runIf(codeFlow !== undefined)("a flow record Code's schema accepts parses with Cloud's, and the other way round", () => {
+  it("a flow record Code's schema accepts parses with Cloud's, and the other way round", () => {
     for (const flow of [fullFlow, { rulesVersion: 0 }, { ...fullFlow, rulesVersion: undefined }, { rulesVersion: 1, extra: 1 }]) {
-      expect(WorkflowFlowSchema.safeParse(flow).success, JSON.stringify(flow).slice(0, 60)).toBe(codeFlow?.safeParse(flow).success);
+      expect(WorkflowFlowSchema.safeParse(flow).success, JSON.stringify(flow).slice(0, 60)).toBe(codeFlow.safeParse(flow).success);
     }
     const row = { ...quick11Row(), designReview, flow: fullFlow };
     expect(codeShape.safeParse(row).success).toBe(true);
@@ -197,7 +197,7 @@ describe("Cloud reads what Code writes", () => {
     expect(JSON.parse(JSON.stringify(WorkflowSnapshotSchema.parse(row)))).toEqual(row);
   });
 
-  it.runIf((vendored as { FINDING_SCALES?: unknown }).FINDING_SCALES !== undefined)("the vendored review finding and second review shapes take the scale", () => {
+  it("the vendored review finding and second review shapes take the scale", () => {
     const v = vendored as unknown as Record<string, { safeParse: (value: unknown) => { success: boolean } }>;
     expect(v.WorkflowReviewFindingSchema?.safeParse({ text: "x", origin: "INTRODUCED", scale: "must_fix" }).success).toBe(true);
     expect(v.WorkflowSecondReviewBlockSchema?.safeParse({ candidateDigest: digest, findings: [{ text: "x", scale: "note" }] }).success).toBe(true);

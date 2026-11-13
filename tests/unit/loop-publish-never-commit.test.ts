@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { neverCommitRefusal } from "@agentx/cloud-contracts";
+import { neverCommitRefusal } from "@rovara-code/contracts";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { realExec, type Exec } from "../../packages/cli/src/loop/exec.js";
 import { publish, type PublishInput } from "../../packages/cli/src/loop/publish.js";

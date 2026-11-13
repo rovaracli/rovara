@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { ROVARA_NEVER_COMMIT, ROVARA_NEVER_COMMIT_EXCLUDE, neverCommitRefusal } from "@agentx/cloud-contracts";
+import { ROVARA_NEVER_COMMIT, ROVARA_NEVER_COMMIT_EXCLUDE, neverCommitRefusal } from "@rovara-code/contracts";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { snapshotTree, withIsolatedGit } from "../../packages/worker/src/isolated-git.js";
 import { isolatedGitEnvironment } from "../../packages/worker/src/git.js";

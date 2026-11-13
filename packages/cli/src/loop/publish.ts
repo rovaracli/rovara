@@ -1,7 +1,7 @@
 // rovara loop (#356): publishing, which the loop does itself, never the agent: push the item's branch, then open
 // its pull request (or, when it has one, say the update is pushed). It runs only after the plan was approved and
 // the checks passed. A push that would overwrite anything is refused by git, and so is ours.
-import { ROVARA_NEVER_COMMIT, neverCommitRefusal } from "@agentx/cloud-contracts";
+import { ROVARA_NEVER_COMMIT, neverCommitRefusal } from "@rovara-code/contracts";
 import { run, type Exec } from "./exec.js";
 
 export interface PublishInput {

@@ -4,8 +4,7 @@
 //   3. the check on the commit about to be pushed, which fails closed with a fixed sentence (`neverCommitRefusal`). It looks at what the commit INTRODUCES (added, modified or type-changed paths; a deletion is not a commit of
 //      the file), against the base for a publication or against every parent for a push onto an existing pull request, as the lessons-file guard does: a file the customer's repository already held is not Rovara's to refuse.
 // Git does the matching, with the same pathspecs `git add` used, so the exclude and the check cannot drift apart. A diff that cannot be read fails closed.
-import { agentXError } from "@rovara-code/contracts";
-import { ROVARA_NEVER_COMMIT, neverCommitRefusal } from "@agentx/cloud-contracts";
+import { ROVARA_NEVER_COMMIT, agentXError, neverCommitRefusal } from "@rovara-code/contracts";
 
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /** Paths to a `git rm --cached` call, so no command line grows past what an environment allows. */
