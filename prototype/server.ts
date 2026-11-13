@@ -102,6 +102,19 @@ function me(session: Session) {
   };
 }
 
+/** GET /v1/app/nav, the app's frame (AppNavSchema): the person, the one org, and their projects from the access check. */
+function nav(session: Session) {
+  return {
+    me: { developerId: session.access.developerId, name: session.access.displayName, orgRole: session.access.administrator ? "owner" : "member", nameChosen: true },
+    org: { name: "Rovara (production)" },
+    homeCount: 0,
+    projects: session.access.projects.slice(0, 50).map((project) => ({ name: project.name, agents: [] })),
+    shared: { agents: [], sessions: [] },
+    // Off until each is built in the prototype.
+    features: { localAgents: false, usage: false, admin: false, chains: false, notices: false, describe: false },
+  };
+}
+
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
   const method = req.method ?? "GET";
@@ -120,6 +133,15 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (session === undefined) return send(res, 401, { error: { code: "AUTH_REQUIRED", message: "Sign in to continue." } });
     if (method !== "GET" && method !== "HEAD" && !sameText(String(req.headers["x-rovara-csrf"] ?? ""), session.csrf)) return send(res, 403, { error: { code: "CSRF_INVALID", message: "Refresh the page and try again." } });
     if (url.pathname === "/v1/web/me" && method === "GET") return send(res, 200, me(session));
+    if (url.pathname === "/v1/web/nav" && method === "GET") {
+      // Step 2: projects come from Rovara Code each time, so a grant or revoke shows on the next load.
+      const fresh = await accessCheck(session.accessToken);
+      if (fresh === undefined) return send(res, 401, { error: { code: "AUTH_REQUIRED", message: "Your Rovara sign-in ended. Sign in again." } });
+      session.access = fresh;
+      return send(res, 200, nav(session));
+    }
+    if (url.pathname === "/v1/web/home" && method === "GET") return send(res, 200, { cards: [], total: 0 });
+    console.log(JSON.stringify({ event: "not_in_prototype", method, path: url.pathname }));
     return notBuilt(res, url.pathname.replace("/v1/web/", "/v1/app/"));
   }
   if (url.pathname === "/app" || url.pathname.startsWith("/app/") || url.pathname.startsWith("/s/")) {
