@@ -89,8 +89,10 @@ import { stubContextEvent } from "./context-sources/events.js";
 import { createSourceTextGuard, guardArtifactSink, guardEventSink, type SourceTextGuard } from "./context-sources/text-guard.js";
 import { isContextSourceStage, type ContextToolCatalog } from "@rovara-code/contracts";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
-import { localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
-import { startTaskTestServices, withTestServices, type TestServicesConfig } from "./test-services-run.js";
+import { TASK_SANDBOX_IMAGE_ENVIRONMENT, localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
+import { chooseCheckRound } from "./check-round-kind.js";
+import { checkRoundRunners, type FreshCheckRoundSeam } from "./check-round-choice.js";
+import { startTaskTestServices, type TestServicesConfig } from "./test-services-run.js";
 import type { FixtureSetCallback } from "./fixture-delivery.js";
 import type { CompanyImageLoginCallback } from "./company-image-pull.js";
 
@@ -162,6 +164,14 @@ export interface TaskInvocationDependencies {
   devcontainerCli?: DevcontainerCli;
   /** The runners AgentX's checks use; tests supply fakes. Default: as preparation and the agent's shell run. */
   checkRunners?: CheckRunners;
+  /**
+   * TE-B1-fresh: the company gate `freshCheckRound` (TE-A1's rollout gates; NOT `sealedChecks`). Returns the seam when the gate is on for this task's company, and nothing when it is off (today's behaviour). The seam carries the
+   * project's setup commands, which the worker does not have at task time. The broker's read of the gate, the payload field that carries it and the setup commands to the worker are not on this base (TE-A1 is unmerged), so
+   * production passes nothing: the fresh round is built, tested and dormant until that wiring lands (a deferred row).
+   */
+  freshCheckRound?: (invocation: Extract<WorkerInvocation, { kind: "task" }>) => FreshCheckRoundSeam | undefined;
+  /** The sealed round is cleared for production (the TS-L worker self-test passed). Default: true, which is today's behaviour (a run with test services is sealed); held means false. */
+  sealedRoundCleared?: () => boolean;
   /** Each check round's budget; tests supply short ones. Default: CHECK_ROUND_BUDGET_MS (P-3). */
   checkBudgetMs?: () => number;
   /** D-16: the original code for before results; tests supply a fake. Default: each repository's preparation commit. */
@@ -389,6 +399,18 @@ async function runTask(
     }
   }
   const candidateSweep = fileTools === undefined ? undefined : async (directory: string): Promise<void> => { await sweepFileOps(fileTools, canonicalRoot, directory); };
+  // TE-B1-fresh: which kind of round this task's official checks are (check-round-kind.ts). A dev container, the local shell and a task with test services are never moved to the fresh round.
+  const freshSeam = dependencies.freshCheckRound?.(invocation);
+  const roundKind = chooseCheckRound({ freshGate: freshSeam !== undefined, testServices: testServices !== undefined, sealedCleared: dependencies.sealedRoundCleared?.() ?? true, devcontainer: devcontainer !== undefined, sandbox: sandbox !== undefined, candidateCommitted: mode === "IMPLEMENT" || mode === "CHECKS" });
+  const freshWiring = (onProgress: (line: string) => void) => freshSeam === undefined ? undefined : {
+    seam: freshSeam, docker: fileToolsDocker, rootPath: canonicalRoot, taskId: invocation.operationId, image: sandboxImageOf(dependencies.taskShell), onProgress,
+    // The candidate as it is NOW, read again for each round: each repository's commit and tree, with where it sits in the workspace.
+    candidate: async () => (await readCandidateRepositories(candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep))).map((identity) => {
+      const repository = manifest.repositories.find((entry) => entry.name === identity.repositoryId);
+      if (repository === undefined) throw new Error("the candidate names a repository the manifest does not have");
+      return { repositoryId: identity.repositoryId, path: repository.path, directory: resolve(canonicalRoot, repository.path), commitSha: identity.commitSha, treeSha: identity.treeSha };
+    }),
+  };
 
   if (step?.kind === "agent") {
     const { brokerUrl, ...hooks } = dependencies.agentRun!;
@@ -514,13 +536,16 @@ async function runTask(
         : invocation.payload.workflowE2EAdmission?.purpose === "grounding"
         ? "AgentX is checking the plan's unchanged-behaviour checks against the current app. It has no code-editing tools and decides nothing about the change."
         : "AgentX is running the selected project checks against the current code. This retry has no code-editing tools." });
-      const runners = withTestServices(testServices, dependencies.checkRunners ?? createCheckRunners({
+      // The official round is the candidate's (`final`: sealed with test services, fresh when the gate is on, today's otherwise); the baseline scans and the test proof below run on the original code (`before`).
+      const chosenRound = checkRoundRunners({ kind: roundKind, testServices, fresh: freshWiring((message) => { void events.append("progress", { message }).catch(() => undefined); }), base: dependencies.checkRunners ?? createCheckRunners({
         rootPath: canonicalRoot,
         ...(devcontainer === undefined || devcontainerCli === undefined ? {} : { devcontainer: { cli: devcontainerCli, target: devcontainer } }),
         ...(bashOperations === undefined ? {} : { bashOperations }),
         ...(sandbox === undefined ? {} : { sandbox }),
         ...(localShell ? { local: true } : {}),
-      }));
+      }) });
+      const runners = chosenRound.final;
+      const originalCodeRunners = chosenRound.before;
       const roundBudgetMs = dependencies.checkBudgetMs?.() ?? testEnv?.budgetMs ?? CHECK_ROUND_BUDGET_MS;
       const roundStarted = Date.now();
       const round = await runChecks(plan, runners, { budgetMs: roundBudgetMs, signal: stop.signal });
@@ -568,14 +593,14 @@ async function runTask(
         // Test services: the rounds' usage record rides in the raw file (the broker labels it; nothing of it was reaching the evidence). Read before the services stop.
         const servicesRecord = await testServices?.usageRecord().catch(() => undefined);
         await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore, roundStartedAtMs: roundStarted, selection: testEnv?.selection, ...(servicesRecord === undefined ? {} : { testServices: servicesRecord }), coveragePaths: invocation.payload.testEnvironment?.checks.map((check) => check.coveragePath),
-          baseline: { runners, signal: stop.signal, budgetMs: roundBudgetMs - roundSpentMs, ...(dependencies.testProofOriginalCode === undefined ? {} : { originalCode: dependencies.testProofOriginalCode }) } });
+          baseline: { runners: originalCodeRunners, signal: stop.signal, budgetMs: roundBudgetMs - roundSpentMs, ...(dependencies.testProofOriginalCode === undefined ? {} : { originalCode: dependencies.testProofOriginalCode }) } });
       }
       const evidenceSpentMs = Date.now() - evidenceStarted;
       // TESTPROOF: informational only. It changes no check result and no artifact above; only a failure to put the agent's files back stops the task.
       // It runs after the browser and API checks, so their evidence never sees the build output of a run on the original code. Known limitation: files the
       // original code's run left that git ignores (build output, caches) are not removed and can remain for the stages after this one.
       if (status === "verified" && plan.source === "project" && !stop.signal.aborted) {
-        const testProof = await runTestProofStep({ plan, round: round.entries, runners, repositories, candidateBefore, rootPath: canonicalRoot, signal: stop.signal,
+        const testProof = await runTestProofStep({ plan, round: round.entries, runners: originalCodeRunners, repositories, candidateBefore, rootPath: canonicalRoot, signal: stop.signal,
           budgetMs: roundBudgetMs - roundSpentMs - evidenceSpentMs, events, originalCode: dependencies.testProofOriginalCode });
         // Read only when the proof ran, and deliberately fail-closed: a read failure here fails the task rather than reporting a candidate nobody confirmed.
         // The after-snapshot is read after the proof run too: whatever it left behind in the candidate is then seen by the broker as drift.
@@ -737,12 +762,13 @@ async function runTask(
     // The agent's shell is the devcontainer's, where the repository is at its container path (Minor 11).
     ...(containerPaths === undefined ? {} : { cdTarget: (target: string) => workspaceRelativeCdTarget(target, containerPaths, canonicalRoot) }),
   });
-  const checkRunners = withTestServices(testServices, dependencies.checkRunners ?? createCheckRunners({
+  const chosenRound = checkRoundRunners({ kind: roundKind, testServices, fresh: freshWiring((message) => { void events.append("progress", { message }).catch(() => undefined); }), base: dependencies.checkRunners ?? createCheckRunners({
     rootPath: canonicalRoot,
     ...(devcontainer === undefined || devcontainerCli === undefined ? {} : { devcontainer: { cli: devcontainerCli, target: devcontainer } }),
     ...(sandbox === undefined ? {} : { sandbox }),
     ...(localShell ? { local: true } : {}),
-  }));
+  }) });
+  const checkRunners = chosenRound.final;
   const checkBudgetMs = dependencies.checkBudgetMs ?? (() => CHECK_ROUND_BUDGET_MS);
   let checkPlan: CheckPlan | undefined;
   let reportedChecks: CheckReport | undefined;
@@ -754,6 +780,8 @@ async function runTask(
     // Review Focus 5: a broker that sends no readiness leaves the agent's own commands.
     plan: () => (checkPlan = planChecks(readiness, recorder, checkHistory)),
     runners: checkRunners,
+    // The before results are measured on the original code: the working runners, never the fresh round's (there is no candidate to export there).
+    beforeRunners: chosenRound.before,
     budgetMs: checkBudgetMs,
     signal: verificationStop.signal,
     recorder,
@@ -2089,6 +2117,12 @@ function candidateInputs(
       ...(sweep === undefined ? {} : { sweep: () => sweep(directory) }),
     };
   });
+}
+
+/** The task sandbox's image: the selection's own, else the worker's environment (AGENTX_SANDBOX_IMAGE). The fresh check sandbox starts from the same one. */
+function sandboxImageOf(selection: TaskShellSelection | undefined): string | undefined {
+  if (selection?.kind === "sandbox") return selection.image ?? (selection.environment ?? process.env)[TASK_SANDBOX_IMAGE_ENVIRONMENT];
+  return process.env[TASK_SANDBOX_IMAGE_ENVIRONMENT];
 }
 
 /**

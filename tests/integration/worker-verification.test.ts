@@ -23,6 +23,7 @@ import { commitCandidateWorktree, readCandidateRepositories } from "../../packag
 import { CHECKS_MESSAGE_TYPE, checksArtifactContent, compactCheckReport } from "../../packages/worker/src/verification/extension.js";
 import { AgentFilesRestoreError, type OriginalCode } from "../../packages/worker/src/verification/original-code.js";
 import * as buildSourceExport from "../../packages/worker/src/e2e-build-source-export.js";
+import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 import { createFixtureDirectory } from "../fixtures/index.js";
 import { FAUX_MODEL, fauxModelRuntime } from "../support/faux-model.js";
 
@@ -114,6 +115,8 @@ async function runTask(options: {
   originalCode?: OriginalCode;
   /** The scripted model's context window. Pi 1.5 compacts a long transcript on its own, and a compaction asks the scripted model for a summary, which would use up the script; a run with huge outputs gives the model room. */
   contextWindow?: number;
+  /** More task dependencies (a task shell, the freshCheckRound seam): spread last. */
+  extraDependencies?: Partial<Parameters<typeof runTaskInvocation>[1]>;
 }) {
   const { modelRuntime, faux } = await fauxModelRuntime(options.contextWindow === undefined ? {} : { contextWindow: options.contextWindow });
   const requests: Request[] = [];
@@ -150,6 +153,7 @@ async function runTask(options: {
         if (artifact.name === options.failArtifact) throw new Error(`upload of ${artifact.name} failed`);
         artifacts.push(artifact);
       },
+      ...(options.extraDependencies ?? {}),
     });
   } catch (error) {
     failure = error;
@@ -1725,5 +1729,48 @@ describe("AgentX measures the before result on the original code (spec 051 D-16,
     const run = await runTask({ steps: [write("src.py", "changed\n", "c1"), bash("pytest", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)], runners, originalCode });
     expect(run.report).toMatchObject({ status: "not_verified", notVerifiedReason: "error" });
     expect(progress(run.events).some((message) => message.includes("refs/agentx/agent-files"))).toBe(true);
+  });
+});
+
+describe("TE-B1-fresh: the coding run's final round with the freshCheckRound gate", () => {
+  const IMAGE = "registry.example.test/agentx/worker@sha256:" + "b".repeat(64);
+  /** A fake Docker that answers like a healthy daemon and records every call. */
+  function fakeDocker() {
+    const calls: string[][] = [];
+    const docker: DockerCli = { run: async (args) => {
+      calls.push([...args]);
+      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    } };
+    return { docker, calls };
+  }
+  const nameOf = (args: string[]) => args[args.indexOf("--name") + 1]!;
+
+  it("runs the final round in a fresh container made from the committed candidate, and the before result on the original code in the working sandbox", async () => {
+    const fake = fakeDocker();
+    const { originalCode, state } = (() => {
+      const state = { showing: false, runs: 0 };
+      const originalCode: OriginalCode = { async run(work) { state.runs += 1; state.showing = true; try { return await work(); } finally { state.showing = false; } } };
+      return { originalCode, state };
+    })();
+    const rootPath = await gitWorkspaceRoot();
+    // The agent's shell writes the change itself (the file tools would run in the sandbox, which this fake daemon does not serve).
+    const shell = scriptedShell({}, async (command) => { if (command === "make-change") await writeFile(join(rootPath, "app/notes.md"), "note\n"); });
+    const run = await runTask({
+      steps: [bash("make-change", "c1"), bash("pytest tests/te-b1-marker", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], rootPath, shell, originalCode,
+      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }) },
+    });
+    expect(run.failure).toBeUndefined();
+    expect(state.runs).toBe(1);
+    const starts = fake.calls.filter((args) => args[0] === "run");
+    const working = nameOf(starts.find((args) => nameOf(args).startsWith("agentx-task-"))!);
+    const fresh = nameOf(starts.find((args) => nameOf(args).startsWith("agentx-fresh-"))!);
+    const execs = fake.calls.filter((args) => args[0] === "exec" && args.join(" ").includes("te-b1-marker"));
+    // one measurement of the before result (original code, working sandbox) and one final run (the candidate, the fresh container)
+    expect(execs.map((args) => (args.includes(working) ? "working" : args.includes(fresh) ? "fresh" : "other"))).toEqual(["working", "fresh"]);
+    expect(run.report).toMatchObject({ source: "agent_commands", status: "verified" });
+    expect(run.events.some((event) => JSON.stringify(event).includes("not sealed: checked in a fresh sandbox"))).toBe(true);
+    expect(fake.calls.some((args) => args[0] === "rm" && args.includes(fresh))).toBe(true);
   });
 });

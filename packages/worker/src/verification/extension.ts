@@ -18,6 +18,11 @@ export interface VerificationOptions {
   /** Read at settle time, after the agent's commands are recorded. */
   plan: () => CheckPlan;
   runners: CheckRunners;
+  /**
+   * TE-B1-fresh: the runners of the rounds on the ORIGINAL code (the before results below). Default: `runners`. A fresh check round exports the candidate commit, so it cannot show the original code; those rounds keep the
+   * working runners (check-round-choice.ts).
+   */
+  beforeRunners?: CheckRunners;
   /** Production: 30 minutes per round (P-3); eval: the agent time remaining. */
   budgetMs: () => number;
   /** Fires on cancel, loop-guard stop or eval limit: a running check stops, and no new one starts. */
@@ -221,7 +226,7 @@ async function measureBefore(
   try {
     const round = await originalCode.run(() => runChecks(
       { source: "agent_commands", agentRuns: missing },
-      options.runners,
+      options.beforeRunners ?? options.runners,
       { budgetMs, signal: options.signal },
     ));
     round.entries.forEach((entry, index) => {
