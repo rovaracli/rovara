@@ -7,7 +7,7 @@
 // parameter either kept at its current value or taken from the approval. The caller never supplies a template, a stack, a parameter or a path.
 //
 // All outcomes are values, never thrown text: the only strings returned are fixed reasons and part names.
-import { BUNDLE_PUBLIC_DEPLOYED_KINDS, BUILT_MANIFEST_FILE, BuiltManifestSchema, SynthSettingsSchema, accessTemplatesAgree, editionBackupParameter, editionRecordParameter, redactedSynthSettings, synthKitSha256, synthSettingsParameter, synthSettingsSha256, BUNDLE_MANIFEST_FILE, BUNDLE_SIGNATURE_FILE, ApprovalRecordSchema, BundleManifestSchema, BundleSignatureSchema, DEPLOYER_PARTS, DEPLOY_LOCK_STALE_MS, DeployerRequestSchema, bundleApprovalKey, approvedFileKey, bundleTrustParameter, deployLockParameter, deployProgressParameter, operatorAccessStateParameter, deployingKey, installedBundleParameter, restorePointParameter, sha256OfBytes, verifyBundleSignature, type DeployerPart, type DeployerResult } from "@agentx/cloud-contracts";
+import { BUNDLE_PUBLIC_DEPLOYED_KINDS, BUILT_MANIFEST_FILE, BuiltManifestSchema, SynthSettingsSchema, accessTemplatesAgree, editionBackupParameter, editionRecordParameter, redactedSynthSettings, synthKitSha256, synthSettingsParameter, synthSettingsSha256, BUNDLE_MANIFEST_FILE, BUNDLE_SIGNATURE_FILE, ApprovalRecordSchema, BundleManifestSchema, BundleSignatureSchema, DEPLOYER_PARTS, DEPLOY_LOCK_STALE_MS, DeployerRequestSchema, bundleApprovalKey, approvedFileKey, bundleTrustParameter, deployLockParameter, deployProgressParameter, operatorAccessStateParameter, deployingKey, installedBundleParameter, releaseHighWaterParameter, restorePointParameter, sha256OfBytes, verifyBundleSignature, type DeployerPart, type DeployerResult } from "@agentx/cloud-contracts";
 import { canonicalJson, parseReleaseManifestIgnoringUnknownFields, environmentSettingsPrefix, environmentStackName, renderTemplate } from "@rovara-code/contracts";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -88,6 +88,14 @@ function compare(a: string, b: string): number | undefined {
   if (left === undefined || right === undefined) return undefined;
   for (let index = 0; index < 3; index += 1) if (left[index] !== right[index]) return (left[index] as number) - (right[index] as number);
   return 0;
+}
+
+/** Writes `version` as the mark when none is recorded or it is higher; never lowers it. `current` is the mark as read (already checked to be x.y.z or absent). */
+async function raiseHighWater(ports: DeployerPorts, env: string, current: string | undefined, version: string): Promise<void> {
+  const order = current === undefined ? undefined : compare(current, version);
+  if (order !== undefined && order >= 0) return;
+  if (semver(version) === undefined) return;
+  await ports.ssm.put(releaseHighWaterParameter(env), version);
 }
 
 const LOCK_STALE_MS = DEPLOY_LOCK_STALE_MS;
@@ -368,6 +376,16 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
     return refused("the access stack could not be compared");
   }
 
+  // 5b. The release high-water mark (the highest release the install ever ran; never lowered), checked and raised to the installed version before the first change,
+  // so a rollback this run makes still leaves the floors of the release it leaves in force (the CLI reads the mark: upgrade/target.ts rollbackDirection).
+  const highWater = await ports.ssm.get(releaseHighWaterParameter(env));
+  if (highWater !== undefined && semver(highWater.trim()) === undefined) return refused("the install's release high-water mark is not a release version");
+  try {
+    await raiseHighWater(ports, env, highWater?.trim(), settings.version);
+  } catch {
+    return failed("the release high-water mark could not be written");
+  }
+
   // 6. Progress, and the restore point before the first change.
   let progressText = await ports.ssm.get(deployProgressParameter(env));
   let progress;
@@ -473,6 +491,8 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
   const installedAt = new Date(ports.now()).toISOString();
   await ports.ssm.put(installedBundleParameter(env), JSON.stringify({ schemaVersion: 1, bundleId, version: manifest.version, installedAt }));
   await ports.ssm.put(`${environmentSettingsPrefix(env)}settings`, JSON.stringify({ ...(JSON.parse(settingsText as string) as Record<string, unknown>), version: manifest.version, updatedAt: installedAt }));
+  // An upgrade raises the mark to the release now installed; a rollback leaves it where step 5b put it.
+  await raiseHighWater(ports, env, (await ports.ssm.get(releaseHighWaterParameter(env)))?.trim(), manifest.version);
   await ports.ssm.delete(deployProgressParameter(env));
   return { status: "done", bundleId, done: parts, remaining: [] };
 }

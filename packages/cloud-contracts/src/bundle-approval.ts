@@ -89,4 +89,6 @@ export type RestorePoint = z.infer<typeof RestorePointSchema>;
 export const InstalledBundleSchema = z.object({ schemaVersion: z.literal(1), bundleId: BundleIdText, version: z.string().min(1), installedAt: z.iso.datetime() }).strict();
 export type InstalledBundle = z.infer<typeof InstalledBundleSchema>;
 export const installedBundleParameter = (env: string): string => `${environmentSettingsPrefix(env)}bundle`;
+/** The highest release the install ever ran (a plain x.y.z), never lowered: `agentx upgrade --rollback-to` and `bundle approve --rollback` check the rollback floors from it. Written by the CLI and by the bundle deployer. */
+export const releaseHighWaterParameter = (env: string): string => `${environmentSettingsPrefix(env)}release-high-water`;
 export const restorePointParameter = (env: string, takenAt: string): string => `${environmentSettingsPrefix(env)}restore-points/${takenAt.replace(/[-:.]/g, "")}`;

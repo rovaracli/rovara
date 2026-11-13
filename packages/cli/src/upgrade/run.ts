@@ -424,7 +424,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
         try {
           await raiseReleaseHighWater(deps.store, env, settings.version);
         } catch (error) {
-          throw agentXError("CONFIG_INVALID", `the rollback could not record ${settings.version} as ${releaseHighWaterParameter(env)} (${plainMessage(error)}), so it stopped before anything changed. The operator role cannot write that parameter until its access stack grants it; run the rollback with admin credentials`);
+          throw agentXError("CONFIG_INVALID", `the rollback could not record ${settings.version} as ${releaseHighWaterParameter(env)} (${plainMessage(error)}), so it stopped before anything changed. Check that these credentials may write it (ssm:PutParameter), then run the rollback again`);
         }
       }
       try {
@@ -457,7 +457,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     // An upgrade raises the high-water mark to the release it installed (a rollback leaves it). Every stack is already on it, so a refusal here only warns.
     if (!rollback) {
       try { await raiseReleaseHighWater(deps.store, env, target); } catch (error) {
-        deps.write(`WARNING: ${releaseHighWaterParameter(env)} could not be raised to ${target} (${plainMessage(error)}); a later rollback then checks floors only from the version it finds recorded. With the operator role this needs a grant in the access stack; run agentx upgrade again with admin credentials to record it`);
+        deps.write(`WARNING: ${releaseHighWaterParameter(env)} could not be raised to ${target} (${plainMessage(error)}); a later rollback then checks floors only from the version it finds recorded. Run agentx upgrade again with credentials that may write it (ssm:PutParameter) to record it`);
       }
     }
     return { settings, parts };

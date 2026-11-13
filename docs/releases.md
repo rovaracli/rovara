@@ -251,10 +251,13 @@ Messages say "rollback" and name `--rollback-to` for re-running.
 ever ran (its own SSM parameter, not the strict settings record, which every older agentx must still
 read). Every upgrade raises it; a rollback first records the release it leaves, and never lowers it, so
 a second rollback still meets the floors the first one passed. An install made before 0.5.17 has none,
-and its recorded version stands in. **IAM:** the operator role cannot write this parameter today (its
-`WriteUpgradeRecords` grant in `infra/lib/operator-access.ts` lists settings, the bundle record, restore
-points and deploy progress only). Under the operator role an upgrade warns that it could not raise the
-mark, and a rollback refuses; run either with admin credentials until the grant is added.
+and its recorded version stands in. Who writes it: the CLI (admin credentials, or the environment's
+operator role, whose grant already covers `/agentx/<env>/*`), `agentx bundle approve` (raised to the
+installed version at every approval), and the Enterprise bundle deployer (raised to the installed
+version before its first stack change and to the bundle's version after its last; its role has
+`ssm:GetParameter` and `ssm:PutParameter` on exactly this parameter, as on the settings record). If an
+upgrade cannot raise it, it warns; if a rollback cannot record it, the rollback stops before anything
+changes.
 
 **Operator values a rollback drops.** A `config set` value whose parameter the older template does not
 declare is dropped (the rollback prints each one), and rolling forward again deploys the newer

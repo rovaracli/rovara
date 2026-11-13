@@ -2,12 +2,13 @@
 // settings schema, which every older agentx must still read). Raised by every upgrade and bundle approval, never lowered: a rollback leaves
 // it where it was, so the rollback floors (upgrade/target.ts) of a release rolled back past keep applying to the next rollback too.
 // Absent on every install made before 0.5.17: the recorded version stands in for it.
-import { agentXError, environmentSettingsPrefix } from "@rovara-code/contracts";
+import { agentXError } from "@rovara-code/contracts";
+import { releaseHighWaterParameter as contractParameter } from "@agentx/cloud-contracts";
 import type { ParameterStore } from "./parameter-store.js";
 import { compareVersions } from "../upgrade/target.js";
 
 export function releaseHighWaterParameter(env: string): string {
-  return `${environmentSettingsPrefix(env)}release-high-water`;
+  return contractParameter(env);
 }
 
 /** The recorded mark, or undefined when none is recorded. A value that is not x.y.z is a refusal: a rollback never guesses it lower. */
