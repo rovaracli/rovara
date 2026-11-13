@@ -19,6 +19,7 @@ import type { CallerIdentity, StackDescription, StackReader } from "../environme
 import { withEnvironmentLock, type LockRecord } from "../environments/lock.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { readEnvironmentSettings, type EnvironmentSettings } from "../environments/settings.js";
+import { raiseReleaseHighWater, readReleaseHighWater, releaseHighWaterParameter } from "../environments/release-high-water.js";
 import { activeHintLine, ensureGithubWebhook, missingEventsLine } from "../github/webhook-setup.js";
 import { isOperatorRole } from "../init/commands.js";
 import type { InitSecrets } from "../init/context.js";
@@ -31,7 +32,7 @@ import type { VerifiedBundle } from "./bundle/verify.js";
 import { writeUpgradeBundle } from "./export.js";
 import { FORCED_OPERATOR_VALUES, forcedOperatorValues, forcedValueLines } from "./forced-values.js";
 import { cdkDiffRisks, cdkReviewedDeployer, guardData, upgradeConfirm } from "./review.js";
-import { notesText, refusePrereleaseTarget, upgradeDirection, type ReleaseNotes } from "./target.js";
+import { floorCheck, notesText, refusePrereleaseTarget, rollbackDirection, ROLLBACK_FLOORS, ROLLBACK_FLOORS_DECLARED_THROUGH, upgradeDirection, type ReleaseNotes, type RollbackFloor } from "./target.js";
 
 /** The release's embedder image, sent over the deployed value of the control plane's EmbedderImageUri (only where the Team record is built, see prepareDeployment). */
 function withEmbedderImage(forced: ReturnType<typeof forcedOperatorValues>, image: string | undefined): ReturnType<typeof forcedOperatorValues> {
@@ -39,7 +40,7 @@ function withEmbedderImage(forced: ReturnType<typeof forcedOperatorValues>, imag
   return { ...forced, "control-plane": { ...forced["control-plane"], EmbedderImageUri: image } };
 }
 
-export interface UpgradeOptions { env: string; /** With `--bundle` on a cdk install: the build made at approval is approved without asking. `--yes` never does this. */ approveBuild?: boolean; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; /** --allow-tls-removal (model-proxy-tls.ts M1). */ allowTlsRemoval?: boolean; /** --allow-legacy-http-removal (model-proxy-tls.ts L1). */ allowLegacyHttpRemoval?: boolean; images?: { worker?: string; slack?: string; bootStage2Sha256?: string; /** --embedder-image: the embedder image for a release that names none (a source or override upgrade). */ embedder?: string } }
+export interface UpgradeOptions { env: string; /** With `--bundle` on a cdk install: the build made at approval is approved without asking. `--yes` never does this. */ approveBuild?: boolean; /** N3: a signed release bundle directory; verified (signature, approved id, every hash) before anything is read or changed. */ bundleDir?: string; /** N3: the bundle id (SHA-256 of bundle.json) the customer approved; any other bundle is refused. */ approvedBundleSha256?: string; to?: string; /** --rollback-to: move back to this older release on purpose (rollbackDirection); the only way an environment moves back. */ rollbackTo?: string; releaseDir?: string; source?: string; yes: boolean; allowReplace: string[]; exportDir?: string; /** --no-reserved-concurrency: the cdk app leaves Lambda reserved concurrency off (cdk engine only). */ reservedConcurrency?: false; /** --allow-tls-removal (model-proxy-tls.ts M1). */ allowTlsRemoval?: boolean; /** --allow-legacy-http-removal (model-proxy-tls.ts L1). */ allowLegacyHttpRemoval?: boolean; images?: { worker?: string; slack?: string; bootStage2Sha256?: string; /** --embedder-image: the embedder image for a release that names none (a source or override upgrade). */ embedder?: string } }
 
 export interface UpgradeDependencies {
   store: ParameterStore;
@@ -80,9 +81,11 @@ export interface UpgradeDependencies {
   modelProxyTlsState?: (env: string, options: { workers: boolean }) => Promise<ModelProxyTlsState>;
   /** The public DNS lookups of the certificate check. Absent: that check refuses. */
   dns?: DnsLookups;
+  /** Tests: the rollback floors and the newest release they cover. Absent: ROLLBACK_FLOORS and ROLLBACK_FLOORS_DECLARED_THROUGH. */
+  rollbackFloors?: { floors: readonly RollbackFloor[]; declaredThrough: string };
 }
 
-export interface UpgradeResult { env: string; from: string; to: string; parts: DeployPart[]; exported?: string; doctor?: { failed: number; warned: number } }
+export interface UpgradeResult { env: string; from: string; to: string; /** --rollback-to moved the environment back. */ rolledBack?: true; parts: DeployPart[]; exported?: string; doctor?: { failed: number; warned: number } }
 
 /** Sorts object keys at every level, so two templates compare by content, not by formatting. */
 function canonical(value: unknown): unknown {
@@ -221,8 +224,8 @@ async function verifiedBundle(options: UpgradeOptions, deps: UpgradeDependencies
     if (options.approvedBundleSha256 !== undefined) throw agentXError("CONFIG_INVALID", "--approved-bundle-sha256 applies to --bundle only");
     return undefined;
   }
-  if (options.releaseDir !== undefined || options.to !== undefined || options.source !== undefined || options.exportDir !== undefined || options.images !== undefined) {
-    throw agentXError("CONFIG_INVALID", "--bundle carries its own release and images; do not combine it with --release, --to, --source, --export, --worker-image, --slack-image, --embedder-image or --boot-stage2-sha256");
+  if (options.releaseDir !== undefined || options.to !== undefined || options.rollbackTo !== undefined || options.source !== undefined || options.exportDir !== undefined || options.images !== undefined) {
+    throw agentXError("CONFIG_INVALID", "--bundle carries its own release and images; do not combine it with --release, --to, --rollback-to, --source, --export, --worker-image, --slack-image, --embedder-image or --boot-stage2-sha256 (a bundle moves back through agentx bundle approve --rollback)");
   }
   if (deps.verifyBundle === undefined) throw agentXError("CONFIG_INVALID", "this agentx cannot verify bundles; bundle refused, nothing was changed");
   return deps.verifyBundle({ dir: options.bundleDir, ...(options.approvedBundleSha256 === undefined ? {} : { approvedBundleSha256: options.approvedBundleSha256 }) });
@@ -246,6 +249,12 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
   // Task 10: a hand-supplied worker image brings the hash of the stage 2 boot script it carries, before anything is read or changed.
   const imagesProblem = bootStage2ImagesProblem(options.images);
   if (imagesProblem !== undefined) throw agentXError("CONFIG_INVALID", imagesProblem);
+  // --rollback-to names the one release to move back to: it replaces --to, and the rollback is deployed, never exported.
+  if (options.rollbackTo !== undefined) {
+    if (!/^\d+\.\d+\.\d+$/.test(options.rollbackTo)) throw agentXError("CONFIG_INVALID", `--rollback-to takes a published release version (x.y.z), not "${options.rollbackTo}"; nothing was changed`);
+    if (options.to !== undefined) throw agentXError("CONFIG_INVALID", "--rollback-to names the release to move back to; do not combine it with --to");
+    if (options.exportDir !== undefined) throw agentXError("CONFIG_INVALID", "--rollback-to deploys the rollback itself; it cannot be combined with --export");
+  }
   const first = upgradableSettings(await readEnvironmentSettings(deps.store, env), env);
   // Ruling F19 (FR-013): the bundle holds the published templates; deploying them onto cdk-deployed
   // stacks would switch the environment's engine.
@@ -280,7 +289,9 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
 
   if (bundle !== undefined && first.engine === "cdk") return runBuiltBundleUpgrade({ options, deps, bundle, first });
 
-  const version = options.releaseDir === undefined && bundle === undefined ? options.to ?? deps.cliVersion : undefined;
+  // A cdk rollback always builds the target from the --source checkout of its tag (never a download), checked against --rollback-to below.
+  const rollbackFromSource = options.rollbackTo !== undefined && first.engine === "cdk" && options.releaseDir === undefined;
+  const version = options.releaseDir === undefined && bundle === undefined && !rollbackFromSource ? options.rollbackTo ?? options.to ?? deps.cliVersion : undefined;
   // Issue 152: a source-built CLI's cdk upgrade needs no release: the version is the source's tag.
   // With --to or --release, that release is loaded as before, and prepare refuses one that is not
   // the source's tag before anything deploys.
@@ -296,8 +307,28 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
   if (options.to !== undefined && options.releaseDir !== undefined && options.to !== target) {
     throw agentXError("CONFIG_INVALID", `--release holds release ${target}, not ${options.to}; pass the release you mean`);
   }
+  if (options.rollbackTo !== undefined && options.rollbackTo !== target) {
+    throw agentXError("CONFIG_INVALID", `--rollback-to ${options.rollbackTo} does not match the release given, which is ${target} (${options.releaseDir !== undefined ? "--release" : "the --source checkout's tag"}); pass the release you mean; nothing was changed`);
+  }
+  const floors = deps.rollbackFloors ?? { floors: ROLLBACK_FLOORS, declaredThrough: ROLLBACK_FLOORS_DECLARED_THROUGH };
+  // The direction guard: a plain upgrade never moves back; only --rollback-to does, and only to an older release above every floor of every
+  // release the environment ever ran (the high-water mark, read again under the lock).
+  const rollback = options.rollbackTo !== undefined;
+  // A plain upgrade or a same-version re-run is checked against the floors too whenever the mark is above the target: an upgrade that stopped
+  // part way already recorded its target as the mark, so the floors it declared hold from then on.
+  const checkDirection = async (current: string): Promise<"same" | "newer" | "older"> => {
+    const highWater = await readReleaseHighWater(deps.store, env);
+    if (rollback) return rollbackDirection(env, current, target, floors.floors, floors.declaredThrough, highWater);
+    const direction = upgradeDirection(env, current, target);
+    floorCheck(env, current, target, floors.floors, floors.declaredThrough, highWater);
+    return direction;
+  };
   // Checked here to fail fast, and again under the lock, where it counts.
-  upgradeDirection(env, first.version, target);
+  await checkDirection(first.version);
+  // A cdk rollback to a release that names no embedder image would keep the newer release's image running under the older code: name it.
+  if (rollback && first.engine === "cdk" && release.manifest.images.embedder === undefined && options.images?.embedder === undefined && await teamRecordRecordedOrUnknown(deps.store, env)) {
+    throw agentXError("CONFIG_INVALID", `release ${target} names no embedder image, and ${env} records the Team record as on (or it could not be read), so the rollback would keep the embedder of ${first.version}; pass --embedder-image <release ${target}'s embedder, pinned by digest in your registry>; nothing was changed`);
+  }
   if (options.exportDir !== undefined) return exportUpgrade({ options, deps, settings: first, release, dir: options.exportDir });
 
   // Question 3 under concurrency: another upgrade may finish between the read above and this lock,
@@ -313,8 +344,10 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     if (settings.engine !== first.engine) {
       throw agentXError("CONFIG_INVALID", `environment ${env}'s settings changed to the ${settings.engine} engine while agentx upgrade was starting; run agentx upgrade again`);
     }
-    const direction = upgradeDirection(env, settings.version, target);
-    deps.write(direction === "same" ? `Environment ${env} already runs ${target}; checking that every stack is on it` : `Upgrading ${env} from ${settings.version} to ${target} (${settings.engine} engine)`);
+    const direction = await checkDirection(settings.version);
+    deps.write(direction === "same" ? `Environment ${env} already runs ${target}; checking that every stack is on it`
+      : direction === "older" ? `Rolling back ${env} from ${settings.version} to ${target} (${settings.engine} engine): every change is shown and confirmed as for an upgrade`
+        : `Upgrading ${env} from ${settings.version} to ${target} (${settings.engine} engine)`);
     deps.write(notesText(await deps.notes(target), target));
 
     const answers = await upgradeAnswers({ settings, stacks: deps.stacks, ...(options.images === undefined ? {} : { images: options.images }) });
@@ -331,7 +364,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     }
 
     const allowReplace = new Set(options.allowReplace);
-    const review = upgradeConfirm({ write: deps.write, ask: deps.ask, yes: options.yes, allowReplace });
+    const review = upgradeConfirm({ write: deps.write, ask: deps.ask, yes: options.yes, allowReplace, stopped: (stackName) => stoppedBefore(stackName, options.rollbackTo) });
     // Prepared before the dropped keys are named: the cdk engine's synth of the source (issue 152)
     // says which parameters the deploy can send, and so which it drops.
     // The embedder image the stack runs now, for a release that names none (a --source or --worker-image upgrade): kept, not refused. Read live, as the answers are.
@@ -359,8 +392,14 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     try {
       const declaredBy = prepared.declaredParameters;
       const declared = (part: DeployPart) => (declaredBy === undefined ? templateParameterNames(release, part, env) : declaredBy(part));
-      for (const entry of await droppedConfigKeys({ declared, env, parts, stacks: deps.stacks })) {
-        deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the upgrade drops it; ${entry.instead === undefined ? "nothing replaces it" : `instead, ${entry.instead}`}`);
+      const dropped = await droppedConfigKeys({ declared, env, parts, stacks: deps.stacks });
+      for (const entry of dropped) {
+        deps.write(`config key ${entry.key} (${entry.value}) is not in release ${target}, so the ${rollback ? "rollback" : "upgrade"} drops it; ${entry.instead === undefined ? "nothing replaces it" : `instead, ${entry.instead}`}`);
+      }
+      // A value an older template does not declare is gone from the stack; rolling forward again deploys the newer template's default, not it.
+      if (rollback && dropped.length > 0) {
+        deps.write(`WARNING: rolling back drops ${dropped.length === 1 ? "this value" : "these values"}, and rolling forward again does NOT bring ${dropped.length === 1 ? "it" : "them"} back (the newer release's default is deployed instead). After the next upgrade, re-apply ${dropped.length === 1 ? "it" : "each"}:`);
+        for (const entry of dropped) deps.write(`  agentx --env ${env} config set ${entry.key} ${entry.value}`);
       }
       for (const line of await forcedNotes({ env, from: settings.version, to: target, stacks: deps.stacks })) deps.write(line);
 
@@ -383,9 +422,16 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
           throw agentXError("CONFIG_INVALID", hint === undefined ? refusal : `${refusal} ${hint}`);
         }
         if (!options.yes && !/^y(es)?$/i.test((await deps.ask(`Deploy ${request.stackName}? [y/N] `)).trim())) {
-          throw agentXError("CONFIG_INVALID", `upgrade stopped before ${request.stackName}: nothing in it changed. Stacks upgraded before it keep the new release; run agentx upgrade again to continue`);
+          throw agentXError("CONFIG_INVALID", stoppedBefore(request.stackName, options.rollbackTo));
         }
       });
+      // Before the first stack changes, the mark records the highest release this run touches: the release a rollback leaves, or the target of an
+      // upgrade (so an upgrade that stops part way still leaves its floors in force). It must be recorded; otherwise nothing changes.
+      try {
+        await raiseReleaseHighWater(deps.store, env, rollback ? settings.version : target);
+      } catch (error) {
+        throw agentXError("CONFIG_INVALID", highWaterRefusal(env, rollback ? settings.version : target, rollback ? "rollback" : "upgrade", error));
+      }
       try {
         // The lock is this command's, in deps.store, where the settings live; deployEnvironment
         // checks that and writes the new settings there.
@@ -398,6 +444,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
           ...(declaredBy === undefined ? {} : { declaredParameters: declaredBy }),
           ...(settings.engine === "cdk" && prepared.ensurePassRole !== undefined ? { ensurePassRole: prepared.ensurePassRole } : {}),
           ...(settings.engine === "cdk" && prepared.publishEmbedderImage !== undefined ? { afterAccess: prepared.publishEmbedderImage } : {}),
+          ...(rollback ? { checkParametersFirst: true } : {}),
           now: deps.now,
         });
       } catch (error) {
@@ -415,12 +462,28 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
     return { settings, parts };
   });
 
-  return finishUpgrade({ env, from: settings.version, target, parts, deps });
+  const finished = await finishUpgrade({ env, from: settings.version, target, parts, deps, ...(rollback ? { rollback: true } : {}) });
+  return options.rollbackTo === undefined ? finished : { ...finished, rolledBack: true };
+}
+
+/** Why the mark could not be recorded, with the advice that fits: a malformed mark is fixed by hand, a refused write needs other credentials. */
+export function highWaterRefusal(env: string, version: string, what: "upgrade" | "rollback", error: unknown, afterDeploy = false): string {
+  const reason = plainMessage(error);
+  const advice = /not a release version/.test(reason) ? "fix it by hand to the highest release the environment ever ran, then run it again" : "check that these credentials may write it (ssm:PutParameter), then run it again";
+  return `the ${what} could not record ${version} as ${releaseHighWaterParameter(env)} (${reason})${afterDeploy ? "" : ", so it stopped before anything changed"}; ${advice}`;
+}
+
+/** A declined stack: what changed, and how to go on (an upgrade and a rollback each re-run themselves). */
+export function stoppedBefore(stackName: string, rollbackTo?: string): string {
+  return rollbackTo === undefined
+    ? `upgrade stopped before ${stackName}: nothing in it changed. Stacks upgraded before it keep the new release; run agentx upgrade again to continue`
+    : `rollback stopped before ${stackName}: nothing in it changed. Stacks rolled back before it already run ${rollbackTo}; run agentx upgrade --rollback-to ${rollbackTo} again to continue`;
 }
 
 /** After the stacks are on the target: the GitHub webhook (outside the lock, since it changes only GitHub's hook and the App secret), then doctor. */
-async function finishUpgrade(input: { env: string; from: string; target: string; parts: DeployPart[]; deps: UpgradeDependencies }): Promise<UpgradeResult> {
+async function finishUpgrade(input: { env: string; from: string; target: string; parts: DeployPart[]; deps: UpgradeDependencies; rollback?: true }): Promise<UpgradeResult> {
   const { env, from, target, parts, deps } = input;
+  const done = input.rollback === true ? "rolled back" : "upgraded";
   await setUpGithubWebhook(env, deps);
 
   deps.write("Checking the environment with agentx doctor");
@@ -428,11 +491,11 @@ async function finishUpgrade(input: { env: string; from: string; target: string;
   try {
     report = await deps.doctor(env);
   } catch (error) {
-    throw agentXError("CONFIG_INVALID", `upgraded ${env} to ${target}, but doctor could not run: ${plainMessage(error)}; run agentx doctor`);
+    throw agentXError("CONFIG_INVALID", `${done} ${env} to ${target}, but doctor could not run: ${plainMessage(error)}; run agentx doctor`);
   }
   deps.write(reportText(report).trimEnd());
   if (report.failed > 0) {
-    throw agentXError("CONFIG_INVALID", `upgraded ${env} to ${target}, but ${report.failed} doctor ${report.failed === 1 ? "check" : "checks"} failed; fix what each one names, then run agentx doctor again`);
+    throw agentXError("CONFIG_INVALID", `${done} ${env} to ${target}, but ${report.failed} doctor ${report.failed === 1 ? "check" : "checks"} failed; fix what each one names, then run agentx doctor again`);
   }
   return { env, from, to: target, parts, doctor: { failed: report.failed, warned: report.warned } };
 }
@@ -443,6 +506,7 @@ async function runBuiltBundleUpgrade(input: { options: UpgradeOptions; deps: Upg
   const target = bundle.manifest.version;
   refusePrereleaseTarget(target);
   upgradeDirection(first.env, first.version, target);
+  floorCheck(first.env, first.version, target, deps.rollbackFloors?.floors ?? ROLLBACK_FLOORS, deps.rollbackFloors?.declaredThrough ?? ROLLBACK_FLOORS_DECLARED_THROUGH, await readReleaseHighWater(deps.store, first.env));
   if (deps.approveAndDeploy === undefined) throw agentXError("CONFIG_INVALID", "this agentx cannot build an install's templates at approval; the bundle was refused and nothing was changed");
   // The same check as the main path, before the approval is written or the deployer started: a table left by a rolled-back Team record build would fail the deployer on "already exists".
   await enforceTeamRecordPreflight({ env: first.env, store: deps.store, controlPlaneParameters: (await deps.stacks.describe(first.stacks["control-plane"]))?.parameters, probe: deps.teamRecordProbe, write: deps.write, stoppedMessage: "upgrade stopped before anything changed" });
@@ -451,6 +515,10 @@ async function runBuiltBundleUpgrade(input: { options: UpgradeOptions; deps: Upg
   const outcome = await deps.approveAndDeploy({ bundle, settings: first, yes: options.approveBuild === true });
   if (outcome.status !== "done") {
     throw agentXError("CONFIG_INVALID", `the deployer did not finish (${outcome.status}); stacks done so far: ${outcome.done.length === 0 ? "none" : outcome.done.join(", ")}. Run agentx upgrade again; the approval stands`);
+  }
+  // The deployer raised the mark itself before its first change; this only repairs a mark it could not (a malformed one is named, not overwritten).
+  try { await raiseReleaseHighWater(deps.store, first.env, target); } catch (error) {
+    deps.write(`WARNING: ${highWaterRefusal(first.env, target, "upgrade", error, true)}`);
   }
   return finishUpgrade({ env: first.env, from: first.version, target, parts: outcome.done as DeployPart[], deps });
 }
