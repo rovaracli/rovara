@@ -1,7 +1,7 @@
 // TE-B1-fresh: the fresh check round through the worker's CHECKS path (run-task.ts -> check-round-choice.ts -> fresh-check-round.ts). Real git workspace, fake Docker CLI, offline. With the company gate on, the official round
 // runs in a NEW container made from the committed code and the working sandbox's exec is never used for it; with the gate off, it is today's round, unchanged.
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -16,7 +16,7 @@ import { FAUX_MODEL } from "../support/faux-model.js";
 import { git } from "../support/test-proof-fixture.js";
 
 const IMAGE = "registry.example.test/agentx/worker@sha256:" + "b".repeat(64);
-const check: ProjectCommand = { cwd: "app", executable: "npm", args: ["fresh-wiring-marker"], timeoutSeconds: 60 };
+const check: ProjectCommand = { cwd: "app", executable: "npm", args: ["fresh-wiring-marker", "--outputFile=report.json"], timeoutSeconds: 60 };
 
 async function workspace(): Promise<string> {
   const rootPath = await createFixtureDirectory("agentx-wire-");
@@ -24,7 +24,7 @@ async function workspace(): Promise<string> {
   await mkdir(join(rootPath, ".agentx"), { recursive: true });
   await mkdir(join(repository, "src"), { recursive: true });
   await writeFile(join(repository, "src/a.ts"), "export const a = 1;\n");
-  await writeFile(join(repository, ".gitignore"), "node_modules/\n");
+  await writeFile(join(repository, ".gitignore"), "node_modules/\nreport.json\n");
   git(repository, "init", "-q", "-b", "main");
   git(repository, "add", "-A");
   git(repository, "commit", "-q", "-m", "fixture");
@@ -39,7 +39,7 @@ async function workspace(): Promise<string> {
   return rootPath;
 }
 
-function fakeDocker(exitOf: (text: string, container: string) => number = () => 0) {
+function fakeDocker(exitOf: (text: string, container: string) => number = () => 0, onExec?: (text: string, calls: string[][]) => void) {
   const calls: string[][] = [];
   const docker: DockerCli = {
     run: async (args) => {
@@ -47,7 +47,9 @@ function fakeDocker(exitOf: (text: string, container: string) => number = () => 
       if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
       if (args[0] === "exec") {
         const text = args.join(" ");
+        if (text.includes("REMAINING:")) return { exitCode: 0, stdout: "REMAINING:0\n", stderr: "" };
         if (text.includes("kill")) return { exitCode: 0, stdout: "", stderr: "" };
+        onExec?.(text, calls);
         return { exitCode: exitOf(text, args.find((arg) => arg.startsWith("agentx-task-") || arg.startsWith("agentx-fresh-")) ?? ""), stdout: "", stderr: "" };
       }
       return { exitCode: 0, stdout: "", stderr: "" };
@@ -57,10 +59,10 @@ function fakeDocker(exitOf: (text: string, container: string) => number = () => 
 }
 const nameOf = (args: string[]) => args[args.indexOf("--name") + 1]!;
 
-async function checksRun(rootPath: string, fake: ReturnType<typeof fakeDocker>, extra: Partial<Parameters<typeof runTaskInvocation>[1]> = {}) {
+async function checksRun(rootPath: string, fake: ReturnType<typeof fakeDocker>, extra: Partial<Parameters<typeof runTaskInvocation>[1]> & { evidenceCapture?: boolean } = {}) {
   const invocation: Extract<WorkerInvocation, { kind: "task" }> = {
     protocolVersion: 1, kind: "task", operationId: randomUUID(), workspaceId: randomUUID(), fence: 1, projectRevision: 1, callbackCapability: "c".repeat(64),
-    payload: { conversationId: randomUUID(), prompt: "check it", readiness: [check], workflowMode: "CHECKS" },
+    payload: { conversationId: randomUUID(), prompt: "check it", readiness: [check], workflowMode: "CHECKS", ...(extra.evidenceCapture === true ? { evidenceCapture: true } : {}) },
   };
   const events: WorkerEvent[] = [];
   const artifacts: Array<{ name: string; content: string }> = [];
@@ -145,5 +147,56 @@ describe("the CHECKS round with the freshCheckRound gate", () => {
     expect(result.checks!.status).toBe("verified");
     expect(ran).toHaveLength(1);
     expect(fake.calls).toEqual([]);
+  });
+});
+
+describe("H1c: the fresh round's evidence comes from its export", () => {
+  const report = (name: string) => JSON.stringify({ testResults: [{ name: "/w/src/a.test.ts", status: "passed", assertionResults: [{ fullName: name, status: "passed", duration: 3 }] }] });
+  it("reads the test report the check wrote in the export, ignores a report written into the working tree during the round, and removes the export afterwards", async () => {
+    const rootPath = await workspace();
+    const fake = fakeDocker(() => 0, (text, calls) => {
+      if (!text.includes("fresh-wiring-marker")) return;
+      const fresh = calls.find((args) => args[0] === "run" && args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-"))!;
+      const exportDirectory = fresh[fresh.indexOf("--volume") + 1]!.split(":")[0]!;
+      // the check wrote its report in the fresh sandbox (the export); the agent's leftover program wrote another into the working tree
+      writeFileSync(join(exportDirectory, "app", "report.json"), report("from-the-export works"));
+      writeFileSync(join(rootPath, "app", "report.json"), report("planted-in-the-working-tree works"));
+    });
+    const { artifacts } = await checksRun(rootPath, fake, { freshCheckRound: () => ({ setup: [] }), evidenceCapture: true, stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
+    const raw = artifacts.find((artifact) => artifact.name === "evidence-raw.json");
+    expect(raw).toBeDefined();
+    expect(raw!.content).toContain("from-the-export");
+    expect(raw!.content).not.toContain("planted-in-the-working-tree");
+    const parent = join(rootPath, ".agentx", "fresh-check");
+    expect(existsSync(parent) ? readdirSync(parent).filter((name) => name !== "scratch") : []).toEqual([]);
+  });
+  it("a fresh round whose container could not be removed has no export to read: no evidence is claimed, and the working tree is NOT read instead", async () => {
+    const rootPath = await workspace();
+    const base = fakeDocker(() => 0, (text) => { if (text.includes("fresh-wiring-marker")) writeFileSync(join(rootPath, "app", "report.json"), report("planted-in-the-working-tree works")); });
+    const stuck: DockerCli = { run: (args, options) => (args[0] === "rm" && args.some((arg) => arg.startsWith("agentx-fresh-")) ? Promise.resolve({ exitCode: 1, stdout: "", stderr: "busy" }) : base.docker.run(args, options)) };
+    const { artifacts } = await checksRun(rootPath, { docker: stuck, calls: base.calls }, { freshCheckRound: () => ({ setup: [] }), evidenceCapture: true, stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
+    expect(artifacts.find((artifact) => artifact.name === "evidence-raw.json")).toBeUndefined();
+  });
+  it("the same run with the gate off reads the working tree, as always", async () => {
+    const rootPath = await workspace();
+    const fake = fakeDocker(() => 0, (text) => { if (text.includes("fresh-wiring-marker")) writeFileSync(join(rootPath, "app", "report.json"), report("from-the-working-tree works")); });
+    const { artifacts } = await checksRun(rootPath, fake, { evidenceCapture: true, stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
+    expect(artifacts.find((artifact) => artifact.name === "evidence-raw.json")?.content).toContain("from-the-working-tree");
+  });
+});
+
+describe("H1b: the leftover programs are stopped before the fresh round", () => {
+  it("the working sandbox's stop script runs before the fresh container starts, and a sandbox that still holds programs makes the check 'not run'", async () => {
+    const rootPath = await workspace();
+    const fake = fakeDocker();
+    await checksRun(rootPath, fake, { freshCheckRound: () => ({ setup: [] }), stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
+    const order = fake.calls.filter((args) => args[0] === "run" || (args[0] === "exec" && args.join(" ").includes("REMAINING:"))).map((args) => (args[0] === "run" ? (args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-") ? "fresh start" : "working start") : "stop programs"));
+    expect(order).toEqual(["working start", "stop programs", "fresh start"]);
+    const refusing = fakeDocker();
+    const stuck: DockerCli = { run: (args, options) => (args[0] === "exec" && args.join(" ").includes("REMAINING:") ? Promise.resolve({ exitCode: 0, stdout: "REMAINING:2\n", stderr: "" }) : refusing.docker.run(args, options)) };
+    const { result } = await checksRun(await workspace(), { docker: stuck, calls: refusing.calls }, { freshCheckRound: () => ({ setup: [] }), stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
+    expect(result.checks!.checks[0]).toMatchObject({ after: "not_run" });
+    expect(result.checks!.checks[0]!.output).toContain("programs the agent left running could not be stopped");
+    expect(refusing.calls.some((args) => args[0] === "run" && args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-"))).toBe(false);
   });
 });

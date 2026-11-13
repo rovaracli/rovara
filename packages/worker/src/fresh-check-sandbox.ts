@@ -6,23 +6,27 @@
 // repository, and it is refused when the commit's tree is not the tree the candidate names. The directory is under `<workspace>/.agentx/fresh-check`: the working sandbox hides `.agentx` behind an empty mount (workspace-state.ts), and the
 // Docker host shares the workspace with the worker at the same path.
 //
-// THE CAPS ARE THE E2E BUILD-SOURCE CAPS (10,000 files, 64 MB in all, 8 MB a file: e2e-candidate-source.ts, not exported and not changed here). A repository over them is refused in plain words ("the repository is too large for a fresh
-// check sandbox"); nothing is ever cut to fit. That is a product limit the owner may want raised: it needs its own constants and an edit of that file.
+// THE EXPORT IS VERIFIED (fresh-check-export.ts): every object is hashed against the id it was asked for, because the candidate's object store is agent-writable. The lane's OWN CAPS are 100,000 files, 1 GiB in all, 100 MiB a file; blobs stream to disk
+// and the free space is checked first. A repository over them, or a disk too small, is refused in plain words; nothing is ever cut to fit.
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { BuildSourceCapError, createProcessCandidateGit, removeWithoutFollowing, type CandidateGit, type SkippedTreeEntry } from "./e2e-candidate-source.js";
+import { removeWithoutFollowing } from "./e2e-candidate-source.js";
+import { FreshExportError, makeRemovable, materializeVerified, type FreshExportCaps, type FreshSkippedEntry } from "./fresh-check-export.js";
 import { privateAddressHostArgs } from "./private-address-hosts.js";
 import { SANDBOX_INIT, TASK_SANDBOX_NETWORK, TASK_SANDBOX_USER, taskSandboxRunArgs, workspaceKey } from "./task-sandbox.js";
 
 /** Why a fresh round did not run. Fixed codes: nothing a repository, git or docker printed is ever repeated. */
-export type FreshNotRunReason = "export_failed" | "tree_changed" | "too_large" | "sandbox_failed" | "no_image" | "not_prepared" | "stopped";
+export type FreshNotRunReason = "export_failed" | "tree_changed" | "too_large" | "no_space" | "corrupt" | "quiesce_failed" | "sandbox_failed" | "no_image" | "not_prepared" | "stopped";
 
 /** The words the check shows for each reason. Each starts with "not run", and none says "sealed". */
 export const FRESH_NOT_RUN_SENTENCES: Readonly<Record<FreshNotRunReason, string>> = {
   export_failed: "not run: the fresh check sandbox could not start (the committed code could not be exported)",
   tree_changed: "not run: the fresh check sandbox could not start (the files changed after they were committed, so they are not the committed code)",
   too_large: "not run: the repository is too large for a fresh check sandbox",
+  no_space: "not run: there is not enough free disk space for a fresh check sandbox",
+  corrupt: "not run: the committed code could not be read safely (an object is missing or does not match its id)",
+  quiesce_failed: "not run: programs the agent left running could not be stopped, so the fresh check sandbox did not start",
   sandbox_failed: "not run: the fresh check sandbox could not start (the container did not start)",
   no_image: "not run: the fresh check sandbox could not start (no sandbox image is configured)",
   not_prepared: "not run: the fresh check sandbox could not be prepared (the project's setup did not finish)",
@@ -133,11 +137,10 @@ export interface FreshCandidateRepository {
   treeSha: string;
 }
 
-export interface FreshSkippedEntry extends SkippedTreeEntry { repositoryId: string }
+export interface FreshSkippedRepositoryEntry extends FreshSkippedEntry { repositoryId: string }
 
-export type FreshExportResult = { ok: true; directory: string; skipped: FreshSkippedEntry[] } | { ok: false; reason: FreshNotRunReason };
+export type FreshExportResult = { ok: true; directory: string; skipped: FreshSkippedRepositoryEntry[] } | { ok: false; reason: FreshNotRunReason };
 
-const SIZE_PROBLEM = /more files than|more entries than|exceed|too large|size bound|build source (?:file )?limit|over the/iu;
 const safeName = (text: string): string => text.replace(/[^a-zA-Z0-9_.-]/gu, "-").slice(0, 40) || "task";
 /** A repository path that stays inside the workspace: relative, no `..`, no NUL, no empty part ("." is the root itself). */
 function safeRelativePath(path: string): boolean {
@@ -150,7 +153,7 @@ function safeRelativePath(path: string): boolean {
  * (`{ ok: false }`, nothing left behind) when a path leaves the workspace, a tree is not the one named, a repository is over the caps, or git fails. Never writes anything of the working tree.
  */
 export async function exportCandidateForFreshRound(input: {
-  rootPath: string; taskId: string; repositories: readonly FreshCandidateRepository[]; signal: AbortSignal; git?: CandidateGit | undefined;
+  rootPath: string; taskId: string; repositories: readonly FreshCandidateRepository[]; signal: AbortSignal; caps?: Partial<FreshExportCaps> | undefined;
 }): Promise<FreshExportResult> {
   if (input.repositories.length === 0 || input.repositories.some((repository) => !safeRelativePath(repository.path))) return { ok: false, reason: "export_failed" };
   const parent = exportParentOf(input.rootPath);
@@ -159,23 +162,20 @@ export async function exportCandidateForFreshRound(input: {
     await mkdir(parent, { recursive: true, mode: 0o700 });
     directory = await mkdtemp(join(parent, `${safeName(input.taskId)}-`));
     await chmod(directory, 0o755);
-    const git = input.git ?? createProcessCandidateGit(join(parent, SCRATCH_NAME));
-    const skipped: FreshSkippedEntry[] = [];
+    const skipped: FreshSkippedRepositoryEntry[] = [];
     for (const repository of [...input.repositories].sort((left, right) => left.repositoryId.localeCompare(right.repositoryId))) {
       if (input.signal.aborted) return await refuse(parent, directory, "stopped");
-      const tree = await git.treeOf(resolve(repository.directory), repository.commitSha, input.signal);
-      if (tree !== repository.treeSha) return await refuse(parent, directory, "tree_changed");
       const destination = repository.path === "." ? directory : join(directory, repository.path);
       await mkdir(destination, { recursive: true, mode: 0o755 });
       await chmod(destination, 0o755);
-      for (const entry of await git.materializeInto(resolve(repository.directory), repository.commitSha, destination, input.signal)) skipped.push({ repositoryId: repository.repositoryId, ...entry });
+      const entries = await materializeVerified({ repositoryRoot: resolve(repository.directory), commitSha: repository.commitSha, treeSha: repository.treeSha, destination, scratchRoot: join(parent, SCRATCH_NAME), signal: input.signal, ...(input.caps === undefined ? {} : { caps: input.caps }) });
+      for (const entry of entries) skipped.push({ repositoryId: repository.repositoryId, ...entry });
     }
     return { ok: true, directory, skipped };
   } catch (error) {
     if (directory !== undefined) await removeFreshExport(input.rootPath, directory).catch(() => undefined);
     if (input.signal.aborted) return { ok: false, reason: "stopped" };
-    const big = error instanceof BuildSourceCapError || (error instanceof Error && SIZE_PROBLEM.test(error.message));
-    return { ok: false, reason: big ? "too_large" : "export_failed" };
+    return { ok: false, reason: error instanceof FreshExportError ? error.reason : "export_failed" };
   }
 }
 
@@ -188,6 +188,8 @@ async function refuse(parent: string, directory: string, reason: FreshNotRunReas
 export async function removeFreshExport(rootPath: string, directory: string): Promise<void> {
   const parent = exportParentOf(rootPath);
   if (dirname(resolve(directory)) !== parent || basename(directory) === SCRATCH_NAME) throw new Error("not a fresh check export");
+  // a check may have left a folder at 0000 or 0555: made removable first, never following a link
+  await makeRemovable(resolve(directory));
   await removeWithoutFollowing(parent, basename(directory));
 }
 

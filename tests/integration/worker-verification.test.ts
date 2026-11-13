@@ -1740,6 +1740,7 @@ describe("TE-B1-fresh: the coding run's final round with the freshCheckRound gat
     const docker: DockerCli = { run: async (args) => {
       calls.push([...args]);
       if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
+      if (args[0] === "exec" && args.join(" ").includes("REMAINING:")) return { exitCode: 0, stdout: "REMAINING:0\n", stderr: "" };
       return { exitCode: 0, stdout: "", stderr: "" };
     } };
     return { docker, calls };

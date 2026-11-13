@@ -61,6 +61,24 @@ describe("the test report a check already writes", () => {
   });
 });
 
+describe("H1c: a separate report root", () => {
+  it("reads the test report from the report root, ignores one the agent wrote into the working tree, and never falls back to it", async () => {
+    const exportRoot = await mkdtemp(join(tmpdir(), "evidence-export-"));
+    try {
+      await writeFile(join(root, "report.xml"), JUNIT);
+      await writeFile(join(exportRoot, "report.xml"), `<testsuites><testsuite name="x" tests="1"><testcase classname="c" name="only_one" file="t.py"/></testsuite></testsuites>`);
+      const commands = [command(["--junitxml=report.xml"])];
+      const raw = await collectEvidenceRaw({ rootPath: root, reportRoot: exportRoot, commands, entries: [entry(0)], candidateDigest: DIGEST, repositories: [] });
+      expect(raw?.checks[0]?.tests).toMatchObject({ total: 1, passed: 1 });
+      expect(JSON.stringify(raw)).not.toContain("test_no_region");
+      await rm(join(exportRoot, "report.xml"));
+      expect(await collectEvidenceRaw({ rootPath: root, reportRoot: exportRoot, commands, entries: [entry(0)], candidateDigest: DIGEST, repositories: [] })).toBeUndefined();
+    } finally {
+      await rm(exportRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("a report it must not read", () => {
   it("outside the workspace, through a link, malformed, or not there at all gives no tests", async () => {
     await mkdir(join(root, "work"));

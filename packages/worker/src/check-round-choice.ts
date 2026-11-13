@@ -1,17 +1,19 @@
 // TE-B1-fresh: the ONE place the round kinds meet. It says which runners a task's official check rounds use and which its original-code rounds use; run-task.ts calls it at the three places it builds check runners.
 // A source guard (tests/unit/worker-fresh-source-guards.test.ts) lets only this module import the fresh round, and no module may import both round kinds directly: the sealed round is reached through `withTestServices`, as before.
 //
-//   - A task with test services (a plan with dependencies) keeps TODAY'S sealed path for every round, whatever the kind says: `withTestServices`, untouched. A plan with dependencies is not moved to the fresh round, and a round that cannot
-//     be sealed is not run unsealed in a fresh place either (the existing refusal stays where it is).
+//   - A task with test services (a plan with dependencies) keeps TODAY'S sealed RUNNERS for every round, whatever the kind says: `withTestServices`, untouched. A plan with dependencies is not moved to the fresh round, and a round that cannot
+//     be sealed is not run unsealed in a fresh place either (the existing refusal stays where it is). The LABEL comes from the chooser alone: `sealed` only when it said sealed (the self-test passed); otherwise `working`.
+//   - Each runners object has its own kind (`runnersKind`): the original-code runners are `working` and never a place for a real model call. The fresh runners also hold the export the checks' reports are read from (`evidence`).
 //   - `fresh_unsealed` gives the official rounds the fresh runners (fresh-check-round.ts). The rounds that run on the ORIGINAL code (the before results of the agent's commands, the test proof, the scanners' baseline) keep the working
 //     runners: there is no candidate to export in them, and they are measurements, not the final check. Real model calls are not allowed in them (`realModelCallsAllowed("working")`).
 //   - Anything else is today's behaviour: the working runners for both.
 import type { ProjectCommand } from "@rovara-code/contracts";
 import type { CheckRoundKind } from "./check-round-kind.js";
-import { createFreshCheckRunners, type FreshRoundHooks } from "./fresh-check-round.js";
+import { createFreshCheckRunners, stopWorkingSandboxPrograms, type FreshEvidenceSource, type FreshRoundHooks } from "./fresh-check-round.js";
 import type { FreshCandidateRepository } from "./fresh-check-sandbox.js";
 import type { DockerCli } from "./swebench/containers.js";
 import { withTestServices, type TestServicesRun } from "./test-services-run.js";
+import { stopWorkspaceProcesses } from "./workspace-processes.js";
 import type { CheckRunners } from "./verification/checks.js";
 
 /**
@@ -33,15 +35,32 @@ export interface FreshRoundWiring {
   image: string | undefined;
   candidate: () => Promise<readonly FreshCandidateRepository[]>;
   onProgress: (line: string) => void;
+  /** Stops what the agent left running before each round (H1b). */
+  quiesce?: ((signal: AbortSignal) => Promise<void>) | undefined;
 }
 
 export interface RoundRunners {
-  /** The kind the official rounds really are: `sealed` when test services run them, `fresh_unsealed` when the fresh runners do, otherwise `working`. */
+  /** The kind of the official rounds, from the chooser's answer alone (M1): `sealed` only when the chooser said so, `fresh_unsealed` only when the fresh runners run them, otherwise `working`. */
   readonly kind: CheckRoundKind;
+  /** The kind of the original-code rounds: `working`, or `sealed` when test services run those too (M3). Never `fresh_unsealed`. */
+  readonly beforeKind: CheckRoundKind;
   /** The runners of the task's official (final) check rounds. */
   readonly final: CheckRunners;
   /** The runners of the rounds on the original code. */
   readonly before: CheckRunners;
+  /** The last fresh round's export, where the checks' reports are read from (H1c); only for `fresh_unsealed`. */
+  readonly evidence?: FreshEvidenceSource;
+}
+
+const KINDS = new WeakMap<object, CheckRoundKind>();
+/** The kind a runners object was made for. Each runner has its own: a `before` runner is never `fresh_unsealed`, so `realModelCallsAllowed(runnersKind(before))` is false unless a sealed round runs it (M3). */
+export function runnersKind(runners: CheckRunners): CheckRoundKind | undefined {
+  return KINDS.get(runners);
+}
+function tagged(kind: CheckRoundKind, runners: CheckRunners): CheckRunners {
+  // base runners may be shared (the same object is `working` for both rounds): the first tag stays unless a stricter one is asked for.
+  if (!KINDS.has(runners)) KINDS.set(runners, kind);
+  return runners;
 }
 
 export function checkRoundRunners(input: {
@@ -53,13 +72,32 @@ export function checkRoundRunners(input: {
   fresh: FreshRoundWiring | undefined;
 }): RoundRunners {
   if (input.testServices !== undefined) {
-    const sealed = withTestServices(input.testServices, input.base);
-    return { kind: "sealed", final: sealed, before: sealed };
+    // A plan with dependencies keeps today's sealed path. The label comes from the chooser alone: `sealed` only when it said sealed; while the self-test is held it says working (or fresh, which a plan with dependencies is not moved to), and then the
+    // round reports `working`, never `sealed`.
+    const kind: CheckRoundKind = input.kind === "sealed" ? "sealed" : "working";
+    const sealedRunners = withTestServices(input.testServices, input.base);
+    KINDS.set(sealedRunners, kind);
+    return { kind, beforeKind: kind, final: sealedRunners, before: sealedRunners };
   }
   if (input.kind === "fresh_unsealed" && input.fresh !== undefined) {
     const { seam, ...wiring } = input.fresh;
     const final = createFreshCheckRunners({ ...wiring, setup: seam.setup, ...(seam.setupBudgetMs === undefined ? {} : { setupBudgetMs: seam.setupBudgetMs }), ...(seam.hooks === undefined ? {} : { hooks: seam.hooks }) });
-    return { kind: "fresh_unsealed", final, before: input.base };
+    KINDS.set(final, "fresh_unsealed");
+    // the original-code rounds are working: never a place for a real model call
+    KINDS.set(input.base, "working");
+    return { kind: "fresh_unsealed", beforeKind: "working", final, before: input.base, evidence: final };
   }
-  return { kind: "working", final: input.base, before: input.base };
+  tagged("working", input.base);
+  return { kind: "working", beforeKind: "working", final: input.base, before: input.base };
+}
+
+/**
+ * H1b: what runs before every fresh round so nothing the agent left running can act during it: the worker's own leftover processes (workspace-processes.ts, as publication and CHECKS mode do), then every program in the working sandbox
+ * (the sandbox itself stays: the agent may get an extra turn in it). It fails closed: a rejection makes the round "not run".
+ */
+export function quietWorkingPlace(input: { docker: DockerCli; rootPath: string; sandboxName: string | undefined; stopProcesses?: (rootPath: string) => Promise<unknown> }): (signal: AbortSignal) => Promise<void> {
+  return async (signal) => {
+    await (input.stopProcesses ?? ((root: string) => stopWorkspaceProcesses({ rootPath: root })))(input.rootPath);
+    if (input.sandboxName !== undefined) await stopWorkingSandboxPrograms(input.docker, input.sandboxName, signal);
+  };
 }

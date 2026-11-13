@@ -6,7 +6,9 @@
 #   FR3 the export (committed files only) IS what the sandbox sees at the working root's path, and it can write there;
 #   FR4 the sandbox is on one network only;
 #   FR5 the working sandbox cannot connect to the fresh one on the walled bridge (inter-container traffic off), which is why the working sandbox is not paused; a control network WITH inter-container traffic shows the probe can connect;
-#   FR6 after the round the container is gone, and so is the export.
+#   FR6 the stop script the worker runs in the WORKING sandbox before a fresh round (STOP_SANDBOX_PROGRAMS_SCRIPT in fresh-check-round.ts; a unit test keeps the two copies equal) kills what the agent left running (a plain background program and a setsid
+#       daemon) and leaves the sandbox itself running;
+#   FR7 after the round the container is gone, and so is the export.
 # Output: one line per check, `FRESH <id> PASS|FAIL <name> | <detail>`, then `FRESH SUMMARY pass=<p> fail=<f>`. Exit 0 only when every line is PASS, 1 on any FAIL, 2 on a usage or setup error.
 #
 # HERMETIC. It calls only `docker` (and mkdir, mktemp, chmod, printf, rm, test, grep, tr, cut, sed, sleep, sha256sum or shasum from the base system). It calls no `nft`, `ip6tables`, `ip` or `iptables`, reads no secret, makes no AWS call and never touches colima:
@@ -111,6 +113,9 @@ verdict FR3 the_export_is_the_root "$FAILS" "the committed file is at the workin
 NETS=$(docker inspect --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$NAME" 2>/dev/null | tr -s ' ' | sed 's/ *$//')
 verdict FR4 one_network "$([[ "$NETS" == "$NET" ]] || printf 'networks are: %s' "$NETS")" "only $NET"
 
+# the stop script the worker runs in the working sandbox (kept equal to STOP_SANDBOX_PROGRAMS_SCRIPT by tests/unit/linux-check-fresh-round-script.test.ts)
+STOP_SCRIPT='n=0; pass=0; while [ "$pass" -lt 3 ]; do n=0; for p in /proc/[0-9]*; do pid=${p#/proc/}; [ "$pid" = 1 ] && continue; [ "$pid" = "$$" ] && continue; cmd=$(tr "\0" " " < "$p/cmdline" 2>/dev/null); case "$cmd" in "sleep infinity "*|"") continue;; esac; state=$(sed -n "s/^State:[[:space:]]*\(.\).*/\1/p" "$p/status" 2>/dev/null); [ "$state" = Z ] && continue; kill -9 "$pid" 2>/dev/null; n=$((n+1)); done; [ "$n" -eq 0 ] && break; pass=$((pass+1)); done; echo "REMAINING:$n"'
+
 # FR5: inter-container traffic. A listener in the fresh sandbox; a stand-in working sandbox on the same network tries to connect.
 FAILS=""
 docker run --detach --name "$WORKING" --network "$NET" --user 1000:1000 --entrypoint /usr/bin/tini "$IMAGE" -- sleep infinity >/dev/null 2>&1 || FAILS="$FAILS the stand-in working sandbox did not start;"
@@ -140,13 +145,28 @@ else
 fi
 verdict FR5 working_sandbox_cannot_reach_the_fresh_one "$FAILS" "blocked on $NET (enable_icc=$ICC), connected on the control network: no pause needed"
 
-# FR6: the container and the export are gone after the round
+# FR6: the stop script, in the stand-in working sandbox (still up from FR5): leftovers die, the sandbox stays.
+FAILS=""
+docker exec --detach "$WORKING" sh -c 'exec sleep 777' >/dev/null 2>&1
+docker exec --detach "$WORKING" sh -c 'setsid sleep 778 </dev/null >/dev/null 2>&1 &' >/dev/null 2>&1
+sleep "$SETTLE"
+COUNT_LEFTOVERS='n=0; for p in /proc/[0-9]*; do case "$(tr "\0" " " < "$p/cmdline" 2>/dev/null)" in "sleep 777 "*|"sleep 778 "*) n=$((n+1));; esac; done; echo "LEFT:$n"'
+BEFORE=$(docker exec "$WORKING" sh -c "$COUNT_LEFTOVERS" 2>&1 | tr -d '[:space:]')
+[[ "$BEFORE" == "LEFT:2" ]] || FAILS="$FAILS the leftovers were not running before the stop ($BEFORE);"
+STOPPED=$(docker exec "$WORKING" sh -c "$STOP_SCRIPT" 2>&1 | tr -d '[:space:]')
+[[ "$STOPPED" == "REMAINING:0" ]] || FAILS="$FAILS the stop script said $STOPPED;"
+AFTER=$(docker exec "$WORKING" sh -c "$COUNT_LEFTOVERS" 2>&1 | tr -d '[:space:]')
+[[ "$AFTER" == "LEFT:0" ]] || FAILS="$FAILS the leftovers are still running ($AFTER);"
+[[ "$(docker inspect --format '{{.State.Running}}' "$WORKING" 2>/dev/null)" == "true" ]] || FAILS="$FAILS the sandbox itself stopped;"
+verdict FR6 leftover_programs_stopped_sandbox_stays "$FAILS" "a background program and a setsid daemon were killed; the sandbox is still running"
+
+# FR7: the container and the export are gone after the round
 FAILS=""
 docker rm --force "$NAME" >/dev/null 2>&1
 if docker container inspect "$NAME" >/dev/null 2>&1; then FAILS="$FAILS the container is still there;"; fi
 rm -rf "$EXPORT"
 [[ ! -e "$EXPORT" ]] || FAILS="$FAILS the export is still there;"
-verdict FR6 container_and_export_gone "$FAILS" "docker has no $NAME and the export directory is removed"
+verdict FR7 container_and_export_gone "$FAILS" "docker has no $NAME and the export directory is removed"
 
 printf 'FRESH SUMMARY pass=%s fail=%s\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

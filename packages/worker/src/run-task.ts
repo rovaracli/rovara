@@ -90,8 +90,8 @@ import { createSourceTextGuard, guardArtifactSink, guardEventSink, type SourceTe
 import { isContextSourceStage, type ContextToolCatalog } from "@rovara-code/contracts";
 import { SANDBOX_TARGET, executionFor } from "./execution-target.js";
 import { TASK_SANDBOX_IMAGE_ENVIRONMENT, localBashOperations, taskSandboxFor, taskShellSelection, type TaskSandbox, type TaskShellSelection } from "./task-sandbox.js";
-import { chooseCheckRound } from "./check-round-kind.js";
-import { checkRoundRunners, type FreshCheckRoundSeam } from "./check-round-choice.js";
+import { chooseCheckRound, sealedRoundClearedFrom } from "./check-round-kind.js";
+import { checkRoundRunners, quietWorkingPlace, type FreshCheckRoundSeam } from "./check-round-choice.js";
 import { startTaskTestServices, type TestServicesConfig } from "./test-services-run.js";
 import type { FixtureSetCallback } from "./fixture-delivery.js";
 import type { CompanyImageLoginCallback } from "./company-image-pull.js";
@@ -170,7 +170,7 @@ export interface TaskInvocationDependencies {
    * production passes nothing: the fresh round is built, tested and dormant until that wiring lands (a deferred row).
    */
   freshCheckRound?: (invocation: Extract<WorkerInvocation, { kind: "task" }>) => FreshCheckRoundSeam | undefined;
-  /** The sealed round is cleared for production (the TS-L worker self-test passed). Default: true, which is today's behaviour (a run with test services is sealed); held means false. */
+  /** The sealed round is cleared for production (the TS-L worker self-test passed). Default: false (fail closed): a round with test services is then labelled `working`, never `sealed`; its runners are today's sealed path either way. */
   sealedRoundCleared?: () => boolean;
   /** Each check round's budget; tests supply short ones. Default: CHECK_ROUND_BUDGET_MS (P-3). */
   checkBudgetMs?: () => number;
@@ -401,9 +401,11 @@ async function runTask(
   const candidateSweep = fileTools === undefined ? undefined : async (directory: string): Promise<void> => { await sweepFileOps(fileTools, canonicalRoot, directory); };
   // TE-B1-fresh: which kind of round this task's official checks are (check-round-kind.ts). A dev container, the local shell and a task with test services are never moved to the fresh round.
   const freshSeam = dependencies.freshCheckRound?.(invocation);
-  const roundKind = chooseCheckRound({ freshGate: freshSeam !== undefined, testServices: testServices !== undefined, sealedCleared: dependencies.sealedRoundCleared?.() ?? true, devcontainer: devcontainer !== undefined, sandbox: sandbox !== undefined, candidateCommitted: mode === "IMPLEMENT" || mode === "CHECKS" });
+  const roundKind = chooseCheckRound({ freshGate: freshSeam !== undefined, testServices: testServices !== undefined, sealedCleared: sealedRoundClearedFrom(dependencies.sealedRoundCleared), devcontainer: devcontainer !== undefined, sandbox: sandbox !== undefined, candidateCommitted: mode === "IMPLEMENT" || mode === "CHECKS" });
   const freshWiring = (onProgress: (line: string) => void) => freshSeam === undefined ? undefined : {
     seam: freshSeam, docker: fileToolsDocker, rootPath: canonicalRoot, taskId: invocation.operationId, image: sandboxImageOf(dependencies.taskShell), onProgress,
+    // H1b: nothing the agent left running may act while the round runs: the worker's leftover processes and the working sandbox's programs are stopped first, every round (CHECKS mode does the former at its start, run-task.ts above).
+    quiesce: quietWorkingPlace({ docker: fileToolsDocker, rootPath: canonicalRoot, sandboxName: sandbox?.name, ...(dependencies.stopBeforeReading?.stopWorkspaceProcesses === undefined ? {} : { stopProcesses: dependencies.stopBeforeReading.stopWorkspaceProcesses }) }),
     // The candidate as it is NOW, read again for each round: each repository's commit and tree, with where it sits in the workspace.
     candidate: async () => (await readCandidateRepositories(candidateInputs(manifest, canonicalRoot, invocation.payload.workflowBase, candidateSweep))).map((identity) => {
       const repository = manifest.repositories.find((entry) => entry.name === identity.repositoryId);
@@ -520,6 +522,8 @@ async function runTask(
     const plan = planChecks(testEnv?.readiness ?? readiness, recorder, checkHistory);
     const stop = new AbortController();
     const unregister = dependencies.cancellationController?.register(invocation.operationId, { abort: async () => stop.abort() });
+    // a fresh round's export, kept for the evidence: removed when this run ends, whatever happened
+    let releaseFreshEvidence: (() => Promise<void>) | undefined;
     try {
       await events.append("lifecycle", { status: "RUNNING", conversationId: invocation.payload.conversationId, conversation: { started: true, reopened: true } });
       // The broker authorizes the private admission read only after the operation is durably
@@ -546,6 +550,7 @@ async function runTask(
       }) });
       const runners = chosenRound.final;
       const originalCodeRunners = chosenRound.before;
+      releaseFreshEvidence = chosenRound.evidence === undefined ? undefined : () => chosenRound.evidence!.releaseEvidence();
       const roundBudgetMs = dependencies.checkBudgetMs?.() ?? testEnv?.budgetMs ?? CHECK_ROUND_BUDGET_MS;
       const roundStarted = Date.now();
       const round = await runChecks(plan, runners, { budgetMs: roundBudgetMs, signal: stop.signal });
@@ -589,17 +594,24 @@ async function runTask(
       // Proof and evidence (wire-proof): the checks' own test reports are read before TESTPROOF runs the original code. Only when the broker asked (its proof switch is on); informational.
       // The baseline run of a scanner on the original code (P4) takes time from the same budget the test proof below has.
       const evidenceStarted = Date.now();
-      if (invocation.payload.evidenceCapture === true && !stop.signal.aborted) {
+      // H1c: a fresh round's reports are read from ITS export (the checks wrote them there), never from the working tree the agent can write. A fresh round with no export left (it did not run, or its container could not be removed) has none to read: no
+      // evidence is claimed. Every other round reads the workspace, as always.
+      const freshRound = chosenRound.kind === "fresh_unsealed";
+      const reportRoot = freshRound ? chosenRound.evidence?.evidenceRoot() : undefined;
+      if (invocation.payload.evidenceCapture === true && !stop.signal.aborted && (!freshRound || reportRoot !== undefined)) {
         // Test services: the rounds' usage record rides in the raw file (the broker labels it; nothing of it was reaching the evidence). Read before the services stop.
         const servicesRecord = await testServices?.usageRecord().catch(() => undefined);
-        await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, plan, entries: round.entries, repositories, candidateBefore, roundStartedAtMs: roundStarted, selection: testEnv?.selection, ...(servicesRecord === undefined ? {} : { testServices: servicesRecord }), coveragePaths: invocation.payload.testEnvironment?.checks.map((check) => check.coveragePath),
+        await saveEvidenceRaw({ sink: dependencies.artifactSink, rootPath: canonicalRoot, ...(reportRoot === undefined ? {} : { reportRoot }), plan, entries: round.entries, repositories, candidateBefore, roundStartedAtMs: roundStarted, selection: testEnv?.selection, ...(servicesRecord === undefined ? {} : { testServices: servicesRecord }), coveragePaths: invocation.payload.testEnvironment?.checks.map((check) => check.coveragePath),
           baseline: { runners: originalCodeRunners, signal: stop.signal, budgetMs: roundBudgetMs - roundSpentMs, ...(dependencies.testProofOriginalCode === undefined ? {} : { originalCode: dependencies.testProofOriginalCode }) } });
       }
+      // The export is not needed any more: removed now (and again, idempotently, when the run ends).
+      await chosenRound.evidence?.releaseEvidence();
       const evidenceSpentMs = Date.now() - evidenceStarted;
       // TESTPROOF: informational only. It changes no check result and no artifact above; only a failure to put the agent's files back stops the task.
       // It runs after the browser and API checks, so their evidence never sees the build output of a run on the original code. Known limitation: files the
       // original code's run left that git ignores (build output, caches) are not removed and can remain for the stages after this one.
-      if (status === "verified" && plan.source === "project" && !stop.signal.aborted) {
+      // TESTPROOF reads the candidate's reports from the working tree (and writes them back there); with a fresh round those are not the checks' reports, so it is not run (informational only; a deferred row).
+      if (status === "verified" && plan.source === "project" && !stop.signal.aborted && !freshRound) {
         const testProof = await runTestProofStep({ plan, round: round.entries, runners: originalCodeRunners, repositories, candidateBefore, rootPath: canonicalRoot, signal: stop.signal,
           budgetMs: roundBudgetMs - roundSpentMs - evidenceSpentMs, events, originalCode: dependencies.testProofOriginalCode });
         // Read only when the proof ran, and deliberately fail-closed: a read failure here fails the task rather than reporting a candidate nobody confirmed.
@@ -627,6 +639,7 @@ async function runTask(
       if (dependencies.cancellationController?.isCancelled(invocation.operationId)) throw new WorkerOperationCancelledError(invocation.operationId);
       throw error;
     } finally {
+      await releaseFreshEvidence?.().catch(() => undefined);
       unregister?.();
     }
   }

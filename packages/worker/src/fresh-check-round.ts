@@ -58,6 +58,16 @@ export interface FreshCheckRoundInput {
   setup: readonly ProjectCommand[];
   setupBudgetMs?: number;
   signal?: AbortSignal;
+  /**
+   * Stops whatever the agent left running before anything is read or started (H1b): the host's leftover processes and the working sandbox's programs. It runs first, every round. A rejection is "not run: programs the agent left
+   * running could not be stopped"; the round never starts over a program that may still act.
+   */
+  quiesce?: ((signal: AbortSignal) => Promise<void>) | undefined;
+  /**
+   * When given, the export of a round that RAN (and whose container was removed cleanly, so nothing can still write to it) is NOT removed: it is handed to this callback, and the caller reads the checks' reports from it (H1c: evidence comes from
+   * the export, never from the working tree) and then removes it with `removeFreshExport`. Absent: the export is removed with the sandbox.
+   */
+  retainExport?: (directory: string) => void;
   hooks?: FreshRoundHooks;
   /** Where the round's first line goes (the task's progress events). */
   onProgress?: (line: string) => void;
@@ -119,16 +129,21 @@ export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round:
   const notRun = (reason: FreshNotRunReason): FreshRoundResult<T> => ({ kind: "not_run", reason, sentence: FRESH_NOT_RUN_SENTENCES[reason] });
   const signal = input.signal ?? new AbortController().signal;
   const log = input.log ?? logEvent;
-  if (input.image === undefined || input.image === "") return notRun("no_image");
-  if (signal.aborted) return notRun("stopped");
+  // The first line is printed whatever happens next, a round that cannot start included (L6).
   input.onProgress?.(FRESH_ROUND_FIRST_LINE);
   if (input.hooks?.residualLine !== undefined) input.onProgress?.(input.hooks.residualLine);
+  if (input.image === undefined || input.image === "") return notRun("no_image");
+  if (signal.aborted) return notRun("stopped");
   const root = resolve(input.rootPath);
   let exportDirectory: string | undefined;
   let name: string | undefined;
   let live = false;
   const stops: Array<() => Promise<void>> = [];
+  let roundDone = false;
   try {
+    if (input.quiesce !== undefined) {
+      try { await input.quiesce(signal); } catch { return notRun(signal.aborted ? "stopped" : "quiesce_failed"); }
+    }
     try { await (input.ensureNetwork ?? ensureTaskNetwork)(input.docker); } catch { return notRun("sandbox_failed"); }
     const repositories = await input.candidate().catch(() => undefined);
     if (repositories === undefined) return notRun("export_failed");
@@ -160,22 +175,49 @@ export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round:
     try {
       for (const helper of input.hooks?.helpers ?? []) stops.push(await helper.start({ container: containerName, signal }));
     } catch { return notRun("sandbox_failed"); }
-    return { kind: "ran", value: await round(await createFreshRunners(root, exec)) };
+    const value = await round(await createFreshRunners(root, exec));
+    roundDone = true;
+    return { kind: "ran", value };
   } finally {
     live = false;
     for (const stop of stops.reverse()) await stop().catch(() => undefined);
-    if (name !== undefined) await removeContainer(input.docker, name, input.taskId, log);
-    if (exportDirectory !== undefined) await removeFreshExport(root, exportDirectory).catch(() => log({ event: "fresh-check-round.export-remove.failed", taskId: input.taskId }));
+    const removed = name === undefined ? true : await removeContainer(input.docker, name, input.taskId, log);
+    if (exportDirectory !== undefined) {
+      // Kept for the evidence only when the round ran and nothing can still be writing to it.
+      if (roundDone && removed && input.retainExport !== undefined) input.retainExport(exportDirectory);
+      else await removeFreshExport(root, exportDirectory).catch(() => log({ event: "fresh-check-round.export-remove.failed", taskId: input.taskId }));
+    }
   }
 }
 
 /** `docker rm --force`, once more if it fails; a container that cannot be removed is logged, since it keeps the export mounted. */
-async function removeContainer(docker: DockerCli, name: string, taskId: string, log: (event: Record<string, unknown>) => void): Promise<void> {
+async function removeContainer(docker: DockerCli, name: string, taskId: string, log: (event: Record<string, unknown>) => void): Promise<boolean> {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     const result = await docker.run(["rm", "--force", name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
-    if (result.exitCode === 0 || /no such container/iu.test(result.stderr)) return;
+    if (result.exitCode === 0 || /no such container/iu.test(result.stderr)) return true;
   }
   log({ event: "fresh-check-round.remove.failed", container: name, taskId });
+  return false;
+}
+
+/**
+ * Every program the agent left running in the WORKING sandbox, stopped without stopping the sandbox itself (the agent may get an extra turn in it): each process but PID 1 (tini), the sandbox's own `sleep infinity` and this script is killed,
+ * and the sandbox is checked to hold nothing else, up to three passes. Pure `sh` and /proc, so it needs no tool the image may lack. It prints `REMAINING:<n>`; anything but 0 fails the round closed.
+ */
+export const STOP_SANDBOX_PROGRAMS_SCRIPT = 'n=0; pass=0; while [ "$pass" -lt 3 ]; do n=0; for p in /proc/[0-9]*; do pid=${p#/proc/}; [ "$pid" = 1 ] && continue; [ "$pid" = "$$" ] && continue; cmd=$(tr "\\0" " " < "$p/cmdline" 2>/dev/null); case "$cmd" in "sleep infinity "*|"") continue;; esac; state=$(sed -n "s/^State:[[:space:]]*\\(.\\).*/\\1/p" "$p/status" 2>/dev/null); [ "$state" = Z ] && continue; kill -9 "$pid" 2>/dev/null; n=$((n+1)); done; [ "$n" -eq 0 ] && break; pass=$((pass+1)); done; echo "REMAINING:$n"';
+
+/** Runs `STOP_SANDBOX_PROGRAMS_SCRIPT` in the working sandbox and fails (throws) unless nothing else is left running. */
+export async function stopWorkingSandboxPrograms(docker: DockerCli, container: string, signal?: AbortSignal): Promise<void> {
+  const result = await docker.run(["exec", container, "sh", "-c", STOP_SANDBOX_PROGRAMS_SCRIPT], { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(signal === undefined ? {} : { signal }) });
+  if (result.exitCode !== 0 || !/(^|\n)REMAINING:0\s*$/u.test(result.stdout)) throw new Error("programs the agent left running could not be stopped");
+}
+
+/** Where the checks' reports of the last fresh round are read from, and the way to remove them (H1c). */
+export interface FreshEvidenceSource {
+  /** The export of the last round that ran (its container is gone), or undefined: a round that did not run, or whose container could not be removed, leaves none. */
+  evidenceRoot(): string | undefined;
+  /** Removes what `evidenceRoot` names. Idempotent. */
+  releaseEvidence(): Promise<void>;
 }
 
 /**
@@ -183,9 +225,17 @@ async function removeContainer(docker: DockerCli, name: string, taskId: string, 
  * `runChecks` is its own fresh sandbox. `freshServices` never rejects: a round that could not start leaves every command refused with the fixed "not run" sentence (a `CheckNotRunError`, so the check is `not_run`, never failed).
  * A command outside a round is refused too. The original-code rounds (before results, the test proof) do NOT use these: they run on the original code, where there is nothing to export (run-task.ts, check-round-choice.ts).
  */
-export function createFreshCheckRunners(input: FreshCheckRoundInput): CheckRunners {
+export function createFreshCheckRunners(input: FreshCheckRoundInput): CheckRunners & FreshEvidenceSource {
   let open: { runners: CheckRunners; release: () => void; done: Promise<unknown> } | undefined;
   let failure: string | undefined;
+  // Each round has a number; a round that ended (endRound, or a newer start) while its sandbox was still starting releases it the moment it is handed over (L3).
+  let epoch = 0;
+  let retained: string[] = [];
+  const releaseRetained = async (): Promise<void> => {
+    const directories = retained;
+    retained = [];
+    for (const directory of directories) await removeFreshExport(resolve(input.rootPath), directory).catch(() => undefined);
+  };
   const close = async (): Promise<void> => {
     const current = open;
     open = undefined;
@@ -199,22 +249,29 @@ export function createFreshCheckRunners(input: FreshCheckRoundInput): CheckRunne
   };
   return {
     async freshServices(signal) {
+      epoch += 1;
+      const mine = epoch;
       await close();
+      await releaseRetained();
       failure = undefined;
       let release!: () => void;
       const closed = new Promise<void>((done) => { release = done; });
       let handOver!: (runners: CheckRunners | undefined) => void;
       const ready = new Promise<CheckRunners | undefined>((done) => { handOver = done; });
       const roundSignal = input.signal === undefined ? signal : AbortSignal.any([signal, input.signal]);
-      const done = withFreshCheckRound({ ...input, signal: roundSignal }, async (runners) => { handOver(runners); await closed; }).then(
+      const done = withFreshCheckRound({ ...input, signal: roundSignal, retainExport: (directory) => { retained.push(directory); } }, async (runners) => { handOver(runners); await closed; }).then(
         (result) => { if (result.kind === "not_run") { failure = result.sentence; handOver(undefined); } },
         () => { failure = FRESH_NOT_RUN_SENTENCES.sandbox_failed; handOver(undefined); },
       );
       const runners = await ready;
-      if (runners !== undefined) open = { runners, release, done };
-      else await done;
+      if (runners === undefined) { await done; return; }
+      // The round was ended or replaced while the sandbox started: nothing may keep it.
+      if (epoch !== mine) { release(); await done.catch(() => undefined); await releaseRetained(); return; }
+      open = { runners, release, done };
     },
-    async endRound() { await close(); },
+    async endRound() { epoch += 1; await close(); },
+    evidenceRoot: () => retained.at(-1),
+    releaseEvidence: releaseRetained,
     // async: a refusal is a rejection, as the other runners' are.
     runProjectCommand: async (command, signal) => current().runProjectCommand(command, signal),
     runAgentCommand: async (replay, timeoutMs, signal) => current().runAgentCommand(replay, timeoutMs, signal),

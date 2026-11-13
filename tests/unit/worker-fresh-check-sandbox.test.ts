@@ -1,9 +1,11 @@
 // TE-B1-fresh: the fresh check sandbox's run arguments (an allow-list in the style of checkSandboxArgProblems) and the clean export of the candidate commit (fresh-check-sandbox.ts). The export tests drive real git.
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { deflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { FRESH_EXPORT_CAPS } from "../../packages/worker/src/fresh-check-export.js";
 import {
   FRESH_NOT_RUN_SENTENCES, FRESH_SANDBOX_ROUND_LABEL, exportCandidateForFreshRound, freshSandboxArgProblems, freshSandboxRunArgs, removeFreshExport, type FreshSandboxRunInput,
 } from "../../packages/worker/src/fresh-check-sandbox.js";
@@ -147,14 +149,87 @@ describe("the clean export of the candidate commit", () => {
       expect(exported, path).toEqual({ ok: false, reason: "export_failed" });
     }
   });
-  it("a repository over the caps is refused in plain words, never cut", async () => {
+  const repositoryOf = (planted: ReturnType<typeof plantedRepository>) => [{ repositoryId: "repo", path: "repo", directory: planted.repo, commitSha: planted.commitSha, treeSha: planted.treeSha }];
+  const left = () => (existsSync(join(root, ".agentx", "fresh-check")) ? readdirSync(join(root, ".agentx", "fresh-check")).filter((name) => name !== "scratch") : []);
+  it("a repository over the caps is refused in plain words, never cut (files, one file, the total, the disk)", async () => {
     const planted = plantedRepository();
-    const big = { treeOf: () => Promise.resolve(planted.treeSha), materializeInto: () => Promise.reject(new Error("candidate tree has more files than the build source allows")) };
-    const exported = await exportCandidateForFreshRound({ rootPath: root, taskId: "t1", signal: signal(), git: big,
-      repositories: [{ repositoryId: "repo", path: "repo", directory: planted.repo, commitSha: planted.commitSha, treeSha: planted.treeSha }] });
-    expect(exported).toEqual({ ok: false, reason: "too_large" });
+    const attempt = (caps: Parameters<typeof exportCandidateForFreshRound>[0]["caps"]) => exportCandidateForFreshRound({ rootPath: root, taskId: "t1", signal: signal(), repositories: repositoryOf(planted), caps });
+    expect(await attempt({ maxFiles: 1 })).toEqual({ ok: false, reason: "too_large" });
+    expect(await attempt({ maxFileBytes: 5 })).toEqual({ ok: false, reason: "too_large" });
+    expect(await attempt({ maxTotalBytes: 10 })).toEqual({ ok: false, reason: "too_large" });
+    expect(await attempt({ diskMarginBytes: Number.MAX_SAFE_INTEGER })).toEqual({ ok: false, reason: "no_space" });
     expect(FRESH_NOT_RUN_SENTENCES.too_large).toBe("not run: the repository is too large for a fresh check sandbox");
-    expect(readdirSync(join(root, ".agentx", "fresh-check")).filter((name) => name !== "scratch")).toEqual([]);
+    expect(left()).toEqual([]);
+  });
+  it("the lane's own caps are 100,000 files, 1 GiB in all and 100 MiB a file", () => {
+    expect(FRESH_EXPORT_CAPS).toMatchObject({ maxFiles: 100_000, maxTotalBytes: 1024 ** 3, maxFileBytes: 100 * 1024 ** 2 });
+  });
+
+  // H1a: the object store is agent-writable. Every swap below keeps the id and changes the bytes; git itself answers them with exit 0.
+  const objectPath = (repo: string, sha: string) => join(repo, ".git", "objects", sha.slice(0, 2), sha.slice(2));
+  function swapLoose(repo: string, sha: string, type: "blob" | "tree", content: Buffer) {
+    const path = objectPath(repo, sha);
+    chmodSync(join(repo, ".git", "objects", sha.slice(0, 2)), 0o755);
+    rmSync(path, { force: true });
+    writeFileSync(path, deflateSync(Buffer.concat([Buffer.from(`${type} ${String(content.length)}\0`), content])), { mode: 0o644 });
+  }
+  const refusedWith = async (planted: ReturnType<typeof plantedRepository>, reason: string) => {
+    expect(await exportCandidateForFreshRound({ rootPath: root, taskId: "t1", signal: signal(), repositories: repositoryOf(planted) })).toEqual({ ok: false, reason });
+    expect(left()).toEqual([]);
+  };
+  it("H1a: a blob swapped under the same id is refused, not exported", async () => {
+    const planted = plantedRepository();
+    // the control: git still answers for the swapped object
+    swapLoose(planted.repo, git(planted.repo, "rev-parse", "HEAD:src/app.js"), "blob", Buffer.from("module.exports = 'EVIL';\n"));
+    expect(git(planted.repo, "cat-file", "-p", "HEAD:src/app.js")).toContain("EVIL");
+    await refusedWith(planted, "corrupt");
+  });
+  it("H1a: a tree swapped under the same id is refused", async () => {
+    const planted = plantedRepository();
+    swapLoose(planted.repo, git(planted.repo, "rev-parse", "HEAD:src"), "tree", Buffer.concat([Buffer.from("100644 other.js\0"), Buffer.alloc(20, 1)]));
+    await refusedWith(planted, "corrupt");
+  });
+  it("H1a: the commit swapped under the same id is refused", async () => {
+    const planted = plantedRepository();
+    swapLoose(planted.repo, planted.commitSha, "blob", Buffer.from("x"));
+    await refusedWith(planted, "corrupt");
+  });
+  it("L2: a missing object is reported as missing or corrupt, not as 'too large'", async () => {
+    const planted = plantedRepository();
+    rmSync(objectPath(planted.repo, git(planted.repo, "rev-parse", "HEAD:src/app.js")));
+    await refusedWith(planted, "corrupt");
+    expect(FRESH_NOT_RUN_SENTENCES.corrupt).not.toMatch(/too large/u);
+  });
+  it("L2: a missing tree or commit object is reported as missing or corrupt too", async () => {
+    const tree = plantedRepository();
+    rmSync(objectPath(tree.repo, git(tree.repo, "rev-parse", "HEAD:src")));
+    await refusedWith(tree, "corrupt");
+  });
+  it("H1a: an alternates file the agent wrote cannot supply swapped objects", async () => {
+    const planted = plantedRepository();
+    const sha = git(planted.repo, "rev-parse", "HEAD:src/app.js");
+    const evil = join(root, "evil-objects");
+    mkdirSync(join(evil, sha.slice(0, 2)), { recursive: true });
+    writeFileSync(join(evil, sha.slice(0, 2), sha.slice(2)), deflateSync(Buffer.from("blob 5\0EVIL!")));
+    rmSync(objectPath(planted.repo, sha));
+    mkdirSync(join(planted.repo, ".git", "objects", "info"), { recursive: true });
+    writeFileSync(join(planted.repo, ".git", "objects", "info", "alternates"), `${evil}\n`);
+    await refusedWith(planted, "corrupt");
+  });
+  it("L5: an export a check left with 0000 and 0555 folders is still removed", async () => {
+    const planted = plantedRepository();
+    const exported = await exportCandidateForFreshRound({ rootPath: root, taskId: "t1", signal: signal(), repositories: repositoryOf(planted) });
+    if (!exported.ok) throw new Error("export refused");
+    mkdirSync(join(exported.directory, "repo", "locked", "inner"), { recursive: true });
+    writeFileSync(join(exported.directory, "repo", "locked", "inner", "f"), "x");
+    mkdirSync(join(exported.directory, "repo", "readonly"));
+    writeFileSync(join(exported.directory, "repo", "readonly", "f"), "x");
+    chmodSync(join(exported.directory, "repo", "locked", "inner"), 0o000);
+    chmodSync(join(exported.directory, "repo", "locked"), 0o000);
+    chmodSync(join(exported.directory, "repo", "readonly"), 0o555);
+    chmodSync(join(exported.directory, "repo", "src"), 0o555);
+    await removeFreshExport(root, exported.directory);
+    expect(existsSync(exported.directory)).toBe(false);
   });
   it("every refusal sentence starts with 'not run' and never says sealed without 'not'", () => {
     for (const sentence of Object.values(FRESH_NOT_RUN_SENTENCES)) {

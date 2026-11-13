@@ -28,6 +28,11 @@ import { withTestIds } from "./test-ids.js";
 export interface CollectEvidenceInput {
   /** The workspace root, where a check's report path is resolved from its cwd. */
   rootPath: string;
+  /**
+   * TE-B1-fresh (H1c): where the checks' REPORTS (test report, coverage, SARIF) are read from, when the checks ran somewhere else than `rootPath`: a fresh check round's export, never the agent's working tree. Absent: `rootPath`, as always.
+   * The repositories' git data (the changed lines, the start commits) still come from `repositories`.
+   */
+  reportRoot?: string | undefined;
   /** The project checks that were run, in order: check `readiness:<index>` is `commands[index]`. */
   commands: readonly ProjectCommand[];
   /** The round's entries on the candidate. */
@@ -112,25 +117,27 @@ export async function collectEvidenceRaw(input: CollectEvidenceInput): Promise<E
     const partials: CheckParts[] = [];
     const scans: Array<BaselineScan & { candidate: ParsedSarif }> = [];
     // Directories an absolute address in a scanner's file is made relative to.
+    const reports = input.reportRoot ?? input.rootPath;
     const roots = [...new Set([resolve(input.rootPath), await realpath(input.rootPath).catch(() => resolve(input.rootPath)), ...input.repositories.map((repository) => resolve(repository.directory))])];
 
     for (const [index, command] of input.commands.entries()) {
       const entry = entryOf(index);
       if (entry === undefined) continue;
-      const read = await readCheckReport(input.rootPath, command).catch(() => undefined);
+      const read = await readCheckReport(reports, command).catch(() => undefined);
       const reported = read === undefined ? undefined : parseTestReport(read.text, read.kind);
       // The tests in ID form (contracts `test-id.ts`), the same strings the nightly run and the known-failing marks use.
-      const parsed = reported === undefined ? undefined : await withTestIds(reported, { root: input.rootPath, cwd: command.cwd });
+      const parsed = reported === undefined ? undefined : await withTestIds(reported, { root: reports, cwd: command.cwd });
       const partial: CheckParts = { index, entry };
       if (parsed !== undefined) { partial.tests = evidenceTests(parsed, { changedTestPaths }); measured += parsed.total; }
       if (entry.after === "failed") { const tail = outputTailOf(entry.output); if (tail !== undefined) partial.outputTail = tail; }
       // A timed-out, stopped or never-run check may have left an older report on disk: only a check that ended is read.
       if (ended(entry)) {
-        const covered = await readChangedCoverage({ rootPath: input.rootPath, command, repositories: diffs, notBeforeMs: input.roundStartedAtMs, used: usedReports, approvedPath: input.coveragePaths?.[index], lineCoverage: (text, repositories) => placeLineCoverage(text, input.rootPath, command.cwd, repositories) });
+        const covered = await readChangedCoverage({ rootPath: reports, command, repositories: diffs, notBeforeMs: input.roundStartedAtMs, used: usedReports, approvedPath: input.coveragePaths?.[index], // Go and JaCoCo line coverage is placed by reading the repository's files in the working tree: with a separate report root that is the agent's tree, so it is not read and no such coverage is claimed.
+          lineCoverage: (text, repositories) => (input.reportRoot === undefined ? placeLineCoverage(text, input.rootPath, command.cwd, repositories) : Promise.resolve(undefined)) });
         if ("coverage" in covered) partial.coverage = coveragePart(covered.coverage, input.repositories.length);
         const argument = sarifPathOf(command);
         if (argument !== undefined) {
-          const sarif = await readContainedReport({ root: input.rootPath, cwd: command.cwd, argument, maxBytes: SARIF_REPORT_MAX_BYTES, notBeforeMs: input.roundStartedAtMs });
+          const sarif = await readContainedReport({ root: reports, cwd: command.cwd, argument, maxBytes: SARIF_REPORT_MAX_BYTES, notBeforeMs: input.roundStartedAtMs });
           const candidate = sarif.ok ? parseSarif(sarif.bytes.toString("utf8"), roots) : undefined;
           if (sarif.ok && candidate !== undefined) scans.push({ index, command, argument, path: sarif.path, candidateBytes: Buffer.from(sarif.bytes), candidate });
         }
@@ -235,6 +242,8 @@ async function placeLineCoverage(text: string, rootPath: string, cwd: string, re
 
 export async function saveEvidenceRaw(input: {
   sink: ArtifactSink; rootPath: string; plan: CheckPlan; entries: readonly CheckEntry[];
+  /** Where the checks' reports are read from instead of `rootPath` (see `CollectEvidenceInput.reportRoot`). */
+  reportRoot?: string | undefined;
   repositories: ReadonlyArray<{ repositoryId: string; directory: string; baseCommitSha?: string | undefined }>; candidateBefore: ReadonlyArray<CandidateRepository>;
   selection?: EvidenceSelection | undefined;
   /** The `coveragePath` approved for each command, by index (see `collectEvidenceRaw`). */
@@ -256,7 +265,7 @@ export async function saveEvidenceRaw(input: {
     const complete = placed.length === input.repositories.length;
     const baseline = input.baseline;
     const raw = await collectEvidenceRaw({
-      rootPath: input.rootPath, commands: input.plan.readiness, entries: input.entries, candidateDigest: createCandidateManifest(input.candidateBefore).digest, roundStartedAtMs: input.roundStartedAtMs,
+      rootPath: input.rootPath, ...(input.reportRoot === undefined ? {} : { reportRoot: input.reportRoot }), commands: input.plan.readiness, entries: input.entries, candidateDigest: createCandidateManifest(input.candidateBefore).digest, roundStartedAtMs: input.roundStartedAtMs,
       repositories: placed, repositoriesComplete: complete,
       selection: input.selection, coveragePaths: input.coveragePaths,
       ...(input.testServices === undefined ? {} : { testServices: input.testServices }),

@@ -39,6 +39,13 @@ export function chooseCheckRound(facts: CheckRoundFacts): CheckRoundKind {
 }
 
 /**
+ * Whether the sealed round is cleared for production, from the worker's seam (M2): no seam means NOT cleared (fail closed), and only exactly `true` clears. Cleared is the TS-L worker self-test having passed.
+ */
+export function sealedRoundClearedFrom(seam: (() => unknown) | undefined): boolean {
+  return seam !== undefined && seam() === true;
+}
+
+/**
  * D2 as code: real model calls (a customer's own key, a provider's real answer) are allowed only in a fresh check sandbox or the sealed round, never in the agent's working sandbox. F1-c's mode control and F1-e's bridge read the kind
  * from the worker with this, never from the sandbox or a helper. An unknown value is not allowed.
  */

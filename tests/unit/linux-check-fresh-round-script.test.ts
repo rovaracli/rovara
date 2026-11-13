@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { freshSandboxArgProblems } from "../../packages/worker/src/fresh-check-sandbox.js";
+import { STOP_SANDBOX_PROGRAMS_SCRIPT } from "../../packages/worker/src/fresh-check-round.js";
 
 const NODE_DIR = dirname(process.execPath);
 const SCRIPT = new URL("../../scripts/linux-check-fresh-round.sh", import.meta.url).pathname;
@@ -28,14 +29,18 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
 const verb = args[0];
+const stateFile = ${JSON.stringify(join(dir, "stopped.flag"))};
 const out = (text, code = 0) => { process.stdout.write(text); process.exit(code); };
 if (verb === "network" && args[1] === "inspect") { if (args.includes("--format")) out("false\\n"); out("[]\\n"); }
 if (verb === "network") out("");
+if (verb === "inspect" && args.some((a) => a.includes("State.Running"))) out("true\\n");
 if (verb === "inspect") out(args.join(" ").includes("IPAddress") ? (args.some((a) => a.endsWith("-open-a")) ? "172.30.9.2\\n" : "172.30.0.2\\n") : args.some((a) => a.includes("range")) ? "agentx-task\\n" : "");
 if (verb === "container" && args[1] === "inspect") process.exit(1);
 if (verb === "exec") {
   const text = args.join(" ");
   if (args.includes("--detach")) out("");
+  if (text.includes("REMAINING:")) { fs.writeFileSync(stateFile, "1"); out("REMAINING:0\\n"); }
+  if (text.includes("LEFT:")) out(fs.existsSync(stateFile) ? "LEFT:0\\n" : "LEFT:2\\n");
   if (text.includes("id -u")) out(${JSON.stringify(options.rootUid ?? "1000")} + "\\n");
   if (text.includes("CapEff")) out("CapEff:0000000000000000\\n");
   if (text.includes("NoNewPrivs")) out("NoNewPrivs:1\\n");
@@ -78,7 +83,7 @@ describe("scripts/linux-check-fresh-round.sh", () => {
   });
   it("every line passes when the sandbox sees only the export", () => {
     const result = run(fakeTools());
-    expect(result.stdout.split("\n").filter((line) => line.startsWith("FRESH FR")).map((line) => line.split(" ").slice(1, 3).join(" "))).toEqual(["FR1 PASS", "FR2 PASS", "FR3 PASS", "FR4 PASS", "FR5 PASS", "FR6 PASS"]);
+    expect(result.stdout.split("\n").filter((line) => line.startsWith("FRESH FR")).map((line) => line.split(" ").slice(1, 3).join(" "))).toEqual(["FR1 PASS", "FR2 PASS", "FR3 PASS", "FR4 PASS", "FR5 PASS", "FR6 PASS", "FR7 PASS"]);
     expect(result.status).toBe(0);
   });
   it("FAILS (exit 1) when the sandbox can see the working root", () => {
@@ -97,5 +102,19 @@ describe("scripts/linux-check-fresh-round.sh", () => {
     expect(noImage.status).toBe(2);
     const result = run(tools);
     expect(existsSync(join(result.base, "workspace"))).toBe(false);
+  });
+  it("carries the very stop script the worker runs in the working sandbox (the two copies cannot drift)", () => {
+    expect(readFileSync(SCRIPT, "utf8")).toContain(`STOP_SCRIPT='${STOP_SANDBOX_PROGRAMS_SCRIPT}'`);
+    expect(STOP_SANDBOX_PROGRAMS_SCRIPT).not.toContain("'");
+  });
+  it("FAILS (exit 1) when the stop script leaves a program running", () => {
+    const tools = fakeTools();
+    writeFileSync(join(dir, "bin", "docker-leaving"), "");
+    // a daemon that never dies: the fake keeps answering LEFT:2
+    const source = readFileSync(join(tools.bin, "docker"), "utf8").replace('fs.writeFileSync(stateFile, "1"); ', "");
+    writeFileSync(join(tools.bin, "docker"), source);
+    const result = run(tools);
+    expect(result.stdout).toMatch(/FRESH FR6 FAIL/u);
+    expect(result.status).toBe(1);
   });
 });

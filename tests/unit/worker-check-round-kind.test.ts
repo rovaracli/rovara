@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CHECK_ROUND_KINDS, DEVCONTAINER_ROUND_LINE, FRESH_ROUND_FIRST_LINE, SEALED_ROUND_LINE, WORKING_ROUND_LINE,
-  chooseCheckRound, modelEgressRoundKind, realModelCallsAllowed, roundEvidenceLines, type CheckRoundFacts,
+  chooseCheckRound, modelEgressRoundKind, realModelCallsAllowed, roundEvidenceLines, sealedRoundClearedFrom, type CheckRoundFacts,
 } from "../../packages/worker/src/check-round-kind.js";
 
 const facts = (extra: Partial<CheckRoundFacts> = {}): CheckRoundFacts => ({ freshGate: false, testServices: false, sealedCleared: false, devcontainer: false, sandbox: true, candidateCommitted: true, ...extra });
@@ -84,5 +84,13 @@ describe("the labels", () => {
     }
     // The sealed round has its own words, and they are not used for the others.
     expect(roundEvidenceLines("sealed", { devcontainer: false })).toEqual([SEALED_ROUND_LINE]);
+  });
+});
+
+describe("M2: the sealed round is cleared only when the worker says so (fail closed)", () => {
+  it("no seam is not cleared; only exactly true clears", () => {
+    expect(sealedRoundClearedFrom(undefined)).toBe(false);
+    expect(sealedRoundClearedFrom(() => true)).toBe(true);
+    for (const value of [false, undefined, null, "true", 1, {}]) expect(sealedRoundClearedFrom(() => value), JSON.stringify(value) ?? "undefined").toBe(false);
   });
 });
