@@ -141,9 +141,10 @@ run_live_driver() {
   fi
   local sig_mount=()
   [[ -s "$TSL_DIR/catalog.sig.json" ]] && sig_mount=(-v "$TSL_DIR/catalog.sig.json:/opt/agentx/tsl-catalog.sig.json:ro")
-  local base=(--rm --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,nosuid,size=64m -v "$TSL_DIR/live.mjs:/opt/agentx/tsl-live.mjs:ro" -v "$TSL_DIR/catalog.json:/opt/agentx/tsl-catalog.json:ro" ${sig_mount[@]+"${sig_mount[@]}"}
+  local base=(--rm --label rovara.tsl-selftest=1 --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,nosuid,size=64m -v "$TSL_DIR/live.mjs:/opt/agentx/tsl-live.mjs:ro" -v "$TSL_DIR/catalog.json:/opt/agentx/tsl-catalog.json:ro" ${sig_mount[@]+"${sig_mount[@]}"}
     -v "$TSL_WORK/manifests:/opt/agentx/tsl-manifests:ro" -e "TSL_REGISTRY=$reg" -e "TSL_ENV=$TSL_ENV" -e TSL_CATALOG=/opt/agentx/tsl-catalog.json -e TSL_MANIFESTS=/opt/agentx/tsl-manifests
     -e "TSL_WORKER_IMAGE=$image" -e "TSL_WORK=$TSL_WORK" -e "TSL_ACCOUNT_ID=$account")
+  # Every driver container carries the label rovara.tsl-selftest=1, so the worker boot's opt-in self-test (boot-stage2.sh run_tsl_selftest) can remove one a timeout left running.
   # The driver checks the signature first: with no trusted catalog key it says BLOCKED here and nothing is pulled.
   refs=$(DOCKER_CONFIG="$TSL_DOCKER_CONFIG" "$DOCKER" run "${base[@]}" --user 1000:1000 --entrypoint /usr/local/bin/node "$image" /opt/agentx/tsl-live.mjs pull-list 2>&1) || {
     case "$refs" in "BLOCKED:"*) LIVE_OUT=""; LIVE_BLOCKED=$(printf '%s' "$refs" | head -1 | cut -c1-120) ;; *) LIVE_OUT="TSL ERROR pull-list: $(printf '%s' "$refs" | tr '\r\n\t' '   ' | cut -c1-200)" ;; esac

@@ -459,18 +459,21 @@ describe("the named TEST proof-only installation gate", () => {
     // authorizer's role gains dynamodb:BatchGetItem on the State table for the leading key DEVELOPER_NAME#* only, with the Null guard (the owner's name read on a session subscribe was refused). Checked first: with
     // infra/lib/control-plane.ts, infra/lib/realtime.ts and the named snapshot put back to v0.5.15's, this test and named-templates pass on v0.5.15's own pins. The named snapshot shows exactly that one attribute and
     // that one statement added. Legacy did not move.
+    // 2026-11-13 (0.5.16, feat/0516-tsl-worker-selftest, M1; replaces the 2026-11-12 note): the named and foreign digests were retaken from the values the test reports, after ONE intended change to the session steps
+    // function: the condition SessionsTslSelftestIsStaging (Fn::Equals [<environment name>, "staging"]) and the policy SessionsTslSelftestSwitchRead (ssm:GetParameter on exactly parameter/agentx/<env>/tsl-selftest) behind it.
+    // Every named template has them (a published template is the placeholder's with the name replaced, so the condition, not an `if` on the name, keeps the permission to staging); the legacy digests did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "c1cb67860eacd4945cc9e31be8389f0c97b5b2d96dcc72717569c59290896ac3",
-        withoutRoute: "499c5d8dcd97f2ef40eb555fcd68089a4b539ab15221ea0ff92511a24346ab1f",
+        withRoute: "1dba8c8318939bc6e4e3e71a68f4adf3ff3146fba0d6660d379b4e1e4cb4bfcb",
+        withoutRoute: "fb5098f4651ce66d9ed82e2cb53acff0e249d5d647b94f8397b5de950175512b",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "83f42fd1e7483a6715220f6a55e4a9486fcb3df3cfbffbd00b832d6dd29c600b",
-        withoutRoute: "24683fc7b7d18dd0009289cfa6af4f0e17c23093beec66f903c09242f241e28d",
+        withRoute: "1487c9923a9158ef72df58103dc476283d00cb21b5104b2e9291214ba2de03db",
+        withoutRoute: "2dd93f98d5a51b78f8f9324b90f6d22584777ad274e0921aad96221bc3e7eb82",
       },
       {
         label: "legacy",

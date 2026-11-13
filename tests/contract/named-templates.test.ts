@@ -272,6 +272,10 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // No other snapshot moved.
 // 2026-11-12 (fix/0517-tls-boundary, MODEL-PROXY-TLS-BOUNDARY-BLOCKER, review M-1): the agentx-staging-access snapshot was re-recorded for one added managed policy, DeployRolePermissionsBoundary
 // (agentx-staging--deploy-boundary), and the deploy role's PermissionsBoundary else branch now naming it. The default boundary itself did not move.
+// 2026-11-13 (feat/0516-tsl-worker-selftest, M1; replaces the 2026-11-12 note): the agentx-staging-control-plane snapshot was re-recorded for the TS-L worker self-test switch's read: the condition
+// SessionsTslSelftestIsStaging (Fn::Equals [<environment name>, "staging"]) and one separate policy SessionsTslSelftestSwitchRead on the steps function's role (ssm:GetParameter on exactly
+// parameter/agentx/staging/tsl-selftest), behind it. It is a condition and not an `if` on the name in the CDK code because a published template is the placeholder environment's with the name replaced
+// (template-rendering.test.ts); in every environment other than staging the condition is false and the policy does not exist (tests/contract/tsl-selftest-grant.test.ts).
 describe("named environment templates", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   for (const stack of stacks) {

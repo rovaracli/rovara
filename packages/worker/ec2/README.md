@@ -76,3 +76,46 @@ walled before `devcontainer up` can start it, and removes a started one that is 
 network or kept NET_RAW. The network has inter-container traffic off (`enable_icc=false`): it is one
 segment shared by every task's containers, and this keeps them from connecting to each other.
 The default bridge (docker0) cannot be walled because the worker's own container is on it.
+
+## Opt-in TS-L self-test (staging only)
+
+A named environment's stage 2 can run Rovara's TS-L Linux checks (`scripts/linux-check-test-services.sh` and its live driver, the same ones the linux-runtime CI job runs) on the real worker and report the result in the worker's
+`worker_start` line (key `selfTest`). The five release-gate conditions and the review's findings, in short (the long form is the comment above `TSL_SELFTEST_VARIABLE` in `boot-stage2.sh`):
+
+- **Off by default, staging only.** It runs only when the launch environment carries `AGENTX_TSL_SELFTEST=1`, and then only in a named environment called exactly `staging`, on a worker image built with `CATALOG_FLAVOR=staging` (a
+  release image carries no checks at all), in the staging account (the image's registry account and the instance identity document must both say it). Anything else records `refused` and runs nothing.
+- **Never blocks the boot.** The whole self-test, clean-up included, ends before `BOOT_DEADLINE`: the checks get at most 170 s and only what is left after a 150 s reserve; with under 45 s it records `incomplete: no_time`.
+- **Clean-up proven before work.** It applies the launcher's own wall steps first (`agentx-worker-start --walls-only`), so it runs against the firewall tasks get; after the checks every container, network, volume, bridge and rule it made
+  is removed and read back (iptables and ip6tables in every table, nft, routes, ip rules and interfaces, compared in order), polled for about 15 s, with a second round before it gives up. If that fails the boot fails (`/ping` says
+  `BootFailed`) and the provisioner stops the session. Because Docker's data root is on the workspace volume, EVERY named boot (self-test on or off) first removes anything carrying the two fixed labels
+  (`rovara.tsl-selftest=1`, and the throwaway workspace key `rovara.run-network.workspace=7e57c4ec7e57c4ec`) and reads that back (`tsl_sweep_leftovers`).
+- **Fixed output.** Item ids that are CI's, a status and a reason code each, the AMI id, the boot-stage2 SHA-256, the Docker version and the instance id; at most 3,000 characters. TS-RUN-3's Redis flush and http_reset have no CI id: they are
+  `extra.redis-flush` and `extra.http-reset` in their own list, always pending. The result is written under `/run/agentx/tsl-selftest` and the launcher passes it only when it is there, so a rebooted instance reports nothing old.
+- **Where the checks come from.** `packages/worker/ec2/tsl/checks.sh` and `live-driver.ts.txt` are byte-for-byte copies of the scripts under `scripts/` (held equal by `tests/contract/ec2-boot-tsl-selftest.test.ts`; the copies exist so the
+  worker image's inputs and the release pipeline's trigger paths already cover them); the Dockerfile builds the driver to `live.mjs` in a staging build and removes the directory otherwise. The only pull is the pinned Postgres image, by digest,
+  with the worker role's existing catalog grant.
+
+### Recovery when the sweep or the read-back cannot clear leftovers (`tsl_leftover`)
+
+Docker's data root is on the workspace volume, so a self-test object that cannot be removed would meet every later boot of that volume, and the boot FAILS CLOSED rather than let a customer task meet it. To tell a worker that ran the self-test from one that never did, the self-test keeps a marker file on the workspace volume (`/mnt/workspace/.agentx-tsl-selftest-running`, beside Docker's data root): written before it makes its first object, removed only after its clean-up is read back clean. Every named boot looks for leftovers first. With the marker there (a crash mid-self-test, or a clean-up that failed) the sweep removes what it finds and the boot fails (`tsl_leftover`) if it cannot prove the volume clean, a Docker error included. With no marker nothing can have been left, so one short look is made: a Docker error is logged and the boot continues (a transient Docker error never fails a worker that did not run the self-test), and only a labelled object that is actually found and cannot be removed fails the boot. The session's failure then reads
+`worker boot failed: tsl_leftover: ...` (the boot's `/ping` BootFailed reason), which tells it apart from any other boot failure. There is no automatic replacement of a claimed volume (the reconciler's quarantine only tags volumes
+no session claims), so the recovery is the existing close path: close that workspace (its machine and volume are deleted) and start a new one; its volume is fresh. Nothing on a staging worker may be cleared by hand (no SSM, no key pair).
+A person with a shell on a purpose-launched host can instead remove what carries the labels `rovara.tsl-selftest=1` and `rovara.run-network.workspace=7e57c4ec7e57c4ec` (containers, networks, volumes) and start again.
+
+### How a staging launch turns it on (M1, an owner decision, 2026-11-12)
+
+`AGENTX_TSL_SELFTEST` is a launch field, and only a staging launch whose operator switch is on carries it; everywhere else the self-test is off. The vendored (read-only) boot configuration is not touched:
+`workerUserDataWithPrivateAddresses` (`packages/broker/src/aws/private-address-launch.ts`) appends `export AGENTX_TSL_SELFTEST='1'` after the rendered header, beside the private address exports (with or without a list; with neither
+the user data is byte for byte what it was). It does so only when ALL hold:
+
+- the launch is for a named environment;
+- the install's worker settings prefix (`WORKER_SETTINGS_PREFIX`) is exactly `/agentx/staging/`;
+- the operator's SSM parameter `<WORKER_SETTINGS_PREFIX>tsl-selftest` (`/agentx/staging/tsl-selftest`) holds exactly `true`. An absent parameter means off; `false`, any other value and a failed read all mean off (fail closed). The odd
+  cases log the event `tsl_selftest.switch_unreadable` with the error's name or the word `value`, never the value.
+
+`session-steps.ts` reads the parameter (`readTslSelftestOn`, beside `readPrivateAddressesOff`) at each named-environment launch, and only on the staging install: the dependency is wired nowhere else, so no other environment asks for it.
+The steps function's role has one added statement for it, in `infra/lib/session-lifecycle.ts`, only when the environment is `staging`: `ssm:GetParameter` on exactly that one parameter. No other environment's template changes, and
+workers get no IAM. Nothing creates the parameter: it is off until an operator creates it with the value `true` (and off again when it is deleted or set to anything else). Launches that already happened keep what they were given.
+
+This is the switch only. The boot gate (`tsl_selftest_gate` in `boot-stage2.sh`) still refuses unless the environment name cut from the log group is `staging`, the worker image's build flavor is `staging`, and the registry account of the
+worker image and the instance's own account are both the staging account; a launch that carries the variable anywhere else records `refused` and runs nothing.

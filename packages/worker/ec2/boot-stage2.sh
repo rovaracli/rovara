@@ -576,6 +576,8 @@ require_model_proxy || { log 'no model proxy'; exit 1; }
 if named_environment; then block_imds || { log 'iptables failed'; exit 1; }; fi
 # Owner decision 123: open the company's approved internal addresses on the task and setup bridges, resolved and pinned now, until the next start of the worker container (stage 2 `write_private_addresses`). Not fatal: a failure opens nothing.
 if named_environment && [[ -f /usr/local/libexec/rovara-private-allow ]]; then /bin/bash /usr/local/libexec/rovara-private-allow || log 'internal addresses not opened (not fatal: tasks reach none of them)'; fi
+# The opt-in TS-L self-test (stage 2 `run_tsl_selftest`) applies exactly the wall steps above, before it runs, by starting this script with --walls-only: it stops here, before anything that starts or prepares a worker.
+[[ "${1:-}" != --walls-only ]] || exit 0
 # Test services (slice 1): the run directory for the services' env files and seeds, a small tmpfs at the SAME path on the host and in the worker (the Docker daemon resolves the bind mounts the worker asks for against the host).
 # Made at every start, so it is there after a reboot too. Not fatal: without it the worker refuses runs that have dependencies, and everything else runs.
 readonly TEST_SERVICES_RUN_DIR=/run/agentx-test-services
@@ -626,6 +628,9 @@ if named_environment; then args+=(--env "AGENTX_SETUP_ISOLATION=$(setup_isolatio
 # Owner decision 123: the pinned name=address pairs (for the sandboxes' --add-host) and the step's counts, each only in its one written form.
 if named_environment; then for pair in "AGENTX_PRIVATE_ADDRESS_HOSTS:/etc/agentx/private-address-pins:^[a-z0-9.-]{1,94}=[0-9.]{7,15}(,[a-z0-9.-]{1,94}=[0-9.]{7,15}){0,127}$" "AGENTX_PRIVATE_ADDRESS_FACTS:/etc/agentx/private-address-facts:^entries=[0-9]{1,2},opened=[0-9]{1,2},skipped=[0-9]{1,2}$"; do IFS=: read -r name file pattern <<<"$pair"; value=$(head -c 16384 "$file" 2>/dev/null || true); if [[ -n "$value" && "$value" =~ $pattern ]]; then args+=(--env "$name=$value"); fi; done; fi
 if [[ "$test_services_run_dir" == true ]]; then args+=(--volume "$TEST_SERVICES_RUN_DIR:$TEST_SERVICES_RUN_DIR" --env "AGENTX_TEST_SERVICES_RUN_DIR=$TEST_SERVICES_RUN_DIR"); fi
+# The opt-in TS-L self-test's result for THIS boot (stage 2 writes it under /run, which a reboot empties, so a restarted instance never reports an old one): one line of at most 3,000 characters in its one written form, else nothing.
+tsl_selftest_result=$(head -c 3001 /run/agentx/tsl-selftest 2>/dev/null | tr -d '\r\n' || true)
+if named_environment && [[ ${#tsl_selftest_result} -gt 0 && ${#tsl_selftest_result} -le 3000 && "$tsl_selftest_result" == '{"v":1,'* ]]; then args+=(--env "AGENTX_TEST_SERVICES_SELFTEST=$tsl_selftest_result"); fi
 args+=(--volume "$DOCKER_SOCKET:$DOCKER_SOCKET" --group-add "$docker_gid" --log-driver awslogs --log-opt awslogs-region="$(sed -n 's/^AWS_REGION=//p' "$WORKER_ENV_FILE")" --log-opt awslogs-group="$(cat /etc/agentx/log-group)" --log-opt awslogs-stream="$(sed -n 's/^AGENTX_WORKSPACE_ID=//p' "$WORKER_ENV_FILE")/$(sed -n 's/^AGENTX_SESSION_GENERATION=//p' "$WORKER_ENV_FILE")/$(cat /etc/agentx/instance-id)" "$worker_image")
 exec "$docker" "${args[@]}"
 LAUNCHER
@@ -941,15 +946,420 @@ PRIVATEALLOW
   chmod 0755 /usr/local/libexec/rovara-private-allow
 }
 
+# TS-L worker self-test (OPT-IN, staging only; the release gate's five conditions, session 89, and the Opus review of 2026-11-12). Runs the SAME checks CI runs (scripts/linux-check-test-services.sh and its live driver, carried in a STAGING-flavor
+# worker image under /opt/agentx/packages/worker/ec2/tsl) on this real worker, as root, AFTER the worker's walls are all in place and BEFORE the worker unit is started, and reports the result through the worker's own start report (`worker_start`,
+# key `selfTest`, packages/worker/src/test-services-selftest.ts). The conditions:
+#   1. OFF BY DEFAULT. It runs only when the launch environment carries AGENTX_TSL_SELFTEST=1 (a launch field; see the M1 note in packages/worker/ec2/README.md for how a staging launch would set it). Even then it refuses unless ALL of these hold,
+#      each one a thing the launch cannot fake: a NAMED environment whose name, cut from the launch's log group, is exactly `staging`; the worker image's own build flavor is `staging` (the file the image builds with `CATALOG_FLAVOR=staging`
+#      says so; a release image does not even carry the checks); and the registry account of the worker image and the account in the instance identity document are both the staging account. Anything else records `refused` and runs nothing.
+#   2. NEVER BLOCKS THE BOOT. The WHOLE self-test (the checks, the extra read-only pass, every clean-up and read-back) ends before the boot deadline: it starts only when at least 45 s of checks plus TSL_RESERVE_S (150 s, for the clean-up) fit before
+#      BOOT_DEADLINE, else it records `incomplete: no_time` and does nothing; the checks run under one timeout that kills the process group, and every Docker command is bounded. Past its hard deadline no Docker command runs, so what is left cannot
+#      be read back (condition 3). The worker's own walls, units and settings are never written by it: the checks only read the firewall, and everything they make carries a fixed label.
+#   3. CLEAN-UP IS PROVEN BEFORE THE WORKER TAKES WORK. After the checks (and after a timeout) every container, network, volume, bridge and rule they made is removed and READ BACK as gone: no labelled object; the same iptables and ip6tables rules in
+#      EVERY table (filter, nat, mangle, raw), nft ruleset, routes, ip rules and interfaces as before, compared IN ORDER; no scratch directory. The read-back is polled (about 15 s) between two clean-up rounds, so a bridge that goes a moment late is
+#      not a failure. If it still fails the boot FAILS (`fail`: the provisioner stops the session) before the worker unit is started. Docker's data root is on the workspace volume, so a failed clean-up would reach the next launch: therefore EVERY named
+#      boot, with the self-test off or on, first looks for whatever carries the self-test's two fixed labels (below), removes it and reads that back (tsl_sweep_leftovers). The self-test keeps a MARKER on the workspace volume from before it makes its first
+#      object until its clean-up is read back clean (TSL_MARKER_FILE). With the marker there, a sweep that cannot prove the volume clean (a leftover that stays, or a Docker look that fails) fails the boot. Without it, no self-test can have left anything: a Docker
+#      look that fails is logged and the boot continues (a transient Docker error must not fail a worker that never ran the self-test, F1), and only a FOUND labelled object that cannot be removed fails the boot.
+#      Cloud-only: this whole TS-L block (with the staging account id below) must not be ported to public code/next.
+#   4. FIXED OUTPUT. The result is built only from fixed words (TSL_STATES, TSL_REASONS, the item ids) and the four identity values, each checked against its pattern (AMI id, boot-stage2 SHA-256, Docker version, instance id). No command output,
+#      host name or address is ever copied. At most 3,000 characters (the worker_start line is one log event). The worker checks the same shape (parseSelfTest). The result is written under /run (a reboot empties it) and the worker's launcher
+#      passes it only when it is there, so a restarted instance never reports an old result. `unusable` is recorded there but the boot has failed, so no worker_start ever carries it: the BootFailed reason does.
+#   5. THE ITEM IDS ARE CI'S: the script CI runs gives them (TSL_ITEM_IDS), and a contract test holds this list equal to the script's, to scripts/ci-test-services-linux.sh's LIVE_IDS and to the worker's list. `L3.egress-capture` (CI's optional tcpdump
+#      line) is always `pending`. TS-RUN-3's Redis flush and http_reset are two EXTRA ids, in their own `extra` list (`extra.redis-flush`, `extra.http-reset`), always pending: no live driver case, and no Redis digest is pinned (`no_pin`). The driver pulls
+#      ONLY the pinned Postgres image, by digest, with the worker role's existing catalog grant (TS-IMG-1).
+# Two fixed labels mark everything it makes: rovara.tsl-selftest=1 (what this script and the checker create: the bundle container, the working sandbox's network, every driver container) and the throwaway workspace key
+# rovara.run-network.workspace=7e57c4ec7e57c4ec (what the driver's run modules create: run networks, helpers, probes).
+readonly TSL_SELFTEST_VARIABLE=AGENTX_TSL_SELFTEST
+readonly TSL_RESULT_VARIABLE=AGENTX_TEST_SERVICES_SELFTEST
+readonly TSL_RESULT_FILE=/run/agentx/tsl-selftest
+# On the workspace volume (beside Docker's data root, so it outlives a reboot as the objects do): written before the self-test makes any object, removed only after its clean-up is read back clean. It decides how strict the next boot's sweep is.
+readonly TSL_MARKER_FILE=/mnt/workspace/.agentx-tsl-selftest-running
+readonly TSL_LAUNCHER=/usr/local/libexec/agentx-worker-start
+readonly TSL_ALLOWED_ENVIRONMENT=staging
+# Cloud-only: boot-stage2.sh's TS-L block is not for public code/next with this account in it. The account is deliberately NOT a launch variable: it must be something the launch cannot fake.
+readonly TSL_ALLOWED_ACCOUNT=944937319445
+readonly TSL_FLAVOR_FILE=/opt/agentx/packages/cloud-contracts/dist/catalog-build-flavor.js
+readonly TSL_BUNDLE_DIR=/opt/agentx/packages/worker/ec2/tsl
+readonly TSL_CATALOG_DIR=/opt/agentx/packages/worker/service-catalog
+readonly TSL_WORKSPACE_KEY=7e57c4ec7e57c4ec
+readonly TSL_FAMILY_LABEL=rovara.run-network
+readonly TSL_DRIVER_LABEL=rovara.tsl-selftest
+readonly TSL_TASK_NETWORK=agentx-task
+readonly TSL_TASK_BRIDGE=rvbtask
+readonly TSL_RESULT_MAX_CHARS=3000
+# Seconds kept back for everything after the checks: the host-only pass, two clean-up rounds, the settle polls and the read-backs.
+readonly TSL_RESERVE_S=150
+# Seconds of its hard deadline that must be left for the extra read-only pass after a timeout (30 s of checks, its kill grace, and the clean-up that follows it); with less, every item is `incomplete: no_time`.
+readonly TSL_HOST_PASS_NEEDS_S=90
+# Seconds of the hard deadline kept for what follows the checks (the clean-up rounds and the read-backs, besides the extra pass above); the checks never run into them, however long the steps before them took.
+readonly TSL_AFTER_CHECKS_S=100
+readonly TSL_STATES="ran refused incomplete unusable"
+readonly TSL_STATUSES="pass fail pending incomplete"
+readonly TSL_REASONS="ok not_named not_staging wrong_account not_staging_image budget no_time docker_unavailable walls_failed bundle_missing snapshot_failed cleanup_failed too_large check_failed later_slice no_run_network no_pull_grant pull_failed no_pin no_capture live_not_run no_result catalog_untrusted driver_error"
+# The ids scripts/linux-check-test-services.sh prints, in its order of first mention (held equal to the script's by a test), the ones its live driver gives, the one CI id that is always pending here, and the two extras.
+readonly TSL_ITEM_IDS="L1.walls L1.isolation L1.docker-version L1.iptables-backend L1.internal-drops L1.live L1.live-other-run L1.range L1.pools L2.egress-network L2.live L3.live L3.embedded-resolver L3.embedded-resolver-blocked L3.working-relay L3.ipv6 L3.no-route L3.other-run L3.multicast L3.run-files L3.spoofing L4.live L4.template-db L5.walls L5.live L6.no-leftovers L6.live L7.host L7.live L8.no-socket L8.live"
+readonly TSL_LIVE_IDS="L1.live L1.live-other-run L2.live L3.live L3.embedded-resolver L3.embedded-resolver-blocked L3.working-relay L3.ipv6 L3.no-route L3.other-run L3.multicast L3.run-files L3.spoofing L4.live L4.template-db L6.live"
+readonly TSL_PENDING_IDS="L3.egress-capture"
+readonly TSL_EXTRA_IDS="extra.redis-flush extra.http-reset"
+TSL_GATE=off; TSL_GATE_REASON=""; TSL_ENVIRONMENT=""; TSL_RESULTS=""; TSL_DIFF=""
+TSL_AMI=unknown; TSL_BOOT2=unknown; TSL_DOCKER=unknown; TSL_INSTANCE=unknown
+TSL_WORK_DIR=""; TSL_SNAPSHOT_BEFORE=""; TSL_IMAGES_BEFORE=""; TSL_HARD_DEADLINE=""
+# Every Docker command of the self-test is bounded: a hung daemon costs one timeout (TSL_COMMAND_TIMEOUT_S, 1 to 999 s, default 15), not the boot. And the whole self-test is bounded: past TSL_HARD_DEADLINE (set when it starts; never later than
+# the boot deadline) no Docker command is run at all. What could not be cleaned up then cannot be read back either, and the worker is stopped (condition 3) instead of left hanging.
+tsl_past_deadline() { [[ -n "${TSL_HARD_DEADLINE:-}" ]] && ((SECONDS >= TSL_HARD_DEADLINE)); }
+tsl_dk() {
+  local limit=${TSL_COMMAND_TIMEOUT_S:-15}
+  [[ "$limit" =~ ^[0-9]{1,3}$ ]] && ((10#$limit >= 1)) || limit=15
+  ! tsl_past_deadline || return 124
+  timeout --foreground --kill-after=5s "$((10#$limit))s" docker "$@"
+}
+# The opt-in gate. Sets TSL_GATE to off (nothing at all happens and nothing is recorded), refused (recorded, nothing runs) or on.
+tsl_selftest_gate() {
+  TSL_GATE=off; TSL_GATE_REASON=""; TSL_ENVIRONMENT=""
+  [[ "${AGENTX_TSL_SELFTEST:-}" == 1 ]] || return 0
+  if [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]]; then TSL_ENVIRONMENT=${BASH_REMATCH[1]}; fi
+  if [[ "${AGENTX_ENVIRONMENT_KIND:-}" != named ]]; then TSL_GATE=refused; TSL_GATE_REASON=not_named; return 0; fi
+  if [[ "$TSL_ENVIRONMENT" != "$TSL_ALLOWED_ENVIRONMENT" ]]; then TSL_GATE=refused; TSL_GATE_REASON=not_staging; return 0; fi
+  TSL_GATE=on
+}
+# The account: the registry account of the worker image AND the account in the instance identity document (IMDSv2) must both be the staging account. An identity document that cannot be read is a refusal, never a pass.
+tsl_account_ok() {
+  local registry=${AGENTX_WORKER_IMAGE:-} token doc account
+  registry=${registry%%/*}
+  [[ "${registry%%.*}" == "$TSL_ALLOWED_ACCOUNT" ]] || return 1
+  token=$(curl -fsS --connect-timeout 2 --max-time 3 -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null) || return 1
+  doc=$(curl -fsS --connect-timeout 2 --max-time 3 -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/dynamic/instance-identity/document 2>/dev/null) || return 1
+  account=$(printf '%s' "$doc" | sed -n 's/.*"accountId" *: *"\([0-9]\{12\}\)".*/\1/p' | head -n1)
+  [[ "$account" == "$TSL_ALLOWED_ACCOUNT" ]]
+}
+# The four identity values, each only in its one written form, else `unknown`: AMI id (instance metadata), boot-stage2 SHA-256 (the launch's, which boot.sh already checked against the file it sourced), Docker version, instance id.
+tsl_identity() {
+  local ami="" version=""
+  TSL_AMI=unknown; TSL_BOOT2=unknown; TSL_DOCKER=unknown; TSL_INSTANCE=unknown
+  if declare -F imds_once >/dev/null; then ami=$(imds_once ami-id 2>/dev/null | head -n1) || ami=""; fi
+  [[ "$ami" =~ ^ami-[0-9a-f]{8,17}$ ]] && TSL_AMI=$ami
+  [[ "${AGENTX_BOOT_STAGE2_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] && TSL_BOOT2=$AGENTX_BOOT_STAGE2_SHA256
+  version=$(tsl_dk version --format '{{.Server.Version}}' 2>/dev/null | head -n1) || version=""
+  [[ "$version" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){0,3}(-[a-z0-9.]{1,12})?$ ]] && TSL_DOCKER=$version
+  [[ "${1:-}" =~ ^i-[0-9a-f]{8,17}$ ]] && TSL_INSTANCE=$1
+  return 0
+}
+# Seconds the CHECKS may run: TSL_SELFTEST_BUDGET_S (45 to 300, default 170; under 45 never starts), and never so long that the checks plus TSL_RESERVE_S end after the boot deadline. May be under 45 or negative: the caller then does not start.
+tsl_budget_seconds() {
+  local want=${TSL_SELFTEST_BUDGET_S:-170} left
+  if [[ "$want" =~ ^[0-9]{2,3}$ ]] && ((10#$want >= 45 && 10#$want <= 300)); then want=$((10#$want)); else want=170; fi
+  left=$(( ${BOOT_DEADLINE:-$((SECONDS + 100000))} - SECONDS - TSL_RESERVE_S ))
+  ((left >= want)) || want=$left
+  printf '%s\n' "$want"
+}
+# Text that changes by itself between two looks is not a difference: the countdown of a router-advertisement route (`expires 1795sec`), address lifetimes (`valid_lft`, `preferred_lft`), an age, a set element's expiry (nft) and packet and byte
+# counters. They are cut out of every part of the snapshot, so a healthy host never fails the read-back for the clock; everything that is a rule, a route, a table or a link name stays.
+tsl_normalize() { sed -E 's/ (expires|valid_lft|preferred_lft|age) [0-9a-z.]+//g; s/ ?(counter )?packets [0-9]+ bytes [0-9]+//g; s/ ?\[[0-9]+:[0-9]+\]//g'; }
+# What the host looks like, as text IN ORDER (never sorted: a rule moved below an ACCEPT is a different firewall): every table of iptables (filter, nat, mangle, raw) and, where it is usable, ip6tables; the nft ruleset (stateless) when nft is
+# there; routes of every table, ip rules and the interface names. Fails (returns 1) when anything that should be readable was not: an unread table proves nothing.
+tsl_snapshot() {
+  local out=$1 table text tool
+  tsl_past_deadline && return 1
+  : >"$out" || return 1
+  for tool in iptables ip6tables; do
+    if [[ "$tool" == ip6tables ]] && ! { command -v ip6tables >/dev/null 2>&1 && ip6tables -S INPUT >/dev/null 2>&1; }; then continue; fi
+    for table in filter nat mangle raw; do
+      tsl_past_deadline && return 1
+      # filter and nat must be readable; a table the kernel does not have (raw and mangle are loaded on demand) cannot hold a rule, and is recorded as such (the same before and after, unless a leftover loaded it).
+      text=$(timeout --kill-after=3s 10s "$tool" -t "$table" -S 2>/dev/null) || { if [[ "$table" == filter || ( "$tool" == iptables && "$table" == nat ) ]]; then return 1; fi; text=unreadable; }
+      printf '%s\n' "$text" | tsl_normalize | sed "s/^/$tool:$table /" >>"$out"
+    done
+  done
+  if command -v nft >/dev/null 2>&1; then
+    text=$(timeout --kill-after=3s 10s nft -s list ruleset 2>/dev/null) || return 1
+    printf '%s\n' "$text" | tsl_normalize | sed 's/^/nft /' >>"$out"
+  fi
+  text=$(timeout --kill-after=3s 10s ip -4 route show table all 2>/dev/null) || return 1
+  printf '%s\n' "$text" | tsl_normalize | sed 's/^/route4 /' >>"$out"
+  text=$(timeout --kill-after=3s 10s ip -6 route show table all 2>/dev/null) || text=""
+  printf '%s\n' "$text" | tsl_normalize | sed 's/^/route6 /' >>"$out"
+  text=$(timeout --kill-after=3s 10s ip rule show 2>/dev/null) || return 1
+  printf '%s\n' "$text" | tsl_normalize | sed 's/^/rule /' >>"$out"
+  text=$(timeout --kill-after=3s 10s ip -o link show 2>/dev/null) || return 1
+  printf '%s\n' "$text" | awk '{ n = $2; sub(/@.*/, "", n); sub(/:$/, "", n); print "link " n }' >>"$out"
+}
+# Removes the Docker OBJECTS the self-test made: containers (and their anonymous volumes), networks and volumes carrying either fixed label. Best effort; the looks below decide. Safe to run twice, and on a volume a failed self-test left behind.
+tsl_remove_objects() {
+  local filter ids
+  for filter in "label=$TSL_DRIVER_LABEL=1" "label=$TSL_FAMILY_LABEL.workspace=$TSL_WORKSPACE_KEY"; do
+    ids=$(tsl_dk ps -a -q --filter "$filter" 2>/dev/null) || ids=""
+    # shellcheck disable=SC2086
+    [[ -z "$ids" ]] || tsl_dk rm -f -v $ids >/dev/null 2>&1 || true
+  done
+  for filter in "label=$TSL_DRIVER_LABEL=1" "label=$TSL_FAMILY_LABEL.workspace=$TSL_WORKSPACE_KEY"; do
+    ids=$(tsl_dk network ls -q --filter "$filter" 2>/dev/null) || ids=""
+    # shellcheck disable=SC2086
+    [[ -z "$ids" ]] || tsl_dk network rm $ids >/dev/null 2>&1 || true
+    ids=$(tsl_dk volume ls -q --filter "$filter" 2>/dev/null) || ids=""
+    # shellcheck disable=SC2086
+    [[ -z "$ids" ]] || tsl_dk volume rm -f $ids >/dev/null 2>&1 || true
+  done
+  return 0
+}
+# The looks at those objects: returns 0 only when none is left and every look answered. A look that fails is NOT gone. Sets TSL_DIFF to the part that was not gone (a fixed word, for the log).
+tsl_objects_gone() {
+  local filter ids
+  TSL_DIFF=""
+  for filter in "label=$TSL_DRIVER_LABEL=1" "label=$TSL_FAMILY_LABEL.workspace=$TSL_WORKSPACE_KEY"; do
+    ids=$(tsl_dk ps -a -q --filter "$filter" 2>/dev/null) || { TSL_DIFF=docker; return 1; }
+    [[ -z "$ids" ]] || { TSL_DIFF=containers; return 1; }
+    ids=$(tsl_dk network ls -q --filter "$filter" 2>/dev/null) || { TSL_DIFF=docker; return 1; }
+    [[ -z "$ids" ]] || { TSL_DIFF=networks; return 1; }
+    ids=$(tsl_dk volume ls -q --filter "$filter" 2>/dev/null) || { TSL_DIFF=docker; return 1; }
+    [[ -z "$ids" ]] || { TSL_DIFF=volumes; return 1; }
+  done
+  return 0
+}
+# EVERY named boot, before anything else and whether or not the self-test is on: Docker's data root is on the workspace volume, so a self-test that failed its clean-up on an earlier instance would otherwise reach this launch.
+# Strict when the self-test's marker is on the volume (it may have left objects): removes what carries the fixed labels, reads it back (one settle and retry), and returns 1 when it cannot, so the boot fails before any customer task can meet it;
+# the marker goes only when that read-back is clean. With no marker nothing can have been left: ONE bounded look (30 s, no retry loop). A look that errors is logged (a fixed word, no Docker text) and the boot goes on; an object that IS found is removed
+# and read back, and returns 1 only when it is still there or the second look fails.
+tsl_sweep_leftovers() {
+  if [[ -e "$TSL_MARKER_FILE" ]]; then
+    TSL_HARD_DEADLINE=$((SECONDS + 90))
+    tsl_remove_objects
+    if tsl_objects_gone; then TSL_HARD_DEADLINE=""; rm -f "$TSL_MARKER_FILE" 2>/dev/null || true; return 0; fi
+    sleep 2
+    tsl_remove_objects
+    if tsl_objects_gone; then TSL_HARD_DEADLINE=""; rm -f "$TSL_MARKER_FILE" 2>/dev/null || true; return 0; fi
+    TSL_HARD_DEADLINE=""
+    log "TS-L self-test leftovers could not be removed from the workspace volume ($TSL_DIFF)"
+    return 1
+  fi
+  TSL_HARD_DEADLINE=$((SECONDS + 30))
+  if tsl_objects_gone; then TSL_HARD_DEADLINE=""; return 0; fi
+  if [[ "$TSL_DIFF" == docker ]]; then
+    TSL_HARD_DEADLINE=""
+    log "TS-L leftover look could not be completed (docker); no self-test marker is on the volume, so the boot continues"
+    return 0
+  fi
+  tsl_remove_objects
+  if tsl_objects_gone; then TSL_HARD_DEADLINE=""; return 0; fi
+  TSL_HARD_DEADLINE=""
+  log "TS-L self-test leftovers could not be removed from the workspace volume ($TSL_DIFF)"
+  return 1
+}
+# Removes everything the self-test made: the objects (above), images the checks pulled (the pinned Postgres, and nothing that was here before them) and scratch directories; KEEP names one scratch directory to leave for now.
+tsl_cleanup() {
+  local keep=${1:-} ids id after dir
+  tsl_remove_objects
+  if [[ -n "$TSL_IMAGES_BEFORE" && -s "$TSL_IMAGES_BEFORE" ]]; then
+    after=$(tsl_dk image ls -q --no-trunc 2>/dev/null | LC_ALL=C sort -u) || after=""
+    for id in $after; do grep -qx -- "$id" "$TSL_IMAGES_BEFORE" 2>/dev/null || tsl_dk image rm -f "$id" >/dev/null 2>&1 || true; done
+  fi
+  for dir in /var/tmp/tsl.* /var/tmp/tsl-work.* /var/tmp/tsl-docker.*; do [[ ! -e "$dir" || "$dir" == "$keep" ]] || rm -rf "$dir" 2>/dev/null || true; done
+  return 0
+}
+# THE READ-BACK (condition 3): returns 0 only when every look says gone and the host looks as it did (same text, in order). A look that fails is NOT gone. Sets TSL_DIFF (containers, networks, volumes, docker, rules, routes, links, dirs).
+tsl_readback() {
+  local after dir first
+  tsl_objects_gone || return 1
+  after=$(mktemp) || { TSL_DIFF=dirs; return 1; }
+  if ! tsl_snapshot "$after"; then rm -f "$after"; TSL_DIFF=rules; return 1; fi
+  if ! cmp -s "$TSL_SNAPSHOT_BEFORE" "$after"; then
+    first=$(diff "$TSL_SNAPSHOT_BEFORE" "$after" | awk '/^[<>]/ { print $2; exit }')
+    case "$first" in link) TSL_DIFF=links ;; route4|route6|rule) TSL_DIFF=routes ;; *) TSL_DIFF=rules ;; esac
+    rm -f "$after"; return 1
+  fi
+  rm -f "$after"
+  for dir in /var/tmp/tsl.* /var/tmp/tsl-work.* /var/tmp/tsl-docker.*; do [[ ! -e "$dir" ]] || { TSL_DIFF=dirs; return 1; }; done
+  return 0
+}
+# The read-back, polled for about 15 s (1 s apart): a bridge, a veth or a rule that goes a moment after its network is removed is not a failure. Fails only when it is still not gone at the end or the hard deadline has passed.
+tsl_readback_settled() {
+  local tries=${TSL_SETTLE_TRIES:-15} i
+  [[ "$tries" =~ ^[0-9]{1,2}$ ]] && ((10#$tries >= 1)) || tries=15
+  for ((i = 1; i <= 10#$tries; i++)); do
+    tsl_readback && return 0
+    tsl_past_deadline && return 1
+    ((i == 10#$tries)) || sleep 1
+  done
+  return 1
+}
+# Records one item. Only fixed words are ever stored: the encoder checks them again.
+tsl_item() { TSL_RESULTS="${TSL_RESULTS}$1 $2 $3"$'\n'; }
+tsl_pending_reason() { # tsl_pending_reason <id>: why an item the script printed as PENDING is pending
+  case "$1" in
+    L1.internal-drops) printf 'no_run_network' ;;
+    L5.live|L7.live|L8.live) printf 'later_slice' ;;
+    *) if [[ " $TSL_LIVE_IDS " == *" $1 "* ]]; then printf 'live_not_run'; else printf 'later_slice'; fi ;;
+  esac
+}
+# Turns the checker's output file into fixed-word items. MODE is `live` (the run finished), `timeout` (it did not: the host-only pass's lines for the host items, `incomplete: budget` for the driver's) or `none` (no time was left for even the host-only
+# pass: every item is `incomplete: no_time`). Nothing of the output is copied: only the status word of the LAST line for each item id (a raw driver line the checker echoed cannot override its own verdict, which comes later), and the presence of the
+# ERROR and BLOCKED lines, are read. A pull that failed at the login or the manifest read is `no_pull_grant`; one that failed at the pull itself is `pull_failed` (the checker hides the registry's words, so a grant that does not cover the repositories
+# looks like either).
+tsl_classify() {
+  local out=$1 mode=$2 id status auth_failed=no pull_failed=no blocked=no errored=no
+  grep -Eq '^TSL ERROR (the registry login failed|the manifest of )' "$out" 2>/dev/null && auth_failed=yes
+  grep -Eq '^TSL ERROR the pull of ' "$out" 2>/dev/null && pull_failed=yes
+  grep -Eq '^TSL BLOCKED' "$out" 2>/dev/null && blocked=yes
+  grep -Eq '^TSL ERROR' "$out" 2>/dev/null && errored=yes
+  for id in $TSL_ITEM_IDS; do
+    if [[ "$mode" == none ]]; then tsl_item "$id" incomplete no_time; continue; fi
+    if [[ "$mode" == timeout && " $TSL_LIVE_IDS " == *" $id "* ]]; then tsl_item "$id" incomplete budget; continue; fi
+    status=$(awk -v id="$id" 'index($0, "TSL ") == 1 && $1 == "TSL" && $2 == id && ($3 == "PASS" || $3 == "FAIL" || $3 == "PENDING") { s = $3 } END { print s }' "$out" 2>/dev/null) || status=""
+    case "$status" in
+      PASS) tsl_item "$id" pass ok ;;
+      FAIL)
+        if [[ " $TSL_LIVE_IDS " == *" $id "* && $blocked == yes ]]; then tsl_item "$id" fail catalog_untrusted
+        elif [[ " $TSL_LIVE_IDS " == *" $id "* && $auth_failed == yes ]]; then tsl_item "$id" pending no_pull_grant
+        elif [[ " $TSL_LIVE_IDS " == *" $id "* && $pull_failed == yes ]]; then tsl_item "$id" pending pull_failed
+        elif [[ " $TSL_LIVE_IDS " == *" $id "* && $errored == yes ]]; then tsl_item "$id" fail driver_error
+        else tsl_item "$id" fail check_failed; fi ;;
+      PENDING) tsl_item "$id" pending "$(tsl_pending_reason "$id")" ;;
+      *) tsl_item "$id" incomplete no_result ;;
+    esac
+  done
+  tsl_item L3.egress-capture pending no_capture
+  tsl_item extra.redis-flush pending no_pin
+  tsl_item extra.http-reset pending later_slice
+}
+# The result as ONE line of JSON, from fixed words only: `items` are CI's ids, `extra` the extras. Prints nothing and returns 1 when it would not fit TSL_RESULT_MAX_CHARS or a word is not in its list; the caller then records
+# `incomplete: too_large` without items.
+tsl_encode() { # tsl_encode <state> <reason> <seconds>
+  local state=$1 reason=$2 seconds=$3 items="" extra="" id status why text
+  [[ " $TSL_STATES " == *" $state "* && " $TSL_REASONS " == *" $reason "* && "$seconds" =~ ^[0-9]{1,4}$ ]] || return 1
+  while read -r id status why; do
+    [[ -n "$id" ]] || continue
+    [[ " $TSL_STATUSES " == *" $status "* && " $TSL_REASONS " == *" $why "* ]] || return 1
+    if [[ " $TSL_ITEM_IDS $TSL_PENDING_IDS " == *" $id "* ]]; then items="${items:+$items,}\"$id:$status:$why\""
+    elif [[ " $TSL_EXTRA_IDS " == *" $id "* ]]; then extra="${extra:+$extra,}\"$id:$status:$why\""
+    else return 1; fi
+  done <<<"$TSL_RESULTS"
+  printf -v text '{"v":1,"state":"%s","reason":"%s","ami":"%s","boot2":"%s","docker":"%s","instance":"%s","secs":%s,"items":[%s],"extra":[%s]}' "$state" "$reason" "$TSL_AMI" "$TSL_BOOT2" "$TSL_DOCKER" "$TSL_INSTANCE" "$seconds" "$items" "$extra"
+  ((${#text} <= TSL_RESULT_MAX_CHARS)) || return 1
+  printf '%s\n' "$text"
+}
+# Writes the result to TSL_RESULT_FILE (under /run: a reboot empties it; the worker's launcher passes it to the worker when it is there, so no old result is ever reported). Never fatal.
+tsl_record() { # tsl_record <state> <reason> <seconds>
+  local line
+  line=$(tsl_encode "$1" "$2" "$3") || { TSL_RESULTS=""; line=$(tsl_encode incomplete too_large "$3") || return 0; }
+  install -d -m 0700 "$(dirname "$TSL_RESULT_FILE")" 2>/dev/null || true
+  printf '%s\n' "$line" >"$TSL_RESULT_FILE" 2>/dev/null || true
+  log "TS-L self-test: $1 ($2)"
+  return 0
+}
+# Runs the checker script from the bundle directory: `live` with the driver delivered (TSL_DIR), `host` without it. One timeout, whole process group.
+tsl_run_checks() { # tsl_run_checks <live|host> <seconds> <dir> <out>
+  local mode=$1 seconds=$2 dir=$3 out=$4
+  if [[ "$mode" == live ]]; then
+    TSL_DIR=$dir TSL_ENV=$TSL_ENVIRONMENT timeout --kill-after=10s "${seconds}s" bash "$dir/s.sh" >"$out" 2>/dev/null
+  else
+    env -u TSL_DIR -u TSL_LIVE_OUT_FILE TSL_ENV=$TSL_ENVIRONMENT timeout --kill-after=10s "${seconds}s" bash "$dir/s.sh" >"$out" 2>/dev/null
+  fi
+}
+# The image's build flavor, then the checker, its driver and the catalog, out of the worker image the boot already pulled (by digest), into a root-owned scratch directory. Returns 0 (all there), 1 (the bundle is not in the image) or 2 (the
+# image is not a staging build: the caller refuses). A release image carries no bundle at all.
+tsl_extract_bundle() {
+  local dir=$1 image=${AGENTX_WORKER_IMAGE:-} id
+  [[ "$image" =~ ^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || return 1
+  id=$(tsl_dk create --label "$TSL_DRIVER_LABEL=1" "$image" 2>/dev/null) || return 1
+  [[ "$id" =~ ^[a-f0-9]{12,64}$ ]] || return 1
+  if ! tsl_dk cp "$id:$TSL_FLAVOR_FILE" "$dir/flavor.js" >/dev/null 2>&1 || ! grep -Fq 'CATALOG_BUILD_FLAVOR = "staging";' "$dir/flavor.js"; then
+    tsl_dk rm -f "$id" >/dev/null 2>&1 || true
+    return 2
+  fi
+  if tsl_dk cp "$id:$TSL_BUNDLE_DIR/checks.sh" "$dir/s.sh" >/dev/null 2>&1 && tsl_dk cp "$id:$TSL_BUNDLE_DIR/live.mjs" "$dir/live.mjs" >/dev/null 2>&1 \
+    && tsl_dk cp "$id:$TSL_CATALOG_DIR/catalog.json" "$dir/catalog.json" >/dev/null 2>&1; then
+    tsl_dk cp "$id:$TSL_CATALOG_DIR/catalog.sig.json" "$dir/catalog.sig.json" >/dev/null 2>&1 || true
+  fi
+  tsl_dk rm -f "$id" >/dev/null 2>&1 || true
+  [[ -s "$dir/s.sh" && -s "$dir/live.mjs" && -s "$dir/catalog.json" ]] || return 1
+  chmod 0755 "$dir" && chmod 0444 "$dir"/* 2>/dev/null || true
+  return 0
+}
+# The marker (TSL_MARKER_FILE): written (and synced) before the first object is made; a marker that cannot be written means nothing is made. Removed only after a clean read-back (never on a failed one: the next boot's sweep is then strict).
+tsl_marker_write() { (umask 077 && printf 'tsl-selftest\n' >"$TSL_MARKER_FILE") 2>/dev/null && { sync 2>/dev/null || true; }; }
+tsl_marker_clear() { rm -f "$TSL_MARKER_FILE" 2>/dev/null || true; }
+# Ends the self-test early: cleans up, proves it, records. Returns 0, or 75 when the read-back fails.
+tsl_finish_early() { # tsl_finish_early <state> <reason> <started>
+  tsl_cleanup
+  tsl_readback_settled || { sleep 2; tsl_cleanup; tsl_readback_settled; } || {
+    log "TS-L self-test: the clean-up could not be read back ($TSL_DIFF)"
+    rm -f "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE"; tsl_record unusable cleanup_failed $((SECONDS - $3)); return 75
+  }
+  tsl_marker_clear
+  rm -f "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE"
+  tsl_record "$1" "$2" $((SECONDS - $3))
+  return 0
+}
+# The whole self-test. Returns 0 always, EXCEPT 75: the read-back failed twice and this worker must not take work (the caller fails the boot).
+run_tsl_selftest() {
+  local instance_id=${1:-} started=$SECONDS budget out="" host_out="" rc=0 mode=live images extract_rc=0 run_s
+  TSL_RESULTS=""; TSL_WORK_DIR=""; TSL_SNAPSHOT_BEFORE=""; TSL_IMAGES_BEFORE=""; TSL_HARD_DEADLINE=""
+  tsl_selftest_gate
+  [[ "$TSL_GATE" != off ]] || return 0
+  tsl_identity "$instance_id"
+  if [[ "$TSL_GATE" == refused ]]; then tsl_record refused "$TSL_GATE_REASON" 0; return 0; fi
+  if ! tsl_account_ok; then tsl_record refused wrong_account 0; return 0; fi
+  budget=$(tsl_budget_seconds)
+  if ((budget < 45)); then tsl_record incomplete no_time 0; return 0; fi
+  TSL_HARD_DEADLINE=$((SECONDS + budget + TSL_RESERVE_S))
+  if ! tsl_dk version --format '{{.Server.Version}}' >/dev/null 2>&1; then tsl_record incomplete docker_unavailable 0; return 0; fi
+  # The launcher's own wall steps (the metadata block, the setup walls, the internal-address chain: idempotent, run at every start of the worker too) go in FIRST, so the checks run against the firewall the tasks will get and the "before"
+  # snapshot already holds those rules. If they cannot be applied the worker could not start either: nothing is run.
+  if ! timeout --kill-after=5s 60s "$TSL_LAUNCHER" --walls-only >/dev/null 2>&1; then tsl_record incomplete walls_failed 0; return 0; fi
+  TSL_SNAPSHOT_BEFORE=$(mktemp) && TSL_IMAGES_BEFORE=$(mktemp) && TSL_WORK_DIR=$(mktemp -d /var/tmp/tsl.XXXXXX) && out=$(mktemp) && host_out=$(mktemp) || { rm -rf "${TSL_SNAPSHOT_BEFORE:-}" "${TSL_IMAGES_BEFORE:-}" "${TSL_WORK_DIR:-}"; tsl_record incomplete snapshot_failed 0; return 0; }
+  if ! tsl_snapshot "$TSL_SNAPSHOT_BEFORE" || ! images=$(tsl_dk image ls -q --no-trunc 2>/dev/null) || ! printf '%s\n' "$images" | LC_ALL=C sort -u >"$TSL_IMAGES_BEFORE" || [[ ! -s "$TSL_IMAGES_BEFORE" ]]; then
+    rm -rf "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE" "$TSL_WORK_DIR" "$out" "$host_out"; tsl_record incomplete snapshot_failed 0; return 0
+  fi
+  # From here the self-test makes objects (the bundle container first): the marker goes on the volume BEFORE that, so a crash from here on makes the next boot's sweep strict. No marker, no objects.
+  if ! tsl_marker_write; then rm -rf "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE" "$TSL_WORK_DIR" "$out" "$host_out"; tsl_marker_clear; tsl_record incomplete snapshot_failed 0; return 0; fi
+  tsl_extract_bundle "$TSL_WORK_DIR" || extract_rc=$?
+  if ((extract_rc != 0)); then
+    rm -f "$out" "$host_out"
+    if ((extract_rc == 2)); then tsl_finish_early refused not_staging_image "$started"; return $?; fi
+    tsl_finish_early incomplete bundle_missing "$started"; return $?
+  fi
+  # The working sandbox's network (L2) is the worker's to make at its first task; the driver needs it now, made the way the worker makes it (task-network.ts) plus the fixed label, so the clean-up finds it even if the create timed out.
+  if [[ -z "$(tsl_dk network ls -q --filter "name=^$TSL_TASK_NETWORK\$" 2>/dev/null)" ]]; then
+    tsl_dk network create --driver bridge --opt "com.docker.network.bridge.name=$TSL_TASK_BRIDGE" --opt com.docker.network.bridge.enable_icc=false --label "$TSL_DRIVER_LABEL=1" "$TSL_TASK_NETWORK" >/dev/null 2>&1 || true
+  fi
+  # The steps above took time too: the checks run for at most what is left of the hard deadline less what follows them, never longer than the budget.
+  run_s=$((TSL_HARD_DEADLINE - SECONDS - TSL_AFTER_CHECKS_S))
+  ((run_s <= budget)) || run_s=$budget
+  if ((run_s < 30)); then rm -f "$out" "$host_out"; tsl_finish_early incomplete no_time "$started"; return $?; fi
+  tsl_run_checks live "$run_s" "$TSL_WORK_DIR" "$out" || rc=$?
+  if ((rc == 124 || rc == 137)); then mode=timeout; fi
+  tsl_cleanup "$TSL_WORK_DIR"
+  # A timed-out run printed nothing (the checker reads the driver first): the read-only half is run alone, on the clean host, so the host items still count, if the time allows it (the reserve keeps the rest of the clean-up safe).
+  if [[ "$mode" == timeout ]]; then
+    if ((TSL_HARD_DEADLINE - SECONDS >= TSL_HOST_PASS_NEEDS_S)); then tsl_run_checks host 30 "$TSL_WORK_DIR" "$host_out" || true; tsl_classify "$host_out" timeout; else tsl_classify "$host_out" none; fi
+  else tsl_classify "$out" live; fi
+  tsl_cleanup
+  if ! tsl_readback_settled; then
+    # One settle, then a second round (condition 3: it must be gone before the worker takes work).
+    sleep 2
+    tsl_cleanup
+    if ! tsl_readback_settled; then
+      log "TS-L self-test: the clean-up could not be read back ($TSL_DIFF)"
+      rm -f "$out" "$host_out" "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE"; tsl_record unusable cleanup_failed $((SECONDS - started)); return 75
+    fi
+  fi
+  tsl_marker_clear
+  rm -f "$TSL_SNAPSHOT_BEFORE" "$TSL_IMAGES_BEFORE" "$out" "$host_out"
+  if [[ "$mode" == timeout ]]; then tsl_record incomplete budget $((SECONDS - started)); else tsl_record ran ok $((SECONDS - started)); fi
+  return 0
+}
+
 # What boot.sh's main did after the worker image was pulled, in the same order, with the same BOOT_STEP labels.
 stage2_main() {
-  local region=$1 instance_id=$2
+  local region=$1 instance_id=$2 tsl_status
   BOOT_STEP="download the worker image"
   if [[ "$CONTAINED_RUNTIME_AVAILABLE_BOOT" == true ]]; then pull_contained_image || true; fi
   pull_executor_image || true
   BOOT_STEP="start the worker"
   write_worker_environment "$region"
   if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then
+    # FIRST, on every named boot (the self-test off or on): what a failed TS-L self-test left on the workspace volume's Docker data root must not meet this launch (tsl_sweep_leftovers).
+    tsl_sweep_leftovers || fail "tsl_leftover: TS-L self-test leftovers on the workspace volume could not be removed; this worker is stopped before it takes any work (README: recovery)"
     install_function_runner_runsc || true
     if pull_catalog_images "$region"; then
       write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"
@@ -967,6 +1377,12 @@ stage2_main() {
   fi
   write_worker_unit "$region" "$instance_id"
   systemctl daemon-reload
+  # The opt-in TS-L self-test (above), after every wall (it applies the launcher's own wall steps first) and before the worker unit is started: it never fails the boot, except that a worker whose clean-up could not be read back as complete must not take work (return 75).
+  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then
+    tsl_status=0
+    run_tsl_selftest "$instance_id" || tsl_status=$?
+    ((tsl_status == 0)) || fail "tsl_leftover: the TS-L self-test left test objects on this worker and it is unusable (cleanup_failed); it is stopped before it takes any work (README: recovery)"
+  fi
   systemctl enable --now "$WORKER_UNIT"
   log "worker started"
   start_e2e_qualification "$region" "$instance_id" || log "the E2E qualification did not start"
