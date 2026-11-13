@@ -107,7 +107,7 @@ describe("cloudTaskAccess.canAct is v2's set: the task's owner, and no one else"
     world.db.set({
       pk: `DEVTASK#${TASK}`, sk: "META", entityType: "DEVTASK", taskId: TASK, companyId: PEOPLE_ORG, project: "payments", developerId: world.people.member.developerId, developerName: "Mia",
       ownerKey: taskOwnerKey(world.people.member.developerId, TASK), workspaceId: "33333333-3333-4333-8333-333333333333", status: "RUNNING", createdAt: "2026-11-12T10:00:00.000Z",
-    } as never);
+    });
     expect(await canAct(world, world.people.member)).toBe(true);
     expect(await canAct(world, world.people.maintainer)).toBe(false);
     expect(await cloudTaskAccess(() => world.routes).checkStep(world.db.get(`DEVTASK#${TASK}`, "META") as never)).toMatchObject({ allowed: true });
@@ -172,7 +172,7 @@ describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fe
     await store.put({ item: grantRow as never });
     expect(await fenced()).toBe(true);
     // A take-over (it writes the task's PEOPLE sidecar) between the check and the commit refuses the step.
-    await store.put({ item: { pk: people!.key.pk, sk: people!.key.sk, revision: 1 } as never });
+    await store.put({ item: { pk: people!.key.pk, sk: people!.key.sk, revision: 1 } });
     expect(await fenced()).toBe(false);
     await store.delete({ key: people!.key });
     await store.delete({ key: items[1]!.key });
@@ -183,14 +183,14 @@ describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fe
     const world = createPeopleWorld();
     seedProject(world);
     grant(world, world.people.member, "developer");
-    world.db.set({ pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 3 } as never);
+    world.db.set({ pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 3 });
     const verdict = await step(world, taskOf(world, world.people.member));
     const people = (verdict as unknown as { items: Array<{ key: { pk: string; sk: string }; condition: unknown }> }).items.at(-1)!;
     const store = new MemoryDocumentStore();
-    await store.put({ item: { pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 3 } as never });
+    await store.put({ item: { pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 3 } });
     const holds = async () => (await store.transact([{ kind: "check", key: people.key, condition: people.condition as never }])).applied;
     expect(await holds()).toBe(true);
-    await store.put({ item: { pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 4 } as never });
+    await store.put({ item: { pk: `DEVTASK#${TASK}`, sk: "PEOPLE", revision: 4 } });
     expect(await holds()).toBe(false);
   });
 
@@ -201,11 +201,11 @@ describe("switch blocker 1: cloudTaskAccess.checkStep is v2's dispatch check, fe
     const run = async () => (await store.transact(items.map((item) => ({ kind: "check" as const, key: item.key, condition: item.condition })))).applied;
     // No grant row, no binding row: the person's channel access is gone.
     expect(await run()).toBe(false);
-    await store.put({ item: { ...orgMemberKey(PEOPLE_ORG, base.developerId), role: "member" } as never });
-    await store.put({ item: { pk: `ORG#${PEOPLE_ORG}#SLACK_BINDING#T0PEOPLE1`, sk: "CHANNEL#C0CHAN", projectName: "payments" } as never });
+    await store.put({ item: { ...orgMemberKey(PEOPLE_ORG, base.developerId), role: "member" } });
+    await store.put({ item: { pk: `ORG#${PEOPLE_ORG}#SLACK_BINDING#T0PEOPLE1`, sk: "CHANNEL#C0CHAN", projectName: "payments" } });
     expect(await run()).toBe(true);
     // The channel rebound to another project, or the catalog row appearing where there was none, refuses the step.
-    await store.put({ item: { pk: `ORG#${PEOPLE_ORG}#SLACK_BINDING#T0PEOPLE1`, sk: "CHANNEL#C0CHAN", projectName: "other" } as never });
+    await store.put({ item: { pk: `ORG#${PEOPLE_ORG}#SLACK_BINDING#T0PEOPLE1`, sk: "CHANNEL#C0CHAN", projectName: "other" } });
     expect(await run()).toBe(false);
   });
 

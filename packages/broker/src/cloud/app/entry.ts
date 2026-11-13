@@ -10,7 +10,7 @@
 //                         request, and hands the broker its start hook. Infrastructure (the stack parameter, the schedules, the Lambda wiring) is not here.
 //   f  the wiring         `cloudCoreWiringFromBroker`: Cloud's own people, code settings, task end, channel rules, Slack standing and task access, from the broker's dependencies where they
 //                         exist. What does not exist yet is an explicit input of `CloudCoreEntryInputs`, never a default.
-import { AgentXError, SessionIdSchema, orgProjectCatalogKey, projectMemberKey, projectMetaKey, when, sessionLink, type CodeIntentRequest, type CodeIntentResult, type OrgId, type Principal, type SlackRequestMessage } from "@rovara-code/contracts";
+import { AgentXError, SessionIdSchema, type TransactItem, orgProjectCatalogKey, projectMemberKey, projectMetaKey, when, sessionLink, type CodeIntentRequest, type CodeIntentResult, type OrgId, type Principal, type SlackRequestMessage } from "@rovara-code/contracts";
 import { recordTaskThread } from "@rovara-code/broker/core/channel";
 import { taskSessionId } from "@rovara-code/broker/core/sessions";
 import type { TaskAccess } from "@rovara-code/broker/core/task-flow";
@@ -170,7 +170,7 @@ const slackBindingKey = (orgId: OrgId, teamId: string, channelId: string): { pk:
 export function stepFence(input: {
   orgId: OrgId; project: string; taskId: string; developerId: string; orgRole: string; revision: number;
   catalog: Record<string, unknown> | undefined; grant: Record<string, unknown> | undefined; people: Record<string, unknown> | undefined; channelKeys: ReadonlyArray<{ pk: string; sk: string }>;
-}): Array<Extract<import("@rovara-code/contracts").TransactItem, { kind: "check" }>> {
+}): Array<Extract<TransactItem, { kind: "check" }>> {
   const { orgId, project } = input;
   const maintainer = input.orgRole === "owner" || input.orgRole === "admin";
   const grant = input.grant;

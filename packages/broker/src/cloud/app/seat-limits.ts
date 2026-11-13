@@ -9,7 +9,8 @@
 // v2's last maintainer limit, "never raises the owner's run limit through a plain approval", has nothing to hold on the core: approving a plan there sets no run limit (the limit is the task's own and
 // is not changed by a decision), which a test pins. A surface decides through the wrapped gate only (`inbound.clientGate`; the raw gate is not exposed).
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { ApprovalVerdict, Approvers } from "@rovara-code/contracts";
+import { when, type ApprovalVerdict, type Approvers, type DocumentStore, type TransactItem } from "@rovara-code/contracts";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { STANDING_ROLE_PREFIX } from "../adapters/people/methods.js";
 
 interface Attempt { requestId: string; credentials: readonly { method: string; token: string }[]; details?: unknown }
@@ -22,8 +23,15 @@ const limitedBy = (details: unknown): boolean => {
   return given.closeAsAnswered === true || given.acknowledgedRunLimitUsd !== undefined;
 };
 
-export function createSeatLimits() {
-  const context = new AsyncLocalStorage<{ details: unknown }>();
+interface Verified { companyId: string; developerId: string; orgRole: string; taskId?: string | undefined; people?: { revision: number } | "absent" | undefined }
+
+/**
+ * L1 (v2's `deciderStillMemberCheck` and PEOPLE fence): what each approver read at verification, held into the decision's own transaction by `fenceStore`, so a person removed or demoted, or a task whose
+ * People list changed (a take-over, a change of owners), between the check and the commit does not get the decision recorded. The conditions are the member record holding the role read, and the
+ * task's PEOPLE sidecar holding the revision read (or still absent).
+ */
+export function createSeatLimits(options: { read?: (key: { pk: string; sk: string }) => Promise<Record<string, unknown> | undefined> } = {}) {
+  const context = new AsyncLocalStorage<{ details: unknown; verified: Verified[] }>();
   return {
     wrap(approvers: Approvers): Approvers {
       return {
@@ -32,8 +40,15 @@ export function createSeatLimits() {
           const verdict = await approvers.verify(request, proof);
           if (!verdict.approved) return verdict;
           const standing = verdict.approver.roles.find((role) => role.startsWith(STANDING_ROLE_PREFIX))?.slice(STANDING_ROLE_PREFIX.length);
-          if (standing !== "maintainer") return verdict;
           const held = context.getStore();
+          if (held !== undefined) {
+            const people = request.subject.type === "task" && options.read !== undefined ? await options.read({ pk: `DEVTASK#${request.subject.id}`, sk: "PEOPLE" }) : undefined;
+            held.verified.push({
+              companyId: verdict.approver.companyId, developerId: verdict.approver.personId, orgRole: verdict.approver.roles[0] ?? "", ...(request.subject.type === "task" ? { taskId: request.subject.id } : {}),
+              people: request.subject.type !== "task" || options.read === undefined ? undefined : people === undefined ? "absent" : { revision: Number(people["revision"]) },
+            });
+          }
+          if (standing !== "maintainer") return verdict;
           if (request.subject.type === "task" && held === undefined) return { approved: false, reason: SEAT_LIMIT_UNAVAILABLE };
           return held !== undefined && limitedBy(held.details) ? { approved: false, reason: SEAT_LIMIT_WORDS } : verdict;
         },
@@ -43,8 +58,34 @@ export function createSeatLimits() {
     gate<G extends { decide(attempt: never): Promise<unknown> }>(gate: G): G {
       return {
         ...gate,
-        decide: (attempt: Attempt) => context.run({ details: attempt.details }, () => (gate as unknown as { decide(attempt: Attempt): Promise<unknown> }).decide(attempt)),
+        decide: (attempt: Attempt) => context.run({ details: attempt.details, verified: [] }, () => (gate as unknown as { decide(attempt: Attempt): Promise<unknown> }).decide(attempt)),
       };
+    },
+    /** The store the decision gate commits through: a decision's transaction gains the conditions of what its approvers read (`Verified`). Every other call is the store's own. */
+    fenceStore<S extends DocumentStore>(store: S): S {
+      return new Proxy(store, {
+        get(target, property) {
+          if (property !== "transact") {
+            const value = Reflect.get(target, property, target) as unknown;
+            return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+          }
+          return async (items: readonly TransactItem[]) => {
+            const held = context.getStore();
+            const decision = items.some((item) => item.kind === "put" && item.item["entityType"] === "APPROVAL_DECISION");
+            if (!decision || held === undefined || held.verified.length === 0) return await target.transact(items);
+            const fence: TransactItem[] = [];
+            const seenTasks = new Set<string>();
+            for (const person of held.verified) {
+              fence.push({ kind: "check", key: orgMemberKey(person.companyId, person.developerId), condition: when.eq("role", person.orgRole) });
+              if (person.taskId !== undefined && person.people !== undefined && !seenTasks.has(person.taskId)) {
+                seenTasks.add(person.taskId);
+                fence.push({ kind: "check", key: { pk: `DEVTASK#${person.taskId}`, sk: "PEOPLE" }, condition: person.people === "absent" ? when.absent() : when.eq("revision", person.people.revision) });
+              }
+            }
+            return await target.transact([...items, ...fence]);
+          };
+        },
+      });
     },
   };
 }

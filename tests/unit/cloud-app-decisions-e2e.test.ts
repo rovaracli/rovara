@@ -22,6 +22,7 @@ import { SEAT_LIMIT_UNAVAILABLE, createClientFacingApprovers, createSeatLimits }
 import { resolveSlackDecisionCaller } from "../../packages/broker/src/decisions/slack-actions.js";
 import { CloudSlackChannel } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
 import { bindChannelSpace, postApprovalCard } from "@rovara-code/broker/core/channel";
+import { orgMemberKey } from "@agentx/cloud-contracts";
 import { createFakeWorld, type FakeWorld } from "../support/cloud-core-fakes.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 
@@ -35,15 +36,17 @@ const allowAll: TaskAccess = { checkStart: async () => ({ allowed: true }), canA
 
 interface Rig { /** A6's approvers adapter as built, without the client-facing wrapper the root registers (for tests of A6 itself). */ approvers: Approvers; world: FakeWorld; people: PeopleWorld; app: CloudApp; standing: Map<string, ApprovalDeciderRole>; posts: string[]; /** Another root over the same world, adapters and wiring (a later Lambda container, with the switch changed). */ rebuild(options: { env: NodeJS.ProcessEnv; serveStamped?: boolean }): CloudApp }
 
-async function rig(options: { slack?: boolean; liveRole?: boolean } = {}): Promise<Rig> {
+async function rig(options: { slack?: boolean; liveRole?: boolean; afterVerify?: () => Promise<void> | void } = {}): Promise<Rig> {
   const world = createFakeWorld();
   const people = createPeopleWorld();
   const standing = new Map<string, ApprovalDeciderRole>();
-  const approvers = createCloudApprovers({
+  const realApprovers = createCloudApprovers({
     issuers: cloudApprovalIssuers({ routes: people.routes, slackLookups: people.slackLookups }),
     deciderRole: options.liveRole === true ? cloudDeciderRole(() => people.routes) : async (_request, decider) => standing.get(decider.developerId) ?? "none",
     place: { documentClient: people.db, tableName: "state", signInTableName: "signin", now: people.now },
   });
+  // A6 as built, with a hook run right after a person is verified (a change between the check and the commit).
+  const approvers: Approvers = { requirement: (request) => realApprovers.requirement(request), verify: async (request, proof) => { const verdict = await realApprovers.verify(request, proof); if (verdict.approved) await options.afterVerify?.(); return verdict; } };
   const posts: string[] = [];
   // The real Slack adapter (A8), its Slack calls answered by a recording stand-in for Slack's API.
   const slackAdapter = cloudAdapter({
@@ -63,6 +66,8 @@ async function rig(options: { slack?: boolean; liveRole?: boolean } = {}): Promi
   };
   const rebuild = (built: { env: NodeJS.ProcessEnv; serveStamped?: boolean }): CloudApp => createCloudApp({ env: built.env, modules, context: () => world.context(), nowMs: () => world.clock.now, runtime: cloudCoreRuntime(wiring), ...(built.serveStamped === true ? { serveStamped: true } : {}) });
   const app = rebuild({ env: { CLOUD_CORE_ENGINE: "on" } });
+  // The members' records in the core's table (one table in production): the decision's transaction holds them to the roles read at verification.
+  for (const person of Object.values(people.people)) await world.store.put({ item: { ...orgMemberKey(person.orgId, person.developerId), entityType: "ORG_MEMBER", role: person.role } });
   const project = PROJECT(world.hostModel.url);
   await world.store.put({ item: { ...projectRevisionKey(PEOPLE_ORG, project.name, project.revision), entityType: "PROJECT", definition: JSON.parse(JSON.stringify(project)) as JsonValue } });
   await world.store.put({ item: { ...orgProjectCatalogKey(PEOPLE_ORG, project.name), entityType: "PROJECT_CATALOG", latestRevision: project.revision } });
@@ -743,5 +748,53 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     const r = await rig();
     const inbound = (await r.app.runtimeFor(PEOPLE_ORG)).inbound as Record<string, unknown>;
     expect(Object.keys(inbound)).not.toContain("actions");
+  });
+});
+
+describe("L1: the decider's membership and the task's People revision are held into the decision's own transaction", () => {
+  async function racing(change: (r: Rig, taskId: string) => Promise<void>, taskRef: { id?: string } = {}) {
+    const r = await rig({ afterVerify: async () => { if (taskRef.id !== undefined) await change(r, taskRef.id); } });
+    r.standing.set(r.people.people.owner.developerId, "owner");
+    const { taskId } = await plannedTask(r);
+    taskRef.id = taskId;
+    return { r, taskId };
+  }
+
+  it("with nothing changed the decision commits (the control)", async () => {
+    const { r, taskId } = await racing(async () => undefined);
+    expect((await press(r, taskId, r.people.people.owner, BROWSER_SESSION_METHOD)).status).toBe("decided");
+  });
+
+  it("a person demoted between the check and the commit does not get the decision recorded", async () => {
+    const { r, taskId } = await racing(async (rig) => { await rig.world.store.put({ item: { ...orgMemberKey(PEOPLE_ORG, rig.people.people.owner.developerId), entityType: "ORG_MEMBER", role: "auditor" } }); });
+    const answer = await press(r, taskId, r.people.people.owner, BROWSER_SESSION_METHOD);
+    expect(answer.status).toBe("refused");
+    expect(await decisionsOf(r, taskId)).toEqual([]);
+  });
+
+  it("a person removed between the check and the commit does not get the decision recorded", async () => {
+    const { r, taskId } = await racing(async (rig) => { await rig.world.store.delete({ key: orgMemberKey(PEOPLE_ORG, rig.people.people.owner.developerId) }); });
+    expect((await press(r, taskId, r.people.people.owner, BROWSER_SESSION_METHOD)).status).toBe("refused");
+    expect(await decisionsOf(r, taskId)).toEqual([]);
+  });
+
+  it("a take-over (the task's PEOPLE sidecar written) between the check and the commit refuses the decision; an unchanged sidecar does not", async () => {
+    const r = await rig();
+    r.standing.set(r.people.people.owner.developerId, "owner");
+    const { taskId } = await plannedTask(r);
+    // The take-over lands right after the verification read the People list (absent): the commit's fence holds it as absent.
+    const store = r.world.store;
+    const original = store.get.bind(store);
+    let landed = false;
+    store.get = async (key) => {
+      const found = await original(key);
+      if (key.sk === "PEOPLE" && key.pk === `DEVTASK#${taskId}` && !landed) { landed = true; await store.put({ item: { pk: key.pk, sk: key.sk, revision: 1 } }); }
+      return found;
+    };
+    expect((await press(r, taskId, r.people.people.owner, BROWSER_SESSION_METHOD)).status).toBe("refused");
+    expect(await decisionsOf(r, taskId)).toEqual([]);
+    store.get = original;
+    // With the sidecar in place and unchanged (revision 1), the same person's next decision commits.
+    expect((await press(r, taskId, r.people.people.owner, BROWSER_SESSION_METHOD)).status).toBe("decided");
   });
 });

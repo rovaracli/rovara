@@ -149,9 +149,9 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
         ...(pinnedCompanyOf === undefined ? {} : { companyOf: pinnedCompanyOf }),
       });
       // v2's limits on a maintainer's seat (see seat-limits.ts): the decision's details are noted for the approvers adapter, which refuses a maintainer's proof for a close-as-answered or an acknowledged run limit.
-      const seats = createSeatLimits();
+      const seats = createSeatLimits({ read: async (key) => await store.get(key) });
       const service = createDecisionService({
-        flow: flow.deps, blobs: registry.require("object-storage"), store, approvers: seats.wrap(registry.require("approvers")), audit: registry.require("audit-sink"), companyId,
+        flow: flow.deps, blobs: registry.require("object-storage"), store: seats.fenceStore(store), approvers: seats.wrap(registry.require("approvers")), audit: registry.require("audit-sink"), companyId,
         identity: registry.require("identity"), now: wiring.now,
         ...(wiring.decisionSubjects === undefined ? {} : { subjects: wiring.decisionSubjects }),
         workflowSubject: { actorFor: cloudActorFor },

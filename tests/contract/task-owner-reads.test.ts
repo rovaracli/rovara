@@ -172,6 +172,10 @@ const ROWS: readonly Row[] = [
   ["cloud/app/merge-people.ts", "createCloudMergePeople>requestersOf", "other-record", ".startedBy"],
   // S3-7: the owner KEY of a core task (a hash of its creator and its id) is taken OUT of the requester list, since it is not a person; it grants nothing
   ["cloud/app/merge-people.ts", "createCloudMergePeople>requestersOf", "other-record", "taskOwnerKey()"],
+  // S3-7: the fence of a step names the person the step runs for, passed in by the caller that already resolved them (`checkStep` reads the owner through `tryEffectiveTaskOwner`); it builds conditions and grants nothing
+  ["cloud/app/entry.ts", "stepFence", "other-record", ".developerId*3"],
+  // S3-7 (L1): the approver's own id, as the approvers adapter verified it, held into the decision's transaction as a member-record condition; it decides nothing about who owns a task
+  ["cloud/app/seat-limits.ts", "createSeatLimits>fenceStore>get", "other-record", ".developerId"],
   // Plan 6 Task 23: undoing a Slack share keeps the creator's task-list row and the owner's in step (`effectiveTaskOwner` is called for the owner)
   ["rovara-code/sharing.ts", "undoCodeShare", "index", ".developerId*2"],
   ["aws/broker/handler.ts", "createAwsBrokerHandler", "other-record", ".ownerKey*2"],
