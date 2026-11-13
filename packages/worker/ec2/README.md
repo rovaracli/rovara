@@ -76,3 +76,13 @@ walled before `devcontainer up` can start it, and removes a started one that is 
 network or kept NET_RAW. The network has inter-container traffic off (`enable_icc=false`): it is one
 segment shared by every task's containers, and this keeps them from connecting to each other.
 The default bridge (docker0) cannot be walled because the worker's own container is on it.
+
+## Opt-in TS-L self-test (staging only)
+
+A named environment's stage 2 can run Rovara's TS-L Linux checks (`scripts/linux-check-test-services.sh` and its live driver, the same ones the linux-runtime CI job runs) on the real worker, before the worker unit starts, and
+report the result in the worker's `worker_start` line (key `selfTest`). It is OFF unless the launch environment carries `AGENTX_TSL_SELFTEST=1`, and even then it refuses unless the environment's name (from the log group) is exactly
+`staging`. It has its own time budget (170 s by default, never past the boot deadline plus 90 s), never fails the boot, and proves its clean-up before the worker takes work: every container, network, bridge and rule it made is
+removed and read back as gone (the same iptables, ip6tables and nat rules and interfaces as before, compared as sorted text); if the read-back fails twice the boot fails (`/ping` says `BootFailed`) and the provisioner stops the
+session. The result is fixed words only (item ids that are CI's, a status and a reason code each, the AMI id, the boot-stage2 SHA-256, the Docker version and the instance id), at most 3,000 characters. The checker and the driver
+come from the worker image (`packages/worker/ec2/tsl`: `checks.sh` and `live-driver.ts.txt` are byte-for-byte copies of the scripts under `scripts/`, held equal by `tests/contract/ec2-boot-tsl-selftest.test.ts`; the Dockerfile
+builds the driver to `live.mjs`). The only pull is the pinned Postgres image, by digest, with the worker role's existing catalog grant. See the comment above `TSL_SELFTEST_VARIABLE` in `boot-stage2.sh` for the five conditions.

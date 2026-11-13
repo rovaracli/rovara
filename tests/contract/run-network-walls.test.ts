@@ -83,7 +83,9 @@ describe("the run network adds no firewall rule", () => {
         expect(step.split("\n").filter((line) => line.includes(`${RUN_NETWORK_FIRST_OCTETS}.`))).toEqual([expect.stringMatching(/^readonly WORKER="[0-9./ ]+"$/u)]);
       }
       expect(scripts[name].replace(step, "")).not.toContain(`${RUN_NETWORK_FIRST_OCTETS}.`);
-      expect(scripts[name]).not.toMatch(/rovara-svc|rovara\.run-network|run-network/u);
+      // The opt-in TS-L self-test (boot-stage2.sh, ec2-boot-tsl-selftest.test.ts) names the run networks' Docker labels to find and remove the check objects it made; it writes no rule at all (that test), so it is the one place outside this check.
+      const withoutSelfTest = name === "boot-stage2.sh" ? scripts[name].slice(0, scripts[name].indexOf("readonly TSL_SELFTEST_VARIABLE")) + scripts[name].slice(scripts[name].indexOf("# What boot.sh's main did after the worker image was pulled")) : scripts[name];
+      expect(withoutSelfTest).not.toMatch(/rovara-svc|rovara\.run-network|run-network/u);
     });
   }
 

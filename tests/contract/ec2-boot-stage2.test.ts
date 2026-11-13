@@ -33,6 +33,8 @@ const MOVED_DECLARATIONS = [
   "readonly DOCKER_SOCKET=/var/run/docker.sock\n",
 ] as const;
 
+// The opt-in TS-L self-test's functions (tests/contract/ec2-boot-tsl-selftest.test.ts): defined in stage 2, run only when a staging launch opts in.
+const TSL_SELFTEST_FUNCTIONS = ["tsl_dk", "tsl_selftest_gate", "tsl_identity", "tsl_budget_seconds", "tsl_snapshot", "tsl_cleanup", "tsl_readback", "tsl_item", "tsl_pending_reason", "tsl_classify", "tsl_encode", "tsl_record", "tsl_run_checks", "tsl_extract_bundle", "run_tsl_selftest"];
 const MOVED_FUNCTIONS = [
   "pull_contained_image",
   "pull_executor_image",
@@ -133,7 +135,11 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     // The one addition: in a named environment, after the worker environment is written and before the worker unit, Docker's address pools and the rvi-to-rvi wall (design test-services.md 4.0.1).
     const addition = '  write_worker_environment "$region"\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    install_function_runner_runsc || true\n    if pull_catalog_images "$region"; then\n      write_test_services_environment || log "the test services settings could not be written (not fatal; runs with dependencies are refused)"\n    else\n      log "test services are not offered on this worker (the catalog images could not be pulled; not fatal)"\n    fi\n    set_docker_address_pools || fail "could not set Docker\'s address pools"\n    metadata_blocked || fail "the metadata block is missing after the Docker restart"\n    wall_between_run_networks || fail "could not wall run networks off from each other"\n    wall_ipv6_into_host || withhold_test_services_for_ipv6 "${IPV6_WALL_REASON:-ip6tables-unusable}" || fail "could not withhold test services after the IPv6 wall failed"\n    install_run_walls_unit || fail "could not install the unit that restores the run network walls"\n    finish_function_runner || log "the function runner check did not finish (not fatal; the runner is not offered)"\n    write_test_services_boot_facts || log "the test services boot facts could not be written (not fatal)"\n    write_private_addresses || log "the internal address step could not be written (not fatal; no internal address is opened)"\n  fi\n';
     expect(legacyTail).toContain('  write_worker_environment "$region"\n');
-    expect(stage2Main).toBe(`  local region=$1 instance_id=$2\n  BOOT_STEP="download the worker image"\n${legacyTail.replace('  write_worker_environment "$region"\n', addition)}`);
+    // The opt-in TS-L self-test (tests/contract/ec2-boot-tsl-selftest.test.ts): in a named environment, after the worker's unit is written and before it is started. A failed clean-up read-back is the only thing in it that can fail the boot.
+    const selfTestCall = '  # The opt-in TS-L self-test (above), after every wall and before the worker unit is started: it never fails the boot, except that a worker whose clean-up could not be read back as complete must not take work (return 75).\n  if [[ ${AGENTX_ENVIRONMENT_KIND:-} == named ]]; then\n    tsl_status=0\n    run_tsl_selftest "$instance_id" || tsl_status=$?\n    ((tsl_status == 0)) || fail "the TS-L self-test left test objects on this worker and it is unusable (cleanup_failed); it is stopped before it takes any work"\n  fi\n';
+    const startUnit = '  systemctl enable --now "$WORKER_UNIT"\n';
+    expect(legacyTail).toContain(startUnit);
+    expect(stage2Main).toBe(`  local region=$1 instance_id=$2 tsl_status\n  BOOT_STEP="download the worker image"\n${legacyTail.replace('  write_worker_environment "$region"\n', addition).replace(startUnit, selfTestCall + startUnit)}`);
   });
 
   it("run the container wall before any container can start: stage 1 sets Docker up (and walls containers off) before it pulls, creates or runs anything", () => {
@@ -154,7 +160,7 @@ describe("boot.sh (stage 1) and boot-stage2.sh", () => {
     expect(sourced.status, sourced.stderr).toBe(0);
     expect(sourced.stderr).toBe("");
     const defined = sourced.stdout.split("\n").filter(Boolean).map((line) => line.replace(/^declare -f /, "")).sort();
-    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "ipv6_active", "wall_ipv6_into_host", "withhold_test_services_for_ipv6", "install_run_walls_unit", "catalog_seconds", "pull_catalog_images", "write_test_services_boot_facts", "write_test_services_environment", "write_private_addresses", "stage2_main",
+    expect(defined).toEqual([...MOVED_FUNCTIONS, "set_docker_address_pools", "metadata_blocked", "wall_between_run_networks", "ipv6_active", "wall_ipv6_into_host", "withhold_test_services_for_ipv6", "install_run_walls_unit", ...TSL_SELFTEST_FUNCTIONS, "catalog_seconds", "pull_catalog_images", "write_test_services_boot_facts", "write_test_services_environment", "write_private_addresses", "stage2_main",
       // Slice 4 (the function runner): defined here and run only when the launch turns it on (ec2-boot-function-runner.test.ts).
       "function_runner_enabled", "function_runner_unavailable", "install_function_runner_runsc", "function_runner_daemon_runtimes", "function_runner_reference", "function_runner_collect_pairs", "verify_function_runner_runtime", "function_runner_docker_arch", "function_runner_machine_byte", "extract_function_agent", "finish_function_runner", "write_function_runner_environment"].sort());
     expect(stage2).not.toMatch(/^main "\$@"/m);
