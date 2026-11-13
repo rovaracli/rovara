@@ -59,6 +59,7 @@ const KNOWN: Readonly<Record<string, readonly Known[]>> = {
     { reason: "TE-B9 (public PR #510), not in Code's pin yet: the Git variables that change how a pathspec is read are removed from every Git the worker runs", line: '"GIT_LITERAL_PATHSPECS", "GIT_ICASE_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS",' },
   ],
   "verification/candidate.ts": [
+    { reason: "TE-B9 (public PR #510), not in Code's pin yet: the base's ancestry is checked before the snapshot reads the base, so the ancestry refusal keeps its own message", line: "The base's ancestry is checked FIRST" },
     { reason: "TE-B9 (public PR #510), not in Code's pin yet: candidate capture names the task's base to the snapshot (so a committed working file never reaches the reviewed commit)", line: "snapshotTree(git, commit, input.baseCommitSha)" },
     { reason: "TE-B9 (public PR #510), not in Code's pin yet: the candidate commit's snapshots name the base", line: "snapshotTree(git, oldHead, input.baseCommitSha)" },
     { reason: "TE-B9 (public PR #510), not in Code's pin yet: the verifying snapshot names the base", line: "snapshotTree(git, newHead, input.baseCommitSha)" },
