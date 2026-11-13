@@ -49,7 +49,9 @@ export function mergeItemOf(task: DeveloperTaskRecord, workflow: WorkflowSnapsho
   const passed = results.filter((result) => result.status === "PASS").length;
   const failed = results.filter((result) => result.status === "FAILED").length;
   const unknown = results.length - passed - failed;
-  const ci = unmerged.some((item) => item.ci === "failing") ? "failing" as const : unmerged.some((item) => item.ci === "pending") ? "pending" as const : "passing" as const;
+  // TE-B2: "No CI" and unreadable CI are said, never folded into "passing". Worst first: failing, not readable, still running, no CI, passing.
+  const ci = unmerged.some((item) => item.ci === "failing") ? "failing" as const : unmerged.some((item) => item.ci === "unreadable") ? "unreadable" as const
+    : unmerged.some((item) => item.ci === "pending") ? "pending" as const : unmerged.some((item) => item.ci === "none") ? "none" as const : "passing" as const;
   const unaccepted = (workflow.reviews ?? []).filter((review) => review.candidateDigest === workflow.candidate?.digest && review.role === "SECURITY")
     .reduce((sum, review) => sum + review.findings.filter((finding) => !workflowFindingAccepted(workflow, review.role, finding)).length, 0);
   const heads = unmerged.map((item) => ({ repositoryId: item.repositoryId, number: item.number, headSha: item.headSha }));

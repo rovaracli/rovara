@@ -341,7 +341,7 @@ export async function sessionAnswer(
 // ---- Merge (Plan 6 Task 19, with the Task 25 slice)
 
 const shortHead = (sha: unknown): string => (typeof sha === "string" && /^[0-9a-f]{40}$/u.test(sha) ? sha.slice(0, 7) : "unknown");
-const ciWords: Record<string, string> = { passing: "passing", failing: "failing", pending: "still running", none: "none to wait for" };
+const ciWords: Record<string, string> = { passing: "passing", failing: "failing", pending: "still running", none: "No CI on this repository", unreadable: "CI not readable: grant checks read, or set this project to 'do not read CI'" };
 const branchWords: Record<string, string> = { up_to_date: "up to date", behind: "behind its base", conflicted: "conflicts with its base", unknown: "not read yet" };
 
 /** One pull request's line: what merge tracking last read from GitHub, in words. */
