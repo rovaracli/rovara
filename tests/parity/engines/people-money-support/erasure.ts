@@ -1,13 +1,13 @@
 // Area 39 (erasure), compared on the part both paths have: a person's task evidence (the evidence pack and the output tails kept under the task's workspace).
 //   Cloud: its person erase (`createEvidenceErase(...).person`, packages/broker/src/rovara-code/evidence-erase.ts), which walks the person's task index and deletes
 //          each task's evidence prefixes in the artifact bucket;
-//   core:  Code's core has no walk by person (decision 41: vendor core/proof/evidence-erase.ts:6-7). Its counterpart is per task (`eraseTaskEvidence`). The walk
-//          below is the S0 adapter the composition root owes, written test-side: the person's task index rows in the core's store, each task's owner key and
-//          workspace, then `eraseTaskEvidence` on the object-storage point. The product adapter is proposed in the lane report.
+//   core:  Code's core has no walk by person (decision 41: vendor core/proof/evidence-erase.ts:6-7). Its counterpart is per task. The walk is the product's
+//          `erasePersonOnCore` (packages/broker/src/cloud/app/erase.ts): the person's task index in the core's store, each core-stamped task's owner key and
+//          workspace, then the per-task erase on the object-storage point.
 // The same objects are put on both sides: two for the erased person's task, two for another person's task (which must stay). Each is reported `<family>:erased|kept`.
 import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { queryAll, type DocumentStore, type ObjectStorage } from "@rovara-code/contracts";
-import { eraseTaskEvidence } from "../../../../vendor/rovara-code/packages/broker/src/core/proof/evidence-erase.js";
+import type { AdapterRegistry } from "@rovara-code/contracts";
+import { erasePersonOnCore } from "../../../../packages/broker/src/cloud/app/erase.js";
 import { createEvidenceErase, markEvidenceStored } from "../../../../packages/broker/src/rovara-code/evidence-erase.js";
 
 export interface EvidenceScope { ownerKey: string; workspaceId: string; taskId: string }
@@ -51,25 +51,12 @@ export async function cloudErase(input: { s3: { send(command: unknown): Promise<
   return wordsOf(objects, async (key) => input.s3.objects.has(key) || input.s3.binary.has(key));
 }
 
-/** The S0 adapter the composition root owes (test-side): a person's tasks from their task index, each task's evidence erased with the core's own per-task erase. */
-export async function erasePersonOnCore(store: DocumentStore, objects: ObjectStorage, companyId: string, developerId: string): Promise<number> {
-  let erased = 0;
-  for (const row of await queryAll(store, { pk: `DEVELOPER#${developerId}`, sk: { op: "beginsWith", prefix: "TASK#" } })) {
-    const taskId = typeof row.taskId === "string" ? row.taskId : undefined;
-    if (taskId === undefined) continue;
-    const task = await store.get({ pk: `DEVTASK#${taskId}`, sk: "META" });
-    const company = task?.companyId ?? task?.orgId;
-    if (task === undefined || company !== companyId || typeof task.ownerKey !== "string" || typeof task.workspaceId !== "string") continue;
-    await eraseTaskEvidence(objects, { ownerKey: task.ownerKey, workspaceId: task.workspaceId, taskId });
-    erased += 1;
-  }
-  return erased;
-}
-
-/** Core: puts the same objects on the object-storage point and runs the adapter above. */
-export async function coreErase(input: { store: DocumentStore; objects: ObjectStorage; companyId: string; developerId: string; own: EvidenceScope }): Promise<string[]> {
+/** Core: puts the same objects on the object-storage point and runs the product's person erase over the registry. */
+export async function coreErase(input: { registry: Pick<AdapterRegistry, "require">; companyId: string; developerId: string; own: EvidenceScope }): Promise<string[]> {
   const objects = seededObjects(input.own, OTHER_SCOPE);
-  for (const key of Object.values(objects)) await input.objects.put(key, new TextEncoder().encode("{}"), { contentType: "application/json", metadata: {}, retention: "evidence-std" });
-  await erasePersonOnCore(input.store, input.objects, input.companyId, input.developerId);
-  return wordsOf(objects, async (key) => (await input.objects.stat(key)) !== undefined);
+  const storage = input.registry.require("object-storage");
+  for (const key of Object.values(objects)) await storage.put(key, new TextEncoder().encode("{}"), { contentType: "application/json", metadata: {}, retention: "evidence-std" });
+  const report = await erasePersonOnCore({ registry: input.registry, companyId: input.companyId, developerId: input.developerId });
+  if (report.erased < 1 || report.incomplete > 0) throw new Error(`the product's person erase reported ${JSON.stringify(report)}`);
+  return wordsOf(objects, async (key) => (await storage.stat(key)) !== undefined);
 }
