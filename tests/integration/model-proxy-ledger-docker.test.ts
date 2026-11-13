@@ -142,6 +142,20 @@ async def main():
     sql("INSERT INTO rovara_budget.keys (key_hash, held_micros) VALUES ('mw-holder', 1);")
     sql("INSERT INTO rovara_budget.holds (call_id, key_hash, reserved_micros, org, month, slot, expires_at) VALUES ('mw-holder-call', 'mw-holder', 1, 'org-w', '2026-11', true, now() + interval '1 hour');")
     out["slot_in_flight"] = await ledger.take("mw-0", "mw-call-0", 5_000_000, 900_000, CAP, True, ("org-w", "2026-11", 4_000_000, 0))
+    # F1: an expired orphan of ANOTHER company is left alone by that sweep (it is scoped to the company and month)
+    await ledger.take("ku-0", "ku-call-0", 1_000, 0, CAP, True, ("org-u", "2026-11", 1_000_000, 0))
+    expire("ku-call-0")
+    # F1: an expired orphan under ANOTHER key of the company is swept by the next take of any key of that company and month, then the take is decided again
+    await ledger.take("kx-0", "kx-call-0", 1_000, 0, CAP, True, ("org-z", "2026-11", 1_000, 0))
+    expire("kx-call-0")
+    out["orphan_other_key"] = (await ledger.take("ky-0", "ky-call-0", 500, 0, CAP, True, ("org-z", "2026-11", 1_000, 0)))[0]
+    out["orphan_other_key_row"] = {"month": month_row("org-z", "2026-11"), "kx": row("kx-0"), "holds": holds("kx-0")}
+    # ... an expired slot holder under another key: the slot and the held go, and the month's charge is its worst case
+    await ledger.take("kv-0", "kv-call-0", 5_000_000, 900_000, CAP, True, ("org-v", "2026-11", 1_000_000, 0))
+    expire("kv-call-0")
+    out["orphan_slot_other_key"] = (await ledger.take("kw-0", "kw-call-0", 10_000, 0, CAP, True, ("org-v", "2026-11", 1_000_000, 0)))[0]
+    out["orphan_slot_other_key_row"] = month_row("org-v", "2026-11")
+    out["other_company_orphan_left"] = holds("ku-0")
     out["kept"] = {"row": month_row("org-k", "2026-11"), "next": (await ledger.take("kp-1", "kp-call-1", 5_000_000, 900_000, CAP, True, ("org-k", "2026-11", 1_000_000, 0)))[0]}
     await ledger.take("ml-0", "ml-call-0", 5_000_000, 900_000, CAP, True, ("org-l", "2026-11", 1_000_000, 0))
     expire("ml-call-0")
@@ -171,7 +185,7 @@ type Row = { charged_micros: string; held_micros: string; estimated_micros: stri
 type MonthRow = { held_micros: string; charged_micros: string; over_used: string };
 type Out = { cut: { verdict: string; held: string; after: Row }; known: Row; fits: Row; orphan: { after: Row; holds: number }; start: { after: Row; holds: number }; old: { settled: Row; swept: Row }; twice: Row;
   slot: string[]; slot_row: MonthRow; slot_other_company: string[]; slot_next_month: string[]; fits_but_month: string[]; blocked: string[]; blocked_known: string[]; blocked_known_row: MonthRow; none: string[]; none_row: MonthRow;
-  inflight: string[]; cheap_release: { row: MonthRow; next: string }; orphan_slot: [string, number | null]; orphan_slot_row: MonthRow; stale_over: string; stale_fits: [string, null]; stale_fits_row: MonthRow; slot_in_flight: [string, number]; released: { second_while_held: string; row: MonthRow; third: string }; kept: { row: MonthRow; next: string }; swept: MonthRow; month_known: { held: MonthRow; settled: MonthRow }; retried: { verdict: string; failed: number } };
+  inflight: string[]; cheap_release: { row: MonthRow; next: string }; other_company_orphan_left: number; orphan_other_key: string; orphan_other_key_row: { month: MonthRow; kx: Row; holds: number }; orphan_slot_other_key: string; orphan_slot_other_key_row: MonthRow; orphan_slot: [string, number | null]; orphan_slot_row: MonthRow; stale_over: string; stale_fits: [string, null]; stale_fits_row: MonthRow; slot_in_flight: [string, number]; released: { second_while_held: string; row: MonthRow; third: string }; kept: { row: MonthRow; next: string }; swept: MonthRow; month_known: { held: MonthRow; settled: MonthRow }; retried: { verdict: string; failed: number } };
 
 describe.skipIf(!usable)("the budget ledger's SQL against a real Postgres (docker)", () => {
   it("charges the worst case of an overrun call whose cost is never known, by settle, by the sweep of its key and by the start-up sweep; an older hold keeps its reserved charge", () => {
@@ -224,6 +238,11 @@ describe.skipIf(!usable)("the budget ledger's SQL against a real Postgres (docke
       expect(out.released).toEqual({ second_while_held: "held", row: month("0", "0", "f"), third: "ok" });   // a failed call (cost 0) gives the slot back
       expect(out.cheap_release).toEqual({ row: month("0", "30000", "f"), next: "ok" });
       expect(out.slot_in_flight[0]).toBe("held");
+      expect(out.other_company_orphan_left).toBe(1);
+      expect(out.orphan_other_key).toBe("month");                                   // swept, the month's charge (1,000) is at its cap: spent, not a 20-minute wait
+      expect(out.orphan_other_key_row).toEqual({ month: month("0", "1000", "f"), kx: { charged_micros: "1000", held_micros: "0", estimated_micros: "0" }, holds: 0 });
+      expect(out.orphan_slot_other_key).toBe("month");
+      expect(out.orphan_slot_other_key_row).toEqual(month("0", "5000000", "t"));
       expect(out.orphan_slot).toEqual(["ok", null]);                                 // self-healed, and it took the slot itself (the call overruns its key)
       expect(out.orphan_slot_row).toEqual(month("5000000", "0", "t"));
       expect(out.stale_over).toBe("month");

@@ -287,6 +287,7 @@ _SCHEMA = (
     "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS month text",
     "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS slot boolean",
     "ALTER TABLE rovara_budget.holds ADD COLUMN IF NOT EXISTS month_cap bigint",
+    "CREATE INDEX IF NOT EXISTS holds_org ON rovara_budget.holds (org, month, expires_at)",
 )
 # An orphan (older than HOLD_SECONDS) leaves the holds and is added to what its key and its company's month have been charged: the worst case of its call when that is more than the
 # room it held (an overrun call), else what it held. One statement per sweep: a hold is moved once. What leaves "held" is what was reserved (key) or the worst case (month). A swept slot is
@@ -312,6 +313,8 @@ _SQL_SWEEP_ALL = (
     " UPDATE rovara_budget.org_months o SET held_micros = o.held_micros - mm.w, charged_micros = o.charged_micros + mm.owed,"
     " over_used = o.over_used AND NOT (mm.slot AND o.charged_micros + mm.owed <= COALESCE(mm.cap, -1)), updated_at = now()"
     " FROM mm, (SELECT count(*) AS n FROM k) kk WHERE o.org = mm.org AND o.month = mm.month")
+# The same sweep, for one company's month ($1, $2): an orphan under ANOTHER key of the company (a dead task) must not keep the month's held and slot until that key calls again.
+_SQL_SWEEP_MONTH = _SQL_SWEEP_ALL.replace("WHERE expires_at < now() RETURNING", "WHERE expires_at < now() AND org = $1::text AND month = $2::text RETURNING")
 _SQL_FORGET = "DELETE FROM rovara_budget.keys WHERE held_micros = 0 AND updated_at < now() - interval '45 days'"
 _SQL_FORGET_MONTHS = "DELETE FROM rovara_budget.org_months WHERE held_micros = 0 AND updated_at < now() - interval '120 days'"
 _SQL_ENSURE = "INSERT INTO rovara_budget.keys (key_hash) VALUES ($1::text) ON CONFLICT (key_hash) DO NOTHING"
@@ -414,6 +417,8 @@ class _PostgresLedger:
             if org is not None:
                 await db.execute_raw(_SQL_ENSURE_MONTH, org, month)
             await _retrying(lambda: db.execute_raw(_SQL_SWEEP, key))
+            if org is not None:
+                await _retrying(lambda: db.execute_raw(_SQL_SWEEP_MONTH, org, month))
             if await _retrying(lambda: db.query_raw(_SQL_TAKE, key, worst, spent, cap, call_id, HOLD_SECONDS, bool(estimated), org, month, month_cap, month_spent)):
                 return "ok", None
             rows = await db.query_raw(_SQL_READ, key)
