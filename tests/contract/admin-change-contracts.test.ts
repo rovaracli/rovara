@@ -14,6 +14,10 @@ describe("change requests (E1)", () => {
     expect(AdminChangeKindSchema.options).toEqual([
       "register_project_revision", "bind_channel", "unbind_channel", "register_credential", "stop_workspace",
       "grant_project_access", "revoke_project_access", "revoke_signin", "set_workspace_limits", "set_config", "set_chatgpt",
+      // register_sign_in_client and remove_sign_in_client (Code 824ea123e, spec 063 phase 063a) are Code-only until spec 063 is ported to Cloud: Cloud has no
+      // planner, sign-in client registry, MCP tool or CLI command for them, and its planChange fails closed with CONFIG_INVALID
+      // (tests/contract/admin-change-plans-access.test.ts). When they are ported, this list and that assertion change together.
+      "register_sign_in_client", "remove_sign_in_client",
     ]);
     // A recorded config change is never planned or confirmed: it is not a change request's input.
     expect(AdminChangeInputSchema.safeParse({ kind: "set_config" }).success).toBe(false);
