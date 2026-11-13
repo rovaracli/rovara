@@ -18,8 +18,14 @@ import { buildCloudRegistry, type CloudAdapterContext, type CloudAdapterModule }
 
 export interface CloudAppOptions {
   env?: NodeJS.ProcessEnv;
-  /** The adapters (cloud-modules.ts in production; fakes in tests). */
-  modules: readonly CloudAdapterModule[];
+  /** The adapters (cloud-modules.ts in production; fakes in tests). A function is called when the registry is first built, so a deployment's inputs are asked for only then. */
+  modules: readonly CloudAdapterModule[] | (() => readonly CloudAdapterModule[]);
+  /**
+   * The switch gates NEW tasks only (decision 130: a task keeps its engine). With this on, the root also serves the tasks the core already holds while the switch is off or narrowed: it builds
+   * the whole registry (every area's points) and a runtime for any company on request (`runtimeFor`), and runs the jobs for the install's company (`installCompanyId`). `active` still says whether
+   * a new task may start on the core. Default off: with every switch off the root builds nothing.
+   */
+  serveStamped?: boolean;
   /** Builds the adapter context (clients) on first use. */
   context: () => CloudAdapterContext;
   /** The per-company runtime's own wiring (signing key, access, credentials, services). */
@@ -32,8 +38,10 @@ export interface CloudAppOptions {
 
 export interface CloudApp {
   readonly flags: CoreEngineFlags;
-  /** Whether any switch is on. False: nothing below builds anything. */
+  /** Whether any switch is on, that is, whether a NEW task may start on the core. False with `serveStamped` off: nothing below builds anything. */
   readonly active: boolean;
+  /** Whether the root serves tasks the core already holds even when no switch is on (`serveStamped`). */
+  readonly serveStamped: boolean;
   engineForNewTask(companyId: string): Engine;
   engineOfTask(store: Parameters<typeof engineOfStoredTask>[0], taskId: string, area: CoreArea): Promise<Engine>;
   /** The sealed registry (built once). Throws when no switch is on: an off install never builds it. */
@@ -56,6 +64,8 @@ export class CoreEngineOffError extends Error {
 export function createCloudApp(options: CloudAppOptions): CloudApp {
   const flags = readCoreEngineFlags(options.env ?? process.env);
   const active = anyCoreAreaOn(flags);
+  const serveStamped = options.serveStamped === true;
+  const serving = active || serveStamped;
   const jobs = options.jobs ?? CORE_JOBS;
   const nowMs = options.nowMs ?? Date.now;
   let context: CloudAdapterContext | undefined;
@@ -65,11 +75,12 @@ export function createCloudApp(options: CloudAppOptions): CloudApp {
 
   const contextOnce = (): CloudAdapterContext => (context ??= options.context());
   // The areas some company may have on: their points must all be filled.
-  const switchedAreas = (): CoreArea[] => CORE_AREAS.filter((area) => flags.areas[area]?.mode !== "off");
+  const switchedAreas = (): CoreArea[] => (serveStamped ? [...CORE_AREAS] : CORE_AREAS.filter((area) => flags.areas[area]?.mode !== "off"));
+  const modulesOf = (): readonly CloudAdapterModule[] => (typeof options.modules === "function" ? options.modules() : options.modules);
 
   const registry = (): Promise<AdapterRegistry> => {
-    if (!active) return Promise.reject(new CoreEngineOffError("no registry is built"));
-    registryPromise ??= buildCloudRegistry({ modules: options.modules, context: contextOnce(), areas: switchedAreas() }).catch((error: unknown) => {
+    if (!serving) return Promise.reject(new CoreEngineOffError("no registry is built"));
+    registryPromise ??= Promise.resolve().then(() => modulesOf()).then((modules) => buildCloudRegistry({ modules, context: contextOnce(), areas: switchedAreas() })).catch((error: unknown) => {
       // A failed build is not cached: the next container use tries again (a transient client error), and the switch stays effectively off meanwhile.
       registryPromise = undefined;
       throw error;
@@ -78,12 +89,12 @@ export function createCloudApp(options: CloudAppOptions): CloudApp {
   };
 
   const runtimeFor = (companyId: string): Promise<CoreRuntime> => {
-    if (!coreAreaOn(flags, "flow", companyId)) return Promise.reject(new CoreEngineOffError("the flow is not on for this company"));
+    if (!serveStamped && !coreAreaOn(flags, "flow", companyId)) return Promise.reject(new CoreEngineOffError("the flow is not on for this company"));
     let found = runtimes.get(companyId);
     if (found === undefined) {
       found = registry().then((built) => {
         const runtime = createCoreRuntime({ ...options.runtime(built, companyId, flags), registry: built, companyId: companyId, flags });
-        const areas = CORE_AREAS.filter((area) => coreAreaOn(flags, area, companyId));
+        const areas = serveStamped ? [...CORE_AREAS] : CORE_AREAS.filter((area) => coreAreaOn(flags, area, companyId));
         const gaps = serviceGaps(runtime.services, areas);
         if (gaps.length > 0) throw new Error(`the core runtime lacks services for the areas switched on: ${gaps.join(", ")}`);
         return runtime;
@@ -97,12 +108,15 @@ export function createCloudApp(options: CloudAppOptions): CloudApp {
   const companiesFor = (area: CoreArea): string[] => {
     const covered = coreCompanies(flags);
     const all = covered === "all" ? [contextOnce().installCompanyId] : [...covered];
+    // Serving stamped tasks: the install's company is always served (the core's tasks of a company the switch no longer names still need their sweeps).
+    if (serveStamped) return [...new Set([...all, contextOnce().installCompanyId])];
     return all.filter((companyId) => coreAreaOn(flags, area, companyId));
   };
 
   return {
     flags,
     active,
+    serveStamped,
     engineForNewTask: (companyId) => engineForNewTask(flags, companyId),
     // A stamped core task stays on the core after the switch is turned off; reading the stamp never needs the switch.
     engineOfTask: (store, taskId, area) => engineOfStoredTask(store, taskId, area),
@@ -110,7 +124,7 @@ export function createCloudApp(options: CloudAppOptions): CloudApp {
     runtimeFor,
     async handleScheduledJob(event) {
       if (!isCoreJobEvent(event)) return undefined;
-      if (!active) return { skipped: "off" };
+      if (!serving) return { skipped: "off" };
       const job = jobs.find((entry) => entry.name === event.job);
       if (job === undefined) return { skipped: "unknown_job" };
       const budgetMs = options.jobBudgetMs ?? 50_000;
@@ -118,10 +132,10 @@ export function createCloudApp(options: CloudAppOptions): CloudApp {
       return { job: job.name, companies };
     },
     async relayOutbox(companies) {
-      if (!active) return [];
+      if (!serving) return [];
       const relay = jobs.find((entry) => entry.trigger.kind === "stream");
       if (relay === undefined) return [];
-      const served = [...new Set(companies)].filter((companyId) => coreAreaOn(flags, relay.area, companyId));
+      const served = [...new Set(companies)].filter((companyId) => serveStamped || coreAreaOn(flags, relay.area, companyId));
       return await runPerCompany(served, async (companyId) => await relay.run(await runtimeFor(companyId), options.jobBudgetMs ?? 50_000), { rotation: rotation++, budgetMs: options.jobBudgetMs ?? 50_000, nowMs });
     },
   };

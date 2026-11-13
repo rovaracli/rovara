@@ -233,16 +233,22 @@ describe("S3-4 c: the Lambda entry", () => {
     inputs: { moduleDeps, sessionFacts: { read: async () => undefined } }, installCompanyId: FAKE_COMPANY as never,
   });
 
-  it("with the switch off it is nothing: no module input is asked for, nothing is built", () => {
+  it("with the switch off the entry is inert for new work: nothing is asked for or built, a start and a Slack request are Cloud's, and a job with no core task to serve is skipped", async () => {
     let asked = 0;
-    expect(createCloudCoreEntry(sources({}, () => { asked += 1; return {} as never; }))).toBeUndefined();
+    const entry = createCloudCoreEntry(sources({}, () => { asked += 1; return {} as never; }))!;
+    expect(entry).toBeDefined();
+    expect(await entry.intentHook.start({ caller: { orgId: FAKE_COMPANY, developerId: MAYA } as never, request: intent(), ownedTask })).toBeUndefined();
+    expect(await entry.slackRequest({ version: 1, eventId: "EvAbcd1234", thread: { teamId: TENANT, channelId: SPACE, threadTs: THREAD }, userId: "U0MAYA", text: "hi", receivedAt: "2026-11-12T10:00:00.000Z" } as never)).toEqual({ handled: false });
+    expect(await entry.handleScheduledJob({ source: "agentx.core-job", job: "merge-tracking" })).toEqual({ skipped: "off" });
+    expect(await entry.routeCallback({ method: "POST", path: `/v1/internal/workspaces/${randomUUID()}/operations/${randomUUID()}/events`, headers: {} })).toBeUndefined();
     expect(asked).toBe(0);
   });
 
-  it("with the switch on but an input missing it is nothing too, and says why once", () => {
+  it("with the switch on but an input missing, the first use says why and the start stays on Cloud's path", async () => {
     const logs: Array<Record<string, unknown>> = [];
-    expect(createCloudCoreEntry({ ...sources({ CLOUD_CORE_ENGINE: "on" }, () => { throw new TypeError("no clients"); }), log: (entry) => logs.push(entry) })).toBeUndefined();
-    expect(logs).toEqual([{ event: "core_entry.not_configured", component: "cloud_core", error: "TypeError" }]);
+    const entry = createCloudCoreEntry({ ...sources({ CLOUD_CORE_ENGINE: "on" }, () => { throw new TypeError("no clients"); }), log: (entry) => logs.push(entry) })!;
+    expect(await entry.intentHook.start({ caller: { orgId: FAKE_COMPANY, developerId: MAYA } as never, request: intent(), ownedTask })).toBeUndefined();
+    expect(logs.filter((entry) => entry["event"] === "core_entry.not_configured").length).toBeGreaterThan(0);
   });
 
   it("with the switch on it answers the core's scheduled jobs and leaves every other event alone; a job that cannot run fails alone", async () => {

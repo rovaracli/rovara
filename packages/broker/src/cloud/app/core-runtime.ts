@@ -10,7 +10,7 @@
 import { RepositoryGrantService, type createCallbackService, type createDecisionService } from "@rovara-code/broker";
 import { createStoreProjectSource, createTaskFlowFromRegistry, type RegistryTaskFlowOptions, type StartExtras, type StartExtrasInput, type TaskAccess, type TaskFlow } from "@rovara-code/broker/core/task-flow";
 import type { AdapterRegistry, ChannelInboundSink, OrgId, SlackRequestMessage } from "@rovara-code/contracts";
-import { stampForNewTask, stampItem } from "./engine-stamp.js";
+import { coreInUseItem, stampForNewTask, stampItem } from "./engine-stamp.js";
 import type { CoreArea, CoreEngineFlags } from "./flags.js";
 import { createCloudStepModels, type CloudModelFacts } from "./model-mapping.js";
 import { mapCloudSettings, type CloudCompanySettings } from "./settings-mapping.js";
@@ -79,7 +79,7 @@ export function createCoreRuntime(options: CoreRuntimeOptions): CoreRuntime {
   const startExtras = (input: StartExtrasInput): StartExtras => {
     const own = given?.(input);
     const stamp = stampItem(companyId, input.taskId, stampForNewTask(options.flags, companyId, options.now()));
-    return { ...(own ?? {}), items: [...(own?.items ?? []), stamp] };
+    return { ...(own ?? {}), items: [...(own?.items ?? []), stamp, coreInUseItem(companyId)] };
   };
   const flow = createTaskFlowFromRegistry(registry, {
     ...options.flowOptions,

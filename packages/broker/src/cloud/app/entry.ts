@@ -33,13 +33,13 @@ import { CORE_SLACK_ACTION, type CoreSlackRequestEvent } from "./slack-ingress-h
 
 export { CORE_SLACK_ACTION, coreSlackFromIngress, type CoreSlackFromIngressDeps, type CoreSlackRequestEvent } from "./slack-ingress-hook.js";
 import { cloudAdapterModules, type CloudModuleDeps } from "./cloud-modules.js";
-import { anyCoreAreaOn, coreAreaOn, readCoreEngineFlags } from "./flags.js";
+import { coreAreaOn } from "./flags.js";
 import { isCoreJobEvent } from "./jobs.js";
 import { createCloudMergePeople } from "./merge-people.js";
 import { cloudWordsForCoreRefusal } from "./refusal-words.js";
 import { cloudCoreRuntime, type CloudCoreWiring } from "./runtime.js";
 import { cloudTaskFacts } from "./task-facts.js";
-import { engineOfStoredTask } from "./engine-stamp.js";
+import { coreInUseKey, engineOfStoredTask } from "./engine-stamp.js";
 import { cloudSettingsFromEnvironment, type CloudCompanySettings } from "./settings-mapping.js";
 import type { CloudAdapterContext } from "./registry.js";
 
@@ -296,9 +296,10 @@ export function cloudCoreWiringFromBroker(sources: CloudCoreWiringSources): Clou
 }
 
 /** The worker-callback router of the Cloud root (see `CloudCoreEntry.routeCallback`). */
-export function createCoreCallbackRouter(app: CloudApp): CloudCoreEntry["routeCallback"] {
+export function createCoreCallbackRouter(app: CloudApp, inUse: () => Promise<boolean> = async () => false): CloudCoreEntry["routeCallback"] {
   return async (request) => {
-    if (!app.active) return undefined;
+    // A new task may start on the core (`active`), or the root serves what the core already holds (`serveStamped`) and this install has started one: otherwise the request is Cloud's, with no read.
+    if (!app.active && !(app.serveStamped && await inUse())) return undefined;
     const match = CALLBACK_PATH.exec(request.path.split("?")[0] ?? "");
     if (match === null || !CORE_CALLBACK_ACTIONS.has(match[3]!)) return undefined;
     const [, workspaceId] = match as unknown as [string, string];
@@ -351,18 +352,29 @@ export interface CreateCloudCoreEntryOptions extends CloudCoreWiringSources {
  * request in the meantime stays on Cloud's path.
  */
 export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): CloudCoreEntry | undefined {
-  // Off (the default): nothing below runs.
-  if (!anyCoreAreaOn(readCoreEngineFlags(options.env))) return undefined;
-  let modules;
-  try {
-    modules = cloudAdapterModules(options.inputs.moduleDeps());
-  } catch (error) {
-    // An input the deployment has not given: the switch is effectively off here, and every start and Slack request stays on Cloud's path.
-    options.log({ event: "core_entry.not_configured", component: "cloud_core", error: error instanceof Error ? error.name : "unknown" });
-    return undefined;
-  }
+  // The switch gates NEW tasks only (decision 130): with it off the entry still exists, so a task the core already holds keeps being served (callbacks, jobs), but it starts nothing, and nothing
+  // is built or asked for until there is a core task to serve (`coreInUse`, cached; a never-switched-on install has none).
   const context = (): CloudAdapterContext => ({ installCompanyId: options.installCompanyId, now: options.now, env: options.env, clients: {}, log: options.log });
-  const app = createCloudApp({ env: options.env, nowMs: () => options.now().getTime(), modules, context, runtime: cloudCoreRuntime(cloudCoreWiringFromBroker(options)) });
+  const modules = (): ReturnType<typeof cloudAdapterModules> => {
+    try {
+      return cloudAdapterModules(options.inputs.moduleDeps());
+    } catch (error) {
+      // An input the deployment has not given: the registry cannot be built, and every start and Slack request stays on Cloud's path.
+      options.log({ event: "core_entry.not_configured", component: "cloud_core", error: error instanceof Error ? error.name : "unknown" });
+      throw error;
+    }
+  };
+  const app = createCloudApp({ env: options.env, nowMs: () => options.now().getTime(), modules, serveStamped: true, context, runtime: cloudCoreRuntime(cloudCoreWiringFromBroker(options)) });
+  let inUseAt = 0;
+  let inUse = false;
+  const coreInUse = async (): Promise<boolean> => {
+    if (inUse) return true;
+    if (options.now().getTime() - inUseAt < 30_000) return false;
+    inUseAt = options.now().getTime();
+    const found = (await options.broker.documentClient.send(new GetCommand({ TableName: options.broker.tableName, Key: coreInUseKey(options.installCompanyId), ConsistentRead: true }))).Item;
+    inUse = found !== undefined;
+    return inUse;
+  };
   const routesOf = (): DeveloperRouteDependencies => {
     const routes = options.routes();
     if (routes === undefined) throw new Error("the developer API is not configured");
@@ -373,8 +385,8 @@ export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): Clou
     app,
     intentHook: createCoreIntentHook({ app, principalOf: async (caller) => await principalOfCaller(routesOf(), caller), origin, now: () => options.now().getTime(), log: options.log }),
     slackRequest: createCoreSlackConsumer({ app, log: options.log, orgOfTeam: async (teamId) => await slackTeamOrg(options.broker, teamId).catch(() => undefined) }),
-    routeCallback: createCoreCallbackRouter(app),
+    routeCallback: createCoreCallbackRouter(app, coreInUse),
     isScheduledJob: isCoreJobEvent,
-    handleScheduledJob: async (event) => await app.handleScheduledJob(event),
+    handleScheduledJob: async (event) => (!app.active && !(await coreInUse()) ? (isCoreJobEvent(event) ? { skipped: "off" } : undefined) : await app.handleScheduledJob(event)),
   };
 }

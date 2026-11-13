@@ -70,3 +70,14 @@ export function stampItem(companyId: string, taskId: string, stamp: EngineStamp)
 export async function engineOfStoredTask(store: Pick<DocumentStore, "get">, taskId: string, area: CoreArea): Promise<Engine> {
   return engineOfTask(await store.get(engineStampKey(taskId)), area);
 }
+
+/**
+ * Where the root looks, cheaply, to learn that this company has ever started a task on the core (the stamp is per task, and there is no list of them). The core's start writes it in the same
+ * transaction as the first stamp (and again, identically, with every later one). While the switch is off the root serves the core's tasks only where this exists, so an install that never
+ * switched on builds nothing and asks for nothing.
+ */
+export const coreInUseKey = (companyId: string): { pk: string; sk: string } => ({ pk: `ORG#${companyId}#CORE_ENGINE_IN_USE`, sk: "MARK" });
+
+export function coreInUseItem(companyId: string): Extract<TransactItem, { kind: "put" }> {
+  return { kind: "put", item: { ...coreInUseKey(companyId), entityType: "CORE_ENGINE_IN_USE", orgId: companyId } };
+}

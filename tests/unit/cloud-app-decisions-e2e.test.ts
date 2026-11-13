@@ -16,7 +16,7 @@ import {
 import { BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD, cloudApprovalIssuers, createCloudApprovers, createCloudIdentityProvider } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { createCallbackService } from "@rovara-code/broker";
 import { PEOPLE_ORG, SLACK_TEAM, createPeopleWorld, type Person, type PeopleWorld } from "../support/cloud-people-world.js";
-import { CORE_CALLBACK_ACTIONS, cloudDeciderRole, cloudTaskFacts, createCoreCallbackRouter, engineStampKey } from "../../packages/broker/src/cloud/app/index.js";
+import { CORE_CALLBACK_ACTIONS, cloudDeciderRole, coreInUseKey, createCoreIntentHook, cloudTaskFacts, createCoreCallbackRouter, engineStampKey } from "../../packages/broker/src/cloud/app/index.js";
 import { resolveSlackDecisionCaller } from "../../packages/broker/src/decisions/slack-actions.js";
 import { CloudSlackChannel } from "../../packages/broker/src/plugins/channel/slack-cloud/index.js";
 import { bindChannelSpace, postApprovalCard } from "@rovara-code/broker/core/channel";
@@ -31,7 +31,7 @@ const PROJECT = (url: string): ProjectDefinition => ({
 
 const allowAll: TaskAccess = { checkStart: async () => ({ allowed: true }), canAct: async () => true, checkStep: async () => ({ allowed: true }) };
 
-interface Rig { world: FakeWorld; people: PeopleWorld; app: CloudApp; standing: Map<string, ApprovalDeciderRole>; posts: string[] }
+interface Rig { world: FakeWorld; people: PeopleWorld; app: CloudApp; standing: Map<string, ApprovalDeciderRole>; posts: string[]; /** Another root over the same world, adapters and wiring (a later Lambda container, with the switch changed). */ rebuild(options: { env: NodeJS.ProcessEnv; serveStamped?: boolean }): CloudApp }
 
 async function rig(options: { slack?: boolean; liveRole?: boolean } = {}): Promise<Rig> {
   const world = createFakeWorld();
@@ -59,27 +59,32 @@ async function rig(options: { slack?: boolean; liveRole?: boolean } = {}): Promi
       // The Slack account's person is found by A6's own lookups (the linked, signed-in, live member), as the broker's `slackRequesterStanding` finds them in production.
       standingOf: async (_org, slackUserId) => { const member = await resolveSlackDecisionCaller(people.slackLookups(new Map()), { userId: slackUserId, userTeamId: SLACK_TEAM, workspaceTeamId: SLACK_TEAM, enterpriseId: "", userEnterpriseId: "" }); if (member === undefined) throw new Error("not a member"); return member.developerId; }, principalOf: async (orgId, personId) => await identity.getPrincipal(orgId, personId), linkWords: () => "x" },
   };
-  const app = createCloudApp({ env: { CLOUD_CORE_ENGINE: "on" }, modules, context: () => world.context(), nowMs: () => world.clock.now, runtime: cloudCoreRuntime(wiring) });
+  const rebuild = (built: { env: NodeJS.ProcessEnv; serveStamped?: boolean }): CloudApp => createCloudApp({ env: built.env, modules, context: () => world.context(), nowMs: () => world.clock.now, runtime: cloudCoreRuntime(wiring), ...(built.serveStamped === true ? { serveStamped: true } : {}) });
+  const app = rebuild({ env: { CLOUD_CORE_ENGINE: "on" } });
   const project = PROJECT(world.hostModel.url);
   await world.store.put({ item: { ...projectRevisionKey(PEOPLE_ORG, project.name, project.revision), entityType: "PROJECT", definition: JSON.parse(JSON.stringify(project)) as JsonValue } });
   await world.store.put({ item: { ...orgProjectCatalogKey(PEOPLE_ORG, project.name), entityType: "PROJECT_CATALOG", latestRevision: project.revision } });
-  return { world, people, app, standing, posts };
+  return { world, people, app, standing, posts, rebuild };
 }
 
 /** Starts a task as the owner and plans it: the fake worker answers the planning job through the real callback service, so the task waits at its plan review. */
-async function plannedTask(r: Rig, path: "QUICK" | "FULL" = "QUICK"): Promise<{ taskId: string; owner: Person }> {
+async function plannedTask(r: Rig, path: "QUICK" | "FULL" = "QUICK", driver?: CloudApp): Promise<{ taskId: string; owner: Person }> {
   const owner = r.people.people.owner;
   const runtime = await r.app.runtimeFor(PEOPLE_ORG);
   const principal = (await createCloudIdentityProvider(r.people.routes).getPrincipal(PEOPLE_ORG, owner.developerId))!;
   const started = await runtime.flow.start({ principal, client: "app" }, { requestId: randomUUID(), project: "payments", instructions: "Add a greeting.", workflow: true, workflowPath: path });
   const taskId = started.task.taskId;
+  // The root that drives the rest: the one the task started under, or a later one with the switch off, whose worker callbacks come through the router.
+  const drive = driver === undefined ? runtime : await driver.runtimeFor(PEOPLE_ORG);
   const registry = await r.app.registry();
-  const callbacks = createCallbackService({ flow: runtime.flow.deps, blobs: registry.require("object-storage"), grants: { exchange: async () => { throw new Error("unused"); } } });
+  const direct = createCallbackService({ flow: runtime.flow.deps, blobs: registry.require("object-storage"), grants: { exchange: async () => { throw new Error("unused"); } } });
+  const routed = driver === undefined ? undefined : createCoreCallbackRouter(driver, async () => true);
+  const callbacks = async (request: Parameters<typeof direct>[0]) => (routed === undefined ? await direct(request) : (await routed(request)) ?? { statusCode: 599, headers: {}, body: "not routed" });
   const store = r.world.store;
   for (let round = 0; round < 6; round += 1) {
-    await runtime.flow.relayOnce();
-    await runtime.flow.dispatchOnce({ maxMessages: 5, waitSeconds: 0 });
-    await runtime.flow.sweepOnce();
+    await drive.flow.relayOnce();
+    await drive.flow.dispatchOnce({ maxMessages: 5, waitSeconds: 0 });
+    await drive.flow.sweepOnce();
     const task = await store.get({ pk: `DEVTASK#${taskId}`, sk: "META" });
     const workflow = task?.workflow as { stage?: string; state?: string } | undefined;
     if (workflow?.stage === "PLAN_REVIEW" && workflow.state === "WAITING") return { taskId, owner };
@@ -539,5 +544,74 @@ describe("switch blocker 7 (callbacks): a worker's callback on a core-stamped ta
     const vendored = readFileSync(join(import.meta.dirname, "../../vendor/rovara-code/packages/broker/src/services/callbacks.ts"), "utf8");
     const served = /SERVED_ACTIONS[^=]*= new Set\(\[([^\]]*)\]\)/u.exec(vendored)![1]!.split(",").map((name) => name.trim().replaceAll("\"", ""));
     expect([...CORE_CALLBACK_ACTIONS].sort()).toEqual([...served, "repository-credentials"].sort());
+  });
+});
+
+describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-stamped task is served with it off", () => {
+  const post = (workspaceId: string, operationId: string, action: string, capability: string, body: unknown) => ({
+    method: "POST", path: `/v1/internal/workspaces/${workspaceId}/operations/${operationId}/${action}`, headers: { "x-agentx-callback-capability": capability, "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+
+  async function startedOnCore() {
+    const r = await rig();
+    r.standing.set(r.people.people.owner.developerId, "owner");
+    const owner = r.people.people.owner;
+    const runtime = await r.app.runtimeFor(PEOPLE_ORG);
+    const principal = (await createCloudIdentityProvider(r.people.routes).getPrincipal(PEOPLE_ORG, owner.developerId))!;
+    const { task } = await runtime.flow.start({ principal, client: "app" }, { requestId: randomUUID(), project: "payments", instructions: "Add a greeting.", workflow: true, workflowPath: "QUICK" });
+    for (let round = 0; round < 3; round += 1) { await runtime.flow.relayOnce(); await runtime.flow.dispatchOnce({ maxMessages: 5, waitSeconds: 0 }); await runtime.flow.sweepOnce(); }
+    const row = await r.world.store.get({ pk: `DEVTASK#${task.taskId}`, sk: "META" });
+    const workspaceId = (row as unknown as { workspaceId: string }).workspaceId;
+    const machineId = ((await r.world.store.get({ pk: `WORKSPACE#${workspaceId}`, sk: "META" }))?.machine as { machineId: string }).machineId;
+    const job = r.world.machines.delivered(machineId)[0]!;
+    return { r, owner, principal, taskId: task.taskId, job };
+  }
+
+  it("the first core start leaves the in-use mark, so an off root knows there is a core task to serve", async () => {
+    const { r } = await startedOnCore();
+    expect(await r.world.store.get(coreInUseKey(PEOPLE_ORG))).toBeDefined();
+  });
+
+  it("switch on, start, switch off: the worker's callbacks, the owner's decision and the close still work, and a new start is Cloud's", async () => {
+    const r = await rig();
+    const { owner } = r.people.people;
+    r.standing.set(owner.developerId, "owner");
+    const off = r.rebuild({ env: {}, serveStamped: true });
+    expect(off.active).toBe(false);
+    expect(off.engineForNewTask(PEOPLE_ORG)).toBe("cloud");
+    // Started with the switch on; planned by a worker whose callbacks now come with the switch OFF, through the router.
+    const { taskId } = await plannedTask(r, "QUICK", off);
+    const runtime = await off.runtimeFor(PEOPLE_ORG);
+    const principal = (await createCloudIdentityProvider(r.people.routes).getPrincipal(PEOPLE_ORG, owner.developerId))!;
+    // The owner's decision, through the same gate, with the switch off.
+    const found = (await runtime.inbound.gate!.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
+    const decided = await runtime.inbound.clientGate!.decide({
+      companyId: PEOPLE_ORG, kind: "workflow-document", subjectId: taskId, requestId: randomUUID(), outcome: "approve", seen: { revision: found.revision, artifactDigest: found.artifactDigest },
+      credentials: [{ method: BROWSER_SESSION_METHOD, token: owner.sessionId }], reason: "fine",
+    });
+    expect(decided.status, JSON.stringify(decided)).toBe("decided");
+    // The close.
+    await runtime.flow.close({ principal, client: "app" }, taskId);
+    const closed = await r.world.store.get({ pk: `DEVTASK#${taskId}`, sk: "META" });
+    expect((closed as unknown as { closedAt?: string }).closedAt).toBeDefined();
+    // And a NEW task is not started on the core: the switch is off.
+    expect(await createCoreIntentHook({ app: off, principalOf: async () => principal, origin: "https://x.test", now: () => r.world.clock.now, log: () => undefined }).start({ caller: { orgId: PEOPLE_ORG, developerId: owner.developerId } as never, request: { requestId: randomUUID(), project: "payments", input: { text: "again" }, source: "app", path: "QUICK" } as never, ownedTask: (async () => ({})) as never })).toBeUndefined();
+  });
+
+  it("the jobs run for the install's company while the switch is off, and the root without serveStamped refuses to serve (the control)", async () => {
+    const { r } = await startedOnCore();
+    const off = r.rebuild({ env: {}, serveStamped: true });
+    const ran = await off.handleScheduledJob({ source: "agentx.core-job", job: "merge-tracking" }) as { companies: Array<{ companyId: string; outcome: string }> };
+    // The install's own company (the world's), whatever the switch names.
+    expect(ran.companies.map((company) => [company.companyId, company.outcome])).toEqual([[r.world.context().installCompanyId, "ran"]]);
+    const old = r.rebuild({ env: {} });
+    await expect(old.runtimeFor(PEOPLE_ORG)).rejects.toThrow();
+    expect(await old.handleScheduledJob({ source: "agentx.core-job", job: "merge-tracking" })).toEqual({ skipped: "off" });
+  });
+
+  it("an off root that holds no core task serves nothing: no in-use mark, no callback routing", async () => {
+    const r = await rig();
+    const off = r.rebuild({ env: {}, serveStamped: true });
+    expect(await createCoreCallbackRouter(off, async () => false)(post(randomUUID(), randomUUID(), "events", "x", {}))).toBeUndefined();
   });
 });
