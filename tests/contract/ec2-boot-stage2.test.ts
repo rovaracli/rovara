@@ -216,6 +216,9 @@ const FAKES: Record<string, string> = {
 echo "docker $*" >>"$LOG"
 case "$1" in
   create) echo cid-1 ;;
+  # The real docker reads the password from the pipe (--password-stdin). Without this the fake exits at once, the fake aws can be killed by SIGPIPE while it writes, and boot.sh's pipefail
+  # then fails the login: a race that made the boot fail "after 5 tries" on a loaded runner in about a quarter of the runs (a test of the two failure messages after the login saw it on CI).
+  login) cat >/dev/null ;;
   cp) [[ -z "\${CP_FAILS:-}" ]] || exit 1
     # A symlink in the image is copied as a symlink (docker cp does not follow it), pointing at a file that holds the right bytes.
     if [[ -n "\${CP_LINKS:-}" ]]; then ln -s "$IMAGE_STAGE2" "$3"; else cp "$IMAGE_STAGE2" "$3"; fi ;;
