@@ -121,6 +121,7 @@ import { handleDesignReviewPacket } from "./design-review-packet-route.js";
 import { SWEEP_EVENT_BUDGET_MS, headEventDependencies, outsidePushDependencies, processGithubWorkflowEvent, reconcileWorkflowMergeRecoveryTask, retryDueGithubWebhookEvents, retryGithubWebhookAsAdministrator } from "./terminal-and-github-events.js";
 import { completeThreadWorkspaceClose, ensureThreadWorkspace, markCommentAnswered, markThreadNoteAnswered, prepareThreadWorkspace, startThreadWorkspaceClose } from "./thread-workspaces.js";
 import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
+import { viewCoreTaskRowsClient } from "../../cloud/app/core-task-rows.js";
 import { createCloudCoreEntry, isCoreSlackRequestEvent } from "../../cloud/app/entry.js";
 import { anyCoreAreaOn, readCoreEngineFlags } from "../../cloud/app/flags.js";
 import { isOutboxRelayBackstopEvent, runOutboxRelayBackstop } from "../../cloud-adapters/queue/outbox-relay-wiring.js";
@@ -138,6 +139,8 @@ import { settleSettingsProofOfCheck, sweepSettingsProofs } from "../developer-ro
 
 export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const dependencies = brokerDependencies(input);
+  // S3: where the Cloud root is configured, every reader of a task row sees a core task's `companyId` also as `orgId` (cloud/app/core-task-rows.ts). A view: nothing is written.
+  if (dependencies.cloudCore !== undefined) dependencies.documentClient = viewCoreTaskRowsClient(dependencies.documentClient);
   if (Buffer.byteLength(dependencies.callbackSigningKey, "utf8") < 32) {
     throw new Error("CALLBACK_SIGNING_KEY must contain at least 32 bytes");
   }
