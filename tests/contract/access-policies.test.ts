@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BOUNDARY_INSTANCE_PROFILE_ACTIONS, BOUNDARY_NAMED_READS, BOUNDARY_ROLE_LIST_ACTIONS, BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
+  BOUNDARY_APPSYNC_NAMESPACE_ACTIONS, BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS, BOUNDARY_INSTANCE_PROFILE_ACTIONS, BOUNDARY_NAMED_READS, BOUNDARY_ROLE_LIST_ACTIONS, BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
 import { readFileSync } from "node:fs";
 import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/cloud-contracts";
@@ -129,7 +129,8 @@ describe("service role policy", () => {
     expect(creators.map((s) => s.Sid).sort()).toEqual(["CognitoEmailServiceLinkedRole", "EcrTemplateServiceLinkedRole", "ServiceLinkedRoles"]);
     expect(statements.find((s) => s.Sid === "ServiceLinkedRoles")!.Condition).toEqual({ StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"] } });
     expect(SERVICE_LINKED_ROLE_SERVICES).not.toContain("ecr.amazonaws.com");
-    // The service role is not bounded (no PermissionsBoundary), so the default boundary, which is at its size limit, does not carry the grant.
+    // The default boundary carries no statement of its own for it: the service role IS bounded (the access stack's aspect bounds every role in it), so since 0.5.17 the boundary's
+    // ServiceLinkedRoles statement lists ecr.amazonaws.com as the ceiling (tests/contract/deploy-role-boundary-coverage.test.ts found the refusal).
     expect(defaultBoundaryStatements(scope).some((s) => s.Sid === "EcrTemplateServiceLinkedRole")).toBe(false);
     // Partition and account follow the scope.
     const govCloud = serviceRoleStatements({ ...scope, partition: "aws-us-gov", account: "210987654321" }).find((s) => s.Sid === "EcrTemplateServiceLinkedRole")!;
@@ -188,9 +189,10 @@ describe("AppSync Events API creation (Plan 5 Task 8 review, I-1)", () => {
   ];
   for (const [name, statements] of checks) {
     it(`the ${name} allows CreateApi and ListApis on "*" only inside the deploy region`, () => {
-      const statement = statements.find((s) => s.Sid === "AppSyncEventsCreate")!;
+      // 0.5.17: the boundary holds them in one statement with ses:GetAccount (the same Effect, Resource and Condition), for room.
+      const statement = statements.find((s) => s.Sid === (name === "boundary" ? "UnscopedInRegion" : "AppSyncEventsCreate"))!;
       expect(statement).toEqual({
-        Sid: "AppSyncEventsCreate", Effect: "Allow", Action: unscoped, Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": "us-east-1" } },
+        Sid: name === "boundary" ? "UnscopedInRegion" : "AppSyncEventsCreate", Effect: "Allow", Action: name === "boundary" ? [...unscoped, "ses:GetAccount"] : unscoped, Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": "us-east-1" } },
       });
     });
 
@@ -198,13 +200,21 @@ describe("AppSync Events API creation (Plan 5 Task 8 review, I-1)", () => {
       const scoped = statements.find((s) => s.Sid === "AppSyncEvents")!;
       expect(scoped.Resource).toBe(apisArn);
       expect(scoped.Condition).toBeUndefined();
-      expect([...scoped.Action].sort()).toEqual([
+      const all = [
         "appsync:CreateChannelNamespace", "appsync:DeleteApi", "appsync:DeleteChannelNamespace", "appsync:GetApi", "appsync:GetChannelNamespace",
         "appsync:ListTagsForResource", "appsync:TagResource", "appsync:UntagResource", "appsync:UpdateApi", "appsync:UpdateChannelNamespace",
-      ]);
+      ];
+      // 0.5.17: the boundary names the four channel namespace actions with one pattern, which matches exactly those four of AppSync's actions.
+      if (name === "boundary") {
+        expect([...scoped.Action].sort()).toEqual([...all.filter((a) => !a.endsWith("ChannelNamespace")), BOUNDARY_APPSYNC_NAMESPACE_ACTIONS].sort());
+        const appsync = ["appsync:CreateChannelNamespace", "appsync:GetChannelNamespace", "appsync:UpdateChannelNamespace", "appsync:DeleteChannelNamespace", "appsync:ListChannelNamespaces", "appsync:CreateApi", "appsync:ListApis", "appsync:EventPublish", "appsync:EventSubscribe", "appsync:EventConnect", "appsync:GetApi"];
+        expect(appsync.filter((a) => actionPattern(BOUNDARY_APPSYNC_NAMESPACE_ACTIONS).test(a)).sort()).toEqual(["appsync:CreateChannelNamespace", "appsync:DeleteChannelNamespace", "appsync:GetChannelNamespace", "appsync:UpdateChannelNamespace"]);
+      } else {
+        expect([...scoped.Action].sort()).toEqual(all);
+      }
       // Nothing else names either action: no second grant on "*" without the region condition, and none on the APIs' ARN.
       const naming = statements.filter((s) => s.Action.some((a) => unscoped.includes(a)));
-      expect(naming.map((s) => s.Sid)).toEqual(["AppSyncEventsCreate"]);
+      expect(naming.map((s) => s.Sid)).toEqual([name === "boundary" ? "UnscopedInRegion" : "AppSyncEventsCreate"]);
     });
   }
 });
@@ -447,7 +457,9 @@ describe("default permission boundary", () => {
     const services = allows.find((s) => s.Sid === "Services")!;
     // CloudFront is the exception: action families (not cloudfront:*), as a ceiling over the service role's exact actions.
     // 2026-11-03: and the two unconditional "*" reads that used to be statements of their own (sts:GetCallerIdentity, servicequotas:GetServiceQuota), by name.
-    expect(services.Action).toEqual([...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS, ...BOUNDARY_NAMED_READS]);
+    // 0.5.17: and the deploy role's Certificate Manager and Route 53 actions (tests/contract/deploy-role-boundary-coverage.test.ts).
+    expect(services.Action).toEqual([...BOUNDARY_SERVICES.map((s) => `${s}:*`), ...CLOUDFRONT_BOUNDARY_ACTIONS, ...BOUNDARY_NAMED_READS, ...BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS]);
+    expect([...BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS]).toEqual(["acm:RequestCertificate", "acm:*Tags*", "acm:De*Certificate", "route53:ChangeResourceRecordSets", "route53:GetChange", "route53:GetHostedZone", "route53:ListResourceRecordSets", "route53:ListHostedZones"]);
     // TR-SWITCH-B2: and the Team record's Glue reads and lakeformation:GetDataAccess (no resource type); its S3 Vectors, S3 Tables and Athena are wildcards in BOUNDARY_SERVICES.
     expect([...BOUNDARY_NAMED_READS]).toEqual(["sts:GetCallerIdentity", "servicequotas:GetServiceQuota", "lakeformation:GetDataAccess", "glue:GetCatalog", "glue:GetDatabase*", "glue:GetTable*"]);
     expect(services.Resource).toBe("*");
@@ -516,7 +528,8 @@ describe("default permission boundary", () => {
     expect(byId.ServiceLinkedRoles).toEqual({
       Sid: "ServiceLinkedRoles", Effect: "Allow", Action: ["iam:CreateServiceLinkedRole"],
       Resource: "arn:aws:iam::123456789012:role/aws-service-role/*",
-      Condition: { StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com"] } },
+      // 0.5.17: and ecr.amazonaws.com, the ceiling over the deploy role's exact EcrTemplateServiceLinkedRole grant (the deploy role carries this boundary).
+      Condition: { StringLike: { "iam:AWSServiceName": ["ecs.amazonaws.com", "elasticloadbalancing.amazonaws.com", "rds.amazonaws.com", "route53resolver.amazonaws.com", "ecr.amazonaws.com"] } },
     });
   });
 
@@ -527,7 +540,9 @@ describe("default permission boundary", () => {
       Condition: { StringEquals: { "iam:AWSServiceName": "email.cognito-idp.amazonaws.com" } },
     });
     expect(byId.SesIdentityCheck).toEqual({ Sid: "SesIdentityCheck", Effect: "Allow", Action: ["ses:GetEmailIdentity"], Resource: "arn:aws:ses:us-east-1:123456789012:identity/*" });
-    expect(byId.SesAccountCheck).toEqual({ Sid: "SesAccountCheck", Effect: "Allow", Action: ["ses:GetAccount"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": "us-east-1" } } });
+    // 0.5.17: ses:GetAccount shares one statement with appsync:CreateApi and ListApis (the same "*" and region condition), for room.
+    expect(byId.SesAccountCheck).toBeUndefined();
+    expect(byId.UnscopedInRegion).toEqual({ Sid: "UnscopedInRegion", Effect: "Allow", Action: ["appsync:CreateApi", "appsync:ListApis", "ses:GetAccount"], Resource: "*", Condition: { StringEquals: { "aws:RequestedRegion": "us-east-1" } } });
     expect(BOUNDARY_SERVICES).not.toContain("ses");
   });
 
@@ -679,6 +694,8 @@ describe("CloudFront permissions (web app deploy)", () => {
         // from 7,864 to 9,198 (limit 9,240: 42 left; IAM's real cap is 10,240, so about 1,040 remain). The next addition to either policy needs a compression pass, or a deliberate decision to lower the margin, first.
         // 2026-11-11: the image roles named exactly again in the lookup list (img-push, img-pull, img-manage, img-mirror; no img-* wildcard) took the worst case to 6,086, 32 over; naming the two role list actions with
         // BOUNDARY_ROLE_LIST_ACTIONS (exactly those two, in IamRoles and the lookup statement) saved 60, so it is 6,026 (28 left). Nothing new is allowed (default-boundary-equivalence holds).
+        // 0.5.17 (MODEL-PROXY-TLS-BOUNDARY-BLOCKER): the deploy role's eight acm/route53 action names (197) and ecr.amazonaws.com in ServiceLinkedRoles (20) were made room for by merging ses:GetAccount into the
+        // AppSync region statement (115) and naming the four channel namespace actions with BOUNDARY_APPSYNC_NAMESPACE_ACTIONS (101): the worst case is 5,997 (57 left).
         const boundary = size(withoutSids(defaultBoundaryStatements(longest)));
         worst = Math.max(worst, boundary);
         expect(boundary, `boundary, ${env}, ${rovaraOrganizationId ?? "no org id"}`).toBeLessThanOrEqual(6144 - 90);

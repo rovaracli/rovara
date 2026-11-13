@@ -1209,6 +1209,14 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "glue:GetCatalog",
                 "glue:GetDatabase*",
                 "glue:GetTable*",
+                "acm:RequestCertificate",
+                "acm:*Tags*",
+                "acm:De*Certificate",
+                "route53:ChangeResourceRecordSets",
+                "route53:GetChange",
+                "route53:GetHostedZone",
+                "route53:ListResourceRecordSets",
+                "route53:ListHostedZones",
               ],
               "Effect": "Allow",
               "Resource": "*",
@@ -1227,10 +1235,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                 "appsync:GetApi",
                 "appsync:UpdateApi",
                 "appsync:DeleteApi",
-                "appsync:CreateChannelNamespace",
-                "appsync:GetChannelNamespace",
-                "appsync:UpdateChannelNamespace",
-                "appsync:DeleteChannelNamespace",
+                "appsync:*ChannelNamespace",
                 "appsync:TagResource",
                 "appsync:UntagResource",
                 "appsync:ListTagsForResource",
@@ -1261,6 +1266,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
               "Action": [
                 "appsync:CreateApi",
                 "appsync:ListApis",
+                "ses:GetAccount",
               ],
               "Condition": {
                 "StringEquals": {
@@ -1771,6 +1777,7 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                     "elasticloadbalancing.amazonaws.com",
                     "rds.amazonaws.com",
                     "route53resolver.amazonaws.com",
+                    "ecr.amazonaws.com",
                   ],
                 },
               },
@@ -1844,20 +1851,6 @@ exports[`named environment templates > agentx-staging-access is unchanged 1`] = 
                   ],
                 ],
               },
-            },
-            {
-              "Action": [
-                "ses:GetAccount",
-              ],
-              "Condition": {
-                "StringEquals": {
-                  "aws:RequestedRegion": {
-                    "Ref": "AWS::Region",
-                  },
-                },
-              },
-              "Effect": "Allow",
-              "Resource": "*",
             },
             {
               "Action": [

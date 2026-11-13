@@ -50,8 +50,16 @@ describe("the default boundary after the 2026-11-03 tightening", () => {
     const after = defaultBoundaryStatements(scope);
 
     it(`${name}: keeps every statement with a condition exactly as it was`, () => {
-      const conditional = (statements: readonly PolicyStatementJson[]) => statements.filter((statement) => statement.Condition !== undefined).map(withoutSid).sort();
-      expect(conditional(after)).toEqual(conditional(before));
+      // 0.5.17: compared one action at a time (a statement of N actions allows what N one-action statements with the same Resource and Condition allow), because the boundary merged
+      // the AppSync region statement and ses:GetAccount's into one (same Effect, Resource and Condition, for room). And one deliberate change: ecr.amazonaws.com joined the
+      // ServiceLinkedRoles list, the ceiling over the deploy role's exact ECR template service-linked role grant (tests/contract/deploy-role-boundary-coverage.test.ts).
+      const perAction = (statements: readonly PolicyStatementJson[]) => statements.filter((statement) => statement.Condition !== undefined)
+        .flatMap((statement) => list(statement.Action).map((action) => withoutSid({ ...statement, Action: [action] }))).sort();
+      const withEcr = before.map((statement) => {
+        const names = (statement.Condition as { StringLike?: { "iam:AWSServiceName"?: string[] } } | undefined)?.StringLike?.["iam:AWSServiceName"];
+        return Array.isArray(names) && names.includes("route53resolver.amazonaws.com") ? { ...statement, Condition: { StringLike: { "iam:AWSServiceName": [...names, "ecr.amazonaws.com"] } } } : statement;
+      });
+      expect(perAction(after)).toEqual(perAction(withEcr));
     });
 
     it(`${name}: permits and refuses the same (action, resource) pairs as v0.5.2`, () => {
@@ -62,7 +70,10 @@ describe("the default boundary after the 2026-11-03 tightening", () => {
       // 0.5.15 (company images) added one fixed-name role, the mirror role, to the lookup list: named exactly (no wildcard), so only its exact ARN leaves the grid; the near misses of its name (`-other`, a
       // prefix, an `x` before the ARN) stay in it, and the next test checks the seven actions it gets and that its neighbours get none.
       const mirrorRoleArn = (text: string) => new RegExp(`^arn:aws:iam::[0-9]{12}:role/agentx-${scope.env}-img-mirror$`).test(text);
-      const actions = [...new Set([...iamActions, ...SAMPLE_ACTIONS, ...[...before, ...after].flatMap((statement) => list(statement.Action)).filter((action) => !action.includes("*") && !action.startsWith("lakeformation:") && !action.startsWith("glue:"))])];
+      // 0.5.17 (MODEL-PROXY-TLS-BOUNDARY-BLOCKER) widened it on purpose once more: the deploy role's Certificate Manager and Route 53 actions (BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS), left out of the grid here and
+      // checked by tests/contract/deploy-role-boundary-coverage.test.ts (exactly those, no other acm or route53 action).
+      const actions = [...new Set([...iamActions, ...SAMPLE_ACTIONS, ...[...before, ...after].flatMap((statement) => list(statement.Action)).filter((action) => !action.includes("*") && !action.startsWith("lakeformation:") && !action.startsWith("glue:"))])]
+        .filter((action) => !action.startsWith("acm:") && !action.startsWith("route53:"));
       const resources = [...new Set([...resourcesOf(before), ...resourcesOf(after)])].filter((resource) => !newRecordGrants(resource) && !mirrorRoleArn(resource));
       const differences: string[] = [];
       let permitted = 0;

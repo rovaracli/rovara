@@ -161,7 +161,8 @@ describe("access stack", () => {
     const neededServices = new Set([...resourceTypeServices(), ...Object.values(MANAGED_POLICY_SERVICES).flat()].filter((s) => s !== "iam"));
     // AppSync is allowed by name (Events APIs and their namespaces only, Plan 5 Task 8), never by wildcard.
     expect(allowedServices.has("appsync")).toBe(false);
-    expect([...APPSYNC_EVENTS_ACTIONS, ...APPSYNC_EVENTS_UNSCOPED_ACTIONS].filter((action) => !allowed.has(action))).toEqual([]);
+    // 0.5.17: by name or by pattern (the four channel namespace actions are BOUNDARY_APPSYNC_NAMESPACE_ACTIONS in the boundary).
+    expect([...APPSYNC_EVENTS_ACTIONS, ...APPSYNC_EVENTS_UNSCOPED_ACTIONS].filter((action) => ![...allowed].some((pattern) => globMatches(pattern, action)))).toEqual([]);
     // CloudFront is allowed by name too (distributions by environment tag, the rest by ARN), never `cloudfront:*`.
     expect(allowedServices.has("cloudfront")).toBe(false);
     expect([...CLOUDFRONT_ALL_ACTIONS].filter((action) => !CLOUDFRONT_BOUNDARY_ACTIONS.some((pattern) => globMatches(pattern, action)))).toEqual([]);

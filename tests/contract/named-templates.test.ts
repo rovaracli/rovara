@@ -270,6 +270,8 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // 2026-11-12 (chore/0515-drop-callback-key-param, decision 123 folds the next release into 0.5.15): the CallbackSigningKey parameter is dropped from the named control-plane snapshot (nothing else
 // moved), and the CLI stops passing it (tests/contract/callback-key-param-upgrade.test.ts). The legacy install's snapshot is not touched: its frozen template keeps the parameter and its variable.
 // No other snapshot moved.
+// 2026-11-12 (fix/0517-tls-boundary, MODEL-PROXY-TLS-BOUNDARY-BLOCKER): the agentx-staging-access snapshot was re-recorded for the DEFAULT BOUNDARY only: the deploy role's eight acm/route53 action names
+// and ecr.amazonaws.com in ServiceLinkedRoles added; ses:GetAccount merged into the AppSync region statement and the four channel namespace actions named as appsync:*ChannelNamespace (no change in what they allow).
 describe("named environment templates", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   for (const stack of stacks) {
