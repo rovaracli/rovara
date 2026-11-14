@@ -235,6 +235,12 @@ export const ROUTES: Route[] = [
     },
   },
   {
+    // GET /v1/app/decisions: decision cards are not on Code yet. The app reads a 404 here as "cards are switched off" and shows
+    // none (Home's plan, failure and pull-request cards still show), where any other answer would show as an error.
+    method: "GET", path: /^\/decisions$/u,
+    answer: () => Promise.resolve({ status: 404, body: { error: { code: "NOT_FOUND", message: "Decision cards aren't on Rovara Code yet." } } }),
+  },
+  {
     // GET /v1/app/projects/{p}/overview (ProjectOverviewSchema).
     method: "GET", path: /^\/projects\/([^/]+)\/overview$/u,
     answer: async (context) => {

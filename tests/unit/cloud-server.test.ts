@@ -232,6 +232,14 @@ describe("the app's API, answered from Code as the person", () => {
     expect(await call("GET", "/app/projects")).toBeUndefined();
   });
 
+  it("answers decision cards as switched off (404), which the app shows as no cards rather than an error", async () => {
+    const { call, signIn } = setUp();
+    const { cookie } = await signIn();
+    const decisions = await call("GET", "/v1/web/decisions", { cookie });
+    expect(decisions!.status).toBe(404);
+    expect(JSON.parse(decisions!.body)).toEqual({ error: { code: "NOT_FOUND", message: "Decision cards aren't on Rovara Code yet." } });
+  });
+
   it("signs out only with the CSRF token, and clears the cookie either way", async () => {
     const { call, signIn, store } = setUp();
     const { cookie, csrf } = await signIn();
