@@ -503,9 +503,21 @@ function usage(): string {
     `  --help                     Show this help\n`;
 }
 
+/**
+ * This repository (PrepLabsAI/Rovara-cloud) names every resource under `rovara-cloud` and shares some names with the legacy
+ * deployment (worker tags, the writable-secret tag, the CodeBuild prefix, the admin group). Deploying the legacy `AgentX*`
+ * stacks from here would terminate its running workers and lose rotated connector tokens, so it is refused (owner decision
+ * 2026-11-14). The legacy deployment is released from PrepLabsAI/Rovara by the AgentXReleasePipeline, as before.
+ */
+export const LEGACY_RELEASE_REFUSED =
+  "the legacy AgentX deployment is not released from this repository: its code names resources under rovara-cloud. Release it from PrepLabsAI/Rovara (the AgentXReleasePipeline does this on mainline).";
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.includes("--help")) {
     process.stdout.write(usage());
+  } else if (!process.argv.includes("--dry-run")) {
+    process.stderr.write(`AgentX production release refused: ${LEGACY_RELEASE_REFUSED}\n`);
+    process.exitCode = 1;
   } else {
     releaseProduction(parseProductionReleaseArgs(process.argv.slice(2))).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
