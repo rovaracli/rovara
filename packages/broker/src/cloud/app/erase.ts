@@ -161,6 +161,10 @@ export const CORE_ERASE_RESUME_BUDGET_MS = 2_000;
 export const CORE_ERASE_RESUME_SHARE_MS = 500;
 /** Below this much time left, the every-minute run starts no other walk. */
 const RESUME_MIN_MS = 250;
+/** Pages of pending items one every-minute run reads at most. */
+const RESUME_PAGES = 50;
+/** Where the next every-minute run starts reading the pending items (its own partition, so it is never read as a pending walk). */
+const RESUME_KEY: DocumentKey = { pk: "CORE_EVIDENCE_ERASE_RESUME", sk: "META" };
 /** A walk with only failing tasks left waits this long after a try before the every-minute run tries it again. */
 export const CORE_ERASE_RETRY_GAP_MS = 5 * 60_000;
 /** What is kept back from the Lambda's remaining time: the response, and the step's own bookkeeping after the walk. */
@@ -409,20 +413,42 @@ export function corePersonEraseOf(ports: CoreErasePorts, budgetMs: number = CORE
 
 /**
  * The walks a request left unfinished, continued from their cursors within `millis` (the every-minute run, next to `resumeEvidenceErase`). The pending items are read first (at most
- * 50 pages); the walks are then taken oldest try first (`triedAt`; never tried first), so the start point moves on every minute; a walk with only failing tasks left that was tried in the
+ * 50 pages, from a saved key that moves every run and wraps round, so more items than one run reads are all reached; nothing is read without time to walk); the walks are then taken oldest try first (`triedAt`; never tried first), so the start point moves on every minute; a walk with only failing tasks left that was tried in the
  * last `CORE_ERASE_RETRY_GAP_MS` waits; and each walk gets at most `CORE_ERASE_RESUME_SHARE_MS`, so no walk, stuck or long, takes the run from another person's.
  */
 export async function resumeCoreEvidenceErase(ports: CoreErasePorts, limits: { millis: number; max?: number }): Promise<{ pending: number; finished: number }> {
   const now = ports.now ?? Date.now;
   const stop = now() + limits.millis;
   const items: StoredDocument[] = [];
+  // Too little time to start a walk: nothing is read.
+  if (stop - now() < RESUME_MIN_MS) return { pending: 0, finished: 0 };
+  // The read starts after the last pending item the previous run read (a key that moves every run), runs to the end of the pending items, then wraps round to the start and stops
+  // before that key: with more items than one run reads, every person is reached within a bounded number of runs.
+  const saved = await ports.store.get(RESUME_KEY);
+  const after = typeof saved?.after === "string" && saved.after !== "" ? saved.after : undefined;
+  let wrapped = after === undefined;
   let cursor: string | undefined;
-  for (let pages = 0; pages < 50; pages += 1) {
-    const page = await ports.store.query({ pk: CORE_ERASE_PENDING_PK, limit: limits.max ?? 20, ...(cursor === undefined ? {} : { cursor }) });
-    items.push(...page.items);
+  for (let pages = 0; pages < RESUME_PAGES && stop - now() >= RESUME_MIN_MS; pages += 1) {
+    const page = await ports.store.query({
+      pk: CORE_ERASE_PENDING_PK, limit: limits.max ?? 20,
+      ...(wrapped ? {} : { sk: { op: "between" as const, low: `${after!}\u0000`, high: "\uffff" } }),
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    const fresh = wrapped && after !== undefined ? page.items.filter((item) => item.sk <= after) : page.items;
+    items.push(...fresh);
     cursor = page.cursor;
-    if (cursor === undefined) break;
+    if (wrapped && after !== undefined && fresh.length < page.items.length) break;
+    if (cursor === undefined) {
+      if (wrapped) break;
+      wrapped = true;
+    }
   }
+  // Where the next run starts: after the last item read (none read: from the start). The key names a pending walk, which is overwritten or removed by the next run.
+  try {
+    const next = items.at(-1)?.sk;
+    if (next === undefined) { if (saved !== undefined) await ports.store.delete({ key: RESUME_KEY }); }
+    else await ports.store.put({ item: { ...RESUME_KEY, entityType: "CORE_EVIDENCE_ERASE_RESUME", after: next } });
+  } catch { /* the next run starts from the old key */ }
   const triedAt = (item: StoredDocument): number => (typeof item.triedAt === "number" ? item.triedAt : 0);
   const startedAt = now();
   const due = items

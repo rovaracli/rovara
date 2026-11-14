@@ -516,7 +516,10 @@ describe("a budget, a cursor and the every-minute resume", () => {
   it("a resume with too little time left leaves the item for the next minute", async () => {
     const { world, ports, keys } = await many();
     await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 250 });
-    expect(await resumeCoreEvidenceErase(ports, { millis: 100 })).toEqual({ pending: 1, finished: 0 });
+    // Too little time to start a walk: the pending items are not even read (the deadline is checked before the reads).
+    const reads = [vi.spyOn(world.store, "query"), vi.spyOn(world.store, "get"), vi.spyOn(world.store, "put"), vi.spyOn(world.store, "delete")];
+    expect(await resumeCoreEvidenceErase(ports, { millis: 100 })).toEqual({ pending: 0, finished: 0 });
+    for (const spy of reads) expect(spy).not.toHaveBeenCalled();
     expect(keys.size).toBeGreaterThan(0);
     expect(await pendingOf(world)).toBeDefined();
   });
@@ -858,6 +861,60 @@ describe("a task that fails for good, stuck walks in the every-minute run, and a
       await resumeCoreEvidenceErase(ports, { millis: 2_000 });
       clock.at += 60_000;
     }
+  });
+
+  it("more than 1,000 unfinished walks: the page read starts after where the last run stopped (wrapping round), so the last person is reached within a few runs", async () => {
+    const world = createFakeWorld();
+    const clock = { at: 11_000_000 };
+    const keys = new Set<string>();
+    const failing = new Set<string>();
+    // 1,049 people whose one task always fails (stuck, cheap: deletes cost nothing) ahead of a last person with one task that erases.
+    const people = Array.from({ length: 1_050 }, (_, index) => index.toString(16).padStart(64, "0"));
+    let last: Seeded | undefined;
+    for (const [index, person] of people.entries()) {
+      const task = await seedRecords(world, { person, stamp: "core" });
+      for (const key of keysOf(task)) keys.add(key);
+      if (index === people.length - 1) last = task; else failing.add(task.taskId);
+      await beginCoreEvidenceErase({ store: world.store }, FAKE_COMPANY, person);
+    }
+    const objects: CoreErasePorts["objects"] = {
+      async deletePrefix(prefix) {
+        if ([...failing].some((taskId) => prefix.includes(taskId))) return false;
+        for (const key of [...keys]) if (key.startsWith(prefix)) keys.delete(key);
+        return true;
+      },
+    };
+    const ports: CoreErasePorts = { store: world.store, objects, now: () => clock.at };
+    let runs = 0;
+    while (leftKeys(keys, last!) > 0) {
+      runs += 1;
+      expect(runs).toBeLessThanOrEqual(3);
+      await resumeCoreEvidenceErase(ports, { millis: 2_000 });
+      clock.at += 60_000;
+    }
+    expect(await world.store.get(pendingKeyOf(people.at(-1)!))).toBeUndefined();
+  }, 60_000);
+
+  it("the page read wraps round: started after the middle item it reads the rest, then the start up to that item, each once", async () => {
+    const [pa, pb, pc] = ["c1", "c2", "c3"].map((name) => name.repeat(32)) as [string, string, string];
+    const { world, ports } = await crowd({ [pa]: 1, [pb]: 1, [pc]: 1 });
+    await world.store.put({ item: { pk: "CORE_EVIDENCE_ERASE_RESUME", sk: "META", after: `${FAKE_COMPANY}|${pb}` } });
+    const tried: string[] = [];
+    const get = world.store.get.bind(world.store);
+    vi.spyOn(world.store, "get").mockImplementation(async (key) => { if (key.pk === CORE_ERASE_PENDING_PK) tried.push(key.sk); return get(key); });
+    expect(await resumeCoreEvidenceErase(ports, { millis: 2_000, max: 1 })).toEqual({ pending: 3, finished: 3 });
+    expect([...tried].sort()).toEqual([pa, pb, pc].map((person) => `${FAKE_COMPANY}|${person}`));
+    // The next run starts after the last item read (here the middle one, read last after wrapping round).
+    expect(await world.store.get({ pk: "CORE_EVIDENCE_ERASE_RESUME", sk: "META" })).toMatchObject({ after: `${FAKE_COMPANY}|${pb}` });
+  });
+
+  it("the page read stops at the deadline between pages (slow reads do not take the run)", async () => {
+    const people = Array.from({ length: 10 }, (_, index) => `d${String(index)}`.repeat(32));
+    const { world, clock, ports } = await crowd(Object.fromEntries(people.map((person) => [person, 1])));
+    const query = world.store.query.bind(world.store);
+    const pages = vi.spyOn(world.store, "query").mockImplementation(async (request) => { if (request.pk === CORE_ERASE_PENDING_PK) clock.at += 1_000; return query(request); });
+    await resumeCoreEvidenceErase(ports, { millis: 2_000, max: 1 });
+    expect(pages.mock.calls.filter(([request]) => request.pk === CORE_ERASE_PENDING_PK).length).toBeLessThanOrEqual(2);
   });
 
   it("M-B: a walk gets at most its fixed share of the every-minute run, however much time the run has", async () => {
