@@ -1,8 +1,10 @@
 // Rovara Cloud's server for its web app: sign-in through Rovara Code, the session cookie, and the app's API
-// (/v1/web/*, the browser's name for /v1/app/*) answered by the route table. Framework-neutral: a local HTTP server
+// (/v1/web/*, the browser's name for /v1/app/*) answered by the route table, and the plan approval page (/v1/app/approve/*, approve.ts).
+// Framework-neutral: a local HTTP server
 // and a Lambda both pass a CloudRequest and send back the CloudResponse.
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
+import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
 import { ROUTES, type OrgView, type Route } from "./routes.js";
 import type { SessionStore } from "./sessions.js";
 import type { WorkSessionStore } from "./work-sessions.js";
@@ -94,6 +96,29 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       const session = id === undefined ? undefined : await options.store.get(id);
       if (id !== undefined && session !== undefined && sameText(request.headers["x-rovara-csrf"] ?? "", session.csrf)) await options.store.delete(id);
       return text(204, "", { "set-cookie": cookie("", 0) });
+    }
+    const approval = APPROVAL_PATH.exec(path);
+    if (approval !== null && (method === "GET" || method === "POST")) {
+      // A page the browser opens directly, so a missing sign-in answers a page, not JSON.
+      const id = sessionId(request);
+      const session = id === undefined ? undefined : await options.store.get(id);
+      if (id === undefined || session === undefined) return signInPage();
+      const form = method === "POST" && (request.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded") ? new URLSearchParams(request.body ?? "") : undefined;
+      try {
+        const answer = await approvalRoute({ client: options.client, session, work: options.work, origin: options.origin }, approval[1]!, method, request.headers, form);
+        if (session.changed === true) {
+          delete session.changed;
+          await options.store.put(id, session);
+        }
+        if (method === "POST" && answer.status === 303) log({ event: "cloud.plan_decided", sessionId: approval[1], decision: form?.get("decision") });
+        return answer;
+      } catch (error) {
+        if (error instanceof SignInEnded) {
+          await options.store.delete(id);
+          return signInPage();
+        }
+        throw error;
+      }
     }
     if (!path.startsWith("/v1/web/")) return undefined;
 

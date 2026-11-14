@@ -44,6 +44,8 @@ export interface PendingSignIn { verifier: string; returnTo: string; at: number 
 export class CodeClient {
   private readonly base: string;
   private readonly fetchImpl: typeof fetch;
+  /** One refresh at a time per session: calls made together that all get a 401 share it, so a rotated refresh token is used once. */
+  private readonly refreshing = new WeakMap<CodeSession, Promise<boolean>>();
 
   constructor(private readonly options: CodeClientOptions) {
     this.base = options.baseUrl.replace(/\/+$/u, "");
@@ -87,15 +89,24 @@ export class CodeClient {
   }
 
   private async call(session: CodeSession, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> }): Promise<Response> {
-    const send = () => this.fetchImpl(`${this.base}${path}`, {
+    const send = (token: string) => this.fetchImpl(`${this.base}${path}`, {
       method: init.method ?? "GET",
-      headers: { ...init.headers, authorization: `Bearer ${session.accessToken}`, ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { ...init.headers, authorization: `Bearer ${token}`, ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
     });
-    const first = await send();
+    const used = session.accessToken;
+    const first = await send(used);
     if (first.status !== 401) return first;
-    if (!await this.refresh(session)) throw new SignInEnded();
-    const second = await send();
+    // Another call may already have refreshed the token while this one was out.
+    if (session.accessToken === used) {
+      let pending = this.refreshing.get(session);
+      if (pending === undefined) {
+        pending = this.refresh(session).finally(() => { this.refreshing.delete(session); });
+        this.refreshing.set(session, pending);
+      }
+      if (!await pending) throw new SignInEnded();
+    }
+    const second = await send(session.accessToken);
     if (second.status === 401) throw new SignInEnded();
     return second;
   }

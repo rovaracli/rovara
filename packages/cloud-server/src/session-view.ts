@@ -1,7 +1,7 @@
 // A Cloud session as the app reads it (SessionViewSchema, `GET /v1/app/sessions/{id}`), built from Cloud's own session
 // record and the Rovara Code task it points at. The task goes in as Code answered it: Cloud's task view is a subset of
-// Code's, and the app reads it tolerantly. What Cloud doesn't track yet (followers, viewers, shares, approvals, cost)
-// starts empty.
+// Code's, and the app reads it tolerantly. A plan waiting for the owner's review is the owner's approval; what Cloud
+// doesn't track yet (followers, viewers, shares, cost) starts empty.
 import type { WorkSession } from "./work-sessions.js";
 
 /** The parts of Code's task view (DeveloperTaskView) the session reads; the whole task is passed through as the body. */
@@ -10,7 +10,8 @@ export interface CodeTask {
   title: string;
   project: string;
   status: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED" | "CLOSED";
-  workflow?: { state?: string };
+  workflow?: { stage?: string; state?: string; revision?: number; artifacts?: Array<{ type?: string; version?: number; sha256?: string }> };
+  pullRequests?: Array<{ repository?: string; number?: number; url?: string; state?: string }>;
   createdAt: string;
   updatedAt: string;
   [field: string]: unknown;
@@ -26,6 +27,22 @@ export function sessionStatus(task: CodeTask): SessionStatus {
   };
   return statuses[task.status];
 }
+
+/** The plan waiting for review on this task: the workflow's revision and the newest plan's digest. Undefined when no plan waits. */
+export function waitingPlan(task: CodeTask): { revision: number; digest: string; version: number } | undefined {
+  const workflow = task.workflow;
+  if (task.status !== "RUNNING" || workflow?.stage !== "PLAN_REVIEW" || workflow.state !== "WAITING" || typeof workflow.revision !== "number") return undefined;
+  let newest: { version: number; sha256: string } | undefined;
+  for (const artifact of workflow.artifacts ?? []) {
+    if (artifact.type === "plan" && typeof artifact.sha256 === "string" && typeof artifact.version === "number" && (newest === undefined || artifact.version > newest.version)) {
+      newest = { version: artifact.version, sha256: artifact.sha256 };
+    }
+  }
+  return newest === undefined ? undefined : { revision: workflow.revision, digest: newest.sha256, version: newest.version };
+}
+
+/** The confirmation page for a session's plan (approve.ts); its id fits the app's confirm-link rule. */
+export const approvalUrl = (origin: string, sessionId: string) => `${origin.replace(/\/+$/u, "")}/v1/app/approve/plan-${sessionId}`;
 
 const ENDED: ReadonlySet<SessionStatus> = new Set(["stopped", "succeeded", "failed", "cancelled"]);
 
@@ -48,7 +65,8 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
     status,
     ...(status === "failed" ? { lastRunFailed: true } : {}),
     cost: { spentUsd: 0, payer: { kind: "member", name: session.startedBy.name } },
-    approvals: [],
+    // Only the task's owner decides a plan in Code, so only the owner is shown it.
+    approvals: owner && waitingPlan(task) !== undefined ? [{ approvalId: `plan-${session.sessionId}`, title: "Review the plan", confirmUrl: approvalUrl(origin, session.sessionId) }] : [],
     followers: 0,
     viewingNow: [],
     you: { level: owner ? "edit" : "view", owner, following: false, actions },
