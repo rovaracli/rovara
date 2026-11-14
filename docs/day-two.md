@@ -88,6 +88,27 @@ Without `--to`, it upgrades to the release of the `agentx` you run. So
 The access stack deploys first, so the CloudFormation role can create the broker's
 `agentx-<env>-broker-*` managed policies before the control plane needs them.
 
+Upgrading to 0.5.17 or later from an earlier release also gives the CloudFormation role its own permissions boundary,
+`agentx-<env>--deploy-boundary`, changed in place. Whoever deploys the access stack needs `iam:CreatePolicy` on that
+policy and `iam:PutRolePermissionsBoundary` on `agentx-<env>-cloudformation`. See
+[the model proxy TLS notes](architecture/model-proxy-tls.md#0517-upgrade-and-runbook-notes-the-deploy-roles-own-boundary).
+
+Upgrading to 0.5.18 or later moves a custom domain's grants (Rovara Cloud) out of the CloudFormation role's inline
+`deploy` policy into a managed policy of their own, `agentx-<env>--custom-domain-deploy`, attached to that role only and
+created only while a custom domain is set. The statements are the same; only where they live changes, because the inline
+policy was close to IAM's 10,240-character limit. One access stack update removes the inline statements and creates and
+attaches the managed policy. The access stack deploys first and alone, so no other stack deploys during the swap. With a
+custom domain set, whoever deploys the access stack needs `iam:CreatePolicy` on that policy and `iam:AttachRolePolicy` on
+`agentx-<env>-cloudformation`. Removing the custom domain, or rolling back to a release before 0.5.18 while one is set,
+deletes the policy, so that deploy needs `iam:DetachRolePolicy` on `agentx-<env>-cloudformation` and `iam:DeletePolicy` and
+`iam:DeletePolicyVersion` on `arn:<partition>:iam::<account>:policy/agentx/<env>/agentx-<env>--custom-domain-deploy`.
+
+A self-hosted install deployed from an export bundle: roll back from 0.5.18 with the 0.5.18 bundle's
+`policies/access-deployer.json`, not the 0.5.17 one. Only the 0.5.18 deployer policy names the custom domain's policy. With
+the 0.5.17 one, CloudFormation cannot delete `agentx-<env>--custom-domain-deploy` during the rollback and leaves it behind.
+A later upgrade to 0.5.18 then fails with "already exists". If that has happened, delete the left-behind policy (detach it from
+`agentx-<env>-cloudformation` first), then upgrade.
+
 It prints the release notes, then deploys each stack in turn. For each stack it shows the change
 set (or, for a cdk environment, `cdk diff`), lists IAM changes on their own, and asks before
 deploying. It stops before any change that replaces or deletes a table, user pool, bucket, KMS
@@ -133,9 +154,18 @@ a terminal no lock is taken over, not your own and not a stale one someone else 
 are all read from the environment, and nothing is asked again. If a release drops a `config` key,
 `upgrade` names it before deploying, and says nothing replaces it.
 
-**Never back.** `upgrade` refuses a release older than the one the environment runs, naming both,
-because a newer release may have written data an older one cannot read. The same release is fine
-(a re-run). It also refuses every prerelease (such as `1.4.0-rc.1`).
+**Never back, unless you say so.** `upgrade` refuses a release older than the one the environment
+runs, naming both, because a newer release may have written data an older one cannot read. The same
+release is fine (a re-run). It also refuses every prerelease (such as `1.4.0-rc.1`). To move back on
+purpose, name the release with `--rollback-to <x.y.z>` instead of `--to` (on the cdk engine, with
+`--source <checkout of v<x.y.z>>`). It is refused unless that release is older than the recorded one,
+below a floor declared by any release the environment ever ran (recorded in
+`/agentx/<env>/release-high-water`), or when the older templates would not take the parameters this
+agentx sends; all of that is checked before any stack changes. Every change is shown and confirmed
+exactly as for an upgrade, `--yes` works the same, the data guard still stops on a deleted table unless
+you name it with `--allow-replace`, and the settings then record the release you rolled back to. Values
+the older templates drop are listed with the `config set` line to re-apply each after the next upgrade.
+See "Rolling a release back" in [releases.md](releases.md).
 
 **The operator role and the access stack.** The operator role cannot change the access stack.
 Under it, `upgrade` compares the deployed access template with the release's. If they are the
@@ -367,7 +397,7 @@ agentx --env <env> upgrade --region <region>
 
 The first command only records the two values, in a record of their own (`/agentx/<env>/custom-domain`), not in the environment settings or the install answers, so a 0.5.6 `agentx` can still read the environment if you ever roll back (`--no-custom-domain` deletes the record). Nothing in AWS changes until the upgrade. The upgrade applies them, access stack first: the deploy role (the CloudFormation service role in the access stack) gains grants for this name and this one zone, and nothing else, and then the control plane gets the certificate, domain name, mapping and records. Certificate validation usually takes a few minutes; the control plane stack waits for it. The upgrade then records the new address as the environment's `controlPlaneUrl` (machine callers keep using the API's own address, which the stack still reports as `ApiEndpoint`).
 
-The deploy role's new grants exist only while a name and a zone are set (statement ids `CustomDomain*` in the access stack, which takes the same two parameters):
+The deploy role's new grants exist only while a name and a zone are set (statement ids `CustomDomain*`; since 0.5.18 they are the managed policy `agentx-<env>--custom-domain-deploy` in the access stack, which takes the same two parameters, attached to the deploy role only):
 - `acm:RequestCertificate` on `*`, only in the install's region, only for exactly that domain name (a request that names no domain is refused), and only when the request tags the certificate `agentx:env=<env>`;
 - `acm:AddTagsToCertificate` only when the request sets that tag and the certificate already has it; `acm:DescribeCertificate`, `DeleteCertificate`, `RemoveTagsFromCertificate` and `ListTagsForCertificate` only on certificates that carry that tag. So the role can touch no other certificate in the account: it cannot tag a certificate that is not its own and then delete it. (CloudFormation tags the certificate when it creates it. If stack-level tags are ever added to the control-plane stack, they must include `agentx:env=<env>`, or the next update of the certificate is refused.)
 - `route53:ChangeResourceRecordSets` on that one hosted zone, only for the names `<name>` and `_<hash>.<name>` (the DNS validation record) and only record types A, AAAA and CNAME, so the zone's apex and every other record are out of reach;
@@ -422,7 +452,7 @@ Run once on staging after 0.5.7 is installed there, with a throwaway name if the
    If a certificate or a record is left, the delete was refused: look for `AccessDenied` in the stack events (below), and delete the leftover by hand only after reading what it is (a leftover alias record makes the next enable fail with "record already exists").
 5. **Re-enable.** Repeat step 1 and the first three checks of step 2. It must succeed with no manual clean-up.
 
-**If `AccessDenied` names an action.** Read it from `aws cloudformation describe-stack-events --stack-name <stack-or-access-stack> --query "StackEvents[?contains(ResourceStatusReason, 'AccessDenied') || contains(ResourceStatusReason, 'not authorized')].[LogicalResourceId,ResourceStatusReason]"`. It names the action and the resource. Add exactly that action to the matching `CustomDomain*` statement in `packages/contracts/src/access-policies.ts` (keeping its resource and conditions), run `agentx upgrade` (the access stack deploys first), and retry. Two cases are expected to need a decision, not just an action: (a) the first enable is refused on `acm:RequestCertificate` or `acm:AddTagsToCertificate` because the certificate handler does not tag as assumed; (b) the remove leaves the certificate because the handler calls `RemoveTagsFromCertificate` before `DeleteCertificate`. Report either one rather than widening the tag condition. A failed enable rolls the control plane back; check step 4 before trying again.
+**If `AccessDenied` names an action.** Read it from `aws cloudformation describe-stack-events --stack-name <stack-or-access-stack> --query "StackEvents[?contains(ResourceStatusReason, 'AccessDenied') || contains(ResourceStatusReason, 'not authorized')].[LogicalResourceId,ResourceStatusReason]"`. It names the action and the resource. Add exactly that action to the matching `CustomDomain*` statement in `packages/cloud-contracts/src/access-policies.ts` (`customDomainStatements`) (keeping its resource and conditions), run `agentx upgrade` (the access stack deploys first), and retry. Two cases are expected to need a decision, not just an action: (a) the first enable is refused on `acm:RequestCertificate` or `acm:AddTagsToCertificate` because the certificate handler does not tag as assumed; (b) the remove leaves the certificate because the handler calls `RemoveTagsFromCertificate` before `DeleteCertificate`. Report either one rather than widening the tag condition. A failed enable rolls the control plane back; check step 4 before trying again.
 
 ### Roll back
 

@@ -13,7 +13,7 @@ import { Aws, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy
 import { resolve } from "node:path";
 import { markCodeContractsPureCommand } from "./code-contracts-bundling.js";
 import { Construct } from "constructs";
-import { APPROVED_BUNDLE_PREFIX, OPERATOR_ACCESS_CONTEXT_KEY, OPERATOR_ACCESS_STATES, OPERATOR_APPROVERS_CONTEXT_KEY, OPERATOR_SIGNING_KEYS_CONTEXT_KEY, OPERATOR_EXTERNAL_ID_CONTEXT_KEY, OPERATOR_LOG_GROUPS_CONTEXT_KEY, OPERATOR_PRINCIPAL_CONTEXT_KEY, APPROVAL_PREFIX, DEPLOYER_PARTS, DEPLOYING_PREFIX, bundleDeployerFunctionName, bundleDeployerRoleName, bundleTrustParameter, editionBackupParameter, editionRecordParameter, synthSettingsParameter, deployLockParameter, deployProgressParameter, operatorAccessStateParameter, installedBundleParameter, rovaraOperatorRoleName, type OperatorAccessState } from "@agentx/cloud-contracts";
+import { APPROVED_BUNDLE_PREFIX, OPERATOR_ACCESS_CONTEXT_KEY, OPERATOR_ACCESS_STATES, OPERATOR_APPROVERS_CONTEXT_KEY, OPERATOR_SIGNING_KEYS_CONTEXT_KEY, OPERATOR_EXTERNAL_ID_CONTEXT_KEY, OPERATOR_LOG_GROUPS_CONTEXT_KEY, OPERATOR_PRINCIPAL_CONTEXT_KEY, APPROVAL_PREFIX, DEPLOYER_PARTS, DEPLOYING_PREFIX, bundleDeployerFunctionName, bundleDeployerRoleName, bundleTrustParameter, editionBackupParameter, editionRecordParameter, synthSettingsParameter, deployLockParameter, deployProgressParameter, operatorAccessStateParameter, installedBundleParameter, releaseHighWaterParameter, rovaraOperatorRoleName, type OperatorAccessState } from "@agentx/cloud-contracts";
 import { environmentSettingsPrefix, environmentStackName, parseBundlePublicKey } from "@rovara-code/contracts";
 import type { AgentXNaming } from "./naming.js";
 
@@ -224,10 +224,11 @@ export class OperatorAccess extends Construct {
     const deployerPolicy: Statement[] = [
       { Sid: "ReadApprovals", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion"], Resource: [approvedObjects, approvalObjects] },
       { Sid: "WriteVerifiedCopies", Effect: "Allow", Action: ["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion"], Resource: deployingObjects },
-      { Sid: "ReadInstallRecords", Effect: "Allow", Action: ["ssm:GetParameter"], Resource: [`${prefix}settings`, `${prefix}bundle`, bundleTrustParameter(env), deployProgressParameter(env), operatorAccessStateParameter(env), deployLockParameter(env), synthSettingsParameter(env), editionRecordParameter(env), editionBackupParameter(env)].map(parameterArn) },
+      { Sid: "ReadInstallRecords", Effect: "Allow", Action: ["ssm:GetParameter"], Resource: [`${prefix}settings`, `${prefix}bundle`, bundleTrustParameter(env), deployProgressParameter(env), operatorAccessStateParameter(env), deployLockParameter(env), synthSettingsParameter(env), editionRecordParameter(env), editionBackupParameter(env), releaseHighWaterParameter(env)].map(parameterArn) },
       { Sid: "TellTheCustomer", Effect: "Allow", Action: ["sns:Publish"], Resource: this.alertTopic.topicArn },
       { Sid: "OneRunAtATime", Effect: "Allow", Action: ["ssm:PutParameter", "ssm:DeleteParameter"], Resource: parameterArn(deployLockParameter(env)) },
-      { Sid: "WriteUpgradeRecords", Effect: "Allow", Action: ["ssm:PutParameter"], Resource: [`${prefix}settings`, installedBundleParameter(env), `${prefix}restore-points/*`, deployProgressParameter(env)].map(parameterArn) },
+      // The release high-water mark (0.5.17): the exact parameter, read and written like the settings record, so the deployer's own installs raise it.
+      { Sid: "WriteUpgradeRecords", Effect: "Allow", Action: ["ssm:PutParameter"], Resource: [`${prefix}settings`, installedBundleParameter(env), `${prefix}restore-points/*`, deployProgressParameter(env), releaseHighWaterParameter(env)].map(parameterArn) },
       { Sid: "CloseProgress", Effect: "Allow", Action: ["ssm:DeleteParameter"], Resource: parameterArn(deployProgressParameter(env)) },
       { Sid: "ReadStacks", Effect: "Allow", Action: ["cloudformation:DescribeStacks", "cloudformation:GetTemplate"], Resource: allStacks },
       { Sid: "CreateChangeSetsThroughTheDeployRole", Effect: "Allow", Action: ["cloudformation:CreateChangeSet"], Resource: deployableStacks, Condition: { StringEquals: { "cloudformation:RoleArn": deployRoleArn }, StringLike: { "cloudformation:TemplateUrl": [`https://${bucketName}.s3.${Aws.REGION}.${Aws.URL_SUFFIX}/${DEPLOYING_PREFIX}*`] } } },

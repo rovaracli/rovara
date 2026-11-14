@@ -14,7 +14,7 @@ import { effectiveTaskOwner, taskKey, type DeveloperTaskRecord } from "../../dev
 import type { DesignApprovalWrite } from "../../design-review/approve-handler.js";
 import type { TransactItems } from "../developer-task-actions.js";
 import type { DeveloperCaller } from "../developer-routes.js";
-import { TASK_ID, get, iso } from "./common.js";
+import { TASK_ID, get, iso, log } from "./common.js";
 import { decideTaskWorkflow } from "./decide.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 
@@ -68,14 +68,20 @@ export function designApprovalItems(
 export async function commitDesignApproval(
   deps: DeveloperTaskRouteDependencies, ownerCaller: DeveloperCaller, approver: { developerId: string; name: string }, write: DesignApprovalWrite,
 ): Promise<"done" | "stale"> {
-  if (write.taskId === undefined || !TASK_ID.test(write.taskId)) return "stale";
+  // Every "stale" is logged with its reason code first (counts and codes only, never a name or an id), so a person told "this changed" can be traced.
+  const stale = (reason: string): "stale" => {
+    log(deps, { event: "design.approve_stale", reason });
+    return "stale";
+  };
+  if (write.taskId === undefined || !TASK_ID.test(write.taskId)) return stale("task_id_invalid");
   const digest = designDigestOfVersion(write.contentVersion);
   const task = await get<DeveloperTaskRecord>(deps, taskKey(write.taskId));
   const workflow = task?.workflow;
-  if (task === undefined || task.orgId !== deps.orgId || workflow === undefined || workflow.designReview === undefined || workflow.stage !== "PLAN_REVIEW" || workflow.state !== "WAITING" || workflow.reviewPhase !== "DESIGN") return "stale";
+  if (task === undefined || task.orgId !== deps.orgId) return stale("task_not_found");
+  if (workflow === undefined || workflow.designReview === undefined || workflow.stage !== "PLAN_REVIEW" || workflow.state !== "WAITING" || workflow.reviewPhase !== "DESIGN") return stale("not_waiting_on_design");
   // The design the person was shown must be the design waiting now.
-  if (workflow.artifacts.filter((artifact) => artifact.type === "design").at(-1)?.sha256 !== digest) return "stale";
-  if (effectiveTaskOwner(task).developerId !== ownerCaller.developerId) return "stale";
+  if (workflow.artifacts.filter((artifact) => artifact.type === "design").at(-1)?.sha256 !== digest) return stale("design_changed");
+  if (effectiveTaskOwner(task).developerId !== ownerCaller.developerId) return stale("owner_changed");
   const now = iso(deps);
   const extra = designApprovalItems(deps, { taskId: task.taskId, digest, write, approver, now });
   try {
@@ -84,7 +90,7 @@ export async function commitDesignApproval(
     }, { designApproval: { items: extra.items, approverId: approver.developerId } });
   } catch (error) {
     const code = (error as { code?: string }).code;
-    if (code === "IDEMPOTENCY_CONFLICT" || code === "CHANGE_STALE" || code === "TASK_NOT_FOUND") return "stale";
+    if (code === "IDEMPOTENCY_CONFLICT" || code === "CHANGE_STALE" || code === "TASK_NOT_FOUND") return stale(code.toLowerCase());
     throw error;
   }
   if (extra.auditEvent !== undefined && deps.learningAudit !== undefined) await flushAuditEvents({ audit: deps.learningAudit }, [extra.auditEvent]).catch(() => undefined);

@@ -1,4 +1,6 @@
 // TE-B1-fresh: the one place that brings the round kinds together (check-round-choice.ts): which runners a task's official check rounds use, and which its original-code rounds use.
+import { RunnerKillUnconfirmedError } from "../../packages/worker/src/collected-process.js";
+import { WorkspaceSafety, withWorkspaceSafety } from "../../packages/worker/src/workspace-safety.js";
 import { describe, expect, it } from "vitest";
 import { realModelCallsAllowed, chooseCheckRound } from "../../packages/worker/src/check-round-kind.js";
 import { answerSandboxRestart } from "../support/fake-sandbox-restart.js";
@@ -106,4 +108,19 @@ describe("quietWorkingPlace (H1b): the working sandbox is restarted and checked 
     expect(await ptraceScopeFromProc(() => Promise.resolve("x"))).toBeUndefined();
     expect(await ptraceScopeFromProc(() => Promise.reject(new Error("ENOENT")))).toBeUndefined();
   });
+});
+
+
+it("landing: quiesce checks the latch before stopping processes and again before restarting", async () => {
+  for (const when of ["before", "during"] as const) {
+    const safety = new WorkspaceSafety();
+    const calls: string[] = [];
+    await withWorkspaceSafety(safety, async () => {
+      if (when === "before") new RunnerKillUnconfirmedError({ kind: "local" });
+      const quiet = quietWorkingPlace({ rootPath: "/w", sandboxName: "working", docker: { run: async () => { calls.push("docker"); return { exitCode: 0, stdout: "", stderr: "" }; } },
+        stopProcesses: async () => { calls.push("stop"); new RunnerKillUnconfirmedError({ kind: "local" }); }, ptraceScope: async () => { calls.push("ptrace"); return 1; } });
+      await expect(quiet(new AbortController().signal)).rejects.toBe(safety.failure);
+      expect(calls).toEqual(when === "before" ? [] : ["stop"]);
+    });
+  }
 });

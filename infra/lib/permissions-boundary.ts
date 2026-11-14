@@ -54,7 +54,7 @@ class PermissionsBoundaryAspect implements IAspect {
       if (node.permissionsBoundary !== undefined) {
         throw new Error(`${node.node.path} already has a permissions boundary`);
       }
-      node.permissionsBoundary = this.boundary;
+      node.permissionsBoundary = OWN_BOUNDARIES.get(node) ?? this.boundary;
     } else {
       // Plain CfnResource properties are raw CloudFormation JSON (PascalCase), unlike the
       // camelCase props cfn2ts-generated classes like iam.CfnRole translate for us.
@@ -71,6 +71,18 @@ class PermissionsBoundaryAspect implements IAspect {
 }
 
 const applied = new WeakMap<Stack, PermissionsBoundaryParameter>();
+
+/** Roles that carry a boundary other than the stack's effective one (only the access stack's deploy role, 0.5.17): the aspect sets that one instead. */
+const OWN_BOUNDARIES = new WeakMap<iam.CfnRole, string>();
+
+/**
+ * 0.5.17 (review M-1): gives one role its own boundary instead of the stack's effective boundary. The access stack's deploy role uses it for `agentx-<env>--deploy-boundary` (the default
+ * boundary plus the Certificate Manager and Route 53 ceiling its own grants need), so the default boundary, which every role the deploy creates carries, stays without them. The aspect still
+ * refuses a role that sets PermissionsBoundary itself.
+ */
+export function useOwnPermissionsBoundary(role: iam.CfnRole, boundary: string): void {
+  OWN_BOUNDARIES.set(role, boundary);
+}
 
 /**
  * Creates the `PermissionsBoundaryArn` parameter and `HasPermissionsBoundary` condition on `stack`

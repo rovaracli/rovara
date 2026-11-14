@@ -22,7 +22,7 @@ import { runChecks, type CheckPlan, type CheckRunners } from "./checks.js";
 import { isTestPath } from "./test-paths.js";
 import { testIdResolver } from "./test-ids.js";
 import { displayLine } from "./test-report.js";
-import { AgentFilesRestoreError, git, gitOriginalCode, type OriginalCode, type OriginalCodeRepository } from "./original-code.js";
+import { isUnconfirmedStop, isWorkspaceUnsafe, git, gitOriginalCode, type OriginalCode, type OriginalCodeRepository } from "./original-code.js";
 
 /** The whole run on the original code gets this long, inside what is left of the check round's budget. */
 export const TEST_PROOF_CAP_MS = 10 * 60_000;
@@ -157,6 +157,8 @@ export async function runTestProof(options: RunTestProofOptions): Promise<TestPr
     .map(({ repository, changed }) => ({ directory: repository.directory, commit: repository.startCommit, overlay: changed.paths })));
   const budgetMs = Math.max(0, Math.min(options.capMs ?? TEST_PROOF_CAP_MS, options.budgetMs));
   let ran: { entries: CheckEntry[]; oldReports: Map<number, ReadResult> };
+  // A stop that could not be confirmed: the report files are not put back either, because a command that may still be running would write over them.
+  let unconfirmedStop = false;
   try {
     ran = await originalCode.run(async () => {
       for (const report of reports.values()) await unlink(report.path).catch(() => undefined);
@@ -168,10 +170,13 @@ export async function runTestProof(options: RunTestProofOptions): Promise<TestPr
     });
   } catch (error) {
     // The one fault that must stop the task: the agent's files are not back.
-    if (error instanceof AgentFilesRestoreError) throw error;
+    if (isWorkspaceUnsafe(error)) {
+      unconfirmedStop = isUnconfirmedStop(error);
+      throw error;
+    }
     return result("not_checked", options.signal.aborted ? "stopped" : "original_code_unavailable", changedTests, items);
   } finally {
-    for (const report of reports.values()) await restoreFile(report);
+    if (!unconfirmedStop) for (const report of reports.values()) await restoreFile(report);
   }
 
   const perCheck: TestProofItem[] = [];
@@ -252,10 +257,15 @@ const LOAD_FAILURE = [
   /cannot find symbol|cannot find name|undefined reference to|no required module provides package|error\[E\d{4}\]|could not compile|compilation (?:failed|error)|build failed|\[build failed\]/i,
   /\n# [\w./-]+\n[^\n]*\.go:\d+:\d+:/, /undefined: \w+/, /no such file or directory/i,
 ];
+// Output and report messages come from the customer's tests (a report may be 8 MiB), so each pattern here is linear in the text. `^\s*assert` with the `m` flag rescanned a run of blank lines from
+// every line of it; after a line start only blanks that are not line breaks are taken, which finds the same text (a match that ran over blank lines matches from the last of them).
+const ASSERT_THEN_WHERE = /^[^\S\n\r\u2028\u2029]*assert\b.+\n.*(?:where|AssertionError)/m;
+// `\bFAILED [^\n]*::[^\n]* - (?:assert|AssertionError)` rescanned a line from every `FAILED ` and every `::` on it. A line matches exactly when it does from its first `FAILED ` and the first
+// `::` after that, so only those are tried: each lookahead takes the shortest run and cannot give it back.
+const PYTEST_FAILED_ASSERT = /(?<![^\n])(?=([^\n]*?\bFAILED ))\1(?=([^\n]*?::))\2[^\n]* - (?:assert|AssertionError)/i;
 const ASSERTION_FAILURE = [
   /AssertionError/, /\bexpected\b[\s\S]{0,160}?\b(?:to be|to equal|to deeply equal|to strictly equal|to match|to contain|to have|to throw|to include|received|but got|but was|actual)\b/i,
-  /^E\s+assert\b/m, /^\s*assert\b.+\n.*(?:where|AssertionError)/m, /--- FAIL: /, /\bExpected:?[\s\S]{0,200}\b(?:Actual|Received|Got):?/i,
-  /\bFAILED [^\n]*::[^\n]* - (?:assert|AssertionError)/i, /Assertion (?:failed|error)/i,
+  /^E\s+assert\b/m, ASSERT_THEN_WHERE, /--- FAIL: /, /\bExpected:?[\s\S]{0,200}\b(?:Actual|Received|Got):?/i, PYTEST_FAILED_ASSERT, /Assertion (?:failed|error)/i,
 ];
 
 /** The verdict for a failure on the original code, from the check's output. See the heuristic at the top of this file. */
@@ -419,9 +429,10 @@ function parseJsonReport(text: string): TestRecord[] {
 /** JUnit XML: <testcase classname name file?> with a <failure>, <error> or <skipped> child when it did not pass. */
 function parseJunitReport(text: string): TestRecord[] {
   const records: TestRecord[] = [];
-  for (const match of text.matchAll(/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)) {
-    const attributes = new Map([...match[1]!.matchAll(/([\w:-]+)="([^"]*)"/g)].map((attribute) => [attribute[1]!, unescapeXml(attribute[2]!)] as const));
-    const body = match[2] ?? "";
+  for (const testcase of junitTestcases(text)) {
+    // A name starts where a run of name characters starts: from inside one, the old pattern rescanned the rest of the run from every character of it.
+    const attributes = new Map([...testcase.attributes.matchAll(/(?<![\w:-])([\w:-]+)="([^"]*)"/g)].map((attribute) => [attribute[1]!, unescapeXml(attribute[2]!)] as const));
+    const body = testcase.body ?? "";
     const status = /<(?:failure|error)\b/.test(body) ? "failed" : /<skipped\b/.test(body) ? "skipped" : "passed";
     const classname = attributes.get("classname");
     records.push({
@@ -431,6 +442,34 @@ function parseJunitReport(text: string): TestRecord[] {
     });
   }
   return records;
+}
+
+/**
+ * Each `<testcase …/>` and `<testcase …>…</testcase>` in order: what `/<testcase\b([^>]*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g` matched, in linear time. That pattern scanned to the end of
+ * the report from every opener with no `</testcase>` after it (quadratic: a report of `<testcase>` repeated took 50 ms at 64 KiB, and minutes at the 8 MiB a report may be). Here the
+ * next `>` and the next `</testcase>` are each found once and reused while they are still ahead.
+ */
+function* junitTestcases(text: string): Generator<{ attributes: string; body: string | undefined }> {
+  const OPEN = "<testcase";
+  const CLOSE = "</testcase>";
+  let at = 0;
+  let gt = -1;
+  let close = -1;
+  let noClose = false;
+  for (;;) {
+    const open = text.indexOf(OPEN, at);
+    if (open === -1) return;
+    const after = open + OPEN.length;
+    if (/\w/.test(text[after] ?? "")) { at = open + 1; continue; }
+    if (gt < after) gt = text.indexOf(">", after);
+    // No `>` after this opener: none after any later one.
+    if (gt === -1) return;
+    if (text[gt - 1] === "/") { yield { attributes: text.slice(after, gt - 1), body: undefined }; at = gt + 1; continue; }
+    if (!noClose && close <= gt) { close = text.indexOf(CLOSE, gt + 1); noClose = close === -1; }
+    if (noClose) { at = open + 1; continue; }
+    yield { attributes: text.slice(after, gt), body: text.slice(gt + 1, close) };
+    at = close + CLOSE.length;
+  }
 }
 
 function unescapeXml(text: string): string {

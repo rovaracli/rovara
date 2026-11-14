@@ -230,7 +230,7 @@ export async function commitSetupCheck(deps: SetupCheckDependencies, input: Setu
     Item: { ...setupCheckWatchKey(input.createdAt, input.workspaceId), entityType: "SETUP_CHECK_WATCH", workspaceId: input.workspaceId },
   } };
   try {
-    // The slot first, at positions 0 and 1: chargeConflict reads the cancellation reasons by position.
+    // The slot first, at positions 0 to 2: chargeConflict reads the cancellation reasons by position.
     await deps.documentClient.send(new TransactWriteCommand({ TransactItems: [...chargeItems(deps.tableName, input.charge, input.limits, input.workspaceId), ...input.preparation, record, watch, candidateRecord === undefined ? meta : notArchived, ...(candidateRecord === undefined ? [] : [candidateRecord]), request] }));
     return true;
   } catch (error) {

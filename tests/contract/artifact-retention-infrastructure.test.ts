@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
+import { EVIDENCE_RECORD_RETENTION_DAYS } from "@agentx/cloud-contracts";
 import { E2E_ARTIFACT_RETENTION_DAYS, E2E_ARTIFACT_RETENTION_TAG, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
@@ -45,14 +46,17 @@ describe("the retention of workflow screenshots is a rule on the bucket the brok
     const rules = buckets[brokerBucketId!]?.Properties.LifecycleConfiguration?.Rules ?? [];
     // The screenshot rule first; proof and evidence P6 adds one rule per evidence class (tests/unit/evidence-artifact-store.test.ts pins those), each on its own tag value; NH-1 adds a last, prefix-only rule for the
     // nightly coverage maps (tests/unit/nightly-maps-erase.test.ts pins it), which carry no tag.
-    expect(rules).toHaveLength(4);
+    expect(rules).toHaveLength(5);
     expect(rules[0]).toMatchObject({ Status: "Enabled", ExpirationInDays: E2E_ARTIFACT_RETENTION_DAYS,
       TagFilters: [{ Key: E2E_ARTIFACT_RETENTION_TAG_KEY, Value: E2E_ARTIFACT_RETENTION_TAG_VALUE }] });
-    expect(rules.map((rule) => rule.TagFilters?.[0]?.Value)).toEqual([E2E_ARTIFACT_RETENTION_TAG_VALUE, "evidence-short", "evidence-std", undefined]);
+    expect(rules.map((rule) => rule.TagFilters?.[0]?.Value)).toEqual([E2E_ARTIFACT_RETENTION_TAG_VALUE, "evidence-short", "evidence-std", "evidence-record", undefined]);
+    // TE-H4a: the pack's own class, one year, tag AND prefix like the other evidence rules; the constant lives in cloud-contracts
+    expect(rules[3]).toMatchObject({ Id: "ExpireEvidenceRecord", Status: "Enabled", ExpirationInDays: EVIDENCE_RECORD_RETENTION_DAYS, Prefix: "private/", TagFilters: [{ Key: E2E_ARTIFACT_RETENTION_TAG_KEY, Value: "evidence-record" }] });
+    expect(EVIDENCE_RECORD_RETENTION_DAYS).toBe(365);
     // the screenshot rule is tag-only (as before); the evidence rules are prefix AND tag (an `And` filter), so a tagged object outside the private keys never matches
-    expect(rules.map((rule) => rule.Prefix)).toEqual([undefined, "private/", "private/", "nightly-maps/"]);
+    expect(rules.map((rule) => rule.Prefix)).toEqual([undefined, "private/", "private/", "private/", "nightly-maps/"]);
     // the nightly-maps rule matches a key prefix only, so it can never reach a screenshot or an evidence object (those live under private/)
-    expect(rules[3]).toMatchObject({ Id: "ExpireNightlyMaps", Status: "Enabled", ExpirationInDays: 30 });
+    expect(rules[4]).toMatchObject({ Id: "ExpireNightlyMaps", Status: "Enabled", ExpirationInDays: 30 });
     // The bucket is not versioned, so expiry deletes the object and no rule for old versions is needed.
     expect(buckets[brokerBucketId!]!.Properties.VersioningConfiguration).toBeUndefined();
   });
@@ -102,7 +106,7 @@ describe("the broker tags a screenshot, and only a screenshot, with that retenti
     const found = execFileSync("grep", ["-rl", "E2E_ARTIFACT_RETENTION_TAG\\|Tagging:", "packages", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" })
       .trim().split("\n").filter((file) => file !== "");
     // P6: the evidence store tags with the same KEY and the evidence classes' own values; it must never carry the screenshot tag.
-    // wire-proof (fix round 1): the evidence pack is tagged with the evidence classes' own value (`evidence-std`) through evidence-keep.ts, never the screenshot tag.
+    // wire-proof (fix round 1): the evidence pack is tagged with the evidence classes' own value (`evidence-record`, one year) through evidence-keep.ts, never the screenshot tag.
     expect(found.sort()).toEqual(["packages/broker/src/aws/evidence-artifacts.ts", "packages/broker/src/aws/workflow-e2e-artifacts.ts", "packages/broker/src/rovara-code/evidence-keep.ts"]);
   });
 

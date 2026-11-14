@@ -3,6 +3,7 @@
 // transaction, so it is never sent when the compute comes up; the caller then ends the step as a successful cancel does.
 import { GetCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { workspaceSessionKey } from "@rovara-code/contracts";
+import { parkedOutboxIds, sessionWaitingKey } from "./sessions.js";
 
 type Client = { send(command: unknown): Promise<unknown> };
 
@@ -14,8 +15,8 @@ type Client = { send(command: unknown): Promise<unknown> };
 export async function withdrawParkedDelivery(client: Client, tableName: string, workspaceId: string, operationId: string): Promise<boolean> {
   const read = async (key: { pk: string; sk: string }) => ((await client.send(new GetCommand({ TableName: tableName, Key: key, ConsistentRead: true }))) as { Item?: Record<string, unknown> }).Item;
   const session = await read(workspaceSessionKey(workspaceId));
-  const waiting = session?.waitingOutboxIds;
-  const ids: string[] = waiting instanceof Set ? [...waiting].map(String) : Array.isArray(waiting) ? waiting.map(String) : [];
+  // Both forms (S2): the session's old `waitingOutboxIds` set and the parked markers.
+  const ids = session === undefined ? [] : await parkedOutboxIds(client as Parameters<typeof parkedOutboxIds>[0], tableName, workspaceId, session);
   for (const outboxId of ids) {
     const outbox = await read({ pk: `OUTBOX#${outboxId}`, sk: "OUTBOX" });
     if (outbox?.operationId !== operationId || outbox.workspaceId !== workspaceId || outbox.status !== "WAITING_FOR_SESSION") continue;
@@ -35,6 +36,7 @@ export async function withdrawParkedDelivery(client: Client, tableName: string, 
           ConditionExpression: "attribute_exists(pk)",
           ExpressionAttributeValues: { ":id": new Set([outboxId]) },
         } },
+        { Delete: { TableName: tableName, Key: sessionWaitingKey(workspaceId, outboxId) } },
       ] }));
       return true;
     } catch (error) {

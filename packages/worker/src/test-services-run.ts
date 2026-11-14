@@ -58,6 +58,7 @@ import { EmulatorControlError, type EmulatorControlTarget } from "./emulator-con
 import { emulatorLedgerPort, type EmulatorLedgerPort } from "./emulator-ledger.js";
 import { EmulatorSeedError, readAwsResourcesFromIac, seedEmulator } from "./service-seed-aws.js";
 import { repoAwsEndpointNames, type RepoEndpointNamesNote } from "./repo-aws-endpoints.js";
+import { RunnerKillUnconfirmedError } from "./collected-process.js";
 import { SeedError, createResetHooks, resetForNextCheck, seedRun, type ResetDependency, type SeedPorts } from "./service-reset.js";
 import { SeedFileError, loadSeedFile, readSeedFile, seedFileDigest } from "./service-seed-file.js";
 import { seedLockHoldsInCheckout } from "./service-seed-lock.js";
@@ -71,6 +72,7 @@ import { refuseTestServicesWithDevcontainer, withSealedCheckRound } from "./chec
 import { UNREADABLE_AWS_USAGE, buildServiceUsageRecord, countResets, mergeAwsUsage, mergeFakeUsage } from "./service-usage-record.js";
 import { setupWorkspaceKey } from "./setup-network.js";
 import { TEST_SERVICES_BOOT_FACTS_ENVIRONMENT, emitReport, type ReportOutcome } from "./test-services-report.js";
+import { TEST_SERVICES_SELFTEST_ENVIRONMENT } from "./test-services-selftest.js";
 import { createDockerCli, type DockerCli } from "./swebench/containers.js";
 import type { CheckRunners } from "./verification/checks.js";
 import { hiddenWorkspaceDirectories } from "./workspace-state.js";
@@ -272,14 +274,14 @@ export async function testServicesAtWorkerBoot(input: { rootPath: string; config
     if (config === undefined) {
       // Not configured for test services (for instance root's pre-pull failed, so the settings were not written): the worker still says so, with root's boot facts (`prepull: "failed"` shows there), so an operator sees WHY.
       const unconfiguredWorkspace = await setupWorkspaceKey(input.rootPath);
-      await emitReport({ docker: input.docker ?? createDockerCli(), workspace: unconfiguredWorkspace, phase: "worker_start", outcome: "booted", bootFactsText: (input.environment ?? process.env)[TEST_SERVICES_BOOT_FACTS_ENVIRONMENT] }, log);
+      await emitReport({ docker: input.docker ?? createDockerCli(), workspace: unconfiguredWorkspace, phase: "worker_start", outcome: "booted", bootFactsText: (input.environment ?? process.env)[TEST_SERVICES_BOOT_FACTS_ENVIRONMENT], selfTestText: (input.environment ?? process.env)[TEST_SERVICES_SELFTEST_ENVIRONMENT] }, log);
       return;
     }
     const workspace = await setupWorkspaceKey(input.rootPath);
     const swept = await sweepServicesNetworksAtWorkerStart(config.docker, workspace);
     if (swept.containers + swept.networks > 0) log({ event: "test-services.leftovers.removed", ...swept });
     // The worker's self-report at start, after the sweep: what is left (should be nothing), the run directory, and the facts root wrote at boot.
-    await emitReport({ docker: config.docker, workspace, runDirectoryParent: config.runDirectoryParent, phase: "worker_start", outcome: "booted", swept, bootFactsText: (input.environment ?? process.env)[TEST_SERVICES_BOOT_FACTS_ENVIRONMENT] }, log);
+    await emitReport({ docker: config.docker, workspace, runDirectoryParent: config.runDirectoryParent, phase: "worker_start", outcome: "booted", swept, bootFactsText: (input.environment ?? process.env)[TEST_SERVICES_BOOT_FACTS_ENVIRONMENT], selfTestText: (input.environment ?? process.env)[TEST_SERVICES_SELFTEST_ENVIRONMENT] }, log);
     // No pre-pull here: the worker container has no registry login and no AWS credentials, so it never pulls. Root pulls the pinned digests before the worker starts (packages/worker/ec2/boot-stage2.sh).
   } catch {
     log({ event: "test-services.boot.failed" });
@@ -970,6 +972,8 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
         try {
           await seedRun(countResets(workSession).session, [dependencyOf(item, workSession, files, runId)], workingSeeds, seedSignal);
         } catch (error) {
+          // A seed command whose stop could not be confirmed may still be running: it is not "seed failed", and nothing must touch the workspace after it.
+          if (error instanceof RunnerKillUnconfirmedError) throw error;
           for (const id of item.emulator?.ids ?? [item.plan.id]) failures.set(id, "seed_failed");
           throw new TestServicesError(seedStartFailureOf(error), failures);
         }
@@ -1078,6 +1082,8 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
         try {
           await seedRun(state.counted, state.resetDeps.filter((dependency) => dependency.id === item.plan.id), roundSeeds, seedSignal);
         } catch (error) {
+          // A seed command whose stop could not be confirmed may still be running: it is not "seed failed", and nothing must touch the workspace after it.
+          if (error instanceof RunnerKillUnconfirmedError) throw error;
           for (const id of item.emulator?.ids ?? [item.plan.id]) failures.set(id, "seed_failed");
           throw new TestServicesError(seedStartFailureOf(error), failures);
         }
@@ -1096,7 +1102,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
           await step("round-directory", () => removeRunDirectory(roundFiles.directory));
         }
       }
-      throw failure;
+      throw error instanceof RunnerKillUnconfirmedError ? error : failure;
     }
   };
   const currentRound = (): CheckRunners => {
@@ -1137,6 +1143,7 @@ export async function startTestServicesRun(config: TestServicesConfig, input: St
     ids,
     checkRunners() {
       return {
+        kind: "sealed",
         runProjectCommand: async (command, signal) => {
           const result = await currentRound().runProjectCommand(command, signal);
           if (result.exitCode !== 0 || result.timedOut) checkFailed = true;

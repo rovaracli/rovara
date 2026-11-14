@@ -19,6 +19,7 @@ const SEALED_FILES: readonly string[] = [`${W}check-sandbox.ts`, `${W}check-roun
 export function freshSourceViolations(sources: readonly Source[]): string[] {
   const out: string[] = [];
   for (const { path, text } of sources) {
+    if (/\bfreshCheckRound\s*:/u.test(text.replace(/\/\/.*$/gmu, "").replace(/\/\*[\s\S]*?\*\//gu, ""))) out.push(`${path}: wires the dormant fresh round into production`);
     if (FRESH_ROUND.test(text) && !FRESH_ROUND_USERS.includes(path)) out.push(`${path}: is not allowed to import the fresh check round`);
     if (/\bfreshSandboxRunArgs\b/u.test(text) && !RUN_ARGS_USERS.includes(path)) out.push(`${path}: names freshSandboxRunArgs, which only the fresh round starts a sandbox with`);
     if (/\bstartFreshSandbox\b|\bwithFreshCheckRound\b/u.test(text) && ![`${W}fresh-check-round.ts`, ...FRESH_ROUND_USERS].includes(path)) out.push(`${path}: names the fresh round's start`);
@@ -57,6 +58,7 @@ describe("the fresh round's source guards", () => {
   });
   it("finds a stray importer, a stray start, a module that imports both kinds, and an option in the sealed files", () => {
     const bad = (path: string, text: string) => freshSourceViolations([{ path, text }]);
+    expect(bad(`${W}main.ts`, "runTaskInvocation(task, { freshCheckRound: () => ({ setup: [] }) });")).toEqual([`${W}main.ts: wires the dormant fresh round into production`]);
     expect(bad(`${W}run-task.ts`, 'import { withFreshCheckRound } from "./fresh-check-round.js";')).toEqual([`${W}run-task.ts: is not allowed to import the fresh check round`, `${W}run-task.ts: names the fresh round's start`]);
     expect(bad(`${W}x.ts`, "const a = freshSandboxRunArgs(input);")).toEqual([`${W}x.ts: names freshSandboxRunArgs, which only the fresh round starts a sandbox with`]);
     expect(bad(`${W}check-round-choice.ts`, 'import { createFreshCheckRunners } from "./fresh-check-round.js";\nimport { runSealedCheckRound } from "./check-round-runners.js";')).toEqual([`${W}check-round-choice.ts: imports both round kinds`]);

@@ -20,9 +20,16 @@ export function sessionDisplay(session: ReadSession): { state: string; text: str
  return { state: status.state, text: taskStatusText(status), next: typeof status.next === "string" && status.next !== "" ? status.next : undefined };
 }
 type HeaderProps = { session: ReadSession; onAction: (action: "watch" | "share") => void; shareControl?: ReactNode; controls?: ReactNode; busy?: boolean };
+/** What it cost so far. Whatever part of it is an estimate (a model with no known price is counted at the dearest known rate of its provider, DECISIONS 172) says so: all of it reads "Estimated $x", part of it "$x ($y of it estimated)". */
+function SpentCost({ cost }: { cost: ReadSession["cost"] }) {
+  const estimated = cost.estimatedUsd ?? 0;
+  if (estimated <= 0) return <Money usd={cost.spentUsd} />;
+  if (estimated >= cost.spentUsd) return <Money usd={cost.spentUsd} estimated />;
+  return <><Money usd={cost.spentUsd} /> (<Money usd={estimated} /> of it estimated)</>;
+}
 /** Where it runs, what it cost and who pays. No status dot: the lead block says the state in plain words. */
 function Facts({ session, display }: { session: ReadSession; display: ReturnType<typeof sessionDisplay> }) {
- return <div className="rv-session-facts">{session.body.kind === "task" && session.body.task.closing === true && <span>Closing…</span>}{session.step && display.state !== "needs_you" && display.state !== "failed" && <span><VisibleText text={session.step} /></span>}<span>{session.where.kind === "cloud" ? "Cloud" : session.where.kind === "mac" ? <VisibleText text={"on " + session.where.label} /> : "Location unavailable"}</span>{session.where.kind === "mac" && session.where.offline && <span>offline</span>}<span><Money usd={session.cost.spentUsd} />{session.cost.runLimitUsd !== undefined && <> of <Money usd={session.cost.runLimitUsd} /></>}</span><span>Paid by <VisibleText text={session.cost.payer.name} /></span></div>;
+ return <div className="rv-session-facts">{session.body.kind === "task" && session.body.task.closing === true && <span>Closing…</span>}{session.step && display.state !== "needs_you" && display.state !== "failed" && <span><VisibleText text={session.step} /></span>}<span>{session.where.kind === "cloud" ? "Cloud" : session.where.kind === "mac" ? <VisibleText text={"on " + session.where.label} /> : "Location unavailable"}</span>{session.where.kind === "mac" && session.where.offline && <span>offline</span>}<span><SpentCost cost={session.cost} />{session.cost.runLimitUsd !== undefined && <> of <Money usd={session.cost.runLimitUsd} /></>}</span><span>Paid by <VisibleText text={session.cost.payer.name} /></span></div>;
 }
 function People({ session, onAction, shareControl, controls, busy = false }: HeaderProps) {
  return <div className="rv-session-people"><AvatarStack people={session.viewingNow} />{controls ?? <div className="rv-actions">{session.you.actions.includes("watch") && <Button busy={busy} onClick={() => onAction("watch")}>{session.you.following ? "Following" : "Follow"}</Button>}{session.you.actions.includes("share") && (shareControl ?? <Button onClick={() => onAction("share")}>Share</Button>)}</div>}</div>;

@@ -57,9 +57,11 @@ export function plainState(status: LeadStatus, task: ReadTask | undefined): Plai
  }
  if (status.state !== "ready_to_merge" || task?.merge === undefined) return base;
  const open = items(task);
- if (task.merge.ready === true) return base;
+ // A ready pull request with no CI is not the green "Ready to merge": nothing checked the code.
+ if (task.merge.ready === true) return open.some(item => item.ci === "none") ? { label: "Ready to merge (no CI)", tone: "attention" } : base;
  if (open.some(item => item.review === "changes_requested")) return { label: "Changes requested", tone: "attention" };
  if (open.some(item => item.ci === "failing")) return { label: "Checks failed", tone: "danger" };
+ if (open.some(item => item.ci === "unreadable")) return { label: "CI not readable", tone: "attention" };
  if (open.some(item => item.ci === "pending")) return { label: "Checking", tone: "info" };
  if (open.length > 0 && open.every(item => item.review !== "approved" && item.ci !== "failing")) return { label: "Ready for review", tone: "attention" };
  // The merge read says it is not ready and none of the specific reasons above is the one (a conflicted branch, no tracking yet): never the green "Ready to merge" (Merge says "Not ready to merge" here).

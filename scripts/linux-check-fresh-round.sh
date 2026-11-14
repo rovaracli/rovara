@@ -18,7 +18,7 @@
 # Needs: FRESH_IMAGE (an image with /usr/bin/tini, sh and node, run as 1000:1000: the worker image). Optional: FRESH_BASE (a directory the Docker daemon can bind-mount; default: a new one under /tmp), FRESH_NETWORK (default agentx-task; created
 # with inter-container traffic off if it does not exist, and removed again only if this script made it).
 set -u
-export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}
+export LC_ALL=C PATH=${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}
 
 [[ $# -eq 0 ]] || { printf 'FRESH ERROR this script takes no arguments\n'; exit 2; }
 IMAGE=${FRESH_IMAGE:-}

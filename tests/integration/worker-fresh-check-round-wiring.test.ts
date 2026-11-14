@@ -2,12 +2,13 @@
 // runs in a NEW container made from the committed code and the working sandbox's exec is never used for it; with the gate off, it is today's round, unchanged.
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { type ProjectCommand } from "@rovara-code/contracts";
 import { type WorkerInvocation } from "@agentx/cloud-contracts";
 import type { WorkerEvent } from "../../packages/worker/src/events.js";
+import { RunnerKillUnconfirmedError } from "../../packages/worker/src/collected-process.js";
 import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
 import { projectCheckKey } from "../../packages/worker/src/verification/check-history.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
@@ -72,7 +73,9 @@ async function checksRun(rootPath: string, fake: ReturnType<typeof fakeDocker>, 
   const events: WorkerEvent[] = [];
   const artifacts: Array<{ name: string; content: string }> = [];
   const result = await runTaskInvocation(invocation, {
-    rootPath, model: FAUX_MODEL, taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshPtraceScope: () => Promise.resolve(1),
+    // Fake commands start no host processes; keep this fixture independent of the host process table.
+    stopBeforeReading: { stopWorkspaceProcesses: async () => undefined },
+    rootPath, docker: fake.docker, model: FAUX_MODEL, taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshPtraceScope: () => Promise.resolve(1),
     eventSink: async (batch) => { events.push(...batch); }, artifactSink: async (artifact) => { artifacts.push(artifact); }, ...dependencyExtras,
   });
   return { result, events, artifacts };
@@ -113,7 +116,10 @@ describe("the CHECKS round with the freshCheckRound gate", () => {
   it("gate off: today's round, in the working sandbox, with no second container", async () => {
     const rootPath = await workspace();
     const fake = fakeDocker();
-    await checksRun(rootPath, fake);
+    const { result, events } = await checksRun(rootPath, fake);
+    expect(result.checks).toMatchObject({ status: "verified", source: "project", checks: [expect.objectContaining({ after: "passed" })] });
+    expect(progressTexts(events).join("\n")).not.toContain("not sealed");
+    expect(fake.calls.some((args) => args[0] === "restart" || args[0] === "ps")).toBe(false);
     const starts = fake.calls.filter((args) => args[0] === "run");
     expect(starts).toHaveLength(1);
     expect(nameOf(starts[0]!).startsWith("agentx-task-")).toBe(true);
@@ -181,8 +187,9 @@ describe("H1c: the fresh round's evidence comes from its export", () => {
     const rootPath = await workspace();
     const base = fakeDocker(() => 0, (text) => { if (text.includes("fresh-wiring-marker")) writeFileSync(join(rootPath, "app", "report.json"), report("planted-in-the-working-tree works")); });
     const stuck: DockerCli = { run: (args, options) => (args[0] === "rm" && args.some((arg) => arg.startsWith("agentx-fresh-")) ? Promise.resolve({ exitCode: 1, stdout: "", stderr: "busy" }) : base.docker.run(args, options)) };
-    const { artifacts } = await checksRun(rootPath, { docker: stuck, calls: base.calls }, { freshCheckRound: () => ({ setup: [] }), evidenceCapture: true, stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } });
-    expect(artifacts.find((artifact) => artifact.name === "evidence-raw.json")).toBeUndefined();
+    const artifacts: string[] = [];
+    await expect(checksRun(rootPath, { docker: stuck, calls: base.calls }, { freshCheckRound: () => ({ setup: [] }), evidenceCapture: true, artifactSink: async (artifact) => { artifacts.push(artifact.name); } })).rejects.toBeInstanceOf(RunnerKillUnconfirmedError);
+    expect(artifacts).not.toContain("evidence-raw.json");
   });
   it("a run that asked for no evidence keeps no export (it is removed with the sandbox)", async () => {
     const rootPath = await workspace();
@@ -245,3 +252,24 @@ describe("the scanner baseline after a fresh round runs without the Python user 
   });
 });
 
+
+
+it("landing: a fresh stop is recorded with its own container and prevents a later task", async () => {
+  const rootPath = await workspace();
+  const base = fakeDocker();
+  let unconfirmed = false;
+  const docker: DockerCli = { run: async (args, options) => {
+    if (args[0] === "exec" && args.some((arg) => arg.startsWith("agentx-fresh-")) && args.join(" ").includes("fresh-wiring-marker")) {
+      unconfirmed = true;
+      throw new RunnerKillUnconfirmedError({ kind: "sandbox" });
+    }
+    return base.docker.run(args, options);
+  } };
+  await expect(checksRun(rootPath, { docker, calls: base.calls }, { freshCheckRound: () => ({ setup: [] }) })).rejects.toBeInstanceOf(RunnerKillUnconfirmedError);
+  expect(unconfirmed).toBe(true);
+  const fresh = nameOf(base.calls.find((args) => args[0] === "run" && nameOf(args).startsWith("agentx-fresh-"))!);
+  expect(base.calls.some((args) => args[0] === "rm" && args.includes(fresh))).toBe(false);
+  const marker = JSON.parse(await readFile(join(rootPath, ".agentx", "workspace-unsafe.json"), "utf8")) as { sandboxes: Array<{ name: string; verified: boolean }> };
+  expect(marker.sandboxes).toContainEqual({ name: fresh, verified: false });
+  await expect(checksRun(rootPath, base)).rejects.toThrow(/could not be confirmed stopped/u);
+});

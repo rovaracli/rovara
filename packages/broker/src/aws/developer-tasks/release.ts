@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { DeleteCommand, QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentXError } from "@rovara-code/contracts";
+import { engineOfTask, engineStampKey } from "../../cloud/app/engine-stamp.js";
 import { recordRunCost } from "../../spend/estimate.js";
 import { noteFinishedTaskDuration } from "../../rovara-code/duration.js";
 import type { ModelAccess } from "../../model-proxy/access.js";
-import { releaseConflict, releaseItems } from "../../developer/limits.js";
+import { chargeFormOf, chargedTaskIds, releaseConflict, releaseItems, type ChargeForm } from "../../developer/limits.js";
 import { aiToolTurn, partyOfTask, taskIndexKey, taskKey, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { isConditional } from "../broker-shared.js";
 import type { DeveloperTaskActions, TransactItems } from "../developer-task-actions.js";
@@ -197,10 +198,12 @@ async function releaseFinishedTaskNow(deps: ReleaseDeps, task: DeveloperTaskReco
   ];
   let release = true;
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const items = [...(release ? releaseItems(deps.tableName, task.charge, task.taskId) : []), ...rest()];
+    // The form the slot was charged in (a marker, or the counter's old `tasks` set), read again on each try.
+    const form: ChargeForm | undefined = release ? await chargeFormOf(deps.documentClient, deps.tableName, task.charge, task.taskId) : undefined;
+    const items = [...(form !== undefined ? releaseItems(deps.tableName, task.charge, task.taskId, form) : []), ...rest()];
     if (items.length === 0) return "already_released";
     try {
-      // First, at positions 0 and 1: releaseConflict reads the cancellation reasons by position.
+      // First (positions 0 to 2): releaseConflict reads the cancellation reasons by position.
       await deps.actions.transact(items);
       return release ? "released" : "already_released";
     } catch (error) {
@@ -210,7 +213,7 @@ async function releaseFinishedTaskNow(deps: ReleaseDeps, task: DeveloperTaskReco
       if (!release) return "busy";
       try {
         // Counters that no longer hold this task: given back already; the rest is sent again without them.
-        await releaseConflict(deps.documentClient, deps.tableName, task.charge, task.taskId, error);
+        await releaseConflict(deps.documentClient, deps.tableName, task.charge, task.taskId, error, form ?? "set");
       } catch {
         // Not the counters: something else moved meanwhile; the next call tries again.
         return "busy";
@@ -231,12 +234,15 @@ const SELF_HEAL_MAX = 10;
  * released now is left for the next time.
  */
 export async function releaseFinishedTasksOf(deps: ReleaseDeps, member: { pk: string; sk: string }): Promise<number> {
-  const counter = await get<{ tasks?: Set<string> }>(deps, member);
   let released = 0;
-  for (const taskId of [...(counter?.tasks ?? [])].slice(0, 50)) {
+  // Both forms: the markers that name this counter and the counter's old `tasks` set (before the one-time migration).
+  for (const taskId of await chargedTaskIds(deps.documentClient, deps.tableName, member, 50)) {
     if (released >= SELF_HEAL_MAX) break;
     const task = await get<DeveloperTaskRecord>(deps, taskKey(taskId));
     if (task === undefined) continue;
+    // A marker beside a person's counter may be the core's (it charges the same family and marks each task `TASK#<id>`): the core releases its own tasks, and
+    // Cloud's path must never close one (it would write releasedAt, a task-index update and an audit row on a core task). Only Cloud's tasks are healed here.
+    if (engineOfTask(await get<Record<string, unknown>>(deps, engineStampKey(taskId)), "flow") === "core") continue;
     // A finished task goes through the marked release, so a claim it leaves (the compute refused, say) is the sweep's to
     // finish; a closed task only gives back its slot.
     try {

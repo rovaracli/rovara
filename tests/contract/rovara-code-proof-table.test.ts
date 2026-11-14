@@ -407,14 +407,22 @@ describe("loadTestProof", () => {
     expect(await loadTestProof(actionsWith({ [artifactKey("op-1")]: JSON.stringify(proof) }), task, CODE.digest)).toEqual(proof);
   });
 
-  it("returns nothing when there is no artifact (always, until the worker part lands), when it is for another digest, malformed, or from another workspace's key", async () => {
+  it("returns nothing when there is no artifact, when it is for another digest, malformed, a different schema version, or from another workspace's key", async () => {
     expect(await loadTestProof(actionsWith({}), task, CODE.digest)).toBeUndefined();
     expect(await loadTestProof(actionsWith({ [artifactKey("op-1")]: JSON.stringify(proofFor(OTHER.digest)) }), task, CODE.digest)).toBeUndefined();
     expect(await loadTestProof(actionsWith({ [artifactKey("op-1")]: "{not json" }), task, CODE.digest)).toBeUndefined();
-    expect(await loadTestProof(actionsWith({ [artifactKey("op-1")]: JSON.stringify({ ...proofFor(CODE.digest), extra: 1 }) }), task, CODE.digest)).toBeUndefined();
+    expect(await loadTestProof(actionsWith({ [artifactKey("op-1")]: JSON.stringify({ ...proofFor(CODE.digest), schemaVersion: 2 }) }), task, CODE.digest)).toBeUndefined();
     const foreign = { ...actionsWith({ [artifactKey("op-1")]: JSON.stringify(proofFor(CODE.digest)) }), artifacts: async () => [{ name: "test-proof.json", objectKey: "private/someone-else/ws-9/op-1/test-proof.json" }] };
     expect(await loadTestProof(foreign, task, CODE.digest)).toBeUndefined();
     expect(await loadTestProof(actionsWith({ [artifactKey("op-1")]: JSON.stringify(proofFor(CODE.digest)) }), task, undefined)).toBeUndefined();
+  });
+
+  it("reads a proof a newer writer added keys to (0.5.18 pin, public #518): the unknown key is dropped and a weakening part that does not read is dropped alone", async () => {
+    const proof = proofFor(CODE.digest);
+    expect(await loadTestProof(actionsWith({ [artifactKey("op-1")]: JSON.stringify({ ...proof, extra: 1 }) }), task, CODE.digest)).toEqual(proof);
+    expect(await loadTestProof(actionsWith({ [artifactKey("op-1")]: JSON.stringify({ ...proof, weakening: [{ checkId: "readiness:0", skippedBefore: -1 }] }) }), task, CODE.digest)).toEqual(proof);
+    const weakening = [{ checkId: "readiness:0", skippedBefore: 0, skippedAfter: 2, absentOnNew: ["t1"], absentOnNewCount: 1 }];
+    expect(await loadTestProof(actionsWith({ [artifactKey("op-1")]: JSON.stringify({ ...proof, weakening }) }), task, CODE.digest)).toEqual({ ...proof, weakening });
   });
 
   it("returns nothing, and does not throw, when storage fails", async () => {

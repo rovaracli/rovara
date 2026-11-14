@@ -92,7 +92,7 @@ jobs:
             fi
             echo "Changed paths compared with $base."
           fi
-          if grep -Eq '^(packages/worker/|packages/cloud-contracts/src/(service-catalog|test-env|test-services)|vendor/rovara-code/packages/contracts/src/(service-catalog|test-env|test-services)|environments/(base|service-catalog)/|infra/lib/(worker|ec2|network|access)|scripts/(linux-check-test-services|ci-test-services-linux|ci-docker25-engine|ci-egress-capture)|\.github/workflows/ci\.yml)' "$changed"; then
+          if grep -Eq '^(packages/worker/|packages/cloud-contracts/src/(service-catalog|test-env|test-services)|vendor/rovara-code/packages/contracts/src/(service-catalog|test-env|test-services)|environments/(base|service-catalog)/|infra/lib/(worker|ec2|network|access)|scripts/(linux-check-fresh-round|linux-check-test-services|ci-test-services-linux|ci-docker25-engine|ci-egress-capture)|\.github/workflows/ci\.yml)' "$changed"; then
             echo "test_services=true" >> "$GITHUB_OUTPUT"
           else
             echo "test_services=false" >> "$GITHUB_OUTPUT"
@@ -397,6 +397,12 @@ jobs:
           node scripts/ci-images.ts dockerfile environments/base/Dockerfile "$RUNNER_TEMP/worker.Dockerfile"
           docker build -f "$RUNNER_TEMP/worker.Dockerfile" -t rovara-worker:ci .
           npx tsx scripts/linux-check-test-services-live.ts --js > "$RUNNER_TEMP/tsl-live.mjs"
+      - name: Fresh check round Linux proof
+        if: needs.scope.outputs.test_services != 'false'
+        timeout-minutes: 10
+        env:
+          FRESH_IMAGE: rovara-worker:ci
+        run: bash scripts/linux-check-fresh-round.sh
       # No catalog and no AWS on CI: Postgres is the public postgres:16 (ECR Public mirror), pinned by the index digest in scripts/ci-test-services-linux.sh, pushed to a throwaway local registry and run by the
       # digest it got there. The rules are boot-stage2.sh's own functions (sourced). Any FAIL, any unexpected PENDING and any live item without a PASS fails the job.
       - name: Test services Linux checks (rules, live driver, host checks)

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { allowGitFileTransportForTests } from "../../packages/worker/src/git.js";
+import { HARDENED_GIT_CONFIG, allowGitFileTransportForTests, isolatedGitEnvironment } from "../../packages/worker/src/git.js";
 import { maintainPullRequest } from "../../packages/worker/src/maintain-pull-request.js";
 import { publishWorkspace } from "../../packages/worker/src/publish.js";
 import { installGitShim, type GitShim } from "../support/git-shim.js";
@@ -143,5 +143,19 @@ describe("class C: token-carrying git calls never read the workspace repository'
       stopWorkspaceProcesses: async () => ({ stopped: 0 }), sweepWorkspaceContainers: async () => ({ removed: 0 }) });
     expect((await git(fixture.bare, ["rev-parse", `refs/heads/${fixture.headBranch}`])).trim()).toBe(result.commit);
     expect(await markersIn(fixture.root)).toEqual([]);
+  });
+});
+
+describe("a server's redirect is never followed by the worker's Git", () => {
+  it("sets http.followRedirects=false in the hardened list and in the environment Git actually reads", async () => {
+    expect(HARDENED_GIT_CONFIG).toContainEqual(["http.followRedirects", "false"]);
+    const directory = await mkdtemp(join(tmpdir(), "worker-redirects-"));
+    try {
+      // A positive control: Git itself reports the value, so the test fails if the list is not what reaches `git`.
+      const { stdout } = await promisify(execFileCallback)("git", ["config", "--get", "http.followRedirects"], { cwd: directory, env: isolatedGitEnvironment(directory) });
+      expect(stdout.trim()).toBe("false");
+      const { stdout: other } = await promisify(execFileCallback)("git", ["config", "--get", "http.sslVerify"], { cwd: directory, env: isolatedGitEnvironment(directory) });
+      expect(other.trim()).toBe("true");
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });

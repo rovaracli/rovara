@@ -5,7 +5,7 @@
 //     NEW sandbox on it with the task sandbox's hardening, on the `agentx-task` network, the export as the only mount. A second round on the same task gets its own directory and container.
 //   - IT NEVER FALLS BACK. If the export, the start, the setup or a helper fails, the round is "not run: ..." with a fixed sentence (never docker's or git's words), and `round` is not called. Nothing runs in the working sandbox, a dev container
 //     or the host instead: the sealed round's own rule (check-round-runners.ts), kept here. The working sandbox is never touched, never joined to a network of this round and never paused (see below).
-//   - THE SANDBOX IS REMOVED in `finally`, on success, failure and cancel, and so is the export. A runner kept after the round rejects.
+//   - THE SANDBOX IS REMOVED in `finally`, on success, failure and confirmed cancel, and so is the export. An unconfirmed stop preserves both for quarantine; no cleanup touches a potentially live writer. A runner kept after the round rejects.
 //   - IT SAYS WHAT IT IS. The round's first progress line starts with "not sealed" (check-round-kind.ts). The word "sealed" is never printed for this round without "not" in front of it.
 //   - DEPENDENCIES. A clean export has no installed dependencies. The project's own setup commands (`setup`, given by the caller: the worker does not know them at task time, see the seam in run-task.ts) run INSIDE the fresh sandbox, in
 //     the round's time, before the first check; if they cannot finish the round is "not run: ... could not be prepared", never a failed check. Registry tokens are not given to this round.
@@ -16,17 +16,19 @@
 // IT BECOMES THE SEALED ROUND by the chooser's input and nothing else (check-round-kind.ts): same export, same runners shape, same evidence input; only the sandbox, the network and the label differ. It does not touch `withSealedCheckRound` or
 // check-sandbox.ts, and has no option that makes either "unsealed".
 import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { matchTestCommand, type ProjectCommand } from "@rovara-code/contracts";
-import { tailCollector } from "./collected-process.js";
+import { RunnerKillUnconfirmedError, tailCollector } from "./collected-process.js";
 import { FRESH_ROUND_FIRST_LINE } from "./check-round-kind.js";
 import { containerBashOperations, runContainerCommand, type ContainerExec } from "./devcontainer.js";
-import { FRESH_NOT_RUN_SENTENCES, FreshQuiesceError, exportCandidateForFreshRound, freshSandboxArgProblems, freshSandboxRunArgs, freshSandboxSuffix, removeFreshExport, type FreshCandidateRepository, type FreshNotRunReason } from "./fresh-check-sandbox.js";
+import { FRESH_NOT_RUN_SENTENCES, FreshQuiesceError, sweepFreshExports, exportCandidateForFreshRound, freshSandboxArgProblems, freshSandboxRunArgs, freshSandboxSuffix, removeFreshExport, type FreshCandidateRepository, type FreshNotRunReason } from "./fresh-check-sandbox.js";
 import { AGENTX_GIT_IDENTITY_ENVIRONMENT } from "./git.js";
 import { sandboxCommandOptions } from "./task-sandbox.js";
 import { ensureTaskNetwork } from "./task-network.js";
 import { createDockerCli, taskContainerExec, type DockerCli } from "./swebench/containers.js";
 import { CheckNotRunError, containedDirectory, withoutRootError, type CheckRunners } from "./verification/checks.js";
+
+import { currentWorkspaceSafety, type Quarantinable } from "./workspace-safety.js";
 
 const SANDBOX_START_TIMEOUT_MS = 5 * 60_000;
 const DOCKER_CALL_TIMEOUT_MS = 60_000;
@@ -103,12 +105,36 @@ function logEvent(event: Record<string, unknown>): void {
   console.log(JSON.stringify({ component: "worker", ...event }));
 }
 
+/** The task latch wins even when an intermediate callback swallowed the original exception. */
+export function assertFreshWorkspaceSafe(): void {
+  const safety = currentWorkspaceSafety();
+  if (safety?.unsafe === true) throw safety.failure ?? new RunnerKillUnconfirmedError(safety.unconfirmed[0] ?? { kind: "local" });
+}
+
+function freshFailure(error: unknown): undefined {
+  if (error instanceof RunnerKillUnconfirmedError) throw error;
+  assertFreshWorkspaceSafe();
+  return undefined;
+}
+
+/** A Docker client that outlives its stop can still start or remove a container. Preserve that fact. */
+function guardedDocker(docker: DockerCli): DockerCli {
+  return { run: async (args, options) => {
+    assertFreshWorkspaceSafe();
+    const result = await docker.run(args, options);
+    if (result.killUnconfirmed === true) throw new RunnerKillUnconfirmedError({ kind: "local", ...(result.pgid === undefined ? {} : { pgid: result.pgid }) });
+    assertFreshWorkspaceSafe();
+    return result;
+  } };
+}
+
 /** The runners of a fresh round: the same commands the working sandbox runs (`runContainerCommand`, `containerBashOperations`, the same NODE_ENV and Python user site settings), through `exec` into the fresh container. */
-async function createFreshRunners(rootPath: string, exec: ContainerExec): Promise<CheckRunners> {
+async function createFreshRunners(rootPath: string, exec: ContainerExec, exportDirectory: string): Promise<CheckRunners> {
   const commandOptions = sandboxCommandOptions(rootPath);
   const operations = containerBashOperations(exec, commandOptions);
   const root = await realpath(resolve(rootPath)).catch(() => resolve(rootPath));
   return {
+    kind: "sandbox",
     async runProjectCommand(command, signal) {
       if (signal.aborted) throw new Error("aborted");
       try {
@@ -124,13 +150,22 @@ async function createFreshRunners(rootPath: string, exec: ContainerExec): Promis
       if (matchTestCommand(replay) !== replay) throw new CheckNotRunError("AgentX replays only a simple test command, and this is not one.");
       const cd = /^cd (\S+) && (.+)$/s.exec(replay);
       const command = cd === null ? replay : cd[2]!;
-      const cwd = cd === null ? root : await containedDirectory(root, cd[1]!, true);
+      let cwd = root;
+      if (cd !== null) {
+        // The host working tree can be gone or contain a different symlink. Resolve ONLY in the export,
+        // then translate to the path where Docker mounts it. Never echo the supplied path on refusal.
+        const exportedCwd = await containedDirectory(exportDirectory, cd[1]!, true).catch(() => {
+          throw new CheckNotRunError("AgentX did not replay this command: its directory is not available in the fresh export.");
+        });
+        cwd = resolve(root, relative(exportDirectory, exportedCwd));
+      }
       const output = tailCollector();
       try {
         // The AgentX git identity only: the worker's own environment is not copied into the fresh sandbox.
         const { exitCode } = await operations.exec(command, cwd, { onData: (data) => output.add(data), signal, timeout: timeoutMs / 1_000, env: { ...AGENTX_GIT_IDENTITY_ENVIRONMENT } });
         return { exitCode, timedOut: false, output: output.text() };
       } catch (error) {
+        if (error instanceof RunnerKillUnconfirmedError) throw error;
         if (signal.aborted) throw new Error("aborted", { cause: error });
         if (error instanceof Error && error.message.startsWith("timeout:")) return { exitCode: null, timedOut: true, output: output.text() };
         throw withoutRootError(error, root);
@@ -141,9 +176,13 @@ async function createFreshRunners(rootPath: string, exec: ContainerExec): Promis
 
 /**
  * Runs `round` in a fresh check sandbox made from a clean export of the candidate commit, then removes the sandbox and the export. Resolves `{ kind: "not_run" }` (and does not call `round`) when the export, the start, the setup
- * or a helper fails. A throw from `round` (and a cancel that makes it throw) is rethrown after the cleanup.
+ * or a helper fails. An unconfirmed stop is always rethrown and preserves the container and export. Other throws from `round` are rethrown after cleanup.
  */
 export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round: (runners: CheckRunners) => Promise<T>): Promise<FreshRoundResult<T>> {
+  assertFreshWorkspaceSafe();
+  const docker = guardedDocker(input.docker);
+  const registered: Quarantinable[] = [];
+  currentWorkspaceSafety()?.quarantinables.push(registered);
   const notRun = (reason: FreshNotRunReason): FreshRoundResult<T> => ({ kind: "not_run", reason, sentence: FRESH_NOT_RUN_SENTENCES[reason] });
   const signal = input.signal ?? new AbortController().signal;
   const log = input.log ?? logEvent;
@@ -158,18 +197,24 @@ export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round:
   let live = false;
   const stops: Array<() => Promise<void>> = [];
   let roundDone = false;
+  let unsafeStop = false;
   try {
     if (input.quiesce !== undefined) {
-      try { await input.quiesce(signal); } catch (error) { return notRun(signal.aborted ? "stopped" : error instanceof FreshQuiesceError ? error.reason : "quiesce_failed"); }
+      try { await input.quiesce(signal); assertFreshWorkspaceSafe(); } catch (error) { freshFailure(error); return notRun(signal.aborted ? "stopped" : error instanceof FreshQuiesceError ? error.reason : "quiesce_failed"); }
     }
-    try { await (input.ensureNetwork ?? ensureTaskNetwork)(input.docker); } catch { return notRun("sandbox_failed"); }
-    const repositories = await input.candidate().catch(() => undefined);
+    try { await (input.ensureNetwork ?? ensureTaskNetwork)(docker); assertFreshWorkspaceSafe(); } catch (error) { freshFailure(error); return notRun("sandbox_failed"); }
+    const repositories = await input.candidate().catch(freshFailure);
+    assertFreshWorkspaceSafe();
     if (repositories === undefined) return notRun("export_failed");
     const pinned = input.pinned();
     if (pinned === undefined || !samePinned(repositories, pinned)) return notRun("candidate_moved");
     const exported = await exportCandidateForFreshRound({ rootPath: root, taskId: input.taskId, repositories, signal });
+    assertFreshWorkspaceSafe();
     if (!exported.ok) return notRun(exported.reason);
     exportDirectory = exported.directory;
+    const swept = await sweepFreshExports({ rootPath: root, docker, signal });
+    assertFreshWorkspaceSafe();
+    if (swept.kind === "skipped") log({ event: "fresh-check-round.sweep.skipped", reason: swept.reason });
     if (exported.skipped.length > 0) log({ event: "fresh-check-round.export.skipped", taskId: input.taskId, symlinksAndSubmodules: exported.skipped.length });
     const containerName = `agentx-fresh-${input.taskId.replace(/[^a-zA-Z0-9_.-]/gu, "-").slice(0, 40)}-${freshSandboxSuffix()}`;
     const runInput = { name: containerName, taskId: input.taskId, image: input.image, rootPath: root, exportDirectory,
@@ -178,10 +223,13 @@ export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round:
     if (freshSandboxArgProblems(args, runInput).length > 0) return notRun("sandbox_failed");
     // Named before the start: a start that half-worked is removed too.
     name = containerName;
-    const started = await input.docker.run(args, { timeoutMs: SANDBOX_START_TIMEOUT_MS, signal }).catch(() => undefined);
+    // The existing quarantine marker must name this container too. Once unsafe, leave it in place;
+    // the next task stays refused until containerGone verifies it has been stopped externally.
+    registered.push({ name: containerName, quarantine: async () => ({ name: containerName, verified: false }) });
+    const started = await docker.run(args, { timeoutMs: SANDBOX_START_TIMEOUT_MS, signal }).catch(freshFailure);
     if (started === undefined || started.exitCode !== 0) return notRun(signal.aborted ? "stopped" : "sandbox_failed");
     live = true;
-    const raw = taskContainerExec(input.docker, containerName);
+    const raw = taskContainerExec(docker, containerName);
     const exec: ContainerExec = (command, options) => {
       if (!live) return Promise.reject(new Error("the fresh check sandbox is not running"));
       return raw(command, options);
@@ -189,23 +237,32 @@ export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round:
     // The project's setup, inside the fresh sandbox, within its budget.
     const setupSignal = AbortSignal.any([signal, AbortSignal.timeout(input.setupBudgetMs ?? FRESH_SETUP_BUDGET_MS)]);
     for (const command of input.setup) {
-      const result = await runContainerCommand(exec, root, command, setupSignal, sandboxCommandOptions(root)).catch(() => undefined);
+      const result = await runContainerCommand(exec, root, command, setupSignal, sandboxCommandOptions(root)).catch(freshFailure);
       if (result === undefined || result.exitCode !== 0 || result.timedOut === true) return notRun(signal.aborted ? "stopped" : "not_prepared");
     }
     try {
       for (const helper of input.hooks?.helpers ?? []) stops.push(await helper.start({ container: containerName, signal }));
-    } catch { return notRun("sandbox_failed"); }
-    const value = await round(await createFreshRunners(root, exec));
+    } catch (error) { freshFailure(error); return notRun("sandbox_failed"); }
+    assertFreshWorkspaceSafe();
+    const value = await round(await createFreshRunners(root, exec, exportDirectory));
+    assertFreshWorkspaceSafe();
     roundDone = true;
     return { kind: "ran", value };
+  } catch (error) {
+    unsafeStop = error instanceof RunnerKillUnconfirmedError;
+    throw error;
   } finally {
     live = false;
-    for (const stop of stops.reverse()) await stop().catch(() => undefined);
-    const removed = name === undefined ? true : await removeContainer(input.docker, name, input.taskId, log);
-    if (exportDirectory !== undefined) {
-      // Kept for the evidence only when the round ran and nothing can still be writing to it.
-      if (roundDone && removed && input.retainExport !== undefined) input.retainExport(exportDirectory);
-      else await removeFreshExport(root, exportDirectory).catch(() => log({ event: "fresh-check-round.export-remove.failed", taskId: input.taskId }));
+    if (!unsafeStop && currentWorkspaceSafety()?.unsafe !== true) {
+      for (const stop of stops.reverse()) { assertFreshWorkspaceSafe(); await stop().catch(freshFailure); }
+      const removed = name === undefined ? true : await removeContainer(docker, name, input.taskId, log);
+      assertFreshWorkspaceSafe();
+      if (removed) registered.length = 0;
+      if (exportDirectory !== undefined && removed) {
+        // Kept for the evidence only when the round ran and nothing can still be writing to it.
+        if (roundDone && input.retainExport !== undefined) input.retainExport(exportDirectory);
+        else await removeFreshExport(root, exportDirectory).catch(() => log({ event: "fresh-check-round.export-remove.failed", taskId: input.taskId }));
+      }
     }
   }
 }
@@ -213,11 +270,11 @@ export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round:
 /** `docker rm --force`, once more if it fails; a container that cannot be removed is logged, since it keeps the export mounted. */
 async function removeContainer(docker: DockerCli, name: string, taskId: string, log: (event: Record<string, unknown>) => void): Promise<boolean> {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const result = await docker.run(["rm", "--force", name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => ({ exitCode: -1, stdout: "", stderr: "" }));
+    const result = await docker.run(["rm", "--force", name], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch((error: unknown) => { freshFailure(error); return { exitCode: -1, stdout: "", stderr: "" }; });
     if (result.exitCode === 0 || /no such container/iu.test(result.stderr)) return true;
   }
   log({ event: "fresh-check-round.remove.failed", container: name, taskId });
-  return false;
+  throw new RunnerKillUnconfirmedError({ kind: "sandbox" });
 }
 
 /**
@@ -233,15 +290,17 @@ async function removeContainer(docker: DockerCli, name: string, taskId: string, 
  * Anything else, or an answer that cannot be read, rejects, and the round is not run.
  */
 export async function restartWorkingSandbox(docker: DockerCli, container: string, signal?: AbortSignal): Promise<void> {
+  assertFreshWorkspaceSafe();
+  docker = guardedDocker(docker);
   const fail = (): never => { throw new Error("programs the agent left running could not be stopped"); };
   const options = { timeoutMs: DOCKER_CALL_TIMEOUT_MS, ...(signal === undefined ? {} : { signal }) };
-  const restarted = await docker.run(["restart", "--timeout", "0", container], options).catch(() => undefined);
+  const restarted = await docker.run(["restart", "--timeout", "0", container], options).catch(freshFailure);
   if (restarted === undefined || restarted.exitCode !== 0) return fail();
-  const state = await docker.run(["inspect", "--format", "{{.State.Running}} {{.State.Pid}}", container], options).catch(() => undefined);
+  const state = await docker.run(["inspect", "--format", "{{.State.Running}} {{.State.Pid}}", container], options).catch(freshFailure);
   const stateMatch = state === undefined || state.exitCode !== 0 ? null : /^true (\d+)\s*$/u.exec(state.stdout);
   const tini = stateMatch === null ? 0 : Number(stateMatch[1]);
   if (!Number.isSafeInteger(tini) || tini < 2) return fail();
-  const top = await docker.run(["top", container, "-eo", "pid,ppid,args"], options).catch(() => undefined);
+  const top = await docker.run(["top", container, "-eo", "pid,ppid,args"], options).catch(freshFailure);
   if (top === undefined || top.exitCode !== 0) return fail();
   const lines = top.stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "");
   if (lines.length !== 3 || !/^PID\s+PPID\s+/iu.test(lines[0]!)) return fail();
@@ -262,13 +321,13 @@ export interface FreshEvidenceSource {
   pin(candidate: readonly FreshPinnedCandidate[]): void;
   /** The export of the last round that ran (its container is gone), or undefined: a round that did not run, or whose container could not be removed, leaves none. */
   evidenceRoot(): string | undefined;
-  /** Removes what `evidenceRoot` names. Idempotent. */
+  /** Removes what `evidenceRoot` names when the task is safe; an unsafe task leaves it for recovery. Idempotent. */
   releaseEvidence(): Promise<void>;
 }
 
 /**
  * The runners a task uses for its official rounds when the round is fresh: a round opens at `freshServices` (which `runChecks` calls first, every round) and closes at `endRound` (which it calls last, also on failure), so each
- * `runChecks` is its own fresh sandbox. `freshServices` never rejects: a round that could not start leaves every command refused with the fixed "not run" sentence (a `CheckNotRunError`, so the check is `not_run`, never failed).
+ * `runChecks` is its own fresh sandbox. `freshServices` rejects an unconfirmed stop; other start refusals leave every command refused with the fixed "not run" sentence (a `CheckNotRunError`, so the check is `not_run`, never failed).
  * A command outside a round is refused too. The original-code rounds (before results, the test proof) do NOT use these: they run on the original code, where there is nothing to export (run-task.ts, check-round-choice.ts).
  */
 export function createFreshCheckRunners(input: Omit<FreshCheckRoundInput, "pinned" | "retainExport"> & {
@@ -282,9 +341,10 @@ export function createFreshCheckRunners(input: Omit<FreshCheckRoundInput, "pinne
   let epoch = 0;
   let retained: string[] = [];
   const releaseRetained = async (): Promise<void> => {
+    if (currentWorkspaceSafety()?.unsafe === true) return;
     const directories = retained;
     retained = [];
-    for (const directory of directories) await removeFreshExport(resolve(input.rootPath), directory).catch(() => undefined);
+    for (const directory of directories) { assertFreshWorkspaceSafe(); await removeFreshExport(resolve(input.rootPath), directory).catch(() => undefined); }
   };
   const close = async (): Promise<void> => {
     const current = open;
@@ -294,11 +354,16 @@ export function createFreshCheckRunners(input: Omit<FreshCheckRoundInput, "pinne
     await current.done.catch(() => undefined);
   };
   const current = (): CheckRunners => {
+    assertFreshWorkspaceSafe();
     if (open === undefined) throw new CheckNotRunError(failure ?? "not run: the fresh check sandbox is not open");
     return open.runners;
   };
   return {
+    // The lifecycle also waits for host export/start clients. A join timeout must keep the
+    // workspace fenced even if Docker cannot see a not-yet-created container.
+    kind: "local",
     async freshServices(signal) {
+      assertFreshWorkspaceSafe();
       epoch += 1;
       const mine = epoch;
       await close();
@@ -310,12 +375,13 @@ export function createFreshCheckRunners(input: Omit<FreshCheckRoundInput, "pinne
       const ready = new Promise<CheckRunners | undefined>((done) => { handOver = done; });
       const roundSignal = input.signal === undefined ? signal : AbortSignal.any([signal, input.signal]);
       const { keepExport, ...rest } = input;
+      let fatal: RunnerKillUnconfirmedError | undefined;
       const done = withFreshCheckRound({ ...rest, signal: roundSignal, pinned: () => pinned, ...(keepExport === true ? { retainExport: (directory: string) => { retained.push(directory); } } : {}) }, async (runners) => { handOver(runners); await closed; }).then(
         (result) => { if (result.kind === "not_run") { failure = result.sentence; handOver(undefined); } },
-        () => { failure = FRESH_NOT_RUN_SENTENCES.sandbox_failed; handOver(undefined); },
+        (error: unknown) => { if (error instanceof RunnerKillUnconfirmedError) fatal = error; failure = FRESH_NOT_RUN_SENTENCES.sandbox_failed; handOver(undefined); },
       );
       const runners = await ready;
-      if (runners === undefined) { await done; return; }
+      if (runners === undefined) { await done; if (fatal !== undefined) throw fatal; assertFreshWorkspaceSafe(); return; }
       // The round was ended or replaced while the sandbox started: nothing may keep it.
       if (epoch !== mine) { release(); await done.catch(() => undefined); await releaseRetained(); return; }
       open = { runners, release, done };

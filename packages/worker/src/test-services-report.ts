@@ -11,9 +11,12 @@
 //   runDirEmpty                             the run directory (a tmpfs the worker was given) holds nothing
 //   runDirTmpfs                             that directory really is a tmpfs mount inside the worker (null: the mount table could not be read)
 //   workingSandboxPaused                    the task's working sandbox is NOT frozen after the run (false is right; true means a pause was left behind; null: no sandbox, or it is gone)
+//   selfTest                                worker_start only, and only when the launch opted in to the TS-L self-test on a staging environment (boot-stage2.sh `run_tsl_selftest`): fixed item ids with a status and a reason code each, and the AMI id,
+//                                           boot-stage2 SHA-256, Docker version and instance id (test-services-selftest.ts). The key is absent otherwise.
 //   bootFacts                               root's facts from boot (`AGENTX_TEST_SERVICES_BOOT_FACTS`): the metadata block, the run-network walls, the IPv6 drops, the pre-pull and the registry logout
 import { readFile, readdir } from "node:fs/promises";
 import { RUN_NETWORK_LABEL, RUN_NETWORK_WORKSPACE_LABEL } from "./run-network.js";
+import { type SelfTestResult, isSelfTestResult, parseSelfTest } from "./test-services-selftest.js";
 import type { DockerCli } from "./swebench/containers.js";
 
 export const TEST_SERVICES_REPORT_EVENT = "test-services.report";
@@ -56,6 +59,8 @@ export interface TestServicesReport {
   sweptNetworks?: number;
   /** worker_start: root's boot facts, "absent" when the worker was not given any, "unreadable" when they were not in the expected form. */
   bootFacts?: BootFacts | "absent" | "unreadable";
+  /** worker_start: the opt-in TS-L self-test's result; the key is left out when the self-test is off. */
+  selfTest?: SelfTestResult | "unreadable";
 }
 
 const COUNT_MAX = 100_000;
@@ -81,7 +86,7 @@ export function parseBootFacts(text: string | undefined): BootFacts | "absent" |
   return { metadataBlocked: facts["metadataBlocked"], runWalls: facts["runWalls"], ipv6Drops: facts["ipv6Drops"], ...(reason === "ip6tables-unusable" || reason === "rule-not-added" ? { ipv6DropsReason: reason } : {}), prepull: facts["prepull"], prepulled: facts["prepulled"], loggedOut: facts["loggedOut"], dockerVersion: facts["dockerVersion"] };
 }
 
-const REPORT_KEYS: ReadonlySet<string> = new Set(["phase", "outcome", "leftoverContainers", "leftoverNetworks", "runDirEmpty", "runDirTmpfs", "workingSandboxPaused", "sweptContainers", "sweptNetworks", "bootFacts"]);
+const REPORT_KEYS: ReadonlySet<string> = new Set(["phase", "outcome", "leftoverContainers", "leftoverNetworks", "runDirEmpty", "runDirTmpfs", "workingSandboxPaused", "sweptContainers", "sweptNetworks", "bootFacts", "selfTest"]);
 const count = (value: unknown): boolean => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= COUNT_MAX;
 const countOrNull = (value: unknown): boolean => value === null || count(value);
 const tri = (value: unknown): boolean => value === null || typeof value === "boolean";
@@ -98,6 +103,8 @@ export function checkReport(value: unknown): value is TestServicesReport {
   if (report["sweptNetworks"] !== undefined && !count(report["sweptNetworks"])) return false;
   const facts = report["bootFacts"];
   if (facts !== undefined && facts !== "absent" && facts !== "unreadable" && parseBootFacts(JSON.stringify(facts)) === "unreadable") return false;
+  const selfTest = report["selfTest"];
+  if (selfTest !== undefined && selfTest !== "unreadable" && (report["phase"] !== "worker_start" || !isSelfTestResult(selfTest))) return false;
   return true;
 }
 
@@ -118,9 +125,17 @@ export interface ReportInput {
   outcome: ReportOutcome;
   swept?: { containers: number; networks: number } | undefined;
   bootFactsText?: string | undefined;
+  /** worker_start: the self-test result root wrote (`AGENTX_TEST_SERVICES_SELFTEST`); undefined or empty when the self-test is off. */
+  selfTestText?: string | undefined;
   /** Test seams. */
   readMountTable?: () => Promise<string>;
   readDirectory?: (path: string) => Promise<string[]>;
+}
+
+/** The `selfTest` key, or nothing when the self-test did not run (off is the normal case: the report is then exactly what it was). */
+function selfTestPart(text: string | undefined): { selfTest?: SelfTestResult | "unreadable" } {
+  const parsed = parseSelfTest(text);
+  return parsed === "absent" ? {} : { selfTest: parsed };
 }
 
 const ofLines = (stdout: string): number => stdout.split("\n").filter((line) => line.trim() !== "").length;
@@ -155,6 +170,7 @@ export async function collectReport(input: ReportInput): Promise<TestServicesRep
     phase: input.phase, outcome: input.outcome, leftoverContainers, leftoverNetworks, runDirEmpty, runDirTmpfs, workingSandboxPaused,
     ...(input.swept === undefined ? {} : { sweptContainers: input.swept.containers, sweptNetworks: input.swept.networks }),
     ...(input.phase === "worker_start" ? { bootFacts: parseBootFacts(input.bootFactsText) } : {}),
+    ...(input.phase === "worker_start" ? selfTestPart(input.selfTestText) : {}),
   };
 }
 

@@ -187,6 +187,23 @@ describe("ModelProxyClient", () => {
     expect(seen).toHaveLength(3);
   });
 
+  it("keyEstimatedSpend sums the guard's stamp in each key's metadata (micro-dollars), never more than the key's own spend, and 0 for a key with none", async () => {
+    const infos: Record<string, Record<string, unknown>> = {
+      ["a".repeat(64)]: { spend: 1.5, metadata: { orgId: "o", rovara_estimated_micros: 250_000 } },
+      ["b".repeat(64)]: { spend: 0.1, metadata: { rovara_estimated_micros: 9_000_000 } },   // a stamp ahead of the spend the proxy has flushed: capped at the spend
+      ["d".repeat(64)]: { spend: 2.25, metadata: { orgId: "o" } },
+      ["e".repeat(64)]: { spend: 1, metadata: null },
+      ["f".repeat(64)]: { spend: 1, metadata: { rovara_estimated_micros: "x" } },
+      ["g".repeat(64)]: { spend: 1, metadata: { rovara_estimated_micros: -5 } },
+    };
+    const { client } = proxy(({ path, search }) => (path === "/key/info" ? json({ info: infos[new URLSearchParams(search).get("key") ?? ""] }) : undefined));
+    expect(await client.keyEstimatedSpend(Object.keys(infos))).toBeCloseTo(0.25 + 0.1, 9);
+    expect(await client.keySpend(Object.keys(infos))).toBeCloseTo(1.5 + 0.1 + 2.25 + 3, 9);
+    expect(await client.keyEstimatedSpend([])).toBe(0);
+    // A key the proxy cannot find fails closed, as keySpend does.
+    expect((await failure(proxy(() => undefined).client.keyEstimatedSpend(["c".repeat(64)]))).code).toBe("MODEL_PROXY_UNAVAILABLE");
+  });
+
   it("keySpend fails closed on a key the proxy cannot find: MODEL_PROXY_UNAVAILABLE, never a spend of 0", async () => {
     const { client } = proxy(({ path, search }) => (path === "/key/info" && new URLSearchParams(search).get("key") === "a".repeat(64) ? json({ info: { spend: 1 } }) : undefined));
     expect((await failure(client.keySpend(["a".repeat(64), "c".repeat(64)]))).code).toBe("MODEL_PROXY_UNAVAILABLE");

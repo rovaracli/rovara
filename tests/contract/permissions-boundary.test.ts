@@ -27,11 +27,13 @@ describe("permission boundary", () => {
       const policyIds = Object.entries(json.Resources)
         .filter(([, r]) => r.Type === "AWS::IAM::ManagedPolicy" && !/^agentx-.+-broker-/.test(((name) => (typeof name === "string" ? name : ""))((r.Properties as { ManagedPolicyName?: unknown }).ManagedPolicyName)))
         .map(([id]) => id);
-      const elseBranch = stack.stackName === "agentx-staging-access" ? { Ref: policyIds[0] } : defaultArn;
-      expect(policyIds, stack.stackName).toHaveLength(stack.stackName === "agentx-staging-access" ? 1 : 0);
+      const elseBranch = stack.stackName === "agentx-staging-access" ? { Ref: "DefaultPermissionsBoundary" } : defaultArn;
+      // 0.5.17: the access stack also creates the deploy role's own boundary, and only the deploy role carries it.
+      expect(policyIds.sort(), stack.stackName).toEqual(stack.stackName === "agentx-staging-access" ? ["DefaultPermissionsBoundary", "DeployRolePermissionsBoundary"] : []);
       for (const [id, resource] of Object.entries(json.Resources).filter(([, r]) => r.Type === "AWS::IAM::Role")) {
         roles += 1;
-        expect(resource.Properties.PermissionsBoundary, `${stack.stackName} ${id}`).toEqual({ "Fn::If": ["HasPermissionsBoundary", { Ref: "PermissionsBoundaryArn" }, elseBranch] });
+        const own = stack.stackName === "agentx-staging-access" && id === "CloudFormationServiceRole" ? { Ref: "DeployRolePermissionsBoundary" } : elseBranch;
+        expect(resource.Properties.PermissionsBoundary, `${stack.stackName} ${id}`).toEqual({ "Fn::If": ["HasPermissionsBoundary", { Ref: "PermissionsBoundaryArn" }, own] });
       }
     }
     expect(roles).toBeGreaterThan(2);

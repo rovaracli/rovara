@@ -171,6 +171,8 @@ export function modelProxyTlsDeployStatements(scope: { env: string; partition: s
         Sid: "ModelProxyTlsCertificateRequest", Effect: "Allow", Action: ["acm:RequestCertificate"], Resource: "*",
         Condition: {
           StringEquals: { "aws:RequestedRegion": scope.region, "aws:RequestTag/agentx:env": scope.env },
+          // 0.5.17 review L-2: never an exportable certificate. IfExists: CloudFormation's request names no export option; one that does must say DISABLED.
+          StringEqualsIfExists: { "acm:Export": "DISABLED" },
           "ForAllValues:StringEquals": { "acm:DomainNames": [tls.name] },
           Null: { "acm:DomainNames": "false" },
         },

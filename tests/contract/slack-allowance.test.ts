@@ -59,7 +59,9 @@ describe("the Slack ingress", () => {
     // One rule for the requester (requireSlackRequesterWriterRole; the membership step is the one explicit-member rule, since a9eef871d): the company sign-in's allowance is asked first; the person's live role (I2) is read after it. The workflow caller and the
     // service route's role both go through it, and the caller carries that role.
     expect(wiring).toMatch(/await requireSlackAllowedByEdition\(dependencies, userId, orgId\);[\s\S]*?explicitMemberStanding\(/);
-    expect(wiring).toMatch(/const role = await requireSlackRequesterWriterRole\(dependencies, userId, teamOrg\);\s*return requireWriterCaller\(\{ \.\.\.slackWorkflowCaller/);
+    // 0.5.18 (review L2): the workflow caller runs the rule's own body once (`slackRequesterStanding`, default options: a writer only) and seats the survivor of that same walk, with that role.
+    expect(wiring).toMatch(/return \(await slackRequesterStanding\(dependencies, userId, teamOrg, options\)\)\.role;/);
+    expect(wiring).toMatch(/const standing = await slackRequesterStanding\(dependencies, userId, teamOrg\);\s*const seat = await slackSeatOf\(dependencies, userId, teamOrg, standing\.ids\);\s*return requireWriterCaller\(\{ \.\.\.slackWorkflowCaller\(userId, teamOrg\), \.\.\.seat, orgRole: standing\.role \}\);/);
     const preparation = readFileSync(new URL("../../packages/broker/src/aws/broker/workspace-preparation.ts", import.meta.url), "utf8");
     expect(preparation).toMatch(/await requireSlackAllowedByEdition\(dependencies, context\.requester\.userId, orgId\);/);
     expect(preparation).toMatch(/await slackRequesterStanding\(dependencies, userId, orgId, \{ allowUnlinked: true \}\)/);

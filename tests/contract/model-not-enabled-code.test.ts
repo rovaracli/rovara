@@ -103,7 +103,7 @@ describe("a design-review round whose reviewers' model cannot be used", () => {
   });
 });
 
-// 0.5.13: the budget-reserve guard answers 403 `model_not_priced` for a model it has no price for (today only Haiku 5.5) on a budgeted key. That is read like Bedrock's refusal, so the broker learns it and the
+// 0.5.13: the budget-reserve guard answers 403 `model_not_priced` for a model it has no price for on a budgeted key (at 0.5.17 that was Haiku 5.5. DECISIONS 172, 0.5.18: the guard no longer refuses a model for lack of a price, it holds it at a cautious estimate (tests/contract/model-proxy-unpriced.test.ts); the 403 below is a canned body that a guard of 0.5.17 or earlier still answers, so the broker keeps learning from it). That is read like Bedrock's refusal, so the broker learns it and the
 // plan check, reviewers, second review, diagnosis and design review move on instead of losing one attempt (or a whole design-review round) on it every time.
 describe("the guard's 403 model_not_priced is learned like a model the account may not use", () => {
   const org = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;

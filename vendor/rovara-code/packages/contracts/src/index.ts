@@ -19,6 +19,7 @@ export * from "./developer-tasks-node.js";
 export * from "./task-workflow-node.js";
 export * from "./task-workflow-revise.js";
 export * from "./task-workflow-design-review.js";
+export * from "./task-flow-tier.js";
 export * from "./design-review-state.js";
 export * from "./no-change-findings.js";
 export * from "./workflow-autofix.js";
@@ -87,9 +88,17 @@ export * from "./slack.js";
 export * from "./conversation.js";
 export * from "./channel-binding.js";
 export * from "./channel-adapter.js";
+export * from "./channel-command-client.js";
+export * from "./channel-forms.js";
+export * from "./sign-in-clients.js";
+export * from "./thread-service.js";
 export * from "./slack-details.js";
 export * from "./slack-confirmation.js";
+export * from "./slack-blocks.js";
+export * from "./slack-forms.js";
+export * from "./text-chunks.js";
 export * from "./slack-routing.js";
+export * from "./request-intake.js";
 export * from "./templates.js";
 export * from "./turns.js";
 export * from "./usage.js";
@@ -214,7 +223,12 @@ export * from "./ports/index.js";
 export * from "./outcomes.js";
 
 // Proof and evidence (W4/W5): the evidence pack, decision cards, the test environment and service mocks.
+export * from "./check-kinds.js";
 export * from "./evidence.js";
+// TE-B9: the list of Rovara working files that are never committed.
+export * from "./never-commit.js";
+export * from "./evidence-inert.js";
+export * from "./evidence-render.js";
 export * from "./api-samples.js";
 export * from "./media-gate.js";
 
@@ -252,6 +266,12 @@ export * from "./service-mocks.js";
 export * from "./test-services-aws-resources.js";
 export * from "./test-services-shared.js";
 export * from "./test-env-dependency.js";
+export * from "./sagemaker-fixtures.js";
+export * from "./sagemaker-endpoint.js";
+export * from "./sagemaker-words.js";
+export * from "./pii-scan.js";
+export * from "./sagemaker-recording.js";
+export * from "./test-answer-labels.js";
 export * from "./seed-script-lock.js";
 export * from "./generated/aws-emulator-services.js";
 export * from "./aws-emulator-service-keys.js";
@@ -262,7 +282,18 @@ export * from "./catalog-trust.js";
 export * from "./owner-image-list.js";
 export * from "./owner-starter-images.js";
 export * from "./service-catalog-verify.js";
+// TE-F0a (M2): the model catcher foundation. Pure contracts and data with no callers yet; Rovara's own agent-model files (model-providers.ts, model-sources.ts, e2e-model-*.ts) are separate (DECISIONS 157).
+export * from "./model-catalog.js";
+export * from "./model-catalog-rows.js";
+// The unsigned parse (`parseModelCatalogBytes`) is deliberately NOT exported here: only `builtinModelCatalog()` may feed F1 and F2 until the rows are signed.
+export { MODEL_CATALOG_MAX_BYTES, modelCatalogDigest } from "./model-catalog-digest.js";
+export * from "./model-family-common.js";
+export * from "./model-family-gemini.js";
+export * from "./model-family-openai.js";
+export * from "./model-egress-block.js";
+export * from "./model-serve.js";
 export * from "./test-account.js";
+export * from "./test-account-model-hosts.js";
 export * from "./context-sources.js";
 export * from "./mcp-servers.js";
 

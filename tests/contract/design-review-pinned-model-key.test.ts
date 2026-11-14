@@ -190,7 +190,7 @@ describe("a design review of a task with a pinned model policy", () => {
     }
     expect(capability).not.toBe(capabilityOf(w, String(rounds[1]!.id)));
   });
-  // 0.5.13: the budget-reserve guard answers 403 `model_not_priced` for a model it has no price for (today Haiku 5.5). At 0.5.12 the refusal was Bedrock's and marked the model unusable; the round must move on now too.
+  // 0.5.13: the budget-reserve guard answers 403 `model_not_priced` for a model it has no price for (at 0.5.17 that was Haiku 5.5; from 0.5.18 the guard holds such a model cautiously instead of refusing it, and the 403 here is the canned body an older guard answers). At 0.5.12 the refusal was Bedrock's and marked the model unusable; the round must move on now too.
   it("a round whose reviewers' model the guard refused as not priced is tried again on the next usable model, and that round runs", async () => {
     const learned = new Set<string>();
     const w = await world({ learned });

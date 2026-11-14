@@ -90,7 +90,7 @@ export class World {
   }
 
   /** What the customer's administrator does: place the files (not the images) and write the approval record last. */
-  async approve(bundle: BuiltBundle, options: { parameters?: ApprovalRecord["parameters"]; rollback?: boolean; version?: string } = {}): Promise<{ record: ApprovalRecord }> {
+  async approve(bundle: BuiltBundle, options: { parameters?: ApprovalRecord["parameters"]; rollback?: boolean; version?: string; /** A rollback's pin; default: the seeded install (1.2.3, no mark). null: none. */ rollbackFrom?: ApprovalRecord["rollbackFrom"] | null } = {}): Promise<{ record: ApprovalRecord }> {
     const manifest = BundleManifestSchema.parse(JSON.parse(await readFile(join(bundle.dir, "bundle.json"), "utf8")));
     const names = ["bundle.json", "bundle.sig.json", ...manifest.files.filter((entry) => BUNDLE_PUBLIC_DEPLOYED_KINDS.includes(entry.kind)).map((entry) => entry.file)];
     const files: ApprovalRecord["files"] = [];
@@ -98,7 +98,8 @@ export class World {
       const body = await readFile(join(bundle.dir, file));
       files.push({ file, versionId: this.putObject(approvedFileKey(bundle.bundleSha256, file), body), sha256: sha256OfBytes(body), bytes: body.length });
     }
-    const record: ApprovalRecord = { schemaVersion: 1, bundleId: bundle.bundleSha256, version: options.version ?? manifest.version, approvedAt: "2026-10-31T11:00:00.000Z", approvedBy: "security@customer.example", files, parameters: options.parameters ?? {}, rollback: options.rollback ?? false };
+    const record: ApprovalRecord = { schemaVersion: 1, bundleId: bundle.bundleSha256, version: options.version ?? manifest.version, approvedAt: "2026-10-31T11:00:00.000Z", approvedBy: "security@customer.example", files, parameters: options.parameters ?? {}, rollback: options.rollback ?? false,
+      ...(options.rollback === true && options.rollbackFrom !== null ? { rollbackFrom: options.rollbackFrom ?? { installedVersion: "1.2.3", highWater: null } } : {}) };
     this.putObject(bundleApprovalKey(bundle.bundleSha256), Buffer.from(JSON.stringify(record)));
     return { record };
   }

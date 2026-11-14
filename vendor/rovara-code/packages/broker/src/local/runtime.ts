@@ -26,9 +26,12 @@ import {
   type ModuleImporter,
   loadAdapters,
   parsePluginConfig,
+  localOwnerPrincipal,
   registerCodeDefaults,
 } from "../ports/index.js";
 import { MemoryDocumentStore } from "../ports/memory-document-store.js";
+import { linkedPerson } from "../core/channel/links.js";
+import { developerIdOf } from "../core/sessions/create.js";
 import { registerNativeMonitoring } from "../monitoring/native-adapters.js";
 import { registryModelPrices } from "./model-prices.js";
 import { catalogPriceOf } from "../core/cost/price-table.js";
@@ -44,6 +47,7 @@ import type { AutomationSwitch } from "../core/automation/switch.js";
 import type { BrowserOpener } from "./open-browser.js";
 import { createLocalApp, type LocalApp } from "./app/app.js";
 import { localAllowedDomains } from "./isolation/allow-list.js";
+import { laptopSandboxDenyList, sandboxModelHostsAllowed } from "./isolation/sandbox-model-deny.js";
 import { devcontainerRegistriesForInstall } from "./isolation/stack.js";
 import type { LocalComments } from "./app/comments.js";
 import { configurationAnswer } from "./app/routes.js";
@@ -407,6 +411,12 @@ async function startLocked(options: LocalRuntimeOptions, stateDirectory: string)
       fetchComment: async (commentId, request) => comments.current?.fetchComment(commentId, request),
       commentContext: async (request) => comments.current?.contextOf(request),
       commentsOn: () => comments.current?.available() === true,
+      // The owner may approve a low or medium risk request, and ask for changes, with a button in the chat they linked (owner decision of 2026-11-12). Only the owner's own linked account counts; a high-risk request is never
+      // decided there (`createLocalOwnerApprovers`, and again in the decision gate).
+      chat: {
+        channels: () => registry.names("channel"),
+        linkedToOwner: async (account) => (await linkedPerson({ store: registry.require("storage"), orgId: OrgIdSchema.parse(config.companyId ?? IMPLICIT_COMPANY_ID), now: () => Date.now() }, { channel: account.provider, tenant: account.tenant, userId: account.accountId })) === developerIdOf(localOwnerPrincipal({ ...(config.companyId === undefined ? {} : { companyId: config.companyId }) })),
+      },
     },
     modelKeys,
     // A model with no price in its provider's table or the catalog is recorded as "unknown", never guessed.
@@ -461,6 +471,7 @@ async function startLocked(options: LocalRuntimeOptions, stateDirectory: string)
   const callbackServer: { current?: CallbackServer } = {};
   // The hosts the owner approved for a setup run: read at each machine start (the app is made after the machines, so it is read late).
   const approvedHosts: { current?: (project: string | undefined) => Promise<string[]> } = {};
+  const sandboxDeny = laptopSandboxDenyList();
   const docker = new DockerWorkerMachines({
     image: options.workerImage,
     stateDirectory,
@@ -469,6 +480,9 @@ async function startLocked(options: LocalRuntimeOptions, stateDirectory: string)
       return { tcpPort: callbackServer.current.tcpPort, socketDirectory: callbackServer.current.socketDirectory };
     },
     ...(options.allowedDomains === undefined ? {} : { allowedDomains: options.allowedDomains }),
+    // FIX-0518 (security): the sandboxes' network may not reach a model host, unless the owner's config says so for that project. The worker's own network keeps them: the agent's model loop runs there, through the key proxy.
+    modelHostsDeniedInSandbox: sandboxDeny,
+    sandboxModelHostsAllowed: (project) => sandboxModelHostsAllowed(config, project),
     extraAllowedDomains: async (project) => (await approvedHosts.current?.(project)) ?? [],
     // The registries a project's dev container may pull from: the owner's `ROVARA_DEVCONTAINER_REGISTRIES` (`0` turns dev containers off); with none said, the default list on a Docker that runs in a virtual machine and none on a host where root in a container is root.
     devcontainerRegistries: await devcontainerRegistriesForInstall(options.environment, options.docker ?? createDockerRunner(options.environment)),
@@ -618,6 +632,9 @@ async function startLocked(options: LocalRuntimeOptions, stateDirectory: string)
     // The setup agent (`ROVARA_SETUP_AGENT=0` turns it off): a run that sets a project up by running its commands in a sandbox.
     setupAgent: options.environment["ROVARA_SETUP_AGENT"] !== "0",
     installDomains: () => localAllowedDomains(options.allowedDomains),
+    sandboxModelHostsAllowed: (project) => sandboxModelHostsAllowed(config, project),
+    sandboxModelHostsOf: (machineId) => docker.sandboxModelHostsOf(machineId),
+    sandboxDenied: (project) => (sandboxModelHostsAllowed(config, project) ? [] : sandboxDeny),
   });
   approvedHosts.current = (project) => app.setupAgent.approvedHosts(project);
 

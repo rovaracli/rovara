@@ -283,7 +283,7 @@ export async function roundsOfCommits(deps: OutcomeDependencies, task: OutcomeTa
  * ("the tests said they prove the change" and CI failed), scored now, so a fix that replaces the candidate cannot hide them; passing checks are remembered for when it is replaced.
  */
 export async function observeCandidateCode(
-  deps: OutcomeDependencies, task: OutcomeTask, input: { candidateDigest: string; head: string | undefined; ci: "none" | "pending" | "passing" | "failing"; ciIsOnHead: boolean; now: string },
+  deps: OutcomeDependencies, task: OutcomeTask, input: { candidateDigest: string; head: string | undefined; ci: "none" | "pending" | "passing" | "failing" | "unreadable"; ciIsOnHead: boolean; now: string },
 ): Promise<void> {
   try {
     const round = outcomeRoundOf(input.candidateDigest);

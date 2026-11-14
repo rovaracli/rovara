@@ -43,7 +43,9 @@ describe("the linux-runtime job runs the test services Linux checks", () => {
     expect(check, "check step").toBeDefined();
     expect(build.if).toBe(GATE);
     expect(check.if).toBe(GATE);
-    expect(job.steps.slice(-4)).toEqual([build, check, swap, check25]);
+    const fresh = job.steps.find((step) => step.name === "Fresh check round Linux proof");
+    expect(fresh).toMatchObject({ if: GATE, run: "bash scripts/linux-check-fresh-round.sh" });
+    expect(job.steps.slice(-5)).toEqual([build, fresh, check, swap, check25]);
     const lastVitest = job.steps.map((step) => step.run ?? "").map((run, index) => (run.includes("vitest run") ? index : -1)).reduce((a, b) => Math.max(a, b), -1);
     expect(job.steps.indexOf(build)).toBeGreaterThan(lastVitest);
   });

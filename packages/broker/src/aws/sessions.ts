@@ -123,6 +123,56 @@ export interface SessionManagerDependencies {
 const MAX_ATTEMPTS = 5;
 const SESSION_ENTITY = "SESSION";
 
+// ---- Parked deliveries (convergence lane A5, owner decision 60 item S2) ----
+//
+// READERS ONLY (release 0.5.18, DECISIONS 152a). An outbox record that waits for the workspace's compute is an entry of the SESSION item's string set
+// `waitingOutboxIds`, and this release still parks it there. The S2 release (0.5.19) parks each record as one marker item in the workspace's partition
+// instead (Code's document store has no sets) and moves the stored sets to markers. So that a rollback from 0.5.19 to this release strands no parked
+// delivery, every read here merges both forms and every release removes the record from both.
+
+/** The marker's entity type and its sort-key prefix in the workspace's partition. */
+export const SESSION_WAITING_ENTITY = "SESSION_WAITING";
+export const SESSION_WAITING_SK_PREFIX = "SESSION_WAITING#";
+
+/** The marker of one parked outbox record of a workspace's session. */
+export const sessionWaitingKey = (workspaceId: string, outboxId: string): { pk: string; sk: string } => ({ pk: `WORKSPACE#${workspaceId}`, sk: `${SESSION_WAITING_SK_PREFIX}${outboxId}` });
+
+/** The marker item the S2 release's park writes (this release only reads and deletes it; the shape is kept here so the readers and the writer agree). */
+export function sessionWaitingItem(workspaceId: string, outboxId: string, parkedAt: string): Record<string, unknown> {
+  return { ...sessionWaitingKey(workspaceId, outboxId), entityType: SESSION_WAITING_ENTITY, workspaceId, outboxId, parkedAt };
+}
+
+/** The steps that release one parked record, in both forms: out of the old set (a no-op when it is not there) and its marker deleted (a no-op when absent). */
+export function unparkItems(tableName: string, workspaceId: string, outboxId: string): Array<Record<string, unknown>> {
+  return [
+    { Update: { TableName: tableName, Key: workspaceSessionKey(workspaceId), UpdateExpression: "DELETE waitingOutboxIds :id", ExpressionAttributeValues: { ":id": new Set([outboxId]) } } },
+    { Delete: { TableName: tableName, Key: sessionWaitingKey(workspaceId, outboxId) } },
+  ];
+}
+
+/** The outbox ids parked as markers for a workspace (a consistent query of its partition), sorted. */
+export async function parkedMarkerIds(documentClient: Pick<DynamoDBDocumentClient, "send">, tableName: string, workspaceId: string): Promise<string[]> {
+  const ids: string[] = [];
+  let exclusiveStartKey: Record<string, unknown> | undefined;
+  do {
+    const page = await documentClient.send(new QueryCommand({
+      TableName: tableName, ConsistentRead: true, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)",
+      ExpressionAttributeValues: { ":pk": `WORKSPACE#${workspaceId}`, ":prefix": SESSION_WAITING_SK_PREFIX },
+      ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
+    }));
+    for (const item of page.Items ?? []) if (item["entityType"] === SESSION_WAITING_ENTITY && typeof item["outboxId"] === "string") ids.push(item["outboxId"]);
+    exclusiveStartKey = page.LastEvaluatedKey;
+  } while (exclusiveStartKey !== undefined);
+  return ids.sort();
+}
+
+/** The outbox ids a stored SESSION item's old set holds (a Set from the document client, or a list), merged with its markers, sorted and without repeats. */
+export async function parkedOutboxIds(documentClient: Pick<DynamoDBDocumentClient, "send">, tableName: string, workspaceId: string, item: Record<string, unknown> | undefined): Promise<string[]> {
+  const waiting = item?.["waitingOutboxIds"];
+  const fromSet = waiting instanceof Set ? [...waiting].map(String) : Array.isArray(waiting) ? waiting.map(String) : [];
+  return [...new Set([...fromSet, ...await parkedMarkerIds(documentClient, tableName, workspaceId)])].sort();
+}
+
 /**
  * Owns every SESSION state transition of an ec2-ebs workspace (design in #76). Each write is
  * conditional on the state and generation it was read in, so concurrent callers (the dispatcher,
@@ -137,7 +187,14 @@ export class SessionManager {
       Key: workspaceSessionKey(workspaceId),
       ConsistentRead: true,
     }));
-    return response.Item === undefined ? undefined : sessionFromItem(response.Item);
+    return response.Item === undefined ? undefined : this.withParked(response.Item);
+  }
+
+  /** A stored SESSION item as a session, its parked records read in both forms (the old set and the markers). */
+  private async withParked(item: Record<string, unknown>): Promise<WorkspaceSession> {
+    const session = sessionFromItem(item);
+    const parked = await parkedOutboxIds(this.dependencies.documentClient, this.dependencies.tableName, session.workspaceId, item);
+    return parked.length === 0 ? session : { ...session, waitingOutboxIds: parked };
   }
 
   /**
@@ -276,10 +333,10 @@ export class SessionManager {
           ExpressionAttributeNames: { "#status": "status" },
           ExpressionAttributeValues: { ":pending": "PENDING", ":waiting": "WAITING_FOR_SESSION" },
         } },
-        { Update: this.unpark(workspaceId, outboxId) },
+        ...unparkItems(this.dependencies.tableName, workspaceId, outboxId),
       ] });
       if (sent) requeued.push(outboxId);
-      else await this.dependencies.documentClient.send(new UpdateCommand(this.unpark(workspaceId, outboxId)));
+      else await this.unpark(workspaceId, outboxId);
     }
     return { requeued };
   }
@@ -314,7 +371,7 @@ export class SessionManager {
           if (!isConditionalFailure(failure)) throw failure;
         }
       }
-      await this.dependencies.documentClient.send(new UpdateCommand(this.unpark(workspaceId, outboxId)));
+      await this.unpark(workspaceId, outboxId);
     }
     return { failed };
   }
@@ -370,7 +427,7 @@ export class SessionManager {
         ExpressionAttributeValues: { ":state": state },
         ...(exclusiveStartKey === undefined ? {} : { ExclusiveStartKey: exclusiveStartKey }),
       }));
-      sessions.push(...(page.Items ?? []).map(sessionFromItem));
+      for (const item of page.Items ?? []) sessions.push(await this.withParked(item));
       exclusiveStartKey = page.LastEvaluatedKey;
     } while (exclusiveStartKey !== undefined);
     return sessions;
@@ -461,6 +518,10 @@ export class SessionManager {
     if (moved) await this.recordCompute(before);
     if (!moved && (await this.get(workspaceId))?.state !== "DELETED") {
       throw agentXError("STALE_FENCE", `session ${workspaceId} is not being deleted`);
+    }
+    // The old set went with the REMOVE above; the markers go too (a repeat of this call deletes whatever a crash left).
+    for (const outboxId of await parkedMarkerIds(this.dependencies.documentClient, this.dependencies.tableName, workspaceId)) {
+      await this.dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: [{ Delete: { TableName: this.dependencies.tableName, Key: sessionWaitingKey(workspaceId, outboxId) } }] }));
     }
   }
 
@@ -614,13 +675,9 @@ export class SessionManager {
     };
   }
 
-  private unpark(workspaceId: string, outboxId: string): UpdateCommandInput {
-    return {
-      TableName: this.dependencies.tableName,
-      Key: workspaceSessionKey(workspaceId),
-      UpdateExpression: "DELETE waitingOutboxIds :id",
-      ExpressionAttributeValues: { ":id": new Set([outboxId]) },
-    };
+  /** Releases one parked record on its own, in both forms (`unparkItems`). */
+  private async unpark(workspaceId: string, outboxId: string): Promise<void> {
+    await this.dependencies.documentClient.send(new TransactWriteCommand({ TransactItems: unparkItems(this.dependencies.tableName, workspaceId, outboxId) }));
   }
 
   /** Runs a conditional update or transaction; false when its condition did not hold. */

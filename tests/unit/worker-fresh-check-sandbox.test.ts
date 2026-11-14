@@ -1,14 +1,16 @@
 // TE-B1-fresh: the fresh check sandbox's run arguments (an allow-list in the style of checkSandboxArgProblems) and the clean export of the candidate commit (fresh-check-sandbox.ts). The export tests drive real git.
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, statSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, statSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, renameSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { deflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RunnerKillUnconfirmedError } from "../../packages/worker/src/collected-process.js";
+import { WorkspaceSafety, withWorkspaceSafety } from "../../packages/worker/src/workspace-safety.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FRESH_EXPORT_CAPS, FreshExportError, materializeVerified } from "../../packages/worker/src/fresh-check-export.js";
 import {
-  FRESH_NOT_RUN_SENTENCES, FRESH_SANDBOX_ROUND_LABEL, exportCandidateForFreshRound, freshSandboxArgProblems, freshSandboxRunArgs, removeFreshExport, type FreshSandboxRunInput,
+  FRESH_SWEEP_LIMITS, sweepFreshExports, FRESH_NOT_RUN_SENTENCES, FRESH_SANDBOX_ROUND_LABEL, exportCandidateForFreshRound, freshSandboxArgProblems, freshSandboxRunArgs, removeFreshExport, type FreshSandboxRunInput,
 } from "../../packages/worker/src/fresh-check-sandbox.js";
 
 const GIT_ENV = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.test", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.test", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
@@ -370,5 +372,102 @@ describe("the clean export of the candidate commit", () => {
       expect(sentence.startsWith("not run")).toBe(true);
       expect(/(?<!not )sealed/iu.test(sentence)).toBe(false);
     }
+  });
+});
+
+
+describe("landing: bounded crash-export sweep", () => {
+  const okDocker = { run: async () => ({ exitCode: 0, stdout: "", stderr: "" }) };
+  const parent = () => join(root, ".agentx", "fresh-check");
+  const old = (name: string) => {
+    const path = join(parent(), name);
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, "report"), "report");
+    utimesSync(path, new Date(0), new Date(0));
+    return path;
+  };
+  it("removes old exports only; preserves recent, scratch and outside symlink targets", async () => {
+    const stale = old("task-abcdef");
+    const scratch = old("scratch");
+    const recent = old("task-recent");
+    utimesSync(recent, new Date(), new Date());
+    const outside = join(root, "outside");
+    mkdirSync(outside); writeFileSync(join(outside, "keep"), "keep");
+    symlinkSync(outside, join(stale, "link"));
+    symlinkSync(outside, join(parent(), "task-link"));
+    utimesSync(stale, new Date(0), new Date(0));
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toMatchObject({ kind: "complete", removed: 1 });
+    expect(existsSync(stale)).toBe(false);
+    for (const path of [scratch, recent, join(outside, "keep"), join(parent(), "task-link")]) expect(existsSync(path)).toBe(true);
+  });
+  it.each(["busy", "unreadable"] as const)("leaves all exports when Docker is %s, with no echoed error", async (reason) => {
+    const stale = old("task-abcdef");
+    const result = await sweepFreshExports({ rootPath: root, signal: new AbortController().signal, docker: { run: async () => ({ exitCode: reason === "busy" ? 0 : 1, stdout: "private-input", stderr: "private-input" }) } });
+    expect(result).toEqual({ kind: "skipped", reason, removed: 0 });
+    expect(existsSync(stale)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("private-input");
+  });
+  it("refuses a symlinked parent without touching its target", async () => {
+    mkdirSync(join(root, ".agentx"));
+    const outside = join(root, "outside"); mkdirSync(outside);
+    symlinkSync(outside, parent());
+    const stale = old("task-abcdef");
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "skipped", reason: "unreadable", removed: 0 });
+    expect(existsSync(stale)).toBe(true);
+  });
+  it("caps TOTAL entries before deletion and completes a large input within a bounded time", async () => {
+    const stale = old("task-abcdef");
+    for (let i = 0; i < FRESH_SWEEP_LIMITS.maxEntries; i++) writeFileSync(join(stale, `f${i}`), "");
+    utimesSync(stale, new Date(0), new Date(0));
+    const start = performance.now();
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "skipped", reason: "limit", removed: 0 });
+    expect(performance.now() - start).toBeLessThan(5000);
+    expect(readdirSync(stale)).toHaveLength(FRESH_SWEEP_LIMITS.maxEntries + 1);
+  });
+  it("caps total exports and total path bytes before deleting any part", async () => {
+    for (let i = 0; i <= FRESH_SWEEP_LIMITS.maxExports; i++) old(`task-${i}`);
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "skipped", reason: "limit", removed: 0 });
+    expect(readdirSync(parent())).toHaveLength(FRESH_SWEEP_LIMITS.maxExports + 1);
+    rmSync(parent(), { recursive: true });
+    const stale = old("task-deep");
+    const nested = join(stale, "a".repeat(200), "b".repeat(200), "c".repeat(200));
+    mkdirSync(nested, { recursive: true });
+    for (let i = 0; i < 1400; i++) writeFileSync(join(nested, `${"f".repeat(200)}${i}`), "");
+    utimesSync(stale, new Date(0), new Date(0));
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "skipped", reason: "limit", removed: 0 });
+    expect(readdirSync(nested)).toHaveLength(1400);
+  });
+  it("checks the latch and the directory identity before mutations", async () => {
+    const stale = old("task-abcdef");
+    let reads = 0;
+    const result = await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal, clock: () => {
+      if (++reads === 11) { renameSync(stale, join(root, "old-copy")); mkdirSync(stale); writeFileSync(join(stale, "report"), "keep"); }
+      return 0;
+    } });
+    expect(result).toEqual({ kind: "skipped", reason: "unreadable", removed: 0 });
+    expect(readFileSync(join(stale, "report"), "utf8")).toBe("keep");
+  });
+  it("an unsafe workspace is never swept", async () => {
+    const stale = old("task-abcdef");
+    await withWorkspaceSafety(new WorkspaceSafety(), async () => {
+      new RunnerKillUnconfirmedError({ kind: "local" });
+      expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "skipped", reason: "unsafe", removed: 0 });
+      expect(existsSync(stale)).toBe(true);
+    });
+  });
+  it("the exact entry limit still works", async () => {
+    const stale = old("task-abcdef");
+    for (let i = 0; i < FRESH_SWEEP_LIMITS.maxEntries - 2; i++) writeFileSync(join(stale, `f${i}`), "");
+    utimesSync(stale, new Date(0), new Date(0));
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "complete", removed: 1 });
+    expect(existsSync(stale)).toBe(false);
+  });
+  it("stops before deletion at the total deadline or on cancellation", async () => {
+    const stale = old("task-abcdef");
+    let clock = 0;
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal, clock: () => { clock += FRESH_SWEEP_LIMITS.maxMs; return clock; } })).toEqual({ kind: "skipped", reason: "limit", removed: 0 });
+    const stop = new AbortController(); stop.abort();
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: stop.signal })).toEqual({ kind: "skipped", reason: "stopped", removed: 0 });
+    expect(existsSync(stale)).toBe(true);
   });
 });

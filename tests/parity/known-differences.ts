@@ -38,18 +38,9 @@ const CORE_LANE_DIFFERENCES: readonly KnownDifference[] = [
     owner: "Agents on the core (X lane): the recipe pin as a core record, or readers that take the workflow's program; until then Cloud-only",
   },
   {
-    scenario: "plan-changes-requested", facet: "transitions",
-    cause: [
-      "Core bug found by the suite: with Understand off (Cloud's Quick path; the composition root maps Cloud's settings to understandFirst=false), a plan sent back with \"request changes\" is never re-planned.",
-      "The decision writes PLAN/READY and a PLAN dispatch row, but core/task-flow/stage-machine.ts runDispatchRow only starts a PLAN after Understand (it requires workflow.intent.assessment ready)",
-      "and resolves the row as STALE, so the task stays PLAN/READY for ever. Cloud's path re-plans (PLAN/RUNNING then PLAN_REVIEW/WAITING v2).",
-    ].join(" "),
-    owner: "Fixed upstream in public code/next #484 (2026-11-12); shows here until Cloud's vendor pin (0e340c0e) is bumped past it. The suite then fails on this entry as stale: remove it with the bump",
-  },
-  {
     scenario: "plan-changes-requested", facet: "rows",
-    cause: "Same bug as its transitions (the core leaves its PLAN dispatch row and writes its PLAN_FEEDBACK#<n> note row, Cloud keeps the note on the revised plan's run).",
-    owner: "Code upstream fix (see transitions); recheck the feedback row's family after it",
+    cause: "The core writes its PLAN_FEEDBACK#<n> note row and leaves a PLAN dispatch row; Cloud keeps the note on the revised plan's run. (The re-plan bug that used to sit under this is fixed by the 0.5.17 pin, public #484: the transitions are the same now; the rows are a difference of their own.)",
+    owner: "Row family of the feedback note: decide at the rows switch (readers before writers)",
   },
 ];
 

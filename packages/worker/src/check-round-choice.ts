@@ -10,7 +10,7 @@
 import type { ProjectCommand } from "@rovara-code/contracts";
 import type { CheckRoundKind } from "./check-round-kind.js";
 import { readFile } from "node:fs/promises";
-import { createFreshCheckRunners, restartWorkingSandbox, type FreshEvidenceSource, type FreshRoundHooks } from "./fresh-check-round.js";
+import { assertFreshWorkspaceSafe, createFreshCheckRunners, restartWorkingSandbox, type FreshEvidenceSource, type FreshRoundHooks } from "./fresh-check-round.js";
 import { FreshQuiesceError } from "./fresh-check-sandbox.js";
 import type { FreshCandidateRepository } from "./fresh-check-sandbox.js";
 import type { DockerCli } from "./swebench/containers.js";
@@ -113,9 +113,12 @@ export async function ptraceScopeFromProc(read: () => Promise<string> = () => re
  */
 export function quietWorkingPlace(input: { docker: DockerCli; rootPath: string; sandboxName: string | undefined; stopProcesses?: (rootPath: string) => Promise<unknown>; ptraceScope?: () => Promise<number | undefined> }): (signal: AbortSignal) => Promise<void> {
   return async (signal) => {
+    assertFreshWorkspaceSafe();
     await (input.stopProcesses ?? ((root: string) => stopWorkspaceProcesses({ rootPath: root })))(input.rootPath);
+    assertFreshWorkspaceSafe();
     const scope = await (input.ptraceScope ?? (() => ptraceScopeFromProc()))().catch(() => undefined);
     if (scope === undefined || !Number.isSafeInteger(scope) || scope < 1) throw new FreshQuiesceError("ptrace_unrestricted");
+    assertFreshWorkspaceSafe();
     if (input.sandboxName !== undefined) await restartWorkingSandbox(input.docker, input.sandboxName, signal);
   };
 }

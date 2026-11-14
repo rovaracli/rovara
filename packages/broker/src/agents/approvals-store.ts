@@ -34,6 +34,10 @@ import { safeDisplayName } from "../developer/person-name.js";
 
 /** What an agent's routes and the approvals that act on agents need: access checks, the store and where the page lives. */
 export interface ApprovalDependencies extends AgentAccessDeps {
+  /** TE-B2: whether the company's `honestCi` gate is on (TE-A1). Absent, or a read that fails: off, today's behaviour. */
+  honestCi?(orgId: OrgId): Promise<boolean>;
+  /** TE-B2: the project's real-check mode (see `ProjectCiMode`). `DEFAULT_CI_MODE` when absent. */
+  ciMode?(task: { taskId: string; project: string }): Promise<"sandbox_only" | "their_ci_watch" | "their_ci_fix" | "rovara_real_run"> | "sandbox_only" | "their_ci_watch" | "their_ci_fix" | "rovara_real_run";
   modelRouting?: RoutingDependencies;
   /** Existing sign-in table, used only for global revocation ConditionChecks. */
   modelSignInTableName?: string;

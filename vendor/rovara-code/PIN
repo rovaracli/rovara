@@ -1,8 +1,8 @@
 # The pinned copy of public Rovara Code in this folder. Written by scripts/vendor/update-rovara-code.ts; do not edit by hand.
 # Check it: node scripts/vendor/verify-rovara-code.ts [--remote]. Refresh it: node scripts/vendor/update-rovara-code.ts <sha>.
 repo=https://github.com/PrepLabsAI/Rovara.git
-sha=0e340c0eda571d9f16805401d0dfcd6a291bc3ab
-branch=code/next
-include=LICENSE,LICENSE-APACHE,RELICENSED.md,docs/ports.md,packages/aws-adapters,packages/broker,packages/contracts,packages/gateway,packages/local-adapters,packages/model-runtime,packages/verifier,packages/worker,tests/support/ports,tsconfig.base.json
-files=1819
-manifest-sha256=b9678bc81483d8b41db950aa9d674ec0c7d757723c3b9831af9751efe7d823e1
+sha=a0c5357387e9be9103e6f75215baeffece1149e1
+branch=a0c5357387e9be9103e6f75215baeffece1149e1
+include=LICENSE,LICENSE-APACHE,RELICENSED.md,docs/ports.md,packages/aws-adapters,packages/broker,packages/contracts,packages/gateway,packages/local-adapters,packages/model-runtime,packages/testing,packages/verifier,packages/worker,tests/support/ports,tsconfig.base.json
+files=1921
+manifest-sha256=7307805d5d3a0aefbc5e260668815aad4555f8ae554a1f2d4e9a650b90ee0ffe

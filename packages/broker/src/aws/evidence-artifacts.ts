@@ -3,7 +3,7 @@
 // Store. Objects are content-addressed UNDER THE TASK, `private/<owner>/<workspace>/evidence/<taskId>/<sha256>` (Opus review I4: byte-identical files of two tasks of one workspace are two objects, so deleting one task's
 // artifact never deletes another's and a pack can never name an object of another task), written only when they are what their kind says: the bytes have the named digest,
 // are within the kind's cap, carry the kind's magic bytes (JPEG, WebM `1A45DFA3`, ZIP `504B0304`), and a JSON sample or a text tail really parses. Each object is tagged `rovara-retention=<class>` (`evidence-short` or
-// `evidence-std`), which the artifact bucket's lifecycle rules expire (infra/lib/control-plane.ts); the tag is the only thing that tells an object's lifetime, so it is set on every write.
+// `evidence-std`; the pack, `evidence-record`), which the artifact bucket's lifecycle rules expire (infra/lib/control-plane.ts); the tag is the only thing that tells an object's lifetime, so it is set on every write.
 //
 // Read. An artifact is served only when it is named, as `available`, by the task's CURRENT evidence view (`servableEvidenceArtifact`): a hash the store happens to hold (a withheld video, a file of an older
 // candidate, another task's) is never served by this answer. Small kinds are returned as bytes; video and trace are handed back as a 60-second presigned URL, with a trace forced to download. The reader's right to the
@@ -25,9 +25,18 @@ const keyOf = (owner: EvidenceOwner, sha256: string): string => {
 const SHA = /^[a-f0-9]{64}$/u;
 const sha256Of = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-/** The `x-amz-tagging` form of a class's tag. `evidence-record` is never stored through this function; the pack is written by evidence-keep.ts with the `evidence-std` tag. */
+/**
+ * The `x-amz-tagging` form of an ARTIFACT class's tag. `evidence-record` is never stored through this function (no artifact kind maps to it, and it refuses it at run time too): the pack, which is not an artifact,
+ * is written by evidence-keep.ts with `evidencePackTagging()`.
+ */
 export function evidenceTagging(retentionClass: Exclude<EvidenceRetentionClass, "evidence-record">): string {
+  if ((retentionClass as EvidenceRetentionClass) === "evidence-record") throw new Error("evidence-record is the pack's class: use evidencePackTagging, never an artifact's tag");
   return `${E2E_ARTIFACT_RETENTION_TAG_KEY}=${retentionClass}`;
+}
+
+/** The tag of the evidence pack: the 1-year record class (TE-H4a). Packs written before this change carry `evidence-std` and keep their 30 days; readers never look at the tag. */
+export function evidencePackTagging(): string {
+  return `${E2E_ARTIFACT_RETENTION_TAG_KEY}=evidence-record`;
 }
 
 const hasMagic = (bytes: Uint8Array, hex: string) => hex.match(/../gu)!.every((pair, index) => bytes[index] === Number.parseInt(pair, 16));

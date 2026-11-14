@@ -43,20 +43,6 @@ export const FEATURES_C_DIFFERENCES: readonly KnownDifference[] = [
     owner: "X4 cloud/adopt-connect (route map for connections, context sources, MCP servers)",
   },
   {
-    scenario: "devcontainer", facet: "features",
-    cause: [
-      "Real gap, CODE's worker (drift W0-2 never sent upstream). Cloud's worker refuses any `--network` / `--net` in a devcontainer's runArgs or build options when",
-      "it joins the walled task network (packages/worker/src/devcontainer-policy.ts:46 walledNetwork, :178, :228-229: \"dev containers on this worker join the",
-      "agentx-task network\"), and checks the started container for NET_RAW and the walled network (:398-414 dropsNetRaw, walledNetworkProblem). The vendored",
-      "Code worker has no walledNetwork in its policy context (vendor packages/worker/src/devcontainer-policy.ts:28-36) and refuses only `--network=host` and",
-      "`--network=container:` (:180-183), so a devcontainer on a network of its own (`--network team-cache`) is allowed: on an EC2 worker that container would",
-      "sit on a second, unwalled network. The other fixtures (plain image, features, privileged, host command) and the config path are the same on both.",
-      "Proposed fix (Code, upstream first): add walledNetwork, its two refusals and the NET_RAW / walled-network container checks to Code's worker policy;",
-      "Cloud moves onto Code's worker (W0-1 vendor pin) only after that. The words of the host-network refusal differ too (Cloud names the walled network).",
-    ].join(" "),
-    owner: "W0-2 drift-upstream (Code worker), before Cloud runs Code's worker",
-  },
-  {
     scenario: "diagnosis", facet: "features",
     cause: [
       "Real bug, CORE side (words). With no provider both refuse MODEL_NOT_ALLOWED, but the core's words are the laptop's: \"Fix with agent runs on your own",

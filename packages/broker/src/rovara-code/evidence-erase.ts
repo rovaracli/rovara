@@ -1,7 +1,7 @@
 // Proof and evidence (wire-proof fix round 1): deleting what the evidence path stored, when a person is erased, a project is archived or a company closes. Two kinds of object live under a task's workspace:
 //   private/<owner>/<workspace>/evidence-pack/<task>/<digest>.json   the pack (test names, check labels, paths)
 //   private/<owner>/<workspace>/evidence/<task>/<sha256>            output tails (and any artifact the capture lane adds)
-// The tails and the pack both carry the `evidence-std` retention tag (30 days by default), so they expire on their own on a stack whose bucket has the rule; this is the deletion that does not wait for it. It is
+// The tails carry the `evidence-std` retention tag (30 days by default) and the pack carries `evidence-record` (one year; packs written before TE-H4a still carry `evidence-std`), so they expire on their own on a stack whose bucket has the rules; this is the deletion that does not wait for it. It lists and deletes by PREFIX, never by tag, so a pack that lives a year is erased like any other. It is
 // NOT behind the proof switch: evidence kept while the switch was on is erased after it was turned off too, and with nothing stored the walk finds nothing (one list call per workspace).
 //
 // Cost and resumption (fix round 2). An install that never kept evidence pays one read: the first pack an org keeps writes a marker (`markEvidenceStored`) BEFORE anything is stored, and an erase for an org with no

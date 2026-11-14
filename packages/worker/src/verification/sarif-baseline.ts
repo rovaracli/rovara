@@ -7,7 +7,7 @@
 import { lstat, unlink, writeFile } from "node:fs/promises";
 import type { ProjectCommand } from "@rovara-code/contracts";
 import { runChecks, type CheckPlan, type CheckRunners } from "./checks.js";
-import { AgentFilesRestoreError, gitOriginalCode, type OriginalCode, type OriginalCodeRepository } from "./original-code.js";
+import { isUnconfirmedStop, isWorkspaceUnsafe, gitOriginalCode, type OriginalCode, type OriginalCodeRepository } from "./original-code.js";
 import { containedReportPath, readContainedReport } from "./report-file.js";
 import { SARIF_REPORT_MAX_BYTES } from "./sarif.js";
 
@@ -66,6 +66,8 @@ export async function runBaselineScans(scans: readonly BaselineScan[], run: Base
   const commandOf = (command: ProjectCommand): ProjectCommand => (run.noUserSite === true ? { ...command, env: { ...command.env, PYTHONNOUSERSITE: "1" } } : command);
   const subPlan: CheckPlan = { source: "project", readiness: scans.map((scan) => commandOf(scan.command)), projectBefore: scans.map(() => "unknown" as const) };
   const originalCode = (run.originalCode ?? gitOriginalCode)(run.repositories.map((repository) => ({ directory: repository.directory, commit: repository.commit })));
+  // A stop that could not be confirmed: the scan files are not put back either, because a command that may still be running would write over them.
+  let unconfirmedStop = false;
   try {
     await originalCode.run(async () => {
       // A file the candidate's run left is removed first, so one the baseline run did not write is never read as its result.
@@ -82,10 +84,13 @@ export async function runBaselineScans(scans: readonly BaselineScan[], run: Base
     });
   } catch (error) {
     // The one fault that must stop the task: the agent's files are not back.
-    if (error instanceof AgentFilesRestoreError) throw error;
+    if (isWorkspaceUnsafe(error)) {
+      unconfirmedStop = isUnconfirmedStop(error);
+      throw error;
+    }
     found.clear();
   } finally {
-    for (const scan of scans) await putBack(run.rootPath, scan);
+    if (!unconfirmedStop) for (const scan of scans) await putBack(run.rootPath, scan);
   }
   return found;
 }

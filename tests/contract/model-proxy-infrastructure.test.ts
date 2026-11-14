@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { INFERENCE_PATHS } from "@rovara-code/contracts";
 import { litellmConfig } from "../../packages/model-proxy/src/litellm-config.js";
+import { bedrockProxyModels } from "../../packages/model-runtime/src/catalog.js";
 import { ROVARA_GUARD_PY } from "../../packages/model-proxy/src/rovara-guard.js";
 import { ROVARA_GUARD_PACKED, ROVARA_GUARD_SHA256 } from "../../packages/model-proxy/src/rovara-guard-packed.js";
 import { litellmStartCommand } from "../../packages/model-proxy/src/start-command.js";
@@ -105,7 +106,9 @@ describe("model proxy infrastructure (named environments)", () => {
     expect(text).not.toContain("?");
     for (const id of new Set(Object.values(DEFAULT_BEDROCK_MODELS))) expect(text).toContain(`model_name: ${JSON.stringify(id)}`);
     const served = [...text.matchAll(/model_name: "([^"]+)"/g)].map((match) => ({ id: match[1]! }));
-    expect(text).toBe(litellmConfig({ region: "us-east-1", models: served }));
+    // The config is the one the control plane builds: every id of the geography, with the verified price overrides (DECISIONS 172 (d)) on the few that have one.
+    expect(text).toBe(litellmConfig({ region: "us-east-1", models: bedrockProxyModels("us") }));
+    expect(served.map(({ id }) => id)).toEqual(bedrockProxyModels("us").map(({ id }) => id));
     expect(served.every(({ id }) => id.startsWith("us.anthropic.claude-"))).toBe(true);
   });
 
@@ -129,10 +132,11 @@ describe("model proxy infrastructure (named environments)", () => {
   });
 
   it("keeps the task definition well inside ECS's 64 KiB limit: the guard travels packed, not as its 40 KB text", () => {
-    // ECS refuses a task definition over 64 KiB. The guard text alone was 40 KB of 46.9 KB used; packed it is about 16 KB, so the container definitions take about 20.8 KB (synth, staging) and leave room for
-    // the guard to double. The region token stands in for the deploy-time value. The ceiling is 32 KiB (half the limit); a guard that no longer packs under it needs a derived image.
+    // ECS refuses a task definition over 64 KiB. The guard travels packed (about 31 KB of base64 for the 74 KB text), and the container definitions come to about 35.5 KiB (synth, staging), so
+    // about 28 KiB are left. The region token stands in for the deploy-time value. The ceiling is 40 KiB (it was 32 KiB until the 0.5.18 money fixes grew the guard); a guard that no longer packs
+    // under it needs a derived image.
     const size = Buffer.byteLength(JSON.stringify(taskDefinition().Properties.ContainerDefinitions));
-    expect(size).toBeLessThan(32 * 1024);
+    expect(size).toBeLessThan(40 * 1024);
     expect(size).toBeLessThan(Buffer.byteLength(ROVARA_GUARD_PY));
     expect(JSON.stringify(taskDefinition().Properties.ContainerDefinitions)).not.toContain("proxy_handler_instance = RovaraGuard()");
   });

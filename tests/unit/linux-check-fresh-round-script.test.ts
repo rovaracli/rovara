@@ -133,3 +133,12 @@ describe("scripts/linux-check-fresh-round.sh", () => {
     expect(result.status).toBe(1);
   });
 });
+
+
+it("landing: linux-runtime runs the fresh proof with its built image and a time cap", () => {
+  const ci = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  const job = ci.slice(ci.indexOf("  linux-runtime:"), ci.indexOf("  mcp-runner-linux:"));
+  expect(ci).toContain("linux-check-fresh-round|linux-check-test-services");
+  expect(job).toMatch(/name: Fresh check round Linux proof[\s\S]*?timeout-minutes: 10[\s\S]*?FRESH_IMAGE: rovara-worker:ci[\s\S]*?run: bash scripts\/linux-check-fresh-round\.sh/u);
+  expect(readFileSync(SCRIPT, "utf8")).toContain('PATH=${PATH:-');
+});

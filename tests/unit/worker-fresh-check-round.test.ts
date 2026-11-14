@@ -1,10 +1,12 @@
 // TE-B1-fresh: the fresh check round (fresh-check-round.ts). Nothing starts Docker: a fake CLI records every call and plays the fresh sandbox, over a real git export.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProjectCommand } from "@rovara-code/contracts";
+import { RunnerKillUnconfirmedError } from "../../packages/worker/src/collected-process.js";
+import { WorkspaceSafety, withWorkspaceSafety } from "../../packages/worker/src/workspace-safety.js";
 import { FRESH_ROUND_FIRST_LINE } from "../../packages/worker/src/check-round-kind.js";
 import { FRESH_NOT_RUN_SENTENCES, freshSandboxArgProblems, type FreshCandidateRepository } from "../../packages/worker/src/fresh-check-sandbox.js";
 import { createFreshCheckRunners, restartWorkingSandbox, withFreshCheckRound, type FreshCheckRoundInput } from "../../packages/worker/src/fresh-check-round.js";
@@ -41,6 +43,7 @@ function fakeDocker(options: FakeOptions = {}) {
     run: (args) => {
       calls.push({ args: [...args] });
       const [verb] = args;
+      if (verb === "ps") return Promise.resolve({ exitCode: 0, stdout: "", stderr: "" });
       if (verb === "run") {
         options.onRun?.();
         const started = () => {
@@ -128,13 +131,13 @@ describe("withFreshCheckRound", () => {
     expect(exportsLeft()).toEqual([]);
   });
 
-  it("a removal that fails is tried twice and logged, and the export is still removed", async () => {
+  it("a removal that fails is tried twice and logged, and the export is preserved for an unconfirmed stop", async () => {
     const fake = fakeDocker({ rmFails: true });
     const events: Array<Record<string, unknown>> = [];
-    await withFreshCheckRound(input(fake.docker, { log: (event) => events.push(event) }), () => Promise.resolve(1));
+    await expect(withFreshCheckRound(input(fake.docker, { log: (event) => events.push(event) }), () => Promise.resolve(1))).rejects.toBeInstanceOf(RunnerKillUnconfirmedError);
     expect(fake.verbs().filter((verb) => verb === "rm")).toHaveLength(2);
     expect(events.map((event) => event.event)).toContain("fresh-check-round.remove.failed");
-    expect(exportsLeft()).toEqual([]);
+    expect(exportsLeft()).toHaveLength(1);
   });
 
   it("NEVER falls back: a failed export is 'not run', the round is not called, and nothing runs anywhere", async () => {
@@ -154,7 +157,7 @@ describe("withFreshCheckRound", () => {
     expect(called).toBe(false);
     expect(result).toEqual({ kind: "not_run", reason: "sandbox_failed", sentence: FRESH_NOT_RUN_SENTENCES.sandbox_failed });
     expect(JSON.stringify(result)).not.toContain("secret-looking-text");
-    expect(fake.calls.every((call) => call.args[0] === "run" || call.args[0] === "rm")).toBe(true);
+    expect(fake.calls.every((call) => call.args[0] === "run" || call.args[0] === "rm" || call.args[0] === "ps")).toBe(true);
     expect(exportsLeft()).toEqual([]);
   });
 
@@ -360,14 +363,14 @@ describe("H1c: the export is kept for the evidence only when the round ran and i
     expect(existsSync(root)).toBe(false);
     expect(evidence(runners)).toBeUndefined();
   });
-  it("a round that did not run, or whose container could not be removed, keeps nothing", async () => {
+  it("a round that did not run exposes no evidence; an unremoved container retains its export privately", async () => {
     const failed = freshRunners({ keepExport: true }, fakeDocker({ runExit: 125 }).docker);
     await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, failed, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(evidence(failed)).toBeUndefined();
     const stuck = freshRunners({ keepExport: true }, fakeDocker({ rmFails: true }).docker);
     await runChecks({ source: "project", readiness: [command("npm", ["test"])] }, stuck, { budgetMs: 60_000, signal: new AbortController().signal });
     expect(evidence(stuck)).toBeUndefined();
-    expect(exportsLeft()).toEqual([]);
+    expect(exportsLeft()).toHaveLength(1);
   });
   it("a new round releases the earlier round's export", async () => {
     const runners = freshRunners({ keepExport: true });
@@ -426,5 +429,161 @@ describe("H1b (2): the round is pinned to the candidate that was recorded", () =
     expect(moved.entries[0]).toMatchObject({ after: "not_run" });
     expect(reads).toBe(1);
     expect(fake.calls.filter((call) => call.args[0] === "run")).toEqual([]);
+  });
+});
+
+
+describe("landing: exported paths and abort-join", () => {
+  it("cd resolves the export, never a working-tree symlink or directory", async () => {
+    const fake = fakeDocker({ onRun: () => {
+      rmSync(join(candidate.directory, "a.txt"));
+      mkdirSync(join(root, "working-only"));
+      symlinkSync("working-only", join(root, "alias"));
+    } });
+    const result = await withFreshCheckRound(input(fake.docker), async (runners) => {
+      rmSync(candidate.directory, { recursive: true, force: true });
+      expect(await runners.runAgentCommand("cd repo && npm test", 1000, new AbortController().signal)).toMatchObject({ exitCode: 0 });
+      for (const path of ["working-only", "alias", "missing-private-path"]) {
+        await expect(runners.runAgentCommand(`cd ${path} && npm test`, 1000, new AbortController().signal)).rejects.toMatchObject({ message: "AgentX did not replay this command: its directory is not available in the fresh export." });
+      }
+      await expect(runners.runAgentCommand("cd ../escape && npm test", 1000, new AbortController().signal)).rejects.toThrow("AgentX replays only a simple test command, and this is not one.");
+      const commands = fake.calls.filter(({ args }) => args[0] === "exec" && args.join(" ").includes("npm test"));
+      expect(commands).toHaveLength(1);
+      expect(commands[0]!.args).toContain(join(root, "repo"));
+      return 1;
+    });
+    expect(result).toEqual({ kind: "ran", value: 1 });
+  });
+
+  it.each(["setup", "project", "replay", "quiesce"] as const)("preserves an unconfirmed %s stop and leaves the export and container alone", async (stage) => {
+    const safety = new WorkspaceSafety();
+    const stop = new AbortController();
+    const fake = fakeDocker();
+    let failure: RunnerKillUnconfirmedError | undefined;
+    const fail = () => { failure = new RunnerKillUnconfirmedError({ kind: "sandbox" }); stop.abort(); throw failure; };
+    const docker: DockerCli = { run: (args, options) => args[0] === "exec" ? Promise.resolve().then(fail) : fake.docker.run(args, options) };
+    await withWorkspaceSafety(safety, async () => {
+      const runners = freshRunners({ signal: stop.signal, ...(stage === "setup" ? { setup: [command("npm", ["install"])] } : {}), ...(stage === "quiesce" ? { quiesce: async () => fail() } : {}) }, docker);
+      await expect((async () => {
+        await runners.freshServices!(stop.signal);
+        if (stage === "replay") await runners.runAgentCommand("cd repo && npm test", 1000, stop.signal);
+        else await runners.runProjectCommand(command("npm", ["test"]), stop.signal);
+      })()).rejects.toBeInstanceOf(RunnerKillUnconfirmedError);
+      expect(safety.failure).toBe(failure);
+      await runners.endRound!();
+      await runners.releaseEvidence();
+      expect(fake.verbs()).not.toContain("rm");
+      if (stage !== "quiesce") {
+        expect(exportsLeft()).toHaveLength(1);
+        expect(safety.quarantinables.flat().map((item) => item.name)).toEqual([...fake.state.up]);
+      }
+    });
+  });
+
+  it.each(["run", "exec", "rm"])("propagates Docker killUnconfirmed during %s", async (verb) => {
+    const safety = new WorkspaceSafety();
+    const fake = fakeDocker();
+    const docker: DockerCli = { run: (args, options) => args[0] === verb ? Promise.resolve({ exitCode: 0, stdout: "private-input", stderr: "private-input", killUnconfirmed: true }) : fake.docker.run(args, options) };
+    await withWorkspaceSafety(safety, async () => {
+      await expect(withFreshCheckRound(input(docker), (runners) => runners.runProjectCommand(command("npm", ["test"]), new AbortController().signal))).rejects.toBeInstanceOf(RunnerKillUnconfirmedError);
+      expect(safety.unsafe).toBe(true);
+      expect(safety.failure?.message).not.toContain("private-input");
+      expect(exportsLeft()).toHaveLength(1);
+    });
+  });
+
+  it("a pre-existing latch prevents candidate reads and all Docker calls", async () => {
+    const safety = new WorkspaceSafety();
+    const fake = fakeDocker();
+    await withWorkspaceSafety(safety, async () => {
+      const failure = new RunnerKillUnconfirmedError({ kind: "local" });
+      await expect(withFreshCheckRound(input(fake.docker, { candidate: async () => { throw new Error("must not read"); } }), async () => 1)).rejects.toBe(failure);
+      expect(fake.calls).toEqual([]);
+    });
+  });
+});
+
+
+it("landing: an unsafe helper stop prevents subsequent stops and removal", async () => {
+  const safety = new WorkspaceSafety();
+  const fake = fakeDocker();
+  const calls: string[] = [];
+  await withWorkspaceSafety(safety, async () => {
+    await expect(withFreshCheckRound(input(fake.docker, { hooks: { helpers: [
+      { name: "first", start: async () => async () => { calls.push("first"); } },
+      { name: "last", start: async () => async () => { calls.push("last"); new RunnerKillUnconfirmedError({ kind: "local" }); } },
+    ] } }), async () => 1)).rejects.toBeInstanceOf(RunnerKillUnconfirmedError);
+    expect(calls).toEqual(["last"]);
+    expect(fake.verbs()).not.toContain("rm");
+    expect(exportsLeft()).toHaveLength(1);
+  });
+});
+
+it("landing: retained evidence is left untouched after an unsafe stop", async () => {
+  const safety = new WorkspaceSafety();
+  await withWorkspaceSafety(safety, async () => {
+    const runners = freshRunners({ keepExport: true });
+    await runners.freshServices!(new AbortController().signal);
+    await runners.endRound!();
+    const exported = runners.evidenceRoot()!;
+    expect(existsSync(exported)).toBe(true);
+    new RunnerKillUnconfirmedError({ kind: "local" });
+    await runners.releaseEvidence();
+    expect(existsSync(exported)).toBe(true);
+  });
+});
+
+it("landing: a late start observes the latch before handing over runners or removing the container", async () => {
+  const safety = new WorkspaceSafety();
+  let release!: () => void;
+  let began!: () => void;
+  const starting = new Promise<void>((resolve) => { began = resolve; });
+  const fake = fakeDocker({ holdRun: new Promise<void>((resolve) => { release = resolve; }), onRun: began });
+  await withWorkspaceSafety(safety, async () => {
+    const runners = freshRunners({}, fake.docker);
+    const opened = runners.freshServices!(new AbortController().signal);
+    await starting;
+    const failure = new RunnerKillUnconfirmedError({ kind: "local" });
+    release();
+    await expect(opened).rejects.toBe(failure);
+    await runners.endRound!();
+    expect(fake.verbs()).not.toContain("rm");
+    expect(exportsLeft()).toHaveLength(1);
+  });
+});
+
+
+it("landing: unconfirmed stops propagate even outside a task latch", async () => {
+  const failure = new RunnerKillUnconfirmedError({ kind: "sandbox" });
+  await expect(withFreshCheckRound(input(fakeDocker().docker, { quiesce: async () => { throw failure; } }), async () => 1)).rejects.toBe(failure);
+  const fake = fakeDocker();
+  const docker: DockerCli = { run: async (args, options) => { if (args[0] === "exec") throw failure; return fake.docker.run(args, options); } };
+  const runners = freshRunners({ setup: [command("npm", ["install"])] }, docker);
+  await expect(runners.freshServices!(new AbortController().signal)).rejects.toBe(failure);
+  expect(fake.verbs()).not.toContain("rm");
+});
+
+it("landing: abort-join during startup fences a late host client even before its container exists", async () => {
+  const safety = new WorkspaceSafety();
+  let release!: () => void;
+  let began!: () => void;
+  const starting = new Promise<void>((resolve) => { began = resolve; });
+  const fake = fakeDocker({ holdRun: new Promise<void>((resolve) => { release = resolve; }), onRun: began });
+  await withWorkspaceSafety(safety, async () => {
+    const runners = freshRunners({}, fake.docker);
+    const fresh = runners.freshServices!.bind(runners);
+    let opening: Promise<void> | undefined;
+    runners.freshServices = (signal) => { opening = fresh(signal); return opening; };
+    const stop = new AbortController();
+    const running = runChecks({ source: "project", readiness: [command("npm", ["test"])] }, runners, { budgetMs: 60_000, signal: stop.signal, abortJoinMs: 5 });
+    await starting;
+    stop.abort();
+    await expect(running).rejects.toBeInstanceOf(RunnerKillUnconfirmedError);
+    // An absent container alone cannot prove a still-starting host Docker client has ended.
+    const recorded = [...safety.unconfirmed];
+    release();
+    await expect(opening).rejects.toBeInstanceOf(RunnerKillUnconfirmedError);
+    expect(recorded).toEqual([{ kind: "local" }]);
+    expect(fake.verbs()).not.toContain("rm");
   });
 });
