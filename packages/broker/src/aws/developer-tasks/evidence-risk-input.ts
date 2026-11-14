@@ -18,10 +18,13 @@ export function securityCheckIdsOf(policy: WorkflowCheckPolicy | undefined): str
  *
  * `port === undefined` means the proof switch is off, or a caller that was never given the port: with the switch on (`switchOn`) and a security check expected the second reading is the one that must not look Low.
  */
-export async function evidenceRiskOfTask(port: Pick<EvidencePort, "pack"> | undefined, task: EvidenceTaskKey, candidateDigest: string | undefined, securityChecks: readonly string[] = [], switchOn: boolean = proofEvidenceEnabled()): Promise<EvidenceRiskSignal | undefined> {
+export async function evidenceRiskOfTask(port: (Pick<EvidencePort, "pack"> & Partial<Pick<EvidencePort, "on">>) | undefined, task: EvidenceTaskKey, candidateDigest: string | undefined, securityChecks: readonly string[] = [], switchOn: boolean = proofEvidenceEnabled()): Promise<EvidenceRiskSignal | undefined> {
   if (candidateDigest === undefined) return undefined;
   const unavailable: EvidenceRiskSignal | undefined = securityChecks.length > 0 ? { highNewFindings: 0, evidenceUnavailable: true } : undefined;
   if (port === undefined) return switchOn ? unavailable : undefined;
+  // TE-A1: a company whose gate is off is as the proof switch off: no evidence, and no "evidence unavailable" bump to the risk. A gate that could not be READ is not off: the evidence is unavailable, so the risk is at least medium
+  // when a security check is expected, never silently low.
+  try { if (port.on !== undefined && !(await port.on(task))) return undefined; } catch { return unavailable; }
   try {
     const pack = await port.pack(task, candidateDigest);
     if (pack === undefined || !evidenceIsFor(pack, candidateDigest)) return unavailable;

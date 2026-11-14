@@ -1,4 +1,5 @@
 import { closeProjectRovaraPrs } from "../../lessons/repo-file-routes.js";
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { candidateDependencyPlan } from "../../test-env/candidate-plan.js";
 import { testEnvironmentEnabled } from "../../test-env/switch.js";
 import { proposalReplacesLists, readApprovedSeedFiles, readApprovedTestEnvironment } from "../../org/test-environment.js";
@@ -232,10 +233,10 @@ type CandidateInput = { digest: string; origin?: "setup_run" } & ({ body: TestEn
  * A plan the approved environment can no longer make (test services switched off since, a dev container added) gives none: the check then runs as it always did, without services, and says what fails.
  */
 async function approvedTestServicesOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: string): Promise<{ plan: Awaited<ReturnType<typeof candidateDependencyPlan>>; prodDeny: TestEnvironmentBody["prodDeny"] } | undefined> {
-  if (!testEnvironmentEnabled()) return undefined;
+  if (!testEnvironmentEnabled(routeEnvOf(deps))) return undefined;
   const approved = await readApprovedTestEnvironment({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, name).catch(() => undefined);
   if (approved === undefined || (approved.environment.dependencies?.length ?? 0) === 0) return undefined;
-  const plan = await candidateDependencyPlan(deps, approved.environment, { orgId, project: name }, process.env, await readApprovedSeedFiles({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, name, approved.revision)).catch(() => undefined);
+  const plan = await candidateDependencyPlan(deps, approved.environment, { orgId, project: name }, routeEnvOf(deps), await readApprovedSeedFiles({ documentClient: deps.documentClient, tableName: deps.tableName, now: deps.now }, orgId, name, approved.revision)).catch(() => undefined);
   return plan === undefined ? undefined : { plan, prodDeny: approved.environment.prodDeny };
 }
 
@@ -281,7 +282,7 @@ async function runSetupCheck(deps: DeveloperRouteDependencies, caller: Developer
     // Test services: the dependencies a candidate check starts, pinned from the signed catalog (a refusal stops the check before anything is written). Nothing for any other check, so its options are what they were.
     // TS-UX-1 item 3: the project's OWN check (the one an approval starts after writing its commands) runs with the APPROVED environment's test services, so tests that need the database do not fail it for want of one.
     const approvedServices = candidate === undefined ? await approvedTestServicesOf(deps, caller.orgId, name) : undefined;
-    const testServices = candidate !== undefined && "body" in candidate ? await candidateDependencyPlan(deps, candidate.body, { orgId: caller.orgId, project: name }) : approvedServices?.plan;
+    const testServices = candidate !== undefined && "body" in candidate ? await candidateDependencyPlan(deps, candidate.body, { orgId: caller.orgId, project: name }, routeEnvOf(deps)) : approvedServices?.plan;
     // The proposal's own production list rides with the check (its fixture-set callback scans a fake with it too: the first check has no approved environment).
     const testServicesDeny = testServices !== undefined && candidate !== undefined && "body" in candidate ? candidate.body.prodDeny : approvedServices?.prodDeny;
     const preparation = await tasks.preparation(identity, prepared, requestId, runCommits === undefined && testServices === undefined ? undefined : { ...(runCommits === undefined ? {} : { pins: runCommits }), ...(testServices === undefined ? {} : { testServices }), ...(testServicesDeny === undefined ? {} : { testServicesDeny }) });

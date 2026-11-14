@@ -122,12 +122,12 @@ const owns = (task: DeveloperTaskRecord | undefined, caller: Who): task is Devel
   task !== undefined && task.orgId === caller.orgId && task.closedAt === undefined && task.releasedAt === undefined && task.purpose === undefined && tryEffectiveTaskOwner(task)?.developerId === caller.developerId;
 
 /** The card for one running task: undefined when there is nothing to confirm (no pin, nothing newer, a change a running task does not take, or one the owner declined). */
-async function changeItemOf(ports: EnvChangePorts, task: DeveloperTaskRecord): Promise<ChangeItem | undefined> {
+async function changeItemOf(ports: EnvChangePorts, task: DeveloperTaskRecord, env: NodeJS.ProcessEnv): Promise<ChangeItem | undefined> {
   const orgId = task.orgId as OrgId;
   const pin = await readTestEnvPin(ports.store, orgId, task.project, task.taskId);
   if (pin === undefined || pin.unused !== undefined) return undefined;
   const latest = await readApprovedTestEnvironment(ports.store, orgId, task.project);
-  if (latest === undefined || latest.revision <= pin.revision || environmentUnusedReason(latest) !== undefined) return undefined;
+  if (latest === undefined || latest.revision <= pin.revision || environmentUnusedReason(latest, env) !== undefined) return undefined;
   const latestDigest = testEnvDigest(latest.environment);
   if (pin.declined === latestDigest) return undefined;
   const pinned = await readApprovedTestEnvironment(ports.store, orgId, task.project, pin.revision);
@@ -155,7 +155,7 @@ export async function envChangeItemsFor(ports: EnvChangePorts, caller: Who, env:
     try {
       const task = await ports.task(row.taskId);
       if (!owns(task, caller)) continue;
-      const item = await changeItemOf(ports, task);
+      const item = await changeItemOf(ports, task, env);
       if (item !== undefined) found.push(item);
     } catch { /* a task that cannot be read has no card */ }
   }
@@ -172,11 +172,11 @@ export type EnvChangeOutcome = "moved" | "declined" | "gone";
  * the newest revision still a change the task takes. Approving moves the pin from exactly the revision and digest it holds to the newest ones (a conditional write, so a pin that moved is "gone"); declining
  * records the newest digest on the pin. Returns "gone" when there is no longer anything to confirm.
  */
-export async function answerEnvChange(ports: EnvChangePorts, caller: Who, taskId: string, answer: "approve" | "decline"): Promise<EnvChangeOutcome> {
+export async function answerEnvChange(ports: EnvChangePorts, caller: Who, taskId: string, answer: "approve" | "decline", env: NodeJS.ProcessEnv = process.env): Promise<EnvChangeOutcome> {
   const task = await ports.task(taskId);
   if (!owns(task, caller)) return "gone";
   const orgId = task.orgId as OrgId;
-  const item = await changeItemOf(ports, task);
+  const item = await changeItemOf(ports, task, env);
   if (item === undefined) return "gone";
   const pin = (await readTestEnvPin(ports.store, orgId, task.project, taskId))!;
   const latest = (await readApprovedTestEnvironment(ports.store, orgId, task.project))!;

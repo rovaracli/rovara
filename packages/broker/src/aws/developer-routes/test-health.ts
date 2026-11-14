@@ -4,6 +4,7 @@
 //   POST (dismiss)      a maintainer puts one proposed task away: { action: "dismiss_proposed_task", key }.
 //   POST (cap)          a maintainer sets the monthly cap on the project's automatic runs: { action: "set_automatic_runs_cap", cap, requestId }. Audited. The GET carries `automaticRuns` (runs, the line, the pause, the reminder).
 // Every answer is fixed words, a count, test ids and a day: no output and no message text.
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { z } from "zod";
 import { MAX_AUTOMATIC_RUNS_PER_MONTH, agentXError, type OrgId } from "@rovara-code/contracts";
 import { resolveSurvivor } from "../../agents/access.js";
@@ -47,10 +48,10 @@ async function stateOf(deps: DeveloperRouteDependencies, orgId: OrgId, name: str
 }
 
 /** The reply, or undefined when the switch is off or the path is not this one. */
-export async function routeTestHealth(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = process.env): Promise<StatusReply | undefined> {
-  if (!healthWiringOn(env)) return undefined;
+export async function routeTestHealth(deps: DeveloperRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL, env: NodeJS.ProcessEnv = routeEnvOf(deps)): Promise<StatusReply | undefined> {
+  // The path first: a request for any other path reads no gated switch (TE-A1).
   const match = TEST_HEALTH_PATH.exec(url.pathname);
-  if (match === null) return undefined;
+  if (match === null || !healthWiringOn(env)) return undefined;
   if (request.method !== "GET" && request.method !== "POST") return undefined;
   const { name, role } = await projectRoleForRoute(deps, caller, match[1]!);
   if (request.method === "GET") return new StatusReply(200, await stateOf(deps, caller.orgId, name));

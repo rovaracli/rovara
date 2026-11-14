@@ -65,11 +65,11 @@ describe("the broker judges the risk with the evidence where a pull request's ri
     const publication = readFileSync(join(BROKER, "developer-tasks/publication.ts"), "utf8");
     expect(publication).toContain("recomputeRisk(workflow, bodyContext?.changedFiles, {}, evidenceRisk)");
     // The last argument says whether the approved check policy has a security check: with it, a pack that cannot be had is "evidence unavailable" and the risk is at least medium (EV-2).
-    expect(publication).toContain("evidenceRiskOfTask(deps.evidence, task, workflow.candidate?.digest, securityCheckIdsOf(workflow.checkPolicy))");
-    expect(publication).toContain("await evidenceRiskOfTask(deps.evidence, task, started.candidate?.digest, securityCheckIdsOf(workflow.checkPolicy))");
+    expect(publication).toContain("evidenceRiskOfTask(deps.evidence, evidenceKeyOf(task), workflow.candidate?.digest, securityCheckIdsOf(workflow.checkPolicy))");
+    expect(publication).toContain("await evidenceRiskOfTask(deps.evidence, evidenceKeyOf(task), started.candidate?.digest, securityCheckIdsOf(workflow.checkPolicy))");
     expect(publication).toMatch(/\.\.\.\(evidenceRisk === undefined \? \{\} : \{ evidenceRisk \}\)/u);
     const reconcile = readFileSync(join(BROKER, "broker/pull-request-reconcile.ts"), "utf8");
-    expect(reconcile).toContain("evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest, securityCheckIdsOf(workflow.checkPolicy))");
+    expect(reconcile).toContain("evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, evidenceKeyOf(task), candidateDigest, securityCheckIdsOf(workflow.checkPolicy))");
     expect(reconcile).toMatch(/\.\.\.\(evidenceRisk === undefined \? \{\} : \{ evidenceRisk \}\)/u);
   });
 });

@@ -18,6 +18,7 @@
 //   approve_design   Request changes (slice 2) is the same workflow decision; Approve stays the design review's own handler.
 //   NOT connected: spend requests (`decideSpendRequest` is reachable only through the decide page's fresh sign-in; a card press would decide one with no sign-in proof, so Home's own card stays), and
 //   dependency, E2E plan, feedback, autofix, setting and test-environment decisions (their endpoints live in hot task files and stay page-decided). An unregistered kind is refused `unsupported`.
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { recordsOf } from "../../test-env/fixture-lookup.js";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
 import { agentXError, projectAllows } from "@rovara-code/contracts";
@@ -61,7 +62,7 @@ export const DECISION_PATH = /^\/v1\/app\/decisions(?:\/|$)/u;
 export const isDecisionPath = (pathname: string): boolean => DECISION_PATH.test(pathname);
 
 /** The card routes' dependencies for one caller, or undefined while the switch is off or where sessions, tasks or agents are not set up (fail closed). */
-export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, env: NodeJS.ProcessEnv = process.env, request: { decideCookie?: string | undefined; /** The outside approval a link or a press names (`apr_`/`spr_`): listed when its kind lets this person decide it. */ focusApprovalId?: string | undefined } = {}): DecisionRouteDependencies<DeveloperCaller> | undefined {
+export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: DeveloperCaller, env: NodeJS.ProcessEnv = routeEnvOf(deps), request: { decideCookie?: string | undefined; /** The outside approval a link or a press names (`apr_`/`spr_`): listed when its kind lets this person decide it. */ focusApprovalId?: string | undefined } = {}): DecisionRouteDependencies<DeveloperCaller> | undefined {
   if (!decisionCardsEnabled(env)) return undefined;
   const sessions = sessionDependenciesOf(deps);
   const agents = deps.agents;
@@ -115,9 +116,9 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
             tracking: (taskId, orgId) => readMergeTracking(table, taskId, orgId as never),
           }, who),
           specChoiceItemsFor(taskDeps(who), who),
-          approveTestEnvItemsFor(testEnvCards, who),
-          envChangeItemsFor({ store, task: loadTask, taskPagePathOf: (task) => taskPagePathOf(deps, who.orgId, task) }, who),
-          fixSetupItemsFor({ store, maintainedProjects: testEnvCards.maintainedProjects, task: loadTask }, who),
+          approveTestEnvItemsFor(testEnvCards, who, env),
+          envChangeItemsFor({ store, task: loadTask, taskPagePathOf: (task) => taskPagePathOf(deps, who.orgId, task) }, who, env),
+          fixSetupItemsFor({ store, maintainedProjects: testEnvCards.maintainedProjects, task: loadTask }, who, env),
           hostsOn ? hostAskItemsFor({ ...hostDeps, approvableProjects: (caller) => approvableHostProjects(caller as DeveloperCaller), staffStep: deps.cloud === true, companyApproved: (orgId, project) => companyApprovedHostMarks(hostDeps, { orgId, project, cloud: deps.cloud === true }),
             // The setup run's task page, when the run has a session; else the project page.
             taskPagePathOf: async (taskId) => { const task = await loadTask(taskId); return task === undefined || task.orgId !== who.orgId ? undefined : await taskPagePathOf(deps, who.orgId, task); } }, who) : Promise.resolve([]),
@@ -143,9 +144,9 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
       })),
       approve_test_env: testEnvHandler(async (who, item, requestId) => {
         const role = (await visibleProjectRoles(deps, who)).get(item.project);
-        await approveChecked(deps, who, role, item.project, { digest: item.digest, expectedRevision: item.expectedRevision, requestId }, nightlyHooks());
+        await approveChecked(deps, who, role, item.project, { digest: item.digest, expectedRevision: item.expectedRevision, requestId }, nightlyHooks({}, env));
       }),
-      confirm_env_change: envChangeHandler((who, taskId, answer) => answerEnvChange({ store, task: loadTask }, who, taskId, answer)),
+      confirm_env_change: envChangeHandler((who, taskId, answer) => answerEnvChange({ store, task: loadTask }, who, taskId, answer, env)),
       fix_setup: fixSetupHandler({
         markKnownFailing: (who, item, requestId) => markKnownFailing(fixSetupPorts, who, item, requestId),
         dismiss: (who, item) => dismissFixSetup(fixSetupPorts, who, item),
