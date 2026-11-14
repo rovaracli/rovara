@@ -19,6 +19,7 @@ import { fedThroughUpdate, promptTagId, sendBackProblemsPromptSection, withCurre
 import { NO_PUBLISH_NOTE, approvedCodingPlan, approvedWorkflowDependencies, ownerConstraintsSection, retiredClaimIdList } from "./workflow-inputs.js";
 import { queueWorkflowCoding, retryWorkflowImplementation, sharedAccessCheck } from "./workflow-coding.js";
 import { requireProjectSendBackRole } from "../../developer/task-access.js";
+import { refuseRedirectOnCoreTask } from "../../rovara-code/task-routes.js";
 import { framedPlanningInstruction, redirectRestartRequestId } from "./redirect-frame.js";
 
 export { framedPlanningInstruction, redirectRestartRequestId };
@@ -31,6 +32,8 @@ const TURN_REQUEST = REDIRECT_RETRY_INSTRUCTIONS;
 
 /** The task as the redirect found it: open, a workflow, and at exactly the revision the redirect recorded. A task that moved is `IDEMPOTENCY_CONFLICT`, and nothing is started. */
 async function currentTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, record: RedirectRecord, action: "retry" | "work") {
+  // Every restart reads Cloud's workflow rows, which a task the core engine runs does not have: refused in plain words before anything is read or written (phase 1 refuses first; this is the same rule for a record that predates it).
+  await refuseRedirectOnCoreTask(caller, record.taskId);
   const access = await authorizeTaskAction(deps, caller, record.taskId, action);
   const workflow = access.task.workflow;
   if (workflow === undefined || workflow.revision !== record.blockedRevision || workflow.stage !== record.step || workflow.state !== "BLOCKED") {

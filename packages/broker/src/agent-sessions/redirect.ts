@@ -19,6 +19,7 @@ import { auditPending, tryAuditEvents } from "../audit/outbox.js";
 import { auditActorOf } from "../audit/plan3-hooks.js";
 import { isTaskTakenOver, taskKey, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { sessionNoteItems } from "../aws/developer-tasks.js";
+import { refuseRedirectOnCoreTask } from "../rovara-code/task-routes.js";
 import { readTaskPeople, requireSessionLevel, type SessionAccess } from "./access.js";
 import { countKey, messageKey, newMessageId, rateStep, sendSessionMessage, sessionStillThere, storedText, type SessionMessageDependencies } from "./messages.js";
 import { hourlyRedirects, readRedirect, redirectCreateItems, redirectTtl, stepRedirects, endRedirect, type RedirectStateDependencies } from "./redirect-state.js";
@@ -148,6 +149,8 @@ export async function redirectSession(deps: RedirectDependencies, caller: Contro
   if (task === undefined) throw agentXError("NOT_FOUND", "session not found");
   // The owner check comes before anything else is read or written, so a refused person learns nothing about the task and the table is unchanged.
   if (!await mayRedirectTask(deps, task, caller.developerId, access.owner)) throw redirectRefusal("not_owner");
+  // A task the core engine runs has no redirect: refused in plain words here, before the instruction is recorded or the step is stopped (S3, 0.5.19 pin).
+  await refuseRedirectOnCoreTask(caller, task.taskId);
   const prior = await readControlRequest(deps, session, input.requestId);
   if (prior !== undefined) {
     repeatOf(prior, "redirect", caller.developerId);
