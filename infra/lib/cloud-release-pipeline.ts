@@ -86,6 +86,8 @@ const SETUP_STATE = [
   "}",
 ].join("\n");
 
+/** The TypeScript build needs more than Node's default 2 GB heap; the LARGE build machine has 16 GB. */
+export const CLOUD_PIPELINE_NODE_OPTIONS = "--max-old-space-size=8192";
 const BUILD_CHECKOUT = ["npm ci", "npm run build", 'test -z "$(git status --porcelain)" || { git status --porcelain >&2; echo "the build changed tracked files" >&2; exit 1; }'];
 
 /** Fetches the tags and finds the one release tag on this commit; the CLI deploys only a clean checkout of a vX.Y.Z tag. */
@@ -207,6 +209,7 @@ export class CloudReleasePipelineStack extends Stack {
           "git-credential-helper": "yes",
           variables: {
             AWS_CLI_VERSION: CLOUD_PIPELINE_AWS_CLI_VERSION,
+            NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS,
             ROVARA_ENV: env,
             SETTINGS_PARAMETER: `${settingsPrefix}settings`,
             PROGRESS_PARAMETER: `${settingsPrefix}install/progress`,
@@ -264,6 +267,7 @@ export class CloudReleasePipelineStack extends Stack {
           "git-credential-helper": "yes",
           variables: {
             AWS_CLI_VERSION: CLOUD_PIPELINE_AWS_CLI_VERSION,
+            NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS,
             ROVARA_ENV: env,
             PROGRESS_PARAMETER: `${settingsPrefix}install/progress`,
             SETUP_TABLE: setup.table.tableName,

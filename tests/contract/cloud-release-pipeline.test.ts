@@ -1,7 +1,7 @@
 import { App } from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { CLOUD_PIPELINE_GITHUB_ACCOUNT, CLOUD_PIPELINE_PLACEHOLDER_CHANNEL, CLOUD_SETUP_TIMEOUT, CloudReleasePipelineStack, cloudImageRepositoryName } from "../../infra/lib/cloud-release-pipeline.js";
+import { CLOUD_PIPELINE_GITHUB_ACCOUNT, CLOUD_PIPELINE_NODE_OPTIONS, CLOUD_PIPELINE_PLACEHOLDER_CHANNEL, CLOUD_SETUP_TIMEOUT, CloudReleasePipelineStack, cloudImageRepositoryName } from "../../infra/lib/cloud-release-pipeline.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
@@ -75,6 +75,7 @@ describe("Rovara Cloud release pipeline", () => {
     expect(variables).toMatchObject({
       SETTINGS_PARAMETER: "/rovara-cloud/production/settings", SETUP_EMAIL: "<token>", SETUP_URL: "<setup page>",
       GITHUB_ACCOUNT: CLOUD_PIPELINE_GITHUB_ACCOUNT, PLACEHOLDER_CHANNEL: CLOUD_PIPELINE_PLACEHOLDER_CHANNEL,
+      NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS,
     });
     expect(JSON.stringify(project("rovara-cloud-production-deploy").Properties)).toContain('{"Ref":"SetupEmail"}');
     expect(commands).toContain('cli upgrade --region "$AWS_REGION"');
@@ -96,7 +97,7 @@ describe("Rovara Cloud release pipeline", () => {
     const { variables, commands } = buildSpec("rovara-cloud-production-setup");
     expect((project("rovara-cloud-production-setup").Properties as { TimeoutInMinutes: number }).TimeoutInMinutes).toBe(CLOUD_SETUP_TIMEOUT.toMinutes());
     expect(CLOUD_SETUP_TIMEOUT.toHours()).toBe(8);
-    expect(variables).toMatchObject({ PROGRESS_PARAMETER: "/rovara-cloud/production/install/progress", SETUP_TABLE: "<token>", SETUP_URL: "<setup page>" });
+    expect(variables).toMatchObject({ PROGRESS_PARAMETER: "/rovara-cloud/production/install/progress", SETUP_TABLE: "<token>", SETUP_URL: "<setup page>", NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS });
     expect(commands).toContain('steps.e2e && steps.e2e.status === "done" ? "finished" : "unfinished"');
     expect(commands).toContain("*ParameterNotFound*) echo unfinished");
     // Finished: no build and no init.
@@ -104,6 +105,10 @@ describe("Rovara Cloud release pipeline", () => {
     expect(commands).toContain('init --region "$AWS_REGION" --engine cdk --source "$PWD" --rovara-cloud --resume');
     expect(commands).toContain('--setup-table "$SETUP_TABLE" --setup-url "$SETUP_URL" --connectors none');
     expect(commands).not.toContain("--yes");
+  });
+
+  it("gives the jobs that build the checkout a Node heap the TypeScript build fits in", () => {
+    expect(CLOUD_PIPELINE_NODE_OPTIONS).toBe("--max-old-space-size=8192");
   });
 
   it("refuses an environment name the environment rules refuse", () => {
