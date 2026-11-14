@@ -1,7 +1,7 @@
 // FR-048: agentx config's fixed, documented keys. Each maps to exactly one place: a stack parameter,
 // an SSM value (the environment settings) or a control-plane setting. docs/day-two.md lists the
 // same table.
-import { UI_FLAG_NAMES, UI_FLAGS_FORCE_OFF_ALL, UI_FLAGS_FORCE_OFF_NONE, UiFlagNameSchema, isRemovedUiFlagName } from "@agentx/cloud-contracts";
+import { CORE_ENGINE_DEFAULT, CORE_ENGINE_PARAMETER_PATTERN, UI_FLAG_NAMES, UI_FLAGS_FORCE_OFF_ALL, UI_FLAGS_FORCE_OFF_NONE, UiFlagNameSchema, isRemovedUiFlagName } from "@agentx/cloud-contracts";
 import { CHATGPT_DEFAULT_PREFERRED_MODEL, ChatGptModelIdSchema, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, agentXError, environmentSettingsPrefix, environmentStackName } from "@rovara-code/contracts";
 import { catalogModel } from "@agentx/model-runtime/catalog";
 import { AlertEmailSchema, MAX_BUDGET_USD } from "../deploy/answer-schemas.js";
@@ -58,6 +58,12 @@ const uiFlagsForceOffValue = (key: string) => (value: string): string => {
   const removed = parts.filter((part) => isRemovedUiFlagName(part));
   if (removed.length > 0) return refuse(key, `none, all, or screen names (${UI_FLAG_NAMES.join(", ")}) joined by a hyphen; ${removed.join(", ")} can no longer be turned off (the old screen was removed)`);
   return parts.every((part) => UiFlagNameSchema.safeParse(part).success) && trimmed.length <= 64 ? trimmed : refuse(key, `none, all, or screen names (${UI_FLAG_NAMES.join(", ")}) joined by a hyphen, at most 64 characters`);
+};
+
+/** `off`, `on`, or `on:<company id>[:<company id>]` (the stack parameter's own pattern). The broker reads anything else as off; the command refuses it before anything changes. */
+const coreEngineValue = (key: string) => (value: string): string => {
+  const trimmed = value.trim();
+  return new RegExp(CORE_ENGINE_PARAMETER_PATTERN, "u").test(trimmed) ? trimmed : refuse(key, "off, on, or on:<company id>[:<company id>] (a company id is org_ and 20 lowercase letters or digits; at most two)");
 };
 
 const oneOf = (key: string, values: readonly string[]) => (value: string): string =>
@@ -172,6 +178,7 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
   { key: "savedEnv.enabled", description: "1: a project's proven setup can be built into a saved image and used by tasks (turn on only after the registry roles and the worker image are deployed); 0: nothing is built, pushed, pulled or sent to a worker", target: parameter("control-plane", "SavedEnvEnabled"), defaultValue: "0", parse: oneOf("savedEnv.enabled", ["0", "1"]) },
   { key: "slack.explicitMembers", description: "1: a Slack person who is not an explicit, current member of the company (not removed, not banned) is not served in Slack and is told to ask an admin to add them or to link their account (new installs default to 1); warn: today's access is kept and each such person gets one direct message that a membership will soon be needed; 0: today's behaviour, a Slack person with no membership is served as an implicit member (the rollback)", target: parameter("control-plane", "SlackExplicitMembers"), defaultValue: "1", parse: oneOf("slack.explicitMembers", ["0", "1", "warn"]) },
   { key: "ui.forceOff", description: "screens still being finished to hold back for every company on this install (wins over whatever a company chose in the app): none, all, or screen names joined by a hyphen (health, setup, publish, billing, agreement, companies); the finished screens (look, nav, home, work, spending, leadingHeader, insights, continue) have no old screen left and can no longer be turned off; any other name turns every remaining screen off", target: parameter("control-plane", "UiFlagsForceOff"), defaultValue: "none", parse: uiFlagsForceOffValue("ui.forceOff") },
+  { key: "coreEngine.switch", description: "off: every new task runs Cloud's own flow (the default); on: new tasks of every company start on Rovara Code's core; on:<company id>[:<company id>]: only those companies' new tasks do (at most two). A running task keeps the engine it started on, so turning it off never moves one. The core's scheduled jobs run only while this is not off", target: parameter("control-plane", "CoreEngine"), defaultValue: CORE_ENGINE_DEFAULT, parse: coreEngineValue("coreEngine.switch") },
   { key: "scriptTokens.enabled", description: "1: people can make script tokens in the app settings so their scripts and CI can read and start their own tasks; 0: no token can be made and every script token is refused", target: parameter("control-plane", "ScriptTokensEnabled"), defaultValue: "0", parse: oneOf("scriptTokens.enabled", ["0", "1"]) },
   { key: "standingInstructions.enabled", description: "1: the project's How we work reaches every step in the system prompt, in one block with the company's rules and the precedence wording (turn on only after the worker image that carries task.standingInstructions.v1 is deployed); 0: How we work stays in the user message", target: parameter("control-plane", "StandingInstructionsEnabled"), defaultValue: "0", parse: oneOf("standingInstructions.enabled", ["0", "1"]) },
   { key: "secondReview.enabled", description: "1: an added second review of a task's code by a model of a different AI company is on (a project or company chooses shadow, where it never blocks, or on; turn on only after the worker image that runs it is deployed); 0: no second review is planned, run or shown", target: parameter("control-plane", "SecondReviewEnabled"), defaultValue: "0", parse: oneOf("secondReview.enabled", ["0", "1"]) },

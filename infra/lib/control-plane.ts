@@ -11,7 +11,8 @@ import { attachLessonsWorker, attachTeamRecord } from "./team-record-wiring.js";
 import { attachCoreTierChecks } from "./core-tier-checks.js";
 import { attachSavedEnvImages } from "./saved-env-images.js";
 import { CompanyImageMirror } from "./company-image-mirror.js";
-import { attachServiceCatalogImages } from "./service-catalog-images.js";
+import { CoreEngine } from "./core-engine.js";
+import { attachServiceCatalogImages, installCatalogRepositories } from "./service-catalog-images.js";
 import { attachProjectRegistries } from "./registry-wiring.js";
 import type { RegistryDomain } from "./registry-access.js";
 import type { TeamRecordContext } from "./team-record-edition.js";
@@ -53,7 +54,7 @@ import {
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { BROKER_SETTINGS, fixtureKeyAlias, HEALTH_ALARM_SUFFIXES, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName, EVIDENCE_RECORD_RETENTION_DAYS } from "@agentx/cloud-contracts";
-import { SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, chainScheduleGroupName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@rovara-code/contracts";
+import { E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, chainScheduleGroupName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@rovara-code/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
@@ -1206,7 +1207,7 @@ export class ControlPlaneStack extends Stack {
       // The broker finds the mirror function by its derived name (companyImageMirrorFunctionName), not by a name passed in AGENTX_NAMES (the broker's environment has no room for it).
     }
     // Test services (TS19): the catalog's image repositories and their key. NOT behind `TestServicesEnabled` (switch `tx`): the repositories have fixed names and are retained, so a condition would break turning the switch on, off and on again.
-    if (naming.env !== undefined) attachServiceCatalogImages(this, { env: naming.env, repositories: SERVICE_CATALOG_REPOSITORIES });
+    if (naming.env !== undefined) attachServiceCatalogImages(this, { env: naming.env, repositories: installCatalogRepositories() });
     // N9 (INTG2): a project's private package registries, behind `rovaraCodeArtifactDomains` (off by default: this does not run and nothing changes).
     if (props?.registryDomains !== undefined) attachProjectRegistries(this, { broker, domains: props.registryDomains });
     // Plan 4 Task 26: schedule triggers. Each trigger's schedule lives in a group of its own and invokes the broker through a role of its own. EventBridge Scheduler sets
@@ -1450,6 +1451,11 @@ export class ControlPlaneStack extends Stack {
       brokerSettings.add("learningSuggestionsDefault", signInParameters.learningSuggestionsDefault.valueAsString);
       // Lane U5 (runtime UI flags): the operator's override, a packed setting. `none` unless the operator sets the parameter.
       brokerSettings.add("uiFlagsForceOff", signInParameters.uiFlagsForceOff.valueAsString);
+      // The core engine's combined switch (0.5.19, `cc`): a packed setting. `off` unless the operator sets the parameter. The Slack ingress reads CLOUD_CORE_ENGINE itself (it decides whether to hand a plain top-level request to the
+      // broker) and does not unpack settings, so it is given the same value as a plain variable (a few bytes: its environment is small). The queue, the job schedules and the alarm are core-engine.ts.
+      brokerSettings.add("coreEngine", signInParameters.coreEngine.valueAsString);
+      slackIngress.addEnvironment(BROKER_SETTINGS.coreEngine.variable, signInParameters.coreEngine.valueAsString);
+      new CoreEngine(this, "CoreEngineJobs", { naming, env: naming.env, broker, coreEngine: signInParameters.coreEngine, notifyOperator });
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
       // connection belongs to a signed-in developer, so it exists only where developer sign-in
       // does. Only the broker encrypts and decrypts with it, always under an encryption context

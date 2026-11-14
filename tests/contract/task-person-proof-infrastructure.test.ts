@@ -143,9 +143,19 @@ function parentRemainderDigest(template: TemplateJson): string {
   delete remainder.Parameters?.TestServicesEnabled;
   delete remainder.Parameters?.TestAccountsEnabled;
   delete remainder.Parameters?.ProjectImagesEnabled;
+  // The core engine switch (0.5.19): its parameter, its queues, schedules, role and alarm (CoreEngineJobs*), its condition, the four revision 7 catalog repositories, its broker grant and the Slack ingress variable are no part of the proof-only addition.
+  delete remainder.Parameters?.CoreEngine;
   const conditions = remainder.Conditions ?? {};
-  for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof")) delete conditions[id];
+  for (const id of Object.keys(conditions)) if (id.includes("InstallTaskPersonProof") || id.startsWith("CoreEngineJobs")) delete conditions[id];
   const resources = remainder.Resources ?? {};
+  const REVISION_7_REPOSITORY_IDS = ["svcfunctionagent", "svclambdanodejs", "svclambdapython", "svcmodelstandin"].map((name) => `ServiceCatalogImagesRepository${name}`);
+  for (const id of Object.keys(resources)) if (id.startsWith("CoreEngineJobs") || REVISION_7_REPOSITORY_IDS.some((prefix) => id.startsWith(prefix))) delete resources[id];
+  for (const [resourceId, resource] of Object.entries(resources)) {
+    if (resource.Type === "AWS::Lambda::Function" && resourceId.startsWith("SlackIngress")) delete (resource.Properties!.Environment as { Variables: Record<string, unknown> }).Variables.CLOUD_CORE_ENGINE;
+    if (resource.Type !== "AWS::IAM::Policy" && resource.Type !== "AWS::IAM::ManagedPolicy") continue;
+    const document = (resource.Properties as { PolicyDocument?: { Statement?: unknown[] } } | undefined)?.PolicyDocument;
+    if (document?.Statement !== undefined) document.Statement = document.Statement.filter((statement) => !JSON.stringify(statement).includes("CoreEngineJobs"));
+  }
   for (const id of Object.keys(resources)) if (id.startsWith("TaskPersonProof")) delete resources[id];
   // (2026-11-03: the Rovara-paid diagnosis ceiling's parameter, packed setting, metric filter and alarm were removed; nothing of them is left to take out here, and the pinned digests below did not move.)
   // Plan 3 Task 30's spend settlement schedule is no part of the proof-only addition either.
@@ -176,7 +186,7 @@ function parentRemainderDigest(template: TemplateJson): string {
   for (const [id] of workflowDependencyEnvironmentEntries(remainder)) {
     const brokerVariables = resources[id]!.Properties!.Environment as { Variables: Record<string, unknown> };
     // The flag is in the broker's settings in a named environment (ENV-ROOM: AGENTX_SETTINGS), and its own variable in the legacy one (which has none).
-    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "testServices", "testAccounts", "projectImages", "secondReview", "setupRecipes", "nightlyHealth", "insights", "learningSuggestionsDefault", "uiFlagsForceOff"]);
+    if (brokerVariables.Variables.AGENTX_SETTINGS !== undefined) takeBrokerSettings(brokerVariables.Variables, ["workflowDependencies", "rovaraCodeV2", "planSelfCheck", "autofix", "liveSteer", "liveRedirect", "liveAsk", "liveFix", "proofEvidence", "decisionCards", "testEnvironment", "learnedLessons", "verifyResults", "setupAgent", "testServices", "testAccounts", "projectImages", "secondReview", "setupRecipes", "nightlyHealth", "insights", "learningSuggestionsDefault", "uiFlagsForceOff", "coreEngine"]);
     delete brokerVariables.Variables.AGENTX_WORKFLOW_DEPENDENCIES_ENABLED;
     delete brokerVariables.Variables.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID;
     delete brokerVariables.Variables.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID;

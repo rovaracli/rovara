@@ -6,7 +6,7 @@ import { App, CfnParameter, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { SERVICE_CATALOG_REPOSITORIES, catalogRepositoryName } from "@rovara-code/contracts";
-import { SERVICE_CATALOG_KEEP_TAGGED, attachServiceCatalogImages, serviceCatalogLifecyclePolicy } from "../../infra/lib/service-catalog-images.js";
+import { SERVICE_CATALOG_KEEP_TAGGED, attachServiceCatalogImages, installCatalogRepositories, serviceCatalogLifecyclePolicy } from "../../infra/lib/service-catalog-images.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { defaultBoundaryStatements, serviceRoleStatements, type PolicyScope } from "../../infra/lib/access-policies.js";
 import { normalizedTemplate } from "../support/template-snapshot.js";
@@ -230,7 +230,7 @@ describe("in the stacks", () => {
     const json = normalizedTemplate(stack) as { Parameters: Record<string, { Default?: string }>; Resources: Record<string, Resource> };
     expect(json.Parameters["TestServicesEnabled"]!.Default).toBe("0");
     const mine = Object.entries(json.Resources).filter(([id]) => id.startsWith("ServiceCatalogImages"));
-    expect(mine.map(([, resource]) => resource.Type).sort()).toEqual([...SERVICE_CATALOG_REPOSITORIES.map(() => "AWS::ECR::Repository"), "AWS::KMS::Key"].sort());
+    expect(mine.map(([, resource]) => resource.Type).sort()).toEqual([...installCatalogRepositories().map(() => "AWS::ECR::Repository"), "AWS::KMS::Key"].sort());
     for (const [id, resource] of mine) {
       expect(resource.Condition, id).toBeUndefined();
       expect(JSON.stringify(resource), id).not.toContain("TestServicesEnabled");

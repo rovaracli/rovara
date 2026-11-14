@@ -43,7 +43,9 @@ describe("retained resources in a named environment", () => {
         "DeveloperSignInTable AWS::DynamoDB::Table", "FixtureKey AWS::KMS::Key", "ModelProxySaltKey AWS::SecretsManager::Secret",
         // Test services (TS19): one repository per catalog repository, unconditional (they do not depend on TestServicesEnabled). Empty on the first create, so a rolled-back first create may delete them. (Their key is in the plain Retain list below.)
         "ServiceCatalogImagesRepositorysvcdnshelper AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcfakeserver AWS::ECR::Repository",
-        "ServiceCatalogImagesRepositorysvclocalaws AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcmysql AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcpostgres AWS::ECR::Repository",
+        // 0.5.19 (DEC 176, catalog revision 7): the four new repositories, sorted in.
+        "ServiceCatalogImagesRepositorysvcfunctionagent AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvclambdanodejs AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvclambdapython AWS::ECR::Repository",
+        "ServiceCatalogImagesRepositorysvclocalaws AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcmodelstandin AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcmysql AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcpostgres AWS::ECR::Repository",
         "ServiceCatalogImagesRepositorysvcrabbitmq AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvcredis AWS::ECR::Repository", "ServiceCatalogImagesRepositorysvctestaccountproxy AWS::ECR::Repository",
         "ServiceCatalogImagesRepositorysvcvalkey AWS::ECR::Repository",
         "SlackSecret AWS::SecretsManager::Secret", "SlackThreadSessions AWS::S3::Bucket",

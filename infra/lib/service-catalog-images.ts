@@ -26,7 +26,7 @@
 //     policy expires UNTAGGED images after one day, and an image pushed by digest alone would vanish.
 import { Aws, RemovalPolicy, Stack, Token, aws_ecr as ecr, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { catalogRepositoryName } from "@rovara-code/contracts";
+import { SERVICE_CATALOG_REPOSITORIES, catalogRepositoryName } from "@rovara-code/contracts";
 
 /** The metadata `retention.ts` reads: the resource stays plain `Retain` where the aspect would make it `RetainExceptOnCreate`. */
 const KEEP_ON_ROLLBACK_METADATA = "agentx:retain-on-create-rollback";
@@ -78,6 +78,20 @@ export function serviceCatalogKeyPolicy(): iam.PolicyDocument {
       }),
     ],
   });
+}
+
+/**
+ * 0.5.19 (DEC 176, catalog revision 7, S0-CC-INFRA-UNWIRED): the four repositories the revision's new images live in. `svc/model-stand-in` (the fake SageMaker container, model-stand-in@r1), `svc/function-agent`
+ * (the function runner's agent, function-agent@r1) and `svc/lambda-python` and `svc/lambda-nodejs` (the function runner's four runtimes, lambda-python@3.12 and 3.13, lambda-nodejs@22 and 24: a family shares a
+ * repository, as the postgres versions do). The names are the revision's entries' `image.repository`; tests/contract/service-catalog-images-infrastructure.test.ts holds them to the shipped catalog once the revision
+ * is in it. They are listed here, beside the vendored SERVICE_CATALOG_REPOSITORIES (the released catalog's repositories, which the Code pin owns and which does not name these four yet), so this release creates
+ * them whatever the pin says. Empty until the revision's images are pushed; nothing is granted on them (a worker's pull grant comes with the wiring that uses them).
+ */
+export const REVISION_7_CATALOG_REPOSITORIES: readonly string[] = ["svc/function-agent", "svc/lambda-nodejs", "svc/lambda-python", "svc/model-stand-in"];
+
+/** Every catalog repository an install creates: the vendored list and the revision 7 additions, each once, in name order. */
+export function installCatalogRepositories(released: readonly string[] = SERVICE_CATALOG_REPOSITORIES): string[] {
+  return [...new Set([...released, ...REVISION_7_CATALOG_REPOSITORIES])].sort();
 }
 
 export interface ServiceCatalogImagesProps {

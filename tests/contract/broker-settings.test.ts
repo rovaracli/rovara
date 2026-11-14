@@ -151,6 +151,7 @@ describe("the control plane wires each setting and name to what it came from", (
       projectImages: { Ref: "ProjectImagesEnabled" },
       learningSuggestionsDefault: { Ref: "LearningSuggestionsDefault" },
       uiFlagsForceOff: { Ref: "UiFlagsForceOff" },
+      coreEngine: { Ref: "CoreEngine" },
       // Moved out of the broker's own variables to keep its 400 bytes of room (ENV-ROOM): the parameters admit plain text only in a named environment.
       githubAppCredentialRef: { Ref: "GitHubAppCredentialRef" },
       githubAppId: { Ref: "GitHubAppId" },

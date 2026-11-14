@@ -14,6 +14,7 @@ export * from "./rovara-code.js";
 export * from "./rovara-code-node.js";
 export * from "./broker-names.js";
 export * from "./derived-names.js";
+export * from "./core-engine-infra.js";
 export * from "./project-node.js";
 export * from "./protocol.js";
 export * from "./live-interaction-errors.js";
