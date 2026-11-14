@@ -51,4 +51,20 @@ describe("Cloud's retention for core writes", () => {
     expect(await inner.get({ pk: "a", sk: "3" })).toEqual({ pk: "a", sk: "3", x: 1 });
     expect(await inner.get({ pk: "a", sk: "4" })).toHaveProperty("indexExpiresAt", 9);
   });
+
+  // The suggestion allowance's kind and expiry are on separate source lines, so the scan above cannot see it.
+  it.each(["CODE_SUGGESTION", "CODE_SUGGESTION_RATE"])("keeps the existing 24-hour expiry for %s through every write path", async (entityType) => {
+    const inner = new MemoryDocumentStore();
+    const store = cloudRetentionStore(inner);
+    const expiry = 1_800_000_000 + 86_400;
+    const item = { pk: "ORG#retention-test", sk: "put", entityType, indexExpiresAt: expiry };
+    expect(retentionFor(entityType)).toBe("keep");
+    await store.put({ item });
+    await store.transact([{ kind: "put", item: { ...item, sk: "transaction" } }]);
+    await store.update({ key: { pk: item.pk, sk: "update" }, ops: [change.set("entityType", entityType), change.set("indexExpiresAt", expiry)] });
+    await store.transact([{ kind: "update", key: { pk: item.pk, sk: "transaction-update" }, ops: [change.set("entityType", entityType), change.set("indexExpiresAt", expiry)] }]);
+    for (const sk of ["put", "transaction", "update", "transaction-update"]) {
+      expect(await inner.get({ pk: item.pk, sk })).toEqual({ ...item, sk });
+    }
+  });
 });
