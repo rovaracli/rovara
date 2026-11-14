@@ -7,8 +7,10 @@ switch, `rovara init --rovara-cloud`, which turns on self-serve sign-up, organiz
 and an egress firewall.
 
 Rovara Cloud is always deployed from a source checkout with the CDK. The Launch in AWS button and the
-published templates cannot deploy it. There is no pipeline yet: every install and upgrade is run by
-hand, as below.
+published templates cannot deploy it. Production is deployed by a release pipeline in AWS: a `vX.Y.Z`
+tag on `cloud/next` builds the images, waits for a person to approve, and deploys. See
+[Deploying through the pipeline](#deploying-through-the-pipeline). The numbered steps after it are what
+the pipeline runs, and how to run them by hand for a test environment.
 
 > **Names.** From 0.7.0, every AWS resource of an environment is named under `rovara-cloud`: stacks
 > `rovara-cloud-<env>-<part>`, parameters `/rovara-cloud/<env>/...`, secrets `rovara-cloud/<env>/...`,
@@ -53,6 +55,75 @@ flowchart TD
   E --> F[Register the sign-in callback URLs<br/>rovara signin cloud]
   F --> G[doctor, then sign up at /app/signup]
 ```
+
+## Deploying through the pipeline
+
+The pipeline is the stack `rovara-cloud-<env>-pipeline` (`infra/lib/cloud-release-pipeline.ts`), in the
+environment's account and region. Production is `production` in us-east-1.
+
+```mermaid
+flowchart LR
+  T["Push tag vX.Y.Z<br/>(cut from cloud/next)"] --> S[Source]
+  S --> I["Images<br/>build + push worker and Slack,<br/>by digest"]
+  I --> A{{"Approve<br/>(a person, in the console)"}}
+  A --> D{"Installed?"}
+  D -- no --> N["rovara init --rovara-cloud --yes<br/>--stop-after slack-service"]
+  D -- yes --> U["rovara upgrade --yes"]
+```
+
+- **Trigger:** a pushed tag matching `v*.*.*`. Prerelease tags (`v1.2.3-rc.1`) and branch pushes do
+  nothing. The CLI refuses an older version than the one installed.
+- **Images:** built for linux/arm64 into `rovara-cloud-<env>/worker` and `rovara-cloud-<env>/slack`,
+  which the pipeline stack creates and keeps.
+- **Approve:** the pipeline waits in the CodePipeline console until someone presses Approve.
+- **Deploy:** a CodeBuild job with AdministratorAccess (the CLI deploys the CDK only with admin
+  credentials). It installs the environment the first time and upgrades it after.
+
+### Setting up the pipeline (once)
+
+Deploy the pipeline stack from a clean checkout of `cloud/next`, with admin credentials:
+
+```sh
+npm ci && npm run build
+npx cdk deploy RovaraCloudPipeline --app 'node infra/dist/bin/agentx.js' \
+  -c rovaraCloudPipeline=production -c agentxRegion=us-east-1 \
+  --parameters GitHubConnectionArn=<connection ARN> \
+  --parameters AdminEmail=<staff admin email> --parameters AlertEmail=<alert email> \
+  --parameters GitHubAccount=<GitHub owner of the App> --parameters SlackChannel=<channel name>
+```
+
+The GitHub connection must be allowed to read `PrepLabsAI/Rovara-cloud` (GitHub organization
+settings, GitHub Apps, AWS Connector for GitHub, repository access). The four answers are used only by
+the first install.
+
+### Releasing
+
+```sh
+git tag v<x.y.z> origin/cloud/next && git push origin v<x.y.z>
+```
+
+Then approve the run in the CodePipeline console (`rovara-cloud-<env>-release`).
+
+### Finishing the first install (once)
+
+The first run creates every stack and stops before the steps that need a person in a browser. Finish
+them on your own machine, with admin credentials, from a clean clone of the same tag:
+
+```sh
+git clone --branch v<x.y.z> --depth 1 git@github.com:PrepLabsAI/Rovara-cloud.git rovara-cloud-<x.y.z>
+cd rovara-cloud-<x.y.z> && npm ci && npm run build
+P=/rovara-cloud/production; R=us-east-1
+W=$(aws ssm get-parameter --region $R --name $P/worker-image --query Parameter.Value --output text)
+H=$(aws ssm get-parameter --region $R --name $P/worker-boot-stage2-sha256 --query Parameter.Value --output text)
+S=$(aws cloudformation describe-stacks --region $R --stack-name rovara-cloud-production-slack \
+  --query "Stacks[0].Parameters[?ParameterKey=='OrchestratorImageUri'].ParameterValue" --output text)
+node packages/cli/dist/bin.js --env production init --region $R --engine cdk --source "$PWD" \
+  --rovara-cloud --worker-image "$W" --boot-stage2-sha256 "$H" --slack-image "$S"
+```
+
+The install page opens and continues where the pipeline stopped: the GitHub App, the Slack app, the
+admin sign-in, the first project and the first reply (see [What the steps do](#what-the-steps-do-on-rovara-cloud)).
+Every later release only goes through the pipeline.
 
 ## Before you start
 
@@ -321,7 +392,7 @@ These are open in the code on `cloud/next`. Fix them before a production Rovara 
   control-plane parameter `RovaraWebOrigin` cannot be set from the CLI. Staging still uses the
   default.
 - **No custom domain.** Users see the raw API Gateway address.
-- **No pipeline.** Installs and upgrades are manual, and the repository holds no AWS role.
+- **The pipeline's deploy job has AdministratorAccess.** Narrow it to what a deploy uses.
 - **Customers cannot set their own spend limits** in the app: nothing calls the budget route yet.
   There is a trial, but no billing.
 - **No self-serve Slack,** and the shared Slack app's install in a customer workspace is unproven.
