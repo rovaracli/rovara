@@ -50,6 +50,9 @@
       "path": "packages/web"
     },
     {
+      "path": "packages/cloud-server"
+    },
+    {
       "path": "tests/web"
     },
     {

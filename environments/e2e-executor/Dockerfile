@@ -24,6 +24,7 @@ COPY packages/slack-service/package.json packages/slack-service/package.json
 COPY packages/design-tokens/package.json packages/design-tokens/package.json
 COPY packages/ui/package.json packages/ui/package.json
 COPY packages/web/package.json packages/web/package.json
+COPY packages/cloud-server/package.json packages/cloud-server/package.json
 COPY upstream/e2e-0.20.0.tgz upstream/e2e-0.20.0.tgz
 COPY infra/package.json infra/package.json
 RUN npm ci --ignore-scripts
