@@ -334,7 +334,9 @@ describe("no new deploy-role action: the deploy role and its permissions boundar
     // AWS::SQS::Queue, the core dispatch queue and its dead letters.
     ...[coreDispatchQueueName("staging"), coreDispatchDeadLetterName("staging")].flatMap((name) => ["sqs:CreateQueue", "sqs:SetQueueAttributes", "sqs:GetQueueAttributes", "sqs:TagQueue", "sqs:UntagQueue", "sqs:ListQueueTags", "sqs:DeleteQueue"].map((action) => ({ action, resource: queue(name) }))),
     // AWS::Scheduler::ScheduleGroup and AWS::Scheduler::Schedule.
-    ...["scheduler:CreateScheduleGroup", "scheduler:GetScheduleGroup", "scheduler:DeleteScheduleGroup", "scheduler:TagResource", "scheduler:CreateSchedule", "scheduler:GetSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule"].map((action) => ({ action, resource: "arn:aws:scheduler:us-west-2:123456789012:schedule/group/schedule" })),
+    // Each action on the ARN shape AWS gives its resource: a group is `schedule-group/<name>`, a schedule `schedule/<group>/<name>` (0519-INFRA-LOWS L6: one made-up ARN used to stand for both).
+    ...["scheduler:CreateScheduleGroup", "scheduler:GetScheduleGroup", "scheduler:DeleteScheduleGroup", "scheduler:TagResource"].map((action) => ({ action, resource: "arn:aws:scheduler:us-west-2:123456789012:schedule-group/CoreEngineScheduleGroup-ABC" })),
+    ...["scheduler:CreateSchedule", "scheduler:GetSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule"].map((action) => ({ action, resource: "arn:aws:scheduler:us-west-2:123456789012:schedule/CoreEngineScheduleGroup-ABC/CoreEngineSchedule-ABC" })),
     // AWS::CloudWatch::Alarm.
     ...["cloudwatch:PutMetricAlarm", "cloudwatch:DescribeAlarms", "cloudwatch:DeleteAlarms", "cloudwatch:TagResource"].map((action) => ({ action, resource: "arn:aws:cloudwatch:us-west-2:123456789012:alarm:agentx-staging-CoreDispatchDeadLetters" })),
     // AWS::IAM::Role under the environment's path (the schedules' role), its policy, and passing it to the scheduler.

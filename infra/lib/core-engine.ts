@@ -64,7 +64,7 @@ export class CoreEngine extends Construct {
       encryption: sqs.QueueEncryption.SQS_MANAGED,
       visibilityTimeout: CORE_DISPATCH_VISIBILITY_TIMEOUT,
     });
-    // The broker runs the core's queue point (send, receive, ack, extend a message's visibility) and, for a redrive or a purge, reads and clears the dead letters. Exactly these two queues.
+    // The broker runs the core's queue point (send, receive, ack, extend a message's visibility) and, for a redrive or a purge, reads the dead letters and clears them one message at a time (DeleteMessage; sqs:PurgeQueue is deliberately not granted). Exactly these two queues.
     broker.addToRolePolicy(new iam.PolicyStatement({
       sid: "UseCoreDispatchQueue",
       actions: ["sqs:SendMessage", "sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"],
