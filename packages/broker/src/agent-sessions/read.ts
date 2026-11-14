@@ -3,7 +3,7 @@
 // a step's task without a project role) is left out, never shown as an error.
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import { AGENT_SESSION_CONTRACT_VERSION, AGENTX_NAME_PATTERN, ChainRunViewSchema, LIVE_INDEX_SCAN_MAX, LIVE_PAGE_MAX, SessionBindingSchema, SessionIdSchema, agentSessionKey, agentXError, cleanSessionName, hideEmailAddresses, mySessionsKey, projectAllows, projectSessionsKey, sessionLink, sessionBindingKey, sharedSessionsKey, type AgentSessionRecord, type SessionBinding, type SessionLevel, type SessionStatus, budgetPauseNext, budgetScopeName, sessionTaskStatus, taskStatusNext, type TaskStatus } from "@rovara-code/contracts";
+import { AGENT_SESSION_CONTRACT_VERSION, AGENTX_NAME_PATTERN, ChainRunViewSchema, LIVE_INDEX_SCAN_MAX, LIVE_PAGE_MAX, SessionBindingSchema, SessionIdSchema, agentSessionKey, agentXError, cleanSessionName, hideEmailAddresses, mySessionsKey, projectAllows, projectSessionsKey, sessionLink, sessionBindingKey, sharedSessionsKey, taskSpendKey, type AgentSessionRecord, type SessionBinding, type SessionLevel, type SessionStatus, budgetPauseNext, budgetScopeName, sessionTaskStatus, taskStatusNext, type TaskStatus } from "@rovara-code/contracts";
 import { type SessionList, type SessionTile } from "@agentx/cloud-contracts";
 import { type SessionView } from "@agentx/cloud-contracts";
 import { type DeveloperTaskView, type OrgRole } from "@agentx/cloud-contracts";
@@ -172,6 +172,13 @@ function withoutForeignLinks(view: DeveloperTaskView, mine: ReadonlySet<string>)
  * with no level. Status and step come from the stored summary once the projector has computed one (its revision is above the start's), and
  * from the task until then.
  */
+/** How much of a task session's cost is an estimate (DECISIONS 172), from the task's own spend counter the ledger keeps beside its total: never more than the cost shown. */
+async function estimatedSpendOf(deps: Pick<SessionReadDependencies, "documentClient" | "tableName">, session: AgentSessionRecord, costUsd: number): Promise<number> {
+  if (session.subject.kind !== "task") return 0;
+  const value = (await getItem(deps, taskSpendKey(session.orgId, session.subject.taskId)))?.["estimatedUsd"];
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(Math.min(value, costUsd) * 1e6) / 1e6 : 0;
+}
+
 export async function sessionView(deps: SessionReadDependencies, caller: SessionReadCaller, sessionId: string): Promise<SessionView> {
   const access = await requireSessionLevel(deps, caller, sessionId, "view", "view it");
   const { session } = access;
@@ -207,6 +214,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
   const runLimitUsd = computed || task === undefined ? summary.runLimitUsd : typeof task.budgetUsd === "number" ? task.budgetUsd : undefined;
   const stopAtUsd = computed || task === undefined ? summary.stopAtUsd
     : runLimitUsd === undefined ? task.maxPerRunUsd : Math.min(runLimitUsd, task.maxPerRunUsd ?? runLimitUsd);
+  const estimatedUsd = await estimatedSpendOf(deps, session, summary.costUsd);
   const pausedView = taskShown?.paused;
   let paused: SessionView["cost"]["paused"];
   if (pausedView !== undefined) {
@@ -260,6 +268,7 @@ export async function sessionView(deps: SessionReadDependencies, caller: Session
     ...(taskShown?.errorRef === undefined ? {} : { errorRef: taskShown.errorRef }),
     cost: {
       spentUsd: summary.costUsd,
+      ...(estimatedUsd > 0 ? { estimatedUsd } : {}),
       ...(runLimitUsd === undefined ? {} : { runLimitUsd }),
       ...(stopAtUsd === undefined ? {} : { stopAtUsd }),
       payer: await payerOf(deps, session, ownerNamedAt({ developerId: session.owner.developerId, name: safeDisplayName(session.owner.name, session.owner.developerId) }, ownerNames, session.createdAt).name),

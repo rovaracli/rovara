@@ -215,7 +215,7 @@ const ROWS: readonly Row[] = [
   ["aws/developer-routes/design-review.ts", "resumePortsOf>context", "history", ".developerId"],
   // Final fix round: the same fixed fact (the requester) read where a card is listed for each person (the requester sees it, an approver who is not the requester is checked by the approval rules), and where Design first and Retry ask whether the caller is the requester
   // (or the current owner, read through `tryEffectiveTaskOwner`). A press that approved a design is recognised by the caller's own actor id in the decision it recorded: it names a person, it decides nothing about who owns the task.
-  ["aws/developer-routes/design-review.ts", "cardsForTask", "history", ".developerId*3"],
+  ["aws/developer-routes/design-review.ts", "cardsForTask", "history", ".developerId"],
   ["aws/developer-routes/design-review.ts", "mayDirectWork", "history", ".developerId"],
   ["aws/developer-routes/design-review.ts", "approveOnPage", "caller-actor", "taskOwnerKey()"],
   // Mainline #408 (plan self-check and grounding): the object prefix of the plan the planner answered and of the task's stored plan document, and the task's principal for the grounding step's workspace: the task's principal, never changes

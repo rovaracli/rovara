@@ -265,7 +265,7 @@ exec(compile(text[text.index("# ------------------------------------------------
 class Ledger:
     """The Postgres ledger's meaning, in memory. clock is moved by the scenarios to age holds."""
     def __init__(self): self.keys, self.holds, self.clock, self.lock = {}, {}, 0.0, asyncio.Lock()
-    async def take(self, key, call_id, worst, spent, cap):
+    async def take(self, key, call_id, worst, spent, cap, estimated=False, month_gate=None):   # an estimated hold's overrun rule: tests/contract/model-proxy-unpriced.test.ts
         await asyncio.sleep(random.random() / 1000)         # replicas reach the database in any order
         async with self.lock:
             row = self.keys.setdefault(key, {"charged": 0, "held": 0})
@@ -276,11 +276,12 @@ class Ledger:
                 row["held"] += worst; self.holds[call_id] = {"key": key, "r": worst, "expires": self.clock + ns["HOLD_SECONDS"]}
                 return "ok", None
             return ("exceeded" if max(row["charged"], spent) + worst > cap else "held"), row["charged"]
-    async def settle(self, call_id, cost):
+    async def settle(self, call_id, cost, estimated=False):
         async with self.lock:
             h = self.holds.pop(call_id, None)
             if h is None: return
             row = self.keys[h["key"]]; row["held"] -= h["r"]; row["charged"] += h["r"] if cost is None else cost
+            if estimated: row["estimated"] = row.get("estimated", 0) + (h["r"] if cost is None else cost)
 ns["SETTLE_GRACE_SECONDS"] = 0.05
 
 class Key:
@@ -303,7 +304,7 @@ async def chunks(n, fail=False):
     for i in range(n):
         await asyncio.sleep(0); yield i
     if fail: raise RuntimeError("provider cut the stream")
-def state(ledger, key="k1"): return dict(ledger.keys.get(key, {"charged": 0, "held": 0}), holds=len([h for h in ledger.holds.values() if h["key"] == key]))
+def state(ledger, key="k1"): return dict({k: v for k, v in ledger.keys.get(key, {"charged": 0, "held": 0}).items() if k != "estimated"}, holds=len([h for h in ledger.holds.values() if h["key"] == key]))   # the estimated part of a charge: tests/contract/model-proxy-unpriced.test.ts
 def worst(data): return ns["_worst_case_micros"](data, ns["_prices_for"](data["model"]))
 
 async def parallel():
@@ -518,7 +519,7 @@ json.dump({name: asyncio.run(globals()[name]()) for name in which}, sys.stdout)
     expect(parallel.after).toEqual({ charged: 3000, held: 0, holds: 0 });
   });
 
-  itPython("answers 422 budget_exceeded when the spend leaves no room for the call, in the shape the worker reads, and 403 for a model with no price", () => {
+  itPython("answers 422 budget_exceeded when the spend leaves no room for the call, in the shape the worker reads, and holds a model with no price at a cautious estimate instead of refusing it", () => {
     const r = runBudget("refusals");
     for (const name of ["spent", "charged", "too_big"] as const) {
       expect(r[name].status, name).toBe(422);
@@ -531,8 +532,9 @@ json.dump({name: asyncio.run(globals()[name]()) for name in which}, sys.stdout)
     expect(anthropic.type).toBe("error");
     expect(anthropic.error.type).toBe("budget_exceeded");
     expect(anthropic.error.message).toMatch(/^Budget has been exceeded! Key=task /u);
-    expect(r.unpriced).toMatchObject({ status: 403, type: "model_not_priced" });
-    expect(r.unknown).toMatchObject({ status: 403, type: "model_not_priced" });
+    // DECISIONS 172: no model is refused for lack of a price. One priced at zero, and one nothing serves, are held at a cautious estimate (tests/contract/model-proxy-unpriced.test.ts).
+    expect(r.unpriced).toEqual({ status: 200 });
+    expect(r.unknown).toEqual({ status: 200 });
     // a key with no budget (or no key object) is not held at all
     expect(r.no_budget).toEqual({ status: 200 });
     expect(r.no_key_object).toEqual({ status: 200 });

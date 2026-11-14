@@ -20,6 +20,7 @@ function fakeAccess(overrides: Partial<ModelAccess> = {}): ModelAccess & { calls
     spend: record("spend", { member: { spentUsd: 1, limitUsd: 2 }, org: { spentUsd: 3, limitUsd: 4 } }),
     orgSpend: record("orgSpend", { spentUsd: 3, limitUsd: 4 }),
     keySpend: record("keySpend", 1.25),
+    keyEstimatedSpend: record("keyEstimatedSpend", 0.5),
     upsertSource: record("upsertSource", undefined),
     removeSource: record("removeSource", undefined),
     checkSource: record("checkSource", { ok: true, health: "healthy" }),
@@ -62,6 +63,17 @@ describe("ModelAccessFunction handler", () => {
     expect(access.calls).toEqual([["blockKey", ["c".repeat(64)]]]);
     expect((await run({ op: "blockKey", args: { keyId: "sk-the-key-itself" } })).ok).toBe(false);
     expect(access.calls).toHaveLength(1);
+  });
+
+  it("reads the estimated part of the keys' spend, as 0 from an access that cannot, and refuses a raw key", async () => {
+    const ids = ["a".repeat(64)];
+    const access = fakeAccess();
+    expect(await createModelAccessHandler({ access, log: quiet })({ op: "keyEstimatedSpend", args: { keyIds: ids } })).toEqual({ ok: true, result: 0.5 });
+    expect(access.calls).toEqual([["keyEstimatedSpend", [ids]]]);
+    const without = fakeAccess();
+    delete without.keyEstimatedSpend;
+    expect(await createModelAccessHandler({ access: without, log: quiet })({ op: "keyEstimatedSpend", args: { keyIds: ids } })).toEqual({ ok: true, result: 0 });
+    expect(await createModelAccessHandler({ access, log: quiet })({ op: "keyEstimatedSpend", args: { keyIds: [VIRTUAL] } })).toMatchObject({ ok: false, code: "CONFIG_INVALID" });
   });
 
   it("runs the org-only spend and the keys' spend", async () => {

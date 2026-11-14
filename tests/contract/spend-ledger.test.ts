@@ -218,6 +218,41 @@ describe("settleKey", () => {
     expect(t.db.get(taskSpendKey(OTHER_ORG, String(key.tags.taskId)))).toBeUndefined();
   });
 
+  it("counts the estimated part of a key's spend beside its total (DECISIONS 172): on the key's record and the task's counter, once, never above the spend, and not at all when it cannot be read", async () => {
+    const t = setup();
+    const key = t.input();
+    await registerKey(t.deps(), key);
+    let estimated: number | Error = 0.3;
+    const deps = () => ({ ...t.deps(), access: { ...t.deps().access, keyEstimatedSpend: async () => { if (estimated instanceof Error) throw estimated; return estimated; } } });
+    const counter = () => t.db.get(taskSpendKey(t.orgId, String(key.tags.taskId))) as { settledUsd?: number; estimatedUsd?: number } | undefined;
+    t.spend(key, 1.2);
+    await settleKey(deps(), t.orgId, key.keyId);
+    near(counter()?.settledUsd, 1.2);
+    near(counter()?.estimatedUsd, 0.3);
+    // More spend, more estimate: only the new part is added; a repeated settle adds nothing.
+    estimated = 0.8; t.spend(key, 2);
+    await settleKey(deps(), t.orgId, key.keyId);
+    await settleKey(deps(), t.orgId, key.keyId);
+    near(counter()?.settledUsd, 2);
+    near(counter()?.estimatedUsd, 0.8);
+    // A stamp ahead of the spend the proxy has flushed is capped at that spend; a stamp that cannot be read leaves the spend counted and the estimate as it was.
+    estimated = 50; t.spend(key, 2.5);
+    await settleKey(deps(), t.orgId, key.keyId);
+    near(counter()?.settledUsd, 2.5);
+    near(counter()?.estimatedUsd, 2.5);
+    estimated = new Error("proxy down"); t.spend(key, 3);
+    await settleKey(deps(), t.orgId, key.keyId);
+    near(counter()?.settledUsd, 3);
+    near(counter()?.estimatedUsd, 2.5);
+    // An access that has no such read counts the spend with no estimate at all.
+    const plain = setup();
+    const other = plain.input();
+    await registerKey(plain.deps(), other);
+    plain.spend(other, 1);
+    await settleKey(plain.deps(), plain.orgId, other.keyId);
+    expect((plain.db.get(taskSpendKey(plain.orgId, String(other.tags.taskId))) as { estimatedUsd?: number }).estimatedUsd).toBeUndefined();
+  });
+
   it("adds once when two settles of one key run at the same time", async () => {
     const t = setup();
     const key = t.input();

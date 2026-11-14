@@ -3,7 +3,8 @@
 // KNOWN differences below, named by a line it holds. A new difference (Code's next change not mirrored, or a Cloud edit that was not meant) fails here until it is mirrored or listed with its reason. A listed
 // difference that no longer exists fails too, so the list never goes stale.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { ROVARA_NEVER_COMMIT, ROVARA_NEVER_COMMIT_EXCLUDE, neverCommitRefusal } from "@rovara-code/contracts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -41,6 +42,23 @@ const KNOWN: Readonly<Record<string, readonly Known[]>> = {
     { reason: "Cloud only (switch `pj`): `companyImageOf`", line: "function companyImageOf(reference: string, registry: string): string {" },
     { reason: "Cloud and Code differ in which image a helper starts (company image reference against imageReferences)", line: "plans.push({ request, index, entry, name: plainName(request.name)" },
   ],
+  "isolated-git.ts": [
+    { reason: "Cloud's wording of the lessons-replay note (older than Code's)", line: "Lane 7 (lessons replay, the file arm)" },
+  ],
+  "git.ts": [],
+  "verification/candidate.ts": [
+  ],
+  "publish.ts": [
+    { reason: "Cloud imports `WorkerInvocation` from its own contracts", line: 'import { type WorkerInvocation } from "@agentx/cloud-contracts";' },
+  ],
+  "maintain-pull-request.ts": [
+    { reason: "Cloud imports `WorkerInvocation` from its own contracts", line: 'import { type WorkerInvocation } from "@agentx/cloud-contracts";' },
+    { reason: "Cloud only: `workflowAdopt` (Continue in your own tool: a Recheck of a head pushed outside Rovara) joins the workflow-task branch", line: "invocation.payload.workflowAdopt !== undefined) {" },
+    { reason: "Cloud only: `workflowAdopt` returns the adoption before anything is merged or pushed", line: "if (invocation.payload.workflowAdopt !== undefined) return adoptOutsideHead(" },
+    { reason: "Cloud only: `adoptOutsideHead`", line: "async function adoptOutsideHead(" },
+    { reason: "Cloud's wording of the push note (names the CodeBuild validation branch)", line: "a CodeBuild validation branch) goes through here" },
+  ],
+  "never-commit-guard.ts": [],
   "service-usage-record.ts": [
     { reason: "Cloud only: the front's markers (test-services-front-markers.ts)", line: 'import { frontMarkerOfLedger, frontMarkerWord } from "@agentx/cloud-contracts";' },
     { reason: "Cloud only: `takeFrontMarkers` and its slots", line: "function takeFrontMarkers(ledger: EmulatorLedger)" },
@@ -86,5 +104,24 @@ describe("Cloud's copies of Code's worker files", () => {
     const drifted = cloud.replace("export const REPO_ENDPOINT_NAMES_MAX = 128;", "export const REPO_ENDPOINT_NAMES_MAX = 129;");
     expect(drifted).not.toBe(cloud);
     expect(hunks(drifted, normalise(readFileSync(join(CODE, "service-env.ts"), "utf8"))).length).toBeGreaterThan(0);
+  });
+});
+
+
+// TE-B9 (public PR #510): the pin carries Code's never-commit list and guard since the 0.5.18 re-pin. Cloud imports the list from @rovara-code/contracts (its own copy in cloud-contracts is deleted); the guard is mirrored above.
+describe("TE-B9: the never-commit list comes from Code's contracts", () => {
+  it("cloud-contracts has no copy of the list any more, and Code's file is in the pin", () => {
+    expect(existsSync("packages/cloud-contracts/src/never-commit.ts"), "cloud-contracts/src/never-commit.ts is back: import the list from @rovara-code/contracts").toBe(false);
+    expect(existsSync("vendor/rovara-code/packages/contracts/src/never-commit.ts")).toBe(true);
+    expect(existsSync(join(CODE, "never-commit-guard.ts"))).toBe(true);
+  });
+
+  it("the exported list and the sentence are what the owner approved (O38, the review's M2/M3 and M1(b))", () => {
+    expect([...ROVARA_NEVER_COMMIT]).toEqual([
+      ":(top,icase,glob)**/.agentx", ":(top,icase,glob)**/.agentx/**", ":(top,icase,glob)**/.agentx-*", ":(top,icase,glob)**/.agentx-*/**",
+      ":(top,icase,glob)**/.rovara/state.db*", ":(top,icase,glob)**/.rovara/audit.db*",
+    ]);
+    expect([...ROVARA_NEVER_COMMIT_EXCLUDE]).toEqual(ROVARA_NEVER_COMMIT.map((entry) => entry.replace(":(top,", ":(top,exclude,")));
+    expect(neverCommitRefusal(".agentx/x")).toBe("Rovara stopped: its own working files were about to be committed (.agentx/x). Not your code. Nothing was pushed. Next: run the task again.");
   });
 });

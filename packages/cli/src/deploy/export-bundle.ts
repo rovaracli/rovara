@@ -12,7 +12,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, rmdir, writeFile 
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import { agentXError, environmentCloudFormationRoleName, environmentOperatorRoleName, environmentPullThroughPrefix, environmentStackName, EnvironmentNameSchema } from "@rovara-code/contracts";
-import { defaultBoundaryArn, defaultBoundaryStatements, deployRoleBoundaryArn, deployRoleBoundaryStatements, operatorRoleStatements, serviceRoleStatements, type PolicyScope, type PolicyStatementJson } from "@agentx/cloud-contracts";
+import { customDomainDeployPolicyArn, customDomainStatements, defaultBoundaryArn, defaultBoundaryStatements, deployRoleBoundaryArn, deployRoleBoundaryStatements, operatorRoleStatements, serviceRoleStatements, type PolicyScope, type PolicyStatementJson } from "@agentx/cloud-contracts";
 import type { InitAnswers } from "../init/install-state.js";
 import { ACCOUNT_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
 import type { DeployAnswers } from "./deploy-environment.js";
@@ -184,8 +184,13 @@ function policyDocument(statements: PolicyStatementJson[]): string {
  * The ECR pull-through-cache-rule actions (aside from the service-linked-role one above) stay
  * unscoped (`*`): neither action supports resource-level scoping (documented in README.md as the
  * one place this policy can't be scoped down).
+ *
+ * 0.5.18 (IAM-SIZE-HEADROOM): with a custom domain (`customDomain`), the stack also creates the deploy role's CustomDomainDeployPolicy
+ * (`agentx-<env>--custom-domain-deploy` under /agentx/<env>/) and attaches it to that role. Its exact ARN joins the managed-policy
+ * statement's resources (create, read, delete: the same handler permissions), and attaching it is iam:AttachRolePolicy on the deploy
+ * role, which IamRoles already grants. Never a wildcard, and nothing more without a custom domain.
  */
-function accessDeployerStatements(scope: { env: string; partition: string; region: string; account: string }): PolicyStatementJson[] {
+function accessDeployerStatements(scope: { env: string; partition: string; region: string; account: string; customDomain?: boolean }): PolicyStatementJson[] {
   const { env, partition, region, account } = scope;
   const stackArn = `arn:${partition}:cloudformation:${region}:${account}:stack/${environmentStackName(env, "access")}/*`;
   const roleArns = [
@@ -193,7 +198,7 @@ function accessDeployerStatements(scope: { env: string; partition: string; regio
     `arn:${partition}:iam::${account}:role/${environmentOperatorRoleName(env)}`,
   ];
   // 0.5.17: and the deploy role's own boundary (agentx-<env>--deploy-boundary), the second managed policy the stack creates.
-  const boundaryArns = [defaultBoundaryArn({ env, partition, account }), deployRoleBoundaryArn({ env, partition, account })];
+  const boundaryArns = [defaultBoundaryArn({ env, partition, account }), deployRoleBoundaryArn({ env, partition, account }), ...(scope.customDomain === true ? [customDomainDeployPolicyArn({ env, partition, account })] : [])];
   const bucketArn = `arn:${partition}:s3:::${environmentStackName(env, "access")}-*`;
   const serviceLinkedRoleArn = `arn:${partition}:iam::${account}:role/aws-service-role/*`;
   return [
@@ -499,8 +504,8 @@ aws cloudformation describe-stacks --stack-name "\${STACK_NAME}" --region "${reg
 `;
 }
 
-function readme(input: { env: string; region: string; account: string; order: DeployPart[] }): string {
-  const { env, region, account, order } = input;
+function readme(input: { env: string; region: string; account: string; order: DeployPart[]; customDomain: boolean }): string {
+  const { env, region, account, order, customDomain } = input;
   const stackName = environmentStackName(env, "access");
   const laterParts = order.filter((part) => part !== "access");
   const deleteOrder = [...order].reverse().map((part) => environmentStackName(env, part));
@@ -531,7 +536,10 @@ pull-through cache rule, and the two IAM roles every later stack needs.
   CloudFormation role's own boundary: the default one plus the Certificate Manager and Route 53
   actions its certificate and DNS record grants need, which no other role's boundary allows. A
   company boundary given instead must allow those actions too (see \`policies/deploy-role-boundary.json\`).
-- An S3 bucket for release artifacts (templates and code packages) and an ECR pull-through cache
+${customDomain ? `- \`agentx-${env}--custom-domain-deploy\`: a managed policy attached to the CloudFormation role only, with
+  its Certificate Manager and Route 53 grants for the custom domain (\`policies/custom-domain.json\`). CloudFormation
+  creates and attaches it with the stack; it exists only while the custom domain is set.
+` : ""}- An S3 bucket for release artifacts (templates and code packages) and an ECR pull-through cache
   rule prefixed \`agentx-${env}\`.
 
 **Note:** \`ecr:CreatePullThroughCacheRule\` and \`ecr:DeletePullThroughCacheRule\` support no
@@ -713,7 +721,9 @@ whose deletion protection keeps it; its name is not unique, so it never blocks a
   (\`sha256sum -c SHA256SUMS\` from inside that directory).
 - \`policies/service-role.json\`, \`policies/operator-role.json\`, \`policies/default-boundary.json\`, \`policies/deploy-role-boundary.json\`:
   the inline policies the later stacks' roles carry, with this environment's real account,
-  region and partition.
+  region and partition.${customDomain ? `
+- \`policies/custom-domain.json\`: the CloudFormation role's custom-domain grants, the managed policy
+  \`agentx-${env}--custom-domain-deploy\` the access stack attaches to that role.` : ""}
 - \`policies/access-deployer.json\`: the policy for whoever runs \`deploy-access.sh\`.
 - \`init-answers.json\`: the answers this export knew, for the operator's
   \`agentx init --resume --from-bundle\`. It holds no secret.
@@ -818,10 +828,13 @@ export async function writeExportBundle(input: ExportBundleInput): Promise<Expor
     await write("policies/operator-role.json", policyDocument(operatorRoleStatements(policyScope)));
     await write("policies/default-boundary.json", policyDocument(defaultBoundaryStatements(policyScope)));
     await write("policies/deploy-role-boundary.json", policyDocument(deployRoleBoundaryStatements(policyScope)));
-    await write("policies/access-deployer.json", policyDocument(accessDeployerStatements({ env, partition, region, account })));
+    // 0.5.18: with a custom domain on the hosted cloud (the same test stackParameters makes to send it to the access stack), its grants are the managed policy CustomDomainDeployPolicy, not part of service-role.json.
+    const customDomain = answers.cloud === true ? answers.customDomain : undefined;
+    if (customDomain !== undefined) await write("policies/custom-domain.json", policyDocument(customDomainStatements({ ...policyScope, customDomain })));
+    await write("policies/access-deployer.json", policyDocument(accessDeployerStatements({ env, partition, region, account, customDomain: customDomain !== undefined })));
 
     await write("deploy-access.sh", deployAccessScript({ env, region, version: release.manifest.version }), { mode: 0o755 });
-    await write("README.md", readme({ env, region, account, order }));
+    await write("README.md", readme({ env, region, account, order, customDomain: customDomain !== undefined }));
     await write(BUNDLE_ANSWERS_FILE, `${JSON.stringify(initAnswers, null, 2)}\n`);
 
     // Publish atomically: remove `dir` if it exists (assertClaimable already confirmed it's empty,

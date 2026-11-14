@@ -48,6 +48,7 @@
   "packages/cloud-contracts/src/setup-proposal.ts",
   "packages/cloud-contracts/src/sign-in-reasons.ts",
   "packages/cloud-contracts/src/spend.ts",
+  "packages/cloud-contracts/src/task-flow-tier.ts",
   "packages/cloud-contracts/src/task-response.ts",
   "packages/cloud-contracts/src/task-stop-agent.ts",
   "packages/cloud-contracts/src/task-stop-ceiling.ts",

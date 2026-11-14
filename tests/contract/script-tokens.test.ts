@@ -7,6 +7,7 @@ import { SCRIPT_TOKEN_NOT_ALLOWED_MESSAGE, orgScriptTokensKey, scriptTokenKey, t
 import { AuditEventInputSchema, developerOrgKey, editionPolicy } from "@agentx/cloud-contracts";
 import { appCsrfTokenFor } from "../../packages/broker/src/developer/app-csrf.js";
 import { scriptTokenRoute } from "../../packages/broker/src/script-tokens/authenticate.js";
+import * as tokenFormat from "../../packages/broker/src/script-tokens/token-format.js";
 import { hashScriptToken, parseScriptTokenHeader, scriptTokenMatches } from "../../packages/broker/src/script-tokens/token-format.js";
 import { ScriptTokenRecordSchema, noteScriptTokenUse } from "../../packages/broker/src/script-tokens/store.js";
 import { developerFooter } from "../../packages/broker/src/developer/task-records.js";
@@ -21,7 +22,94 @@ const ORIGIN = new URL(DEV_ISSUER).origin;
 const OTHER_ORG = "org_zzzzzzzzzzzzzzzzzzzz" as OrgId;
 
 beforeEach(() => { vi.stubEnv("SCRIPT_TOKENS_ENABLED", "1"); });
-afterEach(() => { vi.unstubAllEnvs(); });
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
+// Deterministic bytes at the existing minting seam; never replace the mint/hash logic.
+function seededTokenRandom(seed: number) {
+  let counter = 0;
+  return (size: number): Buffer => {
+    expect(size).toBe(32);
+    return createHash("sha256").update(`script-token-test:${seed}:${counter++}`).digest();
+  };
+}
+
+function seedTokenMint(seed: number) {
+  const mint = tokenFormat.mintScriptToken;
+  const random = seededTokenRandom(seed);
+  vi.spyOn(tokenFormat, "mintScriptToken").mockImplementation((orgId, tokenId) => mint(orgId, tokenId, random));
+}
+
+/** Public routing IDs are stored intentionally. Only the payload after the first three
+ * separators is secret; base64url itself may contain underscores and hyphens. */
+function assertNoTokenText(value: unknown, token: string): void {
+  const payload = token.split("_").slice(3).join("_");
+  const needles = [token, ...payload.split(/[_-]/u).filter((part) => part.length >= 8), Buffer.from(payload, "base64url").toString("hex")];
+  const check = (text: string) => {
+    if (needles.some((needle) => text.includes(needle))) throw new Error("stored token text");
+  };
+  // JSON covers keys too; raw traversal also covers binary DynamoDB values.
+  check(JSON.stringify(value));
+  const raw = (item: unknown): void => {
+    if (typeof item === "string") check(item);
+    else if (item instanceof Uint8Array) check(Buffer.from(item).toString("utf8"));
+    else if (item !== null && typeof item === "object") for (const child of Object.values(item)) raw(child);
+  };
+  raw(value);
+}
+
+// Fake tokens are assembled at runtime, never committed as token-looking literals.
+const tokenWithPayload = (payload: string) => ["rvst", "a".repeat(20), "b".repeat(20), payload].join("_");
+
+describe("stored token text check", () => {
+  it("rejects a whole token even when every payload segment is short", () => {
+    const token = tokenWithPayload(`${"a_".repeat(21)}8`);
+    expect(() => assertNoTokenText([{ nested: [token] }], token)).toThrow("stored token text");
+  });
+
+  it("rejects each distinctive segment, including exactly eight characters", () => {
+    const parts = ["abcdefgh", "ijklmnop", "q".repeat(25)];
+    const token = tokenWithPayload(parts.join("_"));
+    for (const part of parts) expect(() => assertNoTokenText([{ nested: [`before ${part} after`] }], token)).toThrow("stored token text");
+    const hyphenated = tokenWithPayload(parts.join("-"));
+    for (const part of parts) expect(() => assertNoTokenText([part], hyphenated)).toThrow("stored token text");
+  });
+
+  it("ignores every fragment shorter than eight characters, including the CI fragment 8", () => {
+    for (let length = 1; length < 8; length++) {
+      const part = "8".repeat(length);
+      const token = tokenWithPayload(`${"a".repeat(42 - length)}_${part}`);
+      expect(() => assertNoTokenText([{ name: part }], token)).not.toThrow();
+    }
+  });
+
+  it("rejects token text in JSON keys and raw binary values", () => {
+    const token = tokenWithPayload(`${"a_".repeat(21)}8`);
+    expect(() => assertNoTokenText({ [token]: "value" }, token)).toThrow("stored token text");
+    expect(() => assertNoTokenText([{ nested: [new Uint8Array(Buffer.from(token))] }], token)).toThrow("stored token text");
+  });
+
+  it("rejects the full secret bytes stored as hex", () => {
+    const bytes = seededTokenRandom(150)(32);
+    const token = tokenWithPayload(bytes.toString("base64url"));
+    expect(() => assertNoTokenText([{ secret: bytes.toString("hex") }], token)).toThrow("stored token text");
+  });
+
+  it("checks 2,000 seeded tokens against hash-only rows in under one second", () => {
+    const random = seededTokenRandom(150);
+    const tokenId = `stk_${"b".repeat(20)}`;
+    const seen = new Set<string>();
+    const started = performance.now();
+    for (let index = 0; index < 2_000; index++) {
+      const { token, hash } = tokenFormat.mintScriptToken(TEST_ORG, tokenId, random);
+      seen.add(token);
+      assertNoTokenText([{ orgId: TEST_ORG, tokenId, secretHash: hash, name: "CI deploy 8" }], token);
+    }
+    const elapsed = performance.now() - started;
+    expect(seen.size).toBe(2_000);
+    expect(elapsed).toBeLessThan(1_000);
+    console.info(`2,000 seeded token checks: ${elapsed.toFixed(1)} ms`);
+  });
+});
 
 async function world(options: { brokerExtra?: Record<string, unknown>; developerExtra?: Record<string, unknown>; orgResolver?: OrgResolver } = {}) {
   const audit = capturingAuditDeps();
@@ -64,23 +152,22 @@ async function world(options: { brokerExtra?: Record<string, unknown>; developer
 
 describe("making a token", () => {
   it("shows the token once and stores only its hash, nowhere the token itself", async () => {
+    seedTokenMint(150); // This seed ends in "_8", the CI false positive.
     const w = await world();
-    const made = await w.create();
+    const made = await w.create(MAYA, { name: "CI deploy 8" });
+    expect(made.secret.split("_").at(-1)).toBe("8");
     expect(made.secret).toMatch(/^rvst_[0-9a-z]{20}_[0-9a-z]{20}_[A-Za-z0-9_-]{43}$/);
     expect(made.token.hint).toBe(`rvst_…${made.token.tokenId.slice(4, 12)}`);
     const stored = w.record(made.token.tokenId);
     // Positive control: the record is there and holds the hash of exactly this token.
     expect(stored.secretHash).toBe(createHash("sha256").update(made.secret).digest("hex"));
-    const secretPart = made.secret.split("_").at(-1)!;
-    const everything = JSON.stringify(w.db.find(() => true));
-    expect(everything).toContain(made.token.tokenId);
-    expect(everything).not.toContain(made.secret);
-    expect(everything).not.toContain(secretPart);
-    expect(everything).not.toContain(Buffer.from(secretPart, "base64url").toString("hex"));
-    expect(JSON.stringify(w.audit.recorded())).not.toContain(secretPart);
+    const rows = w.db.find(() => true);
+    expect(JSON.stringify(rows)).toContain(made.token.tokenId);
+    assertNoTokenText(rows, made.secret);
+    assertNoTokenText(w.audit.recorded(), made.secret);
     // The list never shows it either.
     const listed = await w.web(MAYA, "GET", "/v1/app/script-tokens");
-    expect(JSON.stringify(listed.body)).not.toContain(secretPart);
+    assertNoTokenText(listed.body, made.secret);
     expect((listed.body.tokens as Array<{ tokenId: string; mine: boolean; status: string }>)).toEqual([expect.objectContaining({ tokenId: made.token.tokenId, mine: true, status: "active" })]);
   });
 

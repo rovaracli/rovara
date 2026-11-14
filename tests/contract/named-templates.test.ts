@@ -276,6 +276,10 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // SessionsTslSelftestIsStaging (Fn::Equals [<environment name>, "staging"]) and one separate policy SessionsTslSelftestSwitchRead on the steps function's role (ssm:GetParameter on exactly
 // parameter/agentx/staging/tsl-selftest), behind it. It is a condition and not an `if` on the name in the CDK code because a published template is the placeholder environment's with the name replaced
 // (template-rendering.test.ts); in every environment other than staging the condition is false and the policy does not exist (tests/contract/tsl-selftest-grant.test.ts).
+// 2026-11-13 (fix/0518-iam-size-headroom, IAM-SIZE-HEADROOM): the agentx-staging-access snapshot was re-recorded for the two boundaries only (DefaultPermissionsBoundary and DeployRolePermissionsBoundary), compacted
+// without allowing anything new: the role, role lookup and managed-policy actions as exact patterns (BOUNDARY_ROLE_ACTIONS, BOUNDARY_ROLE_LOOKUP_ACTIONS, BOUNDARY_MANAGED_POLICY_ACTIONS), the Team record's
+// sharing Deny merged into the other Deny on "*", and route53:*ResourceRecordSets in the deploy boundary. default-boundary-equivalence.test.ts and deploy-role-boundary-coverage.test.ts prove the same pairs are
+// permitted and refused. The custom domain's move to CustomDomainDeployPolicy does not show here: this snapshot is not the hosted cloud's (deploy-role-grant-equivalence.test.ts covers it). No other snapshot moved.
 describe("named environment templates", () => {
   const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child));
   for (const stack of stacks) {

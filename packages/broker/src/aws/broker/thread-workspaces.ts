@@ -40,6 +40,7 @@ import { registriesPrepareOf } from "./registry-credentials.js";
 import { MEMBERSHIP_PREPARATION_ATTEMPTS, membershipMovedSince, membershipPreparationItem, newWorkspacePreparation, metaPrepareOf, requireSlackRequesterMayWork, slackRequesterRole } from "./workspace-preparation.js";
 import { connectorTypeContext } from "./workspace-routes.js";
 import { OUTCOME_SETTLE_PASS_MS, releaseDependenciesOf } from "./terminal-and-github-events.js";
+import { chargedTaskIds } from "../../developer/limits.js";
 
 /** The close preflight's operation, worker invocation and outbox item: the Slack close's and a developer task's. */
 function closeOperationParts(
@@ -1237,7 +1238,8 @@ async function threadWorkspaceLimitRefusal(
       starterThreads: (member?.threads ?? []).map((subject) => parseSlackThreadSubject(subject)),
       // C16: the member's open AI-tool tasks share this counter (25b R6), so the reply counts them.
       // A count only: a task's title stays with its developer, never in the channel (D22).
-      ...(includeOpenTaskCount ? { openTaskCount: openTaskCount(member?.tasks) } : {}),
+      // Both forms (S2): the markers that name this counter and its old `tasks` set (before the one-time migration).
+      ...(includeOpenTaskCount ? { openTaskCount: (await chargedTaskIds(dependencies.documentClient, dependencies.tableName, slackMemberLimitKey(orgId, teamId, userId))).length } : {}),
     };
   }
   const organization = await getItem<{ count?: number }>(dependencies, slackOrganizationLimitKey(orgId, teamId));
@@ -1245,12 +1247,6 @@ async function threadWorkspaceLimitRefusal(
     return { outcome: "LIMIT_REACHED", limit: "ORGANIZATION", maximum: limits.organizationWorkspaceLimit, starterThreads: [] };
   }
   throw agentXError("WORKSPACE_BUSY", "thread workspace creation conflicted with another request; retry");
-}
-
-/** The size of the member counter's `tasks` string set, which the document client reads as a Set. */
-function openTaskCount(tasks: unknown): number {
-  if (tasks instanceof Set) return tasks.size;
-  return Array.isArray(tasks) ? tasks.length : 0;
 }
 
 /** The Slack limits with the admin's setting applied (R7); read only when a workspace is created. */

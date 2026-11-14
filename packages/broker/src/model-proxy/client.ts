@@ -274,10 +274,19 @@ export class ModelProxyClient implements ModelAccess {
   }
 
   async keySpend(keyIds: readonly string[]): Promise<number> {
+    return (await this.keyInfos(keyIds)).reduce((total, info) => total + info.spent, 0);
+  }
+
+  /** The estimated part of the keys' spend (see ModelAccess.keyEstimatedSpend): the guard's stamp in each key's metadata, at most the key's own spend. */
+  async keyEstimatedSpend(keyIds: readonly string[]): Promise<number> {
+    return (await this.keyInfos(keyIds)).reduce((total, info) => total + Math.min(info.estimated, info.spent), 0);
+  }
+
+  private async keyInfos(keyIds: readonly string[]): Promise<Array<{ spent: number; estimated: number }>> {
     const unique = [...new Set(keyIds)];
-    if (unique.length === 0) return 0;
+    if (unique.length === 0) return [];
     const master = await this.master();
-    let total = 0;
+    const out: Array<{ spent: number; estimated: number }> = [];
     for (let start = 0; start < unique.length; start += KEY_INFO_AT_ONCE) {
       const replies = await Promise.all(unique.slice(start, start + KEY_INFO_AT_ONCE).map((id) => this.request("GET", `/key/info?key=${encodeURIComponent(id)}`, master, undefined)));
       for (const reply of replies) {
@@ -288,10 +297,12 @@ export class ModelProxyClient implements ModelAccess {
         const info = isRecord(reply.body) ? reply.body.info : undefined;
         const spent = isRecord(info) ? (info.spend === null ? 0 : numberOf(info.spend)) : undefined;
         if (spent === undefined) throw unavailable("model proxy answered with no key spend");
-        total += spent;
+        // The guard stamps the estimated part of the key's charges, in micro-dollars, in the key's metadata (rovara_guard.py, _SQL_STAMP); absent for a key with none.
+        const stamp = isRecord(info) && isRecord(info.metadata) ? numberOf(info.metadata.rovara_estimated_micros) : undefined;
+        out.push({ spent, estimated: stamp === undefined || stamp < 0 ? 0 : stamp / 1e6 });
       }
     }
-    return total;
+    return out;
   }
 
   async mintKey(input: MintKeyInput): Promise<MintedKey> {

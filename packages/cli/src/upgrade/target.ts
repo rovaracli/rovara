@@ -72,7 +72,7 @@ export const ROLLBACK_FLOORS: readonly RollbackFloor[] = [
  * ran a newer release is refused, because that release may have declared a floor this agentx has never seen; run the rollback with that
  * release's agentx (or a newer one) instead. Forgetting the bump only refuses, never allows.
  */
-export const ROLLBACK_FLOORS_DECLARED_THROUGH = "0.5.17";
+export const ROLLBACK_FLOORS_DECLARED_THROUGH = "0.5.18";
 
 /** The release's own check (scripts/release/pack-cli.ts): a release whose x.y.z is not ROLLBACK_FLOORS_DECLARED_THROUGH forgot the bump, so its packed agentx would refuse to roll its own release back. */
 export function assertRollbackFloorsDeclaredFor(version: string, declaredThrough: string = ROLLBACK_FLOORS_DECLARED_THROUGH): void {

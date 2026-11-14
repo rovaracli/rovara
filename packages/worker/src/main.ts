@@ -1,3 +1,4 @@
+import { withWorkspaceGuard } from "./workspace-quarantine.js";
 import {taskFallbackAuthorizer} from "./model-fallback-authority.js";
 import { privateAddressFacts, privateAddressHostArgs } from "./private-address-hosts.js";
 import type { WorkerInvocation } from "@agentx/cloud-contracts";
@@ -108,7 +109,8 @@ const state = createWorkerServerState(
     ...(workerBootFailureOf(workerScratch) === undefined ? {} : { bootFailure: workerBootFailureOf(workerScratch)! }),
     steer: (invocation) => handleSteerInvocation(invocation, cancellationController, journal),
     peek: (invocation) => handlePeekInvocation(invocation, rootPath),
-    async execute(invocation: WorkerInvocation): Promise<unknown> {
+    // FIX-RUNNER-ABORT-JOIN: every kind of invocation (preparation, publication, maintenance, a task) runs inside the workspace-safety latch, so a command that could not be confirmed stopped is recorded and quarantined wherever it ran.
+    execute: (invocation: WorkerInvocation): Promise<unknown> => withWorkspaceGuard(rootPath, async () => {
       assertWorkerScratchReady(workerScratch);
       if (invocation.kind === "project-setup-smoke") {
         return projectSetupRuntime.execute(invocation);
@@ -229,7 +231,7 @@ const state = createWorkerServerState(
         return closeInvocationResult(rootPath, () => anotherOperationActive(state, invocation.operationId));
       }
       throw new Error(`worker operation ${invocation.kind} is not implemented in this delivery slice`);
-    },
+    }),
   },
   {
     log: consoleWorkerLog,

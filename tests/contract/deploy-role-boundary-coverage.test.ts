@@ -16,11 +16,12 @@ import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import {
+  BOUNDARY_ACTION_PATTERNS_STAND_FOR, BOUNDARY_MANAGED_POLICY_ACTIONS, BOUNDARY_ROLE_ACTIONS, BOUNDARY_ROLE_LOOKUP_ACTIONS,
   BOUNDARY_APPSYNC_NAMESPACE_ACTIONS, DEPLOY_ROLE_BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS, defaultBoundaryArn, defaultBoundaryStatements, deployRoleBoundaryArn, deployRoleBoundaryName, deployRoleBoundaryStatements, serviceRoleStatements as serviceStatementsFor, type PolicyStatementJson,
 } from "../../infra/lib/access-policies.js";
 import { EnvironmentNameSchema, defaultBoundaryName } from "@rovara-code/contracts";
 import { MODEL_PROXY_TLS_CONTEXT_KEYS as T, MODEL_PROXY_TLS_PREVIOUS_CONTEXT_KEYS as P } from "../../infra/lib/model-proxy-tls.js";
-import { evaluate, type CfnContext } from "../support/cfn-evaluate.js";
+import { evaluate, evaluateCondition, type CfnContext } from "../support/cfn-evaluate.js";
 import { simulateIam, type IamStatement } from "../support/iam-simulate.js";
 import { skipLambdaBundling } from "../support/skip-bundling.js";
 
@@ -75,6 +76,8 @@ function resolver(json: Json, env: string, parameters: Record<string, string>) {
   const text = (value: unknown): unknown => typeof value === "string" ? value : Array.isArray(value) ? value.map(text) : JSON.stringify(value);
   return {
     value: (value: unknown) => evaluate(value, context),
+    /** Whether a resource exists for these parameters (its Condition holds, or it has none). */
+    exists: (resource: Resource) => resource.Condition === undefined || evaluateCondition(resource.Condition, context),
     statements: (document: unknown): Statement[] => {
       const resolved = evaluate(document, context) as { Statement: unknown };
       return [resolved.Statement].flat().filter((statement) => statement !== undefined).map((statement) => {
@@ -94,7 +97,8 @@ function rolesOf(json: Json, read: ReturnType<typeof resolver>) {
     expect(role.Properties.ManagedPolicyArns ?? [], `${id}: no policy attached by ARN (it could not be read here)`).toEqual([]);
     const policies = [
       ...((role.Properties.Policies ?? []) as Array<{ PolicyName: string; PolicyDocument: unknown }>).map((policy) => ({ name: `${id} inline ${policy.PolicyName}`, document: policy.PolicyDocument })),
-      ...Object.entries(json.Resources).filter(([, resource]) => {
+      // 0.5.18: only the policies that exist for these parameters (CustomDomainDeployPolicy only while the custom domain is set).
+      ...Object.entries(json.Resources).filter(([, resource]) => read.exists(resource)).filter(([, resource]) => {
         if (resource.Type === "AWS::IAM::RolePolicy") return isThis(resource.Properties.RoleName);
         if (resource.Type === "AWS::IAM::Policy" || resource.Type === "AWS::IAM::ManagedPolicy") return ((resource.Properties.Roles ?? []) as unknown[]).some(isThis);
         return false;
@@ -165,6 +169,14 @@ describe("every action of every policy an access-stack role holds is inside that
       const deploy = roles.find((role) => role.id === "CloudFormationServiceRole")!;
       expect(deploy.policies.flatMap(({ statements }) => statements).length).toBeGreaterThan(10);
       if (shape.name.startsWith("model proxy TLS")) expect(deploy.policies.some(({ name }) => name.startsWith("ModelProxyTlsDeployPolicy"))).toBe(true);
+      // 0.5.18: the custom domain's grants are the managed policy CustomDomainDeployPolicy, held (and so checked against the deploy boundary) only while the domain is set.
+      const domainPolicy = deploy.policies.find(({ name }) => name === "CustomDomainDeployPolicy");
+      if (shape.parameters?.CustomDomainName !== undefined) {
+        expect(domainPolicy?.statements.flatMap((statement) => list(statement.Action))).toEqual(expect.arrayContaining(["acm:RequestCertificate", "route53:ChangeResourceRecordSets"]));
+        expect(deploy.policies.filter(({ name }) => name.includes("inline")).flatMap(({ statements }) => statements).some((statement) => list(statement.Action).some((action) => /^(acm|route53):/u.test(action)))).toBe(false);
+      } else {
+        expect(domainPolicy).toBeUndefined();
+      }
       expect(roles.flatMap((role) => refusals(boundaries[role.boundary]!, role.policies))).toEqual([]);
     }, 400_000);
   }
@@ -253,6 +265,8 @@ describe("the deploy role's boundary is the default boundary plus exactly the 0.
   }
 });
 
+const BOUNDARY_SCOPE = { env: "staging", partition: "aws", region: REGION, account: ACCOUNT, cloudFormationRoleName: "agentx-staging-cloudformation" };
+
 describe("the boundary action patterns match exactly what they say, against AWS's action lists", () => {
   const matches = (pattern: string, actions: string[]) => actions.filter((action) => glob(pattern, "i").test(action)).sort();
 
@@ -270,6 +284,26 @@ describe("the boundary action patterns match exactly what they say, against AWS'
     expect(matches(BOUNDARY_APPSYNC_NAMESPACE_ACTIONS, SERVICE_ACTIONS.appsync)).toEqual(["appsync:CreateChannelNamespace", "appsync:DeleteChannelNamespace", "appsync:GetChannelNamespace", "appsync:UpdateChannelNamespace"]);
     // Every named action is a real one.
     for (const action of DEPLOY_ROLE_BOUNDARY_CERTIFICATE_AND_RECORD_ACTIONS.filter((pattern) => !pattern.includes("*"))) expect(all, action).toContain(action);
+  });
+
+  it("0.5.18: the boundaries' role, role lookup and managed-policy patterns are exactly the actions the deploy role names, against AWS's IAM action list", () => {
+    const lists: Record<string, readonly string[]> = { BOUNDARY_ROLE_ACTIONS, BOUNDARY_ROLE_LOOKUP_ACTIONS, BOUNDARY_MANAGED_POLICY_ACTIONS };
+    for (const [name, patterns] of Object.entries(lists)) {
+      const standsFor = BOUNDARY_ACTION_PATTERNS_STAND_FOR[name]!;
+      // Every named action is a real one, and every pattern matches only actions it stands for, so the union is exactly the deploy role's named list.
+      for (const action of standsFor) expect(IAM_ACTIONS, `${name}: ${action}`).toContain(action);
+      for (const pattern of patterns) expect(matches(pattern, IAM_ACTIONS).every((action) => standsFor.includes(action)), `${name}: ${pattern} matches ${matches(pattern, IAM_ACTIONS).join(", ")}`).toBe(true);
+      expect([...new Set(patterns.flatMap((pattern) => matches(pattern, IAM_ACTIONS)))].sort(), name).toEqual([...standsFor].sort());
+    }
+    // The boundaries use them, in both: the default one and the deploy role's.
+    for (const statements of [defaultBoundaryStatements(BOUNDARY_SCOPE), deployRoleBoundaryStatements(BOUNDARY_SCOPE)]) {
+      const bySid = (sid: string) => statements.find((statement) => statement.Sid === sid)!.Action;
+      expect(bySid("IamRoles")).toEqual([...BOUNDARY_ROLE_ACTIONS]);
+      expect(bySid("IamFixedNameRolesNotYetCreated")).toEqual([...BOUNDARY_ROLE_LOOKUP_ACTIONS]);
+      expect(bySid("IamManagedPolicies")).toEqual([...BOUNDARY_MANAGED_POLICY_ACTIONS]);
+    }
+    // And route53:*ResourceRecordSets is exactly the change and the list of records.
+    expect(matches("route53:*ResourceRecordSets", SERVICE_ACTIONS.route53)).toEqual(["route53:ChangeResourceRecordSets", "route53:ListResourceRecordSets"]);
   });
 
   it("no ACM import, export, private-key read, renewal, revocation, ACME or account configuration; no zone creation, deletion, association, DNSSEC, health check or tag change", () => {
@@ -290,7 +324,9 @@ describe("only the deploy role is granted any acm or route53 action", () => {
         for (const [id, resource] of Object.entries(json.Resources)) {
           const documents = resource.Type === "AWS::IAM::Role" ? ((resource.Properties.Policies ?? []) as Array<{ PolicyDocument: unknown }>).map((policy) => policy.PolicyDocument)
             : ["AWS::IAM::Policy", "AWS::IAM::ManagedPolicy", "AWS::IAM::RolePolicy"].includes(resource.Type) ? [resource.Properties.PolicyDocument] : [];
-          if (documents.length === 0 || (stack.node.id === "AgentXAccess" && (id === "CloudFormationServiceRole" || id.startsWith("ModelProxyTlsDeployPolicy") || id === "DeployRolePermissionsBoundary"))) continue;
+          // 0.5.18: CustomDomainDeployPolicy is the deploy role's too, attached to it alone.
+          if (stack.node.id === "AgentXAccess" && id === "CustomDomainDeployPolicy") expect(resource.Properties.Roles).toEqual([{ Ref: "CloudFormationServiceRole" }]);
+          if (documents.length === 0 || (stack.node.id === "AgentXAccess" && (id === "CloudFormationServiceRole" || id.startsWith("ModelProxyTlsDeployPolicy") || id === "CustomDomainDeployPolicy" || id === "DeployRolePermissionsBoundary"))) continue;
           expect(JSON.stringify(documents), `${stack.node.id}/${id}`).not.toMatch(/"(acm|route53):/u);
         }
       }

@@ -43,8 +43,10 @@ export const MergeTrackingItemSchema = z
     draft: z.boolean(),
     state: z.enum(["open", "closed", "merged"]),
     baseBranch: z.string().min(1).max(255),
-    ci: z.enum(["none", "pending", "passing", "failing"]),
+    ci: z.enum(["none", "pending", "passing", "failing", "unreadable"]),
     ciBasis: z.enum(["required", "all_checks"]),
+    /** TE-B2 (gate `honestCi`): since when the head's checks could not be read. Optional, and only ever written while the gate is on; a row written before reads as "not unreadable". */
+    ciUnreadableSince: InstantSchema.optional(),
     checksEverSeen: z.boolean(),
     failingChecks: z.array(z.string().min(1).max(200)).max(10),
     review: z.enum(["not_requested", "requested", "changes_requested", "approved"]),
@@ -73,6 +75,10 @@ export const MERGE_NOT_READY_MESSAGES = {
   conflicted: (base: string): string => `The branch conflicts with ${base}. I'm resolving it.`,
   baseChanged: (branch: string): string => `The pull request's base changed to ${branch}. Change it back or close the task.`,
   draft: "The pull request is still a draft.",
+  /** TE-B2 (gate `honestCi`): a draft that has no CI to wait for. The default mode keeps it a draft (nothing checked it); a project in sandbox_only has it marked ready. */
+  draftNoCi: "No CI on this repository, so nothing checked this code. The pull request is still a draft: mark it ready on the code host when you are happy with it.",
+  /** TE-B2 (gate `honestCi`): the checks could not be read for a whole wait. */
+  ciNotReadable: "CI not readable: grant checks read, or set this project to 'do not read CI'.",
   notOpen: "The pull request isn't open.",
   changing: "I'm still changing this pull request.",
   repository: (repository: string, reason: string): string => `${repository}'s pull request isn't ready yet: ${reason}`,

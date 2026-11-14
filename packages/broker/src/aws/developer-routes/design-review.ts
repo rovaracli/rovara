@@ -13,7 +13,7 @@ import { z } from "zod";
 import { ModelSelectionSchema, WORKSPACE_PROJECT_INDEX, WorkflowTransitionError, isHighRiskDesign, workspaceProjectIndexValue, agentXError, DESIGN_ACTIONS_NAME_MAX, plainOneLine, type DesignActionsView, type DesignReason, type ModelIdentifier, type OrgId } from "@rovara-code/contracts";
 import { enableDesignReview, retryDesignReviewNotRun, designReviewRetryOffer, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { StatusReply } from "../status-reply.js";
-import { effectiveTaskOwner, taskKey, taskOwnerKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
+import { taskKey, taskOwnerKey, taskPointerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { listProjectMembers } from "../../org/project-members.js";
 import { AgentSessionStore } from "../../agent-sessions/store.js";
 import { DECISION_REFUSALS, type DecisionCaller } from "../../decisions/routes.js";
@@ -39,7 +39,12 @@ import { commitDesignApproval, membershipFenceItem } from "../developer-tasks/de
 import { TASK_ID, get } from "../developer-tasks/common.js";
 import type { DeveloperTaskRouteDependencies } from "../developer-tasks/types.js";
 import type { AdaptedHttpRequest } from "../lambda.js";
-import { agentRunStarterOf, developerTaskRouteDependencies } from "./dependencies.js";
+import { developerTaskRouteDependencies } from "./dependencies.js";
+import { seatTaskOwner } from "./owner-seat.js";
+import { getSignIn } from "./authentication.js";
+import { logDeveloperEvent } from "../../developer/log.js";
+import { mergeSurvivor, TASK_OWNER_CANNOT_ACT_MESSAGE, TASK_OWNER_NOT_MEMBER_MESSAGE } from "../../developer/merged-owner.js";
+import type { DeveloperRecord } from "../../developer/store.js";
 import { jsonBody } from "./organization.js";
 import { signInStoreOf } from "./common.js";
 import { withCardDecideGrade } from "./card-decide-grade.js";
@@ -143,7 +148,13 @@ function approvePortsOf(env: Env, page = false, decideGrade = false): DesignAppr
       const loaded = item.taskId === undefined ? undefined : await loadDesignTask(env, item.taskId);
       if (loaded === undefined || !waitingOnDesign(loaded.workflow)) return undefined;
       const facts = await factsOf(env, loaded);
-      return { requesterId: loaded.task.developerId, setting: facts.setting, edition: facts.edition, directory: facts.directory, freshSignIn: decideGrade };
+      // The requester is the person who asked, as they are now: a creator merged into another sign-in is that survivor, so the survivor is never a "second person" for their own design.
+      const requesterId = await requesterOf(env, loaded.task.developerId);
+      if (requesterId === undefined) {
+        logDeveloperEvent({ event: "design.approve_stale", reason: "requester_unreadable" });
+        return undefined;
+      }
+      return { requesterId, setting: facts.setting, edition: facts.edition, directory: facts.directory, freshSignIn: decideGrade };
     },
     // Company locks on a card's tier are not stored anywhere yet: the tiers are the projector's own (as `decisionRouteDepsOf` says).
     locks: async () => ({}),
@@ -153,15 +164,28 @@ function approvePortsOf(env: Env, page = false, decideGrade = false): DesignAppr
     confirmUrl: () => (page ? PAGE_REAUTH : undefined),
     async commit(caller, write) {
       const loaded = write.taskId === undefined ? undefined : await loadDesignTask(env, write.taskId);
-      if (loaded === undefined) return "stale";
-      // The owner's seat is the OWNER's own (their sign-in record and membership, read now), never the approver's role or session under the owner's id (ON-4). An owner who can no longer be seated (removed, revoked) leaves the
-      // approval stale: nothing is committed on a guess. The decision and the record name the person who really pressed.
-      const owner = effectiveTaskOwner(loaded.task);
-      const ownerCaller = await agentRunStarterOf(env.deps)?.callerFor(caller.orgId, owner.developerId);
-      if (ownerCaller === undefined) return "stale";
-      return commitDesignApproval(developerTaskRouteDependencies(env.deps, ownerCaller), ownerCaller, { developerId: caller.developerId, name: caller.name }, write);
+      if (loaded === undefined) {
+        logDeveloperEvent({ event: "design.approve_stale", reason: "task_not_waiting" });
+        return "stale";
+      }
+      // The owner's seat is the OWNER's own (their sign-in record and membership, read now), never the approver's role or session under the owner's id (ON-4). An owner whose sign-in was merged
+      // into another is seated as the survivor, in this company only, after the task is handed on to them (0.5.18, owner-seat.ts). An owner nobody can seat (removed, revoked, merged into someone
+      // outside this company) is said plainly, never as "stale": nothing is committed on a guess. The decision and the record name the person who really pressed.
+      const seat = await seatTaskOwner(env.deps, caller.orgId, loaded.task);
+      if (seat.kind === "not_member") throw agentXError("CONFIG_INVALID", TASK_OWNER_NOT_MEMBER_MESSAGE);
+      if (seat.kind === "not_writer") throw agentXError("CONFIG_INVALID", TASK_OWNER_CANNOT_ACT_MESSAGE);
+      if (seat.kind === "moved") {
+        logDeveloperEvent({ event: "design.approve_stale", reason: "owner_moved" });
+        return "stale";
+      }
+      return commitDesignApproval(developerTaskRouteDependencies(env.deps, seat.caller), seat.caller, { developerId: caller.developerId, name: caller.name }, write);
     },
   };
+}
+
+/** A task's requester as the person they are now: the end of the creator's merge chain (0.5.18). Undefined when the chain cannot be read (the card is then stale, never decided on a guess). */
+function requesterOf(env: Env, developerId: string): Promise<string | undefined> {
+  return mergeSurvivor((id) => getSignIn<DeveloperRecord>(env.deps, `DEVELOPER#${id}`), developerId);
 }
 
 /** The `approve_design` handler for the decision cards' performer. Registered only while the design review switch is on (the caller decides); a task with no design review is refused by the handler's own context. */
@@ -194,8 +218,10 @@ async function spendContextOf(env: Env, caller: DecisionCaller, loaded: Loaded, 
   const facts = await factsOf(env, loaded);
   const models = await modelsOf(env, task);
   const estimates = spendEstimatesOf({ review, reviewerModel: models.reviewer, plannerModel: models.planner, price: ports.price, reviewerCaches: models.reviewerCaches });
+  const requesterId = await requesterOf(env, task.developerId);
+  if (requesterId === undefined) return undefined;
   return {
-    taskId: task.taskId, requesterId: task.developerId, tier: review.tier, setting: facts.setting, taskCapUsd: review.capUsd ?? facts.setting.capUsdPerTask, spentUsd: review.spentUsd,
+    taskId: task.taskId, requesterId, tier: review.tier, setting: facts.setting, taskCapUsd: review.capUsd ?? facts.setting.capUsdPerTask, spentUsd: review.spentUsd,
     capCeilingUsd: await ports.capCeilingUsd(caller.orgId), estimate: estimates.estimate, lowerTier: estimates.lowerTier, reasons: review.reasons, touches: facts.touches, directory: facts.directory, edition: facts.edition,
     freshSignIn: decideGrade, browserSession: env.caller.browserSession === true, revision: String(workflow.revision),
     card: { subjectId: task.taskId, project: task.project, title: task.title, createdAt: workflow.updatedAt ?? nowIso(env), openPath: await sessionPathOf(env, task), contentVersion: `hold-${String(workflow.revision)}` },
@@ -245,7 +271,9 @@ function resumePortsOf(env: Env): DesignResumePorts<DeveloperCaller> {
       if (loaded === undefined) return undefined;
       const facts = await factsOf(env, loaded);
       membershipVersion = facts.directory.people.membershipVersion;
-      return { taskId, requesterId: loaded.task.developerId, workflow: loaded.workflow, setting: facts.setting, directory: facts.directory, edition: facts.edition, touches: facts.touches };
+      const requesterId = await requesterOf(env, loaded.task.developerId);
+      if (requesterId === undefined) return undefined;
+      return { taskId, requesterId, workflow: loaded.workflow, setting: facts.setting, directory: facts.directory, edition: facts.edition, touches: facts.touches };
     },
     now: () => env.deps.now(),
     async commit(caller, write) {
@@ -276,7 +304,9 @@ function answersPortsOf(env: Env): DesignAnswersPorts<DeveloperCaller> {
       if (loaded === undefined) return undefined;
       const facts = await factsOf(env, loaded);
       membershipVersion = facts.directory.people.membershipVersion;
-      return { taskId, requesterId: loaded.task.developerId, workflow: loaded.workflow, setting: facts.setting, touches: facts.touches, directory: facts.directory, edition: facts.edition };
+      const requesterId = await requesterOf(env, loaded.task.developerId);
+      if (requesterId === undefined) return undefined;
+      return { taskId, requesterId, workflow: loaded.workflow, setting: facts.setting, touches: facts.touches, directory: facts.directory, edition: facts.edition };
     },
     now: () => env.deps.now(),
     async commit(caller, write) {
@@ -343,7 +373,10 @@ async function projectTaskIds(deps: DeveloperRouteDependencies, caller: Develope
 async function cardsForTask(env: Env, caller: DeveloperCaller, loaded: Loaded): Promise<DecisionItem[]> {
   const { workflow, task } = loaded;
   const review = workflow.designReview!;
-  const requester = sameId(task.developerId, caller.developerId) || tryEffectiveTaskOwner(task)?.developerId === caller.developerId;
+  // The requester as the person they are now (a creator merged into another sign-in is the survivor), exactly as the handlers read it, so the list shows what a press would do.
+  const requesterId = await requesterOf(env, task.developerId);
+  if (requesterId === undefined) return [];
+  const requester = sameId(requesterId, caller.developerId) || tryEffectiveTaskOwner(task)?.developerId === caller.developerId;
   if (waitingOnDesign(workflow)) {
     const facts = await factsOf(env, loaded);
     const item = await approveItemOf(env, loaded, facts.touches);
@@ -353,7 +386,7 @@ async function cardsForTask(env: Env, caller: DeveloperCaller, loaded: Loaded): 
       if (tier === undefined) return [];
       // Eligible exactly as `designApproveHandler` works it out (a sign-in and a reason are the press's to ask for, not the list's).
       const verdict = decideDesignApproval({
-        tier, requesterId: task.developerId, approverId: caller.developerId, nowMs: env.deps.now(), setting: facts.setting, edition: facts.edition, directory: facts.directory,
+        tier, requesterId, approverId: caller.developerId, nowMs: env.deps.now(), setting: facts.setting, edition: facts.edition, directory: facts.directory,
         freshSignIn: true, openBlockers: item.review?.blockers.length ?? 0, blockerReason: "x",
       });
       if (!verdict.ok) return [];
@@ -378,7 +411,7 @@ async function cardsForTask(env: Env, caller: DeveloperCaller, loaded: Loaded): 
     const facts = await factsOf(env, loaded);
     // Only a person who may answer sees the card (the handler checks again on the press).
     if (round?.questions === undefined || !facts.directory.people.complete) return [];
-    const audience = designQuestionAudience({ requesterId: task.developerId, aboutHighRisk: isHighRiskDesign([...review.reasons, ...facts.touches]), setting: facts.setting, directory: facts.directory, edition: facts.edition });
+    const audience = designQuestionAudience({ requesterId, aboutHighRisk: isHighRiskDesign([...review.reasons, ...facts.touches]), setting: facts.setting, directory: facts.directory, edition: facts.edition });
     if (!requester && !audience.some((id) => sameId(id, caller.developerId))) return [];
     const item = designQuestionsItem({
       subjectId: task.taskId, taskId: task.taskId, project: task.project, title: task.title, createdAt: review.waiting?.since ?? workflow.updatedAt ?? nowIso(env), openPath: await sessionPathOf(env, task),
@@ -470,8 +503,10 @@ async function transactWorkflow(env: Env, loaded: Loaded, next: WorkflowSnapshot
 /**
  * Design first and Retry start paid work on a task, so they are the requester's or a project maintainer's (ON-11), not any member's. A member who is neither is told so; a person outside the project gets "no longer waiting".
  */
-function mayDirectWork(directory: Parameters<typeof memberOf>[0], task: DeveloperTaskRecord, callerId: string): boolean {
-  const requester = sameId(task.developerId, callerId) || tryEffectiveTaskOwner(task)?.developerId === callerId;
+async function mayDirectWork(env: Env, directory: Parameters<typeof memberOf>[0], task: DeveloperTaskRecord, callerId: string): Promise<boolean> {
+  // The requester as the person they are now (0.5.18); a merge chain that cannot be read makes nobody the requester (a maintainer still may).
+  const requesterId = await requesterOf(env, task.developerId);
+  const requester = (requesterId !== undefined && sameId(requesterId, callerId)) || tryEffectiveTaskOwner(task)?.developerId === callerId;
   return requester || directory.people.eligibleIds.some((id) => sameId(id, callerId));
 }
 const REQUESTER_OR_MAINTAINER = "Only the person who asked for this task, or a project maintainer, can do this.";
@@ -488,7 +523,7 @@ async function designFirst(env: Env, taskId: string, requestId: string): Promise
   if (!memberOf(directory, env.caller.developerId)) throw agentXError("NOT_FOUND", GONE);
   // A repeat of the same press: the first answer, before the state (which has moved on) is looked at.
   if (await replayOf(env, marker) === "done") return { outcome: "done" };
-  if (!mayDirectWork(directory, task, env.caller.developerId)) throw agentXError("FORBIDDEN", REQUESTER_OR_MAINTAINER);
+  if (!(await mayDirectWork(env, directory, task, env.caller.developerId))) throw agentXError("FORBIDDEN", REQUESTER_OR_MAINTAINER);
   if (workflow.designReview?.decidedBy === "person" && workflow.designReview.startedBy?.actorId === env.caller.developerId) return { outcome: "done" };
   if (workflow.designReview !== undefined) throw agentXError("CONFIG_INVALID", "Design review is already on for this task.");
   const now = nowIso(env);
@@ -580,7 +615,7 @@ async function retryNotRun(env: Env, taskId: string, requestId: string): Promise
   if (await replayOf(env, marker) === "done") return { outcome: "done" };
   const facts = await factsOf(env, loaded);
   if (!memberOf(facts.directory, env.caller.developerId)) throw agentXError("NOT_FOUND", GONE);
-  if (!mayDirectWork(facts.directory, task, env.caller.developerId)) throw agentXError("FORBIDDEN", REQUESTER_OR_MAINTAINER);
+  if (!(await mayDirectWork(env, facts.directory, task, env.caller.developerId))) throw agentXError("FORBIDDEN", REQUESTER_OR_MAINTAINER);
   const now = nowIso(env);
   let next: WorkflowSnapshot;
   try { next = retryDesignReviewNotRun(workflow, { expectedRevision: workflow.revision, by: { actorId: env.caller.developerId }, now }); } catch (error) {
@@ -645,8 +680,10 @@ async function confirmationCard(env: Env, taskId: string): Promise<{ card: unkno
   const card = projection?.cards[0];
   const digest = projection?.digests[card?.id ?? ""];
   if (projection === undefined || card === undefined || digest === undefined || item === undefined || item.kind !== "approve_design") throw agentXError("NOT_FOUND", GONE);
+  const requesterId = await requesterOf(env, loaded.task.developerId);
+  if (requesterId === undefined) throw agentXError("NOT_FOUND", GONE);
   const verdict = decideDesignApproval({
-    tier: card.risk, requesterId: loaded.task.developerId, approverId: env.caller.developerId, nowMs: env.deps.now(), setting: facts.setting, edition: facts.edition, directory: facts.directory,
+    tier: card.risk, requesterId, approverId: env.caller.developerId, nowMs: env.deps.now(), setting: facts.setting, edition: facts.edition, directory: facts.directory,
     freshSignIn: true, openBlockers: item.review?.blockers.length ?? 0, blockerReason: "x",
   });
   const mayApprove = env.caller.browserSession === true && verdict.ok;
@@ -751,7 +788,7 @@ export function designActionsFor(deps: DeveloperRouteDependencies, caller: Devel
     // DR-KEY-1 (D): "Retry review" by the route's own rules: the workflow's (`designReviewRetryOffer`) and who may press it (the requester or a maintainer).
     // Not offered when the plan check has used its model tries since the latest plan: the dispatch would refuse the retry (the same rule it applies).
     const offer = designReviewRetryOffer(workflow);
-    const retry = offer === undefined || await planCheckModelTriesUsed(deps, task) ? undefined : { allowed: offer.allowed && mayDirectWork(directory, task, caller.developerId), retriesLeft: offer.retriesLeft };
+    const retry = offer === undefined || await planCheckModelTriesUsed(deps, task) ? undefined : { allowed: offer.allowed && await mayDirectWork(env, directory, task, caller.developerId), retriesLeft: offer.retriesLeft };
     if (!designFirst && skip === undefined && retry === undefined) return undefined;
     return { designFirst, ...(skip === undefined ? {} : { skip }), ...(hint ? { hint: true } : {}), ...(retry === undefined ? {} : { retry }) };
   };

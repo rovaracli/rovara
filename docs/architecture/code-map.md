@@ -475,6 +475,7 @@ No single test lists every broker read.
 | `lessons.ts` | Learning v2 L3b wiring: the lessons routes and the loaded-knowledge routes on the developer routes. |
 | `organization.ts` | (No header comment.) Exports `createProject`, `getAppNavigation`, `getAppMe`. |
 | `outside-cards.ts` | Decision journey slice 3b: outside approvers decide on the card. |
+| `owner-seat.ts` | 0.5.18 (Slack merged identity): the task owner's seat for a commit that acts as the owner; an owner merged into another sign-in is seated as the survivor (same company only) after the task is handed on. |
 | `plan-cards.ts` | Decision journey slice 2: the requirements and the coding plan as decision cards, decided on the card (Approve, Request changes) through the ONE workflow decision Slack, MCP and the task page use (`decideTaskWorkflow`... |
 | `plan-panel.ts` | OWNER DECISION 18 (PLAN-PANEL-NOW): the task page reads, discusses and decides the plan in one place. |
 | `private-addresses.ts` | Internal addresses a company's tasks may reach (owner decision 123): `/v1/app/org/private-addresses`. |
