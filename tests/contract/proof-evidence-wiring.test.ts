@@ -16,7 +16,21 @@ describe("the evidence erase is reached from every erase path", () => {
   it("broker.ts: the person erase runs the evidence step after the learning walk, over the broker's own store", () => {
     const source = code(BROKER);
     expect(source).toMatch(/const personEvidenceErase = createEvidenceErase\(\{ s3, artifactBucketName: requiredEnvironment\("ARTIFACT_BUCKET_NAME"\)/u);
-    expect(source).toMatch(/eraseLearning: learningEraseHook\([^\n]*personErasureStep\(teamRecord, personEvidenceErase, personNameEraser\)\)/u);
+    // Convergence S0: the evidence of core-stamped tasks is erased in the same step, from the broker's own State table and bucket, with no switch in between.
+    expect(source).toMatch(/const personCoreErase = corePersonEraseOf\(coreEvidencePorts\(\{ s3, artifactBucketName: requiredEnvironment\("ARTIFACT_BUCKET_NAME"\), tableName: requiredEnvironment\("STATE_TABLE_NAME"\), documentClient \}\)\);/u);
+    expect(source).toMatch(/eraseLearning: learningEraseHook\([^\n]*personErasureStep\(teamRecord, personEvidenceErase, personNameEraser, personCoreErase\)\)/u);
+  });
+
+  it("the core's erase reads and deletes in the artifact bucket and the State table, with no key prefix: the same bucket and table Cloud's own evidence erase uses", () => {
+    const wiring = code(read("packages/broker/src/aws/broker/evidence-wiring.ts"));
+    // The ports are made from the three dependencies Cloud's erase is made from (`dependencies.artifactBucketName` is `ARTIFACT_BUCKET_NAME` in broker.ts), and nothing else names a bucket.
+    expect(wiring).toMatch(/coreErasePortsOf\(\{ dynamo: \{ send: \(command\) => dependencies\.documentClient\.send\(command as never\) \}, tableName: dependencies\.tableName, s3: dependencies\.s3, bucket: dependencies\.artifactBucketName,/u);
+    expect(code(BROKER)).toMatch(/coreEvidencePorts\(\{ s3, artifactBucketName: requiredEnvironment\("ARTIFACT_BUCKET_NAME"\), tableName: requiredEnvironment\("STATE_TABLE_NAME"\), documentClient \}\)/u);
+    // The prefix delete is given the bucket only and lists and deletes the prefix as it is: no key mapping (tests/unit/cloud-app-erase.test.ts shows the keys unchanged).
+    const erase = code(read("packages/broker/src/cloud/app/erase.ts"));
+    expect(erase).toMatch(/objects: bucketPrefixDelete\(input\.s3, input\.bucket, input\.now \?\? Date\.now\)/u);
+    expect(erase).toMatch(/new ListObjectsV2Command\(\{ Bucket: bucket, Prefix: prefix, MaxKeys: 1_000 \}\)/u);
+    expect(erase).toMatch(/new DeleteObjectsCommand\(\{ Bucket: bucket, Delete: \{ Objects: keys\.map\(\(key\) => \(\{ Key: key \}\)\), Quiet: true \} \}\)/u);
   });
 
   it("handler.ts: both route-dependency blocks (the review page's and the developer API's) carry evidenceErase", () => {
@@ -38,6 +52,8 @@ describe("the evidence erase is reached from every erase path", () => {
     const recovery = source.slice(source.indexOf("if (isWorkflowMergeRecoveryEvent(event)) {"), source.indexOf("// Gap 6: the scheduled sweep that re-runs any workflow dispatch"));
     expect(recovery.length).toBeGreaterThan(300);
     expect(recovery).toMatch(/await resumeEvidence\(dependencies, EVIDENCE_RESUME_BUDGET_MS\)/u);
+    // Convergence S0: the core's walks a person's erase left unfinished are resumed there too, next to Cloud's, not behind any switch.
+    expect(recovery).toMatch(/await resumeCoreEvidence\(dependencies\)/u);
     // ... and no longer inside the settlement tick's learning job, whose slice it would share.
     const learningJob = source.slice(source.indexOf('name: "resume-learning-walks"'), source.indexOf("if (jobs.length === 0)"));
     expect(learningJob).not.toContain("resumeEvidence(");

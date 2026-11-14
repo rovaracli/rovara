@@ -28,3 +28,4 @@ export * from "./task-routes.js";
 export * from "./step-fence.js";
 export * from "./tier-review.js";
 export * from "./tier-review-ports.js";
+export * from "./erase.js";

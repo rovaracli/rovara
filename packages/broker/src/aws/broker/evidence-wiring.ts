@@ -10,6 +10,7 @@ import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { createEvidenceErase, markEvidenceStored, resumeEvidenceErase, type EvidenceErase } from "../../rovara-code/evidence-erase.js";
 import { keepEvidence, policyKindsOf, type KeepEvidenceResult } from "../../rovara-code/evidence-keep.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
+import { CORE_ERASE_RESUME_BUDGET_MS, coreErasePortsOf, resumeCoreEvidenceErase, type CoreErasePorts, type CorePersonErase } from "../../cloud/app/erase.js";
 import { evidenceEnvironmentOf } from "../../test-env/evidence-line.js";
 import { developerTaskActions } from "./dependency-wiring.js";
 import { createEvidencePort, type EvidencePort } from "../developer-tasks/evidence-port.js";
@@ -64,16 +65,22 @@ export function evidenceEraseOf(dependencies: Pick<AwsBrokerDependencies, "s3" |
  * What a person's erase does after the learning walk: the Team record's erase (where that switch is on), the erase of the names they are shown by (ERASE-NAME-1), then the stored evidence of the
  * person's tasks. Any one not finishing throws, and the request is repeated. Where the record is on, its erase runs the names (its `names` step, after the Asks step has kept the keyed hashes of
  * those names); where it is off, nothing hashes them and they are erased here.
+ * Convergence S0: the evidence of the tasks the core ran for the person is erased last (cloud/app/erase.ts). It is not behind a switch: a task keeps its engine (its stamp) after the switch is turned off, and
+ * a person with no core-stamped task loses nothing here.
  */
 export function personErasureStep(
   teamRecord: { erase: { person(orgId: OrgId, developerId: string): Promise<void> } } | undefined,
   evidence: Pick<EvidenceErase, "person">,
   names?: { erase(developerId: string): Promise<void> },
+  core?: CorePersonErase,
 ): (orgId: OrgId, developerId: string) => Promise<void> {
   return async (orgId, developerId) => {
+    // The core's walk is recorded as owed before anything that can fail or run the Lambda out of time: the every-minute run finishes it whatever happens next.
+    await core?.begin(orgId, developerId);
     if (teamRecord !== undefined) await teamRecord.erase.person(orgId, developerId);
     else await names?.erase(developerId);
     await evidence.person(orgId, developerId);
+    if (core !== undefined) await core.person(orgId, developerId);
   };
 }
 
@@ -84,4 +91,18 @@ export const EVIDENCE_RESUME_BUDGET_MS = 3_000;
 export function resumeEvidence(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "documentClient" | "tableName">, millis: number): Promise<{ pending: number; finished: number }> {
   const ports = { s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName, documentClient: dependencies.documentClient, tableName: dependencies.tableName };
   return resumeEvidenceErase(ports, createEvidenceErase(ports), { millis });
+}
+
+/**
+ * The core's person erase and its resume read the State table and delete under `private/<owner>/<workspace>/evidence*` in the artifact bucket: the same table, client, bucket and grants as Cloud's
+ * own evidence erase above (`ARTIFACT_BUCKET_NAME`, no key prefix). The vendored DynamoDB store speaks plain commands, which the broker's own document client sends as they are (it adds
+ * marshalling only for its own commands), so no second client is made: a test that fakes the document client fakes this too, and a real call stays blocked there.
+ */
+export function coreEvidencePorts(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "tableName" | "documentClient">): CoreErasePorts {
+  return coreErasePortsOf({ dynamo: { send: (command) => dependencies.documentClient.send(command as never) }, tableName: dependencies.tableName, s3: dependencies.s3, bucket: dependencies.artifactBucketName, log: (entry) => console.log(JSON.stringify(entry)) });
+}
+
+/** The scheduled run's share for the core walks a request left unfinished (its own, next to `resumeEvidence`'s). */
+export function resumeCoreEvidence(dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "tableName" | "documentClient">, millis: number = CORE_ERASE_RESUME_BUDGET_MS): Promise<{ pending: number; finished: number }> {
+  return resumeCoreEvidenceErase(coreEvidencePorts(dependencies), { millis });
 }
