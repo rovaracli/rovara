@@ -98,6 +98,12 @@ export interface AuditEraseDeps extends AuditDeps {
    * that has no learning passes `noLearningToErase`.
    */
   eraseLearning: (orgId: OrgId, developerId: string) => Promise<unknown>;
+  /**
+   * Convergence S0: records the person's evidence erase on the core's tasks as owed (cloud/app/erase.ts, `CorePersonErase.begin`). Called right after the tombstone (and the flush of its
+   * event, which only speeds up delivery), before the export files are cleared and the learning walk runs, so that a failure or a timeout in any of them still leaves the work recorded, and the every-minute run finishes it.
+   * Rejects if it could not (the request is repeated). Absent: no core walk is wired (tests that have none).
+   */
+  oweEvidenceErase?: (orgId: OrgId, developerId: string) => Promise<void>;
 }
 
 /** For a test with no learning data: the hook that erases nothing. */
@@ -176,6 +182,12 @@ export async function eraseAuditSubject(deps: AuditEraseDeps, request: AuditEras
     result = { erasedAt: typeof existing.Item?.erasedAt === "string" ? existing.Item.erasedAt : erasedAt, alreadyErased: true };
   }
   if (!result.alreadyErased) await flushAuditEvents(deps, [event]);
+  try {
+    await deps.oweEvidenceErase?.(orgId, developerId);
+  } catch (error) {
+    deps.log({ event: "audit.erase_evidence_failed", level: "error", orgId, error: errorName(error) });
+    throw agentXError("RUNTIME_UNAVAILABLE", "The details are erased, but their stored test evidence could not be cleared just now. Send the same request again.");
+  }
   try {
     await deps.purgeExports(orgId);
   } catch (error) {

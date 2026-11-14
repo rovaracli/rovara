@@ -6,7 +6,7 @@ import { gunzipSync } from "node:zlib";
 import { InvokeCommand } from "@aws-sdk/client-lambda";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseBundle, verifyBundle } from "@rovara/audit-verifier";
 import { AUDIT_DETAILS_SHRED_AFTER_CLOSE_DAYS, AUDIT_PENDING_TTL_DAYS, AUDIT_TRANSIENT_COPY_DAYS, AuditEventInputSchema, auditEventId, auditOperatorId, type AuditEventInput } from "@agentx/cloud-contracts";
 import { appendEvent, type AppenderDeps } from "../../packages/broker/src/audit/appender.js";
@@ -194,6 +194,45 @@ describe("an unfinished evidence erase is told apart from the learning clean-up"
     expect((error as Error).message).not.toContain("suggested-rule");
     expect(JSON.stringify(b.logs)).toContain("audit.erase_evidence_failed");
     expect(JSON.stringify(b.logs)).not.toContain("SECRET-KEY");
+  });
+});
+
+describe("the core's evidence walk is recorded as owed right after the tombstone (S0, L1)", () => {
+  it("is called after the tombstone and before the export purge and the learning walk, so a failure in either still leaves it owed", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    const order: string[] = [];
+    const deps: AuditEraseDeps = {
+      ...b.erase,
+      oweEvidenceErase: async (orgId, developerId) => { order.push(`owed ${orgId} ${developerId} tombstone=${String(b.keyItems(A).some((item) => item.sk === "SUBJECT#dev_1" && item.erasedAt !== undefined))}`); },
+      purgeExports: async () => { order.push("exports"); throw new Error("export function down"); },
+      eraseLearning: async () => { order.push("learning"); },
+    };
+    await expect(eraseAuditSubject(deps, request())).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(order).toEqual([`owed ${A} dev_1 tombstone=true`, "exports"]);
+    // A learning walk that fails is the same: the walk was already owed.
+    order.length = 0;
+    await expect(eraseAuditSubject({ ...deps, purgeExports: async () => { order.push("exports"); }, eraseLearning: async () => { order.push("learning"); throw new Error("learning down"); } }, request())).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(order).toEqual([`owed ${A} dev_1 tombstone=true`, "exports", "learning"]);
+  });
+
+  it("a store that cannot record it fails the request with the evidence wording (sent again), after the tombstone, and the export purge is not reached", async () => {
+    const b = bench();
+    await b.seedKeys(A);
+    const purge = vi.fn(async () => undefined);
+    const deps: AuditEraseDeps = { ...b.erase, purgeExports: purge, oweEvidenceErase: async () => { throw Object.assign(new Error("SECRET-KEY private/abc"), { name: "TableDown" }); } };
+    const error = await eraseAuditSubject(deps, request()).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect((error as Error).message).toContain("stored test evidence");
+    expect(purge).not.toHaveBeenCalled();
+    expect(JSON.stringify(b.logs)).toContain("audit.erase_evidence_failed");
+    expect(JSON.stringify(b.logs)).not.toContain("SECRET-KEY");
+  });
+
+  it("the broker wires the core walk's begin into the erase dependencies", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(new URL("../../packages/broker/src/aws/broker.ts", import.meta.url), "utf8");
+    expect(source).toMatch(/\n\s*oweEvidenceErase: \(orgId, developerId\) => personCoreErase\.begin\(orgId, developerId\),/);
   });
 });
 

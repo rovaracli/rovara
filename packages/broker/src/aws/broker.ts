@@ -578,6 +578,8 @@ const auditErase: AuditEraseDeps | undefined = auditLedger === undefined ? undef
   purgeExports: exportPurger(lambdaClient, requiredEnvironment("AUDIT_EXPORT_FUNCTION_NAME")),
   // v1.2 learning loop: a person's erase clears their corrections' text and the suggestions that hold their words, in every project of the company; the Team record (where its switch is on) deletes their rows, facts, lessons and lake rows in the same request.
   eraseLearning: learningEraseHook(learningWalkDeps({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), now: Date.now, audit }), undefined, personErasureStep(teamRecord, personEvidenceErase, personNameEraser, personCoreErase)),
+  // Convergence S0: the core's evidence walk is recorded as owed right after the tombstone, before the export purge and the learning walk (either may fail or time out).
+  oweEvidenceErase: (orgId, developerId) => personCoreErase.begin(orgId, developerId),
 };
 
 const githubNoticeSender = process.env.DEVELOPER_NOTICE_EMAIL_FROM ?? "";

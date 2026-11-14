@@ -18,7 +18,7 @@ import { evidencePrefixesOf as codePrefixesOf, eraseTaskEvidence } from "../../v
 import { createEvidenceErase, evidencePrefixesOf as cloudPrefixesOf } from "../../packages/broker/src/rovara-code/evidence-erase.js";
 import { coreEvidencePorts, personErasureStep } from "../../packages/broker/src/aws/broker/evidence-wiring.js";
 import {
-  CORE_ERASE_MARGIN_MS, CORE_ERASE_PENDING_PK, CorePersonEraseUnfinished, beginCoreEvidenceErase, noteRequestEnd, coreErasePortsOf, corePersonEraseOf, createCloudApp, erasePersonOnCore, readCoreEngineFlags, resumeCoreEvidenceErase, stampForNewTask, stampItem, type CloudApp, type CoreErasePorts, type PersonEraseOnCoreReport,
+  CORE_ERASE_MARGIN_MS, CORE_ERASE_PENDING_PK, CORE_ERASE_RETRY_MAX, CORE_ERASE_RESUME_SHARE_MS, CorePersonEraseUnfinished, beginCoreEvidenceErase, noteRequestEnd, coreErasePortsOf, corePersonEraseOf, createCloudApp, erasePersonOnCore, readCoreEngineFlags, resumeCoreEvidenceErase, stampForNewTask, stampItem, type CloudApp, type CoreErasePorts, type PersonEraseOnCoreReport,
 } from "../../packages/broker/src/cloud/app/index.js";
 import { FAKE_COMPANY, createFakeWorld, type FakeWorld } from "../support/cloud-core-fakes.js";
 
@@ -184,13 +184,14 @@ describe("erasePersonOnCore", () => {
       if (prefix.includes(stuck.taskId)) { if (mode.value === "throws") throw new Error(`secret ${prefix}`); await real(prefix); return false; }
       return real(prefix);
     });
-    for (const value of ["unfinished", "throws"] as const) {
-      mode.value = value;
-      const report = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON });
-      expect(report).toMatchObject({ erased: 1, incomplete: 1, refused: 0 });
-      expect(JSON.stringify(report)).not.toContain("secret");
-    }
+    const first = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON });
+    expect(first).toMatchObject({ erased: 1, incomplete: 1, refused: 0, complete: false });
     expect(await leftOf(registry, fine)).toBe(0);
+    // The next run tries only the failing task again (the walk has gone past the rest), here with a fault that names a key.
+    mode.value = "throws";
+    const again = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON });
+    expect(again).toMatchObject({ erased: 0, incomplete: 1, refused: 0, complete: false });
+    for (const report of [first, again]) expect(JSON.stringify(report)).not.toContain("secret");
   });
 
   it("counts a task with a malformed id apart (refused), logs counts only, and does not hold the request open", async () => {
@@ -501,7 +502,9 @@ describe("a budget, a cursor and the every-minute resume", () => {
     expect(first.complete).toBe(false);
     const left = keys.size;
     expect(left).toBeGreaterThan(0);
-    const out = await resumeCoreEvidenceErase(ports, { millis: 60_000 });
+    // Each every-minute run gives the walk its fixed share; within a few runs it is finished.
+    let out = { pending: 0, finished: 0 };
+    for (let run = 0; run < 10 && out.finished === 0; run += 1) out = await resumeCoreEvidenceErase(ports, { millis: 60_000 });
     expect(out).toEqual({ pending: 1, finished: 1 });
     expect(keys.size).toBe(0);
     expect(await pendingOf(world)).toBeUndefined();
@@ -604,16 +607,17 @@ describe("the Lambda's remaining time, the deadline inside a batch and a task th
     expect(keys.size).toBeGreaterThan(0);
   });
 
-  it("keeps erasing the later tasks past a task that does not finish, with the cursor before the first failure, and the walk is not complete", async () => {
+  it("keeps erasing the later tasks past a task that does not finish, moves the cursor past it and keeps it to be tried again, and the walk is not complete", async () => {
     const { world, ports, keys, tasks, failing } = await manyTasks(25, 1);
     failing.add(tasks[3]!.taskId);
     const first = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 60_000 });
     expect(first).toMatchObject({ erased: 24, incomplete: 1, complete: false });
     expect(leftKeys(keys, tasks[3]!)).toBe(2);
     for (const task of tasks.filter((_, index) => index !== 3)) expect(leftKeys(keys, task)).toBe(0);
-    // The cursor stays before the failing task's batch (the first batch): the next run starts from the beginning of it, never after the failure.
+    // The cursor went to the end of the index; the failing task is kept apart, by its index row, to be tried again.
     const pending = await world.store.get({ pk: CORE_ERASE_PENDING_PK, sk: `${FAKE_COMPANY}|${PERSON}` });
-    expect(pending?.cursor).toBeUndefined();
+    expect(pending?.cursor as string).toContain(`#${tasks[24]!.taskId}`);
+    expect(pending).toMatchObject({ scanned: true, retry: [expect.stringContaining(`#${tasks[3]!.taskId}`)] });
     // The failure goes away: the next run finishes, and the pending item goes.
     failing.clear();
     expect(await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 60_000 })).toMatchObject({ incomplete: 0, complete: true });
@@ -621,19 +625,26 @@ describe("the Lambda's remaining time, the deadline inside a batch and a task th
     expect(await world.store.get({ pk: CORE_ERASE_PENDING_PK, sk: `${FAKE_COMPANY}|${PERSON}` })).toBeUndefined();
   });
 
-  it("a failure in a later batch keeps the cursor at the end of the last batch before it", async () => {
-    const { world, ports, tasks, failing } = await manyTasks(25, 1);
-    failing.add(tasks[13]!.taskId);
-    await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 60_000 });
+  it("running out of time keeps the cursor at the end of the last batch that finished (a failure in it is kept to be tried again)", async () => {
+    const { world, ports, keys, tasks, failing } = await manyTasks(25, 1);
+    failing.add(tasks[3]!.taskId);
+    // One batch of ten tasks takes about 20 ms of the clock (two prefixes, ten at once); 15 ms stops the walk inside the first batch.
+    const report = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 15 });
+    expect(report.complete).toBe(false);
     const pending = await world.store.get({ pk: CORE_ERASE_PENDING_PK, sk: `${FAKE_COMPANY}|${PERSON}` });
-    // The first batch (10 tasks) finished; the cursor is the sort key of its last index row.
-    expect(pending?.cursor as string).toContain(`#${tasks[9]!.taskId}`);
+    // The cursor is past the failing task and before the first task the deadline came first for: every task up to it (but the failing one) is erased, the next one is not.
+    const at = tasks.findIndex((task) => (pending?.cursor as string).endsWith(`#${task.taskId}`));
+    expect(at).toBeGreaterThan(3);
+    expect(at).toBeLessThan(9);
+    for (const task of tasks.slice(0, at + 1)) expect(leftKeys(keys, task)).toBe(task === tasks[3] ? 2 : 0);
+    expect(leftKeys(keys, tasks[at + 1]!)).toBeGreaterThan(0);
+    expect(pending?.retry).toEqual([expect.stringContaining(`#${tasks[3]!.taskId}`)]);
+    expect(pending?.scanned).toBeUndefined();
   });
 
   it("the resumed query is bounded on both sides: after the cursor and inside the TASK# range", async () => {
-    const { world, ports, tasks, failing } = await manyTasks(25, 1);
-    failing.add(tasks[13]!.taskId);
-    await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 60_000 });
+    const { world, ports } = await manyTasks(25, 1);
+    await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 15 });
     const cursor = (await world.store.get({ pk: CORE_ERASE_PENDING_PK, sk: `${FAKE_COMPANY}|${PERSON}` }))?.cursor as string;
     const query = vi.spyOn(world.store, "query");
     await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 60_000 });
@@ -760,5 +771,159 @@ describe("the broker's wiring of the ports", () => {
     expect(await ports.store.get({ pk: "pk-1", sk: "sk-1" })).toMatchObject({ pk: "pk-1", sk: "sk-1", kept: "yes" });
     expect(seen.map((call) => call.target)).toEqual(["DynamoDB_20120810.GetItem"]);
     expect(JSON.parse(seen[0]!.body)).toMatchObject({ TableName: "State", Key: { pk: { S: "pk-1" }, sk: { S: "sk-1" } } });
+  });
+});
+
+// Fifth round (M-A, M-B, L2): a task that fails for good must not keep the person's later evidence, a stuck walk must not starve another person's, and one prefix's delete must
+// stop at the deadline between its rounds.
+describe("a task that fails for good, stuck walks in the every-minute run, and a prefix with many rounds", () => {
+  const pendingKeyOf = (person: string) => ({ pk: CORE_ERASE_PENDING_PK, sk: `${FAKE_COMPANY}|${person}` });
+
+  it("M-A: 300 core tasks, task 0 always fails, 1 s per run and 5 ms per delete: the other 299 are erased within a bounded number of runs, task 0 stays owed and is retried", async () => {
+    const { world, ports, keys, tasks, failing, calls } = await manyTasks(300, 5);
+    failing.add(tasks[0]!.taskId);
+    let runs = 0;
+    while (tasks.slice(1).some((task) => leftKeys(keys, task) > 0)) {
+      runs += 1;
+      expect(runs).toBeLessThanOrEqual(8);
+      const report = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 1_000 });
+      expect(report.complete).toBe(false);
+    }
+    expect(leftKeys(keys, tasks[0]!)).toBe(2);
+    // The main cursor went past the failing task: it is kept apart, by its index row, to be tried again (and nothing else is).
+    const pending = await world.store.get(pendingKeyOf(PERSON));
+    expect(pending?.retry).toEqual([expect.stringContaining(`#${tasks[0]!.taskId}`)]);
+    // Later runs retry it (and only it, cheaply), are never complete while it fails, and finish once it erases.
+    const before = calls.deletes;
+    const again = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 1_000 });
+    expect(again).toMatchObject({ incomplete: 1, complete: false });
+    expect(calls.deletes - before).toBeLessThanOrEqual(2);
+    failing.clear();
+    expect(await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 1_000 })).toMatchObject({ incomplete: 0, complete: true });
+    expect(keys.size).toBe(0);
+    expect(await world.store.get(pendingKeyOf(PERSON))).toBeUndefined();
+  });
+
+  /** Several people of one company with core tasks in one store, every delete costing `cost` ms of a clock the test owns; a task id in `failing` never erases. */
+  async function crowd(counts: Record<string, number>, cost = 5) {
+    const world = createFakeWorld();
+    const clock = { at: 9_000_000 };
+    const keys = new Set<string>();
+    const tasks: Record<string, Seeded[]> = {};
+    for (const [person, count] of Object.entries(counts)) {
+      tasks[person] = [];
+      for (let index = 0; index < count; index += 1) {
+        const task = await seedRecords(world, { person, stamp: "core" });
+        tasks[person].push(task);
+        for (const key of keysOf(task)) keys.add(key);
+      }
+      await beginCoreEvidenceErase({ store: world.store }, FAKE_COMPANY, person);
+    }
+    const failing = new Set<string>();
+    const objects: CoreErasePorts["objects"] = {
+      async deletePrefix(prefix) {
+        clock.at += cost;
+        if ([...failing].some((taskId) => prefix.includes(taskId))) return false;
+        for (const key of [...keys]) if (key.startsWith(prefix)) keys.delete(key);
+        return true;
+      },
+    };
+    const ports: CoreErasePorts = { store: world.store, objects, now: () => clock.at };
+    return { world, clock, keys, tasks, failing, ports };
+  }
+
+  it("M-B: three stuck people ahead of a fourth with one task: the fourth is erased within a few every-minute runs", async () => {
+    const [p1, p2, p3, p4] = ["1", "2", "3", "4"].map((digit) => digit.repeat(64)) as [string, string, string, string];
+    const { world, clock, keys, tasks, failing, ports } = await crowd({ [p1]: 300, [p2]: 300, [p3]: 300, [p4]: 1 });
+    for (const person of [p1, p2, p3]) failing.add(tasks[person]![0]!.taskId);
+    let runs = 0;
+    while (leftKeys(keys, tasks[p4]![0]!) > 0) {
+      runs += 1;
+      expect(runs).toBeLessThanOrEqual(3);
+      await resumeCoreEvidenceErase(ports, { millis: 2_000 });
+      clock.at += 60_000;
+    }
+    expect(await world.store.get(pendingKeyOf(p4))).toBeUndefined();
+  });
+
+  it("M-B: the start point moves on: with more stuck people ahead than one run has shares for, the person behind them is still reached within a few runs", async () => {
+    const people = ["a1", "a2", "a3", "a4", "a5", "a6"].map((name) => name.repeat(32));
+    const last = people.at(-1)!;
+    const { keys, tasks, failing, clock, ports } = await crowd(Object.fromEntries(people.map((person) => [person, person === last ? 1 : 300])));
+    for (const person of people.slice(0, -1)) failing.add(tasks[person]![0]!.taskId);
+    let runs = 0;
+    while (leftKeys(keys, tasks[last]![0]!) > 0) {
+      runs += 1;
+      expect(runs).toBeLessThanOrEqual(3);
+      await resumeCoreEvidenceErase(ports, { millis: 2_000 });
+      clock.at += 60_000;
+    }
+  });
+
+  it("M-B: a walk gets at most its fixed share of the every-minute run, however much time the run has", async () => {
+    const big = "7".repeat(64);
+    const { clock, ports } = await crowd({ [big]: 300 });
+    const started = clock.at;
+    await resumeCoreEvidenceErase(ports, { millis: 60_000 });
+    // Ten tasks of two prefixes start together, 5 ms each: the walk stops within one batch (100 ms) of its share.
+    expect(clock.at - started).toBeLessThanOrEqual(CORE_ERASE_RESUME_SHARE_MS + 100);
+  });
+
+  it("M-B: the run starts with whoever was tried longest ago, and skips a walk that has only failing tasks left and was tried in the last few minutes", async () => {
+    const [p1, p2] = ["5", "6"].map((digit) => digit.repeat(64)) as [string, string];
+    const { world, clock, keys, tasks, failing, ports } = await crowd({ [p1]: 3, [p2]: 3 });
+    failing.add(tasks[p1]![1]!.taskId);
+    // p1's walk is done but for its failing task; p2 has not been tried.
+    await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: p1, budgetMs: 1_000 });
+    expect((await world.store.get(pendingKeyOf(p1)))?.retry).toHaveLength(1);
+    const tried: string[] = [];
+    const get = world.store.get.bind(world.store);
+    vi.spyOn(world.store, "get").mockImplementation(async (key) => { if (key.pk === CORE_ERASE_PENDING_PK) tried.push(key.sk); return get(key); });
+    clock.at += 1_000;
+    await resumeCoreEvidenceErase(ports, { millis: 2_000 });
+    // p1 was tried a second ago with only its failing task left: skipped. p2 is erased.
+    expect(tried).toEqual([`${FAKE_COMPANY}|${p2}`]);
+    for (const task of tasks[p2]!) expect(leftKeys(keys, task)).toBe(0);
+    // Some minutes later p1 is tried again.
+    clock.at += 10 * 60_000;
+    tried.length = 0;
+    await resumeCoreEvidenceErase(ports, { millis: 2_000 });
+    expect(tried).toEqual([`${FAKE_COMPANY}|${p1}`]);
+  });
+
+  it("keeps at most CORE_ERASE_RETRY_MAX failing tasks: the main walk stops before the next failure (the item stays small) and is never complete", async () => {
+    const { world, ports, keys, tasks, failing } = await manyTasks(CORE_ERASE_RETRY_MAX + 5, 0);
+    for (const task of tasks.slice(0, CORE_ERASE_RETRY_MAX + 1)) failing.add(task.taskId);
+    const report = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 60_000 });
+    expect(report.complete).toBe(false);
+    const pending = await world.store.get(pendingKeyOf(PERSON));
+    expect(pending?.retry).toHaveLength(CORE_ERASE_RETRY_MAX);
+    // The cursor stays before the first failure that did not fit, so that task is still owed by the main walk.
+    expect(pending?.cursor as string).toContain(`#${tasks[CORE_ERASE_RETRY_MAX - 1]!.taskId}`);
+    expect(pending?.scanned).toBeUndefined();
+    // Once the failures clear, the next runs finish everything.
+    failing.clear();
+    for (let run = 0; run < 3 && keys.size > 0; run += 1) await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 60_000 });
+    expect(keys.size).toBe(0);
+  });
+
+  it("L2: one prefix with many rounds of objects stops at the deadline between rounds (out of time, not a failure)", async () => {
+    const world = createFakeWorld();
+    const clock = { at: 7_000_000 };
+    await seedRecords(world, { person: PERSON, stamp: "core" });
+    let sends = 0;
+    // A prefix that always lists a full page of objects: the vendored delete would go round a hundred times.
+    const s3 = { async send(command: unknown): Promise<unknown> {
+      sends += 1;
+      clock.at += 50;
+      if (command instanceof ListObjectsV2Command) return { Contents: Array.from({ length: 1_000 }, (_, index) => ({ Key: `${String(command.input.Prefix)}${String(index)}` })) };
+      return {};
+    } };
+    const real = coreErasePortsOf({ dynamo: new FakeDynamoDb({ tableName: "State" }), tableName: "State", s3, bucket: "artifact-bucket", now: () => clock.at });
+    const ports: CoreErasePorts = { ...real, store: world.store, now: () => clock.at };
+    const report = await erasePersonOnCore({ ports, companyId: FAKE_COMPANY, developerId: PERSON, budgetMs: 500 });
+    expect(report).toMatchObject({ erased: 0, incomplete: 0, complete: false });
+    // At most the rounds that fit in the budget, plus the one round each started prefix always gets.
+    expect(sends).toBeLessThanOrEqual(2 * (500 / 100 + 1) + 2);
   });
 });
