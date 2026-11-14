@@ -8,6 +8,7 @@ import { SLACK_OIDC_ISSUER, projectMemberKey, type OrgId } from "@rovara-code/co
 import { developerOrgKey, erasedPersonKey, orgBanKey, orgMemberKey, orgRemovedKey, type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
 import { brokerDependencies, slackCallerFor, slackRequesterStanding } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
+import { SLACK_SELF_GRANT_REFUSED } from "../../packages/broker/src/aws/broker/slack-workflow-events.js";
 import { slackRequesterProjectRole } from "../../packages/broker/src/aws/broker/workspace-preparation.js";
 import { linkedRequester } from "../../packages/broker/src/aws/broker/model-access.js";
 import { installLessons, type learningDepsFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
@@ -22,7 +23,8 @@ import { OMAR, createSingleAnswerPlanBroker, grantProject, seedMembership, MAYA 
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { planAnswer } from "../support/plan-documents.js";
 import { pagePlan } from "../support/page-tasks.js";
-import { SLACK_CHANNEL, SLACK_TEAM } from "../support/slack-broker.js";
+import { SLACK_CHANNEL, SLACK_TEAM, ensureWorkspace, markReady, registerSlackProject, serviceCall } from "../support/slack-broker.js";
+import { modelSelectionSlackWorld, SELECTION_MODELS } from "../support/model-selection-slack-world.js";
 import { TEST_ORG } from "../support/orgs.js";
 
 type Harness = Awaited<ReturnType<typeof createSingleAnswerPlanBroker>>;
@@ -382,6 +384,65 @@ describe("threat 8: no union of rights", () => {
   });
 });
 
+describe("threat 8 (review M-2): Slack service surfaces act as the seat, never the bare Slack id", () => {
+  const user = "U0123456789";
+  const slackId = developerIdForSlackUser(user);
+  const thread = `${SLACK_TEAM}/${SLACK_CHANNEL}/1695500000.000801`;
+  const model = { ...SELECTION_MODELS[0]!, label: "Balanced" };
+  const fast = { ...SELECTION_MODELS[1]!, label: "Fast" };
+  /** The Slack id is a maintainer of the project in its own right; the web account it is linked to is a plain member. */
+  async function serviceWorld() {
+    const w = await modelSelectionSlackWorld(user);
+    w.db.set({ pk: `DEVELOPER#${PERSON}`, sk: "META", provider: "oidc", displayName: "Pat Web", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    seedMembership(w.db, PERSON);
+    const body = { entityType: "IDENTITY_LINK", developerId: PERSON, provider: "slack", issuer: SLACK_OIDC_ISSUER, subject: user, linkedAt: LINKED_AT, lastSignInAt: LINKED_AT };
+    w.db.set({ pk: `SIGNIN_IDENTITY#${slackId}`, sk: "META", ...body });
+    w.db.set({ pk: `DEVELOPER#${PERSON}`, sk: `IDENTITY#${slackId}`, ...body });
+    await registerSlackProject(w.handler, { models: { default: model, approved: [model, fast] } });
+    return w;
+  }
+
+  it("the project model selection is authorized on the web account's rights (a plain member is refused), not the Slack id's maintainer grant", async () => {
+    const w = await serviceWorld();
+    await ensureWorkspace(w.handler, thread, user);
+    const select = () => serviceCall(w.handler, thread, user, "PUT", "/v1/service/project/model", { provider: fast.provider, modelId: fast.modelId });
+    const refused = await select();
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(w.db.find((item) => item.entityType === "PROJECT_MODEL_SELECTION")).toEqual([]);
+    // Positive control: the same grant under the web account itself lets the selection through.
+    w.db.set({ ...projectMemberKey(TEST_ORG, PERSON, "payments"), entityType: "MEMBERSHIP", role: "developer", ownerKey: PERSON, projectName: "payments", projectRole: "maintainer", grantId: "pat-editor" });
+    const allowed = await select();
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+  });
+
+  it("a thread chat turn's model-turn actor is the web account, not the Slack id", async () => {
+    const w = await serviceWorld();
+    const workspace = await ensureWorkspace(w.handler, thread, user);
+    expect(workspace.status, JSON.stringify(workspace.body)).toBe(200);
+    const workspaceId = workspace.body.workspaceId as string;
+    markReady(w.db, workspaceId);
+    const conversation = await serviceCall(w.handler, thread, user, "POST", `/v1/service/workspaces/${workspaceId}/conversations`);
+    const turn = await serviceCall(w.handler, thread, user, "POST", `/v1/service/workspaces/${workspaceId}/tasks`, { requestId: randomUUID(), conversationId: (conversation.body.conversation as { id: string }).id, prompt: "hi" });
+    expect(turn.status, JSON.stringify(turn.body)).toBe(202);
+    const operation = w.db.find((item) => item.entityType === "OPERATION" && item.workspaceId === workspaceId && item.kind === "task")[0] as { modelTurnPin?: { actorDeveloperId?: string } };
+    expect(operation.modelTurnPin?.actorDeveloperId).toBe(PERSON);
+  });
+});
+
+describe("threat 8 (review L1): no People role for the linked Slack account itself", () => {
+  it("a linked Slack account cannot give its own Slack user a role on the person's task (it is the person already, and the role would outlive an unlink)", async () => {
+    const h = await linkedWorld();
+    const started = await slackStart(h, "1695500000.000811");
+    const taskId = taskIdOf(started);
+    const before = JSON.stringify(h.db.get(`DEVTASK#${taskId}`, "PEOPLE") ?? null);
+    const answer = await h.handler({ source: "agentx.slack-ingress", action: "task-people-change", thread: threadOf("1695500000.000811"), userId: SLACK_USER, taskId,
+      requestId: randomUUID(), expectedPeopleRevision: 1, slackUserId: SLACK_USER, role: "owner" });
+    expect(answer.body).toContain(SLACK_SELF_GRANT_REFUSED);
+    expect(answer.body).not.toContain(SLACK_ID);
+    expect(JSON.stringify(h.db.get(`DEVTASK#${taskId}`, "PEOPLE") ?? null)).toBe(before);
+  });
+});
+
 describe("threat 9: one rule everywhere", () => {
   it("ingress, the service-route rule, the project role and the spend's member name the same person with the same role; after the unlink all refuse", async () => {
     const h = await linkedWorld({ role: "admin" });
@@ -565,6 +626,23 @@ describe("threat 12: lessons (LP-2b restated for linked people)", () => {
     // The person's erase removes it.
     h.db.set({ ...erasedPersonKey(TEST_ORG, { developerId: PERSON }), entityType: "ERASED_PERSON", orgId: TEST_ORG });
     expect(await lessons.verdict()).toMatchObject({ eligible: false });
+  });
+
+  it("review L4: an OLDER task recorded under the bare Slack id (linked at read time) is read as the person, and the person's erase removes it (the both-ids path)", async () => {
+    const h = await createSingleAnswerPlanBroker();
+    person(h, PERSON);
+    grantProject(h.db, { developerId: PERSON, name: "Pat", provider: "oidc", sessionId: "s-p" });
+    const taskId = await preLaneSlackTask(h, "1695500000.000323");
+    link(h, PERSON);
+    const lessons = await lessonsWorld(h, taskId);
+    const read = await lessons.read();
+    expect(read.facts.task.developerId, "the subject carries the person").toBe(PERSON);
+    expect(read.facts.rest).toMatchObject({ initiatorTrust: "member" });
+    expect(await lessons.verdict()).toMatchObject({ eligible: true });
+    h.db.set({ ...erasedPersonKey(TEST_ORG, { developerId: PERSON_B }), entityType: "ERASED_PERSON", orgId: TEST_ORG });
+    expect(await lessons.verdict(), "another person's erase").toMatchObject({ eligible: true });
+    h.db.set({ ...erasedPersonKey(TEST_ORG, { developerId: PERSON }), entityType: "ERASED_PERSON", orgId: TEST_ORG });
+    expect(await lessons.verdict(), "the person's erase").toMatchObject({ eligible: false });
   });
 });
 

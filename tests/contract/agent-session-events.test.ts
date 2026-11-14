@@ -376,8 +376,10 @@ describe("a Slack thread reply on a task's session", () => {
   it("saves a reply from the person who took the task over as the owner's, and one from the creator who handed it over as a teammate's (Plan 5 Task 12a)", async () => {
     const n = noteWorld();
     n.w.db.set({ ...n.w.db.get(taskKey(n.taskId))!, currentOwner: { developerId: ARJUN, name: "Arjun", provider: "slack", slackUserId: "U0ARJUN", since: "2026-10-22T08:00:00.000Z" } });
-    expect(await n.note({ eventId: "EvTaker", messageTs: "1695500001.000200" })).toEqual({ outcome: "captured" });
-    expect(n.notes().map((item) => item["isOwner"])).toEqual([true]);
+    // 0.5.18x (review M-1, changed on purpose): "the owner" is what the caller judged live (the taker's own seat: `peopleAccess.isOwner`), never the stored Slack user id on the task.
+    expect(await n.note({ eventId: "EvTaker", messageTs: "1695500001.000200", peopleAccess: { isOwner: true } })).toEqual({ outcome: "captured" });
+    expect(await n.note({ eventId: "EvStored", messageTs: "1695500001.000250" })).toEqual({ outcome: "captured" });
+    expect(n.notes().map((item) => item["isOwner"]).sort()).toEqual([false, true]);
     const untaken = noteWorld();
     expect(await untaken.note({ eventId: "EvOther", messageTs: "1695500001.000300" })).toEqual({ outcome: "captured" });
     expect(untaken.notes().map((item) => item["isOwner"])).toEqual([false]);
@@ -476,9 +478,12 @@ describe("through the real broker", () => {
       people: [{ developerId: teammate, slackUserId: "U0TEAMMATE1", name: "Tess Teammate", role: "commenter" }],
     });
     expect(await slackReplyAuthor(deps, signIn, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Tess Teammate" });
-    // The owner is the task's own developer, by the name the task keeps (the caller's is a placeholder).
-    expect(await slackReplyAuthor(deps, signIn, { ...task, developerId: "o".repeat(64), developerName: "Maya on the task", slackUserId: "U0OWNER001" }, "U0OWNER001", { developerId: "c".repeat(64), name: "Slack user U0OWNER001" }))
+    // The owner (the caller's live seat IS the task's developer) is named by what the task keeps (the caller's is a placeholder).
+    expect(await slackReplyAuthor(deps, signIn, { ...task, developerId: "o".repeat(64), developerName: "Maya on the task", slackUserId: "U0OWNER001" }, "U0OWNER001", { developerId: "o".repeat(64), name: "Slack user U0OWNER001" }))
       .toEqual({ developerId: "o".repeat(64), name: "Maya on the task" });
+    // 0.5.18x (review M-1, changed on purpose): a Slack user the task record names whose live seat is someone else (an unlinked account) is never the owner.
+    expect(await slackReplyAuthor(deps, signIn, { ...task, developerId: "o".repeat(64), developerName: "Maya on the task", slackUserId: "U0OWNER001" }, "U0OWNER001", { developerId: "c".repeat(64), name: "Slack user U0OWNER001" }))
+      .toEqual({ developerId: "c".repeat(64), name: "Slack user U0OWNER001" });
     // A table that is down leaves the caller's own name.
     const down = { documentClient: { send: async () => { throw new Error("down"); } }, tableName: "state" } as never;
     expect(await slackReplyAuthor(down, { getDeveloper: async () => { throw new Error("down"); } }, task, "U0TEAMMATE1", caller)).toEqual({ developerId: teammate, name: "Slack user U0TEAMMATE1" });

@@ -25,6 +25,8 @@ import { getItem, operationKey, requireOperation, type OperationRecord } from ".
 import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import { hashJson, isConditional } from "../broker-shared.js";
 import { developerIdForSlackUser } from "../admin-actions.js";
+import { slackPersonId } from "../../developer/merged-owner.js";
+import { signInReader } from "../../org/live-role.js";
 import { reviewSameModelOf } from "../../rovara-code/review-model-lines.js";
 import { secondReviewPullRequestLines } from "../../rovara-code/second-review-store.js";
 import { candidateChangedFiles, approvedPlanForPullRequest, workflowPullRequestStatusLines } from "../developer-tasks.js";
@@ -410,7 +412,8 @@ export async function reconcilePullRequest(
     const requester = operation.requestedBy;
     return auditPullRequestOpened({
       orgId: await orgOfRecord(dependencies, await getItem<Record<string, unknown>>(dependencies, workspaceKey(operation.workspaceId)) ?? {}),
-      actor: requester === undefined ? { kind: "system", id: "rovara" } : { kind: "member", id: "kind" in requester ? requester.developerId : developerIdForSlackUser(requester.userId) },
+      // 0.5.18x (review M-2): a Slack requester is audited as the person their Slack account acts as now (a linked web account), else the Slack id.
+      actor: requester === undefined ? { kind: "system", id: "rovara" } : { kind: "member", id: "kind" in requester ? requester.developerId : (await slackPersonId(signInReader({ documentClient: dependencies.documentClient, signInTableName: dependencies.developer?.signInTableName }), developerIdForSlackUser(requester.userId), dependencies.developer?.signInTableName)) ?? developerIdForSlackUser(requester.userId) },
       occurredAt: openedAt, occurrence: operation.id,
       pullRequestId: auditPullRequestId(repositoryFullName, pullRequest.number), number: pullRequest.number,
       // I3: the people the change request names (full ids), so an auditor can go from the host's change request to the Rovara people behind it.

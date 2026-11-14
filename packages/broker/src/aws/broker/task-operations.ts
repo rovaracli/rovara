@@ -81,7 +81,7 @@ import { object, parseBody, verifyCapability } from "./admin-and-helpers.js";
 import { stageHasContextSources } from "../../context-sources/enabled.js";
 import { prewarmStageServers } from "../../context-sources/prewarm-stage.js";
 import { MAX_SETUP_PROPOSAL_BYTES, type AwsBrokerDependencies, type RegisteredProjectRecord } from "./definitions.js";
-import { requireRecordProject } from "./dependency-wiring.js";
+import { requireRecordProject, slackServiceSeat } from "./dependency-wiring.js";
 import { ROVARA_CODE_NAME } from "./model-access.js";
 import { getDefaultWorkspace, requireLatestProject, requireMembership, requireOwnedWorkspace, requireProjectAuthority, requireWorkspace, resolveProjectModel } from "./records.js";
 import { creatorCheckOf, githubScope, githubScopeOf, modelSourceStoreOf, orgOfRecord, routingOf } from "./scope-helpers.js";
@@ -339,7 +339,11 @@ export async function taskOperationParts(
   // #341: a task whose owner connected a working ChatGPT plan runs on it; `model` stays the default it falls back to.
   const frozen=task?.agent===undefined?undefined:await readTaskRecipe(dependencies,task.taskId,orgId);
   const governed=frozen?.modelPolicyPin!==undefined&&recipeRunner(frozen.recipe)==="coding"&&input.agentRun===undefined;
-  const planOwner = governed||task?.payer!==undefined?(task?.payer?.kind==="member"?task.payer.developerId:undefined):chatGptOwner(task?.developerId, input.requester.requestedBy, developerIdForSlackUser);
+  // 0.5.18x (review M-2): a thread chat turn (no task) acts as the person the Slack requester's seat names (a linked web account), never the bare Slack id.
+  const slackRequester=input.requester.requestedBy!==undefined&&!("kind" in input.requester.requestedBy)?input.requester.requestedBy:undefined;
+  const requesterSeat=task===undefined&&slackRequester!==undefined?(await slackServiceSeat(dependencies,slackRequester.userId,orgId,{allowReadOnly:true})).developerId:undefined;
+  const slackSeatId=(userId:string)=>requesterSeat??developerIdForSlackUser(userId);
+  const planOwner = governed||task?.payer!==undefined?(task?.payer?.kind==="member"?task.payer.developerId:undefined):chatGptOwner(task?.developerId, input.requester.requestedBy, slackSeatId);
   const planSelection = dependencies.chatgpt === undefined || input.workflowMode === "CHECKS" || input.agentRun !== undefined ? undefined
     : await chatGptSelectionForOrg(dependencies, orgId, planOwner);
   const turnMapping=!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS"?turnStagesForMode(input.workflowMode??"IMPLEMENT"):undefined;
@@ -347,7 +351,7 @@ export async function taskOperationParts(
   let applied = await dispatchAgentStep(dependencies, orgId, workspace, task, input, settings, resolvedModel.model, planSelection?.model,frozen);
   // Standing instructions: an operation with no agent snapshot still carries the company's rules (review F3); one with an agent carries the block `applyAgentStep` built.
   const standingBlock = applied === undefined ? await companyOnlyBlockFor(dependencies.companyInstructions, orgId, input.workflowMode, input.agentRun !== undefined, task) : applied.standingInstructions;
-  const turnActor=task===undefined?chatGptOwner(undefined,input.requester.requestedBy,developerIdForSlackUser):effectiveTaskOwner(task).developerId;
+  const turnActor=task===undefined?chatGptOwner(undefined,input.requester.requestedBy,slackSeatId):effectiveTaskOwner(task).developerId;
   let turnPolicy:Awaited<ReturnType<typeof prepareTurnModelPolicy>>|undefined;
   if(!governed&&input.agentRun===undefined&&input.workflowMode!=="CHECKS") {
     const signInTableName=dependencies.developer?.signInTableName;

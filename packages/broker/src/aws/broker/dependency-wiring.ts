@@ -639,7 +639,7 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
     if (await has(orgRemovedKey(orgId, id))) throw refuse();
     standing.absent.push(orgRemovedKey(orgId, id));
   }
-  if (seen !== undefined) return { role: seen.role, ids, seatId: seat.seatId, fence: seat.fence, standing: { ...standing, present: [{ key: orgMemberKey(orgId, survivor), role: seen.role, joinedAt: seen.joinedAt }] } };
+  if (seen !== undefined) return { role: seen.role, ids, seatId: seat.seatId, viaLink: seat.viaLink, fence: seat.fence, standing: { ...standing, present: [{ key: orgMemberKey(orgId, survivor), role: seen.role, joinedAt: seen.joinedAt }] } };
   // No member record for the survivor: a removed person is refused before anything else, an Enterprise install (one company whose people all sign in) does not let a Slack identity with
   // no record in as an implicit member, and anyone else is the implicit member of a single-org install.
   for (const id of ids) {
@@ -666,11 +666,23 @@ export async function slackRequesterStanding(dependencies: AwsBrokerDependencies
     if (rule === "require") throw agentXError("SLACK_ACCOUNT_NOT_LINKED", SLACK_ACCOUNT_NOT_LINKED_MESSAGE);
     if (rule === "warn") await warnImplicitSlackMember({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, orgId, userId);
   }
-  return { role: "member", ids, seatId: seat.seatId, fence: seat.fence, standing };
+  return { role: "member", ids, seatId: seat.seatId, viaLink: seat.viaLink, fence: seat.fence, standing };
 }
 
 /** What `slackRequesterStanding` answers: the role, the walk, the person the Slack account acts as (`seatId`, the walk's survivor) and the fence a write made for them carries. */
-export interface SlackRequesterStandingResult { role: OrgRole; ids: string[]; seatId: string; fence: SeatFence; standing: RequesterStanding }
+export interface SlackRequesterStandingResult { role: OrgRole; ids: string[]; seatId: string; /** The seat was reached through the Slack identity LINK (not a merge). */ viaLink: boolean; fence: SeatFence; standing: RequesterStanding }
+
+/**
+ * 0.5.18x (review M-2): the developer id a Slack user acts as on a service surface (a model selection, a thread chat turn): the seat of the ONE requester rule (`slackRequesterStanding`), never the
+ * bare Slack id. `signedInId` is the sign-in the model authority walks from: the Slack id when the seat was not reached through a link (its own developer, or merged), else the seat (a link-only
+ * Slack account has no record of its own). Throws as the rule does.
+ */
+export async function slackServiceSeat(dependencies: AwsBrokerDependencies, userId: string, orgId: OrgId, options: { allowReadOnly?: boolean } = {}): Promise<{ developerId: string; signedInId: string }> {
+  const standing = options.allowReadOnly === true
+    ? await slackRequesterStanding(dependencies, userId, orgId, { allowUnlinked: true, allowReadOnly: true })
+    : await slackRequesterStanding(dependencies, userId, orgId, { allowUnlinked: true });
+  return { developerId: standing.seatId, signedInId: standing.viaLink ? standing.seatId : developerIdForSlackUser(userId) };
+}
 
 /** What `slackRequesterStanding` read about a person to let them through: the rows that were not there (a ban, a removal) and the member record that was. */
 export interface RequesterStanding {

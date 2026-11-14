@@ -2,7 +2,6 @@
 
 import { ModelIdentifierSchema } from "@rovara-code/contracts";
 import { writeProjectModelSelection } from "../../model-selection/selection-write.js";
-import { survivorOf } from "../../org/project-members.js";
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
 import { ProjectModelOptionsSchema, ProjectModelSelectionRequestSchema, WorkspaceInstanceSchema, agentXError, workspaceRecordFields, type Operation, type WorkspaceInstance, modelKey, type ModelRef, type ModelSelection, type ProjectModelOptions, PROJECT_REVISION_SK_PREFIX, projectMemberKey, defaultWorkspaceKey, projectPk, projectSelectionKey, type OrgId } from "@rovara-code/contracts";
@@ -14,11 +13,10 @@ import type { GitHubAppCredentialProvider } from "../../github-app.js";
 import { requireOrgId } from "../../org/resolve.js";
 import { getItem, operationKey, publicOperation, requireOperation, type OperationRecord } from "../cancellation.js";
 import { grantRoleOf } from "../../developer/project-roles.js";
-import { developerIdForSlackUser } from "../admin-actions.js";
 import { coreOperationEvents, findCoreArtifactRow } from "../../cloud/rows/core-rows.js";
 import { decodeCursor, encodeCursor, parseStoredEvent, pullRequestKey, workspaceKey } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies, MembershipRecord, ProjectModelSelectionRecord, PullRequestRecord, RegisteredProjectRecord } from "./definitions.js";
-import { agentRouteDependencies, developerTaskActions, requireRecordLatestProject, requireRecordProject } from "./dependency-wiring.js";
+import { agentRouteDependencies, developerTaskActions, requireRecordLatestProject, requireRecordProject, slackServiceSeat } from "./dependency-wiring.js";
 import { workspaceTaskOwner } from "./model-access.js";
 import { installOrgId, resolveSlackThreadKey } from "./scope-helpers.js";
 import { requireSlackRequesterMayWork } from "./workspace-preparation.js";
@@ -249,8 +247,8 @@ export async function putProjectModel(
   const orgId = requireOrgId(identity.orgId);
   const agents=agentRouteDependencies(dependencies,developerTaskActions(dependencies));
   if(agents===undefined)throw agentXError("RUNTIME_UNAVAILABLE","The model authority check is unavailable.");
-  const signedInId=developerIdForSlackUser(requester.userId);
-  const developerId=await survivorOf({developerRecord:id=>agents.signInStore.getDeveloper(id)},signedInId);
+  // 0.5.18x (review M-2): the selection is made as the person the Slack account acts as (the seat of the one requester rule: a linked web account's rights, never the bare Slack id's).
+  const {developerId,signedInId}=await slackServiceSeat(dependencies,requester.userId,orgId);
   const applied=await writeProjectModelSelection(agents,{orgId,project:projectName,signedInId,developerId,model:requested,surface:"slack",requestId});
   const project = await requireLatestProject(dependencies, orgId, projectName);
   const policy = project.definition.models;

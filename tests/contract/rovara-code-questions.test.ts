@@ -779,6 +779,38 @@ describe("an owner's Slack reply while the task waits", () => {
   });
 
 
+  it("0.5.18x review M-1: after an unlink, a reply from the Slack account (a member in its own right too) never answers Understand's questions as the linked web person", async () => {
+    const t = await world();
+    const person: Developer = { developerId: "7".repeat(64), name: "Pat Web", provider: "oidc", sessionId: "s-pat" };
+    await t.member(person, "developer");
+    t.db.set({ pk: `DEVELOPER#${person.developerId}`, sk: "META", provider: "oidc", issuer: "https://idp.test", subject: "pat", displayName: "Pat Web", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    // Maya's Slack id is a member of the company in its own right, and her Slack account is linked to Pat's web account.
+    const slackSelf = await slackMember(t, MAYA.slackUserId!, "Maya Slack");
+    const key = slackSelf.developerId;
+    const body = { entityType: "IDENTITY_LINK", developerId: person.developerId, provider: "slack", issuer: "https://slack.com", subject: MAYA.slackUserId, linkedAt: "2020-01-01T00:00:00.000Z", lastSignInAt: "2020-01-01T00:00:00.000Z" };
+    t.db.set({ pk: `SIGNIN_IDENTITY#${key}`, sk: "META", ...body });
+    t.db.set({ pk: `DEVELOPER#${person.developerId}`, sk: `IDENTITY#${key}`, ...body });
+    // The linked record is the web account's own: the Slack id must not hold a member record that outranks it, so it is a plain member (no-union is a separate case).
+    const started = await t.handler({ source: "agentx.slack-ingress", action: "start-workflow", thread, userId: MAYA.slackUserId, instructions: "Fix the retry bug", workflowPath: "QUICK", requestId: randomUUID() });
+    const taskId = String((JSON.parse(started.body) as { taskId: string }).taskId);
+    expect(t.meta(taskId).developerId, started.body).toBe(person.developerId);
+    const workspaceId = t.meta(taskId).workspaceId;
+    const stored = { ...t.db.get(`DEVTASK#${taskId}`, "META")!, agent: { agentId: "rovara-code", name: "Rovara Code", version: 2 }, origin: "slack", startedBy: { developerId: person.developerId } };
+    await ensureTaskSession({ documentClient: t.db, tableName: "state", now: Date.now }, stored as never, { ownerName: "Pat Web", title: "Fix the retry bug" });
+    await t.finish(workspaceId, String(t.operations(workspaceId).find((item) => item.kind === "prepare")!.id), "SUCCEEDED", PREPARED);
+    const run = { taskId, workspaceId, operationId: String(t.understands(workspaceId).at(-1)!.id), sessionId: t.meta(taskId).sessionId };
+    await t.finishUnderstand(run, questions());
+    expect(t.meta(taskId).workflow).toMatchObject({ stage: "UNDERSTAND", state: "WAITING" });
+    // The unlink, as the sign-in function writes it.
+    t.db.set({ ...t.db.get(`SIGNIN_IDENTITY#${key}`, "META")!, unlinkedFrom: person.developerId, unlinkedAt: new Date().toISOString() });
+    t.db.delete({ pk: `DEVELOPER#${person.developerId}`, sk: `IDENTITY#${key}` });
+    t.db.set({ ...t.db.get(`DEVELOPER#${person.developerId}`, "META")!, [`identityUnlinked#${key}`]: new Date().toISOString() });
+    await t.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId, thread, userId: MAYA.slackUserId, messageTs: "1695500009.000001", eventId: "EvUnlinked", text: "go with billing" });
+    const workflow = t.meta(taskId).workflow;
+    expect(workflow).toMatchObject({ stage: "UNDERSTAND", state: "WAITING" });
+    expect((workflow.intent?.answers ?? []).map((entry) => (entry.by as { actorId: string }).actorId)).not.toContain(taskOwnerKey(person.developerId, taskId));
+  });
+
   it("is recorded under the replier's own id and name when that is a member with 'can use', not the task's owner", async () => {
     const { t, run, reply, owner } = await slackTask();
     const ana = await slackMember(t, "U0ANA000001", "Ana Lopez");

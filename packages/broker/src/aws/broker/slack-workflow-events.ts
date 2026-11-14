@@ -1,6 +1,7 @@
 // Part of the broker (split out of ../broker.ts): Slack workflow, people and note events.
 
 import { fencedActions, seatFenceOf } from "../../developer/seat-fence.js";
+import { developerIdForSlackUser } from "../admin-actions.js";
 import { admitOutsideRecheckOf } from "./outside-recheck.js";
 import { workspaceWorkerFeatures } from "./redirect-runtime.js";
 import { nightlyHeadDependencies } from "./nightly-head.js";
@@ -210,12 +211,19 @@ export const isSlackTaskPeopleTakeOwnershipEvent = (event: unknown): event is Sl
   return typeof event.requestId === "string" && Number.isSafeInteger(event.expectedPeopleRevision);
 };
 
+/** Review L1: refused, in the person's words, with no Slack id or account id. */
+export const SLACK_SELF_GRANT_REFUSED = "Your Slack account already acts as you on this task, so it can't be given a role of its own here.";
+
 export async function handleSlackTaskPeople(dependencies: AwsBrokerDependencies, tasks: DeveloperTaskActions,
   event: SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent) {
   if (dependencies.developer === undefined) throw agentXError("NOT_FOUND", "developer task workflows are not configured");
   const thread = SlackThreadSchema.parse(event.thread);
   const caller = await slackCallerFor(dependencies, SlackRequesterSchema.shape.userId.parse(event.userId), thread.teamId);
   const taskId = randomUUIDSchema.parse(event.taskId);
+  // 0.5.18x (review L1): a Slack account that acts as a linked (or merged) web account is that person already: a People role for its own Slack user is pointless, and it would outlive an unlink.
+  if (event.action === "task-people-change" && event.slackUserId === event.userId && caller.developerId !== developerIdForSlackUser(event.userId)) {
+    throw agentXError("CONFIG_INVALID", SLACK_SELF_GRANT_REFUSED);
+  }
   await handOnSlackMergedTaskById(dependencies, taskId, caller);
   const agents = agentRouteDependencies(dependencies, tasks);
   const routeDeps = developerTaskRouteDependencies({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer: dependencies.developer, now: Date.now, tasks, ...(agents === undefined ? {} : { agents }) }, caller);
@@ -504,7 +512,9 @@ export async function slackTaskAccess(
   const task = await handOnSlackMergedTask(dependencies, stored, canonical);
   // The legacy Slack owner of a task with no People list is the effective owner (Plan 5 Task 12a): the person who took it over, else its creator.
   const legacyOwner = sidecar === undefined && legacySlackOwner ? tryEffectiveTaskOwner(task) : undefined;
+  // 0.5.18x (review M-1): only the Slack user's own native id (or the person the live seat already is) is swapped in, never a linked web account the task record names with this Slack user id.
   const caller = legacyOwner !== undefined && legacyOwner.provider === "slack" && legacyOwner.slackUserId === userId
+    && (legacyOwner.developerId === developerIdForSlackUser(userId) || legacyOwner.developerId === canonical.developerId)
     ? { ...canonical, developerId: legacyOwner.developerId, name: legacyOwner.name }
     : canonical;
   // I2: the swapped-in owner is a person too; if they have become an Auditor (or hold a role that is not a writer's) the task is not theirs to steer from Slack.
@@ -872,9 +882,10 @@ export async function recordSlackThreadNote(dependencies: AwsBrokerDependencies,
   // Plan 6 Task 5: a reply answers Understand's questions only from a person who has "can use" on the task's session in this org, judged live the way the app route judges it (the project
   // role included). It is recorded under that person, whoever owns the task.
   const waiting = access.task.workflow?.stage === "UNDERSTAND" && access.task.workflow.state === "WAITING";
-  // Who the Slack user is in this org: the task's effective owner when the Slack user is theirs, else the member the Slack user maps to (merges followed).
+  // Who the Slack user is in this org: the person the LIVE seat names (0.5.18x review M-1): the task's owner only when the seat IS the owner, never because the task record still carries
+  // this Slack user id (after an unlink the record keeps it, but the Slack account is no longer the person).
   const effectiveOwner = tryEffectiveTaskOwner(access.task);
-  const replier = { developerId: effectiveOwner?.slackUserId === userId.data ? effectiveOwner.developerId : author.developerId, name: author.name };
+  const replier = { developerId: effectiveOwner !== undefined && actor.developerId === effectiveOwner.developerId ? effectiveOwner.developerId : author.developerId, name: author.name };
   const mayAnswer = waiting && await mayAnswerFromSlack(dependencies, tasks, { ...actor, developerId: replier.developerId }, access.task);
   // 0.5.18x: the note holds only while the seat's link still stands (its fence), as every other write made for a linked Slack account.
   const result = await recordWorkflowThreadNote({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, actions: fencedActions(tasks, seatFenceOf(actor)), now: Date.now },

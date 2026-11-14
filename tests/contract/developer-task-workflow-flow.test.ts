@@ -1,7 +1,17 @@
 import { commitReviewedProjectWorkingBranch } from "../../packages/broker/src/org/project-working-branch-save.js";
 import { capturingAuditDeps } from "../support/audit-capture.js";
 import { githubInstallationKey, orgMetaKey, orgMemberKey, developerOrgKey } from "@agentx/cloud-contracts";
-import { orgProjectCatalogKey } from "@rovara-code/contracts";
+import { orgProjectCatalogKey, SLACK_OIDC_ISSUER } from "@rovara-code/contracts";
+import { developerIdForSlackUser as slackIdOf } from "../../packages/broker/src/aws/admin-actions.js";
+import type { FakeDynamoDb as LinkDb } from "../support/fake-dynamodb.js";
+
+/** 0.5.18x (review M-1): Maya's Slack account acts as her web account only through its verified link (the task record's Slack user id alone names nobody). */
+function linkMayaSlack(db: LinkDb, slackUserId: string, developerId: string): void {
+  const key = slackIdOf(slackUserId);
+  const body = { entityType: "IDENTITY_LINK", developerId, provider: "slack", issuer: SLACK_OIDC_ISSUER, subject: slackUserId, linkedAt: "2020-01-01T00:00:00.000Z", lastSignInAt: "2020-01-01T00:00:00.000Z" };
+  db.set({ pk: `SIGNIN_IDENTITY#${key}`, sk: "META", ...body });
+  db.set({ pk: `DEVELOPER#${developerId}`, sk: `IDENTITY#${key}`, ...body });
+}
 import type { DeveloperCaller } from "../../packages/broker/src/aws/developer-routes.js";
 import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -668,6 +678,7 @@ describe("native developer task workflow", () => {
 
     const slackThread = { teamId: "T0BSHLLUGBD", channelId: "C0123456789", threadTs: "1695500000.000001" };
     harness.db.set({ ...task, slackUserId: MAYA.slackUserId, share: slackThread, workflow: saved });
+    linkMayaSlack(harness.db, MAYA.slackUserId!, MAYA.developerId);
     harness.db.set({ ...sharedTaskKey(slackThread), entityType: "SHARED_TASK", taskId, workspaceId,
       ownerKey: task.ownerKey, developerId: task.developerId, mode: "FULL", createdAt: now });
     harness.db.set({ ...githubWorkflowPullRequestKey("example/demo", 7), entityType: "GITHUB_WORKFLOW_PR",
@@ -731,6 +742,7 @@ describe("native developer task workflow", () => {
 
     const slackThread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000001" };
     harness.db.set({ ...harness.db.get(`DEVTASK#${taskId}`, "META")!, slackUserId: MAYA.slackUserId, share: { ...slackThread, mode: "continue", sharedAt: now } });
+    linkMayaSlack(harness.db, MAYA.slackUserId!, MAYA.developerId);
     const feedbackReviews = () => operations(harness, workspaceId).filter((item) => item.workflowMode === "FEEDBACK_REVIEW");
     const retry = (userId = MAYA.slackUserId!) => harness.handler({ source: "agentx.slack-ingress", action: "workflow-feedback-review-retry",
       taskId, userId, thread: slackThread, requestId: randomUUID(), reviewDigest: outputDigest });
@@ -841,6 +853,7 @@ describe("native developer task workflow", () => {
     expect(taskWorkflow(harness, taskId)).toMatchObject({ state: "WAITING", feedbackReview: { status: "PENDING", reviewRef: { status: "BLOCKED" } } });
     const slackThread = { teamId: SLACK_TEAM, channelId: SLACK_CHANNEL, threadTs: "1695500000.000001" };
     harness.db.set({ ...harness.db.get(`DEVTASK#${taskId}`, "META")!, slackUserId: MAYA.slackUserId, share: { ...slackThread, mode: "continue", sharedAt: now } });
+    linkMayaSlack(harness.db, MAYA.slackUserId!, MAYA.developerId);
     const pressed = await harness.handler({ source: "agentx.slack-ingress", action: "workflow-feedback-review-retry",
       taskId, userId: MAYA.slackUserId, thread: slackThread, requestId: randomUUID(), reviewDigest: outputDigest });
     expect(JSON.parse(String(pressed.body))).toMatchObject({ started: true });

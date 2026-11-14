@@ -71,7 +71,7 @@ export function slackReplyEventItem(
 }
 
 /**
- * Who wrote a reply in a task's thread, for the session's timeline. The id is the task's owner's when the Slack user is the owner, else the Slack caller's,
+ * Who wrote a reply in a task's thread, for the session's timeline. The id is the Slack caller's live seat (0.5.18x: never taken from the task's Slack user id),
  * followed through any member merge. The name is their developer record's display name (read through the sign-in table, not the state table), else the name
  * the task's Task People list holds for their Slack id, else (the owner) the name the task keeps, else what the Slack caller is called. Never throws: the
  * name is for the timeline only.
@@ -83,8 +83,9 @@ export async function slackReplyAuthor(
   slackUserId: string,
   caller: { developerId: string; name: string },
 ): Promise<{ developerId: string; name: string }> {
-  const owner = task.slackUserId === slackUserId;
-  let developerId = owner ? task.developerId : caller.developerId;
+  // 0.5.18x (review M-1): the id is the caller's LIVE seat, never the task's owner because the task record carries this Slack user id (an unlinked Slack account keeps that on the record).
+  const owner = task.slackUserId === slackUserId && caller.developerId === task.developerId;
+  let developerId = caller.developerId;
   const known = (value: unknown): value is string => typeof value === "string" && value !== "";
   try {
     developerId = await followMerges(signInStore, developerId);

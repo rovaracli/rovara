@@ -282,6 +282,8 @@ const ROWS: readonly Row[] = [
   ["aws/activity-index.ts", "failureItem", "history", ".developerName"],
   ["aws/activity-index.ts", "usageItem", "history", ".developerName"],
   ["aws/broker/slack-workflow-events.ts", "handleSlackTaskPeople", "other-record", ".slackUserId"],
+  // 0.5.18x review L1: the People change's own target (the event's Slack user), compared with the requester to refuse a linked account's self-grant.
+  ["aws/broker/slack-workflow-events.ts", "handleSlackTaskPeople", "other-record", ".slackUserId@2"],
   ["aws/broker/model-access.ts", "writeGateRuntime>runConnector", "principal", ".ownerKey"],
   ["aws/connector-ledger.ts", "finish", "principal", ".ownerKey"],
   ["aws/connector-routes.ts", "scopeContext", "principal", ".ownerKey"],

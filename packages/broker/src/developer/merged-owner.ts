@@ -101,3 +101,13 @@ export function handOnAllowedAt(path: PersonPath, createdAt: unknown): boolean {
   const linked = path.link.linkedAt === undefined ? Number.NaN : Date.parse(path.link.linkedAt);
   return Number.isFinite(made) && Number.isFinite(linked) && made >= linked;
 }
+
+/**
+ * 0.5.18x (R31, review M-2): the person a Slack id acts as now (`linkedPersonOf`, read live): the web account its Slack account is merged into or linked to, else the Slack id itself. A path that
+ * cannot be followed names nobody (undefined), never a guess. `signInTable` undefined (an install with no sign-in table): the Slack id.
+ */
+export async function slackPersonId(read: SignInRead, slackId: string, signInTable: string | undefined): Promise<string | undefined> {
+  if (signInTable === undefined) return slackId;
+  const path = await linkedPersonOf(read, slackId, signInTable);
+  return "refused" in path ? undefined : path.survivor;
+}

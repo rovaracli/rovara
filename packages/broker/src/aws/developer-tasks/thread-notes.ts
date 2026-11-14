@@ -186,7 +186,8 @@ export async function recordWorkflowThreadNote(
   }
   // Decision 134: small talk is not saved, unless the task waits on this person (a plan to approve, a question, a
   // blocked step): then a short "ok" or "yes" is their answer, and it goes to the task like any reply.
-  const waitsOnThem = (input.peopleAccess?.isOwner ?? tryEffectiveTaskOwner(task)?.slackUserId === input.userId) || input.answerBy !== undefined;
+  // 0.5.18x (review M-1): "the owner" is what the caller judged live (`peopleAccess.isOwner`), never the task's stored Slack user id (an unlinked Slack account keeps it on the record).
+  const waitsOnThem = input.peopleAccess?.isOwner === true || input.answerBy !== undefined;
   if (input.smallTalk === true && !(waitsOnThem && (task.workflow.state === "WAITING" || task.workflow.state === "BLOCKED"))) return { outcome: "small_talk" };
   const trimmed = input.text.trim();
   // Plan 6 Task 5: the reply of a person who may answer, while the task waits for answers, is the answer, not a note.
@@ -209,7 +210,7 @@ export async function recordWorkflowThreadNote(
   let withEvent = sessionRef !== undefined && options.preAnswered !== true;
   for (let attempt = 1; ; attempt += 1) {
     const note: SlackNote = SlackNoteSchema.parse({
-      schemaVersion: 1, taskId: task.taskId, slackUserId, isOwner: input.peopleAccess?.isOwner ?? tryEffectiveTaskOwner(task)?.slackUserId === input.userId,
+      schemaVersion: 1, taskId: task.taskId, slackUserId, isOwner: input.peopleAccess?.isOwner === true,
       teamId: thread.teamId, channelId: thread.channelId, threadTs: thread.threadTs, messageTs,
       eventId: input.eventId, text, truncated: text.length < trimmed.length, receivedAt, workflowRevision, ...(options.preAnswered === true ? { answeredAt: receivedAt } : {}),
     });

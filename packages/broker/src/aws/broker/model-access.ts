@@ -44,7 +44,7 @@ import { resolveTaskAccess } from "../../developer/task-access.js";
 import { acceptTask } from "./acceptance.js";
 import { parseBody, verifyCapability } from "./admin-and-helpers.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
-import { linkedPersonOf } from "../../developer/merged-owner.js";
+import { slackPersonId } from "../../developer/merged-owner.js";
 import { signInReader } from "../../org/live-role.js";
 import { orgStoreOf, requesterStandingGuard, slackRequesterStanding, slackTeamOrg, type RequesterStanding } from "./dependency-wiring.js";
 import { putArtifact } from "./pull-request-reconcile.js";
@@ -443,8 +443,9 @@ async function answerModelAccess(dependencies: AwsBrokerDependencies, request: A
     // Check the requester independently of the payer lookup: removing membership makes linkedRequester return undefined,
     // but must not downgrade previously attributable work to anonymous org-funded work (C1).
     const requestedBy = current.requestedBy;
-    const requesterId = requestedBy === undefined ? undefined : await unreadable("requester", () => resolveMember(
-      "kind" in requestedBy ? requestedBy.developerId : developerIdForSlackUser(requestedBy.userId),
+    // 0.5.18x (review M-2): a Slack requester is the person their Slack account acts as now (a linked web account), never the bare Slack id; a path that cannot be followed is the Slack id.
+    const requesterId = requestedBy === undefined ? undefined : await unreadable("requester", async () => resolveMember(
+      "kind" in requestedBy ? requestedBy.developerId : (await slackPersonOf(dependencies, requestedBy.userId)) ?? developerIdForSlackUser(requestedBy.userId),
     ));
     await requireOrgOpenFor(dependencies, current.orgId, [...(requesterId === undefined ? [] : [requesterId]), ...(keyed === undefined ? [] : [keyed])], current.createdAt);
     return {
@@ -824,12 +825,9 @@ export async function linkedRequester(dependencies: AwsBrokerDependencies, orgId
  * 0.5.18x (R31, owner decision 183(d)): the person a Slack user's spend counts against: the web account the Slack account is merged into or linked to now (`linkedPersonOf`, read live), else the
  * Slack id itself. A path that cannot be followed names nobody (the project pays), never a guess.
  */
-async function slackPersonOf(dependencies: AwsBrokerDependencies, userId: string): Promise<string | undefined> {
-  const slackId = developerIdForSlackUser(userId);
+export async function slackPersonOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "developer">, userId: string): Promise<string | undefined> {
   const table = dependencies.developer?.signInTableName;
-  if (table === undefined) return slackId;
-  const path = await linkedPersonOf(signInReader({ documentClient: dependencies.documentClient, signInTableName: table }), slackId, table);
-  return "refused" in path ? undefined : path.survivor;
+  return slackPersonId(signInReader({ documentClient: dependencies.documentClient, signInTableName: table }), developerIdForSlackUser(userId), table);
 }
 
 /** How long a task's model key lasts; the worker asks for a new one a minute before it ends. */
