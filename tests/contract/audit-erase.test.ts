@@ -160,6 +160,36 @@ function event(orgId: string, n: number, subjects: Array<[string, string]> = [["
   });
 }
 
+describe("person erase of web suggestion rate rows", () => {
+  it("deletes only the person's company rate row, including on a repeated erase", async () => {
+    const b = bench();
+    const row = (orgId: string, developerId: string) => ({ pk: `ORG#${orgId}`, sk: `CODE_SUGGEST_RATE#${developerId}`, entityType: "CODE_SUGGESTION_RATE", orgId, developerId, indexExpiresAt: START / 1000 + 86400 });
+    const mine = row(A, "dev_1"), otherPerson = row(A, "dev_2"), otherCompany = row(B, "dev_1");
+    for (const item of [mine, otherPerson, otherCompany]) b.db.set(STATE, item);
+    expect(b.db.get(STATE, mine.pk, mine.sk)).toEqual(mine);
+    await eraseAuditSubject(b.erase, request());
+    expect(b.db.get(STATE, mine.pk, mine.sk)).toBeUndefined();
+    expect(b.db.get(STATE, otherPerson.pk, otherPerson.sk)).toEqual(otherPerson);
+    expect(b.db.get(STATE, otherCompany.pk, otherCompany.sk)).toEqual(otherCompany);
+    b.db.set(STATE, mine);
+    await eraseAuditSubject(b.erase, request());
+    expect(b.db.get(STATE, mine.pk, mine.sk)).toBeUndefined();
+  });
+  it("does not report a completed erase when deleting the rate fails, and retries it", async () => {
+    const b = bench(), mine = { pk: `ORG#${A}`, sk: "CODE_SUGGEST_RATE#dev_1", entityType: "CODE_SUGGESTION_RATE", orgId: A, developerId: "dev_1" };
+    b.db.set(STATE, mine);
+    b.db.before = command => {
+      if (command.constructor.name === "DeleteCommand" && (command.input.Key as { sk?: string } | undefined)?.sk === mine.sk) throw new Error("unavailable");
+    };
+    await expect(eraseAuditSubject(b.erase, request())).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+    expect(b.db.get(STATE, mine.pk, mine.sk)).toEqual(mine);
+    b.db.before = undefined;
+    await eraseAuditSubject(b.erase, request());
+    expect(b.db.get(STATE, mine.pk, mine.sk)).toBeUndefined();
+  });
+
+});
+
 describe("eraseAuditSubject and the learning loop (B7)", () => {
   it("clears the person's learning data after the tombstone, and again on a repeat of the request", async () => {
     const b = bench();
@@ -475,6 +505,7 @@ describe("processDueShreds", () => {
     await processDueShreds(b.shred, b.clock.now);
     expect(b.db.get(STATE, `ORG#${A}`, "META")).toStrictEqual(b.orgMeta(A));
     expect(b.operations.filter((operation) => operation.command === "DeleteCommand" && operation.table === STATE).map((operation) => operation.key)).toStrictEqual([
+      { pk: `ORG#${A}`, sk: "CODE_SUGGEST_RATE#dev_2" },
       expect.objectContaining({ pk: AUDIT_SHRED_DUE_PARTITION }),
     ]);
   });

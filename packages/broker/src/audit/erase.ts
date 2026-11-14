@@ -15,7 +15,7 @@ import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteObjectCommand, ListObjectsV2Command, type S3Client } from "@aws-sdk/client-s3";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { AUDIT_DETAILS_SHRED_AFTER_CLOSE_DAYS, AUDIT_ERROR_MESSAGES, AUDIT_EXPORT_FILE_LIFECYCLE_DAYS, AUDIT_PENDING_TTL_DAYS, AUDIT_TRANSIENT_COPY_DAYS } from "@agentx/cloud-contracts";
-import { OrgIdSchema, agentXError, type OrgId } from "@rovara-code/contracts";
+import { OrgIdSchema, agentXError, orgPk, type OrgId } from "@rovara-code/contracts";
 import { type AuditActor } from "@agentx/cloud-contracts";
 import { auditOccurrence, auditShredScheduled, auditSubjectErased } from "./events.js";
 import { flushAuditEvents } from "./flush.js";
@@ -186,6 +186,9 @@ export async function eraseAuditSubject(deps: AuditEraseDeps, request: AuditEras
     // A missing hook is a wiring mistake: it fails here, loudly, and never reads as "nothing to erase".
     if (typeof deps.eraseLearning !== "function") throw new Error("the learning erase hook is not wired");
     await deps.eraseLearning(orgId, developerId);
+    // Web intake keeps a per-person allowance in State, outside the learning partition.
+    // Delete it on retries too; a failure must leave the erase unfinished.
+    await deps.documentClient.send(new DeleteCommand({ TableName: deps.tableName, Key: { pk: orgPk(orgId), sk: `CODE_SUGGEST_RATE#${developerId}` } }));
   } catch (error) {
     // The error's name only: the learning items hold correction text.
     deps.log({ event: "audit.erase_learning_failed", level: "error", orgId, error: errorName(error) });
