@@ -17,14 +17,17 @@ export function memoryCallLedger(): MemoryCallLedger {
     async last({ taskId, purpose }) { const row = rows.get(key(taskId, purpose)); return row === undefined ? undefined : { ...row }; },
     async claim({ taskId, purpose, callId, at }) {
       if (tierReviewCallBlocked(rows.get(key(taskId, purpose)), at) !== undefined) return false;
-      rows.set(key(taskId, purpose), { callId, status: "started", startedAt: at });
+      // As the DynamoDB claim: an update that keeps the row's failure count.
+      const failures = rows.get(key(taskId, purpose))?.failures;
+      rows.set(key(taskId, purpose), { callId, status: "started", startedAt: at, ...(failures === undefined ? {} : { failures }) });
       writes.push(`claim:${taskId}:${purpose}`);
       return true;
     },
     async mark({ taskId, purpose, callId, status, at }) {
       const row = rows.get(key(taskId, purpose));
       if (row === undefined || row.callId !== callId || (row.status !== "started" && row.status !== "sent")) throw Object.assign(new Error("condition"), { name: "ConditionalCheckFailedException" });
-      rows.set(key(taskId, purpose), { ...row, status, ...(status === "sent" ? {} : { endedAt: at }) });
+      const failures = status === "answered" ? 0 : status === "failed_sent" ? (row.failures ?? 0) + 1 : row.failures;
+      rows.set(key(taskId, purpose), { ...row, status, ...(status === "sent" ? {} : { endedAt: at }), ...(failures === undefined ? {} : { failures }) });
       writes.push(`mark:${status}`);
     },
   };

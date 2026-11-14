@@ -11,6 +11,7 @@
   "BrokerLogsTeamRecordTombstoneFailedMetric5D640F41": "AWS::Logs::MetricFilter",
   "BrokerSqsEventSourceAgentXControlPlaneTeamRecordOps5E3AD63EA5EAE174": "AWS::Lambda::EventSourceMapping",
   "CoreTierChecksED364A6F": "AWS::Lambda::Function",
+  "CoreTierChecksErrorsAlarmEB049A16": "AWS::CloudWatch::Alarm",
   "CoreTierChecksEventInvokeConfig70C0888C": "AWS::Lambda::EventInvokeConfig",
   "CoreTierChecksLogs356C25BC": "AWS::Logs::LogGroup",
   "CoreTierChecksSchedule": "AWS::Scheduler::Schedule",

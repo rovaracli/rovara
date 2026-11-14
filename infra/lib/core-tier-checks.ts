@@ -12,10 +12,10 @@
 //     schedule exists DISABLED by default (DEFERRED S3-9-TIER-CHECKS-SCHEDULE-RECONCILE: point it at CoreEngineIsOn when both reach integ/0519).
 //
 // Its role holds only what the tier pass touches (least privilege, `CORE_TIER_CHECKS_GRANTS` lists them): the State table (reads; writes only under the key prefixes of
-// `CORE_TIER_CHECKS_STATE_WRITE_KEY_PATTERNS`), the artifacts bucket (read: the plan documents), `lambda:InvokeFunction` on the model access function and nothing else on Lambda, and the GitHub App's key secret (read:
+// `CORE_TIER_CHECKS_STATE_WRITE_KEY_PATTERNS`), the artifacts bucket (GetObject on private/* and ListBucket for a clean 404: the plan documents), `lambda:InvokeFunction` on the model access function and nothing else on Lambda, and the GitHub App's key secret (read:
 // the pass reads the pull request's current head from the code host and updates its banner). No queue, no scheduler, no EC2, no Bedrock, no other secret, no self-invoke.
-// No alarm of its own yet (an alarm name must be one the Health page reads, HEALTH_ALARM_SUFFIXES): DEFERRED S3-9-TIER-CHECKS-ALARM.
-import { Aws, CfnCondition, Duration, Fn, Token, aws_iam as iam, aws_scheduler as scheduler, type CfnParameter, type Stack } from "aws-cdk-lib";
+// An Errors alarm of its own, named for the Health page (HEALTH_ALARM_SUFFIXES: `core-tier-checks-errors`): a pass that fails is no longer silent.
+import { Aws, CfnCondition, Duration, Fn, Token, aws_cloudwatch as cloudwatch, aws_iam as iam, aws_scheduler as scheduler, type CfnParameter, type Stack } from "aws-cdk-lib";
 import type { aws_dynamodb as dynamodb, aws_lambda as lambda, aws_s3 as s3 } from "aws-cdk-lib";
 import { aws_lambda as lambdaValues } from "aws-cdk-lib";
 import { packagedFunction } from "./control-plane.js";
@@ -49,7 +49,8 @@ export const CORE_TIER_CHECKS_STATE_WRITE_KEY_PATTERNS = [
 export const CORE_TIER_CHECKS_GRANTS = {
   CoreTierChecksStateReads: ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:Query"],
   CoreTierChecksStateWrites: ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:ConditionCheckItem"],
-  CoreTierChecksArtifactsRead: ["s3:GetObject*", "s3:GetBucket*", "s3:List*"],
+  CoreTierChecksArtifactsRead: ["s3:GetObject"],
+  CoreTierChecksArtifactsExist: ["s3:ListBucket"],
   CoreTierChecksInvokeModelAccess: ["lambda:InvokeFunction"],
   CoreTierChecksGithubAppKey: ["secretsmanager:GetSecretValue"],
 } as const;
@@ -64,6 +65,8 @@ export interface CoreTierChecksProps {
   readonly githubAppId: string;
   /** The CoreEngine stack parameter (0.5.19 `cc`), where the stack has it: the schedule is ENABLED only while it is not `off`. Absent: the schedule is DISABLED (its own always-false condition). */
   readonly coreEngine?: CfnParameter;
+  /** The Health page's alarm: its name is `name(suffix)` (a suffix in HEALTH_ALARM_SUFFIXES) and `action` tells the operator. */
+  readonly alarms: { readonly name: (suffix: string) => string; readonly action: cloudwatch.IAlarmAction };
   /** Whether the function reserves Lambda concurrency (default true; the `agentxReservedConcurrency` context). */
   readonly reservedConcurrency?: boolean;
 }
@@ -93,8 +96,13 @@ export function attachCoreTierChecks(stack: Stack, props: CoreTierChecksProps): 
     // ForAllValues passes when the key is absent, so the Null test requires it (as the LessonsWorker's writes).
     conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...CORE_TIER_CHECKS_STATE_WRITE_KEY_PATTERNS] }, Null: { "dynamodb:LeadingKeys": "false" } },
   }));
-  fn.addToRolePolicy(new iam.PolicyStatement({ sid: "CoreTierChecksArtifactsRead", actions: [...CORE_TIER_CHECKS_GRANTS.CoreTierChecksArtifactsRead], resources: [props.artifacts.bucketArn, props.artifacts.arnForObjects("private/*")] }));
-  fn.addToRolePolicy(new iam.PolicyStatement({ sid: "CoreTierChecksInvokeModelAccess", actions: [...CORE_TIER_CHECKS_GRANTS.CoreTierChecksInvokeModelAccess], resources: [props.modelAccessFunction.functionArn, `${props.modelAccessFunction.functionArn}:*`] }));
+  // Exactly the calls the tier pass makes on the plan documents (the object store's get and stat: GetObject and HeadObject, both answered by s3:GetObject), on the `private/` prefix. s3:ListBucket on the bucket
+  // is kept ONLY so a read of a document that is not there answers 404 (the adapter reads that as "no document"); without it S3 answers 403 and the pass would take it for a refusal. It has no `s3:prefix`
+  // condition because a GET or HEAD carries no prefix (the condition would fail it; the same reasoning as the MCP host's bundle store, mcp-host.ts). The pass never lists, writes or deletes.
+  fn.addToRolePolicy(new iam.PolicyStatement({ sid: "CoreTierChecksArtifactsRead", actions: [...CORE_TIER_CHECKS_GRANTS.CoreTierChecksArtifactsRead], resources: [props.artifacts.arnForObjects("private/*")] }));
+  fn.addToRolePolicy(new iam.PolicyStatement({ sid: "CoreTierChecksArtifactsExist", actions: [...CORE_TIER_CHECKS_GRANTS.CoreTierChecksArtifactsExist], resources: [props.artifacts.bucketArn] }));
+  // The model access function by its own name, as the pass invokes it (no version or alias qualifier, so no `:*`).
+  fn.addToRolePolicy(new iam.PolicyStatement({ sid: "CoreTierChecksInvokeModelAccess", actions: [...CORE_TIER_CHECKS_GRANTS.CoreTierChecksInvokeModelAccess], resources: [props.modelAccessFunction.functionArn] }));
   fn.addToRolePolicy(new iam.PolicyStatement({ sid: "CoreTierChecksGithubAppKey", actions: [...CORE_TIER_CHECKS_GRANTS.CoreTierChecksGithubAppKey], resources: [props.githubAppPrivateKeySecretArn] }));
 
   // ENABLED only while the core engine is on; DISABLED by default.
@@ -120,6 +128,15 @@ export function attachCoreTierChecks(stack: Stack, props: CoreTierChecksProps): 
       retryPolicy: { maximumRetryAttempts: 0, maximumEventAgeInSeconds: 300 },
     },
   });
+
+  // A pass that fails (a start-up fault, a timeout, an out-of-memory kill, a handler that refused) must not be silent: the Health page reads this alarm (HEALTH_ALARM_SUFFIXES). The pass runs every 5 minutes and a
+  // failed one is simply run again, so the alarm looks at 15 minutes (as the LessonsWorker's) and no data (the schedule is off, or the function idle) is not a breach.
+  new cloudwatch.Alarm(stack, "CoreTierChecksErrorsAlarm", {
+    alarmName: props.alarms.name("CoreTierChecksErrors"),
+    alarmDescription: "The CoreTierChecks function (the lighter flow's tier pass and its reviewer calls) failed an invocation (a start-up fault, a timeout or an out-of-memory kill). Check its logs.",
+    metric: fn.metricErrors({ statistic: "Sum", period: Duration.minutes(15) }), threshold: 1, evaluationPeriods: 1,
+    comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD, treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+  }).addAlarmAction(props.alarms.action);
 
   return { fn, schedule, isOn, role };
 }

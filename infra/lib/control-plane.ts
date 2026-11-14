@@ -1656,7 +1656,7 @@ export class ControlPlaneStack extends Stack {
         BrokerSettings.of(broker).add("tierReview", "1");
         attachCoreTierChecks(this, {
           env: naming.env, state, artifacts, modelAccessFunction, githubAppPrivateKeySecretArn: githubAppPrivateKeySecretArn.valueAsString,
-          githubAppCredentialRef: githubAppCredentialRef.valueAsString, githubAppId: githubAppId.valueAsString,
+          githubAppCredentialRef: githubAppCredentialRef.valueAsString, githubAppId: githubAppId.valueAsString, alarms: { name: (suffix) => naming.alarmName(suffix), action: notifyOperator },
           ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}),
         });
       }

@@ -15,7 +15,7 @@ import { AdminHealthCheckSchema } from "@rovara-code/contracts";
  */
 export const HEALTH_ALARM_SUFFIXES = [
   "AuditChainMismatch", "AuditIntakeBacklog", "AuditIntakeDeadLetters", "AuditLockDrift", "AuditObjectConflict", "AuditPendingStuck", "AuditRecordFailed", "AuditSealOverdue", "AuditShredFailed", "AuditTimestampFailed",
-  "BedrockThrottling", "ChainScheduleDeadLetters", "ChainWriteApproverSelectorFailed", "CheckerFailures", "ClassifierThrottling", "ConnectorBroken", "ConnectorNotConnected",
+  "BedrockThrottling", "ChainScheduleDeadLetters", "ChainWriteApproverSelectorFailed", "CheckerFailures", "ClassifierThrottling", "ConnectorBroken", "ConnectorNotConnected", "CoreTierChecksErrors",
   "DeveloperNoticeDeadLetters", "DeveloperNoticeStreamFailures", "DispatchDeadLetters", "EmptyResponses",
   "EvalBatchTickErrors", "EvalBatchWatcherErrors", "EvalExecutionsFailed", "LessonsReflectDeadLetters", "LessonsWorkerErrors", "LessonsWorkerThrottles",
   "ReconcilerLostInstances", "ReconcilerQualifiedAmiReadFailures", "ReconcilerQuarantinedVolumes", "ReconcilerStuckProvisioning", "RecordingFailures",
@@ -25,15 +25,15 @@ export const HEALTH_ALARM_SUFFIXES = [
   "TeamRecordEraseSweepFailed", "TeamRecordKeywordIndexFailed", "TeamRecordKeywordIndexGateFailed", "TeamRecordKeywordIndexJobFailed", "TeamRecordKeywordIndexOverdue", "TeamRecordRedeliveryStateConflict", "TeamRecordRepoCheckNoTime", "TeamRecordRepoCheckRefused", "TeamRecordSweepProblem", "TeamRecordTombstoneFailed",
   "TestAlarm", "TurnErrors", "UnwaitedTaskFailures",
 ] as const;
-/** The listed alarms an environment creates only on Amazon Bedrock (or, for RuntimeRequalify*, only with the automatic renewal on; or, for Lessons* and TeamRecord*, only with the Team record switch on), so their absence is expected. */
-export const HEALTH_ALARM_CONDITIONAL_SUFFIXES = ["BedrockThrottling", "ClassifierThrottling", "LessonsReflectDeadLetters", "LessonsWorkerErrors", "LessonsWorkerThrottles", "RuntimeRequalifyAgeUnreadable", "RuntimeRequalifyMachineFailures", "RuntimeRequalifyStale", "RuntimeRequalifyStepErrors",
+/** The listed alarms an environment creates only on Amazon Bedrock (or, for RuntimeRequalify*, only with the automatic renewal on; or, for CoreTierChecks*, Lessons* and TeamRecord*, only with the Team record switch on), so their absence is expected. */
+export const HEALTH_ALARM_CONDITIONAL_SUFFIXES = ["BedrockThrottling", "ClassifierThrottling", "CoreTierChecksErrors", "LessonsReflectDeadLetters", "LessonsWorkerErrors", "LessonsWorkerThrottles", "RuntimeRequalifyAgeUnreadable", "RuntimeRequalifyMachineFailures", "RuntimeRequalifyStale", "RuntimeRequalifyStepErrors",
   "TeamRecordEraseSweepFailed", "TeamRecordKeywordIndexFailed", "TeamRecordKeywordIndexGateFailed", "TeamRecordKeywordIndexJobFailed", "TeamRecordKeywordIndexOverdue", "TeamRecordRedeliveryStateConflict", "TeamRecordRepoCheckNoTime", "TeamRecordRepoCheckRefused", "TeamRecordSweepProblem", "TeamRecordTombstoneFailed"] as const satisfies ReadonlyArray<typeof HEALTH_ALARM_SUFFIXES[number]>;
 /**
- * HEALTH-COND-1: the conditional alarms the Team record's switch creates (the lessons worker's three and the record's six). With the switch ON they are required, so a missing one shows MISSING on Health; with it OFF they are
+ * HEALTH-COND-1: the conditional alarms the Team record's switch creates (the core tier pass function's one, the lessons worker's three and the record's ten). With the switch ON they are required, so a missing one shows MISSING on Health; with it OFF they are
  * not expected. The other conditional alarms (Bedrock-only, the automatic renewal's) stay conditional either way.
  */
-type TeamRecordAlarmSuffix = Extract<typeof HEALTH_ALARM_CONDITIONAL_SUFFIXES[number], `Lessons${string}` | `TeamRecord${string}`>;
-export const HEALTH_ALARM_TEAM_RECORD_SUFFIXES: readonly TeamRecordAlarmSuffix[] = HEALTH_ALARM_CONDITIONAL_SUFFIXES.filter((suffix): suffix is TeamRecordAlarmSuffix => suffix.startsWith("Lessons") || suffix.startsWith("TeamRecord"));
+type TeamRecordAlarmSuffix = Extract<typeof HEALTH_ALARM_CONDITIONAL_SUFFIXES[number], `CoreTierChecks${string}` | `Lessons${string}` | `TeamRecord${string}`>;
+export const HEALTH_ALARM_TEAM_RECORD_SUFFIXES: readonly TeamRecordAlarmSuffix[] = HEALTH_ALARM_CONDITIONAL_SUFFIXES.filter((suffix): suffix is TeamRecordAlarmSuffix => suffix.startsWith("CoreTierChecks") || suffix.startsWith("Lessons") || suffix.startsWith("TeamRecord"));
 export const AdminHealthResponseSchema = z.object({
   version: z.object({ developerApi: z.string(), adminApi: z.string(), release: z.string().optional() }),
   alarms: z.array(z.object({ name: z.string(), state: z.string() })),

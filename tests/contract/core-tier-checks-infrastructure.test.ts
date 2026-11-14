@@ -3,6 +3,7 @@
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
+import { HEALTH_ALARM_CONDITIONAL_SUFFIXES, HEALTH_ALARM_SUFFIXES, HEALTH_ALARM_TEAM_RECORD_SUFFIXES } from "@agentx/cloud-contracts";
 import { CORE_TIER_CHECKS_GRANTS, CORE_TIER_CHECKS_STATE_WRITE_KEY_PATTERNS } from "../../infra/lib/core-tier-checks.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { brokerSettingsIn } from "../support/broker-names-template.js";
@@ -84,7 +85,33 @@ describe("CoreTierChecks", () => {
     const writes = own.find((statement) => statement.Sid === "CoreTierChecksStateWrites")!;
     expect(writes.Condition).toEqual({ "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...CORE_TIER_CHECKS_STATE_WRITE_KEY_PATTERNS] }, Null: { "dynamodb:LeadingKeys": "false" } });
     expect(CORE_TIER_CHECKS_STATE_WRITE_KEY_PATTERNS).toContain("ORG#*#TIER_REVIEW_CALL#*");
+    // The artifacts: GetObject on private/* only (no GetObject* variants, no bucket-wide reads), and ListBucket on the bucket (no List*, no Get-bucket calls) so a missing document reads as 404, not 403.
+    expect(own.find((statement) => statement.Sid === "CoreTierChecksArtifactsRead")).toMatchObject({ Action: "s3:GetObject", Resource: expect.anything() });
+    expect(JSON.stringify(own.find((statement) => statement.Sid === "CoreTierChecksArtifactsRead")!.Resource)).toMatch(/private\/\*/u);
+    const exist = own.find((statement) => statement.Sid === "CoreTierChecksArtifactsExist") as { Action: string; Resource: unknown; Condition?: unknown };
+    expect(exist.Action).toBe("s3:ListBucket");
+    expect(JSON.stringify(exist.Resource)).not.toContain("/*");
+    // The model access function by its own ARN: no `:*` (the pass invokes it by name, with no version or alias).
+    const invoke = own.find((statement) => statement.Sid === "CoreTierChecksInvokeModelAccess") as { Action: string; Resource: unknown };
+    expect(invoke.Resource).toEqual({ "Fn::GetAtt": [expect.stringMatching(/^ModelAccessFunction[0-9A-F]{8}$/), "Arn"] });
+    expect(JSON.stringify(invoke.Resource)).not.toContain(":*");
     expect(JSON.stringify(own)).not.toMatch(/sqs:|scheduler:|ec2:|bedrock:|iam:/u);
+  }, 180_000);
+
+  it("an Errors alarm on the function, named for the Health page (HEALTH_ALARM_SUFFIXES), telling the operator; only where the function exists (with the Team record)", () => {
+    const all = resources(PUBLIC);
+    const [fnId] = one(all, "AWS::Lambda::Function", /^CoreTierChecks[0-9A-F]{8}$/);
+    const [, alarm] = one(all, "AWS::CloudWatch::Alarm", /^CoreTierChecksErrorsAlarm/);
+    expect(alarm.Properties).toMatchObject({
+      AlarmName: "agentx-staging-CoreTierChecksErrors", Namespace: "AWS/Lambda", MetricName: "Errors", Statistic: "Sum", Period: 900, Threshold: 1, EvaluationPeriods: 1,
+      ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching", Dimensions: [{ Name: "FunctionName", Value: { Ref: fnId } }],
+    });
+    expect(JSON.stringify(alarm.Properties["AlarmActions"])).toContain("OperatorAlerts");
+    expect(HEALTH_ALARM_SUFFIXES).toContain("CoreTierChecksErrors");
+    expect(HEALTH_ALARM_CONDITIONAL_SUFFIXES).toContain("CoreTierChecksErrors");
+    // The Team record being on makes it a required alarm on Health (a missing one shows MISSING).
+    expect(HEALTH_ALARM_TEAM_RECORD_SUFFIXES).toContain("CoreTierChecksErrors");
+    expect(Object.entries(resources(PLAIN)).filter(([id]) => /^CoreTierChecksErrors/.test(id))).toEqual([]);
   }, 180_000);
 
   it("M2: TIER_REVIEW_ENABLED=1 (packed `tq`) on the broker and on CoreTierChecks only with the Team record (the model access function's long timeout); without it neither the setting nor the function", () => {
