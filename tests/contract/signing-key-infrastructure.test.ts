@@ -46,7 +46,7 @@ describe("the key secrets in a named environment's templates", () => {
     }
   });
 
-  it("lets exactly the broker read both, the eval tick and the reconciler the callback signing key alone, read-only", () => {
+  it("lets exactly the broker read both, and the eval tick, the reconciler and the dispatcher (S3-10: the core's jobs, only while cc is not off) the callback signing key alone, read-only", () => {
     const readers = new Map<string, Set<string>>();
     for (const { template } of templates) {
       const functionsByRole = new Map<string, string>();
@@ -78,6 +78,7 @@ describe("the key secrets in a named environment's templates", () => {
     }
     expect(Object.fromEntries([...readers].map(([fn, kinds]) => [fn, [...kinds].sort()]))).toEqual({
       Broker: ["callback", "erasure"],
+      Dispatcher: ["callback"],
       EvalBatchTick: ["callback"],
       SessionsReconciler: ["callback"],
     });

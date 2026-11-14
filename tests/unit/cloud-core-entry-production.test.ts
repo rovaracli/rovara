@@ -13,6 +13,9 @@ import { FakeS3, FakeSecretsManager } from "../../vendor/rovara-code/tests/suppo
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
 import { BROWSER_SESSION_METHOD } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { coreDispatchLoaderFor, createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
+import { ingressCoreSlack } from "../../packages/broker/src/aws/slack-ingress.js";
+// The source (not the built package): what the parameter, the CLI and the deploy check read.
+import { CORE_ENGINE_PARAMETER_PATTERN as SOURCE_CORE_ENGINE_PATTERN } from "../../packages/cloud-contracts/src/core-engine-infra.js";
 import { DISPATCHER_CORE_NOT_CONFIGURED, createDispatcherCoreDispatch } from "../../packages/broker/src/aws/core-dispatch-entry.js";
 import { coreTierChecksView } from "../../packages/broker/src/aws/core-tier-checks-production.js";
 import { CORE_REFUSED_FOR_NOW, brokerMachineOps, cloudCatalogPriceTable, cloudCoreEntryInputsFromHost, cloudModuleDepsFromHost, coreEngineWanted, coreWorkspaceBinding, type CloudCoreHostResources } from "../../packages/broker/src/cloud/app/entry-inputs.js";
@@ -342,6 +345,8 @@ describe("the production core inputs (S3-10)", () => {
     const named = { AGENTX_ENV: "staging", AWS_REGION: "us-west-2", CORE_DISPATCH_QUEUE_URL: QUEUE_URL, CORE_DISPATCH_DEAD_LETTER_URL: DEAD_URL };
     const record = { messageId: "m-1", body: JSON.stringify({ v: 1, workspaceId: randomUUID(), operationId: randomUUID() }) };
     expect((await createDispatcherCoreDispatch(inputs({ ...named, CLOUD_CORE_ENGINE: "on" }))).take([record]).size).toBe(1);
+    // Review H1(a): a draining core still dispatches its running tasks' steps: the batch is taken, never handed back.
+    expect((await createDispatcherCoreDispatch(inputs({ ...named, CLOUD_CORE_ENGINE: "drain" }))).take([record]).size).toBe(1);
     expect((await createDispatcherCoreDispatch(inputs({ ...named, CLOUD_CORE_ENGINE: "off" }))).take([record]).size).toBe(0);
     expect((await createDispatcherCoreDispatch(inputs({ ...named }))).take([record]).size).toBe(0);
     await expect(createDispatcherCoreDispatch(inputs({ AWS_REGION: "us-west-2", CLOUD_CORE_ENGINE: "on" }))).rejects.toThrow(DISPATCHER_CORE_NOT_CONFIGURED);
@@ -373,6 +378,19 @@ describe("the production core inputs (S3-10)", () => {
     await load();
     await load();
     expect(builds).toBe(2);
+  });
+
+  it("review H1(a): the Slack ingress sends a plain top-level request to the core only while new tasks start there: drain and off keep it on Cloud's queue", () => {
+    const deps = { invokeBroker: async () => ({}) as never, post: async () => undefined };
+    expect(ingressCoreSlack({ CLOUD_CORE_ENGINE: "on" }, deps)).toBeTypeOf("function");
+    expect(ingressCoreSlack({ CLOUD_CORE_ENGINE: "drain" }, deps)).toBeUndefined();
+    expect(ingressCoreSlack({ CLOUD_CORE_ENGINE: "off" }, deps)).toBeUndefined();
+  });
+
+  it("review H1(a): the stack parameter's own pattern (as the CLI and the deploy check it) admits drain, and nothing like it", () => {
+    const pattern = new RegExp(SOURCE_CORE_ENGINE_PATTERN, "u");
+    for (const value of ["off", "on", "drain"]) expect(pattern.test(value), value).toBe(true);
+    for (const value of ["drained", "drain:org_aaaaaaaaaaaaaaaaaaaa", "Drain"]) expect(pattern.test(value), value).toBe(false);
   });
 
   it("lists what is refused for now, each with its refusal", () => {

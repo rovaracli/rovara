@@ -26,7 +26,8 @@ describe("the outbox relay backstop schedule", () => {
     expect(backstop!.Properties.Target.RoleArn).toEqual(recovery.Properties.Target.RoleArn);
     expect(backstop!.Properties.Target.Arn).toEqual(recovery.Properties.Target.Arn);
     // Every other schedule keeps its state: this lane turned nothing on or off.
-    expect(schedules(stack).filter((schedule) => schedule !== backstop).every((schedule) => schedule.Properties.State === "ENABLED")).toBe(true);
+    // (The core engine's job schedules follow the CoreEngine parameter, a state of their own: core-engine-infrastructure.test.ts holds them.)
+    expect(schedules(stack).filter((schedule) => schedule !== backstop && !((schedule.Properties as { Description?: string }).Description ?? "").startsWith("Core engine job")).every((schedule) => schedule.Properties.State === "ENABLED")).toBe(true);
   }, 240_000);
 
   it("is not in a legacy (unnamed) environment's template", () => {

@@ -37,14 +37,15 @@ const brokerStatements = (template: Template): Array<{ policy: string; statement
 describe("the schedule group", () => {
   it("is named by the environment, and is the only group this stack makes", () => {
     expect(chainScheduleGroupName("staging")).toBe(GROUP);
-    const groups = byType(named, "AWS::Scheduler::ScheduleGroup");
+    // The core engine's job schedules have a group of their own (infra/lib/core-engine.ts, held by core-engine-infrastructure.test.ts); this is the chain triggers' one.
+    const groups = byType(named, "AWS::Scheduler::ScheduleGroup").filter(([id]) => !id.startsWith("CoreEngineJobs"));
     expect(groups).toHaveLength(1);
     expect(groups[0]![1].Properties).toMatchObject({ Name: GROUP });
     expect(GROUP).not.toMatch(/[—–]/u);
   });
 
   it("is in a cloud and a self-hosted named environment, and in no legacy template", () => {
-    expect(byType(build("SchedCloud", { cloud: true }), "AWS::Scheduler::ScheduleGroup")).toHaveLength(1);
+    expect(byType(build("SchedCloud", { cloud: true }), "AWS::Scheduler::ScheduleGroup").filter(([id]) => !id.startsWith("CoreEngineJobs"))).toHaveLength(1);
     const legacy = build("SchedLegacy", { env: null });
     for (const type of ["AWS::Scheduler::ScheduleGroup"]) expect(byType(legacy, type)).toEqual([]);
     expect(JSON.stringify(legacy.toJSON())).not.toContain("ChainSchedule");

@@ -1291,6 +1291,14 @@ export function threadPendingCounter(documentClient: { send(command: UpdateComma
   };
 }
 
+/**
+ * The ingress's core hook (S3): a plain top-level request goes to the core only while a NEW task may start there (`anyCoreAreaOn`). `drain` (S3-10 review H1) and `off` give none, so every request is queued for
+ * Cloud's own path, as before: a draining core finishes the tasks it holds and takes no new one.
+ */
+export function ingressCoreSlack(env: NodeJS.ProcessEnv, deps: Omit<Parameters<typeof coreSlackFromIngress>[0], "env" | "active">): ReturnType<typeof coreSlackFromIngress> {
+  return coreSlackFromIngress({ env, active: anyCoreAreaOn(readCoreEngineFlags(env)), ...deps });
+}
+
 function createAwsSlackIngressHandler() {
   const clientConfiguration = process.env.AWS_REGION === undefined ? {} : { region: process.env.AWS_REGION };
   const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(clientConfiguration), {
@@ -1331,8 +1339,8 @@ function createAwsSlackIngressHandler() {
     if (response.FunctionError !== undefined || response.Payload === undefined) throw new Error(`broker ${String(event.action)} failed`);
     return JSON.parse(Buffer.from(response.Payload).toString("utf8")) as BrokerReply;
   };
-  const coreSlack = coreSlackFromIngress({
-    env: process.env, active: anyCoreAreaOn(readCoreEngineFlags(process.env)), invokeBroker,
+  const coreSlack = ingressCoreSlack(process.env, {
+    invokeBroker,
     post: async (thread, text) => { await postSlackMessage((await secrets()).botToken, { channel: thread.channelId, threadTs: thread.threadTs, text }); },
   });
   const invokeWorkflow = async (input: SlackWorkflowStartInput) => {

@@ -3,6 +3,7 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { createBroker, loadSlackBroker } from "../support/slack-broker.js";
+import { MAYA, createDeveloperTaskBroker } from "../support/developer-task-broker.js";
 import { TEST_ORG } from "../support/orgs.js";
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { CORE_IN_USE_PARTITION, readCoreEngineFlags, stampForNewTask, stampItem } from "../../packages/broker/src/cloud/app/index.js";
@@ -95,4 +96,36 @@ describe("the broker entry's core gate (S3-10)", () => {
     for (const action of ["decide", "close", "retry", "cancel", "revisePlan"] as const) await expect(later.taskRoutes[action]({} as never)).rejects.toThrow(CORE_ENGINE_OFF_WORDS);
     expect([...GUARDED_CALLBACK_ACTIONS].sort()).toEqual([...CORE_CALLBACK_ACTIONS].sort());
   });
+
+  /** A task started on Cloud's own path through the developer API (cc off), and the routes a person calls on it. */
+  async function cloudTask() {
+    delete process.env.CLOUD_CORE_ENGINE;
+    const harness = await createDeveloperTaskBroker();
+    const response = await harness.dev(MAYA, "POST", "/v1/dev/tasks", { requestId: randomUUID(), project: "payments", instructions: "Fix it", client: "claude-code" });
+    const taskId = (response.body.task as { taskId: string }).taskId;
+    const close = () => harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/close`, { requestId: randomUUID(), discard_unpublished: true });
+    const decide = () => harness.dev(MAYA, "POST", `/v1/dev/tasks/${taskId}/workflow/decision`, { requestId: randomUUID(), expectedRevision: 1, decision: "APPROVE", reason: "fine", artifactDigest: "a".repeat(64) });
+    // Some company once started a core task: the guard reads stamps from now on.
+    harness.db.set({ pk: CORE_IN_USE_PARTITION, sk: `ORG#${TEST_ORG}`, orgId: TEST_ORG });
+    return { ...harness, taskId, close, decide };
+  }
+
+  it("review H1(b), through the handler: switch off, a core-stamped task's decide and close are refused in words, never run on Cloud's code", async () => {
+    const t = await cloudTask();
+    t.db.set(stampItem(TEST_ORG, t.taskId, stampForNewTask(readCoreEngineFlags({ CLOUD_CORE_ENGINE: "on" }), TEST_ORG, new Date())).item);
+    const before = snapshot(t.db);
+    for (const answer of [await t.close(), await t.decide()]) {
+      expect(answer.status, JSON.stringify(answer.body)).toBe(503);
+      expect(JSON.stringify(answer.body)).toContain("switched off on this install");
+    }
+    expect(snapshot(t.db)).toBe(before);
+  }, 60_000);
+
+  it("review H1(b), through the handler: switch off, with an in-use mark, a Cloud (unstamped) task's decide and close still go to Cloud's code", async () => {
+    const t = await cloudTask();
+    for (const answer of [await t.close(), await t.decide()]) {
+      expect(answer.status, JSON.stringify(answer.body)).not.toBe(503);
+      expect(JSON.stringify(answer.body)).not.toContain("switched off on this install");
+    }
+  }, 60_000);
 });
