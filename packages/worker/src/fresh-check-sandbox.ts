@@ -9,7 +9,7 @@
 // THE EXPORT IS VERIFIED (fresh-check-export.ts): every object is hashed against the id it was asked for, because the candidate's object store is agent-writable. The lane's OWN CAPS are 100,000 files, 1 GiB in all, 100 MiB a file; blobs stream to disk
 // and the free space is checked first. A repository over them, or a disk too small, is refused in plain words; nothing is ever cut to fit.
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, opendir, realpath, rmdir, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, opendir, realpath, rmdir, unlink, utimes } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { removeWithoutFollowing } from "./e2e-candidate-source.js";
 import { FreshExportError, makeRemovable, materializeVerified, type FreshExportCaps, type FreshSkippedEntry } from "./fresh-check-export.js";
@@ -219,9 +219,10 @@ class SweepRefusal extends Error { constructor(readonly reason: SweepReason) { s
 
 /**
  * Sweep only old, plain export directories when Docker confirms this workspace has no fresh container
- * (including stopped containers). Never follow a symlink. Scan the WHOLE bounded deletion plan before
- * deleting anything; a limit or unreadable entry is an explicit skipped result. No recursive rm with
- * an unbounded tree. Active in-process rounds are also protected by the caller's container lifecycle.
+ * (including stopped containers). Never follow a symlink. Each call selects at most ONE old export,
+ * preflights a bounded batch, and deletes only scanned leaves and fully scanned directories. Limits
+ * return an explicit skipped result; the remainder is retried next call. No recursive rm, saved paths
+ * or unbounded tree scan. Active rounds are also protected by the caller's container lifecycle.
  */
 export async function sweepFreshExports(input: {
   rootPath: string; docker: DockerCli; signal: AbortSignal;
@@ -230,6 +231,7 @@ export async function sweepFreshExports(input: {
 }): Promise<SweepResult> {
   const clock = input.clock ?? (() => performance.now());
   const deadline = clock() + FRESH_SWEEP_LIMITS.maxMs;
+  const scanDeadline = deadline - FRESH_SWEEP_LIMITS.maxMs / 2;
   const cutoff = Date.now() - FRESH_SWEEP_LIMITS.minAgeMs;
   let removed = 0;
   let entries = 0;
@@ -240,9 +242,10 @@ export async function sweepFreshExports(input: {
     if (clock() >= deadline) throw new SweepRefusal("limit");
   };
   const parent = exportParentOf(input.rootPath);
-  type Entry = { path: string; dev: number; ino: number; directory: boolean; mode: number };
+  type Entry = { path: string; dev: number; ino: number; directory: boolean; mode: number; complete: boolean };
   const plan: Entry[] = [];
-  const exports = new Set<string>();
+  let limited = false;
+  let selected: { entry: Entry; atime: Date; mtime: Date } | undefined;
   try {
     guard();
     const live = await input.docker.run(["ps", "--all", "--quiet", "--filter", `label=agentx.workspace=${workspaceKey(resolve(input.rootPath))}`, "--filter", `label=${FRESH_SANDBOX_ROUND_LABEL}`], { signal: input.signal, timeoutMs: Math.max(1, deadline - clock()) });
@@ -256,28 +259,36 @@ export async function sweepFreshExports(input: {
     });
     if (parentStat === undefined) return { kind: "complete", removed };
     if (!parentStat.isDirectory() || parentStat.isSymbolicLink() || await realpath(parent) !== parent) throw new SweepRefusal("unreadable");
-    const walk = async (directory: string, top: boolean): Promise<void> => {
+    const walk = async (directory: string, top: boolean): Promise<boolean> => {
       guard();
       const handle = await opendir(directory);
+      let topEntries = 0;
       for await (const entry of handle) {
         guard();
-        if (++entries > FRESH_SWEEP_LIMITS.maxEntries) throw new SweepRefusal("limit");
         const path = join(directory, entry.name);
-        pathBytes += Buffer.byteLength(path);
-        if (pathBytes > FRESH_SWEEP_LIMITS.maxPathBytes) throw new SweepRefusal("limit");
+        const bytes = Buffer.byteLength(path);
+        if (entries >= FRESH_SWEEP_LIMITS.maxEntries || pathBytes + bytes > FRESH_SWEEP_LIMITS.maxPathBytes
+          || clock() >= scanDeadline || (top && topEntries >= FRESH_SWEEP_LIMITS.maxExports)) {
+          limited = true;
+          return false;
+        }
+        entries++;
+        topEntries++;
+        pathBytes += bytes;
         if (top && entry.name === SCRATCH_NAME) continue;
         const info = await lstat(path);
         guard();
-        if (top) {
-          if (!info.isDirectory() || info.isSymbolicLink() || info.mtimeMs > cutoff) continue;
-          if (exports.size >= FRESH_SWEEP_LIMITS.maxExports) throw new SweepRefusal("limit");
-          exports.add(path);
-        }
+        if (top && (!info.isDirectory() || info.isSymbolicLink() || info.mtimeMs > cutoff)) continue;
         if (info.dev !== parentStat.dev) throw new SweepRefusal("unreadable");
         const isDirectory = info.isDirectory() && !info.isSymbolicLink();
-        plan.push({ path, dev: info.dev, ino: info.ino, directory: isDirectory, mode: info.mode });
-        if (isDirectory) await walk(path, false);
+        const planned: Entry = { path, dev: info.dev, ino: info.ino, directory: isDirectory, mode: info.mode, complete: !isDirectory };
+        plan.push(planned);
+        if (top) selected = { entry: planned, atime: info.atime, mtime: info.mtime };
+        if (isDirectory) planned.complete = await walk(path, false);
+        if (top) return planned.complete; // One crashed export per call; no large orphan blocks the others forever.
+        if (!planned.complete) return false;
       }
+      return true;
     };
     await walk(parent, true);
     // Revalidate the parent and each identity immediately before mutation. A replacement is refused.
@@ -293,12 +304,22 @@ export async function sweepFreshExports(input: {
       await check(entry);
       if (entry.directory) await chmod(entry.path, entry.mode | 0o700);
     }
-    for (const entry of plan.reverse()) {
-      await check(entry);
-      if (entry.directory) await rmdir(entry.path); else await unlink(entry.path);
-      if (exports.has(entry.path)) removed++;
+    try {
+      for (const entry of plan.reverse()) {
+        await check(entry);
+        if (entry.directory && !entry.complete) continue;
+        if (entry.directory) await rmdir(entry.path); else await unlink(entry.path);
+        if (entry === selected?.entry) removed++;
+      }
+    } finally {
+      // Unlink changes the top directory's mtime. Preserve its original age so the next call can
+      // resume immediately. Never touch a replacement or a workspace whose latch was set meanwhile.
+      if (selected !== undefined && removed === 0) {
+        await check(selected.entry);
+        await utimes(selected.entry.path, selected.atime, selected.mtime);
+      }
     }
-    return { kind: "complete", removed };
+    return limited ? { kind: "skipped", reason: "limit", removed } : { kind: "complete", removed };
   } catch (error) {
     if (error instanceof RunnerKillUnconfirmedError) throw error;
     return { kind: "skipped", reason: error instanceof SweepRefusal ? error.reason : "unreadable", removed };

@@ -4,7 +4,7 @@
 // agent_before_settle hook run. Only the check runners are fakes, except where a test says otherwise. Offline.
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, type FauxResponseStep, type TranscriptContext } from "@earendil-works/pi-ai";
@@ -25,6 +25,7 @@ import { runWorkflowFeedbackReview } from "../../packages/worker/src/verificatio
 import { commitCandidateWorktree, readCandidateRepositories } from "../../packages/worker/src/verification/candidate.js";
 import { CHECKS_MESSAGE_TYPE, checksArtifactContent, compactCheckReport } from "../../packages/worker/src/verification/extension.js";
 import { AgentFilesRestoreError, type OriginalCode } from "../../packages/worker/src/verification/original-code.js";
+import * as workspaceProcesses from "../../packages/worker/src/workspace-processes.js";
 import * as buildSourceExport from "../../packages/worker/src/e2e-build-source-export.js";
 import { answerSandboxRestart } from "../support/fake-sandbox-restart.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
@@ -150,8 +151,6 @@ async function runTask(options: {
   let failure: unknown;
   try {
     result = await runTaskInvocation(invocation, {
-      // Scripted runners start no host programs; real stop/join behavior has its own tests.
-      stopBeforeReading: { stopWorkspaceProcesses: async () => undefined },
       rootPath, model: FAUX_MODEL, piAdapter,
       ...(options.runners === undefined ? {} : { checkRunners: options.runners }),
       ...(options.budgets === undefined ? {} : { checkBudgetMs: budgetSequence(options.budgets) }),
@@ -311,7 +310,7 @@ describe("verification-only retries", () => {
     const fake = fakeRunners({ project: [{ exitCode: 0, timedOut: false, stdout: "lint passed\n", stderr: "" }] });
     const shell = scriptedShell();
     const rootPath = await gitWorkspaceRoot([lint]);
-    const run = await runTask({ steps: [], workflowMode: "CHECKS", readiness: [lint], runners: fake.runners, shell, rootPath });
+    const run = await runTask({ steps: [], workflowMode: "CHECKS", readiness: [lint], runners: fake.runners, shell, rootPath, extraDependencies: { stopBeforeReading: { stopWorkspaceProcesses: async () => undefined } } });
 
     expect(run.failure).toBeUndefined();
     expect(run.result).toMatchObject({ workflowMode: "CHECKS", checks: { status: "verified", source: "project" } });
@@ -1771,7 +1770,7 @@ describe("TE-B1-fresh: the coding run's final round with the freshCheckRound gat
     const run = await runTask({
       steps: [bash("make-change", "c1"), bash("pytest tests/te-b1-marker", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)],
       workflowMode: "IMPLEMENT", readiness: [], rootPath, shell, originalCode,
-      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }), freshPtraceScope: () => Promise.resolve(1) },
+      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }), freshPtraceScope: () => Promise.resolve(1), stopBeforeReading: { stopWorkspaceProcesses: async () => undefined } },
     });
     expect(run.failure).toBeUndefined();
     expect(state.runs).toBe(1);
@@ -1889,4 +1888,15 @@ describe("a stop that could not be confirmed ends the run and touches nothing (F
     expect(run.failure).toBeDefined();
     await expect(readFile(join(rootPath, ".agentx/last-checks.json"), "utf8")).rejects.toThrow(/ENOENT/u);
   });
+});
+
+
+it("Round 2 L3: the default CHECKS harness calls the real process-stop dependency", async () => {
+  const stop = vi.spyOn(workspaceProcesses, "stopWorkspaceProcesses").mockRejectedValueOnce(new Error("test stop refusal"));
+  try {
+    const run = await runTask({ steps: [], workflowMode: "CHECKS" });
+    expect(stop).toHaveBeenCalledWith({ rootPath: realpathSync(run.rootPath) });
+    expect(run.failure).toBeDefined();
+    expect(run.requests).toEqual([]);
+  } finally { stop.mockRestore(); }
 });

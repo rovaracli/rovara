@@ -415,19 +415,24 @@ describe("landing: bounded crash-export sweep", () => {
     expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "skipped", reason: "unreadable", removed: 0 });
     expect(existsSync(stale)).toBe(true);
   });
-  it("caps TOTAL entries before deletion and completes a large input within a bounded time", async () => {
+  it("Round 2 L2: a large export makes bounded progress and resumes immediately", async () => {
     const stale = old("task-abcdef");
     for (let i = 0; i < FRESH_SWEEP_LIMITS.maxEntries; i++) writeFileSync(join(stale, `f${i}`), "");
     utimesSync(stale, new Date(0), new Date(0));
     const start = performance.now();
     expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "skipped", reason: "limit", removed: 0 });
     expect(performance.now() - start).toBeLessThan(5000);
-    expect(readdirSync(stale)).toHaveLength(FRESH_SWEEP_LIMITS.maxEntries + 1);
+    const left = readdirSync(stale).length;
+    expect(FRESH_SWEEP_LIMITS.maxEntries + 1 - left).toBeLessThanOrEqual(FRESH_SWEEP_LIMITS.maxEntries);
+    expect(left).toBeGreaterThan(0);
+    expect(left).toBeLessThan(FRESH_SWEEP_LIMITS.maxEntries + 1);
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "complete", removed: 1 });
+    expect(existsSync(stale)).toBe(false);
   });
-  it("caps total exports and total path bytes before deleting any part", async () => {
+  it("Round 2 L2: sweeps one export per call even with many orphans and resumes path-byte budgets", async () => {
     for (let i = 0; i <= FRESH_SWEEP_LIMITS.maxExports; i++) old(`task-${i}`);
-    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "skipped", reason: "limit", removed: 0 });
-    expect(readdirSync(parent())).toHaveLength(FRESH_SWEEP_LIMITS.maxExports + 1);
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "complete", removed: 1 });
+    expect(readdirSync(parent())).toHaveLength(FRESH_SWEEP_LIMITS.maxExports);
     rmSync(parent(), { recursive: true });
     const stale = old("task-deep");
     const nested = join(stale, "a".repeat(200), "b".repeat(200), "c".repeat(200));
@@ -435,17 +440,48 @@ describe("landing: bounded crash-export sweep", () => {
     for (let i = 0; i < 1400; i++) writeFileSync(join(nested, `${"f".repeat(200)}${i}`), "");
     utimesSync(stale, new Date(0), new Date(0));
     expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "skipped", reason: "limit", removed: 0 });
-    expect(readdirSync(nested)).toHaveLength(1400);
+    expect(readdirSync(nested).length).toBeLessThan(1400);
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "complete", removed: 1 });
+    expect(existsSync(stale)).toBe(false);
   });
   it("checks the latch and the directory identity before mutations", async () => {
     const stale = old("task-abcdef");
     let reads = 0;
     const result = await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal, clock: () => {
-      if (++reads === 11) { renameSync(stale, join(root, "old-copy")); mkdirSync(stale); writeFileSync(join(stale, "report"), "keep"); }
+      if (++reads === 13) { renameSync(stale, join(root, "old-copy")); mkdirSync(stale); writeFileSync(join(stale, "report"), "keep"); }
       return 0;
     } });
     expect(result).toEqual({ kind: "skipped", reason: "unreadable", removed: 0 });
     expect(readFileSync(join(stale, "report"), "utf8")).toBe("keep");
+  });
+  it("Round 2 L1: rechecks each identity after chmod and immediately before deletion", async () => {
+    const stale = old("task-abcdef");
+    let reads = 0;
+    let swapped = false;
+    const result = await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal, clock: () => {
+      // After the last chmod-pass identity read, before the first deletion-pass read.
+      if (++reads === 16) {
+        renameSync(join(stale, "report"), join(root, "old-report"));
+        writeFileSync(join(stale, "report"), "replacement");
+        swapped = true;
+      }
+      return 0;
+    } });
+    expect(swapped).toBe(true);
+    expect(result).toEqual({ kind: "skipped", reason: "unreadable", removed: 0 });
+    expect(readFileSync(join(stale, "report"), "utf8")).toBe("replacement");
+  });
+  it("Round 2 L2: a scan deadline leaves time for bounded deletion and immediate resumption", async () => {
+    const stale = old("task-clock");
+    for (let i = 0; i < 30; i++) writeFileSync(join(stale, `f${i}`), "");
+    utimesSync(stale, new Date(0), new Date(0));
+    let reads = 0;
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal,
+      clock: () => ++reads > 25 ? FRESH_SWEEP_LIMITS.maxMs / 2 : 0,
+    })).toEqual({ kind: "skipped", reason: "limit", removed: 0 });
+    expect(readdirSync(stale).length).toBeLessThan(31);
+    expect(await sweepFreshExports({ rootPath: root, docker: okDocker, signal: new AbortController().signal })).toEqual({ kind: "complete", removed: 1 });
+    expect(existsSync(stale)).toBe(false);
   });
   it("an unsafe workspace is never swept", async () => {
     const stale = old("task-abcdef");

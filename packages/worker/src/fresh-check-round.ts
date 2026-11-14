@@ -28,6 +28,7 @@ import { ensureTaskNetwork } from "./task-network.js";
 import { createDockerCli, taskContainerExec, type DockerCli } from "./swebench/containers.js";
 import { CheckNotRunError, containedDirectory, withoutRootError, type CheckRunners } from "./verification/checks.js";
 
+import { containerGone } from "./workspace-quarantine.js";
 import { currentWorkspaceSafety, type Quarantinable } from "./workspace-safety.js";
 
 const SANDBOX_START_TIMEOUT_MS = 5 * 60_000;
@@ -117,12 +118,12 @@ function freshFailure(error: unknown): undefined {
   return undefined;
 }
 
-/** A Docker client that outlives its stop can still start or remove a container. Preserve that fact. */
+/** A host start/restart client can outlive its stop. Exec cannot create a container, so quarantine can contain it. */
 function guardedDocker(docker: DockerCli): DockerCli {
   return { run: async (args, options) => {
     assertFreshWorkspaceSafe();
     const result = await docker.run(args, options);
-    if (result.killUnconfirmed === true) throw new RunnerKillUnconfirmedError({ kind: "local", ...(result.pgid === undefined ? {} : { pgid: result.pgid }) });
+    if (result.killUnconfirmed === true) throw new RunnerKillUnconfirmedError({ kind: args[0] === "exec" ? "sandbox" : "local", ...(result.pgid === undefined ? {} : { pgid: result.pgid }) });
     assertFreshWorkspaceSafe();
     return result;
   } };
@@ -154,10 +155,13 @@ async function createFreshRunners(rootPath: string, exec: ContainerExec, exportD
       if (cd !== null) {
         // The host working tree can be gone or contain a different symlink. Resolve ONLY in the export,
         // then translate to the path where Docker mounts it. Never echo the supplied path on refusal.
-        const exportedCwd = await containedDirectory(exportDirectory, cd[1]!, true).catch(() => {
+        try {
+          const canonicalExport = await realpath(exportDirectory);
+          const exportedCwd = await containedDirectory(canonicalExport, cd[1]!, true);
+          cwd = resolve(root, relative(canonicalExport, exportedCwd));
+        } catch {
           throw new CheckNotRunError("AgentX did not replay this command: its directory is not available in the fresh export.");
-        });
-        cwd = resolve(root, relative(exportDirectory, exportedCwd));
+        }
       }
       const output = tailCollector();
       try {
@@ -176,7 +180,7 @@ async function createFreshRunners(rootPath: string, exec: ContainerExec, exportD
 
 /**
  * Runs `round` in a fresh check sandbox made from a clean export of the candidate commit, then removes the sandbox and the export. Resolves `{ kind: "not_run" }` (and does not call `round`) when the export, the start, the setup
- * or a helper fails. An unconfirmed stop is always rethrown and preserves the container and export. Other throws from `round` are rethrown after cleanup.
+ * or a helper fails. An unconfirmed stop is always rethrown: quarantine contains the sandbox and retains the export. Other throws from `round` are rethrown after cleanup.
  */
 export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round: (runners: CheckRunners) => Promise<T>): Promise<FreshRoundResult<T>> {
   assertFreshWorkspaceSafe();
@@ -192,6 +196,20 @@ export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round:
   if (input.image === undefined || input.image === "") return notRun("no_image");
   if (signal.aborted) return notRun("stopped");
   const root = resolve(input.rootPath);
+  const containerName = `agentx-fresh-${input.taskId.replace(/[^a-zA-Z0-9_.-]/gu, "-").slice(0, 40)}-${freshSandboxSuffix()}`;
+  // Register before ANY preparation awaits: quarantine must join even a start that has not reached Docker yet.
+  let finishStarting!: () => void;
+  const starting = new Promise<void>((done) => { finishStarting = done; });
+  registered.push({ name: containerName, quarantine: async () => {
+    await starting;
+    // Quarantine deliberately uses the raw CLI: the latch forbids ordinary cleanup, not containment.
+    await input.docker.run(["kill", containerName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await input.docker.run(["rm", "--force", containerName], { timeoutMs: DOCKER_CALL_TIMEOUT_MS }).catch(() => undefined);
+      if (result?.exitCode === 0 || /no such container/iu.test(result?.stderr ?? "")) break;
+    }
+    return { name: containerName, verified: await containerGone(input.docker, containerName) };
+  } });
   let exportDirectory: string | undefined;
   let name: string | undefined;
   let live = false;
@@ -216,17 +234,13 @@ export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round:
     assertFreshWorkspaceSafe();
     if (swept.kind === "skipped") log({ event: "fresh-check-round.sweep.skipped", reason: swept.reason });
     if (exported.skipped.length > 0) log({ event: "fresh-check-round.export.skipped", taskId: input.taskId, symlinksAndSubmodules: exported.skipped.length });
-    const containerName = `agentx-fresh-${input.taskId.replace(/[^a-zA-Z0-9_.-]/gu, "-").slice(0, 40)}-${freshSandboxSuffix()}`;
     const runInput = { name: containerName, taskId: input.taskId, image: input.image, rootPath: root, exportDirectory,
       ...(input.hostCpus === undefined ? {} : { hostCpus: input.hostCpus }), ...(input.hostMemoryBytes === undefined ? {} : { hostMemoryBytes: input.hostMemoryBytes }), ...(input.environment === undefined ? {} : { environment: input.environment }) };
     const args = freshSandboxRunArgs(runInput);
     if (freshSandboxArgProblems(args, runInput).length > 0) return notRun("sandbox_failed");
     // Named before the start: a start that half-worked is removed too.
     name = containerName;
-    // The existing quarantine marker must name this container too. Once unsafe, leave it in place;
-    // the next task stays refused until containerGone verifies it has been stopped externally.
-    registered.push({ name: containerName, quarantine: async () => ({ name: containerName, verified: false }) });
-    const started = await docker.run(args, { timeoutMs: SANDBOX_START_TIMEOUT_MS, signal }).catch(freshFailure);
+    const started = await docker.run(args, { timeoutMs: SANDBOX_START_TIMEOUT_MS, signal }).finally(finishStarting).catch(freshFailure);
     if (started === undefined || started.exitCode !== 0) return notRun(signal.aborted ? "stopped" : "sandbox_failed");
     live = true;
     const raw = taskContainerExec(docker, containerName);
@@ -252,6 +266,7 @@ export async function withFreshCheckRound<T>(input: FreshCheckRoundInput, round:
     unsafeStop = error instanceof RunnerKillUnconfirmedError;
     throw error;
   } finally {
+    finishStarting();
     live = false;
     if (!unsafeStop && currentWorkspaceSafety()?.unsafe !== true) {
       for (const stop of stops.reverse()) { assertFreshWorkspaceSafe(); await stop().catch(freshFailure); }
@@ -359,9 +374,8 @@ export function createFreshCheckRunners(input: Omit<FreshCheckRoundInput, "pinne
     return open.runners;
   };
   return {
-    // The lifecycle also waits for host export/start clients. A join timeout must keep the
-    // workspace fenced even if Docker cannot see a not-yet-created container.
-    kind: "local",
+    // Quarantine joins preparation/start before checking the named container, including late starts.
+    kind: "sandbox",
     async freshServices(signal) {
       assertFreshWorkspaceSafe();
       epoch += 1;

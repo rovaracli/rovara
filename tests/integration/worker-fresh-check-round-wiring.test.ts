@@ -268,7 +268,8 @@ it("landing: a fresh stop is recorded with its own container and prevents a late
   await expect(checksRun(rootPath, { docker, calls: base.calls }, { freshCheckRound: () => ({ setup: [] }) })).rejects.toBeInstanceOf(RunnerKillUnconfirmedError);
   expect(unconfirmed).toBe(true);
   const fresh = nameOf(base.calls.find((args) => args[0] === "run" && nameOf(args).startsWith("agentx-fresh-"))!);
-  expect(base.calls.some((args) => args[0] === "rm" && args.includes(fresh))).toBe(false);
+  expect(base.calls.some((args) => args[0] === "kill" && args.includes(fresh))).toBe(true);
+  expect(base.calls.some((args) => args[0] === "rm" && args.includes(fresh))).toBe(true);
   const marker = JSON.parse(await readFile(join(rootPath, ".agentx", "workspace-unsafe.json"), "utf8")) as { sandboxes: Array<{ name: string; verified: boolean }> };
   expect(marker.sandboxes).toContainEqual({ name: fresh, verified: false });
   await expect(checksRun(rootPath, base)).rejects.toThrow(/could not be confirmed stopped/u);
