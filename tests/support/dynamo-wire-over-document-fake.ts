@@ -18,13 +18,21 @@ function expressionParts(input: { ExpressionAttributeNames?: Record<string, stri
   };
 }
 
+/** The fields of a low-level request this adapter reads. */
+interface WireInput {
+  TableName?: string; IndexName?: string; Key?: Wire; Item?: Wire; ExclusiveStartKey?: Wire; ExpressionAttributeValues?: Wire; ExpressionAttributeNames?: Record<string, string>;
+  ConditionExpression?: string; UpdateExpression?: string; KeyConditionExpression?: string; FilterExpression?: string; ProjectionExpression?: string; ReturnValues?: string;
+  ConsistentRead?: boolean; ScanIndexForward?: boolean; Limit?: number;
+  RequestItems?: Record<string, { Keys: Wire[]; ConsistentRead?: boolean }>; TransactItems?: Array<Record<string, WireInput>>;
+}
+
 const compare = (left: string, right: string): number => Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 
 /**
  * A query on the table's own keys, in any of the forms the core's store sends (`#k = :v` with `=`, `<`, `<=`, `>`, `>=`, `BETWEEN` or `begins_with` on the sort key): the whole partition is read from the
  * fake (the form it takes), and the sort key range, the order, the start key and the limit are applied here, as DynamoDB applies them. A filter is refused (the core's store sends none on these paths).
  */
-async function baseQuery(fake: FakeDynamoDb, input: Record<string, any>): Promise<unknown> {
+async function baseQuery(fake: FakeDynamoDb, input: WireInput): Promise<unknown> {
   const names: Record<string, string> = input.ExpressionAttributeNames ?? {};
   // The one filter the core's store sends on these paths: `attribute_exists(#n)` (a session's live-delivered notes). Anything else is refused, never guessed.
   const exists = input.FilterExpression === undefined ? undefined : /^attribute_exists\((#?\w+)\)$/u.exec(String(input.FilterExpression));
@@ -34,12 +42,12 @@ async function baseQuery(fake: FakeDynamoDb, input: Record<string, any>): Promis
   const name = (token: string): string => (token.startsWith("#") ? names[token]! : token);
   const parts = /^(\S+) = (:\S+)(?: AND (?:(\S+) (=|<=|>=|<|>) (:\S+)|(\S+) BETWEEN (:\S+) AND (:\S+)|begins_with\((\S+), (:\S+)\)))?$/u.exec(String(input.KeyConditionExpression));
   if (parts === null || name(parts[1]!) !== "pk") throw new Error(`the wire adapter does not take the key condition ${String(input.KeyConditionExpression)}`);
-  const whole = await fake.send(new DocQueryCommand({ TableName: input.TableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": values[parts[2]!] }, ConsistentRead: true } as never)) as { Items?: Array<Record<string, unknown>> };
+  const whole = await fake.send(new DocQueryCommand({ TableName: input.TableName, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": values[parts[2]!] }, ConsistentRead: true })) as { Items?: Array<Record<string, unknown>> };
   let items = (whole.Items ?? []).filter((item) => {
     const sk = String(item["sk"]);
     if (parts[4] !== undefined) { const bound = String(values[parts[5]!]); const order = compare(sk, bound); return parts[4] === "=" ? order === 0 : parts[4] === "<" ? order < 0 : parts[4] === "<=" ? order <= 0 : parts[4] === ">" ? order > 0 : order >= 0; }
-    if (parts[7] !== undefined) return compare(sk, String(values[parts[7]!])) >= 0 && compare(sk, String(values[parts[8]!])) <= 0;
-    if (parts[10] !== undefined) return sk.startsWith(String(values[parts[10]!]));
+    if (parts[7] !== undefined) return compare(sk, String(values[parts[7]])) >= 0 && compare(sk, String(values[parts[8]!])) <= 0;
+    if (parts[10] !== undefined) return sk.startsWith(String(values[parts[10]]));
     return true;
   }).filter((item) => filterAttribute === undefined || item[filterAttribute] !== undefined).sort((left, right) => compare(String(left["sk"]), String(right["sk"])));
   if (input.ScanIndexForward === false) items.reverse();
@@ -55,14 +63,14 @@ async function baseQuery(fake: FakeDynamoDb, input: Record<string, any>): Promis
 export function wireOver(fake: FakeDynamoDb): { send(command: unknown): Promise<unknown> } {
   return {
     async send(command: unknown): Promise<unknown> {
-      const input = (command as { input: Record<string, any> }).input;
+      const input = (command as { input: WireInput }).input;
       if (command instanceof GetItemCommand) {
-        const answer = await fake.send(new GetCommand({ TableName: input.TableName, Key: down(input.Key)!, ...(input.ConsistentRead === undefined ? {} : { ConsistentRead: input.ConsistentRead }), ...(input.ProjectionExpression === undefined ? {} : { ProjectionExpression: input.ProjectionExpression }), ...expressionParts(input) } as never)) as { Item?: Record<string, unknown> };
+        const answer = await fake.send(new GetCommand({ TableName: input.TableName, Key: down(input.Key)!, ...(input.ConsistentRead === undefined ? {} : { ConsistentRead: input.ConsistentRead }), ...(input.ProjectionExpression === undefined ? {} : { ProjectionExpression: input.ProjectionExpression }), ...expressionParts(input) })) as { Item?: Record<string, unknown> };
         return { Item: up(answer.Item) };
       }
       if (command instanceof BatchGetItemCommand) {
-        const request = Object.fromEntries(Object.entries(input.RequestItems as Record<string, { Keys: Wire[]; ConsistentRead?: boolean }>).map(([table, spec]) => [table, { Keys: spec.Keys.map((key) => down(key)!), ...(spec.ConsistentRead === undefined ? {} : { ConsistentRead: spec.ConsistentRead }) }]));
-        const answer = await fake.send(new BatchGetCommand({ RequestItems: request } as never)) as { Responses?: Record<string, Array<Record<string, unknown>>> };
+        const request = Object.fromEntries(Object.entries(input.RequestItems ?? {}).map(([table, spec]) => [table, { Keys: spec.Keys.map((key) => down(key)!), ...(spec.ConsistentRead === undefined ? {} : { ConsistentRead: spec.ConsistentRead }) }]));
+        const answer = await fake.send(new BatchGetCommand({ RequestItems: request })) as { Responses?: Record<string, Array<Record<string, unknown>>> };
         return { Responses: Object.fromEntries(Object.entries(answer.Responses ?? {}).map(([table, items]) => [table, items.map((item) => up(item)!)])), UnprocessedKeys: {} };
       }
       if (command instanceof PutItemCommand) {
@@ -79,12 +87,12 @@ export function wireOver(fake: FakeDynamoDb): { send(command: unknown): Promise<
       }
       if (command instanceof QueryCommand && input.IndexName === undefined) return await baseQuery(fake, input);
       if (command instanceof QueryCommand) {
-        const { ExpressionAttributeValues: _values, ExclusiveStartKey, ...rest } = input;
+        const { ExpressionAttributeValues: _values, ExclusiveStartKey, ...rest } = input; // eslint-disable-line @typescript-eslint/no-unused-vars -- the values are unmarshalled below
         const answer = await fake.send(new DocQueryCommand({ ...rest, ...expressionParts(input), ...(ExclusiveStartKey === undefined ? {} : { ExclusiveStartKey: down(ExclusiveStartKey) }) } as never)) as { Items?: Array<Record<string, unknown>>; LastEvaluatedKey?: Record<string, unknown>; Count?: number };
         return { Items: (answer.Items ?? []).map((item) => up(item)!), ...(answer.LastEvaluatedKey === undefined ? {} : { LastEvaluatedKey: up(answer.LastEvaluatedKey) }), Count: answer.Items?.length ?? 0 };
       }
       if (command instanceof TransactWriteItemsCommand) {
-        const items = (input.TransactItems as Array<Record<string, Record<string, any>>>).map((entry) => {
+        const items = (input.TransactItems ?? []).map((entry) => {
           const [kind, spec] = Object.entries(entry)[0]!;
           const base = { TableName: spec.TableName, ...(spec.ConditionExpression === undefined ? {} : { ConditionExpression: spec.ConditionExpression }), ...expressionParts(spec) };
           switch (kind) {

@@ -97,7 +97,7 @@ export interface CoreDispatchWiring {
 export function createProductionCoreDispatchHost(wiring: CoreDispatchWiring): CoreDispatchHost {
   return createCoreDispatchHost({
     enabled: wiring.enabled,
-    companyOfWorkspace: workspaceCompanyReader(wiring.documentClient as never, wiring.tableName, wiring.installCompanyId),
+    companyOfWorkspace: workspaceCompanyReader(wiring.documentClient, wiring.tableName, wiring.installCompanyId),
     depsFor: async (companyId, queues) => {
       const runtime = await (await wiring.entry()).app.runtimeFor(companyId);
       return { ...runtime.flow.deps, queues };

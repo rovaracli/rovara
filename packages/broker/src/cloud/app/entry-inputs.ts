@@ -130,7 +130,7 @@ export function brokerMachineOps(sessionsOf: () => Pick<SessionManager, "get" | 
       deleteSession: (workspaceId) => sessionsOf().deleteSession(workspaceId),
       claimStop: (session) => sessionsOf().claimStop(session),
       markStopped: (workspaceId, generation) => sessionsOf().markStopped(workspaceId, generation),
-    } as Pick<SessionManager, "get" | "ensureSession" | "deleteSession" | "claimStop" | "markStopped">,
+    },
     // No ec2:TerminateInstances on the broker: the claimed STOPPING session is ended by the idle reaper's next tick (session-worker-machines.ts `stop`).
     stopInstance: async () => ({ gone: false }),
     sign: async () => { throw new MachineError("unavailable", BROKER_CANNOT_DELIVER); },
@@ -155,7 +155,7 @@ export function cloudCatalogPriceTable(): PriceTable {
     return free || (row.inputMicrosPerMillionTokens > 0 && row.outputMicrosPerMillionTokens > 0) ? row : undefined;
   };
   // Metering reads one key at a time (`prices.models[\`${provider}/${modelId}\`]`); the catalog cannot be listed, so the table answers each key from it.
-  const models = new Proxy({} as Record<string, ModelPrice>, {
+  const models = new Proxy({}, {
     get: (_target, key) => (typeof key === "string" ? priceOf(key) : undefined),
     has: (_target, key) => typeof key === "string" && priceOf(key) !== undefined,
   });

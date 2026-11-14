@@ -7,7 +7,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { ReceiveMessageCommand, DeleteMessageCommand } from "@aws-sdk/client-sqs";
 import { describe, expect, it } from "vitest";
-import { WORKER_INVOCATION_FEATURES, createCandidateManifest, orgProjectCatalogKey, projectRevisionKey, type OrgId, type WorkflowSnapshot } from "@rovara-code/contracts";
+import { WORKER_INVOCATION_FEATURES, createCandidateManifest, orgProjectCatalogKey, projectRevisionKey, type WorkflowSnapshot } from "@rovara-code/contracts";
 import { FakeSqs } from "../../vendor/rovara-code/tests/support/ports/sqs-fake.js";
 import { FakeS3, FakeSecretsManager } from "../../vendor/rovara-code/tests/support/ports/aws-fakes.js";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
@@ -117,7 +117,7 @@ function world(options: { env?: Record<string, string> } = {}) {
   const brokerEntry = createCloudCoreEntry({ env, broker: broker as never, routes: () => people.routes, inputs, installCompanyId: PEOPLE_ORG, now, log })!;
   const dispatcherEntry = createCoreHostEntry({
     host: "dispatcher", env, installCompanyId: PEOPLE_ORG, resources: dispatcherResources, now, log,
-    view: { documentClient: db as never, tableName: "state", callbackSigningKey: callbackKey, repositoryGrants: issueOnlyRepositoryGrants(callbackKey) as never, cloud: true, environmentName: TEST_ENV },
+    view: { documentClient: db as never, tableName: "state", callbackSigningKey: callbackKey, repositoryGrants: issueOnlyRepositoryGrants(callbackKey), cloud: true, environmentName: TEST_ENV },
   });
   const coreDispatch = createProductionCoreDispatchHost({
     entry: async () => dispatcherEntry, documentClient: db as never, tableName: "state", installCompanyId: PEOPLE_ORG, enabled: () => coreEngineWanted(env),
@@ -150,9 +150,9 @@ const job = (name: string) => ({ source: "agentx.core-job", job: name });
 
 async function startCoreTask(w: World): Promise<string> {
   const owner = w.people.people.owner;
-  const caller = { developerId: owner.developerId, sessionId: owner.sessionId, amr: owner.amr, name: owner.name, orgId: owner.orgId as OrgId, orgRole: owner.role };
+  const caller = { developerId: owner.developerId, sessionId: owner.sessionId, amr: owner.amr, name: owner.name, orgId: owner.orgId, orgRole: owner.role };
   const started = await w.brokerEntry.intentHook.start({
-    caller: caller as never, request: { requestId: randomUUID(), source: "app", project: "payments", input: { text: "Add a /health endpoint" }, path: "QUICK" } as never, ownedTask: (async (_caller: unknown, taskId: string) => ({ taskId })) as never,
+    caller: caller, request: { requestId: randomUUID(), source: "app", project: "payments", input: { text: "Add a /health endpoint" }, path: "QUICK" } as never, ownedTask: (async (_caller: unknown, taskId: string) => ({ taskId })) as never,
   });
   expect(started, JSON.stringify(w.logs.slice(-3))).toBeDefined();
   return (started!.task as unknown as { taskId: string }).taskId;

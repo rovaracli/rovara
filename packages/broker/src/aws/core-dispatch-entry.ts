@@ -53,7 +53,7 @@ export async function createDispatcherCoreDispatch(inputs: DispatcherCoreInputs)
   const resources: CloudCoreHostResources = {
     dynamo: inputs.clients?.dynamo ?? new DynamoDBClient(configuration), s3: inputs.clients?.s3 ?? new S3Client(configuration), artifactBucketName: env.ARTIFACT_BUCKET_NAME ?? "",
     secretsManager, secretNamePrefix: `agentx/${environmentName}/`, installModelKeys: {},
-    sqs: sqs as CloudCoreHostResources["sqs"], region: env.AWS_REGION ?? "us-east-1", coreDispatchQueue: { url: queueUrl, deadLetterUrl },
+    sqs: sqs, region: env.AWS_REGION ?? "us-east-1", coreDispatchQueue: { url: queueUrl, deadLetterUrl },
     // A dispatch reads no repository: the dispatcher holds no GitHub App, and its code host refuses in words.
     github: { provider: refusingCodeHost(), credentialRef: "" },
     machines: {
@@ -70,7 +70,7 @@ export async function createDispatcherCoreDispatch(inputs: DispatcherCoreInputs)
   const entryOf = async (): Promise<CloudCoreEntry> => {
     entry ??= createCoreHostEntry({
       host: "dispatcher", env, installCompanyId: inputs.installCompanyId, resources, now: () => new Date(), log: inputs.log,
-      view: { documentClient: inputs.documentClient as never, tableName: inputs.tableName, callbackSigningKey: callbackKey, repositoryGrants: issueOnlyRepositoryGrants(callbackKey) as never, cloud: true, environmentName },
+      view: { documentClient: inputs.documentClient as never, tableName: inputs.tableName, callbackSigningKey: callbackKey, repositoryGrants: issueOnlyRepositoryGrants(callbackKey), cloud: true, environmentName },
     });
     return entry;
   };

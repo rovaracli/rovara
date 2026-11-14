@@ -29,7 +29,7 @@ export const NO_MACHINES_HERE = "worker machines are not started, stopped or rea
 export function refusingMachineOps(): CloudCoreMachineOps {
   const refuse = async (): Promise<never> => { throw new MachineError("unavailable", NO_MACHINES_HERE); };
   return {
-    sessions: { get: refuse, ensureSession: refuse, deleteSession: refuse, claimStop: refuse, markStopped: refuse } as unknown as CloudCoreMachineOps["sessions"],
+    sessions: { get: refuse, ensureSession: refuse, deleteSession: refuse, claimStop: refuse, markStopped: refuse },
     stopInstance: refuse, sign: refuse, post: refuse, ping: async () => undefined,
   };
 }

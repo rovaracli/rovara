@@ -146,10 +146,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
   // S3: where the Cloud root is configured, every reader of a task row sees a core task's `companyId` also as `orgId` (cloud/app/core-task-rows.ts). A view: nothing is written.
   if (dependencies.cloudCore !== undefined || buildCoreInputs) dependencies.documentClient = viewCoreTaskRowsClient(dependencies.documentClient);
   // The people are the developer API's (built below, per request): read through this reference, set once that function exists.
-  let coreRoutes: (() => DeveloperRouteDependencies | undefined) | undefined;
+  const coreRoutes: { current?: () => DeveloperRouteDependencies | undefined } = {};
   if (buildCoreInputs) {
     dependencies.cloudCore = cloudCoreEntryInputsFromHost({
-      documentClient: dependencies.documentClient, tableName: dependencies.tableName, routes: () => coreRoutes?.(), installCompanyId: installOrgId(dependencies), resources: dependencies.cloudCoreHost!, now: Date.now,
+      documentClient: dependencies.documentClient, tableName: dependencies.tableName, routes: () => coreRoutes.current?.(), installCompanyId: installOrgId(dependencies), resources: dependencies.cloudCoreHost!, now: Date.now,
     });
   }
   if (Buffer.byteLength(dependencies.callbackSigningKey, "utf8") < 32) {
@@ -257,7 +257,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     return routeDependencies;
   };
   installSettingsProofSettler((workspaceId) => settleSettingsProofOfCheck(developerRouteDependencies, workspaceId));
-  coreRoutes = developerRouteDependencies;
+  coreRoutes.current = developerRouteDependencies;
   // S3 (decision 130): the Cloud root behind the combined switch. `undefined` while `CLOUD_CORE_ENGINE` is off, which is the default: nothing is built, no hook is installed and nothing below answers.
   // A deployment that has the switch on but gives no `cloudCore` inputs gets one log line and stays on Cloud's path.
   const coreLog = (entry: Record<string, unknown>): void => console.log(JSON.stringify({ component: "broker", ...entry }));
