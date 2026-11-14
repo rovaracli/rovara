@@ -179,10 +179,24 @@ export const ROUTES: Route[] = [
     method: "GET", path: /^\/me$/u,
     answer: async ({ session, org }) => ok({
       csrf: session.csrf,
-      developer: { id: session.access.developerId, name: session.access.displayName, orgRole: session.access.administrator ? "owner" : "member", nameChosen: true },
+      // Not chosen only when Code says so; the app then asks once what teammates should call the person.
+      developer: { id: session.access.developerId, name: session.access.displayName, orgRole: session.access.administrator ? "owner" : "member", nameChosen: session.access.nameChosen !== false },
       org,
       identities: [{ provider: "oidc", linkedAt: session.signedInAt, lastSignInAt: session.signedInAt }],
     }),
+  },
+  {
+    // PUT /v1/app/me/name (SetMyNameBodySchema): the person's own name, stored in Code (PrepLabsAI/Rovara#634), which checks it. Only the name is passed on.
+    method: "PUT", path: /^\/me\/name$/u,
+    answer: async ({ client, session, body }) => {
+      const name = (body as { name?: unknown } | undefined)?.name;
+      if (typeof name !== "string") return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "name: give a name of 1 to 80 characters." } } };
+      const answer = await client.json<{ name: string; nameChosen: true }>(session, "/v1/dev/me/name", { method: "PUT", body: { name } });
+      // The session keeps Code's access answer from sign-in; /me reads it, so it takes the new name now.
+      session.access = { ...session.access, displayName: answer.name, nameChosen: true };
+      session.changed = true;
+      return ok({ name: answer.name, nameChosen: true });
+    },
   },
   {
     // GET /v1/app/nav (AppNavSchema): projects come from Code on every load, so a grant or revoke shows at once.
@@ -191,7 +205,7 @@ export const ROUTES: Route[] = [
       const { client, session, org } = context;
       const [access, home] = await Promise.all([client.access(session), homeCards(context)]);
       return ok({
-        me: { developerId: access.developerId, name: access.displayName, orgRole: access.administrator ? "owner" : "member", nameChosen: true },
+        me: { developerId: access.developerId, name: access.displayName, orgRole: access.administrator ? "owner" : "member", nameChosen: access.nameChosen !== false },
         org: { name: org.name },
         homeCount: home.total,
         projects: access.projects.slice(0, 50).map((project) => ({ name: project.name, agents: [] })),

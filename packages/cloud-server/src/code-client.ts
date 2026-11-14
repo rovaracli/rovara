@@ -20,6 +20,8 @@ export interface CodeClientOptions {
 export interface CodeAccess {
   developerId: string;
   displayName: string;
+  /** True once the person chose their own name in Code (PrepLabsAI/Rovara#634). An older Code leaves it out. */
+  nameChosen?: boolean;
   administrator: boolean;
   projects: Array<{ name: string; access: string }>;
   notices: string[];

@@ -55,8 +55,13 @@ function fakeCode() {
     if (call.authorization !== `Bearer ${validToken}` && !grace) return respond(401, { error: { code: "AUTH_REQUIRED" } });
     if (url.pathname === "/v1/dev/access") {
       return respond(200, grace
-        ? { developerId: GRACE, displayName: "Grace", administrator: false, projects: [{ name: "payments", access: "developer" }], notices: [] }
+        ? { developerId: GRACE, displayName: "Grace", nameChosen: false, administrator: false, projects: [{ name: "payments", access: "developer" }], notices: [] }
         : { developerId: ADA, displayName: "Ada", administrator: true, projects: [{ name: "payments", access: "administrator" }], notices: [] });
+    }
+    if (url.pathname === "/v1/dev/me/name" && call.method === "PUT") {
+      const raw = (JSON.parse(call.body ?? "{}") as { name?: unknown }).name;
+      const name = (typeof raw === "string" ? raw : "").replace(/\s+/gu, " ").trim();
+      return name.includes("@") ? respond(400, { error: { code: "CONFIG_INVALID", message: "name: must not be an email address" } }) : respond(200, { name, nameChosen: true, requestId: "r" });
     }
     const notYours = () => respond(404, { error: { code: "TASK_NOT_FOUND", message: `no task ${TASK_ID} of yours` } });
     if (grace && url.pathname.startsWith(`/v1/dev/tasks/${TASK_ID}`)) {
@@ -230,6 +235,25 @@ describe("the app's API, answered from Code as the person", () => {
     expect(later!.status).toBe(501);
     expect(JSON.parse(later!.body)).toEqual({ error: { code: "NOT_ON_CODE_YET", message: "/v1/app/org/budget-settings isn't connected to Rovara Code yet." } });
     expect(await call("GET", "/app/projects")).toBeUndefined();
+  });
+
+  it("sets the person's own name in Code, passes only the name, and shows it at once; nameChosen follows Code (Rovara#634)", async () => {
+    const { call, signIn, code } = setUp();
+    const grace = await signIn("grace-code");
+    expect(JSON.parse((await call("GET", "/v1/web/me", { cookie: grace.cookie }))!.body)).toMatchObject({ developer: { nameChosen: false } });
+    const saved = await call("PUT", "/v1/web/me/name", { cookie: grace.cookie, csrf: grace.csrf, body: { name: "  Grace   Hopper ", developerId: ADA } });
+    expect(saved!.status).toBe(200);
+    expect(JSON.parse(saved!.body)).toEqual({ name: "Grace Hopper", nameChosen: true });
+    expect(JSON.parse(code.calls.find((c) => c.path === "/v1/dev/me/name")!.body!)).toEqual({ name: "  Grace   Hopper " });
+    expect(JSON.parse((await call("GET", "/v1/web/me", { cookie: grace.cookie }))!.body)).toMatchObject({ developer: { name: "Grace Hopper", nameChosen: true } });
+
+    const refused = await call("PUT", "/v1/web/me/name", { cookie: grace.cookie, csrf: grace.csrf, body: { name: "grace@example.com" } });
+    expect(refused!.status).toBe(400);
+    expect(JSON.parse(refused!.body)).toMatchObject({ error: { code: "CONFIG_INVALID" } });
+    expect((await call("PUT", "/v1/web/me/name", { cookie: grace.cookie, csrf: grace.csrf, body: {} }))!.status).toBe(400);
+    // An older Code says nothing about it: the app is not asked to prompt.
+    const ada = await signIn();
+    expect(JSON.parse((await call("GET", "/v1/web/me", { cookie: ada.cookie }))!.body)).toMatchObject({ developer: { nameChosen: true } });
   });
 
   it("answers decision cards as switched off (404), which the app shows as no cards rather than an error", async () => {
