@@ -465,18 +465,23 @@ describe("the named TEST proof-only installation gate", () => {
     // function: the condition SessionsTslSelftestIsStaging (Fn::Equals [<environment name>, "staging"]) and the policy SessionsTslSelftestSwitchRead (ssm:GetParameter on exactly parameter/agentx/<env>/tsl-selftest) behind it.
     // Every named template has them (a published template is the placeholder's with the name replaced, so the condition, not an `if` on the name, keeps the permission to staging); the legacy digests did not move.
     // 2026-11-13 (TE-H4a merged onto integ/0518 cc2966810, v0.5.17): the four named and foreign digests were retaken again from the values the test reports, after the two changes above together (the ExpireEvidenceRecord rule and the 0.5.16 TSL self-test condition and policy).
+    // 2026-11-14 (TE-F1e, feat/te-f1e-product-model-egress): the four named and foreign digests were retaken from the values the test reports, after ONE intended change: the control plane gains the
+    // ProductModelEgress function, its fixed-name role (agentx-<env>-connector-secrets-product-egress), its log group, its capability key (Sign denied to all but the dispatcher) and the dispatcher's kms:Sign grant
+    // and PRODUCT_MODEL_EGRESS_SIGNING_KEY_ARN variable. The legacy digests did not move (named environments only).
+    // 2026-11-14 (TE-F1e fix round 1): retaken again after two intended changes: the stack parameter ProductModelEgressReservedConcurrency (Number, default 20) feeding the function's reserved concurrency, and the
+    // role's DynamoDB statement split into write on product-ai-meter#* and read-only (GetItem, Query) on F1-d's product-ai#* keys. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "9618f73ecfa4e3a4b7b466b7cc7879ae39897ecb804a9b69e11b3d3adb75df57",
-        withoutRoute: "d4ff2ef4c790efa35b615363d878dbdf41718fbc4fd2431cb449c613da2b712c",
+        withRoute: "b892829188fc024c8752b07f75cc8492bbe62edb13f10a8878e9be2149efc3c8",
+        withoutRoute: "87b37fae2f79442fe2285307f18bf27c2fd856116c696ede47c1f11043ba41d0",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "8bff4640ed75df6440ed8c91fd7ef58762ae02f072b2b145247855a04c54e5a4",
-        withoutRoute: "cdc331e991d3362bb506c9d515c94270169abe74e369e6b1396234bcb23a6515",
+        withRoute: "8a41d5a9ea47847704cf3802027af07ea2b146c0f94e8bac9a4a0bbb384ad8f7",
+        withoutRoute: "b977f5b250ab06a70d117e55d43b9b0f1a2d3257dc17206ed13a78ea7ec35cb2",
       },
       {
         label: "legacy",

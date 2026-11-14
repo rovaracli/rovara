@@ -46,7 +46,7 @@ describe("test-deploy's control-plane code units", () => {
   it("leaves out only a function a code-only change set cannot move or that is not a TEST unit, with the reason", () => {
     // The proof function is invoked through a published version: new code in the function would not change what runs.
     // The others are Rovara Cloud's own functions (round 4 merge), shipped with a CDK deploy.
-    const cloud = ["AuditLedgerAuditAnchorA02AF164", "AuditLedgerAuditAppender4120E8F4", "AuditLedgerAuditExportED90D71C", "ModelAccessFunction1B50ECC9", "RealtimeAuthorizer74F9F06D"];
+    const cloud = ["AuditLedgerAuditAnchorA02AF164", "AuditLedgerAuditAppender4120E8F4", "AuditLedgerAuditExportED90D71C", "ModelAccessFunction1B50ECC9", "RealtimeAuthorizer74F9F06D", "ProductModelEgressD55D0E62"];
     // The web app's page function and CDK's BucketDeployment handler (its asset upload): the page function serves a directory of hashed assets the upload puts in a bucket.
     const web = ["WebAppFunction611CC907", "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536"];
     // The company image mirror (0.5.15, switch pj): invoked by the broker when an admin approves an image; shipped with a CDK deploy.

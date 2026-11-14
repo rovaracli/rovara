@@ -7,6 +7,9 @@ import { readTeamRecordSwitch } from "./team-record-switch.js";
 import { readModelProxyTlsRecord } from "./model-proxy-tls.js";
 import { enforceTeamRecordPreflight, type TeamRecordProbe } from "./team-record-preflight.js";
 import { dynamoTeamRecordProbe } from "./team-record-probe.js";
+import { PRODUCT_MODEL_EGRESS_DEFAULT_RESERVED_CONCURRENCY, productModelConcurrencyPreflight, readLambdaConcurrency } from "./product-model-concurrency-preflight.js";
+import { LambdaClient } from "@aws-sdk/client-lambda";
+import { productModelEgressFunctionName } from "@agentx/cloud-contracts";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -70,6 +73,8 @@ export interface DeployCliDependencies {
   stackParameters?: (stackName: string) => Promise<Record<string, string> | undefined>;
   /** Read-only check for a table left over by a rolled-back Team record build (team-record-preflight.ts). Real DynamoDB by default on the cdk engine. */
   teamRecordProbe?: TeamRecordProbe;
+  /** TE-F1e: read-only Lambda concurrency read for the product model egress preflight (product-model-concurrency-preflight.ts). Real Lambda by default on the cdk engine. */
+  lambdaConcurrency?: (functionName: string) => Promise<{ readonly unreserved: number; readonly alreadyReservedByFunction: number }>;
   /** Copies a Public install's embedder image into its own repository (copy-embedder-image.ts); real ECR and skopeo by default on the cdk engine. */
   copyEmbedderImage?: (input: CopyEmbedderImageInput) => Promise<unknown>;
   /** The check that runs before any stack deploys when the install copies the embedder image: skopeo and the ECR credential (copy-embedder-image.ts); real by default on the cdk engine. */
@@ -648,10 +653,16 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
     ...(options.source === undefined ? {} : { source: options.source }),
     // A Team record recorded as on but not yet built: a table left by a rolled-back build stops the deploy before the local build and the synth, and before any AWS write.
     ...(options.engine === "cdk" ? {
-      beforeBuild: async (store: ParameterStore) => enforceTeamRecordPreflight({
+      beforeBuild: async (store: ParameterStore) => {
+        // TE-F1e: the product model egress function's reserved concurrency must fit with Lambda's unreserved floor left, or the stack fails at create time.
+        const room = await (deps.lambdaConcurrency ?? ((name: string) => readLambdaConcurrency(new LambdaClient({ region: answers.region }), name)))(productModelEgressFunctionName(answers.env));
+        const fits = productModelConcurrencyPreflight({ ...room, reservation: PRODUCT_MODEL_EGRESS_DEFAULT_RESERVED_CONCURRENCY });
+        if (!fits.ok) throw agentXError("CONFIG_INVALID", `deploy stopped before any change: ${fits.reason}`);
+        await enforceTeamRecordPreflight({
         env: answers.env, store, controlPlaneParameters: await (deps.stackParameters ?? cloudFormationParametersReader(new CloudFormationClient({ region: answers.region })))(environmentStackName(answers.env, "control-plane")),
         probe: deps.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient({ region: answers.region }), { ecr: new ECRClient({ region: answers.region }), cloudFormation: new CloudFormationClient({ region: answers.region }) }), write: (line) => services.stderr.write(`${line}\n`), stoppedMessage: "deploy stopped before anything was built or changed",
-      }),
+      });
+      },
     } : {}),
     deps,
     stderr: services.stderr,

@@ -10,9 +10,11 @@ import { type WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { createEvidenceErase, markEvidenceStored, resumeEvidenceErase, type EvidenceErase } from "../../rovara-code/evidence-erase.js";
 import { keepEvidence, policyKindsOf, type KeepEvidenceResult } from "../../rovara-code/evidence-keep.js";
 import { proofEvidenceEnabled } from "../../proof/switch.js";
+import { companyGatedEnv } from "../../org/feature-rollout.js";
 import { evidenceEnvironmentOf } from "../../test-env/evidence-line.js";
 import { developerTaskActions } from "./dependency-wiring.js";
 import { createEvidencePort, type EvidencePort } from "../developer-tasks/evidence-port.js";
+import { gatedEvidencePort } from "../developer-tasks/evidence-gate.js";
 import type { AwsBrokerDependencies } from "./definitions.js";
 import type { OperationRecord } from "../cancellation.js";
 import type { DeveloperTaskRecord } from "../../developer/task-records.js";
@@ -20,7 +22,7 @@ import type { DeveloperTaskRecord } from "../../developer/task-records.js";
 /** How long the hook may hold up the worker's callback. */
 export const EVIDENCE_KEEP_MAX_MS = 6_000;
 
-/** Keeps the evidence of a verification run. Never throws; returns the result for the tests. */
+/** Keeps the evidence of a verification run. Throws only when the company's gate cannot be read (RUNTIME_UNAVAILABLE, `isGateUnavailable`); returns the result for the tests. */
 export async function keepEvidenceAfterChecks(
   dependencies: Pick<AwsBrokerDependencies, "s3" | "artifactBucketName" | "tableName" | "documentClient"> & Partial<AwsBrokerDependencies>,
   input: { task: Pick<DeveloperTaskRecord, "taskId" | "ownerKey" | "workspaceId" | "orgId"> & { project?: string }; operation: Pick<OperationRecord, "id" | "workflowMode">; workflow: Pick<WorkflowSnapshot, "checkPolicy">; candidateDigest: string; checks: readonly CheckEntry[] },
@@ -30,9 +32,12 @@ export async function keepEvidenceAfterChecks(
   // A task with no org (before orgs) keeps no evidence: the erase finds evidence through the org, so none is stored that it could not find.
   const orgId = input.task.orgId;
   if (orgId === undefined) return undefined;
+  // TE-A1: evidence is kept only for a company whose gate is on (and the environment line, and the dependencies it names, only where theirs are). A gate that cannot be read is RUNTIME_UNAVAILABLE, never "off": the caller lets the callback fail so the evidence is kept on the retry.
+  const gated = await companyGatedEnv({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, orgId, env, { onReadFailure: "throw" });
+  if (!proofEvidenceEnabled(gated)) return undefined;
   let late = false;
   // Test environment (wire-testenv): the environment the task pinned, named in the pack (nothing while that switch is off). Inside the same bound as the rest.
-  const run = evidenceEnvironmentOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...fixtureStoreForRoutes(dependencies) }, input.task, env).then((chosen) => keepEvidence({
+  const run = evidenceEnvironmentOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, ...fixtureStoreForRoutes(dependencies, gated) }, input.task, gated).then((chosen) => keepEvidence({
     actions: developerTaskActions(dependencies as AwsBrokerDependencies), store: { s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName }, markStored: (orgId) => markEvidenceStored({ documentClient: dependencies.documentClient, tableName: dependencies.tableName }, orgId), late: () => late,
     log: (event, fields) => console.log(JSON.stringify({ component: "broker", event, taskId: input.task.taskId, operationId: input.operation.id, ...fields })),
   }, {
@@ -51,8 +56,9 @@ export async function keepEvidenceAfterChecks(
  */
 export function evidenceRouteDependencies(dependencies: AwsBrokerDependencies, env: NodeJS.ProcessEnv = process.env): { evidence?: EvidencePort } {
   if (!proofEvidenceEnabled(env)) return {};
-  return { evidence: createEvidencePort({ actions: developerTaskActions(dependencies), store: { s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName }, issuer: dependencies.developer?.issuer, audit: dependencies.audit,
-    presign: ({ key, contentType, disposition, expiresInSeconds }) => getSignedUrl(dependencies.s3, new GetObjectCommand({ Bucket: dependencies.artifactBucketName, Key: key, ResponseContentType: contentType, ResponseContentDisposition: disposition }), { expiresIn: expiresInSeconds }) }) };
+  // TE-A1: the port is the install's, gated per task company: a company whose `proofEvidence` gate is off is shown nothing (gatedEvidencePort).
+  return { evidence: gatedEvidencePort(createEvidencePort({ actions: developerTaskActions(dependencies), store: { s3: dependencies.s3, artifactBucketName: dependencies.artifactBucketName }, issuer: dependencies.developer?.issuer, audit: dependencies.audit,
+    presign: ({ key, contentType, disposition, expiresInSeconds }) => getSignedUrl(dependencies.s3, new GetObjectCommand({ Bucket: dependencies.artifactBucketName, Key: key, ResponseContentType: contentType, ResponseContentDisposition: disposition }), { expiresIn: expiresInSeconds }) }), { documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }, env) };
 }
 
 /** The deletion of stored evidence for a project, a company or a person (rovara-code/evidence-erase.ts). Not behind the proof switch: it erases what was kept while the switch was on. */

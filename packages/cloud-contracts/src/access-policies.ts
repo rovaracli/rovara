@@ -482,6 +482,14 @@ export function testAccountSecretsRoleName(env: string): string {
 }
 
 /**
+ * TE-F1e: the ProductModelEgress function's role (te-f1d.md fork F2 agreed this name with F1-d, which defines the same function; the merge keeps one). Its `connector-secrets` prefix keeps it under the default
+ * boundary's existing `connector-secrets*` ARNs, so the boundary text (at its size limit) does not change.
+ */
+export function productModelEgressRoleName(env: string): string {
+  return `${connectorSecretsRoleName(env)}-product-egress`;
+}
+
+/**
  * The role EventBridge Scheduler assumes to invoke the broker for a schedule trigger (Plan 4 Task 26), and the queue that keeps the invocations that failed. Fixed names, so the broker
  * builds the role's ARN and the queue's URL from the environment (like the connector secrets role) and its environment, held to 4 KB, carries neither. The role is created under the
  * environment's path like every other, so a fixed-name role needs its path-less ARN in the deploy role's lookup grant where that list exists.
@@ -548,7 +556,7 @@ const recordStorageNames = (env: string) => ({ vectorBucket: `agentx-${env}-reco
  */
 export function fixedNameEnvironmentRoleNames(env: string): string[] {
   return [
-    connectorSecretsRoleName(env), testAccountSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
+    connectorSecretsRoleName(env), testAccountSecretsRoleName(env), productModelEgressRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
     savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env), companyImageMirrorRoleName(env),
     teamRecordVectorsRoleName(env),
     ...(env === TASK_PERSON_PROOF_ENV ? [taskPersonProofRoleName(env)] : []),

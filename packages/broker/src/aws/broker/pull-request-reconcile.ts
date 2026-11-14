@@ -1,5 +1,6 @@
 // Part of the broker (split out of ../broker.ts): Linear lines, pull request reconciliation, event append and artifacts.
 
+import { evidenceKeyOf } from "../developer-tasks/evidence-port.js";
 import { createHash, randomUUID } from "node:crypto";
 import { PutCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
@@ -135,7 +136,7 @@ async function proofContextForRewrite(dependencies: AwsBrokerDependencies, task:
   const actions = developerTaskActions(dependencies);
   const [operations, approvedPlan] = await Promise.all([actions.operations(task.workspaceId), approvedPlanForPullRequest({ actions }, workflow).catch(() => undefined)]);
   const evidence = evidenceRouteDependencies(dependencies).evidence;
-  return loadProofContext({ actions, scenarioResults: () => loadWorkflowE2EScenarioResults(dependencies, task, operations, "owner"), ...(evidence === undefined ? {} : { evidence: (digest: string) => evidence.context(task, digest) }),
+  return loadProofContext({ actions, scenarioResults: () => loadWorkflowE2EScenarioResults(dependencies, task, operations, "owner"), ...(evidence === undefined ? {} : { evidence: (digest: string) => evidence.context(evidenceKeyOf(task), digest) }),
     design: proofDesignContextOf({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, taskId: task.taskId, readArtifact: (key, max) => actions.readArtifact(key, max) }) }, task, workflow, approvedPlan, operations);
 }
 
@@ -190,7 +191,7 @@ export async function describeFeedbackFixes(dependencies: AwsBrokerDependencies,
     const stale = proofResult !== undefined && !proofResult.done && hadProofSection(current);
     const proof = proofResult === undefined ? undefined : proofResult.done ? proofResult.value : stale ? { stale } : undefined;
     // Proof and evidence P4: the risk shown keeps a security scan's new high findings on this code (only while the proof switch is on).
-    const evidenceRisk = pushedChecked && workflow.definitionVersion === "1.1.0" ? await evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, task, candidateDigest, securityCheckIdsOf(workflow.checkPolicy)) : undefined;
+    const evidenceRisk = pushedChecked && workflow.definitionVersion === "1.1.0" ? await evidenceRiskOfTask(evidenceRouteDependencies(dependencies).evidence, evidenceKeyOf(task), candidateDigest, securityCheckIdsOf(workflow.checkPolicy)) : undefined;
     // Setup and test health SH18: the Testing view of the code now on the pull request (only while `vx` is on).
     const testing = pushedChecked && workflow.definitionVersion === "1.1.0"
       ? await loadTestingView({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now, nightlyHead: nightlyHeadReaderOf(dependencies), evidence: evidenceRouteDependencies(dependencies).evidence }, task, workflow) : undefined;

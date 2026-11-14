@@ -12,6 +12,7 @@ import {
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { environmentRolePath } from "@rovara-code/contracts";
+import { productModelEgressFunctionName } from "@agentx/cloud-contracts";
 import type { AgentXNaming } from "./naming.js";
 
 /** The worker's HTTP port: /ping for health probes, /invocations for signed work (#80). */
@@ -127,6 +128,15 @@ export class Ec2WorkerFoundation extends Construct {
       actions: ["logs:CreateLogStream", "logs:PutLogEvents"],
       resources: [logGroup.logGroupArn, `${logGroup.logGroupArn}:log-stream:*`],
     }));
+    // TE-F1e: a named environment's workers invoke the ProductModelEgress function (InvokeWithResponseStream, which IAM authorizes as lambda:InvokeFunction: there is no separate action) and no other
+    // function: ONE function ARN, built from its fixed name (it lives in the control plane), no wildcard, no qualifier.
+    if (naming.env !== undefined) {
+      this.instanceRole.addToPolicy(new iam.PolicyStatement({
+        sid: "InvokeProductModelEgress",
+        actions: ["lambda:InvokeFunction"],
+        resources: [`arn:${Aws.PARTITION}:lambda:${Aws.REGION}:${Aws.ACCOUNT_ID}:function:${productModelEgressFunctionName(naming.env)}`],
+      }));
+    }
     // Under the environment's IAM path like its roles, which its CloudFormation role is scoped to.
     const instanceProfile = new iam.CfnInstanceProfile(this, "InstanceProfile", {
       ...(naming.env === undefined ? {} : { path: environmentRolePath(naming.env) }),

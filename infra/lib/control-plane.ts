@@ -67,6 +67,7 @@ import { swebenchNames } from "./swebench-eval.js";
 import { SWEBENCH_DEPLOYMENT_MODE } from "./swebench-eval-definition.js";
 import { markCodeContractsPureCommand } from "./code-contracts-bundling.js";
 import { grantSigningKeySecrets } from "./signing-key-secrets.js";
+import { attachProductModelEgress } from "./product-model-egress.js";
 
 const MAX_DISPATCH_ATTEMPTS = 5;
 // Matches MAX_RECEIVE_COUNT in packages/slack-service, which reports the final attempt in the thread.
@@ -558,6 +559,8 @@ export class ControlPlaneStack extends Stack {
       // this one function and no other. The dispatcher signs only a peek invocation it has parsed, and wakes no compute for one.
       BrokerNames.of(broker).add("dispatcherFunction", dispatcher.functionName);
       dispatcher.grantInvoke(broker);
+      // TE-F1e: the ProductModelEgress function (outside the VPC), its fixed-name role and its capability key, which only the dispatcher may sign with. Dark until F1-d is bound.
+      attachProductModelEgress(this, { env: naming.env, state, dispatcher, ...(props?.reservedConcurrency === false ? { reservedConcurrency: false } : {}) });
     }
     dispatchQueue.grantConsumeMessages(dispatcher);
     state.grantReadWriteData(dispatcher);

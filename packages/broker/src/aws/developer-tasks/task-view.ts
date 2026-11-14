@@ -1,4 +1,5 @@
 import { QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { evidenceKeyOf } from "./evidence-port.js";
 import { mayReadEvidence } from "./evidence-port.js";
 import { loadTestingView } from "./testing-view.js";
 import { ModelFallbacksSchema, CHANNEL_TURNS_MAX, DEVELOPER_TASK_SUMMARY_MAX, DEVELOPER_FAILURE_MESSAGE_MAX, WorkspaceClosePreflightResultSchema, agentXError, diffStat, lastAssistantResponse, redactAndCap, hideEmailAddresses, redactText, type DeveloperTaskFailure, type DeveloperTaskStatus, type Operation, type WorkspaceInstance, WORKFLOW_PLAN_MAX_BYTES, isNoCodeChangedReason, noChangeFindingsFrom, taskGraphDigest, workflowRequestId, capText, sessionLink, planRunLimitSubject, type SessionStatus } from "@rovara-code/contracts";
@@ -323,10 +324,10 @@ export async function taskView(
   const pageActions = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.pageActions !== undefined ? await deps.pageActions(task).catch(() => undefined) : undefined;
   const proofTable = rovaraCodeV2 && options.details && task.workflow !== undefined ? await taskProofTable(deps, task, task.workflow, options.actor ?? "owner", operations) : undefined;
   // Proof and evidence (wire-proof): the evidence kept for the task's current code (full reads only, like the proof table), with each stored artifact as a link. Present only while the proof switch is on (`deps.evidence`); a fault leaves it out.
-  const evidence = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.evidence !== undefined && await mayReadEvidence(deps, task) ? await deps.evidence.view(task, task.workflow.candidate?.digest).catch(() => undefined) : undefined;
+  const evidence = rovaraCodeV2 && options.details && task.workflow !== undefined && deps.evidence !== undefined && await mayReadEvidence(deps, task) ? await deps.evidence.view(evidenceKeyOf(task), task.workflow.candidate?.digest).catch(() => undefined) : undefined;
   // Setup and test health SH19: the four test results (only while `vx` is on; full reads only, like the proof table). The evidence pack feeds it only for a person who may read the task's evidence.
   const testing = rovaraCodeV2 && options.details && task.workflow !== undefined
-    ? await loadTestingView({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), nightlyHead: deps.nightlyHead, evidence: deps.evidence !== undefined && await mayReadEvidence(deps, task) ? deps.evidence : undefined }, task, task.workflow) : undefined;
+    ? await loadTestingView({ documentClient: deps.documentClient, tableName: deps.tableName, now: () => deps.now(), gates: deps.gates, nightlyHead: deps.nightlyHead, evidence: deps.evidence !== undefined && await mayReadEvidence(deps, task) ? deps.evidence : undefined }, task, task.workflow) : undefined;
   // Playbook P2: the reviewer model lines of the pull request's Reviews section (A2's function and flag, the only source), for the Tests tab.
   const reviewLines = rovaraCodeV2 && task.workflow !== undefined ? reviewModelLines(task.workflow, reviewSameModelOf(task, task.workflow)) : [];
   // Owner decision 2026-11-02: the reviews ran on the build's company because no other company's model was usable (the default is another company's). Said with the review lines, so only once the current code has a review.

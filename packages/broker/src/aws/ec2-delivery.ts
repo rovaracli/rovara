@@ -2,7 +2,7 @@ import { META_FEATURE_MISSING } from "../meta-repo/prepare-meta.js";
 import { REGISTRY_FEATURE_MISSING } from "../project-registries/prepare.js";
 import { nonLegacyCredentialKindsOfGrant } from "../repository-access.js";
 import { AGENT_RUN_FEATURE, AGENT_STEP_FEATURE, AGENT_WORKER_OUTDATED, LEARNED_CONTEXT_FEATURE, EVAL_FILES_FEATURE, MODEL_ROUTE_FEATURE, E2E_AGENT_MODEL_CHOICE_FEATURE, E2E_AGENT_STEPS_FEATURE, E2E_CAPTURE_EXTRAS_FEATURE, E2E_MODEL_SESSION_SYNC_FEATURE, E2E_AGENT_UNAVAILABLE_REASONS, E2E_MODEL_FREE_LIMITS_FEATURE, E2E_REPLAY_CHECKS_FEATURE, GROUNDING_CHECKS_FEATURE, DIAGNOSIS_WORKER_FEATURE, SETUP_AGENT_FEATURE, NIGHTLY_RUN_FEATURE, STANDING_INSTRUCTIONS_FEATURE, SETUP_RECIPES_FEATURE, EVIDENCE_CAPTURE_FEATURE, TEST_ENV_COVERAGE_PATH_FEATURE, TEST_ENV_DETECT_FEATURE, SECOND_REVIEWER_FEATURE, DESIGN_REVIEW_WORKER_FEATURE, TEST_ENV_PLAN_FEATURE, TEST_SERVICES_AWS_ALL_SERVICES_FEATURE, TEST_SERVICES_AWS_PLAN_FEATURE, TEST_SERVICES_FAKE_PLAN_FEATURE, TEST_SERVICES_FILE_SEED_FEATURE, TEST_SERVICES_SEED_LOCK_FEATURE, TEST_SERVICES_PLAN_FEATURE, PREPARE_REGISTRIES_FEATURE, PREPARE_SAVED_ENV_FEATURE, PREPARE_SAVED_ENV_BUILD_FEATURE, PREPARE_PINS_FEATURE, credentialKindsOfWorkerFeatures, OWNER_REDIRECT_FEATURE, PLAN_DRY_RUN_FEATURE, E2E_APPLICATION_ADMISSION_SCHEMA_V2, WORKER_INVOKE_AUTHORIZATION_SCHEME, WORKFLOW_PULL_REQUEST_UPDATE_WORKER_OUTDATED, agentXError, awsPlanNeedsAllServices, isE2EApplicationAdmissionSchemaVersion, modelSelectionFor, workerInvokeToken, workerInvokeTokenPayload, workflowPublicationContextDigest, type E2EWorkflowAdmissionRef, type Ec2RuntimeBinding, type EvalFilesPayload, type LearnedContext, type LearnedRefs } from "@rovara-code/contracts";
-import { OUTSIDE_RECHECK_WORKER_FEATURE, OUTSIDE_RECHECK_WORKER_MISSING, TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE, TEST_SERVICES_FUNCTIONS_PLAN_FEATURE, workflowPublicationContext, type WorkerInvocation } from "@agentx/cloud-contracts";
+import { PRODUCT_MODELS_FEATURE, type ProductModelPlan, OUTSIDE_RECHECK_WORKER_FEATURE, OUTSIDE_RECHECK_WORKER_MISSING, TEST_SERVICES_COMPANY_IMAGE_PLAN_FEATURE, TEST_SERVICES_FUNCTIONS_PLAN_FEATURE, workflowPublicationContext, type WorkerInvocation } from "@agentx/cloud-contracts";
 import { asksForApplicationPlan, asksForCodeAnchors, asksForPlanQuality, withoutApplicationPlanText, withoutCodeAnchorText, withoutPlanQualityText } from "./broker-shared.js";
 import type { Ec2OutboxRecord } from "./lambda.js";
 import { serialWorkerCanResume } from "../rovara-code/parallel-parts.js";
@@ -42,6 +42,11 @@ export interface Ec2DeliveryDependencies {
    * worker built before them. Without it, no optional field is sent.
    */
   workerFeatures?: (url: string) => Promise<readonly string[]>;
+  /**
+   * TE-F1e (the broker send): the model plan for a CHECKS round (product-ai/plan.ts). Sent only to a worker that lists "task.productModels.v1"; any failure or a worker without the feature is no plan
+   * (the round's real model checks read "Not run"), never a refused delivery. Absent (the default wiring until F1-d's gate is on the base): never sent.
+   */
+  productModelPlan?: (operation: { readonly workspaceId: string; readonly operationId: string; readonly fence: number }) => Promise<ProductModelPlan | undefined>;
   /**
    * Called, before the invocation is posted, when a planning run's schema-v2 application plan was dropped for a worker that does not list
    * "task.workflowE2EApplicationPlan": the operation record must stop saying the version was offered, so the broker refuses a v2 plan it uploads.
@@ -182,7 +187,10 @@ export function createEc2Delivery(dependencies: Ec2DeliveryDependencies) {
     const applicationAdmission = invocation.kind === "task" && invocation.payload.workflowE2EAdmission?.kind === "application" ? invocation.payload.workflowE2EAdmission : undefined;
     const modelChoice = applicationAdmission === undefined || dependencies.workflowE2EAdmissionNeedsModelChoice === undefined ? undefined
       : () => dependencies.workflowE2EAdmissionNeedsModelChoice!(applicationAdmission);
-    const sent = await forWorker(invocation, `http://${session.privateIp}:${WORKER_PORT}/ping`, dependencies.workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice, dependencies.learnedFromRefs, dependencies.evalFilesFromRefs);
+    const sent = await withProductModelPlan(
+      await forWorker(invocation, `http://${session.privateIp}:${WORKER_PORT}/ping`, dependencies.workerFeatures, admissionSchemaVersion, needsModelFreeLimits, modelChoice, dependencies.learnedFromRefs, dependencies.evalFilesFromRefs),
+      `http://${session.privateIp}:${WORKER_PORT}/ping`, dependencies.workerFeatures, dependencies.productModelPlan,
+    );
     if (invocation.kind === "task" && invocation.payload.workflowE2EPlanVersion !== undefined
       && !(sent.kind === "task" && sent.payload.workflowE2EPlanVersion !== undefined)) {
       // Without the recorder the operation record would keep saying version 2 was offered while the worker was sent a portable-only run, so the broker would
@@ -886,6 +894,34 @@ export async function withLearnedContext(invocation: WorkerInvocation, features:
   try { context = resolve === undefined ? undefined : await resolve(refs); } catch { context = undefined; }
   if (context === undefined || (context.lessons.length === 0 && (context.priorLoaded ?? []).length === 0)) return { invocation: { ...invocation, payload: rest }, omitted: true, reason: "no_lessons_at_delivery" };
   return { invocation: { ...invocation, payload: { ...rest, learnedContext: context } }, omitted: false, reason: "" };
+}
+
+/**
+ * TE-F1e: a CHECKS round's task invocation with its product model plan, for a worker that lists "task.productModels.v1" and only when the planner gives one. Everything else is the invocation unchanged:
+ * no planner, another kind or mode, a worker without the feature, a /ping or a planner that fails. A plan already on a stored invocation is never forwarded (it is minted here, at delivery, or not at all).
+ */
+export async function withProductModelPlan(
+  invocation: WorkerInvocation, pingUrl: string, workerFeatures: Ec2DeliveryDependencies["workerFeatures"], planner: Ec2DeliveryDependencies["productModelPlan"],
+): Promise<WorkerInvocation> {
+  if (invocation.kind !== "task") return invocation;
+  const { productModels: _stored, ...payload } = invocation.payload;
+  void _stored;
+  const bare: WorkerInvocation = { ...invocation, payload };
+  if (planner === undefined || workerFeatures === undefined || invocation.payload.workflowMode !== "CHECKS") return bare;
+  let features: readonly string[];
+  try {
+    features = await workerFeatures(pingUrl);
+  } catch {
+    return bare;
+  }
+  if (!features.includes(PRODUCT_MODELS_FEATURE)) return bare;
+  let plan: ProductModelPlan | undefined;
+  try {
+    plan = await planner({ workspaceId: invocation.workspaceId, operationId: invocation.operationId, fence: invocation.fence });
+  } catch {
+    plan = undefined;
+  }
+  return plan === undefined ? bare : { ...invocation, payload: { ...payload, productModels: plan } };
 }
 
 /** A stage without the lessons chosen for it, for a worker that does not list "task.learnedContext.v1": it would reject the field. Nothing is lost but the advice. */

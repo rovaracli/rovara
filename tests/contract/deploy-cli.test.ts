@@ -194,6 +194,8 @@ function safeDeployDeps(overrides: DeployCliDependencies = {}): DeployCliDepende
     stackOutputs: () => unexpectedAwsCall(),
     // An install now looks up the control plane's audit lock profile too: by default no stack exists yet.
     stackParameters: async () => undefined,
+    // TE-F1e: the product model egress concurrency preflight reads the account's room: by default plenty (staging's shape).
+    lambdaConcurrency: async () => ({ unreserved: 988, alreadyReservedByFunction: 0 }),
     iam: { send: () => unexpectedAwsCall() },
     templatesClients: {
       cloudFormation: { send: () => unexpectedAwsCall() } as unknown as TemplatesEngineClients["cloudFormation"],
@@ -674,6 +676,30 @@ describe("agentx deploy", () => {
   });
 
   // Lane fix/0513-embedder-3gb: a table left by a rolled-back Team record build fails the deploy on "already exists"; the deploy checks before it writes anything.
+  it("--engine cdk stops before building when the account cannot take the product model egress reservation (TE-F1e), and goes on when it can", async () => {
+    for (const [room, expectedCode] of [[{ unreserved: 10, alreadyReservedByFunction: 0 }, 1], [{ unreserved: 988, alreadyReservedByFunction: 0 }, 0]] as const) {
+      const releaseDir = await emptyReleaseDir();
+      const answersPath = await writeAnswers();
+      const store = new MemoryParameterStore();
+      await store.put("/cdk-bootstrap/hnb659fds/version", "21");
+      const runner = cleanCdkRunner(scriptedOutputs());
+      const asked: string[] = [];
+      const io = capture();
+      const code = await executeCli(
+        ["deploy", "--mode", "install", "--engine", "cdk", "--release", releaseDir, "--answers", answersPath, "--source", "/some/source", "--yes"],
+        { ...io, deploy: safeDeployDeps({ identity: fakeIdentity, store, secrets: memorySecrets(), commandRunner: runner, iam: passRolePresentIam(), lambdaConcurrency: async (name) => { asked.push(name); return room; } }) },
+      );
+      expect(asked).toEqual([`agentx-${ENV}-product-model-egress`]);
+      if (expectedCode === 0) {
+        expect(code, io.err.join("")).toBe(0);
+      } else {
+        expect(code).not.toBe(0);
+        expect(io.err.join("")).toMatch(/deploy stopped before any change: The account's Lambda concurrency quota cannot take/u);
+        expect(runner.synthDirs).toEqual([]);
+      }
+    }
+  });
+
   it("--engine cdk with the Team record recorded as on stops on a left-over record table before deploying, and deploys when the account is clear", async () => {
     for (const [probeAnswer, expectedCode] of [[{ exists: true, itemCount: 0, deletionProtected: true }, 1], [{ exists: false }, 0]] as const) {
       const releaseDir = await emptyReleaseDir();

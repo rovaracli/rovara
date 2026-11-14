@@ -286,6 +286,8 @@ export function setupDraftRepositoriesOf(definition: Pick<StoredProjectDefinitio
 
 /** What the routes need from the developer API. */
 export interface SetupDraftDependencies {
+  /** The install switches as the caller's company has them (TE-A1). Absent: the process environment. */
+  env?: NodeJS.ProcessEnv | undefined;
   documentClient: Client;
   tableName: string;
   now: () => number;
@@ -581,7 +583,7 @@ async function reviewOf(
   for (const item of setupItemsOf(proposal)) {
     const handling = setupItemHandling(item.kind, item.proposed.value);
     const current = currentOf(definition, item);
-    const unavailable = unavailableReason(definition, item, { cards: deps.approvals !== undefined, testServices: testServicesEnabled() });
+    const unavailable = unavailableReason(definition, item, { cards: deps.approvals !== undefined, testServices: testServicesEnabled(deps.env) });
     let approval: SetupReviewEntry["approval"];
     if (handling === "approval" && unavailable === undefined && deps.approvals !== undefined) {
       const { card } = await liveCardOf(deps, deps.approvals, caller, project, pointer.taskId, item);
@@ -738,7 +740,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
     // A setting the meta repo's config file manages is changed by changing the file: said before any save is tried.
     const current = currentOf(latest.definition, item);
     if (current?.state === "managed_by_file") { result(item, "managed_by_file", { message: SETUP_ITEM_WORDS.managedByFile }); continue; }
-    const unavailable = unavailableReason(latest.definition, item, { cards: deps.approvals !== undefined, testServices: testServicesEnabled() });
+    const unavailable = unavailableReason(latest.definition, item, { cards: deps.approvals !== undefined, testServices: testServicesEnabled(deps.env) });
     if (unavailable !== undefined) { result(item, "not_available", { message: unavailable }); continue; }
     if (current?.state === "same") { result(item, "already_set", { message: SETUP_APPLY_WORDS.alreadySet }); continue; }
     // A value a person typed is replaced only on that item's own tick; one an earlier Rovara proposal set may be replaced by a newer one.
@@ -808,7 +810,7 @@ export async function applySetupDraft(deps: SetupDraftDependencies, caller: Deve
     if (waiting) { result(item, "not_available", { message: DRAFT_CHECK_WORDS.notTried }); continue; }
     const currently = currentOf(latest.definition, item);
     if (currently?.state === "managed_by_file") { result(item, "managed_by_file", { message: SETUP_ITEM_WORDS.managedByFile }); continue; }
-    const unavailable = unavailableReason(latest.definition, item, { cards: deps.approvals !== undefined, testServices: testServicesEnabled() });
+    const unavailable = unavailableReason(latest.definition, item, { cards: deps.approvals !== undefined, testServices: testServicesEnabled(deps.env) });
     if (unavailable !== undefined) { result(item, "not_available", { message: unavailable }); continue; }
     if (currently?.state === "same") { result(item, "already_set", { message: SETUP_APPLY_WORDS.alreadySet }); continue; }
     const approvals = deps.approvals!;

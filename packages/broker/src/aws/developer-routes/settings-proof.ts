@@ -6,6 +6,7 @@
 //   Tasks read the project's latest revision, so a held change is never in a task's prepared definition.
 // One check in flight per project; a newer save supersedes an older pending one. The check's result is read live from its workspace; it is acted on (proof recorded, failure announced, held change written)
 // by `settleSettingsProof`, which runs whenever the project is read or saved, so no timer is needed and a person looking at the page is what drives it.
+import { routeEnvOf } from "../../org/feature-rollout.js";
 import { nameResolverOf, resolveStoredName } from "../../developer/name-resolver.js";
 import { randomUUID } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
@@ -406,7 +407,7 @@ export async function putProjectSettingsChecked(deps: DeveloperRouteDependencies
   }
   // UX-4b review I1 (owner decision 11): where the test environment is on, setup and test commands are proved in its sandbox before they are used, so a browser save that changes them is refused
   // here, the server's own rule, whatever the page is. The commands go to `POST .../setup-draft/typed` (the person's edited proposal: check, Prove, Approve). Lines resent unchanged were dropped above.
-  if (testEnvironmentEnabled() && (body.setupCommands !== undefined || body.testCommands !== undefined)) throw agentXError("CONFIG_INVALID", PROOF_WORDS.provedInTestEnvironment);
+  if (testEnvironmentEnabled(routeEnvOf(deps)) && (body.setupCommands !== undefined || body.testCommands !== undefined)) throw agentXError("CONFIG_INVALID", PROOF_WORDS.provedInTestEnvironment);
   // A browser saves what it sent; what was saved is compared with what was there, after the save (a repository change can move where commands run).
   return browserSave(deps, caller, rawName, name, rawBody, options);
 }

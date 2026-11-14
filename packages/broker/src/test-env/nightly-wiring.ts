@@ -12,7 +12,8 @@
 // Cost (no AWS call was made to measure; EventBridge Scheduler pricing is $1.00 per million invocations after 14 million free a month): the schedules themselves are free at any size this runs at. The cost of a
 // night is the worker's time for the whole suite once (design 7 estimates 45 minutes for each of 5 to 6 repositories), charged to the project, and none of it is incurred until a run can be started.
 import { SchedulerClient } from "@aws-sdk/client-scheduler";
-import { NIGHTLY_SOURCE, type OrgId, type TestEnvironment } from "@rovara-code/contracts";
+import { NIGHTLY_SOURCE, NightlyFireSchema, type OrgId, type TestEnvironment } from "@rovara-code/contracts";
+import { companyGatedEnv } from "../org/feature-rollout.js";
 import { scheduleSettingsFromEnvironment, type SchedulerPort } from "../triggers/schedules.js";
 import type { TestEnvRouteHooks } from "../aws/developer-routes/test-environment.js";
 import type { TestEnvDeps } from "../org/test-environment.js";
@@ -61,10 +62,13 @@ export type TestEnvNightlyAnswer = NightlyFireOutcome | { outcome: "off" } | { o
 
 /**
  * Handles one scheduler fire. Off: nothing is read. On, without a way to start a run: nothing is charged or claimed. On, with `runs`: `handleNightlyFire` decides. A fault that may pass is thrown (the
- * scheduler retries it and then dead-letters it); everything decided is an answer.
+ * fire is an asynchronous Lambda invocation: Lambda retries it, then it goes to the dead-letter queue); everything decided is an answer.
  */
 export async function fireTestEnvNightly(deps: TestEnvDeps, event: unknown, runs?: NightlyRunPort, env: NodeJS.ProcessEnv = process.env): Promise<TestEnvNightlyAnswer> {
   if (!testEnvironmentEnabled(env)) return { outcome: "off" };
   if (runs === undefined) return { outcome: "skipped", reason: "run_unavailable" };
+  // TE-A1: a fire for a company whose `testEnvironment` gate is off does nothing (a fire that does not read is left for `handleNightlyFire` to refuse). A gate read that fails is thrown (RUNTIME_UNAVAILABLE): the fire arrives as an asynchronous Lambda invocation, which Lambda retries before it goes to the dead-letter queue, so the night is not lost as "off".
+  const fire = NightlyFireSchema.safeParse(event);
+  if (fire.success && !testEnvironmentEnabled(await companyGatedEnv(deps, fire.data.orgId, env, { onReadFailure: "throw" }))) return { outcome: "off" };
   return handleNightlyFire({ ...deps, runs }, event);
 }

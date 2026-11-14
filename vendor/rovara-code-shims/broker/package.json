@@ -9,6 +9,10 @@
       "types": "./index.d.ts",
       "default": "./index.js"
     },
+    "./core": {
+      "types": "./core.d.ts",
+      "default": "./core.js"
+    },
     "./channel": {
       "types": "./channel.d.ts",
       "default": "./channel.js"

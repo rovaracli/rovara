@@ -126,6 +126,8 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
         savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env), companyImageMirrorRoleName(env),
         // TR-SWITCH-B2: the Team record's vector data role (only while the record is switched on, as here).
         teamRecordVectorsRoleName(env),
+        // TE-F1e: the product model egress function's role (F1-d's ProductAiSecretsRole trusts it for the proxy purpose).
+        `agentx-${env}-connector-secrets-product-egress`,
         ...(env === "agentxlivetest123" ? [`${env}-task-person-proof`] : []),
       ].sort(),
     );

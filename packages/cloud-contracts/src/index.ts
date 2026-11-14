@@ -131,6 +131,7 @@ export * from "./setup-proposal.js";
 export * from "./task-stop-enrollment.js";
 
 export * from "./task-stop-start-preview.js";
+export * from "./feature-rollout.js";
 export * from "./ui-flags.js";
 
 // Work events (U3) and lessons for local coding tools (decision 46b) are Code's since the vendor pin 0e340c0e: import them from @rovara-code/contracts.
@@ -149,3 +150,4 @@ export * from "./smart-intake.js";
 export * from "./test-access-connect.js";
 export * from "./test-access-policy.js";
 export * from "./test-access-scoping.js";
+export * from "./product-model-egress.js";
