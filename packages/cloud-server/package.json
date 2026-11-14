@@ -1,0 +1,17 @@
+{
+  "name": "@rovara/cloud-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Rovara Cloud's server for its web app: signs people in through a Rovara Code install and answers the app's API from Code's.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b"
+  }
+}

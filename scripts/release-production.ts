@@ -59,6 +59,7 @@ export const WORKER_IMAGE_INPUTS = [
   "packages/design-tokens/package.json",
   "packages/ui/package.json",
   "packages/web/package.json",
+  "packages/cloud-server/package.json",
   "infra/package.json",
 ] as const;
 
@@ -86,6 +87,7 @@ export const SLACK_ORCHESTRATOR_IMAGE_INPUTS = [
   "packages/design-tokens/package.json",
   "packages/ui/package.json",
   "packages/web/package.json",
+  "packages/cloud-server/package.json",
   "infra/package.json",
 ] as const;
 
