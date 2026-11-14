@@ -7,7 +7,7 @@
 #   1. The rules, applied the way boot-stage2.sh applies them: the container firewall (the very heredoc of boot.sh, extracted), then boot-stage2.sh is SOURCED (it only defines functions) and its own functions run in
 #      stage2_main's order: set_docker_address_pools (daemon.json pools + Docker restart + firewall again), metadata_blocked, wall_between_run_networks, wall_ipv6_into_host. Nothing is copied from them.
 #   2. Postgres: there is no catalog on CI. The public postgres:16 image (ECR Public mirror of Docker Hub, PINNED BY THE INDEX DIGEST below) is pushed to a throwaway local registry (localhost:5000, registry:2 pinned by digest) and
-#      pulled back by the digest it got there, so the helper runs `localhost:5000/svc/postgres@sha256:<digest>` with --pull=never, the same shape as the catalog's reference. The registry is removed before the checks start.
+#      pulled back by the digest it got there, so the helper runs `localhost:5000/rovara-catalog/ci/svc/postgres@sha256:<digest>` with --pull=never, the same shape as a staging worker's reference (`<registry>/rovara-catalog/<env>/svc/postgres@...`; the driver builds both from one function, catalogRegistry). The registry is removed before the checks start.
 #      The committed catalog's postgres@16 entry (run arguments, health, resources, template_db reset) supplies everything else; the catalog's signature is NOT checked here (CI proves how the entry RUNS, not that it is trusted).
 #   3. The live driver runs inside the worker image (built from environments/base/Dockerfile by the previous workflow step: the code that ships), with the host's Docker socket, exactly as on a worker.
 #   4. linux-check-test-services.sh reads the driver's lines (TSL_LIVE_OUT_FILE) and adds its own read-only host checks. `judge` then fails the job on any FAIL or TSL ERROR, on a PENDING that is not one of the known later-slice
@@ -23,6 +23,9 @@ set -uo pipefail
 readonly POSTGRES_PINNED='public.ecr.aws/docker/library/postgres:16@sha256:5db6dac2ef5dcff512f4f00a009c3c332b9f2f28f24277175bf3e4a3d02ef83a'
 readonly REGISTRY_PINNED='public.ecr.aws/docker/library/registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373'
 readonly LOCAL_REGISTRY=localhost:5000
+# The environment name of the CI run: the driver prefixes the image with `$LOCAL_REGISTRY/rovara-catalog/$CI_ENV`, as a staging worker's is `<ecr>/rovara-catalog/staging` (never `staging` here: CI mode is never used on a staging worker).
+readonly CI_ENV=ci
+readonly CI_IMAGE_REPO="$LOCAL_REGISTRY/rovara-catalog/$CI_ENV/svc/postgres"
 readonly TSL_WORKSPACE_KEY=7e57c4ec7e57c4ec
 # The items the live driver must PASS (scripts/linux-check-test-services-live.ts), and the only items that may stay PENDING (later slices: L5 test-account proxy, L7, L8, and the internal-drops part that needs an idle host's run network).
 readonly LIVE_IDS="L1.live L1.live-other-run L2.live L3.live L3.embedded-resolver L3.embedded-resolver-blocked L3.working-relay L3.ipv6 L3.no-route L3.other-run L3.multicast L3.run-files L3.spoofing L4.live L4.template-db L6.live"
@@ -86,12 +89,12 @@ push_postgres() {
   docker run -d --name tsl-ci-registry -p 127.0.0.1:5000:5000 "$REGISTRY_PINNED" >/dev/null || return 1
   local n
   for n in $(seq 1 30); do curl -fsS --max-time 2 "http://$LOCAL_REGISTRY/v2/" >/dev/null 2>&1 && break; sleep 1; [[ $n -lt 30 ]] || { log "the local registry did not come up"; return 1; }; done
-  docker tag "$POSTGRES_PINNED" "$LOCAL_REGISTRY/svc/postgres:ci" || return 1
-  out=$(docker push "$LOCAL_REGISTRY/svc/postgres:ci" 2>&1) || { log "push failed: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"; return 1; }
+  docker tag "$POSTGRES_PINNED" "$CI_IMAGE_REPO:ci" || return 1
+  out=$(docker push "$CI_IMAGE_REPO:ci" 2>&1) || { log "push failed: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"; return 1; }
   digest=$(printf '%s\n' "$out" | sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p' | tail -1)
   [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { log "the registry gave no digest"; return 1; }
-  docker rmi "$LOCAL_REGISTRY/svc/postgres:ci" >/dev/null 2>&1 || true
-  docker pull --quiet "$LOCAL_REGISTRY/svc/postgres@$digest" >/dev/null || { log "could not pull the pushed image back by digest"; return 1; }
+  docker rmi "$CI_IMAGE_REPO:ci" >/dev/null 2>&1 || true
+  docker pull --quiet "$CI_IMAGE_REPO@$digest" >/dev/null || { log "could not pull the pushed image back by digest"; return 1; }
   docker rm -f tsl-ci-registry >/dev/null 2>&1 || true
   printf '%s\n' "$digest"
 }
@@ -137,13 +140,13 @@ main() {
   log "running the live driver in the worker image ($image_id), postgres $digest"
   timeout --foreground --kill-after=30s 2400s docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp:rw,nosuid,size=64m \
     -v "$TSL_CI_DRIVER_JS:/opt/agentx/tsl-live.mjs:ro" -v "$root/environments/service-catalog/catalog.json:/opt/agentx/tsl-catalog.json:ro" \
-    -e TSL_REGISTRY="$LOCAL_REGISTRY" -e TSL_ENV=ci -e TSL_CATALOG=/opt/agentx/tsl-catalog.json -e TSL_WORKER_IMAGE="$image_id" -e TSL_WORK="$work" -e TSL_CI_POSTGRES_DIGEST="$digest" \
+    -e TSL_REGISTRY="$LOCAL_REGISTRY" -e TSL_ENV="$CI_ENV" -e TSL_CATALOG=/opt/agentx/tsl-catalog.json -e TSL_WORKER_IMAGE="$image_id" -e TSL_WORK="$work" -e TSL_CI_POSTGRES_DIGEST="$digest" \
     --user 0:0 --group-add "$gid" -v /var/run/docker.sock:/var/run/docker.sock -v "$work:$work" --entrypoint /usr/local/bin/node "$image_id" /opt/agentx/tsl-live.mjs ci > "$live_out" 2>&1
   log "driver exit status $?"
   cleanup_labelled
   rm -rf "$work"
   check_out="$RUNNER_TEMP/tsl-check.out"
-  TSL_ENV=ci TSL_LIVE_OUT_FILE="$live_out" bash "$root/scripts/linux-check-test-services.sh" > "$check_out" 2>&1
+  TSL_ENV="$CI_ENV" TSL_LIVE_OUT_FILE="$live_out" bash "$root/scripts/linux-check-test-services.sh" > "$check_out" 2>&1
   log "checker exit status $? (0: all pass; 3: only later-slice items pending; 1: a failure)"
   if [[ "${TSL_EGRESS_CAPTURE:-}" == 1 ]]; then
     eg_capture_stop

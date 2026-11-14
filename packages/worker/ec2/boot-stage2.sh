@@ -1225,6 +1225,18 @@ tsl_classify() {
   tsl_item extra.redis-flush pending no_pin
   tsl_item extra.http-reset pending later_slice
 }
+# Logs, and never records, why the run failed: the first FAIL line of the checker's output (its item id, name and detail) and the first ERROR or BLOCKED line, each cut to 200 characters and reduced to plain text (letters, digits and
+# `space . _ : / @ , = ( ) | -`: an image reference survives, a control character or quote does not). Without it a `check_failed` told nothing about the cause (staging 2026-11-14: 16 live items failed on one image-reference mistake and
+# the result said only `check_failed`). The RECORDED result stays fixed words (condition 4, 3,000 characters): this goes to the worker log only, where the driver's own detail lines (already redacted, 200 characters) are. Never fatal.
+tsl_log_first_failure() { # tsl_log_first_failure <checker output file>
+  local out=$1 line count
+  line=$(grep -m1 -E '^TSL [A-Za-z0-9._-]+ FAIL ' "$out" 2>/dev/null | tr -c 'A-Za-z0-9 ._:/@,=()|-' ' ' | tr -s ' ' | cut -c1-200) || line=""
+  count=$(grep -c -E '^TSL [A-Za-z0-9._-]+ FAIL ' "$out" 2>/dev/null) || count=0
+  [[ -z "$line" ]] || log "TS-L self-test: ${count} failing item(s); first: ${line}"
+  line=$(grep -m1 -E '^TSL (ERROR|BLOCKED)' "$out" 2>/dev/null | tr -c 'A-Za-z0-9 ._:/@,=()|-' ' ' | tr -s ' ' | cut -c1-200) || line=""
+  [[ -z "$line" ]] || log "TS-L self-test: checker reported: ${line}"
+  return 0
+}
 # The result as ONE line of JSON, from fixed words only: `items` are CI's ids, `extra` the extras. Prints nothing and returns 1 when it would not fit TSL_RESULT_MAX_CHARS or a word is not in its list; the caller then records
 # `incomplete: too_large` without items.
 tsl_encode() { # tsl_encode <state> <reason> <seconds>
@@ -1336,7 +1348,7 @@ run_tsl_selftest() {
   # A timed-out run printed nothing (the checker reads the driver first): the read-only half is run alone, on the clean host, so the host items still count, if the time allows it (the reserve keeps the rest of the clean-up safe).
   if [[ "$mode" == timeout ]]; then
     if ((TSL_HARD_DEADLINE - SECONDS >= TSL_HOST_PASS_NEEDS_S)); then tsl_run_checks host 30 "$TSL_WORK_DIR" "$host_out" || true; tsl_classify "$host_out" timeout; else tsl_classify "$host_out" none; fi
-  else tsl_classify "$out" live; fi
+  else tsl_log_first_failure "$out"; tsl_classify "$out" live; fi
   tsl_cleanup
   if ! tsl_readback_settled; then
     # One settle, then a second round (condition 3: it must be gone before the worker takes work).

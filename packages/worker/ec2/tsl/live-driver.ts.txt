@@ -217,10 +217,19 @@ export function postgresEntry(catalog: VerifiedCatalog): CatalogEntry & { image:
   return entry as CatalogEntry & { image: { digest: string } };
 }
 
+/**
+ * The registry prefix the helpers are started with: `<host>/rovara-catalog/<env>`, the very value the real worker passes (`${config.registry}/${CATALOG_REGISTRY_ROOT}/${config.catalogEnv}`, packages/worker/src/test-services-run.ts).
+ * The service helpers append the entry's repository (`svc/postgres`) and the digest to it with --pull=never, so the image the driver PULLS and the image the lab STARTS are the same reference only if both use this one function.
+ * CI mode uses it too (its local registry holds `localhost:5000/rovara-catalog/ci/svc/postgres`), so CI exercises the staging shape.
+ */
+export function catalogRegistry(input: { registry: string; env: string }): string {
+  return `${input.registry}/rovara-catalog/${input.env}`;
+}
+
 /** The references the shell script pulls before the run: only what this slice uses, always by digest. */
 export function pullList(input: { catalog: VerifiedCatalog; registry: string; env: string }): string[] {
   const entry = postgresEntry(input.catalog);
-  return [`${input.registry}/rovara-catalog/${input.env}/${entry.image.repository}@sha256:${entry.image.digest}`];
+  return [`${catalogRegistry(input)}/${entry.image.repository}@sha256:${entry.image.digest}`];
 }
 
 /** A manifest port over a directory of files named by digest (the shell script wrote them from the registry, byte for byte). */
@@ -297,7 +306,7 @@ async function startLab(context: Context, label: string): Promise<Lab> {
   let session: ServiceRunnerModule.ServiceSession;
   try {
     session = await layer.runner.createDockerServiceRunner(context.docker).start({
-      runId, workspace: TSL_WORKSPACE, roundBudgetMs: ROUND_BUDGET_MS, registry: input.registry, edition: "public", probeImage: input.workerImage, maxMemMiB: 3072,
+      runId, workspace: TSL_WORKSPACE, roundBudgetMs: ROUND_BUDGET_MS, registry: catalogRegistry(input), edition: "public", probeImage: input.workerImage, maxMemMiB: 3072,
       helpers: [request], files, resetHooks: layer.reset.createResetHooks(),
     });
   } catch (error) {

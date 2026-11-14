@@ -758,6 +758,32 @@ describe("condition 4: the output is fixed ids, fixed codes and the four identit
     expect(parsedOf(s).items.find((entry) => entry.id === "L3.ipv6")).toEqual({ id: "L3.ipv6", status: "fail", reason: "check_failed" });
   });
 
+  it("logs the first FAIL line (cut to 200 characters, plain text) and the first ERROR line to the worker log, and records only fixed words: the 3,000-character result is unchanged", () => {
+    const ref = `${IMAGE.split("@")[0]}/rovara-catalog/staging/svc/postgres@sha256:${"d".repeat(64)}`;
+    const long = `the check could not run: docker run ${ref} failed: ${"x".repeat(400)}`;
+    const s = setup();
+    selfTest(s, STAGING, checkerOutput({ "L4.live": `FAIL helpers-start-non-root | ${long}\u001b[31m "quoted" \`tick\`` , "L6.live": "FAIL killed-worker-sweep | second" }, ["TSL ERROR pull-list: broke at the registry"]));
+    const lines = logOf(s).split("\n").filter((line) => line.startsWith("TS-L self-test:") && (line.includes("failing item(s)") || line.includes("checker reported")));
+    expect(lines).toHaveLength(2);
+    const failing = lines.find((line) => line.includes("failing item(s)"))!;
+    expect(failing).toContain("2 failing item(s); first: TSL L4.live FAIL helpers-start-non-root | the check could not run: docker run");
+    expect(failing).toContain(ref.slice(0, 120));
+    expect(failing.slice(failing.indexOf("first: ") + "first: ".length).length).toBeLessThanOrEqual(200);
+    expect([...failing].every((char) => char.charCodeAt(0) >= 0x20 && char !== '"' && char !== "`")).toBe(true);
+    expect(failing).not.toContain("second");
+    expect(lines.find((line) => line.includes("checker reported"))).toContain("TSL ERROR pull-list: broke at the registry");
+    // the recorded result is still fixed words, and none of the detail reached it
+    const result = recorded(s)!;
+    expect(result.length).toBeLessThanOrEqual(3000);
+    expect(result).not.toMatch(/rovara-catalog|postgres|could not run|broke at/u);
+    expect(parsedOf(s).items.find((entry) => entry.id === "L4.live")).toEqual({ id: "L4.live", status: "fail", reason: "driver_error" });
+    // a clean run logs nothing of this kind
+    const clean = setup();
+    selfTest(clean, STAGING);
+    expect(logOf(clean)).not.toContain("failing item(s)");
+    expect(logOf(clean)).not.toContain("checker reported");
+  });
+
   it("an untrusted catalog, a registry login or manifest read that failed, and a pull that failed each have their own fixed code (the first two are `pending: no_pull_grant`, the pull `pending: pull_failed`)", () => {
     const itemOf = (s: Setup, id: string) => parsedOf(s).items.find((entry) => entry.id === id);
     const live = { "L4.live": "FAIL x | y", "L4.template-db": "FAIL x | y", "L1.walls": "FAIL x | y" };

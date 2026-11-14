@@ -380,6 +380,17 @@ describe("scripts/ci-test-services-linux.sh", () => {
     expect(script).toContain("judge \"$check_out\"");
   });
 
+  it("pushes the CI image under the staging shape, `<registry>/rovara-catalog/<env>/svc/postgres`, with the same environment name for the driver and the checker (CI mode is never `staging`)", () => {
+    expect(scriptCode).toContain("readonly CI_ENV=ci");
+    expect(scriptCode).toContain('readonly CI_IMAGE_REPO="$LOCAL_REGISTRY/rovara-catalog/$CI_ENV/svc/postgres"');
+    expect(scriptCode).not.toMatch(/\$LOCAL_REGISTRY\/svc\//u);
+    expect(scriptCode).toContain('docker tag "$POSTGRES_PINNED" "$CI_IMAGE_REPO:ci"');
+    expect(scriptCode).toContain('docker pull --quiet "$CI_IMAGE_REPO@$digest"');
+    expect(scriptCode).toContain('-e TSL_ENV="$CI_ENV"');
+    expect(scriptCode).toContain('TSL_ENV="$CI_ENV" TSL_LIVE_OUT_FILE=');
+    expect(scriptCode).not.toMatch(/TSL_ENV=staging/u);
+  });
+
   const judge = (output: string, expectedVersion = "", egress = "") => {
     const dir = mkdtempSync(join(tmpdir(), "tsl-judge-"));
     const file = join(dir, "out");

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
-  BlockedError, ITEMS, LISTEN_JS, embeddedResolverLines, PROBE_JS, RELAY_LISTENER_JS, SSM_CHUNK_CHARS, TSL_WORKSPACE, blockedLines, formatLine, hasDefaultRoute, labelArgsFrom, loadVerifiedCatalog, manifestFilesPort, parseProbeOutput, parseUids, postgresEntry, pullList, resolvePostgres, runLiveChecks, ssmCommands, unexpected,
+  BlockedError, ITEMS, LISTEN_JS, catalogRegistry, ciPostgresEntry, embeddedResolverLines, PROBE_JS, RELAY_LISTENER_JS, SSM_CHUNK_CHARS, TSL_WORKSPACE, blockedLines, formatLine, hasDefaultRoute, labelArgsFrom, loadVerifiedCatalog, manifestFilesPort, parseProbeOutput, parseUids, postgresEntry, pullList, resolvePostgres, runLiveChecks, ssmCommands, unexpected,
   type EmbeddedResolverEvidence, type RunLayer,
 } from "../../scripts/linux-check-test-services-live.js";
 import { CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf, type VerifiedCatalog } from "@rovara-code/contracts";
@@ -391,6 +391,36 @@ describe("the whole run, with a launcher that fails", () => {
     // one sweep before the first item and one after each of the five items
     expect(events.filter((event) => event === "sweep")).toHaveLength(1 + ITEMS.length);
     expect(events.filter((event) => event.startsWith("remove ")).length).toBeGreaterThan(0);
+  });
+  /** The image reference the real helper launcher builds from the registry it is given (service-helpers.ts: `${registry}/${entry.image.repository}@sha256:${digest}`, started with --pull=never). */
+  const helperReference = (registry: string, entry: { image: { repository: string; digest: string } }): string => `${registry}/${entry.image.repository}@sha256:${entry.image.digest}`;
+  /** A layer whose runner records the `registry` each lab is started with, then fails the start (nothing runs). */
+  const recordingLayer = (registries: string[]): RunLayer => ({
+    helpers: { sweepServicesNetworksAtWorkerStart: async () => ({ containers: 0, networks: 0 }) },
+    env: { createRunDirectoryFiles: async (_parent: string, name: string) => ({ directory: `/nowhere/${name}`, write: async () => "/x", remove: async () => undefined }), removeRunDirectory: async () => undefined },
+    reset: { createResetHooks: () => ({}) },
+    runner: { createDockerServiceRunner: () => ({ start: (input: { registry: string }) => { registries.push(input.registry); return Promise.reject(new Error("stop here")); } }) },
+    runNetwork: {}, check: {}, containers: { createDockerCli: () => ({ run: async () => ({ exitCode: 0, stdout: "", stderr: "" }) }) },
+  } as unknown as RunLayer);
+  it("starts the lab with the very image reference it pulled: the helper's --pull=never start asks for the pull list's reference, in the signed-catalog mode", async () => {
+    const catalog = await verified();
+    const registries: string[] = [];
+    await runLiveChecks({ catalog, manifests: served, registry: REGISTRY, env: "staging", workerImage: IMAGE, workDir: await mkdtemp(join(tmpdir(), "tsl-run-")), layer: recordingLayer(registries) });
+    expect(registries.length).toBeGreaterThan(0);
+    const pulled = pullList({ catalog, registry: REGISTRY, env: "staging" });
+    expect(pulled).toHaveLength(1);
+    for (const registry of registries) expect(helperReference(registry, postgresEntry(catalog)), registry).toBe(pulled[0]);
+    // the real worker's value (`${config.registry}/rovara-catalog/${catalogEnv}`), not the bare ECR host
+    expect(registries[0]).toBe(`${REGISTRY}/rovara-catalog/staging`);
+    expect(registries[0]).toBe(catalogRegistry({ registry: REGISTRY, env: "staging" }));
+  });
+  it("CI mode starts the lab under the same prefix, so CI exercises the staging shape (the image CI pushes is localhost:5000/rovara-catalog/ci/svc/postgres)", async () => {
+    const digest = "c".repeat(64);
+    const entry = ciPostgresEntry(await readFile(new URL("../../environments/service-catalog/catalog.json", import.meta.url), "utf8"), digest);
+    const registries: string[] = [];
+    await runLiveChecks({ entry, registry: "localhost:5000", env: "ci", workerImage: IMAGE, workDir: await mkdtemp(join(tmpdir(), "tsl-run-")), layer: recordingLayer(registries) });
+    expect(registries.length).toBeGreaterThan(0);
+    for (const registry of registries) expect(helperReference(registry, entry)).toBe(`localhost:5000/rovara-catalog/ci/svc/postgres@sha256:${digest}`);
   });
   it("refuses to run at all when the registry does not serve the catalog's digest, before it starts anything", async () => {
     const events: string[] = [];
