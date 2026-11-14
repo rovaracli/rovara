@@ -118,7 +118,7 @@ for (const switchState of ["on", "off"] as const) {
     it("decide: a caller with no credential to present (a Slack event, a script token, a token with no header) is refused, and nothing is decided", async () => {
       const { r, routes, taskId, body, owner } = await setup();
       for (const caller of [callerOf(owner), callerOf(owner, { scriptToken: { tokenId: "t", name: "n", permissions: ["start"], projects: [] } })]) {
-        const error = await refusal(routes.decide({ caller, taskId, value: body(), bearer: r.people.tokenOf(owner).length > 0 && caller.scriptToken !== undefined ? r.people.tokenOf(owner) : undefined, view: viewOf(r, taskId) }));
+        const error = await refusal(routes.decide({ caller, taskId, value: body(), bearer: r.people.tokenOf(owner).length > 0 && (caller as { scriptToken?: unknown }).scriptToken !== undefined ? r.people.tokenOf(owner) : undefined, view: viewOf(r, taskId) }));
         expect(error, "refused").toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining(NO_CREDENTIAL_WORDS) as string });
       }
       expect((await metaOf(r, taskId)).workflow).toMatchObject({ decisions: [] });
@@ -530,5 +530,179 @@ describe("the route's authorize is Cloud's own check for each action (Code's ses
     installCoreTaskRoutes(authorizedBy(done));
     expect(await act(world, world.people.owner)).toEqual({ retry: "PROJECT_ARCHIVED", cancel: "done", "revise-plan": "PROJECT_ARCHIVED" });
     expect(done).toEqual(["cancel"]);
+  });
+});
+
+// DEFERRED S3-RETRY-CANCEL-REVISE-WIRING, review round 1: the route's `authorize` is Cloud's own check for each action. These tests run the real functions (`retryTaskWorkflow`, `cancelTask`,
+// `reviseTaskWorkflowPlan`) over the people world with the task's People list, a share, project roles and a closed task, and a hook that records only that the core was reached. Each case fails when the check
+// it pins is weakened (the review's mutants R1, R2, V1, V2, C1, C2, T3, T4).
+describe("who may retry, stop and revise a core task: Cloud's access rule for the action, not 'can read' (review round 1)", () => {
+  const TASK = "99999999-9999-4999-8999-999999999999";
+  type Key = keyof PeopleWorld["people"];
+  type Listed = Partial<Record<Key, "owner" | "commenter" | "viewer">>;
+  interface Setup { creator: Key; listed?: Listed; /** A project grant: `developer` is a contributor, `viewer` a viewer, none is no grant at all. */ grants?: Partial<Record<Key, "developer" | "viewer">>; closed?: boolean; takenOverBy?: Key }
+
+  const build = (setup: Setup) => {
+    const world = createPeopleWorld();
+    const { people } = world;
+    world.db.set({
+      ...projectRevisionKey(PEOPLE_ORG, "payments", 1), entityType: "PROJECT", registeredBy: "seed", registeredAt: "2026-10-01T00:00:00.000Z",
+      definition: { name: "payments", revision: 1, repositories: [{ name: "web", url: "https://github.com/acme/payments.git", path: "repo/web", defaultBranch: "main", credentialRef: "github-app" }], setup: [], readiness: [], orchestratorInstructions: "Delegate work." },
+    });
+    world.db.set({ ...orgProjectCatalogKey(PEOPLE_ORG, "payments"), entityType: "PROJECT_CATALOG", name: "payments", latestRevision: 1, firstRegisteredAt: "2026-10-01T00:00:00.000Z" });
+    world.db.set({ ...projectMetaKey(PEOPLE_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "active", createdAt: "2026-10-02T00:00:00.000Z", createdBy: people.owner.developerId });
+    for (const [key, role] of Object.entries(setup.grants ?? {}) as Array<[Key, "developer" | "viewer"]>) {
+      world.db.set({ ...projectMemberKey(PEOPLE_ORG, people[key].developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: people[key].developerId, projectName: "payments", role });
+    }
+    const creator = people[setup.creator];
+    const taker = setup.takenOverBy === undefined ? undefined : people[setup.takenOverBy];
+    world.db.set({
+      pk: `DEVTASK#${TASK}`, sk: "META", entityType: "DEVELOPER_TASK", taskId: TASK, orgId: PEOPLE_ORG, companyId: PEOPLE_ORG, project: "payments", developerId: creator.developerId, developerName: creator.name, provider: "oidc",
+      ownerKey: taskOwnerKey(creator.developerId, TASK), workspaceId: "77777777-7777-4777-8777-777777777777", status: "RUNNING", createdAt: "2026-11-12T10:00:00.000Z",
+      ...(setup.listed === undefined ? {} : { share: { teamId: "T0PEOPLE1", channelId: "C0CHAN", threadTs: "1.1" } }),
+      ...(setup.closed === true ? { closedAt: "2026-11-12T11:00:00.000Z" } : {}),
+      ...(taker === undefined ? {} : { currentOwner: { developerId: taker.developerId, name: taker.name, provider: "oidc", since: "2026-11-12T10:30:00.000Z" } }),
+    });
+    if (setup.listed !== undefined) {
+      world.db.set({
+        pk: `DEVTASK#${TASK}`, sk: "PEOPLE", schemaVersion: 1, revision: 1, orphaned: false,
+        people: Object.entries(setup.listed).map(([key, role]) => ({ developerId: people[key as Key].developerId, name: people[key as Key].name, role })),
+      });
+    }
+    const grants = setup.grants ?? {};
+    // The identity check the People list asks (Slack and the directory are not under test): everyone listed is an eligible member of the task's channel; a project viewer is marked as one.
+    const checkTaskPerson = async (_task: unknown, developerId: string) => {
+      const who = Object.values(people).find((person) => person.developerId === developerId)!;
+      return { subject: { developerId }, identity: { developerId, name: who.name, method: "oidc", issuer: "https://oidc.example.test", subject: `${who.key}-subject` }, eligible: true, channelMember: true,
+        ...((grants as Record<string, string | undefined>)[who.key] === "viewer" ? { projectViewer: true as const } : {}) } as never;
+    };
+    const depsFor = (who: Person) => ({ ...developerTaskRouteDependencies(world.routes, callerOf(who)), checkTaskPerson });
+    return { world, depsFor, people };
+  };
+
+  /** The core's hook with the real revise route (the owner rule is the route's own) and a recorder for the rest: it says only that the route reached the core. */
+  const hook = (world: PeopleWorld, done: string[]): CoreTaskRoutes => {
+    const real = createCoreTaskRoutes({ app: {} as never, log: () => undefined, read: async (key) => world.db.get(key), principalOf: async () => { throw new Error("unused"); } });
+    return {
+      owns: async () => true,
+      decide: async () => { throw new Error("unused"); },
+      close: async () => { throw new Error("unused"); },
+      retry: async (input) => { await input.authorize(); done.push("retry"); return { task: {} as never }; },
+      cancel: async (input) => { await input.authorize(); done.push("cancel"); return { task: {} as never, nothingRunning: true }; },
+      // The real owner rule after Cloud's check; a person who passes both reaches the (absent) session and is told so before Code is asked.
+      revisePlan: async (input) => { const answer = await real.revisePlan(input); done.push("revise-plan"); return answer; },
+    };
+  };
+
+  type Outcome = "done" | { code?: string | undefined; message: string };
+  const press = async (setup: ReturnType<typeof build>, who: Person): Promise<Record<"retry" | "cancel" | "revise-plan", Outcome>> => {
+    const caller = callerOf(who);
+    const deps = setup.depsFor(who);
+    const outcome = async (run: () => Promise<unknown>): Promise<Outcome> => {
+      const error = await refusal(run());
+      return error === undefined ? "done" : { code: (error as { code?: string }).code, message: error.message };
+    };
+    return {
+      retry: await outcome(() => retryTaskWorkflow(deps, caller, TASK, {})),
+      cancel: await outcome(() => cancelTask(deps, caller, TASK, {})),
+      "revise-plan": await outcome(() => reviseTaskWorkflowPlan(deps, caller, TASK, {})),
+    };
+  };
+  // Where a person who passed Cloud's check ends in the revise route: the owner rule passed and the task has no session, so the route says so (it never calls Code).
+  const REACHED_CORE = { code: "CONFIG_INVALID" };
+
+  it("R2/V2: a company admin or owner who is not the task's owner, and a shared person with a developer project role, are each refused retry and revise; a commenter is refused stop too", async () => {
+    for (const setup of [
+      // The task is the member's; the company owner and the admin are listed as commenters (they can read it).
+      build({ creator: "member", listed: { member: "owner", owner: "commenter", maintainer: "commenter" }, grants: { member: "developer" } }),
+      // The task is the owner's; the admin and a member with a developer grant (a shared person) are commenters.
+      build({ creator: "owner", listed: { owner: "owner", maintainer: "commenter", member: "commenter" }, grants: { member: "developer" } }),
+    ]) {
+      const done: string[] = [];
+      installCoreTaskRoutes(hook(setup.world, done));
+      const { owner, maintainer, member } = setup.people;
+      const creatorId = (setup.world.db.get({ pk: `DEVTASK#${TASK}`, sk: "META" }) as { developerId: string }).developerId;
+      const bystanders = [owner, maintainer, member].filter((who) => who.developerId !== creatorId);
+      expect(bystanders).toHaveLength(2);
+      for (const who of bystanders) {
+        const outcomes = await press(setup, who);
+        expect(outcomes.retry, `${who.key} retry`).toMatchObject({ code: "TASK_NOT_FOUND" });
+        expect(outcomes["revise-plan"], `${who.key} revise`).toMatchObject({ code: "TASK_NOT_FOUND" });
+        expect(outcomes.cancel, `${who.key} stop`).toMatchObject({ code: "TASK_NOT_FOUND" });
+      }
+      expect(done).toEqual([]);
+    }
+  });
+
+  it("C1: a viewer who can see the task, and a commenter, are refused stop (it is the owner's action, not a read)", async () => {
+    const setup = build({ creator: "owner", listed: { owner: "owner", member: "viewer", maintainer: "commenter" }, grants: { member: "developer" } });
+    const done: string[] = [];
+    installCoreTaskRoutes(hook(setup.world, done));
+    for (const who of [setup.people.member, setup.people.maintainer]) expect((await press(setup, who)).cancel, who.key).toMatchObject({ code: "TASK_NOT_FOUND" });
+    expect(done).toEqual([]);
+    // The owner's own stop passes the same check.
+    expect((await press(setup, setup.people.owner)).cancel).toBe("done");
+    expect(done).toContain("cancel");
+  });
+
+  it("R1/V1: an owner (the creator, or a co-owner on the People list) who holds no project access, or only a viewer's, cannot send the task back to coding by retry or revise", async () => {
+    for (const setup of [
+      build({ creator: "member" }),
+      build({ creator: "member", grants: { member: "viewer" } }),
+      build({ creator: "owner", listed: { owner: "owner", member: "owner" } }),
+      build({ creator: "owner", listed: { owner: "owner", member: "owner" }, grants: { member: "viewer" } }),
+    ]) {
+      const done: string[] = [];
+      installCoreTaskRoutes(hook(setup.world, done));
+      const outcomes = await press(setup, setup.people.member);
+      expect(outcomes.retry, "retry").toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+      expect(outcomes["revise-plan"], "revise").toMatchObject({ code: "PROJECT_ACCESS_DENIED" });
+      expect(done).not.toContain("retry");
+      expect(done).not.toContain("revise-plan");
+    }
+    // The same owner with a contributor's grant passes both, and a company admin who owns the task needs no grant.
+    const allowed = build({ creator: "member", grants: { member: "developer" } });
+    installCoreTaskRoutes(hook(allowed.world, []));
+    const outcomes = await press(allowed, allowed.people.member);
+    expect(outcomes.retry).toBe("done");
+    expect(outcomes["revise-plan"]).toMatchObject({ ...REACHED_CORE, message: expect.stringContaining(REVISE_NO_SESSION_WORDS) as string });
+    const admin = build({ creator: "maintainer" });
+    installCoreTaskRoutes(hook(admin.world, []));
+    expect((await press(admin, admin.people.maintainer)).retry).toBe("done");
+  });
+
+  it("C2: a closed task is refused a stop in Cloud's own words (and a retry and a revise as no task), and the core does nothing", async () => {
+    const setup = build({ creator: "owner", closed: true });
+    const done: string[] = [];
+    installCoreTaskRoutes(hook(setup.world, done));
+    const outcomes = await press(setup, setup.people.owner);
+    expect(outcomes.cancel).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("this task is closed") as string });
+    expect(outcomes.retry).toMatchObject({ code: "TASK_NOT_FOUND" });
+    expect(outcomes["revise-plan"]).toMatchObject({ code: "TASK_NOT_FOUND" });
+    expect(done).toEqual([]);
+  });
+
+  it("T3: a stranger, a person with no access and someone of another company hear 'no task' from revise, never 'owners only' (which would confirm the task exists)", async () => {
+    const setup = build({ creator: "owner", grants: { owner: "developer" } });
+    const done: string[] = [];
+    installCoreTaskRoutes(hook(setup.world, done));
+    for (const who of [setup.people.stranger, setup.people.auditor, setup.people.member]) {
+      const outcome = (await press(setup, who))["revise-plan"];
+      expect(outcome, who.key).toMatchObject({ code: "TASK_NOT_FOUND" });
+      expect(JSON.stringify(outcome), who.key).not.toContain(REVISE_OWNER_ONLY_WORDS);
+    }
+    expect(done).toEqual([]);
+  });
+
+  it("T3/T4: the route's own order and owner (over the real route): Cloud's refusal is first even for a non-owner, and the owner is the task's EFFECTIVE owner (the taker after a take-over, never the creator)", async () => {
+    const setup = build({ creator: "owner", takenOverBy: "member" });
+    const real = createCoreTaskRoutes({ app: {} as never, log: () => undefined, read: async (key) => setup.world.db.get(key), principalOf: async () => { throw new Error("unused"); } });
+    const value = { requestId: randomUUID(), expectedRevision: 1 };
+    const view = async () => ({}) as never;
+    // Cloud's check first: a person it refuses hears its words whoever owns the task.
+    expect(await refusal(real.revisePlan({ caller: browser(setup.people.maintainer), taskId: TASK, value, authorize: deny, view }))).toMatchObject({ code: "TASK_NOT_FOUND" });
+    // After the take-over the creator is not the owner any more ("owners only"), and the taker is (so the route goes on to the session, which this task has none of).
+    expect(await refusal(real.revisePlan({ caller: browser(setup.people.owner), taskId: TASK, value, authorize: allow, view }))).toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining(REVISE_OWNER_ONLY_WORDS) as string });
+    expect(await refusal(real.revisePlan({ caller: browser(setup.people.member), taskId: TASK, value, authorize: allow, view }))).toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining(REVISE_NO_SESSION_WORDS) as string });
   });
 });

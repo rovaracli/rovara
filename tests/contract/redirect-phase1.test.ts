@@ -2,13 +2,15 @@
 // nothing at all), the strict body, the rates (3 per step attempt, 5 per task per hour, and the person's steer rate), the worker feature check, the task-state guard inside the transaction,
 // the in-flight marker, idempotency by request id, and the cancel that must follow the commit. Phase 2 (the restart) is `redirect-continue.test.ts`.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { OWNER_REDIRECT_FEATURE, REDIRECT_REFUSAL_MESSAGES, REDIRECT_SLACK_STATUS_LINE, agentSessionKey, agentXError, type OrgId } from "@rovara-code/contracts";
 import { WORKFLOW_BLOCK_REASONS } from "@agentx/cloud-contracts";
 import { redirectSession, type RedirectConfig, type RedirectDependencies } from "../../packages/broker/src/agent-sessions/redirect.js";
 import { endRedirect, readOpenRedirect, readRedirect, redirectKey } from "../../packages/broker/src/agent-sessions/redirect-state.js";
 import { stopSession } from "../../packages/broker/src/agent-sessions/stop.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { CORE_REDIRECT_NOT_AVAILABLE_WORDS, installCoreTaskRoutes, type CoreTaskRoutes } from "../../packages/broker/src/rovara-code/task-routes.js";
+import { restartCodingForRedirect, restartPlanningForRedirect, revisePlanForRedirect, sendBackForRedirect } from "../../packages/broker/src/aws/developer-tasks/redirect-restart.js";
 import { ARJUN, MAX, MIA, OLA, ORG_A, ORG_B, BO, PRIYA, ZED, sessionWorld } from "../support/agent-session-world.js";
 
 type Item = Record<string, unknown>;
@@ -501,5 +503,68 @@ describe("a blocked check or review needs what a send-back needs (fix round 1, S
     expect(offered.records()[0]).toMatchObject({ kind: "blocked", step: "VERIFY" });
     const planning = world({ stage: "PLAN", state: "BLOCKED", features: [], workflow: { blockReason: "planning operation ended failed" } });
     await expect(planning.go(PRIYA)).resolves.toMatchObject({ redirect: { state: "stopping" } });
+  });
+});
+
+afterEach(() => installCoreTaskRoutes(undefined));
+
+describe("Stop & redirect on a task the core engine runs (S3, 0.5.19 pin)", () => {
+  /** A hook that says the core runs exactly this task; it answers nothing else (a redirect must never ask the core to act). */
+  const coreRuns = (taskId: string | undefined, asked: string[] = []): CoreTaskRoutes => {
+    const refuse = async (): Promise<never> => { throw new Error("the core is never asked to redirect"); };
+    return { owns: async (_caller, id) => { asked.push(id); return id === taskId; }, decide: refuse, close: refuse, retry: refuse, cancel: refuse, revisePlan: refuse };
+  };
+
+  it("refuses the owner in plain words before anything is recorded, stopped or counted: the whole table is unchanged, no worker is asked, no stop is sent", async () => {
+    const s = world();
+    installCoreTaskRoutes(coreRuns(s.made.taskId));
+    const before = s.table();
+    for (const mode of ["keep_plan", "change_plan"]) {
+      expect(await code(s.go(PRIYA, { mode }))).toEqual({ code: "CONFIG_INVALID", message: CORE_REDIRECT_NOT_AVAILABLE_WORDS });
+    }
+    expect(CORE_REDIRECT_NOT_AVAILABLE_WORDS).toContain("Not available on this task yet.");
+    expect(CORE_REDIRECT_NOT_AVAILABLE_WORDS).toContain("close this task and start a new one");
+    expect(s.table()).toBe(before);
+    expect(s.calls).toMatchObject({ cancel: [], features: 0, gate: [], continued: [], plan: [] });
+    expect(s.records()).toEqual([]);
+    expect(s.notes()).toEqual([]);
+  });
+
+  it("a repeat of a request is refused the same way, and a person who may not redirect still hears the owner rule first (nothing about the engine leaks)", async () => {
+    const s = world({ people: [{ developerId: MAX, role: "commenter" }] });
+    installCoreTaskRoutes(coreRuns(s.made.taskId));
+    const requestId = randomUUID();
+    const first = await code(s.go(PRIYA, { requestId }));
+    expect(first).toMatchObject({ code: "CONFIG_INVALID" });
+    expect(await code(s.go(PRIYA, { requestId }))).toEqual(first);
+    expect(await code(s.go(MAX))).toEqual({ code: "FORBIDDEN", message: REDIRECT_REFUSAL_MESSAGES.not_owner });
+  });
+
+  it("a Cloud task, no hook at all, and a hook that says the core runs another task leave the redirect as it was", async () => {
+    for (const hook of [undefined, "other" as const]) {
+      const s = world();
+      installCoreTaskRoutes(hook === undefined ? undefined : coreRuns(randomUUID()));
+      await expect(s.go(PRIYA)).resolves.toMatchObject({ redirect: { state: "stopping" } });
+      expect(s.calls.cancel).toHaveLength(1);
+    }
+  });
+
+  it("every restart (planning, coding, send-back, revise) refuses a core task before any row is read, so a redirect record that predates the rule restarts nothing", async () => {
+    const taskId = randomUUID();
+    const asked: string[] = [];
+    installCoreTaskRoutes(coreRuns(taskId, asked));
+    const record = { requestId: randomUUID(), kind: "blocked", orgId: ORG_A, sessionId: "ses_x", taskId, actorId: PRIYA, messageId: "msg_x", mode: "keep_plan", blockedRevision: 4, step: "PLAN", state: "stopping", createdAt: "2026-10-22T08:00:00.000Z", ttl: 1 } as never;
+    const caller = { developerId: PRIYA, sessionId: "redirect", amr: "oidc", name: "Priya", orgId: ORG_A, orgRole: "member" } as never;
+    // `deps` is an empty object: a refusal after any read or write would throw a TypeError instead of the plain words.
+    const deps = {} as never;
+    for (const restart of [
+      () => restartPlanningForRedirect(deps, caller, record, "text"),
+      () => restartCodingForRedirect(deps, caller, record, {} as never),
+      () => sendBackForRedirect(deps, caller, record, {} as never),
+      () => revisePlanForRedirect(deps, caller, record, "text"),
+    ]) {
+      expect(await code(restart())).toEqual({ code: "CONFIG_INVALID", message: CORE_REDIRECT_NOT_AVAILABLE_WORDS });
+    }
+    expect(asked).toEqual([taskId, taskId, taskId, taskId]);
   });
 });

@@ -3,6 +3,7 @@
 // `owns` and, when the core owns the task, hand the request to it. It holds no engine code, so the route files import nothing heavy. One hook per container, installed by the broker's handler
 // where the Cloud root is built (the same way the settings-proof settler is); absent, every route is exactly what it was.
 import type { DeveloperCloseResponse, DeveloperTaskView } from "@agentx/cloud-contracts";
+import { agentXError } from "@rovara-code/contracts";
 import type { DeveloperCaller } from "../aws/developer-routes.js";
 
 /** What a route gives the core to answer a decision on a task it owns. */
@@ -43,7 +44,7 @@ export interface CoreActionInput {
 
 export interface CoreTaskRoutes {
   /** Whether the core runs this task for the caller's company: the task's engine stamp says `core` and the row is the caller's company's. A task that is not found, or is another company's, is not the core's (Cloud's reader answers). Throws `RUNTIME_UNAVAILABLE` when it cannot be read. */
-  owns(caller: DeveloperCaller, taskId: string): Promise<boolean>;
+  owns(caller: Pick<DeveloperCaller, "orgId">, taskId: string): Promise<boolean>;
   decide(input: CoreDecideInput): Promise<{ task: DeveloperTaskView }>;
   close(input: CoreCloseInput): Promise<DeveloperCloseResponse>;
   /** Retries the step the task is blocked at (Code's `retryBlockedStep`, at the revision the person saw when the request names one). */
@@ -95,6 +96,19 @@ export const CORE_ACTION_WORDS: Readonly<Record<string, string>> = {
   "canvas-closeout/retry": `${CORE_NOT_AVAILABLE_PREFIX} The canvas close-out is not run for tasks on the new engine.`,
   "e2e-publication-context": `${CORE_NOT_AVAILABLE_PREFIX} End-to-end presentation checks are not run for tasks on the new engine.`,
 };
+
+/** What a person is told for Stop & redirect on a task the core engine runs: the core has no redirect (its Stop, Retry and "Revise the plan" are the session actions), so the redirect stops and restarts nothing. */
+export const CORE_REDIRECT_NOT_AVAILABLE_WORDS = `${CORE_NOT_AVAILABLE_PREFIX} To change what the task is doing, stop it, then close this task and start a new one with the extra instructions.`;
+
+/**
+ * Stop & redirect (phase 1's route and phase 2's restarts) never runs over a task the core engine owns: its restarts read workflow rows the core does not write, and phase 1 would record the instruction and
+ * stop the step before any restart could say no. Refuses in plain words (CONFIG_INVALID) before anything is read for the redirect or written. A Cloud task, no hook at all, and a company the core does not
+ * serve all pass through. A task that cannot be read fails closed (`owns` throws RUNTIME_UNAVAILABLE).
+ */
+export async function refuseRedirectOnCoreTask(caller: Pick<DeveloperCaller, "orgId">, taskId: string): Promise<void> {
+  const core = installed;
+  if (core !== undefined && await core.owns(caller, taskId)) throw agentXError("CONFIG_INVALID", CORE_REDIRECT_NOT_AVAILABLE_WORDS);
+}
 
 /** The words for an action: its own sentence, or (for an action no row names) the same plain first words and the close-and-start-again advice. Never a generic error. */
 export const coreActionWords = (action: string): string => CORE_ACTION_WORDS[action] ?? `${CORE_NOT_AVAILABLE_PREFIX} ${MORE_CHANGES}`;
