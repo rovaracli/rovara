@@ -5,7 +5,8 @@
 // What it joins, per company, once:
 //   milestones       Code's document milestones (`createMilestoneService`), with the root's task-end handler for a merge (`coreTaskEndWiring`) and, when a chat adapter is registered,
 //                    the thread notices (`channelThreadHandler`: the plan's approval card by risk, three milestone lines).
-//   merge tracking   `createMergeTrackingService` with Cloud's MergePeople (A6's rules) and Cloud's code settings; its sweep is the `merge-tracking` job.
+//   merge tracking   `createMergeTrackingService` with Cloud's MergePeople (A6's rules) and Cloud's code settings; its sweep is the `merge-tracking` job (the broker), and the lighter flow's tier pass
+//                    is the `tier-checks` job, which runs only on its own function (CoreTierChecks: 15 minutes, one at a time, no retries), never on the broker's 30 s.
 //   sessions         `createSessionService` over Cloud's facts and the cost ledger; its sweep is the `session-sweep` job. The notices a change calls for are queued by the notice service.
 //   notices          `createNoticeService` with Cloud's footer, link and access rules; its delivery is the `notify-deliver` job.
 //   decisions        `createDecisionService`, over Cloud's approvers adapter (A6) and the audit sink (A7). Who decides as the task's owner is Cloud's rule (`cloudActorFor`).
@@ -135,7 +136,10 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
     const models = wiring.models?.(companyId);
     // The reviewer is kept whether the switch is on or off (a task that skipped its planning steps still owes its questions after the switch went off); the switch itself needs it.
     const reviewPorts = wiring.tierReview?.(companyId);
-    const review = reviewPorts === undefined ? undefined : createCloudTierReview({ ports: reviewPorts, now: nowMs, log: (event, fields) => wiring.log({ component: "tier_review", event, ...fields }) });
+    // H1a: a reviewer call is started only inside a tier pass that has time for it. The `tier-checks` job sets the pass's end from its budget while it runs; outside a pass (the broker, any other job) there
+    // is no deadline, and the meter refuses every call (`no_time`).
+    let passEndsAt: number | undefined;
+    const review = reviewPorts === undefined ? undefined : createCloudTierReview({ ports: reviewPorts, now: nowMs, deadline: () => passEndsAt, log: (event, fields) => wiring.log({ component: "tier_review", event, ...fields }) });
 
     const flowOptions: Partial<RegistryTaskFlowOptions> = {
       ...cloudFlowOptions(settings, models),
@@ -193,13 +197,18 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
       const tracking = createMergeTrackingService({ flow: flow.deps, registry, companyId, milestones, people: wiring.people, settings: wiring.codeSettings, now: nowMs, log: wiring.log });
       const automationSwitch = cloudAutomationSwitch();
       const services: Partial<Record<CoreServiceName, CoreService>> = {
-        // The sweep, then the lighter flow's tier pass (Code runs it beside the sweep on its own timer, with its own allowance): the tasks the sweep found owing their reviewer's questions or a grown
-        // tier's reviews get them here. Without this pass a lighter-flow change is held for good (Code logs `tier_checks.not_running`). A pass that fails is reported, never the sweep's failure.
-        "merge-tracking": {
-          async pass() {
-            const swept = await tracking.sweep();
-            const tierChecks = await tracking.tierChecks().catch((error: unknown) => { wiring.log({ component: "merge_tracking", event: "tier_checks.failed", error: error instanceof Error ? error.name : "unknown" }); return "failed" as const; });
-            return { ...swept, tierChecks };
+        // The sweep only (on the broker). It marks the tasks that owe the lighter flow's checks (`TIER_CHECKS_DUE`); their model calls are the `tier-checks` job's.
+        "merge-tracking": { async pass() { return { ...(await tracking.sweep()) }; } },
+        // The lighter flow's tier pass (Code runs it beside the sweep on its own timer, with its own allowance): the tasks the sweep marked get their reviewer's questions or a grown tier's reviews here.
+        // Without this pass a lighter-flow change is held for good (Code logs `tier_checks.not_running`). The pass's end is its budget: the meter starts no call that could outlive it.
+        "tier-checks": {
+          async pass({ budgetMs }) {
+            passEndsAt = nowMs() + Math.max(0, budgetMs);
+            try {
+              return { tierChecks: await tracking.tierChecks() };
+            } finally {
+              passEndsAt = undefined;
+            }
           },
         },
         "session-sweep": { async pass({ budgetMs }) { return { ...(await sessions.sweep({ budgetMs })) }; } },

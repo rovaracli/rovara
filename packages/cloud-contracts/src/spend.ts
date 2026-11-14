@@ -111,7 +111,7 @@ export const personalCounter = (developerId: string): string => `PERSONAL#${deve
 /**
  * How an agent's spend view splits its runs. The split is by where the run came from, not by who pays: a test run is `test`; an event, a schedule or a
  * chain is `autonomous` (a member-paid chain still reads as autonomous, since no person started that run), and so is the company's own lesson learning (`learning`: no person
- * started that call, and it must not read as a person's spend); every other origin is `person` (so a Linear
+ * started that call, and it must not read as a person's spend), and the lighter flow's reviewer calls (`tier_review`: the scheduled tier pass makes them, not a person); every other origin is `person` (so a Linear
  * run a bot assigned and the project pays for is `person`: someone's request started it). Who pays is the ledger line's `payerKind`.
  */
 export type SpendOriginKind = "person" | "autonomous" | "test";
@@ -119,7 +119,7 @@ export const SPEND_ORIGIN_KINDS: readonly SpendOriginKind[] = ["person", "autono
 export const originCounter = (agentId: string, kind: SpendOriginKind): string => `AGENT_ORIGIN#${agentId}#${kind}`;
 export function spendOriginKind(origin: string): SpendOriginKind {
   if (origin === "test_run") return "test";
-  return origin === "event" || origin === "schedule" || origin === "chain" || origin === "learning" ? "autonomous" : "person";
+  return origin === "event" || origin === "schedule" || origin === "chain" || origin === "learning" || origin === "tier_review" ? "autonomous" : "person";
 }
 
 // ---- project AI settings and the org's spend policy (Task 28)

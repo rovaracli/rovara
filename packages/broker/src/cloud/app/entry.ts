@@ -35,11 +35,11 @@ import { CORE_CARD_ACTION_PREFIX, CORE_SLACK_ACTION, CORE_SLACK_PRESS_ACTION, ty
 export { CORE_CARD_ACTION_PREFIX, CORE_SLACK_ACTION, CORE_SLACK_PRESS_ACTION, corePressHandler, coreSlackFromIngress, type CoreSlackFromIngressDeps, type CoreSlackPress, type CoreSlackPressRequestEvent, type CoreSlackRequestEvent } from "./slack-ingress-hook.js";
 import { cloudAdapterModules, type CloudModuleDeps } from "./cloud-modules.js";
 import { coreAreaOn } from "./flags.js";
-import { isCoreJobEvent } from "./jobs.js";
+import { isCoreJobEvent, type CoreJobHost } from "./jobs.js";
 import { createCloudMergePeople } from "./merge-people.js";
 import { cloudWordsForCoreRefusal } from "./refusal-words.js";
 import { cloudCoreRuntime, type CloudCoreWiring } from "./runtime.js";
-import { cloudTierReviewPorts } from "./tier-review-ports.js";
+import { cloudTierReviewPorts, tierReviewLongCallsOn } from "./tier-review-ports.js";
 import { routingOf } from "../../aws/broker/scope-helpers.js";
 import { ledgerOf } from "../../aws/broker/sweeps-and-readiness.js";
 import { cloudTaskFacts } from "./task-facts.js";
@@ -437,13 +437,15 @@ export function cloudCoreWiringFromBroker(sources: CloudCoreWiringSources): Clou
     },
     ...(inputs.automation === undefined ? {} : { automation: inputs.automation }),
     // S3-9: the lighter flow's reviewer, over the broker's own money and model machinery (the customer pays, on a source billed to the company). An install without the model access function's reviewer
-    // call, the spend ledger or routing gives none, and the lighter flow then stays off for core tasks (runtime.ts).
+    // call, the spend ledger or routing gives none, and the lighter flow then stays off for core tasks (runtime.ts). Review M2: nor does an install whose model access function cannot make long calls
+    // (`tierReviewLongCallsOn`): every call there would be refused, and a small change that skipped its planning steps would be held for good.
     tierReview: (companyId) => {
+      if (!tierReviewLongCallsOn(env)) return undefined;
       const access = broker.modelAccess?.access;
       const routing = routingOf(broker, true);
       const ledger = ledgerOf(broker);
       if (access?.reviewCompletion === undefined || routing === undefined || ledger === undefined) return undefined;
-      return cloudTierReviewPorts({ companyId, documentClient: broker.documentClient, tableName: broker.tableName, access, routing, ledger, cloud: broker.cloud === true, now: () => now().getTime() });
+      return cloudTierReviewPorts({ companyId, documentClient: broker.documentClient, tableName: broker.tableName, access, routing, ledger, cloud: broker.cloud === true, now: () => now().getTime(), log: (event, fields) => log({ component: "tier_review", event, ...fields }) });
     },
     flowOptions: { repositoryGrants: broker.repositoryGrants },
   };
@@ -490,6 +492,9 @@ export const CORE_CALLBACK_ACTIONS: ReadonlySet<string> = new Set([
 ]);
 const CALLBACK_PATH = /^\/v1\/internal\/workspaces\/([0-9a-f-]{36})\/operations\/([0-9a-f-]{36})\/([a-z0-9-]+)$/u;
 
+/** The most one tier pass may take on its own function (whose timeout is 15 minutes): Lambda's own time left caps it further. */
+export const CORE_TIER_CHECKS_BUDGET_MS = 14 * 60_000;
+
 export interface CloudCoreEntry {
   /** A worker's callback on a core-stamped task: Code's callback service answers it. `undefined`: it is Cloud's (not a callback the core serves, or not a core task). */
   routeCallback(request: { method: string; path: string; headers: Record<string, string | undefined>; body?: string; requestId?: string }): Promise<{ statusCode: number; headers: Record<string, string>; body: string } | undefined>;
@@ -502,14 +507,16 @@ export interface CloudCoreEntry {
   slackRequest(message: SlackRequestMessage): Promise<CoreSlackAnswer>;
   /** The broker's answer to the ingress's `core-slack-press` event (a press on a card the core posted). */
   slackPress(press: CoreSlackPress): Promise<CoreSlackPressAnswer>;
-  /** An EventBridge event: `undefined` when it is not a core job's. */
-  handleScheduledJob(event: unknown): Promise<unknown>;
+  /** An EventBridge event: `undefined` when it is not a core job's. `remainingMs`: the function's time left, which caps the run's budget. */
+  handleScheduledJob(event: unknown, options?: { remainingMs?: number | undefined }): Promise<unknown>;
   isScheduledJob(event: unknown): boolean;
 }
 
 export interface CreateCloudCoreEntryOptions extends CloudCoreWiringSources {
   /** The company an install has (ruling R3); adapters still take the company from each call. */
   installCompanyId: OrgId;
+  /** Which function this entry runs in (review H1c): the broker (default) runs every job but the tier pass; the tier pass's own function (CoreTierChecks) runs only `tier-checks`. */
+  host?: CoreJobHost;
 }
 
 /**
@@ -548,7 +555,12 @@ export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): Clou
     marked = [...found];
     return marked;
   };
-  const app = createCloudApp({ env: options.env, nowMs: () => options.now().getTime(), modules, serveStamped: true, context, servedCompanies: markedCompanies, runtime: cloudCoreRuntime(cloudCoreWiringFromBroker(options)) });
+  const host = options.host ?? "broker";
+  // The tier pass's function runs one pass for up to its whole timeout (less the exit margin); the broker's jobs keep their 50 s.
+  const app = createCloudApp({
+    env: options.env, nowMs: () => options.now().getTime(), modules, serveStamped: true, context, servedCompanies: markedCompanies, runtime: cloudCoreRuntime(cloudCoreWiringFromBroker(options)), host,
+    ...(host === "tier-checks" ? { jobBudgetMs: CORE_TIER_CHECKS_BUDGET_MS } : {}),
+  });
   const coreInUse = async (): Promise<boolean> => (await markedCompanies()).length > 0;
   const taskStop = async (orgId: OrgId): Promise<TaskStopRead> => await readTaskStop({ documentClient: options.broker.documentClient, tableName: options.broker.tableName }, orgId);
   const routesOf = (): DeveloperRouteDependencies => {
@@ -566,6 +578,6 @@ export function createCloudCoreEntry(options: CreateCloudCoreEntryOptions): Clou
     slackPress: createCoreSlackPressConsumer({ app, log: options.log, orgOfTeam: async (teamId) => await slackTeamOrg(options.broker, teamId).catch(() => undefined) }),
     routeCallback: createCoreCallbackRouter(app, readItem),
     isScheduledJob: isCoreJobEvent,
-    handleScheduledJob: async (event) => (!app.active && !(await coreInUse()) ? (isCoreJobEvent(event) ? { skipped: "off" } : undefined) : await app.handleScheduledJob(event)),
+    handleScheduledJob: async (event, run) => (!app.active && !(await coreInUse()) ? (isCoreJobEvent(event) ? { skipped: "off" } : undefined) : await app.handleScheduledJob(event, run)),
   };
 }

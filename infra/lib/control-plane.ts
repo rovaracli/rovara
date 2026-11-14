@@ -8,6 +8,7 @@ import { grantProviderKeySecrets } from "./model-keys.js";
 import { mergeRoleStatementsOnSynth } from "./merge-role-statements.js";
 import { EgressAlarms } from "./egress-alarms.js";
 import { attachLessonsWorker, attachTeamRecord } from "./team-record-wiring.js";
+import { attachCoreTierChecks } from "./core-tier-checks.js";
 import { attachSavedEnvImages } from "./saved-env-images.js";
 import { CompanyImageMirror } from "./company-image-mirror.js";
 import { attachServiceCatalogImages } from "./service-catalog-images.js";
@@ -1646,6 +1647,17 @@ export class ControlPlaneStack extends Stack {
           env: naming.env, context: props.teamRecord, broker, resources: teamRecordResources, state, artifacts, signInTable: developerSignInTable, modelAccessFunction,
           githubAppPrivateKeySecretArn: githubAppPrivateKeySecretArn.valueAsString,
           githubAppCredentialRef: githubAppCredentialRef.valueAsString, githubAppId: githubAppId.valueAsString, alarms: { name: (suffix) => naming.alarmName(suffix), action: notifyOperator }, ...(signInParameters === undefined ? {} : { learnedLessons: signInParameters.learnedLessonsEnabled.valueAsString }), ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}),
+        });
+      }
+      // S3-9 review M2: the broker builds the core's flow, which gets the lighter flow's reviewer (and so the lighter flow) only where the model access function makes long calls (the Team record).
+      // Review H1c, M1: with them, the core engine's tier pass on a function of its own (15 minutes, one at a time, no retries), never on the broker; its schedule is DISABLED until the core engine is on.
+      // Without the Team record there is no reviewer, so the lighter flow is off, no core task skips its planning steps, and no tier pass is owed: neither exists.
+      if (props?.teamRecord !== undefined) {
+        BrokerSettings.of(broker).add("tierReview", "1");
+        attachCoreTierChecks(this, {
+          env: naming.env, state, artifacts, modelAccessFunction, githubAppPrivateKeySecretArn: githubAppPrivateKeySecretArn.valueAsString,
+          githubAppCredentialRef: githubAppCredentialRef.valueAsString, githubAppId: githubAppId.valueAsString,
+          ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}),
         });
       }
       BrokerNames.of(broker).add("modelAccessFunction", modelAccessFunction.functionName);

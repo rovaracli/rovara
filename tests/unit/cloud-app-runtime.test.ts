@@ -1,5 +1,6 @@
 // S3 items 1, 4, 5 and 6: the company's core runtime composed from Code's service factories over Cloud's adapters (cloud/app/runtime.ts). Driven through `createCloudApp`, so the jobs
 // run the real services over a fake world's store and the real Cloud adapter modules the world registers.
+import { memoryCallLedger } from "../support/tier-review-calls.js";
 import { describe, expect, it } from "vitest";
 import { createOwnerTaskAccess } from "@rovara-code/broker/core/task-flow";
 import { fixedCodeSettings, soleOwnerPeople } from "@rovara-code/broker/core/merge";
@@ -8,7 +9,7 @@ import type { Approvers } from "@rovara-code/contracts";
 import { when } from "@rovara-code/contracts";
 import { orgProjectCatalogKey, projectRevisionKey, type JsonValue, type ProjectDefinition } from "@rovara-code/contracts";
 import {
-  CORE_JOBS, cloudActorFor, cloudAdapter, cloudCoreRuntime, cloudSettingsFromEnvironment, createCloudApp, scheduleEventOf, type CloudApp, type CloudCoreWiring,
+  CORE_JOBS, JOB_EXIT_MARGIN_MS, cloudActorFor, cloudAdapter, cloudCoreRuntime, cloudSettingsFromEnvironment, createCloudApp, scheduleEventOf, type CloudApp, type CloudCoreWiring,
 } from "../../packages/broker/src/cloud/app/index.js";
 import { bindChannelSpace, decisionRefusalWords, postApprovalCard } from "@rovara-code/broker/core/channel";
 import { STANDING_ROLE_PREFIX } from "../../packages/broker/src/cloud/adapters/people/methods.js";
@@ -77,8 +78,42 @@ describe("S3 item 1: the services are Code's factories, wired by the root", () =
     }
   });
 
-  it("merge tracking's sweep is Code's: it reports how many rows it attempted, and how many tasks the lighter flow's tier pass checked after it (S3-9)", async () => {
-    expect((await run(harness().app, "merge-tracking")).report).toEqual({ attempted: 0, tierChecks: 0 });
+  it("merge tracking's sweep is Code's: it reports how many rows it attempted, and runs no tier pass (S3-9 review H1c: that is the tier-checks job's)", async () => {
+    expect((await run(harness().app, "merge-tracking")).report).toEqual({ attempted: 0 });
+  });
+
+  it("H1c: the broker's root refuses the tier pass (unknown_job); the tier pass's own root runs it and nothing else", async () => {
+    const { app } = harness();
+    expect(await app.handleScheduledJob({ source: "agentx.core-job", job: "tier-checks" })).toEqual({ skipped: "unknown_job" });
+    const world = createFakeWorld();
+    const tierHost = createCloudApp({ env: { CLOUD_CORE_ENGINE: "on" }, modules: world.modules, context: () => world.context(), nowMs: () => world.clock.now, host: "tier-checks", jobBudgetMs: 14 * 60_000,
+      runtime: () => ({ callbackSigningKey: Buffer.alloc(32, 7), access: createOwnerTaskAccess(), repositoryGrantKey: Buffer.alloc(32, 5), repositoryCredential: async () => ({ token: "x" }), now: () => new Date(world.clock.now), log: () => undefined,
+        services: () => ({ "merge-tracking": { pass: async () => ({ attempted: 0 }) }, "session-sweep": { pass: async () => ({}) }, "notify-deliver": { pass: async () => ({}) }, "admission-hold-sweep": { pass: async () => ({}) },
+          "tier-checks": { pass: async ({ budgetMs }) => ({ budgetMs }) } }) }) });
+    for (const job of ["merge-tracking", "dispatch-sweep", "session-sweep", "outbox-relay-backstop"]) expect(await tierHost.handleScheduledJob({ source: "agentx.core-job", job }), job).toEqual({ skipped: "unknown_job" });
+    expect(await tierHost.relayOutbox([FAKE_COMPANY])).toEqual([]);
+    // The function's time left caps the pass (less the exit margin); without it, the configured 14 minutes.
+    const capped = await tierHost.handleScheduledJob({ source: "agentx.core-job", job: "tier-checks" }, { remainingMs: 300_000 }) as unknown as { companies: Array<{ report: { budgetMs: number } }> };
+    expect(capped.companies[0]!.report.budgetMs).toBe(300_000 - JOB_EXIT_MARGIN_MS);
+    const full = await tierHost.handleScheduledJob({ source: "agentx.core-job", job: "tier-checks" }, { remainingMs: 15 * 60_000 }) as unknown as { companies: Array<{ report: { budgetMs: number } }> };
+    expect(full.companies[0]!.report.budgetMs).toBe(14 * 60_000);
+  });
+
+  it("H1a: the tier-checks service gives the reviewer a deadline only while its pass runs (its budget); outside it the meter refuses no_time", async () => {
+    const meters: boolean[] = [];
+    const { app, logs } = harness({ wiring: { tierReview: () => ({
+      task: async () => ({ project: "payments", payer: { kind: "project", project: "payments" } }), route: async () => ({ model: { provider: "anthropic", modelId: "claude-sonnet-4-6" }, alias: "a", sourceId: "src_aaaaaaaaaaaaaaaaaaaa", api: "anthropic-messages" }),
+      room: async () => 10, call: async () => "[]", calls: memoryCallLedger(),
+    }) } });
+    const runtime = await app.runtimeFor(FAKE_COMPANY);
+    const meter = runtime.flow.deps.tierReviewMeter!;
+    meters.push(await meter({ taskId: "t", purpose: "questions", model: undefined, promptChars: 10 }));
+    // A pass with time: the tier pass runs (no task is due, so no call), and after it the deadline is gone again.
+    await runtime.services["tier-checks"]!.pass({ budgetMs: 14 * 60_000 });
+    meters.push(await meter({ taskId: "t", purpose: "questions", model: undefined, promptChars: 10 }));
+    expect(meters).toEqual([false, false]);
+    expect(logs.filter((entry) => entry["why"] === "no_time")).toHaveLength(2);
+    expect(logs).toContainEqual(expect.objectContaining({ component: "tier_review", event: "tier_review.refused", why: "no_time" }));
   });
 
   it("the session sweep is Code's: it reports visited, updated, failed and whether it finished", async () => {

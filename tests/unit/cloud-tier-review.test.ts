@@ -3,7 +3,9 @@
 import { describe, expect, it } from "vitest";
 import type { Payer } from "@rovara-code/contracts";
 import { REVIEW_LIMITS } from "../../packages/broker/src/model-proxy/protocol.js";
-import { TIER_REVIEW_MAX_CALL_USD, TIER_REVIEW_TICKET_MS, TIER_REVIEW_UNPRICED_HOLD_USD, createCloudTierReview, tierReviewHoldUsd, type TierReviewPorts, type TierReviewRoute } from "../../packages/broker/src/cloud/app/tier-review.js";
+import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
+import { TIER_REVIEW_MAX_CALL_USD, TIER_REVIEW_TICKET_MS, createCloudTierReview, tierReviewCallBlocked, tierReviewHoldUsd, type TierReviewPorts, type TierReviewRoute } from "../../packages/broker/src/cloud/app/tier-review.js";
+import { memoryCallLedger, type MemoryCallLedger } from "../support/tier-review-calls.js";
 
 const SONNET = { provider: "anthropic", modelId: "claude-sonnet-4-6" };
 const ROUTE: TierReviewRoute = { model: SONNET, alias: "org-src-sonnet", sourceId: "src_aaaaaaaaaaaaaaaaaaaa", api: "anthropic-messages" };
@@ -18,17 +20,29 @@ interface World {
   route: TierReviewRoute | undefined;
   /** Held open while set: the next `task` read waits for it (two meters in flight). */
   gate?: Promise<void>;
+  /** The host's deadline (epoch ms); undefined: no pass is running. Default: 14 minutes ahead. */
+  deadline: number | undefined;
+  ledger: MemoryCallLedger;
+  /** What the port's call does: answer (default), or fail before or after the prompt is sent. */
+  behaviour: "answer" | "fail_before_send" | "fail_after_send";
 }
 
 function world(overrides: Partial<World> = {}) {
-  const w: World = { clock: { now: 1_000_000 }, calls: [], logs: [], payers: new Map([["task-a", MEMBER], ["task-b", { kind: "project", project: "web" }]]), room: 10, route: ROUTE, ...overrides };
+  const w: World = { clock: { now: 1_000_000 }, calls: [], logs: [], payers: new Map([["task-a", MEMBER], ["task-b", { kind: "project", project: "web" }]]), room: 10, route: ROUTE, deadline: 1_000_000 + 14 * 60_000, ledger: memoryCallLedger(), behaviour: "answer", ...overrides };
   const ports: TierReviewPorts = {
     task: async (taskId) => { await w.gate; const payer = w.payers.get(taskId); return payer === undefined ? undefined : { project: "web", payer }; },
     route: async () => w.route,
     room: async () => { if (w.room instanceof Error) throw w.room; return w.room; },
-    call: async ({ taskId, payer, purpose, holdUsd, prompt }) => { w.calls.push({ taskId, payer, purpose, holdUsd, prompt }); return "[]"; },
+    call: async ({ taskId, payer, purpose, holdUsd, prompt, sent }) => {
+      if (w.behaviour === "fail_before_send") throw new Error("the key could not be minted");
+      await sent();
+      w.calls.push({ taskId, payer, purpose, holdUsd, prompt });
+      if (w.behaviour === "fail_after_send") throw new Error("the provider dropped the connection");
+      return "[]";
+    },
+    calls: w.ledger,
   };
-  const review = createCloudTierReview({ ports, now: () => w.clock.now, log: (event, fields) => { w.logs.push({ event, ...fields }); } });
+  const review = createCloudTierReview({ ports, now: () => w.clock.now, deadline: () => w.deadline, log: (event, fields) => { w.logs.push({ event, ...fields }); } });
   return { w, ...review };
 }
 const signal = () => new AbortController().signal;
@@ -60,7 +74,7 @@ describe("the meter refuses before any call (fail closed, zero calls)", () => {
   });
 
   it("a room smaller than the call could hold, or none at all: refused, zero calls", async () => {
-    for (const room of [0, tierReviewHoldUsd(SONNET, 100) / 2]) {
+    for (const room of [0, tierReviewHoldUsd(SONNET, 100)! / 2]) {
       const t = world({ room });
       expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(false);
       await expect(t.tierReviewCall(ask())).rejects.toThrow();
@@ -110,6 +124,18 @@ describe("the call is made only right after its own meter, charged to that task'
     expect(t.w.calls).toEqual([]);
   });
 
+  it("the ticket's window is ten seconds, whatever the constant says: a call 10 s after its meter is refused, one 9.9 s after is made", async () => {
+    expect(TIER_REVIEW_TICKET_MS).toBe(10_000);
+    const late = world();
+    await late.tierReviewMeter(meterInput("task-a"));
+    late.w.clock.now += 10_000;
+    await expect(late.tierReviewCall(ask())).rejects.toThrow(/not metered/u);
+    const prompt = world();
+    await prompt.tierReviewMeter(meterInput("task-a"));
+    prompt.w.clock.now += 9_900;
+    await expect(prompt.tierReviewCall(ask())).resolves.toBe("[]");
+  });
+
   it("two tasks never swap tickets: while task A's ticket waits for its call, task B's meter refuses, and A's call is charged to A", async () => {
     const t = world();
     expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(true);
@@ -146,7 +172,7 @@ describe("the call is made only right after its own meter, charged to that task'
     await expect(long.tierReviewCall(ask("questions", "x".repeat(REVIEW_LIMITS.userChars + 1)))).rejects.toThrow(/too large/u);
 
     // A prompt far bigger than the meter was told (the patch's size): its hold is over the room the meter saw.
-    const room = tierReviewHoldUsd(SONNET, 100 + 8_000) * 1.01;
+    const room = tierReviewHoldUsd(SONNET, 100 + 8_000)! * 1.01;
     const short = world({ room });
     expect(await short.tierReviewMeter(meterInput("task-a"))).toBe(true);
     await expect(short.tierReviewCall(ask("questions", "x".repeat(200_000)))).rejects.toThrow(/budget cannot take/u);
@@ -154,8 +180,8 @@ describe("the call is made only right after its own meter, charged to that task'
     for (const t of [aborted, long, short]) expect(t.w.calls).toEqual([]);
   });
 
-  it("the hold: the model's worst case on its list price with the margin; a model with no list price holds the fixed estimate; the ceiling refuses a dearer call", async () => {
-    expect(tierReviewHoldUsd({ provider: "anthropic", modelId: "acme-tuned-1" }, 1000)).toBe(TIER_REVIEW_UNPRICED_HOLD_USD);
+  it("the hold: the model's worst case on its list price with the margin; a model with no list price has none (it is never called); the ceiling refuses a dearer call", async () => {
+    expect(tierReviewHoldUsd({ provider: "anthropic", modelId: "acme-tuned-1" }, 1000)).toBeUndefined();
     expect(tierReviewHoldUsd(SONNET, 1000)).toBeGreaterThan(0);
     const opus = { provider: "openai", modelId: "gpt-5-pro" };
     const huge = tierReviewHoldUsd(opus, REVIEW_LIMITS.userChars);
@@ -163,5 +189,149 @@ describe("the call is made only right after its own meter, charged to that task'
     const t = world({ route: { ...ROUTE, model: opus }, room: 1_000 });
     expect(await t.tierReviewMeter({ ...meterInput("task-a"), promptChars: REVIEW_LIMITS.userChars })).toBe(false);
     expect(t.w.logs).toContainEqual(expect.objectContaining({ why: "too_dear" }));
+  });
+});
+
+
+describe("review survivors: the per-call ceiling, the margin", () => {
+  it("the $5 ceiling refuses at the CALL too: a meter that saw a small patch, then a prompt whose hold is over $5, is not sent (whatever the room)", async () => {
+    expect(TIER_REVIEW_MAX_CALL_USD).toBe(5);
+    const opus = { provider: "openai", modelId: "gpt-5-pro" };
+    const t = world({ route: { ...ROUTE, model: opus }, room: 1_000 });
+    expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(true);
+    // A prompt whose worst case is between $5 and the room: only the ceiling refuses it.
+    let chars = 1_000;
+    while ((tierReviewHoldUsd(opus, chars) ?? 0) <= 5) chars *= 2;
+    expect(tierReviewHoldUsd(opus, chars)!).toBeLessThan(1_000);
+    expect(chars).toBeLessThanOrEqual(REVIEW_LIMITS.userChars);
+    await expect(t.tierReviewCall(ask("questions", "x".repeat(chars)))).rejects.toThrow(/more than one call may/u);
+    expect(t.w.calls).toEqual([]);
+  });
+
+  it("the hold is the worst case on the list price times 1.25 (rounded up to a millionth of a dollar)", () => {
+    const price = listPricesPerMillion(SONNET)!;
+    const bytes = 40_000;
+    const worst = ((bytes + 256) * price.input + 8_000 * price.output) / 1_000_000;
+    expect(tierReviewHoldUsd(SONNET, bytes)).toBe(Math.ceil(worst * 1.25 * 1e6) / 1e6);
+  });
+});
+
+describe("H1a: no call is started that the host could not wait for", () => {
+  it("no deadline (no tier pass is running here: the broker, any other job): the meter refuses no_time, zero calls, no key", async () => {
+    const t = world({ deadline: undefined });
+    expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(false);
+    await expect(t.tierReviewCall(ask())).rejects.toThrow(/not metered/u);
+    expect(t.w.calls).toEqual([]);
+    expect(t.w.ledger.writes).toEqual([]);
+    expect(t.w.logs).toContainEqual(expect.objectContaining({ event: "tier_review.refused", why: "no_time" }));
+  });
+
+  it("less than 140 s left (the reviewer's 120 s wait and the function's 130 s): refused; exactly 140 s: metered and called", async () => {
+    const short = world();
+    short.w.deadline = short.w.clock.now + 139_999;
+    expect(await short.tierReviewMeter(meterInput("task-a"))).toBe(false);
+    expect(short.w.logs).toContainEqual(expect.objectContaining({ why: "no_time" }));
+    const enough = world();
+    enough.w.deadline = enough.w.clock.now + 140_000;
+    expect(await enough.tierReviewMeter(meterInput("task-a"))).toBe(true);
+    await expect(enough.tierReviewCall(ask())).resolves.toBe("[]");
+  });
+
+  it("the time ran short between the meter and the call: the call is refused before any claim or key", async () => {
+    const t = world();
+    t.w.deadline = t.w.clock.now + 145_000;
+    expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(true);
+    t.w.clock.now += 6_000;
+    await expect(t.tierReviewCall(ask())).rejects.toThrow(/time ran out/u);
+    expect(t.w.ledger.writes).toEqual([]);
+    expect(t.w.calls).toEqual([]);
+  });
+});
+
+describe("H1b: one reviewer call at a time per task and purpose, durably", () => {
+  it("the claim is written before the call, `sent` before the prompt leaves, and the outcome after", async () => {
+    const t = world();
+    await t.tierReviewMeter(meterInput("task-a"));
+    await t.tierReviewCall(ask());
+    expect(t.w.ledger.writes).toEqual(["claim:task-a:questions", "mark:sent", "mark:answered"]);
+    expect(t.w.ledger.rows.get("task-a|questions")).toMatchObject({ status: "answered" });
+  });
+
+  it("a call whose host died mid-call (claimed or sent, no outcome) holds its task and purpose for 10 minutes: the meter refuses (no key, no call), then frees it", async () => {
+    for (const status of ["started", "sent"] as const) {
+      const t = world();
+      t.w.ledger.rows.set("task-a|questions", { callId: "dead", status, startedAt: t.w.clock.now - 60_000 });
+      expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(false);
+      expect(t.w.logs).toContainEqual(expect.objectContaining({ why: "in_flight" }));
+      // Another purpose of the same task is not held.
+      expect(await t.tierReviewMeter(meterInput("task-a", "code_review"))).toBe(true);
+      await t.tierReviewCall(ask("code_review"));
+      // Ten minutes after the dead call started, it is free again.
+      t.w.clock.now += 9 * 60_000 - 1;
+      expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(false);
+      t.w.clock.now += 1;
+      expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(true);
+    }
+  });
+
+  it("two passes that both metered (the read said free): the second claim is refused and makes no call", async () => {
+    const t = world();
+    expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(true);
+    // Another pass (another container) claims the same task and purpose between this meter and its call.
+    await t.w.ledger.claim({ taskId: "task-a", purpose: "questions", callId: "other", at: t.w.clock.now });
+    await expect(t.tierReviewCall(ask())).rejects.toThrow(/still running/u);
+    expect(t.w.calls).toEqual([]);
+  });
+
+  it("Code's fast-fail retry of a call that FAILED AFTER IT WAS SENT is refused (the provider may have billed it); a call that failed before sending may be retried", async () => {
+    const sentThenFailed = world({ behaviour: "fail_after_send" });
+    await sentThenFailed.tierReviewMeter(meterInput("task-a"));
+    await expect(sentThenFailed.tierReviewCall(ask())).rejects.toThrow(/dropped/u);
+    expect(sentThenFailed.w.ledger.rows.get("task-a|questions")).toMatchObject({ status: "failed_sent" });
+    sentThenFailed.w.clock.now += 1_000;
+    expect(await sentThenFailed.tierReviewMeter(meterInput("task-a"))).toBe(false);
+    expect(sentThenFailed.w.logs).toContainEqual(expect.objectContaining({ why: "sent_and_failed" }));
+    expect(sentThenFailed.w.calls).toHaveLength(1);
+    // A later pass (a minute on) may ask again.
+    sentThenFailed.w.clock.now += 60_000;
+    sentThenFailed.w.behaviour = "answer";
+    expect(await sentThenFailed.tierReviewMeter(meterInput("task-a"))).toBe(true);
+
+    const unsent = world({ behaviour: "fail_before_send" });
+    await unsent.tierReviewMeter(meterInput("task-a"));
+    await expect(unsent.tierReviewCall(ask())).rejects.toThrow(/could not be minted/u);
+    expect(unsent.w.ledger.rows.get("task-a|questions")).toMatchObject({ status: "failed_unsent" });
+    unsent.w.clock.now += 1_000;
+    expect(await unsent.tierReviewMeter(meterInput("task-a"))).toBe(true);
+  });
+
+  it("a `sent` record that cannot be written stops the call before the prompt leaves", async () => {
+    const t = world();
+    const mark = t.w.ledger.mark.bind(t.w.ledger);
+    t.w.ledger.mark = async (input) => { if (input.status === "sent") throw new Error("table down"); await mark(input); };
+    await t.tierReviewMeter(meterInput("task-a"));
+    await expect(t.tierReviewCall(ask())).rejects.toThrow(/table down/u);
+    expect(t.w.calls).toEqual([]);
+    expect(t.w.ledger.rows.get("task-a|questions")).toMatchObject({ status: "failed_unsent" });
+  });
+
+  it("the rule itself: answered and failed-unsent free at once; failed-sent after 60 s; started or sent after 10 minutes", () => {
+    const now = 10_000_000;
+    expect(tierReviewCallBlocked(undefined, now)).toBeUndefined();
+    expect(tierReviewCallBlocked({ callId: "c", status: "answered", startedAt: now, endedAt: now }, now)).toBeUndefined();
+    expect(tierReviewCallBlocked({ callId: "c", status: "failed_unsent", startedAt: now, endedAt: now }, now)).toBeUndefined();
+    expect(tierReviewCallBlocked({ callId: "c", status: "failed_sent", startedAt: now - 5, endedAt: now - 59_999 }, now)).toBe("sent_and_failed");
+    expect(tierReviewCallBlocked({ callId: "c", status: "failed_sent", startedAt: now - 5, endedAt: now - 60_000 }, now)).toBeUndefined();
+    expect(tierReviewCallBlocked({ callId: "c", status: "sent", startedAt: now - 599_999 }, now)).toBe("in_flight");
+    expect(tierReviewCallBlocked({ callId: "c", status: "started", startedAt: now - 600_000 }, now)).toBeUndefined();
+  });
+});
+
+describe("M3: a model with no list price is never called", () => {
+  it("the meter refuses `unpriced`, zero calls", async () => {
+    const t = world({ route: { ...ROUTE, model: { provider: "anthropic", modelId: "acme-tuned-1" } } });
+    expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(false);
+    expect(t.w.logs).toContainEqual(expect.objectContaining({ why: "unpriced" }));
+    expect(t.w.calls).toEqual([]);
   });
 });

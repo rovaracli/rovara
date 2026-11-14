@@ -11,10 +11,15 @@ import type { CoreArea } from "./flags.js";
 
 export type JobTrigger = { kind: "schedule"; rate: string } | { kind: "stream"; on: "outbox-insert" };
 
+/** Which function runs a job: the broker (30 s) or the tier pass's own function (CoreTierChecks: 15 minutes, reserved concurrency 1, no retries). A host refuses another host's job (`unknown_job`). */
+export type CoreJobHost = "broker" | "tier-checks";
+
 export interface CoreJob {
   name: string;
   area: CoreArea;
   trigger: JobTrigger;
+  /** Default: the broker. */
+  host?: CoreJobHost;
   run(runtime: CoreRuntime, budgetMs: number): Promise<Record<string, unknown>>;
 }
 
@@ -32,6 +37,8 @@ export const CORE_JOBS: readonly CoreJob[] = [
   { name: "dispatch-sweep", area: "flow", trigger: { kind: "schedule", rate: "rate(1 minute)" }, run: async (runtime) => ({ ...(await runtime.flow.sweepOnce()) }) },
   // Merge tracking's sweep (Cloud also wakes a row from the GitHub webhook).
   { name: "merge-tracking", area: "merge", trigger: { kind: "schedule", rate: "rate(1 minute)" }, run: service("merge-tracking") },
+  // S3-9 (review H1c, M1): the lighter flow's tier pass, which makes customer-paid model calls of up to 130 s. Only on its own function, whose schedule sends this event every 5 minutes; the broker never runs it.
+  { name: "tier-checks", area: "merge", trigger: { kind: "schedule", rate: "rate(5 minutes)" }, host: "tier-checks", run: service("tier-checks") },
   { name: "session-sweep", area: "flow", trigger: { kind: "schedule", rate: "rate(5 minutes)" }, run: service("session-sweep") },
   { name: "notify-deliver", area: "flow", trigger: { kind: "schedule", rate: "rate(5 minutes)" }, run: service("notify-deliver") },
   // A5 open question 3: a hold whose caller died is charged in full by CloudAdmission.sweepExpiredHolds, on a schedule.
@@ -41,6 +48,11 @@ export const CORE_JOBS: readonly CoreJob[] = [
 ];
 
 export const CORE_SCHEDULE_SOURCE = "agentx.core-job";
+
+/** The jobs one host runs. */
+export function jobsOfHost(host: CoreJobHost, jobs: readonly CoreJob[] = CORE_JOBS): CoreJob[] {
+  return jobs.filter((job) => (job.host ?? "broker") === host);
+}
 
 export function scheduleEventOf(job: CoreJob): { source: typeof CORE_SCHEDULE_SOURCE; job: string } {
   return { source: CORE_SCHEDULE_SOURCE, job: job.name };
@@ -59,9 +71,9 @@ export interface CompanyRunReport {
 
 /**
  * Runs `work` for each company, isolated: a throw is recorded for that company only. The start rotates by `rotation` (the caller passes a counter, such
- * as the minute), and a company not reached before the budget runs out is `deferred`, not failed.
+ * as the minute), and a company not reached before the budget runs out is `deferred`, not failed. Each company's work is told the time that is LEFT of the budget, not the whole of it.
  */
-export async function runPerCompany(companies: readonly string[], work: (companyId: string) => Promise<Record<string, unknown>>, options: { rotation: number; budgetMs: number; nowMs: () => number }): Promise<CompanyRunReport[]> {
+export async function runPerCompany(companies: readonly string[], work: (companyId: string, leftMs: number) => Promise<Record<string, unknown>>, options: { rotation: number; budgetMs: number; nowMs: () => number }): Promise<CompanyRunReport[]> {
   const count = companies.length;
   if (count === 0) return [];
   const start = ((options.rotation % count) + count) % count;
@@ -71,7 +83,7 @@ export async function runPerCompany(companies: readonly string[], work: (company
   for (const companyId of ordered) {
     if (options.nowMs() >= deadline) { reports.push({ companyId, outcome: "deferred" }); continue; }
     try {
-      reports.push({ companyId, outcome: "ran", report: await work(companyId) });
+      reports.push({ companyId, outcome: "ran", report: await work(companyId, deadline - options.nowMs()) });
     } catch (error) {
       reports.push({ companyId, outcome: "failed", error: error instanceof Error ? error.name : "unknown" });
     }

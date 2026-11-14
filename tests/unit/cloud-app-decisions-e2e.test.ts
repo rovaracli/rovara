@@ -595,7 +595,7 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     const closed = await r.world.store.get({ pk: `DEVTASK#${taskId}`, sk: "META" });
     expect((closed as unknown as { closedAt?: string }).closedAt).toBeDefined();
     // And a NEW task is not started on the core: the switch is off.
-    expect(await createCoreIntentHook({ app: off, principalOf: async () => principal, origin: "https://x.test", now: () => r.world.clock.now, log: () => undefined }).start({ caller: { orgId: PEOPLE_ORG, developerId: owner.developerId } as never, request: { requestId: randomUUID(), project: "payments", input: { text: "again" }, source: "app", path: "QUICK" } as never, ownedTask: (async () => ({})) as never })).toBeUndefined();
+    expect(await createCoreIntentHook({ app: off, principalOf: async () => principal, origin: "https://x.test", now: () => r.world.clock.now, log: () => undefined, taskStop: async () => ({ enrolled: false, fence: [] }) }).start({ caller: { orgId: PEOPLE_ORG, developerId: owner.developerId } as never, request: { requestId: randomUUID(), project: "payments", input: { text: "again" }, source: "app", path: "QUICK" } as never, ownedTask: (async () => ({})) as never })).toBeUndefined();
   });
 
   it("the jobs run for the install's company AND every company with an in-use mark while the switch is off, and the root without serveStamped refuses to serve (the control)", async () => {

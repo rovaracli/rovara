@@ -355,6 +355,8 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/cloud/app/retention.ts",
       // Convergence S0, D12: names the TTL attribute for the core's DynamoDB store; safe only because the retention.ts wrapper strips the core's expiry from the extra kinds (approvals, decisions, proof markers); proof: tests/unit/cloud-app-retention.test.ts and tests/unit/cloud-app.test.ts ("stores through Cloud's retention rule").
       "packages/broker/src/cloud/app/cloud-modules.ts",
+      // S3-9 review H1b: the lighter flow's reviewer-call row (one per task and purpose, `ORG#<company>#TIER_REVIEW_CALL#<task>`), kept a day, far past the 10-minute window it decides; a working row, not a record (the spend is the ledger's). Only tier-review-ports.ts writes it.
+      "packages/broker/src/cloud/app/tier-review-ports.ts",
     ]);
     const found = execFileSync("grep", ["-rl", "indexExpiresAt\\|INDEX_EXPIRY_ATTRIBUTE", "packages", "infra/lib", "--include=*.ts", "--exclude-dir=dist", "--exclude-dir=node_modules"], { encoding: "utf8" }).trim().split("\n").filter((file) => file !== "");
     expect(found.filter((file) => !allowed.has(file))).toEqual([]);

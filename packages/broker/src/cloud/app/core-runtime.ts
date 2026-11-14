@@ -30,8 +30,9 @@ export const CORE_SERVICES = {
   "notify-deliver": "flow",
   "admission-hold-sweep": "flow",
 } as const satisfies Record<string, CoreArea>;
-/** The required services (above) and the optional ones: a runtime without an optional one skips its job (`service_not_wired`), and the switch is never refused for it. */
-export type CoreServiceName = keyof typeof CORE_SERVICES | "automation-stop";
+/** The required services (above) and the optional ones: a runtime without an optional one skips its job (`service_not_wired`), and the switch is never refused for it. `tier-checks` is the lighter flow's
+ * tier pass, which runs on its own function (CoreTierChecks), never on the broker. */
+export type CoreServiceName = keyof typeof CORE_SERVICES | "automation-stop" | "tier-checks";
 
 /** What reaches the core from outside, per company (S3 item 4): the intake of Cloud's Slack request queue, as the channel sink takes it. */
 export interface CoreInbound {

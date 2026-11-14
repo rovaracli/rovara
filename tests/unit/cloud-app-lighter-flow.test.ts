@@ -12,6 +12,7 @@ import type { TierReviewPorts, TierReviewPurpose } from "../../packages/broker/s
 import { createCloudIdentityProvider } from "../../packages/broker/src/cloud/adapters/people/index.js";
 import { PEOPLE_ORG } from "../support/cloud-people-world.js";
 import { rig, type Rig } from "../support/cloud-core-rig.js";
+import { memoryCallLedger } from "../support/tier-review-calls.js";
 import { planAnswer, planDocument } from "../support/plan-documents.js";
 
 const PAYER: Payer = { kind: "project", project: "payments" };
@@ -25,7 +26,9 @@ function ports(calls: Calls, options: { provider?: "down"; budget?: "used_up"; q
     task: async (taskId) => { calls.meteredTasks.push(taskId); return { project: "payments", payer: PAYER }; },
     route: async () => (options.provider === "down" ? undefined : { model: SONNET, alias: "org-src-sonnet", sourceId: "src_aaaaaaaaaaaaaaaaaaaa", api: "anthropic-messages" }),
     room: async () => { if (options.budget === "used_up") throw Object.assign(new Error("the month is used up"), { code: "ORG_BUDGET_EXCEEDED" }); return 10; },
-    call: async ({ taskId, purpose, payer, holdUsd }) => {
+    calls: memoryCallLedger(),
+    call: async ({ taskId, purpose, payer, holdUsd, sent }) => {
+      await sent();
       calls.calls.push({ taskId, purpose, payer, holdUsd });
       if (purpose === "questions") return JSON.stringify(TIER_QUESTIONS.map((question) => ({ id: question.id, yes: (options.questionsYes ?? []).includes(question.id), reason: (options.questionsYes ?? []).includes(question.id) ? "it touches that" : "" })));
       return JSON.stringify({ findings: [] });
@@ -121,14 +124,18 @@ async function drive(r: Rig, files: Record<string, string | null>, planned: read
   throw new Error(`the task never published (stages: ${stagesSeen.join(" > ")}; flow ${JSON.stringify(last.flow)}; path ${last.path} v${last.definitionVersion}; ${JSON.stringify((last as unknown as {artifacts?: unknown}).artifacts ?? Object.keys(last)).slice(0, 1500)})`);
 }
 
-/** Cloud's scheduled merge-tracking job for the company (the sweep, then the tier pass), run a few times as the schedule would. */
-async function mergeTrackingJob(r: Rig, times = 3): Promise<Array<Record<string, unknown>>> {
+/** Cloud's scheduled jobs for the company as the schedules run them: the merge-tracking sweep (the broker), then the tier pass (its own function, a 14-minute budget), a few times. Answers the tier passes' reports. */
+async function mergeTrackingJob(r: Rig, times = 3, tierBudgetMs = 14 * 60_000): Promise<Array<Record<string, unknown>>> {
   const runtime = await r.app.runtimeFor(PEOPLE_ORG);
-  const job = CORE_JOBS.find((entry) => entry.name === "merge-tracking")!;
+  const sweep = CORE_JOBS.find((entry) => entry.name === "merge-tracking")!;
+  const tier = CORE_JOBS.find((entry) => entry.name === "tier-checks")!;
   const reports: Array<Record<string, unknown>> = [];
   for (let index = 0; index < times; index += 1) {
     r.world.clock.advance(300);
-    reports.push(await job.run(runtime, 50_000));
+    const swept = await sweep.run(runtime, 50_000);
+    // H1c: the sweep no longer runs the tier pass.
+    expect(swept).not.toHaveProperty("tierChecks");
+    reports.push(await tier.run(runtime, tierBudgetMs));
   }
   return reports;
 }
@@ -210,6 +217,21 @@ describe("S3-9: the lighter flow on a core task, with Cloud's reviewer", () => {
     // The floor failed closed: the reviewer counts as unavailable, so the change is risky, never cleared.
     expect(flow?.tier?.reasons.map((reason) => reason.code)).toContain("reviewer_unavailable");
     expect(await gate(r, t.taskId)).toBeDefined();
+  });
+
+  it("H1a: a tier pass with less than 140 s of budget (as on the broker's 50 s) starts no reviewer call: the meter refuses, zero calls, the merge is refused", async () => {
+    const calls: Calls = { meteredTasks: [], calls: [] };
+    const r = await rig(lighter(calls));
+    const t = await drive(r, SMALL);
+    await mergeTrackingJob(r, 3, 50_000);
+    expect(calls.calls).toEqual([]);
+    expect(await gate(r, t.taskId)).toBeDefined();
+  });
+
+  it("H1c: the tier pass is its own job, run only by the tier pass's function (never the broker's)", () => {
+    const tier = CORE_JOBS.find((entry) => entry.name === "tier-checks")!;
+    expect(tier).toMatchObject({ area: "merge", host: "tier-checks", trigger: { kind: "schedule", rate: "rate(5 minutes)" } });
+    expect(CORE_JOBS.filter((entry) => entry.host === "tier-checks").map((entry) => entry.name)).toEqual(["tier-checks"]);
   });
 
   it("the payer's month is used up: the meter refuses before any call (zero calls), and the merge is refused", async () => {

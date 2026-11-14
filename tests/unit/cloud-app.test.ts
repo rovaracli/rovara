@@ -212,6 +212,11 @@ describe("scheduled jobs", () => {
     let clock = 0;
     const budgeted = await runPerCompany(["a", "b", "c"], async () => { clock += 600; return {}; }, { rotation: 0, budgetMs: 1_000, nowMs: () => clock });
     expect(budgeted.map((report) => report.outcome)).toEqual(["ran", "ran", "deferred"]);
+    // Each company is told what is left of the budget when its turn comes, not the whole budget.
+    clock = 0;
+    const left: number[] = [];
+    await runPerCompany(["a", "b"], async (_company, leftMs) => { left.push(leftMs); clock += 300; return {}; }, { rotation: 0, budgetMs: 1_000, nowMs: () => clock });
+    expect(left).toEqual([1_000, 700]);
   });
 
   it("runs a job only for the companies the switch covers, through the core", async () => {

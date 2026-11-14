@@ -399,6 +399,17 @@ describe("S3-4 f: Cloud's own rules for the core, from the broker's dependencies
     expect(await wiring.access.checkStep({ taskId: randomUUID(), developerId: MAYA, project: "payments", orgId: FAKE_COMPANY } as never)).toMatchObject({ allowed: false });
   });
 
+  it("S3-9 review M2: the reviewer (and so the lighter flow) is given only with TIER_REVIEW_ENABLED=1; without it the broker's root gets no reviewer, even with the reviewer call, routing and ledger", async () => {
+    const db = new (await FakeDb())();
+    const access = { reviewCompletion: async () => ({ text: "[]", model: "m" }) };
+    const broker = { documentClient: db, tableName: "state", callbackSigningKey: "k".repeat(32), repositoryGrants: {}, agents: {}, modelAccess: { access, proxyUrl: "" }, cloud: true } as never;
+    const wiringWith = (env: NodeJS.ProcessEnv) => cloudCoreWiringFromBroker({ env, now: () => new Date(), log: () => undefined, routes: () => undefined, broker, inputs: { moduleDeps: () => ({}) as never, sessionFacts: { read: async () => undefined } } });
+    for (const env of [{}, { TIER_REVIEW_ENABLED: "0" }, { LEARNING_COMPLETION_ENABLED: "1" }, { TEAM_RECORD_ENABLED: "1" }]) expect(wiringWith(env).tierReview!(FAKE_COMPANY as never), JSON.stringify(env)).toBeUndefined();
+    const ports = wiringWith({ TIER_REVIEW_ENABLED: "1" }).tierReview!(FAKE_COMPANY);
+    expect(ports).toBeDefined();
+    expect(typeof ports!.calls.claim).toBe("function");
+  });
+
   it("the settings carry what Cloud knows: the connector writes behind approval, the install's workspace limits, the pinned recipe", async () => {
     const db = new (await FakeDb())();
     const wiring = cloudCoreWiringFromBroker({

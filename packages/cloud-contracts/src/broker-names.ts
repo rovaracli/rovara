@@ -256,6 +256,9 @@ export const BROKER_SETTINGS = {
   // the engine it started on (packages/broker/src/cloud/app/flags.ts, engine-stamp.ts). The infrastructure half (a stack parameter packed into AGENTX_SETTINGS)
   // is NOT wired yet, so a deployed install reads it as off.
   coreEngine: { code: "cc", variable: "CLOUD_CORE_ENGINE" },
+  // S3-9 review M2: the lighter flow's reviewer may run (`tq`): "1" only where the model access function makes long calls (it has LEARNING_COMPLETION_ENABLED=1, which the infra sets with the Team record).
+  // The infra gives it to the broker and to the CoreTierChecks function under the same condition; absent or anything else is OFF, and the core's lighter flow then stays off (the whole plan every time).
+  tierReview: { code: "tq", variable: "TIER_REVIEW_ENABLED" },
   // Lighter flow (decisions 178 and 179): a small change skips the planning steps and gets one quick check. ON by default, for everyone: absent or anything but the exact word "false" is on. The
   // broker's root reads it as LIGHTER_FLOW_ENABLED (cloud/app/settings-mapping.ts `lighterFlow`). Packed setting, not a Lambda variable (ENV-ROOM). The infrastructure half (a stack
   // parameter, "true" by default, packed into AGENTX_SETTINGS) is NOT wired yet, so a deployed install reads it as on, which is the default.

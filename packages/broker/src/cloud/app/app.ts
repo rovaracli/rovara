@@ -13,7 +13,7 @@ import type { AdapterRegistry, OrgId } from "@rovara-code/contracts";
 import { createCoreRuntime, serviceGaps, type CoreRuntime, type CoreRuntimeOptions } from "./core-runtime.js";
 import { engineForNewTask, engineOfStoredTask, type Engine } from "./engine-stamp.js";
 import { CORE_AREAS, anyCoreAreaOn, coreAreaOn, coreCompanies, readCoreEngineFlags, type CoreArea, type CoreEngineFlags } from "./flags.js";
-import { CORE_JOBS, isCoreJobEvent, runPerCompany, type CompanyRunReport, type CoreJob } from "./jobs.js";
+import { isCoreJobEvent, jobsOfHost, runPerCompany, type CompanyRunReport, type CoreJob, type CoreJobHost } from "./jobs.js";
 import { buildCloudRegistry, type CloudAdapterContext, type CloudAdapterModule } from "./registry.js";
 
 export interface CloudAppOptions {
@@ -32,8 +32,11 @@ export interface CloudAppOptions {
   context: () => CloudAdapterContext;
   /** The per-company runtime's own wiring (signing key, access, credentials, services). */
   runtime: (registry: AdapterRegistry, companyId: OrgId, flags: CoreEngineFlags) => Omit<CoreRuntimeOptions, "registry" | "companyId" | "flags">;
+  /** The jobs this root runs. Default: the host's rows of CORE_JOBS (`host`). */
   jobs?: readonly CoreJob[];
-  /** The time budget of one scheduled run. Default 50 s (a schedule's Lambda has 60). */
+  /** Which function this root runs in: the broker (default) or the tier pass's own function. Another host's job is answered `unknown_job` and never run. */
+  host?: CoreJobHost;
+  /** The time budget of one scheduled run. Default 50 s (a schedule's Lambda has 60). Never more than the function's own time left (`handleScheduledJob`'s `remainingMs`) less `JOB_EXIT_MARGIN_MS`. */
   jobBudgetMs?: number;
   nowMs?: () => number;
 }
@@ -50,11 +53,14 @@ export interface CloudApp {
   registry(): Promise<AdapterRegistry>;
   /** The core for one company (built once). Throws when the flow is not switched on for it. */
   runtimeFor(companyId: string): Promise<CoreRuntime>;
-  /** An EventBridge event: `undefined` when it is not a core job's; `{ skipped: "off" }` while off. */
-  handleScheduledJob(event: unknown): Promise<undefined | { skipped: "off" | "unknown_job" } | { job: string; companies: CompanyRunReport[] }>;
+  /** An EventBridge event: `undefined` when it is not a core job's; `{ skipped: "off" }` while off. `remainingMs`: the function's time left (Lambda's `getRemainingTimeInMillis`), which caps the budget. */
+  handleScheduledJob(event: unknown, options?: { remainingMs?: number | undefined }): Promise<undefined | { skipped: "off" | "unknown_job" } | { job: string; companies: CompanyRunReport[] }>;
   /** The stream reader's hook: relay the outbox of these companies (those not switched on are skipped). */
   relayOutbox(companies: readonly string[]): Promise<CompanyRunReport[]>;
 }
+
+/** What a scheduled run leaves of its function's time for the run's own end (logging, the answer): its budget is the time left less this. */
+export const JOB_EXIT_MARGIN_MS = 20_000;
 
 export class CoreEngineOffError extends Error {
   constructor(what: string) {
@@ -68,7 +74,7 @@ export function createCloudApp(options: CloudAppOptions): CloudApp {
   const active = anyCoreAreaOn(flags);
   const serveStamped = options.serveStamped === true;
   const serving = active || serveStamped;
-  const jobs = options.jobs ?? CORE_JOBS;
+  const jobs = options.jobs ?? jobsOfHost(options.host ?? "broker");
   const nowMs = options.nowMs ?? Date.now;
   let context: CloudAdapterContext | undefined;
   let registryPromise: Promise<AdapterRegistry> | undefined;
@@ -126,13 +132,19 @@ export function createCloudApp(options: CloudAppOptions): CloudApp {
     engineOfTask: (store, taskId, area) => engineOfStoredTask(store, taskId, area),
     registry,
     runtimeFor,
-    async handleScheduledJob(event) {
+    async handleScheduledJob(event, run) {
       if (!isCoreJobEvent(event)) return undefined;
       if (!serving) return { skipped: "off" };
       const job = jobs.find((entry) => entry.name === event.job);
       if (job === undefined) return { skipped: "unknown_job" };
-      const budgetMs = options.jobBudgetMs ?? 50_000;
-      const companies = await runPerCompany(await companiesFor(job.area), async (companyId) => await job.run(await runtimeFor(companyId), budgetMs), { rotation: rotation++, budgetMs, nowMs });
+      const configured = options.jobBudgetMs ?? 50_000;
+      const budgetMs = Math.max(0, run?.remainingMs === undefined ? configured : Math.min(configured, run.remainingMs - JOB_EXIT_MARGIN_MS));
+      // Each company's job is given what is left of the run's budget when its turn comes (a tier pass that started late can never plan past the function's end).
+      const companies = await runPerCompany(await companiesFor(job.area), async (companyId, leftMs) => {
+        const asked = nowMs();
+        const runtime = await runtimeFor(companyId);
+        return await job.run(runtime, Math.max(0, leftMs - (nowMs() - asked)));
+      }, { rotation: rotation++, budgetMs, nowMs });
       return { job: job.name, companies };
     },
     async relayOutbox(companies) {
