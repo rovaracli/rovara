@@ -124,8 +124,8 @@ import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
 import { installCoreTaskRoutes } from "../../rovara-code/task-routes.js";
 import { viewCoreTaskRowsClient } from "../../cloud/app/core-task-rows.js";
 import { createCloudCoreEntry, isCoreSlackPressEvent, isCoreSlackRequestEvent } from "../../cloud/app/entry.js";
-import { anyCoreAreaOn, readCoreEngineFlags } from "../../cloud/app/flags.js";
 import { cloudCoreEntryInputsFromHost, coreEngineWanted } from "../../cloud/app/entry-inputs.js";
+import { createCoreStampGuard } from "../../cloud/app/stamp-guard.js";
 import { isOutboxRelayBackstopEvent, runOutboxRelayBackstop } from "../../cloud-adapters/queue/outbox-relay-wiring.js";
 import { isWorkflowDispatchRecoveryEvent, retryDueWorkflowDispatches, startDuePlanEvidenceJobs } from "./workflow-items.js";
 import { connectSlackTeam, deleteSlackBinding, disconnectSlackTeam, getTeamSlackBinding, putSlackBinding, requireSlackRequesterMayWork, requireSlackServiceRole, slackServiceIdentity } from "./workspace-preparation.js";
@@ -265,8 +265,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     env: process.env, broker: dependencies, routes: developerRouteDependencies, inputs: dependencies.cloudCore, installCompanyId: installOrgId(dependencies), now: () => new Date(), log: coreLog,
   });
   if (coreEntry !== undefined) dependencies.coreStart = coreEntry.intentHook;
-  installCoreTaskRoutes(coreEntry?.taskRoutes);
-  if (coreEntry === undefined && dependencies.cloudCore === undefined && anyCoreAreaOn(readCoreEngineFlags(process.env))) coreLog({ event: "core_entry.not_configured", component: "cloud_core", missing: "cloudCore" });
+  // S3-10 review H1(b): without a root (cc off), a core-stamped task is still the core's: its worker callbacks get 503 and Cloud's task routes refuse it, never run Cloud's code over its rows.
+  const stampGuard = coreEntry === undefined ? createCoreStampGuard({ documentClient: dependencies.documentClient, tableName: dependencies.tableName, now: Date.now }) : undefined;
+  installCoreTaskRoutes(coreEntry?.taskRoutes ?? stampGuard?.taskRoutes);
+  if (coreEntry === undefined && dependencies.cloudCore === undefined && coreEngineWanted(process.env)) coreLog({ event: "core_entry.not_configured", component: "cloud_core", missing: "cloudCore" });
   return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.chain-sweep" } | { source: "agentx.intake-poll" } | { source: "agentx.session-sweep" } | { source: "agentx.audit-drain" } | { source: "agentx.outbox-relay-backstop" }, context?: { awsRequestId?: string; invokedFunctionArn?: string; getRemainingTimeInMillis?: () => number }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Test services: the account this function runs in, from the Lambda's own ARN (the catalog's trust decision reads it; nothing else does).
     noteInvokedFunctionArn(context?.invokedFunctionArn);
@@ -701,6 +703,10 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       if (coreEntry !== undefined && request.method === "POST" && url.pathname.startsWith("/v1/internal/workspaces/")) {
         const core = await coreEntry.routeCallback({ method: request.method, path: request.path, headers: request.headers, ...(request.body === undefined ? {} : { body: request.body }), requestId: request.requestId });
         if (core !== undefined) return core;
+      }
+      if (stampGuard !== undefined && url.pathname.startsWith("/v1/internal/workspaces/")) {
+        const refused = await stampGuard.callback({ method: request.method, path: request.path });
+        if (refused !== undefined) return refused;
       }
       // Shared links belong exclusively to the web shell, including stale broker route events.
       if (url.pathname.startsWith("/s/")) throw agentXError("NOT_FOUND", "route not found");

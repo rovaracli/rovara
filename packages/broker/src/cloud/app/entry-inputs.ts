@@ -28,15 +28,18 @@ import { workspaceCompanyReader } from "../../aws/worker-machines/workspace-comp
 import type { SessionManager } from "../../aws/sessions.js";
 import { cloudApprovalIssuers, coreProofMarkerReader } from "../adapters/people/index.js";
 import type { AppSyncEventsPublisherOptions } from "../../cloud-adapters/realtime-appsync/publisher.js";
-import { anyCoreAreaOn, readCoreEngineFlags } from "./flags.js";
+import { coreEngineServes, readCoreEngineFlags } from "./flags.js";
 import { cloudLevelSources } from "./money.js";
 import { cloudDeciderRole } from "./decider-role.js";
 import { CORE_DISPATCH_QUEUE, type CloudModuleDeps } from "./cloud-modules.js";
 import type { CloudCoreEntryInputs } from "./entry.js";
 
-/** Whether this Lambda should build anything for the core: some area of the combined switch is on for some company. Off (the default): the entry makes no client and installs no input. */
+/**
+ * Whether this Lambda should build anything for the core: the combined switch is not off (`on`, `on:<ids>`, or `drain`, in which the core still serves its running tasks). Off (the default): the entry makes no
+ * client and installs no input. Whether a NEW task starts on the core is the app's own rule (`anyCoreAreaOn`), which is false in `drain`.
+ */
 export function coreEngineWanted(env: NodeJS.ProcessEnv = process.env): boolean {
-  return anyCoreAreaOn(readCoreEngineFlags(env));
+  return coreEngineServes(readCoreEngineFlags(env));
 }
 
 /**

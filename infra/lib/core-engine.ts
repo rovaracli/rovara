@@ -11,7 +11,7 @@
 //   - an alarm on the dead-letter queue.
 //
 // None of this runs a core job or moves a task: the broker answers a scheduled core job `{ skipped: "off" }` while `cc` is off, and the dispatch queue stays empty until a task starts on the core.
-import { CfnCondition, Duration, Fn, Stack, Token, aws_cloudwatch as cloudwatch, aws_iam as iam, aws_lambda as lambda, aws_scheduler as scheduler, aws_sqs as sqs, type CfnParameter, type aws_cloudwatch_actions as cloudwatchActions } from "aws-cdk-lib";
+import { Aws, CfnCondition, Duration, Fn, Stack, Token, aws_cloudwatch as cloudwatch, aws_iam as iam, aws_lambda as lambda, aws_scheduler as scheduler, aws_sqs as sqs, type CfnParameter, type aws_cloudwatch_actions as cloudwatchActions } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { BROKER_SETTINGS, CORE_DISPATCH_MAX_RECEIVES, CORE_JOB_EVENT_SOURCE, CORE_JOB_SCHEDULES, coreDispatchDeadLetterName, coreDispatchQueueName, type CoreJobSchedule } from "@agentx/cloud-contracts";
 import { BrokerSettings } from "./broker-names.js";
@@ -31,6 +31,9 @@ export interface CoreEngineProps {
   readonly coreEngine: CfnParameter;
   readonly notifyOperator: cloudwatchActions.SnsAction;
 }
+
+/** The dispatcher takes one core record per invocation (review M1). */
+export const CORE_DISPATCH_BATCH_SIZE = 1;
 
 /** The queue's visibility timeout. Like Cloud's DispatchQueue; the core extends it per message while a step starts (changeVisibility). */
 export const CORE_DISPATCH_VISIBILITY_TIMEOUT = Duration.minutes(2);
@@ -96,24 +99,38 @@ export class CoreEngine extends Construct {
    * touch the dead letters); it starts the deleter (the core ends a closed workspace's machine) and ends a session's instance (own-tagged only, as the idle reaper does); and it reads the callback signing key
    * (the core builds a worker's job on the dispatcher, so the capability and the repository grant it signs are the ones the broker verifies). It already starts the provisioner and signs with the invoke key.
    */
-  connectDispatcher(dispatcher: lambda.Function, props: { startDeleter: (fn: lambda.Function) => void; terminateOwnInstances: iam.PolicyStatement; readCallbackKey: (fn: lambda.Function) => void }): lambda.CfnEventSourceMapping {
+  connectDispatcher(dispatcher: lambda.Function, props: { deleterArn: string; environmentTagValue: string; callbackKeySecretArn: string }): lambda.CfnEventSourceMapping {
     dispatcher.addEnvironment("CORE_DISPATCH_QUEUE_URL", this.queue.queueUrl);
     dispatcher.addEnvironment("CORE_DISPATCH_DEAD_LETTER_URL", this.deadLetters.queueUrl);
     dispatcher.addEnvironment("CORE_DISPATCH_QUEUE_ARN", this.queue.queueArn);
     // The dispatcher does not unpack the broker's settings: the switch is a plain variable (as on the Slack ingress), read per batch.
     dispatcher.addEnvironment(BROKER_SETTINGS.coreEngine.variable, this.coreEngine.valueAsString);
+    // Unconditional: the mapping's own reads, which Lambda checks when it creates the mapping (even a disabled one).
     dispatcher.addToRolePolicy(new iam.PolicyStatement({
       sid: "ConsumeCoreDispatchQueue",
       actions: [...CORE_DISPATCHER_QUEUE_ACTIONS],
       resources: [this.queue.queueArn],
     }));
-    props.startDeleter(dispatcher);
-    dispatcher.addToRolePolicy(props.terminateOwnInstances);
-    props.readCallbackKey(dispatcher);
+    // Review L1: what only the core's dispatch uses exists only while `cc` is not off: a policy of its own under CoreEngineIsOn.
+    const corePolicy = new iam.Policy(this, "DispatcherCorePolicy", {
+      roles: [dispatcher.role!],
+      statements: [
+        new iam.PolicyStatement({ sid: "CoreStartSessionDeleter", actions: ["states:StartExecution"], resources: [props.deleterArn] }),
+        new iam.PolicyStatement({
+          sid: "CoreTerminateOwnSessionInstances",
+          actions: ["ec2:TerminateInstances"],
+          resources: [`arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:instance/*`],
+          conditions: { StringEquals: { "aws:ResourceTag/DeploymentMode": "ec2-ebs", "aws:ResourceTag/Environment": props.environmentTagValue } },
+        }),
+        new iam.PolicyStatement({ sid: "CoreReadCallbackSigningKey", actions: ["secretsmanager:GetSecretValue"], resources: [props.callbackKeySecretArn] }),
+      ],
+    });
+    (corePolicy.node.defaultChild as iam.CfnPolicy).cfnOptions.condition = this.isOn;
+    // Review M1: one record per invocation, so a slow EC2 cold start of one message never runs another past the function's timeout (the queue's visibility, two minutes, is above it).
     const mapping = new lambda.CfnEventSourceMapping(this, "DispatcherMapping", {
       functionName: dispatcher.functionName,
       eventSourceArn: this.queue.queueArn,
-      batchSize: 10,
+      batchSize: CORE_DISPATCH_BATCH_SIZE,
       functionResponseTypes: ["ReportBatchItemFailures"],
       enabled: Fn.conditionIf(this.isOn.logicalId, true, false),
     });

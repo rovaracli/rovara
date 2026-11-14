@@ -32,6 +32,8 @@ const OFF: CoreSwitch = { mode: "off" };
 
 export interface ParsedSwitch {
   value: CoreSwitch;
+  /** `drain` (S3-10 review H1): the switch is off for NEW tasks, and the core still serves the tasks it holds to their end (callbacks, jobs, dispatch). The reverse plan is on -> drain -> none in flight -> off. */
+  drain?: true;
   /** Why the raw text was not a switch value (it then reads as off). Never echoes the text: it may be anything. */
   problem?: string;
 }
@@ -41,6 +43,7 @@ export function parseCoreSwitch(raw: string | undefined): ParsedSwitch {
   const text = raw?.trim() ?? "";
   if (text === "" || text === "off" || text === "0") return { value: OFF };
   if (text === "on") return { value: { mode: "on" } };
+  if (text === "drain") return { value: OFF, drain: true };
   if (!text.startsWith("on:")) return { value: OFF, problem: "not off, on or on:<company ids>" };
   const ids = text.slice(3).split(":");
   if (ids.length === 0 || ids.some((id) => !OrgIdSchema.safeParse(id).success)) return { value: OFF, problem: "a company id is not well formed" };
@@ -62,6 +65,8 @@ export interface CoreEngineFlags {
   areas: Readonly<Partial<Record<CoreArea, CoreSwitch>>>;
   /** Values that could not be read (each read as off). */
   problems: readonly { variable: string; problem: string }[];
+  /** The combined switch says `drain`: no new task on the core, its tasks served to the end. */
+  drain?: boolean;
 }
 
 export const CORE_ENGINE_OFF: CoreEngineFlags = Object.freeze({ combined: OFF, areas: Object.freeze({}), problems: Object.freeze([]) });
@@ -79,7 +84,7 @@ export function readCoreEngineFlags(env: NodeJS.ProcessEnv = process.env): CoreE
     if (parsed.problem !== undefined) problems.push({ variable, problem: parsed.problem });
     areas[area] = parsed.value;
   }
-  return { combined: combined.value, areas, problems };
+  return { combined: combined.value, areas, problems, ...(combined.drain === true ? { drain: true } : {}) };
 }
 
 /** Whether a NEW task of this company runs this area on the core. Both the combined switch and the area's own key (when set) must cover it. */
@@ -96,6 +101,14 @@ export function anyCoreAreaOn(flags: CoreEngineFlags): boolean {
     const own = flags.areas[area];
     return own === undefined || own.mode !== "off";
   });
+}
+
+/**
+ * Whether a function should build the Cloud root at all: the combined switch is not off (`on`, `on:<ids>` or `drain`). Distinct from `anyCoreAreaOn` (whether a NEW task may start on the core): in `drain` the
+ * root is built and serves the core's tasks to their end, while every new task stays on Cloud's path. The infrastructure's CoreEngineIsOn is the same rule (cc != off).
+ */
+export function coreEngineServes(flags: CoreEngineFlags): boolean {
+  return flags.combined.mode !== "off" || flags.drain === true;
 }
 
 /** The companies the core serves at all (for the scheduled jobs that run per company). `all` when the combined switch is plain `on`. */

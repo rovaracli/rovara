@@ -25,10 +25,10 @@ export const CORE_JOB_SCHEDULES: readonly CoreJobSchedule[] = [
 ];
 
 /**
- * What the `cc` setting (stack parameter CoreEngine, `agentx config set coreEngine.switch`) may be: `off`, `on` (every company) or `on:<company id>[:<company id>]`, the shape the broker's
+ * What the `cc` setting (stack parameter CoreEngine, `agentx config set coreEngine.switch`) may be: `off`, `on` (every company), `on:<company id>[:<company id>]` or `drain` (S3-10 review H1: no new task on the core, its running tasks served to the end), the shape the broker's
  * parseCoreSwitch reads (packages/broker/src/cloud/app/flags.ts). A company id is `org_` and twenty lowercase letters or digits. At most two: a packed setting holds 64 characters
  * (BROKER_SETTING_VALUE) and `on:` plus two ids is 52. The pattern admits no comma, equals sign, slash or space, so the value is joined into the broker's packed settings unescaped.
  */
-export const CORE_ENGINE_PARAMETER_PATTERN = "^(off|on|on:org_[0-9a-z]{20}(:org_[0-9a-z]{20})?)$";
+export const CORE_ENGINE_PARAMETER_PATTERN = "^(off|on|drain|on:org_[0-9a-z]{20}(:org_[0-9a-z]{20})?)$";
 export const CORE_ENGINE_PARAMETER_MAX_LENGTH = 64;
 export const CORE_ENGINE_DEFAULT = "off";

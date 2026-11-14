@@ -35,8 +35,9 @@ How the overlap works:
   and it refuses tokens signed with the new key. **Step 3 is therefore mandatory, and you run it right after step 2.**
   Without it the old key is not revoked.
 
-Functions that read the callback signing key: the broker, the eval batch tick, and the session reconciler. Only the
-broker reads the erasure hash key.
+Functions that read the callback signing key: the broker, the eval batch tick, the session reconciler and, while the
+core engine switch (`coreEngine.switch`) is not `off`, the dispatcher (it builds a core task's job and signs its callback
+capability and repository grant with the broker's key). Only the broker reads the erasure hash key.
 
 ## Failure behaviour (for the release notes)
 
@@ -104,6 +105,8 @@ A configuration change sends new invocations to fresh execution environments, an
 `Description` isn't set in the templates, so changing it doesn't fight CloudFormation.
 
 ```sh
+# While coreEngine.switch is not off (on, on:<company>, or drain), add <dispatcher function> to this list: a warm
+# dispatcher keeps the old key and signs core jobs the broker then refuses.
 for FN in <broker function> <eval batch tick function> <session reconciler function>; do
   $S aws lambda update-function-configuration --function-name "$FN" --description "callback signing key rolled $(date -u +%Y-%m-%dT%H:%MZ)" --query LastUpdateStatus
   $S aws lambda wait function-updated --function-name "$FN"

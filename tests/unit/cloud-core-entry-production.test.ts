@@ -12,8 +12,9 @@ import { FakeSqs } from "../../vendor/rovara-code/tests/support/ports/sqs-fake.j
 import { FakeS3, FakeSecretsManager } from "../../vendor/rovara-code/tests/support/ports/aws-fakes.js";
 import { RepositoryGrantService } from "../../packages/broker/src/repository-access.js";
 import { BROWSER_SESSION_METHOD } from "../../packages/broker/src/cloud/adapters/people/index.js";
-import { createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
+import { coreDispatchLoaderFor, createDispatcherHandler } from "../../packages/broker/src/aws/dispatcher.js";
 import { DISPATCHER_CORE_NOT_CONFIGURED, createDispatcherCoreDispatch } from "../../packages/broker/src/aws/core-dispatch-entry.js";
+import { coreTierChecksView } from "../../packages/broker/src/aws/core-tier-checks-production.js";
 import { CORE_REFUSED_FOR_NOW, brokerMachineOps, cloudCatalogPriceTable, cloudCoreEntryInputsFromHost, cloudModuleDepsFromHost, coreEngineWanted, coreWorkspaceBinding, type CloudCoreHostResources } from "../../packages/broker/src/cloud/app/entry-inputs.js";
 import { NO_CODE_HOST_HERE, createCoreHostEntry, createProductionCoreDispatchHost, issueOnlyRepositoryGrants, refusingCodeHost, repositoryGrantKeyOf } from "../../packages/broker/src/cloud/app/core-host.js";
 import { createCloudCoreEntry, type CloudCoreEntry } from "../../packages/broker/src/cloud/app/entry.js";
@@ -114,23 +115,30 @@ function world(options: { env?: Record<string, string> } = {}) {
     repositoryGrants: new RepositoryGrantService(repositoryGrantKeyOf(callbackKey), async () => ({ token: "repository-token-for-tests" })),
   };
   const inputs = cloudCoreEntryInputsFromHost({ documentClient: db, tableName: "state", routes: () => people.routes, installCompanyId: PEOPLE_ORG, resources: brokerResources, now: () => people.routes.now() });
-  const brokerEntry = createCloudCoreEntry({ env, broker: broker as never, routes: () => people.routes, inputs, installCompanyId: PEOPLE_ORG, now, log })!;
-  const dispatcherEntry = createCoreHostEntry({
-    host: "dispatcher", env, installCompanyId: PEOPLE_ORG, resources: dispatcherResources, now, log,
-    view: { documentClient: db as never, tableName: "state", callbackSigningKey: callbackKey, repositoryGrants: issueOnlyRepositoryGrants(callbackKey), cloud: true, environmentName: TEST_ENV },
-  });
-  const coreDispatch = createProductionCoreDispatchHost({
-    entry: async () => dispatcherEntry, documentClient: db as never, tableName: "state", installCompanyId: PEOPLE_ORG, enabled: () => coreEngineWanted(env),
-    changeVisibility: async () => undefined, log,
-  });
-  const dispatcher = createDispatcherHandler({
-    queueArn: "arn:aws:sqs:us-west-2:111122223333:agentx-staging-dispatch", coreQueueArn: QUEUE_ARN, coreDispatch,
-    markDispatching: async () => { throw new Error("Cloud's path must not run for a core batch"); }, markDelivered: async () => { throw new Error("Cloud's path"); }, markFailed: async () => { throw new Error("Cloud's path"); },
-  });
+  /** The broker's and the dispatcher's roots for one value of the switch: new Lambda containers over the same table, queues and machines. */
+  const roots = (rootEnv: Record<string, string>) => {
+    const brokerEntry = createCloudCoreEntry({ env: rootEnv, broker: broker as never, routes: () => people.routes, inputs, installCompanyId: PEOPLE_ORG, now, log })!;
+    const dispatcherEntry = createCoreHostEntry({
+      host: "dispatcher", env: rootEnv, installCompanyId: PEOPLE_ORG, resources: dispatcherResources, now, log,
+      view: { documentClient: db as never, tableName: "state", callbackSigningKey: callbackKey, repositoryGrants: issueOnlyRepositoryGrants(callbackKey), cloud: true, environmentName: TEST_ENV },
+    });
+    const coreDispatch = createProductionCoreDispatchHost({
+      entry: async () => dispatcherEntry, documentClient: db as never, tableName: "state", installCompanyId: PEOPLE_ORG, enabled: () => coreEngineWanted(rootEnv),
+      changeVisibility: async () => undefined, log,
+    });
+    const dispatcher = createDispatcherHandler({
+      queueArn: "arn:aws:sqs:us-west-2:111122223333:agentx-staging-dispatch", coreQueueArn: QUEUE_ARN, coreDispatch,
+      markDispatching: async () => { throw new Error("Cloud's path must not run for a core batch"); }, markDelivered: async () => { throw new Error("Cloud's path"); }, markFailed: async () => { throw new Error("Cloud's path"); },
+    });
+    return { brokerEntry, dispatcherEntry, dispatcher };
+  };
   // The project, as Cloud registers it: its revision (with the ec2-ebs binding) and its catalog row.
   db.set({ ...projectRevisionKey(PEOPLE_ORG, "payments", 1), entityType: "PROJECT", definition: { name: "payments", revision: 1, setup: [], readiness: [], orchestratorInstructions: "Delegate work.", repositories: [{ name: "demo", url: REPO, path: "repo/demo", defaultBranch: "main", credentialRef: "host-app" }] }, runtimeBinding: BINDING });
   db.set({ ...orgProjectCatalogKey(PEOPLE_ORG, "payments"), entityType: "PROJECT_CATALOG", latestRevision: 1 });
-  return { people, db, sqs, s3, github, machines, brokerEntry, dispatcherEntry, dispatcher, logs, inputs, brokerResources, dispatcherResources };
+  const w = { people, db, sqs, s3, github, machines, logs, done: new Set<string>(), built: { value: undefined as { commit: string; tree: string } | undefined }, inputs, brokerResources, dispatcherResources, ...roots(env),
+    /** The switch changed (a deploy): the next requests reach new containers built with this value. */
+    switchTo(next: Record<string, string>) { Object.assign(w, roots(next)); } };
+  return w;
 }
 type World = ReturnType<typeof world>;
 
@@ -159,10 +167,10 @@ async function startCoreTask(w: World): Promise<string> {
 }
 
 /** Drives the task: the broker's scheduled jobs, the dispatcher's batches and a fake worker posting to the broker's callback router, until a pull request is recorded. */
-async function drive(w: World, taskId: string): Promise<{ stages: string[]; workflow: WorkflowSnapshot }> {
+async function drive(w: World, taskId: string, until?: (workflow: WorkflowSnapshot) => boolean): Promise<{ stages: string[]; workflow: WorkflowSnapshot }> {
   const stages: string[] = [];
-  const done = new Set<string>();
-  let built: { commit: string; tree: string } | undefined;
+  const done = w.done;
+  let built = w.built.value;
   const base = w.github.branches.get("main")!;
   for (let round = 0; round < 30; round += 1) {
     await w.brokerEntry.handleScheduledJob(job("outbox-relay-backstop"));
@@ -171,7 +179,7 @@ async function drive(w: World, taskId: string): Promise<{ stages: string[]; work
     const task = w.db.get(`DEVTASK#${taskId}`, "META") as Record<string, unknown> | undefined;
     const workflow = task?.["workflow"] as WorkflowSnapshot;
     if (stages.at(-1) !== workflow.stage) stages.push(workflow.stage);
-    if ((workflow.pullRequests ?? []).length > 0) return { stages, workflow };
+    if ((workflow.pullRequests ?? []).length > 0 || until?.(workflow) === true) return { stages, workflow };
     if (workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING") {
       const gate = (await w.brokerEntry.app.runtimeFor(PEOPLE_ORG)).inbound.clientGate!;
       const found = (await gate.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
@@ -196,6 +204,7 @@ async function drive(w: World, taskId: string): Promise<{ stages: string[]; work
       } else if (mode === "IMPLEMENT") {
         const commit = w.github.commit(base);
         built = { commit, tree: w.github.commits.get(commit)!.tree };
+        w.built.value = built;
         const candidate = [{ repositoryId: "demo", commitSha: commit, treeSha: built.tree, baseCommitSha: base }];
         await post("result", { status: "SUCCEEDED", result: { conversationId: "conversation", checks: { status: "not_verified", notVerifiedReason: "no_checks", source: "none", preambleVersion: "1", preambleSha256: "a".repeat(64), checks: [], extraTry: "not_needed", agentClaim: "none" }, workflowCandidateRepositories: candidate, workflowCheckCandidateRepositories: candidate } });
       } else if (mode === "REVIEW") {
@@ -233,6 +242,26 @@ describe("the production core inputs (S3-10)", () => {
     // Nothing was left on the core queue or in its dead letters.
     expect((await w.sqs.send(new ReceiveMessageCommand({ QueueUrl: DEAD_URL, MaxNumberOfMessages: 10 })) as { Messages?: unknown[] }).Messages ?? []).toHaveLength(0);
     expect(w.github.unmodelled).toEqual([]);
+  }, 60_000);
+
+  it("review H1(a): a core task in flight when cc goes to drain still runs its steps on the core to a pull request, and no new task starts on the core", async () => {
+    const w = world();
+    const taskId = await startCoreTask(w);
+    await drive(w, taskId, (workflow) => workflow.stage === "PLAN_REVIEW" && workflow.state === "WAITING");
+    w.switchTo({ CLOUD_CORE_ENGINE: "drain" });
+    expect(coreEngineWanted({ CLOUD_CORE_ENGINE: "drain" })).toBe(true);
+    expect(w.brokerEntry.app.active).toBe(false);
+    // A new start stays on Cloud's path (the hook answers nothing).
+    const owner = w.people.people.owner;
+    const another = await w.brokerEntry.intentHook.start({
+      caller: { developerId: owner.developerId, sessionId: owner.sessionId, amr: owner.amr, name: owner.name, orgId: owner.orgId, orgRole: owner.role },
+      request: { requestId: randomUUID(), source: "app", project: "payments", input: { text: "Another change" }, path: "QUICK" } as never, ownedTask: (async () => ({})) as never,
+    });
+    expect(another).toBeUndefined();
+    // The running task's decision, steps, dispatch and callbacks are all still the core's.
+    const { workflow } = await drive(w, taskId);
+    expect(workflow.pullRequests?.[0]).toMatchObject({ number: 1 });
+    expect(w.github.pulls).toHaveLength(1);
   }, 60_000);
 
   it("the registry the production deps build owes no point (queue, worker machines, check runner all wired)", () => {
@@ -291,7 +320,8 @@ describe("the production core inputs (S3-10)", () => {
     w.db.set({ pk: `WORKSPACE#${workspaceId}`, sk: "META", companyId: PEOPLE_ORG, projectName: "payments", projectRevision: 1 });
     expect(await coreWorkspaceBinding(w.db, "state")(workspaceId)).toMatchObject({ launchTemplateId: BINDING.launchTemplateId });
     const stray = randomUUID();
-    w.db.set({ pk: `WORKSPACE#${stray}`, sk: "META", projectName: "payments", projectRevision: 1 });
+    // A record with no company of its own is never placed under another one (not even its `orgId`, which a Cloud workspace carries): no binding.
+    w.db.set({ pk: `WORKSPACE#${stray}`, sk: "META", orgId: PEOPLE_ORG, projectName: "payments", projectRevision: 1 });
     expect(await coreWorkspaceBinding(w.db, "state")(stray)).toBeUndefined();
   });
 
@@ -315,6 +345,34 @@ describe("the production core inputs (S3-10)", () => {
     expect((await createDispatcherCoreDispatch(inputs({ ...named, CLOUD_CORE_ENGINE: "off" }))).take([record]).size).toBe(0);
     expect((await createDispatcherCoreDispatch(inputs({ ...named }))).take([record]).size).toBe(0);
     await expect(createDispatcherCoreDispatch(inputs({ AWS_REGION: "us-west-2", CLOUD_CORE_ENGINE: "on" }))).rejects.toThrow(DISPATCHER_CORE_NOT_CONFIGURED);
+  });
+
+  it("the production CoreTierChecks host decides nobody: its module deps build with no developer API, and its people refuse in words", () => {
+    const saved = { ...process.env };
+    Object.assign(process.env, { STATE_TABLE_NAME: "state", ARTIFACT_BUCKET_NAME: "artifacts", AGENTX_ENV: "staging", MODEL_ACCESS_FUNCTION_NAME: "model-access", GITHUB_APP_CREDENTIAL_REF: "github-app", GITHUB_APP_PRIVATE_KEY_SECRET_ARN: "arn:aws:secretsmanager:us-west-2:111122223333:secret:app-key", AWS_REGION: "us-west-2", CORE_DISPATCH_QUEUE_URL: QUEUE_URL, CORE_DISPATCH_DEAD_LETTER_URL: DEAD_URL });
+    try {
+      const view = coreTierChecksView(process.env);
+      const deps = view.cloudCore.moduleDeps();
+      expect(() => (deps.people as unknown as { orgs: unknown }).orgs).toThrow(/people are decided by the broker/u);
+      expect(deps.approvers.issuers).toEqual({});
+      expect(owedPoints(deps)).toEqual([]);
+    } finally {
+      for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+      Object.assign(process.env, saved);
+    }
+  });
+
+  it("the dispatcher loads nothing of the core while cc is off; on and drain load the host once, and again only after a failed build", async () => {
+    let builds = 0;
+    const build = async () => { builds += 1; if (builds === 1) throw new Error("first build fails"); return { take: () => new Set<string>(), handle: async () => ({ taken: new Set<string>(), failures: [], reports: [] }) } as never; };
+    expect(coreDispatchLoaderFor({}, build)).toBeUndefined();
+    expect(coreDispatchLoaderFor({ CLOUD_CORE_ENGINE: "off" }, build)).toBeUndefined();
+    expect(coreDispatchLoaderFor({ CLOUD_CORE_ENGINE: "drain" }, build)).toBeTypeOf("function");
+    const load = coreDispatchLoaderFor({ CLOUD_CORE_ENGINE: "on" }, build)!;
+    await expect(load()).rejects.toThrow("first build fails");
+    await load();
+    await load();
+    expect(builds).toBe(2);
   });
 
   it("lists what is refused for now, each with its refusal", () => {

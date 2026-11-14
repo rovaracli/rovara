@@ -99,9 +99,9 @@ describe("the cc setting (stack parameter CoreEngine)", () => {
     const entry = configKey("coreEngine.switch");
     expect(entry.target).toEqual({ kind: "stack-parameter", part: "control-plane", parameter: "CoreEngine" });
     expect(entry.defaultValue).toBe("off");
-    for (const value of ["off", "on", `on:${ORG_A}`, `on:${ORG_A}:${ORG_B}`]) expect(entry.parse(value)).toBe(value);
+    for (const value of ["off", "on", "drain", `on:${ORG_A}`, `on:${ORG_A}:${ORG_B}`]) expect(entry.parse(value)).toBe(value);
     expect(entry.parse(" on ")).toBe("on");
-    for (const value of ["", "1", "true", "on:", `on:${ORG_A},${ORG_B}`, `on:${ORG_A}:${ORG_B}:${ORG_A}`]) expect(() => entry.parse(value), value).toThrow("coreEngine.switch must be off, on, or on:<company id>");
+    for (const value of ["", "1", "true", "on:", "drained", `drain:${ORG_A}`, `on:${ORG_A},${ORG_B}`, `on:${ORG_A}:${ORG_B}:${ORG_A}`]) expect(() => entry.parse(value), value).toThrow("coreEngine.switch must be off, on, drain, or on:<company id>");
     expect(OPERATOR_PARAMETERS["control-plane"]).toContain("CoreEngine");
   });
 });
@@ -166,7 +166,7 @@ describe("the core dispatch queue", () => {
     const mappings = resources(named, "AWS::Lambda::EventSourceMapping").filter(([, mapping]) => JSON.stringify(mapping.Properties.EventSourceArn).includes(queue![0]));
     expect(mappings).toHaveLength(1);
     const dispatcher = resources(named, "AWS::Lambda::Function").find(([id]) => id.startsWith("Dispatcher"))!;
-    expect(mappings[0]![1].Properties).toMatchObject({ FunctionName: { Ref: dispatcher[0] }, BatchSize: 10, FunctionResponseTypes: ["ReportBatchItemFailures"], Enabled: { "Fn::If": [expect.stringContaining("CoreEngineIsOn"), true, false] } });
+    expect(mappings[0]![1].Properties).toMatchObject({ FunctionName: { Ref: dispatcher[0] }, BatchSize: 1, FunctionResponseTypes: ["ReportBatchItemFailures"], Enabled: { "Fn::If": [expect.stringContaining("CoreEngineIsOn"), true, false] } });
     // No mapping reads the dead letters.
     for (const [, mapping] of resources(named, "AWS::Lambda::EventSourceMapping")) expect(JSON.stringify(mapping.Properties.EventSourceArn)).not.toContain(deadLetters![0]);
     // The dispatcher is told the queue (URLs and ARN) and the switch as plain variables.
@@ -178,18 +178,24 @@ describe("the core dispatch queue", () => {
   it("gives the dispatcher exactly what the core's dispatch needs beyond what it had: the deleter, ending an own-tagged session instance, and the callback signing key (S3-10)", () => {
     const dispatcher = resources(named, "AWS::Lambda::Function").find(([id]) => id.startsWith("Dispatcher"))!;
     const roleId = ((dispatcher[1].Properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"])[0];
-    const statements = resources(named, "AWS::IAM::Policy").filter(([, policy]) => JSON.stringify(policy.Properties.Roles).includes(roleId)).flatMap(([, policy]) => (policy.Properties.PolicyDocument as { Statement: IamStatement[] }).Statement);
+    const policies = resources(named, "AWS::IAM::Policy").filter(([, policy]) => JSON.stringify(policy.Properties.Roles).includes(roleId));
+    const statements = policies.flatMap(([, policy]) => (policy.Properties.PolicyDocument as { Statement: IamStatement[] }).Statement);
+    // Review L1: the core-only grants are one policy of their own, which exists only while cc is not off.
+    const core = policies.filter(([, policy]) => JSON.stringify(policy.Properties.PolicyDocument).includes("CoreTerminateOwnSessionInstances"));
+    expect(core).toHaveLength(1);
+    expect((core[0]![1] as { Condition?: string }).Condition).toMatch(/CoreEngineIsOn/u);
+    expect((core[0]![1].Properties.PolicyDocument as { Statement: IamStatement[] }).Statement.map((statement) => statement.Sid).sort()).toEqual(["CoreReadCallbackSigningKey", "CoreStartSessionDeleter", "CoreTerminateOwnSessionInstances"]);
     const terminate = statements.find((statement) => statement.Sid === "CoreTerminateOwnSessionInstances")!;
     expect(list(terminate.Action)).toEqual(["ec2:TerminateInstances"]);
-    expect(JSON.stringify(terminate.Condition)).toContain("aws:ResourceTag/DeploymentMode");
-    expect(JSON.stringify(terminate.Condition)).toContain("ec2-ebs");
-    expect(JSON.stringify(terminate.Condition)).toContain("aws:ResourceTag/Environment");
+    // Review M2: the exact condition: this environment's own ec2-ebs session instances, nothing wider.
+    expect(terminate.Condition).toEqual({ StringEquals: { "aws:ResourceTag/DeploymentMode": "ec2-ebs", "aws:ResourceTag/Environment": "staging" } });
     const key = statements.find((statement) => statement.Sid === "CoreReadCallbackSigningKey")!;
     expect(list(key.Action)).toEqual(["secretsmanager:GetSecretValue"]);
     expect(JSON.stringify(key.Resource)).toContain("callback");
     expect(JSON.stringify(key.Resource)).not.toContain("erasure");
-    const starts = statements.filter((statement) => list(statement.Action).includes("states:StartExecution"));
-    expect(starts.map((statement) => JSON.stringify(statement.Resource)).join(" ")).toMatch(/Deleter/u);
+    const deleter = statements.find((statement) => statement.Sid === "CoreStartSessionDeleter")!;
+    expect(list(deleter.Action)).toEqual(["states:StartExecution"]);
+    expect(JSON.stringify(deleter.Resource)).toMatch(/Deleter/u);
   });
 
   it("indexes the core's pending outbox rows on the State table (Code's OUTBOX_PENDING_INDEX), so the core's relay can list them (S3-10)", () => {

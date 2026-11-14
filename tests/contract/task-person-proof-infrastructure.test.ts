@@ -477,19 +477,19 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-13 (TE-H4a merged onto integ/0518 cc2966810, v0.5.17): the four named and foreign digests were retaken again from the values the test reports, after the two changes above together (the ExpireEvidenceRecord rule and the 0.5.16 TSL self-test condition and policy).
     // 2026-11-14 (S3-10, feat/s3-10-entry-wiring, on feat/s3-9 + feat/0519-infra-slot + the 0.5.19 re-pin): the four named and foreign digests were retaken from the values the test reports, after the core engine's
     // production wiring: the dispatcher's core dispatch queue mapping (enabled only while cc is not off), its new grants (ConsumeCoreDispatchQueue, CoreTerminateOwnSessionInstances, CoreReadCallbackSigningKey, the deleter)
-    // and variables, CoreTierChecks' schedule on the CoreEngine parameter with the packed cc, and the State table's outbox-pending index (named environments only). Legacy did not move.
+    // and variables, CoreTierChecks' schedule on the CoreEngine parameter with the packed cc, and the State table's outbox-pending index (named environments only). Retaken again after the review fixes: the CoreEngine parameter admits `drain`, the core dispatch mapping takes one record, and the dispatcher's core-only grants are one policy under CoreEngineIsOn. Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "6575063e8a64f72c4610c298e1085a9a0a846d5dc7e3a2cc5d2aafc5aebb4877",
-        withoutRoute: "6fcf764a7f60a366f5f322f4db7843e304155bc5ec95a651005766240cf985ce",
+        withRoute: "2e62d96cc9410fd9badfba2509f50116bce7f369f5b5d867f6e3ece1230bc11b",
+        withoutRoute: "9866c5addc8f249cf14e71930457e3675ea2757e4750f9a01cb8d820e1240a8c",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "ef40ceb8e96652c394b31c608923346a6a8304b905c5ee354bc459be6befdaf5",
-        withoutRoute: "cbfc1085dab35a49996dad0821ed72ef5be9853d1d1f7277290e687ed02b5021",
+        withRoute: "03aacb7f65a8736b964b5918052a5ed58c36945c651c5b44de0549e94bd8b844",
+        withoutRoute: "741f4085b5349925a7611b715f211a0bbc150d222f5caa4a9058274932e291fc",
       },
       {
         label: "legacy",

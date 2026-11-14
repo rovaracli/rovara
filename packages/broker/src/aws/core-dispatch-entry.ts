@@ -13,7 +13,7 @@ import type { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import type { OrgId } from "@rovara-code/contracts";
 import { createCoreHostEntry, createProductionCoreDispatchHost, issueOnlyRepositoryGrants, refusingCodeHost } from "../cloud/app/core-host.js";
 import type { CloudCoreHostResources, CloudCoreMachineOps } from "../cloud/app/entry-inputs.js";
-import { anyCoreAreaOn, readCoreEngineFlags } from "../cloud/app/flags.js";
+import { coreEngineServes, readCoreEngineFlags } from "../cloud/app/flags.js";
 import type { CloudCoreEntry } from "../cloud/app/entry.js";
 import type { CoreDispatchHost } from "./worker-machines/core-dispatch-host.js";
 import { callbackKeySource } from "./signing-key-secrets.js";
@@ -76,8 +76,8 @@ export async function createDispatcherCoreDispatch(inputs: DispatcherCoreInputs)
   };
   return createProductionCoreDispatchHost({
     entry: entryOf, documentClient: inputs.documentClient as never, tableName: inputs.tableName, installCompanyId: inputs.installCompanyId,
-    // Read per batch: a dispatcher whose switch went off takes nothing (its messages come back and wait, never Cloud's path).
-    enabled: () => anyCoreAreaOn(readCoreEngineFlags(env)),
+    // Read per batch: `on` and `drain` take the core's records (a draining core still dispatches its running tasks' steps); `off` takes nothing (its messages come back and wait, never Cloud's path).
+    enabled: () => coreEngineServes(readCoreEngineFlags(env)),
     changeVisibility: async (receiptHandle, seconds) => { await sqs.send(new ChangeMessageVisibilityCommand({ QueueUrl: queueUrl, ReceiptHandle: receiptHandle, VisibilityTimeout: seconds })); },
     log: inputs.log,
   });

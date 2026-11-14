@@ -68,7 +68,7 @@ import { REQUALIFY_CONTEXT_KEY, REQUALIFY_DEFAULT_HOUR_UTC, RuntimeRequalify } f
 import { swebenchNames } from "./swebench-eval.js";
 import { SWEBENCH_DEPLOYMENT_MODE } from "./swebench-eval-definition.js";
 import { markCodeContractsPureCommand } from "./code-contracts-bundling.js";
-import { grantSigningKeySecrets } from "./signing-key-secrets.js";
+import { grantSigningKeySecrets, signingKeySecretArn } from "./signing-key-secrets.js";
 
 const MAX_DISPATCH_ATTEMPTS = 5;
 // Matches MAX_RECEIVE_COUNT in packages/slack-service, which reports the final attempt in the thread.
@@ -1782,19 +1782,10 @@ export class ControlPlaneStack extends Stack {
     sessions.connectDispatcher(dispatcher);
     sessions.connectBroker(broker);
     // S3-10 (0519-INFRA-CORE-DISPATCH-CONSUMER): the dispatcher consumes the core dispatch queue (named environments; the mapping is ENABLED only while `cc` is not off). Its new grants: the queue's receive,
-    // delete and visibility; the deleter; ending an own-tagged session instance (the reaper's grant); and the callback signing key.
+    // delete and visibility; and, only while cc is not off, the deleter, ending an own-tagged session instance (the reaper's grant) and the callback signing key.
     if (coreEngineJobs !== undefined && naming.env !== undefined) {
       const env = naming.env;
-      coreEngineJobs.connectDispatcher(dispatcher, {
-        startDeleter: (fn) => { sessions.deleter.grantStartExecution(fn); },
-        terminateOwnInstances: new iam.PolicyStatement({
-          sid: "CoreTerminateOwnSessionInstances",
-          actions: ["ec2:TerminateInstances"],
-          resources: [`arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:instance/*`],
-          conditions: { StringEquals: { "aws:ResourceTag/DeploymentMode": "ec2-ebs", "aws:ResourceTag/Environment": naming.environmentTagValue } },
-        }),
-        readCallbackKey: (fn) => { grantSigningKeySecrets(fn, this, env, ["callback"], "CoreReadCallbackSigningKey"); },
-      });
+      coreEngineJobs.connectDispatcher(dispatcher, { deleterArn: sessions.deleter.stateMachineArn, environmentTagValue: naming.environmentTagValue, callbackKeySecretArn: signingKeySecretArn(this, env, "callback") });
     }
 
     // Spec 052 FR-006, FR-011: the eval batch tick. Every 2 minutes it records run ends the broker

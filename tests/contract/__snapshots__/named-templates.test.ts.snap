@@ -3943,7 +3943,7 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Type": "String",
     },
     "CoreEngine": {
-      "AllowedPattern": "^(off|on|on:org_[0-9a-z]{20}(:org_[0-9a-z]{20})?)$",
+      "AllowedPattern": "^(off|on|drain|on:org_[0-9a-z]{20}(:org_[0-9a-z]{20})?)$",
       "ConstraintDescription": "must be off, on, or on:<company id> (at most two company ids joined by a colon)",
       "Default": "off",
       "Description": "off: every new task runs Cloud's own flow; on: new tasks of every company start on Rovara Code's core; on:<company id>[:<company id>]: only those companies' new tasks do. A running task keeps the engine it started on. The core's job schedules run only while this is not off (agentx config set coreEngine.switch on:<company id>)",
@@ -7248,12 +7248,93 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::CloudWatch::Alarm",
     },
+    "CoreEngineJobsDispatcherCorePolicy1A9E3DBB": {
+      "Condition": "CoreEngineJobsCoreEngineIsOnCBF38D40",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "states:StartExecution",
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SessionsDeleterB48741EA",
+              },
+              "Sid": "CoreStartSessionDeleter",
+            },
+            {
+              "Action": "ec2:TerminateInstances",
+              "Condition": {
+                "StringEquals": {
+                  "aws:ResourceTag/DeploymentMode": "ec2-ebs",
+                  "aws:ResourceTag/Environment": "staging",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ec2:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":instance/*",
+                  ],
+                ],
+              },
+              "Sid": "CoreTerminateOwnSessionInstances",
+            },
+            {
+              "Action": "secretsmanager:GetSecretValue",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":secretsmanager:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":secret:agentx/staging/callback-signing-key-??????",
+                  ],
+                ],
+              },
+              "Sid": "CoreReadCallbackSigningKey",
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "CoreEngineJobsDispatcherCorePolicy1A9E3DBB",
+        "Roles": [
+          {
+            "Ref": "DispatcherServiceRole904BCD09",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
+    },
     "CoreEngineJobsDispatcherMapping13D37C6B": {
       "DependsOn": [
         "DispatcherServiceRoleDefaultPolicyDA413007",
       ],
       "Properties": {
-        "BatchSize": 10,
+        "BatchSize": 1,
         "Enabled": {
           "Fn::If": [
             "CoreEngineJobsCoreEngineIsOnCBF38D40",
@@ -10137,69 +10218,6 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 ],
               },
               "Sid": "ConsumeCoreDispatchQueue",
-            },
-            {
-              "Action": "states:StartExecution",
-              "Effect": "Allow",
-              "Resource": {
-                "Ref": "SessionsDeleterB48741EA",
-              },
-            },
-            {
-              "Action": "ec2:TerminateInstances",
-              "Condition": {
-                "StringEquals": {
-                  "aws:ResourceTag/DeploymentMode": "ec2-ebs",
-                  "aws:ResourceTag/Environment": "staging",
-                },
-              },
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::Join": [
-                  "",
-                  [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition",
-                    },
-                    ":ec2:",
-                    {
-                      "Ref": "AWS::Region",
-                    },
-                    ":",
-                    {
-                      "Ref": "AWS::AccountId",
-                    },
-                    ":instance/*",
-                  ],
-                ],
-              },
-              "Sid": "CoreTerminateOwnSessionInstances",
-            },
-            {
-              "Action": "secretsmanager:GetSecretValue",
-              "Effect": "Allow",
-              "Resource": {
-                "Fn::Join": [
-                  "",
-                  [
-                    "arn:",
-                    {
-                      "Ref": "AWS::Partition",
-                    },
-                    ":secretsmanager:",
-                    {
-                      "Ref": "AWS::Region",
-                    },
-                    ":",
-                    {
-                      "Ref": "AWS::AccountId",
-                    },
-                    ":secret:agentx/staging/callback-signing-key-??????",
-                  ],
-                ],
-              },
-              "Sid": "CoreReadCallbackSigningKey",
             },
           ],
           "Version": "2012-10-17",

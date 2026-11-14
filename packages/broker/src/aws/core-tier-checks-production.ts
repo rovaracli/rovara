@@ -37,6 +37,11 @@ export function refusingMachineOps(): CloudCoreMachineOps {
 /** The tier pass's root, or undefined while the switch is off (nothing is built). */
 export function coreTierChecksProductionHost(env: NodeJS.ProcessEnv): CoreTierChecksHost | undefined {
   if (!coreEngineWanted(env)) return undefined;
+  return coreTierChecksHostFrom(coreTierChecksView(env) as unknown as AwsBrokerDependencies, { env });
+}
+
+/** What the tier pass's root is built from: the broker dependencies it reads, with its core inputs (`cloudCore`). Exported for its test. */
+export function coreTierChecksView(env: NodeJS.ProcessEnv) {
   const configuration = env.AWS_REGION === undefined ? {} : { region: env.AWS_REGION };
   const tableName = requiredEnvironment("STATE_TABLE_NAME");
   const documentClient = DynamoDBDocumentClient.from(new DynamoDBClient(configuration), { marshallOptions: { removeUndefinedValues: true } });
@@ -62,5 +67,5 @@ export function coreTierChecksProductionHost(env: NodeJS.ProcessEnv): CoreTierCh
     agents: {},
     cloudCore: cloudCoreEntryInputsFromHost({ documentClient, tableName, routes: () => undefined, peopleHere: false, installCompanyId, resources, now: Date.now }),
   };
-  return coreTierChecksHostFrom(view as unknown as AwsBrokerDependencies, { env });
+  return view;
 }

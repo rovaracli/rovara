@@ -29,7 +29,7 @@ import { taskPersonProofThroughLambda } from "./task-person-proof-transport.js";
 import { createLiveSteerDispatch } from "../agent-sessions/live-steer-dispatch.js";
 import { createPeekDispatch } from "../agent-sessions/peek-dispatch.js";
 import type { CoreDispatchHost } from "./worker-machines/core-dispatch-host.js";
-import { anyCoreAreaOn, readCoreEngineFlags } from "../cloud/app/flags.js";
+import { coreEngineServes, readCoreEngineFlags } from "../cloud/app/flags.js";
 
 const DEFAULT_MAX_DISPATCH_ATTEMPTS = 5;
 
@@ -855,21 +855,29 @@ async function pingWorker(url: string): Promise<{ status?: string; activeOperati
   };
 }
 
-// S3-10: the core engine's dispatch consumer, built only while the combined switch is on (and then only on the first batch from the core dispatch queue). Off, nothing of the core is loaded here.
-let coreDispatchHost: Promise<CoreDispatchHost> | undefined;
-const loadCoreDispatch = anyCoreAreaOn(readCoreEngineFlags(process.env)) ? async (): Promise<CoreDispatchHost> => {
-  coreDispatchHost ??= import("./core-dispatch-entry.js").then(async (module) => await module.createDispatcherCoreDispatch({
-    env: process.env, documentClient, tableName: tableName ?? requiredEnvironment("STATE_TABLE_NAME"), installCompanyId: installOrgIdFromEnvironment(),
-    sessions: new SessionManager({
-      documentClient, tableName: tableName ?? "",
-      executions: { provisionerArn: process.env.PROVISIONER_ARN ?? "", deleterArn: process.env.DELETER_ARN ?? "", async start(input) { return (await sfn.send(new StartExecutionCommand(input))).executionArn!; } },
-    }),
-    sign: signInvocation, post: postToWorker, ping: pingWorker,
-    log: (entry) => console.log(JSON.stringify({ component: "dispatcher", ...entry })),
-  }));
-  // A host that could not be built is not kept: the next batch tries again (its records came back meanwhile).
-  return await coreDispatchHost.catch((error: unknown) => { coreDispatchHost = undefined; throw error; });
-} : undefined;
+// S3-10: the core engine's dispatch consumer, built only while the combined switch is not off (on, or drain) (and then only on the first batch from the core dispatch queue). Off, nothing of the core is loaded here.
+/**
+ * The dispatcher's loader of the core's dispatch host: undefined while the combined switch is off (nothing of the core is loaded), else a loader that builds the host once (on the first core batch) and builds it
+ * again after a failure (its records came back meanwhile).
+ */
+export function coreDispatchLoaderFor(env: NodeJS.ProcessEnv, build: () => Promise<CoreDispatchHost>): (() => Promise<CoreDispatchHost>) | undefined {
+  if (!coreEngineServes(readCoreEngineFlags(env))) return undefined;
+  let host: Promise<CoreDispatchHost> | undefined;
+  return async () => {
+    host ??= build();
+    return await host.catch((error: unknown) => { host = undefined; throw error; });
+  };
+}
+
+const loadCoreDispatch = coreDispatchLoaderFor(process.env, async () => await import("./core-dispatch-entry.js").then(async (module) => await module.createDispatcherCoreDispatch({
+  env: process.env, documentClient, tableName: tableName ?? requiredEnvironment("STATE_TABLE_NAME"), installCompanyId: installOrgIdFromEnvironment(),
+  sessions: new SessionManager({
+    documentClient, tableName: tableName ?? "",
+    executions: { provisionerArn: process.env.PROVISIONER_ARN ?? "", deleterArn: process.env.DELETER_ARN ?? "", async start(input) { return (await sfn.send(new StartExecutionCommand(input))).executionArn!; } },
+  }),
+  sign: signInvocation, post: postToWorker, ping: pingWorker,
+  log: (entry) => console.log(JSON.stringify({ component: "dispatcher", ...entry })),
+})));
 
 export const handler = createDispatcherHandler({
   queueArn: process.env.DISPATCH_QUEUE_ARN ?? "",
