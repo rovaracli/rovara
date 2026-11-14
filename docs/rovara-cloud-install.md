@@ -8,9 +8,9 @@ and an egress firewall.
 
 Rovara Cloud is always deployed from a source checkout with the CDK. The Launch in AWS button and the
 published templates cannot deploy it. Production is deployed by a release pipeline in AWS: a `vX.Y.Z`
-tag on `cloud/next` builds the images, waits for a person to approve, and deploys. See
-[Deploying through the pipeline](#deploying-through-the-pipeline). The numbered steps after it are what
-the pipeline runs, and how to run them by hand for a test environment.
+tag on `cloud/next` builds the images, waits for a person to approve, and deploys. The first time, the
+rest is finished on a hosted setup page. See [Deploying through the pipeline](#deploying-through-the-pipeline).
+The numbered steps after it are what the pipeline runs, and how to run them by hand for a test environment.
 
 > **Names.** From 0.7.0, every AWS resource of an environment is named under `rovara-cloud`: stacks
 > `rovara-cloud-<env>-<part>`, parameters `/rovara-cloud/<env>/...`, secrets `rovara-cloud/<env>/...`,
@@ -69,6 +69,10 @@ flowchart LR
   A --> D{"Installed?"}
   D -- no --> N["rovara init --rovara-cloud --yes<br/>--stop-after slack-service"]
   D -- yes --> U["rovara upgrade --yes"]
+  N --> F{"Setup finished?"}
+  U --> F
+  F -- no --> P["rovara init --resume<br/>on the setup page"]
+  F -- yes --> X[nothing to do]
 ```
 
 - **Trigger:** a pushed tag matching `v*.*.*`. Prerelease tags (`v1.2.3-rc.1`) and branch pushes do
@@ -77,7 +81,11 @@ flowchart LR
   which the pipeline stack creates and keeps.
 - **Approve:** the pipeline waits in the CodePipeline console until someone presses Approve.
 - **Deploy:** a CodeBuild job with AdministratorAccess (the CLI deploys the CDK only with admin
-  credentials). It installs the environment the first time and upgrades it after.
+  credentials). The first time it deploys every stack and asks nothing. After that it upgrades, but only
+  once the setup is finished.
+- **Setup:** the CodeBuild job `rovara-cloud-<env>-setup`, also AdministratorAccess. Until the CLI's
+  install progress says setup is finished, it runs `rovara init` on the pipeline stack's hosted setup page
+  and waits up to 8 hours for you there. Once setup is finished, it does nothing.
 
 ### Setting up the pipeline (once)
 
@@ -87,14 +95,14 @@ Deploy the pipeline stack from a clean checkout of `cloud/next`, with admin cred
 npm ci && npm run build
 npx cdk deploy RovaraCloudPipeline --app 'node infra/dist/bin/agentx.js' \
   -c rovaraCloudPipeline=production -c agentxRegion=us-east-1 \
-  --parameters GitHubConnectionArn=<connection ARN> \
-  --parameters AdminEmail=<staff admin email> --parameters AlertEmail=<alert email> \
-  --parameters GitHubAccount=<GitHub owner of the App> --parameters SlackChannel=<channel name>
+  --parameters GitHubConnectionArn=<connection ARN> --parameters SetupEmail=<your email>
 ```
 
-The GitHub connection must be allowed to read `PrepLabsAI/Rovara-cloud` (GitHub organization
-settings, GitHub Apps, AWS Connector for GitHub, repository access). The four answers are used only by
-the first install.
+The GitHub connection must be allowed to read `PrepLabsAI/Rovara-cloud`. Set this in the GitHub
+organization's settings: GitHub Apps, AWS Connector for GitHub, repository access. `SetupEmail` is the
+person who finishes the install. That person becomes the first staff admin and gets the setup link, the
+temporary password and the alerts. The shared GitHub App is always owned by `PrepLabsAI`. The stack's
+output `SetupPageUrl` is the setup page.
 
 ### Releasing
 
@@ -106,24 +114,15 @@ Then approve the run in the CodePipeline console (`rovara-cloud-<env>-release`).
 
 ### Finishing the first install (once)
 
-The first run creates every stack and stops before the steps that need a person in a browser. Finish
-them on your own machine, with admin credentials, from a clean clone of the same tag:
+You don't need a laptop command for this. After the first release deploys its stacks, the Setup stage
+creates your admin user. Cognito then emails `SetupEmail` the setup page address and a temporary password.
+AWS Notifications also emails a request to confirm the alert subscription. Open the setup page, sign in,
+and finish there: the GitHub App, the Slack app, the first project and its channel, the alert test and
+the first reply (see [What the steps do](#what-the-steps-do-on-rovara-cloud)).
 
-```sh
-git clone --branch v<x.y.z> --depth 1 git@github.com:PrepLabsAI/Rovara-cloud.git rovara-cloud-<x.y.z>
-cd rovara-cloud-<x.y.z> && npm ci && npm run build
-P=/rovara-cloud/production; R=us-east-1
-W=$(aws ssm get-parameter --region $R --name $P/worker-image --query Parameter.Value --output text)
-H=$(aws ssm get-parameter --region $R --name $P/worker-boot-stage2-sha256 --query Parameter.Value --output text)
-S=$(aws cloudformation describe-stacks --region $R --stack-name rovara-cloud-production-slack \
-  --query "Stacks[0].Parameters[?ParameterKey=='OrchestratorImageUri'].ParameterValue" --output text)
-node packages/cli/dist/bin.js --env production init --region $R --engine cdk --source "$PWD" \
-  --rovara-cloud --worker-image "$W" --boot-stage2-sha256 "$H" --slack-image "$S"
-```
-
-The install page opens and continues where the pipeline stopped: the GitHub App, the Slack app, the
-admin sign-in, the first project and the first reply (see [What the steps do](#what-the-steps-do-on-rovara-cloud)).
-Every later release only goes through the pipeline.
+If the Setup stage times out or fails, or stops waiting on someone (for example a Slack admin), retry
+that stage in the CodePipeline console. It continues where it stopped. A newer release's Deploy stage
+refuses to upgrade until setup is finished. Retry that Deploy stage once setup is done.
 
 ## Before you start
 
@@ -392,7 +391,8 @@ These are open in the code on `cloud/next`. Fix them before a production Rovara 
   control-plane parameter `RovaraWebOrigin` cannot be set from the CLI. Staging still uses the
   default.
 - **No custom domain.** Users see the raw API Gateway address.
-- **The pipeline's deploy job has AdministratorAccess.** Narrow it to what a deploy uses.
+- **The pipeline's deploy and setup jobs have AdministratorAccess.** Narrow them to what a deploy and
+  init's finishing steps use.
 - **Customers cannot set their own spend limits** in the app: nothing calls the budget route yet.
   There is a trial, but no billing.
 - **No self-serve Slack,** and the shared Slack app's install in a customer workspace is unproven.

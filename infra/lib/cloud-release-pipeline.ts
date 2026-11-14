@@ -1,4 +1,5 @@
 import {
+  CfnOutput,
   CfnParameter,
   Duration,
   RemovalPolicy,
@@ -14,19 +15,25 @@ import {
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { RESOURCE_PREFIX, environmentSettingsPrefix, environmentStackName } from "@agentx/contracts";
+import { INSTALLER_TIMEOUT } from "./installer.js";
+import { setupPage } from "./setup-page.js";
 
 /**
  * The Rovara Cloud release pipeline (owner decisions 2026-11-14): a vX.Y.Z tag pushed to PrepLabsAI/Rovara-cloud builds the
  * worker and Slack images, waits for a person to approve, then deploys one named cloud environment with the CLI.
  *
- *   Source (tag) -> Images (build and push, by digest) -> Approve (manual) -> Deploy (rovara init or rovara upgrade)
+ *   Source (tag) -> Images (build and push, by digest) -> Approve (manual) -> Deploy (rovara init or rovara upgrade) -> Setup
  *
- * The first deployment of an environment runs `rovara init --rovara-cloud --yes --stop-after slack-service`: every stack, nothing
- * that needs a browser. A person then finishes the GitHub App, the Slack app, the admin sign-in and the first reply once with
- * `rovara init` on their own machine (docs/rovara-cloud-install.md). Every later tag runs `rovara upgrade`.
+ * Two phases. The first deployment of an environment runs `rovara init --rovara-cloud --yes --stop-after slack-service`: every
+ * stack, no questions; the identity stack already allows this stack's setup page (--setup-page-url). The Setup stage then
+ * resumes `rovara init` on that hosted setup page (setup-page.ts, the Launch in AWS installer's page): it makes the first admin
+ * (SetupEmail), whose temporary password and the page's address Cognito emails, and the person finishes the GitHub App, the
+ * Slack app, the first project, alerts and the first reply there. No laptop. Once the CLI's install progress says init
+ * finished, the Setup stage does nothing, and every later tag runs `rovara upgrade`.
  *
- * The deploy job has AdministratorAccess: the CLI deploys the cdk engine only with admin credentials (it refuses the operator
- * role). It is guarded by the tag trigger and the approval. The pipeline never deploys itself.
+ * The deploy and setup jobs have AdministratorAccess: the CLI deploys the cdk engine only with admin credentials (it refuses
+ * the operator role), and init's finishing steps create users, secrets and subscriptions. They are guarded by the tag trigger
+ * and the approval. The pipeline never deploys itself.
  */
 export const CLOUD_PIPELINE_CONTEXT_KEY = "rovaraCloudPipeline";
 export const CLOUD_PIPELINE_REPOSITORY_OWNER = "PrepLabsAI";
@@ -34,6 +41,13 @@ export const CLOUD_PIPELINE_REPOSITORY_NAME = "Rovara-cloud";
 /** The branch the source action names. A tag on any commit triggers it; release tags are cut from cloud/next. */
 export const CLOUD_PIPELINE_BRANCH = "cloud/next";
 export const CLOUD_PIPELINE_AWS_CLI_VERSION = "2.36.47";
+/** The GitHub organization that owns every cloud environment's shared, public GitHub App. */
+export const CLOUD_PIPELINE_GITHUB_ACCOUNT = "PrepLabsAI";
+/** `rovara init --yes` insists on --channel before it starts, though only the first-project step (on the setup page) uses it.
+ * The first run stops before that step and never stores it, so the setup page asks for the real channel. */
+export const CLOUD_PIPELINE_PLACEHOLDER_CHANNEL = "rovara-setup-placeholder";
+/** How long the setup job may wait for the person on the setup page (the installer's limit). */
+export const CLOUD_SETUP_TIMEOUT = INSTALLER_TIMEOUT;
 
 /** The images repository of one environment's image, created by this stack in the environment's account and region. */
 export function cloudImageRepositoryName(env: string, image: "worker" | "slack"): string {
@@ -58,6 +72,22 @@ const INSTALL_TOOLS = [
   "node --version && npm --version && aws --version",
 ];
 
+/** Defines setup_state, which prints "finished" once the CLI's install progress (SSM /rovara-cloud/<env>/install/progress)
+ * records its last step, e2e, as done, and "unfinished" otherwise (no progress yet included). Init records a step done only
+ * after every step before it, so a done e2e means every step is. Any other read failure is an error, never a guess. */
+const SETUP_STATE = [
+  "setup_state() {",
+  '  local out',
+  '  if ! out="$(aws ssm get-parameter --name "$PROGRESS_PARAMETER" --region "$AWS_REGION" --query Parameter.Value --output text 2>&1)"; then',
+  '    case "$out" in *ParameterNotFound*) echo unfinished; return 0;; esac',
+  '    echo "could not read $PROGRESS_PARAMETER: $out" >&2; return 1',
+  "  fi",
+  "  PROGRESS=\"$out\" node -e 'const steps = JSON.parse(process.env.PROGRESS).steps || {}; console.log(steps.e2e && steps.e2e.status === \"done\" ? \"finished\" : \"unfinished\")'",
+  "}",
+].join("\n");
+
+const BUILD_CHECKOUT = ["npm ci", "npm run build", 'test -z "$(git status --porcelain)" || { git status --porcelain >&2; echo "the build changed tracked files" >&2; exit 1; }'];
+
 /** Fetches the tags and finds the one release tag on this commit; the CLI deploys only a clean checkout of a vX.Y.Z tag. */
 const FIND_RELEASE_TAG = [
   'git fetch --force --quiet origin "refs/tags/*:refs/tags/*"',
@@ -79,11 +109,21 @@ export class CloudReleasePipelineStack extends Stack {
       allowedPattern: "^arn:aws(-[a-z]+)?:(codeconnections|codestar-connections):[a-z0-9-]+:[0-9]{12}:connection/[0-9a-f-]{36}$",
       description: `Authorized CodeConnections GitHub connection that can read ${CLOUD_PIPELINE_REPOSITORY_OWNER}/${CLOUD_PIPELINE_REPOSITORY_NAME}`,
     });
-    // The answers the first, unattended `rovara init --yes` needs. Later upgrades read the environment's own settings instead.
-    const adminEmail = new CfnParameter(this, "AdminEmail", { type: "String", minLength: 3, description: "Email of the environment's first Rovara staff admin (the identity stack's admin user)" });
-    const alertEmail = new CfnParameter(this, "AlertEmail", { type: "String", minLength: 3, description: "Email address the environment's alarms and budget alerts go to" });
-    const githubAccount = new CfnParameter(this, "GitHubAccount", { type: "String", allowedPattern: "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$", description: "GitHub organization or user that will own the environment's shared, public GitHub App" });
-    const slackChannel = new CfnParameter(this, "SlackChannel", { type: "String", allowedPattern: "^[a-z0-9][a-z0-9_-]{0,79}$", description: "Slack channel name for the first project (used when a person finishes the install)" });
+    // The person who finishes the install on the setup page: the identity stack's first admin. Their temporary password and
+    // the page's address are emailed here, and the environment's alerts go here until changed (as with the installer).
+    const setupEmail = new CfnParameter(this, "SetupEmail", {
+      type: "String",
+      allowedPattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+      constraintDescription: "an email address",
+      description: `Email of the person who finishes the ${env} install on the setup page (its first Rovara staff admin; the setup link, the temporary password and alerts go here)`,
+    });
+
+    // The hosted setup page, shared with the Launch in AWS installer.
+    const setup = setupPage(this, {
+      installName: env,
+      apiName: `${RESOURCE_PREFIX}-${env}-setup`,
+      keyDescription: `Rovara Cloud ${env}: the setup page's table and the admin's sign-in hand-off`,
+    });
 
     const useConnection = new iam.PolicyStatement({
       actions: ["codeconnections:UseConnection", "codestar-connections:UseConnection", "codeconnections:GetConnectionToken", "codestar-connections:GetConnectionToken"],
@@ -169,28 +209,37 @@ export class CloudReleasePipelineStack extends Stack {
             AWS_CLI_VERSION: CLOUD_PIPELINE_AWS_CLI_VERSION,
             ROVARA_ENV: env,
             SETTINGS_PARAMETER: `${settingsPrefix}settings`,
-            ADMIN_EMAIL: adminEmail.valueAsString,
-            ALERT_EMAIL: alertEmail.valueAsString,
-            GITHUB_ACCOUNT: githubAccount.valueAsString,
-            SLACK_CHANNEL: slackChannel.valueAsString,
+            PROGRESS_PARAMETER: `${settingsPrefix}install/progress`,
+            SETUP_EMAIL: setupEmail.valueAsString,
+            SETUP_URL: setup.url,
+            GITHUB_ACCOUNT: CLOUD_PIPELINE_GITHUB_ACCOUNT,
+            PLACEHOLDER_CHANNEL: CLOUD_PIPELINE_PLACEHOLDER_CHANNEL,
           },
         },
         phases: {
           install: { commands: INSTALL_TOOLS },
-          pre_build: { commands: [...FIND_RELEASE_TAG, "npm ci", "npm run build", 'test -z "$(git status --porcelain)" || { git status --porcelain >&2; echo "the build changed tracked files" >&2; exit 1; }'] },
+          pre_build: { commands: [...FIND_RELEASE_TAG, ...BUILD_CHECKOUT] },
           build: {
             commands: [
               'cli() { node packages/cli/dist/bin.js --env "$ROVARA_ENV" "$@"; }',
               'images=(--worker-image "$WORKER_IMAGE" --boot-stage2-sha256 "$BOOT_STAGE2_SHA256" --slack-image "$SLACK_IMAGE")',
+              SETUP_STATE,
               [
                 'if aws ssm get-parameter --name "$SETTINGS_PARAMETER" --region "$AWS_REGION" >/dev/null 2>&1; then',
+                // An upgrade over an unfinished setup would drop the setup page's sign-in from the identity stack, and the
+                // setup can only be resumed by the release that started it.
+                '  state="$(setup_state)" || exit 1',
+                '  if [ "$state" != finished ]; then',
+                '    echo "$ROVARA_ENV is installed but its setup is not finished; finish it on $SETUP_URL (retry the Setup stage of the release that installed it), then retry this stage" >&2',
+                "    exit 1",
+                "  fi",
                 '  echo "$ROVARA_ENV is installed: upgrading to $RELEASE_TAG"',
                 '  cli upgrade --region "$AWS_REGION" --source "$PWD" "${images[@]}" --yes',
                 "else",
-                '  echo "$ROVARA_ENV is not installed: installing $RELEASE_TAG (every stack; a person finishes the browser steps)"',
+                '  echo "$ROVARA_ENV is not installed: installing $RELEASE_TAG (every stack; the Setup stage finishes the rest on $SETUP_URL)"',
                 '  cli init --region "$AWS_REGION" --engine cdk --source "$PWD" --rovara-cloud --yes --no-browser --no-ui "${images[@]}" \\',
-                '    --github-account "$GITHUB_ACCOUNT" --alert-email "$ALERT_EMAIL" --admin-email "$ADMIN_EMAIL" --channel "$SLACK_CHANNEL" --connectors none \\',
-                "    --stop-after slack-service",
+                '    --github-account "$GITHUB_ACCOUNT" --github-account-type organization --admin-email "$SETUP_EMAIL" \\',
+                '    --channel "$PLACEHOLDER_CHANNEL" --connectors none --setup-page-url "$SETUP_URL" --stop-after slack-service',
                 "fi",
               ].join("\n"),
             ],
@@ -199,6 +248,57 @@ export class CloudReleasePipelineStack extends Stack {
       }),
     });
     deploy.role?.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName("AdministratorAccess"));
+
+    const finishSetup = new codebuild.PipelineProject(this, "Setup", {
+      projectName: `${RESOURCE_PREFIX}-${env}-setup`,
+      description: `Finishes the ${env} Rovara Cloud install on its setup page (rovara init --setup-table); does nothing once it is finished`,
+      environment: { buildImage: codebuild.LinuxArmBuildImage.AMAZON_LINUX_2023_STANDARD_3_0, computeType: codebuild.ComputeType.LARGE },
+      concurrentBuildLimit: 1,
+      // It waits for the person on the setup page; the CLI resumes where a cut-off run stopped.
+      timeout: CLOUD_SETUP_TIMEOUT,
+      logging: { cloudWatch: { logGroup, prefix: "setup" } },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: "0.2",
+        env: {
+          shell: "bash",
+          "git-credential-helper": "yes",
+          variables: {
+            AWS_CLI_VERSION: CLOUD_PIPELINE_AWS_CLI_VERSION,
+            ROVARA_ENV: env,
+            PROGRESS_PARAMETER: `${settingsPrefix}install/progress`,
+            SETUP_TABLE: setup.table.tableName,
+            SETUP_URL: setup.url,
+          },
+        },
+        phases: {
+          install: { commands: INSTALL_TOOLS },
+          pre_build: { commands: FIND_RELEASE_TAG },
+          build: {
+            commands: [
+              SETUP_STATE,
+              [
+                'state="$(setup_state)" || exit 1',
+                'if [ "$state" = finished ]; then',
+                '  echo "$ROVARA_ENV is set up: nothing to do"',
+                "else",
+                // A multi-line command goes on after a failed line, so each line stops the job itself.
+                ...BUILD_CHECKOUT.map((command) => `  ${command.startsWith("npm ") ? `${command} || exit 1` : command}`),
+                '  echo "Finishing $ROVARA_ENV on its setup page: $SETUP_URL (the sign-in is emailed to the setup email)"',
+                '  node packages/cli/dist/bin.js --env "$ROVARA_ENV" init --region "$AWS_REGION" --engine cdk --source "$PWD" --rovara-cloud --resume \\',
+                '    --worker-image "$WORKER_IMAGE" --boot-stage2-sha256 "$BOOT_STAGE2_SHA256" --slack-image "$SLACK_IMAGE" \\',
+                '    --setup-table "$SETUP_TABLE" --setup-url "$SETUP_URL" --connectors none',
+                // A run that ends waiting on someone (a Slack admin, the alert subscription) is not finished: retry the stage.
+                '  state="$(setup_state)" || exit 1',
+                '  if [ "$state" != finished ]; then echo "$ROVARA_ENV is not set up yet; retry this stage to continue on $SETUP_URL" >&2; exit 1; fi',
+                "fi",
+              ].join("\n"),
+            ],
+          },
+        },
+      }),
+    });
+    finishSetup.role?.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName("AdministratorAccess"));
+    setup.table.grantReadWriteData(finishSetup);
 
     const sourceRole = new iam.Role(this, "SourceActionRole", {
       assumedBy: new iam.AccountRootPrincipal(),
@@ -252,11 +352,29 @@ export class CloudReleasePipelineStack extends Stack {
             },
           })],
         },
+        {
+          stageName: "Setup",
+          actions: [new actions.CodeBuildAction({
+            actionName: "FinishSetup",
+            project: finishSetup,
+            input: sourceOutput,
+            environmentVariables: {
+              WORKER_IMAGE: { value: imagesAction.variable("WORKER_IMAGE") },
+              SLACK_IMAGE: { value: imagesAction.variable("SLACK_IMAGE") },
+              BOOT_STAGE2_SHA256: { value: imagesAction.variable("BOOT_STAGE2_SHA256") },
+            },
+          })],
+        },
       ],
       triggers: [{
         providerType: codepipeline.ProviderType.CODE_STAR_SOURCE_CONNECTION,
         gitConfiguration: { sourceAction: source, pushFilter: [{ tagsIncludes: ["v*.*.*"], tagsExcludes: ["v*-*"] }] },
       }],
+    });
+
+    new CfnOutput(this, "SetupPageUrl", {
+      value: setup.url,
+      description: "Open this when the email with the temporary password arrives, after the first release deploys",
     });
   }
 }

@@ -7,17 +7,14 @@
 // so deleting this stack removes the installer and leaves the environment running; `agentx
 // destroy` removes the environment.
 import {
-  Aws, CfnOutput, CfnParameter, CustomResource, Duration, RemovalPolicy, Stack, type StackProps,
-  aws_apigatewayv2 as apigwv2,
+  CfnOutput, CfnParameter, CustomResource, Duration, Stack, type StackProps,
   aws_codebuild as codebuild,
-  aws_dynamodb as dynamodb,
   aws_iam as iam,
-  aws_kms as kms,
   aws_lambda as lambda,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { CLI_PACKAGE_NAME, ENVIRONMENT_NAME_PATTERN, RESOURCE_PREFIX } from "@agentx/contracts";
-import { packagedFunction } from "./control-plane.js";
+import { setupPage } from "./setup-page.js";
 
 /** Starts the installer job on Create and answers CloudFormation; Update and Delete only answer.
  * CloudFormation's own response protocol, written out: a failure to start fails the stack. */
@@ -91,47 +88,12 @@ export class InstallerStack extends Stack {
       },
     };
 
-    // The table's own key: it also seals the admin's sign-in on its way to the job.
-    const key = new kms.Key(this, "SetupKey", {
-      description: "AgentX installer: the setup table and the admin's sign-in hand-off",
-      enableKeyRotation: true,
-      removalPolicy: RemovalPolicy.DESTROY,
-      pendingWindow: Duration.days(7),
+    // The setup page (its table, key, function and HTTP API).
+    const { table, url: setupUrl } = setupPage(this, {
+      installName: installName.valueAsString,
+      apiName: `${RESOURCE_PREFIX}-installer-${installName.valueAsString}`,
+      keyDescription: "AgentX installer: the setup table and the admin's sign-in hand-off",
     });
-    const table = new dynamodb.Table(this, "SetupTable", {
-      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
-      encryptionKey: key,
-      timeToLiveAttribute: "expiresAt",
-      // Holds only what passes between the page and the job while the install runs.
-      removalPolicy: RemovalPolicy.DESTROY,
-    });
-
-    // The setup page.
-    const page = packagedFunction(this, "SetupPage", "packages/cli/src/init/ui/setup-lambda.ts", {
-      SETUP_TABLE: table.tableName,
-      INSTALL_NAME: installName.valueAsString,
-      SETUP_KEY_ID: key.keyArn,
-    }, Duration.seconds(20));
-    table.grantReadWriteData(page);
-    key.grant(page, "kms:Encrypt");
-    page.addToRolePolicy(new iam.PolicyStatement({
-      actions: ["cloudformation:DescribeStacks"],
-      resources: [`arn:${Aws.PARTITION}:cloudformation:${Aws.REGION}:${Aws.ACCOUNT_ID}:stack/${RESOURCE_PREFIX}-${installName.valueAsString}-identity/*`],
-    }));
-    const api = new apigwv2.CfnApi(this, "SetupApi", { name: `${RESOURCE_PREFIX}-installer-${installName.valueAsString}`, protocolType: "HTTP" });
-    const integration = new apigwv2.CfnIntegration(this, "SetupIntegration", {
-      apiId: api.ref, integrationType: "AWS_PROXY", integrationUri: page.functionArn, payloadFormatVersion: "2.0",
-    });
-    new apigwv2.CfnRoute(this, "SetupRoute", { apiId: api.ref, routeKey: "$default", target: `integrations/${integration.ref}` });
-    new apigwv2.CfnStage(this, "SetupStage", { apiId: api.ref, stageName: "$default", autoDeploy: true });
-    page.addPermission("SetupApiInvoke", {
-      principal: new iam.ServicePrincipal("apigateway.amazonaws.com"),
-      sourceArn: `arn:${Aws.PARTITION}:execute-api:${Aws.REGION}:${Aws.ACCOUNT_ID}:${api.ref}/*`,
-    });
-    const setupUrl = api.attrApiEndpoint;
 
     // The installer job. `rovara init` creates IAM roles (the access stack) and deploys every other
     // stack, as an administrator running it on a computer does: the role is AdministratorAccess,
