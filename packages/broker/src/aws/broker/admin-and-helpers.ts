@@ -27,7 +27,7 @@ import { deleteSwebenchChannel, getSwebenchChannel, putSwebenchChannel, type Swe
 import { withEvalBatches, type EvalBatchDependencies } from "../eval-batch.js";
 import { batchResults, parseStartBody, requireBatchProject, showBatch, startBatch, stopBatchById } from "../eval-batch-admin.js";
 import type { AwsBrokerDependencies, MembershipRecord, RegisteredProjectRecord } from "./definitions.js";
-import { agentRouteDependencies, developerTaskActions } from "./dependency-wiring.js";
+import { agentRouteDependencies, developerTaskActions, slackServiceSeat } from "./dependency-wiring.js";
 import { startReplayApplicationRound } from "./e2e-rounds.js";
 import { approvedSelection, getMembership, readOrgMember, requireAdministrator, requireLatestProject, resolveProjectModel } from "./records.js";
 import { creatorCheckOf, githubScopeOfWorkspace, orgConnectionStoreOf, orgOfRecord } from "./scope-helpers.js";
@@ -35,7 +35,6 @@ import { refreshTaskFeedbackForOwnerDecision } from "./terminal-and-github-event
 import { workflowE2EPresentation, workflowE2EPublicationChecks } from "./workflow-e2e-verification.js";
 import { getSlackBinding } from "./workspace-preparation.js";
 import { auditOperatorId } from "@agentx/cloud-contracts";
-import { developerIdForSlackUser } from "../admin-actions.js";
 import { requirePricedTaskStopAdmission } from "../../org/task-stop-unpriced.js";
 import { startTask } from "../developer-tasks/start.js";
 import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
@@ -67,11 +66,15 @@ export function swebenchDependencies(dependencies: AwsBrokerDependencies): EvalB
   });
 }
 
-/** The thread, requester and project model a SWE-bench run takes from the Slack service identity. */
-export function swebenchSlackContext(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): SwebenchSlackContext {
+/**
+ * The thread, requester and project model a SWE-bench run takes from the Slack service identity. 0.5.18x (re-check, money): the run is created and charged as the person the Slack account acts as
+ * (the seat of the one requester rule, `slackServiceSeat`: a linked web account, with that account's role and limits), never the bare Slack id.
+ */
+export async function swebenchSlackContext(dependencies: AwsBrokerDependencies, identity: AuthenticatedIdentity): Promise<SwebenchSlackContext> {
   const slack = identity.slack;
   if (!slack) throw agentXError("FORBIDDEN", "Slack thread context is required");
-  return { orgId: requireOrgId(identity.orgId), developerId: developerIdForSlackUser(slack.requester.userId), thread: slack.thread, requester: slack.requester, ...swebenchProjectContext(dependencies, requireOrgId(identity.orgId), slack.binding.projectName) };
+  const seat = await slackServiceSeat(dependencies, slack.requester.userId, requireOrgId(identity.orgId));
+  return { orgId: requireOrgId(identity.orgId), developerId: seat.developerId, thread: slack.thread, requester: slack.requester, ...swebenchProjectContext(dependencies, requireOrgId(identity.orgId), slack.binding.projectName) };
 }
 
 /** The project and its approved models, for a run or batch whose thread and requester the caller supplies. */

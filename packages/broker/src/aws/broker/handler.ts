@@ -936,12 +936,12 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         }
         if (request.method === "POST" && serviceUrl.pathname === "/v1/evals/swebench") {
           await requireSlackRequesterMayWork(dependencies, identity, identity.slack?.binding.projectName ?? "");
-          return json(await startSwebenchRun(swebenchDependencies(dependencies), swebenchSlackContext(dependencies, identity), parseBody(request.body)), request.requestId);
+          return json(await startSwebenchRun(swebenchDependencies(dependencies), await swebenchSlackContext(dependencies, identity), parseBody(request.body)), request.requestId);
         }
         // Spec 052 FR-002 and Task 6: the Slack batch form, and the watcher's thread and posts for one batch.
         if (request.method === "POST" && serviceUrl.pathname === "/v1/evals/batches") {
           await requireSlackRequesterMayWork(dependencies, identity, identity.slack?.binding.projectName ?? "");
-          return json(await startSlackBatch(swebenchDependencies(dependencies), swebenchSlackContext(dependencies, identity), parseBody(request.body)), request.requestId);
+          return json(await startSlackBatch(swebenchDependencies(dependencies), await swebenchSlackContext(dependencies, identity), parseBody(request.body)), request.requestId);
         }
         const watchedBatch = /^\/v1\/evals\/batches\/([0-9a-f-]{36})\/(thread|watch|drop)$/.exec(serviceUrl.pathname);
         if (request.method === "POST" && watchedBatch?.[1] && watchedBatch[2]) {

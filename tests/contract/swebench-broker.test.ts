@@ -42,7 +42,7 @@ beforeAll(async () => {
 });
 
 /** A broker with SWE-bench runs installed, a bound channel, and the launch files it writes. */
-async function evalBroker(options: { installed?: boolean; models?: unknown; startExecution?: () => Promise<void>; runnerFeatures?: string[]; maxConcurrentEvals?: number } = {}) {
+async function evalBroker(options: { installed?: boolean; models?: unknown; startExecution?: () => Promise<void>; runnerFeatures?: string[]; maxConcurrentEvals?: number; signInTable?: true } = {}) {
   const launches = new Map<string, SwebenchLaunch>();
   const s3 = {
     send: vi.fn(async (command: { input: { Key?: string; Body?: string } }) => {
@@ -53,6 +53,8 @@ async function evalBroker(options: { installed?: boolean; models?: unknown; star
   const startExecution = vi.fn(options.startExecution ?? (async () => undefined));
   const broker = createBroker({
     s3,
+    // 0.5.18x: an install with a sign-in table (identity links), for the linked-account case.
+    ...(options.signInTable === true ? { developer: { issuer: "https://dev.example/v1/auth", env: "staging", methods: { slack: true }, signInTableName: "signin", slackTeamId: SLACK_TEAM, verifyAccessToken: async () => { throw new Error("unused"); } } as never } : {}),
     extra: {
       swebench: {
         deployment: async () => (options.installed === false ? undefined : {
@@ -124,6 +126,28 @@ describe("starting a run (spec 043 FR-001 to FR-006)", () => {
       name: runId,
       input: JSON.stringify({ runId, subnetId: "subnet-0123456789abcdef0" }),
     });
+  });
+
+  it("0.5.18x (re-check, money): a linked Slack account's run is created and charged as the web person, under their limits, never as the Slack id (which has an owner record of its own)", async () => {
+    const { handler, db } = await evalBroker({ signInTable: true });
+    await enable(handler, { maxCostUsd: 12 });
+    const slackId = developerIdForSlackUser(member);
+    const person = "7".repeat(64);
+    db.set({ ...orgMemberKey(TEST_ORG, slackId), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: slackId, role: "owner", joinedAt: "2026-10-01T00:00:00.000Z" });
+    db.set({ ...developerOrgKey(slackId), entityType: "DEVELOPER_ORG", orgId: TEST_ORG, role: "owner", joinedAt: "2026-10-01T00:00:00.000Z" });
+    db.set({ pk: `DEVELOPER#${person}`, sk: "META", provider: "oidc", displayName: "Pat Web", firstSignInAt: "x", lastSignInAt: "x", revoked: false });
+    db.set({ ...orgMemberKey(TEST_ORG, person), entityType: "ORG_MEMBER", orgId: TEST_ORG, developerId: person, role: "member", joinedAt: "2026-10-01T00:00:00.000Z" });
+    db.set({ ...developerOrgKey(person), entityType: "DEVELOPER_ORG", orgId: TEST_ORG, role: "member", joinedAt: "2026-10-01T00:00:00.000Z" });
+    const link = { entityType: "IDENTITY_LINK", developerId: person, provider: "slack", issuer: "https://slack.com", subject: member, linkedAt: "2020-01-01T00:00:00.000Z", lastSignInAt: "2020-01-01T00:00:00.000Z" };
+    db.set({ pk: `SIGNIN_IDENTITY#${slackId}`, sk: "META", ...link });
+    db.set({ pk: `DEVELOPER#${person}`, sk: `IDENTITY#${slackId}`, ...link });
+    const started = await start(handler);
+    expect(started.status, JSON.stringify(started.body)).toBe(200);
+    const runId = (started.body.run as { runId: string }).runId;
+    expect(db.get(`SWEBENCH_RUN#${runId}`, "META")).toMatchObject({ developerId: person });
+    // Every row the run's spending admission wrote names the web person, never the Slack id.
+    const spend = JSON.stringify(db.find((item) => JSON.stringify(item).includes(runId) && item.entityType !== "SWEBENCH_RUN"));
+    expect(spend).not.toContain(slackId);
   });
 
   it("answers a repeated request with the run it started, and refuses a second run while one is active", async () => {

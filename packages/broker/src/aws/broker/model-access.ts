@@ -445,7 +445,7 @@ async function answerModelAccess(dependencies: AwsBrokerDependencies, request: A
     const requestedBy = current.requestedBy;
     // 0.5.18x (review M-2): a Slack requester is the person their Slack account acts as now (a linked web account), never the bare Slack id; a path that cannot be followed is the Slack id.
     const requesterId = requestedBy === undefined ? undefined : await unreadable("requester", async () => resolveMember(
-      "kind" in requestedBy ? requestedBy.developerId : (await slackPersonOf(dependencies, requestedBy.userId)) ?? developerIdForSlackUser(requestedBy.userId),
+      await operationRequesterId(dependencies, requestedBy),
     ));
     await requireOrgOpenFor(dependencies, current.orgId, [...(requesterId === undefined ? [] : [requesterId]), ...(keyed === undefined ? [] : [keyed])], current.createdAt);
     return {
@@ -828,6 +828,11 @@ export async function linkedRequester(dependencies: AwsBrokerDependencies, orgId
 export async function slackPersonOf(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "developer">, userId: string): Promise<string | undefined> {
   const table = dependencies.developer?.signInTableName;
   return slackPersonId(signInReader({ documentClient: dependencies.documentClient, signInTableName: table }), developerIdForSlackUser(userId), table);
+}
+
+/** 0.5.18x (review M-2): the id an operation's requester is checked under: a developer as they are, a Slack requester as the person their Slack account acts as now, else the Slack id. */
+export async function operationRequesterId(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "developer">, requester: OperationRequester): Promise<string> {
+  return "kind" in requester ? requester.developerId : (await slackPersonOf(dependencies, requester.userId)) ?? developerIdForSlackUser(requester.userId);
 }
 
 /** How long a task's model key lasts; the worker asks for a new one a minute before it ends. */

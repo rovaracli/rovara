@@ -10,7 +10,8 @@ import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-act
 import { brokerDependencies, slackCallerFor, slackRequesterStanding } from "../../packages/broker/src/aws/broker/dependency-wiring.js";
 import { SLACK_SELF_GRANT_REFUSED } from "../../packages/broker/src/aws/broker/slack-workflow-events.js";
 import { slackRequesterProjectRole } from "../../packages/broker/src/aws/broker/workspace-preparation.js";
-import { linkedRequester } from "../../packages/broker/src/aws/broker/model-access.js";
+import { linkedRequester, operationRequesterId } from "../../packages/broker/src/aws/broker/model-access.js";
+import { pullRequestAuditActor } from "../../packages/broker/src/aws/broker/pull-request-reconcile.js";
 import { installLessons, type learningDepsFor } from "../../packages/broker/src/aws/broker/lessons-wiring.js";
 import { uninstallLearningTaskEnd } from "../../packages/broker/src/aws/broker/learning-wiring.js";
 import { seatTaskOwner } from "../../packages/broker/src/aws/developer-routes/owner-seat.js";
@@ -440,6 +441,44 @@ describe("threat 8 (review L1): no People role for the linked Slack account itse
     expect(answer.body).toContain(SLACK_SELF_GRANT_REFUSED);
     expect(answer.body).not.toContain(SLACK_ID);
     expect(JSON.stringify(h.db.get(`DEVTASK#${taskId}`, "PEOPLE") ?? null)).toBe(before);
+  });
+});
+
+describe("threat 2 (re-check A): the legacy Slack-owner swap never brings back the web person after an unlink", () => {
+  it("a task whose record names the web account with this Slack user (its last sign-in was Slack): after the unlink, a reply from the Slack id (a member in its own right) is not the owner's", async () => {
+    const h = await createSingleAnswerPlanBroker();
+    // The web account's record as a Slack sign-in leaves it: provider slack and this Slack user id.
+    person(h, PERSON, { extra: { provider: "slack", slackUserId: SLACK_USER } });
+    link(h, PERSON);
+    const ts = "1695500000.000821";
+    const started = await slackStart(h, ts);
+    const taskId = taskIdOf(started);
+    expect(taskOf(h, taskId)).toMatchObject({ developerId: PERSON, provider: "slack", slackUserId: SLACK_USER });
+    expect(h.db.get(`DEVTASK#${taskId}`, "PEOPLE"), "a task with no People list: the legacy owner path").toBeUndefined();
+    const reply = async (messageTs: string) => JSON.parse((await h.handler({ source: "agentx.slack-ingress", action: "thread-note", taskId, thread: threadOf(ts), userId: SLACK_USER, messageTs, eventId: `Ev${messageTs}`, text: "Keep the flag." }) as { body: string }).body) as { outcome: string };
+    const notes = () => h.db.find((item) => item.pk === `DEVTASK#${taskId}` && String(item.sk).startsWith("NOTE#")).map((item) => item["isOwner"]);
+    // Positive control: while linked, the reply is the owner's.
+    expect(await reply("1695500002.000001")).toMatchObject({ outcome: "captured" });
+    expect(notes()).toEqual([true]);
+    unlink(h.db, PERSON);
+    seedMembership(h.db, SLACK_ID, { orgId: TEST_ORG, role: "member" });
+    const after = await reply("1695500002.000002");
+    // Refused, or saved as a teammate's: never the owner's.
+    if (after.outcome === "captured") expect(notes().sort()).toEqual([false, true]);
+    else expect(notes()).toEqual([true]);
+  });
+});
+
+describe("threat 9 (re-check I, J): the PR-opened audit actor and the model-key requester name the seat", () => {
+  it("names the web account while linked, and the bare Slack id after the unlink", async () => {
+    const h = await linkedWorld();
+    const d = deps(h);
+    const requester = { teamId: SLACK_TEAM, userId: SLACK_USER } as never;
+    expect(await pullRequestAuditActor(d, requester)).toEqual({ kind: "member", id: PERSON });
+    expect(await operationRequesterId(d, requester)).toBe(PERSON);
+    unlink(h.db, PERSON);
+    expect(await pullRequestAuditActor(d, requester)).toEqual({ kind: "member", id: SLACK_ID });
+    expect(await operationRequesterId(d, requester)).toBe(SLACK_ID);
   });
 });
 

@@ -26,6 +26,7 @@ import { taskKey, taskPointerKey, type DeveloperTaskPointerRecord, type Develope
 import { hashJson, isConditional } from "../broker-shared.js";
 import { developerIdForSlackUser } from "../admin-actions.js";
 import { slackPersonId } from "../../developer/merged-owner.js";
+import type { OperationRequester } from "@rovara-code/contracts";
 import { signInReader } from "../../org/live-role.js";
 import { reviewSameModelOf } from "../../rovara-code/review-model-lines.js";
 import { secondReviewPullRequestLines } from "../../rovara-code/second-review-store.js";
@@ -412,8 +413,7 @@ export async function reconcilePullRequest(
     const requester = operation.requestedBy;
     return auditPullRequestOpened({
       orgId: await orgOfRecord(dependencies, await getItem<Record<string, unknown>>(dependencies, workspaceKey(operation.workspaceId)) ?? {}),
-      // 0.5.18x (review M-2): a Slack requester is audited as the person their Slack account acts as now (a linked web account), else the Slack id.
-      actor: requester === undefined ? { kind: "system", id: "rovara" } : { kind: "member", id: "kind" in requester ? requester.developerId : (await slackPersonId(signInReader({ documentClient: dependencies.documentClient, signInTableName: dependencies.developer?.signInTableName }), developerIdForSlackUser(requester.userId), dependencies.developer?.signInTableName)) ?? developerIdForSlackUser(requester.userId) },
+      actor: await pullRequestAuditActor(dependencies, requester),
       occurredAt: openedAt, occurrence: operation.id,
       pullRequestId: auditPullRequestId(repositoryFullName, pullRequest.number), number: pullRequest.number,
       // I3: the people the change request names (full ids), so an auditor can go from the host's change request to the Rovara people behind it.
@@ -842,4 +842,13 @@ export async function putArtifact(
     ConditionExpression: "attribute_not_exists(pk)",
   }));
   return artifactId;
+}
+
+/** 0.5.18x (review M-2): who opened a pull request, for its audit event: the developer who asked, or a Slack requester as the person their Slack account acts as now (a linked web account), else the Slack id. */
+export async function pullRequestAuditActor(dependencies: Pick<AwsBrokerDependencies, "documentClient" | "developer">, requester: OperationRequester | undefined): Promise<{ kind: "system"; id: "rovara" } | { kind: "member"; id: string }> {
+  if (requester === undefined) return { kind: "system", id: "rovara" };
+  if ("kind" in requester) return { kind: "member", id: requester.developerId };
+  const table = dependencies.developer?.signInTableName;
+  const slackId = developerIdForSlackUser(requester.userId);
+  return { kind: "member", id: (await slackPersonId(signInReader({ documentClient: dependencies.documentClient, signInTableName: table }), slackId, table)) ?? slackId };
 }
