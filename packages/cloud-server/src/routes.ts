@@ -3,6 +3,8 @@
 // lists every route and where it is answered from (PrepLabsAI/Rovara-cloud#1).
 import type { CodeAccess, CodeClient } from "./code-client.js";
 import type { CodeSession } from "./sessions.js";
+import { newSessionId, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
+import { sessionView, type CodeTask } from "./session-view.js";
 
 /** The company this Cloud shows, until companies are Cloud's own (phase 4). */
 export interface OrgView { orgId: string; name: string; plan: string }
@@ -16,6 +18,10 @@ export interface RouteContext {
   body: unknown;
   org: OrgView;
   now: () => Date;
+  /** Cloud's sessions (phase 2). */
+  work: WorkSessionStore;
+  /** The address the app is served at, for session links. */
+  origin: string;
 }
 
 export interface RouteAnswer { status: number; body: unknown }
@@ -65,6 +71,26 @@ async function summary(context: RouteContext, name: string, access: string) {
 interface CodeRepositories {
   installations: Array<{ installationId: number; accountLogin: string; accountType: string; repositorySelection: string; status: string; repositories: Array<{ fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string }> }>;
 }
+
+/** Code's task view, version 2, as the app's session page reads it. */
+const TASK_VIEW = { "x-agentx-task-view": "2" };
+
+const sessionNotFound: RouteAnswer = { status: 404, body: { error: { code: "SESSION_NOT_FOUND", message: "That session doesn't exist, or you can't see it." } } };
+const badRequest = (message: string): RouteAnswer => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message } } });
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+async function readTask(context: RouteContext, taskId: string): Promise<CodeTask> {
+  return (await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}`, { headers: TASK_VIEW })).task;
+}
+
+/** The session and its task, or undefined for a session Cloud doesn't have. Code decides whether the person may see the task. */
+async function sessionAndTask(context: RouteContext): Promise<{ record: WorkSession; task: CodeTask } | undefined> {
+  const record = await context.work.get(context.params[0]!);
+  if (record === undefined) return undefined;
+  return { record, task: await readTask(context, record.taskId) };
+}
+
+const viewer = (context: RouteContext) => ({ developerId: context.session.access.developerId });
 
 export const ROUTES: Route[] = [
   {
@@ -204,6 +230,87 @@ export const ROUTES: Route[] = [
         }
       }
       return ok({ repositories: installation.repositories.map((repository) => ({ ...repository, ...(used.has(repository.fullName.toLowerCase()) ? { project: used.get(repository.fullName.toLowerCase()) } : {}) })) });
+    },
+  },
+  {
+    // POST /v1/app/projects/{p}/code: start work. Code starts a Quick task (plan, code, checks, draft pull request); Cloud keeps a
+    // session for it. A retried requestId answers the same session without asking Code again.
+    method: "POST", path: /^\/projects\/([^/]+)\/code$/u,
+    answer: async (context) => {
+      const input = (context.body ?? {}) as { requestId?: unknown; input?: { text?: unknown } };
+      if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
+      const text = typeof input.input?.text === "string" ? input.input.text.trim() : "";
+      if (text === "") return badRequest("Say what the work is.");
+      const earlier = await context.work.byRequest(input.requestId);
+      const project = context.params[0]!;
+      if (earlier !== undefined) {
+        const task = await readTask(context, earlier.taskId);
+        return { status: 201, body: { task, sessionId: earlier.sessionId, sessionUrl: `${context.origin.replace(/\/+$/u, "")}/s/${earlier.sessionId}` } };
+      }
+      const started = await context.client.json<{ task: CodeTask }>(context.session, "/v1/dev/tasks", {
+        method: "POST", headers: TASK_VIEW,
+        body: { requestId: input.requestId, project, instructions: text, workflow: true, workflowPath: "QUICK", client: "Rovara Cloud" },
+      });
+      const person = { developerId: context.session.access.developerId, name: context.session.access.displayName };
+      const record: WorkSession = { sessionId: newSessionId(), taskId: started.task.taskId, project, startedBy: person, owner: person, createdAt: context.now().toISOString(), revision: 1 };
+      await context.work.put(record, input.requestId);
+      return { status: 201, body: { task: started.task, sessionId: record.sessionId, sessionUrl: `${context.origin.replace(/\/+$/u, "")}/s/${record.sessionId}` } };
+    },
+  },
+  {
+    // GET /v1/app/sessions/{id}: Cloud's session around Code's task.
+    method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})$/u,
+    answer: async (context) => {
+      const found = await sessionAndTask(context);
+      return found === undefined ? sessionNotFound : ok({ session: sessionView(found.record, found.task, viewer(context), context.origin) });
+    },
+  },
+  {
+    // POST /v1/app/sessions/{id}/stop: Code cancels the task's running step.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/stop$/u,
+    answer: async (context) => {
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const requestId = (context.body as { requestId?: unknown } | undefined)?.requestId;
+      if (typeof requestId !== "string" || !UUID.test(requestId)) return badRequest("requestId must be a UUID.");
+      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/cancel`, { method: "POST", headers: TASK_VIEW, body: { requestId } });
+      return ok({ session: sessionView(record, task, viewer(context), context.origin) });
+    },
+  },
+  {
+    // POST /v1/app/sessions/{id}/close: Code closes the task; the first ask never discards unpublished work.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/close$/u,
+    answer: async (context) => {
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const input = (context.body ?? {}) as { requestId?: unknown; discardUnpublished?: unknown };
+      if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
+      const closed = await context.client.json<{ task: CodeTask; closed: boolean; discardedUnpublished?: boolean; unpublished?: unknown; message?: string }>(
+        context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/close`,
+        { method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, ...(input.discardUnpublished === true ? { discard_unpublished: true } : {}) } },
+      );
+      return ok({
+        session: sessionView(record, closed.task, viewer(context), context.origin), closed: closed.closed,
+        ...(closed.discardedUnpublished === undefined ? {} : { discardedUnpublished: closed.discardedUnpublished }),
+        ...(closed.unpublished === undefined ? {} : { unpublished: closed.unpublished }),
+        ...(closed.message === undefined ? {} : { message: closed.message }),
+      });
+    },
+  },
+  {
+    // POST /v1/app/sessions/{id}/take-over: the person becomes the task's owner in Code (asked against the people revision Code shows now).
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/take-over$/u,
+    answer: async (context) => {
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const requestId = (context.body as { requestId?: unknown } | undefined)?.requestId;
+      if (typeof requestId !== "string" || !UUID.test(requestId)) return badRequest("requestId must be a UUID.");
+      const path = `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/people`;
+      const { view } = await context.client.json<{ view: { revision: number } }>(context.session, path);
+      await context.client.json(context.session, `${path}/take-ownership`, { method: "POST", body: { requestId, expectedPeopleRevision: view.revision } });
+      const updated: WorkSession = { ...record, owner: { developerId: context.session.access.developerId, name: context.session.access.displayName }, revision: record.revision + 1 };
+      await context.work.put(updated);
+      return ok({ session: sessionView(updated, await readTask(context, record.taskId), viewer(context), context.origin) });
     },
   },
 ];

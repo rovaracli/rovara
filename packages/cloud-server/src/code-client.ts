@@ -79,17 +79,17 @@ export class CodeClient {
   }
 
   /** A JSON call to Code as the person. Throws CodeError for Code's refusals and SignInEnded when no refresh is possible. */
-  async json<T>(session: CodeSession, path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+  async json<T>(session: CodeSession, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
     const response = await this.call(session, path, init);
     const body: unknown = await response.json().catch(() => undefined);
     if (!response.ok) throw new CodeError(response.status, body);
     return body as T;
   }
 
-  private async call(session: CodeSession, path: string, init: { method?: string; body?: unknown }): Promise<Response> {
+  private async call(session: CodeSession, path: string, init: { method?: string; body?: unknown; headers?: Record<string, string> }): Promise<Response> {
     const send = () => this.fetchImpl(`${this.base}${path}`, {
       method: init.method ?? "GET",
-      headers: { authorization: `Bearer ${session.accessToken}`, ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { ...init.headers, authorization: `Bearer ${session.accessToken}`, ...(init.body === undefined ? {} : { "content-type": "application/json" }) },
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
     });
     const first = await send();
