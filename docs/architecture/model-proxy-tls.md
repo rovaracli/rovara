@@ -184,6 +184,27 @@ upgrade: it carries the new grants.
 - Watch the certificate's validation: it should be issued within minutes. The L3 check has already confirmed that `rovara.dev` is served by
   Route 53 and that no CAA record forbids Amazon.
 
+### 0.5.17 upgrade and runbook notes (the deploy role's own boundary)
+
+0.5.15 could not turn step 1 on: the deploy role carried `agentx-<env>-boundary`, which allows no `acm:*` or `route53:*`, so
+`ModelProxyTlsDeployPolicy` was implicitly denied. 0.5.17 gives the deploy role (`agentx-<env>-cloudformation`) a boundary of its own,
+`agentx-<env>--deploy-boundary`. It is the default boundary plus the certificate and record actions and ECR's service-linked role. The default
+boundary, which every role the deploy creates carries, does not change.
+
+- **Upgrade note (self-hosted installs).** The access-stack upgrade creates the new managed policy and changes the deploy role's permissions
+  boundary in place. The role is not replaced. Whoever deploys the access stack needs `iam:CreatePolicy` on
+  `arn:<partition>:iam::<account>:policy/agentx/<env>/agentx-<env>--deploy-boundary` and `iam:PutRolePermissionsBoundary` on
+  `agentx-<env>-cloudformation`. The bundle's create-only `access-deployer.json` does not grant the second. An install that passes its own
+  `PermissionsBoundaryArn` keeps it on the deploy role; that boundary must allow the same acm and route53 actions before step 1.
+- **Order: access first, always.** Deploy the access stack (the new boundary) before any control-plane deploy that creates the certificate and
+  records. `agentx upgrade` already deploys it first.
+- **If the access-stack update rolls back after a control-plane deploy has already created the certificate and records,** the deploy role is back
+  on the default boundary and has no acm or route53 permissions. The next control-plane update or delete that touches the certificate or the
+  records then fails with AccessDenied. Do not run a control-plane deploy, a TLS change or a rollback of the control plane until the access stack
+  is deployed again at 0.5.17. Then re-run the control-plane deploy.
+- After the access stack is on 0.5.17, re-run the IAM simulation of `ModelProxyTlsDeployPolicy` against the live deploy role (tag-on-create with
+  `aws:RequestTag/agentx:env`) before setting step 1.
+
 ## Open items
 
 - The Enterprise bundle path (see M-2).

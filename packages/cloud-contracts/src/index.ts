@@ -8,6 +8,7 @@ export * from "./developer-tasks-node.js";
 export * from "./task-workflow-node.js";
 export * from "./task-workflow-revise.js";
 export * from "./task-workflow-design-review.js";
+export * from "./task-flow-tier.js";
 export * from "./workflow-autofix.js";
 export * from "./rovara-code.js";
 export * from "./rovara-code-node.js";
@@ -148,3 +149,5 @@ export * from "./smart-intake.js";
 export * from "./test-access-connect.js";
 export * from "./test-access-policy.js";
 export * from "./test-access-scoping.js";
+// TE-B9: Cloud copy of Code's never-commit list, until the vendored pin carries it.
+export * from "./never-commit.js";

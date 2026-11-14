@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BOUNDARY_INSTANCE_PROFILE_ACTIONS, BOUNDARY_NAMED_READS, BOUNDARY_ROLE_LIST_ACTIONS, BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
+  BOUNDARY_INSTANCE_PROFILE_ACTIONS, BOUNDARY_MANAGED_POLICY_ACTIONS, BOUNDARY_NAMED_READS, BOUNDARY_ROLE_ACTIONS, BOUNDARY_ROLE_LIST_ACTIONS, BOUNDARY_ROLE_LOOKUP_ACTIONS, BOUNDARY_SERVICES, CLOUDFRONT_BOUNDARY_ACTIONS, MANAGED_POLICY_ACTIONS, SERVICE_LINKED_ROLE_SERVICES, SERVICE_ROLE_SERVICES, defaultBoundaryArn, defaultBoundaryName, defaultBoundaryStatements, deployRoleBoundaryStatements, operatorRoleStatements, serviceRoleStatements, withoutSids, type PolicyScope,
 } from "../../infra/lib/access-policies.js";
 import { readFileSync } from "node:fs";
 import { brokerRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName } from "@agentx/cloud-contracts";
@@ -493,20 +493,28 @@ describe("default permission boundary", () => {
   it("never allows iam:* or any user, group, access key, login profile or managed-policy action, except agentx-* managed policies (ruling M2)", () => {
     const managedPolicies = allows.find((statement) => statement.Sid === "IamManagedPolicies");
     expect(managedPolicies?.Resource).toBe("arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*");
-    expect([...managedPolicies!.Action].sort()).toEqual([...MANAGED_POLICY_ACTIONS].sort());
+    // 0.5.18: as patterns that match exactly MANAGED_POLICY_ACTIONS (pinned in deploy-role-boundary-coverage.test.ts).
+    expect(managedPolicies!.Action).toEqual([...BOUNDARY_MANAGED_POLICY_ACTIONS]);
+    expect(iamActions.actions.filter((action) => managedPolicies!.Action.some((pattern) => actionPattern(pattern).test(action))).sort()).toEqual([...MANAGED_POLICY_ACTIONS].sort());
     const iam = allows.filter((statement) => statement.Sid !== "IamManagedPolicies").flatMap((s) => s.Action).filter((a) => a.startsWith("iam:") || a === "*");
     expect(iam).not.toContain("iam:*");
     expect(iam).not.toContain("*");
     expect(iam.filter((a) => /User|Group|AccessKey|LoginProfile|PolicyVersion|^iam:(Create|Delete)Policy$|DefaultPolicyVersion/.test(a))).toEqual([]);
     // 2026-11-03: the one wildcard is the instance profile pattern, which is exactly the seven INSTANCE_PROFILE_ACTIONS (pinned in "names the instance profile actions with one pattern" below).
     // 2026-11-11: and the role list pattern, which is exactly iam:ListRolePolicies and iam:ListAttachedRolePolicies (pinned in "names the two role list actions with one pattern" below), in IamRoles and the lookup statement.
-    expect(iam.filter((a) => a.includes("*"))).toEqual([BOUNDARY_ROLE_LIST_ACTIONS, BOUNDARY_ROLE_LIST_ACTIONS, BOUNDARY_INSTANCE_PROFILE_ACTIONS]);
+    // 0.5.18: and the role and lookup patterns (BOUNDARY_ROLE_ACTIONS, BOUNDARY_ROLE_LOOKUP_ACTIONS), each matching only actions the deploy role names (pinned below and in deploy-role-boundary-coverage.test.ts).
+    expect(iam.filter((a) => a.includes("*"))).toEqual([...BOUNDARY_ROLE_ACTIONS, ...BOUNDARY_ROLE_LOOKUP_ACTIONS].filter((a) => a.includes("*")).concat(BOUNDARY_INSTANCE_PROFILE_ACTIONS));
+    // No wildcard here reaches a user, group, access key, login profile, policy version or the policy create and delete.
+    const reached = iamActions.actions.filter((action) => iam.some((pattern) => actionPattern(pattern).test(action)));
+    expect(reached.filter((a) => /User|Group|AccessKey|LoginProfile|PolicyVersion|^iam:(Create|Delete)Policy$|DefaultPolicyVersion/.test(a))).toEqual([]);
   });
 
   it("scopes role actions and PassRole to AgentX's own roles", () => {
     const byId = Object.fromEntries(allows.map((s) => [s.Sid, s]));
     expect([byId.IamRoles!.Resource].flat()).toEqual(["arn:aws:iam::123456789012:role/agentx/staging/*", "arn:aws:iam::123456789012:role/agentx-staging-img-create"]);
-    expect(byId.IamRoles!.Action.every((a) => /^iam:[A-Za-z]*Role[A-Za-z]*$/.test(a) || a === BOUNDARY_ROLE_LIST_ACTIONS)).toBe(true);
+    // 0.5.18: BOUNDARY_ROLE_ACTIONS, whose patterns match exactly ROLE_ACTIONS and iam:PassRole, every one a role action.
+    expect(byId.IamRoles!.Action).toEqual([...BOUNDARY_ROLE_ACTIONS]);
+    expect(iamActions.actions.filter((action) => byId.IamRoles!.Action.some((pattern) => actionPattern(pattern).test(action))).every((a) => /^iam:[A-Za-z]*Role[A-Za-z]*$/.test(a))).toBe(true);
     // 2026-11-03: iam:PassRole is in IamRoles (the same two ARNs), and the service role is passed by PassServiceRole alone: the union of what is allowed is what PassRoles and IamRoles allowed before.
     expect(byId.IamRoles!.Action).toContain("iam:PassRole");
     expect(byId.PassRoles).toBeUndefined();
@@ -533,14 +541,12 @@ describe("default permission boundary", () => {
 
   it("explicitly denies account, organization, user, group and policy management, and changing itself", () => {
     expect(denies.map((s) => ({ Action: s.Action, Resource: s.Resource ?? { NotResource: s.NotResource } }))).toEqual([
-      // 2026-11-03: the two Denies on "*" are one statement.
-      { Action: ["organizations:*", "account:*", "iam:*User*", "iam:*Group*"], Resource: "*" },
+      // 2026-11-03: the two Denies on "*" are one statement. 0.5.18: and the Team record's sharing Deny (TR-SWITCH review F3, pinned in team-record-iam-coverage.test.ts) joined it, the same Effect and "*".
+      { Action: ["organizations:*", "account:*", "iam:*User*", "iam:*Group*", "s3tables:Put*Policy", "s3tables:Put*Replication", "s3vectors:Put*Policy"], Resource: "*" },
       // Every policy except the agentx-* managed policies the service role creates (ruling M2); the boundary itself stays denied below.
       // iam:SetDefaultPolicyVersion is matched by iam:*PolicyVersion* (checked below), so it is not listed again.
       { Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy"], Resource: { NotResource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*" } },
       { Action: ["iam:*Policy*"], Resource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary" },
-      // TR-SWITCH review F3: no bounded role may share or replicate the Team record's stores (pinned in team-record-iam-coverage.test.ts).
-      { Action: ["s3tables:Put*Policy", "s3tables:Put*Replication", "s3vectors:Put*Policy"], Resource: "*" },
     ]);
     expect(denies.every((s) => s.Condition === undefined)).toBe(true);
   });
@@ -576,12 +582,13 @@ describe("default permission boundary", () => {
     const matched = iamActions.actions.filter((action) => actionPattern(BOUNDARY_ROLE_LIST_ACTIONS).test(action));
     expect([...matched].sort()).toEqual(["iam:ListAttachedRolePolicies", "iam:ListRolePolicies"]);
     const deploy = serviceRoleStatements(scope);
+    // 0.5.18: every pattern in the two statements (the role list pattern among them) expands, against the same list, to exactly the actions the deploy role names.
     for (const sid of ["IamRoles", "IamFixedNameRolesNotYetCreated"]) {
       const inBoundary = allows.find((s) => s.Sid === sid)!.Action;
-      const expanded = inBoundary.flatMap((a) => (a === BOUNDARY_ROLE_LIST_ACTIONS ? matched : [a]));
+      const expanded = iamActions.actions.filter((action) => inBoundary.some((pattern) => actionPattern(pattern).test(action)));
       expect([...expanded].sort(), sid).toEqual([...deploy.find((s) => s.Sid === sid)!.Action].sort());
-      expect(inBoundary.filter((a) => a.includes("*")), sid).toEqual([BOUNDARY_ROLE_LIST_ACTIONS]);
     }
+    expect(allows.find((s) => s.Sid === "IamFixedNameRolesNotYetCreated")!.Action).toContain(BOUNDARY_ROLE_LIST_ACTIONS);
   });
 
   it("lets the roles it bounds read Bedrock model availability (bedrock:GetFoundationModelAvailability has no resource type, so it needs Resource \"*\"), through the Services statement's bedrock:* and no Deny", () => {
@@ -682,6 +689,9 @@ describe("CloudFront permissions (web app deploy)", () => {
         const boundary = size(withoutSids(defaultBoundaryStatements(longest)));
         worst = Math.max(worst, boundary);
         expect(boundary, `boundary, ${env}, ${rovaraOrganizationId ?? "no org id"}`).toBeLessThanOrEqual(6144 - 90);
+        // 0.5.17: the deploy role's own boundary is the default plus the acm/route53 ceiling, ECR's service-linked role and its own ARN in DenyBoundaryChanges, less the merged AppSync/SES
+        // statement and the namespace pattern; the same margin.
+        expect(size(withoutSids(deployRoleBoundaryStatements(longest))), `deploy role boundary, ${env}, ${rovaraOrganizationId ?? "no org id"}`).toBeLessThanOrEqual(6144 - 90);
         expect(size(serviceRoleStatements(longest)), `service role, ${env}`).toBeLessThanOrEqual(10_240 - 1000);
       }
     }

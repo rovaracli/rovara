@@ -17,7 +17,7 @@ import type { TeamRecordContext } from "./team-record-edition.js";
 import { ModelAccess } from "./model-access.js";
 import { ModelProxy } from "./model-proxy.js";
 import type { ModelProxyTls } from "./model-proxy-tls.js";
-import { bedrockClaudeModelIds, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
+import { bedrockProxyModels, proxyGeographyForRegion } from "@agentx/model-runtime/catalog";
 import { resolve } from "node:path";
 import {
   ArnFormat,
@@ -51,7 +51,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { BROKER_SETTINGS, fixtureKeyAlias, HEALTH_ALARM_SUFFIXES, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName } from "@agentx/cloud-contracts";
+import { BROKER_SETTINGS, fixtureKeyAlias, HEALTH_ALARM_SUFFIXES, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName, EVIDENCE_RECORD_RETENTION_DAYS } from "@agentx/cloud-contracts";
 import { SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, chainScheduleGroupName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@rovara-code/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
@@ -234,11 +234,15 @@ export class ControlPlaneStack extends Stack {
         { id: "ExpireE2EScreenshots", expiration: Duration.days(E2E_ARTIFACT_RETENTION_DAYS), tagFilters: { [E2E_ARTIFACT_RETENTION_TAG_KEY]: E2E_ARTIFACT_RETENTION_TAG_VALUE } },
         // Proof and evidence P6: stored evidence expires by class, on the same tag key. evidence-short is video and trace (14 days by default); evidence-std is screenshots, API samples and output tails (30 days).
         // An Enterprise install sets the days with the `evidenceRetentionDays` context value ({"evidence-short": n, "evidence-std": n}); a value outside the allowed range is clamped, never refused, so a bad
-        // setting cannot keep evidence longer than the maximum or expire it sooner than the minimum. The pack is tagged evidence-std as well, so it expires with the tails; erasing a person, archiving a project or closing a company deletes both at once (rovara-code/evidence-erase.ts).
+        // setting cannot keep evidence longer than the maximum or expire it sooner than the minimum. The pack has its own class below.
         ...(["evidence-short", "evidence-std"] as const).map((retentionClass) => ({ id: retentionClass === "evidence-short" ? "ExpireEvidenceShort" : "ExpireEvidenceStd",
           expiration: Duration.days(evidenceRetentionDays(retentionClass, evidenceRetentionSetting(this.node.tryGetContext("evidenceRetentionDays"))?.[retentionClass] as number | undefined) ?? EVIDENCE_RETENTION_DAYS[retentionClass].default),
           // Prefix AND tag (S3 reads that as an `And` filter): another writer's object that happens to carry the tag, outside the private evidence keys, never matches (Opus review M1).
           prefix: "private/", tagFilters: { [E2E_ARTIFACT_RETENTION_TAG_KEY]: retentionClass } })),
+        // TE-H4a (O20, O49): the evidence pack (the small JSON record) is kept for a year. It carries its own tag value, `evidence-record`, so it no longer expires with the tails. The days are a constant, never the
+        // `evidenceRetentionDays` setting: a company cannot shorten or lengthen the record. A pack written before this rule existed carries evidence-std and still expires in 30 days (no backfill). Erasing a person, archiving a
+        // project or closing a company deletes the pack by prefix, not by tag (rovara-code/evidence-erase.ts). Same prefix-AND-tag filter shape as the rules above; named environments only.
+        { id: "ExpireEvidenceRecord", expiration: Duration.days(EVIDENCE_RECORD_RETENTION_DAYS), prefix: "private/", tagFilters: { [E2E_ARTIFACT_RETENTION_TAG_KEY]: "evidence-record" } },
         // NH-1: the nightly run's coverage maps (`nightly-maps/<company>/<project>/<digest>.json`) expire after 30 days; selection reads a map no older than 7 days, so nothing live is lost. Archiving a project or closing
         // a company deletes the prefix sooner (evidence-erase.ts).
         { id: "ExpireNightlyMaps", prefix: "nightly-maps/", expiration: Duration.days(30) },
@@ -1612,7 +1616,8 @@ export class ControlPlaneStack extends Stack {
         subnetIds: Fn.split(",", sessions.privateSubnetIds.valueAsString),
         clientSecurityGroupIds: [new CfnParameter(this, "Ec2WorkerSecurityGroupId", { type: "String", description: "The foundation's EC2 worker security group" }).valueAsString],
         // Ruling R52: the geography follows the install's region (an eu install serves eu.* profiles); an unsupported region fails the synth.
-        models: bedrockClaudeModelIds(proxyGeographyForRegion(props?.deploymentRegion ?? "us-east-1")).map((id) => ({ id })),
+        // A model LiteLLM's own cost map lacks (Haiku 5.5, Fable 5.2) carries the catalog's price in the config; the guard refuses a model with no price.
+        models: bedrockProxyModels(proxyGeographyForRegion(props?.deploymentRegion ?? "us-east-1")),
         ...(props?.privateEgressCidrs === undefined ? {} : { privateEgressCidrs: [...props.privateEgressCidrs, ...(props.modelEndpointCidrs ?? [])] }),
         ...(props?.bundledImages === true ? { bundledImages: true } : {}),
         ...(props?.modelProxyTls === undefined ? {} : { tls: props.modelProxyTls }),

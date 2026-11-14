@@ -6,6 +6,7 @@ import {
   type TransactWriteCommandInput,
 } from "@aws-sdk/lib-dynamodb";
 import { TRACKING_COALESCE_SECONDS, TRACKING_GATE_SECONDS, TRACKING_HEARTBEAT_MINUTES, TRACKING_MAX_ROWS } from "@rovara-code/contracts";
+import { chargeMarkerKey } from "../developer/limits.js";
 
 type TransactItems = NonNullable<TransactWriteCommandInput["TransactItems"]>;
 type DocumentClient = { send(command: unknown): Promise<unknown> };
@@ -570,8 +571,10 @@ async function terminalReceipt(
     const organization = await readItem(dependencies, { pk: task.charge.organization.pk, sk: task.charge.organization.sk });
     const tasks = member?.tasks;
     const readableTasks = tasks === undefined || tasks instanceof Set;
+    // S2: a slot charged since the switch to markers is a marker item beside the counter; one charged before is in the old `tasks` set.
+    const marker = await readItem(dependencies, chargeMarkerKey(task.charge as { member: { pk: string; sk: string } }, taskId));
     const memberReleased = typeof member?.count === "number" && member.count >= 0 && readableTasks
-      && (tasks === undefined || !tasks.has(taskId));
+      && (tasks === undefined || !tasks.has(taskId)) && marker === undefined;
     const organizationReleased = typeof organization?.count === "number" && organization.count >= 0
       && (!(organization.tasks instanceof Set) || !organization.tasks.has(taskId));
     return workspace?.status === "CLOSED" && memberReleased && organizationReleased ? "confirmed" : "unproven";

@@ -22,7 +22,7 @@ import { workEventPutItem } from "../work-events/store.js";
 import type { WorkEventsRuntime } from "../work-events/stream.js";
 
 export interface LedgerDependencies extends SpendSettingsDependencies {
-  access: Pick<ModelAccess, "keySpend" | "blockKey">;
+  access: Pick<ModelAccess, "keySpend" | "blockKey" | "keyEstimatedSpend">;
   /** Epoch milliseconds. */
   now: () => number;
   /** How many open keys a sweep takes at once (default 50). */
@@ -72,6 +72,8 @@ export interface ModelKeyRecord {
   capUsd: number;
   /** How much of the key's spend has been counted. */
   settledUsd: number;
+  /** How much of `settledUsd` is an estimate (DECISIONS 172: a model with no known price, a call cut before its cost was known). Absent: none counted. */
+  estimatedUsd?: number;
   scopes: BudgetScope[];
   /** The counters the key holds its cap on besides its scopes (`KeyInput.holds`), by counter name. */
   holds?: string[];
@@ -314,18 +316,33 @@ function extraCounters(record: ModelKeyRecord): string[] {
   ];
 }
 
+/** The estimated part of a key's spend, at most `spent`; 0 when the access cannot read it or fails to (it is shown beside the cost, never instead of it). */
+async function estimatedSpend(deps: LedgerDependencies, keyId: string, spent: number): Promise<number> {
+  if (deps.access.keyEstimatedSpend === undefined) return 0;
+  try {
+    return cleanUsd(Math.min(Math.max(0, await deps.access.keyEstimatedSpend([keyId])), spent));
+  } catch (error) {
+    log(deps, { event: "spend.estimated_unread", keyId, error: errorName(error) ?? "unknown" });
+    return 0;
+  }
+}
+
 async function settleOnce(deps: LedgerDependencies, record: ModelKeyRecord): Promise<SettleOutcome | "raced"> {
   const spent = cleanUsd(await deps.access.keySpend([record.keyId]));
   const deltaUsd = cleanUsd(spent - record.settledUsd);
   if (!(deltaUsd > 0)) return { deltaUsd: 0, settledUsd: record.settledUsd };
   const at = deps.now();
   const seq = record.settleCount + 1;
+  // DECISIONS 172: how much of the key's spend the proxy's guard says is an estimate. A display figure, never more than what is counted: a failure to read it counts the spend all the same, and
+  // leaves it shown without the word "estimated".
+  const estimated = await estimatedSpend(deps, record.keyId, spent);
+  const estimatedDeltaUsd = cleanUsd(Math.max(0, estimated - (record.estimatedUsd ?? 0)));
   // An open reserving key already holds its cap, so only what passes the cap adds to committed; any other key adds all of it.
   const committed = record.reserved && !record.finalized ? cleanUsd(overshoot(spent, record.capUsd) - overshoot(record.settledUsd, record.capUsd)) : deltaUsd;
   const orgId = record.orgId;
   const items: TransactItem[] = [
     upsert(deps, modelKeyKey(orgId, record.keyId), "MODEL_KEY", {
-      set: { settledUsd: spent, settleCount: seq, lastSettledAt: iso(at), alertsDue: true },
+      set: { settledUsd: spent, settleCount: seq, lastSettledAt: iso(at), alertsDue: true, ...(estimated > (record.estimatedUsd ?? 0) ? { estimatedUsd: estimated } : {}) },
       condition: (aliases) => `${aliases.name("settledUsd")} = ${aliases.value(record.settledUsd)} AND ${aliases.name("finalized")} = ${aliases.value(record.finalized)}`,
     }),
     ...counterNamesOf(record).map((name) => upsert(deps, spendCounterKey(orgId, record.month, name), "SPEND_COUNTER", { add: { spentUsd: deltaUsd, ...(committed === 0 ? {} : { committedUsd: committed }) } })),
@@ -336,7 +353,7 @@ async function settleOnce(deps: LedgerDependencies, record: ModelKeyRecord): Pro
     }), ConditionExpression: NOT_EXISTS } },
     // Plan 5, Task 7a (N5): what the task has cost so far, added in this same conditional transaction so a raced or replayed settle adds nothing. A session shows cost
     // from this one counter and never sums keys. Tasks started before this deploy show cost from the deploy onward.
-    ...(record.tags.taskId === undefined ? [] : [upsert(deps, taskSpendKey(orgId, record.tags.taskId), "TASK_SPENT", { set: { orgId }, add: { settledUsd: deltaUsd } })]),
+    ...(record.tags.taskId === undefined ? [] : [upsert(deps, taskSpendKey(orgId, record.tags.taskId), "TASK_SPENT", { set: { orgId }, add: { settledUsd: deltaUsd, ...(estimatedDeltaUsd > 0 ? { estimatedUsd: estimatedDeltaUsd } : {}) } })]),
     // A run is the task, or the operation of Slack-thread work. A Slack turn's key has neither (R50), so each turn is a run of its own, keyed by its key's
     // token id; the routes never show that key.
     upsert(deps, agentRunsKey(orgId, record.month, record.tags.agentId, record.tags.taskId ?? record.tags.operationId ?? record.keyId), "AGENT_RUN", {

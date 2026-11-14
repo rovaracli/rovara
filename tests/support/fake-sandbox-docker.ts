@@ -94,12 +94,22 @@ export function fakeSandboxHost(options: FakeSandboxHostOptions = {}) {
       let resolveExit!: (exit: SandboxExit) => void;
       const exited = new Promise<SandboxExit>((resolve) => { resolveExit = resolve; });
       let done = false;
-      const end = (exit: SandboxExit): void => { if (done) return; done = true; setImmediate(() => resolveExit(exit)); };
+      // Output the agent has written but the controller has not been handed yet. A real pipe keeps what was written before the process ended and delivers it before `close`, so ending the process flushes this queue
+      // first. (The fake used to drop it once `done` was set: an answer followed by an exit within one event-loop turn was lost, which no real docker client does.)
+      const unsent: Buffer[] = [];
+      const deliver = (chunk: Buffer): void => { for (const listener of stdout) listener(chunk); };
+      const end = (exit: SandboxExit): void => {
+        if (done) return;
+        for (const chunk of unsent.splice(0)) deliver(chunk);
+        done = true;
+        setImmediate(() => resolveExit(exit));
+      };
+      const send = (bytes: Buffer): void => { unsent.push(bytes); setImmediate(() => { const next = unsent.shift(); if (next !== undefined) deliver(next); }); };
       const name = args[args.indexOf("--name") + 1]!;
       const container: FakeContainer = {
         name, args: [...args], running: true, oom: false, frames: [],
-        emit: (frame) => { const body = Buffer.from(JSON.stringify(frame)); const header = Buffer.alloc(4); header.writeUInt32BE(body.length); setImmediate(() => { if (!done) for (const listener of stdout) listener(Buffer.concat([header, body])); }); },
-        emitRaw: (bytes) => { setImmediate(() => { if (!done) for (const listener of stdout) listener(bytes); }); },
+        emit: (frame) => { if (done) return; const body = Buffer.from(JSON.stringify(frame)); const header = Buffer.alloc(4); header.writeUInt32BE(body.length); send(Buffer.concat([header, body])); },
+        emitRaw: (bytes) => { if (!done) send(bytes); },
         die: (code, dieOptions) => { if (!container.running) return; container.running = false; container.oom = dieOptions?.oom === true; end({ code, signal: null }); },
       };
       const decode = decoderOf();

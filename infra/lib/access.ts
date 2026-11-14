@@ -1,13 +1,13 @@
-import { Aws, CfnCondition, CfnRule, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Validations, type StackProps } from "aws-cdk-lib";
+import { Aws, CfnCondition, CfnRule, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, Token, Validations, type StackProps } from "aws-cdk-lib";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import type { Construct } from "constructs";
-import { defaultBoundaryName, defaultBoundaryStatements, environmentRolePath, operatorRoleStatements, serviceRoleStatements, withoutSids } from "./access-policies.js";
+import { customDomainDeployPolicyName, customDomainStatements, defaultBoundaryName, defaultBoundaryStatements, deployRoleBoundaryName, deployRoleBoundaryStatements, environmentRolePath, operatorRoleStatements, serviceRoleStatements, withoutSids } from "./access-policies.js";
 import type { AgentXNaming } from "./naming.js";
 import { OperatorAccess, type OperatorAccessSettings } from "./operator-access.js";
 import { CUSTOM_DOMAIN_NAME_PATTERN, CUSTOM_DOMAIN_ZONE_PATTERN } from "./custom-domain-patterns.js";
-import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
+import { applyPermissionsBoundaryParameter, useOwnPermissionsBoundary } from "./permissions-boundary.js";
 import { modelProxyTlsCleanupStatements, modelProxyTlsDeployStatements, type ModelProxyTls, type ModelProxyTlsPrevious } from "./model-proxy-tls.js";
 
 export interface AccessStackProps extends StackProps {
@@ -66,26 +66,38 @@ export class AccessStack extends Stack {
     // the Fn::If's else branch, which is valid for a conditional resource (the branch is evaluated
     // only when the resource exists) and makes CloudFormation create the policy before the roles.
     // A DependsOn would not do: DependsOn on a resource whose condition is false fails the stack.
-    const { effectiveBoundaryArn } = applyPermissionsBoundaryParameter(this, env, {
+    let deployBoundaryRef: string | undefined;
+    const { effectiveBoundaryArn, parameter: boundaryParameter, condition: hasPermissionsBoundary } = applyPermissionsBoundaryParameter(this, env, {
       defaultBoundary: (hasPermissionsBoundary) => {
         const useDefaultBoundary = new CfnCondition(this, "UseDefaultBoundary", {
           expression: Fn.conditionNot(hasPermissionsBoundary),
         });
+        const boundaryScope = { env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account, cloudFormationRoleName: naming.cloudFormationRoleName, ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }) };
+        // withoutSids: the deployed boundaries are capped at 6,144 characters; the tests find statements by Sid in defaultBoundaryStatements and deployRoleBoundaryStatements.
+        const deployed = (statements: ReturnType<typeof defaultBoundaryStatements>) => withoutSids(statements.map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement));
         const policy = new iam.CfnManagedPolicy(this, "DefaultPermissionsBoundary", {
           managedPolicyName: defaultBoundaryName(env),
           path: environmentRolePath(env),
           description: `Default permission boundary for every agentx-${env} role`,
-          policyDocument: {
-            Version: "2012-10-17",
-            Statement: withoutSids(defaultBoundaryStatements({ env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account, cloudFormationRoleName: naming.cloudFormationRoleName, ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }) })
-              // withoutSids: the deployed boundary is capped at 6,144 characters; the tests find statements by Sid in defaultBoundaryStatements.
-              .map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement)),
-          },
+          policyDocument: { Version: "2012-10-17", Statement: deployed(defaultBoundaryStatements(boundaryScope)) },
         });
         policy.cfnOptions.condition = useDefaultBoundary;
+        // 0.5.17 (MODEL-PROXY-TLS-BOUNDARY-BLOCKER, review M-1): the deploy role's own boundary, the default one plus the Certificate Manager and Route 53 ceiling its grants need
+        // (deployRoleBoundaryStatements). Only the deploy role carries it; every role the deploy creates is still pinned to the default boundary (IamRequireBoundary).
+        const deployPolicy = new iam.CfnManagedPolicy(this, "DeployRolePermissionsBoundary", {
+          managedPolicyName: deployRoleBoundaryName(env),
+          path: environmentRolePath(env),
+          description: `Permission boundary for the agentx-${env} deploy role only`,
+          policyDocument: { Version: "2012-10-17", Statement: deployed(deployRoleBoundaryStatements(boundaryScope)) },
+        });
+        deployPolicy.cfnOptions.condition = useDefaultBoundary;
+        deployBoundaryRef = deployPolicy.ref;
         return policy.ref;
       },
     });
+    if (deployBoundaryRef === undefined) throw new Error("the access stack's default boundary was not created");
+    // A company's own boundary (the parameter) bounds the deploy role as it bounds every role; without one, the deploy role's own boundary.
+    const deployRoleBoundaryArn = Token.asString(Fn.conditionIf(hasPermissionsBoundary.logicalId, boundaryParameter.valueAsString, deployBoundaryRef));
     const operatorPrincipalArn = new CfnParameter(this, "OperatorPrincipalArn", {
       type: "String",
       default: "",
@@ -129,7 +141,7 @@ export class AccessStack extends Stack {
     }
 
     // 0.5.7: the same two parameters the control-plane stack takes (infra/lib/custom-domain.ts), so the deploy role's grants name exactly this domain and zone.
-    // The grants exist only while both are set (each statement is an Fn::If below); with the defaults the role has none of them.
+    // The grants exist only while both are set (CustomDomainDeployPolicy below exists only under CustomDomainEnabled); with the defaults the role has none of them.
     const customDomainParameters = cloud !== true ? undefined : {
       name: new CfnParameter(this, "CustomDomainName", { type: "String", default: "", allowedPattern: CUSTOM_DOMAIN_NAME_PATTERN, maxLength: 64, description: "The control plane's custom domain name; the deploy role may request a certificate for it. Empty: none" }),
       zone: new CfnParameter(this, "CustomDomainHostedZoneId", { type: "String", default: "", allowedPattern: CUSTOM_DOMAIN_ZONE_PATTERN, description: "The Route 53 hosted zone that holds the custom domain's DNS; the deploy role may change records in this zone only. Empty: none" }),
@@ -166,9 +178,9 @@ export class AccessStack extends Stack {
     // The boundary Deny statements always apply and name the effective boundary.
     // The deployed deploy policy carries no Sids, as the deployed boundary does (withoutSids): a role's inline policies are capped at 10,240 characters (non-whitespace) in all, and with a custom domain the Sids
     // (about 1,000 characters) were the difference. Sids are optional and grant nothing; the tests find statements by Sid in serviceRoleStatements and put them back by position (tests/support/deployed-service-role.ts).
-    const serviceStatements = serviceRoleStatements({ ...policyScope, permissionsBoundaryArn: effectiveBoundaryArn })
-      .map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement)
-      .map(({ Sid, ...statement }) => customDomainSet !== undefined && Sid.startsWith("CustomDomain") ? Fn.conditionIf(customDomainSet.logicalId, statement, Aws.NO_VALUE) : statement);
+    // 0.5.18: the custom domain's statements are no longer here (they were each an Fn::If): they are CustomDomainDeployPolicy, below.
+    const serviceStatements = withoutSids(serviceRoleStatements({ ...policyScope, permissionsBoundaryArn: effectiveBoundaryArn })
+      .map((statement) => statement.Sid === "EcsFailureEventsRule" ? { ...statement, Resource: ecsFailureRuleArn } : statement));
 
     // Built before the deploy role, which gains the one statement it needs to read the templates the customer approved.
     const operatorAccessConstruct = operatorAccess === undefined ? undefined : new OperatorAccess(this, "RovaraOperatorAccess", { naming, settings: operatorAccess });
@@ -192,6 +204,7 @@ export class AccessStack extends Stack {
         ...(operatorAccessConstruct === undefined ? [] : [operatorAccessConstruct.deployRoleReadPolicy]),
       ],
     });
+    useOwnPermissionsBoundary(serviceRole, deployRoleBoundaryArn);
 
     const operatorRole = new iam.CfnRole(this, "OperatorRole", {
       roleName: naming.operatorRoleName,
@@ -215,6 +228,21 @@ export class AccessStack extends Stack {
       maxSessionDuration: 3600,
       policies: [{ policyName: "operate", policyDocument: { Version: "2012-10-17", Statement: operatorRoleStatements(policyScope) } }],
     });
+
+    if (customDomainSet !== undefined && customDomain !== undefined) {
+      // 0.5.18 (IAM-SIZE-HEADROOM): the custom domain's grants, as ModelProxyTlsDeployPolicy below: a managed policy of their own (6,144 characters of room) attached to the deploy role only, so the role's
+      // inline policies (capped at 10,240 in all, and 99% full with these in the worst case) stay as they are without them. The same statements, Sids included, that were in the inline policy; it exists only
+      // while the domain is set (CustomDomainEnabled), as each of those statements did. Named, under the environment's path, so the export bundle's create-only deployer policy can name its exact ARN.
+      // Upgrade: this stack's update removes the inline statements and creates and attaches this policy in one deploy, and the access stack deploys first and alone (docs/day-two.md).
+      const policy = new iam.CfnManagedPolicy(this, "CustomDomainDeployPolicy", {
+        managedPolicyName: customDomainDeployPolicyName(env),
+        path: environmentRolePath(env),
+        description: `Lets the ${env} deploy role build the custom domain certificate and records`,
+        roles: [serviceRole.ref],
+        policyDocument: { Version: "2012-10-17", Statement: customDomainStatements({ env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account, customDomain }) },
+      });
+      policy.cfnOptions.condition = customDomainSet;
+    }
 
     if (props.modelProxyTls !== undefined || props.modelProxyTlsPrevious !== undefined) {
       // Its own managed policy (6,144 characters of room), attached to the deploy role only: the role's inline policies stay as they were. It also carries, for one deploy, the

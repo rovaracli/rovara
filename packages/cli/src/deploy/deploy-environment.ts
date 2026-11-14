@@ -14,6 +14,7 @@ import { installOrder, isRetiredParameter, OPERATOR_PARAMETERS, SECRET_PARAMETER
 import type { LoadedRelease } from "./release.js";
 import { callbackSigningKeyWithOrigin, ensureErasureHashKey, refuseLostErasureKey, type SecretValueStore } from "./signing-key.js";
 import { readStoredDeveloperSignIn, SIGN_IN_PARAMETER_NAMES } from "../signin/settings.js";
+import { declaredFromTemplate, requiredParameters } from "./declared-parameters.js";
 
 export type { SecretValueStore } from "./signing-key.js";
 
@@ -58,6 +59,9 @@ export interface DeployEnvironmentInput {
   adoptEditionRecord?: () => Promise<unknown>;
   /** After the foundation deploy: `true` when it completed (the backup is no longer needed), `false` when it did not (the record is put back from the backup). */
   settleEditionRecord?: (completed: boolean) => Promise<unknown>;
+  /** `agentx upgrade --rollback-to`: before the first stack deploys, every part's final parameters are checked against the target's templates
+   * (checkParametersAgainstTemplates), so an older template that needs a parameter this agentx no longer sends is refused with nothing changed. */
+  checkParametersFirst?: boolean;
 }
 
 export interface DeployEnvironmentResult {
@@ -102,7 +106,25 @@ export function templateParameterNames(release: LoadedRelease, part: DeployPart,
       `the release's ${part} template for ${anyRegion} could not be read; rebuild or re-download release ${release.manifest.version}`,
     );
   }
-  return new Set(Object.keys(template.Parameters ?? {}));
+  // The names, carrying which have no Default (declared-parameters.ts).
+  return declaredFromTemplate(template.Parameters ?? {});
+}
+
+/**
+ * The rollback's check before the first deploy: each part's final parameters against what the target's template declares. Refused when a
+ * sent parameter is not declared (CloudFormation would refuse it), or a declared one with no Default is neither sent nor, on the cdk engine
+ * (which deploys with the stack's previous values), held by the deployed stack. Returns one line per problem; empty means every part passes.
+ */
+export function parameterProblems(input: { part: DeployPart; stackName: string; parameters: Record<string, string>; declared: ReadonlySet<string> | undefined; deployed: Record<string, string> | undefined; engine: "templates" | "cdk" }): string[] {
+  if (input.declared === undefined) return [`${input.stackName}: the target's template could not be read, so its parameters cannot be checked`];
+  const problems: string[] = [];
+  const undeclared = Object.keys(input.parameters).filter((name) => !input.declared!.has(name)).sort();
+  if (undeclared.length > 0) problems.push(`${input.stackName}: the target's template does not declare ${undeclared.join(", ")}`);
+  const required = requiredParameters(input.declared);
+  if (required === undefined) return [...problems, `${input.stackName}: the target's template does not say which parameters have no default, so they cannot be checked`];
+  const missing = [...required].filter((name) => !Object.hasOwn(input.parameters, name) && !(input.engine === "cdk" && input.deployed?.[name] !== undefined)).sort();
+  if (missing.length > 0) problems.push(`${input.stackName}: the target's template needs ${missing.join(", ")} (no default), which this agentx does not send${input.engine === "cdk" ? " and the stack does not hold" : ""}`);
+  return problems;
 }
 
 /**
@@ -339,19 +361,8 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
       }
     }
 
-    let passRoleChecked = false;
-    let imagesPublished = false;
-    for (const part of fullOrder) {
-      if (!deploySet.has(part)) continue;
-      const stackName = environmentStackName(env, part);
-      if (part !== "access" && engine === "cdk" && !passRoleChecked && input.ensurePassRole !== undefined) {
-        passRoleChecked = true;
-        await input.ensurePassRole();
-      }
-      if (part !== "access" && engine === "cdk" && !imagesPublished && input.afterAccess !== undefined) {
-        imagesPublished = true;
-        await input.afterAccess();
-      }
+    /** One part's final parameters, exactly as its deploy sends them. `report`: record what was dropped and say what was kept (the deploy itself, not the check before it). */
+    const parametersFor = async (part: DeployPart, stackName: string, report: boolean): Promise<Record<string, string>> => {
       const rawParameters = stackParameters(part, fullAnswers, outputs, { packages: engine === "templates" });
       // F24: only when this deploy is actually sending a stored sign-in choice to the control plane
       // are the declared parameters even consulted (every other deploy never calls `release.template`).
@@ -379,8 +390,10 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
         const declared = candidates.length === 0 ? undefined : declaredFor(part);
         const { kept, dropped } = keptOperatorParameters({ part, computed: parameters, deployed, declared });
         parameters = { ...kept, ...parameters };
-        droppedParameters.push(...dropped.map((entry) => ({ stackName, ...entry })));
-        if (candidates.length > 0) input.onEvent?.({ kind: "kept", stackName, kept: Object.keys(kept), dropped: dropped.map((entry) => entry.parameter) });
+        if (report) {
+          droppedParameters.push(...dropped.map((entry) => ({ stackName, ...entry })));
+          if (candidates.length > 0) input.onEvent?.({ kind: "kept", stackName, kept: Object.keys(kept), dropped: dropped.map((entry) => entry.parameter) });
+        }
       }
       // A one-time forced value of this upgrade replaces what was kept (an explicit operator value included), only where the release's template declares it.
       const forced = mode === "upgrade" ? input.forcedParameters?.[part] : undefined;
@@ -388,6 +401,34 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
         const declared = declaredFor(part);
         parameters = { ...parameters, ...Object.fromEntries(Object.entries(forced).filter(([name]) => declared === undefined || declared.has(name))) };
       }
+      return parameters;
+    };
+
+    // --rollback-to: every part is checked before the first one deploys, from the outputs the stacks report now.
+    if (input.checkParametersFirst === true) {
+      const problems: string[] = [];
+      for (const part of fullOrder) {
+        if (!deploySet.has(part)) continue;
+        const stackName = environmentStackName(env, part);
+        problems.push(...parameterProblems({ part, stackName, parameters: await parametersFor(part, stackName, false), declared: declaredFor(part), deployed: await input.deployedParameters?.(stackName), engine }));
+      }
+      if (problems.length > 0) throw agentXError("CONFIG_INVALID", `release ${release.manifest.version}'s templates do not take the parameters this agentx would send, so nothing was deployed: ${problems.join("; ")}. Roll back to a release this agentx can deploy (a higher one), or fix forward`);
+    }
+
+    let passRoleChecked = false;
+    let imagesPublished = false;
+    for (const part of fullOrder) {
+      if (!deploySet.has(part)) continue;
+      const stackName = environmentStackName(env, part);
+      if (part !== "access" && engine === "cdk" && !passRoleChecked && input.ensurePassRole !== undefined) {
+        passRoleChecked = true;
+        await input.ensurePassRole();
+      }
+      if (part !== "access" && engine === "cdk" && !imagesPublished && input.afterAccess !== undefined) {
+        imagesPublished = true;
+        await input.afterAccess();
+      }
+      const parameters = await parametersFor(part, stackName, true);
       const roleArn = part === "access" ? undefined : requiredOutput(outputs, "access", "CloudFormationRoleArn", env);
       const request: DeployRequest = {
         part,

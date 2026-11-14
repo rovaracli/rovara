@@ -74,6 +74,7 @@ async function perform(access: ModelAccess, request: ModelAccessRequest, options
     case "spend": return access.spend(request.args.orgId, request.args.developerId);
     case "orgSpend": return access.orgSpend(request.args.orgId);
     case "keySpend": return access.keySpend(request.args.keyIds);
+    case "keyEstimatedSpend": return access.keyEstimatedSpend === undefined ? 0 : access.keyEstimatedSpend(request.args.keyIds);
     case "mintKey": return access.mintKey(request.args);
     case "upsertSource": return access.upsertSource(request.args).then(() => null);
     case "removeSource": return access.removeSource(request.args.orgId, request.args.sourceId).then(() => null);

@@ -153,6 +153,26 @@ describe("warm reuse and cold starts", () => {
     expect((await call(runner, "r2")).kind).toBe("response");
   });
 
+  it("returns the answer when the sandbox exits in the same turn as it answers: output written before an exit is delivered before it (deterministic order)", async () => {
+    // No timer: the exit is requested straight after the answer, so the exit is ahead of the answer in time unless the host (the real docker client's pipe, here the fake) hands over buffered output before it ends.
+    const agent: AgentBehavior = (frame, container) => {
+      if (frame.type !== "invoke") return;
+      container.emit(resultFor(frame, { payload: b64("\"done\"") }));
+      container.die(0);
+    };
+    const { runner, everStarted, containers } = setup({ agent });
+    await runner.register(KEY, config());
+    const outcome = await call(runner);
+    expect(outcome).toMatchObject({ kind: "response", cold: true });
+    expect(outcome.kind === "response" && outcome.payload.toString()).toBe("\"done\"");
+    expect(everStarted[0]!.running).toBe(false);
+    await wait(10);
+    // The dead environment is not reused: the next call starts cold.
+    expect(await call(runner, "r2")).toMatchObject({ kind: "response", cold: true });
+    expect(containers.size).toBe(1);
+    expect(runner.metrics().total.crashes).toBe(0);
+  });
+
   it("reports the agent's logs and its truncation flag", async () => {
     const noisy: AgentBehavior = (frame, container) => { if (frame.type === "invoke") container.emit(resultFor(frame, { logTail: "tail\n", logTruncated: true })); };
     const { runner } = setup({ agent: noisy });

@@ -35,6 +35,12 @@ export const ApprovalRecordSchema = z
     /** True only when the customer approves moving back to this older version on purpose. */
     rollback: z.boolean().default(false),
     /**
+     * A rollback approval only (0.5.17): the install it was checked against, the version its settings recorded and its release high-water mark (null: none
+     * recorded). The deployer refuses the approval once either differs, so an approval checked against the rollback floors at one version is never deployed
+     * after the install moved on. A rollback approval without it is refused (approve it again). A deployer that predates the field refuses the record.
+     */
+    rollbackFrom: z.object({ installedVersion: z.string().regex(/^\d+\.\d+\.\d+$/), highWater: z.string().regex(/^\d+\.\d+\.\d+$/).nullable() }).strict().optional(),
+    /**
      * Present only for an Enterprise install's approval: the files above then include `built/...`, the templates and packages the approval built for this install
      * (task N3b), and this pins the hash of that result and of every setting it was built from. Absent: the bundle's own (Public) templates, as before. A deployer
      * that predates this field refuses the record (the schema is strict), which is the safe side.
@@ -89,4 +95,6 @@ export type RestorePoint = z.infer<typeof RestorePointSchema>;
 export const InstalledBundleSchema = z.object({ schemaVersion: z.literal(1), bundleId: BundleIdText, version: z.string().min(1), installedAt: z.iso.datetime() }).strict();
 export type InstalledBundle = z.infer<typeof InstalledBundleSchema>;
 export const installedBundleParameter = (env: string): string => `${environmentSettingsPrefix(env)}bundle`;
+/** The highest release the install ever ran (a plain x.y.z), never lowered: `agentx upgrade --rollback-to` and `bundle approve --rollback` check the rollback floors from it. Written by the CLI and by the bundle deployer. */
+export const releaseHighWaterParameter = (env: string): string => `${environmentSettingsPrefix(env)}release-high-water`;
 export const restorePointParameter = (env: string, takenAt: string): string => `${environmentSettingsPrefix(env)}restore-points/${takenAt.replace(/[-:.]/g, "")}`;

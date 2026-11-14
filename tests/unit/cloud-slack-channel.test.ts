@@ -118,6 +118,33 @@ describe("today's Web API calls and escaping (characterization), and the adapter
     expect(buttonsOf(renderCloudSlackEvent(card([{ decision: "APPROVE", label: "Approve" }]), 3_000))).toEqual(["rovara_decide_APPROVE", "rovara_open_task"]);
   });
 
+  // The channel contract of the 0.5.17 pin: `message` (a reply or notice, optionally private), `done` with an optional closing line, and `direct` (needs an ability this adapter does not declare).
+  it("posts a message event's text, privately when its audience is one person, and says nothing for a done event with no closing line", async () => {
+    const ours = fakeSlack();
+    await adapter(ours).deliver(event({ text: "Here you go." }, "message"));
+    expect(ours.calls[0]!.url).toBe("https://slack.com/api/chat.postMessage");
+    expect(ours.calls[0]!.body).toMatchObject({ text: "Here you go.", thread_ts: THREAD });
+    const privateOne = fakeSlack();
+    await adapter(privateOne).deliver(event({ text: "Only you.", audience: { kind: "ephemeral", actor: { channel: "slack", tenant: TEAM, userId: PERSON } } }, "message"));
+    expect(privateOne.calls[0]!.url).toBe("https://slack.com/api/chat.postEphemeral");
+    expect(privateOne.calls[0]!.body).toMatchObject({ user: PERSON, text: "Only you." });
+    expect(renderCloudSlackEvent(event({}, "done"), 3_000)).toBeUndefined();
+    expect(renderCloudSlackEvent(event({ text: "All done." }, "done"), 3_000)).toEqual({ text: "All done." });
+    const quiet = fakeSlack();
+    await adapter(quiet).deliver(event({}, "done"));
+    expect(quiet.calls).toEqual([]);
+  });
+
+  it("refuses a direct message (it declares no `direct` ability) and posts nothing", async () => {
+    const ours = fakeSlack();
+    const direct = ChannelEventSchema.parse({
+      version: 1, id: channelEventId(), type: "direct", channel: "slack", to: { channel: "slack", tenant: TEAM, userId: PERSON }, createdAt: "2026-11-11T12:00:00.000Z", data: { text: "Hi." },
+    });
+    await expect(adapter(ours).deliver(direct)).rejects.toMatchObject({ name: "CloudSlackError", code: "direct_not_supported" });
+    expect(renderCloudSlackEvent(direct, 3_000)).toBeUndefined();
+    expect(ours.calls).toEqual([]);
+  });
+
   it("drops a repeat of an event id, as an at-least-once adapter must", async () => {
     const ours = fakeSlack();
     const same = event({ text: "Once." });

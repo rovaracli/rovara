@@ -108,7 +108,7 @@ describe("routing realistic plain requests end to end (Task 21)", () => {
       } else if (scripted === "large_change") {
         expect(buttons, text).toEqual([`Start:${WORKFLOW_PATH_FULL_ACTION}:primary`, `Use Quick instead:${WORKFLOW_PATH_QUICK_ACTION}`, `Just answer:${WORKFLOW_PATH_ANSWER_ACTION}`]);
       } else {
-        expect(buttons, text).toEqual([`Just answer:${WORKFLOW_PATH_ANSWER_ACTION}`, `Quick:${WORKFLOW_PATH_QUICK_ACTION}`, `Full:${WORKFLOW_PATH_FULL_ACTION}`]);
+        expect(buttons, text).toEqual([`Just answer:${WORKFLOW_PATH_ANSWER_ACTION}:primary`, `Quick:${WORKFLOW_PATH_QUICK_ACTION}`, `Full:${WORKFLOW_PATH_FULL_ACTION}`]);
       }
       // Every button names this request's own saved choice, derived from its Slack event.
       const choiceId = (JSON.parse(actions[0]!.value) as { choiceId: string }).choiceId;
@@ -201,7 +201,7 @@ describe("the Slack service's routing (Task 21)", () => {
     const deps = { route: async () => ({ kind: "small_change" as const, outcome: "ok" as const }), notify, answer: async () => undefined, finish: async () => undefined, log };
     await routeSlackRequest(message, { ...deps, offer: flaky });
     await routeSlackRequest(message, { ...deps, offer: working });
-    expect(slack.posts.map((post) => post.text)).toEqual([ROUTE_CARD_FAILED_TEXT, expect.stringContaining("Looks like a small change.") as unknown]);
+    expect(slack.posts.map((post) => post.text)).toEqual([ROUTE_CARD_FAILED_TEXT, expect.stringContaining("This looks like a small, clear change") as unknown]);
   });
 
   it("leaves nothing waiting, says so in one line and counts the request done when Slack refuses the card", async () => {
@@ -304,8 +304,8 @@ describe("smart intake: the owner's messages end to end (\"@Rovara hello\" got t
         continue;
       }
       const card = posted[0]!.text;
-      if (expected === "quick_card") expect(card, text).toContain("Looks like a small change. I'll use Quick.");
-      if (expected === "full_card") expect(card, text).toContain("Looks like a bigger change. I'll use Full");
+      if (expected === "quick_card") expect(card, text).toContain("This looks like a small, clear change, so I'll do it as a quick change");
+      if (expected === "full_card") expect(card, text).toContain("This looks like a bigger change");
       if (expected === "picker") {
         expect(card, text).toContain("How should I handle this?");
       }

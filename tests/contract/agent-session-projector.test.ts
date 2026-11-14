@@ -534,6 +534,23 @@ describe("cost, order and the notice sink", () => {
     expect(view.cost.spentUsd).toBe(0.75);
   });
 
+  it("the view carries the estimated part of the cost from the task's counter (DECISIONS 172), never above the cost, and nothing when there is none", async () => {
+    const p = projectorWorld();
+    const s = p.open();
+    p.operation(s.workspaceId, "task", "RUNNING");
+    p.spent(s.taskId, 2);
+    await p.refresh(s.sessionId);
+    const read = () => sessionView({
+      ...p.deps, projectMembers: p.w.members, signInStore: p.w.signInStore, origin: CELL, cursorKey: "k".repeat(64),
+      taskView: async (task: { taskId: string; project: string }) => ({ taskId: task.taskId, title: "t", project: task.project, status: "RUNNING", startingRevision: 1, client: "x", shared: false, createdAt: iso(T0), updatedAt: iso(T0), events: [] }) as never,
+    }, p.w.caller(PRIYA), s.sessionId);
+    expect((await read()).cost).not.toHaveProperty("estimatedUsd");
+    p.w.db.set({ ...taskSpendKey(ORG_A, s.taskId), entityType: "TASK_SPENT", orgId: ORG_A, settledUsd: 2, estimatedUsd: 0.5 });
+    expect((await read()).cost).toMatchObject({ spentUsd: 2, estimatedUsd: 0.5 });
+    p.w.db.set({ ...taskSpendKey(ORG_A, s.taskId), entityType: "TASK_SPENT", orgId: ORG_A, settledUsd: 2, estimatedUsd: 9 });
+    expect((await read()).cost.estimatedUsd).toBe(2);
+  });
+
   it("the summary's digest ignores computedAt, and is the SHA-256 of its canonical JSON", async () => {
     const p = projectorWorld();
     const s = p.open();

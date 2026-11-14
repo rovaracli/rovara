@@ -52,6 +52,7 @@ import { handleSpecPullRequestEvent } from "./spec-wiring.js";
 import { type EndedPullRequestReader, outcomeDepsOf, scoreMergedCandidate } from "../../rovara-code/outcome-hooks.js";
 import { canonicalJson } from "@rovara-code/contracts";
 import { requireTaskStopWindowContext, withAdmittedTaskSource } from "../../org/task-stop-window.js";
+import { chargeMarkerKey } from "../../developer/limits.js";
 
 /**
  * Spec 025 R3: the first instructions of a developer task, queued in the prepare's own result
@@ -623,6 +624,8 @@ async function mergeRecoveryReleaseConfirmed(dependencies: AwsBrokerDependencies
   if (!Number.isInteger(member.count) || (member.count as number) < 0
     || !Number.isInteger(organization.count) || (organization.count as number) < 0) return false;
   if (member.tasks !== undefined && (!(member.tasks instanceof Set) || member.tasks.has(task.taskId))) return false;
+  // S2: a slot charged since the switch to markers is a marker item beside the counter; it must be gone too.
+  if (await stronglyRead<Record<string, unknown>>(dependencies, chargeMarkerKey(task.charge, task.taskId)) !== undefined) return false;
   return true;
 }
 

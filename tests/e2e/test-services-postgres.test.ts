@@ -156,11 +156,24 @@ const BASE_RUNNERS: CheckRunners = {
 
 async function workerBench(options: { docker?: FakeServicesDockerOptions; slowChecks?: boolean } = {}) {
   const fake = fakeServicesDocker(options.docker);
-  // Official checks (a docker exec into the sealed check sandbox) can be made to hang until the signal stops them (a cancel).
+  // Official checks (a docker exec into the sealed check sandbox) can be made to hang until a cancel stops them, as a real Docker would: the command runs until the stop's TERM exec signals its group
+  // (then its exec returns 143), or until its local client is aborted (then it answers with no exit code, as runCollected does). The stop's own TERM and KILL execs are answered (exit 0): a Docker that never
+  // answered them would be a stop that cannot be confirmed (FIX-RUNNER-ABORT-JOIN), which is not what this test is about.
+  const hanging = new Set<() => void>();
+  const isStopStep = (args: readonly string[]) => args.some((arg) => arg.includes("kill -TERM") || arg.includes("kill -KILL"));
   const docker = options.slowChecks === true
-    ? { ...fake.docker, run: (args: readonly string[], runOptions?: { signal?: AbortSignal }) => (args[0] === "exec" && args.some((arg) => arg.endsWith("-check"))
-      ? new Promise<never>((_, reject) => { runOptions?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); })
-      : fake.docker.run(args, runOptions)) }
+    ? { ...fake.docker, run: (args: readonly string[], runOptions?: { signal?: AbortSignal }) => {
+      if (args[0] !== "exec" || !args.some((arg) => arg.endsWith("-check"))) return fake.docker.run(args, runOptions);
+      if (isStopStep(args)) {
+        if (args.some((arg) => arg.includes("kill -TERM"))) for (const end of [...hanging]) end();
+        return fake.docker.run(args, runOptions);
+      }
+      return new Promise<{ exitCode: number | null; stdout: string; stderr: string }>((resolveRun) => {
+        const end = () => { hanging.delete(end); resolveRun({ exitCode: 143, stdout: "", stderr: "" }); };
+        hanging.add(end);
+        runOptions?.signal?.addEventListener("abort", () => { hanging.delete(end); resolveRun({ exitCode: null, stdout: "", stderr: "" }); }, { once: true });
+      });
+    } }
     : fake.docker;
   const root = await temp("tsp-work-");
   await mkdir(join(root, PROJECT), { recursive: true });

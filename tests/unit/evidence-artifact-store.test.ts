@@ -5,8 +5,9 @@ import { createHash } from "node:crypto";
 import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { EVIDENCE_RECORD_RETENTION_DAYS } from "@agentx/cloud-contracts";
 import { E2E_ARTIFACT_RETENTION_TAG_KEY, EVIDENCE_ARTIFACT_MAX_BYTES, EVIDENCE_ARTIFACT_RETENTION, buildApiSample, type EvidenceView } from "@rovara-code/contracts";
-import { EVIDENCE_PRESIGN_SECONDS, deleteEvidenceArtifacts, evidenceArtifactKey, evidenceBytesAreKind, evidenceTagging, serveEvidenceArtifact, statEvidenceArtifacts, storeEvidenceArtifacts, type EvidenceDownloadDependencies } from "../../packages/broker/src/aws/evidence-artifacts.js";
+import { EVIDENCE_PRESIGN_SECONDS, deleteEvidenceArtifacts, evidenceArtifactKey, evidenceBytesAreKind, evidencePackTagging, evidenceTagging, serveEvidenceArtifact, statEvidenceArtifacts, storeEvidenceArtifacts, type EvidenceDownloadDependencies } from "../../packages/broker/src/aws/evidence-artifacts.js";
 import { evidenceDownloadAudit, evidenceDownloadResponse, handleEvidenceDownload } from "../../packages/broker/src/aws/evidence-download-route.js";
 import { evidenceViewOf } from "../../packages/broker/src/rovara-code/evidence-pack.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
@@ -76,6 +77,11 @@ describe("what the store keeps", () => {
       { kind: "jpeg", bytes: WEBM }, { kind: "jpeg", bytes: JPEG, sha256: "f".repeat(64) }, { kind: "webm", bytes: Buffer.from("junk") }, { kind: "jpeg", bytes: JPEG }, { kind: "jpeg", bytes: JPEG }]);
     expect([...stored.keys()]).toEqual([sha(JPEG)]);
     expect(memory.objects.size).toBe(1);
+  });
+  it("tags the pack with the 1-year record class, through its own function, and refuses that class for an artifact (TE-H4a)", () => {
+    expect(evidencePackTagging()).toBe(`${E2E_ARTIFACT_RETENTION_TAG_KEY}=evidence-record`);
+    // @ts-expect-error evidence-record is not an artifact class: the type refuses it
+    expect(() => evidenceTagging("evidence-record")).toThrow(/pack/u);
   });
   it("never stores the pack itself, whose class has no tag", async () => {
     expect(EVIDENCE_ARTIFACT_RETENTION.jpeg).not.toBe("evidence-record");
@@ -284,20 +290,24 @@ describe("the lifecycle rules on the artifact bucket", () => {
     const buckets = Object.values(template.findResources("AWS::S3::Bucket") as Record<string, Bucket>);
     return buckets.flatMap((bucket) => bucket.Properties.LifecycleConfiguration?.Rules ?? []).filter((rule) => rule.TagFilters !== undefined);
   };
-  it("expires evidence-short after 14 days and evidence-std after 30 by default, each on its own tag, and keeps the screenshot rule", () => {
+  it("expires evidence-short after 14 days and evidence-std after 30 by default, evidence-record after 365, each on its own tag, and keeps the screenshot rule", () => {
     const rules = rulesOf();
-    expect(rules.map((rule) => rule.Prefix)).toEqual([undefined, "private/", "private/"]);
+    expect(rules.map((rule) => rule.Prefix)).toEqual([undefined, "private/", "private/", "private/"]);
+    expect(EVIDENCE_RECORD_RETENTION_DAYS).toBe(365);
     expect(rules.map((rule) => [rule.Id, rule.ExpirationInDays, rule.TagFilters])).toEqual([
       ["ExpireE2EScreenshots", 30, [{ Key: "rovara-retention", Value: "e2e-screenshot" }]],
       ["ExpireEvidenceShort", 14, [{ Key: "rovara-retention", Value: "evidence-short" }]],
       ["ExpireEvidenceStd", 30, [{ Key: "rovara-retention", Value: "evidence-std" }]],
+      ["ExpireEvidenceRecord", EVIDENCE_RECORD_RETENTION_DAYS, [{ Key: "rovara-retention", Value: "evidence-record" }]],
     ]);
     expect(rules.every((rule) => rule.Status === "Enabled")).toBe(true);
   });
-  it("takes a company's days inside the allowed range, and clamps the rest", () => {
-    expect(rulesOf({ evidenceRetentionDays: { "evidence-short": 3, "evidence-std": 90 } }).slice(1).map((rule) => rule.ExpirationInDays)).toEqual([3, 90]);
-    expect(rulesOf({ evidenceRetentionDays: { "evidence-short": 5000, "evidence-std": 1 } }).slice(1).map((rule) => rule.ExpirationInDays)).toEqual([90, 7]);
-    expect(rulesOf({ evidenceRetentionDays: { "evidence-short": "x", "evidence-std": null } }).slice(1).map((rule) => rule.ExpirationInDays)).toEqual([14, 30]);
+  it("takes a company's days inside the allowed range, and clamps the rest; the 1-year record rule never moves", () => {
+    expect(rulesOf({ evidenceRetentionDays: { "evidence-short": 3, "evidence-std": 90 } }).slice(1).map((rule) => rule.ExpirationInDays)).toEqual([3, 90, 365]);
+    expect(rulesOf({ evidenceRetentionDays: { "evidence-short": 5000, "evidence-std": 1 } }).slice(1).map((rule) => rule.ExpirationInDays)).toEqual([90, 7, 365]);
+    expect(rulesOf({ evidenceRetentionDays: { "evidence-short": "x", "evidence-std": null } }).slice(1).map((rule) => rule.ExpirationInDays)).toEqual([14, 30, 365]);
+    // a setting that names the record class (the recorded setting refuses it; a raw context value must not be able to shorten or lengthen the rule either)
+    for (const days of [1, 30, 90, 5000, "x"]) expect(rulesOf({ evidenceRetentionDays: { "evidence-record": days } }).find((rule) => rule.Id === "ExpireEvidenceRecord")?.ExpirationInDays, String(days)).toBe(EVIDENCE_RECORD_RETENTION_DAYS);
   });
   it("is not added to the legacy production template", () => {
     const legacy = Template.fromStack(new ControlPlaneStack(new App(), "EvidenceLegacy"));

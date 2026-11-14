@@ -459,18 +459,24 @@ describe("the named TEST proof-only installation gate", () => {
     // authorizer's role gains dynamodb:BatchGetItem on the State table for the leading key DEVELOPER_NAME#* only, with the Null guard (the owner's name read on a session subscribe was refused). Checked first: with
     // infra/lib/control-plane.ts, infra/lib/realtime.ts and the named snapshot put back to v0.5.15's, this test and named-templates pass on v0.5.15's own pins. The named snapshot shows exactly that one attribute and
     // that one statement added. Legacy did not move.
+    // 2026-11-13 (TE-H4a, feat/te-h4a-evidence-record-tag, on integ/0516 574adbb27): the named and foreign digests (with and without the route) were retaken from the values the test reports, after ONE intended change:
+    // the artifacts bucket gains the lifecycle rule ExpireEvidenceRecord (365 days, prefix private/, tag rovara-retention=evidence-record). The named snapshot shows exactly that rule added. Legacy did not move.
+    // 2026-11-13 (0.5.16, feat/0516-tsl-worker-selftest, M1; replaces the 2026-11-12 note): the named and foreign digests were retaken from the values the test reports, after ONE intended change to the session steps
+    // function: the condition SessionsTslSelftestIsStaging (Fn::Equals [<environment name>, "staging"]) and the policy SessionsTslSelftestSwitchRead (ssm:GetParameter on exactly parameter/agentx/<env>/tsl-selftest) behind it.
+    // Every named template has them (a published template is the placeholder's with the name replaced, so the condition, not an `if` on the name, keeps the permission to staging); the legacy digests did not move.
+    // 2026-11-13 (TE-H4a merged onto integ/0518 cc2966810, v0.5.17): the four named and foreign digests were retaken again from the values the test reports, after the two changes above together (the ExpireEvidenceRecord rule and the 0.5.16 TSL self-test condition and policy).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "c1cb67860eacd4945cc9e31be8389f0c97b5b2d96dcc72717569c59290896ac3",
-        withoutRoute: "499c5d8dcd97f2ef40eb555fcd68089a4b539ab15221ea0ff92511a24346ab1f",
+        withRoute: "9618f73ecfa4e3a4b7b466b7cc7879ae39897ecb804a9b69e11b3d3adb75df57",
+        withoutRoute: "d4ff2ef4c790efa35b615363d878dbdf41718fbc4fd2431cb449c613da2b712c",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "83f42fd1e7483a6715220f6a55e4a9486fcb3df3cfbffbd00b832d6dd29c600b",
-        withoutRoute: "24683fc7b7d18dd0009289cfa6af4f0e17c23093beec66f903c09242f241e28d",
+        withRoute: "8bff4640ed75df6440ed8c91fd7ef58762ae02f072b2b145247855a04c54e5a4",
+        withoutRoute: "cdc331e991d3362bb506c9d515c94270169abe74e369e6b1396234bcb23a6515",
       },
       {
         label: "legacy",

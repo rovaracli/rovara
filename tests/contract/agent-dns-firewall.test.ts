@@ -314,7 +314,7 @@ describe("the hosted install's allow-list does not carry an exit for an injected
       "dynamodb.us-west-2.amazonaws.com", "sqs.us-west-2.amazonaws.com", "s3.us-west-2.amazonaws.com", "*.s3.us-west-2.amazonaws.com",
       "al2023-repos-us-west-2-de612dc2.s3.dualstack.us-west-2.amazonaws.com", "kms.us-west-2.amazonaws.com", "ssm.us-west-2.amazonaws.com", "ec2.us-west-2.amazonaws.com",
       "states.us-west-2.amazonaws.com", "lambda.us-west-2.amazonaws.com", "email.us-west-2.amazonaws.com", "secretsmanager.us-west-2.amazonaws.com", "scheduler.us-west-2.amazonaws.com",
-      "sts.us-west-2.amazonaws.com", "sts.amazonaws.com", "monitoring.us-west-2.amazonaws.com", "logs.us-west-2.amazonaws.com", "api.ecr.us-west-2.amazonaws.com",
+      "sts.us-west-2.amazonaws.com", "sts.amazonaws.com", "pricing.us-east-1.amazonaws.com", "monitoring.us-west-2.amazonaws.com", "logs.us-west-2.amazonaws.com", "api.ecr.us-west-2.amazonaws.com",
       "123456789012.dkr.ecr.us-west-2.amazonaws.com", "bedrock-runtime.us-west-2.amazonaws.com", "bedrock.us-west-2.amazonaws.com", "servicequotas.us-west-2.amazonaws.com",
       "*.execute-api.us-west-2.amazonaws.com", "*.us-west-2.elb.amazonaws.com", "*.us-west-2.rds.amazonaws.com",
     ];
@@ -325,6 +325,8 @@ describe("the hosted install's allow-list does not carry an exit for an injected
     // Three hosts for each region, less the install's own three already listed above.
     expect(list.slice(own.length)).toHaveLength(BEDROCK_SOURCE_REGIONS.length * 3 - 3);
     expect(list).not.toContain("ecs.us-west-2.amazonaws.com");
+    // The price host is one exact name (AWS's public read-only Price List, the model proxy's price refresh), never a wildcard over pricing or amazonaws.com.
+    expect(list.filter((host) => host.startsWith("pricing."))).toStrictEqual(["pricing.us-east-1.amazonaws.com"]);
     expect(hostedAwsAllowDomains(region).some((host) => host.includes(".dkr.ecr."))).toBe(false);
   });
 

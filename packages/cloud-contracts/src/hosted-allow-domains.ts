@@ -70,6 +70,10 @@ export const HOSTED_AWS_HOSTS: ReadonlyArray<{ host: (region: string, account?: 
   { host: (r) => `scheduler.${r}.amazonaws.com`, why: "EventBridge Scheduler (reconciler)" },
   { host: (r) => `sts.${r}.amazonaws.com`, why: "role sessions (reconciler, model access, org Bedrock roles)" },
   { host: () => "sts.amazonaws.com", why: "the global STS name some SDKs and the AWS CLI still use" },
+  // An exact name, never a wildcard: AWS's own public, read-only price host (the Bedrock model price offer files, no account data and nothing to upload to). The model proxy's guard
+  // reads it once a day to refresh prices; it is the only source allowed to LOWER a price, so a firewall that blocked it would leave the bundled prices in place for good.
+  // The firewall is one resolver for the whole VPC, so naming it here lets every machine on it resolve it, which is harmless for a read-only public host.
+  { host: () => "pricing.us-east-1.amazonaws.com", why: "AWS's public Price List host, read-only: the model proxy's daily price refresh (rovara-guard.ts), the only source that may lower a price" },
   { host: (r) => `monitoring.${r}.amazonaws.com`, why: "CloudWatch metrics (reconciler)" },
   { host: (r) => `logs.${r}.amazonaws.com`, why: "CloudWatch Logs: the worker's awslogs driver, ECS task logs, reconciler" },
   { host: (r) => `api.ecr.${r}.amazonaws.com`, why: "ECR login token for worker image pulls (boot.sh) and ECS image pulls" },

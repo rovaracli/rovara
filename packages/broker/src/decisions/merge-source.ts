@@ -20,6 +20,8 @@ export interface MergeSourcePorts {
   sessionIdOf(task: DeveloperTaskRecord): Promise<string | undefined>;
   task(taskId: string): Promise<DeveloperTaskRecord | undefined>;
   tracking(taskId: string, orgId: string): Promise<readonly MergeTrackingItem[]>;
+  /** TE-B2: whether the company's `honestCi` gate is on. Absent, or a read that fails: off. */
+  honestCi?(orgId: string): Promise<boolean>;
   now(): number;
 }
 
@@ -35,7 +37,7 @@ export function reviewVerdictOf(workflow: WorkflowSnapshot): "approved" | "conce
 }
 
 /** The merge item for one task, or undefined when it cannot be said what merging it would do. Pure over what the ports read. */
-export function mergeItemOf(task: DeveloperTaskRecord, workflow: WorkflowSnapshot, items: readonly MergeTrackingItem[], sessionId: string | undefined, nowIso: string): DecisionItem | undefined {
+export function mergeItemOf(task: DeveloperTaskRecord, workflow: WorkflowSnapshot, items: readonly MergeTrackingItem[], sessionId: string | undefined, nowIso: string, honest = false): DecisionItem | undefined {
   if (sessionId === undefined || task.closedAt !== undefined || task.releasedAt !== undefined || workflow.definitionVersion !== "1.1.0") return undefined;
   if (workflow.stage !== "WAIT_FOR_MERGE" || workflow.state !== "WAITING") return undefined;
   const required = (workflow.pullRequests ?? []).filter((entry) => entry.required && entry.state !== "MERGED");
@@ -49,7 +51,11 @@ export function mergeItemOf(task: DeveloperTaskRecord, workflow: WorkflowSnapsho
   const passed = results.filter((result) => result.status === "PASS").length;
   const failed = results.filter((result) => result.status === "FAILED").length;
   const unknown = results.length - passed - failed;
-  const ci = unmerged.some((item) => item.ci === "failing") ? "failing" as const : unmerged.some((item) => item.ci === "pending") ? "pending" as const : "passing" as const;
+  // TE-B2 (gate `honestCi` on): "No CI" and unreadable CI are said, never folded into "passing". Worst first: failing, not readable, still running, no CI, passing. Gate off: today's aggregation, so an open card's
+  // `contentVersion` (it hashes `ci`) does not change.
+  const ci = unmerged.some((item) => item.ci === "failing") ? "failing" as const
+    : honest && unmerged.some((item) => item.ci === "unreadable") ? "unreadable" as const
+      : unmerged.some((item) => item.ci === "pending") ? "pending" as const : honest && unmerged.some((item) => item.ci === "none") ? "none" as const : "passing" as const;
   const unaccepted = (workflow.reviews ?? []).filter((review) => review.candidateDigest === workflow.candidate?.digest && review.role === "SECURITY")
     .reduce((sum, review) => sum + review.findings.filter((finding) => !workflowFindingAccepted(workflow, review.role, finding)).length, 0);
   const heads = unmerged.map((item) => ({ repositoryId: item.repositoryId, number: item.number, headSha: item.headSha }));
@@ -80,7 +86,8 @@ export async function mergeItemsFor(ports: MergeSourcePorts, caller: { orgId: st
       if (task === undefined || task.orgId !== caller.orgId || task.workflow === undefined || tryEffectiveTaskOwner(task)?.developerId !== caller.developerId) continue;
       const waiting = task.workflow.stage === "WAIT_FOR_MERGE" && task.workflow.state === "WAITING";
       if (!waiting) continue;
-      const item = mergeItemOf(task, task.workflow, await ports.tracking(task.taskId, caller.orgId), await ports.sessionIdOf(task), nowIso);
+      const honest = ports.honestCi === undefined ? false : await ports.honestCi(caller.orgId).catch(() => false);
+      const item = mergeItemOf(task, task.workflow, await ports.tracking(task.taskId, caller.orgId), await ports.sessionIdOf(task), nowIso, honest);
       if (item !== undefined) found.push(item);
     } catch {
       // A task that cannot be read is not a card.

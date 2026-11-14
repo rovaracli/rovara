@@ -28,7 +28,8 @@ import type { TextWriter } from "../init/prompts.js";
 import { fetchRelease, sourceRelease } from "../init/release-fetch.js";
 import { formatSuccess } from "../output.js";
 import { RELEASE_VERSION } from "../version.js";
-import { approveBundle, withdrawApproval, type ApprovalStore } from "./bundle/approve.js";
+import { approveBundle, withdrawApproval, type ApprovalStore, type BundleRollbackGuard } from "./bundle/approve.js";
+import { raiseReleaseHighWater, readReleaseHighWater } from "../environments/release-high-water.js";
 import { approveEnterpriseBundle, installIsEnterprise } from "./bundle/approve-enterprise.js";
 import { nodeSynthRunner, type SynthRunner } from "./bundle/synth-run.js";
 import { recordSynthSettings } from "./bundle/synth-settings.js";
@@ -42,8 +43,8 @@ import { SSMClient } from "@aws-sdk/client-ssm";
 import { resetDeployment } from "./bundle/reset-deployment.js";
 import { PINNED_BUNDLE_SIGNING_KEYS } from "./bundle/trusted-keys.js";
 import { verifyBundle, type VerifiedBundle } from "./bundle/verify.js";
-import { runUpgrade, type UpgradeDependencies } from "./run.js";
-import { releaseNotes } from "./target.js";
+import { highWaterRefusal, runUpgrade, type UpgradeDependencies } from "./run.js";
+import { releaseNotes, rollbackDirection, ROLLBACK_FLOORS, ROLLBACK_FLOORS_DECLARED_THROUGH } from "./target.js";
 
 /** The embedder image has no repository in an install without the Team record (the access stack makes it only with the record): skipped there, an error where the record is on or cannot be read. */
 async function embedderMaySkip(store: ParameterStore, env: string): Promise<readonly string[]> {
@@ -90,11 +91,11 @@ function s3ApprovalStore(client: S3Client, bucket: string): ApprovalStore {
 }
 
 /** An Enterprise install's approval: build the install's templates at approval from its recorded settings, show them, and write the approval that pins the result. */
-async function enterpriseApproval(context: UpgradeCommandContext, input: { beforeBuild?: () => Promise<void>; bundle: VerifiedBundle; install: EnvironmentSettings; store: ParameterStore; aws: { region?: string }; caller: string; parameters: unknown; rollback: boolean; yes: boolean; beforeApproval: () => Promise<void>; approvalStore: ApprovalStore; writeBuildTo?: string; confirmFlag?: string }): Promise<ApprovalRecord> {
+async function enterpriseApproval(context: UpgradeCommandContext, input: { beforeBuild?: () => Promise<void>; bundle: VerifiedBundle; install: EnvironmentSettings; store: ParameterStore; aws: { region?: string }; caller: string; parameters: unknown; rollback: boolean; rollbackGuard?: BundleRollbackGuard; yes: boolean; beforeApproval: () => Promise<void>; approvalStore: ApprovalStore; writeBuildTo?: string; confirmFlag?: string }): Promise<ApprovalRecord> {
   const cloudFormation = new CloudFormationClient(input.aws);
   const { record } = await approveEnterpriseBundle({
     bundle: input.bundle, install: input.install, store: input.store, runner: context.synthRunner ?? nodeSynthRunner, approvalStore: input.approvalStore, approvedBy: input.caller, parameters: input.parameters,
-    rollback: input.rollback, now: Date.now, yes: input.yes, interactive: process.stdin.isTTY === true, ask: readlineAsk(), write: (line) => { context.stderr.write(`${line}\n`); },
+    rollback: input.rollback, ...(input.rollbackGuard === undefined ? {} : { rollbackGuard: input.rollbackGuard }), now: Date.now, yes: input.yes, interactive: process.stdin.isTTY === true, ask: readlineAsk(), write: (line) => { context.stderr.write(`${line}\n`); },
     readDeployedTemplate: async (stackName) => {
       try {
         return ((await cloudFormation.send(new GetTemplateCommand({ StackName: stackName, TemplateStage: "Original" }))) as { TemplateBody?: string }).TemplateBody;
@@ -114,8 +115,9 @@ const collect = (value: string, previous: string[]) => [...previous, value];
 export function registerUpgradeCommand(program: Command, context: UpgradeCommandContext): void {
   program
     .command("upgrade")
-    .description("upgrade an environment to a newer release: shows the release notes and every change, stops on a data replacement unless you name it, then runs doctor (operator role; the cdk engine needs admin credentials)")
+    .description("upgrade an environment to a newer release (or, with --rollback-to, move it back to an older one on purpose): shows the release notes and every change, stops on a data replacement unless you name it, then runs doctor (operator role; the cdk engine needs admin credentials)")
     .option("--to <version>", "the release to upgrade to; default: this agentx's own release, or for an agentx built from source upgrading a cdk environment, the --source tag")
+    .option("--rollback-to <version>", "move the environment back to this older release on purpose (undo = redeploy the previous release): refused for a release that is not older than the recorded one, or below a floor a newer release declared; every change is shown and confirmed as for an upgrade, and --yes works the same; on the cdk engine pass --source <checkout of its tag>; instead of --to")
     .option("--release <dir>", "a release directory (agentx release build output) instead of downloading one")
     .option("--bundle <dir>", "a signed release bundle (Enterprise): its signature and every hash are checked before anything changes, a restore point is recorded, its images are loaded into your registry; instead of --release and --to")
     .option("--approved-bundle-sha256 <hex>", "with --bundle: the bundle id (SHA-256 of bundle.json) your team approved; any other bundle is refused")
@@ -134,13 +136,13 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .option("--allow-legacy-http-removal", "remove the model proxy's legacy plain-http listeners although worker instances launched before its https address was published still run", false)
     .option("--no-reserved-concurrency", "the cdk engine only: deploy with no Lambda reserved concurrency, for an AWS account whose Lambda concurrency limit is too low to reserve any (a new account's limit of 10); keep it on in production")
     .option("--region <region>", "AWS region of the environment; defaults to your AWS configuration")
-    .action(async (options: { approveBuild: boolean; deployApproved?: string; bundle?: string; approvedBundleSha256?: string; bundlePublicKey: string[]; to?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; embedderImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean; allowTlsRemoval: boolean; allowLegacyHttpRemoval: boolean }, command: Command) => {
+    .action(async (options: { approveBuild: boolean; deployApproved?: string; bundle?: string; approvedBundleSha256?: string; bundlePublicKey: string[]; to?: string; rollbackTo?: string; release?: string; source?: string; allowReplace: string[]; export?: string; workerImage?: string; slackImage?: string; embedderImage?: string; bootStage2Sha256?: string; yes: boolean; region?: string; reservedConcurrency: boolean; allowTlsRemoval: boolean; allowLegacyHttpRemoval: boolean }, command: Command) => {
       const globals = command.optsWithGlobals<{ env: string; json: boolean; configDir: string }>();
       const overrides = context.overrides ?? {};
       const aws = options.region === undefined ? {} : { region: options.region };
       if (options.deployApproved !== undefined) {
         // The operator's whole path: a bundle id to the customer's deployer. No release, bundle, source or setting of the operator's choosing is accepted beside it.
-        if (options.approveBuild || options.bundle !== undefined || options.to !== undefined || options.release !== undefined || options.source !== undefined || options.export !== undefined || options.approvedBundleSha256 !== undefined || options.workerImage !== undefined || options.slackImage !== undefined || options.embedderImage !== undefined || options.bootStage2Sha256 !== undefined) {
+        if (options.approveBuild || options.bundle !== undefined || options.to !== undefined || options.rollbackTo !== undefined || options.release !== undefined || options.source !== undefined || options.export !== undefined || options.approvedBundleSha256 !== undefined || options.workerImage !== undefined || options.slackImage !== undefined || options.embedderImage !== undefined || options.bootStage2Sha256 !== undefined) {
           throw agentXError("CONFIG_INVALID", "--deploy-approved takes a bundle id and nothing else");
         }
         const result = await startApprovedDeployment({ env: globals.env, bundleId: options.deployApproved, invoker: context.deployerInvoker ?? lambdaInvoker(new LambdaClient(aws)), write: (line) => { context.stderr.write(`${line}\n`); } });
@@ -210,6 +212,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         cliVersion: "cliVersion" in overrides ? overrides.cliVersion : RELEASE_VERSION,
         modelProxyTlsState: overrides.modelProxyTlsState ?? awsModelProxyTlsState({ ssm: new SSMClient(aws), ec2: new EC2Client(aws) }),
         dns: overrides.dns ?? systemDnsLookups,
+        ...(overrides.rollbackFloors === undefined ? {} : { rollbackFloors: overrides.rollbackFloors }),
       };
       const images = options.workerImage === undefined && options.slackImage === undefined && options.embedderImage === undefined && options.bootStage2Sha256 === undefined ? undefined : {
         ...(options.workerImage === undefined ? {} : { worker: options.workerImage }), ...(options.slackImage === undefined ? {} : { slack: options.slackImage }), ...(options.embedderImage === undefined ? {} : { embedder: options.embedderImage }),
@@ -218,7 +221,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       const result = await runUpgrade({
         env: globals.env, yes: options.yes, allowReplace: options.allowReplace,
         ...(options.bundle === undefined ? {} : { bundleDir: options.bundle }), ...(options.approveBuild ? { approveBuild: true } : {}), ...(options.approvedBundleSha256 === undefined ? {} : { approvedBundleSha256: options.approvedBundleSha256 }),
-        ...(options.to === undefined ? {} : { to: options.to }), ...(options.release === undefined ? {} : { releaseDir: options.release }),
+        ...(options.to === undefined ? {} : { to: options.to }), ...(options.rollbackTo === undefined ? {} : { rollbackTo: options.rollbackTo }), ...(options.release === undefined ? {} : { releaseDir: options.release }),
         ...(options.source === undefined ? {} : { source: options.source }), ...(options.export === undefined ? {} : { exportDir: options.export }),
         ...(options.reservedConcurrency === false ? { reservedConcurrency: false as const } : {}),
         ...(options.allowTlsRemoval ? { allowTlsRemoval: true } : {}), ...(options.allowLegacyHttpRemoval ? { allowLegacyHttpRemoval: true } : {}),
@@ -226,7 +229,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       }, deps);
       context.stdout.write(globals.json ? formatSuccess(result, true) : result.exported !== undefined
         ? `Wrote the upgrade of ${result.env} to ${result.to} to ${result.exported}; give it to your platform team.\n`
-        : `Upgraded ${result.env} from ${result.from} to ${result.to}.\n`);
+        : `${result.rolledBack === true ? "Rolled back" : "Upgraded"} ${result.env} from ${result.from} to ${result.to}.\n`);
     });
   const bundleCommand = program.command("bundle").description("approve or withdraw a signed release bundle for the Rovara operator to deploy (run by your own administrators)");
   bundleCommand
@@ -261,6 +264,17 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       }
       const bundle = await verifyBundle({ dir: options.bundle, trustedKeys: [...PINNED_BUNDLE_SIGNING_KEYS, ...installed, ...extra], approvedBundleSha256: options.approvedBundleSha256 });
       try {
+        // --rollback: the floors of every release the install ever ran (target.ts), checked before any image is loaded or file placed; the release it leaves is
+        // recorded as the high-water mark first, and must be, so a second rollback still meets the floors this one passed.
+        let rollbackGuard: BundleRollbackGuard | undefined;
+        if (options.rollback) {
+          rollbackGuard = { env: globals.env, installedVersion: settings.version, highWater: await readReleaseHighWater(store, globals.env) };
+          rollbackDirection(rollbackGuard.env, rollbackGuard.installedVersion, bundle.manifest.version, ROLLBACK_FLOORS, ROLLBACK_FLOORS_DECLARED_THROUGH, rollbackGuard.highWater);
+          rollbackGuard = { ...rollbackGuard, highWater: await raiseReleaseHighWater(store, globals.env, settings.version) };
+        } else {
+          // Any other approval moves the install off the version it records: that version is at least the mark (best effort; the deployer installs either way).
+          await raiseReleaseHighWater(store, globals.env, settings.version).catch((error: unknown) => { context.stderr.write(`WARNING: ${highWaterRefusal(globals.env, settings.version, "upgrade", error, true)}\n`); });
+        }
         const runner = realCommandRunner(context.stderr);
         const loadImages = async (): Promise<void> => {
           if (bundle.manifest.images.length > 0) await loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner, skipWhenNoRepository: await embedderMaySkip(store, settings.env) });
@@ -278,10 +292,10 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
             env: globals.env, store, controlPlaneParameters: (await cloudFormationStackReader(new CloudFormationClient(aws)).describe(settings.stacks["control-plane"]))?.parameters,
             probe: context.teamRecordProbe ?? dynamoTeamRecordProbe(new DynamoDBClient(aws), { ecr: new ECRClient(aws), cloudFormation: new CloudFormationClient(aws) }), write: (line) => { context.stderr.write(`${line}\n`); }, stoppedMessage: "approval stopped before anything was built or approved",
           });
-          record = await enterpriseApproval(context, { beforeBuild, bundle, install: settings, store, aws, caller: caller.arn, parameters, rollback: options.rollback, yes: options.yes, beforeApproval: loadImages, approvalStore: store_, ...(options.writeBuild === undefined ? {} : { writeBuildTo: options.writeBuild }) });
+          record = await enterpriseApproval(context, { beforeBuild, bundle, install: settings, store, aws, caller: caller.arn, parameters, rollback: options.rollback, ...(rollbackGuard === undefined ? {} : { rollbackGuard }), yes: options.yes, beforeApproval: loadImages, approvalStore: store_, ...(options.writeBuild === undefined ? {} : { writeBuildTo: options.writeBuild }) });
         } else {
           await loadImages();
-          record = await approveBundle({ bundle, approvedBy: caller.arn, parameters, rollback: options.rollback, store: store_, now: Date.now });
+          record = await approveBundle({ bundle, approvedBy: caller.arn, parameters, rollback: options.rollback, ...(rollbackGuard === undefined ? {} : { rollbackGuard }), store: store_, now: Date.now });
         }
         context.stdout.write(globals.json ? formatSuccess(record, true) : `Approved bundle ${record.bundleId} (release ${record.version}) for ${globals.env}. The Rovara operator can now start its deployment; withdraw it with: agentx bundle withdraw ${record.bundleId}\n`);
       } finally {
