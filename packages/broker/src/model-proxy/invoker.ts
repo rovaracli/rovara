@@ -5,7 +5,7 @@
 import { InvokeCommand, LambdaClient, type InvokeCommandOutput, type LambdaClientConfig } from "@aws-sdk/client-lambda";
 import { AgentXErrorCodeSchema, agentXError, type AgentXError, type OrgId } from "@rovara-code/contracts";
 import { z } from "zod";
-import { LearningNotForwarded, type KeyAudit, type LearningCompletion, type LearningCompletionInput, type MemberSpend, type MintKeyInput, type MintedKey, type ModelAccess, type SourceCheck, type SpendFigures, type UpsertSourceInput } from "./access.js";
+import { LearningNotForwarded, type KeyAudit, type LearningCompletion, type LearningCompletionInput, type MemberSpend, type MintKeyInput, type MintedKey, type ModelAccess, type ReviewCompletionInput, type SourceCheck, type SpendFigures, type UpsertSourceInput } from "./access.js";
 import { learnedLessonsOn } from "../lessons/switch.js";
 import { KeyAuditResultSchema, KeySpendResultSchema, LearningCompletionResultSchema, MintedKeyResultSchema, RegisteredSourcesResultSchema, SourceCheckResultSchema, SpendFiguresSchema, SpendResultSchema, type ModelAccessRequest } from "./protocol.js";
 
@@ -25,6 +25,8 @@ export const singleAttemptLambda = (configuration: LambdaClientConfig = {}): Lam
 /** What a learning call is refused with when the invoker was built without a single-attempt client (fixed words). Nothing was sent, so it is a `LearningNotForwarded`. */
 export const LEARNING_NEEDS_SINGLE_ATTEMPT = "learning calls need a Lambda client that sends once";
 
+/** What a reviewer call is refused with when the invoker was built without a single-attempt client (fixed words; nothing was sent). */
+export const REVIEW_NEEDS_SINGLE_ATTEMPT = "reviewer calls need a Lambda client that sends once";
 /** What a learning call is refused with while the install's lessons switch is off or unreadable (owner decision 47; fixed words). Nothing was sent, so it is a `LearningNotForwarded`. */
 export const LEARNING_SWITCHED_OFF = "lessons are switched off for this install, so no learning call is made";
 
@@ -123,6 +125,13 @@ export class ModelAccessInvoker implements ModelAccess {
     // F1: the retrying client would re-run a call the first attempt already started (two provider calls under one key). No single-attempt client: nothing is sent, on any construction path.
     if (this.input.learningLambda === undefined) throw new LearningNotForwarded(LEARNING_NEEDS_SINGLE_ATTEMPT);
     return this.parseResult(await this.invoke({ op: "learningCompletion", args: { key, purpose, system, user, maxOutputTokens, model, api, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) } }, LEARNING_INVOKE_TIMEOUT_MS, this.input.learningLambda, signal), LearningCompletionResultSchema);
+  }
+
+  /** The lighter flow's reviewer call. Not a learning call, so the lessons switch does not gate it; it goes through the single-attempt client all the same (a retry would make two provider calls under one key). */
+  async reviewCompletion(input: ReviewCompletionInput): Promise<LearningCompletion> {
+    const { key, purpose, user, maxOutputTokens, model, api, signal } = input;
+    if (this.input.learningLambda === undefined) throw unavailable(REVIEW_NEEDS_SINGLE_ATTEMPT);
+    return this.parseResult(await this.invoke({ op: "reviewCompletion", args: { key, purpose, user, maxOutputTokens, model, api } }, LEARNING_INVOKE_TIMEOUT_MS, this.input.learningLambda, signal), LearningCompletionResultSchema);
   }
 
   private parseResult<T>(result: unknown, schema: z.ZodType<T>): T {

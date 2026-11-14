@@ -29,7 +29,7 @@ export const allowAll: TaskAccess = { checkStart: async () => ({ allowed: true }
 
 export interface Rig { /** A6's approvers adapter as built, without the client-facing wrapper the root registers (for tests of A6 itself). */ approvers: Approvers; world: FakeWorld; people: PeopleWorld; app: CloudApp; standing: Map<string, ApprovalDeciderRole>; posts: string[]; /** Another root over the same world, adapters and wiring (a later Lambda container, with the switch changed). */ rebuild(options: { env: NodeJS.ProcessEnv; serveStamped?: boolean }): CloudApp }
 
-export async function rig(options: { slack?: boolean; liveRole?: boolean; afterVerify?: () => Promise<void> | void; access?: TaskAccess; log?: (entry: Record<string, unknown>) => void } = {}): Promise<Rig> {
+export async function rig(options: { slack?: boolean; liveRole?: boolean; afterVerify?: () => Promise<void> | void; access?: TaskAccess; log?: (entry: Record<string, unknown>) => void; /** S3-9: the lighter flow's reviewer ports (absent: none, so the lighter flow stays off). */ tierReview?: CloudCoreWiring["tierReview"]; /** The broker's environment the company's settings are read from. */ settingsEnv?: Record<string, string>; /** The company's pinned recipe's step kinds (`plan_critic` with `rv` on: Understand first). */ recipeStepKinds?: readonly string[] } = {}): Promise<Rig> {
   const world = createFakeWorld();
   const people = createPeopleWorld();
   const standing = new Map<string, ApprovalDeciderRole>();
@@ -49,7 +49,8 @@ export async function rig(options: { slack?: boolean; liveRole?: boolean; afterV
   const modules = [...world.modules.map((module) => (module.point === "approvers" ? cloudAdapter({ point: "approvers", name: "cloud", lane: "A6", create: () => createClientFacingApprovers(approvers) }) : module)), ...(options.slack === true ? [slackAdapter] : [])];
   const identity = createCloudIdentityProvider(people.routes);
   const wiring: CloudCoreWiring = {
-    settings: () => cloudSettingsFromEnvironment({}, { recipeStepKinds: undefined, connectorWritesBehindApproval: true }),
+    settings: () => cloudSettingsFromEnvironment(options.settingsEnv ?? {}, { recipeStepKinds: options.recipeStepKinds, connectorWritesBehindApproval: true }),
+    ...(options.tierReview === undefined ? {} : { tierReview: options.tierReview }),
     callbackSigningKey: Buffer.alloc(32, 7), repositoryGrantKey: Buffer.alloc(32, 5), repositoryCredential: async () => ({ token: "unused" }), access: options.access ?? allowAll,
     now: () => new Date(world.clock.now), log: options.log ?? (() => undefined), people: soleOwnerPeople, codeSettings: fixedCodeSettings(),
     taskEnd: { readTask: async () => undefined, onTaskEnded: async () => undefined }, sessionFacts: { read: async () => undefined },

@@ -91,6 +91,10 @@ async function perform(access: ModelAccess, request: ModelAccessRequest, options
       // With the switch off the function's timeout is the short one: a call would be cut off mid-generation and spend money for nothing, so it is refused before anything is sent.
       if (!options.learning || access.learningCompletion === undefined) throw agentXError("CONFIG_INVALID", "learning calls are not set up on this install");
       return access.learningCompletion(request.args);
+    case "reviewCompletion":
+      // The same long timeout a learning call needs: with it off a reviewer call would be cut off mid-generation and spend money for nothing, so it is refused before anything is sent.
+      if (!options.learning || access.reviewCompletion === undefined) throw agentXError("CONFIG_INVALID", "long model calls are not set up on this install");
+      return access.reviewCompletion(request.args);
   }
 }
 

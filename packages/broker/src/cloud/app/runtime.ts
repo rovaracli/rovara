@@ -28,6 +28,7 @@ import { cloudFlowOptions, type CoreInbound, type CoreRuntimeOptions, type CoreS
 import type { CloudCompanySettings } from "./settings-mapping.js";
 import type { CloudModelFacts } from "./model-mapping.js";
 import { createSeatLimits } from "./seat-limits.js";
+import { createCloudTierReview, type TierReviewPorts } from "./tier-review.js";
 import { REUSABLE_METHODS, createClientDecisionGate, createCloudChannelWork, createSlackIntake, type StartTask } from "./slack-work.js";
 import type { CoreTaskEndedDeps } from "../rows/core-rows.js";
 import type { CloudAppOptions } from "./app.js";
@@ -96,6 +97,12 @@ export interface CloudCoreWiring {
   decisionSubjects?: readonly DecisionSubject[];
   /** The `automation-stop` job (143c): the chain runner's and the unattended door's dependencies. Absent: the job is skipped (`service_not_wired`). */
   automation?: Omit<AutomationStopDeps, "automation" | "companyId" | "store" | "log">;
+  /**
+   * The lighter flow's reviewer (S3-9, decisions 178/179/182): the ports over the broker's money and model machinery for this company (tier-review-ports.ts). Given: the core gets the reviewer call and its
+   * meter, and the lighter flow follows the company's setting (`lighterFlow`, on by default). Absent, or undefined for the company: no reviewer can run, so the lighter flow stays OFF for its core tasks
+   * (the whole plan every time): a small change never skips its planning steps without the review that stands in for them.
+   */
+  tierReview?: (companyId: OrgId) => TierReviewPorts | undefined;
   /** Extra flow options (limits, prompts, the design review, ...), spread last EXCEPT the ones this file owns (milestones, taskEnded). */
   flowOptions?: Partial<RegistryTaskFlowOptions>;
 }
@@ -126,9 +133,16 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
     const ledger = createCostLedger({ store, metering: registry.require("metering"), now: wiring.now });
     const settings = wiring.settings(companyId);
     const models = wiring.models?.(companyId);
+    // The reviewer is kept whether the switch is on or off (a task that skipped its planning steps still owes its questions after the switch went off); the switch itself needs it.
+    const reviewPorts = wiring.tierReview?.(companyId);
+    const review = reviewPorts === undefined ? undefined : createCloudTierReview({ ports: reviewPorts, now: nowMs, log: (event, fields) => wiring.log({ component: "tier_review", event, ...fields }) });
 
     const flowOptions: Partial<RegistryTaskFlowOptions> = {
       ...cloudFlowOptions(settings, models),
+      ...(review === undefined ? {} : { tierReviewCall: review.tierReviewCall, tierReviewMeter: review.tierReviewMeter, lighterFlow: settings.lighterFlow }),
+      // The documents workers saved (the plan, the reviewers' answers), read from the registry's object storage as Code's own composition does (local/app/app.ts `artifacts: blobs`). Without it the core cannot
+      // read a plan back: the coding step's approved plan, the plan check's answer, the lighter flow's reading of the plan (so a small change never skipped anything) and the tier pass's planned files.
+      artifacts: registry.require("object-storage"),
       taskSpendUsd: async (taskId) => costUsdOf(await ledger.taskCost(companyId, taskId)),
       ...(wiring.flowOptions ?? {}),
       milestones,
@@ -179,7 +193,15 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
       const tracking = createMergeTrackingService({ flow: flow.deps, registry, companyId, milestones, people: wiring.people, settings: wiring.codeSettings, now: nowMs, log: wiring.log });
       const automationSwitch = cloudAutomationSwitch();
       const services: Partial<Record<CoreServiceName, CoreService>> = {
-        "merge-tracking": { async pass() { return { ...(await tracking.sweep()) }; } },
+        // The sweep, then the lighter flow's tier pass (Code runs it beside the sweep on its own timer, with its own allowance): the tasks the sweep found owing their reviewer's questions or a grown
+        // tier's reviews get them here. Without this pass a lighter-flow change is held for good (Code logs `tier_checks.not_running`). A pass that fails is reported, never the sweep's failure.
+        "merge-tracking": {
+          async pass() {
+            const swept = await tracking.sweep();
+            const tierChecks = await tracking.tierChecks().catch((error: unknown) => { wiring.log({ component: "merge_tracking", event: "tier_checks.failed", error: error instanceof Error ? error.name : "unknown" }); return "failed" as const; });
+            return { ...swept, tierChecks };
+          },
+        },
         "session-sweep": { async pass({ budgetMs }) { return { ...(await sessions.sweep({ budgetMs })) }; } },
         "notify-deliver": { async pass({ budgetMs }) { const outcome = await notices.deliver({ deadlineMs: nowMs() + budgetMs }); return outcome === undefined ? { skipped: "nobody_can_be_told" } : { ...outcome }; } },
         "admission-hold-sweep": holdSweep(registry.require("admission"), companyId),

@@ -56,6 +56,20 @@ const LearningCompletionArgsSchema = z.object({
   if (args.maxOutputTokens > limits.outputTokens) context.addIssue({ code: "custom", path: ["maxOutputTokens"], message: "too many for this purpose" });
 });
 
+/**
+ * Bounds of a lighter-flow reviewer call (`ReviewCompletionInput`). Code gives its reviewer at most 200,000 characters of patch (`REVIEW_PATCH_MAX_CHARS`); written out as data (control characters escaped,
+ * then JSON) it can grow, so the prompt may be up to three times that. The answer is fourteen yes/no answers or a list of findings.
+ */
+export const REVIEW_LIMITS = { userChars: 600_000, outputTokens: 8_000 } as const;
+const ReviewCompletionArgsSchema = z.object({
+  key: z.string().min(1).max(512),
+  purpose: z.enum(["questions", "code_review", "security_review"]),
+  user: z.string().min(1).max(REVIEW_LIMITS.userChars),
+  maxOutputTokens: z.number().int().min(1).max(REVIEW_LIMITS.outputTokens),
+  model: z.string().min(1).max(512),
+  api: z.enum(["anthropic-messages", "openai-responses", "openai-completions"]),
+}).strict();
+
 export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("upsertOrg"), args: z.object({ orgId: OrgIdSchema, monthlyBudgetUsd: BudgetSchema }).strict() }).strict(),
   z.object({ op: z.literal("upsertMember"), args: z.object({ orgId: OrgIdSchema, developerId: DeveloperIdSchema, monthlyBudgetUsd: BudgetSchema }).strict() }).strict(),
@@ -88,6 +102,7 @@ export const ModelAccessRequestSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("revokeKey"), args: z.object({ key: z.string().min(1).max(512) }).strict() }).strict(),
   z.object({ op: z.literal("blockKey"), args: z.object({ keyId: KeyIdSchema }).strict() }).strict(),
   z.object({ op: z.literal("learningCompletion"), args: LearningCompletionArgsSchema }).strict(),
+  z.object({ op: z.literal("reviewCompletion"), args: ReviewCompletionArgsSchema }).strict(),
 ]);
 export type ModelAccessRequest = z.infer<typeof ModelAccessRequestSchema>;
 

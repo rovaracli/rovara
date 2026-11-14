@@ -96,6 +96,26 @@ export interface LearningCompletionInput {
   signal?: AbortSignal | undefined;
 }
 
+/**
+ * The lighter flow's reviewer (decisions 178, 179, 182): ONE tool-less model call for a core task's change tier (the floor's fixed questions, or the code or security review of a change that grew), made on the
+ * COMPANY's own route (a source billed to the company: its own, or Rovara's metered one; never a person's plan) with a key the BROKER minted for the task's payer and reserved in the spend ledger. The function only
+ * makes the call, exactly as `learningCompletion` does: the prompt is the whole user message (Code's reviewer adds no system text), and the answer is the text alone. It is not a learning call, so the lessons switch
+ * does not gate it; the function's long timeout does (the same one `learningCompletion` needs).
+ */
+export interface ReviewCompletionInput {
+  /** The key the broker minted for this call (it never leaves the broker and the function, and is never logged). */
+  key: string;
+  purpose: "questions" | "code_review" | "security_review";
+  /** The whole prompt Code's reviewer built (the fixed questions or the review's role, then the change as untrusted data between fresh boundary lines). */
+  user: string;
+  maxOutputTokens: number;
+  /** The route's alias and its transport. */
+  model: string;
+  api: LearningCompletionApi;
+  /** Aborted at the reviewer's deadline: only the broker's wait for the function stops. Never sent to the function. */
+  signal?: AbortSignal | undefined;
+}
+
 export interface LearningCompletion {
   text: string;
   /** The alias that answered. */
@@ -167,4 +187,6 @@ export interface ModelAccess {
   blockKey(keyId: string): Promise<void>;
   /** See `LearningCompletionInput`. Absent where the function does not make learning calls. Errors carry fixed words only: never the provider's text, never a key. */
   learningCompletion?(input: LearningCompletionInput): Promise<LearningCompletion>;
+  /** See `ReviewCompletionInput`. Absent where the function does not make long model calls. Errors carry fixed words only: never the provider's text, never a key. */
+  reviewCompletion?(input: ReviewCompletionInput): Promise<LearningCompletion>;
 }

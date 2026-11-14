@@ -39,6 +39,9 @@ import { isCoreJobEvent } from "./jobs.js";
 import { createCloudMergePeople } from "./merge-people.js";
 import { cloudWordsForCoreRefusal } from "./refusal-words.js";
 import { cloudCoreRuntime, type CloudCoreWiring } from "./runtime.js";
+import { cloudTierReviewPorts } from "./tier-review-ports.js";
+import { routingOf } from "../../aws/broker/scope-helpers.js";
+import { ledgerOf } from "../../aws/broker/sweeps-and-readiness.js";
 import { cloudTaskFacts } from "./task-facts.js";
 import { readTaskStop, type TaskStopRead } from "./task-stop-guard.js";
 import { withStartFence } from "./core-runtime.js";
@@ -433,6 +436,15 @@ export function cloudCoreWiringFromBroker(sources: CloudCoreWiringSources): Clou
       linkWords: () => SLACK_NOT_A_MEMBER_NOTICE,
     },
     ...(inputs.automation === undefined ? {} : { automation: inputs.automation }),
+    // S3-9: the lighter flow's reviewer, over the broker's own money and model machinery (the customer pays, on a source billed to the company). An install without the model access function's reviewer
+    // call, the spend ledger or routing gives none, and the lighter flow then stays off for core tasks (runtime.ts).
+    tierReview: (companyId) => {
+      const access = broker.modelAccess?.access;
+      const routing = routingOf(broker, true);
+      const ledger = ledgerOf(broker);
+      if (access?.reviewCompletion === undefined || routing === undefined || ledger === undefined) return undefined;
+      return cloudTierReviewPorts({ companyId, documentClient: broker.documentClient, tableName: broker.tableName, access, routing, ledger, cloud: broker.cloud === true, now: () => now().getTime() });
+    },
     flowOptions: { repositoryGrants: broker.repositoryGrants },
   };
 }

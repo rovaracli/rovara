@@ -6,7 +6,7 @@
 // MODEL_PROXY_UNAVAILABLE; a 4xx carries the proxy's message.
 import { createHash, randomInt } from "node:crypto";
 import { AgentXError, INFERENCE_PATHS, agentXError, errorStatus, bedrockExternalId, endpointSecretRefProblem, modelSourceOrgProblem, type OrgId } from "@rovara-code/contracts";
-import { LearningNotForwarded, type KeyAudit, type LearningCompletion, type LearningCompletionInput, type MemberSpend, type MintKeyInput, type MintedKey, type ModelAccess, type SourceCheck, type SpendFigures, type UpsertSourceInput } from "./access.js";
+import { LearningNotForwarded, type KeyAudit, type LearningCompletion, type LearningCompletionInput, type MemberSpend, type ReviewCompletionInput, type MintKeyInput, type MintedKey, type ModelAccess, type SourceCheck, type SpendFigures, type UpsertSourceInput } from "./access.js";
 import { endpointQualified } from "../model-sources/endpoint-digest.js";
 import { credentialNameOf, proxyModelsOf, sourceAliasPrefix, sourceUsesKey, type PriceLookup } from "./sources.js";
 
@@ -197,6 +197,15 @@ function learningRequestOf(input: LearningCompletionInput): [string, Json] {
     case "anthropic-messages": return ["/v1/messages", { model: input.model, max_tokens: input.maxOutputTokens, system: input.system, messages: [{ role: "user", content: input.user }] }];
     case "openai-responses": return ["/v1/responses", { model: input.model, max_output_tokens: input.maxOutputTokens, instructions: input.system, input: input.user, ...(input.reasoningEffort === undefined ? {} : { reasoning: { effort: input.reasoningEffort } }) }];
     case "openai-completions": return ["/chat/completions", { model: input.model, max_tokens: input.maxOutputTokens, messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }], ...(input.reasoningEffort === undefined ? {} : { reasoning_effort: input.reasoningEffort }) }];
+  }
+}
+
+/** A lighter-flow reviewer's request in each transport: the prompt is the one user message; no system text is added (Code's reviewer sends nothing else). */
+function reviewRequestOf(input: ReviewCompletionInput): [string, Json] {
+  switch (input.api) {
+    case "anthropic-messages": return ["/v1/messages", { model: input.model, max_tokens: input.maxOutputTokens, messages: [{ role: "user", content: input.user }] }];
+    case "openai-responses": return ["/v1/responses", { model: input.model, max_output_tokens: input.maxOutputTokens, input: input.user }];
+    case "openai-completions": return ["/chat/completions", { model: input.model, max_tokens: input.maxOutputTokens, messages: [{ role: "user", content: input.user }] }];
   }
 }
 
@@ -480,6 +489,22 @@ export class ModelProxyClient implements ModelAccess {
     if (reply.status !== 200) throw fail("the learning model call failed");
     const text = learningTextOf(input.api, reply.body);
     if (text === undefined) throw fail("the learning model answered with no text");
+    return { text, model: input.model };
+  }
+
+  /** The lighter flow's reviewer call (see `ReviewCompletionInput`): the same one-call job as `learningCompletion`, on the key the broker minted for the task's payer. Every failure is a fixed sentence. */
+  async reviewCompletion(input: ReviewCompletionInput): Promise<LearningCompletion> {
+    const fail = (message: string): AgentXError => agentXError("MODEL_PROXY_UNAVAILABLE", message);
+    const [path, body] = reviewRequestOf(input);
+    let reply: Reply;
+    try {
+      reply = await this.request("POST", path, input.key, body, LEARNING_CALL_TIMEOUT_MS);
+    } catch {
+      throw fail("the reviewer model call failed");
+    }
+    if (reply.status !== 200) throw fail("the reviewer model call failed");
+    const text = learningTextOf(input.api, reply.body);
+    if (text === undefined) throw fail("the reviewer model answered with no text");
     return { text, model: input.model };
   }
 

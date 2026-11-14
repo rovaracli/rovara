@@ -77,8 +77,8 @@ describe("S3 item 1: the services are Code's factories, wired by the root", () =
     }
   });
 
-  it("merge tracking's sweep is Code's: it reports how many rows it attempted", async () => {
-    expect((await run(harness().app, "merge-tracking")).report).toEqual({ attempted: 0 });
+  it("merge tracking's sweep is Code's: it reports how many rows it attempted, and how many tasks the lighter flow's tier pass checked after it (S3-9)", async () => {
+    expect((await run(harness().app, "merge-tracking")).report).toEqual({ attempted: 0, tierChecks: 0 });
   });
 
   it("the session sweep is Code's: it reports visited, updated, failed and whether it finished", async () => {
