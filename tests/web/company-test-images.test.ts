@@ -2,7 +2,7 @@
 // Approved test images (switches `tx` and `pj`): the card on the company How we work page and the screen behind it: what waits for approval (with the digest an admin approves), approve / dismiss / revoke, and adding an
 // image by name. The server decides all of it; the screen shows its answer, in its words.
 import { afterEach, describe, expect, it } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { screen, fireEvent, waitFor, within, configure } from "@testing-library/react";
 import { Outlet, createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/cloud-contracts/web";
@@ -57,6 +57,8 @@ function mount(options: { state?: State; missing?: boolean; role?: "owner" | "ad
  const calls = () => f.request.mock.calls.map(([request]) => request);
  return { ...f, ...view, posts: () => calls().filter(request => request.method === "POST"), reads: () => calls().filter(request => request.method === "GET" && request.path === PATH) };
 }
+// Every screen here is a lazy route (the admin layout and the How we work page are imported on first use), so the first findBy* in a cold worker pays the module load. Under CI load that passed the 1 s default and failed the first test once ("Unable to find role=region ... Approved test images"). Same setting as error-boundary.test.ts and chunk-failure.test.ts (the shared config already allows each test 60 s).
+configure({ asyncUtilTimeout: 10_000 });
 afterEach(() => { document.body.innerHTML = ""; });
 
 describe("the card on How we work", () => {
