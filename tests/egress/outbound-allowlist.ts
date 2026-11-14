@@ -112,12 +112,13 @@ export const HOST_RULES: readonly HostRule[] = [
     hosts: ["api.anthropic.com", "api.openai.com", "auth.openai.com", "chatgpt.com", "openrouter.ai"],
   },
   {
-    category: "model-provider", why: "Names in Rovara Code's model catalog (the 0.5.18 pin, public TE-F0a): the Google (Gemini API, Vertex and its sign-in hosts), Cohere, Groq, Mistral, Together, Portkey, Cloudflare AI Gateway and Azure OpenAI rows, each host an AI model service a test account or a task sandbox must never reach. They are data the catalog and the laptop's model-host deny list read to refuse or redirect a call; no Rovara Cloud code connects to them, and an install reaches one only if an admin adds that provider as a model source.",
-    files: ["vendor/rovara-code/packages/contracts/src/model-catalog-rows.ts", "vendor/rovara-code/packages/contracts/src/model-family-gemini.ts"],
+    category: "model-provider", why: "Names in Rovara Code's model catalog (the 0.5.18 pin, public TE-F0a): the Google (Gemini API, Vertex and its sign-in hosts), Cohere, Groq, Mistral, Together, Portkey, Cloudflare AI Gateway and Azure OpenAI rows, each host an AI model service a test account or a task sandbox must never reach. They are data the catalog and the laptop's model-host deny list read to refuse or redirect a call; no Rovara Cloud code connects to them, and an install reaches one only if an admin adds that provider as a model source. The 0.5.19 pin adds the regional OpenAI hosts (us., eu.), Mistral's Codestral host, Firebase's Vertex AI hosts and the Azure AI Foundry/inference hosts, and the catalog's schema (model-catalog.ts) names the three Google token hosts as the only allowed auth hosts (DEC 174).",
+    files: ["vendor/rovara-code/packages/contracts/src/model-catalog-rows.ts", "vendor/rovara-code/packages/contracts/src/model-family-gemini.ts", "vendor/rovara-code/packages/contracts/src/model-catalog.ts"],
     hosts: [
       "aiplatform.googleapis.com", "aiplatform.mtls.googleapis.com", "api.cohere.ai", "api.cohere.com", "api.groq.com", "api.mistral.ai", "api.portkey.ai", "api.together.ai", "api.together.xyz",
-      "gateway.ai.cloudflare.com", "generativelanguage.googleapis.com", "generativelanguage.mtls.googleapis.com", "iamcredentials.googleapis.com", "oauth2.googleapis.com", "openai.azure.com",
-      "sts.googleapis.com", "www.googleapis.com",
+      "codestral.mistral.ai", "cognitiveservices.azure.com", "eu.api.openai.com", "firebase.google.com", "firebasevertexai.googleapis.com",
+      "gateway.ai.cloudflare.com", "generativelanguage.googleapis.com", "generativelanguage.mtls.googleapis.com", "iamcredentials.googleapis.com", "models.ai.azure.com", "models.inference.ai.azure.com",
+      "oauth2.googleapis.com", "openai.azure.com", "services.ai.azure.com", "sts.googleapis.com", "us.api.openai.com", "www.googleapis.com",
     ],
   },
   {
