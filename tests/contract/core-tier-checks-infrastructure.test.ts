@@ -76,7 +76,7 @@ describe("CoreTierChecks", () => {
     const [, fn] = one(all, "AWS::Lambda::Function", /^CoreTierChecks[0-9A-F]{8}$/);
     const roleId = ((fn.Properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"])[0];
     const statements = Object.values(all).filter((resource) => resource.Type === "AWS::IAM::Policy" && JSON.stringify(resource.Properties.Roles).includes(roleId))
-      .flatMap((resource) => (resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Condition?: unknown }> }).Statement);
+      .flatMap((resource) => (resource.Properties.PolicyDocument as { Statement: Array<{ Sid?: string; Action: string | string[]; Condition?: unknown; Resource?: unknown }> }).Statement);
     const own = statements.filter((statement) => statement.Sid?.startsWith("CoreTierChecks"));
     expect(Object.fromEntries(own.map((statement) => [statement.Sid, [statement.Action].flat()]))).toEqual(Object.fromEntries(Object.entries(CORE_TIER_CHECKS_GRANTS).map(([sid, actions]) => [sid, [...actions].length === 1 ? [actions[0]] : [...actions]])));
     // Nothing but the X-Ray tracing statement besides its own.
@@ -86,8 +86,8 @@ describe("CoreTierChecks", () => {
     expect(writes.Condition).toEqual({ "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [...CORE_TIER_CHECKS_STATE_WRITE_KEY_PATTERNS] }, Null: { "dynamodb:LeadingKeys": "false" } });
     expect(CORE_TIER_CHECKS_STATE_WRITE_KEY_PATTERNS).toContain("ORG#*#TIER_REVIEW_CALL#*");
     // The artifacts: GetObject on private/* only (no GetObject* variants, no bucket-wide reads), and ListBucket on the bucket (no List*, no Get-bucket calls) so a missing document reads as 404, not 403.
-    expect(own.find((statement) => statement.Sid === "CoreTierChecksArtifactsRead")).toMatchObject({ Action: "s3:GetObject", Resource: expect.anything() });
-    expect(JSON.stringify(own.find((statement) => statement.Sid === "CoreTierChecksArtifactsRead")!.Resource)).toMatch(/private\/\*/u);
+    expect(own.find((statement) => statement.Sid === "CoreTierChecksArtifactsRead")).toMatchObject({ Action: "s3:GetObject" });
+    expect(JSON.stringify(own.find((statement) => statement.Sid === "CoreTierChecksArtifactsRead")?.Resource)).toMatch(/private\/\*/u);
     const exist = own.find((statement) => statement.Sid === "CoreTierChecksArtifactsExist") as { Action: string; Resource: unknown; Condition?: unknown };
     expect(exist.Action).toBe("s3:ListBucket");
     expect(JSON.stringify(exist.Resource)).not.toContain("/*");

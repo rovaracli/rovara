@@ -289,7 +289,7 @@ describe("calls: the durable row of each reviewer call (review H1b), its conditi
 
   it("the failure count lives in the row: a claim keeps it, a failure after the send adds one, an unsent failure does not, an answer resets it, and 3 close the row until it expires", async () => {
     const t = install();
-    const key = tierReviewCallKey(TEST_ORG as never, "task-1", purpose);
+    const key = tierReviewCallKey(TEST_ORG, "task-1", purpose);
     const row = () => t.db.get(key) as { failures?: number; status: string; endedAt?: number };
     let at = 10_000_000;
     const attempt = async (callId: string, outcome: "failed_sent" | "failed_unsent" | "answered"): Promise<boolean> => {
