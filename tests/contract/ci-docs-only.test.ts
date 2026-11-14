@@ -52,7 +52,7 @@ describe("the docs-only check (CI skips the heavy steps for a Markdown-only pull
     expect(heavySteps("checks")).toEqual(["npm ci", "npm run typecheck", "Stricter type check (programs the change affects)", "Stricter type check (every program)"]);
     expect(heavySteps("lint")).toEqual(["npm ci", "npm run typecheck", "npm run lint"]);
     expect(heavySteps("test")).toEqual(["Free runner disk space", "npm ci", "npm run build", "npm test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}"]);
-    expect(heavySteps("release")).toEqual(["npm ci", "npm run build", "npm run build:web", "npm run infra:synth", "Web builds are reproducible", "Release builds are reproducible"]);
+    expect(heavySteps("release")).toEqual(["npm ci", "npm run build", "npm run build:web", "npm run infra:synth", "Web builds are reproducible"]);
     // `checks` gates the others (CI cost, 2026-11-02): they wait for it as well as for the scope.
     expect(workflow.jobs.checks!.needs).toBe("scope");
     for (const job of ["lint", "test", "release"]) expect(workflow.jobs[job]!.needs, job).toEqual(["scope", "checks"]);

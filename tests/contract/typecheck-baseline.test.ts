@@ -490,10 +490,4 @@ describe("wiring", () => {
     }
     expect(checks.if).toBe("needs.scope.outputs.docs_only != 'true'");
   });
-
-  it("runs the ratchet in the release workflow's test job after the typecheck", async () => {
-    const workflow = YAML.parse(await readFile(".github/workflows/release.yml", "utf8")) as Workflow;
-    const runs = workflow.jobs.test!.steps.map((step) => step.run ?? "").join("\n");
-    expect(runs).toContain("npm run typecheck && npm run typecheck:all && npm run lint");
-  });
 });

@@ -1,39 +1,25 @@
 name: CI
 
-# PrepLabsAI/Rovara-cloud (private) copy: MANUAL RUNS ONLY (owner decision 2026-10-27, to protect the
-# Actions budget). The controller runs it at agreed checkpoints: each release/0.4.x branch before a
-# staging upgrade, security-sensitive merges into cloud/integration, and suspected Linux-only problems.
-# The public PrepLabsAI/Rovara copy of this file keeps its pull_request trigger.
-#
-# This file lives on both repositories, so the Cloud-only parts are guarded by github.repository. A
-# trigger cannot carry an `if`, so the Cloud triggers are narrowed inside `scope` and `local` below (every
-# other job needs `scope`): on the public repository a push, or a pull request run on Cloud into any
-# other branch, runs no job.
+# Rovara Cloud: MANUAL RUNS ONLY (owner decision 2026-10-27, to protect the Actions budget).
+# Cloud is the API layer (packages/cloud-server and the web app over Rovara Code's API) plus its one
+# stack and release pipeline (infra/), so CI checks only those: the type checks, lint, the test shards,
+# a reproducible web build and the CDK synth.
 on:
   workflow_dispatch:
-    inputs:
-      # The test services Linux checks (the last two steps of linux-runtime) add 10 to 15 minutes. auto: the scope job decides from the changed paths since the previous release tag (or cloud/next
-      # when there is no tag), as it does for a pull request. always: run them whatever changed.
-      test_services:
-        description: "Test services Linux checks: auto (only when the change touches what they read) or always"
-        type: choice
-        options: [auto, always]
-        default: auto
 
-# Read-only by default; a job that needs more says so itself (linux-runtime reads packages, live-aws mints an OIDC token).
+# Read-only.
 permissions:
   contents: read
 
 # A newer run on the same ref supersedes the one in progress (owner decision "CI cost", 2026-11-02): a second manual run of a branch, or a new push to a pull
 # request, cancels the first one's remaining jobs, so no runner minutes are spent on a commit nobody is waiting for. This includes a manual run: dispatch a
-# branch again only when you mean to replace the run in progress. Nothing else waits for a CI run to finish: the release workflows (release.yml,
-# release-test.yml) do their own builds and checks and never read this workflow's result.
+# branch again only when you mean to replace the run in progress.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 # Cheap checks first, expensive jobs second. `scope` decides whether anything needs to run. `checks` (the type check, which also builds the packages, and the stricter type check; a few minutes
-# on its own) must pass before the test shards, the release check, the Linux runtime check, the MCP runner check and the browser tests start, so a type error stops the run
+# on its own) must pass before the test shards and the release check start, so a type error stops the run
 # before any of those spend a minute. The full-repository lint takes 16 minutes on Cloud's runners; if it gated the shards they would start 16 minutes later, so `lint` waits
 # for `checks` and then runs beside the shards instead (a lint failure still fails the run, and the shards already running finish). The job called `local` waits for all of
 # them and is the one check a pull request needs (scripts/ci-gate.ts).
@@ -50,8 +36,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.scope.outputs.docs_only }}
-      # "false" only when none of the files the test services Linux checks read changed since the previous release tag (or the pull request's base) and the input is not "always".
-      test_services: ${{ steps.test_services.outputs.test_services }}
     steps:
       # Depth 2 keeps the pull request's merge commit and its first parent, the base branch.
       - uses: actions/checkout@v5
@@ -66,41 +50,9 @@ jobs:
         run: |
           git diff --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"
           node scripts/ci-docs-only.ts "$RUNNER_TEMP/changed.txt"
-      # The test services Linux checks (the last steps of linux-runtime) build the worker image and start real run networks: 10 to 15 minutes. This ci.yml is started by hand only, so the changed paths are
-      # compared with the previous release tag (the nearest tag before this commit; origin/cloud/next when there is none), and on a pull request with its base. Run them when the change touches what they read: the
-      # worker, the test services contracts and catalog, boot.sh and boot-stage2.sh, the infra that decides the worker's network, or these checks themselves. The input test_services=always forces them. When no
-      # base can be found they run (never a silent skip).
-      - name: Does the change touch what the test services Linux checks read?
-        id: test_services
-        env:
-          INPUT_TEST_SERVICES: ${{ inputs.test_services }}
-        run: |
-          set -u
-          if [ "${INPUT_TEST_SERVICES:-auto}" = "always" ]; then echo "test_services=true" >> "$GITHUB_OUTPUT"; echo "test_services=always: the checks run."; exit 0; fi
-          changed="${RUNNER_TEMP:-/tmp}/ts-changed.txt"
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            git diff --name-only HEAD^1 HEAD > "$changed"
-          else
-            git fetch --quiet --tags --filter=blob:none --unshallow origin >/dev/null 2>&1 || git fetch --quiet --tags --filter=blob:none origin >/dev/null 2>&1 || true
-            base=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || true)
-            if [ -z "$base" ]; then
-              git fetch --quiet --filter=blob:none origin cloud/next >/dev/null 2>&1 || true
-              base=$(git merge-base HEAD origin/cloud/next 2>/dev/null || true)
-            fi
-            if [ -z "$base" ] || ! git diff --name-only "$base" HEAD > "$changed" 2>/dev/null; then
-              echo "test_services=true" >> "$GITHUB_OUTPUT"; echo "No base to compare with (no release tag, no cloud/next): the checks run."; exit 0
-            fi
-            echo "Changed paths compared with $base."
-          fi
-          if grep -Eq '^(packages/worker/|packages/contracts/src/(service-catalog|test-env|test-services)|environments/(base|service-catalog)/|infra/lib/(worker|ec2|network|access)|scripts/(linux-check-test-services|ci-test-services-linux)|\.github/workflows/ci\.yml)' "$changed"; then
-            echo "test_services=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "test_services=false" >> "$GITHUB_OUTPUT"
-            echo "Nothing the test services Linux checks read changed; they are skipped."
-          fi
       - name: Markdown-only change
         if: steps.scope.outputs.docs_only == 'true'
-        run: echo "Only Markdown that no test reads changed; typecheck, the stricter type check, lint, tests, synth and the release check are skipped."
+        run: echo "Only Markdown that no test reads changed; typecheck, the stricter type check, lint and tests are skipped."
 
   # The gate for every expensive job below: the type check (tsc -b) and the stricter type check. Nothing in it needs more than the TypeScript compiler.
   checks:
@@ -125,8 +77,8 @@ jobs:
       # The stricter type check (the programs in tsconfig.lint/, which also cover tests/ and scripts/)
       # may not add errors beyond tests/typecheck-baseline.json (issue #50, scripts/typecheck-baseline.ts).
       # On the public repository a pull request runs only the programs its changed files can affect
-      # (TYPECHECK-SPLIT.md); depth 2 puts the base branch at HEAD^1, as in the scope job. A manual run, and
-      # the release workflow, run all. On Cloud every run, pull request or not, checks every program.
+      # (TYPECHECK-SPLIT.md); depth 2 puts the base branch at HEAD^1, as in the scope job. A manual run runs
+      # all. On Cloud every run, pull request or not, checks every program.
       - name: Stricter type check (programs the change affects)
         if: github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name == 'pull_request'
         run: npm run typecheck:changed -- --base HEAD^1
@@ -201,6 +153,7 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=6144
       - run: npm test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}
 
+  # The web app builds the same twice, and Cloud's stack and its release pipeline synthesize (infra/lib/app.ts).
   release:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
@@ -226,301 +179,10 @@ jobs:
           cp -R packages/web/dist "$RUNNER_TEMP/web-first"
           npm run build:web
           diff -r "$RUNNER_TEMP/web-first" packages/web/dist
-      - name: Release builds are reproducible
-        run: |
-          npm run release:build -- --version 0.0.0-ci --out "$RUNNER_TEMP/release-a"
-          npm run release:build -- --version 0.0.0-ci --out "$RUNNER_TEMP/release-b"
-          diff "$RUNNER_TEMP/release-a/release.json" "$RUNNER_TEMP/release-b/release.json"
-          npm run release:verify -- "$RUNNER_TEMP/release-a"
-
-  # Real Chromium E2E checks need a Linux ARM64 Docker host, the platform Rovara's runtime targets. This job
-  # builds the pinned browser executor image, smoke-tests it with no network, then runs tests/linux against
-  # it. Docker's bridge networks on the runner can reach the cloud metadata service; the first step drops
-  # that traffic so the containment tests see what a locked-down host shows.
-  #
-  # Public registries rate-limit the shared runners' anonymous pulls (`toomanyrequests: Rate exceeded`), so this job pulls each public image once, from the GHCR
-  # mirror (.github/ci-images.json, copied digest for digest by the Mirror CI images workflow), with GITHUB_TOKEN and no cloud credentials. The upstream registry is
-  # the fallback only when the mirror copy is missing, and every pull retries with backoff. Everything after that uses the local copy: the executor image is built
-  # from it, the tests use it, and the Docker 25 (dind) daemon is loaded from the runner's daemon with docker save | docker load and never pulls.
-  linux-runtime:
-    needs: [scope, checks]
-    if: needs.scope.outputs.docs_only != 'true'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 75
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 2
-      # The test shards write a lot under /tmp (CDK assemblies, fixtures), and the stock runner image already holds several GB of toolchains the job never uses. Dropping
-      # them first keeps a shard from running out of disk (EDQUOT, errno -122, on a copyfile in run 40693750224). tests/support/test-file-temp-dir.ts removes the CDK assemblies a file leaves.
-      - name: Free runner disk space
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
-      - uses: actions/setup-node@v5
-        with:
-          node-version-file: .node-version
-          cache: npm
-      # The very rules the EC2 worker installs at boot: the heredoc inside boot.sh, extracted and run unchanged, so CI and production cannot drift.
-      - name: Wall containers off from the host, private networks and the metadata service
-        run: |
-          sed -n "/<<'FIREWALL'/,/^FIREWALL\$/p" packages/worker/ec2/boot.sh | sed '1d;$d' > "$RUNNER_TEMP/container-firewall.sh"
-          test "$(wc -l < "$RUNNER_TEMP/container-firewall.sh")" -gt 5
-          sudo bash "$RUNNER_TEMP/container-firewall.sh"
-          sudo iptables -S DOCKER-USER
-          sudo iptables -S INPUT
-      # Chromium's own sandbox needs unprivileged user namespaces. Ubuntu 24.04 blocks them for AppArmor-confined processes such as Docker containers
-      # (kernel.apparmor_restrict_unprivileged_userns=1); this only turns that CI-runner restriction off. Production runners are Amazon Linux 2023,
-      # which has no such restriction (its kernel only needs user.max_user_namespaces > 0, the default, and the chromium-sandbox-v1 probe fails if not).
-      - name: Allow unprivileged user namespaces for Chromium's sandbox
-        run: |
-          # CI runner only: production runners (Amazon Linux 2023) have no AppArmor userns restriction.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || echo "no AppArmor userns restriction on this kernel"
-          sysctl user.max_user_namespaces
-      # A failed login (for example a pull request from a fork, whose token cannot read packages) only means the mirror is skipped.
-      - name: Log in to the GHCR image mirror (read-only)
-        env:
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin || echo "::warning::GHCR login failed; images will come from their upstream registries"
-      # Exports ROVARA_CI_IMAGE_NODE_BUILD and ROVARA_CI_IMAGE_DOCKER_DIND (local aliases of the digest-pinned images) to the steps below.
-      - name: Pull the pinned public images (GHCR mirror first)
-        run: node scripts/ci-images.ts pull --github-env
-      # The Dockerfile's FROM lines name the pinned upstream image; the build uses a copy whose FROM lines name the local alias of the very same digest, so it pulls nothing.
-      - name: Build the executor image
-        run: |
-          node scripts/ci-images.ts verify node-build
-          node scripts/ci-images.ts dockerfile environments/e2e-executor/Dockerfile "$RUNNER_TEMP/e2e-executor.Dockerfile"
-          docker build -f "$RUNNER_TEMP/e2e-executor.Dockerfile" -t rovara-e2e-executor:ci .
-      - run: npm ci
-      # The packages import each other through their built output.
-      - run: npm run build
-        env:
-          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
-          NODE_OPTIONS: --max-old-space-size=6144
-      # The executor as the host runs it (the pinned seccomp profile, every capability dropped, read-only, no network), from the one definition the release path and
-      # test-deploy use too. The smoke check fails unless Chromium's renderer is sandboxed.
-      - name: Smoke-test the executor image without a network
-        run: npx tsx scripts/executor-smoke.ts rovara-e2e-executor:ci
-      - name: Linux runtime tests
-        env:
-          ROVARA_DOCKER: "1"
-          ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
-        run: npx vitest run tests/linux --exclude tests/linux/e2e-docker25-dns.test.ts --exclude tests/linux/e2e-model-channel.test.ts --exclude tests/linux/e2e-agent.test.ts --exclude tests/linux/e2e-agent-probes.test.ts --exclude tests/linux/e2e-midstep-carriers.test.ts
-      # The EC2 worker runs Docker 25 (the only version Amazon Linux 2023 ships), which does not forward an internal-only container's DNS queries to a --dns server; this runner's
-      # Docker is newer and does, so the step above cannot see that. This one starts Docker 25.0.5 in Docker (a privileged container with its own network namespace, no change to this
-      # runner) and runs the production host against it: the app's lookup of an undeclared name must reach the sinkhole, and a mock's alias must resolve.
-      # dind 25.0.5's entrypoint probes the legacy iptables tables (/proc/net/ip6_tables_names, arp_tables_names) and stops when some arm runner
-      # kernels have not loaded them (run 41276607301). Load them on the host first; best effort, so a kernel without the modules fails as before.
-      - name: Load the iptables kernel modules dind needs
-        run: sudo modprobe -a ip_tables ip6_tables arp_tables iptable_nat iptable_filter || true
-      - name: Docker 25 DNS regression (dind 25.0.5)
-        env:
-          ROVARA_DOCKER: "1"
-          ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
-        run: npx vitest run tests/linux/e2e-docker25-dns.test.ts
-      # M1.4 Task 4.3a: the worker <-> executor model channel on this Docker host (a scripted model route): the executor container's client reaches the proxy through the mounted
-      # socket and the receipt is written, the app container sees neither the socket nor the proxy, and no socket is left behind. It builds a small derived executor image.
-      - name: Model channel (scripted route)
-        env:
-          ROVARA_DOCKER: "1"
-          ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
-        run: npx vitest run tests/linux/e2e-model-channel.test.ts
-      # M1.4 Task 4.3b: the agent step on this Docker host (a scripted model route, the m14 orders app, the real executor image and Chromium): the renamed export is found by its test
-      # id and downloaded once (twenty times in a row, three at a time), a model that does nothing, a decoy, an outage and a second download each leave their record.
-      - name: Agent steps (scripted route)
-        env:
-          ROVARA_DOCKER: "1"
-          ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
-        run: npx vitest run tests/linux/e2e-agent.test.ts
-      # M1.4 Task 4.5: the three agent qualification probes through the production probe runner on this Docker host (the scripted route: no provider, no spend): the renamed export is
-      # found and downloaded, a model that does nothing leaves the case UNKNOWN agent-no-download, and the app starts behind a guard that finds no path to the model.
-      - name: Agent qualification probes (scripted route)
-        env:
-          ROVARA_DOCKER: "1"
-          ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
-        run: npx vitest run tests/linux/e2e-agent-probes.test.ts
-      # MIDSTEP-2 (option A): values the app acquires after the step's first model call (a session cookie, local and session storage, a JSON leaf, a `?token=` URL, an Authorization
-      # header, IndexedDB, one opaque id) never reach the model: the real executor image and Chromium on this Docker host, the scripted route recording every call, three groups of three
-      # cases. Strong values are refused in any spelling, the weak one shows as `<session>`, a control case goes through, no transcript is truncated. Values are random for each run.
-      - name: Mid-step values never reach the model (scripted route)
-        env:
-          ROVARA_DOCKER: "1"
-          ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
-        run: npx vitest run tests/linux/e2e-midstep-carriers.test.ts
-      # The browser path end to end through the real worker, broker and this Docker host: a failing round, send-back, a passing round, publication.
-      # It skips unless Docker and the executor image are provided, so it is a native-suite file that only this job runs.
-      - name: Native browser journey
-        env:
-          ROVARA_DOCKER: "1"
-          ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
-        run: npx vitest run --config vitest.native-p0.config.ts tests/e2e/m1-web-journey.test.ts
-      # The M1.3 paths on the same Docker host: an external origin served by its approved mock, and a call no mock matches.
-      - name: Native M1.3 journeys
-        env:
-          ROVARA_DOCKER: "1"
-          ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
-        run: npx vitest run --config vitest.native-p0.config.ts tests/e2e/m1-3-journeys.test.ts
-      # The M1.4 paths with an AI navigation step (scripted model), through the worker's own checks: what the executor and the worker leave. The verdicts are Task 4.4's.
-      - name: Native M1.4 journeys
-        env:
-          ROVARA_DOCKER: "1"
-          ROVARA_EXECUTOR_IMAGE: rovara-e2e-executor:ci
-        run: npx vitest run --config vitest.native-p0.config.ts tests/e2e/m1-4-journeys.test.ts
-      # Test services Linux checks (TS-L1 to TS-L8): what needs root and a real Docker host and cannot be run on a staging worker (no SSM there). They run LAST in this job because they rewrite
-      # /etc/docker/daemon.json and restart Docker, as a worker's boot does. The worker image is the one that ships (environments/base/Dockerfile, FROM lines pointed at the pulled copy of the pinned digest).
-      # Skipped when the change touches none of the files they read (scope job, test_services) unless the manual input test_services is always. Estimated 10 to 15 minutes (image build 6 to 9, checks 4 to 6); not measured.
-      - name: Test services Linux checks (build the worker image and the driver)
-        if: needs.scope.outputs.test_services != 'false'
-        run: |
-          node scripts/ci-images.ts verify node-build
-          node scripts/ci-images.ts dockerfile environments/base/Dockerfile "$RUNNER_TEMP/worker.Dockerfile"
-          docker build -f "$RUNNER_TEMP/worker.Dockerfile" -t rovara-worker:ci .
-          npx tsx scripts/linux-check-test-services-live.ts --js > "$RUNNER_TEMP/tsl-live.mjs"
-      # No catalog and no AWS on CI: Postgres is the public postgres:16 (ECR Public mirror), pinned by the index digest in scripts/ci-test-services-linux.sh, pushed to a throwaway local registry and run by the
-      # digest it got there. The rules are boot-stage2.sh's own functions (sourced). Any FAIL, any unexpected PENDING and any live item without a PASS fails the job.
-      - name: Test services Linux checks (rules, live driver, host checks)
-        if: needs.scope.outputs.test_services != 'false'
-        env:
-          TSL_CI_WORKER_IMAGE: rovara-worker:ci
-          TSL_CI_DRIVER_JS: ${{ runner.temp }}/tsl-live.mjs
-        run: sudo --preserve-env=TSL_CI_WORKER_IMAGE,TSL_CI_DRIVER_JS,RUNNER_TEMP bash scripts/ci-test-services-linux.sh
-
-  # Stdio MCP host redesign (T11, design section 14): the runner image on a real Linux host. It builds environments/mcp-runner/Dockerfile and runs it the way ECS runs a runner task
-  # (read-only, every capability dropped, a non-root user, an init process, the bundle volume read-only for the server): the processes' uid, no_new_privs, capabilities and limits
-  # read from the host's /proc, a hostile package that must fail at every step it tries, the real install program against a fixture registry, uid 10003 reading the whole tree,
-  # the bridge, fetch, install and controller refusing to run as root, and a bundle with the wrong bytes refused. Nothing here is mocked except the registry and the controller's
-  # network (this host's loopback). It is small: one image build, one test file, about ten minutes on the ARM runner (the runner image is ARM64 like the Fargate tasks).
-  # A pull request that changes none of the runner's paths passes in under a minute without building anything; a manual run, or a push, always runs the checks.
-  mcp-runner-linux:
-    needs: [scope, checks]
-    if: needs.scope.outputs.docs_only != 'true'
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 2
-      - name: Did anything the runner is made of change?
-        id: paths
-        run: |
-          if [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
-          git diff --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed.txt"
-          if grep -Eq '^(environments/mcp-runner/|packages/gateway/src/mcp-runner/|packages/gateway/src/mcp-controller\.ts|packages/broker/src/mcp-runner/|packages/broker/src/mcp-host/|tests/linux/mcp-runner/|tests/support/fixture-npm-registry\.ts|\.github/workflows/ci\.yml)' "$RUNNER_TEMP/changed.txt"; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No file of the MCP runner changed; the Linux runner checks are skipped."
-          fi
-      - uses: actions/setup-node@v5
-        if: steps.paths.outputs.run == 'true'
-        with:
-          node-version-file: .node-version
-          cache: npm
-      # A failed login only means the mirror is skipped. Only the node image is pulled (exported to the steps below as ROVARA_CI_IMAGE_NODE_BUILD).
-      - name: Log in to the GHCR image mirror (read-only)
-        if: steps.paths.outputs.run == 'true'
-        env:
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: echo "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin || echo "::warning::GHCR login failed; images will come from their upstream registries"
-      - name: Pull the pinned node image (GHCR mirror first)
-        if: steps.paths.outputs.run == 'true'
-        run: node scripts/ci-images.ts pull --github-env node-build
-      # The Dockerfile's FROM lines name the pinned upstream image; the build uses a copy whose FROM lines name the local alias of the very same digest, so it pulls nothing.
-      - name: Build the runner image
-        if: steps.paths.outputs.run == 'true'
-        run: |
-          node scripts/ci-images.ts dockerfile environments/mcp-runner/Dockerfile "$RUNNER_TEMP/mcp-runner.Dockerfile"
-          docker build -f "$RUNNER_TEMP/mcp-runner.Dockerfile" -t rovara-mcp-runner:ci .
-      - name: The image holds what the design promises
-        if: steps.paths.outputs.run == 'true'
-        run: sh environments/mcp-runner/check-image.sh rovara-mcp-runner:ci
-      - run: npm ci
-        if: steps.paths.outputs.run == 'true'
-      # The tests drive the real controller and programs through their built output.
-      - name: Build the packages the runner tests use
-        if: steps.paths.outputs.run == 'true'
-        run: npx tsc -b packages/contracts packages/gateway packages/broker
-        env:
-          NODE_OPTIONS: --max-old-space-size=6144
-      - name: The runner on Linux (real containers, ECS flags)
-        if: steps.paths.outputs.run == 'true'
-        env:
-          ROVARA_MCP_RUNNER_IMAGE: rovara-mcp-runner:ci
-        run: npx vitest run tests/linux/mcp-runner
-      - name: Remove what a failed run left
-        if: always() && steps.paths.outputs.run == 'true'
-        run: |
-          docker ps -aq --filter label=rovara.mcp-ci | xargs -r docker rm -f
-          docker volume ls -q --filter label=rovara.mcp-ci | xargs -r docker volume rm -f
-
-  web-e2e:
-    needs: [scope, checks]
-    if: needs.scope.outputs.docs_only != 'true'
-    runs-on: ubuntu-latest
-    # Three browsers on the private repo's 2 vCPU runners ran past 30 minutes once v1.2 landed (run 41270914332).
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 45 || 20 }}
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - run: npm ci
-      # The mock cell reuses broker guards and their package dependencies.
-      - run: npx tsc -b
-        env:
-          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
-          NODE_OPTIONS: --max-old-space-size=6144
-      - run: npm run build:web
-      # The browsers are ~500 MB each run; they only change with the Playwright version, which package-lock pins, so the key is that version. The system packages (apt) are not in the cache:
-      # a hit runs `install-deps` for them, a miss runs the full `install --with-deps`.
-      - name: Playwright version
-        id: playwright-version
-        # A version that cannot be read stops the job here: a constant key would serve one Playwright's browsers to another.
-        run: |
-          version="$(node -p "require('./package-lock.json').packages['node_modules/playwright-core']?.version")"
-          if [ -z "$version" ] || [ "$version" = "undefined" ]; then
-            echo "::error::Could not read the Playwright version from package-lock.json (packages['node_modules/playwright-core'].version); the browser cache key needs it."
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Playwright browsers cache
-        id: playwright-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
-      - name: Install Playwright browsers and system packages
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: npx playwright install --with-deps chromium firefox webkit
-      - name: Install Playwright system packages
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: npx playwright install-deps chromium firefox webkit
-      - run: npx playwright test -c tests/web-e2e/playwright.config.ts
-        env:
-          ROVARA_E2E_ALL_BROWSERS: "1"
-      # A failed run leaves the Playwright traces (retained on failure) and the HTML report to open with `npx playwright show-trace` or `show-report`.
-      - name: Upload Playwright traces and report
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: web-e2e-playwright
-          path: |
-            .test-build/web-e2e/results
-            .test-build/web-e2e/report
-          if-no-files-found: ignore
-          retention-days: 7
 
   # The one check a pull request needs. It runs even when a job before it failed or was cancelled.
   local:
-    needs: [scope, checks, lint, test, release, linux-runtime, mcp-runner-linux, web-e2e]
+    needs: [scope, checks, lint, test, release]
     if: >-
       always() && github.event.pull_request.draft != true && (
       (github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name != 'push')
@@ -536,19 +198,3 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: node scripts/ci-gate.ts
-
-  live-aws:
-    # Never on Rovara-cloud: no AWS role or variable belongs in that repository.
-    if: github.repository == 'PrepLabsAI/Rovara' && github.event_name == 'workflow_dispatch' && vars.AGENTX_ENABLE_AWS_TESTS == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version-file: .node-version
-          cache: npm
-      - run: npm ci
-      - run: npm run test:e2e
