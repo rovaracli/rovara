@@ -4,11 +4,11 @@
 //   ROVARA_CODE_URL=https://<code api> ROVARA_CLIENT_SECRET_FILE=<file> npm run cloud:local
 //
 // Optional: ROVARA_CLIENT_ID (rovara-cloud), PORT (8787), ROVARA_SCOPES, CLOUD_SESSIONS_FILE (keeps people signed in
-// across restarts, mode 600), CLOUD_ORG_NAME.
+// across restarts, mode 600), CLOUD_WORK_SESSIONS_FILE (keeps Cloud's sessions, mode 600), CLOUD_ORG_NAME.
 import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
-import { CodeClient, LocalSessionStore, createCloudHandler } from "../packages/cloud-server/src/index.js";
+import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler } from "../packages/cloud-server/src/index.js";
 import { createAppHandler } from "../packages/web/src/server/handler.js";
 
 function required(name: string): string {
@@ -30,6 +30,7 @@ const cloud = createCloudHandler({
   client, store: new LocalSessionStore(process.env.CLOUD_SESSIONS_FILE ?? process.env.PROTOTYPE_SESSIONS_FILE),
   org: { orgId: "rovara", name: process.env.CLOUD_ORG_NAME ?? "Rovara", plan: "local" },
   callbackPath: "/callback", secureCookies: false,
+  work: new LocalWorkSessionStore(process.env.CLOUD_WORK_SESSIONS_FILE), origin: `http://127.0.0.1:${String(port)}`,
 });
 const app = createAppHandler({ appDirectory: join(resolve(process.cwd(), "packages/web/dist"), "app"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
 

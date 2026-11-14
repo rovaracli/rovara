@@ -5,6 +5,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { ROUTES, type OrgView, type Route } from "./routes.js";
 import type { SessionStore } from "./sessions.js";
+import type { WorkSessionStore } from "./work-sessions.js";
 
 export interface CloudRequest {
   method: string;
@@ -25,6 +26,10 @@ export interface CloudHandlerOptions {
   callbackPath: string;
   /** Adds `Secure` to the cookie; off only on a loopback address. */
   secureCookies: boolean;
+  /** Cloud's sessions (phase 2). */
+  work: WorkSessionStore;
+  /** The address the app is served at, for session links (such as http://127.0.0.1:8787). */
+  origin: string;
   routes?: Route[];
   now?: () => Date;
   log?: (event: Record<string, unknown>) => void;
@@ -112,6 +117,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       try {
         const answer = await route.answer({
           client: options.client, session, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
+          work: options.work, origin: options.origin,
         });
         if (session.changed === true) {
           delete session.changed;

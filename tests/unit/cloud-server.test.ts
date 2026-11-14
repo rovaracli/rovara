@@ -2,7 +2,8 @@
 // as a sign-in client, the session cookie and CSRF, the app's API answered from Code as the signed-in person, a token
 // refreshed once on 401, and every route not on Code yet answering 501.
 import { describe, expect, it } from "vitest";
-import { CodeClient, LocalSessionStore, createCloudHandler, returnPath, type CloudRequest } from "../../packages/cloud-server/src/index.js";
+import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
+import { SessionResponseReaderSchema, SessionCloseResponseReaderSchema } from "../../packages/contracts/src/web.js";
 
 const CODE = "https://code.example.test";
 const ADA = "a".repeat(64);
@@ -15,6 +16,12 @@ function fakeCode() {
   let validToken = "access-1";
   let refreshable = true;
   const members = [{ developerId: ADA, name: "Ada", role: "administrator" }];
+  const TASK_ID = "6f9d0c1e-2b3a-4c5d-8e7f-001122334455";
+  let task: Record<string, unknown> = {
+    taskId: TASK_ID, title: "Fix the README typo", project: "payments", status: "RUNNING", startingRevision: 1, client: "Rovara Cloud", shared: false,
+    createdAt: "2026-11-14T10:00:00.000Z", updatedAt: "2026-11-14T10:05:00.000Z", events: [], changedFiles: [], artifacts: [], pullRequests: [], pageActions: [],
+  };
+  let peopleRevision = 3;
   const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
@@ -32,17 +39,29 @@ function fakeCode() {
     if (url.pathname === "/v1/dev/client/projects/payments") return respond(200, { name: "payments", latestRevision: 3, access: "administrator", repositories: [{ name: "api", url: "https://github.com/acme/payments-api.git", defaultBranch: "main", fullName: "acme/payments-api" }] });
     if (url.pathname.startsWith("/v1/dev/client/projects/") && url.pathname.endsWith("/members")) return respond(200, { project: "payments", members });
     if (url.pathname === "/v1/dev/client/projects" && call.method === "POST") return respond(200, { name: "web-app", latestRevision: 1, access: "administrator", repositories: [] });
+    if (url.pathname === "/v1/dev/tasks" && call.method === "POST") return respond(200, { task });
+    if (url.pathname === `/v1/dev/tasks/${TASK_ID}` && call.method === "GET") return respond(200, { task });
+    if (url.pathname === `/v1/dev/tasks/${TASK_ID}/cancel`) { task = { ...task, status: "CANCELLED" }; return respond(200, { task }); }
+    if (url.pathname === `/v1/dev/tasks/${TASK_ID}/close`) { task = { ...task, status: "CLOSED" }; return respond(200, { task, closed: true }); }
+    if (url.pathname === `/v1/dev/tasks/${TASK_ID}/people` && call.method === "GET") return respond(200, { view: { revision: peopleRevision } });
+    if (url.pathname === `/v1/dev/tasks/${TASK_ID}/people/take-ownership`) {
+      const body = JSON.parse(call.body ?? "{}") as { expectedPeopleRevision?: number };
+      if (body.expectedPeopleRevision !== peopleRevision) return respond(409, { error: { code: "CONFLICT", message: "people changed" } });
+      peopleRevision += 1;
+      return respond(200, { view: { revision: peopleRevision } });
+    }
     if (url.pathname === "/v1/dev/client/repositories") return respond(200, { installations: [{ installationId: 7, accountLogin: "acme", accountType: "Organization", repositorySelection: "selected", status: "active", repositories: [{ fullName: "acme/payments-api", githubRepositoryId: 1, private: true, defaultBranch: "main" }, { fullName: "acme/web-app", githubRepositoryId: 2, private: true, defaultBranch: "main" }] }] });
     return respond(404, { error: { code: "NOT_FOUND", message: "route not found" } });
   }) as typeof fetch;
-  return { fetchImpl, calls, expireToken: () => { validToken = "access-rotated"; }, endSignIn: () => { refreshable = false; validToken = "nobody"; } };
+  return { fetchImpl, calls, taskId: TASK_ID, expireToken: () => { validToken = "access-rotated"; }, endSignIn: () => { refreshable = false; validToken = "nobody"; } };
 }
 
 function setUp() {
   const code = fakeCode();
   const store = new LocalSessionStore();
   const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: "http://127.0.0.1:8787/callback", scopes: "projects:members", fetch: code.fetchImpl });
-  const handler = createCloudHandler({ client, store, org: { orgId: "acme", name: "Acme", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: () => undefined });
+  const work = new LocalWorkSessionStore();
+  const handler = createCloudHandler({ client, store, work, origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: () => undefined });
   const call = async (method: string, target: string, options: { cookie?: string; csrf?: string; body?: unknown } = {}) => {
     const url = new URL(target, "http://127.0.0.1:8787");
     const request: CloudRequest = {
@@ -61,7 +80,7 @@ function setUp() {
     const me = JSON.parse((await call("GET", "/v1/web/me", { cookie }))!.body) as { csrf: string };
     return { cookie, csrf: me.csrf, back };
   };
-  return { code, store, call, signIn };
+  return { code, store, work, call, signIn };
 }
 
 describe("signing in through Rovara Code", () => {
@@ -171,5 +190,80 @@ describe("the app's API, answered from Code as the person", () => {
     const out = await call("POST", "/v1/auth/browser/sign-out", { cookie, csrf });
     expect(out!.headers["set-cookie"]).toContain("Max-Age=0");
     expect(await store.get(id)).toBeUndefined();
+  });
+});
+
+describe("sessions on Code's tasks (phase 2a)", () => {
+  const start = async (call: ReturnType<typeof setUp>["call"], auth: { cookie: string; csrf: string }, requestId = "22222222-2222-4222-8222-222222222222") =>
+    call("POST", "/v1/web/projects/payments/code", { ...auth, body: { requestId, input: { text: "Fix the README typo" } } });
+
+  it("starts a Quick task in Code and a Cloud session for it, and answers a retried start with the same session", async () => {
+    const { call, signIn, code } = setUp();
+    const auth = await signIn();
+    const first = await start(call, auth);
+    expect(first!.status).toBe(201);
+    const body = JSON.parse(first!.body) as { sessionId: string; sessionUrl: string; task: { taskId: string } };
+    expect(body.sessionId).toMatch(/^ses_[0-9a-z]{20}$/u);
+    expect(body.sessionUrl).toBe(`https://cloud.example.test/s/${body.sessionId}`);
+    expect(body.task.taskId).toBe(code.taskId);
+    const sent = code.calls.find((entry) => entry.path === "/v1/dev/tasks" && entry.method === "POST")!;
+    expect(JSON.parse(sent.body!)).toEqual({ requestId: "22222222-2222-4222-8222-222222222222", project: "payments", instructions: "Fix the README typo", workflow: true, workflowPath: "QUICK", client: "Rovara Cloud" });
+    const again = JSON.parse((await start(call, auth))!.body) as { sessionId: string };
+    expect(again.sessionId).toBe(body.sessionId);
+    expect(code.calls.filter((entry) => entry.path === "/v1/dev/tasks" && entry.method === "POST")).toHaveLength(1);
+  });
+
+  it("refuses a start without a request id or any text", async () => {
+    const { call, signIn } = setUp();
+    const auth = await signIn();
+    expect((await call("POST", "/v1/web/projects/payments/code", { ...auth, body: { input: { text: "x" } } }))!.status).toBe(400);
+    expect((await call("POST", "/v1/web/projects/payments/code", { ...auth, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "  " } } }))!.status).toBe(400);
+  });
+
+  it("reads a session as the app's session page reads it, with Code's task inside", async () => {
+    const { call, signIn } = setUp();
+    const auth = await signIn();
+    const { sessionId } = JSON.parse((await start(call, auth))!.body) as { sessionId: string };
+    const read = await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: auth.cookie });
+    expect(read!.status).toBe(200);
+    const parsed = SessionResponseReaderSchema.parse(JSON.parse(read!.body));
+    expect(parsed.session).toMatchObject({ sessionId, kind: "task", title: "Fix the README typo", project: "payments", status: "running", owner: { developerId: ADA, name: "Ada" }, you: { owner: true, level: "edit" } });
+    expect((parsed.session.body as { kind: string; task: { taskId: string } }).task.taskId).toBeDefined();
+    expect((await call("GET", "/v1/web/sessions/ses_00000000000000000000", { cookie: auth.cookie }))!.status).toBe(404);
+  });
+
+  it("stops and closes through Code, and the session shows the task's new state", async () => {
+    const { call, signIn, code } = setUp();
+    const auth = await signIn();
+    const { sessionId } = JSON.parse((await start(call, auth))!.body) as { sessionId: string };
+    const stopped = await call("POST", `/v1/web/sessions/${sessionId}/stop`, { ...auth, body: { requestId: "33333333-3333-4333-8333-333333333333" } });
+    expect(SessionResponseReaderSchema.parse(JSON.parse(stopped!.body)).session.status).toBe("cancelled");
+    expect(code.calls.at(-1)).toMatchObject({ method: "POST", path: `/v1/dev/tasks/${code.taskId}/cancel` });
+    const closed = await call("POST", `/v1/web/sessions/${sessionId}/close`, { ...auth, body: { requestId: "44444444-4444-4444-8444-444444444444" } });
+    expect(SessionCloseResponseReaderSchema.parse(JSON.parse(closed!.body))).toMatchObject({ closed: true, session: { status: "stopped" } });
+  });
+
+  it("takes over a session against the people revision Code shows, and makes the person its owner", async () => {
+    const { call, signIn, code, work } = setUp();
+    const auth = await signIn();
+    const { sessionId } = JSON.parse((await start(call, auth))!.body) as { sessionId: string };
+    const taken = await call("POST", `/v1/web/sessions/${sessionId}/take-over`, { ...auth, body: { requestId: "55555555-5555-4555-8555-555555555555" } });
+    expect(taken!.status).toBe(200);
+    const sent = code.calls.find((entry) => entry.path.endsWith("/take-ownership"))!;
+    expect(JSON.parse(sent.body!)).toEqual({ requestId: "55555555-5555-4555-8555-555555555555", expectedPeopleRevision: 3 });
+    expect((await work.get(sessionId))?.revision).toBe(2);
+  });
+
+  it("needs the CSRF token for each change", async () => {
+    const { call, signIn } = setUp();
+    const auth = await signIn();
+    const { sessionId } = JSON.parse((await start(call, auth))!.body) as { sessionId: string };
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/stop`, { cookie: auth.cookie, body: { requestId: "33333333-3333-4333-8333-333333333333" } }))!.status).toBe(403);
+  });
+
+  it("puts Code's task status in Cloud's words", () => {
+    const task = (status: CodeTask["status"], state?: string): CodeTask => ({ taskId: "t", title: "t", project: "p", status, ...(state === undefined ? {} : { workflow: { state } }), createdAt: "", updatedAt: "" });
+    expect([sessionStatus(task("STARTING")), sessionStatus(task("RUNNING")), sessionStatus(task("RUNNING", "BLOCKED")), sessionStatus(task("INTERRUPTED")), sessionStatus(task("CLOSED"))])
+      .toEqual(["starting", "running", "needs_person", "failed", "stopped"]);
   });
 });
