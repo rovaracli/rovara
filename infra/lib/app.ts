@@ -23,6 +23,7 @@ import { parseTeamRecordSwitch } from "./team-record-wiring.js";
 import { BundleSigningStack, parseBundleSigningContext } from "./bundle-signing.js";
 import { ReleasePipelineStack } from "./release-pipeline.js";
 import { CLOUD_PIPELINE_CONTEXT_KEY, CloudReleasePipelineStack } from "./cloud-release-pipeline.js";
+import { CLOUD_APP_CONTEXT_KEY, CloudAppStack, cloudAppStackName } from "./cloud-app.js";
 import { RetainExceptOnCreate } from "./retention.js";
 import { EnvironmentRolePath } from "./role-path.js";
 import { SlackOrchestratorStack } from "./slack-orchestrator.js";
@@ -91,6 +92,20 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   });
   const naming = namingFromContext(app);
   const deploymentRegion = app.node.tryGetContext("agentxRegion") as string | undefined;
+  // Rovara Cloud on an existing Rovara Code install (`-c rovaraCloudApp=<environment>`): its own stack only, so a Cloud
+  // release synthesizes and deploys nothing of Code's (cloud-app.ts).
+  const cloudAppEnv = app.node.tryGetContext(CLOUD_APP_CONTEXT_KEY) as unknown;
+  if (cloudAppEnv !== undefined) {
+    if (typeof cloudAppEnv !== "string" || cloudAppEnv === "") throw new Error(`${CLOUD_APP_CONTEXT_KEY} must name the Rovara Cloud environment, for example production`);
+    const cloudApp = new CloudAppStack(app, "RovaraCloudApp", {
+      description: `Rovara Cloud ${cloudAppEnv}: the web app and Cloud's server, signing people in through Rovara Code`,
+      stackName: cloudAppStackName(cloudAppEnv),
+      env: { region: deploymentRegion ?? "us-east-1" },
+      environmentName: cloudAppEnv,
+    });
+    Tags.of(cloudApp).add(ENVIRONMENT_TAG_KEY, cloudAppEnv);
+    return app;
+  }
   const deploymentMode =
     (app.node.tryGetContext("agentxDeploymentMode") as string | undefined) ?? "ec2-ebs";
   if (deploymentMode !== "ec2-ebs") {
@@ -234,12 +249,12 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     });
   }
   // The Rovara Cloud release pipeline (`-c rovaraCloudPipeline=<environment>`): synthesized only when asked for, so no
-  // environment's own templates change; deployed once by hand, then every vX.Y.Z tag deploys that environment through it.
+  // environment's own templates change; deployed once by hand, then every vX.Y.Z tag deploys that Cloud through it.
   const cloudPipelineEnv = app.node.tryGetContext(CLOUD_PIPELINE_CONTEXT_KEY) as unknown;
   if (cloudPipelineEnv !== undefined) {
     if (typeof cloudPipelineEnv !== "string" || cloudPipelineEnv === "") throw new Error(`${CLOUD_PIPELINE_CONTEXT_KEY} must name the environment the pipeline deploys, for example production`);
     new CloudReleasePipelineStack(app, "RovaraCloudPipeline", {
-      description: `Rovara Cloud release pipeline: a vX.Y.Z tag builds the images, waits for approval, and deploys ${cloudPipelineEnv}`,
+      description: `Rovara Cloud release pipeline: a vX.Y.Z tag waits for approval, then deploys Rovara Cloud ${cloudPipelineEnv} on its Rovara Code install`,
       stackName: `${RESOURCE_PREFIX}-${cloudPipelineEnv}-pipeline`,
       env: { region: deploymentRegion ?? "us-east-1" },
       environmentName: cloudPipelineEnv,

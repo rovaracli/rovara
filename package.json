@@ -39,7 +39,7 @@
     "release:pack-cli": "tsx scripts/release/pack-cli.ts",
     "swebench:runner-image": "tsx scripts/swebench-runner-image.ts",
     "infra:synth": "npm run build --workspace @agentx/infra && cdk synth --app 'node infra/dist/bin/agentx.js'",
-    "cloud:local": "tsx scripts/cloud-local.ts",
+    "cloud:local": "tsx scripts/cloud-server.ts",
     "build:web": "npm run build --workspace @agentx/web && npx tsx scripts/web-precompress.ts"
   },
   "devDependencies": {

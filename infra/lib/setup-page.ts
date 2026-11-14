@@ -1,7 +1,6 @@
 // The hosted setup page: the questions `rovara init --setup-table --setup-url` asks a person, served by a Lambda function behind
 // an HTTP API, with a DynamoDB table (and its own KMS key) between the page and the job that runs init
-// (packages/cli/src/init/ui/setup-*.ts). The Launch in AWS installer (installer.ts) and the Rovara Cloud release pipeline
-// (cloud-release-pipeline.ts) both use it.
+// (packages/cli/src/init/ui/setup-*.ts). The Launch in AWS installer (installer.ts) uses it.
 //
 // The resources are made directly in the given scope, under the ids the installer has always had, so the installer's
 // template is unchanged.

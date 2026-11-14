@@ -13,3 +13,5 @@ cdk.out/
 **/dist
 **/*.tsbuildinfo
 **/node_modules
+# Local agent worktrees (full checkouts) never belong in an image.
+.claude/
