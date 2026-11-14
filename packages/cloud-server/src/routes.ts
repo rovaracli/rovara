@@ -4,7 +4,8 @@
 import type { CodeAccess, CodeClient } from "./code-client.js";
 import type { CodeSession } from "./sessions.js";
 import { newSessionId, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
-import { sessionView, type CodeTask } from "./session-view.js";
+import { approvalUrl, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
+import { CodeError } from "./code-client.js";
 
 /** The company this Cloud shows, until companies are Cloud's own (phase 4). */
 export interface OrgView { orgId: string; name: string; plan: string }
@@ -92,6 +93,57 @@ async function sessionAndTask(context: RouteContext): Promise<{ record: WorkSess
 
 const viewer = (context: RouteContext) => ({ developerId: context.session.access.developerId });
 
+/** How many of the person's newest sessions Home reads from Code, and how many cards it answers (HOME_CARDS_MAX). */
+const HOME_SESSIONS_READ = 20;
+const HOME_CARDS_MAX = 10;
+const HOME_RANK = { plan: 0, failure: 1, pull_request: 2 } as const;
+
+interface HomeCard {
+  cardId: string; kind: keyof typeof HOME_RANK; title: string; reason: string; sessionId: string; at: string;
+  buttons: Array<{ label: string; action: "open" | "confirm"; href: string; method: "GET" }>;
+}
+
+/**
+ * Home's cards, from the sessions the person started (their newest few), each read from Code now: a plan waiting for them to review, a
+ * failed run, an open pull request. A card goes away when its task moves on; none is dismissible yet. A task Code no longer lets the
+ * person see is left out.
+ */
+async function homeCards(context: RouteContext): Promise<{ cards: HomeCard[]; total: number }> {
+  const me = context.session.access.developerId;
+  const sessions = (await context.work.startedBy(me)).slice(0, HOME_SESSIONS_READ);
+  const origin = context.origin.replace(/\/+$/u, "");
+  const read = await Promise.all(sessions.map(async (record) => {
+    try {
+      return { record, task: await readTask(context, record.taskId) };
+    } catch (error) {
+      if (error instanceof CodeError && (error.status === 403 || error.status === 404)) return undefined;
+      throw error;
+    }
+  }));
+  const cards: HomeCard[] = [];
+  for (const entry of read) {
+    if (entry === undefined) continue;
+    const { record, task } = entry;
+    const title = (task.title.trim() === "" ? "Task" : task.title).slice(0, 300);
+    const open = { label: "Open session", action: "open" as const, href: `${origin}/s/${record.sessionId}`, method: "GET" as const };
+    const card = (kind: HomeCard["kind"], reason: string, buttons: HomeCard["buttons"]) =>
+      cards.push({ cardId: `${kind}:${record.sessionId}`, kind, title, reason, sessionId: record.sessionId, at: task.updatedAt, buttons });
+    const status = sessionStatus(task);
+    if (record.owner.developerId === me && waitingPlan(task) !== undefined) {
+      card("plan", `The plan for ${task.project} is waiting for your review.`, [{ label: "Review plan", action: "confirm", href: approvalUrl(origin, record.sessionId), method: "GET" }, open]);
+    } else if (status === "failed") {
+      card("failure", `The work in ${task.project} stopped before it finished.`, [open]);
+    } else {
+      const pullRequest = (task.pullRequests ?? []).find((entry) => entry.state === "open" && typeof entry.url === "string" && /^https:\/\//u.test(entry.url));
+      if (pullRequest !== undefined && status !== "stopped") {
+        card("pull_request", `A pull request in ${task.project} is ready for review.`, [{ label: "Open pull request", action: "open", href: pullRequest.url!, method: "GET" }, open]);
+      }
+    }
+  }
+  cards.sort((a, b) => HOME_RANK[a.kind] - HOME_RANK[b.kind] || b.at.localeCompare(a.at));
+  return { cards: cards.slice(0, HOME_CARDS_MAX), total: cards.length };
+}
+
 export const ROUTES: Route[] = [
   {
     // GET /v1/app/me (AppMeResponseSchema): the person from Code's access check, in the one company this Cloud shows.
@@ -106,12 +158,13 @@ export const ROUTES: Route[] = [
   {
     // GET /v1/app/nav (AppNavSchema): projects come from Code on every load, so a grant or revoke shows at once.
     method: "GET", path: /^\/nav$/u,
-    answer: async ({ client, session, org }) => {
-      const access = await client.access(session);
+    answer: async (context) => {
+      const { client, session, org } = context;
+      const [access, home] = await Promise.all([client.access(session), homeCards(context)]);
       return ok({
         me: { developerId: access.developerId, name: access.displayName, orgRole: access.administrator ? "owner" : "member", nameChosen: true },
         org: { name: org.name },
-        homeCount: 0,
+        homeCount: home.total,
         projects: access.projects.slice(0, 50).map((project) => ({ name: project.name, agents: [] })),
         shared: { agents: [], sessions: [] },
         // Each turns on as its routes move to Code (phase 2 onwards).
@@ -120,9 +173,9 @@ export const ROUTES: Route[] = [
     },
   },
   {
-    // GET /v1/app/home: no cards until tasks are on in Code (phase 2).
+    // GET /v1/app/home: what needs the person, from their sessions' tasks in Code.
     method: "GET", path: /^\/home$/u,
-    answer: async () => ok({ cards: [], total: 0 }),
+    answer: async (context) => ok(await homeCards(context)),
   },
   {
     method: "GET", path: /^\/projects$/u,

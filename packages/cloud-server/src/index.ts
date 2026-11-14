@@ -3,4 +3,5 @@ export { LocalSessionStore, type CodeSession, type SessionStore } from "./sessio
 export { ROUTES, roleOf, type OrgView, type Route, type RouteAnswer, type RouteContext } from "./routes.js";
 export { createCloudHandler, returnPath, type CloudHandlerOptions, type CloudRequest, type CloudResponse } from "./handler.js";
 export { LocalWorkSessionStore, newSessionId, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
-export { sessionStatus, sessionView, type CodeTask } from "./session-view.js";
+export { approvalUrl, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
+export { APPROVAL_PATH, approvalRoute } from "./approve.js";
