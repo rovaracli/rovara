@@ -305,6 +305,9 @@ describe("the health route's grants (A13)", () => {
       "packages/broker/src/learning/settings.ts",
       // Second review track record (lane cr-settings): a row per answered second opinion, kept TRACK_RETENTION_DAYS (400), then removed by the TTL.
       "packages/broker/src/rovara-code/second-review-track.ts",
+      // Web path suggestions: CODE_SUGGESTION caches wording for 24 hours; CODE_SUGGESTION_RATE keeps the company/person allowance
+      // and last suggestion for 24 hours (the allowance window itself is 600 seconds). Both are working rows, not durable records.
+      "packages/broker/src/rovara-code/suggest.ts",
       // Saved project images: the start marker of a rebuild job and a closed build workspace's record expire after 30 days; only this file writes either expiry.
       "packages/broker/src/test-env/saved-env-markers.ts",
       // 2026-11-03, chain merge: automatic runs. Their claim, month counter, started, ended and paused markers expire 62 days after they are written (cap.ts, start.ts, end.ts) and a run's watch 14 days (end.ts); each is a marker, none a durable record (the audit event is).

@@ -33,6 +33,9 @@ export const CLOUD_TTL_KINDS: ReadonlySet<string> = new Set([
   "WORK_EVENT",
   // Added at the integ/0515 merge of 2026-11-12 (private address allow-list, 0.5.15).
   "PRIVATE_ADDRESS_CHANGE", "PRIVATE_ADDRESS_LAUNCH", "PRIVATE_ADDRESS_RECYCLE",
+  // Web path suggestions: existing 24-hour cache and per-person allowance rows, not durable records.
+  // The allowance's kind and expiry are on separate lines, so the source scan does not discover it.
+  "CODE_SUGGESTION", "CODE_SUGGESTION_RATE",
 ]);
 
 export type RetentionAction = "keep" | "strip";

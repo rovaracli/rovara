@@ -34,30 +34,31 @@ function gatewayHost(...args: Parameters<typeof fakeHost>) {
 }
 // The project page also holds the Tickets section (slice 5), which reads the intake routes; this start box test answers them as an install without intake (404, one quiet line).
 function setup(value = projectFixture(), options: { theme?: "light" | "dark"; send?: (request: ApiRequest) => Promise<ApiResponse>; seed?: unknown; preview?: () => Promise<ApiResponse>; get?: (request: ApiRequest) => ApiResponse | undefined } = {}) {
- const f = gatewayHost(async request => request.path.endsWith("/start-preview") ? options.preview?.() ?? { status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "disabled" } } : request.path === "/v1/app/changes" ? { status: 200, body: { notices: [], next: "settled" } } : request.path.endsWith("/setup-agent/limits") || /\/intake(\/updates)?$/u.test(request.path) ? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } } : request.method === "GET" ? (options.get?.(request) ?? { status: 200, body: value }) : options.send ? options.send(request) : started());
+ const f = gatewayHost(async request => request.path.endsWith("/code/suggest") ? { status: 200, body: { path: "quick", reason: "small_change", source: "wording" } } : request.path.endsWith("/start-preview") ? options.preview?.() ?? { status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "disabled" } } : request.path === "/v1/app/changes" ? { status: 200, body: { notices: [], next: "settled" } } : request.path.endsWith("/setup-agent/limits") || /\/intake(\/updates)?$/u.test(request.path) ? { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } } : request.method === "GET" ? (options.get?.(request) ?? { status: 200, body: value }) : options.send ? options.send(request) : started());
  const query = createQueryClient();
  if (options.seed !== undefined) query.setQueryData([...howWeWorkKey("payments"), "view"], options.seed);
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) }) }) }), { theme: options.theme ?? "light" });
  return { ...f, ...ui, query, close() { ui.unmount();query.clear(); } };
 }
-const posts = (f: ReturnType<typeof setup>) => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST" && !request.path.endsWith("/start-preview"));
+const posts = (f: ReturnType<typeof setup>) => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST" && !request.path.endsWith("/start-preview") && !request.path.endsWith("/suggest"));
+const readyToStart = async () => { await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start" }).disabled).toBe(false)); };
 const box = () => screen.findByRole("textbox", { name: "What do you need?" });
 it("posts the text to the project's code route and opens the returned session", async () => {
  const f = setup(), navigate = vi.spyOn(f.host, "navigate");
- fireEvent.change(await box(), { target: { value: "Fix the duplicate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
+ fireEvent.change(await box(), { target: { value: "Fix the duplicate refunds" } });await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));
  await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));
  expect(posts(f)).toHaveLength(1);expect(posts(f)[0]).toMatchObject({ path: CODE, body: { input: { text: "Fix the duplicate refunds" }, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown } });
- expect(Object.keys(posts(f)[0]!.body as object).sort()).toEqual(["input", "requestId"]);f.close();
+ expect(Object.keys(posts(f)[0]!.body as object).sort()).toEqual(["input", "path", "requestId"]);f.close();
 });
 for (const modifier of ["metaKey", "ctrlKey"] as const) it("submits with " + modifier + "+Enter but not with a bare Enter", async () => {
  const f = setup(), navigate = vi.spyOn(f.host, "navigate"), input = await box();
  fireEvent.change(input, { target: { value: "Add a retry" } });fireEvent.keyDown(input, { key: "Enter" });expect(posts(f)).toHaveLength(0);
- fireEvent.keyDown(input, { key: "Enter", [modifier]: true });await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));expect(posts(f)).toHaveLength(1);f.close();
+ await readyToStart();fireEvent.keyDown(input, { key: "Enter", [modifier]: true });await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));expect(posts(f)).toHaveLength(1);f.close();
 });
 it("sends once while a start is in flight and disables the box", async () => {
  let finish: ((value: ApiResponse) => void) | undefined;const send = vi.fn(async () => new Promise<ApiResponse>(resolve => { finish = resolve; }));
  const f = setup(undefined, { send }), navigate = vi.spyOn(f.host, "navigate"), input = await box();fireEvent.change(input, { target: { value: "Add a retry" } });
- const start = screen.getByRole<HTMLButtonElement>("button", { name: "Start" });fireEvent.click(start);fireEvent.click(start);fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+ await readyToStart();const start = screen.getByRole<HTMLButtonElement>("button", { name: "Start" });fireEvent.click(start);fireEvent.click(start);fireEvent.keyDown(input, { key: "Enter", metaKey: true });
  expect(send).toHaveBeenCalledTimes(1);expect((input as HTMLTextAreaElement).disabled).toBe(true);expect(start.disabled).toBe(true);
  finish?.(started());await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));f.close();
 });
@@ -65,7 +66,7 @@ it("counts characters and cannot submit text over 4,000 characters or blank text
  const f = setup(), input = await box(), start = screen.getByRole<HTMLButtonElement>("button", { name: "Start" });
  expect(start.disabled).toBe(true);expect(screen.getByText("0 / 4000")).toBeTruthy();
  fireEvent.change(input, { target: { value: "   " } });expect(start.disabled).toBe(true);
- fireEvent.change(input, { target: { value: "x".repeat(4000) } });expect(screen.getByText("4000 / 4000")).toBeTruthy();expect(start.disabled).toBe(false);
+ fireEvent.change(input, { target: { value: "x".repeat(4000) } });expect(screen.getByText("4000 / 4000")).toBeTruthy();await readyToStart();expect(start.disabled).toBe(false);
  fireEvent.change(input, { target: { value: "x".repeat(4001) } });expect(screen.getByText("4001 / 4000")).toBeTruthy();expect(start.disabled).toBe(true);
  fireEvent.click(start);fireEvent.keyDown(input, { key: "Enter", metaKey: true });expect(posts(f)).toHaveLength(0);f.close();
 });
@@ -75,7 +76,7 @@ it("shows no box to a viewer", async () => {
 });
 it("shows PROCESS_UNAVAILABLE's message and does not navigate", async () => {
  const f = setup(undefined, { send: async () => ({ status: 400, body: { error: { code: "PROCESS_UNAVAILABLE", message: PROCESS_START_REFUSED_MESSAGE } } }) }), navigate = vi.spyOn(f.host, "navigate");
- fireEvent.change(await box(), { target: { value: "Fix it" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
+ fireEvent.change(await box(), { target: { value: "Fix it" } });await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));
  expect((await screen.findByRole("alert")).textContent).toBe(PROCESS_START_REFUSED_MESSAGE);expect(navigate).not.toHaveBeenCalled();
  expect((await box() as HTMLTextAreaElement).value).toBe("Fix it");f.close();
 });
@@ -124,7 +125,7 @@ it("answers a full workspace limit with the person's open tasks as links with a 
  let open = OPEN(first, second), refuse = true;
  const send = vi.fn(async (request: ApiRequest): Promise<ApiResponse> => request.path === CODE ? (refuse ? LIMIT : started()) : request.path.endsWith("/close") ? { status: 200, body: { closed: true, session: { ...sessionFixture({ sessionId: first }) } } } : { status: 500, body: {} });
  const f = setup(undefined, { send, get: request => request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: open } } : undefined }), navigate = vi.spyOn(f.host, "navigate");
- fireEvent.change(await box(), { target: { value: "Fix the duplicate refunds" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
+ fireEvent.change(await box(), { target: { value: "Fix the duplicate refunds" } });await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));
  expect((await screen.findByRole("alert")).textContent).toBe("You have too many open tasks to start more work. Close one of these, then start again.");
  expect(document.body.textContent).not.toContain("agentx_close_task");
  const list = await screen.findByRole("list", { name: "Your open tasks" });
@@ -139,11 +140,11 @@ it("answers a full workspace limit with the person's open tasks as links with a 
  expect(send.mock.calls.find(([request]) => request.path.endsWith("/close"))![0]).toMatchObject({ method: "POST", body: { requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) as unknown } });
  // The refusal is gone, so the same text can be started again.
  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
- fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));f.close();
+ await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));f.close();
 });
 it("offers no Close for a task the person does not own, and says so when none can be closed from here", async () => {
  const f = setup(undefined, { send: async () => LIMIT, get: request => request.path.startsWith("/v1/app/live") ? { status: 200, body: { tiles: [liveFixture({ actions: ["watch"] })] } } : undefined });
- fireEvent.change(await box(), { target: { value: "Fix it" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
+ fireEvent.change(await box(), { target: { value: "Fix it" } });await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));
  expect(await screen.findByText("No task of yours can be closed from here. Ask an admin to free a place.")).toBeTruthy();expect(screen.queryByRole("button", { name: "Close" })).toBeNull();f.close();
 });
 
@@ -153,11 +154,11 @@ it("shows the confirmed effective spending stop before work starts", async () =>
 });
 for (const result of [{ status: 200, body: { orgId: "org_aaaaaaaaaaaaaaaaaaaa", project: "payments", kind: "disabled" } }, { status: 503, body: {} }, { status: 200, body: { kind: "captured", effectiveStopMicrousd: "bad" } }]) it(`unclear preview ${JSON.stringify(result)} never blocks Start`, async () => {
  const f = setup(undefined, { preview: async () => result });
- try { fireEvent.change(await box(), { target: { value: "Fix it" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1));expect(screen.queryByText(/Effective spending stop:/)).toBeNull(); } finally { f.close(); }
+ try { fireEvent.change(await box(), { target: { value: "Fix it" } });await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1));expect(screen.queryByText(/Effective spending stop:/)).toBeNull(); } finally { f.close(); }
 });
 it("a pending preview never disables Start", async () => {
  const f = setup(undefined, { preview: async () => new Promise<ApiResponse>(() => undefined) });
- try { fireEvent.change(await box(), { target: { value: "Fix it" } });expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start" }).disabled).toBe(false);fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1)); } finally { f.close(); }
+ try { fireEvent.change(await box(), { target: { value: "Fix it" } });await readyToStart();expect(screen.getByRole<HTMLButtonElement>("button", { name: "Start" }).disabled).toBe(false);await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(posts(f)).toHaveLength(1)); } finally { f.close(); }
 });
 
 // DR-UX-3: the start box's "Design first" option. It is offered only where the playbook answer says design review exists for the company (`designReviewAllowed: true`, which means `dr` is on and the company allows it).
@@ -184,27 +185,27 @@ describe("Design first in the start box", () => {
   const f = setup(projectFixture({ you: { role: "viewer", canStartWork: false, canEditSettings: false, canViewSpend: false } }), { get: withPlaybook(playbookAnswer(true)) });await screen.findByRole("heading", { name: "payments" });
   expect(screen.queryByRole("checkbox", { name: DESIGN_FIRST })).toBeNull();f.close();
  });
- it("sends the flag only when ticked, and an unticked start has exactly the old body", async () => {
+ it("sends the flag only when ticked, and an unticked start carries only the text, selected path and request ID", async () => {
   const f = setup(undefined, { get: withPlaybook(playbookAnswer(true)) }), navigate = vi.spyOn(f.host, "navigate");
-  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(navigate).toHaveBeenCalledWith("/app/sessions/" + id));
   expect(posts(f)[0]).toMatchObject({ path: CODE, body: { input: { text: "Add a retry" }, designFirst: true } });f.close();
   const plain = setup(undefined, { get: withPlaybook(playbookAnswer(true)) });
-  fireEvent.change(await box(), { target: { value: "Add a retry" } });await screen.findByRole("checkbox", { name: DESIGN_FIRST });fireEvent.click(screen.getByRole("button", { name: "Start" }));
-  await waitFor(() => expect(posts(plain)).toHaveLength(1));expect(Object.keys(posts(plain)[0]!.body as object).sort()).toEqual(["input", "requestId"]);plain.close();
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });await screen.findByRole("checkbox", { name: DESIGN_FIRST });await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(posts(plain)).toHaveLength(1));expect(Object.keys(posts(plain)[0]!.body as object).sort()).toEqual(["input", "path", "requestId"]);plain.close();
  });
  it("a retry of the same text with the option changed is a new request (a lost answer never turns into a different start)", async () => {
   let attempt = 0;const send = vi.fn(async (): Promise<ApiResponse> => (attempt++ === 0 ? { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "x" } } } : started()));
   const f = setup(undefined, { send, get: withPlaybook(playbookAnswer(true)) });
-  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));await screen.findByRole("alert");
-  fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));await screen.findByRole("alert");
+  fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
   const [first, second] = send.mock.calls.map(call => (call as unknown as [ApiRequest])[0].body as { requestId: string; designFirst?: boolean });
   expect(first!.designFirst).toBeUndefined();expect(second!.designFirst).toBe(true);expect(second!.requestId).not.toBe(first!.requestId);f.close();
  });
  it("when the broker refuses it (the company stopped allowing it while the page was open) the page says so plainly, keeps the text and reads the setting again", async () => {
   let allowed = true;const send = vi.fn(async (): Promise<ApiResponse> => { allowed = false;return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Design review isn't available right now." } } }; });
   const f = setup(undefined, { send, get: request => request.path === PLAYBOOK ? playbookAnswer(allowed) : undefined }), navigate = vi.spyOn(f.host, "navigate");
-  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));
   expect((await screen.findByRole("alert")).textContent).toMatch(/Design first/u);expect(navigate).not.toHaveBeenCalled();
   await waitFor(() => expect(screen.queryByRole("checkbox", { name: DESIGN_FIRST })).toBeNull());expect((await box() as HTMLTextAreaElement).value).toBe("Add a retry");f.close();
  });
@@ -212,7 +213,7 @@ describe("Design first in the start box", () => {
   const send = vi.fn(async (): Promise<ApiResponse> => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message: "input.text: request is empty" } } }));
   const f = setup(undefined, { send, get: withPlaybook(playbookAnswer(true)) });
   fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));
-  const reads = () => f.request.mock.calls.filter(([request]) => request.path === PLAYBOOK).length, before = reads();fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  const reads = () => f.request.mock.calls.filter(([request]) => request.path === PLAYBOOK).length, before = reads();await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));
   const alert = await screen.findByRole("alert");expect(alert.textContent).toMatch(/4000/u);expect(alert.textContent).not.toMatch(/Design first/u);expect(reads()).toBe(before);
   expect(screen.getByRole("checkbox", { name: DESIGN_FIRST })).toBeTruthy();f.close();
  });
@@ -220,8 +221,8 @@ describe("Design first in the start box", () => {
   let allowed = true;const f = setup(undefined, { get: request => request.path === PLAYBOOK ? playbookAnswer(allowed) : undefined });
   fireEvent.click(await screen.findByRole("checkbox", { name: DESIGN_FIRST }));allowed = false;await f.query.refetchQueries({ queryKey: ["how-we-work", "payments", "design-review"] });
   await waitFor(() => expect(screen.queryByRole("checkbox", { name: DESIGN_FIRST })).toBeNull());
-  fireEvent.change(await box(), { target: { value: "Add a retry" } });fireEvent.click(screen.getByRole("button", { name: "Start" }));
-  await waitFor(() => expect(posts(f)).toHaveLength(1));expect(Object.keys(posts(f)[0]!.body as object).sort()).toEqual(["input", "requestId"]);f.close();
+  fireEvent.change(await box(), { target: { value: "Add a retry" } });await readyToStart();fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(posts(f)).toHaveLength(1));expect(Object.keys(posts(f)[0]!.body as object).sort()).toEqual(["input", "path", "requestId"]);f.close();
  });
  for (const theme of ["light", "dark"] as const) it("has no accessibility violations with the option shown in " + theme, async () => { const f = setup(undefined, { theme, get: withPlaybook(playbookAnswer(true)) });await screen.findByRole("checkbox", { name: DESIGN_FIRST });await expectNoAxeViolations(f.container);f.close(); });
 });

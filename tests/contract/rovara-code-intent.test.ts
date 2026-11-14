@@ -1,19 +1,22 @@
 // Plan 6 Task 3: one entry point for intents. `startCodeIntent` starts Rovara Code work for every surface (the app route here; Slack today; Linear, offers, the CLI and MCP through
 // Plan 9 and Task 25), through the same start every task uses, so the project role, the company's rules, the budget and the planning limit are the ones that already exist. A
 // version 2 task starts at UNDERSTAND/READY; a version 1 task starts as it always did. The broker is built with `agents: {}` as the deployed handler is.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as BrokerModule from "../../packages/broker/src/aws/broker.js";
-import { DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, TransactWriteCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
 import { AgentStore } from "../../packages/broker/src/agents/store.js";
+import { codeSuggestionForKind } from "../../packages/broker/src/rovara-code/suggest.js";
+import { CodeSuggestionSchema } from "../../packages/cloud-contracts/src/app-code-suggestion.js";
+import { assessmentForTask } from "../../packages/broker/src/rovara-code/explicit-path.js";
 import { startCodeIntent } from "../../packages/broker/src/rovara-code/intent.js";
 import { developerIdForSlackUser } from "../../packages/broker/src/aws/admin-actions.js";
-import { sessionBindingKey, sessionSurfaceKey } from "@rovara-code/contracts";
+import { INDEX_EXPIRY_ATTRIBUTE, orgPk, projectPk, projectMetaKey, sessionBindingKey, sessionSurfaceKey } from "@rovara-code/contracts";
 import { orgMemberKey, orgRemovedKey, developerOrgKey } from "../../packages/cloud-contracts/src/org-node.js";
 import { builtinSettingsKey, projectMemberKey } from "@rovara-code/contracts";
 import { CodeIntentBodySchema, CodeIntentRequestSchema } from "@rovara-code/contracts";
 import { StartDeveloperTaskRequestSchema } from "@rovara-code/contracts";
-import { WorkflowSnapshotSchema, createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
+import { WorkflowSnapshotSchema, answerWorkflowIntent, startWorkflowUnderstand, createWorkflowSnapshot } from "../../packages/cloud-contracts/src/task-workflow-node.js";
 import type { AgentXError } from "@rovara-code/contracts";
 import type { OrgId } from "@rovara-code/contracts";
 import { MAYA, OMAR, createDeveloperTaskBroker, seedMembership, type Developer } from "../support/developer-task-broker.js";
@@ -738,5 +741,212 @@ describe("POST /v1/app/projects/{project}/code with Design first", () => {
       expect(stored.designFirst !== undefined, text).toBe(shared.designFirst);
       expect(JSON.stringify(stored), text).toContain(shared.rest.trim());
     }
+  });
+});
+
+describe("web path suggestion (deterministic fallback)", () => {
+  const suggest = async (h: Awaited<ReturnType<typeof setup>>, who: Developer, text: string, requestId = randomUUID(), project = "payments") => h.dev(who, "POST", `/v1/app/projects/${project}/code/suggest`, { requestId, text });
+  // Both real routes must reach their write after reading the old values. Without this barrier,
+  // the synchronous fake can serialize Promise.all and leave conditional-write regressions untested.
+  const concurrently = async (h: Awaited<ReturnType<typeof setup>>, operations: Array<() => Promise<Reply>>) => {
+    let release!: () => void;const ready = new Promise<void>(resolve => { release = resolve; });let arrivals = 0;
+    const original = h.db.send.bind(h.db);
+    const spy = vi.spyOn(h.db, "send").mockImplementation(async command => {
+      if (command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => String(item.Put?.Item?.sk).startsWith("CODE_SUGGEST_TEXT#")) && ++arrivals <= 2) {
+        if (arrivals === 2) release();await ready;
+      }
+      return original(command);
+    });
+    try { return await Promise.all(operations.map(operation => operation())); } finally { spy.mockRestore(); }
+  };
+  it("routes small talk before the size check, maps safe/risky text, spends nothing and starts nothing", async () => {
+    const h = await setup({ v2: true, proxy: true });await h.member(MAYA);
+    for (const [text, path, reason] of [["hello", "answer", "question"], ["Fix the typo", "quick", "small_change"], ["Change authentication", "full", "large_change"], ["Explain authentication", "answer", "question"], ["x".repeat(4000), "answer", "unclear"], ["界".repeat(4000), "answer", "unclear"]]) {
+      const response = await suggest(h, MAYA, text!);expect(response.status, text?.slice(0, 30)).toBe(200);expect(response.body).toMatchObject({ path, reason, source: "wording" });
+    }
+    expect(h.taskCount()).toBe(0);expect(h.sessions()).toHaveLength(0);expect(h.charges()).toHaveLength(0);
+    expect(h.db.find(row => /SPEND|KEY|HOLD/u.test(String(row.entityType)))).toHaveLength(0);
+  });
+  it("questions and explanations never suggest Quick, including questions that mention a change", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);
+    for (const text of ["How does retry work?", "How do I fix this bug?", "Can you explain the retry fix?", "Explain authentication", "What changed in the update", "Ｈｏｗ does retry work？", "why does this fail", "Where is the button", "Could you explain the build", "Tell me about retries"]) {
+      const reply = await suggest(h, MAYA, text);expect(reply.body, text).toMatchObject({ path: "answer", reason: "question" });
+    }
+    expect((await suggest(h, MAYA, "Something with the widget")).body).toMatchObject({ path: "answer", reason: "unclear" });
+  });
+  it("reuses the fingerprint across new request IDs without more writes or another person's allowance", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);await h.member(KIT);
+    await suggest(h, MAYA, "Fix typo");const before = h.db.find(row => String(row.entityType).startsWith("CODE_SUGGEST"));
+    expect((await suggest(h, MAYA, "Fix typo")).body).toMatchObject({ path: "quick" });
+    expect((await suggest(h, KIT, "Fix typo")).body).toMatchObject({ path: "quick" });
+    expect(h.db.find(row => String(row.entityType).startsWith("CODE_SUGGEST"))).toEqual(before);
+  });
+  it("caps new wording suggestions at 30 per person per ten minutes and returns the last answer without writing", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);await h.member(KIT);
+    for (let n = 0; n < 29; n++) expect((await suggest(h, MAYA, `Fix typo ${n}`)).body).toMatchObject({ path: "quick" });
+    expect((await suggest(h, MAYA, "Change login 30")).body).toMatchObject({ path: "full" });
+    const before = h.db.find(row => String(row.entityType).startsWith("CODE_SUGGEST"));
+    expect((await suggest(h, MAYA, "Fix typo 31")).body).toMatchObject({ path: "full", source: "previous_wording" });
+    expect(h.db.find(row => String(row.entityType).startsWith("CODE_SUGGEST"))).toEqual(before);
+    expect((await suggest(h, KIT, "Fix typo 31")).body).toMatchObject({ path: "quick" });
+    const rate = h.db.find(row => row.entityType === "CODE_SUGGESTION_RATE" && row.developerId === MAYA.developerId)[0]!;
+    expect(rate).toBeDefined();h.db.set({ ...rate, windowStart: Math.floor(Date.now() / 1000) - 600 });
+    expect((await suggest(h, MAYA, "Fix typo 32")).body).toMatchObject({ path: "quick" });
+  });
+  it("a question started with no path stays an answer through Understand, while explicit choices plan", async () => {
+    for (const path of [undefined, "QUICK", "FULL"] as const) {
+      const h = await setup({ v2: true });await h.member(MAYA);
+      const response = await h.send(MAYA, { input: { text: "How does retry work?" }, ...(path === undefined ? {} : { path }) });expect(response.status).toBe(202);
+      const workflow = startWorkflowUnderstand(WorkflowSnapshotSchema.parse(h.meta(h.taskOf(response).taskId).workflow), NOW);
+      const assessment = assessmentForTask({ workflow, followsAnswer: false, assessment: { kind: "answer", restatement: "How does retry work?", answer: "It retries the request.", sources: [] } });
+      if (path === undefined) {
+        expect(assessment.kind).toBe("answer");
+        expect(answerWorkflowIntent(workflow, { expectedRevision: workflow.revision, assessment, artifact: { id: "answer", objectKey: "intent.json", createdAt: NOW }, now: NOW })).toMatchObject({ stage: "CLOSED", outcome: "ANSWERED" });
+      } else expect(assessment).toMatchObject({ kind: "ready", path });
+    }
+  });
+  it("concurrent first requests share one allowance and concurrent people share one text cache", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);await h.member(KIT);
+    const distinct = await concurrently(h, [() => suggest(h, MAYA, "Fix typo A"), () => suggest(h, MAYA, "Change login B")]);
+    expect(distinct.map(r => r.body.path)).toEqual(["quick", "full"]);
+    expect(h.db.find(row => row.entityType === "CODE_SUGGESTION_RATE" && row.developerId === MAYA.developerId)[0]?.count).toBe(2);
+    const same = await concurrently(h, [() => suggest(h, MAYA, "Fix shared typo"), () => suggest(h, KIT, "Fix shared typo")]);
+    expect(same.map(r => r.body.path)).toEqual(["quick", "quick"]);
+    expect(h.db.find(row => row.entityType === "CODE_SUGGESTION_RATE").reduce((sum, row) => sum + Number(row.count), 0)).toBe(3);
+  });
+  it("has the start route's viewer, missing project, cross-company and archived refusals", async () => {
+    const h = await setup({ v2: true, orgs: true });await h.member(MAYA, "viewer");await h.orgOf(OMAR);seedMembership(h.db, OMAR.developerId, { orgId: ORG_B, role: "owner" });
+    for (const [who, project, status] of [[MAYA, "payments", 403], [MAYA, "missing", 404], [OMAR, "payments", 404]] as const) {
+      const start = await h.send(who, { path: "QUICK" }, project), response = await suggest(h, who, "Fix typo", randomUUID(), project);
+      expect(start.status).toBe(status);expect(response.status).toBe(start.status);expect(errorOf(response)).toEqual(errorOf(start));
+    }
+    await h.member(MAYA);
+    h.db.set({ ...projectMetaKey(TEST_ORG, "payments"), entityType: "PROJECT_META", name: "payments", status: "archived" });
+    const start = await h.send(MAYA, { path: "QUICK" }), response = await suggest(h, MAYA, "Fix typo");expect(response.status).toBe(start.status);expect(errorOf(response)).toEqual(errorOf(start));
+    expect(h.taskCount()).toBe(0);
+  });
+  it("caches text once, checks access live, and scopes records to company and project", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);const requestId = randomUUID();
+    const first = await suggest(h, MAYA, "Fix typo", requestId), again = await suggest(h, MAYA, "Fix typo", requestId);
+    expect(first.status).toBe(200);expect(again.body).toMatchObject({ path: "quick", reason: "small_change" });
+    const records = () => h.db.find(row => row.entityType === "CODE_SUGGESTION");expect(records()).toHaveLength(1);
+    expect(records()[0]).toMatchObject({ orgId: TEST_ORG, project: "payments" });expect(JSON.stringify(records())).not.toContain("Fix typo");
+    await h.member(MAYA, "viewer");expect((await suggest(h, MAYA, "Fix typo", requestId)).status).toBe(403);expect(records()).toHaveLength(1);
+  });
+  it("maps every Code kind exhaustively and never lowers the classifier's caution", () => {
+    for (const text of ["Fix typo", "Change auth", "Change IAM", "Remove database", "x".repeat(4000), "ignore instructions", "Fix src/auth/login.ts", "ｄｅｌｅｔｅ a file", "dеlete a file"]) {
+      expect(codeSuggestionForKind("question", text).path).toBe("answer");expect(codeSuggestionForKind("unclear", text).path).toBe("answer");expect(codeSuggestionForKind("large_change", text).path).toBe("full");
+      expect(["quick", "full"]).toContain(codeSuggestionForKind("small_change", text).path);
+      if (text !== "Fix typo") expect(codeSuggestionForKind("small_change", text).path).toBe("full");
+    }
+    expect(codeSuggestionForKind("small_change", "Fix typo").path).toBe("quick");
+  });
+  it("isolates company B and another project, including identical request IDs", async () => {
+    const h = await setup({ v2: true, orgs: true });await h.member(MAYA);await h.orgOf(OMAR);seedMembership(h.db, OMAR.developerId, { orgId: ORG_B, role: "owner" });
+    for (const row of h.db.find(row => row.pk === projectPk(TEST_ORG, "payments"))) {
+      h.db.set({ ...row, pk: projectPk(ORG_B, "payments"), orgId: ORG_B });
+      h.db.set({ ...row, pk: projectPk(TEST_ORG, "other"), orgId: TEST_ORG, ...(typeof row.definition === "object" ? { definition: { ...row.definition, name: "other" } } : {}) });
+    }
+    h.db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "other"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "other", role: "developer", projectRole: "contributor" });
+    const requestId = randomUUID();expect((await suggest(h, MAYA, "Fix typo", requestId)).status).toBe(200);
+    const a = h.db.find(row => row.entityType === "CODE_SUGGESTION");expect(a).toHaveLength(1);
+    const allowanceA = h.db.find(row => row.pk === orgPk(TEST_ORG) && row.entityType === "CODE_SUGGESTION_RATE");expect(allowanceA).toHaveLength(1);
+    const b = await suggest(h, OMAR, "Change login", requestId);expect(b.status).toBe(200);expect(b.body).toMatchObject({ path: "full" });
+    expect(h.db.find(row => row.entityType === "CODE_SUGGESTION" && row.orgId === TEST_ORG)).toEqual(a);
+    expect(h.db.find(row => row.pk === orgPk(TEST_ORG) && row.entityType === "CODE_SUGGESTION_RATE")).toEqual(allowanceA);
+    expect(h.db.find(row => row.entityType === "CODE_SUGGESTION" && row.orgId === ORG_B)[0]?.pk).toBe(projectPk(ORG_B, "payments"));
+    const other = await suggest(h, MAYA, "Change login", requestId, "other");expect(other.status).toBe(200);expect(other.body).toMatchObject({ path: "full" });
+    expect(h.db.find(row => row.entityType === "CODE_SUGGESTION")).toHaveLength(3);
+    const rate = h.db.find(row => row.entityType === "CODE_SUGGESTION_RATE" && row.orgId === TEST_ORG)[0]!;
+    expect(rate.count).toBe(2);h.db.set({ ...rate, count: 30, lastSuggestion: { path: "full", reason: "large_change", source: "wording" } });
+    expect((await suggest(h, MAYA, "Fix different text", randomUUID(), "other")).body).toMatchObject({ path: "full" });
+    expect((await suggest(h, OMAR, "Fix different text")).body).toMatchObject({ path: "quick" });
+  });
+  it("expires replay records in seconds and refuses corrupted or mismatched saved answers", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);const requestId = randomUUID();await suggest(h, MAYA, "Fix typo", requestId);
+    const record = h.db.find(row => row.entityType === "CODE_SUGGESTION")[0]!;
+    expect(record[INDEX_EXPIRY_ATTRIBUTE]).toBeGreaterThan(Date.now() / 1000);expect(record[INDEX_EXPIRY_ATTRIBUTE]).toBeLessThan(Date.now() / 1000 + 86_401);
+    h.db.set({ ...record, suggestion: { path: "full", reason: "large_change", source: "wording" }, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.now() / 1000) - 1 });
+    expect((await suggest(h, MAYA, "Fix typo", requestId)).body).toMatchObject({ path: "quick" });
+    expect(h.db.find(row => row.entityType === "CODE_SUGGESTION")[0]?.[INDEX_EXPIRY_ATTRIBUTE]).toBeGreaterThan(Date.now() / 1000);
+    for (const corrupt of [{ orgId: ORG_B }, { project: "other" }, { fingerprint: "different" }, { suggestion: { path: "quick", reason: "injected", source: "wording" } }]) {
+      h.db.set({ ...record, ...corrupt });expect((await suggest(h, MAYA, "Fix typo", requestId)).body).toMatchObject({ path: "answer", reason: "unavailable" });
+    }
+  });
+  it("returns unavailable on unreadable storage and on exhausted conditional races", async () => {
+    for (const failure of ["read", "write", "race"] as const) {
+      const h = await setup({ v2: true });await h.member(MAYA);const original = h.db.send.bind(h.db);let attempts = 0;
+      const spy = vi.spyOn(h.db, "send").mockImplementation(async command => {
+        const input = (command as { input?: { Key?: { sk?: string }; Item?: { sk?: string } } }).input;
+        if ((command instanceof GetCommand && input?.Key?.sk?.startsWith("CODE_SUGGEST_TEXT#") && failure === "read") || (command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => String(item.Put?.Item?.sk).startsWith("CODE_SUGGEST_TEXT#")) && failure !== "read")) {
+          attempts++;throw Object.assign(new Error("private provider words"), { name: failure === "race" ? "TransactionCanceledException" : "Unavailable" });
+        }
+        return original(command);
+      });
+      const response = await suggest(h, MAYA, "Fix typo");expect(response.status).toBe(200);expect(response.body).toMatchObject({ path: "answer", reason: "unavailable" });expect(attempts).toBe(failure === "race" ? 3 : 1);expect(h.taskCount()).toBe(0);spy.mockRestore();
+    }
+  });
+  it("commits only one cache entry and allowance increment for concurrent identical text", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);const requestId = randomUUID();
+    const replies = await Promise.all([suggest(h, MAYA, "Fix typo", requestId), suggest(h, MAYA, "Fix typo", requestId)]);
+    expect(replies.map(reply => reply.status)).toEqual([200, 200]);expect(h.db.find(row => row.entityType === "CODE_SUGGESTION")).toHaveLength(1);
+    expect(h.db.find(row => row.entityType === "CODE_SUGGESTION_RATE")[0]?.count).toBe(1);
+  });
+  it("does not offer suggestions where starting work is not configured", async () => {
+    const h = await createDeveloperTaskBroker();const requestId = randomUUID();
+    const start = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code", { requestId, input: { text: "Fix typo" }, path: "QUICK" });
+    const suggestion = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code/suggest", { requestId, text: "Fix typo" });
+    expect(start.status).toBe(404);expect(suggestion.status).toBe(start.status);expect(errorOf(suggestion)).toEqual(errorOf(start));
+  });
+  it("refuses malformed bodies before recording a suggestion", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);
+    for (const body of [{ requestId: randomUUID(), text: " " }, { requestId: randomUUID(), text: "Fix", orgId: ORG_B }, { requestId: "bad", text: "Fix" }]) {
+      const response = await h.dev(MAYA, "POST", "/v1/app/projects/payments/code/suggest", body);expect(response.status).toBe(400);expect(errorOf(response).message).toBe("A suggestion needs a request ID and text of 1 to 4000 characters.");
+    }
+    expect(h.db.find(row => row.entityType === "CODE_SUGGESTION")).toHaveLength(0);
+  });
+  it("a concurrent winner is replayed and no second write occurs", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);const original = h.db.send.bind(h.db);let writes = 0;
+    const spy = vi.spyOn(h.db, "send").mockImplementation(async command => {
+      if (command instanceof TransactWriteCommand && command.input.TransactItems?.some(item => String(item.Put?.Item?.sk).startsWith("CODE_SUGGEST_TEXT#"))) {
+        writes++;h.db.set({ ...command.input.TransactItems[0]!.Put!.Item, suggestion: { path: "full", reason: "large_change", source: "wording" } });
+        throw Object.assign(new Error("race"), { name: "TransactionCanceledException" });
+      }
+      return original(command);
+    });
+    expect((await suggest(h, MAYA, "Fix typo")).body).toMatchObject({ path: "full" });expect(writes).toBe(1);spy.mockRestore();
+  });
+  it("still reads and validates records produced by the request-id writer", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);const requestId = randomUUID();
+    const record = { pk: projectPk(TEST_ORG, "payments"), sk: `CODE_SUGGEST#${MAYA.developerId}#${requestId}`, entityType: "CODE_SUGGESTION", orgId: TEST_ORG, project: "payments", fingerprint: createHash("sha256").update("Fix typo", "utf8").digest("hex"), suggestion: { path: "full", reason: "large_change", source: "wording" }, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.now() / 1000) + 86400 };
+    h.db.set(record);expect((await suggest(h, MAYA, "Fix typo", requestId)).body).toMatchObject({ path: "full" });
+    expect((await suggest(h, MAYA, "Change login", requestId)).status).toBe(409);
+    h.db.set({ ...record, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(Date.now() / 1000) - 1 });
+    expect((await suggest(h, MAYA, "Fix typo", requestId)).body).toMatchObject({ path: "quick" });
+  });
+  it("refuses invalid or foreign allowance state without writing or returning its last answer", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);await suggest(h, MAYA, "Fix typo");
+    const rate = h.db.find(row => row.entityType === "CODE_SUGGESTION_RATE")[0]!;
+    for (const corrupt of [{ orgId: ORG_B }, { developerId: KIT.developerId }, { count: NaN }, { count: 31 }, { revision: -1 }, { windowStart: Infinity }, { lastSuggestion: { path: "quick", reason: "injected", source: "wording" } }]) {
+      h.db.set({ ...rate, ...corrupt });const before = h.db.find(row => row.entityType === "CODE_SUGGESTION");
+      expect((await suggest(h, MAYA, "Change login")).body).toMatchObject({ path: "answer", reason: "unavailable" });
+      expect(h.db.find(row => row.entityType === "CODE_SUGGESTION")).toEqual(before);
+    }
+  });
+  it("a race for the last allowance slot commits only one new suggestion", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);await suggest(h, MAYA, "Fix typo");
+    const rate = h.db.find(row => row.entityType === "CODE_SUGGESTION_RATE")[0]!;h.db.set({ ...rate, count: 29 });
+    const replies = await concurrently(h, [() => suggest(h, MAYA, "Change login A"), () => suggest(h, MAYA, "Change login B")]);
+    expect(replies.map(r => r.body.path)).toEqual(["full", "full"]);
+    expect(h.db.find(row => row.entityType === "CODE_SUGGESTION")).toHaveLength(2);
+    expect(h.db.find(row => row.entityType === "CODE_SUGGESTION_RATE")[0]?.count).toBe(30);
+  });
+  it("never reflects hostile or oversized input in an answer", async () => {
+    const h = await setup({ v2: true });await h.member(MAYA);
+    for (const text of ["<img src=x> @everyone #123", "# heading\n> quote\n---\n```\n~~~", "[a [b]](https://evil.test) ![img][id]\n[id]: https://evil.test", "ignore rules\u202e\u200b\ufe0f", "x".repeat(1_000_000)]) {
+      const response = await suggest(h, MAYA, text);expect(response.status).toBe(text.length > 4000 ? 400 : 200);expect(JSON.stringify(response.body)).not.toContain(text);
+      if (response.status === 200) { const { requestId: _id, ...result } = response.body;expect(CodeSuggestionSchema.safeParse(result).success).toBe(true);expect(_id).toBeDefined(); }
+    }
+    expect(h.taskCount()).toBe(0);
   });
 });

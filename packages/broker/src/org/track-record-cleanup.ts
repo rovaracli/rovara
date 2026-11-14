@@ -1,10 +1,11 @@
 // Track record: the company-close erasure of the outcome samples (`OUTCOME#`), their scored copies (`OUTCOME_SCORED#`), the run costs (`RUN_COST#`) and (SRL-3) the merge-commit index (`GITHUB_MERGE`).
+// Web intake suggestion caches and per-person rates are also removed here (one-day TTL is only a backstop).
 // Their partitions are named by project (and stage, or agent and path), so they are found from the project catalog and the agent directory, not by a
 // prefix scan. Like the other close cleanups it runs only while the company is closing or closed, pins that state in every batch, never resends an
 // ambiguous call, and a failure stops the close (`closingAt` stays, and the next close resumes). Their expiries (180 and 365 days) are the backstop.
 import { GetCommand, QueryCommand, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
-import { AgentXError, BUILTIN_AGENT_IDS, OUTCOME_STAGES, OrgIdSchema, agentXError, orgProjectCatalogPk, orgScoped } from "@rovara-code/contracts";
+import { AgentXError, BUILTIN_AGENT_IDS, OUTCOME_STAGES, OrgIdSchema, agentXError, orgProjectCatalogPk, orgScoped, orgPk, projectPk } from "@rovara-code/contracts";
 import { orgMetaKey } from "@agentx/cloud-contracts";
 import type { TransactItem } from "../audit/outbox.js";
 import type { EstimatePath } from "../spend/estimate.js";
@@ -58,13 +59,13 @@ export async function clearTrackRecordData(deps: Dependencies, value: unknown): 
     };
     /** Every item of one partition, in batches that each pin the closing state. */
     let deleted = 0;
-    const clearPartition = async (pk: string, maxPages: number = MAX_PAGES): Promise<void> => {
+    const clearPartition = async (pk: string, maxPages: number = MAX_PAGES, prefix?: string): Promise<void> => {
       let cursor: { pk: string; sk: string } | undefined;
       for (let page = 0; page < maxPages; page += 1) {
-        const result = await query(pk, undefined, cursor);
+        const result = await query(pk, prefix, cursor);
         const keys = (result.Items ?? []).map((raw) => {
           const row = z.object({ pk: z.literal(pk), sk: z.string().min(1) }).passthrough().safeParse(raw);
-          if (!row.success) throw unavailable();
+          if (!row.success || (prefix !== undefined && !row.data.sk.startsWith(prefix))) throw unavailable();
           return { pk, sk: row.data.sk };
         });
         const next = cursorOf(result.LastEvaluatedKey, pk);
@@ -98,9 +99,13 @@ export async function clearTrackRecordData(deps: Dependencies, value: unknown): 
     };
     // The merge-commit index is one partition for the company (no project or repository to find first); a busy company may hold many rows, so it is given more pages than the others.
     await clearPartition(orgScoped(orgId, "GITHUB_MERGE"), MERGE_INDEX_MAX_PAGES);
+    // Web intake rates share the company partition; caches share project partitions.
+    // Only these prefixes go, including the original request-id cache writer.
+    await clearPartition(orgPk(orgId), MAX_PAGES, "CODE_SUGGEST_RATE#");
     const projects = await names(orgProjectCatalogPk(orgId), "PROJECT#", (row) => row.name);
     const agents = [...new Set([...BUILTIN_AGENT_IDS, ...await names(orgScoped(orgId, "AGENT_DIRECTORY"), undefined, (row) => row.agentId)])];
     for (const project of projects) {
+      for (const prefix of ["CODE_SUGGEST_TEXT#", "CODE_SUGGEST#"]) await clearPartition(projectPk(orgId, project), MAX_PAGES, prefix);
       for (const stage of OUTCOME_STAGES) {
         await clearPartition(orgScoped(orgId, `OUTCOME#${project}#${stage}`));
         await clearPartition(orgScoped(orgId, `OUTCOME_SCORED#${project}#${stage}`));

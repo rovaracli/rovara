@@ -1,7 +1,7 @@
 import { createContext, createElement, useContext, type ReactNode } from "react";
 import type { RealtimeTokenResponse } from "@agentx/cloud-contracts/web";
 export type ApiMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
-export interface ApiRequest { method: ApiMethod; path: string; body?: unknown; headers?: Record<string, string>; retry?: "never" }
+export interface ApiRequest { method: ApiMethod; path: string; body?: unknown; headers?: Record<string, string>; retry?: "never"; signal?: AbortSignal }
 export interface ApiResponse { status: number; body: unknown; /** The company the server says it answered for (the `x-rovara-company` response header), when it sent one. Read only while the company switcher is on. */ company?: string }
 export interface ApiTransport { request(input: ApiRequest): Promise<ApiResponse> }
 export interface RealtimeSocket {

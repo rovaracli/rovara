@@ -230,6 +230,7 @@ import { isProjectAutomationsRoute, routeProjectAutomations } from "../chains/pr
 import { isAgentSessionRoute, routeAgentSessionRequest } from "../agent-sessions/routes.js";
 import { isDiagnosisPath, routeDiagnosisRequest } from "../diagnosis/routes.js";
 import { isDeviceRoute, routeDeviceRequest } from "../devices/routes.js";
+import { CODE_SUGGEST_PATH, routeCodeSuggestion } from "../rovara-code/suggest.js";
 import { CODE_INTENT_PATH, routeCodeIntentStart } from "../rovara-code/routes.js";
 import { getCodeSettings, putCodeSettings } from "../rovara-code/code-settings.js";
 import { HOW_WE_WORK_PATH, PLAYBOOK_PATH, PLAYBOOK_PROCESS_PATH, getProjectHowWeWork, routeProjectPlaybook, routeProjectProcess } from "../playbook/routes.js";
@@ -690,6 +691,8 @@ export async function routeDeveloperRequest(deps: DeveloperRouteDependencies, re
   if (intakeReply !== undefined) return intakeReply;
   const startPreviewRoute = /^\/v1\/app\/projects\/([^/]+)\/start-preview$/.exec(url.pathname);
   if (request.method === "POST" && startPreviewRoute !== null) return previewTaskStartStop(deps, caller, startPreviewRoute[1]!, jsonBody(request));
+  const codeSuggestRoute = CODE_SUGGEST_PATH.exec(url.pathname);
+  if (request.method === "POST" && codeSuggestRoute !== null) return routeCodeSuggestion(deps, caller, codeSuggestRoute[1]!, jsonBody(request));
   const codeIntentRoute = CODE_INTENT_PATH.exec(url.pathname);
   if (request.method === "POST" && codeIntentRoute !== null) return routeCodeIntentStart(codeIntentDependenciesOf(deps, caller), caller, codeIntentRoute[1]!, jsonBody(request), request.headers);
   // Rovara Code (Plan 6 Task 19): a project's code settings. Anyone who can see the project reads them; a maintainer changes them.

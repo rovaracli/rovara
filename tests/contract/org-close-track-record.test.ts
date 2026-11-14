@@ -81,3 +81,54 @@ it("a failed erasure stops the close, keeps closingAt and resumes on the next cl
   expect(mine.filter((key) => f.db.get(key) !== undefined)).toEqual([]);
   expect(f.db.get(orgMetaKey(f.orgId))?.closedAt).toBeDefined();
 });
+
+it("company close removes web suggestion caches and rates and preserves other company and project data", async () => {
+  const f = await fixture();
+  f.seedOrg(f.orgId); f.seedOrg(f.other);
+  const seed = (orgId: string) => {
+    const rows = [{ pk: `ORG#${orgId}`, sk: "CODE_SUGGEST_RATE#owner", entityType: "CODE_SUGGESTION_RATE", orgId, developerId: "owner" }];
+    for (const project of ["payments", "web"]) {
+      for (let n = 0; n < 30; n += 1) rows.push({ pk: `ORG#${orgId}#PROJECT#${project}`, sk: `CODE_SUGGEST_TEXT#${n}`, entityType: "CODE_SUGGESTION", orgId, developerId: "" });
+      rows.push({ pk: `ORG#${orgId}#PROJECT#${project}`, sk: "CODE_SUGGEST#owner#old-request", entityType: "CODE_SUGGESTION", orgId, developerId: "" });
+    }
+    for (const row of rows) f.db.set(row);
+    return rows;
+  };
+  const mine = seed(f.orgId), foreign = seed(f.other);
+  const unrelated = { pk: `ORG#${f.orgId}#PROJECT#payments`, sk: "REV#0000000001", entityType: "PROJECT" };
+  f.db.set(unrelated);
+  expect(mine.every(row => f.db.get(row) !== undefined)).toBe(true);
+  await f.close();
+  expect(mine.filter(row => f.db.get(row) !== undefined)).toEqual([]);
+  expect(foreign.map(row => f.db.get(row))).toEqual(foreign);
+  expect(f.db.get(unrelated)).toEqual(unrelated);
+});
+
+for (const fault of ["wrong-prefix", "delete-failed"] as const) it(`company close retains its fence on suggestion cleanup ${fault} and resumes`, async () => {
+  const f = await fixture();
+  const rate = { pk: `ORG#${f.orgId}`, sk: "CODE_SUGGEST_RATE#owner", entityType: "CODE_SUGGESTION_RATE", orgId: f.orgId, developerId: "owner" };
+  f.db.set(rate);
+  const send = f.db.send.bind(f.db);
+  let injected = false;
+  f.db.send = async command => {
+    if (fault === "wrong-prefix" && command.constructor.name === "QueryCommand" && (command.input.ExpressionAttributeValues as Record<string, unknown> | undefined)?.[":prefix"] === "CODE_SUGGEST_RATE#") {
+      injected = true;
+      return { Items: [f.db.get(orgMemberKey(f.orgId, "owner"))] };
+    }
+    if (fault === "delete-failed" && command.constructor.name === "TransactWriteCommand" && JSON.stringify(command.input).includes(rate.sk)) {
+      injected = true;
+      throw new Error("unavailable");
+    }
+    return send(command);
+  };
+  await expect(f.close()).rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
+  expect(injected).toBe(true);
+  expect(f.db.get(orgMetaKey(f.orgId))?.closingAt).toBeDefined();
+  expect(f.db.get(orgMetaKey(f.orgId))?.closedAt).toBeUndefined();
+  expect(f.db.get(orgMemberKey(f.orgId, "owner"))).toBeDefined();
+  expect(f.db.get(rate)).toEqual(rate);
+  f.db.send = send;
+  await f.close();
+  expect(f.db.get(rate)).toBeUndefined();
+  expect(f.db.get(orgMetaKey(f.orgId))?.closedAt).toBeDefined();
+});
