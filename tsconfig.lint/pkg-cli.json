@@ -1,6 +1,0 @@
-{
-  "extends": "./base.json",
-  "include": [
-    "../packages/cli/**/*.ts"
-  ]
-}

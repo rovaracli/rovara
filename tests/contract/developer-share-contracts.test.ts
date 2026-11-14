@@ -1,7 +1,6 @@
 // tests/contract/developer-share-contracts.test.ts
 // Spec 025 phase 25c, Task 1: the shapes sharing adds. Every addition is optional, so a record or
 // answer written before 25c still parses.
-import { UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import {
   AdminShareModeRequestSchema,
@@ -25,7 +24,6 @@ import {
   sharedNoticeKey,
   sharedTaskKey,
 } from "../../packages/contracts/src/index.js";
-import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const TASK = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE = "22222222-2222-4222-8222-222222222222";
@@ -92,16 +90,6 @@ describe("share shapes (C1, C2, C6)", () => {
 
 describe("the shared thread's hourly notice claim (C10, F13)", () => {
   const subject = "T0BSHLLUGBD/C0123456789/1695500000.000001";
-  const claim = async (db: FakeDynamoDb, now: number, kind: "view" | "closed" = "view") => {
-    try {
-      await db.send(new UpdateCommand({ TableName: "threads", ...sharedNoticeClaim(subject, now, kind) }));
-      return true;
-    } catch (error) {
-      if (error instanceof Error && error.name === "ConditionalCheckFailedException") return false;
-      throw error;
-    }
-  };
-
   it("claims the thread's SHARED_NOTICE item, and keeps it two intervals", () => {
     expect(sharedNoticeClaim(subject, 1_000_000, "view")).toEqual({
       Key: sharedNoticeKey(subject),
@@ -112,38 +100,13 @@ describe("the shared thread's hourly notice claim (C10, F13)", () => {
     });
   });
 
-  it("lets one caller through per thread per 3,600 seconds", async () => {
-    const db = new FakeDynamoDb();
-    expect(await claim(db, 1_000_000)).toBe(true);
-    expect(await claim(db, 1_000_000)).toBe(false);
-    expect(await claim(db, 1_003_599)).toBe(false);
-    expect(await claim(db, 1_003_600)).toBe(true);
-    expect(db.get(`THREAD#${subject}`, "SHARED_NOTICE")).toMatchObject({ noticedAt: 1_003_600, expiresAt: 1_010_800 });
-  });
-
-  it("claims the closed notice apart from the view-only one, on the same item (live check)", async () => {
+  it("claims the closed notice apart from the view-only one, on the same item", () => {
     expect(sharedNoticeClaim(subject, 1_000_000, "closed")).toEqual({
       Key: sharedNoticeKey(subject),
       UpdateExpression: "SET closedNoticedAt = :now, expiresAt = :expires",
       ConditionExpression: "attribute_not_exists(closedNoticedAt) OR closedNoticedAt <= :cutoff",
       ExpressionAttributeValues: { ":now": 1_000_000, ":expires": 1_007_200, ":cutoff": 996_400 },
     });
-    const db = new FakeDynamoDb();
-    // A marker written before this change holds only noticedAt: it blocks the view-only notice, not the closed one.
-    expect(await claim(db, 1_000_000)).toBe(true);
-    expect(await claim(db, 1_001_080, "closed")).toBe(true);
-    expect(await claim(db, 1_002_000, "closed")).toBe(false);
-    expect(await claim(db, 1_002_000, "view")).toBe(false);
-    expect(await claim(db, 1_004_680, "closed")).toBe(true);
-    expect(db.get(`THREAD#${subject}`, "SHARED_NOTICE")).toMatchObject({ noticedAt: 1_000_000, closedNoticedAt: 1_004_680, expiresAt: 1_011_880 });
-  });
-
-  it("refuses a view-only claim after any closed claim, even one older than an hour (closed wins)", async () => {
-    const db = new FakeDynamoDb();
-    expect(await claim(db, 1_000_000, "closed")).toBe(true);
-    expect(await claim(db, 1_000_010, "view")).toBe(false);
-    expect(await claim(db, 1_000_000 + 2 * 3_600, "view")).toBe(false);
-    expect(db.get(`THREAD#${subject}`, "SHARED_NOTICE")).not.toHaveProperty("noticedAt");
   });
 });
 

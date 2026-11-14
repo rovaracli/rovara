@@ -11,49 +11,21 @@
     "infra"
   ],
   "scripts": {
-    "build": "tsc -b && node scripts/check-worker-dist.ts && npm run build:web",
-    "check:worker-dist": "node scripts/check-worker-dist.ts",
+    "build": "tsc -b && npm run build:web",
     "clean": "tsc -b --clean",
     "lint": "node scripts/lint-shards.ts",
     "lint:single": "node --max-old-space-size=14336 node_modules/eslint/bin/eslint.js .",
-    "agentx": "node packages/cli/dist/bin.js",
-    "preflight": "tsx scripts/preflight.ts",
-    "eval": "tsx scripts/eval.ts",
     "test": "vitest run",
-    "test:contract": "vitest run tests/contract",
-    "test:integration": "vitest run tests/integration",
-    "test:e2e": "vitest run tests/e2e",
-    "acceptance:p0-native-journey": "P0_NATIVE_PROFILE=all sh scripts/acceptance/p0-native-journey.sh",
-    "test:boot-script": "AGENTX_BOOT_SCRIPT_DOCKER=1 vitest run tests/live/ec2-boot-script.test.ts",
     "typecheck": "tsc -b --pretty false",
     "typecheck:all": "tsc -b --pretty false && node scripts/typecheck-baseline.ts check",
     "typecheck:changed": "tsc -b --pretty false && node scripts/typecheck-baseline.ts check --changed",
     "typecheck:baseline": "tsc -b --pretty false && node scripts/typecheck-baseline.ts update",
-    "release:prod": "tsx scripts/release-production.ts",
-    "session:e2e": "tsx scripts/session-e2e.ts",
-    "release:build": "tsx scripts/release/build.ts",
-    "release:kit": "tsx scripts/release/synth-kit.ts",
-    "release:bundle": "tsx scripts/release/bundle.ts",
-    "release:installer": "tsx scripts/release/installer.ts",
-    "release:verify": "tsx scripts/release/verify.ts",
-    "release:pack-cli": "tsx scripts/release/pack-cli.ts",
-    "swebench:runner-image": "tsx scripts/swebench-runner-image.ts",
-    "infra:synth": "npm run build --workspace @agentx/infra && cdk synth --app 'node infra/dist/bin/agentx.js'",
+    "infra:synth": "npm run build --workspace @agentx/infra && cdk synth --app \"node infra/dist/bin/agentx.js\" -c rovaraCloudApp=production -q && cdk synth --app \"node infra/dist/bin/agentx.js\" -c rovaraCloudPipeline=production -q",
     "cloud:local": "tsx scripts/cloud-server.ts",
     "build:web": "npm run build --workspace @agentx/web && npx tsx scripts/web-precompress.ts"
   },
   "devDependencies": {
-    "@aws-sdk/client-cloudformation": "3.1134.0",
-    "@aws-sdk/client-ec2": "3.1134.0",
-    "@aws-sdk/client-kms": "3.1134.0",
-    "@aws-sdk/client-lambda": "3.1134.0",
-    "@aws-sdk/client-service-quotas": "3.1134.0",
-    "@aws-sdk/client-sfn": "3.1134.0",
-    "@aws-sdk/client-ssm": "3.1134.0",
-    "@aws-sdk/client-sts": "3.1134.0",
-    "@axe-core/playwright": "4.13.0",
     "@eslint/js": "10.0.1",
-    "@playwright/test": "1.64.0",
     "@testing-library/dom": "10.4.2",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.7",
@@ -62,15 +34,10 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
     "axe-core": "4.13.0",
-    "e2e": "file:upstream/e2e-0.20.0.tgz",
     "esbuild": "0.28.2",
     "eslint": "10.10.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "jsdom": "29.1.1",
-    "jsonata": "2.2.1",
-    "micromark": "4.0.3",
-    "micromark-extension-gfm": "3.0.0",
-    "playwright-core": "1.64.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "tsx": "4.23.13",
@@ -80,15 +47,6 @@
     "vitest": "5.0.3"
   },
   "overrides": {
-    "minimatch": "11.0.3",
-    "@earendil-works/pi-coding-agent": {
-      "undici": "8.12.2"
-    },
-    "e2e": {
-      "zod": "4.6.6"
-    },
-    "@modelcontextprotocol/sdk": {
-      "@hono/node-server": "2.1.3"
-    }
+    "minimatch": "11.0.3"
   }
 }

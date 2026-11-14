@@ -17,23 +17,10 @@ export default tseslint.config(
       "**/dist/**",
       "**/node_modules/**",
       "cdk.out/**",
-      ".release-synth/**",
       "coverage/**",
-      "tests/fixtures/e2e-web-api-app/**",
       "tests/fixtures/test-services-escape-project/**",
-      "tests/support/stdio-mcp-fixture.mjs",
-      "tests/support/stdio-runner-fixture.mjs",
-      "tests/linux/mcp-runner/adversary-mcp.mjs",
-      "tests/staging/selfcheck-mcp/**",
-      "packages/verifier/assets/qualification-app/**",
-      "tests/fixtures/orders-web-starter/**",
       "packages/audit-verifier/scripts/**",
       "**/.test-build/**",
-      "tests/fixtures/orders-web-m14/**",
-      "tests/fixtures/e2e-accounts-app/**",
-      "tests/fixtures/e2e-midstep-carriers/**",
-      "tests/fixtures/e2e-inferred-web-app/**",
-      "tests/fixtures/orders-web-m13/**",
       "eslint.config.js",
       ...alreadyLinted,
     ],
@@ -54,7 +41,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["packages/ui/**/*.{ts,tsx}", "packages/web/**/*.{ts,tsx}", "tests/web/**/*.{ts,tsx}", "tests/web-e2e/**/*.{ts,tsx}"],
+    files: ["packages/ui/**/*.{ts,tsx}", "packages/web/**/*.{ts,tsx}", "tests/web/**/*.{ts,tsx}"],
     languageOptions: { parserOptions: { project: false, projectService: { allowDefaultProject: ["packages/web/vite.config.ts"] } } },
     plugins: { "react-hooks": reactHooks },
     rules: {
@@ -85,16 +72,6 @@ export default tseslint.config(
   {
     files: webSafeFiles,
     rules: { "no-restricted-imports": ["error", { paths: ["typescript", "@rovara/audit-verifier"], patterns: ["node:*", "typescript/*", "@rovara/audit-verifier/*"] }] },
-  },
-  {
-    // The static rovara.dev/join forwarder (Plan 2, Task 6): plain browser scripts, outside the TypeScript projects.
-    files: ["web/**/*.js"],
-    ...tseslint.configs.disableTypeChecked,
-    languageOptions: {
-      sourceType: "script",
-      parserOptions: { project: false },
-      globals: { document: "readonly", fetch: "readonly", history: "readonly", location: "readonly", URL: "readonly", URLSearchParams: "readonly" },
-    },
   },
   {
     // Plain Node scripts outside the TypeScript projects (Plan 2, Task 17: the Public Suffix List generator).

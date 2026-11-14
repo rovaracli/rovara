@@ -2,8 +2,6 @@
 // the default test timeout leaves room for them (final review M4).
 import { describe, expect, it } from "vitest";
 import config from "../../vitest.config.js";
-import nativeP0Config from "../../vitest.native-p0.config.js";
-import { nativeP0Files } from "../support/vitest-shared-config.js";
 
 describe("the test runner's configuration", () => {
   it("gives every test, CDK synths included, 60 seconds", () => {
@@ -12,14 +10,5 @@ describe("the test runner's configuration", () => {
 
   it("removes the CDK assemblies each test file leaves when it ends, so a shard never fills the disk", () => {
     expect(config.test?.setupFiles).toEqual(["tests/support/test-file-temp-dir.ts"]);
-  });
-
-  it("keeps the three required contained P0 journeys in an explicit no-empty native profile", () => {
-    expect(config.test?.exclude).toEqual(expect.arrayContaining(nativeP0Files));
-    expect(nativeP0Config.test?.include).toEqual(nativeP0Files);
-    expect(nativeP0Config.test?.passWithNoTests).toBe(false);
-    expect(nativeP0Config.test?.globalSetup).toEqual(config.test?.globalSetup);
-    expect(nativeP0Config.test?.testTimeout).toBe(config.test?.testTimeout);
-    expect(nativeP0Config.test?.setupFiles).toEqual(config.test?.setupFiles);
   });
 });

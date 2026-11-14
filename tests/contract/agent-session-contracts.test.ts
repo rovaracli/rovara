@@ -1,5 +1,4 @@
 // Plan 5 Task 1: the agent session contracts: ids, limits, records, events, views, keys and error codes.
-import { TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { describe, expect, it } from "vitest";
 import { atLeast, newPrefixedId } from "../../packages/contracts/src/agent-node.js";
 import {
@@ -77,7 +76,6 @@ import {
   SessionViewSchema,
 } from "../../packages/contracts/src/session-views.js";
 import * as contracts from "../../packages/contracts/src/index.js";
-import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 
 const ORG_A = OrgIdSchema.parse("org_aaaaaaaaaaaaaaaaaaaa");
 const ORG_B = OrgIdSchema.parse("org_bbbbbbbbbbbbbbbbbbbb");
@@ -726,38 +724,5 @@ describe("error codes", () => {
       localAgentsNotAllowedOnProjectMessage("web"),
     ];
     for (const message of messages) expect(message).not.toContain("—");
-  });
-});
-
-describe("FakeDynamoDb.transactions", () => {
-  it("lists the items of each transaction, in the order sent", async () => {
-    const table = new FakeDynamoDb();
-    const put = (id: string) => ({ Put: { TableName: "State", Item: { pk: `T#${id}`, sk: "META", id } } });
-    await table.send(new TransactWriteCommand({ TransactItems: [put("1"), put("2")] }));
-    await table.send(new TransactWriteCommand({ TransactItems: [put("3")] }));
-    expect(table.transactions()).toEqual([[put("1"), put("2")], [put("3")]]);
-  });
-
-  it("holds nothing before a transaction and ignores other commands", async () => {
-    const table = new FakeDynamoDb();
-    expect(table.transactions()).toEqual([]);
-    table.set({ pk: "A", sk: "B" });
-    expect(table.transactions()).toEqual([]);
-  });
-
-  it("lists a transaction a condition cancelled too, since it was sent", async () => {
-    const table = new FakeDynamoDb();
-    table.set({ pk: "A", sk: "B" });
-    const put = { Put: { TableName: "State", Item: { pk: "A", sk: "B" }, ConditionExpression: "attribute_not_exists(pk)" } };
-    await expect(table.send(new TransactWriteCommand({ TransactItems: [put] }))).rejects.toThrow();
-    expect(table.transactions()).toEqual([[put]]);
-  });
-
-  it("hands back copies, so a caller cannot change what was recorded", async () => {
-    const table = new FakeDynamoDb();
-    await table.send(new TransactWriteCommand({ TransactItems: [{ Put: { TableName: "State", Item: { pk: "A", sk: "B" } } }] }));
-    const first = table.transactions();
-    first[0]?.splice(0, 1);
-    expect(table.transactions()[0]).toHaveLength(1);
   });
 });

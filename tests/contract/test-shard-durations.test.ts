@@ -9,11 +9,10 @@ import config from "../../vitest.config.js";
 import { durationsFromReport, median, renderTimings } from "../../scripts/test-shard-timings.js";
 import { DurationSequencer } from "../support/duration-sequencer.js";
 import { MIN_WEIGHT_SECONDS, TIMINGS_PATH, loadTimings, parseTimings, planShards, shardTotals, weightOf } from "../support/duration-shards.js";
-import { nativeP0Files } from "../support/vitest-shared-config.js";
 
 const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "cypress", ".git", ".test-build"]);
 
-/** Every file the root vitest config includes: tests/**\/*.test.ts and packages/**\/*.test.ts, minus node_modules, dist and the native journeys. */
+/** Every file the root vitest config includes: tests/**\/*.test.ts and packages/**\/*.test.ts, minus node_modules and dist. */
 function testFiles(): string[] {
   const found: string[] = [];
   const walk = (directory: string): void => {
@@ -26,7 +25,7 @@ function testFiles(): string[] {
   };
   walk("tests");
   walk("packages");
-  return found.filter((file) => !nativeP0Files.includes(file)).sort();
+  return found.sort();
 }
 
 const SHARDS = 6;
@@ -35,9 +34,8 @@ const timings = loadTimings(TIMINGS_PATH);
 
 describe("the duration-balanced test shards", () => {
   it("find the test files the root vitest config runs", () => {
-    expect(files.length).toBeGreaterThan(500);
+    expect(files.length).toBeGreaterThan(200);
     expect(files).toContain("tests/contract/test-shard-durations.test.ts");
-    expect(files).not.toContain("tests/e2e/m1-web-journey.test.ts");
   });
 
   it("give every test file to exactly one of the six shards", () => {

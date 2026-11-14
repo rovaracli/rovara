@@ -1,8 +1,6 @@
 {
   "extends": "./tsconfig.lint.json",
   "include": [
-    "vitest.config.ts",
-    "vitest.native-p0.config.ts",
-    "vitest.lessons-dynamo.config.ts"
+    "vitest.config.ts"
   ]
 }

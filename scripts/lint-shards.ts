@@ -32,7 +32,6 @@ export const DIRECTORY_SHARDS: readonly { name: string; directory: string }[] = 
   { name: "web-ui", directory: "packages/ui" },
   { name: "web-app", directory: "packages/web" },
   { name: "web-tests", directory: "tests/web" },
-  { name: "web-e2e-tests", directory: "tests/web-e2e" },
 ];
 
 export interface Shard {
