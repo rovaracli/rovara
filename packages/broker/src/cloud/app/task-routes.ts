@@ -7,14 +7,19 @@
 //   close   `flow.close`, answered as `DeveloperCloseResponse`. The core's close has no worker preflight for unpublished work (vendor core/task-flow/close.ts says so), so this rule stands in for it and
 //           fails closed: a task whose coding step ran and whose candidate is not on an open pull request (the vendor's `candidateIsOnPullRequest`), is not merged and has no succeeded publication is not closed without `discard_unpublished` (Slack's close button sends it: the owner confirmed
 //           there). DEFERRED S3-CLOSE-PREFLIGHT.
-import { AgentXError, DeveloperTaskCloseRequestSchema, WorkflowDecisionRequestSchema, agentXError, type Principal } from "@rovara-code/contracts";
+//   retry, cancel, revise the plan  Code's session actions (`createSessionActionsService`, public #577) over the company runtime's own flow dependencies, so a retried step starts exactly as any core step does:
+//           through the flow's step fence (`cloudTaskAccess.checkStep`), its admission (Cloud's payer rules, money.ts) and the dispatch row. Code's actions check NO access of their own, so the route's
+//           `authorize` (Cloud's own check for the action) runs first, before anything is read for the action; a refusal leaves the task as it was. Revising the plan is the task's effective owner's alone (their
+//           own live message asked for the change, as on Code's local host). DEFERRED S3-RETRY-CANCEL-REVISE-WIRING (done at the 0.5.19 pin).
+import { AgentXError, ContinueDeveloperTaskRequestSchema, DeveloperTaskActionRequestSchema, DeveloperTaskCloseRequestSchema, WorkflowDecisionRequestSchema, agentXError, type Principal } from "@rovara-code/contracts";
+import { createSessionActionsService } from "@rovara-code/broker";
 import type { DeveloperCloseResponse, DeveloperTaskView, WorkflowSnapshot } from "@agentx/cloud-contracts";
 import { candidateIsOnPullRequest } from "@rovara-code/broker/core/build-step";
 import { RUN_LIMIT_OWNER_DECIDES_WORDS } from "../../approval-place/words.js";
 import { parse } from "../../aws/developer-tasks/common.js";
 import { CLOSE_REFUSED } from "../../aws/developer-tasks/close.js";
 import type { DeveloperCaller } from "../../aws/developer-routes/types.js";
-import { taskKey } from "../../developer/task-records.js";
+import { taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../../developer/task-records.js";
 import type { CoreTaskRoutes } from "../../rovara-code/task-routes.js";
 import { API_TOKEN_METHOD, BROWSER_SESSION_METHOD, BROWSER_STEP_UP_METHOD } from "../adapters/people/methods.js";
 import type { CloudApp } from "./app.js";
@@ -27,6 +32,10 @@ export const WORKFLOW_DOCUMENT_KIND = "workflow-document";
 export const NO_CREDENTIAL_WORDS = "This plan is decided from the Rovara app or the task's own Slack card, signed in as the person deciding.";
 export const ENGINE_UNAVAILABLE_WORDS = "Rovara could not reach this task's engine just now; try again in a minute.";
 export const NOT_YOURS_WORDS = "no task here that you can see";
+/** What anyone but the task's effective owner hears for "Revise the plan" (Cloud's own words for it, `agent-sessions/live-steer-revise.ts`). */
+export const REVISE_OWNER_ONLY_WORDS = "only the task owner can revise the plan with this change";
+/** A core task with no agent session had no live message, so nothing can revise its plan (Code's own words for a missing change). */
+export const REVISE_NO_SESSION_WORDS = "the message that asked for the change can no longer be found, so the plan cannot be revised with it; retry coding or close the task";
 /** `workflow policy does not allow skipping this stage`: Cloud's words for a skip (`decideWorkflow`'s `WorkflowTransitionError`), which no stage here allows. */
 export const SKIP_REFUSED_WORDS = "workflow policy does not allow skipping this stage";
 
@@ -146,6 +155,35 @@ export function createCoreTaskRoutes(deps: CoreTaskRoutesDeps): CoreTaskRoutes {
       await runtime.flow.close(taskCaller, taskId).catch(notYours);
       const task: DeveloperTaskView = await view();
       return { task, closed: task.status === "CLOSED", ...(task.status === "CLOSED" ? {} : { message: CLOSE_REFUSED }) };
+    },
+
+    async retry({ caller, taskId, value, authorize, view }) {
+      const request = parse(ContinueDeveloperTaskRequestSchema, value, {}, "workflow-retry");
+      await authorize();
+      const actions = createSessionActionsService((await runtimeOf(caller.orgId)).flow.deps);
+      await actions.retryBlockedStep(taskId, request.expectedRevision);
+      return { task: await view() };
+    },
+
+    async cancel({ caller, taskId, value, authorize, view }) {
+      parse(DeveloperTaskActionRequestSchema, value, {}, "cancel");
+      await authorize();
+      const actions = createSessionActionsService((await runtimeOf(caller.orgId)).flow.deps);
+      const stopped = await actions.cancelTask(taskId);
+      return { task: await view(), nothingRunning: stopped.nothingRunning, ...(stopped.message === undefined ? {} : { message: stopped.message }) };
+    },
+
+    async revisePlan({ caller, taskId, value, authorize, view }) {
+      await authorize();
+      const row = await deps.read(taskKey(taskId));
+      const owner = row === undefined ? undefined : tryEffectiveTaskOwner(row as unknown as DeveloperTaskRecord);
+      // The owner, first: anyone else hears "owners only" and nothing about the task's state (as Cloud's own press answers).
+      if (owner === undefined || owner.developerId !== caller.developerId) throw agentXError("FORBIDDEN", REVISE_OWNER_ONLY_WORDS);
+      const sessionId = row!["sessionId"];
+      if (typeof sessionId !== "string" || sessionId === "") throw agentXError("CONFIG_INVALID", REVISE_NO_SESSION_WORDS);
+      const actions = createSessionActionsService((await runtimeOf(caller.orgId)).flow.deps);
+      await actions.revisePlanWithLiveMessage(caller.orgId, sessionId, { taskId, ownerDeveloperId: owner.developerId }, value);
+      return { task: await view() };
     },
   };
 }

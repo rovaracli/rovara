@@ -20,7 +20,7 @@ import { API_TOKEN_METHOD, BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD } from "../
 
 /**
  * The credentials that stay good for many decisions: a signed-in browser session, a developer token and a Slack user are the same person deciding again (Cloud's own approvals never spent them). Kept here,
- * with the one other place that names the chat-slack method, so the root has one list of the methods it knows by name (seat-limits.ts applies it to the gate's store).
+ * with the one other place that names the chat-slack method, so the root has one list of the methods it knows by name (runtime.ts gives it to the decision gate as its policy, `reusableMethods`).
  */
 export const REUSABLE_METHODS: readonly string[] = [BROWSER_SESSION_METHOD, API_TOKEN_METHOD, CHAT_SLACK_METHOD];
 

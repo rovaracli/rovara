@@ -6,9 +6,11 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
+import { companyScoped, orgProjectCatalogKey, projectMemberKey, projectRevisionKey } from "@rovara-code/contracts";
 import { createCloudApp, slackPressToken } from "../../packages/broker/src/cloud/app/index.js";
 import { BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD, createCloudIdentityProvider } from "../../packages/broker/src/cloud/adapters/people/index.js";
+import { API_TOKEN_METHOD, BROWSER_STEP_UP_METHOD } from "../../packages/broker/src/cloud/adapters/people/methods.js";
+import { REUSABLE_METHODS } from "../../packages/broker/src/cloud/app/slack-work.js";
 import { PEOPLE_ORG, SLACK_TEAM, type Person } from "../support/cloud-people-world.js";
 import { CORE_CALLBACK_ACTIONS, cloudDeciderRole, coreInUseItem, coreInUseKey, ensureCoreInUse, createCoreIntentHook, cloudTaskFacts, createCoreCallbackRouter, engineStampKey } from "../../packages/broker/src/cloud/app/index.js";
 import { SEAT_LIMIT_UNAVAILABLE, createSeatLimits } from "../../packages/broker/src/cloud/app/index.js";
@@ -673,18 +675,24 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     await slackDecide(fourth.taskId, "EvReuse2");
     expect(await decisionsOf(r, third.taskId), "the Slack user's first card").toHaveLength(1);
     expect(await decisionsOf(r, fourth.taskId), "the same Slack user, a second card").toHaveLength(1);
-    // The filter itself: reusable methods lose their spent-once marker in a decision's transaction, the step-up keeps it, and a non-decision transaction is untouched.
+    // The gate's own policy (#582, `policy.reusableMethods`): no decision wrote an across-requests spent marker for a browser session or a Slack user, and each wrote its per-request proof marker.
+    const markers = (await r.world.store.query({ pk: companyScoped(PEOPLE_ORG, "APPROVAL_PROOF") })).items;
+    expect(markers.filter((item) => item["entityType"] === "APPROVAL_PROOF_SPENT").map((item) => item["method"])).toEqual([]);
+    expect(new Set(markers.filter((item) => item["entityType"] === "APPROVAL_PROOF_USED").map((item) => item["method"]))).toEqual(new Set([BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD]));
+    // DEFERRED S3-REUSABLE-METHODS-POLICY (done at the 0.5.19 pin): the seat-limits store wrapper no longer drops anything from a decision's transaction (the gate decides what it writes), so a failed item's
+    // index in the gate's explanation of a lost race points at the item it names.
     const seen: unknown[][] = [];
     const store = createSeatLimits().fenceStore({ transact: async (items: unknown[]) => { seen.push(items); return { applied: true, failed: [] }; } } as never) as unknown as { transact(items: unknown[]): Promise<unknown> };
     const spent = (method: string) => ({ kind: "put", item: { entityType: "APPROVAL_PROOF_SPENT", method } });
     const used = (method: string) => ({ kind: "put", item: { entityType: "APPROVAL_PROOF_USED", method } });
-    await store.transact([{ kind: "put", item: { entityType: "APPROVAL_DECISION" } }, used("browser-session"), used("browser-step-up"), spent("browser-session"), spent("api-token"), spent("chat-slack"), spent("browser-step-up")]);
-    await store.transact([spent("browser-session")]);
-    // The per-request proof marker (a retry of the same request is the same decision) is kept for every method; only the across-requests spent marker of a reusable method goes.
-    expect(seen[0]!.map((item) => `${(item as { item: { entityType: string } }).item.entityType}:${(item as { item: { method?: string } }).item.method ?? ""}`)).toEqual([
-      "APPROVAL_DECISION:", "APPROVAL_PROOF_USED:browser-session", "APPROVAL_PROOF_USED:browser-step-up", "APPROVAL_PROOF_SPENT:browser-step-up",
-    ]);
-    expect(seen[1]).toHaveLength(1);
+    const decision = [{ kind: "put", item: { entityType: "APPROVAL_DECISION" } }, used("browser-session"), used("browser-step-up"), spent("browser-session"), spent("api-token"), spent("chat-slack"), spent("browser-step-up")];
+    await store.transact(decision);
+    expect(seen[0]).toEqual(decision);
+  });
+
+  it("the gate's policy names exactly Cloud's reusable methods, and the step-up is not among them (a sign-in for one card)", () => {
+    expect([...REUSABLE_METHODS].sort()).toEqual([API_TOKEN_METHOD, BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD].sort());
+    expect(REUSABLE_METHODS).not.toContain(BROWSER_STEP_UP_METHOD);
   });
 
   it("HIGH: a retry of the same decision request is `replayed`, and a fresh request id on the same task, once decided, is refused (the markers still do their per-request work)", async () => {

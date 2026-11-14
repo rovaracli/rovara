@@ -18,12 +18,12 @@ import type { DeveloperCaller } from "../developer-routes.js";
 import { cancelAgentRun } from "../../agents/run-engine.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { CLOSED_TASK, get, iso, log, parse, partyOfTaskActor, putNew, turnRecordFailed, turnTable } from "./common.js";
-import { accessFence, authorizeLegacyTaskAction, authorizeTaskAction } from "./access.js";
+import { accessFence, authorizeLegacyTaskAction, authorizeTaskAction, authorizeTaskActor } from "./access.js";
 import { taskView } from "./task-view.js";
 import { syncIndex } from "./task-index.js";
 import { retryTaskWorkflow } from "./workflow-retry.js";
 import { releaseFinishedTaskQuietly } from "./release.js";
-import { CORE_CANCEL_NOT_AVAILABLE_WORDS, coreTaskRoutes } from "../../rovara-code/task-routes.js";
+import { coreTaskRoutes } from "../../rovara-code/task-routes.js";
 
 /** Who acts on a task: its owner under the task's own rules, or (Plan 5) the person whose session level the session route checked. */
 export type TaskActor = { kind: "owner"; caller: DeveloperCaller } | { kind: "session"; caller: DeveloperCaller };
@@ -96,9 +96,16 @@ export async function cancelTask(deps: DeveloperTaskRouteDependencies, caller: D
 
 /** The cancel and whether it found nothing to stop (the answer a session's Stop button needs: "Stop requested" is only true when something was running or was ended). */
 async function cancelTaskWithOutcome(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView; nothingRunning: boolean; message?: string }> {
-  // S3 item 7: the core has no stop of a single run; a core-stamped task is never cancelled by code that reads rows the core does not write.
+  // S3 (0.5.19 pin): a core-stamped task is stopped by the core (Code's `cancelTask`), never by code that reads rows the core does not write, after the same check Cloud's own Stop makes (the session
+  // actor's included: `deps` is the acting copy `cancelTaskFor` made).
   const core = coreTaskRoutes();
-  if (core !== undefined && await core.owns(caller, taskId)) throw agentXError("CONFIG_INVALID", CORE_CANCEL_NOT_AVAILABLE_WORDS);
+  if (core !== undefined && await core.owns(caller, taskId)) {
+    return await core.cancel({
+      caller, taskId, value,
+      authorize: async () => { await authorizeLegacyTaskAction(deps, caller, taskId, "control"); },
+      view: async () => await taskView(deps, (await authorizeTaskActor(deps, caller, taskId, "control")).task, { events: 0, details: false }),
+    });
+  }
   const request = parse(DeveloperTaskActionRequestSchema, value, deps, "cancel");
   const access = await authorizeLegacyTaskAction(deps, caller, taskId, "control");
   const { task } = access;

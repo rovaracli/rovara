@@ -263,10 +263,10 @@ const bearerOf = (header: string | undefined): string | undefined => /^Bearer (.
 export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
   if (request.method === "POST" && url.pathname === "/v1/dev/tasks") return startTask(deps, caller, body(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/tasks") return listTasks(deps, caller, url);
-  // S3 item 7: a Cloud workflow action on a task the core runs is refused (decide, close and cancel answer for themselves, in their own functions); a People change and sharing stay Cloud's.
+  // S3 item 7: a Cloud workflow action on a task the core runs is refused (decide, close, retry, cancel and revise-plan answer for themselves, in their own functions); a People change and sharing stay Cloud's.
   const core = coreTaskRoutes();
   const taskPost = core === undefined || request.method !== "POST" ? null : /^\/v1\/dev\/tasks\/([^/]+)\/(.+)$/.exec(url.pathname);
-  if (core !== undefined && taskPost !== null && taskPost[2] !== "cancel" && !CORE_TASK_ANSWERED_ACTIONS.has(taskPost[2]!) && !CORE_TASK_CLOUD_ACTIONS.has(taskPost[2]!) && await core.owns(caller, safeDecode(taskPost[1]!))) {
+  if (core !== undefined && taskPost !== null && !CORE_TASK_ANSWERED_ACTIONS.has(taskPost[2]!) && !CORE_TASK_CLOUD_ACTIONS.has(taskPost[2]!) && await core.owns(caller, safeDecode(taskPost[1]!))) {
     throw agentXError("CONFIG_INVALID", coreActionWords(taskPost[2]!));
   }
   const publicationContextRoute = /^\/v1\/dev\/tasks\/([^/]+)\/e2e-publication-context$/.exec(url.pathname);

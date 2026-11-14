@@ -2,7 +2,11 @@
 import { randomUUID } from "node:crypto";
 import { reviseTaskPlan, type RevisePlanHost } from "../../agent-sessions/live-steer-revise.js";
 import type { DeveloperCaller } from "../developer-routes.js";
-import { accessFence, authorizeTaskAction, type AuthorizedTask } from "./access.js";
+import type { DeveloperTaskView } from "@agentx/cloud-contracts";
+import { requireNewWorkAllowed } from "../../developer/project-roles.js";
+import { requireProjectSendBackRole } from "../../developer/task-access.js";
+import { coreTaskRoutes } from "../../rovara-code/task-routes.js";
+import { accessFence, authorizeTaskAction, authorizeTaskActor, type AuthorizedTask } from "./access.js";
 import { partyOfTaskActor, putNew, turnTable } from "./common.js";
 import { aiToolTurn } from "../../developer/task-records.js";
 import { syncIndex } from "./task-index.js";
@@ -23,4 +27,22 @@ export const revisePlanHost: RevisePlanHost<AuthorizedTask> = {
   view: async (d, c, id) => { const fresh = (await authorizeTaskAction(d, c, id, "work")).task; const view = await taskView(d, fresh, { events: 0, details: false }); await syncIndex(d, fresh, view.status, view.updatedAt); return { task: view }; },
 };
 
-export const reviseTaskWorkflowPlan = (deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown) => reviseTaskPlan(deps, caller, taskId, value, revisePlanHost);
+/**
+ * The task route's "Revise the plan". S3 (0.5.19 pin): a task the core engine runs is revised by the core (Code's `revisePlanWithLiveMessage`, the effective owner only), after the checks Cloud's own press
+ * makes before it starts planning again: the `work` action, an archived project, and the send-back's project access rule.
+ */
+export async function reviseTaskWorkflowPlan(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<{ task: DeveloperTaskView }> {
+  const core = coreTaskRoutes();
+  if (core !== undefined && await core.owns(caller, taskId)) {
+    return await core.revisePlan({
+      caller, taskId, value,
+      authorize: async () => {
+        const access = await authorizeTaskAction(deps, caller, taskId, "work");
+        await requireNewWorkAllowed(deps, caller.orgId, access.task.project, "contributor", "task");
+        await requireProjectSendBackRole(deps, access.task, caller);
+      },
+      view: async () => await taskView(deps, (await authorizeTaskActor(deps, caller, taskId, "work")).task, { events: 0, details: false }),
+    });
+  }
+  return await reviseTaskPlan(deps, caller, taskId, value, revisePlanHost);
+}

@@ -28,7 +28,7 @@ import { cloudFlowOptions, type CoreInbound, type CoreRuntimeOptions, type CoreS
 import type { CloudCompanySettings } from "./settings-mapping.js";
 import type { CloudModelFacts } from "./model-mapping.js";
 import { createSeatLimits } from "./seat-limits.js";
-import { createClientDecisionGate, createCloudChannelWork, createSlackIntake, type StartTask } from "./slack-work.js";
+import { REUSABLE_METHODS, createClientDecisionGate, createCloudChannelWork, createSlackIntake, type StartTask } from "./slack-work.js";
 import type { CoreTaskEndedDeps } from "../rows/core-rows.js";
 import type { CloudAppOptions } from "./app.js";
 
@@ -150,12 +150,14 @@ export function cloudCoreRuntime(wiring: CloudCoreWiring): CloudAppOptions["runt
       });
       // v2's limits on a maintainer's seat (see seat-limits.ts): the decision's details are noted for the approvers adapter, which refuses a maintainer's proof for a close-as-answered or an acknowledged run limit.
       const seats = createSeatLimits({ read: async (key) => await store.get(key) });
-      // TODO(0.5.19 re-pin, Code DECISIONS-SERVICE-POLICY): pass `policy: { reusableMethods: REUSABLE_METHODS }` here and drop the spent-marker filter in `seat-limits.ts` (`fenceStore`).
+      // The credentials good for many decisions (a browser session, a developer token, a Slack user) are the gate's own policy (#582): the gate writes no across-requests spent marker for them. The
+      // step-up is not among them (a sign-in for one card). DEFERRED S3-REUSABLE-METHODS-POLICY, done at the 0.5.19 pin.
       const service = createDecisionService({
         flow: flow.deps, blobs: registry.require("object-storage"), store: seats.fenceStore(store), approvers: seats.wrap(registry.require("approvers")), audit: registry.require("audit-sink"), companyId,
         identity: registry.require("identity"), now: wiring.now,
         ...(wiring.decisionSubjects === undefined ? {} : { subjects: wiring.decisionSubjects }),
         workflowSubject: { actorFor: cloudActorFor },
+        policy: { reusableMethods: REUSABLE_METHODS },
       });
       // Only the wrapped gate leaves this function: the service's own `actions` are built on the raw gate, which skips the seat limits, so they are not carried.
       const decisions = { gate: seats.gate(service.gate) };

@@ -12,10 +12,6 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { when, type ApprovalVerdict, type Approvers, type DocumentStore, type TransactItem } from "@rovara-code/contracts";
 import { orgMemberKey } from "@agentx/cloud-contracts";
 import { STANDING_ROLE_PREFIX } from "../adapters/people/methods.js";
-import { REUSABLE_METHODS } from "./slack-work.js";
-
-/** A decision's spent-once marker of a reusable method (`REUSABLE_METHODS`, slack-work.ts): Code's gate spends a method it is not told is reusable for ONE decision ever, across every request, and `createDecisionService` gives its gate no policy to say so, so the store the gate commits through leaves these markers out. `browser-step-up` keeps its own: it is a sign-in for one card. (DEFERRED S3-REUSABLE-METHODS-POLICY.) TODO(0.5.19 re-pin, Code DECISIONS-SERVICE-POLICY): when `createDecisionService` takes `policy`, pass `{ reusableMethods: REUSABLE_METHODS }` in `runtime.ts` and delete this filter; that also ends its one side effect, that a failed item's index in the gate's own explanation of a lost race can point past the markers it dropped. */
-const spentOnceOfReusable = (item: TransactItem): boolean => item.kind === "put" && item.item["entityType"] === "APPROVAL_PROOF_SPENT" && REUSABLE_METHODS.includes(item.item["method"] as string);
 
 interface Attempt { requestId: string; credentials: readonly { method: string; token: string }[]; details?: unknown }
 
@@ -73,11 +69,10 @@ export function createSeatLimits(options: { read?: (key: { pk: string; sk: strin
             const value = Reflect.get(target, property, target) as unknown;
             return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
           }
-          return async (rawItems: readonly TransactItem[]) => {
+          return async (items: readonly TransactItem[]) => {
             const held = context.getStore();
-            const decision = rawItems.some((item) => item.kind === "put" && item.item["entityType"] === "APPROVAL_DECISION");
-            // A decision's spent-once markers of a reusable method are left out (see `REUSABLE_METHODS`); every other item is the gate's own.
-            const items = decision ? rawItems.filter((item) => !spentOnceOfReusable(item)) : rawItems;
+            const decision = items.some((item) => item.kind === "put" && item.item["entityType"] === "APPROVAL_DECISION");
+            // Every item is the gate's own, in its order (which reusable methods leave no spent marker is the gate's policy, runtime.ts); the fence is added after them.
             if (!decision || held === undefined || held.verified.length === 0) return await target.transact(items);
             const fence: TransactItem[] = [];
             const seenTasks = new Set<string>();

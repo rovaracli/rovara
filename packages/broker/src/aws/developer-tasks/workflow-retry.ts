@@ -13,7 +13,7 @@ import { isRuntimeRenewedBlock, requireRenewalOnlyReapproval } from "../../e2e/r
 import { understandPrompt } from "../../rovara-code/understand.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { creatorGuard, get, iso, parse, partyOfTaskActor, putNew, taskBaseOption, turnTable } from "./common.js";
-import { type AuthorizedTask, accessFence, authorizeTaskAction, systemTaskAccess } from "./access.js";
+import { type AuthorizedTask, accessFence, authorizeTaskAction, authorizeTaskActor, systemTaskAccess } from "./access.js";
 import { resumeParkedTaskDispatch } from "./access-resume.js";
 import { taskView } from "./task-view.js";
 import { syncIndex } from "./task-index.js";
@@ -42,6 +42,7 @@ import { type AutomaticRetry, automaticRetryDecision, queueWorkflowUnderstand } 
 import { fedThroughUpdate, withCurrentThreadNotes } from "./thread-notes.js";
 import { requireNewWorkAllowed } from "../../developer/project-roles.js";
 import { requireProjectSendBackRole } from "../../developer/task-access.js";
+import { coreTaskRoutes } from "../../rovara-code/task-routes.js";
 
 /**
  * Plan self-check: the planner's automatic second run. A plan that parsed but failed AgentX's own checks (or an answer that could
@@ -85,8 +86,22 @@ export async function startTaskWorkflowPlanRevisionFromSystem(
   return accepted.duplicate ? "DUPLICATE" : "STARTED";
 }
 
+/** What Rovara's own retry (autofix, the recovery re-entry) is told for a task the core runs: the core retries its own steps. */
+export const CORE_TASK_AUTOMATIC_RETRY_REFUSED = "Rovara's own retry does not run on a task the new engine runs; the engine retries its own steps.";
+
 /** `afterRecovery`: this call is the one retryTaskWorkflow makes itself once it has blocked a stranded planning step; it never recovers twice. */
 export async function retryTaskWorkflow(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown, afterRecovery = false, automatic?: AutomaticRetry): Promise<{ task: DeveloperTaskView }> {
+  // S3 (0.5.19 pin): a task the core engine runs is retried by the core (Code's `retryBlockedStep`), from the route, the task page or a session, after Cloud's own check for a person's Retry. Rovara's own
+  // retries (autofix, this function's recovery re-entry) read workflow rows the core does not write, so they never run on a core task.
+  const core = coreTaskRoutes();
+  if (core !== undefined && await core.owns(caller, taskId)) {
+    if (afterRecovery || automatic !== undefined) throw agentXError("CONFIG_INVALID", CORE_TASK_AUTOMATIC_RETRY_REFUSED);
+    return await core.retry({
+      caller, taskId, value,
+      authorize: async () => { const access = await authorizeTaskAction(deps, caller, taskId, "retry"); await requireProjectSendBackRole(deps, access.task, caller); },
+      view: async () => await taskView(deps, (await authorizeTaskActor(deps, caller, taskId, "retry")).task, { events: 0, details: false }),
+    });
+  }
   const request = parse(ContinueDeveloperTaskRequestSchema, value, deps, "workflow-retry");
   const access = await authorizeTaskAction(deps, caller, taskId, "retry");
   const { task } = access;

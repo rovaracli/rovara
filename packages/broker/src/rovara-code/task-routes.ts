@@ -28,11 +28,30 @@ export interface CoreCloseInput {
   view: () => Promise<DeveloperTaskView>;
 }
 
+/**
+ * What a route gives the core for a task action Code's session actions run (retry, cancel, revise the plan). Code's actions check no access of their own (the host authorizes first, as Code's local session
+ * routes do), so `authorize` is Cloud's own check for the action, exactly the one the Cloud route makes (its role, the person's project role, an archived project), and the core calls it before it reads or
+ * does anything for the action. It throws Cloud's refusal.
+ */
+export interface CoreActionInput {
+  caller: DeveloperCaller;
+  taskId: string;
+  value: unknown;
+  authorize: () => Promise<void>;
+  view: () => Promise<DeveloperTaskView>;
+}
+
 export interface CoreTaskRoutes {
   /** Whether the core runs this task for the caller's company: the task's engine stamp says `core` and the row is the caller's company's. A task that is not found, or is another company's, is not the core's (Cloud's reader answers). Throws `RUNTIME_UNAVAILABLE` when it cannot be read. */
   owns(caller: DeveloperCaller, taskId: string): Promise<boolean>;
   decide(input: CoreDecideInput): Promise<{ task: DeveloperTaskView }>;
   close(input: CoreCloseInput): Promise<DeveloperCloseResponse>;
+  /** Retries the step the task is blocked at (Code's `retryBlockedStep`, at the revision the person saw when the request names one). */
+  retry(input: CoreActionInput): Promise<{ task: DeveloperTaskView }>;
+  /** Stops the task's running step (Code's `cancelTask`): the step waits for a Retry. `nothingRunning` when there was nothing to stop. */
+  cancel(input: CoreActionInput): Promise<{ task: DeveloperTaskView; nothingRunning: boolean; message?: string }>;
+  /** The owner's "Revise the plan with this change" after their live message stopped coding (Code's `revisePlanWithLiveMessage`). Only the task's effective owner. */
+  revisePlan(input: CoreActionInput): Promise<{ task: DeveloperTaskView }>;
 }
 
 let installed: CoreTaskRoutes | undefined;
@@ -49,14 +68,11 @@ export function coreTaskRoutes(): CoreTaskRoutes | undefined {
 /**
  * The POST actions under `/v1/dev/tasks/{id}/` that stay Cloud's for a core task: a People change and sharing write the task's own People rows and share record, which both engines read the same way.
  * Every other one is a Cloud workflow action (retry, send back, revise the plan, review, publish, feedback, a pull request, the canvas close-out, the E2E context) over workflow rows a core task does not
- * have, and is refused for it, in the words below, rather than run over rows it was not written for. Decide and close are the core's to answer; cancel is refused (below).
+ * have, and is refused for it, in the words below, rather than run over rows it was not written for. Decide, close, retry, cancel and revising the plan are the core's to answer.
  */
 export const CORE_TASK_CLOUD_ACTIONS: ReadonlySet<string> = new Set(["people/role", "people/take-ownership", "share"]);
-export const CORE_TASK_ANSWERED_ACTIONS: ReadonlySet<string> = new Set(["workflow/decision", "close"]);
-
-// TODO(re-pin, DEFERRED S3-RETRY-CANCEL-REVISE-WIRING): `workflow/retry`, `cancel` and `workflow/revise-plan` are refused below only until Code exports `retryBlockedStep`,
-// `createSessionControlHost().cancelTask` and `revisePlanWithLiveMessage` (a public Code PR). Once the pin carries them, answer these three in `cloud/app/task-routes.ts` (as decide and close are) and
-// delete their rows from `CORE_ACTION_WORDS`. A step blocked after the dispatch sweep's attempts (a take-over that never settled, a tripped fence) is retried through `retryBlockedStep` then.
+/** The actions the core answers in their own functions (decide, close, and Code's session actions: retry, cancel, revise the plan; DEFERRED S3-RETRY-CANCEL-REVISE-WIRING, wired at the 0.5.19 pin). */
+export const CORE_TASK_ANSWERED_ACTIONS: ReadonlySet<string> = new Set(["workflow/decision", "close", "workflow/retry", "cancel", "workflow/revise-plan"]);
 
 /** How every refusal below begins, so a person always reads the same plain first words. */
 export const CORE_NOT_AVAILABLE_PREFIX = "Not available on this task yet.";
@@ -64,7 +80,7 @@ const MORE_CHANGES = "To make more changes, close this task and start a new one 
 
 /**
  * What a person is told for each Cloud action a core task cannot do yet (owner decision 198: refused in plain words, never a generic error), by the action's route name. Each says what to do instead:
- * mostly, close the task and start a new one with the extra instructions. `cancel` is told the same way (close the task to stop it) until the core's own stop is wired.
+ * mostly, close the task and start a new one with the extra instructions. Retry, cancel and revising the plan are answered by the core (`CORE_TASK_ANSWERED_ACTIONS`), so they have no row.
  */
 export const CORE_ACTION_WORDS: Readonly<Record<string, string>> = {
   "workflow/send-back": `${CORE_NOT_AVAILABLE_PREFIX} ${MORE_CHANGES}`,
@@ -78,11 +94,7 @@ export const CORE_ACTION_WORDS: Readonly<Record<string, string>> = {
   "workflow/feedback-retry": `${CORE_NOT_AVAILABLE_PREFIX} To act on this feedback, close this task and start a new one that says what to change.`,
   "canvas-closeout/retry": `${CORE_NOT_AVAILABLE_PREFIX} The canvas close-out is not run for tasks on the new engine.`,
   "e2e-publication-context": `${CORE_NOT_AVAILABLE_PREFIX} End-to-end presentation checks are not run for tasks on the new engine.`,
-  "workflow/retry": `${CORE_NOT_AVAILABLE_PREFIX} To try this step again, close this task and start a new one with the same instructions.`,
-  "workflow/revise-plan": `${CORE_NOT_AVAILABLE_PREFIX} To revise the plan, close this task and start a new one with the changes you want.`,
-  "cancel": `${CORE_NOT_AVAILABLE_PREFIX} To stop the task, close it.`,
 };
 
 /** The words for an action: its own sentence, or (for an action no row names) the same plain first words and the close-and-start-again advice. Never a generic error. */
 export const coreActionWords = (action: string): string => CORE_ACTION_WORDS[action] ?? `${CORE_NOT_AVAILABLE_PREFIX} ${MORE_CHANGES}`;
-export const CORE_CANCEL_NOT_AVAILABLE_WORDS = CORE_ACTION_WORDS["cancel"]!;

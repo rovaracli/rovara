@@ -16,6 +16,10 @@ import { PRIYA } from "../support/agent-session-world.js";
 afterEach(() => installCoreTaskRoutes(undefined));
 
 const DIGEST = "d".repeat(64);
+/** The session actions a plan card never reaches (retry, cancel, revise the plan). */
+const UNUSED_ACTIONS: Pick<CoreTaskRoutes, "retry" | "cancel" | "revisePlan"> = {
+  retry: async () => { throw new Error("unused"); }, cancel: async () => { throw new Error("unused"); }, revisePlan: async () => { throw new Error("unused"); },
+};
 const SESSION = `ses_${"a".repeat(20)}`;
 
 async function setup(owns: boolean, decideImpl?: CoreTaskRoutes["decide"]) {
@@ -30,7 +34,7 @@ async function setup(owns: boolean, decideImpl?: CoreTaskRoutes["decide"]) {
   installCoreTaskRoutes({
     owns: async () => owns,
     decide: decideImpl ?? (async (input) => { decided.push(input); return { task: { taskId } as never }; }),
-    close: async () => { throw new Error("unused"); },
+    close: async () => { throw new Error("unused"); }, ...UNUSED_ACTIONS,
   });
   const developer = { documentClient: w.db, tableName: "state", developer: { signInTableName: "signin" }, now: () => w.clock.now, agents: w.deps } as unknown as DeveloperRouteDependencies;
   const who = { ...w.caller(PRIYA), browserSession: true as const };
@@ -55,7 +59,7 @@ describe("a HIGH plan card on a core task", () => {
     const approvalId = approvalIdOf(await press().then(() => undefined, (caught: unknown) => caught));
     const cookie = await w.browser(PRIYA, approvalId);
     const sessionSeenByTheCore: unknown[] = [];
-    installCoreTaskRoutes({ owns: async () => true, decide: async (input) => { decided.push(input); sessionSeenByTheCore.push(await w.decideStore.getSession(cookie)); return { task: {} as never }; }, close: async () => { throw new Error("unused"); } });
+    installCoreTaskRoutes({ owns: async () => true, decide: async (input) => { decided.push(input); sessionSeenByTheCore.push(await w.decideStore.getSession(cookie)); return { task: {} as never }; }, close: async () => { throw new Error("unused"); }, ...UNUSED_ACTIONS });
     expect(await press(cookie)).toMatchObject({ kind: "done" });
     expect(decided).toHaveLength(1);
     expect(decided[0]!.stepUpCookie).toBe(cookie);

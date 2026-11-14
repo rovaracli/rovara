@@ -42,8 +42,9 @@ export interface CloudCompanySettings {
   workspaceLimits?: { member: number; organization: number } | undefined;
   /**
    * The lighter flow (decisions 178 and 179): a small change skips the planning steps and gets one quick check. ON by default, for everyone; `LIGHTER_FLOW_ENABLED` is the switch back, and only the word
-   * "false" (any case, trimmed) turns it off (the same rule as `fx`). The core has no option of this name yet: the flow-P lanes (P1, P2) name it, and until a vendor re-pin carries it `mapCloudSettings` answers it
-   * in `lighterFlow` and does not pass it to the flow.
+   * "false" (any case, trimmed) turns it off (the same rule as `fx`). The 0.5.19 pin's core names it (`lighterFlow`), but the core refuses to build a flow with it on unless the install gives it the lighter flow's
+   * reviewer call (`tierReviewCall`, metered by `tierReviewMeter`), which Cloud does not wire yet (DEFERRED S3-LIGHTER-FLOW-REVIEWER). Until then `mapCloudSettings` answers it in `lighterFlow` and does not
+   * pass it to the flow, so a core task runs the whole plan.
    */
   lighterFlow: boolean;
   /** Cloud serves a connector write behind a person's approval (its approvers adapter is registered), so the core's rule may say yes. */
@@ -62,7 +63,7 @@ export interface UnmappedSetting {
 export interface CoreSettings {
   /** The flow options, to be spread into `createCoreRuntime`'s `flowOptions`. */
   flowOptions: Required<Pick<RegistryTaskFlowOptions, "understandFirst" | "planCheck" | "planSelfCheck" | "autofix" | "liveSteer" | "workflowDependenciesEnabled">> & Pick<RegistryTaskFlowOptions, "limits">;
-  /** Whether the lighter flow is on for this company (178: default ON). Not a flow option until the flow-P lanes are in the pin. */
+  /** Whether the lighter flow is on for this company (178: default ON). Not passed to the flow until Cloud wires the core's reviewer call (DEFERRED S3-LIGHTER-FLOW-REVIEWER). */
   lighterFlow: boolean;
   /** The project rules for the core's chains and custom agents. */
   projectRules: { allowConnectorWrites: boolean };
