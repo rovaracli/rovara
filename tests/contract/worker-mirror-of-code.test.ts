@@ -39,6 +39,10 @@ const KNOWN: Readonly<Record<string, readonly Known[]>> = {
     { reason: "Cloud only (lane SM3): the addresses of the stand-ins this run starts, the only ones the front may be pointed at", line: "const standInTargets = new Set(" },
     { reason: "Cloud only (lane SM3): `ROVARA_AWS_SAGEMAKER_HELPER` is given to the front after the same-run check", line: "ROVARA_AWS_SAGEMAKER_HELPER=" },
     { reason: "Code only: the mongodb helper family", line: "mongodb: { prepare: () => ({ env: [] }) }," },
+    // S3-10 (0.5.19 pin, Code 326dd73fc): Code's F1 model egress reserves its model helper's alias. The F1 bridge stays unwired in Cloud for 0.5.19 (controller: no modelBlock, createModelBridge or
+    // startModelHelper callers), so Cloud's worker starts no model helper and its run-network has no MODEL_HELPER_ALIAS to reserve. Mirror both lines with the bridge.
+    { reason: "Code only (F1, not wired in Cloud for 0.5.19): the model helper's alias, imported", line: "import { MODEL_HELPER_ALIAS, sweepServicesNetworks" },
+    { reason: "Code only (F1, not wired in Cloud for 0.5.19): the model helper's alias is reserved", line: '"app", MODEL_HELPER_ALIAS];' },
     { reason: "Cloud only (switch `pj`): `companyImageOf`", line: "function companyImageOf(reference: string, registry: string): string {" },
     { reason: "Cloud and Code differ in which image a helper starts (company image reference against imageReferences)", line: "plans.push({ request, index, entry, name: plainName(request.name)" },
   ],

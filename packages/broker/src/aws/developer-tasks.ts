@@ -94,7 +94,7 @@ import { proposeTaskOwnership, proposeTaskPeopleRole } from "../developer/task-p
 import { StatusReply } from "./status-reply.js";
 import { CORE_TASK_ANSWERED_ACTIONS, coreActionWords, CORE_TASK_CLOUD_ACTIONS, coreTaskRoutes } from "../rovara-code/task-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./developer-tasks/types.js";
-import { body, parse } from "./developer-tasks/common.js";
+import { bearerOf, body, parse } from "./developer-tasks/common.js";
 import { e2ePublicationContext } from "./developer-tasks/publication-context.js";
 import { codeOwnershipConfirmation, getTaskPeople, getTaskPeopleProposal, taskPeopleEffectsDependencies } from "./developer-tasks/task-people.js";
 import { getWorkflowFeedbackReview, submitWorkflowFeedbackDecision } from "./developer-tasks/feedback-review.js";
@@ -258,8 +258,6 @@ async function retryTaskWorkflowFeedback(deps: DeveloperTaskRouteDependencies, c
 }
 
 /** Every developer task route answers 200 with its body; errors are AgentXErrors. */
-const bearerOf = (header: string | undefined): string | undefined => /^Bearer (.+)$/iu.exec(header ?? "")?.[1];
-
 export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
   if (request.method === "POST" && url.pathname === "/v1/dev/tasks") return startTask(deps, caller, body(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/tasks") return listTasks(deps, caller, url);

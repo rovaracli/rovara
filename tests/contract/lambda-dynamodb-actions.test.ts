@@ -87,13 +87,27 @@ const PINS: Record<string, Pin[]> = {
   ],
 };
 /** Constructs the walk cannot follow, per Lambda: pinned so a new one is read. The broker's are lazy loads of store modules by the agent, chain and learning stores. */
+// The `(a value)` lines below are methods named `require` (a store's own `require`, the Cloud root's `registry.require(point)` and its type), not module requires: each was read. S3-10: the Cloud root's files
+// arrived with the root (the broker's entry since S3, and the dispatcher's core host, which the walk now follows through its literal dynamic import, as it now follows learning/settings.ts's ./grouping.js).
+const ROOT_REGISTRY_REQUIRES = [
+  "packages/broker/src/cloud/app/cloud-modules.ts: dynamic import or require of (a value)",
+  "packages/broker/src/cloud/app/core-runtime.ts: dynamic import or require of (a value)",
+  "packages/broker/src/cloud/app/entry.ts: dynamic import or require of (a value)",
+  "packages/broker/src/cloud/app/runtime.ts: dynamic import or require of (a value)",
+  "packages/broker/src/cloud/app/step-fence.ts: dynamic import or require of (a value)",
+];
 const UNRESOLVED: Record<string, string[]> = {
   broker: [
     "packages/broker/src/agents/owned-store.ts: dynamic import or require of (a value)",
     "packages/broker/src/agents/store.ts: dynamic import or require of (a value)",
     "packages/broker/src/chains/store.ts: dynamic import or require of (a value)",
-    "packages/broker/src/learning/settings.ts: dynamic import or require of ./grouping.js",
-  ],
+    ...ROOT_REGISTRY_REQUIRES,
+  ].sort(),
+  dispatcher: [
+    "packages/broker/src/agents/owned-store.ts: dynamic import or require of (a value)",
+    "packages/broker/src/agents/store.ts: dynamic import or require of (a value)",
+    ...ROOT_REGISTRY_REQUIRES,
+  ].sort(),
 };
 
 describe("every Lambda's reachable DynamoDB actions are granted on the State table, or pinned with a reason", () => {
@@ -163,13 +177,24 @@ describe("the walk reads units, follows imports and re-exports, and fails closed
     expect(reachableDynamoCalls("entry.ts", root).calls.map((call) => call.action).sort()).toEqual(["ConditionCheckItem", "UpdateItem"]);
     expect(actionsIn("new ScanCommand({}) new BatchWriteCommand({})").map((found) => found.action).sort()).toEqual(["BatchWriteItem", "Scan"]);
   });
-  it("a dynamic import, a require and a namespace import are reported, never skipped", () => {
+  it("a namespace import, a require and a dynamic import of a value or a missing module are reported, never skipped", () => {
     const root = fixture({
-      "entry.ts": "import * as store from \"./store.js\";\nexport const handler = async () => { await import(\"./store.js\"); store.x(); };\n",
+      "entry.ts": "import * as store from \"./store.js\";\nexport const handler = async (name: string) => { await import(name); await import(\"./gone.js\"); store.x(); require(name); };\n",
       "store.ts": "export const x = 1;\n",
     });
     const unresolved = reachableDynamoCalls("entry.ts", root).unresolved;
     expect(unresolved.some((line) => line.includes("import * as store"))).toBe(true);
-    expect(unresolved.some((line) => line.includes("dynamic import"))).toBe(true);
+    expect(unresolved.some((line) => line.includes("dynamic import or require of (a value)"))).toBe(true);
+    expect(unresolved.some((line) => line.includes("dynamic import or require of ./gone.js"))).toBe(true);
+  });
+
+  it("S3-10: a dynamic import of a literal module that exists is followed whole, so the calls behind it are reached (the dispatcher's core host)", () => {
+    const root = fixture({
+      "entry.ts": "export const handler = async () => { const loaded = await import(\"./late.js\"); return loaded; };\n",
+      "late.ts": `import { PutCommand } from "@aws-sdk/lib-dynamodb";\nexport async function write(client: { send(c: unknown): Promise<unknown> }) { await client.send(new PutCommand({ TableName: "t", Item: {} })); }\n`,
+    });
+    const reach = reachableDynamoCalls("entry.ts", root);
+    expect(reach.unresolved).toEqual([]);
+    expect(reach.calls.map((call) => call.action)).toContain("PutItem");
   });
 });

@@ -11,7 +11,7 @@ import { dirname, relative, resolve } from "node:path";
 //
 // What it over-approximates, said plainly: a class is one unit (every method of OrgStore counts when OrgStore is mentioned), an identifier mentioned only in a comment or a string counts, and every call counts
 // whatever table it names. The contract test therefore pins what the walk finds but the role lacks, per Lambda, in a reviewed list with a reason for each: a NEW reachable-but-ungranted action fails.
-// What it cannot follow: dynamic `import()`, `require`, and code reached through a name it cannot resolve (an identifier brought in by `import * as`); each is reported in `unresolved`, never skipped.
+// What it cannot follow: a dynamic `import()` of a non-literal or missing module, `require`, and code reached through a name it cannot resolve (an identifier brought in by `import * as`); each is reported in `unresolved`, never skipped.
 
 export type DynamoAction = "GetItem" | "PutItem" | "UpdateItem" | "DeleteItem" | "Query" | "Scan" | "BatchGetItem" | "BatchWriteItem" | "ConditionCheckItem";
 
@@ -125,6 +125,8 @@ export function reachableDynamoCalls(entry: string, root: URL): Reach {
       if (path !== undefined) info.stars.push(path);
     }
     for (const match of clean.matchAll(/\bimport\(\s*["'`]([^"'`]+)["'`]\s*\)|\brequire\(/g)) {
+      // A dynamic import of a literal relative module that exists is followed (S3-10: the dispatcher loads the core's dispatch host this way): the walk takes the whole module, as for `import * as`.
+      if (match[1] !== undefined && match[1].startsWith(".") && existsSync(target(match[1])!)) continue;
       if (match[1] === undefined || match[1].startsWith(".")) info.unresolved.push(`${relative(rootPath, file)}: dynamic import or require of ${match[1] ?? "(a value)"}`);
     }
     return info;
@@ -160,6 +162,14 @@ export function reachableDynamoCalls(entry: string, root: URL): Reach {
     const unit = info.units.get(name);
     if (unit === undefined) continue;
     for (const found of actionsIn(unit.text)) calls.push({ ...found, file: relative(rootPath, file), unit: name });
+    // A literal relative dynamic import in this unit: every unit of that module is reached (followed whole; never skipped).
+    for (const match of stripComments(unit.text).matchAll(/\bimport\(\s*["'`](\.[^"'`]+)["'`]\s*\)/g)) {
+      const path = resolve(dirname(file), match[1]!.replace(/\.js$/u, ".ts"));
+      const loaded = existsSync(path) ? load(path) : undefined;
+      if (loaded === undefined) continue;
+      if (!filesSeen.has(path)) { filesSeen.add(path); unresolved.push(...loaded.unresolved); }
+      for (const unitName of loaded.units.keys()) queue.push({ file: path, name: unitName });
+    }
     for (const identifier of new Set(unit.text.match(IDENTIFIER) ?? [])) {
       if (identifier === name) continue;
       if (info.units.has(identifier)) { queue.push({ file, name: identifier }); continue; }

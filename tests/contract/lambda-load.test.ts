@@ -56,7 +56,8 @@ describe("the real control-plane Lambdas (I-1 LAMBDALOAD gate)", () => {
     const found = new Map(report.problems.map((problem) => [/ in (\S+) \(/.exec(problem)?.[1] ?? problem, Number(/: (\d+) unlisted/.exec(problem)?.[1])]));
     expect(Object.fromEntries(found)).toEqual(Object.fromEntries(Object.entries(IMPORT_META_ALLOWLIST).map(([file, site]) => [file, site.count])));
     for (const [file, site] of Object.entries(IMPORT_META_ALLOWLIST)) {
-      expect(file.startsWith("packages/verifier/dist/")).toBe(true);
+      // Cloud's verifier, or Rovara Code's vendored copy of it (S3-10: reached through the Cloud root); nothing else.
+      expect(file.startsWith("packages/verifier/dist/") || file.startsWith("vendor/rovara-code/packages/verifier/dist/"), file).toBe(true);
       expect(site.reason.length).toBeGreaterThan(20);
     }
   }, 120_000);

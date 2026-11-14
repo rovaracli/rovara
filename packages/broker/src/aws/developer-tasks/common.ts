@@ -239,3 +239,6 @@ export function taskBaseOption(task: DeveloperTaskRecord, workflow: WorkflowSnap
   const base = workflow.reviewBase ?? task.preparedBase;
   return base === undefined ? {} : { workflowBase: base };
 }
+
+/** The caller's own developer token from an `Authorization: Bearer <token>` header (the core's decide presents it as the caller's credential); undefined without one. Never logged, never stored. */
+export const bearerOf = (header: string | undefined): string | undefined => /^Bearer (.+)$/iu.exec(header ?? "")?.[1];

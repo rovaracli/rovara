@@ -694,10 +694,12 @@ describe("the staged row is Cloud's own outbox row, so Cloud's drain and erasure
     }
   });
 
-  it("the sink adds nothing to Cloud's live audit path: it is not imported by the audit module or the broker's routes", async () => {
+  it("the sink adds nothing to Cloud's live audit path: it is not imported by the audit module or the broker's routes, only by the Cloud root's module list", async () => {
     const { spawnSync } = await import("node:child_process");
     const run = spawnSync("git", ["grep", "-l", "adapters/audit-sink", "--", "packages/broker/src", ":!packages/broker/src/cloud/adapters/audit-sink"], { cwd: new URL("../..", import.meta.url), encoding: "utf8" });
-    expect(run.status).toBe(1);
-    expect(run.stdout).toBe("");
+    // S3 item 7 (S0-OWED-POINTS) registered the sink as the core's `audit-sink` point in the composition root (cloud/app/cloud-modules.ts), which runs only for core tasks (behind the combined switch). That
+    // is the one importer allowed: the audit module and the broker's routes still never import it, so Cloud's own audit path is unchanged.
+    expect(run.status).toBe(0);
+    expect(run.stdout.trim().split("\n")).toEqual(["packages/broker/src/cloud/app/cloud-modules.ts"]);
   });
 });

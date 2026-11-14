@@ -29,8 +29,9 @@ export interface ImportMetaSite {
 }
 
 const VERIFIER_REASON = "reached through the @agentx/verifier index, which the broker imports for its compile/qualify helpers; the site sits inside a function the broker never calls (it uses only E2E_EXECUTOR_HOST_* constants from this module), so it cannot run at init";
+const VENDOR_VERIFIER_REASON = "Rovara Code's vendored verifier, reached through the Cloud root (Code's core e2e imports its @agentx/verifier index); the site sits inside a function (an asset or package-root lookup, or a generated script's text) the root never calls at init";
 /**
- * The `import.meta` sites esbuild reports in today's bundles, by repo-relative file. They are all in packages/verifier/dist and all
+ * The `import.meta` sites esbuild reports in today's bundles, by repo-relative file. They are all in packages/verifier/dist (or its vendored copy from Rovara Code) and all
  * inside functions of runtime-only code (m14-final-review M-1). Narrowing the broker to verifier subpaths would remove them; until
  * then a NEW site, or one in another file, fails the check. `import.meta` at module level would crash at init, which the load step
  * catches independently of this list.
@@ -45,6 +46,18 @@ export const IMPORT_META_ALLOWLIST: Readonly<Record<string, ImportMetaSite>> = {
   "packages/verifier/dist/host/web-api-probe-plan.js": { count: 1, reason: VERIFIER_REASON },
   "packages/verifier/dist/host/web-api-qualification-app.js": { count: 1, reason: VERIFIER_REASON },
   "packages/verifier/dist/runtime-cli.js": { count: 1, reason: VERIFIER_REASON },
+  // S3-10 (0.5.19): the same nine files of Rovara Code's own verifier, vendored, now in the broker's and the dispatcher's bundles through the Cloud root (Code's core e2e imports the @agentx/verifier index;
+  // the dispatcher loads the root only while cc is not off, but esbuild bundles the dynamic import). Each site was read: all sit inside functions (asset and package-root lookups, a generated script's text)
+  // that the root never calls at init.
+  "vendor/rovara-code/packages/verifier/dist/application-runtime-assets.js": { count: 1, reason: VENDOR_VERIFIER_REASON },
+  "vendor/rovara-code/packages/verifier/dist/application-runtime-bootstrap.js": { count: 1, reason: VENDOR_VERIFIER_REASON },
+  "vendor/rovara-code/packages/verifier/dist/application-runtime-cli.js": { count: 3, reason: VENDOR_VERIFIER_REASON },
+  "vendor/rovara-code/packages/verifier/dist/application-runtime-probes.js": { count: 2, reason: VENDOR_VERIFIER_REASON },
+  "vendor/rovara-code/packages/verifier/dist/executor/host-registry.js": { count: 1, reason: VENDOR_VERIFIER_REASON },
+  "vendor/rovara-code/packages/verifier/dist/host/executor-seccomp.js": { count: 1, reason: VENDOR_VERIFIER_REASON },
+  "vendor/rovara-code/packages/verifier/dist/host/web-api-probe-plan.js": { count: 1, reason: VENDOR_VERIFIER_REASON },
+  "vendor/rovara-code/packages/verifier/dist/host/web-api-qualification-app.js": { count: 1, reason: VENDOR_VERIFIER_REASON },
+  "vendor/rovara-code/packages/verifier/dist/runtime-cli.js": { count: 1, reason: VENDOR_VERIFIER_REASON },
 };
 
 export interface LambdaLoadEntry {
