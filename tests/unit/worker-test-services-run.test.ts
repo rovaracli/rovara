@@ -1192,6 +1192,20 @@ describe("the worker's self-report (staging workers are not SSM-managed: CloudWa
     expect(reports(h.logs).map((line) => line["outcome"])).toEqual(["cancelled"]);
   });
 
+  it("logs SU-1 once at boot without changing worker_start", async () => {
+    const root = await temp("su1-boot-check-");
+    const fake = fakeServicesDocker();
+    const logs: Array<Record<string, unknown>> = [];
+    const result = { v: 1, state: "ran", reason: "ok", ami: "unknown", boot2: "unknown", docker: "unknown", instance: "unknown", secs: 1, items: Array.from({ length: 11 }, (_, i) => `${i + 1}:${i === 8 || i === 9 ? "pending:needs_model_run" : "pass:ok"}`) };
+    await testServicesAtWorkerBoot({ rootPath: root, docker: fake.docker, environment: { AGENTX_SU1_CHECK_RESULT: JSON.stringify(result) }, log: event => logs.push(event) });
+    expect(logs.filter(event => event.event === "su1_check")).toEqual([{ event: "su1_check", ...result }]);
+    expect(reports(logs)).toHaveLength(1);
+    expect(reports(logs)[0]).not.toHaveProperty("su1");
+    const bare: Array<Record<string, unknown>> = [];
+    await testServicesAtWorkerBoot({ rootPath: root, docker: fake.docker, environment: {}, log: event => bare.push(event) });
+    expect(bare.some(event => event.event === "su1_check")).toBe(false);
+  });
+
   it("a worker with NO test services configuration (root's pre-pull failed) still logs a worker_start line, with the boot facts that say why", async () => {
     const root = await temp("rsv-report-noconfig-");
     const logs: Array<Record<string, unknown>> = [];

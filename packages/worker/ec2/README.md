@@ -114,8 +114,30 @@ the user data is byte for byte what it was). It does so only when ALL hold:
   cases log the event `tsl_selftest.switch_unreadable` with the error's name or the word `value`, never the value.
 
 `session-steps.ts` reads the parameter (`readTslSelftestOn`, beside `readPrivateAddressesOff`) at each named-environment launch, and only on the staging install: the dependency is wired nowhere else, so no other environment asks for it.
-The steps function's role has one added statement for it, in `infra/lib/session-lifecycle.ts`, only when the environment is `staging`: `ssm:GetParameter` on exactly that one parameter. No other environment's template changes, and
-workers get no IAM. Nothing creates the parameter: it is off until an operator creates it with the value `true` (and off again when it is deleted or set to anything else). Launches that already happened keep what they were given.
+The steps function's role has one staging-conditioned statement in `infra/lib/session-lifecycle.ts`: `ssm:GetParameter` on exactly the TS-L and SU-1 switch parameters. Every named template carries that policy under
+`TslSelftestIsStaging`, including the placeholder used for published templates; its condition is false outside staging. Workers get no IAM. Nothing creates the parameter: it is off until an operator creates it with the value `true`
+(and off again when it is deleted or set to anything else). Launches that already happened keep what they were given.
 
 This is the switch only. The boot gate (`tsl_selftest_gate` in `boot-stage2.sh`) still refuses unless the environment name cut from the log group is `staging`, the worker image's build flavor is `staging`, and the registry account of the
 worker image and the instance's own account are both the staging account; a launch that carries the variable anywhere else records `refused` and runs nothing.
+
+## Opt-in SU-1 setup-agent check (staging only)
+
+Set the SSM parameter `/agentx/staging/su1-check` to exactly `true` to opt future staging launches in; delete it or set it to `false` to turn the check off. An absent, malformed or unreadable parameter means off.
+Only a named install with settings prefix exactly `/agentx/staging/` reads it and carries `AGENTX_SU1_CHECK=1`. Boot independently checks the environment name from the worker log group, the staging registry and instance accounts,
+and the image's staging build flavor. A release-flavor worker reports `refused: not_staging_image`; it carries no SU-1 bundle. The staging bundle is an independent byte-for-byte copy of `scripts/staging-checks/setup-agent-su1.sh`.
+
+After TS-L and before the worker starts, the route requires GNU `timeout` (otherwise `incomplete: timeout_unavailable`) and applies the launcher's walls. `SU1_CHECK_BUDGET_S` defaults to 170 seconds and accepts 45..300;
+invalid values use the default. It recomputes the remaining boot time after TS-L, reserves 150 seconds for cleanup, and records `incomplete: no_time` if the minimum cannot fit. Every Docker command has a bounded timeout;
+the checker has a whole-process-group TERM/KILL timeout and receives its remaining budget as `SU1_TIMEOUT_SECONDS`. Its Docker calls receive `SU1_DOCKER_TIMEOUT_SECONDS=15`. Nothing starts past the hard deadline.
+
+Root writes one bounded result under `/run/agentx/su1-check`; the launcher passes it as one environment value, and the worker emits one separate `su1_check` JSON line (`v: 1`) in `/agentx/staging/worker`. The existing
+`worker_start` / `selfTest` shape stays the same. `secs` records elapsed wall seconds for the boot check, including preparation and cleanup. Compare the first real run with the script's standalone 300-second cap;
+release-checker 89 must review a run over 240 seconds before raising the cap. Results carry fixed status/reason words and validated identities, never checker evidence. Missing rows are `incomplete`; checks 9 and 10 are
+always `pending: needs_model_run`, even if the script prints PASS, because they require a model-driven setup run. With the switch off there is no SU-1 result or event.
+
+Before work starts, containers, networks and volumes labelled `agentx.su1-check`, the lock file and scratch directories are removed and read back as gone. The ordered firewall, routes and interface snapshot must match
+the pre-check snapshot, including after timeout. A durable `/mnt/workspace/.agentx-su1-check-running` marker is written before the first test object and cleared only after that read-back. Every named boot sweeps the label
+and lock even with the switch off. A failed read with a marker, or an observed object that cannot be cleared, stops the boot with `su1_leftover`; a transient Docker error with no marker is only logged.
+Recover through the existing close-workspace path (which deletes its machine and volume), then start a fresh workspace. Disabling the switch alone does not bypass cleanup of a marked volume. As with TS-L, an unusable
+boot stops before the worker can emit its result: its failure reason is `su1_leftover`, and it must not take customer work. No Session Manager or worker key pair is needed by this route.

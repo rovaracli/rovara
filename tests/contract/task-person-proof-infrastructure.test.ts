@@ -478,18 +478,21 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-14 (S3-10, feat/s3-10-entry-wiring, on feat/s3-9 + feat/0519-infra-slot + the 0.5.19 re-pin): the four named and foreign digests were retaken from the values the test reports, after the core engine's
     // production wiring: the dispatcher's core dispatch queue mapping (enabled only while cc is not off), its new grants (ConsumeCoreDispatchQueue, CoreTerminateOwnSessionInstances, CoreReadCallbackSigningKey, the deleter)
     // and variables, CoreTierChecks' schedule on the CoreEngine parameter with the packed cc, and the State table's outbox-pending index (named environments only). Retaken again after the review fixes: the CoreEngine parameter admits `drain`, the core dispatch mapping takes one record, and the dispatcher's core-only grants are one policy under CoreEngineIsOn. Legacy did not move.
+    // 2026-11-14 integ/0519 merge: SU-1 boot lane (ANSWER-2): only TslSelftestSwitchRead.Resource gains the exact su1-check ARN.
+    // Four named/foreign pins move; legacy is unchanged. The named snapshot shows only that statement.
+    // Retaken on integ/0519 after both changes together.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "2e62d96cc9410fd9badfba2509f50116bce7f369f5b5d867f6e3ece1230bc11b",
-        withoutRoute: "9866c5addc8f249cf14e71930457e3675ea2757e4750f9a01cb8d820e1240a8c",
+        withRoute: "a019ace51ac6a80e7b59e159dae9373e6a23d96503d410cbf2ba01306156ca81",
+        withoutRoute: "9a406afdc939a46ce7509302427f11093a554385a60e39ccb52557ae05007cc5",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "03aacb7f65a8736b964b5918052a5ed58c36945c651c5b44de0549e94bd8b844",
-        withoutRoute: "741f4085b5349925a7611b715f211a0bbc150d222f5caa4a9058274932e291fc",
+        withRoute: "10c61e62ecc09c0719ac72203583a0a8977895dd5d4528d137ec78d9e78f7788",
+        withoutRoute: "859e9bd501485710081ac3b0b45ecff97ed9ca9354e8c1af920750e0eda1bff7",
       },
       {
         label: "legacy",
