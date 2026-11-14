@@ -56,7 +56,7 @@ describe("agentx config list and get", () => {
     // UX5b: scriptTokens.enabled. 0.5.14: slack.explicitMembers. Task people: workflowDependencies.enabled and three taskPeople keys. Lane U5: ui.forceOff.
     // 0.5.15: modelProxy.tls (decisions 110 and 127), recorded beside the settings. 0.5.16: teamRecord.keywordIndex (DECISIONS 145).
     expect(rows.find((row) => row.key === "modelProxy.tls")).toMatchObject({ value: "off", where: "SSM /agentx/staging/model-proxy-tls" });
-    expect(rows).toHaveLength(52);
+    expect(rows).toHaveLength(53);
   });
 
   it("never shows the alert address itself, only that it is set", async () => {

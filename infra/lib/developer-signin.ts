@@ -2,6 +2,7 @@
 // (R3): the legacy deployment must not change.
 import { ArnFormat, CfnOutput, CfnParameter, Duration, Fn, Lazy, RemovalPolicy, Stack, Token, aws_apigatewayv2 as apigwv2, aws_dynamodb as dynamodb, aws_iam as iam, aws_kms as kms, type aws_lambda as lambda, type aws_lambda_nodejs as lambdaNodejs, type aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { CORE_ENGINE_DEFAULT, CORE_ENGINE_PARAMETER_MAX_LENGTH, CORE_ENGINE_PARAMETER_PATTERN } from "@agentx/cloud-contracts";
 import type { AgentXNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
 import { BrokerNames, BrokerSettings } from "./broker-names.js";
@@ -71,6 +72,11 @@ export interface DeveloperSignInParameters {
   /** v1.2 learning loop: whether a company that never chose gets suggested rules (the install-wide default of its master switch). Off unless an operator turns it on. */
   learningSuggestionsDefault: CfnParameter;
   uiFlagsForceOff: CfnParameter;
+  /**
+   * The core engine's combined switch (0.5.19, packed setting `cc`, CLOUD_CORE_ENGINE): `off` (the default), `on`, or `on:<company id>[:<company id>]`. It starts NEW tasks on Rovara Code's core for the companies it names; a task keeps
+   * the engine it started on. It also turns the core job schedules on (infra/lib/core-engine.ts). Anything else is refused at deploy time, so a typo never reaches the broker.
+   */
+  coreEngine: CfnParameter;
 }
 
 /** Declared on the stack itself, so the parameter names are exactly these. */
@@ -117,6 +123,7 @@ export function developerSignInParameters(stack: Stack): DeveloperSignInParamete
     projectImagesEnabled: new CfnParameter(stack, "ProjectImagesEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: a project may bring its own images for a dependency (reviewed compose services, a model image); needs testServices.enabled; 0: only Rovara's image catalog is used (agentx config set projectImages.enabled 1)" }),
     learningSuggestionsDefault: new CfnParameter(stack, "LearningSuggestionsDefault", { type: "String", default: "off", allowedValues: ["on", "off"], description: "Whether a company that has not chosen gets suggested rules from Rovara's learning (on) or only has its corrections collected (off). A company's own choice always wins. Off unless an operator turns it on" }),
     uiFlagsForceOff: new CfnParameter(stack, "UiFlagsForceOff", { type: "String", default: "none", allowedPattern: "^(none|all|[A-Za-z]+(-[A-Za-z]+)*)$", maxLength: 64, description: "Screens to hold back for every company on this install, whatever a company chose in the app: none, all, or screen names joined by a hyphen (look-nav-home-work-spending-leadingHeader are the ones that exist today). A name the broker does not know turns every screen off (fail closed). Companies turn screens on in the app with no deploy; this is the operator's emergency lever (agentx config set ui.forceOff <value>)" }),
+    coreEngine: new CfnParameter(stack, "CoreEngine", { type: "String", default: CORE_ENGINE_DEFAULT, allowedPattern: CORE_ENGINE_PARAMETER_PATTERN, maxLength: CORE_ENGINE_PARAMETER_MAX_LENGTH, constraintDescription: "must be off, on, or on:<company id> (at most two company ids joined by a colon)", description: "off: every new task runs Cloud's own flow; on: new tasks of every company start on Rovara Code's core; on:<company id>[:<company id>]: only those companies' new tasks do. A running task keeps the engine it started on. The core's job schedules run only while this is not off (agentx config set coreEngine.switch on:<company id>)" }),
     liveRedirectEnabled: new CfnParameter(stack, "LiveRedirectEnabled", { type: "String", default: "0", allowedValues: ["0", "1"], description: "1: the task owner can stop a running step and redirect it with a new instruction (only after the dispatcher, broker and worker image that carry Stop & redirect are deployed); 0: the redirect route is off (agentx config set liveRedirect.enabled 1)" }),
     mcpConfirmElicitation: new CfnParameter(stack, "McpConfirmElicitation", { type: "String", default: "enabled", allowedValues: ["enabled", "disabled"], description: "enabled: an admin may confirm a change from an AI tool in the tool's own pop-up; disabled: only the Slack Confirm button (or the CLI)" }),
   };

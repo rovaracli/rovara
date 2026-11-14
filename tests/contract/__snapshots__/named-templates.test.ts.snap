@@ -3659,6 +3659,18 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         "tag",
       ],
     },
+    "CoreEngineJobsCoreEngineIsOnCBF38D40": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "CoreEngine",
+            },
+            "off",
+          ],
+        },
+      ],
+    },
     "HasBudget": {
       "Fn::Not": [
         {
@@ -3928,6 +3940,14 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       ],
       "Default": "tag",
       "Description": "tag: costs tagged agentx:env for this environment (the tag must be activated in Billing); account: the whole account",
+      "Type": "String",
+    },
+    "CoreEngine": {
+      "AllowedPattern": "^(off|on|on:org_[0-9a-z]{20}(:org_[0-9a-z]{20})?)$",
+      "ConstraintDescription": "must be off, on, or on:<company id> (at most two company ids joined by a colon)",
+      "Default": "off",
+      "Description": "off: every new task runs Cloud's own flow; on: new tasks of every company start on Rovara Code's core; on:<company id>[:<company id>]: only those companies' new tasks do. A running task keeps the engine it started on. The core's job schedules run only while this is not off (agentx config set coreEngine.switch on:<company id>)",
+      "MaxLength": 64,
       "Type": "String",
     },
     "DecisionCardsEnabled": {
@@ -4781,6 +4801,10 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                   "ak=",
                   {
                     "Ref": "LiveAskEnabled",
+                  },
+                  ",cc=",
+                  {
+                    "Ref": "CoreEngine",
                   },
                   ",cr=",
                   {
@@ -5781,6 +5805,31 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
                 ],
               },
               "Sid": "UseChainScheduleDeadLetters",
+            },
+            {
+              "Action": [
+                "sqs:SendMessage",
+                "sqs:ReceiveMessage",
+                "sqs:DeleteMessage",
+                "sqs:ChangeMessageVisibility",
+                "sqs:GetQueueAttributes",
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "CoreEngineJobsQueue9C998495",
+                    "Arn",
+                  ],
+                },
+                {
+                  "Fn::GetAtt": [
+                    "CoreEngineJobsDeadLetterQueue4163BB61",
+                    "Arn",
+                  ],
+                },
+              ],
+              "Sid": "UseCoreDispatchQueue",
             },
             {
               "Action": "cloudwatch:DescribeAlarms",
@@ -7145,6 +7194,456 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
         },
       },
       "Type": "AWS::ApiGatewayV2::Route",
+    },
+    "CoreEngineJobsDeadLetterQueue4163BB61": {
+      "DeletionPolicy": "Delete",
+      "Properties": {
+        "MessageRetentionPeriod": 1209600,
+        "QueueName": "agentx-staging-core-dispatch-dead",
+        "SqsManagedSseEnabled": true,
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::SQS::Queue",
+      "UpdateReplacePolicy": "Delete",
+    },
+    "CoreEngineJobsDeadLettersAlarmDDAE4AF3": {
+      "Properties": {
+        "AlarmActions": [
+          {
+            "Ref": "OperatorAlertsA2431256",
+          },
+        ],
+        "AlarmDescription": "A core engine dispatch message exhausted its receives and is in the core dispatch dead-letter queue, so its task may hold its workspace. Check the broker logs for the operation ID, then redrive or purge the queue.",
+        "AlarmName": "agentx-staging-CoreDispatchDeadLetters",
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": {
+              "Fn::GetAtt": [
+                "CoreEngineJobsDeadLetterQueue4163BB61",
+                "QueueName",
+              ],
+            },
+          },
+        ],
+        "EvaluationPeriods": 1,
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Namespace": "AWS/SQS",
+        "Period": 300,
+        "Statistic": "Maximum",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+        "Threshold": 1,
+        "TreatMissingData": "notBreaching",
+      },
+      "Type": "AWS::CloudWatch::Alarm",
+    },
+    "CoreEngineJobsInvokeRole08FF5F47": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId",
+                  },
+                  "aws:SourceArn": {
+                    "Fn::GetAtt": [
+                      "CoreEngineJobsScheduleGroupABAD63AF",
+                      "Arn",
+                    ],
+                  },
+                },
+              },
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "scheduler.amazonaws.com",
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "Description": "EventBridge Scheduler invokes the broker for the core engine's scheduled jobs",
+        "Path": "/agentx/staging/",
+        "PermissionsBoundary": {
+          "Fn::If": [
+            "HasPermissionsBoundary",
+            {
+              "Ref": "PermissionsBoundaryArn",
+            },
+            {
+              "Fn::Join": [
+                "",
+                [
+                  "arn:",
+                  {
+                    "Ref": "AWS::Partition",
+                  },
+                  ":iam::",
+                  {
+                    "Ref": "AWS::AccountId",
+                  },
+                  ":policy/agentx/staging/agentx-staging-boundary",
+                ],
+              ],
+            },
+          ],
+        },
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Role",
+    },
+    "CoreEngineJobsInvokeRoleDefaultPolicyDFC5AF3B": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": "lambda:InvokeFunction",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "BrokerE1355FD6",
+                  "Arn",
+                ],
+              },
+            },
+          ],
+          "Version": "2012-10-17",
+        },
+        "PolicyName": "CoreEngineJobsInvokeRoleDefaultPolicyDFC5AF3B",
+        "Roles": [
+          {
+            "Ref": "CoreEngineJobsInvokeRole08FF5F47",
+          },
+        ],
+      },
+      "Type": "AWS::IAM::Policy",
+    },
+    "CoreEngineJobsJobAdmissionHoldSweep71AA868B": {
+      "Properties": {
+        "Description": "Core engine job admission-hold-sweep",
+        "FlexibleTimeWindow": {
+          "Mode": "OFF",
+        },
+        "GroupName": {
+          "Ref": "CoreEngineJobsScheduleGroupABAD63AF",
+        },
+        "ScheduleExpression": "rate(15 minutes)",
+        "State": {
+          "Fn::If": [
+            "CoreEngineJobsCoreEngineIsOnCBF38D40",
+            "ENABLED",
+            "DISABLED",
+          ],
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "BrokerE1355FD6",
+              "Arn",
+            ],
+          },
+          "Input": "{"source":"agentx.core-job","job":"admission-hold-sweep"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 120,
+            "MaximumRetryAttempts": 1,
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "CoreEngineJobsInvokeRole08FF5F47",
+              "Arn",
+            ],
+          },
+        },
+      },
+      "Type": "AWS::Scheduler::Schedule",
+    },
+    "CoreEngineJobsJobAutomationStop0D2CE527": {
+      "Properties": {
+        "Description": "Core engine job automation-stop",
+        "FlexibleTimeWindow": {
+          "Mode": "OFF",
+        },
+        "GroupName": {
+          "Ref": "CoreEngineJobsScheduleGroupABAD63AF",
+        },
+        "ScheduleExpression": "rate(1 minute)",
+        "State": {
+          "Fn::If": [
+            "CoreEngineJobsCoreEngineIsOnCBF38D40",
+            "ENABLED",
+            "DISABLED",
+          ],
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "BrokerE1355FD6",
+              "Arn",
+            ],
+          },
+          "Input": "{"source":"agentx.core-job","job":"automation-stop"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 120,
+            "MaximumRetryAttempts": 1,
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "CoreEngineJobsInvokeRole08FF5F47",
+              "Arn",
+            ],
+          },
+        },
+      },
+      "Type": "AWS::Scheduler::Schedule",
+    },
+    "CoreEngineJobsJobDispatchSweep8E9A1FFF": {
+      "Properties": {
+        "Description": "Core engine job dispatch-sweep",
+        "FlexibleTimeWindow": {
+          "Mode": "OFF",
+        },
+        "GroupName": {
+          "Ref": "CoreEngineJobsScheduleGroupABAD63AF",
+        },
+        "ScheduleExpression": "rate(1 minute)",
+        "State": {
+          "Fn::If": [
+            "CoreEngineJobsCoreEngineIsOnCBF38D40",
+            "ENABLED",
+            "DISABLED",
+          ],
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "BrokerE1355FD6",
+              "Arn",
+            ],
+          },
+          "Input": "{"source":"agentx.core-job","job":"dispatch-sweep"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 120,
+            "MaximumRetryAttempts": 1,
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "CoreEngineJobsInvokeRole08FF5F47",
+              "Arn",
+            ],
+          },
+        },
+      },
+      "Type": "AWS::Scheduler::Schedule",
+    },
+    "CoreEngineJobsJobMergeTrackingD3E4F6DF": {
+      "Properties": {
+        "Description": "Core engine job merge-tracking",
+        "FlexibleTimeWindow": {
+          "Mode": "OFF",
+        },
+        "GroupName": {
+          "Ref": "CoreEngineJobsScheduleGroupABAD63AF",
+        },
+        "ScheduleExpression": "rate(1 minute)",
+        "State": {
+          "Fn::If": [
+            "CoreEngineJobsCoreEngineIsOnCBF38D40",
+            "ENABLED",
+            "DISABLED",
+          ],
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "BrokerE1355FD6",
+              "Arn",
+            ],
+          },
+          "Input": "{"source":"agentx.core-job","job":"merge-tracking"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 120,
+            "MaximumRetryAttempts": 1,
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "CoreEngineJobsInvokeRole08FF5F47",
+              "Arn",
+            ],
+          },
+        },
+      },
+      "Type": "AWS::Scheduler::Schedule",
+    },
+    "CoreEngineJobsJobNotifyDeliverD2E5392A": {
+      "Properties": {
+        "Description": "Core engine job notify-deliver",
+        "FlexibleTimeWindow": {
+          "Mode": "OFF",
+        },
+        "GroupName": {
+          "Ref": "CoreEngineJobsScheduleGroupABAD63AF",
+        },
+        "ScheduleExpression": "rate(5 minutes)",
+        "State": {
+          "Fn::If": [
+            "CoreEngineJobsCoreEngineIsOnCBF38D40",
+            "ENABLED",
+            "DISABLED",
+          ],
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "BrokerE1355FD6",
+              "Arn",
+            ],
+          },
+          "Input": "{"source":"agentx.core-job","job":"notify-deliver"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 120,
+            "MaximumRetryAttempts": 1,
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "CoreEngineJobsInvokeRole08FF5F47",
+              "Arn",
+            ],
+          },
+        },
+      },
+      "Type": "AWS::Scheduler::Schedule",
+    },
+    "CoreEngineJobsJobOutboxRelayBackstopA07586BC": {
+      "Properties": {
+        "Description": "Core engine job outbox-relay-backstop",
+        "FlexibleTimeWindow": {
+          "Mode": "OFF",
+        },
+        "GroupName": {
+          "Ref": "CoreEngineJobsScheduleGroupABAD63AF",
+        },
+        "ScheduleExpression": "rate(1 minute)",
+        "State": {
+          "Fn::If": [
+            "CoreEngineJobsCoreEngineIsOnCBF38D40",
+            "ENABLED",
+            "DISABLED",
+          ],
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "BrokerE1355FD6",
+              "Arn",
+            ],
+          },
+          "Input": "{"source":"agentx.core-job","job":"outbox-relay-backstop"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 120,
+            "MaximumRetryAttempts": 1,
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "CoreEngineJobsInvokeRole08FF5F47",
+              "Arn",
+            ],
+          },
+        },
+      },
+      "Type": "AWS::Scheduler::Schedule",
+    },
+    "CoreEngineJobsJobSessionSweep9FB9CB73": {
+      "Properties": {
+        "Description": "Core engine job session-sweep",
+        "FlexibleTimeWindow": {
+          "Mode": "OFF",
+        },
+        "GroupName": {
+          "Ref": "CoreEngineJobsScheduleGroupABAD63AF",
+        },
+        "ScheduleExpression": "rate(5 minutes)",
+        "State": {
+          "Fn::If": [
+            "CoreEngineJobsCoreEngineIsOnCBF38D40",
+            "ENABLED",
+            "DISABLED",
+          ],
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "BrokerE1355FD6",
+              "Arn",
+            ],
+          },
+          "Input": "{"source":"agentx.core-job","job":"session-sweep"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 120,
+            "MaximumRetryAttempts": 1,
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "CoreEngineJobsInvokeRole08FF5F47",
+              "Arn",
+            ],
+          },
+        },
+      },
+      "Type": "AWS::Scheduler::Schedule",
+    },
+    "CoreEngineJobsQueue9C998495": {
+      "DeletionPolicy": "Delete",
+      "Properties": {
+        "QueueName": "agentx-staging-core-dispatch",
+        "RedrivePolicy": {
+          "deadLetterTargetArn": {
+            "Fn::GetAtt": [
+              "CoreEngineJobsDeadLetterQueue4163BB61",
+              "Arn",
+            ],
+          },
+          "maxReceiveCount": 25,
+        },
+        "SqsManagedSseEnabled": true,
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+        "VisibilityTimeout": 120,
+      },
+      "Type": "AWS::SQS::Queue",
+      "UpdateReplacePolicy": "Delete",
+    },
+    "CoreEngineJobsScheduleGroupABAD63AF": {
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::Scheduler::ScheduleGroup",
     },
     "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536": {
       "DependsOn": [
@@ -13257,6 +13756,108 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       "Type": "AWS::ECR::Repository",
       "UpdateReplacePolicy": "Retain",
     },
+    "ServiceCatalogImagesRepositorysvcfunctionagentBA3781BB": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/function-agent",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvclambdanodejs01AC867B": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/lambda-nodejs",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvclambdapython041DBACB": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/lambda-python",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
     "ServiceCatalogImagesRepositorysvclocalaws8574296E": {
       "DeletionPolicy": "RetainExceptOnCreate",
       "Properties": {
@@ -13277,6 +13878,40 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
           "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
         },
         "RepositoryName": "rovara-catalog/staging/svc/local-aws",
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+          {
+            "Key": "rovara:purpose",
+            "Value": "service-catalog-image",
+          },
+        ],
+      },
+      "Type": "AWS::ECR::Repository",
+      "UpdateReplacePolicy": "Retain",
+    },
+    "ServiceCatalogImagesRepositorysvcmodelstandinD72C15AB": {
+      "DeletionPolicy": "RetainExceptOnCreate",
+      "Properties": {
+        "EncryptionConfiguration": {
+          "EncryptionType": "KMS",
+          "KmsKey": {
+            "Fn::GetAtt": [
+              "ServiceCatalogImagesImagesKeyB3CDB130",
+              "Arn",
+            ],
+          },
+        },
+        "ImageScanningConfiguration": {
+          "ScanOnPush": true,
+        },
+        "ImageTagMutability": "IMMUTABLE",
+        "LifecyclePolicy": {
+          "LifecyclePolicyText": "{"rules":[{"rulePriority":1,"description":"Untagged images expire","selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":1},"action":{"type":"expire"}},{"rulePriority":2,"description":"Backstop: keep at most 60 tagged images","selection":{"tagStatus":"tagged","tagPatternList":["*"],"countType":"imageCountMoreThan","countNumber":60},"action":{"type":"expire"}}]}",
+        },
+        "RepositoryName": "rovara-catalog/staging/svc/model-stand-in",
         "Tags": [
           {
             "Key": "agentx:env",
@@ -16335,6 +16970,9 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "ADMIN_CHANGES": "enabled",
             "BROKER_FUNCTION_NAME": {
               "Ref": "BrokerE1355FD6",
+            },
+            "CLOUD_CORE_ENGINE": {
+              "Ref": "CoreEngine",
             },
             "SHARED_TASKS": "enabled",
             "SLACK_APP_POSTED_MESSAGES": {

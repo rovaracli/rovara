@@ -22,6 +22,18 @@ export function auditIntakeQueueName(env: string): string {
 }
 
 /**
+ * The core engine's task dispatch queue and its dead-letter queue (0.5.19, DEFERRED A4-SWITCH-ON-PRECONDITIONS M2 and S3-ENTRY-NEEDS 4). A queue of its own, apart from Cloud's DispatchQueue: the core retries a dispatch up to
+ * DISPATCH_ATTEMPTS_MAX = 20 times (a minute or two of EC2 cold start), and Cloud's queue dead-letters after 5 receives, so a core message on it would be dead-lettered while the core was still trying. CDK names the queues with these
+ * (infra/lib/core-engine.ts) and the broker builds both URLs from the same functions (DERIVED_BROKER_VARIABLES), so no variable is passed. The queue exists in every named environment and stays empty while `cc` is off.
+ */
+export const coreDispatchQueueName = (env: string): string => `agentx-${env}-core-dispatch`;
+export const coreDispatchDeadLetterName = (env: string): string => `agentx-${env}-core-dispatch-dead`;
+/** The core's most dispatch attempts for one message (Code's DISPATCH_ATTEMPTS_MAX, vendor/rovara-code core/task-flow). The queue's redrive limit must be above it, or SQS dead-letters a message the core is still retrying. */
+export const CORE_DISPATCH_ATTEMPTS_MAX = 20;
+/** The core dispatch queue's redrive limit: above CORE_DISPATCH_ATTEMPTS_MAX with room for a receive that is not an attempt (a guard that parks a message, a batch the consumer gives back whole). At least 21 (the plan). */
+export const CORE_DISPATCH_MAX_RECEIVES = 25;
+
+/**
  * Team record (wire-team-record): the names of the record's storage under the `agentx-<env>-...` naming. CDK names the resources with these (infra/lib/team-record-wiring.ts) and the broker
  * builds the variables from the same functions, so nothing is passed. `TeamRecordStorage` appends `-record-vectors`, `-record-lake` and `-record` to the prefix.
  */
@@ -111,6 +123,9 @@ export const DERIVED_BROKER_VARIABLES: readonly DerivedBrokerVariable[] = [
   { variable: "TEAM_RECORD_ATHENA_WORKGROUP", kind: "text", value: teamRecordWorkGroupName },
   { variable: "EMBEDDER_FUNCTION_NAME", kind: "text", value: embedderFunctionName },
   { variable: "COMPANY_IMAGE_MIRROR_FUNCTION_NAME", kind: "text", value: companyImageMirrorFunctionName },
+  // The core engine's dispatch queue and its dead letters (0.5.19; named environments only). Nothing reads them while `cc` is off.
+  { variable: "CORE_DISPATCH_QUEUE_URL", kind: "queueUrl", queueName: coreDispatchQueueName },
+  { variable: "CORE_DISPATCH_DEAD_LETTER_URL", kind: "queueUrl", queueName: coreDispatchDeadLetterName },
   // Test services, slice 3: the answer sets' key, by its alias (named environments only: the legacy install has no AGENTX_ENV and no key). Nothing reads it while `tx` is off.
   { variable: "FIXTURE_KEY_ARN", kind: "kmsAliasArn", alias: fixtureKeyAlias },
 ];

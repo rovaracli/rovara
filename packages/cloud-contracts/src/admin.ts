@@ -15,7 +15,7 @@ import { AdminHealthCheckSchema } from "@rovara-code/contracts";
  */
 export const HEALTH_ALARM_SUFFIXES = [
   "AuditChainMismatch", "AuditIntakeBacklog", "AuditIntakeDeadLetters", "AuditLockDrift", "AuditObjectConflict", "AuditPendingStuck", "AuditRecordFailed", "AuditSealOverdue", "AuditShredFailed", "AuditTimestampFailed",
-  "BedrockThrottling", "ChainScheduleDeadLetters", "ChainWriteApproverSelectorFailed", "CheckerFailures", "ClassifierThrottling", "ConnectorBroken", "ConnectorNotConnected",
+  "BedrockThrottling", "ChainScheduleDeadLetters", "ChainWriteApproverSelectorFailed", "CheckerFailures", "ClassifierThrottling", "ConnectorBroken", "ConnectorNotConnected", "CoreDispatchDeadLetters",
   "DeveloperNoticeDeadLetters", "DeveloperNoticeStreamFailures", "DispatchDeadLetters", "EmptyResponses",
   "EvalBatchTickErrors", "EvalBatchWatcherErrors", "EvalExecutionsFailed", "LessonsReflectDeadLetters", "LessonsWorkerErrors", "LessonsWorkerThrottles",
   "ReconcilerLostInstances", "ReconcilerQualifiedAmiReadFailures", "ReconcilerQuarantinedVolumes", "ReconcilerStuckProvisioning", "RecordingFailures",

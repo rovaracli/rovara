@@ -64,6 +64,9 @@ export const ROLLBACK_FLOORS: readonly RollbackFloor[] = [
   // 0.5.15 dropped the control plane's CallbackSigningKey parameter (parameters.ts): this agentx no longer sends it, and 0.5.14's template
   // has no default for it, so this agentx cannot deploy 0.5.14 or older. (The 0.5.14 CLI itself still can: rollback-0515-to-0514.sh.)
   { release: "0.5.15", floor: "0.5.15", reason: "removed the control plane's CallbackSigningKey parameter, which every older template needs and this agentx no longer sends" },
+  // 0.5.19 turns the new core engine on for staging (the lighter flow records, the limits-marker data move, the core dispatch queue and its rows): it writes rows 0.5.17 cannot read. 0.5.18 carries the readers
+  // for them (readers ship first, decision 152a), so 0.5.18 is the oldest release that can run on 0.5.19's data.
+  { release: "0.5.19", floor: "0.5.18", reason: "wrote the new core engine's flow records and data moves, which 0.5.17 cannot read (0.5.18 added the readers)" },
 ];
 
 /**
@@ -72,7 +75,7 @@ export const ROLLBACK_FLOORS: readonly RollbackFloor[] = [
  * ran a newer release is refused, because that release may have declared a floor this agentx has never seen; run the rollback with that
  * release's agentx (or a newer one) instead. Forgetting the bump only refuses, never allows.
  */
-export const ROLLBACK_FLOORS_DECLARED_THROUGH = "0.5.18";
+export const ROLLBACK_FLOORS_DECLARED_THROUGH = "0.5.19";
 
 /** The release's own check (scripts/release/pack-cli.ts): a release whose x.y.z is not ROLLBACK_FLOORS_DECLARED_THROUGH forgot the bump, so its packed agentx would refuse to roll its own release back. */
 export function assertRollbackFloorsDeclaredFor(version: string, declaredThrough: string = ROLLBACK_FLOORS_DECLARED_THROUGH): void {

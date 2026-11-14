@@ -17,7 +17,7 @@ import { agentXError } from "@rovara-code/contracts";
 import { writeCustomDomain } from "../../packages/cli/src/environments/custom-domain.js";
 import { accessChanged, runUpgrade, type UpgradeDependencies } from "../../packages/cli/src/upgrade/run.js";
 import { DECISION_CARDS_ON_LINE, forcedOperatorValues } from "../../packages/cli/src/upgrade/forced-values.js";
-import { assertRollbackFloorsDeclaredFor, compareVersions, rollbackDirection, ROLLBACK_FLOORS, ROLLBACK_FLOORS_DECLARED_THROUGH, upgradeDirection, type RollbackFloor } from "../../packages/cli/src/upgrade/target.js";
+import { assertRollbackFloorsDeclaredFor, compareVersions, floorCheck, rollbackDirection, ROLLBACK_FLOORS, ROLLBACK_FLOORS_DECLARED_THROUGH, upgradeDirection, type RollbackFloor } from "../../packages/cli/src/upgrade/target.js";
 import { SETTINGS } from "../support/doctor-fakes.js";
 import { allStackOutputs, fakeGitHubApi, fakeRelease, memoryInitSecrets, scriptedDeployer, T0, TEST_PRIVATE_KEY } from "../support/init-fakes.js";
 import { MemoryParameterStore } from "../support/memory-parameter-store.js";
@@ -1145,6 +1145,26 @@ describe("rollbackDirection (the direction guard)", () => {
     // The 0.5.17 rollback (0.5.17 -> 0.5.16) runs with this agentx; 0.5.14 is under 0.5.15's floor (it dropped CallbackSigningKey).
     expect(rollbackDirection("staging", "0.5.17", "0.5.16")).toBe("older");
     expect(() => rollbackDirection("staging", "0.5.17", "0.5.14")).toThrow("release 0.5.15 removed the control plane's CallbackSigningKey parameter");
+  });
+  it("0.5.19 declares a floor of 0.5.18 (it writes the core engine's rows 0.5.17 cannot read; readers ship first, 152a)", () => {
+    expect(ROLLBACK_FLOORS_DECLARED_THROUGH).toBe("0.5.19");
+    const entries = ROLLBACK_FLOORS.filter((entry) => entry.release === "0.5.19");
+    expect(entries.map((entry) => entry.floor)).toEqual(["0.5.18"]);
+    expect(entries[0]!.reason).toContain("0.5.17 cannot read");
+    // The 0.5.15 floor stays: entries are never removed.
+    expect(ROLLBACK_FLOORS.find((entry) => entry.release === "0.5.15")?.floor).toBe("0.5.15");
+    // 0.5.19 -> 0.5.18 is the supported undo; 0.5.19 -> 0.5.17 (and anything older, also from a high-water mark of 0.5.19) is refused with the floor named.
+    expect(rollbackDirection("staging", "0.5.19", "0.5.18")).toBe("older");
+    for (const below of ["0.5.17", "0.5.16", "0.5.15"]) {
+      expect(() => rollbackDirection("staging", "0.5.19", below), below).toThrow("release 0.5.19 wrote the new core engine's flow records and data moves, which 0.5.17 cannot read (0.5.18 added the readers), so environment staging, which runs 0.5.19, rolls back no lower than 0.5.18");
+    }
+    expect(() => rollbackDirection("staging", "0.5.18", "0.5.17", undefined, undefined, "0.5.19")).toThrow("rolls back no lower than 0.5.18");
+    // A plain deploy of an older release from an environment that ever ran 0.5.19 is refused too.
+    expect(() => floorCheck("staging", "0.5.18", "0.5.17", undefined, undefined, "0.5.19")).toThrow("deploys no lower than 0.5.18");
+    // Before 0.5.19 was ever installed the floor does not apply: 0.5.18 -> 0.5.17 is allowed.
+    expect(rollbackDirection("staging", "0.5.18", "0.5.17")).toBe("older");
+    // An install that ran something newer than 0.5.19 is refused (this agentx cannot know that release's floor).
+    expect(() => rollbackDirection("staging", "0.5.20", "0.5.19")).toThrow("newer than every release this agentx knows (through 0.5.19)");
   });
   it("the release's own check: a release whose x.y.z is not ROLLBACK_FLOORS_DECLARED_THROUGH is not packed", () => {
     expect(() => assertRollbackFloorsDeclaredFor(ROLLBACK_FLOORS_DECLARED_THROUGH)).not.toThrow();
