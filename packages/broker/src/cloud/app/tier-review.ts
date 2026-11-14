@@ -20,7 +20,7 @@
 //     broker included) nothing is called. A call cut off by its host dying would leave the provider's bill and no outcome, and the next pass would buy it again.
 //   - ONE CALL AT A TIME PER TASK AND PURPOSE, durably (review H1b): before the key is minted the call claims a row of its own (`calls.claim`, company-scoped, in the State table). A second call for the same
 //     task and purpose within `TIER_REVIEW_IN_FLIGHT_MS` is refused unless the first one's outcome was recorded (answered, or failed before anything was sent). The row says `sent` before the prompt is
-//     forwarded; a call that failed after that (the provider may have billed it) is not retried at once (`TIER_REVIEW_RESEND_GAP_MS`: Code's fast-fail retry comes a second later and is refused).
+//     forwarded; a call that failed after that (the provider may have billed it) is retried only after a growing wait (`TIER_REVIEW_BACKOFF_MS`: 5 min, then 20 min; Code's fast-fail retry comes a second later and is refused), and never after `TIER_REVIEW_MAX_FAILURES` such failures within the row's day.
 //   - A model with no list price is refused (review M3): what it would cost cannot be held, so it is never called.
 import { randomUUID } from "node:crypto";
 import { canonicalModelName, type ModelIdentifier, type ModelSelection, type Payer } from "@rovara-code/contracts";
@@ -49,8 +49,16 @@ const PROMPT_OVERHEAD_CHARS = 8_000;
 export const TIER_REVIEW_MIN_TIME_MS = 140_000;
 /** A started call that recorded no outcome holds its task and purpose for this long: the key it may have minted lives five minutes, the proxy settles it, and the sweep frees it. */
 export const TIER_REVIEW_IN_FLIGHT_MS = 10 * 60_000;
-/** A call that failed AFTER its prompt was forwarded (the provider may have billed it) is not made again for this long: Code's one fast-fail retry is refused; the next pass may ask. */
-export const TIER_REVIEW_RESEND_GAP_MS = 60_000;
+/** After this many calls of one task and purpose failed AFTER their prompts were forwarded (the provider may have billed each), within the row's one-day life, no more are made: the meter refuses `too_many_failures`
+ * until the row expires or an answered outcome is recorded. */
+export const TIER_REVIEW_MAX_FAILURES = 3;
+/** The wait after the 1st and the 2nd post-send failure before the next call may start (the 3rd failure closes the task and purpose instead). Code's one fast-fail retry, a second later, is refused by the first wait. */
+export const TIER_REVIEW_BACKOFF_MS: readonly number[] = [5 * 60_000, 20 * 60_000];
+
+/** How long a task and purpose must wait after its `failures`-th post-send failure (1-based) before another call: the schedule above. */
+export function tierReviewBackoffMs(failures: number): number {
+  return TIER_REVIEW_BACKOFF_MS[Math.min(Math.max(failures, 1), TIER_REVIEW_BACKOFF_MS.length) - 1]!;
+}
 
 export interface TierReviewTask {
   project: string;
@@ -77,16 +85,27 @@ export interface TierReviewCallRow {
   startedAt: number;
   /** Epoch milliseconds its outcome was recorded (outcomes only). */
   endedAt?: number | undefined;
+  /** How many calls of this row failed after their prompt was sent (the row lives one day; an answered outcome resets it). Absent: none recorded. */
+  failures?: number | undefined;
+}
+
+/** The post-send failures a row counts: its counter, and at least one when its last outcome is such a failure (a row written before the counter existed). */
+export function tierReviewFailuresOf(row: TierReviewCallRow): number {
+  return Math.max(row.failures ?? 0, row.status === "failed_sent" ? 1 : 0);
 }
 
 /**
  * Why a new call for this task and purpose may not start now, given its last row, or undefined when it may. The port's claim holds the SAME rule in its write's condition (tier-review-ports.ts), so two
  * passes that both read "free" cannot both claim.
  */
-export function tierReviewCallBlocked(row: TierReviewCallRow | undefined, now: number): "in_flight" | "sent_and_failed" | undefined {
+export function tierReviewCallBlocked(row: TierReviewCallRow | undefined, now: number): "in_flight" | "sent_and_failed" | "too_many_failures" | undefined {
   if (row === undefined) return undefined;
-  if (row.status === "answered" || row.status === "failed_unsent") return undefined;
-  if (row.status === "failed_sent") return now - (row.endedAt ?? row.startedAt) < TIER_REVIEW_RESEND_GAP_MS ? "sent_and_failed" : undefined;
+  // An answered call frees the row and (in the ledger) resets its failures.
+  if (row.status === "answered") return undefined;
+  const failures = tierReviewFailuresOf(row);
+  if (failures >= TIER_REVIEW_MAX_FAILURES) return "too_many_failures";
+  if (row.status === "failed_unsent") return undefined;
+  if (row.status === "failed_sent") return now - (row.endedAt ?? row.startedAt) < tierReviewBackoffMs(failures) ? "sent_and_failed" : undefined;
   // started or sent, with no outcome: the call may still be running, or its host died with the provider's bill paid. Held for the window, then free.
   return now - row.startedAt < TIER_REVIEW_IN_FLIGHT_MS ? "in_flight" : undefined;
 }

@@ -292,8 +292,10 @@ describe("H1b: one reviewer call at a time per task and purpose, durably", () =>
     expect(await sentThenFailed.tierReviewMeter(meterInput("task-a"))).toBe(false);
     expect(sentThenFailed.w.logs).toContainEqual(expect.objectContaining({ why: "sent_and_failed" }));
     expect(sentThenFailed.w.calls).toHaveLength(1);
-    // A later pass (a minute on) may ask again.
-    sentThenFailed.w.clock.now += 60_000;
+    // A later pass may ask again once the first backoff (5 minutes from the failure) is over, not before.
+    sentThenFailed.w.clock.now += 5 * 60_000 - 1_001;
+    expect(await sentThenFailed.tierReviewMeter(meterInput("task-a"))).toBe(false);
+    sentThenFailed.w.clock.now += 1;
     sentThenFailed.w.behaviour = "answer";
     expect(await sentThenFailed.tierReviewMeter(meterInput("task-a"))).toBe(true);
 
@@ -315,15 +317,119 @@ describe("H1b: one reviewer call at a time per task and purpose, durably", () =>
     expect(t.w.ledger.rows.get("task-a|questions")).toMatchObject({ status: "failed_unsent" });
   });
 
-  it("the rule itself: answered and failed-unsent free at once; failed-sent after 60 s; started or sent after 10 minutes", () => {
+  it("the rule itself: answered and failed-unsent free at once; failed-sent after its backoff (5 min after the 1st failure, 20 min after the 2nd); started or sent after 10 minutes", () => {
     const now = 10_000_000;
     expect(tierReviewCallBlocked(undefined, now)).toBeUndefined();
     expect(tierReviewCallBlocked({ callId: "c", status: "answered", startedAt: now, endedAt: now }, now)).toBeUndefined();
     expect(tierReviewCallBlocked({ callId: "c", status: "failed_unsent", startedAt: now, endedAt: now }, now)).toBeUndefined();
-    expect(tierReviewCallBlocked({ callId: "c", status: "failed_sent", startedAt: now - 5, endedAt: now - 59_999 }, now)).toBe("sent_and_failed");
-    expect(tierReviewCallBlocked({ callId: "c", status: "failed_sent", startedAt: now - 5, endedAt: now - 60_000 }, now)).toBeUndefined();
+    expect(tierReviewCallBlocked({ callId: "c", status: "failed_sent", startedAt: now - 5, endedAt: now - 299_999, failures: 1 }, now)).toBe("sent_and_failed");
+    expect(tierReviewCallBlocked({ callId: "c", status: "failed_sent", startedAt: now - 5, endedAt: now - 300_000, failures: 1 }, now)).toBeUndefined();
+    expect(tierReviewCallBlocked({ callId: "c", status: "failed_sent", startedAt: now - 5, endedAt: now - 1_199_999, failures: 2 }, now)).toBe("sent_and_failed");
+    expect(tierReviewCallBlocked({ callId: "c", status: "failed_sent", startedAt: now - 5, endedAt: now - 1_200_000, failures: 2 }, now)).toBeUndefined();
     expect(tierReviewCallBlocked({ callId: "c", status: "sent", startedAt: now - 599_999 }, now)).toBe("in_flight");
     expect(tierReviewCallBlocked({ callId: "c", status: "started", startedAt: now - 600_000 }, now)).toBeUndefined();
+  });
+});
+
+describe("attempt cap and backoff: calls that failed AFTER being sent (the provider may bill each)", () => {
+  /** One pass of a task whose reviewer call fails after it was sent: meter, then call. Answers what the meter said. */
+  const failingPass = async (t: ReturnType<typeof world>): Promise<boolean> => {
+    t.w.deadline = t.w.clock.now + 14 * 60_000;
+    if (!(await t.tierReviewMeter(meterInput("task-a")))) return false;
+    await expect(t.tierReviewCall(ask())).rejects.toThrow(/dropped/u);
+    return true;
+  };
+
+  it("a persistently failing task is called at most 3 times in its day: after 5 min, after 20 min, then `too_many_failures` (no key, no call)", async () => {
+    const t = world({ behaviour: "fail_after_send" });
+    expect(await failingPass(t)).toBe(true);
+    expect(t.w.ledger.rows.get("task-a|questions")).toMatchObject({ status: "failed_sent", failures: 1 });
+    // The schedule ticks again at once and a minute on: held by the first backoff.
+    t.w.clock.now += 60_000;
+    expect(await failingPass(t)).toBe(false);
+    t.w.clock.now += 4 * 60_000;
+    expect(await failingPass(t)).toBe(true);
+    expect(t.w.ledger.rows.get("task-a|questions")).toMatchObject({ failures: 2 });
+    // The second backoff is 20 minutes, not 5.
+    t.w.clock.now += 5 * 60_000;
+    expect(await failingPass(t)).toBe(false);
+    t.w.clock.now += 15 * 60_000 - 1;
+    expect(await failingPass(t)).toBe(false);
+    t.w.clock.now += 1;
+    expect(await failingPass(t)).toBe(true);
+    expect(t.w.ledger.rows.get("task-a|questions")).toMatchObject({ failures: 3 });
+    expect(t.w.calls).toHaveLength(3);
+    // The cap: no pass, however much later within the row's day, makes a fourth call.
+    for (const later of [1_000, 60 * 60_000, 23 * 60 * 60_000]) {
+      t.w.clock.now += later;
+      t.w.logs.length = 0;
+      expect(await failingPass(t)).toBe(false);
+      expect(t.w.logs).toContainEqual(expect.objectContaining({ event: "tier_review.refused", why: "too_many_failures" }));
+    }
+    expect(t.w.calls).toHaveLength(3);
+    // Another purpose of the same task has its own row, and is not capped.
+    expect(await t.tierReviewMeter(meterInput("task-a", "code_review"))).toBe(true);
+  });
+
+  it("the cap holds even when the meter's read said free: the claim refuses a capped row (no call)", async () => {
+    const t = world();
+    t.w.ledger.rows.set("task-a|questions", { callId: "old", status: "failed_sent", startedAt: 1, endedAt: 2, failures: 3 });
+    expect(await t.w.ledger.claim({ taskId: "task-a", purpose: "questions", callId: "x", at: t.w.clock.now })).toBe(false);
+  });
+
+  it("failures before the send (unsent) are not counted, and an answered outcome resets the count", async () => {
+    const unsent = world({ behaviour: "fail_before_send" });
+    for (let pass = 0; pass < 5; pass += 1) {
+      expect(await unsent.tierReviewMeter(meterInput("task-a"))).toBe(true);
+      await expect(unsent.tierReviewCall(ask())).rejects.toThrow(/could not be minted/u);
+    }
+    expect(unsent.w.ledger.rows.get("task-a|questions")?.failures ?? 0).toBe(0);
+
+    const t = world({ behaviour: "fail_after_send" });
+    expect(await failingPass(t)).toBe(true);
+    t.w.clock.now += 5 * 60_000;
+    expect(await failingPass(t)).toBe(true);
+    expect(t.w.ledger.rows.get("task-a|questions")).toMatchObject({ failures: 2 });
+    t.w.clock.now += 20 * 60_000;
+    t.w.behaviour = "answer";
+    t.w.deadline = t.w.clock.now + 14 * 60_000;
+    expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(true);
+    await t.tierReviewCall(ask());
+    expect(t.w.ledger.rows.get("task-a|questions")).toMatchObject({ status: "answered", failures: 0 });
+    // The count started over: three more failures are allowed again, with the first backoff.
+    t.w.behaviour = "fail_after_send";
+    expect(await failingPass(t)).toBe(true);
+    t.w.clock.now += 5 * 60_000;
+    expect(await failingPass(t)).toBe(true);
+    t.w.clock.now += 20 * 60_000;
+    expect(await failingPass(t)).toBe(true);
+    expect(t.w.ledger.rows.get("task-a|questions")).toMatchObject({ failures: 3 });
+  });
+
+  it("an answered outcome recorded for a capped row lifts the cap (a late answer of a call that was still in flight)", async () => {
+    const t = world();
+    t.w.ledger.rows.set("task-a|questions", { callId: "late", status: "sent", startedAt: t.w.clock.now - 1, failures: 2 });
+    await t.w.ledger.mark({ taskId: "task-a", purpose: "questions", callId: "late", status: "answered", at: t.w.clock.now });
+    expect(await t.tierReviewMeter(meterInput("task-a"))).toBe(true);
+  });
+
+  it("the rule over every state: failures and status decide, the cap beats everything but an answer", () => {
+    const now = 100_000_000;
+    const states = ["started", "sent", "answered", "failed_unsent", "failed_sent"] as const;
+    for (const status of states) {
+      for (const failures of [undefined, 0, 1, 2, 3, 4]) {
+        for (const age of [0, 299_999, 300_000, 1_199_999, 1_200_000, 599_999, 600_000]) {
+          const row = { callId: "c", status, startedAt: now - age, endedAt: now - age, ...(failures === undefined ? {} : { failures }) };
+          const counted = Math.max(failures ?? 0, status === "failed_sent" ? 1 : 0);
+          const blocked = tierReviewCallBlocked(row, now);
+          if (status === "answered") expect(blocked, JSON.stringify(row)).toBeUndefined();
+          else if (counted >= 3) expect(blocked, JSON.stringify(row)).toBe("too_many_failures");
+          else if (status === "failed_unsent") expect(blocked, JSON.stringify(row)).toBeUndefined();
+          else if (status === "failed_sent") expect(blocked, JSON.stringify(row)).toBe(age < (counted >= 2 ? 1_200_000 : 300_000) ? "sent_and_failed" : undefined);
+          else expect(blocked, JSON.stringify(row)).toBe(age < 600_000 ? "in_flight" : undefined);
+        }
+      }
+    }
   });
 });
 

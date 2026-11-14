@@ -258,30 +258,78 @@ describe("calls: the durable row of each reviewer call (review H1b), its conditi
     expect(await t.ports.calls.claim({ taskId: "task-1", purpose, callId: "c2", at: now + 600_000 })).toBe(true);
     // Another call's late outcome cannot overwrite the new claim.
     await expect(t.ports.calls.mark({ taskId: "task-1", purpose, callId: "c1", status: "answered", at: now + 600_001 })).rejects.toThrow();
-    // failed after sent: held 60 s from its end; answered or failed unsent: free at once.
+    // failed after sent: held 5 minutes from its end (the first failure); answered or failed unsent: free at once.
     await t.ports.calls.mark({ taskId: "task-1", purpose, callId: "c2", status: "sent", at: now + 600_002 });
     await t.ports.calls.mark({ taskId: "task-1", purpose, callId: "c2", status: "failed_sent", at: now + 600_010 });
-    expect(await t.ports.calls.claim({ taskId: "task-1", purpose, callId: "c3", at: now + 660_009 })).toBe(false);
-    expect(await t.ports.calls.claim({ taskId: "task-1", purpose, callId: "c3", at: now + 660_010 })).toBe(true);
-    await t.ports.calls.mark({ taskId: "task-1", purpose, callId: "c3", status: "failed_unsent", at: now + 660_011 });
-    expect(await t.ports.calls.claim({ taskId: "task-1", purpose, callId: "c4", at: now + 660_012 })).toBe(true);
-    await t.ports.calls.mark({ taskId: "task-1", purpose, callId: "c4", status: "answered", at: now + 660_013 });
+    expect(await t.ports.calls.claim({ taskId: "task-1", purpose, callId: "c3", at: now + 900_009 })).toBe(false);
+    expect(await t.ports.calls.claim({ taskId: "task-1", purpose, callId: "c3", at: now + 900_010 })).toBe(true);
+    await t.ports.calls.mark({ taskId: "task-1", purpose, callId: "c3", status: "failed_unsent", at: now + 900_011 });
+    expect(await t.ports.calls.claim({ taskId: "task-1", purpose, callId: "c4", at: now + 900_012 })).toBe(true);
+    await t.ports.calls.mark({ taskId: "task-1", purpose, callId: "c4", status: "answered", at: now + 900_013 });
     // An outcome is final: it never goes back to sent.
-    await expect(t.ports.calls.mark({ taskId: "task-1", purpose, callId: "c4", status: "sent", at: now + 660_014 })).rejects.toThrow();
-    expect(await t.ports.calls.claim({ taskId: "task-1", purpose, callId: "c5", at: now + 660_014 })).toBe(true);
+    await expect(t.ports.calls.mark({ taskId: "task-1", purpose, callId: "c4", status: "sent", at: now + 900_014 })).rejects.toThrow();
+    expect(await t.ports.calls.claim({ taskId: "task-1", purpose, callId: "c5", at: now + 900_014 })).toBe(true);
   });
 
   it("the claim's condition and the meter's rule agree on every status at the window edges", async () => {
     const now = 90_000_000;
     const rows: TierReviewCallRow[] = [];
     for (const status of ["started", "sent", "answered", "failed_unsent", "failed_sent"] as const) {
-      for (const age of [0, 59_999, 60_000, 599_999, 600_000]) rows.push({ callId: "old", status, startedAt: now - age, ...(status === "started" || status === "sent" ? {} : { endedAt: now - age }) });
+      for (const failures of [undefined, 0, 1, 2, 3, 4]) {
+        for (const age of [0, 59_999, 299_999, 300_000, 599_999, 600_000, 1_199_999, 1_200_000]) rows.push({ callId: "old", status, startedAt: now - age, ...(status === "started" || status === "sent" ? {} : { endedAt: now - age }), ...(failures === undefined ? {} : { failures }) });
+      }
     }
     for (const row of rows) {
       const t = install();
       t.db.set({ ...tierReviewCallKey(TEST_ORG, "task-1", purpose), entityType: "TIER_REVIEW_CALL", orgId: TEST_ORG, taskId: "task-1", purpose, ...row });
       expect(await t.ports.calls.last({ taskId: "task-1", purpose }), JSON.stringify(row)).toEqual(row);
       expect(await t.ports.calls.claim({ taskId: "task-1", purpose, callId: "new", at: now }), JSON.stringify(row)).toBe(tierReviewCallBlocked(row, now) === undefined);
+    }
+  });
+
+  it("the failure count lives in the row: a claim keeps it, a failure after the send adds one, an unsent failure does not, an answer resets it, and 3 close the row until it expires", async () => {
+    const t = install();
+    const key = tierReviewCallKey(TEST_ORG, "task-1", purpose);
+    const row = () => t.db.get(key) as { failures?: number; status: string; endedAt?: number };
+    let at = 10_000_000;
+    const attempt = async (callId: string, outcome: "failed_sent" | "failed_unsent" | "answered"): Promise<boolean> => {
+      if (!(await t.ports.calls.claim({ taskId: "task-1", purpose, callId, at }))) return false;
+      await t.ports.calls.mark({ taskId: "task-1", purpose, callId, status: "sent", at: at + 1 });
+      await t.ports.calls.mark({ taskId: "task-1", purpose, callId, status: outcome, at: at + 2 });
+      return true;
+    };
+    expect(await attempt("c1", "failed_sent")).toBe(true);
+    expect(row().failures).toBe(1);
+    // A claim never drops the count (it updates the row; an old end time is cleared).
+    at += 300_010;
+    expect(await t.ports.calls.claim({ taskId: "task-1", purpose, callId: "c2", at })).toBe(true);
+    expect(row()).toMatchObject({ status: "started", failures: 1 });
+    expect(row().endedAt).toBeUndefined();
+    await t.ports.calls.mark({ taskId: "task-1", purpose, callId: "c2", status: "failed_unsent", at: at + 1 });
+    expect(row().failures).toBe(1);
+    expect(await attempt("c3", "failed_sent")).toBe(true);
+    expect(row().failures).toBe(2);
+    // The second backoff is 20 minutes.
+    at += 300_010;
+    expect(await attempt("c4", "failed_sent")).toBe(false);
+    at += 900_000;
+    expect(await attempt("c4", "failed_sent")).toBe(true);
+    expect(row().failures).toBe(3);
+    // Capped: nothing claims it, however long since.
+    for (const later of [1, 3_600_000, 23 * 3_600_000]) { at += later; expect(await attempt("c5", "answered"), String(later)).toBe(false); }
+    expect(row()).toMatchObject({ status: "failed_sent", failures: 3 });
+    // An answered outcome (a late one, here set straight on a sent row) resets it.
+    t.db.set({ ...key, entityType: "TIER_REVIEW_CALL", orgId: TEST_ORG, taskId: "task-1", purpose, callId: "late", status: "sent", startedAt: at, failures: 3 });
+    await t.ports.calls.mark({ taskId: "task-1", purpose, callId: "late", status: "answered", at: at + 1 });
+    expect(row().failures).toBe(0);
+    expect(await attempt("c6", "answered")).toBe(true);
+  });
+
+  it("a row whose failure count is not a count reads as a call in flight (it blocks), never as free", async () => {
+    for (const failures of [-1, 1.5, "2", null]) {
+      const t = install();
+      t.db.set({ ...tierReviewCallKey(TEST_ORG, "task-1", purpose), entityType: "TIER_REVIEW_CALL", orgId: TEST_ORG, taskId: "task-1", purpose, callId: "x", status: "answered", startedAt: 1, failures });
+      expect(tierReviewCallBlocked(await t.ports.calls.last({ taskId: "task-1", purpose }), Date.now()), String(failures)).toBe("in_flight");
     }
   });
 

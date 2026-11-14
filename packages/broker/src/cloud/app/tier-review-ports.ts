@@ -11,7 +11,7 @@
 //          forwarded, and its outcome after (review H1b). The claim's condition is `tierReviewCallBlocked`'s rule, so two passes cannot both claim.
 // There is no Rovara-paid route anywhere here: no support key, no fallback model, no default.
 import { randomUUID } from "node:crypto";
-import { GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { INDEX_EXPIRY_ATTRIBUTE, ROVARA_CODE_AGENT_ID, canonicalModelName, forbiddenModelMatcher, orgScoped, type ModelIdentifier, type OrgId, type Payer } from "@rovara-code/contracts";
 import { listPricesPerMillion } from "@agentx/model-runtime/catalog";
 import { BROKER_SETTINGS } from "@agentx/cloud-contracts";
@@ -24,7 +24,7 @@ import { budgetScopesFor, keyMember, payerIdOf } from "../../spend/payer.js";
 import type { ModelAccess } from "../../model-proxy/access.js";
 import { taskPayerKey } from "./money.js";
 import { REVIEW_LIMITS } from "../../model-proxy/protocol.js";
-import { TIER_REVIEW_IN_FLIGHT_MS, TIER_REVIEW_MAX_CALL_USD, TIER_REVIEW_OUTPUT_TOKENS, TIER_REVIEW_RESEND_GAP_MS, tierReviewHoldUsd, type TierReviewCallLedger, type TierReviewCallRow, type TierReviewPorts, type TierReviewPurpose, type TierReviewRoute } from "./tier-review.js";
+import { TIER_REVIEW_IN_FLIGHT_MS, TIER_REVIEW_MAX_CALL_USD, TIER_REVIEW_MAX_FAILURES, TIER_REVIEW_OUTPUT_TOKENS, tierReviewBackoffMs, tierReviewHoldUsd, type TierReviewCallLedger, type TierReviewCallRow, type TierReviewPorts, type TierReviewPurpose, type TierReviewRoute } from "./tier-review.js";
 
 /** A reviewer key lives for at most five minutes (Code's reviewer waits two). */
 export const TIER_REVIEW_KEY_TTL_SECONDS = 300;
@@ -80,20 +80,32 @@ export function tierReviewCallLedger(deps: { companyId: OrgId; documentClient: {
       // A row that is not this company's or not in shape is read as a call in flight (it blocks): never as free.
       const status = item["status"];
       const startedAt = item["startedAt"];
-      if (item["orgId"] !== companyId || typeof item["callId"] !== "string" || typeof startedAt !== "number" || !["started", "sent", "answered", "failed_unsent", "failed_sent"].includes(String(status))) {
+      const failures = item["failures"];
+      if (item["orgId"] !== companyId || typeof item["callId"] !== "string" || typeof startedAt !== "number" || !["started", "sent", "answered", "failed_unsent", "failed_sent"].includes(String(status))
+        || (failures !== undefined && !(typeof failures === "number" && Number.isInteger(failures) && failures >= 0))) {
         return { callId: "unknown", status: "started", startedAt: Number.MAX_SAFE_INTEGER };
       }
-      return { callId: item["callId"], status: status as TierReviewCallRow["status"], startedAt, ...(typeof item["endedAt"] === "number" ? { endedAt: item["endedAt"] } : {}) };
+      return { callId: item["callId"], status: status as TierReviewCallRow["status"], startedAt, ...(typeof item["endedAt"] === "number" ? { endedAt: item["endedAt"] } : {}), ...(typeof failures === "number" ? { failures } : {}) };
     },
     async claim({ taskId, purpose, callId, at }) {
+      // `tierReviewCallBlocked`'s rule as the write's condition, built from the same constants: no row; an answered outcome; otherwise (a count under the cap) a call that failed unsent, one that failed after it was sent
+      // and has waited its backoff for that count, or a claim older than the window. The row's failure count is KEPT by the claim (an update, never a replace); only an answered outcome resets it.
+      const failedSent: string[] = [];
+      const values: Record<string, unknown> = { ":answered": "answered", ":unsent": "failed_unsent", ":failedSent": "failed_sent", ":started": "started", ":sent": "sent", ":max": TIER_REVIEW_MAX_FAILURES, ":zero": 0, ":inFlightBefore": at - TIER_REVIEW_IN_FLIGHT_MS + 1 };
+      for (let count = 1; count < TIER_REVIEW_MAX_FAILURES; count += 1) {
+        values[`:count${count}`] = count;
+        values[`:before${count}`] = at - tierReviewBackoffMs(count) + 1;
+        // A failed row with no counter (or 0) counts as one failure, as `tierReviewFailuresOf` reads it.
+        const counted = count === 1 ? `(attribute_not_exists(#failures) OR #failures = :zero OR #failures = :count1)` : `#failures = :count${count}`;
+        failedSent.push(`(#status = :failedSent AND ${counted} AND #endedAt < :before${count})`);
+      }
       try {
-        await documentClient.send(new PutCommand({
-          TableName: tableName,
-          Item: { ...tierReviewCallKey(companyId, taskId, purpose), entityType: "TIER_REVIEW_CALL", orgId: companyId, taskId, purpose, callId, status: "started", startedAt: at, [INDEX_EXPIRY_ATTRIBUTE]: Math.floor(at / 1000) + CALL_ROW_TTL_SECONDS },
-          // `tierReviewCallBlocked`'s rule as the write's condition: no row; an outcome that frees it (answered, failed unsent); a call that failed after it was sent, long enough ago; or a claim older than the window.
-          ConditionExpression: "attribute_not_exists(pk) OR #status = :answered OR #status = :unsent OR (#status = :failedSent AND endedAt < :resendBefore) OR ((#status = :started OR #status = :sent) AND startedAt < :inFlightBefore)",
-          ExpressionAttributeNames: { "#status": "status" },
-          ExpressionAttributeValues: { ":answered": "answered", ":unsent": "failed_unsent", ":failedSent": "failed_sent", ":started": "started", ":sent": "sent", ":resendBefore": at - TIER_REVIEW_RESEND_GAP_MS + 1, ":inFlightBefore": at - TIER_REVIEW_IN_FLIGHT_MS + 1 },
+        await documentClient.send(new UpdateCommand({
+          TableName: tableName, Key: tierReviewCallKey(companyId, taskId, purpose),
+          UpdateExpression: "SET #entityType = :entityType, #orgId = :orgId, #taskId = :taskId, #purpose = :purpose, #callId = :callId, #status = :started, #startedAt = :at, #expiry = :expiry, #failures = if_not_exists(#failures, :zero) REMOVE #endedAt, #sentAt",
+          ConditionExpression: `attribute_not_exists(pk) OR #status = :answered OR ((attribute_not_exists(#failures) OR #failures < :max) AND (#status = :unsent OR ${failedSent.join(" OR ")} OR ((#status = :started OR #status = :sent) AND #startedAt < :inFlightBefore)))`,
+          ExpressionAttributeNames: { "#status": "status", "#failures": "failures", "#endedAt": "endedAt", "#startedAt": "startedAt", "#sentAt": "sentAt", "#entityType": "entityType", "#orgId": "orgId", "#taskId": "taskId", "#purpose": "purpose", "#callId": "callId", "#expiry": INDEX_EXPIRY_ATTRIBUTE },
+          ExpressionAttributeValues: { ...values, ":entityType": "TIER_REVIEW_CALL", ":orgId": companyId, ":taskId": taskId, ":purpose": purpose, ":callId": callId, ":at": at, ":expiry": Math.floor(at / 1000) + CALL_ROW_TTL_SECONDS },
         }));
         return true;
       } catch (error) {
@@ -104,11 +116,14 @@ export function tierReviewCallLedger(deps: { companyId: OrgId; documentClient: {
     async mark({ taskId, purpose, callId, status, at }) {
       await documentClient.send(new UpdateCommand({
         TableName: tableName, Key: tierReviewCallKey(companyId, taskId, purpose),
-        UpdateExpression: status === "sent" ? "SET #status = :status, sentAt = :at" : "SET #status = :status, endedAt = :at",
+        // An answered outcome resets the row's failure count; a failure after the prompt was sent adds one (atomically, on this call's row only).
+        UpdateExpression: status === "sent" ? "SET #status = :status, sentAt = :at"
+          : status === "answered" ? "SET #status = :status, endedAt = :at, #failures = :zero"
+          : status === "failed_sent" ? "SET #status = :status, endedAt = :at ADD #failures :one" : "SET #status = :status, endedAt = :at",
         // Only this call's row, and never back from an outcome: a late write of an older call cannot free or overwrite a newer one.
         ConditionExpression: "callId = :callId AND (#status = :started OR #status = :sent)",
-        ExpressionAttributeNames: { "#status": "status" },
-        ExpressionAttributeValues: { ":status": status, ":at": at, ":callId": callId, ":started": "started", ":sent": "sent" },
+        ExpressionAttributeNames: { "#status": "status", ...(status === "answered" || status === "failed_sent" ? { "#failures": "failures" } : {}) },
+        ExpressionAttributeValues: { ":status": status, ":at": at, ":callId": callId, ":started": "started", ":sent": "sent", ...(status === "answered" ? { ":zero": 0 } : {}), ...(status === "failed_sent" ? { ":one": 1 } : {}) },
       }));
     },
   };

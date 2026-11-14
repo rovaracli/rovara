@@ -1672,10 +1672,10 @@ export class ControlPlaneStack extends Stack {
       // Without the Team record there is no reviewer, so the lighter flow is off, no core task skips its planning steps, and no tier pass is owed: neither exists.
       if (props?.teamRecord !== undefined) {
         BrokerSettings.of(broker).add("tierReview", "1");
-        // S3-9-TIER-CHECKS-SCHEDULE-RECONCILE (1): its schedule follows the CoreEngine parameter; S3-10: it is told the switch and may queue a step on the core dispatch queue.
+        // S3-9-TIER-CHECKS-SCHEDULE-RECONCILE (1): its schedule follows the CoreEngine parameter; S3-10: it is told the switch (packed cc).
         const tierChecks = attachCoreTierChecks(this, {
           env: naming.env, state, artifacts, modelAccessFunction, githubAppPrivateKeySecretArn: githubAppPrivateKeySecretArn.valueAsString,
-          githubAppCredentialRef: githubAppCredentialRef.valueAsString, githubAppId: githubAppId.valueAsString,
+          githubAppCredentialRef: githubAppCredentialRef.valueAsString, githubAppId: githubAppId.valueAsString, alarms: { name: (suffix) => naming.alarmName(suffix), action: notifyOperator },
           ...(signInParameters === undefined ? {} : { coreEngine: signInParameters.coreEngine }),
           ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}),
         });
