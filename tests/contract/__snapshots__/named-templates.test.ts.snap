@@ -7248,6 +7248,40 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
       },
       "Type": "AWS::CloudWatch::Alarm",
     },
+    "CoreEngineJobsDispatcherMapping13D37C6B": {
+      "DependsOn": [
+        "DispatcherServiceRoleDefaultPolicyDA413007",
+      ],
+      "Properties": {
+        "BatchSize": 10,
+        "Enabled": {
+          "Fn::If": [
+            "CoreEngineJobsCoreEngineIsOnCBF38D40",
+            true,
+            false,
+          ],
+        },
+        "EventSourceArn": {
+          "Fn::GetAtt": [
+            "CoreEngineJobsQueue9C998495",
+            "Arn",
+          ],
+        },
+        "FunctionName": {
+          "Ref": "DispatcherD4A12972",
+        },
+        "FunctionResponseTypes": [
+          "ReportBatchItemFailures",
+        ],
+        "Tags": [
+          {
+            "Key": "agentx:env",
+            "Value": "staging",
+          },
+        ],
+      },
+      "Type": "AWS::Lambda::EventSourceMapping",
+    },
     "CoreEngineJobsInvokeRole08FF5F47": {
       "Properties": {
         "AssumeRolePolicyDocument": {
@@ -9757,6 +9791,21 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "ARTIFACT_BUCKET_NAME": {
               "Ref": "Artifacts82DD59A1",
             },
+            "CLOUD_CORE_ENGINE": {
+              "Ref": "CoreEngine",
+            },
+            "CORE_DISPATCH_DEAD_LETTER_URL": {
+              "Ref": "CoreEngineJobsDeadLetterQueue4163BB61",
+            },
+            "CORE_DISPATCH_QUEUE_ARN": {
+              "Fn::GetAtt": [
+                "CoreEngineJobsQueue9C998495",
+                "Arn",
+              ],
+            },
+            "CORE_DISPATCH_QUEUE_URL": {
+              "Ref": "CoreEngineJobsQueue9C998495",
+            },
             "DELETER_ARN": {
               "Ref": "SessionsDeleterB48741EA",
             },
@@ -10072,6 +10121,85 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               "Resource": {
                 "Ref": "SessionsProvisioner9C44055B",
               },
+            },
+            {
+              "Action": [
+                "sqs:ReceiveMessage",
+                "sqs:DeleteMessage",
+                "sqs:ChangeMessageVisibility",
+                "sqs:GetQueueAttributes",
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "CoreEngineJobsQueue9C998495",
+                  "Arn",
+                ],
+              },
+              "Sid": "ConsumeCoreDispatchQueue",
+            },
+            {
+              "Action": "states:StartExecution",
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "SessionsDeleterB48741EA",
+              },
+            },
+            {
+              "Action": "ec2:TerminateInstances",
+              "Condition": {
+                "StringEquals": {
+                  "aws:ResourceTag/DeploymentMode": "ec2-ebs",
+                  "aws:ResourceTag/Environment": "staging",
+                },
+              },
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":ec2:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":instance/*",
+                  ],
+                ],
+              },
+              "Sid": "CoreTerminateOwnSessionInstances",
+            },
+            {
+              "Action": "secretsmanager:GetSecretValue",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition",
+                    },
+                    ":secretsmanager:",
+                    {
+                      "Ref": "AWS::Region",
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId",
+                    },
+                    ":secret:agentx/staging/callback-signing-key-??????",
+                  ],
+                ],
+              },
+              "Sid": "CoreReadCallbackSigningKey",
             },
           ],
           "Version": "2012-10-17",
@@ -18019,6 +18147,14 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
             "AttributeType": "S",
           },
           {
+            "AttributeName": "outboxState",
+            "AttributeType": "S",
+          },
+          {
+            "AttributeName": "outboxStagedAt",
+            "AttributeType": "S",
+          },
+          {
             "AttributeName": "dispatchDuePk",
             "AttributeType": "S",
           },
@@ -18070,6 +18206,22 @@ exports[`named environment templates > agentx-staging-control-plane is unchanged
               },
               {
                 "AttributeName": "webhookRecoverySk",
+                "KeyType": "RANGE",
+              },
+            ],
+            "Projection": {
+              "ProjectionType": "ALL",
+            },
+          },
+          {
+            "IndexName": "outbox-pending",
+            "KeySchema": [
+              {
+                "AttributeName": "outboxState",
+                "KeyType": "HASH",
+              },
+              {
+                "AttributeName": "outboxStagedAt",
                 "KeyType": "RANGE",
               },
             ],

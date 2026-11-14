@@ -54,7 +54,7 @@ import {
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { BROKER_SETTINGS, fixtureKeyAlias, HEALTH_ALARM_SUFFIXES, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName, EVIDENCE_RECORD_RETENTION_DAYS } from "@agentx/cloud-contracts";
-import { E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, chainScheduleGroupName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@rovara-code/contracts";
+import { E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, chainScheduleGroupName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX, OUTBOX_PENDING_INDEX } from "@rovara-code/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
@@ -200,6 +200,8 @@ export class ControlPlaneStack extends Stack {
     });
     // Spec 025 phase 25a: declared on the stack itself so the names are exact; named environments only (R3).
     const signInParameters = naming.env === undefined ? undefined : developerSignInParameters(this);
+    // S3-10: the core engine's queue and schedules (named environments with sign-in); the dispatcher and CoreTierChecks are connected to it once they exist.
+    let coreEngineJobs: CoreEngine | undefined;
     // The task person proof workload (the dispatcher's person guard needs it): in every named environment. It is installed while this is "true" or while TaskPeopleChangesEnabled is.
     const taskPersonProofEnabled = naming.env !== undefined ? new CfnParameter(this, "TaskPersonProofEnabled", {
       type: "String",
@@ -587,6 +589,16 @@ export class ControlPlaneStack extends Stack {
       sortKey: { name: "webhookRecoverySk", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
     });
+    // S3-10: the core engine's transactional outbox lists its pending messages through this sparse index (Code's OUTBOX_PENDING_INDEX: only a core outbox row waiting to be relayed carries these keys). Without
+    // it the core's relay (the backstop schedule and every start's own relay) is refused by DynamoDB. Nothing is indexed while no task runs on the core. Named environments only (the legacy install has no core).
+    if (naming.env !== undefined) {
+      state.addGlobalSecondaryIndex({
+        indexName: OUTBOX_PENDING_INDEX.name,
+        partitionKey: { name: OUTBOX_PENDING_INDEX.partitionAttribute, type: dynamodb.AttributeType.STRING },
+        sortKey: { name: OUTBOX_PENDING_INDEX.sortAttribute!, type: dynamodb.AttributeType.STRING },
+        projectionType: dynamodb.ProjectionType.ALL,
+      });
+    }
     // Gap 6: sparse due-time index over workflow dispatch rows, so the recovery sweep reads due rows first.
     state.addGlobalSecondaryIndex({
       indexName: WORKFLOW_DISPATCH_DUE_INDEX.name,
@@ -1455,7 +1467,7 @@ export class ControlPlaneStack extends Stack {
       // broker) and does not unpack settings, so it is given the same value as a plain variable (a few bytes: its environment is small). The queue, the job schedules and the alarm are core-engine.ts.
       brokerSettings.add("coreEngine", signInParameters.coreEngine.valueAsString);
       slackIngress.addEnvironment(BROKER_SETTINGS.coreEngine.variable, signInParameters.coreEngine.valueAsString);
-      new CoreEngine(this, "CoreEngineJobs", { naming, env: naming.env, broker, coreEngine: signInParameters.coreEngine, notifyOperator });
+      coreEngineJobs = new CoreEngine(this, "CoreEngineJobs", { naming, env: naming.env, broker, coreEngine: signInParameters.coreEngine, notifyOperator });
       // Sign in with ChatGPT (#338): seals each developer's ChatGPT tokens in the State table. A
       // connection belongs to a signed-in developer, so it exists only where developer sign-in
       // does. Only the broker encrypts and decrypts with it, always under an encryption context
@@ -1660,11 +1672,14 @@ export class ControlPlaneStack extends Stack {
       // Without the Team record there is no reviewer, so the lighter flow is off, no core task skips its planning steps, and no tier pass is owed: neither exists.
       if (props?.teamRecord !== undefined) {
         BrokerSettings.of(broker).add("tierReview", "1");
-        attachCoreTierChecks(this, {
+        // S3-9-TIER-CHECKS-SCHEDULE-RECONCILE (1): its schedule follows the CoreEngine parameter; S3-10: it is told the switch and may queue a step on the core dispatch queue.
+        const tierChecks = attachCoreTierChecks(this, {
           env: naming.env, state, artifacts, modelAccessFunction, githubAppPrivateKeySecretArn: githubAppPrivateKeySecretArn.valueAsString,
           githubAppCredentialRef: githubAppCredentialRef.valueAsString, githubAppId: githubAppId.valueAsString,
+          ...(signInParameters === undefined ? {} : { coreEngine: signInParameters.coreEngine }),
           ...(props.reservedConcurrency === false ? { reservedConcurrency: false } : {}),
         });
+        coreEngineJobs?.connectTierChecks(tierChecks.fn);
       }
       BrokerNames.of(broker).add("modelAccessFunction", modelAccessFunction.functionName);
       // Ruling R29: the proxy's address, which the broker hands a task's worker together with its key.
@@ -1766,6 +1781,21 @@ export class ControlPlaneStack extends Stack {
     }
     sessions.connectDispatcher(dispatcher);
     sessions.connectBroker(broker);
+    // S3-10 (0519-INFRA-CORE-DISPATCH-CONSUMER): the dispatcher consumes the core dispatch queue (named environments; the mapping is ENABLED only while `cc` is not off). Its new grants: the queue's receive,
+    // delete and visibility; the deleter; ending an own-tagged session instance (the reaper's grant); and the callback signing key.
+    if (coreEngineJobs !== undefined && naming.env !== undefined) {
+      const env = naming.env;
+      coreEngineJobs.connectDispatcher(dispatcher, {
+        startDeleter: (fn) => { sessions.deleter.grantStartExecution(fn); },
+        terminateOwnInstances: new iam.PolicyStatement({
+          sid: "CoreTerminateOwnSessionInstances",
+          actions: ["ec2:TerminateInstances"],
+          resources: [`arn:${Aws.PARTITION}:ec2:${Aws.REGION}:${Aws.ACCOUNT_ID}:instance/*`],
+          conditions: { StringEquals: { "aws:ResourceTag/DeploymentMode": "ec2-ebs", "aws:ResourceTag/Environment": naming.environmentTagValue } },
+        }),
+        readCallbackKey: (fn) => { grantSigningKeySecrets(fn, this, env, ["callback"], "CoreReadCallbackSigningKey"); },
+      });
+    }
 
     // Spec 052 FR-006, FR-011: the eval batch tick. Every 2 minutes it records run ends the broker
     // missed, reconciles the eval slot counter, fills free slots through the broker's own run path

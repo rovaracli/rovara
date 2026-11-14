@@ -1,6 +1,7 @@
 // Part of the broker (split out of ../broker.ts): limits, the setup capture policy, the record and dependency types, route keys.
 
 import type { CloudCoreEntryInputs } from "../../cloud/app/entry.js";
+import type { CloudCoreHostResources } from "../../cloud/app/entry-inputs.js";
 import type { CoreIntentHook } from "../../rovara-code/intent.js";
 import type { CompanyImageDigestResolver } from "../../test-env/company-image-resolver.js";
 import type { CompanyRulesRepositories } from "../../company-rules/sync.js";
@@ -222,6 +223,8 @@ export interface AwsBrokerDependencies {
   coreStart?: CoreIntentHook | undefined;
   /** S3 (decision 130): what the broker's Lambda entry supplies for the Cloud root (module clients, session facts, the rest of `CloudCoreEntryInputs`). Absent: no root is built, whatever the switch says. */
   cloudCore?: CloudCoreEntryInputs | undefined;
+  /** S3-10: the Lambda's own clients for the core (made by aws/broker.ts only while the combined switch is on). The handler builds `cloudCore` from them (cloud/app/entry-inputs.ts). Absent: nothing core related is built. */
+  cloudCoreHost?: CloudCoreHostResources | undefined;
   /** Continue in your own tool: the host side of "publish working branch". Absent: the broker's own (a push grant it mints for itself, `working-branch-port.ts`). A seam for tests. */
   workingBranchPort?: WorkingBranchPort | undefined;
   /** Continue in your own tool: starts the re-check of a head that changed outside Rovara. Absent on this build: the action answers RUNTIME_UNAVAILABLE and the task view offers no Recheck. */

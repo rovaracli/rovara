@@ -9,14 +9,15 @@ import { App, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { BROKER_SETTINGS, BROKER_SETTINGS_VARIABLE, CORE_DISPATCH_ATTEMPTS_MAX, CORE_DISPATCH_MAX_RECEIVES, CORE_ENGINE_PARAMETER_PATTERN, CORE_JOB_EVENT_SOURCE, CORE_JOB_SCHEDULES, DERIVED_BROKER_VARIABLES, coreDispatchDeadLetterName, coreDispatchQueueName } from "@agentx/cloud-contracts";
-import { SERVICE_CATALOG_REPOSITORIES, catalogRepositories, catalogRepositoryName } from "@rovara-code/contracts";
+import { OUTBOX_PENDING_INDEX, SERVICE_CATALOG_REPOSITORIES, catalogRepositories, catalogRepositoryName } from "@rovara-code/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { ControlPlaneStack } from "../../infra/lib/control-plane.js";
 import { environmentNaming } from "../../infra/lib/naming.js";
 import { REVISION_7_CATALOG_REPOSITORIES, installCatalogRepositories, serviceCatalogLifecyclePolicy } from "../../infra/lib/service-catalog-images.js";
 import { defaultBoundaryArn, deployRoleBoundaryStatements, serviceRoleStatements, defaultBoundaryStatements } from "../../infra/lib/access-policies.js";
 import { hydrateBrokerEnvironment, type MutableEnvironment } from "../../packages/broker/src/aws/broker-environment.js";
-import { CORE_JOBS } from "../../packages/broker/src/cloud/app/jobs.js";
+import { jobsOfHost } from "../../packages/broker/src/cloud/app/jobs.js";
+import { CORE_DISPATCHER_QUEUE_ACTIONS } from "../../infra/lib/core-engine.js";
 import { parseCoreSwitch, readCoreEngineFlags } from "../../packages/broker/src/cloud/app/flags.js";
 import { configKey } from "../../packages/cli/src/config/keys.js";
 import { OPERATOR_PARAMETERS } from "../../packages/cli/src/deploy/parameters.js";
@@ -150,18 +151,52 @@ describe("the core dispatch queue", () => {
     expect(brokerVariables(named)).not.toHaveProperty("CORE_DISPATCH_QUEUE_URL");
   });
 
-  it("is used by the broker alone, on exactly these two queues; no event source mapping reads it (the dispatcher's core host is not wired yet)", () => {
-    const grants = policyStatements(json).filter((statement) => list(statement.Action).includes("sqs:ChangeMessageVisibility") && JSON.stringify(statement.Resource).includes(queue![0]));
-    expect(grants).toHaveLength(1);
-    expect(list(grants[0]!.Action).sort()).toEqual(["sqs:ChangeMessageVisibility", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage", "sqs:SendMessage"]);
-    expect(grants[0]!.Resource).toEqual([{ "Fn::GetAtt": [queue![0], "Arn"] }, { "Fn::GetAtt": [deadLetters![0], "Arn"] }]);
-    // Nothing else names either queue: not the dispatcher, not the publisher, no event source mapping.
+  it("is used by the broker on both queues, and consumed by the dispatcher alone through its own mapping, enabled only while cc is not off (S3-10)", () => {
     const naming = (statement: IamStatement) => JSON.stringify(statement.Resource).includes(queue![0]) || JSON.stringify(statement.Resource).includes(deadLetters![0]);
-    expect(policyStatements(json).filter(naming)).toHaveLength(1);
-    for (const [, mapping] of resources(named, "AWS::Lambda::EventSourceMapping")) {
-      expect(JSON.stringify(mapping.Properties.EventSourceArn)).not.toContain(queue![0]);
-      expect(JSON.stringify(mapping.Properties.EventSourceArn)).not.toContain(deadLetters![0]);
-    }
+    const grants = policyStatements(json).filter(naming);
+    expect(grants).toHaveLength(2);
+    const brokerGrant = grants.find((statement) => statement.Sid === "UseCoreDispatchQueue")!;
+    expect(list(brokerGrant.Action).sort()).toEqual(["sqs:ChangeMessageVisibility", "sqs:DeleteMessage", "sqs:GetQueueAttributes", "sqs:ReceiveMessage", "sqs:SendMessage"]);
+    expect(brokerGrant.Resource).toEqual([{ "Fn::GetAtt": [queue![0], "Arn"] }, { "Fn::GetAtt": [deadLetters![0], "Arn"] }]);
+    // The dispatcher: the queue alone (never the dead letters), and no send.
+    const dispatcherGrant = grants.find((statement) => statement.Sid === "ConsumeCoreDispatchQueue")!;
+    expect(list(dispatcherGrant.Action).sort()).toEqual([...CORE_DISPATCHER_QUEUE_ACTIONS].sort());
+    expect(list(dispatcherGrant.Action)).not.toContain("sqs:SendMessage");
+    expect(dispatcherGrant.Resource).toEqual({ "Fn::GetAtt": [queue![0], "Arn"] });
+    const mappings = resources(named, "AWS::Lambda::EventSourceMapping").filter(([, mapping]) => JSON.stringify(mapping.Properties.EventSourceArn).includes(queue![0]));
+    expect(mappings).toHaveLength(1);
+    const dispatcher = resources(named, "AWS::Lambda::Function").find(([id]) => id.startsWith("Dispatcher"))!;
+    expect(mappings[0]![1].Properties).toMatchObject({ FunctionName: { Ref: dispatcher[0] }, BatchSize: 10, FunctionResponseTypes: ["ReportBatchItemFailures"], Enabled: { "Fn::If": [expect.stringContaining("CoreEngineIsOn"), true, false] } });
+    // No mapping reads the dead letters.
+    for (const [, mapping] of resources(named, "AWS::Lambda::EventSourceMapping")) expect(JSON.stringify(mapping.Properties.EventSourceArn)).not.toContain(deadLetters![0]);
+    // The dispatcher is told the queue (URLs and ARN) and the switch as plain variables.
+    const variables = (dispatcher[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(Object.keys(variables)).toEqual(expect.arrayContaining(["CORE_DISPATCH_QUEUE_URL", "CORE_DISPATCH_DEAD_LETTER_URL", "CORE_DISPATCH_QUEUE_ARN", BROKER_SETTINGS.coreEngine.variable]));
+    expect(variables[BROKER_SETTINGS.coreEngine.variable]).toEqual({ Ref: "CoreEngine" });
+  });
+
+  it("gives the dispatcher exactly what the core's dispatch needs beyond what it had: the deleter, ending an own-tagged session instance, and the callback signing key (S3-10)", () => {
+    const dispatcher = resources(named, "AWS::Lambda::Function").find(([id]) => id.startsWith("Dispatcher"))!;
+    const roleId = ((dispatcher[1].Properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"])[0];
+    const statements = resources(named, "AWS::IAM::Policy").filter(([, policy]) => JSON.stringify(policy.Properties.Roles).includes(roleId)).flatMap(([, policy]) => (policy.Properties.PolicyDocument as { Statement: IamStatement[] }).Statement);
+    const terminate = statements.find((statement) => statement.Sid === "CoreTerminateOwnSessionInstances")!;
+    expect(list(terminate.Action)).toEqual(["ec2:TerminateInstances"]);
+    expect(JSON.stringify(terminate.Condition)).toContain("aws:ResourceTag/DeploymentMode");
+    expect(JSON.stringify(terminate.Condition)).toContain("ec2-ebs");
+    expect(JSON.stringify(terminate.Condition)).toContain("aws:ResourceTag/Environment");
+    const key = statements.find((statement) => statement.Sid === "CoreReadCallbackSigningKey")!;
+    expect(list(key.Action)).toEqual(["secretsmanager:GetSecretValue"]);
+    expect(JSON.stringify(key.Resource)).toContain("callback");
+    expect(JSON.stringify(key.Resource)).not.toContain("erasure");
+    const starts = statements.filter((statement) => list(statement.Action).includes("states:StartExecution"));
+    expect(starts.map((statement) => JSON.stringify(statement.Resource)).join(" ")).toMatch(/Deleter/u);
+  });
+
+  it("indexes the core's pending outbox rows on the State table (Code's OUTBOX_PENDING_INDEX), so the core's relay can list them (S3-10)", () => {
+    const state = resources(named, "AWS::DynamoDB::Table").find(([id]) => id.startsWith("State"))!;
+    const index = (state[1].Properties.GlobalSecondaryIndexes as Array<{ IndexName: string; KeySchema: Array<{ AttributeName: string; KeyType: string }>; Projection: { ProjectionType: string } }>).find((entry) => entry.IndexName === OUTBOX_PENDING_INDEX.name)!;
+    expect(index.KeySchema).toEqual([{ AttributeName: OUTBOX_PENDING_INDEX.partitionAttribute, KeyType: "HASH" }, { AttributeName: OUTBOX_PENDING_INDEX.sortAttribute, KeyType: "RANGE" }]);
+    expect(index.Projection.ProjectionType).toBe("ALL");
   });
 
   it("has an alarm on its dead letters, which tells the operator", () => {
@@ -181,8 +216,11 @@ describe("the core job schedules", () => {
   const broker = resources(named, "AWS::Lambda::Function").find(([id]) => /^Broker[0-9A-F]{8}$/.test(id))!;
 
   it("are one per scheduled row of the core's job table, with its rate, and the stream row has none", () => {
-    expect(CORE_JOB_SCHEDULES.length).toBe(CORE_JOBS.filter((job) => job.trigger.kind === "schedule").length);
-    for (const job of CORE_JOBS) {
+    // S3-9-TIER-CHECKS-SCHEDULE-RECONCILE (2): the broker's schedules are the broker's jobs only; the tier pass is scheduled on its own function (core-tier-checks.ts).
+    const brokerJobs = jobsOfHost("broker");
+    expect(CORE_JOB_SCHEDULES.length).toBe(brokerJobs.filter((job) => job.trigger.kind === "schedule").length);
+    expect(CORE_JOB_SCHEDULES.some((entry) => entry.job === "tier-checks")).toBe(false);
+    for (const job of brokerJobs) {
       const scheduled = CORE_JOB_SCHEDULES.find((entry) => entry.job === job.name);
       if (job.trigger.kind === "schedule") expect(scheduled, job.name).toEqual({ job: job.name, rate: job.trigger.rate });
       else expect(scheduled, job.name).toBeUndefined();
@@ -314,6 +352,30 @@ describe("no new deploy-role action: the deploy role and its permissions boundar
   it("the default boundary, the ceiling of the schedules' role, allows what that role does (invoke the broker) and not more than the role holds", () => {
     const ceiling = defaultBoundaryStatements(scope as never) as IamStatement[];
     expect(simulateIam(ceiling, { action: "lambda:InvokeFunction", resource: "arn:aws:lambda:us-west-2:123456789012:function:agentx-staging-Broker" }).allowed).toBe(true);
+  });
+
+  // S3-10: what the new pieces need at deploy time (the dispatcher's event source mapping, the State table's new index, the dispatcher role's new policy statements) and at run time on the dispatcher
+  // (the default boundary is every service role's ceiling: a grant it does not allow is an implicit deny).
+  const S310_DEPLOY: Array<{ action: string; resource: string; context?: Record<string, string> }> = [
+    ...["lambda:CreateEventSourceMapping", "lambda:UpdateEventSourceMapping", "lambda:GetEventSourceMapping", "lambda:DeleteEventSourceMapping"].map((action) => ({ action, resource: "arn:aws:lambda:us-west-2:123456789012:event-source-mapping:11111111-2222-3333-4444-555555555555" })),
+    ...["dynamodb:UpdateTable", "dynamodb:DescribeTable"].map((action) => ({ action, resource: "arn:aws:dynamodb:us-west-2:123456789012:table/agentx-staging-State" })),
+    ...["iam:PutRolePolicy", "iam:GetRolePolicy"].map((action) => ({ action, resource: "arn:aws:iam::123456789012:role/agentx/staging/ControlPlaneDispatcherServiceRole-ABC", context: { "iam:PermissionsBoundary": defaultBoundaryArn(scope) } })),
+  ];
+  const S310_DISPATCHER_RUNTIME: Array<{ action: string; resource: string; context?: Record<string, string> }> = [
+    ...["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"].map((action) => ({ action, resource: queue(coreDispatchQueueName("staging")) })),
+    { action: "ec2:TerminateInstances", resource: "arn:aws:ec2:us-west-2:123456789012:instance/i-0123456789abcdef0", context: { "aws:ResourceTag/DeploymentMode": "ec2-ebs", "aws:ResourceTag/Environment": "staging" } },
+    { action: "states:StartExecution", resource: "arn:aws:states:us-west-2:123456789012:stateMachine:agentx-staging-SessionDeleter" },
+    { action: "secretsmanager:GetSecretValue", resource: "arn:aws:secretsmanager:us-west-2:123456789012:secret:agentx/staging/callback-signing-key-AbCdEf" },
+  ];
+
+  it("S3-10: the deploy role and its boundary allow what the dispatcher's mapping, the new index and the dispatcher's new statements need", () => {
+    expect(S310_DEPLOY.filter((request) => !simulateIam(service, request).allowed).map((request) => `${request.action} on ${request.resource}`)).toEqual([]);
+    expect(S310_DEPLOY.filter((request) => !simulateIam(boundary, request).allowed).map((request) => `${request.action} on ${request.resource}`)).toEqual([]);
+  });
+
+  it("S3-10: the default boundary (the dispatcher role's ceiling) allows each new run-time action of the dispatcher", () => {
+    const ceiling = defaultBoundaryStatements(scope as never) as IamStatement[];
+    expect(S310_DISPATCHER_RUNTIME.filter((request) => !simulateIam(ceiling, request).allowed).map((request) => `${request.action} on ${request.resource}`)).toEqual([]);
   });
 
   it("positive control: the check refuses an action outside both (a new user, a certificate) so a pass above means something", () => {

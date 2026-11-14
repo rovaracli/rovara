@@ -475,18 +475,21 @@ describe("the named TEST proof-only installation gate", () => {
     // function: the condition SessionsTslSelftestIsStaging (Fn::Equals [<environment name>, "staging"]) and the policy SessionsTslSelftestSwitchRead (ssm:GetParameter on exactly parameter/agentx/<env>/tsl-selftest) behind it.
     // Every named template has them (a published template is the placeholder's with the name replaced, so the condition, not an `if` on the name, keeps the permission to staging); the legacy digests did not move.
     // 2026-11-13 (TE-H4a merged onto integ/0518 cc2966810, v0.5.17): the four named and foreign digests were retaken again from the values the test reports, after the two changes above together (the ExpireEvidenceRecord rule and the 0.5.16 TSL self-test condition and policy).
+    // 2026-11-14 (S3-10, feat/s3-10-entry-wiring, on feat/s3-9 + feat/0519-infra-slot + the 0.5.19 re-pin): the four named and foreign digests were retaken from the values the test reports, after the core engine's
+    // production wiring: the dispatcher's core dispatch queue mapping (enabled only while cc is not off), its new grants (ConsumeCoreDispatchQueue, CoreTerminateOwnSessionInstances, CoreReadCallbackSigningKey, the deleter)
+    // and variables, CoreTierChecks' schedule on the CoreEngine parameter with the packed cc, and the State table's outbox-pending index (named environments only). Legacy did not move.
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "9618f73ecfa4e3a4b7b466b7cc7879ae39897ecb804a9b69e11b3d3adb75df57",
-        withoutRoute: "d4ff2ef4c790efa35b615363d878dbdf41718fbc4fd2431cb449c613da2b712c",
+        withRoute: "6575063e8a64f72c4610c298e1085a9a0a846d5dc7e3a2cc5d2aafc5aebb4877",
+        withoutRoute: "6fcf764a7f60a366f5f322f4db7843e304155bc5ec95a651005766240cf985ce",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "8bff4640ed75df6440ed8c91fd7ef58762ae02f072b2b145247855a04c54e5a4",
-        withoutRoute: "cdc331e991d3362bb506c9d515c94270169abe74e369e6b1396234bcb23a6515",
+        withRoute: "ef40ceb8e96652c394b31c608923346a6a8304b905c5ee354bc459be6befdaf5",
+        withoutRoute: "cbfc1085dab35a49996dad0821ed72ef5be9853d1d1f7277290e687ed02b5021",
       },
       {
         label: "legacy",

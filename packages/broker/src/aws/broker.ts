@@ -287,7 +287,6 @@ import "../rovara-code/intent.js";
 import "../rovara-code/setup-draft.js";
 import "../developer/task-access.js";
 import "../developer/task-people.js";
-import { createHmac } from "node:crypto";
 import { CloudWatchClient } from "@aws-sdk/client-cloudwatch";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
@@ -339,6 +338,10 @@ import { swebenchDeploymentFromParameters } from "./swebench-settings.js";
 import { positiveInteger } from "./broker/admin-and-helpers.js";
 import { orgStoreOf } from "./broker/dependency-wiring.js";
 import { createAwsBrokerHandler } from "./broker/handler.js";
+import { brokerMachineOps, coreEngineWanted, type CloudCoreHostResources } from "../cloud/app/entry-inputs.js";
+import { repositoryGrantKeyOf } from "../cloud/app/core-host.js";
+import { installModelKeyArns } from "../cloud-adapters/model-keys/secrets-manager.js";
+import { realtimeConfigFromEnvironment } from "../realtime/sink.js";
 import { REFLECT_SDK_REQUEST_TIMEOUT_MS, reflectQueueUrlOf, sqsReflectQueue } from "../lessons/reflect-queue.js";
 import type { AwsBrokerInput } from "./broker/definitions.js";
 import { registryTokenSource } from "./broker/registry-tokens-wiring.js";
@@ -425,7 +428,8 @@ const plugins = createBrokerPlugins({ provider: githubCredentials, credentialRef
 // 0.5.15 signing-key lane: everything from here to the handler needs the keys, so it is built by this function once they are read (signing-key-secrets.ts):
 // at module load for the legacy install (its CALLBACK_SIGNING_KEY variable), on the first request for a named environment (its two secrets). Not re-indented, to keep the diff small.
 function buildBrokerInput(keys: { callback: CallbackKeyRing; erasure: string }): AwsBrokerInput {
-const grantKeyOf = (callbackKey: string): Buffer => createHmac("sha256", callbackKey).update("agentx:repository-grants:v3").digest();
+// One definition with the dispatcher's core host, which issues grants this broker exchanges (cloud/app/core-host.ts).
+const grantKeyOf = repositoryGrantKeyOf;
 const repositoryGrantSigningKey = grantKeyOf(keys.callback.current);
 const previousGrantKey = keys.callback.previous === undefined ? undefined : grantKeyOf(keys.callback.previous.value);
 const repositoryGrants = new RepositoryGrantService(
@@ -587,8 +591,12 @@ const egressDomainsSync = projectAllowListId === undefined || projectAllowListId
 // Enterprise foundations I1: the group mapping and break-glass stores, built once (only where the edition has company sign-in).
 const ssoStores = ssoStoresFor({ documentClient, tableName: requiredEnvironment("STATE_TABLE_NAME"), policy: editionPolicy, ...(audit === undefined ? {} : { audit }) });
 
+// S3-10: the core engine's clients, made only while the combined switch is on (`cc`, CLOUD_CORE_ENGINE). With it off nothing below is made and no core input is installed (a cold start is what it was).
+const cloudCoreHost = coreEngineWanted(process.env) ? cloudCoreHostOfBroker() : undefined;
+
 const brokerInput: AwsBrokerInput = {
   documentClient,
+  ...(cloudCoreHost === undefined ? {} : { cloudCoreHost }),
   ...(teamRecord === undefined ? {} : { teamRecord }),
   // Lessons in production (lane 2, WB-4, M1): a finished task's reflection goes to this queue (its URL is derived from the environment's name; nothing is passed). Its client gives up quickly (two tries, 1.5 s), like the audit client, so a queue brownout cannot hold a task end.
   ...(teamRecord === undefined || reflectQueueUrlOf(process.env) === undefined ? {} : { lessonsReflectQueue: sqsReflectQueue(new SQSClient({ ...awsClientConfiguration, maxAttempts: 2, requestHandler: { requestTimeout: REFLECT_SDK_REQUEST_TIMEOUT_MS, connectionTimeout: REFLECT_SDK_REQUEST_TIMEOUT_MS } }), reflectQueueUrlOf(process.env)!) }),
@@ -750,6 +758,27 @@ const brokerInput: AwsBrokerInput = {
     : {}),
 };
 return brokerInput;
+}
+/**
+ * The broker's clients for the core (S3-10): its own DynamoDB, S3, Secrets Manager and SQS clients, the GitHub App provider and CodeBuild, the core dispatch queue's derived URLs, the events API it already
+ * publishes to, and the machine operations a broker may do (end a session, claim a stop; never start, sign or post: `brokerMachineOps`).
+ */
+function cloudCoreHostOfBroker(): CloudCoreHostResources {
+  const env = installEnvironmentName();
+  const queueUrl = process.env.CORE_DISPATCH_QUEUE_URL;
+  const deadLetterUrl = process.env.CORE_DISPATCH_DEAD_LETTER_URL;
+  const prefix = process.env.CONNECTOR_SECRET_PREFIX;
+  const realtime = realtimeConfigFromEnvironment(process.env);
+  return {
+    dynamo: new DynamoDBClient(awsClientConfiguration), s3, artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"),
+    secretsManager, secretNamePrefix: prefix !== undefined && prefix.endsWith("/") ? prefix : `agentx/${env}/`, installModelKeys: installModelKeyArns(process.env),
+    sqs: new SQSClient(awsClientConfiguration), region: process.env.AWS_REGION ?? "us-east-1",
+    ...(queueUrl === undefined || queueUrl === "" || deadLetterUrl === undefined || deadLetterUrl === "" ? {} : { coreDispatchQueue: { url: queueUrl, deadLetterUrl } }),
+    github: { provider: githubCredentials, credentialRef: requiredEnvironment("GITHUB_APP_CREDENTIAL_REF"), webhookSecret: github.webhookSecret },
+    codeBuild,
+    machines: brokerMachineOps(ec2Sessions),
+    ...(realtime === undefined ? {} : { realtime: { endpoint: realtime.endpoint, region: realtime.region, credentials: realtime.credentials } }),
+  };
 }
 // The legacy install has its key now; a named environment reads its two secrets on the first request (the broker role may read exactly those two).
 const legacyKeys = legacySigningKeys(process.env);

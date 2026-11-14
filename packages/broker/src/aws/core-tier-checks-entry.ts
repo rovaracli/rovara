@@ -2,9 +2,10 @@
 // an explicit, small environment (infra/lib/core-tier-checks.ts): the State table and artifacts bucket names, the in-VPC model function's name, the GitHub App's key ARN and identity, and, where the model
 // function makes long calls, TIER_REVIEW_ENABLED=1 (packed setting `tq`).
 //
-// The Cloud root it runs is built from the install's core inputs (`cloudCore`), the same inputs the broker's root needs. No production builder supplies them yet (DEFERRED S3-ENTRY-NEEDS: the broker
-// has none either, so its root is not built and no core task starts). Until it does, a tier pass here is a misconfiguration and throws (its schedule is DISABLED while the core engine is off).
+// S3-10 (S3-9-TIER-CHECKS-HOST-INPUTS): the Cloud root it runs is built from the production inputs (cloud/app/entry-inputs.ts, cloud/app/core-host.ts) over this function's own clients, and only while the
+// combined switch is on (packed setting `cc`): off, nothing is built and a tier pass is a misconfiguration that throws (its schedule is DISABLED while the core engine is off).
 import "./broker-environment-init.js";
 import { createCoreTierChecksHandler } from "./broker/core-tier-checks.js";
+import { coreTierChecksProductionHost } from "./core-tier-checks-production.js";
 
-export const coreTierChecksHandler = createCoreTierChecksHandler(() => undefined);
+export const coreTierChecksHandler = createCoreTierChecksHandler(() => coreTierChecksProductionHost(process.env));

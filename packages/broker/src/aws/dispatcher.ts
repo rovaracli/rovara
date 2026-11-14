@@ -29,6 +29,7 @@ import { taskPersonProofThroughLambda } from "./task-person-proof-transport.js";
 import { createLiveSteerDispatch } from "../agent-sessions/live-steer-dispatch.js";
 import { createPeekDispatch } from "../agent-sessions/peek-dispatch.js";
 import type { CoreDispatchHost } from "./worker-machines/core-dispatch-host.js";
+import { anyCoreAreaOn, readCoreEngineFlags } from "../cloud/app/flags.js";
 
 const DEFAULT_MAX_DISPATCH_ATTEMPTS = 5;
 
@@ -245,7 +246,7 @@ export function createProjectSetupBindingReader(input: { documentClient: DynamoD
 
 export interface DispatchLogEntry {
   level: "info" | "warn" | "error";
-  event: "dispatch.closed_task_acked" | "dispatch.attempt_failed" | "dispatch.terminal_transition_failed" | "dispatch.live_steer_unconfigured";
+  event: "dispatch.closed_task_acked" | "dispatch.attempt_failed" | "dispatch.terminal_transition_failed" | "dispatch.live_steer_unconfigured" | "dispatch.core_batch_not_taken";
   operationId?: string;
   workspaceId?: string;
   outboxId?: string;
@@ -297,6 +298,10 @@ export function createDispatcherHandler(dependencies: {
    * record the guards below accept, so that grant is never widened.
    */
   queueArn?: string;
+  /** S3-10: the core dispatch queue's ARN (CORE_DISPATCH_QUEUE_ARN). A batch from it goes to `coreDispatch` only, never down Cloud's path; with it set, a batch from `queueArn` is never offered to `coreDispatch`. */
+  coreQueueArn?: string;
+  /** S3-10: builds `coreDispatch` on the first core batch (the production entry's dynamic import, so a dispatcher with the switch off loads none of the core). Used when `coreDispatch` is absent. */
+  loadCoreDispatch?: () => Promise<CoreDispatchHost>;
   log?: (entry: DispatchLogEntry) => void;
 }) {
   /**
@@ -327,19 +332,34 @@ export function createDispatcherHandler(dependencies: {
       messageId, attempt, maxAttempts, terminal: false, reason: `${closed.reason}; ${settled}`,
     });
   };
+  /** Whether every record of the event says it came from SQS and from this queue (S2's shape check; see `queueArn`). */
+  const batchFrom = (event: unknown, queueArn: string | undefined): boolean => {
+    const records = (event as { Records?: unknown } | null)?.Records;
+    return queueArn !== undefined && queueArn !== "" && Array.isArray(records) && (records as SqsRecord[]).every((record) => record?.eventSource === "aws:sqs" && record.eventSourceARN === queueArn);
+  };
+  /**
+   * S3-10: a batch from the CORE dispatch queue is the core's alone (its own event source mapping, apart from Cloud's queue). Its core dispatch messages go to the core's consumer; nothing on that queue ever
+   * reaches Cloud's dispatch code. With the host off (the switch off) or absent, every record is given back (a batch item failure), so the queue's redrive policy keeps it, never Cloud's path.
+   */
+  const handleCoreBatch = async (records: SqsRecord[]): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> => {
+    const host = dependencies.coreDispatch ?? await dependencies.loadCoreDispatch?.();
+    const taken = host?.take(records) ?? new Set<string>();
+    const failures = records.filter((record) => !taken.has(record.messageId)).map((record) => record.messageId);
+    if (failures.length > 0) dependencies.log?.({ level: "warn", event: "dispatch.core_batch_not_taken", messageId: failures[0]!, attempt: 0, maxAttempts: 0, terminal: false, reason: host === undefined ? "no core dispatch host" : "not a core dispatch message, or the switch is off" });
+    if (taken.size > 0) failures.push(...(await host!.handle(records, taken)).failures);
+    return { batchItemFailures: failures.map((itemIdentifier) => ({ itemIdentifier })) };
+  };
   const handleBatch = async (event: SqsEvent, context?: DispatcherLambdaContext): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> => {
-    if (dependencies.queueArn !== undefined) {
-      const queueArn = dependencies.queueArn;
-      const records = (event as { Records?: unknown } | null)?.Records;
-      if (!Array.isArray(records) || !(records as SqsRecord[]).every((record) => record?.eventSource === "aws:sqs" && queueArn !== "" && record.eventSourceARN === queueArn)) {
-        throw agentXError("FORBIDDEN", "the dispatcher takes a peek, or a batch from its own queue");
-      }
+    if (batchFrom(event, dependencies.coreQueueArn)) return await handleCoreBatch(event.Records ?? []);
+    if (dependencies.queueArn !== undefined && !batchFrom(event, dependencies.queueArn)) {
+      throw agentXError("FORBIDDEN", "the dispatcher takes a peek, or a batch from its own queue");
     }
     const batchItemFailures: Array<{ itemIdentifier: string }> = [];
     const records = event.Records ?? [];
     const remainingTimeMs = () => context?.getRemainingTimeInMillis() ?? 60_000;
-    // Each record goes one way only: the core's dispatch messages to the core's consumer (when its switch is on), every other record down this path.
-    const coreTaken = dependencies.coreDispatch?.take(records) ?? new Set<string>();
+    // Each record goes one way only: the core's dispatch messages to the core's consumer (when its switch is on), every other record down this path. Where the core has its own queue (`coreQueueArn`), a batch
+    // of Cloud's queue is never offered to the core's consumer: it is Cloud's, exactly as before.
+    const coreTaken = dependencies.coreQueueArn !== undefined ? new Set<string>() : dependencies.coreDispatch?.take(records) ?? new Set<string>();
     if (coreTaken.size > 0) batchItemFailures.push(...(await dependencies.coreDispatch!.handle(records, coreTaken)).failures.map((itemIdentifier) => ({ itemIdentifier })));
     for (let index = 0; index < records.length; index += 1) {
       const message = records[index]!;
@@ -820,8 +840,41 @@ const deliverEc2 = createEc2Delivery({
   },
 });
 
+/** The worker's /ping, as the core's machines adapter reads it (status, running operations, features). A worker that does not answer is undefined. */
+async function pingWorker(url: string): Promise<{ status?: string; activeOperations?: number; features?: string[] } | undefined> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(WORKER_PING_TIMEOUT_MS) });
+  if (!response.ok) return undefined;
+  const body: unknown = await response.json();
+  if (typeof body !== "object" || body === null) return undefined;
+  const fields = body as Record<string, unknown>;
+  const features = fields[WORKER_PING_FEATURES_FIELD];
+  return {
+    ...(typeof fields["status"] === "string" ? { status: fields["status"] } : {}),
+    ...(typeof fields["activeOperations"] === "number" ? { activeOperations: fields["activeOperations"] } : {}),
+    ...(Array.isArray(features) ? { features: features.filter((feature): feature is string => typeof feature === "string") } : {}),
+  };
+}
+
+// S3-10: the core engine's dispatch consumer, built only while the combined switch is on (and then only on the first batch from the core dispatch queue). Off, nothing of the core is loaded here.
+let coreDispatchHost: Promise<CoreDispatchHost> | undefined;
+const loadCoreDispatch = anyCoreAreaOn(readCoreEngineFlags(process.env)) ? async (): Promise<CoreDispatchHost> => {
+  coreDispatchHost ??= import("./core-dispatch-entry.js").then(async (module) => await module.createDispatcherCoreDispatch({
+    env: process.env, documentClient, tableName: tableName ?? requiredEnvironment("STATE_TABLE_NAME"), installCompanyId: installOrgIdFromEnvironment(),
+    sessions: new SessionManager({
+      documentClient, tableName: tableName ?? "",
+      executions: { provisionerArn: process.env.PROVISIONER_ARN ?? "", deleterArn: process.env.DELETER_ARN ?? "", async start(input) { return (await sfn.send(new StartExecutionCommand(input))).executionArn!; } },
+    }),
+    sign: signInvocation, post: postToWorker, ping: pingWorker,
+    log: (entry) => console.log(JSON.stringify({ component: "dispatcher", ...entry })),
+  }));
+  // A host that could not be built is not kept: the next batch tries again (its records came back meanwhile).
+  return await coreDispatchHost.catch((error: unknown) => { coreDispatchHost = undefined; throw error; });
+} : undefined;
+
 export const handler = createDispatcherHandler({
   queueArn: process.env.DISPATCH_QUEUE_ARN ?? "",
+  ...(process.env.CORE_DISPATCH_QUEUE_ARN === undefined || process.env.CORE_DISPATCH_QUEUE_ARN === "" ? {} : { coreQueueArn: process.env.CORE_DISPATCH_QUEUE_ARN }),
+  ...(loadCoreDispatch === undefined ? {} : { loadCoreDispatch }),
   guardTaskDispatch: taskDispatchGuard,
   guardProjectSetupDispatch,
   projectSetupLifecycle: {

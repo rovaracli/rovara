@@ -3,18 +3,23 @@
 // What is here:
 //   - the core dispatch queue and its dead-letter queue, with a redrive limit above the core's own retry budget (CORE_DISPATCH_MAX_RECEIVES >= 21). Fixed names (derived-names.ts), so the broker builds both URLs and
 //     is passed nothing. The broker may send to, receive from, delete from and change the visibility of the queue (the core's `queue` point runs inside the broker's entry) and the dead letters (receive and delete,
-//     for a redrive or a purge). Nothing else gets a grant: the dispatcher does not read this queue (the core's dispatch host is not in the dispatcher's entry yet, so an event source mapping would hand a core
-//     message to Cloud's own dispatch code; it is added with the host, see A4-SWITCH-ON-DISPATCHER-IAM);
+//     for a redrive or a purge). The dispatcher is the queue's consumer (S3-10, `connectDispatcher`): an event source mapping of its own, ENABLED only while `cc` is not
+//     `off`, so a core message never reaches Cloud's own dispatch code;
 //   - a schedule per scheduled row of the core's job table (CORE_JOB_SCHEDULES), in a group of their own, that invokes the broker with `{ source: "agentx.core-job", job: <name> }` through a role of its own. The role is
 //     created under the environment's path with a generated name (no fixed-name role, so no new line in either boundary), trusts only the scheduler for THIS group, and can invoke the broker function and nothing else.
 //     The schedules always exist and are ENABLED only while the `cc` parameter is not `off`: switching on or off changes a state, never creates or deletes a resource. A disabled schedule costs nothing;
 //   - an alarm on the dead-letter queue.
 //
 // None of this runs a core job or moves a task: the broker answers a scheduled core job `{ skipped: "off" }` while `cc` is off, and the dispatch queue stays empty until a task starts on the core.
-import { CfnCondition, Duration, Fn, Stack, Token, aws_cloudwatch as cloudwatch, aws_iam as iam, aws_scheduler as scheduler, aws_sqs as sqs, type CfnParameter, type aws_cloudwatch_actions as cloudwatchActions, type aws_lambda as lambda } from "aws-cdk-lib";
+import { CfnCondition, Duration, Fn, Stack, Token, aws_cloudwatch as cloudwatch, aws_iam as iam, aws_lambda as lambda, aws_scheduler as scheduler, aws_sqs as sqs, type CfnParameter, type aws_cloudwatch_actions as cloudwatchActions } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { CORE_DISPATCH_MAX_RECEIVES, CORE_JOB_EVENT_SOURCE, CORE_JOB_SCHEDULES, coreDispatchDeadLetterName, coreDispatchQueueName, type CoreJobSchedule } from "@agentx/cloud-contracts";
+import { BROKER_SETTINGS, CORE_DISPATCH_MAX_RECEIVES, CORE_JOB_EVENT_SOURCE, CORE_JOB_SCHEDULES, coreDispatchDeadLetterName, coreDispatchQueueName, type CoreJobSchedule } from "@agentx/cloud-contracts";
+import { BrokerSettings } from "./broker-names.js";
 import type { AgentXNaming } from "./naming.js";
+
+/** What the dispatcher may do on the core dispatch queue: the event source mapping's reads, and the core's own visibility extension of a message it will try again. */
+export const CORE_DISPATCHER_QUEUE_ACTIONS = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:ChangeMessageVisibility", "sqs:GetQueueAttributes"] as const;
+
 
 export interface CoreEngineProps {
   readonly naming: AgentXNaming;
@@ -38,12 +43,14 @@ export class CoreEngine extends Construct {
   readonly schedules: scheduler.CfnSchedule[] = [];
   readonly isOn: CfnCondition;
   private readonly brokerFunctionArn: string;
+  private readonly coreEngine: CfnParameter;
 
   constructor(scope: Construct, id: string, props: CoreEngineProps) {
     super(scope, id);
     const stack = Stack.of(this);
     const { env, broker } = props;
     this.brokerFunctionArn = broker.functionArn;
+    this.coreEngine = props.coreEngine;
     if (new Set(CORE_JOB_SCHEDULES.map((entry) => entry.job)).size !== CORE_JOB_SCHEDULES.length) throw new Error("core engine: a job is scheduled once");
     if (CORE_DISPATCH_MAX_RECEIVES < 21) throw new Error("core engine: the dispatch queue's redrive limit must be above the core's retry budget (at least 21)");
 
@@ -81,6 +88,47 @@ export class CoreEngine extends Construct {
     this.invokeRole.addToPolicy(new iam.PolicyStatement({ actions: ["lambda:InvokeFunction"], resources: [broker.functionArn] }));
     const state = Token.asString(Fn.conditionIf(this.isOn.logicalId, "ENABLED", "DISABLED"));
     for (const entry of CORE_JOB_SCHEDULES) this.schedules.push(this.schedule(entry, state));
+  }
+
+  /**
+   * S3-10 (0519-INFRA-CORE-DISPATCH-CONSUMER, A4-SWITCH-ON-DISPATCHER-IAM): the dispatcher is the core's dispatch consumer. It reads this queue through an event source mapping of its own (apart from Cloud's
+   * DispatchQueue, so a core message never reaches Cloud's dispatch code), ENABLED only while `cc` is not `off`; it may receive, delete and extend the visibility of a message on this queue (not send, and not
+   * touch the dead letters); it starts the deleter (the core ends a closed workspace's machine) and ends a session's instance (own-tagged only, as the idle reaper does); and it reads the callback signing key
+   * (the core builds a worker's job on the dispatcher, so the capability and the repository grant it signs are the ones the broker verifies). It already starts the provisioner and signs with the invoke key.
+   */
+  connectDispatcher(dispatcher: lambda.Function, props: { startDeleter: (fn: lambda.Function) => void; terminateOwnInstances: iam.PolicyStatement; readCallbackKey: (fn: lambda.Function) => void }): lambda.CfnEventSourceMapping {
+    dispatcher.addEnvironment("CORE_DISPATCH_QUEUE_URL", this.queue.queueUrl);
+    dispatcher.addEnvironment("CORE_DISPATCH_DEAD_LETTER_URL", this.deadLetters.queueUrl);
+    dispatcher.addEnvironment("CORE_DISPATCH_QUEUE_ARN", this.queue.queueArn);
+    // The dispatcher does not unpack the broker's settings: the switch is a plain variable (as on the Slack ingress), read per batch.
+    dispatcher.addEnvironment(BROKER_SETTINGS.coreEngine.variable, this.coreEngine.valueAsString);
+    dispatcher.addToRolePolicy(new iam.PolicyStatement({
+      sid: "ConsumeCoreDispatchQueue",
+      actions: [...CORE_DISPATCHER_QUEUE_ACTIONS],
+      resources: [this.queue.queueArn],
+    }));
+    props.startDeleter(dispatcher);
+    dispatcher.addToRolePolicy(props.terminateOwnInstances);
+    props.readCallbackKey(dispatcher);
+    const mapping = new lambda.CfnEventSourceMapping(this, "DispatcherMapping", {
+      functionName: dispatcher.functionName,
+      eventSourceArn: this.queue.queueArn,
+      batchSize: 10,
+      functionResponseTypes: ["ReportBatchItemFailures"],
+      enabled: Fn.conditionIf(this.isOn.logicalId, true, false),
+    });
+    // The mapping is created after the grant that lets it read the queue.
+    const policy = dispatcher.role?.node.tryFindChild("DefaultPolicy");
+    if (policy !== undefined) mapping.node.addDependency(policy);
+    return mapping;
+  }
+
+  /**
+   * S3-10: CoreTierChecks is told the switch (its root is built only while `cc` is on). It gets NO grant on this queue: its State writes are held to the tier review's own rows (CORE_TIER_CHECKS_STATE_WRITE_KEY_PATTERNS),
+   * so it can stage no outbox row and has nothing to send; the queue point its root registers is never used there.
+   */
+  connectTierChecks(fn: lambda.Function): void {
+    BrokerSettings.of(fn).add("coreEngine", this.coreEngine.valueAsString);
   }
 
   private schedule(entry: CoreJobSchedule, state: string): scheduler.CfnSchedule {

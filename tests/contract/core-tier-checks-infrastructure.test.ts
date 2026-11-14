@@ -53,7 +53,7 @@ describe("CoreTierChecks", () => {
     expect(fn.Properties.ReservedConcurrentExecutions).toBeUndefined();
   }, 180_000);
 
-  it("its schedule: rate(5 minutes), no retries, the tier-checks event, through a role that may invoke only this function; DISABLED by default (no CoreEngine parameter on this branch)", () => {
+  it("its schedule: rate(5 minutes), no retries, the tier-checks event, through a role that may invoke only this function; ENABLED only while the CoreEngine parameter is not off (S3-9-TIER-CHECKS-SCHEDULE-RECONCILE)", () => {
     const all = resources(PUBLIC);
     const [fnId] = one(all, "AWS::Lambda::Function", /^CoreTierChecks[0-9A-F]{8}$/);
     const [, schedule] = one(all, "AWS::Scheduler::Schedule", /^CoreTierChecksSchedule$/);
@@ -62,8 +62,8 @@ describe("CoreTierChecks", () => {
     expect(target.Arn).toEqual({ "Fn::GetAtt": [fnId, "Arn"] });
     expect(JSON.parse(target.Input)).toEqual({ source: "agentx.core-job", job: "tier-checks" });
     expect(target.RetryPolicy.MaximumRetryAttempts).toBe(0);
-    // The condition is always false until the core engine's parameter is wired to it.
-    expect(conditionsOf(PUBLIC)["CoreTierChecksIsOn"]).toEqual({ "Fn::Equals": ["off", "on"] });
+    // S3-10: the condition follows the core engine's parameter (`cc`), as the broker's core job schedules do; the function is told the same switch (packed `cc`).
+    expect(conditionsOf(PUBLIC)["CoreTierChecksIsOn"]).toEqual({ "Fn::Not": [{ "Fn::Equals": [{ Ref: "CoreEngine" }, "off"] }] });
     const [, role] = one(all, "AWS::IAM::Role", /^CoreTierChecksSchedulerRole/);
     const statements = (role.Properties.Policies as Array<{ PolicyDocument: { Statement: Array<{ Action: unknown; Resource: unknown }> } }>).flatMap((policy) => policy.PolicyDocument.Statement);
     expect(statements).toEqual([expect.objectContaining({ Action: "lambda:InvokeFunction", Resource: { "Fn::GetAtt": [fnId, "Arn"] } })]);
