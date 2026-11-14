@@ -50,6 +50,26 @@ const KNOWN: Readonly<Record<string, readonly Known[]>> = {
     { reason: "Cloud's wording of the lessons-replay note (older than Code's)", line: "Lane 7 (lessons replay, the file arm)" },
   ],
   "git.ts": [],
+  "verification/evidence-raw.ts": [
+    { reason: "Cloud only (TE-B1 dormant): reportRoot is the isolated export, not the working tree", line: "reportRoot?: string | undefined;" },
+    { reason: "Cloud only (TE-B1 dormant): resolve reports once", line: "const reports = input.reportRoot ?? input.rootPath;" },
+    { reason: "Cloud only (TE-B1 dormant): read test reports from the export", line: "readCheckReport(reports, command)" },
+    { reason: "Cloud only (TE-B1 dormant): place test IDs using export files", line: "root: reports, cwd: command.cwd" },
+    { reason: "Cloud only (TE-B1 dormant): fresh coverage omits Go/JaCoCo placement that reads working files", line: "rootPath: reports, command, repositories: diffs" },
+    { reason: "Cloud only (TE-B1 dormant): baseline disables the agent-writable Python user site", line: "\"capMs\" | \"noUserSite\"" },
+    { reason: "Cloud only (TE-B1 dormant): forward the isolated report root", line: "...(input.reportRoot === undefined ? {} : { reportRoot: input.reportRoot })" },
+  ],
+  "verification/extension.ts": [
+    { reason: "Cloud only (TE-B1 dormant): original-code rounds use the working runners", line: "beforeRunners?: CheckRunners;" },
+    { reason: "Cloud only (TE-B1 dormant): quiesce before candidate commit, pin candidate before final round", line: "pinCandidate?: (identity: string) => void;" },
+    { reason: "Cloud only (TE-B1 dormant): quiesce hook before committing", line: "await options.beforeCandidate?.();" },
+    { reason: "Cloud only (TE-B1 dormant): pin the admitted identity", line: "options.pinCandidate?.(candidateBefore)" },
+    { reason: "Cloud only (TE-B1 dormant): use original-code runners for baseline", line: "options.beforeRunners ?? options.runners" },
+  ],
+  "verification/sarif-baseline.ts": [
+    { reason: "Cloud only (TE-B1 dormant): baseline scanner opts out of the agent-writable Python user site", line: "noUserSite?: boolean;" },
+    { reason: "Cloud only (TE-B1 dormant): set PYTHONNOUSERSITE on baseline commands", line: "const commandOf = (command: ProjectCommand)" },
+  ],
   "verification/candidate.ts": [
   ],
   "publish.ts": [

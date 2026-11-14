@@ -18,6 +18,11 @@ export interface VerificationOptions {
   /** Read at settle time, after the agent's commands are recorded. */
   plan: () => CheckPlan;
   runners: CheckRunners;
+  /**
+   * TE-B1-fresh: the runners of the rounds on the ORIGINAL code (the before results below). Default: `runners`. A fresh check round exports the candidate commit, so it cannot show the original code; those rounds keep the
+   * working runners (check-round-choice.ts).
+   */
+  beforeRunners?: CheckRunners;
   /** Production: 30 minutes per round (P-3); eval: the agent time remaining. */
   budgetMs: () => number;
   /** Fires on cancel, loop-guard stop or eval limit: a running check stops, and no new one starts. */
@@ -31,6 +36,16 @@ export interface VerificationOptions {
   prepareCandidate?: () => Promise<void>;
   /** Exact candidate identity before and after final checks; a changed tree cannot receive a check binding. */
   candidateIdentity?: () => Promise<string>;
+  /**
+   * TE-B1-fresh: told the candidate identity (the same string `candidateIdentity` returned) just before each final round runs, so a round that exports the candidate checks exactly the commit and tree the report will be bound to. A program
+   * that moved HEAD to another commit for the export and back afterwards cannot make the round check something else.
+   */
+  pinCandidate?: (identity: string) => void;
+  /**
+   * TE-B1-fresh: runs on each settle BEFORE the worktree is committed and the candidate identity is read: it stops whatever the agent left running, so no program can change the code between the commit and the checks. A rejection is
+   * an error report for this settle (the agent's work is not checked on a candidate that could still be moving).
+   */
+  beforeCandidate?: () => Promise<void>;
   /** Clears the worker's candidate binding when preparation fails or the check changes the candidate. */
   onCandidateDrift?: () => void;
   /**
@@ -141,8 +156,10 @@ export function verificationExtension(options: VerificationOptions): InlineExten
           }
           if (event.outcome !== "completed" || options.signal.aborted) return report(unverified("stopped", claim));
           await recorder.settled();
+          await options.beforeCandidate?.();
           await options.prepareCandidate?.();
           const candidateBefore = options.candidateIdentity === undefined ? undefined : await options.candidateIdentity();
+          if (candidateBefore !== undefined) options.pinCandidate?.(candidateBefore);
           const plan = options.plan();
           if (plan.source === "none") return report(unverified("no_checks", claim));
           const budgetMs = options.budgetMs();
@@ -221,7 +238,7 @@ async function measureBefore(
   try {
     const round = await originalCode.run(() => runChecks(
       { source: "agent_commands", agentRuns: missing },
-      options.runners,
+      options.beforeRunners ?? options.runners,
       { budgetMs, signal: options.signal },
     ));
     round.entries.forEach((entry, index) => {

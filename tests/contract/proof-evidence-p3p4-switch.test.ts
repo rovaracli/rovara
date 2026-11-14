@@ -35,7 +35,7 @@ describe("the worker side is reachable only through the evidence hook", () => {
     const source = readFileSync(join(WORKER, "run-task.ts"), "utf8");
     const calls = [...source.matchAll(/saveEvidenceRaw\(/gu)];
     expect(calls).toHaveLength(1);
-    const before = source.slice(Math.max(0, calls[0]!.index - 400), calls[0]!.index);
+    const before = source.slice(Math.max(0, calls[0]!.index - 1200), calls[0]!.index); // TE-B1 put the fresh-round report root between the gate and the call
     expect(before).toMatch(/invocation\.payload\.evidenceCapture === true/u);
   });
 });

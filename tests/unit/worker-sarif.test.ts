@@ -166,6 +166,25 @@ describe("the evidence a CHECKS run saves for a scanner", () => {
     expect(EvidenceRawSchema.safeParse(raw).success).toBe(true);
   });
 
+  it("H1c: with a report root, the SARIF and the test report come from THAT root, and what the agent wrote into the working tree is ignored", async () => {
+    const exportRoot = await mkdtemp(join(tmpdir(), "sarif-export-"));
+    try {
+      // the working tree (the agent's) says one thing, the export (where the checks ran) another
+      await writeFile(join(root, "bandit.sarif"), sarif([{ ruleId: "B999", message: "planted in the working tree", uri: "src/x.py", line: 1 }]));
+      await writeFile(join(exportRoot, "bandit.sarif"), sarif([{ ruleId: "B608", message: "SQL built from input", uri: "src/db.py", line: 7 }]));
+      const raw = await collectEvidenceRaw(input({ reportRoot: exportRoot, baselineScans: baseline(sarif([])) }));
+      expect(raw?.checks[0]?.findings?.items.map((item) => item.ruleId)).toEqual(["B608"]);
+      expect(JSON.stringify(raw)).not.toContain("planted in the working tree");
+      // a report only the working tree has is NOT read: there is no fallback to it
+      await rm(join(exportRoot, "bandit.sarif"));
+      const none = await collectEvidenceRaw(input({ reportRoot: exportRoot, baselineScans: baseline(sarif([])) }));
+      expect(JSON.stringify(none ?? {})).not.toContain("B999");
+      expect(none?.checks[0]?.findings).toBeUndefined();
+    } finally {
+      await rm(exportRoot, { recursive: true, force: true });
+    }
+  });
+
   it("does not run a baseline for a scan that found nothing: nothing is new, and the answer is certain", async () => {
     await writeFile(join(root, "bandit.sarif"), sarif([]));
     let asked = 0;
@@ -287,6 +306,18 @@ describe("the baseline run on the original code", () => {
     async runAgentCommand() { throw new Error("not used"); },
   });
   const run = (over: Record<string, unknown> = {}) => ({ rootPath: root, runners: runnersWriting("baseline sarif"), signal: new AbortController().signal, budgetMs: 10 * 60_000, repositories: [{ directory: root, commit: "a".repeat(40) }], ...over });
+
+  it("noUserSite: the baseline command runs with PYTHONNOUSERSITE=1 (a .pth file the agent planted in the Python user base cannot run), over its own env; without the flag the command is untouched", async () => {
+    const seen: Array<Record<string, string> | undefined> = [];
+    const watching: CheckRunners = { async runProjectCommand(command) { seen.push(command.env); await writeFile(join(root, "bandit.sarif"), "baseline sarif"); return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }, async runAgentCommand() { throw new Error("not used"); } };
+    const planted = { ...scanner, env: { KEEP: "1", PYTHONNOUSERSITE: "0" } };
+    await runBaselineScans([{ ...(await scan()), command: planted }], run({ runners: watching, originalCode: passthrough([]), noUserSite: true }));
+    expect(seen).toEqual([{ KEEP: "1", PYTHONNOUSERSITE: "1" }]);
+    seen.length = 0;
+    await runBaselineScans([{ ...(await scan()), command: planted }], run({ runners: watching, originalCode: passthrough([]) }));
+    expect(seen).toEqual([{ KEEP: "1", PYTHONNOUSERSITE: "0" }]);
+    expect(planted.env).toEqual({ KEEP: "1", PYTHONNOUSERSITE: "0" });
+  });
 
   it("runs the same command with the original code shown, reads what it wrote (a scanner that found something exits non-zero), and puts the candidate's file back byte for byte", async () => {
     const events: string[] = [];

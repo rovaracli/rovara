@@ -4,6 +4,7 @@
 // agent_before_settle hook run. Only the check runners are fakes, except where a test says otherwise. Offline.
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, type FauxResponseStep, type TranscriptContext } from "@earendil-works/pi-ai";
@@ -24,7 +25,10 @@ import { runWorkflowFeedbackReview } from "../../packages/worker/src/verificatio
 import { commitCandidateWorktree, readCandidateRepositories } from "../../packages/worker/src/verification/candidate.js";
 import { CHECKS_MESSAGE_TYPE, checksArtifactContent, compactCheckReport } from "../../packages/worker/src/verification/extension.js";
 import { AgentFilesRestoreError, type OriginalCode } from "../../packages/worker/src/verification/original-code.js";
+import * as workspaceProcesses from "../../packages/worker/src/workspace-processes.js";
 import * as buildSourceExport from "../../packages/worker/src/e2e-build-source-export.js";
+import { answerSandboxRestart } from "../support/fake-sandbox-restart.js";
+import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 import { createFixtureDirectory } from "../fixtures/index.js";
 import { FAUX_MODEL, fauxModelRuntime } from "../support/faux-model.js";
 
@@ -119,6 +123,8 @@ async function runTask(options: {
   originalCode?: OriginalCode;
   /** The scripted model's context window. Pi 1.5 compacts a long transcript on its own, and a compaction asks the scripted model for a summary, which would use up the script; a run with huge outputs gives the model room. */
   contextWindow?: number;
+  /** More task dependencies (a task shell, the freshCheckRound seam): spread last. */
+  extraDependencies?: Partial<Parameters<typeof runTaskInvocation>[1]>;
 }) {
   const { modelRuntime, faux } = await fauxModelRuntime(options.contextWindow === undefined ? {} : { contextWindow: options.contextWindow });
   const requests: Request[] = [];
@@ -156,6 +162,7 @@ async function runTask(options: {
         options.onArtifact?.(artifact.name);
         artifacts.push(artifact);
       },
+      ...(options.extraDependencies ?? {}),
     });
   } catch (error) {
     failure = error;
@@ -303,7 +310,7 @@ describe("verification-only retries", () => {
     const fake = fakeRunners({ project: [{ exitCode: 0, timedOut: false, stdout: "lint passed\n", stderr: "" }] });
     const shell = scriptedShell();
     const rootPath = await gitWorkspaceRoot([lint]);
-    const run = await runTask({ steps: [], workflowMode: "CHECKS", readiness: [lint], runners: fake.runners, shell, rootPath });
+    const run = await runTask({ steps: [], workflowMode: "CHECKS", readiness: [lint], runners: fake.runners, shell, rootPath, extraDependencies: { stopBeforeReading: { stopWorkspaceProcesses: async () => undefined } } });
 
     expect(run.failure).toBeUndefined();
     expect(run.result).toMatchObject({ workflowMode: "CHECKS", checks: { status: "verified", source: "project" } });
@@ -1734,6 +1741,110 @@ describe("AgentX measures the before result on the original code (spec 051 D-16,
   });
 });
 
+describe("TE-B1-fresh: the coding run's final round with the freshCheckRound gate", () => {
+  const IMAGE = "registry.example.test/agentx/worker@sha256:" + "b".repeat(64);
+  /** A fake Docker that answers like a healthy daemon and records every call. */
+  function fakeDocker() {
+    const calls: string[][] = [];
+    const docker: DockerCli = { run: async (args) => {
+      calls.push([...args]);
+      if (args[0] === "network" && args[1] === "inspect") return { exitCode: 0, stdout: 'bridge {"com.docker.network.bridge.enable_icc":"false","com.docker.network.bridge.name":"rvbtask"} false', stderr: "" };
+      const restarted = answerSandboxRestart(args);
+      if (restarted !== undefined) return restarted;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    } };
+    return { docker, calls };
+  }
+  const nameOf = (args: string[]) => args[args.indexOf("--name") + 1]!;
+
+  it("runs the final round in a fresh container made from the committed candidate, and the before result on the original code in the working sandbox", async () => {
+    const fake = fakeDocker();
+    const { originalCode, state } = (() => {
+      const state = { showing: false, runs: 0 };
+      const originalCode: OriginalCode = { async run(work) { state.runs += 1; state.showing = true; try { return await work(); } finally { state.showing = false; } } };
+      return { originalCode, state };
+    })();
+    const rootPath = await gitWorkspaceRoot();
+    // The agent's shell writes the change itself (the file tools would run in the sandbox, which this fake daemon does not serve).
+    const shell = scriptedShell({}, async (command) => { if (command === "make-change") await writeFile(join(rootPath, "app/notes.md"), "note\n"); });
+    const run = await runTask({
+      steps: [bash("make-change", "c1"), bash("pytest tests/te-b1-marker", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], rootPath, shell, originalCode,
+      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }), freshPtraceScope: () => Promise.resolve(1), stopBeforeReading: { stopWorkspaceProcesses: async () => undefined } },
+    });
+    expect(run.failure).toBeUndefined();
+    expect(state.runs).toBe(1);
+    const starts = fake.calls.filter((args) => args[0] === "run");
+    const working = nameOf(starts.find((args) => nameOf(args).startsWith("agentx-task-"))!);
+    const fresh = nameOf(starts.find((args) => nameOf(args).startsWith("agentx-fresh-"))!);
+    const execs = fake.calls.filter((args) => args[0] === "exec" && args.join(" ").includes("te-b1-marker"));
+    // one measurement of the before result (original code, working sandbox) and one final run (the candidate, the fresh container)
+    expect(execs.map((args) => (args.includes(working) ? "working" : args.includes(fresh) ? "fresh" : "other"))).toEqual(["working", "fresh"]);
+    expect(run.report).toMatchObject({ source: "agent_commands", status: "verified" });
+    expect(run.events.some((event) => JSON.stringify(event).includes("not sealed: checked in a fresh sandbox"))).toBe(true);
+    expect(fake.calls.some((args) => args[0] === "rm" && args.includes(fresh))).toBe(true);
+    // the coding run reads no evidence from the export, so none is kept on the volume
+    const parent = join(rootPath, ".agentx", "fresh-check");
+    expect(existsSync(parent) ? (await readdir(parent)).filter((name) => name !== "scratch") : []).toEqual([]);
+  });
+
+  it("the working sandbox is stopped BEFORE the candidate is committed and read: what a leftover program wrote during the stop is part of the candidate, not a change under it", async () => {
+    const fake = fakeDocker();
+    const rootPath = await gitWorkspaceRoot();
+    const repository = join(rootPath, "app");
+    const originalCode: OriginalCode = { async run(work) { return work(); } };
+    const shell = scriptedShell({}, async (command) => { if (command === "make-change") await writeFile(join(rootPath, "app/notes.md"), "note\n"); });
+    let stops = 0;
+    const run = await runTask({
+      steps: [bash("make-change", "c1"), bash("pytest tests/te-b1-marker", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], rootPath, shell, originalCode,
+      // the first stop is the one before the candidate is read: a survivor writes late.txt as it happens
+      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }), freshPtraceScope: () => Promise.resolve(1),
+        stopBeforeReading: { stopWorkspaceProcesses: async () => { stops += 1; if (stops === 1) await writeFile(join(repository, "late.txt"), "late\n"); } } },
+    });
+    expect(run.failure).toBeUndefined();
+    // committed with the candidate (the commit came after the stop), and the round ran on it
+    expect(execFileSync("git", ["-C", repository, "show", "HEAD:late.txt"], { encoding: "utf8" })).toBe("late\n");
+    expect(stops).toBeGreaterThanOrEqual(2);
+    expect(run.report).toMatchObject({ source: "agent_commands", status: "verified" });
+  });
+
+  it("a program that moved HEAD to another commit after the candidate was recorded (and would put it back after) cannot change what the round checks: the round is not run", async () => {
+    const fake = fakeDocker();
+    const rootPath = await gitWorkspaceRoot();
+    const repository = join(rootPath, "app");
+    const originalCode: OriginalCode = { async run(work) { return work(); } };
+    const shell = scriptedShell({}, async (command) => { if (command === "make-change") await writeFile(join(rootPath, "app/notes.md"), "note\n"); });
+    let stops = 0;
+    const run = await runTask({
+      steps: [bash("make-change", "c1"), bash("pytest tests/te-b1-marker", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], rootPath, shell, originalCode,
+      // the second stop is the round's own, after the candidate was recorded: the survivor moves HEAD to B exactly then
+      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }), freshPtraceScope: () => Promise.resolve(1),
+        stopBeforeReading: { stopWorkspaceProcesses: async () => { stops += 1; if (stops !== 2) return; await writeFile(join(repository, "evil.txt"), "B\n"); execFileSync("git", ["-C", repository, "-c", "user.name=x", "-c", "user.email=x@x.invalid", "add", "."]); execFileSync("git", ["-C", repository, "-c", "user.name=x", "-c", "user.email=x@x.invalid", "commit", "-qm", "B"]); } } },
+    });
+    const finalExecs = fake.calls.filter((args) => args[0] === "exec" && args.join(" ").includes("te-b1-marker") && args.some((arg) => arg.startsWith("agentx-fresh-")));
+    expect(finalExecs).toEqual([]);
+    expect(fake.calls.some((args) => args[0] === "run" && args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-"))).toBe(false);
+    expect(JSON.stringify(run.report ?? run.failure)).toContain("the candidate is not the commit and tree the checks were planned for");
+  });
+
+  it("IMPLEMENT: a worker that lets programs trace each other (ptrace_scope 0) says so in plain words, and no fresh container starts", async () => {
+    const fake = fakeDocker();
+    const rootPath = await gitWorkspaceRoot();
+    const originalCode: OriginalCode = { async run(work) { return work(); } };
+    const shell = scriptedShell({}, async (command) => { if (command === "make-change") await writeFile(join(rootPath, "app/notes.md"), "note\n"); });
+    const run = await runTask({
+      steps: [bash("make-change", "c1"), bash("pytest tests/te-b1-marker", "c2"), fauxAssistantMessage(`Done.\n${DONE}`)],
+      workflowMode: "IMPLEMENT", readiness: [], rootPath, shell, originalCode,
+      extraDependencies: { taskShell: { kind: "sandbox", docker: fake.docker, image: IMAGE }, freshCheckRound: () => ({ setup: [] }), freshPtraceScope: () => Promise.resolve(0), stopBeforeReading: { stopWorkspaceProcesses: () => Promise.resolve() } },
+    });
+    expect(fake.calls.some((args) => args[0] === "run" && args[args.indexOf("--name") + 1]!.startsWith("agentx-fresh-"))).toBe(false);
+    expect(fake.calls.some((args) => args[0] === "restart")).toBe(false);
+    expect(JSON.stringify(run.events)).toContain("this worker does not stop programs from tracing each other");
+  });
+});
+
 describe("a stop that could not be confirmed ends the run and touches nothing (FIX-RUNNER-ABORT-JOIN, review H1)", () => {
   const touched = (run: Awaited<ReturnType<typeof runTask>>) => run.artifacts.map((artifact) => artifact.name).filter((name) => name === "workspace.diff" || name === "test-and-tool-evidence.json");
 
@@ -1777,4 +1888,15 @@ describe("a stop that could not be confirmed ends the run and touches nothing (F
     expect(run.failure).toBeDefined();
     await expect(readFile(join(rootPath, ".agentx/last-checks.json"), "utf8")).rejects.toThrow(/ENOENT/u);
   });
+});
+
+
+it("Round 2 L3: the default CHECKS harness calls the real process-stop dependency", async () => {
+  const stop = vi.spyOn(workspaceProcesses, "stopWorkspaceProcesses").mockRejectedValueOnce(new Error("test stop refusal"));
+  try {
+    const run = await runTask({ steps: [], workflowMode: "CHECKS" });
+    expect(stop).toHaveBeenCalledWith({ rootPath: realpathSync(run.rootPath) });
+    expect(run.failure).toBeDefined();
+    expect(run.requests).toEqual([]);
+  } finally { stop.mockRestore(); }
 });
