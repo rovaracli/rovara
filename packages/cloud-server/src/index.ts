@@ -5,3 +5,4 @@ export { createCloudHandler, returnPath, type CloudHandlerOptions, type CloudReq
 export { LocalWorkSessionStore, newSessionId, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
 export { approvalUrl, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 export { APPROVAL_PATH, approvalRoute } from "./approve.js";
+export { LocalPresenceBoard, PRESENCE_TTL_MS, PRESENCE_VIEWERS_MAX, type PresenceBoard, type Viewer } from "./presence.js";

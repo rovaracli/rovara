@@ -16,6 +16,8 @@ export interface WorkSession {
   createdAt: string;
   /** What a change to the session (a take-over) is asked against; it goes up with each change Cloud makes. */
   revision: number;
+  /** People who follow the session (phase 2c); the owner always follows and is never listed. */
+  followers?: Array<{ developerId: string; name: string }>;
 }
 
 export interface WorkSessionStore {

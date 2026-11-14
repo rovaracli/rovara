@@ -4,7 +4,8 @@
 import type { CodeAccess, CodeClient } from "./code-client.js";
 import type { CodeSession } from "./sessions.js";
 import { newSessionId, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
-import { approvalUrl, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
+import { approvalUrl, followState, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
+import type { PresenceBoard } from "./presence.js";
 import { CodeError } from "./code-client.js";
 
 /** The company this Cloud shows, until companies are Cloud's own (phase 4). */
@@ -23,6 +24,8 @@ export interface RouteContext {
   work: WorkSessionStore;
   /** The address the app is served at, for session links. */
   origin: string;
+  /** Who is looking at each session now (phase 2c). */
+  presence: PresenceBoard;
 }
 
 export interface RouteAnswer { status: number; body: unknown }
@@ -92,6 +95,32 @@ async function sessionAndTask(context: RouteContext): Promise<{ record: WorkSess
 }
 
 const viewer = (context: RouteContext) => ({ developerId: context.session.access.developerId });
+const me = (context: RouteContext) => ({ developerId: context.session.access.developerId, name: context.session.access.displayName });
+
+/** The session's followers and viewers for this person. */
+const peopleOf = (context: RouteContext, record: WorkSession) => ({ ...followState(record, context.session.access.developerId), viewingNow: context.presence.viewing(record.sessionId, context.now().getTime()) });
+
+/**
+ * The session, once Code has let the person read its task: its owner, or someone it is shared with who is still a member of the
+ * project (spec 067). Code's own refusal (not found) reaches the app as the route's answer. The read asks for no events.
+ */
+async function readableSession(context: RouteContext): Promise<WorkSession | undefined> {
+  const record = await context.work.get(context.params[0]!);
+  if (record === undefined) return undefined;
+  await context.client.json(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}?events=0`, { headers: TASK_VIEW });
+  return record;
+}
+
+const FOLLOWERS_MAX = 200;
+const DEVELOPER_ID = /^[a-f0-9]{64}$/u;
+const MEMBER_KEY = /^MEMBER#([a-f0-9]{64})$/u;
+
+interface CodeReader { developerId: string; name: string; role: string; projectMember: boolean; grantedAt: string }
+
+/** A Code reader as one of the session's shares (SessionShareSchema): a person, at view, shared by the session's owner. */
+const shareOf = (record: WorkSession, reader: CodeReader) => ({
+  principal: { kind: "member", developerId: reader.developerId }, level: "view", sharedBy: record.owner, sharedAt: reader.grantedAt,
+});
 
 /** How many of the person's newest sessions Home reads from Code, and how many cards it answers (HOME_CARDS_MAX). */
 const HOME_SESSIONS_READ = 20;
@@ -315,7 +344,7 @@ export const ROUTES: Route[] = [
     method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})$/u,
     answer: async (context) => {
       const found = await sessionAndTask(context);
-      return found === undefined ? sessionNotFound : ok({ session: sessionView(found.record, found.task, viewer(context), context.origin) });
+      return found === undefined ? sessionNotFound : ok({ session: sessionView(found.record, found.task, viewer(context), context.origin, peopleOf(context, found.record)) });
     },
   },
   {
@@ -364,6 +393,84 @@ export const ROUTES: Route[] = [
       const updated: WorkSession = { ...record, owner: { developerId: context.session.access.developerId, name: context.session.access.displayName }, revision: record.revision + 1 };
       await context.work.put(updated);
       return ok({ session: sessionView(updated, await readTask(context, record.taskId), viewer(context), context.origin) });
+    },
+  },
+  {
+    // POST /v1/app/sessions/{id}/follow: anyone who may read the task follows it; the owner always does, with no entry.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/follow$/u,
+    answer: async (context) => {
+      const record = await readableSession(context);
+      if (record === undefined) return sessionNotFound;
+      const person = me(context);
+      if (followState(record, person.developerId).following) return ok({ following: true });
+      const followers = record.followers ?? [];
+      if (followers.length >= FOLLOWERS_MAX) return badRequest("This session has as many followers as it can have.");
+      await context.work.put({ ...record, followers: [...followers, person] });
+      return ok({ following: true });
+    },
+  },
+  {
+    // DELETE /v1/app/sessions/{id}/follow: the follow goes; the owner always follows.
+    method: "DELETE", path: /^\/sessions\/(ses_[0-9a-z]{20})\/follow$/u,
+    answer: async (context) => {
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const developerId = context.session.access.developerId;
+      if (developerId === record.owner.developerId) return ok({ following: true });
+      const followers = record.followers ?? [];
+      if (followers.some((person) => person.developerId === developerId)) await context.work.put({ ...record, followers: followers.filter((person) => person.developerId !== developerId) });
+      return ok({ following: false });
+    },
+  },
+  {
+    // POST /v1/app/sessions/{id}/presence: the page's heartbeat; answers who is looking at the session now.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/presence$/u,
+    answer: async (context) => {
+      const record = await readableSession(context);
+      if (record === undefined) return sessionNotFound;
+      return ok({ viewingNow: context.presence.heartbeat(record.sessionId, me(context), context.now().getTime()) });
+    },
+  },
+  {
+    // GET /v1/app/sessions/{id}/shares: the people Code lets read the task (its readers, spec 067). Code answers only the owner.
+    method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})\/shares$/u,
+    answer: async (context) => {
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const { readers } = await context.client.json<{ readers: CodeReader[] }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/readers`);
+      return ok({ shares: readers.map((reader) => shareOf(record, reader)) });
+    },
+  },
+  {
+    // PUT /v1/app/sessions/{id}/shares: share with a person, at view. Code makes them a reader (a member of the project only).
+    method: "PUT", path: /^\/sessions\/(ses_[0-9a-z]{20})\/shares$/u,
+    answer: async (context) => {
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const input = (context.body ?? {}) as { requestId?: unknown; principal?: { kind?: unknown; developerId?: unknown }; level?: unknown };
+      if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
+      if (input.principal?.kind !== "member" || typeof input.principal.developerId !== "string" || !DEVELOPER_ID.test(input.principal.developerId)) {
+        return badRequest("A session can be shared with a person for now, not a project or the whole company.");
+      }
+      if (input.level !== "view") return badRequest("A session can be shared to view only, for now.");
+      const answer = await context.client.json<{ reader: CodeReader }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/readers/${input.principal.developerId}`, {
+        method: "PUT", body: { requestId: input.requestId, role: "viewer" },
+      });
+      return ok({ share: shareOf(record, answer.reader) });
+    },
+  },
+  {
+    // DELETE /v1/app/sessions/{id}/shares/{principalKey}: stop sharing with a person (`MEMBER#<developerId>`); they stop following too.
+    method: "DELETE", path: /^\/sessions\/(ses_[0-9a-z]{20})\/shares\/([^/]+)$/u,
+    answer: async (context) => {
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const key = MEMBER_KEY.exec(context.params[1]!);
+      if (key === null) return badRequest("Only a share with a person can be removed here.");
+      const answer = await context.client.json<{ removed: boolean }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/readers/${key[1]!}`, { method: "DELETE" });
+      const followers = record.followers ?? [];
+      if (followers.some((person) => person.developerId === key[1])) await context.work.put({ ...record, followers: followers.filter((person) => person.developerId !== key[1]) });
+      return ok({ removed: answer.removed });
     },
   },
 ];

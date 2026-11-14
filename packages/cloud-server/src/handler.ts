@@ -5,6 +5,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
+import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
 import { ROUTES, type OrgView, type Route } from "./routes.js";
 import type { SessionStore } from "./sessions.js";
 import type { WorkSessionStore } from "./work-sessions.js";
@@ -32,6 +33,8 @@ export interface CloudHandlerOptions {
   work: WorkSessionStore;
   /** The address the app is served at, for session links (such as http://127.0.0.1:8787). */
   origin: string;
+  /** Who is looking at each session now; this server's memory by default. */
+  presence?: PresenceBoard;
   routes?: Route[];
   now?: () => Date;
   log?: (event: Record<string, unknown>) => void;
@@ -60,6 +63,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
   const routes = options.routes ?? ROUTES;
   const now = options.now ?? (() => new Date());
   const log = options.log ?? ((event) => { console.log(JSON.stringify(event)); });
+  const presence = options.presence ?? new LocalPresenceBoard();
   const cookie = (value: string, maxAge?: number) =>
     `${COOKIE}=${value}; HttpOnly; SameSite=Lax; Path=/${options.secureCookies ? "; Secure" : ""}${maxAge === undefined ? "" : `; Max-Age=${String(maxAge)}`}`;
   const sessionId = (request: CloudRequest) =>
@@ -142,7 +146,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       try {
         const answer = await route.answer({
           client: options.client, session, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
-          work: options.work, origin: options.origin,
+          work: options.work, origin: options.origin, presence,
         });
         if (session.changed === true) {
           delete session.changed;

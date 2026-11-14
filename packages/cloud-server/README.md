@@ -6,6 +6,7 @@ Rovara Cloud's server for its web app, on a Rovara Code install's API ([Rovara-c
 - **The app's API** (`/v1/app/*`, which the browser calls as `/v1/web/*`): each route in `src/routes.ts` answers from Code as the signed-in person, in the reader shape the app expects. A changing request needs the session's CSRF token (`x-rovara-csrf`). A route not on Code yet answers 501 `NOT_ON_CODE_YET`.
 - **Tokens:** a call that Code answers 401 refreshes the token once and tries again (calls made together share one refresh, since Code's refresh tokens work once); when the sign-in has ended, the session is removed and the app asks the person to sign in again.
 - **Sessions (phase 2):** a Cloud session (`ses_…`) points at the Code task doing the work. Home's cards come from the person's newest sessions, each read from Code: a plan waiting for its owner, a failed run, an open pull request.
+- **Sharing, following, viewing (phase 2c):** a session is shared with a person through Code's task readers (Rovara spec 067): Code keeps who may read the task and checks it on every read, so Cloud keeps no share list. Someone it is shared with reads the session at `view` and only watches. Cloud keeps followers on the session record, and who is looking at a session now in memory (`src/presence.ts`; a deployed Cloud with several servers needs a shared store).
 - **Plan approval:** `/v1/app/approve/plan-<session>` is a small server page (no scripts, strict policy) where the session's owner approves the plan or asks for changes. The form carries the CSRF token, must come from Cloud's own origin, and is bound to the workflow revision and plan digest it showed; Code checks both again. The app shows the link only on HTTPS, so on `cloud:local` open it from the Home card.
 
 | File | What it holds |
@@ -17,6 +18,7 @@ Rovara Cloud's server for its web app, on a Rovara Code install's API ([Rovara-c
 | `src/work-sessions.ts` | Cloud's sessions: the store interface; `LocalWorkSessionStore` |
 | `src/session-view.ts` | A session as the app reads it, from the session and Code's task; the waiting plan |
 | `src/approve.ts` | The plan approval page and the decision it sends to Code |
+| `src/presence.ts` | Who is looking at a session now: `LocalPresenceBoard` (this server's memory) |
 
 The migration tracker lists every route the app calls and where it is answered from: https://claude.ai/artifact/5dgtmptEHv1sfZNNZqefUw
 

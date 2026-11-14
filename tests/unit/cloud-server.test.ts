@@ -4,12 +4,16 @@
 // phase 2: sessions on Code's tasks, Home's cards and the plan approval page.
 import { describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
-import { HomeResponseReaderSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema } from "../../packages/contracts/src/web.js";
+import {
+  HomeResponseReaderSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema,
+  SessionShareDeleteResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionSharesResponseReaderSchema,
+} from "../../packages/contracts/src/web.js";
 import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { isConfirmUrl } from "../../packages/ui/src/text/links.js";
 
 const CODE = "https://code.example.test";
 const ADA = "a".repeat(64);
+const GRACE = "f".repeat(64);
 
 interface Call { method: string; path: string; authorization?: string; body?: string }
 
@@ -21,6 +25,8 @@ function fakeCode() {
   // Code rotates refresh tokens: each one works once.
   let generation = 1;
   let decisionRefusal: string | undefined;
+  // Spec 067: the people Code lets read the task besides its owner (Ada). Grace signs in with her own code and token.
+  const readers = new Map<string, { developerId: string; name: string; role: string; projectMember: boolean; grantedAt: string }>();
   const members = [{ developerId: ADA, name: "Ada", role: "administrator" }];
   const TASK_ID = "6f9d0c1e-2b3a-4c5d-8e7f-001122334455";
   let task: Record<string, unknown> = {
@@ -36,6 +42,7 @@ function fakeCode() {
     if (url.pathname === "/v1/auth/token") {
       const form = new URLSearchParams(call.body);
       if (call.authorization !== `Basic ${Buffer.from("rovara-cloud:secret").toString("base64")}`) return respond(401, { error: "invalid_client" });
+      if (form.get("grant_type") === "authorization_code" && form.get("code") === "grace-code") return respond(200, { access_token: "grace-access" });
       if (form.get("grant_type") === "authorization_code") return form.get("code") === "good-code" ? respond(200, { access_token: validToken, refresh_token: "refresh-1" }) : respond(400, { error: "invalid_grant" });
       if (form.get("grant_type") === "refresh_token" && refreshable && form.get("refresh_token") === `refresh-${String(generation)}`) {
         generation += 1;
@@ -44,8 +51,28 @@ function fakeCode() {
       }
       return respond(400, { error: "invalid_grant" });
     }
-    if (call.authorization !== `Bearer ${validToken}`) return respond(401, { error: { code: "AUTH_REQUIRED" } });
-    if (url.pathname === "/v1/dev/access") return respond(200, { developerId: ADA, displayName: "Ada", administrator: true, projects: [{ name: "payments", access: "administrator" }], notices: [] });
+    const grace = call.authorization === "Bearer grace-access";
+    if (call.authorization !== `Bearer ${validToken}` && !grace) return respond(401, { error: { code: "AUTH_REQUIRED" } });
+    if (url.pathname === "/v1/dev/access") {
+      return respond(200, grace
+        ? { developerId: GRACE, displayName: "Grace", administrator: false, projects: [{ name: "payments", access: "developer" }], notices: [] }
+        : { developerId: ADA, displayName: "Ada", administrator: true, projects: [{ name: "payments", access: "administrator" }], notices: [] });
+    }
+    const notYours = () => respond(404, { error: { code: "TASK_NOT_FOUND", message: `no task ${TASK_ID} of yours` } });
+    if (grace && url.pathname.startsWith(`/v1/dev/tasks/${TASK_ID}`)) {
+      if (!readers.has(GRACE)) return notYours();
+      if (url.pathname.includes("/readers")) return respond(403, { error: { code: "FORBIDDEN", message: "only the task's owner can share it" } });
+      if (url.pathname !== `/v1/dev/tasks/${TASK_ID}` || call.method !== "GET") return notYours();
+    }
+    if (url.pathname === `/v1/dev/tasks/${TASK_ID}/readers`) return respond(200, { readers: [...readers.values()] });
+    const reader = new RegExp(`^/v1/dev/tasks/${TASK_ID}/readers/([a-f0-9]{64})$`, "u").exec(url.pathname);
+    if (reader !== null && call.method === "PUT") {
+      if (reader[1] !== GRACE) return respond(400, { error: { code: "CONFIG_INVALID", message: "that person isn't a member of payments; add them to the project first" } });
+      const already = readers.has(GRACE);
+      readers.set(GRACE, readers.get(GRACE) ?? { developerId: GRACE, name: "Grace", role: "viewer", projectMember: true, grantedAt: "2026-11-14T10:06:00.000Z" });
+      return respond(200, { reader: readers.get(GRACE), already });
+    }
+    if (reader !== null && call.method === "DELETE") return respond(200, { developerId: reader[1], removed: readers.delete(reader[1]!) });
     if (url.pathname === "/v1/dev/client/projects/payments") return respond(200, { name: "payments", latestRevision: 3, access: "administrator", repositories: [{ name: "api", url: "https://github.com/acme/payments-api.git", defaultBranch: "main", fullName: "acme/payments-api" }] });
     if (url.pathname.startsWith("/v1/dev/client/projects/") && url.pathname.endsWith("/members")) return respond(200, { project: "payments", members });
     if (url.pathname === "/v1/dev/client/projects" && call.method === "POST") return respond(200, { name: "web-app", latestRevision: 1, access: "administrator", repositories: [] });
@@ -80,7 +107,8 @@ function setUp() {
   const store = new LocalSessionStore();
   const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: "http://127.0.0.1:8787/callback", scopes: "projects:members", fetch: code.fetchImpl });
   const work = new LocalWorkSessionStore();
-  const handler = createCloudHandler({ client, store, work, origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: () => undefined });
+  const clock = { ms: Date.parse("2026-11-14T12:00:00.000Z") };
+  const handler = createCloudHandler({ client, store, work, origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(clock.ms) });
   const call = async (method: string, target: string, options: { cookie?: string; csrf?: string; body?: unknown; form?: Record<string, string>; headers?: Record<string, string> } = {}) => {
     const url = new URL(target, "http://127.0.0.1:8787");
     const request: CloudRequest = {
@@ -94,16 +122,16 @@ function setUp() {
     };
     return handler(request);
   };
-  /** Signs Ada in through the fake Code and returns her cookie and CSRF token. */
-  const signIn = async () => {
+  /** Signs Ada (or, with grace-code, Grace) in through the fake Code and returns the cookie and CSRF token. */
+  const signIn = async (code = "good-code") => {
     const start = await call("GET", "/v1/auth/browser/authorize?return_to=/app/projects");
     const state = new URL(start!.headers.location!).searchParams.get("state")!;
-    const back = await call("GET", `/callback?code=good-code&state=${state}`);
+    const back = await call("GET", `/callback?code=${code}&state=${state}`);
     const cookie = back!.headers["set-cookie"]!.split(";")[0]!;
     const me = JSON.parse((await call("GET", "/v1/web/me", { cookie }))!.body) as { csrf: string };
     return { cookie, csrf: me.csrf, back };
   };
-  return { code, store, work, call, signIn };
+  return { code, store, work, call, signIn, clock };
 }
 
 describe("signing in through Rovara Code", () => {
@@ -405,5 +433,83 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     code.expireToken();
     expect((await call("GET", "/v1/web/nav", { cookie: auth.cookie }))!.status).toBe(200);
     expect(code.calls.filter((entry) => entry.path === "/v1/auth/token" && entry.body?.includes("refresh_token"))).toHaveLength(1);
+  });
+});
+
+describe("following, viewing and sharing a session (phase 2c)", () => {
+  const begin = async () => {
+    const context = setUp();
+    const ada = await context.signIn();
+    const grace = await context.signIn("grace-code");
+    const started = await context.call("POST", "/v1/web/projects/payments/code", { ...ada, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the README typo" } } });
+    const { sessionId } = JSON.parse(started!.body) as { sessionId: string };
+    const share = () => context.call("PUT", `/v1/web/sessions/${sessionId}/shares`, { ...ada, body: { requestId: "66666666-6666-4666-8666-666666666666", principal: { kind: "member", developerId: GRACE }, level: "view" } });
+    const read = async (who: { cookie: string }) => SessionResponseReaderSchema.parse(JSON.parse((await context.call("GET", `/v1/web/sessions/${sessionId}`, { cookie: who.cookie }))!.body)).session;
+    return { ...context, ada, grace, sessionId, share, read };
+  };
+  const body = (response: { body: string } | undefined) => JSON.parse(response!.body) as unknown;
+
+  it("shares a session with a person through Code's task readers, lists and removes the share", async () => {
+    const { call, code, ada, sessionId, share } = await begin();
+    const shared = await share();
+    expect(shared!.status).toBe(200);
+    expect(SessionSharePutResponseReaderSchema.parse(body(shared))).toEqual({ share: { principal: { kind: "member", developerId: GRACE }, level: "view", sharedBy: { developerId: ADA, name: "Ada" }, sharedAt: "2026-11-14T10:06:00.000Z" } });
+    expect(JSON.parse(code.calls.find((entry) => entry.path === `/v1/dev/tasks/${code.taskId}/readers/${GRACE}`)!.body!)).toEqual({ requestId: "66666666-6666-4666-8666-666666666666", role: "viewer" });
+    expect(SessionSharesResponseReaderSchema.parse(body(await call("GET", `/v1/web/sessions/${sessionId}/shares`, { cookie: ada.cookie }))).shares).toHaveLength(1);
+    const removed = await call("DELETE", `/v1/web/sessions/${sessionId}/shares/${encodeURIComponent(`MEMBER#${GRACE}`)}`, ada);
+    expect(SessionShareDeleteResponseReaderSchema.parse(body(removed))).toEqual({ removed: true });
+    expect(SessionSharesResponseReaderSchema.parse(body(await call("GET", `/v1/web/sessions/${sessionId}/shares`, { cookie: ada.cookie }))).shares).toEqual([]);
+  });
+
+  it("shares only with a person, at view, and passes on Code's refusals", async () => {
+    const { call, ada, grace, sessionId } = await begin();
+    const put = (who: { cookie: string; csrf: string }, principal: unknown, level = "view") => call("PUT", `/v1/web/sessions/${sessionId}/shares`, { ...who, body: { requestId: "66666666-6666-4666-8666-666666666666", principal, level } });
+    for (const principal of [{ kind: "project", project: "payments" }, { kind: "org" }]) expect((await put(ada, principal))!.status).toBe(400);
+    expect((await put(ada, { kind: "member", developerId: GRACE }, "edit"))!.status).toBe(400);
+    const notMember = await put(ada, { kind: "member", developerId: "b".repeat(64) });
+    expect(notMember!.status).toBe(400);
+    expect(notMember!.body).toContain("isn't a member of payments");
+    expect((await call("DELETE", `/v1/web/sessions/${sessionId}/shares/ORG`, ada))!.status).toBe(400);
+    // Someone the task isn't shared with can't see it to share it.
+    expect((await put(grace, { kind: "member", developerId: GRACE }))!.status).toBe(404);
+  });
+
+  it("shows a shared session to the person at view, to watch only, and not before it is shared", async () => {
+    const { call, code, grace, sessionId, share, read } = await begin();
+    expect((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: grace.cookie }))!.status).toBe(404);
+    await share();
+    code.setTask(PLAN_WAITING);
+    expect(await read(grace)).toMatchObject({ sessionId, you: { level: "view", owner: false, following: false, actions: ["watch"] }, approvals: [] });
+  });
+
+  it("lets anyone who may read the task follow it; the owner always follows", async () => {
+    const { call, ada, grace, sessionId, share, read } = await begin();
+    expect(SessionFollowResponseReaderSchema.parse(body(await call("DELETE", `/v1/web/sessions/${sessionId}/follow`, ada)))).toEqual({ following: true });
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/follow`, grace))!.status).toBe(404);
+    await share();
+    expect(SessionFollowResponseReaderSchema.parse(body(await call("POST", `/v1/web/sessions/${sessionId}/follow`, grace)))).toEqual({ following: true });
+    expect(await read(grace)).toMatchObject({ followers: 1, you: { following: true } });
+    expect(await read(ada)).toMatchObject({ followers: 1, you: { following: true } });
+    expect(SessionFollowResponseReaderSchema.parse(body(await call("DELETE", `/v1/web/sessions/${sessionId}/follow`, grace)))).toEqual({ following: false });
+    expect((await read(ada)).followers).toBe(0);
+    // Unsharing ends the follow too.
+    await call("POST", `/v1/web/sessions/${sessionId}/follow`, grace);
+    await call("DELETE", `/v1/web/sessions/${sessionId}/shares/${encodeURIComponent(`MEMBER#${GRACE}`)}`, ada);
+    expect((await read(ada)).followers).toBe(0);
+  });
+
+  it("shows who is looking at a session, for 90 seconds after their last heartbeat", async () => {
+    const { call, ada, grace, sessionId, share, read, clock } = await begin();
+    const beat = async (who: { cookie: string; csrf: string }) => SessionPresenceResponseReaderSchema.parse(body(await call("POST", `/v1/web/sessions/${sessionId}/presence`, who))).viewingNow;
+    expect(await beat(ada)).toEqual([{ developerId: ADA, name: "Ada" }]);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/presence`, grace))!.status).toBe(404);
+    await share();
+    clock.ms += 30_000;
+    expect(await beat(grace)).toEqual([{ developerId: GRACE, name: "Grace" }, { developerId: ADA, name: "Ada" }]);
+    expect((await read(ada)).viewingNow).toHaveLength(2);
+    clock.ms += 61_000;
+    expect((await read(ada)).viewingNow).toEqual([{ developerId: GRACE, name: "Grace" }]);
+    clock.ms += 30_000;
+    expect((await read(ada)).viewingNow).toEqual([]);
   });
 });
