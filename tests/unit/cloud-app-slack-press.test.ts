@@ -70,8 +70,11 @@ for (const state of ["on", "off"] as const) {
         expect(await consume(press({ ...base, ...over })), name).toEqual({ enabled: true, text: PRESS_GUEST_WORDS });
       }
       expect(await decisions(r, taskId)).toEqual([]);
-      // The same person pressing as a member of the workspace decides (a press with no workspace named is the thread's own).
-      expect(await consume(press({ ...base, workspaceTeamId: "" }))).toEqual({ enabled: true, text: PRESS_TAKEN_WORDS });
+      // A press that names no workspace at all is refused too, as Cloud's resolveSlackDecisionCaller refuses it.
+      expect(await consume(press({ ...base, workspaceTeamId: "" }))).toEqual({ enabled: true, text: PRESS_GUEST_WORDS });
+      expect(await decisions(r, taskId)).toEqual([]);
+      // The same person pressing as a member of the workspace decides.
+      expect(await consume(press(base))).toEqual({ enabled: true, text: PRESS_TAKEN_WORDS });
       expect(await decisions(r, taskId)).toHaveLength(1);
     });
 

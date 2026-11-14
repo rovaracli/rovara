@@ -3,12 +3,13 @@
 // gate's own step-up verification is tested in cloud-app-task-routes), the session is NOT claimed by the card (the core's gate verifies and spends it), and once the decision applies the record is approved with
 // the session's proof (the audit event) and the session deleted. A refused decision leaves both as they were. A Cloud task still claims the session itself.
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { planCardHandler } from "../../packages/broker/src/aws/developer-routes/plan-cards.js";
 import type { DeveloperRouteDependencies } from "../../packages/broker/src/aws/developer-routes/types.js";
 import { getAnyApproval } from "../../packages/broker/src/agents/approvals.js";
 import { installCoreTaskRoutes, type CoreDecideInput, type CoreTaskRoutes } from "../../packages/broker/src/rovara-code/task-routes.js";
 import { taskKey } from "../../packages/broker/src/developer/task-records.js";
+import { DecideStore } from "../../packages/broker/src/developer/decide-session.js";
 import { mergeWorld, type MergeWorld } from "../support/rovara-code-merge-world.js";
 import { PRIYA } from "../support/agent-session-world.js";
 
@@ -74,12 +75,23 @@ describe("a HIGH plan card on a core task", () => {
     expect(await getAnyApproval(w.deps, w.orgId, approvalId)).toMatchObject({ status: "PENDING" });
   });
 
-  it("a Cloud task (the hook does not own it) is unchanged: the card claims the session itself, and the core is never asked", async () => {
-    const { w, decided, press } = await setup(false);
-    const approvalId = approvalIdOf(await press().then(() => undefined, (caught: unknown) => caught));
-    const cookie = await w.browser(PRIYA, approvalId);
-    // Cloud's own decision path needs the agent engine this stand-in has no workspace for; what is asserted is the claim, and that the core was not asked.
-    await press(cookie).catch(() => undefined);
-    expect(decided).toEqual([]);
+  it("a Cloud task (the hook does not own it) is unchanged: the card claims the session itself, and the core is never asked; a core task's card never claims it", async () => {
+    const claim = vi.spyOn(DecideStore.prototype, "claimSession");
+    try {
+      const cloud = await setup(false);
+      const approvalId = approvalIdOf(await cloud.press().then(() => undefined, (caught: unknown) => caught));
+      const cookie = await cloud.w.browser(PRIYA, approvalId);
+      // Cloud's own decision path needs the agent engine this stand-in has no workspace for (it fails and gives the session back); what is asserted is that the card CLAIMED it, and that the core was not asked.
+      await cloud.press(cookie).catch(() => undefined);
+      expect(claim).toHaveBeenCalledWith(cookie, approvalId);
+      expect(cloud.decided).toEqual([]);
+      claim.mockClear();
+      const core = await setup(true);
+      const coreApproval = approvalIdOf(await core.press().then(() => undefined, (caught: unknown) => caught));
+      await core.press(await core.w.browser(PRIYA, coreApproval));
+      expect(claim).not.toHaveBeenCalled();
+    } finally {
+      claim.mockRestore();
+    }
   });
 });

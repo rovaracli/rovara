@@ -543,9 +543,12 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     const principal = (await createCloudIdentityProvider(r.people.routes).getPrincipal(PEOPLE_ORG, r.people.people.owner.developerId))!;
     const put = r.world.store.put.bind(r.world.store);
     r.world.store.put = (async (request: Parameters<typeof put>[0]) => { if (request.item["entityType"] === "CORE_ENGINE_IN_USE") throw new Error("ThrottlingException"); return await put(request); });
-    const hook = createCoreIntentHook({ app: r.app, principalOf: async () => principal, origin: "https://x.test", now: () => r.world.clock.now, log: () => undefined, taskStop: async () => ({ enrolled: false, fence: [] }) });
+    const logs: Array<Record<string, unknown>> = [];
+    const hook = createCoreIntentHook({ app: r.app, principalOf: async () => principal, origin: "https://x.test", now: () => r.world.clock.now, log: (entry) => logs.push(entry), taskStop: async () => ({ enrolled: false, fence: [] }) });
     const started = await hook.start({ caller: { orgId: PEOPLE_ORG, developerId: r.people.people.owner.developerId } as never, request: { requestId: randomUUID(), project: "payments", input: { text: "Add a greeting." }, source: "app", path: "QUICK" }, ownedTask: async (_who, taskId) => ({ taskId }) as never });
     expect(started).toBeUndefined();
+    // Its own log line, not the root-unavailable one.
+    expect(logs.map((entry) => entry["event"])).toEqual(["core_entry.in_use_mark_failed"]);
     expect((await (await r.app.runtimeFor(PEOPLE_ORG)).flow.list({ principal, client: "app" })).tasks).toHaveLength(0);
   });
 
@@ -674,10 +677,33 @@ describe("switch blocker 7 (rollback): the switch gates NEW tasks only; a core-s
     const seen: unknown[][] = [];
     const store = createSeatLimits().fenceStore({ transact: async (items: unknown[]) => { seen.push(items); return { applied: true, failed: [] }; } } as never) as unknown as { transact(items: unknown[]): Promise<unknown> };
     const spent = (method: string) => ({ kind: "put", item: { entityType: "APPROVAL_PROOF_SPENT", method } });
-    await store.transact([{ kind: "put", item: { entityType: "APPROVAL_DECISION" } }, spent("browser-session"), spent("api-token"), spent("chat-slack"), spent("browser-step-up")]);
+    const used = (method: string) => ({ kind: "put", item: { entityType: "APPROVAL_PROOF_USED", method } });
+    await store.transact([{ kind: "put", item: { entityType: "APPROVAL_DECISION" } }, used("browser-session"), used("browser-step-up"), spent("browser-session"), spent("api-token"), spent("chat-slack"), spent("browser-step-up")]);
     await store.transact([spent("browser-session")]);
-    expect(seen[0]!.map((item) => (item as { item: { method?: string } }).item.method)).toEqual([undefined, "browser-step-up"]);
+    // The per-request proof marker (a retry of the same request is the same decision) is kept for every method; only the across-requests spent marker of a reusable method goes.
+    expect(seen[0]!.map((item) => `${(item as { item: { entityType: string } }).item.entityType}:${(item as { item: { method?: string } }).item.method ?? ""}`)).toEqual([
+      "APPROVAL_DECISION:", "APPROVAL_PROOF_USED:browser-session", "APPROVAL_PROOF_USED:browser-step-up", "APPROVAL_PROOF_SPENT:browser-step-up",
+    ]);
     expect(seen[1]).toHaveLength(1);
+  });
+
+  it("HIGH: a retry of the same decision request is `replayed`, and a fresh request id on the same task, once decided, is refused (the markers still do their per-request work)", async () => {
+    const r = await rig();
+    const { owner } = r.people.people;
+    r.standing.set(owner.developerId, "owner");
+    const { taskId } = await plannedTask(r);
+    const runtime = await r.app.runtimeFor(PEOPLE_ORG);
+    const gate = runtime.inbound.clientGate!;
+    const found = (await gate.requirement(PEOPLE_ORG, "workflow-document", taskId))!;
+    const attempt = (requestId: string) => ({
+      companyId: PEOPLE_ORG, kind: "workflow-document", subjectId: taskId, requestId, outcome: "approve" as const, seen: { revision: found.revision, artifactDigest: found.artifactDigest },
+      credentials: [{ method: BROWSER_SESSION_METHOD, token: owner.sessionId }], reason: "fine",
+    });
+    const requestId = randomUUID();
+    expect((await gate.decide(attempt(requestId))).status).toBe("decided");
+    expect((await gate.decide(attempt(requestId))).status, "the same request again").toBe("replayed");
+    expect((await gate.decide(attempt(randomUUID()))).status, "a fresh request id after the decision").toBe("refused");
+    expect(await decisionsOf(r, taskId)).toHaveLength(1);
   });
 
   it("M-1: two credentials of one person put ONE member check in the decision's transaction (a transaction names an item once)", async () => {

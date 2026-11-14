@@ -87,11 +87,16 @@ export function createCoreIntentHook(deps: CoreIntentHookDeps): CoreIntentHook {
       let runtime;
       try {
         runtime = await deps.app.runtimeFor(caller.orgId);
-        // The company's in-use mark is written before the start that stamps a task; a write that fails (a throttled table) is a root that cannot serve now, and the start goes on Cloud's path.
-        await ensureCoreInUse(runtime.flow.deps.store, caller.orgId);
       } catch (error) {
         // A root that cannot be built (a point is empty, a client failed) leaves the switch effectively off: the start goes on Cloud's path, and a person is never refused for it.
         deps.log({ event: "core_entry.runtime_unavailable", component: "cloud_core", error: error instanceof Error ? error.name : "unknown" });
+        return undefined;
+      }
+      // The company's in-use mark is written before the start that stamps a task. A write that fails (a throttled table) is a root that cannot serve now: the start goes on Cloud's path, with a log line of its own.
+      try {
+        await ensureCoreInUse(runtime.flow.deps.store, caller.orgId);
+      } catch (error) {
+        deps.log({ event: "core_entry.in_use_mark_failed", component: "cloud_core", error: error instanceof Error ? error.name : "unknown" });
         return undefined;
       }
       const principal = await deps.principalOf(caller);
@@ -211,7 +216,7 @@ export function createCoreSlackPressConsumer(deps: CoreSlackPressDeps): (press: 
     // Cloud's own guest rule for a press (`chatGptActionHandler`, `resolveSlackDecisionCaller`): the person is a member of the workspace the card is in (not a Slack Connect guest from another one), the
     // press names no other workspace than the thread's, and the two Enterprise Grid ids agree. A press that does not hold together decides nothing. An Enterprise Grid press (both ids set) cannot be carried
     // by a channel adapter's ActorRef yet (DEFERRED S3-SLACK-ENTERPRISE-GRID), so the issuer could not find its install; it is refused here, in words, rather than reaching the gate to be refused there.
-    if (press.userTeamId !== press.teamId || (press.workspaceTeamId !== "" && press.workspaceTeamId !== press.teamId) || press.userEnterpriseId !== press.enterpriseId || press.enterpriseId !== "") return { enabled: true, text: PRESS_GUEST_WORDS };
+    if (press.userTeamId !== press.teamId || press.workspaceTeamId !== press.teamId || press.userEnterpriseId !== press.enterpriseId || press.enterpriseId !== "") return { enabled: true, text: PRESS_GUEST_WORDS };
     const orgId = await deps.orgOfTeam(press.teamId).catch(() => undefined);
     if (orgId === undefined) return { enabled: false };
     let sink;
