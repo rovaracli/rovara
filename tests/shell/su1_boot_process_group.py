@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 """SU-1 boot's actual timeout helpers with inert children; Linux/GNU only.
+Run from the repository root on Linux with GNU timeout:
+  SU1_SCRATCH=$(mktemp -d "${TMPDIR:?}/su1-boot-check.XXXXXX")
+  TMPDIR="$SU1_SCRATCH" ~/.local/share/rovara-tools/heavy.sh python3 tests/shell/su1_boot_process_group.py
+  rmdir "$SU1_SCRATCH"
+Optional --source /path/to/scratch/boot-stage2.sh tests an independent copy.
+On macOS all three tests skip; that is not Linux proof. This harness is committed;
+only its temporary scripts and inert child processes are scratch-only.
 No Docker, network, root, system files or git history. Run through heavy.sh.
 """
 import argparse

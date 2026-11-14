@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
-"""Sequential scratch-only SU-1 guard mutants. Invoke via heavy.sh.
-No git history, network, Docker or mutation of production files.
+"""Committed harness for sequential SU-1 guard mutations in scratch copies.
+Run from the repository root (requires installed dependencies):
+  SU1_SCRATCH=$(mktemp -d "${TMPDIR:?}/su1-boot-check.XXXXXX")
+  TMPDIR="$SU1_SCRATCH" ~/.local/share/rovara-tools/heavy.sh python3 tests/shell/su1_boot_mutants.py
+  rmdir "$SU1_SCRATCH"
+Optional SU1_MUTANTS is a comma-separated subset, e.g. elapsed-seconds;
+SU1_TEST_NODE selects a Node executable. Each selector runs a clean control first.
+Boot mutants use SU1_BOOT_TEST_SOURCE to read an independent scratch script;
+TypeScript mutants use a temporary Vite transform. Only copies are mutated.
+No git history, network, Docker or mutation of production files. Scratch copies
+are removed after synchronous children finish; the harness itself is committed.
 """
 import json
 import os
@@ -24,6 +33,7 @@ LT = 'tests/contract/private-address-wall.test.ts'
 IT = 'tests/contract/tsl-selftest-grant.test.ts'
 # name, module, old, new, test file, literal test-name selector
 MUTANTS = [
+ ('elapsed-seconds', BOOT, 'su1_record "$state" "$reason" $((SECONDS - started))', 'su1_record "$state" "$reason" 0', BT, 'records elapsed wall'),
  ('off', BOOT, 'tsl_selftest_gate "${AGENTX_SU1_CHECK:-}"', 'tsl_selftest_gate "1"', BT, 'off creates'),
  ('named', BOOT, 'if [[ "${AGENTX_ENVIRONMENT_KIND:-}" != named ]]; then TSL_GATE=refused', 'if false; then TSL_GATE=refused', BT, 'refuses.*legacy'),
  ('staging', BOOT, 'if [[ "$TSL_ENVIRONMENT" != "$TSL_ALLOWED_ENVIRONMENT" ]]; then', 'if false; then', BT, 'refuses.*production'),

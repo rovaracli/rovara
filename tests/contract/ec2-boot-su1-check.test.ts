@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 // SU-1 boot path, real bash with fake host tools and translated system paths.
 // Linux/GNU signal proof is separate from this portable harness.
+// SU1_BOOT_TEST_SOURCE: optional path to an independent scratch boot-stage2.sh
+// supplied by tests/shell/su1_boot_mutants.py; unset reads the checked-in script.
+// Never set it for the clean control or normal contract gate.
 const stage2 = readFileSync(process.env.SU1_BOOT_TEST_SOURCE ?? new URL("../../packages/worker/ec2/boot-stage2.sh", import.meta.url), "utf8");
 function requiredTmpdir(): string { if (!process.env.TMPDIR) throw new Error("TMPDIR is required"); return process.env.TMPDIR; }
 const roots: string[] = [];
@@ -188,6 +191,17 @@ describe("SU-1 boot, real bash with hermetic host tools", () => {
     expect(readdirSync(s.vartmp)).toEqual([]);
     expect(readFileSync(join(s.state, "containers_driver"), "utf8")).toBe("");
     expect(callsOf(s)).toContain("checks mode=");
+  });
+  it("records elapsed wall seconds including checker execution and cleanup", () => {
+    const s = setup();
+    // Freeze bash's seconds clock at a nonzero origin; advance it at the
+    // real checker and cleanup/readback boundaries without sleeping.
+    const clock = (text: string) => "SU1_TEST_SECONDS=400\n" + text
+      .replace(/\bSECONDS\b/g, "SU1_TEST_SECONDS")
+      .replace("su1_run_checks() {", "su1_run_checks() { SU1_TEST_SECONDS=$((SU1_TEST_SECONDS + 23));")
+      .replace("su1_readback() {", "su1_readback() { SU1_TEST_SECONDS=$((SU1_TEST_SECONDS + 7));");
+    expect(selfTest(s, STAGING, checkerOutput(), clock).stdout).toContain("rc=0");
+    expect(parsedOf(s)).toMatchObject({ state: "ran", reason: "ok", secs: 30 });
   });
   it("off creates no result and runs nothing", () => {
     for (const value of ["", "0", "true", " 1"]) {
