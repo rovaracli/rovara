@@ -24,6 +24,8 @@ import type { DesignReviewRoundPorts } from "../../design-review/round-ports.js"
 import type { StartOutsideRecheck, WorkingBranchPort } from "./continue-loop.js";
 
 export interface DeveloperTaskRouteDependencies {
+  /** S3 item 7: the caller's own developer token (the request's `Authorization` header, without `Bearer `), set only by the task route for a decision on a task the core runs. Never logged. */
+  coreBearer?: string | undefined;
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   /** The caller's org: every project, grant, limit and catalog key a route reads or writes is scoped to it. */

@@ -6,6 +6,7 @@
 //            The coding plan's card carries the run limit approving sets: a raise is ticked on the card and sent as `acknowledgedRunLimitUsd` (the workflow decision refuses a raise without it).
 //   request changes   the workflow decision's REQUEST_CHANGES with the person's reason, for requirements, a coding plan and a design alike (a design's Approve stays the design review's).
 // The requirements and design pair card (project.ts `pairCards`) forms only when both documents wait at once; today's Full flow asks for them one after the other, so this source never yields both.
+import { coreTaskRoutes } from "../../rovara-code/task-routes.js";
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { DECISION_APPROVE_TAKES, DECISION_PLAN_COMMENTS_MAX, DECISION_PLAN_QUESTIONS_MAX, agentXError, planClaimCount, redactText, taskGraphDigest, taskGraphOrder, type DecisionPlanChoices, type PlanDocument, type WorkflowArtifact } from "@rovara-code/contracts";
 import { PER_TASK_BUDGET_USD, type WorkflowSnapshot } from "@agentx/cloud-contracts";
@@ -185,6 +186,14 @@ export function planCardHandler(deps: DeveloperRouteDependencies, caller: Develo
       if (now === "stale") return { kind: "refused", reason: "stale" };
       if (input.card.risk !== "high") return approvePlan(deps, caller, who, input, now);
       if (who.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
+      // S3: a task the core runs is decided by the core's own gate, which verifies the decide-grade sign-in itself (the `browser-step-up` method: this person, this card, unused, within 10 minutes). The card
+      // still does everything else around it: without the sign-in it makes the `card_decision` record and answers REAUTH with the decide sign-in; with it, the decision is the core's and the session is
+      // left for the gate to spend (`claim: false`); after the decision applies, the record is approved with the session's proof (the audit event) and the session deleted, as for any card.
+      const core = coreTaskRoutes();
+      if (core !== undefined && await core.owns(who, now.task.taskId)) {
+        return withCardDecideGrade(deps, who, decideCookie, { cardId: input.card.id, taskId: now.task.taskId, contentVersion: input.item.contentVersion, openPath: input.item.openPath },
+          async () => ({ applied: true, result: await approvePlan(deps, caller, who, input, now, false, decideCookie) }), { claim: false });
+      }
       return withCardDecideGrade(deps, who, decideCookie, { cardId: input.card.id, taskId: now.task.taskId, contentVersion: input.item.contentVersion, openPath: input.item.openPath },
         async () => ({ applied: true, result: await approvePlan(deps, caller, who, input, now, true) }));
     }),
@@ -202,7 +211,7 @@ export function planCardHandler(deps: DeveloperRouteDependencies, caller: Develo
   };
 }
 
-async function approvePlan(deps: DeveloperRouteDependencies, caller: DeveloperCaller, who: DeveloperCaller, input: PerformInput, now: { task: DeveloperTaskRecord; workflow: WorkflowSnapshot; artifact: WorkflowArtifact }, decideGrade = false): Promise<PerformOutcome> {
+async function approvePlan(deps: DeveloperRouteDependencies, caller: DeveloperCaller, who: DeveloperCaller, input: PerformInput, now: { task: DeveloperTaskRecord; workflow: WorkflowSnapshot; artifact: WorkflowArtifact }, decideGrade = false, coreStepUp?: string): Promise<PerformOutcome> {
       // The work breakdown the approval binds to is the one in the document the card was drawn from (the workflow decision checks it again).
       const loaded = now.artifact.type === "plan" ? await loadWorkflowDocument(reader(deps, caller), now.artifact, {}).catch(() => undefined) : undefined;
       const breakdown = loaded?.format === "structured" && loaded.plan.workBreakdown !== undefined ? taskGraphDigest(loaded.plan.workBreakdown) : undefined;
@@ -215,7 +224,7 @@ async function approvePlan(deps: DeveloperRouteDependencies, caller: DeveloperCa
         ...(plan?.answers === undefined ? {} : { answers: plan.answers }),
         ...(plan?.selectedOptionalCheckIds === undefined ? {} : { selectedOptionalCheckIds: plan.selectedOptionalCheckIds }),
         ...(plan?.includedCommentIds === undefined ? {} : { includedCommentIds: plan.includedCommentIds }),
-      }, { ...(decideGrade ? { decideGrade: true as const } : {}), ...(plan?.note === undefined ? {} : { note: plan.note }) });
+      }, { ...(decideGrade ? { decideGrade: true as const } : {}), ...(coreStepUp === undefined ? {} : { coreStepUp }), ...(plan?.note === undefined ? {} : { note: plan.note }) });
       return { kind: "done" };
 }
 

@@ -24,7 +24,7 @@ import { checkTime, registerMemberMover } from "../agents/lifecycle.js";
 import { errorName, failedIndexes, type Item, type TransactItem } from "../agents/table-writes.js";
 import type { DeveloperSignInStore } from "../developer/store.js";
 import { paymentOfTask } from "../spend/payer.js";
-import { UNNAMED_MEMBER, currentOwnerAfterMerge, holdsTaskByTakeOver, ownerFenceOf, taskIndexKey, taskKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
+import { UNNAMED_MEMBER, currentOwnerAfterMerge, holdsTaskByTakeOver, ownerFenceOf, taskIndexKey, taskKey, taskPayerKey, tryEffectiveTaskOwner, type DeveloperTaskRecord } from "../developer/task-records.js";
 import { endLocalSession, endSessionsOfDevice } from "../devices/local-sessions.js";
 import { removeFollower } from "./followers.js";
 import { AgentSessionStore } from "./store.js";
@@ -352,18 +352,34 @@ async function taskPlan(deps: SessionLifecycleDeps, orgId: OrgId, taskId: string
     log(deps, "agent_session.lifecycle_task_owner_unreadable", { orgId, taskId, error: errorName(error) ?? "unknown" });
     return { items: [], hold: "other" };
   }
-  const paid = paymentOfTask(task).payer;
-  const payer: Payer | undefined = paid.kind === "member" && paid.developerId === duplicateId ? { kind: "member", developerId: survivor.developerId } : undefined;
+  // A task the core engine runs keeps its payer in its own row (`taskPayerKey`, captured by its start), not on the task record: that row is what follows the person, and the record gets no `payer`.
+  const coreRow = await getItem(deps, taskPayerKey(taskId));
+  const corePayer = coreRow !== undefined && coreRow["orgId"] === orgId ? coreRow["payer"] as Payer | undefined : undefined;
+  const paid = corePayer ?? paymentOfTask(task).payer;
+  const survivorPays: Payer = { kind: "member", developerId: survivor.developerId };
+  const payer: Payer | undefined = paid.kind === "member" && paid.developerId === duplicateId ? survivorPays : undefined;
   const hold: TaskHold = handedOn !== undefined ? "handed" : already ? "already" : "other";
   if (handedOn === undefined && payer === undefined) return { items: [], hold };
-  const sets = ["updatedAt = :at", ...(handedOn === undefined ? [] : ["currentOwner = :currentOwner"]), ...(payer === undefined ? [] : ["payer = :payer"])];
+  const onRecord = corePayer === undefined ? payer : undefined;
+  const sets = ["updatedAt = :at", ...(handedOn === undefined ? [] : ["currentOwner = :currentOwner"]), ...(onRecord === undefined ? [] : ["payer = :payer"])];
   const items: TransactItem[] = [{
     Update: {
       TableName: deps.tableName, Key: taskKey(taskId), UpdateExpression: `SET ${sets.join(", ")}`,
-      ConditionExpression: `attribute_exists(pk) AND orgId = :org AND ${fence.expression}`, ExpressionAttributeNames: fence.names,
-      ExpressionAttributeValues: { ...fence.values, ":at": at, ":org": orgId, ...(handedOn === undefined ? {} : { ":currentOwner": handedOn }), ...(payer === undefined ? {} : { ":payer": payer }) },
+      // A core task's record names its company `companyId` and has no `orgId`; a Cloud task's has `orgId`. A row with an `orgId` is judged by it alone (a `companyId` never overrides it).
+      ConditionExpression: `attribute_exists(pk) AND (orgId = :org OR (attribute_not_exists(orgId) AND companyId = :org)) AND ${fence.expression}`, ExpressionAttributeNames: fence.names,
+      ExpressionAttributeValues: { ...fence.values, ":at": at, ":org": orgId, ...(handedOn === undefined ? {} : { ":currentOwner": handedOn }), ...(onRecord === undefined ? {} : { ":payer": onRecord }) },
     },
   }];
+  // The core's payer row moves in the same transaction, on the payer it was read with.
+  if (corePayer !== undefined && payer !== undefined) {
+    items.push({
+      Update: {
+        TableName: deps.tableName, Key: taskPayerKey(taskId), UpdateExpression: "SET payer = :payer",
+        ConditionExpression: "attribute_exists(pk) AND orgId = :org AND payer.#kind = :member AND payer.developerId = :duplicate",
+        ExpressionAttributeNames: { "#kind": "kind" }, ExpressionAttributeValues: { ":payer": payer, ":org": orgId, ":member": "member", ":duplicate": duplicateId },
+      },
+    });
+  }
   if (handedOn !== undefined && typeof task.createdAt === "string") {
     // A taker's row is their own copy and moves with them; for a task the duplicate created, the survivor gets a copy and the creator's row stays as history.
     const taker = holdsTaskByTakeOver(task, duplicateId);

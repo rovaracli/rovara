@@ -6,10 +6,12 @@
 // The other core services (merge tracking, the session sweep, notices) are joined in Code by its LOCAL composition root (`Kb/local/app/tracking.ts`,
 // `app.ts`), which is not exported and carries laptop rules (`fixedCodeSettings`, `soleOwnerPeople`). Cloud needs the same joins with its own company
 // settings and people. Until Code exports a service layer for them (open question S0-Q1 in the lane report), each is a `CoreService` the deployment
-// supplies; `serviceGaps` names the ones missing so the switch cannot be turned on for an area whose service is not wired.
-import { RepositoryGrantService } from "@rovara-code/broker";
+// supplies; `serviceGaps` names the ones missing so the switch cannot be turned on for an area whose service is not wired (an area that is off is not asked: its missing service costs only its own jobs).
+import { AsyncLocalStorage } from "node:async_hooks";
+import { RepositoryGrantService, type createCallbackService, type createDecisionService } from "@rovara-code/broker";
 import { createStoreProjectSource, createTaskFlowFromRegistry, type RegistryTaskFlowOptions, type StartExtras, type StartExtrasInput, type TaskAccess, type TaskFlow } from "@rovara-code/broker/core/task-flow";
-import type { AdapterRegistry, OrgId } from "@rovara-code/contracts";
+import type { AdapterRegistry, ChannelInboundSink, OrgId, SlackRequestMessage, TransactItem } from "@rovara-code/contracts";
+import { withStepFenceRetry } from "./step-fence.js";
 import { stampForNewTask, stampItem } from "./engine-stamp.js";
 import type { CoreArea, CoreEngineFlags } from "./flags.js";
 import { createCloudStepModels, type CloudModelFacts } from "./model-mapping.js";
@@ -31,10 +33,22 @@ export const CORE_SERVICES = {
 /** The required services (above) and the optional ones: a runtime without an optional one skips its job (`service_not_wired`), and the switch is never refused for it. */
 export type CoreServiceName = keyof typeof CORE_SERVICES | "automation-stop";
 
+/** What reaches the core from outside, per company (S3 item 4): the intake of Cloud's Slack request queue, as the channel sink takes it. */
+export interface CoreInbound {
+  slack?: (message: SlackRequestMessage) => Promise<void>;
+  /** The Slack channel sink itself (a message, and a card's decision pressed in Slack); `slack` is its message intake. */
+  slackSink?: ChannelInboundSink;
+  /** The same gate for client surfaces (the web decide routes, the API): it refuses a chat-slack credential, which only the Slack ingress's verified press may carry (slack-work.ts). */
+  clientGate?: ReturnType<typeof createDecisionService>["gate"];
+  /** Code's callback service for this company: what a worker of a core task posts to (events, artifacts, the result, the pull request, repository credentials). */
+  callbacks?: ReturnType<typeof createCallbackService>;
+}
+
 export interface CoreRuntime {
   companyId: OrgId;
   flow: TaskFlow;
   services: Partial<Record<CoreServiceName, CoreService>>;
+  inbound: CoreInbound;
 }
 
 export interface CoreRuntimeOptions {
@@ -53,6 +67,18 @@ export interface CoreRuntimeOptions {
   flowOptions?: Partial<RegistryTaskFlowOptions>;
   /** The services beyond the flow, built for this company. */
   services?: (flow: TaskFlow) => Partial<Record<CoreServiceName, CoreService>>;
+  /** What reaches the core from outside, built for this company's flow (the Slack intake). */
+  inbound?: (flow: TaskFlow) => CoreInbound;
+}
+
+const startFences = new AsyncLocalStorage<readonly TransactItem[]>();
+
+/**
+ * Runs a core start (and anything it awaits) with these checks added to the start's own transaction (`startExtras`): what the entry read about the company before it started the task
+ * (the spending-stop policy as it was; entry.ts). A start that finds one changed commits nothing. The context belongs to this call and its awaits, so concurrent starts never see each other's.
+ */
+export function withStartFence<T>(items: readonly TransactItem[], run: () => Promise<T>): Promise<T> {
+  return startFences.run(items, run);
 }
 
 export function createCoreRuntime(options: CoreRuntimeOptions): CoreRuntime {
@@ -63,9 +89,9 @@ export function createCoreRuntime(options: CoreRuntimeOptions): CoreRuntime {
   const startExtras = (input: StartExtrasInput): StartExtras => {
     const own = given?.(input);
     const stamp = stampItem(companyId, input.taskId, stampForNewTask(options.flags, companyId, options.now()));
-    return { ...(own ?? {}), items: [...(own?.items ?? []), stamp] };
+    return { ...(own ?? {}), items: [...(own?.items ?? []), ...(startFences.getStore() ?? []), stamp] };
   };
-  const flow = createTaskFlowFromRegistry(registry, {
+  const flow = createTaskFlowFromRegistry(withStepFenceRetry(registry), {
     ...options.flowOptions,
     companyId,
     projects: options.flowOptions?.projects ?? createStoreProjectSource(store, companyId),
@@ -76,7 +102,7 @@ export function createCoreRuntime(options: CoreRuntimeOptions): CoreRuntime {
     log: options.log,
     startExtras,
   });
-  return { companyId, flow, services: options.services?.(flow) ?? {} };
+  return { companyId, flow, services: options.services?.(flow) ?? {}, inbound: options.inbound?.(flow) ?? {} };
 }
 
 /** The services an area needs that this runtime lacks. */

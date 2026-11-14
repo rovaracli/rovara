@@ -338,6 +338,8 @@ export const taskAgentRunKey = (taskId: string) => ({ pk: `DEVTASK#${taskId}`, s
 /** The item stored with a plan: which comments the planner answered in it (the Slack card for the plan reads it). */
 export const plannerRepliesKey = (taskId: string, artifactId: string) => ({ pk: `DEVTASK#${taskId}`, sk: `PLANREPLIES#${artifactId}` });
 export const taskIndexKey = (developerId: string, createdAt: string, taskId: string) => ({ pk: `DEVELOPER#${developerId}`, sk: `TASK#${createdAt}#${taskId}` });
+/** Where a task the core engine runs keeps its payer (captured by its start, `cloud/app/money.ts`): beside the task, in its own row. A Cloud task has none (its payer is on the task record). */
+export const taskPayerKey = (taskId: string) => ({ pk: `DEVTASK#${taskId}`, sk: "PAYER" as const });
 export const taskPointerKey = (workspaceId: string) => ({ pk: `WORKSPACE#${workspaceId}`, sk: "DEVELOPER_TASK" as const });
 export function githubWorkflowPullRequestKey(repositoryFullName: string, number: number) {
   const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(repositoryFullName);

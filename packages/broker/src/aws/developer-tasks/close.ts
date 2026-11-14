@@ -22,6 +22,7 @@ import { leaveTaskEndRow } from "../task-end-row.js";
 import type { DeveloperTaskRouteDependencies } from "./types.js";
 import { creatorGuard, get, iso, log, parse, partyOfTaskActor, putNew, turnTable } from "./common.js";
 import { type AuthorizedTask, accessFence, authorizeLegacyTaskAction, authorizeTaskAction, authorizeTaskActor } from "./access.js";
+import { coreTaskRoutes } from "../../rovara-code/task-routes.js";
 import { type WorkspaceReads, taskView, unpublishedOf, workspaceReads } from "./task-view.js";
 import { ownerIndexRowOf, syncIndex } from "./task-index.js";
 import { actionableWorkspace, busy, busyOrClosing } from "./task-window.js";
@@ -343,7 +344,7 @@ function safeClose({ workspace, operations }: WorkspaceReads): Operation | undef
 }
 
 const CLOSE_CHECKING = CLOSE_MESSAGES.checking;
-const CLOSE_REFUSED = "not closed: some work is not published; push it or open a pull request with agentx_open_pull_request, then close the task again";
+export const CLOSE_REFUSED = "not closed: some work is not published; push it or open a pull request with agentx_open_pull_request, then close the task again";
 const CLOSE_COMPUTE_PENDING = CLOSE_MESSAGES.computePending;
 const CLOSE_DISCARD_PENDING = CLOSE_MESSAGES.discardPending;
 const CLOSE_CHECK_FAILED = CLOSE_MESSAGES.checkFailed;
@@ -436,6 +437,11 @@ async function releaseHeldInterruptedOperation(deps: DeveloperTaskRouteDependenc
 }
 
 export async function closeTask(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, taskId: string, value: unknown): Promise<DeveloperCloseResponse> {
+  // S3 item 7: a task the core engine runs is closed by the core (its stamp decides, with the switch on or off).
+  const core = coreTaskRoutes();
+  if (core !== undefined && await core.owns(caller, taskId)) {
+    return await core.close({ caller, taskId, value, view: async () => await taskView(deps, (await authorizeTaskActor(deps, caller, taskId, "close")).task, { events: 0, details: false }) });
+  }
   const request = parse(DeveloperTaskCloseRequestSchema, value, deps, "close");
   let access = await authorizeTaskActor(deps, caller, taskId, "close");
   let task = access.task;

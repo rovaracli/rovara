@@ -39,3 +39,9 @@ export const BROWSER_SESSION_SCHEME = "browser-session";
 
 /** The outside account provider id for a Slack user (`ExternalAccountRef.provider`). */
 export const SLACK_ACCOUNT_PROVIDER = "slack";
+
+/**
+ * The decider's live standing on the request's subject (`ApprovalDeciderRole`: owner, co-owner, maintainer, ...), carried on the verified approver's `roles` as `standing:<role>` beside the company role.
+ * The core's decision subject maps an approver to the engine's actor by it (`cloud/app/runtime.ts` `cloudActorFor`); it is never read as a company role.
+ */
+export const STANDING_ROLE_PREFIX = "standing:";

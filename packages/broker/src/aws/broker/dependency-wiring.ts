@@ -762,6 +762,7 @@ function startRouteDependencies(dependencies: AwsBrokerDependencies, tasks: Deve
     documentClient: dependencies.documentClient, tableName: dependencies.tableName, developer, now: Date.now, tasks, orgs: orgStoreOf(dependencies),
     ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
     ...(dependencies.cloud === true ? { cloud: true } : {}),
+    ...(dependencies.coreStart === undefined ? {} : { coreStart: dependencies.coreStart }),
     ...(agents === undefined ? {} : { agents }),
     ...repositoriesGateRoute(dependencies),
   };

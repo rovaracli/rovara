@@ -11,6 +11,16 @@ import type { PayerFacts } from "../spend/payer.js";
 import type { ProjectProcess } from "../playbook/project-process.js";
 import { CHANGE_ANYWAY_UNAVAILABLE, FOLLOW_UP_UNAVAILABLE_MESSAGE } from "./change-anyway.js";
 
+/**
+ * S3 item a (decision 130): where a person's own Rovara Code start may begin on Rovara Code's core instead. Built by the broker only where the Cloud root is on
+ * (`CLOUD_CORE_ENGINE`); absent, `startCodeIntent` is exactly what it was. It answers `undefined` for a start that stays on Cloud's path (the switch says Cloud for this company,
+ * the source or the request is one the core does not take, or the root could not be built), and it throws an `AgentXError` for a refusal, which the caller answers as any refusal.
+ */
+export interface CoreIntentHook {
+  /** `ownedTask`: the person's own task as the view Cloud's clients read (the core writes the same task rows, so Cloud's reader answers for a core task). */
+  start(input: { caller: DeveloperCaller; request: CodeIntentRequest; ownedTask: (caller: DeveloperCaller, taskId: string) => Promise<DeveloperTaskView> }): Promise<CodeIntentResult<DeveloperTaskView> | undefined>;
+}
+
 /** What `startCodeIntent` needs from the developer API, built for one caller (see `codeIntentDependenciesOf`). */
 export interface CodeIntentDependencies {
   /** Plan 3's run start for a person; undefined where agents are not set up. Only a plain task start is possible then (see `startCodeIntent`). */
@@ -23,6 +33,8 @@ export interface CodeIntentDependencies {
   projectProcess(orgId: OrgId, project: string): Promise<ProjectProcess>;
   /** The origin session links are made from (the cell's own). */
   origin: string;
+  /** S3 item a: the core start (see `CoreIntentHook`). */
+  coreStart?: CoreIntentHook | undefined;
   /** Whether `taskId` is a task a follow-up may follow for this caller: in their org, its session visible to them, and ended Answered. Without it no follow-up starts (fail closed). */
   retryable?(caller: DeveloperCaller, taskId: string): Promise<boolean>;
 }
@@ -70,6 +82,12 @@ export async function startCodeIntent(deps: CodeIntentDependencies, caller: Deve
     throw agentXError("FORBIDDEN", "only a Slack member's own request can start work as Slack");
   }
   const orgId: OrgId = caller.orgId;
+  // S3 item a: the combined switch (decision 130). Only here, after the request and the caller are checked and before the agent, the payer rules and any write; the core does its own access,
+  // admission and records. `undefined`: this start stays on Cloud's path, below.
+  if (deps.coreStart !== undefined) {
+    const onCore = await deps.coreStart.start({ caller, request, ownedTask: (who, taskId) => deps.ownedTask(who, taskId) });
+    if (onCore !== undefined) return onCore;
+  }
   const intent = {
     ...(request.path === undefined ? {} : { path: request.path }),
     ...(request.binding === undefined ? {} : { binding: request.binding }),

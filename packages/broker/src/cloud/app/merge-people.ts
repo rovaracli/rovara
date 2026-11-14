@@ -5,6 +5,7 @@
 // and Cloud's agree on who approved (the parity suite's CODE_MILESTONE#approved difference was this: the core's local people counted any write-access reviewer).
 import type { MergePeople } from "@rovara-code/broker/core/merge";
 import { githubUserOfMember, type GithubMemberDependencies } from "../../rovara-code/github-members.js";
+import { taskOwnerKey } from "../../developer/task-records.js";
 import { linkedAmong, nonWritersAmong } from "../../rovara-code/approval.js";
 
 export function createCloudMergePeople(deps: GithubMemberDependencies): MergePeople {
@@ -12,7 +13,11 @@ export function createCloudMergePeople(deps: GithubMemberDependencies): MergePeo
   return {
     async requestersOf(orgId, task) {
       // The people who asked for the task: its creator, whoever started it, and whoever owns it now (rovara-code/approval.ts requesterIds, on the core's task shape).
-      const people = [...new Set([task.creatorId, task.startedBy?.developerId, task.ownerId].filter((id): id is string => typeof id === "string" && id !== ""))];
+      // A core task's `ownerId` is the task's owner KEY (a hash of its creator and its id, vendor core/task-flow/start.ts), not a person: it has no GitHub account, so keeping it would make every
+      // requester list "unlinked" and no approval would ever count. The person behind it is the creator, already in the list. A task taken over carries the new owner's developer id, which stays.
+      const ownerKey = task.creatorId === undefined || task.creatorId === "" ? undefined : taskOwnerKey(task.creatorId, task.taskId);
+      const owner = task.ownerId === ownerKey ? undefined : task.ownerId;
+      const people = [...new Set([task.creatorId, task.startedBy?.developerId, owner].filter((id): id is string => typeof id === "string" && id !== ""))];
       const accounts: string[] = [];
       for (const personId of people) {
         const account = await accountOf(orgId, personId);

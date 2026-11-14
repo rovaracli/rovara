@@ -28,6 +28,9 @@ export type CoreAdmissionRefusalCode = (typeof CORE_ADMISSION_REFUSAL_CODES)[num
 export const CORE_START_REFUSAL_CODES = ["WORKSPACE_LIMIT", "WORKSPACE_BUSY", "PROJECT_NOT_FOUND", "PROJECT_ARCHIVED"] as const satisfies readonly AgentXErrorCode[];
 export type CoreStartRefusalCode = (typeof CORE_START_REFUSAL_CODES)[number];
 
+/** What is told when an unattended (automation) run is asked of the core: it is not admitted there. Automations are Cloud's own engine's (chains), and the core's unattended door is not wired in Cloud (decision 45.10). */
+export const AUTOMATION_NOT_ON_CORE_WORDS = "Automations are not available on this engine yet; they run on Rovara's own automation engine, which this task does not use.";
+
 /** What Cloud tells a person when something that is the install's fault stops a start (the last line of `workflowStartFailureNotice`, with no reference). */
 export const INSTALL_FAULT_WORDS = "I couldn't start this task. Try again in a minute; if it keeps failing, ask an AgentX admin.";
 
@@ -58,6 +61,7 @@ const scopeOf = (kind: BudgetScope["kind"], project: string): BudgetScope => {
 /** The sentence Cloud tells for an admission refusal. Total over `CORE_ADMISSION_REFUSAL_CODES`; any other code is a fault of the install and says so in Cloud's words, never raw text. */
 export function cloudRefusalWords(refusal: RefusalCircumstance): string {
   const code = refusal.code.toLowerCase();
+  if (code === "admission_action_unknown" && refusal.action === "automation.run") return AUTOMATION_NOT_ON_CORE_WORDS;
   if (code === "budget_busy") return BUSY_WORDS;
   if (code === "trial_locked") return sentence(trialLocked());
   if (code === "machine_time_exceeded") return sentence(machineTimeExceeded());

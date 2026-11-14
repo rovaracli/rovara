@@ -110,7 +110,7 @@ import { handleModelAccess, handleSlackModelAccess } from "./model-access.js";
 import { metaConfigQueueFor, metaRepoRouteDependencies } from "./meta-repo-wiring.js";
 import { createCloudProject, prepareWorkspace, registerProject, registerProjectFor, retryProjectSetupAsAdministrator } from "./project-registration.js";
 import { getProjectModels, putProjectModel } from "./records.js";
-import { decideEgress, decideRequestContext, egressDepsOf, githubScope, listEgressPending, orgConnectionStoreOf, orgResolverOf, putInstallBudget, routingOf, webhookRepositoryUrl } from "./scope-helpers.js";
+import { decideEgress, decideRequestContext, egressDepsOf, githubScope, installOrgId, listEgressPending, orgConnectionStoreOf, orgResolverOf, putInstallBudget, routingOf, webhookRepositoryUrl } from "./scope-helpers.js";
 import { authorizeSlackTaskAction, captureSlackWorkflowFeedbackNote, closeSlackWorkflowTask, confirmSlackTaskPeople, decideSlackWorkflow, decideSlackWorkflowFeedbackFindings, handleSlackTaskPeople, isSlackStopTaskEvent, isSlackTaskAuthorizationEvent, isSlackTaskPeopleChangeEvent, isSlackTaskPeopleConfirmEvent, isSlackTaskPeopleReadEvent, isSlackTaskPeopleTakeOwnershipEvent, isSlackThreadNoteEvent, isSlackWorkflowCloseEvent, isSlackWorkflowDecisionEvent, isSlackWorkflowFeedbackFindingsDecisionEvent, isSlackWorkflowFeedbackNoteEvent, isSlackWorkflowFeedbackReviewRetryEvent, isSlackWorkflowKeepPullRequestsEvent, isSlackWorkflowPublishRetryEvent, isSlackWorkflowResolveFindingsEvent, isSlackWorkflowRetryEvent, isSlackWorkflowReviewRetryEvent, isSlackWorkflowSendBackEvent, isSlackWorkflowStartEvent, reviseSlackWorkflowPlan, keepSlackWorkflowPullRequests, recordSlackThreadNote, resolveSlackWorkflowFindings, retrySlackWorkflowChecks, retrySlackWorkflowFeedbackReview, retrySlackWorkflowPublication, retrySlackWorkflowReviews, sendSlackWorkflowBack, isSlackIntakeRecordEvent, recordSlackIntake, startQuickFromIntake, startSlackWorkflow, stopSlackThreadTask, workflowApplicationRouteDependencies, type SlackStopTaskEvent, type SlackTaskAuthorizationEvent, type SlackTaskPeopleChangeEvent, type SlackTaskPeopleConfirmEvent, type SlackTaskPeopleReadEvent, type SlackTaskPeopleTakeOwnershipEvent, type SlackWorkflowCloseEvent, type SlackWorkflowDecisionEvent, type SlackWorkflowResolveFindingsEvent, type SlackWorkflowRetryEvent, type SlackWorkflowReviewRetryEvent, type SlackWorkflowSendBackEvent, type SlackWorkflowStartEvent } from "./slack-workflow-events.js";
 import { fireTestEnvNightly, isTestEnvNightlyEvent } from "../../test-env/nightly-wiring.js";
 import { nightlyRunsOf, sweepAutomaticRunsOf } from "./nightly-run-wiring.js";
@@ -121,6 +121,10 @@ import { handleDesignReviewPacket } from "./design-review-packet-route.js";
 import { SWEEP_EVENT_BUDGET_MS, headEventDependencies, outsidePushDependencies, processGithubWorkflowEvent, reconcileWorkflowMergeRecoveryTask, retryDueGithubWebhookEvents, retryGithubWebhookAsAdministrator } from "./terminal-and-github-events.js";
 import { completeThreadWorkspaceClose, ensureThreadWorkspace, markCommentAnswered, markThreadNoteAnswered, prepareThreadWorkspace, startThreadWorkspaceClose } from "./thread-workspaces.js";
 import { routeEditionDependencies } from "../../wiring/enterprise-identity.js";
+import { installCoreTaskRoutes } from "../../rovara-code/task-routes.js";
+import { viewCoreTaskRowsClient } from "../../cloud/app/core-task-rows.js";
+import { createCloudCoreEntry, isCoreSlackPressEvent, isCoreSlackRequestEvent } from "../../cloud/app/entry.js";
+import { anyCoreAreaOn, readCoreEngineFlags } from "../../cloud/app/flags.js";
 import { isOutboxRelayBackstopEvent, runOutboxRelayBackstop } from "../../cloud-adapters/queue/outbox-relay-wiring.js";
 import { isWorkflowDispatchRecoveryEvent, retryDueWorkflowDispatches, startDuePlanEvidenceJobs } from "./workflow-items.js";
 import { connectSlackTeam, deleteSlackBinding, disconnectSlackTeam, getTeamSlackBinding, putSlackBinding, requireSlackRequesterMayWork, requireSlackServiceRole, slackServiceIdentity } from "./workspace-preparation.js";
@@ -136,6 +140,8 @@ import { settleSettingsProofOfCheck, sweepSettingsProofs } from "../developer-ro
 
 export function createAwsBrokerHandler(input: AwsBrokerInput) {
   const dependencies = brokerDependencies(input);
+  // S3: where the Cloud root is configured, every reader of a task row sees a core task's `companyId` also as `orgId` (cloud/app/core-task-rows.ts). A view: nothing is written.
+  if (dependencies.cloudCore !== undefined) dependencies.documentClient = viewCoreTaskRowsClient(dependencies.documentClient);
   if (Buffer.byteLength(dependencies.callbackSigningKey, "utf8") < 32) {
     throw new Error("CALLBACK_SIGNING_KEY must contain at least 32 bytes");
   }
@@ -175,6 +181,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ...(agents === undefined ? {} : { projectMemberChanged: async (orgId: OrgId, project: string, developerId: string) => { await onProjectMemberChanged(agents, { orgId, project, developerId }); } }),
           ...(dependencies.modelAccess === undefined ? {} : { modelAccess: dependencies.modelAccess.access }),
           ...(dependencies.cloud === true ? { cloud: true } : {}),
+          ...(dependencies.coreStart === undefined ? {} : { coreStart: dependencies.coreStart }),
           ...routeEditionDependencies(dependencies),
           ...(dependencies.sso === undefined ? {} : { sso: dependencies.sso }),
           ...(dependencies.githubConnectedNotice === undefined ? {} : { ownerNotice: dependencies.githubConnectedNotice }),
@@ -240,6 +247,15 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
     return routeDependencies;
   };
   installSettingsProofSettler((workspaceId) => settleSettingsProofOfCheck(developerRouteDependencies, workspaceId));
+  // S3 (decision 130): the Cloud root behind the combined switch. `undefined` while `CLOUD_CORE_ENGINE` is off, which is the default: nothing is built, no hook is installed and nothing below answers.
+  // A deployment that has the switch on but gives no `cloudCore` inputs gets one log line and stays on Cloud's path.
+  const coreLog = (entry: Record<string, unknown>): void => console.log(JSON.stringify({ component: "broker", ...entry }));
+  const coreEntry = dependencies.cloudCore === undefined ? undefined : createCloudCoreEntry({
+    env: process.env, broker: dependencies, routes: developerRouteDependencies, inputs: dependencies.cloudCore, installCompanyId: installOrgId(dependencies), now: () => new Date(), log: coreLog,
+  });
+  if (coreEntry !== undefined) dependencies.coreStart = coreEntry.intentHook;
+  installCoreTaskRoutes(coreEntry?.taskRoutes);
+  if (coreEntry === undefined && dependencies.cloudCore === undefined && anyCoreAreaOn(readCoreEngineFlags(process.env))) coreLog({ event: "core_entry.not_configured", component: "cloud_core", missing: "cloudCore" });
   return async (event: HttpApiV2Event | DecideInspectEvent | SlackStopTaskEvent | SlackTaskAuthorizationEvent | SlackTaskPeopleConfirmEvent | SlackTaskPeopleReadEvent | SlackTaskPeopleChangeEvent | SlackTaskPeopleTakeOwnershipEvent | SlackWorkflowStartEvent | SlackWorkflowDecisionEvent | SlackWorkflowRetryEvent | SlackWorkflowReviewRetryEvent | SlackWorkflowSendBackEvent | SlackWorkflowResolveFindingsEvent | SlackWorkflowCloseEvent | AdminChangePressEvent | { source: "agentx.github-webhook-recovery" } | { source: "agentx.egress-domains-sync" } | { kind: "github-install-request-reminders" } | { source: "agentx.workflow-dispatch-recovery" } | { source: "agentx.workflow-merge-recovery" } | { source: "agentx.spend-settlement" } | { source: "agentx.chain-sweep" } | { source: "agentx.intake-poll" } | { source: "agentx.session-sweep" } | { source: "agentx.audit-drain" } | { source: "agentx.outbox-relay-backstop" }, context?: { awsRequestId?: string; invokedFunctionArn?: string; getRemainingTimeInMillis?: () => number }): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> => {
     // Test services: the account this function runs in, from the Lambda's own ARN (the catalog's trust decision reads it; nothing else does).
     noteInvokedFunctionArn(context?.invokedFunctionArn);
@@ -508,6 +524,19 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
         return json({ error: "recovery_failed" }, "workflow-merge-recovery", 500);
       }
     }
+    // S3: the core's scheduled jobs and the ingress's plain Slack request. Answered only where the root is built; with the switch off these events are never sent.
+    if (coreEntry !== undefined && coreEntry.isScheduledJob(event)) {
+      try { return json(await coreEntry.handleScheduledJob(event), "core-job"); }
+      catch (error) { return unexpectedErrorAnswer(error, "core-job"); }
+    }
+    if (coreEntry !== undefined && isCoreSlackPressEvent(event)) {
+      try { return json(await coreEntry.slackPress(event.press), "slack-core-press"); }
+      catch (error) { return unexpectedErrorAnswer(error, "slack-core-press"); }
+    }
+    if (coreEntry !== undefined && isCoreSlackRequestEvent(event)) {
+      try { return json(await coreEntry.slackRequest(event.message), "slack-ingress"); }
+      catch (error) { return unexpectedErrorAnswer(error, "slack-ingress"); }
+    }
     // Convergence A2 (no traffic): the outbox relay's backstop schedule. Answered only when the composition root supplies the relay; nothing does yet.
     // A failed run is a 500, as in the sibling schedules, so the scheduler's retry and the Lambda's error metrics see it.
     if (isOutboxRelayBackstopEvent(event)) {
@@ -657,6 +686,11 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
       // the broker through the authorizer-free /v1/dev route (D17), so it must never be resolved.
       if (DOT_SEGMENT.test(event.rawPath ?? "/")) throw agentXError("NOT_FOUND", "route not found");
       const url = new URL(request.path, "https://agentx.invalid");
+      // S3 (decision 130): a worker of a core-stamped task posts its callbacks to Code's callback service; every other request is Cloud's, as before. `coreEntry` is undefined while the switch is off.
+      if (coreEntry !== undefined && request.method === "POST" && url.pathname.startsWith("/v1/internal/workspaces/")) {
+        const core = await coreEntry.routeCallback({ method: request.method, path: request.path, headers: request.headers, ...(request.body === undefined ? {} : { body: request.body }), requestId: request.requestId });
+        if (core !== undefined) return core;
+      }
       // Shared links belong exclusively to the web shell, including stale broker route events.
       if (url.pathname.startsWith("/s/")) throw agentXError("NOT_FOUND", "route not found");
       // 0.5.7: with a custom domain, every browser page opened on the API's own address (an old Slack link, a bookmark, the GitHub App's install callback) moves to the domain:

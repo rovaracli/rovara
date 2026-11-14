@@ -15,7 +15,9 @@ export const autofixOnFor = (scenario: Scenario): boolean => scenario.steps.some
 /** Cloud's settings for a scenario's journey install. */
 export function journeySettings(scenario: Scenario, extra: Partial<Pick<CloudCompanySettings, "workspaceLimits">> = {}): CloudCompanySettings {
   const settings = cloudSettingsFromEnvironment(
-    { AUTOFIX_ENABLED: autofixOnFor(scenario) ? "true" : "false", AUTOFIX_CAP_USD: "5" },
+    { AUTOFIX_ENABLED: autofixOnFor(scenario) ? "true" : "false", AUTOFIX_CAP_USD: "5",
+      // The parts scenario is a Cloud install with the dependencies switch on (Cloud's journey makes a v2 task; the core gets the same permission through `wd`).
+      ...(scenario.id.startsWith("parallel-parts") ? { AGENTX_WORKFLOW_DEPENDENCIES_ENABLED: "true" } : {}) },
     { recipeStepKinds: undefined, connectorWritesBehindApproval: true, ...extra },
   );
   // The Cloud engine gives its autofix a round estimate of $1 (cloud-drivers/task-flow.ts, merge.ts), not the deployed $3.
@@ -29,9 +31,10 @@ export const mappedJourney = (scenario: Scenario, extra: Partial<Pick<CloudCompa
  * Applies the mapping to a running core's flow. `liveSteer` is left alone: the journey harness has no `ls` setting (Cloud's workflow tasks take messages through
  * the session path), so the scenario that sends a message mid-run compares the session, not the switch.
  */
-export function applyJourneySettings(deps: { understandFirst?: boolean; planCheck?: boolean; planSelfCheck?: boolean; autofix?: unknown; limits?: unknown; stepModels?: unknown }, scenario: Scenario, extra: Partial<Pick<CloudCompanySettings, "workspaceLimits">> = {}, companyId?: string): void {
+export function applyJourneySettings(deps: { understandFirst?: boolean; workflowDependenciesEnabled?: boolean; planCheck?: boolean; planSelfCheck?: boolean; autofix?: unknown; limits?: unknown; stepModels?: unknown }, scenario: Scenario, extra: Partial<Pick<CloudCompanySettings, "workspaceLimits">> = {}, companyId?: string): void {
   const { flowOptions } = mappedJourney(scenario, extra);
   deps.understandFirst = flowOptions.understandFirst;
+  deps.workflowDependenciesEnabled = flowOptions.workflowDependenciesEnabled;
   deps.planCheck = flowOptions.planCheck;
   deps.planSelfCheck = flowOptions.planSelfCheck;
   deps.autofix = flowOptions.autofix;

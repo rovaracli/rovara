@@ -70,3 +70,30 @@ export function stampItem(companyId: string, taskId: string, stamp: EngineStamp)
 export async function engineOfStoredTask(store: Pick<DocumentStore, "get">, taskId: string, area: CoreArea): Promise<Engine> {
   return engineOfTask(await store.get(engineStampKey(taskId)), area);
 }
+
+/**
+ * Where the root looks, cheaply, to learn which companies have ever started a task on the core (the stamp is per task, and there is no list of them). The core's start writes the company's row in the
+ * same transaction as the first stamp (and again, identically, with every later one). The rows share one partition so they can be listed: while the switch is off the root serves the core's tasks of
+ * EVERY company that has one (their sweeps and jobs), not only the install's, so an install that never switched on builds nothing and asks for nothing.
+ */
+export const CORE_IN_USE_PARTITION = "CORE_ENGINE_IN_USE";
+export const coreInUseKey = (companyId: string): { pk: string; sk: string } => ({ pk: CORE_IN_USE_PARTITION, sk: `ORG#${companyId}` });
+
+export function coreInUseItem(companyId: string): Extract<TransactItem, { kind: "put" }> {
+  return { kind: "put", item: { ...coreInUseKey(companyId), entityType: "CORE_ENGINE_IN_USE", orgId: companyId } };
+}
+
+const ensured = new WeakMap<object, Set<string>>();
+
+/**
+ * Makes sure the company's in-use mark is there, OFF the start's hot path: a conditional put (only when absent), made once per company per store in this container, before the first core task of the
+ * company starts. Every start used to rewrite the mark inside its own transaction, which put every company's starts on one partition key; now a burst of starts writes it at most once. A mark with no
+ * task behind it is harmless (the jobs find nothing to do); a task never exists without its mark, because the mark is written before the start that stamps it.
+ */
+export async function ensureCoreInUse(store: Pick<DocumentStore, "put">, companyId: string): Promise<void> {
+  let known = ensured.get(store);
+  if (known === undefined) ensured.set(store, known = new Set());
+  if (known.has(companyId)) return;
+  await store.put({ item: coreInUseItem(companyId).item, condition: when.absent() });
+  known.add(companyId);
+}

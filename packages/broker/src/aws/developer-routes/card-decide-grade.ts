@@ -71,7 +71,14 @@ const agentsOf = (deps: DeveloperRouteDependencies): ApprovalDependencies => {
  * Runs `apply` (the card's own decision) only under the decide-grade sign-in for this card. Without it: a `card_decision` record for this person and card version, and REAUTH_REQUIRED with the reason
  * `decide_sign_in` and the sign-in for that record. `apply` says whether the decision was applied (a refusal gives the session back). Never for a token.
  */
-export async function withCardDecideGrade<T>(deps: DeveloperRouteDependencies, who: DeveloperCaller, cookie: string | undefined, card: CardDecideTarget, apply: (proof: AuditProof) => Promise<{ applied: boolean; result: T }>): Promise<T> {
+export async function withCardDecideGrade<T>(
+  deps: DeveloperRouteDependencies, who: DeveloperCaller, cookie: string | undefined, card: CardDecideTarget, apply: (proof: AuditProof) => Promise<{ applied: boolean; result: T }>,
+  /**
+   * `claim: false` (a task the core runs): everything above and below is the same, except that the session is NOT claimed. The core's own gate verifies it (the `browser-step-up` method reads it,
+   * read only, and refuses a claimed one) and spends it through its proof marker, so the card claiming it first would make the core refuse it. A refused decision therefore has nothing to give back.
+   */
+  options: { claim?: boolean } = {},
+): Promise<T> {
   if (who.browserSession !== true) throw agentXError("FORBIDDEN", "Decide this in the Rovara app.");
   const agents = agentsOf(deps);
   const store = new DecideStore({ documentClient: deps.documentClient, tableName: deps.developer.signInTableName, now: () => deps.now() });
@@ -99,16 +106,18 @@ export async function withCardDecideGrade<T>(deps: DeveloperRouteDependencies, w
     throw decideSignInRequired(`/v1/auth/decide/identify?return=${encodeURIComponent(`/v1/app/approve/${made.approvalId}`)}`);
   }
   // One decision per decide session: claimed now, spent by an applied decision, given back when the decision was refused.
-  if (!await store.claimSession(cookie, session.approvalId)) throw decideSignInRequired();
+  const claim = options.claim !== false;
+  if (claim && !await store.claimSession(cookie, session.approvalId)) throw decideSignInRequired();
+  const giveBack = async (): Promise<void> => { if (claim) await store.releaseSession(cookie).catch(() => undefined); };
   let outcome: { applied: boolean; result: T };
   try {
     outcome = await apply(decideProofOf(cookie, session));
   } catch (error) {
-    await store.releaseSession(cookie).catch(() => undefined);
+    await giveBack();
     throw error;
   }
   if (!outcome.applied) {
-    await store.releaseSession(cookie).catch(() => undefined);
+    await giveBack();
     return outcome.result;
   }
   try {

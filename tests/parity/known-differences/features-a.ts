@@ -3,46 +3,19 @@ import type { KnownDifference } from "../known-differences.js";
 
 export const FEATURES_A_DIFFERENCES: readonly KnownDifference[] = [
   {
-    scenario: "parallel-parts", facet: "transitions",
-    cause: [
-      "UPDATED for the 0.5.17 pin (public #484 fixed the re-plan stall described below, so the task now reaches its parts plan): with Understand off (the settings the composition root maps from Cloud) the core's task is a version 1.0.0 task, and core/work-breakdown/parallel-parts.ts workflowDependenciesAllowed lets an ordered work plan start only on a 1.1.0 task (Understand-first) or where the install sets workflowDependenciesEnabled, so the plan decision is refused (\"ordered work plans are saved but this broker is not enabled to start them\") and the run stops there (the driver treats exactly that refusal as the stall). Before the pin: Core bug (same root as plan-changes-requested): with Understand off (the settings the composition root maps from Cloud), a Full task never gets past its first plan.",
-      "Approving the requirements writes PLAN/READY and a PLAN dispatch row for the design, but vendor/rovara-code/packages/broker/src/core/task-flow/stage-machine.ts:340 (runDispatchRow,",
-      "`if (workflow.stage !== \"PLAN\" || workflow.state !== \"READY\" || assessment?.kind !== \"ready\") return stale();`) starts a plan only after an Understand assessment,",
-      "so the row is resolved STALE and the task stays PLAN/READY for ever. Cloud's Full path writes requirements, design and coding plan, builds the parts and opens the pull request.",
-      "Proposed fix (Code): a PLAN row of a READY workflow with no assessment starts the next phase's plan (the Quick/Full path without Understand), as Cloud's",
-      "startTaskWorkflowPlanFromSystem does. Check whether public #484 (replan after request changes) already covers this branch; if it does, a vendor pin bump closes both.",
-    ].join(" "),
-    owner: "Code upstream (stage-machine runDispatchRow), then a vendor pin bump",
-  },
-  {
     scenario: "features-a-parallel-parts-understand", facet: "transitions",
-    cause: "Not the settings mapping (S0-Q2 maps Cloud's Understand setting, which is off on the journey): this variant turns Understand on by hand as a workaround of the G3 core stall (a Full task never passes its first plan with Understand off), so the Full path advances; the one extra UNDERSTAND/RUNNING at the start is that workaround. The parts themselves (plans, approvals, coding with A and B side by side and C on both, reviews, the pull request) follow the same stages as Cloud's path.",
-    owner: "G3 vendor re-pin (public #484); disappears once the re-pin lands and the variant is retired",
-  },
-  {
-    scenario: "parallel-parts", facet: "features",
-    cause: "Consequence of the parallel-parts transitions bug: the core never reaches the coding run, so it records none of the parts' checkpoints Cloud's worker reports (A and B started side by side, then C on both). With Understand on (features-a-parallel-parts-understand) the checkpoints compare the same, in the same order.",
-    owner: "Code upstream (as the transitions entry)",
-  },
-  {
-    scenario: "parallel-parts", facet: "decisions",
-    cause: "Consequence of the parallel-parts transitions bug: the core never reaches the design and coding plans, so only the requirements approval is recorded (Cloud records three).",
-    owner: "Code upstream (as the transitions entry)",
+    cause: "Not the settings mapping (S0-Q2 maps Cloud's Understand setting, which is off on the journey): this variant turns Understand on by hand (the G3 stall is closed by the root's workflowDependenciesEnabled mapping, so the base scenario no longer needs it; what it shows now is the extra UNDERSTAND step) (a Full task never passes its first plan with Understand off), so the Full path advances; the one extra UNDERSTAND/RUNNING at the start is that workaround. The parts themselves (plans, approvals, coding with A and B side by side and C on both, reviews, the pull request) follow the same stages as Cloud's path.",
+    owner: "Retire the variant after the 0.5.19 switch (S3)",
   },
   {
     scenario: "parallel-parts", facet: "rows",
-    cause: "The stall (no pull request row on the core), plus Cloud's DEVTASK#<id>/OUTCOME_KEYS#<hash> track-record row (Cloud-only, decision 41: written when a pull request opens).",
-    owner: "Code upstream (stall); the rest as the core lane's rows entry",
-  },
-  {
-    scenario: "parallel-parts", facet: "codeHost",
-    cause: "Consequence of the stall: the core never opens the pull request Cloud's path opens.",
-    owner: "Code upstream (as the transitions entry)",
+    cause: "Cloud's DEVTASK#<id>/OUTCOME_KEYS#<hash> track-record row (Cloud-only, decision 41: written when a pull request opens).",
+    owner: "As the core lane's rows entry (Cloud-only, decision 41)",
   },
   {
     scenario: "parallel-parts", facet: "messages",
-    cause: "The stall (the core sends one needs-you notice; Cloud's path posts every phase, the progress lines and the pull request) and the Full path's phase posts (Requirements/Design ready and approved) the facets lane's message map leaves as `other:`.",
-    owner: "Code upstream (stall); facets lane (map the Full path's phase posts)",
+    cause: "The core sends needs-you notices only; Cloud's path posts every phase, the progress lines and the pull request (the Full path's phase posts (Requirements/Design ready and approved) the facets lane's message map leaves as `other:`). The stall that used to add to this is closed (switch blocker G3: the root maps workflowDependenciesEnabled).",
+    owner: "S0-143b (milestones to Slack); facets lane (map the Full path's phase posts)",
   },
   {
     scenario: "parallel-parts", facet: "spend",
@@ -51,8 +24,8 @@ export const FEATURES_A_DIFFERENCES: readonly KnownDifference[] = [
   },
   {
     scenario: "parallel-parts", facet: "audit",
-    cause: "The stall (no pull_request.opened on the core) and the general audit vocabulary differences of known-differences/facets.ts (Cloud's project.checks_changed when realProjectCommands registers the project's readiness; the core's task.started and approval.decided have no Cloud audit type).",
-    owner: "facets lane; Code upstream (stall)",
+    cause: "The general audit vocabulary differences of known-differences/facets.ts (Cloud's project.checks_changed when realProjectCommands registers the project's readiness; the core's task.started and approval.decided have no Cloud audit type).",
+    owner: "facets lane",
   },
   {
     scenario: "features-a-parallel-parts-understand", facet: "rows",

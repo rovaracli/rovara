@@ -92,6 +92,7 @@ import type { DeveloperCaller } from "./developer-routes.js";
 import type { AdaptedHttpRequest } from "./lambda.js";
 import { proposeTaskOwnership, proposeTaskPeopleRole } from "../developer/task-people-effects.js";
 import { StatusReply } from "./status-reply.js";
+import { CORE_TASK_ANSWERED_ACTIONS, coreActionWords, CORE_TASK_CLOUD_ACTIONS, coreTaskRoutes } from "../rovara-code/task-routes.js";
 import type { DeveloperTaskRouteDependencies } from "./developer-tasks/types.js";
 import { body, parse } from "./developer-tasks/common.js";
 import { e2ePublicationContext } from "./developer-tasks/publication-context.js";
@@ -257,9 +258,17 @@ async function retryTaskWorkflowFeedback(deps: DeveloperTaskRouteDependencies, c
 }
 
 /** Every developer task route answers 200 with its body; errors are AgentXErrors. */
+const bearerOf = (header: string | undefined): string | undefined => /^Bearer (.+)$/iu.exec(header ?? "")?.[1];
+
 export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependencies, caller: DeveloperCaller, request: AdaptedHttpRequest, url: URL): Promise<unknown> {
   if (request.method === "POST" && url.pathname === "/v1/dev/tasks") return startTask(deps, caller, body(request));
   if (request.method === "GET" && url.pathname === "/v1/dev/tasks") return listTasks(deps, caller, url);
+  // S3 item 7: a Cloud workflow action on a task the core runs is refused (decide, close and cancel answer for themselves, in their own functions); a People change and sharing stay Cloud's.
+  const core = coreTaskRoutes();
+  const taskPost = core === undefined || request.method !== "POST" ? null : /^\/v1\/dev\/tasks\/([^/]+)\/(.+)$/.exec(url.pathname);
+  if (core !== undefined && taskPost !== null && taskPost[2] !== "cancel" && !CORE_TASK_ANSWERED_ACTIONS.has(taskPost[2]!) && !CORE_TASK_CLOUD_ACTIONS.has(taskPost[2]!) && await core.owns(caller, safeDecode(taskPost[1]!))) {
+    throw agentXError("CONFIG_INVALID", coreActionWords(taskPost[2]!));
+  }
   const publicationContextRoute = /^\/v1\/dev\/tasks\/([^/]+)\/e2e-publication-context$/.exec(url.pathname);
   if (publicationContextRoute !== null && request.method === "POST") {
     return e2ePublicationContext(deps, caller, safeDecode(publicationContextRoute[1]!), body(request));
@@ -287,7 +296,7 @@ export async function routeDeveloperTaskRequest(deps: DeveloperTaskRouteDependen
     return { change: await proposeTaskOwnership(taskPeopleEffectsDependencies(deps), caller, taskId, input) };
   }
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "continue") return continueTask(deps, caller, taskId, body(request));
-  if (taskId !== undefined && request.method === "POST" && route?.[2] === "workflow/decision") return decideTaskWorkflow(deps, caller, taskId, body(request));
+  if (taskId !== undefined && request.method === "POST" && route?.[2] === "workflow/decision") return decideTaskWorkflow(core === undefined ? deps : { ...deps, coreBearer: bearerOf(request.headers.authorization) }, caller, taskId, body(request));
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "workflow/retry") return retryTaskWorkflow(deps, caller, taskId, body(request));
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "canvas-closeout/retry") return retryTaskCanvasCloseout(deps, caller, taskId, body(request));
   if (taskId !== undefined && request.method === "POST" && route?.[2] === "workflow/review") return startTaskWorkflowReview(deps, caller, taskId, body(request));

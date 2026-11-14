@@ -272,6 +272,7 @@ export function codeIntentDependenciesOf(deps: DeveloperRouteDependencies, calle
   const taskDeps = developerTaskRouteDependencies(deps, caller);
   return {
     starter: agentRunStarterOf(deps),
+    ...(deps.coreStart === undefined ? {} : { coreStart: deps.coreStart }),
     startPlainTask: (who, body, thread) => startTask(developerTaskRouteDependencies(deps, who, thread), who, body),
     ownedTask: async (who, taskId) => taskView(taskDeps, await loadOwnedTask(taskDeps, who, taskId), { events: 0, details: false }),
     projectProcess: (orgId, project) => projectProcessOf({ documentClient: deps.documentClient, tableName: deps.tableName, store: deps.agents?.store }, orgId, project),

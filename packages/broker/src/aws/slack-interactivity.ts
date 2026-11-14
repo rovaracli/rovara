@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { decisionPressHandler } from "./slack-decision-press.js";
+import { corePressHandler } from "../cloud/app/slack-ingress-hook.js";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
@@ -895,6 +896,11 @@ export function createAwsSlackInteractivityHandler() {
   const learnPress = (event: HandedOffLearnPress) => runHandedOffLearnPress({
     invokeBroker: (brokerEvent) => invokeBroker(brokerEvent, HANDED_OFF_START_TIMEOUT_MS), respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text), respondReplace: (responseUrl, message) => respondReplace(responseUrl, message),
   }, event);
+  // S3: a press on a card the core posted goes to the broker's core consumer (the sink decides). Always registered (a task the core holds keeps its cards live after the switch is turned off): only buttons the core's own adapter posted match, so with no core task no button is handled any differently, and the broker answers nothing for a press it has no root for.
+  const corePress = brokerFunctionName === undefined ? undefined : corePressHandler({
+    invokeBroker, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text), unknownButtonText: UNKNOWN_BUTTON_TEXT,
+  });
+  const coreHandlers = corePress === undefined ? [] : [corePress];
   const interactivity = createSlackInteractivityHandler({
     secrets,
     log,
@@ -905,7 +911,7 @@ export function createAwsSlackInteractivityHandler() {
     ...(workflow === undefined ? {} : { workflow }),
     // The module's own respondEphemeral, for a button no handler knows.
     respondEphemeral,
-    handlers: [...recordHandlers, ...(brokerFunctionName === undefined ? [] : [decisionPressHandler({ invokeBroker, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text), unknownButtonText: UNKNOWN_BUTTON_TEXT })]), chatGptActionHandler({ openView, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text) }), confirmationActionHandler({
+    handlers: [...recordHandlers, ...coreHandlers, ...(brokerFunctionName === undefined ? [] : [decisionPressHandler({ invokeBroker, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text), unknownButtonText: UNKNOWN_BUTTON_TEXT })]), chatGptActionHandler({ openView, respondEphemeral: (responseUrl, text) => respondEphemeral(responseUrl, text) }), confirmationActionHandler({
       async loadConfirmation(subject) {
         const response = await documentClient.send(new GetCommand({ TableName: threadsTableName, Key: confirmationKey(subject), ConsistentRead: true }));
         return pendingConfirmationFromItem(response.Item);

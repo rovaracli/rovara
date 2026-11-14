@@ -8,13 +8,21 @@
 //   decide   asks the core's decision gate with the chat credential of Slack (`chat-slack`, which Cloud's approvers adapter names): a Slack press decides low and
 //            medium plans inside the company's window and never anything higher (A6 gaps G1/G7, owner decision 144 for the card itself), and the gate says which.
 // `quick:` and `full:` at the start of a message choose the path, as today's ingress reads them; with neither, the core's Understand step chooses where it runs, and where
-// it does not the start is refused for want of a path (the Quick or Full question card is the 143b lane's).
+// it does not the root passes `defaultPath: "QUICK"` (S3 item e; lane P5's shared intake rule replaces it).
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
+import type { createDecisionService } from "@rovara-code/broker";
 import { recordTaskThread, type ChannelWork } from "@rovara-code/broker/core/channel";
 import { taskSessionId } from "@rovara-code/broker/core/sessions";
-import type { ChannelInboundSink, DocumentStore, OrgId, Principal, SlackRequestMessage } from "@rovara-code/contracts";
+import type { Approvers, ChannelDecision, ChannelInboundSink, DocumentStore, OrgId, Principal, SlackRequestMessage } from "@rovara-code/contracts";
 import { inboundFromQueuedSlackRequest } from "../../plugins/channel/slack-cloud/index.js";
-import { CHAT_SLACK_METHOD } from "../adapters/people/methods.js";
+import { API_TOKEN_METHOD, BROWSER_SESSION_METHOD, CHAT_SLACK_METHOD } from "../adapters/people/methods.js";
+
+/**
+ * The credentials that stay good for many decisions: a signed-in browser session, a developer token and a Slack user are the same person deciding again (Cloud's own approvals never spent them). Kept here,
+ * with the one other place that names the chat-slack method, so the root has one list of the methods it knows by name (seat-limits.ts applies it to the gate's store).
+ */
+export const REUSABLE_METHODS: readonly string[] = [BROWSER_SESSION_METHOD, API_TOKEN_METHOD, CHAT_SLACK_METHOD];
 
 type Log = (entry: Record<string, unknown>) => void;
 
@@ -26,7 +34,7 @@ export interface DecideOnGate {
   decide(request: {
     companyId: OrgId; kind: string; subjectId: string; requestId: string; outcome: "approve" | "reject" | "request_changes";
     seen: { revision: number; artifactDigest: string };
-    credentials: Array<{ method: string; token: string; claimedAccount: { provider: string; tenant: string; accountId: string } }>; reason?: string | undefined;
+    credentials: Array<{ method: string; token: string; claimedAccount: { provider: string; tenant: string; accountId: string } }>; reason?: string;
   }): Promise<{ status: "refused"; reason: string } | { status: string }>;
 }
 
@@ -37,6 +45,12 @@ export interface CloudChannelWorkDeps {
   gate: DecideOnGate;
   /** The person as the core knows them (lane A6's `identity.getPrincipal`): undefined for anyone who is not of this company. */
   principalOf: (orgId: OrgId, personId: string) => Promise<Principal | undefined>;
+  /**
+   * The path a message with no `quick:` or `full:` prefix takes. `QUICK` while Understand is off: the core has no Understand step to choose a path, and a start with none is refused
+   * ("workflow requests require an explicit Quick or Full path"). The lighter flow then sizes the task from its diff (decisions 178 and 179), and the shared intake rule (lane P5) replaces
+   * this default. Absent: no default, and the core's Understand step chooses (`understandFirst` on).
+   */
+  defaultPath?: "QUICK" | "FULL" | undefined;
   log?: Log;
 }
 
@@ -48,6 +62,51 @@ export function requestIdOf(text: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${((parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
+/**
+ * The chat-slack credential's token: the press fields A6's issuer reads (`adapters/people/issuers.ts` `SlackPressTokenSchema`, strict JSON), from the fields the channel sink already
+ * verified (the actor's workspace is the conversation's, which `createChannelSink` checks before any work is done). A channel adapter's ActorRef carries no Enterprise Grid ids, so both are
+ * empty and equal, which the issuer's own rule takes as "no enterprise"; an Enterprise Grid install needs them carried (DEFERRED S3-SLACK-ENTERPRISE-GRID).
+ */
+export function slackPressToken(decision: Pick<ChannelDecision, "actor" | "conversation">): string {
+  return JSON.stringify({ userId: decision.actor.userId, userTeamId: decision.actor.tenant, workspaceTeamId: decision.conversation.tenant, enterpriseId: "", userEnterpriseId: "" });
+}
+
+type DecisionGateOf = ReturnType<typeof createDecisionService>["gate"];
+
+const pressContext = new AsyncLocalStorage<true>();
+
+/** Runs `work` as the Slack path's own decision: the one context in which a chat-slack proof is taken. Only `createCloudChannelWork`'s decide calls it. */
+const asSlackPress = <T>(work: () => Promise<T>): Promise<T> => pressContext.run(true, work);
+
+/**
+ * The approvers adapter as every consumer in the root sees it: a chat-slack proof is refused unless it comes inside the Slack path's own decision (`asSlackPress`). That method is proved by the
+ * Slack ingress's verification of a press (its signature check), so only `createCloudChannelWork`, fed by the channel sink, may present it. Enforced HERE, at the adapter, so that no consumer
+ * can take a client's chat-slack proof: not the decision gate, not a merge press, not the second review, not an automation. A browser or an API client that sent the same method with press fields of
+ * its choosing would be claiming a Slack press nobody verified. Everything else passes to the real adapter, and `requirement` is unchanged (a card is built from the methods it names).
+ */
+export function createClientFacingApprovers(approvers: Approvers): Approvers {
+  return {
+    requirement: (request) => approvers.requirement(request),
+    verify: async (request, proof) => proof.method === CHAT_SLACK_METHOD && pressContext.getStore() !== true
+      ? { approved: false, reason: "this way of deciding is only for a press in Slack" }
+      : await approvers.verify(request, proof),
+  };
+}
+
+/**
+ * The decision gate as a CLIENT surface may call it (the web decide routes, the API, a script): the same gate, with a chat-slack credential refused up front, whichever credential of the attempt it is
+ * (the adapter refuses it too, `createClientFacingApprovers`). Every route that takes credentials from a client is given this, never the raw gate (which the root does not expose).
+ */
+export function createClientDecisionGate(gate: DecisionGateOf): DecisionGateOf {
+  return {
+    verifyPolicy: (companyId) => gate.verifyPolicy(companyId),
+    requirement: (companyId, kind, subjectId) => gate.requirement(companyId, kind, subjectId),
+    decide: async (attempt) => attempt.credentials.some((credential) => credential.method === CHAT_SLACK_METHOD)
+      ? { status: "refused", reason: "method_not_allowed", detail: "this way of deciding is only for a press in Slack" }
+      : await gate.decide(attempt),
+  };
+}
+
 export function createCloudChannelWork(deps: CloudChannelWorkDeps): ChannelWork {
   const log: Log = deps.log ?? (() => undefined);
   return {
@@ -57,17 +116,17 @@ export function createCloudChannelWork(deps: CloudChannelWorkDeps): ChannelWork 
       const path = /^(quick|full):\s*/iu.exec(message.text);
       const started = await deps.start({ principal, client: "slack" }, {
         project: projectName, instructions: path === null ? message.text : message.text.slice(path[0].length), requestId: requestIdOf(`slack/${message.eventId}`), workflow: true,
-        ...(path === null ? {} : { workflowPath: path[1]!.toLowerCase() === "full" ? "FULL" as const : "QUICK" as const }),
+        ...(path !== null ? { workflowPath: path[1]!.toLowerCase() === "full" ? "FULL" as const : "QUICK" as const } : deps.defaultPath === undefined ? {} : { workflowPath: deps.defaultPath }),
       });
       await recordTaskThread({ store: deps.store, orgId, now: deps.now }, { sessionId: taskSessionId(started.task.taskId), conversation: message.conversation, personId });
     },
     async decide({ orgId, card, decision, personId }) {
       const outcome = OUTCOME[decision.decision];
       if (outcome === undefined || (await deps.principalOf(orgId, personId)) === undefined) return { status: "refused" as const, reason: "invalid" };
-      const result = await deps.gate.decide({
+      const result = await asSlackPress(() => deps.gate.decide({
         companyId: orgId, kind: card.subject.type, subjectId: card.subject.id, requestId: card.requestId, outcome, seen: { revision: card.revision, artifactDigest: card.artifactDigest },
-        credentials: [{ method: CHAT_SLACK_METHOD, token: decision.eventId, claimedAccount: { provider: decision.actor.channel, tenant: decision.actor.tenant, accountId: decision.actor.userId } }], reason: decision.reason,
-      });
+        credentials: [{ method: CHAT_SLACK_METHOD, token: slackPressToken(decision), claimedAccount: { provider: decision.actor.channel, tenant: decision.actor.tenant, accountId: decision.actor.userId } }], ...(decision.reason === undefined ? {} : { reason: decision.reason }),
+      }));
       return result.status === "refused" ? { status: "refused" as const, reason: (result as { reason: string }).reason } : { status: "decided" as const };
     },
   };

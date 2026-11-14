@@ -15,7 +15,7 @@ import { APPROVAL_DECISION_KINDS, isWriterOrgRole, type ApprovalDeciderRole, typ
 import { evaluateApprovalPlace, type PlaceDependencies } from "../../../approval-place/evaluate.js";
 import { approversRequired, secondPersonOutcome, type ApprovalEligibility, type ApprovalLevels } from "../../../org/approval-by-risk.js";
 import { AUDITOR_REFUSED } from "../../../org/auditor.js";
-import { BROWSER_STEP_UP_METHOD, CLOUD_APPROVAL_METHODS, CLOUD_REJECT_METHODS, CLOUD_STRONG_METHODS, PLACE_OF_METHOD, isCloudApprovalMethod, type CloudApprovalMethod } from "./methods.js";
+import { BROWSER_STEP_UP_METHOD, CLOUD_APPROVAL_METHODS, CLOUD_REJECT_METHODS, CLOUD_STRONG_METHODS, PLACE_OF_METHOD, STANDING_ROLE_PREFIX, isCloudApprovalMethod, type CloudApprovalMethod } from "./methods.js";
 
 /** The person a proof's token stands for, as the issuer read it live: their id, session, sign-in method, company and role NOW, and (for a Slack press) the Slack user. */
 export interface CloudDecider {
@@ -62,6 +62,9 @@ export function coreProofMarkerReader(input: { documentClient: { send(command: u
     return answer.Item !== undefined;
   };
 }
+
+/** The verified approver, carrying the decider's live standing (`STANDING_ROLE_PREFIX`) beside the company role. */
+const approverOf = (decider: CloudDecider, role: ApprovalDeciderRole): Principal => ({ companyId: decider.orgId, personId: decider.developerId, displayName: decider.name, roles: [decider.orgRole, `${STANDING_ROLE_PREFIX}${role}`], provider: decider.amr, methods: [decider.amr] });
 
 const refuse = (reason: string): ApprovalVerdict => ({ approved: false, reason });
 const isPlaceKind = (kind: string): kind is ApprovalDecisionKind => (APPROVAL_DECISION_KINDS as readonly string[]).includes(kind);
@@ -116,15 +119,23 @@ export function createCloudApprovers(deps: CloudApproversDependencies): Approver
 
       const facts = await deps.secondPerson?.(request);
       const kind = facts?.placeKind ?? request.kind;
-      if (!isPlaceKind(kind)) return refuse("this kind of request has no Cloud approval rule here");
+      const requirements = request.kind === "requirements" && facts === undefined;
+      if (!requirements && !isPlaceKind(kind)) return refuse("this kind of request has no Cloud approval rule here");
       const answer = request.outcome ?? "approve";
       let role: ApprovalDeciderRole;
       try { role = await deps.deciderRole(request, decider); } catch { return refuse("who may decide this could not be read"); }
+      if (requirements) {
+        // A Full task's requirements document (v2: `requirePlanApprovalPlace` applies to the coding plan only, so no place rule holds here, and the document is the owner's alone): the task's owner or
+        // a co-owner decides it, from wherever they hold a live proof; a project maintainer, who may decide a coding plan that is not theirs, does not decide a requirements document.
+        if (role !== "owner" && role !== "co-owner") return refuse("only the task's owner decides the requirements");
+        used.add(proofKey);
+        return { approved: true, approver: approverOf(decider, role), method: proof.method, proofId: proof.proofId };
+      }
 
       try {
         const placed = await evaluateApprovalPlace(deps.place, {
           orgId: request.companyId, caller: { developerId: decider.developerId, sessionId: decider.sessionId, slackUserId: decider.slackUserId },
-          kind, risk, answer, place: PLACE_OF_METHOD[proof.method], role, freshSignIn: proof.method === BROWSER_STEP_UP_METHOD,
+          kind: kind as ApprovalDecisionKind, risk, answer, place: PLACE_OF_METHOD[proof.method], role, freshSignIn: proof.method === BROWSER_STEP_UP_METHOD,
         });
         if (!placed.verdict.allowed) return refuse(placed.verdict.reason);
       } catch {
@@ -137,8 +148,7 @@ export function createCloudApprovers(deps: CloudApproversDependencies): Approver
       }
 
       used.add(proofKey);
-      const approver: Principal = { companyId: decider.orgId, personId: decider.developerId, displayName: decider.name, roles: [decider.orgRole], provider: decider.amr, methods: [decider.amr] };
-      return { approved: true, approver, method: proof.method, proofId: proof.proofId };
+      return { approved: true, approver: approverOf(decider, role), method: proof.method, proofId: proof.proofId };
     },
   };
 }
