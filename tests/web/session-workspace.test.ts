@@ -36,6 +36,11 @@ it("offers review only to the owner while the plan is waiting", async () => {
  const review = screen.queryByRole("button", { name: "Review and approve the plan" });if (owner) { expect(review).toBeTruthy();fireEvent.click(review!);expect(f.host.openExternal).toHaveBeenCalledWith("https://cell.example/review/11111111-1111-4111-8111-111111111111/task"); } else expect(review).toBeNull();f.close();
  }
 });
+it("sends the owner to the session's own approval page for its plan, not to a page the app's server doesn't have", async () => {
+ const confirmUrl = "https://cloud.example/v1/app/approve/plan-" + SESSION_FIXTURE_ID;
+ const f = setup(fixture({ approvals: [{ approvalId: "plan-" + SESSION_FIXTURE_ID, title: "Review the plan", confirmUrl }] }), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });
+ fireEvent.click(screen.getByRole("button", { name: "Review and approve the plan" }));expect(f.host.openExternal).toHaveBeenCalledWith(confirmUrl);f.close();
+});
 it("shows the real plan estimate and its run limit without claiming checks passed", async () => {
  const f = setup(fixture(), "#plan");await screen.findByRole("heading", { name: "Refund investigation" });expect(screen.getByText("$0.50")).toBeTruthy();expect(screen.getByText("$1.20")).toBeTruthy();expect(screen.getByText("$2.00")).toBeTruthy();expect(screen.queryByText("Passed")).toBeNull();f.close();
 });

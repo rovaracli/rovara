@@ -53,6 +53,9 @@ const sameText = (a: string, b: string) => a.length === b.length && timingSafeEq
 function json(status: number, body: unknown, headers: Record<string, string> = {}): CloudResponse {
   return { status, headers: { "content-type": "application/json", "cache-control": "no-store", ...headers }, body: JSON.stringify(body) };
 }
+/** Code's task page path, as the app's links name it (packages/ui/src/screens/project/learning-text.ts taskPageHref). */
+export const CODE_TASK_PAGE = /^\/review\/[A-Za-z0-9_-]{1,100}\/task$/u;
+
 function text(status: number, body: string, headers: Record<string, string> = {}): CloudResponse {
   return { status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", ...headers }, body };
 }
@@ -124,6 +127,9 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         throw error;
       }
     }
+    // Code's own task page (`/review/<task>/task`), which the app links to where Cloud has no page of its own, such as a lesson's
+    // source task. It lives on Code, so the browser goes there; Code asks the person to sign in to it if they haven't.
+    if (CODE_TASK_PAGE.test(path) && (method === "GET" || method === "HEAD")) return text(302, "", { location: `${options.client.baseUrl}${path}` });
     if (!path.startsWith("/v1/web/")) return undefined;
 
     const id = sessionId(request);

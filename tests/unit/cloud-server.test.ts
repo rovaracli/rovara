@@ -3,7 +3,7 @@
 // refreshed once on 401 (one refresh shared by calls made together), every route not on Code yet answering 501; and
 // phase 2: sessions on Code's tasks, Home's cards and the plan approval page.
 import { describe, expect, it } from "vitest";
-import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
+import { CODE_TASK_PAGE, CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
 import {
   HomeResponseReaderSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema,
   SessionShareDeleteResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionSharesResponseReaderSchema,
@@ -164,6 +164,26 @@ describe("signing in through Rovara Code", () => {
   it("returns only to an app path", () => {
     expect(returnPath("/app/projects/payments")).toBe("/app/projects/payments");
     for (const outside of ["https://evil.example", "//evil.example", "/app/../admin", "/v1/web/me", null]) expect(returnPath(outside)).toBe("/app");
+  });
+});
+
+describe("Code's own task page", () => {
+  it("sends the browser to Code for /review/<task>/task, the link the app shows where Cloud has no page of its own", async () => {
+    const { call } = setUp();
+    for (const method of ["GET", "HEAD"]) {
+      const answer = await call(method, "/review/11111111-1111-4111-8111-111111111111/task");
+      expect(answer?.status).toBe(302);
+      expect(answer?.headers.location).toBe(`${CODE}/review/11111111-1111-4111-8111-111111111111/task`);
+    }
+    // Code decides who may read the page, so Cloud needs no sign-in to send the browser there.
+    expect((await call("GET", "/review/tsk_abc/task"))?.headers.location).toBe(`${CODE}/review/tsk_abc/task`);
+  });
+
+  it("sends nothing else on: other paths and methods are not Cloud's", async () => {
+    const { call } = setUp();
+    for (const path of ["/review/abc/task/api/e2e", "/review/abc", "/review//task", "/review/a.b/task", "/review/" + "a".repeat(101) + "/task"]) expect(await call("GET", path)).toBeUndefined();
+    expect(await call("POST", "/review/abc/task")).toBeUndefined();
+    expect(CODE_TASK_PAGE.test("/review/abc/task")).toBe(true);
   });
 });
 

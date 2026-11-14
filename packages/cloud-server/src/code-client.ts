@@ -54,6 +54,11 @@ export class CodeClient {
     this.fetchImpl = options.fetch ?? fetch;
   }
 
+  /** Code's API address, with no trailing slash: where its own pages live, such as a task's page. */
+  get baseUrl(): string {
+    return this.base;
+  }
+
   /** Step 1 of sign-in: the URL to send the browser to, and what to keep until it comes back. */
   startSignIn(returnTo: string, now: number): { url: string; state: string; pending: PendingSignIn } {
     const verifier = randomBytes(32).toString("base64url");
