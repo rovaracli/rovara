@@ -220,46 +220,46 @@ images, and bounded retention for releases and legacy tags.
 Retired `instances-ebs` and `demo-microvm` records remain readable for audit, including closed
 workspaces, operations and project revisions. They cannot create or resume compute. Administrators
 register a new `ec2-ebs` project revision and users start a new Slack thread for new work.
-This policy applies to hosted and self-hosted installs, including `agentx init`.
+This policy applies to hosted and self-hosted installs, including `rovara init`.
 
 ## Environments
 
 Rovara can run more than one independent deployment (for example `production` and `staging`) in
 the same AWS account and region, selected everywhere with `--env <name>` (default `production`).
-Each gets its own physical names: stacks `agentx-<env>-access/-foundation/-runtime/-control-plane/-slack`,
-alerts topic `agentx-<env>-alerts`, connector secrets
-`agentx/<env>/connectors/<name>`, metrics namespace `AgentX/<env>`, and SSM settings under
-`/agentx/<env>/`. The name `connectors` is reserved and cannot be used as an environment name.
+Each gets its own physical names: stacks `rovara-cloud-<env>-access/-foundation/-runtime/-control-plane/-slack`,
+alerts topic `rovara-cloud-<env>-alerts`, connector secrets
+`rovara-cloud/<env>/connectors/<name>`, metrics namespace `RovaraCloud/<env>`, and SSM settings under
+`/rovara-cloud/<env>/`. The name `connectors` is reserved and cannot be used as an environment name.
 
 The deployment described above predates environments and keeps its fixed legacy names
 (`AgentXProductionFoundation`, `AgentXProductionRuntime`, `AgentXControlPlane`,
 `AgentXSlackOrchestrator`) forever. It must be adopted as the
-`production` environment with `agentx --env production env adopt --region us-east-1`, which only
+`production` environment with `rovara --env production env adopt --region us-east-1`, which only
 reads its CloudFormation stacks and caller identity and writes settings to SSM; it never changes
 the stacks. A fresh `agentxEnv=production` install must never be deployed into the same account
 beside it: the deployments share the production settings prefix.
 
-`agentx env list` shows the environments installed in this account and region; `agentx --env
+`rovara env list` shows the environments installed in this account and region; `rovara --env
 <name> env use` rebuilds this machine's local settings cache for `<name>` from SSM. Any command
-that writes an environment's settings takes an SSM-backed lock at `/agentx/<env>/lock`: it names
+that writes an environment's settings takes an SSM-backed lock at `/rovara-cloud/<env>/lock`: it names
 its holder and start time, refuses a fresh lock held by someone else, and allows takeover of a
 lock older than two hours only with explicit confirmation.
 
 ## Access stack
 
-Every named environment's first stack, `agentx-<env>-access`, deploys with the installing admin's
+Every named environment's first stack, `rovara-cloud-<env>-access`, deploys with the installing admin's
 own AWS rights, because a role cannot deploy the stack that creates it. It holds a private,
 versioned artifact bucket (retained if the stack is ever deleted) for release code packages and
-rendered templates; an ECR pull-through cache rule (prefix `agentx-<env>`, upstream
+rendered templates; an ECR pull-through cache rule (prefix `rovara-cloud-<env>`, upstream
 `public.ecr.aws`) so the worker and Slack service pull Rovara's public images through private ECR
-in the account (the cache repository is created on first pull); the `agentx-<env>-cloudformation` service role
-that deploys every other stack; and the `agentx-<env>-operator` role for day-to-day `agentx`
+in the account (the cache repository is created on first pull); the `rovara-cloud-<env>-cloudformation` service role
+that deploys every other stack; and the `rovara-cloud-<env>-operator` role for day-to-day `rovara`
 commands, which trusts the account root for 1-hour sessions unless an `OperatorPrincipalArn`
 parameter names another principal.
 
-Every other environment role lives under the IAM path `/agentx/<env>/`, not just a name prefix:
-CloudFormation can truncate a generated role name past its `agentx-<env>-` prefix, and a name
-prefix could also match a differently-named sibling environment (`agentx-prod-*` also matches
+Every other environment role lives under the IAM path `/rovara-cloud/<env>/`, not just a name prefix:
+CloudFormation can truncate a generated role name past its `rovara-cloud-<env>-` prefix, and a name
+prefix could also match a differently-named sibling environment (`rovara-cloud-prod-*` also matches
 `prod-eu`). A path cannot collide, because `/` is not a legal character inside an environment name.
 The access stack's own two roles stay at the IAM root path, outside the service role's reach.
 
@@ -268,15 +268,15 @@ roles under that path. It cannot create a role without the environment's permiss
 cannot change or remove a role's boundary once set.
 
 **A permission boundary always applies.** When the company gives no `PermissionsBoundaryArn`, the
-access stack creates a default boundary, the managed policy `agentx-<env>-boundary` under
-`/agentx/<env>/` (so its ARN is fixed and every other stack can name it), and every environment
+access stack creates a default boundary, the managed policy `rovara-cloud-<env>-boundary` under
+`/rovara-cloud/<env>/` (so its ARN is fixed and every other stack can name it), and every environment
 role, the access stack's two roles included, carries it. The `EffectiveBoundaryArn` output names
 whichever boundary is in force. The default boundary allows the AWS services Rovara's roles use
 (a generated test keeps that list complete and adds nothing unused), role actions and `PassRole`
-only for roles under `/agentx/<env>/` (plus the service role itself), and a few
+only for roles under `/rovara-cloud/<env>/` (plus the service role itself), and a few
 service-linked roles. It explicitly denies Organizations and Account changes, anything on IAM users
 or groups, creating, versioning or deleting managed policies (except the environment's own broker grant policies,
-`policy/agentx/<env>/agentx-<env>-broker-*`), and changing the boundary itself. A
+`policy/rovara-cloud/<env>/rovara-cloud-<env>-broker-*`), and changing the boundary itself. A
 company-supplied boundary replaces the default entirely, so it must allow every action Rovara's
 roles need.
 That includes `ses:SendEmail` on the sign-in sender identity (the `CloudSignInEmailSourceArn` identity,
@@ -288,11 +288,11 @@ allows it already, through its `bedrock:*`.
 It also includes creating, reading, versioning and deleting the environment's own broker managed policies
 (`iam:CreatePolicy`, `iam:DeletePolicy`, `iam:CreatePolicyVersion`, `iam:DeletePolicyVersion`,
 `iam:GetPolicy`, `iam:GetPolicyVersion`, `iam:ListPolicyVersions`, `iam:TagPolicy`, `iam:UntagPolicy`,
-`iam:ListEntitiesForPolicy` on `policy/agentx/<env>/agentx-<env>-broker-*`): the broker's grants live in
-`agentx-<env>-broker-state`, `-orchestration` and `-integrations` under the path `/agentx/<env>/`, because IAM caps a role's inline
+`iam:ListEntitiesForPolicy` on `policy/rovara-cloud/<env>/rovara-cloud-<env>-broker-*`): the broker's grants live in
+`rovara-cloud-<env>-broker-state`, `-orchestration` and `-integrations` under the path `/rovara-cloud/<env>/`, because IAM caps a role's inline
 policies at 10,240 characters.
 It also includes `sts:AssumeRole` and `sts:TagSession` on the one role
-`arn:<partition>:iam::<account>:role/agentx/<env>/agentx-<env>-connector-secrets`: the broker assumes that role, tagged with an
+`arn:<partition>:iam::<account>:role/rovara-cloud/<env>/rovara-cloud-<env>-connector-secrets`: the broker assumes that role, tagged with an
 organization, to read and write that organization's connection and event hook secrets (it holds no Secrets Manager
 permission on those paths itself). The default boundary allows exactly these two actions on exactly that role. Without them in a
 company-supplied boundary, every organization connection save or read is refused as FORBIDDEN.
@@ -301,8 +301,8 @@ creates it (`iam:GetRole`) and cleans it up by name if the create rolls back, an
 exist yet against the path-less ARN `arn:<partition>:iam::<account>:role/<name>`, not the path ARN. The service role and the
 default boundary therefore also allow `iam:GetRole`, `iam:GetRolePolicy`, `iam:ListRolePolicies`, `iam:ListAttachedRolePolicies`,
 `iam:DeleteRolePolicy`, `iam:DetachRolePolicy` and `iam:DeleteRole` (no create or change action) on
-`role/agentx-<env>-connector-secrets`, and in the Task Person proof environment on `role/<env>-task-person-proof`. The roles
-themselves are still created under `/agentx/<env>/`. A company-supplied boundary needs the same statement.
+`role/rovara-cloud-<env>-connector-secrets`, and in the Task Person proof environment on `role/<env>-task-person-proof`. The roles
+themselves are still created under `/rovara-cloud/<env>/`. A company-supplied boundary needs the same statement.
 
 What this does and does not protect, plainly:
 
@@ -320,11 +320,11 @@ What this does and does not protect, plainly:
 with the same new `PermissionsBoundaryArn`, in upgrade order (foundation, identity, runtime,
 control-plane, slack). The service role's Deny statements follow the access stack, so a stack
 deployed with a different boundary than the access stack's is refused. When switching from the
-default boundary to a company boundary, the old `agentx-<env>-boundary` policy may be left behind:
+default boundary to a company boundary, the old `rovara-cloud-<env>-boundary` policy may be left behind:
 roles still use it while the switch is in progress, so CloudFormation cannot always remove it
 cleanly. Once every stack carries the new boundary, delete the leftover policy by hand.
 
-**Reinstalling an environment name.** The environment's Slack secret `agentx/<env>/slack` is kept
+**Reinstalling an environment name.** The environment's Slack secret `rovara-cloud/<env>/slack` is kept
 when the control-plane stack is deleted. Reinstalling the same environment name needs that secret
 deleted first, with `--force-delete-without-recovery` if it is still in its recovery window;
 otherwise the new stack cannot create a secret of the same name.
@@ -332,21 +332,21 @@ otherwise the new stack cannot create a secret of the same name.
 The **operator role** may create, describe and execute change sets only for the five non-access
 stacks, by their exact names, and read all six (including the access stack). It may pass only the
 service role, and only to CloudFormation. It can read and write its environment's SSM settings
-(`/agentx/<env>/*`) and Secrets Manager secrets (`agentx/<env>/*`), read and write the artifact
+(`/rovara-cloud/<env>/*`) and Secrets Manager secrets (`rovara-cloud/<env>/*`), read and write the artifact
 bucket, list cached images, call `bedrock:InvokeModel` as a model check, and read its stacks' and
 the EC2 worker logs.
 
 A public image `public.ecr.aws/<alias>/<repo>@sha256:<digest>` reaches the runtime as
-`<account>.dkr.ecr.<region>.amazonaws.com/agentx-<env>/<alias>/<repo>@sha256:<digest>`, private ECR
+`<account>.dkr.ecr.<region>.amazonaws.com/rovara-cloud-<env>/<alias>/<repo>@sha256:<digest>`, private ECR
 in the account. `PermissionsBoundaryArn` is optional on every environment stack, access included;
 every `AWS::IAM::Role` in every environment stack carries the given boundary, else the default one.
 
-## Installing with agentx init
+## Installing with rovara init
 
 The step-by-step guide for each way to install is [docs/install.md](install.md); running an
 environment afterwards is [docs/day-two.md](day-two.md). This section describes how `init` works.
 
-`agentx init --env <name>` (`npx @preplabsai/rovara-code init`) walks an engineer from AWS credentials to a
+`rovara init --env <name>` (`npx @preplabsai/rovara-code init`) walks an engineer from AWS credentials to a
 deployed Rovara environment with its own GitHub App and Slack app. For this first run it needs AWS admin
 credentials, a GitHub organization or personal account to own the GitHub App, and a Slack workspace where
 the engineer can create apps. Day-2 commands then use the narrower operator role.
@@ -363,7 +363,7 @@ as it finishes:
 2. **access**: the access stack, deployed with the caller's own AWS credentials.
 3. **core**: foundation and identity (skipped when bringing your own OIDC).
 4. **control-plane**: the control plane and runtime. The GitHub App does not exist yet, so `init` first
-   creates its secret, `agentx/<env>/github-app`, with no value, and deploys the control plane with
+   creates its secret, `rovara-cloud/<env>/github-app`, with no value, and deploys the control plane with
    that secret's ARN and an empty `GitHubAppId`; the broker reads the App's id from the secret once
    the `github-app` step has stored it.
 5. **slack-service**: the Slack service. It reads the Slack app's bot token only when it first needs it,
@@ -418,7 +418,7 @@ way (`--anthropic-key-file`, `--openai-key-env` and so on). See [OpenRouter mode
 
 `init` also asks for a monthly AWS budget (`--budget <usd>`, default 100; `0` for none) and its scope
 (`--budget-scope tag`, the default, or `--budget-scope account`). The budget counts costs tagged
-`agentx:env`. Someone with billing rights must activate that tag once, in Billing, Cost allocation tags;
+`rovara-cloud:env`. Someone with billing rights must activate that tag once, in Billing, Cost allocation tags;
 it appears there up to 24 hours after the first tagged resource is billed. Until then the budget reads
 $0. For an account used only by Rovara, `--budget-scope account` needs no tag.
 
@@ -427,12 +427,12 @@ estimated monthly cost for the chosen models at a stated usage (1,000 turns, 100
 worker instance-hours, 10 kept workspaces a month, us-east-1 list prices). This is an estimate, not a
 bill; usage and regional pricing determine the actual cost.
 
-Running `agentx init --env <name>` again resumes at the first incomplete step; a completed step never
+Running `rovara init --env <name>` again resumes at the first incomplete step; a completed step never
 runs again. When the Slack workspace needs an admin to approve new apps, the Slack app step exits with
-status "waiting" (exit code 0, nothing failed): once approved, run `agentx init` again to continue. A
-terminal closed mid-run leaves the environment's lock held; the same caller's next `agentx init` offers to
+status "waiting" (exit code 0, nothing failed): once approved, run `rovara init` again to continue. A
+terminal closed mid-run leaves the environment's lock held; the same caller's next `rovara init` offers to
 take it over at once, while a different caller must wait for it to go stale (two hours). `--yes` refuses
-every takeover, even of its own lock: run `agentx init` without `--yes` to be asked.
+every takeover, even of its own lock: run `rovara init` without `--yes` to be asked.
 
 `--no-browser` prints every address instead of opening one. When a browser cannot be opened (no
 `xdg-open` on CloudShell, an SSH host or a container), `init` says so and carries on as if
@@ -440,30 +440,30 @@ every takeover, even of its own lock: run `agentx init` without `--yes` to be as
 through an SSH tunnel (`ssh -L <port>:127.0.0.1:<port> <this host>`) from another machine, or directly on
 the same machine, then paste back the address GitHub sent your browser to (or just its code).
 
-State lives in SSM beside the environment's settings: `/agentx/<env>/install/answers` (the answers, no
-secret) and `/agentx/<env>/install/progress` (step outcomes and the GitHub and Slack facts collected so
-far). `/agentx/<env>/settings` is written only once the Slack stack exists. Secrets go straight into
-Secrets Manager: `agentx/<env>/github-app`, `agentx/<env>/slack`, for a webhook alert address
-`agentx/<env>/alert-endpoint`, and, for OpenRouter without `--openrouter-secret-arn`,
-`agentx/<env>/openrouter` (the raw key; the answers hold only its ARN), and likewise
-`agentx/<env>/anthropic` and `agentx/<env>/openai` for those providers' keys. The alert and model-key secrets
+State lives in SSM beside the environment's settings: `/rovara-cloud/<env>/install/answers` (the answers, no
+secret) and `/rovara-cloud/<env>/install/progress` (step outcomes and the GitHub and Slack facts collected so
+far). `/rovara-cloud/<env>/settings` is written only once the Slack stack exists. Secrets go straight into
+Secrets Manager: `rovara-cloud/<env>/github-app`, `rovara-cloud/<env>/slack`, for a webhook alert address
+`rovara-cloud/<env>/alert-endpoint`, and, for OpenRouter without `--openrouter-secret-arn`,
+`rovara-cloud/<env>/openrouter` (the raw key; the answers hold only its ARN), and likewise
+`rovara-cloud/<env>/anthropic` and `rovara-cloud/<env>/openai` for those providers' keys. The alert and model-key secrets
 are stored just before the answers are saved, so a secret that fails to store leaves no answers and the
 next run asks again; once the answers are saved, a rerun resumes without asking.
 
 The first project is also written to `~/.agentx/projects/<name>.yaml` (or under `--config-dir`, if
-given), the file `agentx admin project register --file` takes; it holds no secret, only credential
-references. `agentx connector add` reads this file and registers its next revision from it.
+given), the file `rovara admin project register --file` takes; it holds no secret, only credential
+references. `rovara connector add` reads this file and registers its next revision from it.
 
-After the install, day-2 work runs with the operator role that `init` created: `agentx --env <env>
-project add` registers another project the same way; `agentx --env <env> channel add --project
-<name>` binds another channel; `agentx --env <env> connector add linear|jira|asana --project <name>`
-adds a connector later, and `connector add mcp` connects any other MCP server; `agentx --env <env>
+After the install, day-2 work runs with the operator role that `init` created: `rovara --env <env>
+project add` registers another project the same way; `rovara --env <env> channel add --project
+<name>` binds another channel; `rovara --env <env> connector add linear|jira|asana --project <name>`
+adds a connector later, and `connector add mcp` connects any other MCP server; `rovara --env <env>
 alerts test` sends another test alarm.
 
-For a platform team that must deploy the access stack itself, `agentx init --export <dir>` writes a
+For a platform team that must deploy the access stack itself, `rovara init --export <dir>` writes a
 bundle instead of deploying anything; it changes nothing in AWS and makes only two read-only calls
 (see [the export bundle](#deploying-an-environment) below). The platform team runs its
-`deploy-access.sh`, and the operator then continues with `agentx init --resume --env <env> --region <region> --from-bundle <dir>`.
+`deploy-access.sh`, and the operator then continues with `rovara init --resume --env <env> --region <region> --from-bundle <dir>`.
 
 ### Developer sign-in
 
@@ -472,17 +472,17 @@ company sign-in (any OIDC provider, such as Okta or Entra ID), or both. `init` s
 step; an operator changes it later, with the operator role:
 
 ```sh
-agentx --env <name> signin show            # which methods are on, and what the control plane offers
-agentx --env <name> signin enable slack    # or: enable oidc --signin-oidc-issuer <url> ...
-agentx --env <name> signin disable slack   # everyone signed in with Slack is signed out at once
-agentx --env <name> signin check           # checks every piece sign-in needs, and says what to fix
+rovara --env <name> signin show            # which methods are on, and what the control plane offers
+rovara --env <name> signin enable slack    # or: enable oidc --signin-oidc-issuer <url> ...
+rovara --env <name> signin disable slack   # everyone signed in with Slack is signed out at once
+rovara --env <name> signin check           # checks every piece sign-in needs, and says what to fix
 ```
 
 Turning a method off ends every session that used it, and turning it back on does not bring those sessions
 back: people sign in again. Company sign-in can require a claim, such as `--signin-oidc-required-claim
 groups --signin-oidc-required-values agentx-developers`; a person without it is refused with that reason.
 Register `<control plane URL>/v1/auth/callback/oidc` as a redirect URI with your identity provider.
-Environments installed before developer sign-in existed turn it on with `agentx signin enable`.
+Environments installed before developer sign-in existed turn it on with `rovara signin enable`.
 
 A developer needs no AWS credentials:
 
@@ -495,11 +495,11 @@ npx @preplabsai/rovara-code logout
 Tokens are kept in the operating system's credential store; `~/.agentx/developer.yaml` holds only
 addresses. A developer can use a project when an administrator granted access or when they are a member
 of the project's bound Slack channel. To hand tasks to Rovara from an AI tool, a developer runs
-`agentx mcp install --client claude-code|codex|cursor` once; see [docs/mcp-install.md](mcp-install.md).
+`rovara mcp install --client claude-code|codex|cursor` once; see [docs/mcp-install.md](mcp-install.md).
 
 ## Deploying an environment
 
-`agentx deploy` installs or upgrades one environment's stacks: access, foundation, identity (skipped when
+`rovara deploy` installs or upgrades one environment's stacks: access, foundation, identity (skipped when
 the environment brings its own OIDC), control-plane, runtime and slack, in that order for a fresh install;
 an upgrade deploys runtime before control-plane instead, so the worker (the tolerant side) parses strictly
 first. Access deploys first, with the caller's own AWS credentials; every later stack deploys through the
@@ -515,13 +515,13 @@ Two engines deploy the same release:
   `infra/dist` is not in git, so a checkout at the right tag can still hold a stale build), then
   `npx --no-install cdk deploy`, the CDK CLI from the release's own lockfile.
 
-With the templates engine, before executing, `agentx deploy` prints each stack's changes (action, logical
+With the templates engine, before executing, `rovara deploy` prints each stack's changes (action, logical
 id, resource type, whether it replaces the resource) and asks "Execute this change set? [y/N]", unless
 `--yes` is given; with no `--yes` and no terminal on stdin, it refuses rather than guessing. A change set
 that fails only because it has no changes is deleted and treated as success ("no changes"), and the stack's
 existing outputs are used as-is.
 
-Before any AWS write, `agentx deploy` refuses (with `CONFIG_INVALID`) AWS credentials for a different
+Before any AWS write, `rovara deploy` refuses (with `CONFIG_INVALID`) AWS credentials for a different
 account than the answers file names, a region the release does not cover (templates engine), and your own
 OIDC provider without `adminClaim`, `adminValues` and `clientId`. Missing or expired AWS credentials fail
 with `AUTH_REQUIRED`, an AWS access denial with `FORBIDDEN`. Use credentials whose session lasts at least as
@@ -532,13 +532,13 @@ before deploying again; the error names the exact `delete-stack` command. In a n
 first create deletes what it made (its kept resources use `RetainExceptOnCreate`), except a Cognito user
 pool, whose deletion protection keeps it; an orphaned pool never blocks a retry, so delete it when
 convenient. The legacy deployment keeps plain `Retain`. A failed or refused
-change set on a new stack leaves it in `REVIEW_IN_PROGRESS` with no resources: `agentx deploy` deletes its
+change set on a new stack leaves it in `REVIEW_IN_PROGRESS` with no resources: `rovara deploy` deletes its
 own change set and a rerun treats the stack as a fresh create; to clean up by hand (for example after
 `deploy-access.sh`), delete the change set, then delete the stack only if it is still REVIEW_IN_PROGRESS with
 no resources. A failed install resumes with `--parts`, naming only the parts still needed; when settings
-were not written, `agentx deploy` prints the deployed and missing parts and the exact command to resume. An
-environment adopted from the legacy deployment (fixed stack names, none of the `agentx-<env>-` naming) is
-refused by `agentx deploy`.
+were not written, `rovara deploy` prints the deployed and missing parts and the exact command to resume. An
+environment adopted from the legacy deployment (fixed stack names, none of the `rovara-cloud-<env>-` naming) is
+refused by `rovara deploy`.
 
 **Regions.** A release only covers the regions it was built for (today: `us-east-1`), each with its own
 verified availability-zone IDs and its own templates (`templates/<region>/<part>.template.json`).
@@ -546,7 +546,7 @@ An uncovered region is refused, by name. Adding a region means adding its verifi
 `DEFAULT_AZ_IDS` in `infra/lib/production-foundation.ts`; the release builder picks the region up from
 there, and nothing else about deploy changes.
 
-**The export bundle** (`agentx init --export`, requiring an explicit `--env`) writes what a platform team
+**The export bundle** (`rovara init --export`, requiring an explicit `--env`) writes what a platform team
 needs to deploy the access stack themselves, with their own credentials: templates, parameters, a
 `deploy-access.sh` script, the policy that principal needs, and `init-answers.json` (the answers the
 export knew, never a secret). Our CLI writes nothing to AWS here, but it makes two read-only calls, so it
@@ -555,32 +555,32 @@ it) and that account's settings parameter in SSM. An environment already install
 included, is refused; any environment with nothing installed can be exported. That policy is for creating the stack only; updating it later needs a
 broader principal, the operator's job. The ECR pull-through rule's create and delete actions cannot be
 scoped to a resource, so that statement stays on every resource (`*`). `deploy-access.sh` prompts for
-confirmation before executing (`--yes` skips it, same as `agentx deploy`), and prints the failure reason
-plus the exact recovery command on failure. It does not create the callback signing key; `agentx deploy`
+confirmation before executing (`--yes` skips it, same as `rovara deploy`), and prints the failure reason
+plus the exact recovery command on failure. It does not create the callback signing key; `rovara deploy`
 creates it on its first run. Every later stack is then deployed by the Rovara operator, through the role the
-access stack created, with `agentx init --resume --env <env> --region <region> --from-bundle <bundle dir>`.
+access stack created, with `rovara init --resume --env <env> --region <region> --from-bundle <bundle dir>`.
 It reads `init-answers.json`, asks only the rest, checks the access stack exists (and was deployed with
 the bundle's permission boundary), records the `access` step as done, and goes on; it never deploys access
 (the operator role is denied change sets on it, and init refuses the `access` step under that role).
 
-**The callback signing key** lives only in Secrets Manager, at `agentx/<env>/callback-signing-key`, never in
+**The callback signing key** lives only in Secrets Manager, at `rovara-cloud/<env>/callback-signing-key`, never in
 settings. The templates engine passes it to CloudFormation as a `NoEcho` parameter, never printed. The cdk
 engine can only pass it as a `cdk deploy --parameters` argument, so for that command's length it is visible
 in the operator's own machine's process list (the engines' one difference in secret handling); it stays
-redacted everywhere `agentx` itself prints anything, including the displayed command, any error, and the
+redacted everywhere `rovara` itself prints anything, including the displayed command, any error, and the
 streamed output.
 
 ### Tearing down an environment
 
-The step-by-step guide, with `agentx destroy` and by hand, is [docs/teardown.md](teardown.md).
-`agentx --env <env> destroy --region <region>`, with admin credentials, does everything below after
+The step-by-step guide, with `rovara destroy` and by hand, is [docs/teardown.md](teardown.md).
+`rovara --env <env> destroy --region <region>`, with admin credentials, does everything below after
 you type the environment's name. The order: turn termination protection off, then delete the stacks
 in reverse install order (slack, runtime, control-plane, identity, foundation, access).
 
 Between deleting the control-plane stack and the foundation stack, tear down the EC2 workers: they are
 launched by Step Functions, outside CloudFormation, so their instances and volumes survive every stack
 delete above and are never removed by CloudFormation. List instances tagged `Environment=<env>`,
-`DeploymentMode=ec2-ebs` and `agentx:env=<env>` (the last keeps the older production deployment's
+`DeploymentMode=ec2-ebs` and `rovara-cloud:env=<env>` (the last keeps the older production deployment's
 workers, also tagged `Environment=production`, out of the list) with `aws ec2 describe-instances`,
 terminate them, and wait with `aws ec2 wait instance-terminated`; then list and delete the volumes
 carrying the same tags with `aws ec2 describe-volumes` and `aws ec2 delete-volume`. A worker instance still running in the worker security group blocks the
@@ -589,11 +589,11 @@ foundation stack's delete. The export bundle's README lists the exact commands, 
 Stack deletion keeps, on purpose: the Cognito user pool (deletion protection), three
 S3 buckets (two versioned: empty every version and delete marker first), three DynamoDB tables, the VPC
 flow-log group, and the KMS workspace key (schedule deletion; 7 days minimum). Two secrets live outside or beyond the
-stacks: `agentx/<env>/callback-signing-key` (created by the CLI) and `agentx/<env>/slack`; delete both with
-`--force-delete-without-recovery` so a new install can reuse the names. An install made with `agentx init`
-also has the secrets init stored itself: `agentx/<env>/github-app`, `agentx/<env>/alert-endpoint` (a
-webhook alert address only) and `agentx/<env>/openrouter`, `agentx/<env>/anthropic` and
-`agentx/<env>/openai` (each only when init stored that key); delete them the same way. Revoke those keys at
+stacks: `rovara-cloud/<env>/callback-signing-key` (created by the CLI) and `rovara-cloud/<env>/slack`; delete both with
+`--force-delete-without-recovery` so a new install can reuse the names. An install made with `rovara init`
+also has the secrets init stored itself: `rovara-cloud/<env>/github-app`, `rovara-cloud/<env>/alert-endpoint` (a
+webhook alert address only) and `rovara-cloud/<env>/openrouter`, `rovara-cloud/<env>/anthropic` and
+`rovara-cloud/<env>/openai` (each only when init stored that key); delete them the same way. Revoke those keys at
 the provider too. A secret you made yourself for a `--…-secret-arn` flag is yours to keep or delete.
 In a named environment the retained resources are kept on a delete and on a replacing update, but a failed
 first create removes them (`RetainExceptOnCreate`), so "delete the stack and rerun" works; only an identity

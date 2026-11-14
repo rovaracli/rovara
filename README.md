@@ -36,13 +36,17 @@ Rovara has no merge path.
 
 **Your team delegates from where it already works. Your AWS account runs the work.**
 
-> **Naming:** Rovara was called AgentX. Commands, AWS resource names, paths, tool names and the
-> default Slack app name still use `agentx` or `AgentX` (for example `agentx init`,
-> `AgentXControlPlane`, `~/.agentx` and `@AgentX`), so every command in these docs works as written.
+> **Naming:** Rovara was called AgentX. The command is `rovara` (`agentx` still works as an alias),
+> and every AWS resource of a named environment is named `rovara-cloud` (for example the stack
+> `rovara-cloud-<env>-control-plane` and the settings under `/rovara-cloud/<env>/`). Packages
+> (`@agentx/*`), environment variables (`AGENTX_*`), MCP tool names, local paths (`~/.agentx`) and the
+> default Slack app name (`@AgentX`) still say agentx. An environment installed under the old
+> `agentx-<env>-*` names is not read by this release. The legacy deployment, which has no environment
+> name, keeps its `AgentX*` stacks (for example `AgentXControlPlane`).
 
 |        | Step                    | Example                                                                                       |
 | ------ | ----------------------- | --------------------------------------------------------------------------------------------- |
-| **01** | Install in your account | `agentx init` sets up the stacks, a GitHub App, a Slack app and your first project.           |
+| **01** | Install in your account | `rovara init` sets up the stacks, a GitHub App, a Slack app and your first project.           |
 | **02** | Bind a project          | Point a Slack channel at a project: its repositories, setup steps and readiness checks.       |
 | **03** | Delegate and review     | _"@AgentX fix the navigation bug."_ Start the suggested Quick or Full path, approve the plan, then review the draft PR. |
 
@@ -129,7 +133,7 @@ GitHub (through GitHub's MCP server), Linear, Jira, Asana, or <a href="docs/conn
 </td>
 <td align="center">
 <h3>🤖 From your AI tool</h3>
-<code>agentx mcp</code> gives Claude Code, Codex or Cursor <a href="docs/mcp-install.md">11 tools</a> to start, check, continue and share Rovara tasks.
+<code>rovara mcp</code> gives Claude Code, Codex or Cursor <a href="docs/mcp-install.md">11 tools</a> to start, check, continue and share Rovara tasks.
 </td>
 <td align="center">
 <h3>🧠 Your choice of model</h3>
@@ -139,7 +143,7 @@ Bedrock by default, or <a href="docs/openrouter.md">OpenRouter</a>, or <a href="
 <tr>
 <td align="center">
 <h3>🏗️ Guided install</h3>
-<code>agentx init</code> shows what it will create and an estimated monthly cost first, and resumes where it stopped. <code>upgrade</code>, <code>doctor</code> and <code>destroy</code> handle day 2.
+<code>rovara init</code> shows what it will create and an estimated monthly cost first, and resumes where it stopped. <code>upgrade</code>, <code>doctor</code> and <code>destroy</code> handle day 2.
 </td>
 <td align="center">
 <h3>📦 Dev containers</h3>
@@ -147,7 +151,7 @@ A project can name a devcontainer. It runs on the worker's own Docker, with the 
 </td>
 <td align="center">
 <h3>🔎 Audit trail</h3>
-Every turn leaves a record of the tools called and why. A <strong>Details</strong> button shows it in Slack; <code>agentx admin turns export</code> exports it.
+Every turn leaves a record of the tools called and why. A <strong>Details</strong> button shows it in Slack; <code>rovara admin turns export</code> exports it.
 </td>
 </tr>
 </table>
@@ -185,7 +189,7 @@ Every turn leaves a record of the tools called and why. A <strong>Details</stron
 
 ```
  Slack thread                         Claude Code · Codex · Cursor
-      │                                          │  agentx mcp
+      │                                          │  rovara mcp
       ▼                                          ▼
 ┌─────────────────────────┐        ┌──────────────────────────────────────┐
 │ Slack ingress (Lambda)  │        │            CONTROL PLANE             │
@@ -259,7 +263,7 @@ server-bound arguments and keeps credentials out of the model's reach.
 </td>
 <td>
 
-**Developer MCP server** (`packages/mcp`): `agentx mcp` lets a signed-in developer's AI tool list
+**Developer MCP server** (`packages/mcp`): `rovara mcp` lets a signed-in developer's AI tool list
 projects, start and continue tasks, share them to Slack and open pull requests.
 [Use Rovara from your AI tool](docs/mcp-install.md)
 
@@ -268,7 +272,7 @@ projects, start and continue tasks, share them to Slack and open pull requests.
 <tr>
 <td>
 
-**CLI and installer** (`packages/cli`): `agentx init`, `upgrade`, `config`, `doctor`, `destroy`,
+**CLI and installer** (`packages/cli`): `rovara init`, `upgrade`, `config`, `doctor`, `destroy`,
 project, channel and connector setup, developer sign-in, and every admin command.
 [Administration client](docs/administration.md)
 
@@ -337,7 +341,7 @@ In the bound channel:
 ```
 
 A plain `@AgentX` request is routed first. AgentX asks its small safety-check model (the classifier
-model set at `agentx init`) whether the request is a question or a change:
+model set at `rovara init`) whether the request is a question or a change:
 
 - **A question** (_"@AgentX what does retry.ts do?"_) is answered in the thread by the chat agent. No
   task is created.
@@ -378,18 +382,18 @@ everything passes, AgentX opens a draft pull request and posts the link in the t
 
 > **Reinstall the Slack app on an existing install.** Saving replies that do not mention AgentX
 > needs the `channels:history` and `groups:history` bot scopes and the `message.channels` and
-> `message.groups` events. Update the app from the manifest `agentx init` generates, then reinstall
+> `message.groups` events. Update the app from the manifest `rovara init` generates, then reinstall
 > it to the workspace. Until then only `@AgentX` replies are saved. AgentX ignores channel messages
 > outside task threads. See [Replies in a Slack task's thread](docs/project-configuration.md#replies-in-a-slack-tasks-thread).
 
 From your own machine (no AWS credentials needed):
 
 ```bash
-agentx login <control plane URL>
-agentx mcp install --client claude-code   # or codex, cursor
+rovara login <control plane URL>
+rovara mcp install --client claude-code   # or codex, cursor
 ```
 
-After the install, `agentx --env <name> project add`, `channel add` and
+After the install, `rovara --env <name> project add`, `channel add` and
 `connector add linear|jira|asana|mcp` add more, and `doctor`, `config`, `upgrade` and `destroy` run
 the environment. See [the install overview](docs/getting-started.md) for the full tour and [E2E setup](docs/e2e-onboarding.md) for the connect, inspect and owner-decision flow.
 
@@ -415,7 +419,7 @@ installer and day-2 operators use AWS credentials.
 
 **Q: What does it cost to run?**
 
-**A:** AWS and model charges depend on your configuration and use. `agentx init` prints an
+**A:** AWS and model charges depend on your configuration and use. `rovara init` prints an
 estimated monthly cost before it creates anything and sets a monthly budget with an alert. Idle
 workspaces stop their compute and keep only their disk. By default each member can hold 3
 workspaces and the organization 20.
@@ -440,8 +444,8 @@ stays. The next mention starts compute again and carries on.
 **Q: Can I use it without Slack?**
 
 **A:** Developers can start and drive tasks from Claude Code, Codex or Cursor through
-`agentx mcp`, and share them into Slack when they want the team to see. Administration happens in
-the `agentx` CLI.
+`rovara mcp`, and share them into Slack when they want the team to see. Administration happens in
+the `rovara` CLI.
 
 <br/>
 
@@ -458,7 +462,7 @@ the `agentx` CLI.
 | [Administration client](docs/administration.md)               | Registering projects, binding channels, the full command surface              |
 | [Project configuration](docs/project-configuration.md)        | Every field of a project file, and how the checks work                         |
 | [Pull requests](docs/pull-requests.md)                        | Publication, maintenance, GitHub App permissions, CodeBuild gates              |
-| [Use Rovara from your AI tool](docs/mcp-install.md)           | `agentx mcp` for Claude Code, Codex and Cursor, and sharing to Slack           |
+| [Use Rovara from your AI tool](docs/mcp-install.md)           | `rovara mcp` for Claude Code, Codex and Cursor, and sharing to Slack           |
 | [Rovara loop](docs/loop.md)                                   | Rovara's workflow on your GitHub issues, run locally by your own Claude Code   |
 | [Model providers](docs/openrouter.md) · [your own key](docs/model-providers.md) · [Sign in with ChatGPT](docs/chatgpt.md) | Bedrock, OpenRouter, Anthropic and OpenAI, and each developer's own ChatGPT plan |
 | Connectors: [Linear](docs/connectors/linear.md) · [Jira](docs/connectors/jira.md) · [Asana](docs/connectors/asana.md) · [any MCP server](docs/connectors/custom-mcp.md) | Credentials and setup per connector |
@@ -496,7 +500,7 @@ GitHub Spec Kit setup.
 - ✅ GitHub MCP, Linear, Jira, Asana and generic MCP connectors
 - ✅ Action gate with confirmations, rules and a **Details** view
 - ✅ Conversation continuity across turns
-- ✅ `agentx init` installer, with `upgrade`, `config`, `doctor` and `destroy`
+- ✅ `rovara init` installer, with `upgrade`, `config`, `doctor` and `destroy`
 - ✅ Developer sign-in and tasks from Claude Code, Codex and Cursor
 - ✅ Sharing tasks into Slack, view only or open to the channel
 - ✅ Dev containers

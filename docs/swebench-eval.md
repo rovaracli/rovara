@@ -114,7 +114,7 @@ Every step writes to the AWS account; an administrator runs them.
    ```
 
    Add `--parameters OpenRouterSecretArn=<arn>` when the worker model is served through OpenRouter.
-   A named environment adds `-c agentxEnv=<name>`, and its stack is `agentx-<name>-eval`.
+   A named environment adds `-c agentxEnv=<name>`, and its stack is `rovara-cloud-<name>-eval`.
 3. **Build the runner image**: `npm run swebench:runner-image` (add `--env <name>` for a named
    environment). It builds the worker image for `linux/amd64`, pushes it with a `swebench-` tag (never
    `release-`, which the repository keeps only twenty of), and writes `<settings prefix>eval/runner-image`,
@@ -126,8 +126,8 @@ Every step writes to the AWS account; an administrator runs them.
    treats that answer as final, so the graded result is lost and the run ends FAILED. The same holds after
    a control-plane rollback: roll the runner image back first. (Spec 053's thinking level alone was safe in
    that direction, since the runner reports it only when the run config carried it.)
-4. **Enable a channel**: `agentx admin eval enable --team <T…> --channel <C…> [--max-cost-usd 10]`.
-   The channel must already be bound to a project. `agentx admin eval show` and `disable` read and
+4. **Enable a channel**: `rovara admin eval enable --team <T…> --channel <C…> [--max-cost-usd 10]`.
+   The channel must already be bound to a project. `rovara admin eval show` and `disable` read and
    remove the setting.
 
 ## Costs and limits
@@ -210,11 +210,11 @@ costCapUsd: 60                     # 1 to 1,000
 ```
 
 ```bash
-agentx admin eval batch start --file batch.yaml --team <T…> --channel <C…>
-agentx admin eval batch show <batch-id>
-agentx admin eval batch stop <batch-id>
-agentx admin eval batch results <batch-id>                 # the per-model table
-agentx admin eval batch results <batch-id> --csv out.csv   # the per-run CSV
+rovara admin eval batch start --file batch.yaml --team <T…> --channel <C…>
+rovara admin eval batch show <batch-id>
+rovara admin eval batch stop <batch-id>
+rovara admin eval batch results <batch-id>                 # the per-model table
+rovara admin eval batch results <batch-id> --csv out.csv   # the per-run CSV
 ```
 
 The channel must be bound to a project and enabled for evals; every model must be approved for that
@@ -254,7 +254,7 @@ ceiling × 1.1), rounded up to cents and at most $1,000. `stop` in the batch's t
 - **Progress.** The thread is updated as runs finish ("12/72 done, 7 resolved, $41.20 spent") and gets
   a per-model summary at the end. A timer every 2 minutes tops up free slots and records ends the
   broker missed, so a lost callback never stalls a batch.
-- **Stop.** `stop` in the thread, or `agentx admin eval batch stop`, cancels queued runs and stops runs
+- **Stop.** `stop` in the thread, or `rovara admin eval batch stop`, cancels queued runs and stops runs
   in flight. Single runs started in the thread are stopped too.
 
 ### Results
@@ -266,7 +266,7 @@ ceiling × 1.1), rounded up to cents and at most $1,000. `stop` in the batch's t
 | `results.csv` | One row per run: instance, model, provider pin, thinking level, repeat, attempt, outcome, resolved, the SEC-bench verdict or test counts, stop reason, agent seconds, tool calls, tokens by kind, cost and charge, image digest, and (spec 051) `checkStatus`, `agentClaim` and `disagrees` |
 | `summary.json` | Per model: graded runs, resolved, resolve rate with a 95% Wilson interval, failed, total cost and cost per solved task, and `disagreementRate` (spec 051) |
 
-`agentx admin eval batch results` reads them through the control plane. Until the batch ends it
+`rovara admin eval batch results` reads them through the control plane. Until the batch ends it
 says the batch is running; if the tick wrote the files and could not confirm them (a lost row, or
 charges that do not sum to the spend) it says the results are incomplete, and the
 `EvalBatchTickErrors` alarm fires. A run with no reported cost is charged its ceiling and marked

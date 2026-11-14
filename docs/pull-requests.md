@@ -63,7 +63,7 @@ credentialed Git command boundary.
 
 CodeBuild projects are administrator-owned infrastructure. Create a project with a GitHub source
 (use AWS CodeConnections for private repositories), a service role, compute image, and repository
-`buildspec.yml`. Its name must begin with `agentx-`. Add the approved project to the repository in
+`buildspec.yml`. Its name must begin with `rovara-cloud-`. Add the approved project to the repository in
 the Rovara project YAML, increment `revision`, and register that immutable revision. New threads
 then use it:
 
@@ -76,17 +76,17 @@ repositories:
     credentialRef: github-agentx-sdlc
     codeBuildGates:
       - name: quality
-        projectName: agentx-personal-website-quality
+        projectName: rovara-cloud-personal-website-quality
         timeoutMinutes: 30
       - name: browser
-        projectName: agentx-personal-website-playwright
+        projectName: rovara-cloud-personal-website-playwright
         timeoutMinutes: 45
 ```
 
 Unit tests, backend integration tests, and Playwright commands belong in the CodeBuild project's
 buildspec. Rovara supplies only the exact Git commit as `sourceVersion`; it does not allow the
 worker to override the buildspec, image, role, environment, source, or artifacts. The broker owns
-`StartBuild`/`BatchGetBuilds` permission scoped to `agentx-*` projects, while the worker receives no
+`StartBuild`/`BatchGetBuilds` permission scoped to `rovara-cloud-*` projects, while the worker receives no
 CodeBuild AWS credentials. A failed new-PR build leaves its candidate branch for diagnosis but
 creates no PR. A failed existing-PR build leaves the PR head unchanged.
 

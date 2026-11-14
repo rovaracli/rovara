@@ -7,10 +7,10 @@ It answers [issue #66](https://github.com/PrepLabsAI/Rovara/issues/66).
 Both ways below need admin credentials in the environment's account. The operator role cannot
 delete the access stack's IAM roles or the kept data, by design.
 
-## With agentx destroy
+## With rovara destroy
 
 ```sh
-agentx --env <env> destroy --region <region>
+rovara --env <env> destroy --region <region>
 ```
 
 `--env` is required: `destroy` never falls back to the default environment name. Pass `--region`
@@ -24,20 +24,20 @@ Without a terminal, it reads each answer as a line from stdin, so the exact name
 
 Then it removes, in this order:
 
-1. It saves a list of what the stacks keep to SSM (`/agentx/<env>/destroy/inventory`), so a
+1. It saves a list of what the stacks keep to SSM (`/rovara-cloud/<env>/destroy/inventory`), so a
    re-run still knows it after the stacks are gone.
-2. It turns termination protection off and deletes `agentx-<env>-slack`, `agentx-<env>-runtime`
-   and `agentx-<env>-control-plane`, waiting for each.
+2. It turns termination protection off and deletes `rovara-cloud-<env>-slack`, `rovara-cloud-<env>-runtime`
+   and `rovara-cloud-<env>-control-plane`, waiting for each.
 3. It terminates the EC2 worker instances and deletes their workspace volumes. Deleting the
    volumes deletes every worker session's workspace.
-4. It turns protection off and deletes `agentx-<env>-identity`, `agentx-<env>-foundation` and
-   `agentx-<env>-access`, waiting for each.
+4. It turns protection off and deletes `rovara-cloud-<env>-identity`, `rovara-cloud-<env>-foundation` and
+   `rovara-cloud-<env>-access`, waiting for each.
 5. It deletes what the stacks keep: it empties and deletes the buckets (every version), and
    deletes the tables, the flow-log group and the Cognito user pool. It schedules each KMS key
    for deletion in 7 days and deletes its aliases.
-6. It deletes every secret under `agentx/<env>/`, without recovery, so a new install can reuse
+6. It deletes every secret under `rovara-cloud/<env>/`, without recovery, so a new install can reuse
    the names.
-7. It deletes every parameter under `/agentx/<env>/`, then the settings, then the lock.
+7. It deletes every parameter under `/rovara-cloud/<env>/`, then the settings, then the lock.
 8. On this computer, it removes `~/.agentx/environments/<env>.yaml`, the project files written for
    this environment, and the stored admin sign-in.
 
@@ -48,7 +48,7 @@ place and listed at the end.
 secrets, the Cognito user pool and the KMS keys, and removes the rest. Run `destroy` again without
 it to remove what was kept.
 
-**How long.** Deleting `agentx-<env>-control-plane` usually takes 20 to 40 minutes, while its
+**How long.** Deleting `rovara-cloud-<env>-control-plane` usually takes 20 to 40 minutes, while its
 Lambda functions release their network interfaces. `destroy` prints a line each minute.
 
 **After a failure**, fix what it names and run the same command again. It continues where it
@@ -58,7 +58,7 @@ stopped.
 left the lock, the next one asks at once whether to take it over; anyone's lock older than 2 hours
 gets the same question. It asks only at a terminal: without one (answers piped on stdin), it
 never takes a lock over, and refuses with the lock's holder and the parameter to delete
-(`/agentx/<env>/lock`) once you are sure no Rovara command is running.
+(`/rovara-cloud/<env>/lock`) once you are sure no Rovara command is running.
 
 **Nothing found.** When it finds nothing for the environment, it says so, naming the account and
 region it looked in, and exits 2. If the environment is in another region, pass `--region`.
@@ -70,19 +70,19 @@ region it looked in, and exits 2. If the environment is in another region, pass 
 - Revoke each connector's credential in Linear, Jira or Asana.
 - Revoke the credential of each MCP server you connected with `connector add mcp`, in that vendor.
   `destroy` does not list these, so check your projects' `mcp` connectors.
-- Delete the ECR repositories under `agentx-<env>/` that the image cache made. It names them, and
+- Delete the ECR repositories under `rovara-cloud-<env>/` that the image cache made. It names them, and
   prints this step only when there is at least one.
 
 ## By hand
 
-Use this if `agentx` is not available. Every command needs `--region <region>`. Where a command
+Use this if `rovara` is not available. Every command needs `--region <region>`. Where a command
 lists more than one id, act on each.
 
 **1. Record what the stacks keep.** Stack deletion keeps some resources on purpose. List each
 stack's resources before you delete it:
 
 ```sh
-aws cloudformation list-stack-resources --stack-name agentx-<env>-<part> --region <region> \
+aws cloudformation list-stack-resources --stack-name rovara-cloud-<env>-<part> --region <region> \
   --query "StackResourceSummaries[].[ResourceType,PhysicalResourceId]" --output text
 ```
 
@@ -92,38 +92,38 @@ Note every bucket, table, log group, user pool and KMS key. The next steps delet
 
 ```sh
 aws cloudformation update-termination-protection --no-enable-termination-protection \
-  --stack-name agentx-<env>-<part> --region <region>
+  --stack-name rovara-cloud-<env>-<part> --region <region>
 ```
 
 **3. Delete the first three stacks**, in this order, each after the one before it is gone:
-`agentx-<env>-slack`, then `agentx-<env>-runtime`, then `agentx-<env>-control-plane`.
+`rovara-cloud-<env>-slack`, then `rovara-cloud-<env>-runtime`, then `rovara-cloud-<env>-control-plane`.
 
 ```sh
-aws cloudformation delete-stack --stack-name agentx-<env>-slack --region <region>
-aws cloudformation wait stack-delete-complete --stack-name agentx-<env>-slack --region <region>
+aws cloudformation delete-stack --stack-name rovara-cloud-<env>-slack --region <region>
+aws cloudformation wait stack-delete-complete --stack-name rovara-cloud-<env>-slack --region <region>
 ```
 
 The control-plane delete takes 20 to 40 minutes. If the wait times out, run it again.
 
 **4. Remove the EC2 workers.** Step Functions launched them, outside CloudFormation, so no stack
-delete removes them, and a running worker blocks the foundation stack's delete. The `agentx:env`
+delete removes them, and a running worker blocks the foundation stack's delete. The `rovara-cloud:env`
 tag keeps any other deployment's workers out of the list, including the one that predates named
 environments, whose workers are also tagged `Environment=production`.
 
 ```sh
 aws ec2 describe-instances --region <region> \
-  --filters Name=tag:DeploymentMode,Values=ec2-ebs Name=tag:Environment,Values=<env> Name=tag:agentx:env,Values=<env> \
+  --filters Name=tag:DeploymentMode,Values=ec2-ebs Name=tag:Environment,Values=<env> Name=tag:rovara-cloud:env,Values=<env> \
   --query "Reservations[].Instances[].InstanceId" --output text
 aws ec2 terminate-instances --instance-ids <ids> --region <region>
 aws ec2 wait instance-terminated --instance-ids <ids> --region <region>
 aws ec2 describe-volumes --region <region> \
-  --filters Name=tag:DeploymentMode,Values=ec2-ebs Name=tag:Environment,Values=<env> Name=tag:agentx:env,Values=<env> \
+  --filters Name=tag:DeploymentMode,Values=ec2-ebs Name=tag:Environment,Values=<env> Name=tag:rovara-cloud:env,Values=<env> \
   --query "Volumes[].VolumeId" --output text
 aws ec2 delete-volume --volume-id <id> --region <region>
 ```
 
-**5. Delete the last three stacks** the same way, in this order: `agentx-<env>-identity` (there is
-none with your own OIDC provider), then `agentx-<env>-foundation`, then `agentx-<env>-access`.
+**5. Delete the last three stacks** the same way, in this order: `rovara-cloud-<env>-identity` (there is
+none with your own OIDC provider), then `rovara-cloud-<env>-foundation`, then `rovara-cloud-<env>-access`.
 
 **6. Delete what the stacks kept**, from your list in step 1:
 
@@ -160,17 +160,17 @@ none with your own OIDC provider), then `agentx-<env>-foundation`, then `agentx-
   aws logs delete-log-group --log-group-name <name> --region <region>
   ```
 - **Each KMS key.** Schedule its deletion (7 days is the minimum), and delete its aliases under
-  `alias/agentx/<env>/`:
+  `alias/rovara-cloud/<env>/`:
   ```sh
   aws kms list-aliases --key-id <key id> --region <region> --query "Aliases[].AliasName" --output text
   aws kms schedule-key-deletion --key-id <key id> --pending-window-in-days 7 --region <region>
   aws kms delete-alias --alias-name <alias> --region <region>
   ```
 
-**7. Delete every secret under `agentx/<env>/`**, without recovery, so the names can be reused:
+**7. Delete every secret under `rovara-cloud/<env>/`**, without recovery, so the names can be reused:
 
 ```sh
-aws secretsmanager list-secrets --region <region> --filters Key=name,Values=agentx/<env>/ \
+aws secretsmanager list-secrets --region <region> --filters Key=name,Values=rovara-cloud/<env>/ \
   --query "SecretList[].Name" --output text
 aws secretsmanager delete-secret --secret-id <name> --force-delete-without-recovery --region <region>
 ```
@@ -179,25 +179,25 @@ Repeat `delete-secret` for each name the listing shows. A secret you made yourse
 `--openrouter-secret-arn`, `--anthropic-secret-arn` or `--openai-secret-arn` is yours to keep or delete.
 Revoke the OpenRouter, Anthropic or OpenAI key at the provider too.
 
-**8. Delete every parameter under `/agentx/<env>/`**, the settings and the lock last:
+**8. Delete every parameter under `/rovara-cloud/<env>/`**, the settings and the lock last:
 
 ```sh
-aws ssm get-parameters-by-path --path /agentx/<env>/ --recursive --region <region> \
+aws ssm get-parameters-by-path --path /rovara-cloud/<env>/ --recursive --region <region> \
   --query "Parameters[].Name" --output text
 aws ssm delete-parameters --names <up to 10 names> --region <region>
-aws ssm delete-parameter --name /agentx/<env>/settings --region <region>
-aws ssm delete-parameter --name /agentx/<env>/lock --region <region>
+aws ssm delete-parameter --name /rovara-cloud/<env>/settings --region <region>
+aws ssm delete-parameter --name /rovara-cloud/<env>/lock --region <region>
 ```
 
-**9. Delete the image cache's ECR repositories** under `agentx-<env>/`:
+**9. Delete the image cache's ECR repositories** under `rovara-cloud-<env>/`:
 
 ```sh
 aws ecr describe-repositories --region <region> \
-  --query "repositories[?starts_with(repositoryName, 'agentx-<env>/')].repositoryName" --output text
+  --query "repositories[?starts_with(repositoryName, 'rovara-cloud-<env>/')].repositoryName" --output text
 aws ecr delete-repository --force --repository-name <name> --region <region>
 ```
 
-**10. On this computer**, sign out of the environment with `agentx --env <env> logout --admin`,
+**10. On this computer**, sign out of the environment with `rovara --env <env> logout --admin`,
 then remove `~/.agentx/environments/<env>.yaml` and each file in `~/.agentx/projects/` whose
 header names `--env <env>`.
 

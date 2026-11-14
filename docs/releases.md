@@ -25,7 +25,7 @@ A release directory looks like this:
   They are built for `arm64` machines only, the same chip the installer's runtime uses.
 - The worker image carries Node 22, Git, the Docker CLI and Compose, Python 3 with pip and venv,
   and uv. A change to `environments/base/Dockerfile` reaches installs only through a new release's
-  worker image: tag a release, and upgrade each environment with `agentx upgrade`. Bookworm's
+  worker image: tag a release, and upgrade each environment with `rovara upgrade`. Bookworm's
   system Python is externally managed (PEP 668), so a repository should use `python3 -m venv` or
   uv, not a bare `pip install`. `uv python install` needs network access.
 - The CLI, published to npm as a single self-contained package with no separate dependencies to
@@ -35,7 +35,7 @@ A release directory looks like this:
 
 The published templates are not built once per customer environment. They are synthesized a
 single time for a reserved, made-up environment name that no real environment is allowed to have
-(`qqenv-placeholderqq`). At install time, the CLI replaces every occurrence of that placeholder
+(`qqenv-phldrqq`). At install time, the CLI replaces every occurrence of that placeholder
 (including the underscore-only form some AWS resource names require) with your real environment
 name, and refuses to proceed if any trace of the placeholder is still left afterward.
 
@@ -208,7 +208,7 @@ runs by hand, before a release is tagged, and never touches the live deployment.
    this repository's `workflow_dispatch` runs through GitHub OIDC (no long-lived keys), and its
    maximum session is at least 3 hours, since an install and an upgrade can outlast the 1 hour
    default. The workflow also names it as each environment's operator principal, so it must be
-   able to assume `agentx-<env>-operator`. Store its ARN in the repository variable
+   able to assume `rovara-cloud-<env>-operator`. Store its ARN in the repository variable
    `vars.AGENTX_RELEASE_TEST_ROLE_ARN`. `vars.AGENTX_RELEASE_TEST_REGION` is optional (default
    `us-east-1`).
 3. **Two private ECR repositories** in that account and region: `agentx-release-test/worker` and
@@ -240,8 +240,8 @@ operator role, `doctor`, and `destroy`. A last job destroys anything a failed ru
 
 Some steps need a person, so do these by hand before tagging, in a throwaway account:
 
-1. One full `agentx init`, all the way to a Slack reply in the thread (docs/install.md).
-2. `agentx --env <env> alerts test`, and check the alarm arrives.
+1. One full `rovara init`, all the way to a Slack reply in the thread (docs/install.md).
+2. `rovara --env <env> alerts test`, and check the alarm arrives.
 3. Remove that environment by hand, following docs/teardown.md's "By hand" section, and check
    nothing is left.
 4. Once, SC-001: a person who has never seen Rovara installs it from docs/install.md, on a clean

@@ -78,7 +78,7 @@ Deleting at the source (for example a message) deletes everywhere, and every rec
 ## 4. Models
 
 - Models run on your Bedrock, in your account, through the `bedrock-runtime` endpoint in your VPC. No other provider is used unless your admin adds one as a model source, and each such host then needs an entry on the egress allow-list. [Built, not deployed] (endpoint); the model proxy using its own role in your account and its image coming from your registry is [Built, not deployed] (task N2).
-- Today the model proxy's image is pulled from a public registry at deploy time. The Enterprise synthesis now takes it from your own registry by digest (loaded from the signed bundle by `agentx bundle approve`); a deployed proof is still to come. [Built, not deployed]
+- Today the model proxy's image is pulled from a public registry at deploy time. The Enterprise synthesis now takes it from your own registry by digest (loaded from the signed bundle by `rovara bundle approve`); a deployed proof is still to come. [Built, not deployed]
 - A custom model endpoint (your own gateway) is [Designed] (task N8): Enterprise only, https only, usable only after its model check passes. The Public edition refuses the field.
 - Each model is qualified by a model check before use. [Built]
 - Bedrock's own data terms are AWS's; see AWS's documentation of Bedrock data protection [verify the page before sending]. We do not re-verify them.

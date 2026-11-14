@@ -2,10 +2,10 @@
 
 Rovara is open source and self-hosted. There is no shared Atlassian account. Your organisation
 creates its own Atlassian service account and API token, stores the token in your own AWS Secrets
-Manager, and registers it with `agentx admin credential register`. This guide walks you through
+Manager, and registers it with `rovara admin credential register`. This guide walks you through
 that, end to end, for one Jira Cloud site and one project.
 
-`agentx connector add jira --project <name>` walks you through this guide, reads the credential from
+`rovara connector add jira --project <name>` walks you through this guide, reads the credential from
 a hidden prompt, tests it, and registers the project's next revision. The steps below are what it
 does, for doing it by hand or understanding it.
 
@@ -22,7 +22,7 @@ You need:
 
 - An Atlassian organization admin.
 - A Jira Cloud site.
-- A Rovara control plane you can reach with `agentx login` as an administrator.
+- A Rovara control plane you can reach with `rovara login` as an administrator.
 - The AWS CLI with Secrets Manager access in the control plane's account and region.
 - `jq` (included in macOS 15 and later).
 
@@ -89,13 +89,13 @@ a guessed one.
 read -rs JIRA_TOKEN        # paste the token, press Enter; nothing is shown
 printf '%s' "$JIRA_TOKEN" | wc -c   # about 192; 128 means it was cut, start again
 jq -n --arg k "$JIRA_TOKEN" '{apiKey: $k}' | aws secretsmanager create-secret \
-  --name agentx/<env>/connectors/jira-agentx-sa --secret-string file:///dev/stdin
+  --name rovara-cloud/<env>/connectors/jira-agentx-sa --secret-string file:///dev/stdin
 unset JIRA_TOKEN
-aws secretsmanager get-secret-value --secret-id agentx/<env>/connectors/jira-agentx-sa \
+aws secretsmanager get-secret-value --secret-id rovara-cloud/<env>/connectors/jira-agentx-sa \
   --query SecretString --output text | jq -r '.apiKey | length'   # same number as above
 ```
 
-The name must start with `agentx/<env>/connectors/` for a named environment (add `--env <name>` to
+The name must start with `rovara-cloud/<env>/connectors/` for a named environment (add `--env <name>` to
 the commands on this page); the legacy default deployment, adopted before named environments
 existed, keeps `agentx/connectors/` instead. Use the default `aws/secretsmanager` key, or grant
 the broker role `kms:Decrypt` on your own key. If you keep the token in the macOS Keychain, add it
@@ -108,13 +108,13 @@ number Step 5 gave you.
 
 ## Step 8: Check what the service account sees (mandatory)
 
-`agentx connector add jira` runs this check itself, as part of testing the credential; the steps
+`rovara connector add jira` runs this check itself, as part of testing the credential; the steps
 below are for doing it by hand. Run this from your Rovara checkout after `npm ci && npm run build`.
 Set `JIRA_PROJECTS` to the project keys Rovara may use, comma separated. It reads the token from
 Secrets Manager, so the token is never typed or shown:
 
 ```sh
-JIRA_TOKEN="$(aws secretsmanager get-secret-value --secret-id agentx/<env>/connectors/jira-agentx-sa \
+JIRA_TOKEN="$(aws secretsmanager get-secret-value --secret-id rovara-cloud/<env>/connectors/jira-agentx-sa \
   --query SecretString --output text | jq -r .apiKey)" \
 JIRA_CLOUD_ID='<your cloudId>' JIRA_PROJECTS='PAY' \
 node --input-type=module -e '
@@ -139,14 +139,14 @@ the check can tell an empty answer from a blind one; a service account that find
 connected project is refused. `outside` no longer has to be 0: when it is more than 0, Rovara still
 saves the connector, warns you with the other projects it found (up to 5, then "and N more"), and
 warns that it will be able to read issues in them. Narrow the account until `outside` is 0 if Rovara
-must not read those projects; `agentx init` keeps the warning, and `agentx doctor` shows it again.
+must not read those projects; `rovara init` keeps the warning, and `rovara doctor` shows it again.
 
 ## Step 9: Register the credential
 
 ```sh
-agentx admin credential register --ref jira-agentx-sa --type static-secret \
-  --secret agentx/<env>/connectors/jira-agentx-sa
-agentx admin credential list
+rovara admin credential register --ref jira-agentx-sa --type static-secret \
+  --secret rovara-cloud/<env>/connectors/jira-agentx-sa
+rovara admin credential list
 ```
 
 The type must be `static-secret`. Registering a project refuses a Jira connector whose reference
@@ -189,7 +189,7 @@ be lowercase.
 
 **Adding `siteUrl` to an already-registered connector.** Edit the project YAML you registered with:
 add `siteUrl` to each scope alongside its `cloudId`, then register the file again the same way as
-Step 11 (`agentx --project <name> admin project register --file <file> ...`) with the revision
+Step 11 (`rovara --project <name> admin project register --file <file> ...`) with the revision
 number increased. Registration is immutable per revision, so this is a new revision, not an edit in
 place; existing threads move to it the same way any other revision change reaches them. Do not
 change anything else in the same file unless you mean to.
@@ -223,7 +223,7 @@ the service account can see. Step 4 is the control there too.
 
 ## Step 11: Register the project and read the preflight
 
-Register the revision the usual way (`agentx --project <name> admin project register --file
+Register the revision the usual way (`rovara --project <name> admin project register --file
 <file> ...`). With `--json`, the result's `preflight` should read:
 
 ```json
@@ -305,7 +305,7 @@ actionPolicy:
 - **"Cloud id isn't explicitly granted".** You gave Rovara an OAuth token. Use an API token
   (Step 5) and `--type static-secret` (Step 9).
 - **Rotating the token.** Put the new value with `aws secretsmanager put-secret-value --secret-id
-  agentx/<env>/connectors/jira-agentx-sa --secret-string file:///dev/stdin` (same `jq` pipe as Step 7).
+  rovara-cloud/<env>/connectors/jira-agentx-sa --secret-string file:///dev/stdin` (same `jq` pipe as Step 7).
   No re-registration is needed; Rovara re-reads the secret within five minutes, or at once after
   Atlassian rejects the old one.
 - **An expired token** makes Jira calls fail as not connected until you rotate it.

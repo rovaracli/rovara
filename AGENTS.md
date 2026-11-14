@@ -7,8 +7,15 @@ Read this first. It is short on purpose. For "where does X live", go to [docs/ar
 
 The product is Rovara. Much of the code still uses the old name, so **search for both**:
 
-- Packages are `@agentx/*` (for example `@agentx/contracts`). The CLI binary is `agentx`.
-- Environment variables and settings use `AGENTX_*` (for example `AGENTX_SETTINGS`). MCP tools start with `agentx_`.
+- The CLI command is `rovara`. `agentx` still works as an alias.
+- AWS resources of a named environment are named `rovara-cloud`: stacks `rovara-cloud-<env>-<part>`, settings
+  `/rovara-cloud/<env>/...`, secrets `rovara-cloud/<env>/...`, the tag `rovara-cloud:env`, metrics `RovaraCloud/<env>`.
+  `packages/contracts/src/resource-prefix.ts` is the one place this name is written. Environment names are at most 14 characters.
+  Environments installed under the old `agentx-<env>-*` names are not read. The legacy deployment (no environment name,
+  `AgentX*` stacks) keeps its names.
+- Packages are `@agentx/*` (for example `@agentx/contracts`).
+- Environment variables and settings use `AGENTX_*` (for example `AGENTX_SETTINGS`). CDK context keys start with `agentx`
+  (for example `agentxEnv`). MCP tools start with `agentx_`. Local files live under `~/.agentx`.
 - Specs under `specs/` (`001-agentx-foundation` and on) are historical. They describe what was built at the time.
   Some numbers repeat (two `008-*` and two `025-*`). Trust the code and `docs/architecture/code-map.md` over a spec.
 
@@ -20,7 +27,7 @@ The product is Rovara. Much of the code still uses the old name, so **search for
 | `packages/worker` | Runs a task on an EC2 worker: checkout, agent run, checks, report back to the broker. |
 | `packages/contracts` | Shared types and schemas (zod) used by every package. The barrel is `src/index.ts`. |
 | `packages/web`, `packages/ui` | The web app (`/app`): `web` is the shell and build, `ui` holds the pages and components. |
-| `packages/cli` | The `agentx` command (install, upgrade, project setup). |
+| `packages/cli` | The `rovara` command, alias `agentx` (install, upgrade, project setup). |
 | `packages/slack-service`, `gateway`, `mcp`, `orchestrator`, `model-proxy`, `model-runtime` | Smaller services. See each package's `src/`. |
 | `packages/verifier`, `audit-verifier` | Check verification and the audit ledger's verifier. |
 | `infra/` | AWS CDK app (`infra/bin`, stacks and constructs in `infra/lib`). |

@@ -2,10 +2,10 @@
 
 Rovara is open source and self-hosted. There is no shared Asana app. Your organisation creates its
 own Asana app and its own bot user, stores the app's client secret and the bot user's refresh
-token in your own AWS Secrets Manager, and registers them with `agentx admin credential authorize`.
+token in your own AWS Secrets Manager, and registers them with `rovara admin credential authorize`.
 This guide walks you through that, end to end, for one Asana project.
 
-`agentx connector add asana --project <name>` walks you through this guide, reads the credential
+`rovara connector add asana --project <name>` walks you through this guide, reads the credential
 from a hidden prompt, tests it, and registers the project's next revision. The steps below are what
 it does, for doing it by hand or understanding it. The command signs the bot in with
 `--no-browser` and `--expect-account` already set, as Step 4 below explains.
@@ -42,12 +42,12 @@ You need:
 - An email address for the bot user that nobody uses for anything else, outside your
   organisation's email domain so the bot user joins as a guest. A plus address on a personal
   mailbox, such as `you+agentx@gmail.com`, works.
-- A Rovara control plane you can reach with `agentx login` as an administrator.
+- A Rovara control plane you can reach with `rovara login` as an administrator.
 - AWS credentials for the control plane's account and region that can create, read, write and tag
   secrets: `secretsmanager:CreateSecret`, `GetSecretValue`, `PutSecretValue` and `TagResource` on
-  `agentx/<env>/connectors/*` for a named environment, or `agentx/connectors/*` for the legacy
+  `rovara-cloud/<env>/connectors/*` for a named environment, or `agentx/connectors/*` for the legacy
   default deployment.
-- A browser on the machine where you run `agentx`, and local port 8765 free.
+- A browser on the machine where you run `rovara`, and local port 8765 free.
 - `jq` (included in macOS 15 and later).
 
 ## Step 1: Create the bot user and share only the project
@@ -83,7 +83,7 @@ it in the developer console, then repeat Steps 3 and 4.
 
 ## Step 3: Store the app's client in Secrets Manager
 
-The secret name must start with `agentx/<env>/connectors/` for a named environment (add `--env
+The secret name must start with `rovara-cloud/<env>/connectors/` for a named environment (add `--env
 <name>` to the commands on this page); the legacy default deployment, adopted before named
 environments existed, keeps `agentx/connectors/` instead. Copy the client secret to the clipboard,
 then run this. It asks for the client ID, which is not secret, and reads the client secret from the
@@ -93,8 +93,8 @@ clipboard so it never appears in your shell history:
 export AWS_PROFILE=<your deployer profile> AWS_REGION=<your region>
 printf 'Asana client ID: '; read -r ASANA_CLIENT_ID
 pbpaste | tr -d '\n' | jq -Rc --arg id "$ASANA_CLIENT_ID" '{clientId: $id, clientSecret: .}' \
-  | aws secretsmanager create-secret --name agentx/<env>/connectors/asana-bot \
-      --tags Key=agentx-writable,Value=refresh-token --secret-string file:///dev/stdin
+  | aws secretsmanager create-secret --name rovara-cloud/<env>/connectors/asana-bot \
+      --tags Key=rovara-cloud-writable,Value=refresh-token --secret-string file:///dev/stdin
 pbcopy < /dev/null
 ```
 
@@ -107,7 +107,7 @@ this secret. Your own AWS credentials need the same on that key for Step 4. See 
 `connector.refresh_token_unsaved` entry in [Troubleshooting](#troubleshooting) for how a missing
 grant shows up.
 
-The `agentx-writable` tag lets Rovara write a new refresh token back to this secret if Asana ever
+The `rovara-cloud-writable` tag lets Rovara write a new refresh token back to this secret if Asana ever
 issues one. Rovara may write only secrets with this tag. Step 4 adds it too, if you left it out.
 
 ## Step 4: Sign the bot user in and register the credential
@@ -115,8 +115,8 @@ issues one. Rovara may write only secrets with this tag. Step 4 adds it too, if 
 The sign-in must be the bot user's, not yours. Run, with the bot user's email:
 
 ```sh
-agentx admin credential authorize --ref asana-bot \
-  --secret agentx/<env>/connectors/asana-bot --provider asana \
+rovara admin credential authorize --ref asana-bot \
+  --secret rovara-cloud/<env>/connectors/asana-bot --provider asana \
   --no-browser --expect-account <bot user's email>
 ```
 
@@ -147,7 +147,7 @@ received the sign-in", and the command prints which Asana account signed in, the
 
 ```text
 Signed in to Asana as AgentX Bot <agentx-bot@example.com>. This must be the connector's bot user; if it is not, run the command again with the sign-in URL opened in a private window signed in as the bot user.
-Stored the refresh token in agentx/<env>/connectors/asana-bot and registered asana-bot as oauth-refresh-token.
+Stored the refresh token in rovara-cloud/<env>/connectors/asana-bot and registered asana-bot as oauth-refresh-token.
 ```
 
 Check that the "Signed in to Asana as" line names the bot user. With `--expect-account`, any other
@@ -167,19 +167,19 @@ only as the bot user.
 What the command did: it signed in with PKCE and a one-time state value, listened only on
 `127.0.0.1:8765`, exchanged the code for a refresh token, wrote the refresh token into the secret
 beside the client, tagged the secret, and registered it. It never prints a token, the code or the
-client secret. `agentx admin credential list` now shows `asana-bot` with type
+client secret. `rovara admin credential list` now shows `asana-bot` with type
 `oauth-refresh-token`.
 
 If the refresh token was stored and tagged but registering it with the control plane failed (for
-example, your `agentx login` session expired), the error ends with the one command that finishes
+example, your `rovara login` session expired), the error ends with the one command that finishes
 the job without a new sign-in:
 
 ```sh
-agentx admin credential register --ref asana-bot --type oauth-refresh-token \
-  --secret agentx/<env>/connectors/asana-bot
+rovara admin credential register --ref asana-bot --type oauth-refresh-token \
+  --secret rovara-cloud/<env>/connectors/asana-bot
 ```
 
-If you run `agentx` on a remote machine over SSH, forward the port first:
+If you run `rovara` on a remote machine over SSH, forward the port first:
 `ssh -L 8765:127.0.0.1:8765 <host>`. The browser on your own machine then reaches the command.
 
 ## Step 5: Find the project GID
@@ -243,12 +243,12 @@ Registration refuses any other Asana tool, because Rovara cannot hold it to a pr
 
 ## Step 8: Register the project and read the preflight
 
-Register the revision the usual way (`agentx --project <name> admin project register --file
+Register the revision the usual way (`rovara --project <name> admin project register --file
 <file> ...`). With `--json`, the result's `preflight` should read `"status":"connected"` for
 `asana`, with each approved tool under `offered` and nothing under `skipped`.
 
 Registration is refused if the credential reference is not registered (the refusal says to run
-`agentx admin credential authorize` first) or is not `oauth-refresh-token`. It is not refused if
+`rovara admin credential authorize` first) or is not `oauth-refresh-token`. It is not refused if
 Asana refuses the sign-in: preflight shows `not_connected` with the reason, and you fix it with
 Step 4.
 
@@ -319,7 +319,7 @@ action policy is needed for this.
 If the bot user's access is removed, its password is reset or the app's client secret changes, the
 refresh token stops working. Rovara then answers that Asana is not connected and names the fix:
 run Step 4 again. If you reset the client secret, first update the secret's `clientSecret` with
-Step 3's pipe, using `aws secretsmanager put-secret-value --secret-id agentx/<env>/connectors/asana-bot`
+Step 3's pipe, using `aws secretsmanager put-secret-value --secret-id rovara-cloud/<env>/connectors/asana-bot`
 in place of `create-secret` and dropping `--tags`, then run Step 4.
 
 Running Step 4 again to re-authorize has a brief rotation window: Asana issues a new refresh token
@@ -334,7 +334,7 @@ settings, then delete the secret.
 
 ## Troubleshooting
 
-- **"port 8765 is in use".** Another program, often another `agentx` command, is listening on it.
+- **"port 8765 is in use".** Another program, often another `rovara` command, is listening on it.
   Stop it and run Step 4 again.
 - **You approved access, but the browser shows another program's page or an error, and the command
   keeps waiting.** Something else listens on `[::1]:8765`, the IPv6 loopback. The command listens
@@ -377,20 +377,20 @@ settings, then delete the secret.
   remove the Rovara app from your own authorized apps in Asana's settings.
 - **"secret ... holds binary data, not a JSON string".** The secret was stored as binary. Store it
   again as a JSON string with Step 3's pipe, using `aws secretsmanager put-secret-value --secret-id
-  agentx/<env>/connectors/asana-bot` in place of `create-secret` and dropping `--tags`.
+  rovara-cloud/<env>/connectors/asana-bot` in place of `create-secret` and dropping `--tags`.
 - **The error says the secret "was not found" and "the control plane reads secrets in its own AWS
   region".** The sign-in stored the token in the region your AWS configuration points at, and the
   control plane runs in another. Running `register` again fails the same way. Create the secret in
   the control plane's region (Step 3 with `--region <region>`), then run Step 4 again with the same
   `--region <region>`, and delete the secret in the wrong region.
-- **"could not tag it agentx-writable=refresh-token".** Your AWS credentials lack
+- **"could not tag it rovara-cloud-writable=refresh-token".** Your AWS credentials lack
   `secretsmanager:TagResource`. Nothing was registered; fix the permission and run Step 4 again.
-- **The error ends with "finish with `agentx admin credential register ...` (no new sign-in
+- **The error ends with "finish with `rovara admin credential register ...` (no new sign-in
   needed)".** The refresh token is stored and tagged; only the registration failed. Run
-  `agentx login` if your session expired, then the `register` command the error names (Step 4).
-- **Registration is refused with "credential asana-bot is not registered; run agentx admin
+  `rovara login` if your session expired, then the `register` command the error names (Step 4).
+- **Registration is refused with "credential asana-bot is not registered; run rovara admin
   credential authorize first".** Run Step 4, then register the project again.
-- **Every call fails as not connected, "sign in again with agentx admin credential authorize".**
+- **Every call fails as not connected, "sign in again with rovara admin credential authorize".**
   The refresh token was revoked. Run Step 4 again.
 - **Every call fails as not connected, "its KMS key does not allow the AgentX broker" or "cannot
   be decrypted".** If a customer-managed key encrypts the secret, the broker role lacks
@@ -401,7 +401,7 @@ settings, then delete the secret.
   `reason`:
   - `"reason":"AccessDeniedException"` usually means a customer-managed KMS key encrypts the
     secret and the broker role lacks `kms:GenerateDataKey` (or `kms:Encrypt`, if the key policy
-    requires it) on it, or that the secret lacks the `agentx-writable` tag. Add the KMS grants from
+    requires it) on it, or that the secret lacks the `rovara-cloud-writable` tag. Add the KMS grants from
     Step 3, or run Step 4 again, which tags the secret.
   - `"reason":"LeaseDeadlineExceeded"` means a slow refresh skipped the write; the next refresh
     tries again.

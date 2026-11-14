@@ -1,6 +1,6 @@
 # Runbook: the audit anchor reports an object conflict, a chain mismatch, a version drift or a lock mismatch
 
-Applies to the audit ledger's anchor (the function that seals each org's new records every 15 minutes) and to these alarms, named `agentx-<env>-<suffix>`:
+Applies to the audit ledger's anchor (the function that seals each org's new records every 15 minutes) and to these alarms, named `rovara-cloud-<env>-<suffix>`:
 
 | Alarm suffix | Log event | Meaning |
 |---|---|---|

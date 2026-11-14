@@ -69,10 +69,10 @@ every tool, such as GitHub's owner and repository; a tool without them is not of
 are bound only on the tools that have them, such as a Linear team; other tools are offered
 unchanged. A request that supplies a bound argument itself is refused.
 
-In an installed environment, `agentx --env <name> connector add linear|jira|asana` stores the
-credential under `agentx/<env>/connectors/<type>` (for example `agentx/prod/connectors/linear`)
+In an installed environment, `rovara --env <name> connector add linear|jira|asana` stores the
+credential under `rovara-cloud/<env>/connectors/<type>` (for example `rovara-cloud/prod/connectors/linear`)
 and registers it for you, so you can skip the manual steps below. `connector add mcp` does the same
-for any other MCP server, under `agentx/<env>/connectors/mcp-<name>`, with the credential pinned to
+for any other MCP server, under `rovara-cloud/<env>/connectors/mcp-<name>`, with the credential pinned to
 the server's host. They are for the maintainers'
 deployment, whose secrets use `agentx/connectors/<name>`.
 
@@ -83,9 +83,9 @@ Connectors other than GitHub read their credential from an AWS Secrets Manager s
 pbpaste | tr -d '\n' | jq -Rc '{apiKey: .}' | aws secretsmanager create-secret \
   --name agentx/connectors/linear-payments --secret-string file:///dev/stdin
 
-agentx admin credential register --ref linear-payments \
+rovara admin credential register --ref linear-payments \
   --type static-secret --secret agentx/connectors/linear-payments
-agentx admin credential list
+rovara admin credential list
 ```
 
 The secret must use the default `aws/secretsmanager` key. If you encrypt it with a
@@ -95,9 +95,9 @@ policy requires it).
 
 A secret is one of three shapes: `static-secret` is `{"apiKey": "..."}`; `oauth-client-credentials`
 is `{"clientId", "clientSecret", "scopes": [...]}`; `oauth-refresh-token` is
-`{"clientId", "clientSecret", "refreshToken"}`, written by `agentx admin credential authorize` after a
+`{"clientId", "clientSecret", "refreshToken"}`, written by `rovara admin credential authorize` after a
 bot user signs in once in a browser. The broker may write a rotated refresh token back only to a
-secret tagged `agentx-writable: refresh-token`. Registration reads the secret and checks its
+secret tagged `rovara-cloud-writable: refresh-token`. Registration reads the secret and checks its
 shape but never echoes it back, and `list` never prints a secret value, only each reference, its
 type, secret name, whether it is the built-in GitHub App entry, whether a token is cached, and (for
 a registered entry) who registered it and when. Linear reads a registered `static-secret` API
@@ -123,7 +123,7 @@ past that point.
 
 This section and [the maintainers' production release](maintainers-release.md) describe the maintainers' own production deployment, which uses fixed
 stack names (`AgentXControlPlane` and so on) and the `release:prod` script. An environment installed
-with `agentx init` needs none of it: `init` creates the Slack app, stores its secrets and deploys the
+with `rovara init` needs none of it: `init` creates the Slack app, stores its secrets and deploys the
 Slack service itself.
 
 The production release creates the Slack ingress route, queue, and thread storage in
@@ -173,7 +173,7 @@ Then configure the Slack app:
   for the task's next step; Rovara ignores, and does not store, any other channel message.
 - Bot token scopes: `app_mentions:read`, `channels:history`, `groups:history`, `chat:write` and
   `users:read` (`channels:history` and `groups:history` go with the message events). The manifest
-  `agentx init` generates (`packages/cli/src/init/slack-app.ts`) lists every scope and event AgentX
+  `rovara init` generates (`packages/cli/src/init/slack-app.ts`) lists every scope and event AgentX
   uses; prefer it to setting them by hand. Rovara uses `users:read`
   to confirm that a mention posted through another app came from a person, and to show the
   requester's name in connector write footers. Without it, Rovara does not run mentions posted
@@ -184,7 +184,7 @@ Then configure the Slack app:
 Finally, bind the channel to the project. Binding requires an administrator login:
 
 ```sh
-agentx --project project-a admin slack bind --team T0123456789 --channel C0123456789
+rovara --project project-a admin slack bind --team T0123456789 --channel C0123456789
 ```
 
 A channel is bound to one project, not to a revision. A thread's workspace is built from the
@@ -237,7 +237,7 @@ such as Claude Code's Slack access or a script. Rovara checks with Slack that th
 person, then treats the message exactly as if they had typed it. A message posted with a bot token
 is ignored. To answer only typed mentions, set the `AgentXControlPlane` parameter
 `SlackAppPostedMessages` to `ignore` (in an installed environment,
-`agentx --env <name> config set slack.appPostedMessages ignore`). This also means a person's own
+`rovara --env <name> config set slack.appPostedMessages ignore`). This also means a person's own
 tool posting "@AgentX yes" counts as that person's confirmation, the same as typing it. The **Approve** button can only be
 pressed in Slack, but a typed or tool-posted `@AgentX yes` still counts, so set
 `SlackAppPostedMessages` to `ignore` if only typed confirmations should count.
@@ -245,7 +245,7 @@ pressed in Slack, but a typed or tool-posted `@AgentX yes` still counts, so set
 A thread that sends Rovara more than 6 requests in a minute is paused: Rovara posts one notice and
 runs nothing more in that thread until the next minute. This stops a tool that answers Rovara's
 replies from looping. The `AgentXControlPlane` parameter `SlackThreadTurnsPerMinute` changes the
-limit (in an installed environment, `agentx --env <name> config set limits.threadTurnsPerMinute
+limit (in an installed environment, `rovara --env <name> config set limits.threadTurnsPerMinute
 <n>`). A request that Rovara could not queue is not counted, so Slack's retry of it is not held
 against the thread; in the rare case where that happens during a burst at the limit, the thread
 can get a second pause notice in the same minute.
@@ -264,9 +264,9 @@ nothing and says which limit was reached; for the member limit, it also links th
 existing threads and gives their open task count. It still answers any part of the request that
 connectors can answer. In the maintainers' deployment, an administrator changes the limits with the
 `AgentXControlPlane` parameters `SlackMemberWorkspaceLimit` and `SlackOrganizationWorkspaceLimit`.
-An installed environment starts from the same defaults, and `agentx --env <name> config get
+An installed environment starts from the same defaults, and `rovara --env <name> config get
 limits.workspacesPerMember` (or `limits.workspacesPerOrg`) shows them. To change them, an
-administrator signed in with `agentx --env <name> login --admin` runs `agentx --env <name> config
+administrator signed in with `rovara --env <name> login --admin` runs `rovara --env <name> config
 set limits.workspacesPerMember <n>` (1 to 50) or `limits.workspacesPerOrg <n>` (1 to 1000), or uses
 the admin tool `agentx_admin_set_workspace_limits`. Either way the change goes through the admin
 change path: Rovara shows who is at or over the new limit, asks "Apply this change?" (`--yes`
@@ -429,8 +429,8 @@ task, `shareMode.default` picks the mode when none is asked for (`view` unless s
 `shareMode.allowContinue: false` keeps every shared task view only. Sharing into a private channel
 needs the developer to be a member of it. A shared task's channel cannot change, and a shared task
 cannot be made private again. An administrator can switch a shared task's mode, within those
-settings, with `agentx --env <name> admin task share-mode --task <task-id> --mode view|continue`.
-Sharing is available only in environments installed with `agentx init`. The developer's side is in
+settings, with `rovara --env <name> admin task share-mode --task <task-id> --mode view|continue`.
+Sharing is available only in environments installed with `rovara init`. The developer's side is in
 [Use Rovara from Claude Code, Codex or Cursor](mcp-install.md#sharing-a-task-to-slack).
 
 A task's workspace setup that is still running after 50 minutes is marked failed; the task then
@@ -522,7 +522,7 @@ What decides that a call is destructive or changes an item, so you can approve t
 The model that checks changes is a deployment setting: the `AgentXSlackOrchestrator` parameter
 `GateClassifierModelId`, default Claude Haiku 4.5 (`us.anthropic.claude-haiku-4-5-20251001-v1:0`),
 which needs the one-time Anthropic use-case form in the Bedrock console. In an installed environment,
-`agentx init` asks for it (`--classifier-model`), and `agentx --env <name> config set
+`rovara init` asks for it (`--classifier-model`), and `rovara --env <name> config set
 models.classifier <id>` changes it later, after testing the model with one call. If the model is
 unavailable, errors, gives an answer that is not a plain verdict, or does not answer in time, Rovara asks. The time limit is 8
 seconds unless the service's `AGENTX_GATE_CLASSIFIER_TIMEOUT_MS` is a whole number of milliseconds
@@ -619,8 +619,8 @@ stored. A mention with no text after `@AgentX` is answered by the ingress Lambda
 reaches the orchestrator, so it leaves no turn record. `recordingErrors` on a record lists fixed
 category strings, never message text, when part of the recording itself failed, for example
 `handler_failed:tool_execution_end`; the turn's own answer to the member is unaffected either way.
-An administrator exports records with `agentx admin turns export --since <duration> [--output
-<file>]`, for example `agentx admin turns export --since 7d --output turns.jsonl`; with `--output`
+An administrator exports records with `rovara admin turns export --since <duration> [--output
+<file>]`, for example `rovara admin turns export --since 7d --output turns.jsonl`; with `--output`
 the file is written at mode `0600` through a `.partial` file renamed into place only on success,
 and the output holds request text, so keep it private. The summary on stderr gives the count
 exported, plus `skipped` when the control plane left out stored records that failed the record
@@ -638,25 +638,25 @@ Lambda's IAM grant cannot read them: it may `GetItem` one record by key, and onl
 the view shows. Nothing is posted to the thread. If the record is more than 30 days old, was never
 saved, is still being saved, or cannot be read, the view says so. If the view cannot open in time,
 Rovara tells the member privately. Long arguments are cut to fit Slack's limits and end with
-`… [cut to fit]`; `agentx admin turns export` has the full record. The button needs Slack
+`… [cut to fit]`; `rovara admin turns export` has the full record. The button needs Slack
 Interactivity, which the action gate's confirmation buttons already turned on; it needs no new
 scope.
 
-Connector and turn metrics go to the `AgentX` CloudWatch namespace (`AgentX/<env>` in an
+Connector and turn metrics go to the `AgentX` CloudWatch namespace (`RovaraCloud/<env>` in an
 installed environment); see
 [contracts/metrics.md](../specs/013-connector-gateway/contracts/metrics.md) for the full list. The
 names below are the maintainers' deployment's. An installed environment has the same alarms named
-`agentx-<env>-<Name>` (for example `agentx-<env>-ConnectorBroken`) on the topic
-`agentx-<env>-alerts`, plus Slack service, session and shared-task notice alarms (such as
-`agentx-<env>-TurnErrors` and `agentx-<env>-DeveloperNoticeDeadLetters`), and
-`agentx-<env>-DispatchDeadLetters`. That last one fires when a worker dispatch job exhausts its
+`rovara-cloud-<env>-<Name>` (for example `rovara-cloud-<env>-ConnectorBroken`) on the topic
+`rovara-cloud-<env>-alerts`, plus Slack service, session and shared-task notice alarms (such as
+`rovara-cloud-<env>-TurnErrors` and `rovara-cloud-<env>-DeveloperNoticeDeadLetters`), and
+`rovara-cloud-<env>-DispatchDeadLetters`. That last one fires when a worker dispatch job exhausts its
 receives and lands in the dispatch dead-letter queue. To clear it, find the job's operation ID in
 the dispatcher logs, then redrive or purge the `DispatchDeadLetterQueueUrl` queue. An installed
-environment also has `agentx-<env>-StuckCancels`: it fires when the session reconciler finds a task
+environment also has `rovara-cloud-<env>-StuckCancels`: it fires when the session reconciler finds a task
 whose cancel never reached its worker for 30 minutes, and queues the cancel again once or ends the
 task (or fails to), or a task whose cancel failed while its worker still says it is busy (it keeps
-its workspace until the worker is idle or gone). Look for `stuck_cancel` events in the reconciler's logs. `agentx init` subscribes
-your alert address and sends a test alarm, and `agentx alerts test` sends another. Five
+its workspace until the worker is idle or gone). Look for `stuck_cancel` events in the reconciler's logs. `rovara init` subscribes
+your alert address and sends a test alarm, and `rovara alerts test` sends another. Five
 alarms ship in `AgentXControlPlane`: `AgentXConnectorBroken` (a connector's discovery failed or a
 vendor changed an approved tool's schema), `AgentXConnectorNotConnected` (a connector's vendor
 credential is missing, revoked or rejected), `AgentXEmptyResponses` (more than three turns in an
@@ -681,8 +681,8 @@ restarted each time, moves to the `SlackRequestDeadLetterQueueUrl` queue.
 
 ## Retired local modes
 
-The local Socket Mode bridge (`agentx slack run`, `slack configure`, `slack login`) and, since the
-Slack-only retirement, the whole local development client are removed: `agentx --prompt`, the
+The local Socket Mode bridge (`rovara slack run`, `slack configure`, `slack login`) and, since the
+Slack-only retirement, the whole local development client are removed: `rovara --prompt`, the
 interactive TUI, `status`, `conversation new`, `pr`, `cancel`, and `slack logout` no longer exist.
 Delete any leftover `~/.agentx/state` directory and, if your OS credential store still holds
 `dev.agentx.slack` entries from the bridge, remove them there.

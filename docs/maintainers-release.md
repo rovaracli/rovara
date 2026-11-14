@@ -1,7 +1,7 @@
 # Maintainers' production release
 
 This page describes the maintainers' own deployment and its release pipeline. To move an
-installed environment to a newer release, use `agentx --env <name> upgrade`; see
+installed environment to a newer release, use `rovara --env <name> upgrade`; see
 [Running Rovara](day-two.md#upgrade).
 
 Registering a project and binding its channel are covered in [Administration client and projects](administration.md#2-register-a-project-and-bind-its-slack-channel). Workspaces are created by
@@ -105,7 +105,7 @@ Spec 014 phase 14c part 2 turns the action gate on. Operator notes:
   already used.
 - The part 1 rollback floor above still applies.
 - Rolling the control plane back below this release does not break the turn record export, but
-  `agentx admin turns export` then skips every record that has a call `gate` or one of the new
+  `rovara admin turns export` then skips every record that has a call `gate` or one of the new
   dispositions: the older control plane's record schema refuses them, counts them as `skipped` and
   logs `turn_record.invalid`. The records stay in the table and export again after rolling forward,
   within their 30 days.
@@ -151,7 +151,7 @@ Spec 014 phase 14d adds the **Details** button. Operator notes:
   without a read, and also for a record DynamoDB has not deleted yet.
 - A press within 60 seconds of the reply, before the record is saved, says the details are still
   being saved. A record that was never saved points to `turn_record.write_failed`. A record that
-  fails its schema (`interaction.details_invalid`) points to `agentx admin turns export`. A read
+  fails its schema (`interaction.details_invalid`) points to `rovara admin turns export`. A read
   that fails or takes more than 1 second (`interaction.details_read_failed`) says to press
   Details again. If the view cannot open (`interaction.details_open_failed`), the member gets
   "I couldn't open the details in time. Press Details again." privately.

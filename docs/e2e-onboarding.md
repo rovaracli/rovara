@@ -4,7 +4,7 @@ AgentX proposes project E2E setup from a source snapshot. The proposal is a star
 
 ## Connect a project
 
-Run `agentx --env <name> project add` from the project checkout and select a GitHub repository the AgentX GitHub App can access. Connect issue trackers separately with `agentx --env <name> connector add <linear|jira|asana> --project <project>`.
+Run `rovara --env <name> project add` from the project checkout and select a GitHub repository the AgentX GitHub App can access. Connect issue trackers separately with `rovara --env <name> connector add <linear|jira|asana> --project <project>`.
 
 ## Inspect the proposal
 
@@ -24,7 +24,7 @@ A Node project with no start script, or with only a pnpm, yarn or bun lockfile, 
 
 ## Approve or decline
 
-Choose whether to use the proposed setup. AgentX records that choice against the immutable proposal reference and digest. Approving stores the proposal's E2E policy with the project revision. Declining records the decision and omits that E2E policy, so browser and API checks are off; the project keeps its own setup and test commands (the proposed ones and any you passed as flags), and you can run `agentx project setup-approve` later to turn the checks on.
+Choose whether to use the proposed setup. AgentX records that choice against the immutable proposal reference and digest. Approving stores the proposal's E2E policy with the project revision. Declining records the decision and omits that E2E policy, so browser and API checks are off; the project keeps its own setup and test commands (the proposed ones and any you passed as flags), and you can run `rovara project setup-approve` later to turn the checks on.
 
 A mock can support a local check of an isolated behavior. Approving that substitution keeps it in the saved proposal; it does not produce a runtime PASS or prove the corresponding live source, browser workflow, or customer path. Required evidence that remains missing or `UNKNOWN` must remain visible and cannot be treated as a pass.
 
@@ -38,4 +38,4 @@ The [native P0 acceptance record](p0-native-journey-acceptance.md) summarizes th
 
 ## Runtime expiry
 
-The browser and API runtime registration is good for at most seven days, and not after the executor or worker image changes; an operator renews it with `npx tsx scripts/test-qualify-runtime.ts --env <env> --profile <aws-profile> --apply`. `agentx doctor` (with an admin sign-in) and `scripts/test-deploy.ts --check` warn when it expires within 48 hours, naming the expiry time and that command. A round refused because the registration expired says `runtime-expired`, and an administrator qualifies the runtime again, then retries the checks.
+The browser and API runtime registration is good for at most seven days, and not after the executor or worker image changes; an operator renews it with `npx tsx scripts/test-qualify-runtime.ts --env <env> --profile <aws-profile> --apply`. `rovara doctor` (with an admin sign-in) and `scripts/test-deploy.ts --check` warn when it expires within 48 hours, naming the expiry time and that command. A round refused because the registration expired says `runtime-expired`, and an administrator qualifies the runtime again, then retries the checks.

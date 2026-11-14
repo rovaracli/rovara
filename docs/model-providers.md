@@ -3,7 +3,7 @@
 Rovara can call Anthropic's API or OpenAI's API directly, using an API key you supply, instead of (or
 alongside) Amazon Bedrock and OpenRouter. Any role can use it: the Slack orchestrator, the action-gate
 classifier and the coding worker. Projects can also approve these models for Slack's `@agentx use`. The
-key belongs to the installation: only an administrator sets it, through `agentx init`. It is never entered
+key belongs to the installation: only an administrator sets it, through `rovara init`. It is never entered
 in Slack. See [spec 054](../specs/054-direct-provider-keys/spec.md).
 
 To let each developer use their **own ChatGPT Plus or Pro plan** for their tasks instead, see
@@ -15,7 +15,7 @@ OpenAI models without a router in between.
 
 ## Configure an installation
 
-`agentx init` asks for the model provider first:
+`rovara init` asks for the model provider first:
 
 ```text
 1. Amazon Bedrock (recommended) (default)
@@ -35,7 +35,7 @@ Enter to accept):
 Init then asks for the **API key** in a hidden prompt. It refuses a key with the wrong prefix for the
 provider (`sk-ant-` for Anthropic; `sk-` for OpenAI, but not an OpenRouter `sk-or-` or Anthropic key). It
 also refuses a Claude Pro/Max subscription token (`sk-ant-oat…`): Rovara uses API keys only. Init stores the
-raw key, not JSON, in the Secrets Manager secret `agentx/<env>/anthropic` or `agentx/<env>/openai`, with the
+raw key, not JSON, in the Secrets Manager secret `rovara-cloud/<env>/anthropic` or `rovara-cloud/<env>/openai`, with the
 AWS-managed encryption key, just before it saves its answers. The saved answers hold only the secret's ARN.
 The plan lists the secret, and prices each direct-provider role from the provider's list price.
 
@@ -73,19 +73,19 @@ takes only the ARN flags. A deploy answers file uses:
     "classifier": "claude-haiku-4-5",
     "worker": "gpt-5.4",
     "providers": { "orchestrator": "anthropic", "classifier": "anthropic", "worker": "openai" },
-    "anthropic": { "secretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/anthropic-AbCdEf" },
-    "openai": { "secretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/openai-AbCdEf" }
+    "anthropic": { "secretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/anthropic-AbCdEf" },
+    "openai": { "secretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/openai-AbCdEf" }
   }
 }
 ```
 
 ### Checks
 
-Init, `agentx config set models.<role>` and `agentx doctor` check each direct-provider model. The check
+Init, `rovara config set models.<role>` and `rovara doctor` check each direct-provider model. The check
 looks the model up in the provider's model list, then sends one request of at most 16 output tokens with
 a tool attached, so it can cost a fraction of a cent. A failure says what to fix (the key, the model's
 availability to your organization, credits and limits, or provider status) without repeating the key or the
-provider's response. A role with a usable key makes no Bedrock call. `agentx doctor` also checks that a
+provider's response. A role with a usable key makes no Bedrock call. `rovara doctor` also checks that a
 secret init created exists and holds the right kind of key. It skips, and says so, a secret you made
 yourself.
 
@@ -111,7 +111,7 @@ installed Pi catalog".
 
 - CloudFormation's `AnthropicSecretArn` and `OpenAISecretArn` parameters go to the control-plane, runtime
   (worker settings) and Slack stacks, and the eval stack when it is deployed. They default to empty, so
-  existing installs are unchanged. `agentx deploy` sends the same ARN to every stack. `agentx env adopt`
+  existing installs are unchanged. `rovara deploy` sends the same ARN to every stack. `rovara env adopt`
   refuses stacks that disagree.
 - The control plane grants `secretsmanager:GetSecretValue` on exactly that ARN to the Slack task role and the
   worker instance role (`AnthropicSecretRead`, `OpenAISecretRead`), only when the ARN is set. The eval stack
@@ -140,11 +140,11 @@ exposure. See [OpenRouter model access](openrouter.md#workspace-credential-expos
 When the ARN is empty, the secret does not exist, or its value is empty, the role does not run on a model
 nobody chose. Without a chosen fallback (the default, `none`) the call fails with a named error: "The OpenAI
 key secret is missing, and no fallback model was chosen. Add or restore the key, or choose a fallback with
-`agentx --env <env> config set models.fallback <bedrock model id>`". `agentx init` refuses a role whose key is missing for
-the same reason, and `agentx doctor` reports it as an error naming the role.
+`rovara --env <env> config set models.fallback <bedrock model id>`". `rovara init` refuses a role whose key is missing for
+the same reason, and `rovara doctor` reports it as an error naming the role.
 
 To run on Amazon Bedrock instead while the key is missing, choose the model:
-`agentx --env <env> config set models.fallback us.anthropic.claude-sonnet-4-6`. The model must be a Bedrock
+`rovara --env <env> config set models.fallback us.anthropic.claude-sonnet-4-6`. The model must be a Bedrock
 model of Rovara's model catalog, and it is tested with one call before it is set. A work request that runs on it
 says so: the task page and the Slack thread read "ran on Amazon Bedrock `<model>` because the OpenAI key
 secret is missing", and the logs record `model_fallback` with the reason `anthropic_secret_missing` or
@@ -169,13 +169,13 @@ deployment's `PromptCacheRetention` setting.
 
 ## Rotate, add or remove a key
 
-- **Rotate:** rerun `agentx init --resume --anthropic-key-file <new key>` (or `--openai-…`). It replaces the
+- **Rotate:** rerun `rovara init --resume --anthropic-key-file <new key>` (or `--openai-…`). It replaces the
   value in the secret init created, then restart the Slack service. For a secret you made yourself, put the
   new value there.
 - **Add a provider later:** add the provider's ARN to the deploy answers or stacks, then deploy. Approve its
   models in a project.
-- **Teardown:** stack deletion does not remove keys init stored. Delete `agentx/<env>/anthropic` and
-  `agentx/<env>/openai` with `aws secretsmanager delete-secret --secret-id <name> --force-delete-without-recovery`,
+- **Teardown:** stack deletion does not remove keys init stored. Delete `rovara-cloud/<env>/anthropic` and
+  `rovara-cloud/<env>/openai` with `aws secretsmanager delete-secret --secret-id <name> --force-delete-without-recovery`,
   and revoke the keys at the provider.
 
 ## Live verification (not yet performed)

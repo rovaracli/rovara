@@ -124,7 +124,7 @@ Codex and Cursor handle this themselves.
 Tasks from your AI tool are private unless you share them, or the project requires sharing (see
 below). For a private task, only you see its title, instructions, progress and results. Others who
 can use the project see only that a workspace exists, with its status and times, in
-`agentx workspaces`. Every action is recorded for your admins. Each task keeps a workspace until
+`rovara workspaces`. Every action is recorded for your admins. Each task keeps a workspace until
 you close it ("close my AgentX task"), and open tasks count against the same limit as your Slack
 threads (3 at a time unless your admin changed it).
 
@@ -167,7 +167,7 @@ a member of it. An admin can also switch a shared task between the two modes, wi
 settings:
 
 ```
-agentx --env <env> admin task share-mode --task <task-id> --mode view|continue
+rovara --env <env> admin task share-mode --task <task-id> --mode view|continue
 ```
 
 ## When something goes wrong

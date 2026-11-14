@@ -1,6 +1,6 @@
 # Runbook: the audit anchor cannot get a timestamp
 
-Applies to the alarm `agentx-<env>-AuditTimestampFailed` (one or more `audit.timestamp_failed` log lines in each of two consecutive 15-minute periods) and to the timestamp settings of the audit ledger's anchor.
+Applies to the alarm `rovara-cloud-<env>-AuditTimestampFailed` (one or more `audit.timestamp_failed` log lines in each of two consecutive 15-minute periods) and to the timestamp settings of the audit ledger's anchor.
 
 Nothing is lost while this alarm is on. Sealing goes on: records are sealed, the sealed objects are locked, and each epoch is chained to the one before it. An epoch that has no timestamp yet is `stamp_pending`. The next epoch that gets timestamps from every configured authority covers all the pending ones before it (the chain of statements binds them), and an export built afterwards verifies with the standalone verifier. What is late is the independent proof of time.
 
