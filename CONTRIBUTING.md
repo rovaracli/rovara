@@ -6,8 +6,8 @@ This page says how to propose a change and get it merged.
 ## Before you start
 
 - **Found a security problem?** Do not open an issue. Follow [SECURITY.md](SECURITY.md).
-- **Found a bug?** Open an issue with the bug form. Include `rovara --version` and, for an
-  installed environment, the output of `rovara --env <name> doctor`, with secrets removed.
+- **Found a bug?** Open an issue with the bug form. Include the steps, what you expected and what
+  happened, with secrets removed.
 - **Want to add or change a feature?** Open an issue first and describe the problem. Larger changes
   start as a specification under `specs/`, so we can agree the behaviour before anyone writes code.
 
@@ -25,7 +25,7 @@ npm run build
 
 1. Fork the repository and create a branch from `mainline`.
 2. Write a failing test first, then the change that makes it pass. Tests live under `tests/`:
-   `contract`, `integration`, `eval`, `live` and their `fixtures` and `support`.
+   `unit`, `contract`, `web` and their `fixtures` and `support`.
 3. Run the same checks CI runs:
 
    ```sh
@@ -35,14 +35,11 @@ npm run build
    npm run infra:synth
    ```
 
-4. Update the docs when behaviour changes. The README and the pages under `docs/` describe what the
+4. Update the docs when behaviour changes. The README and the package READMEs describe what the
    code does today, and they must stay true.
 
-   Note: the repository's `.gitignore` ignores `docs/`, so a new page there is left out of a commit
-   unless you add it with `git add -f docs/<page>.md`.
-
 5. Commit with a [Conventional Commits](https://www.conventionalcommits.org/) message that names
-   the area, for example `fix(worker): …`, `feat(cli): …` or `docs(spec-025): …`.
+   the area, for example `fix(cloud-server): …`, `feat(ui): …` or `docs(readme): …`.
 
 ## Open a pull request
 

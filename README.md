@@ -1,533 +1,72 @@
-<h1 align="center">Rovara</h1>
+# Rovara Cloud
 
-<p align="center">
-  <strong>The open-source alternative to Claude Tag!</strong>
-</p>
-
-<p align="center">
-  <a href="#quickstart"><strong>Quickstart</strong></a> &middot;
-  <a href="#documentation"><strong>Docs</strong></a> &middot;
-  <a href="https://rovara-dev.github.io/docs/index.html"><strong>Field guide</strong></a> &middot;
-  <a href="docs/how-it-works.md"><strong>How it works</strong></a> &middot;
-  <a href="docs/releases.md"><strong>Releases</strong></a> &middot;
-  <a href="CONTRIBUTING.md"><strong>Contributing</strong></a>
-</p>
-
-<p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/node-22.19%2B-339933" alt="Node 22.19+" />
-  <img src="https://img.shields.io/badge/runs%20in-your%20AWS%20account-FF9900" alt="Runs in your AWS account" />
-  <img src="https://img.shields.io/badge/agent-Pi%201.0-6f42c1" alt="Pi coding agent 1.0" />
-</p>
-
-<p align="center">
-  <a href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Frovara-installer-us-east-1.s3.us-east-1.amazonaws.com%2Flatest%2Finstaller.template.json&amp;stackName=agentx-installer"><img src="docs/assets/launch-in-aws.svg" alt="Launch in AWS" width="232" height="52" /></a>
-</p>
-
-<br/>
-
-# The open-source alternative to Claude Tag!
-
-Start a task in Slack, or hand one over from Claude Code, Codex or Cursor. A remote
-[Pi](https://github.com/earendil-works/pi) coding agent works on it in a persistent, isolated EC2
-workspace in your AWS account. When it finishes, Rovara reports which checks passed, failed, or
-could not be verified. When you're ready, it opens a pull request for a person to review and merge.
-Rovara has no merge path.
-
-**Your team delegates from where it already works. Your AWS account runs the work.**
-
-> **Naming:** Rovara was called AgentX. The command is `rovara` (`agentx` still works as an alias),
-> and every AWS resource of a named environment is named `rovara-cloud` (for example the stack
-> `rovara-cloud-<env>-control-plane` and the settings under `/rovara-cloud/<env>/`). Packages
-> (`@agentx/*`), environment variables (`AGENTX_*`), MCP tool names, local paths (`~/.agentx`) and the
-> default Slack app name (`@AgentX`) still say agentx. An environment installed under the old
-> `agentx-<env>-*` names is not read by this release. The legacy deployment, which has no environment
-> name, keeps its `AgentX*` stacks (for example `AgentXControlPlane`).
-
-|        | Step                    | Example                                                                                       |
-| ------ | ----------------------- | --------------------------------------------------------------------------------------------- |
-| **01** | Install in your account | `rovara init` sets up the stacks, a GitHub App, a Slack app and your first project.           |
-| **02** | Bind a project          | Point a Slack channel at a project: its repositories, setup steps and readiness checks.       |
-| **03** | Delegate and review     | _"@AgentX fix the navigation bug."_ Start the suggested Quick or Full path, approve the plan, then review the draft PR. |
-
-<br/>
-
-<div align="center">
-<table>
-  <tr>
-    <td align="center"><strong>Start tasks from</strong></td>
-    <td align="center">Slack</td>
-    <td align="center">Claude Code</td>
-    <td align="center">Codex</td>
-    <td align="center">Cursor</td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Connects to</strong></td>
-    <td align="center">GitHub</td>
-    <td align="center">Linear</td>
-    <td align="center">Jira</td>
-    <td align="center">Asana</td>
-  </tr>
-  <tr>
-    <td align="center"><strong>Models from</strong></td>
-    <td align="center">Amazon Bedrock</td>
-    <td align="center">OpenRouter</td>
-    <td align="center">Anthropic</td>
-    <td align="center">OpenAI</td>
-  </tr>
-</table>
-
-<em>Plus any other remote MCP server, such as Sentry or PagerDuty.</em>
-
-</div>
-
-<br/>
-
-## Rovara is right for you if
-
-- ✅ You want a coding agent your **whole team can use from Slack**, without anyone's laptop staying on
-- ✅ You want every task to run on **its own isolated machine**, not on a developer's computer
-- ✅ You want the agent, its code and its credentials **inside your own AWS account**
-- ✅ You want a thread to **pick up where it left off**, with its files and conversation intact
-- ✅ You want each run to end with a **check report**, not just the agent's word that it's done
-- ✅ You use Claude Code, Codex or Cursor and want to **hand off long tasks** and share them with the team
-- ✅ You want **a person to review and merge** every pull request
-
-<br/>
-
-## Features
-
-<table>
-<tr>
-<td align="center" width="33%">
-<h3>🧵 One thread, one workspace</h3>
-Each Slack thread owns its own EC2 worker and encrypted EBS volume. Threads run in parallel; requests in one thread run in order.
-</td>
-<td align="center" width="33%">
-<h3>💾 Persistent workspaces</h3>
-Files and conversation live on the thread's volume. The idle reaper stops compute and keeps the disk, so the next mention resumes.
-</td>
-<td align="center" width="33%">
-<h3>📋 Check report</h3>
-When the agent finishes, Rovara reruns the project's readiness checks, or the agent's own test commands, and <a href="docs/how-it-works.md#what-the-check-report-means">reports what passed, failed, or could not be verified</a>.
-</td>
-</tr>
-<tr>
-<td align="center">
-<h3>🔀 Pull requests for review</h3>
-Opens and maintains PRs. Configured <a href="docs/pull-requests.md#configure-codebuild-gates">CodeBuild gates</a> run against the candidate commit. A person merges; Rovara never force-pushes.
-</td>
-<td align="center">
-<h3>🔒 Isolated coding worker</h3>
-The Slack orchestrator has no shell or file tools. All coding happens in the remote worker, inside that thread's workspace.
-</td>
-<td align="center">
-<h3>🛡️ Action gate</h3>
-Reads run. Closing, deleting, merging and large changes ask first, with <strong>Approve</strong> and <strong>Cancel</strong> buttons. <a href="docs/slack.md#actions-that-need-your-confirmation">Administrators add their own rules.</a>
-</td>
-</tr>
-<tr>
-<td align="center">
-<h3>🔌 Connectors</h3>
-GitHub (through GitHub's MCP server), Linear, Jira, Asana, or <a href="docs/connectors/custom-mcp.md">any other remote MCP server</a>. Only the tools a project approves are offered.
-</td>
-<td align="center">
-<h3>🤖 From your AI tool</h3>
-<code>rovara mcp</code> gives Claude Code, Codex or Cursor <a href="docs/mcp-install.md">11 tools</a> to start, check, continue and share Rovara tasks.
-</td>
-<td align="center">
-<h3>🧠 Your choice of model</h3>
-Bedrock by default, or <a href="docs/openrouter.md">OpenRouter</a>, or <a href="docs/model-providers.md">your own Anthropic or OpenAI key</a>. <code>@agentx use Fast</code> switches models per project.
-</td>
-</tr>
-<tr>
-<td align="center">
-<h3>🏗️ Guided install</h3>
-<code>rovara init</code> shows what it will create and an estimated monthly cost first, and resumes where it stopped. <code>upgrade</code>, <code>doctor</code> and <code>destroy</code> handle day 2.
-</td>
-<td align="center">
-<h3>📦 Dev containers</h3>
-A project can name a devcontainer. It runs on the worker's own Docker, with the workspace mounted at the same path.
-</td>
-<td align="center">
-<h3>🔎 Audit trail</h3>
-Every turn leaves a record of the tools called and why. A <strong>Details</strong> button shows it in Slack; <code>rovara admin turns export</code> exports it.
-</td>
-</tr>
-</table>
-
-<br/>
-
-## Problems Rovara solves
-
-| Without Rovara                                                                                       | With Rovara                                                                                                         |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| ❌ A coding agent only runs while someone's laptop is open, and only that person can see it.          | ✅ It runs in your AWS account. Anyone in the channel can follow the thread and steer it.                            |
-| ❌ Two tasks on one checkout trip over each other's changes.                                          | ✅ Every thread has its own machine and disk.                                                                        |
-| ❌ Picking a task back up next week means rebuilding the context by hand.                             | ✅ The thread's files and conversation are still on its volume. Mention it again and it carries on.                  |
-| ❌ The agent says "all tests pass" and you can't tell whether it ran any.                             | ✅ Rovara reruns the checks itself and reports what passed, failed, or could not be verified.                        |
-| ❌ Handing an agent your GitHub token and hoping it doesn't close the wrong issue.                    | ✅ Tokens stay in the control plane, and destructive actions wait for the requester to approve them.                 |
-| ❌ Idle cloud machines quietly run up the bill.                                                       | ✅ The idle reaper stops compute and keeps the disk. Per-member and per-organization limits cap open workspaces.     |
-
-<br/>
-
-## Why Rovara is different
-
-|                                         |                                                                                                                                         |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| **Check outcomes, stated plainly.**     | A run with no usable checks, or one that stops before verification, is reported as not verified, never as passing.                     |
-| **A person merges.**                    | Rovara can open, update, replace and revert pull requests. It has no merge path.                                                        |
-| **The orchestrator can't touch code.**  | The hosted Slack agent has orchestration and approved connector tools only. Source, edits and shell live in the remote worker.         |
-| **Credentials never reach the worker.** | The GitHub App key stays in Secrets Manager. Rovara mints short-lived, single-repository tokens for each clone, push and PR.           |
-| **Tool output can't approve itself.**   | The model that checks a change sees only the members' messages and the call, never what a tool returned.                                |
-| **Memory fails closed.**                | If a thread's volume is lost, the next request fails with `CONVERSATION_STATE_LOST` instead of starting over on files it doesn't know. |
-| **Fenced closure.**                     | Closing a workspace is refused while it holds uncommitted, untracked or unpushed work.                                                  |
-
-<br/>
-
-## What's under the hood
+Rovara Cloud is the hosted web app for [Rovara Code](https://github.com/PrepLabsAI/Rovara). It is an
+API layer only: its own server and web app, in front of a separate Rovara Code install. Cloud runs
+no engine of its own. Every task, plan, check and pull request lives in Code, and Cloud reads and
+changes them through Code's HTTP API as the signed-in person.
 
 ```
- Slack thread                         Claude Code · Codex · Cursor
-      │                                          │  rovara mcp
-      ▼                                          ▼
-┌─────────────────────────┐        ┌──────────────────────────────────────┐
-│ Slack ingress (Lambda)  │        │            CONTROL PLANE             │
-│   → SQS → Slack service │──────▶ │                                      │
-│     (ECS Fargate)       │        │  ┌──────────┐ ┌──────────┐ ┌───────┐ │
-│                         │        │  │  Broker  │ │Connector │ │  PRs  │ │
-│  Hosted Pi orchestrator │        │  │   API    │ │ gateway  │ │& gates│ │
-│  + action gate          │        │  └──────────┘ └──────────┘ └───────┘ │
-│  no shell, no files     │        │  ┌──────────┐ ┌──────────┐ ┌───────┐ │
-└─────────────────────────┘        │  │Dispatcher│ │ Session  │ │ Idle  │ │
-                                   │  │  & queue │ │ manager  │ │reaper │ │
-                                   │  └──────────┘ └──────────┘ └───────┘ │
-                                   └──────────────────┬───────────────────┘
-                                                      │ signed invocation
-                        ┌─────────────────────────────┼─────────────────────────────┐
-                        ▼                             ▼                             ▼
-                 ┌─────────────┐               ┌─────────────┐               ┌─────────────┐
-                 │ EC2 worker  │               │ EC2 worker  │               │ EC2 worker  │
-                 │ Pi coding   │               │ Pi coding   │               │ Pi coding   │
-                 │ agent       │               │ agent       │               │ agent       │
-                 ├─────────────┤               ├─────────────┤               ├─────────────┤
-                 │ EBS volume  │               │ EBS volume  │               │ EBS volume  │
-                 └─────────────┘               └─────────────┘               └─────────────┘
-                    thread A                      thread B                   task from Cursor
+browser ──► Cloud (packages/cloud-server + the web app) ──► Rovara Code's API
 ```
 
-### The systems
-
-<table>
-<tr>
-<td width="50%">
-
-**Slack service** (`packages/slack-service`, `packages/orchestrator`): An ingress Lambda verifies
-Slack's signature and queues the request. An ECS Fargate service runs the Pi orchestrator for the
-thread, applies the action gate, and posts the reply. [Working in Slack](docs/slack.md)
-
-</td>
-<td width="50%">
-
-**Control plane** (`packages/broker`): The API behind everything: projects and revisions,
-workspaces, operations, callbacks, pull requests, CodeBuild gates and turn records, with state in
-DynamoDB. [Production architecture](docs/architecture-production.md)
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Coding worker** (`packages/worker`): Runs the Pi coding agent on an EC2 instance with an
-encrypted EBS workspace. Loads each repository's `AGENTS.md` or `CLAUDE.md`, runs the
-verification extension that produces the check report, and records usage for every task.
-[How Rovara works](docs/how-it-works.md)
-
-</td>
-<td>
-
-**Session lifecycle**: The dispatcher signs each invocation; the session manager and Step
-Functions provision, resume and delete workers; the idle reaper stops compute and keeps the volume;
-the reconciler cleans up stuck cancels.
-
-</td>
-</tr>
-<tr>
-<td>
-
-**Connector gateway** (`packages/gateway`): One definition per connector type (GitHub, Linear,
-Jira, Asana and generic MCP). Discovers vendor tools, offers only approved ones, fills
-server-bound arguments and keeps credentials out of the model's reach.
-[Connector credentials](docs/slack.md#connector-credentials)
-
-</td>
-<td>
-
-**Developer MCP server** (`packages/mcp`): `rovara mcp` lets a signed-in developer's AI tool list
-projects, start and continue tasks, share them to Slack and open pull requests.
-[Use Rovara from your AI tool](docs/mcp-install.md)
-
-</td>
-</tr>
-<tr>
-<td>
-
-**CLI and installer** (`packages/cli`): `rovara init`, `upgrade`, `config`, `doctor`, `destroy`,
-project, channel and connector setup, developer sign-in, and every admin command.
-[Administration client](docs/administration.md)
-
-</td>
-<td>
-
-**Infrastructure** (`infra`, `packages/model-runtime`, `packages/contracts`): CDK stacks and
-published CloudFormation templates, the model catalog and provider settings, and the shared
-contracts every component validates against.
-
-</td>
-</tr>
-</table>
-
-<br/>
-
-## What Rovara is not
-
-|                                       |                                                                                                          |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| **Not proof that the code works.**    | The check report says what the available checks showed. It is not proof that a change is correct.       |
-| **Not an auto-merger.**               | It opens and maintains pull requests. A person reviews and merges them.                                  |
-| **Not a hosted service.**             | You install it in your AWS account. There is no Rovara account to sign up for.                           |
-| **Not a local agent.**                | Nothing runs on a developer's machine except the CLI. The old local and Socket Mode modes are retired.   |
-| **Not an agent framework.**           | It runs the Pi coding agent for you. It doesn't ask you to build one.                                    |
-
-<br/>
-
-## Quickstart
-
-### What you need
-
-- An AWS account where you can create IAM roles, ideally one used only for Rovara
-- A GitHub organization or personal account to own Rovara's GitHub App
-- A Slack workspace where you can create and install apps
-- Model access: Amazon Bedrock in your region, or an OpenRouter, Anthropic or OpenAI API key
-
-### Install
-
-<p align="center">
-  <a href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/quickcreate?templateURL=https%3A%2F%2Frovara-installer-us-east-1.s3.us-east-1.amazonaws.com%2Flatest%2Finstaller.template.json&amp;stackName=agentx-installer"><img src="docs/assets/launch-in-aws.svg" alt="Launch in AWS" width="232" height="52" /></a>
-</p>
-
-Press the button, enter your email, your GitHub owner and an install name, and press Create stack.
-An email with your temporary password and the setup page's address arrives in about five minutes.
-The setup page asks everything else: it builds Rovara in your account, then connects GitHub and
-Slack and ends at the bot's first reply in your channel. Nothing is installed on your computer.
-
-To install from a terminal instead, with Node.js 22.19 or newer (Node 22 LTS recommended):
-
-```bash
-export AWS_PROFILE=<an admin profile for the target account>
-npx @preplabsai/rovara-code init --env <name>
-```
-
-On your own computer, `init` opens an install page in your browser (served only from `127.0.0.1`).
-Pass `--no-ui` to stay in the terminal. See [Installing Rovara](docs/install.md) for both ways, and
-[Other ways to install](docs/install-advanced.md) for the CDK, a platform team, or a source checkout.
-
-### Use it
-
-In the bound channel:
-
-```text
-@AgentX Add password reset to the account page
-```
-
-A plain `@AgentX` request is routed first. AgentX asks its small safety-check model (the classifier
-model set at `rovara init`) whether the request is a question or a change:
-
-- **A question** (_"@AgentX what does retry.ts do?"_) is answered in the thread by the chat agent. No
-  task is created.
-- **A small change** gets a card suggesting **Quick**: AgentX writes a short coding plan for you to
-  approve, then codes it, runs the checks and reviews, and opens a draft pull request.
-- **A bigger change** gets a card suggesting **Full**: AgentX writes requirements, then a design,
-  then a coding plan, and you approve each one before any code changes.
-- **Anything unclear** (or when the model is slow, unavailable or gives an unusable answer) gets a
-  card with **Just answer**, **Quick** and **Full**, each explained in one line.
-
-Nothing that changes code starts without a click. On a suggestion card, press **Start** for the
-suggested path, the other path's button to switch, or **Just answer** to send the request to the
-chat agent instead. You can also reply `quick`, `full` or `answer` in the thread. Only the person
-who asked can choose. To skip routing, start the request with a prefix: `@AgentX quick: fix the typo
-on the pricing page` or `@AgentX full: add single sign-on` start on that path, `@AgentX workflow:
-...` asks Quick or Full without a suggestion, and `@AgentX chat: ...` goes straight to the chat
-agent. When approving the coding plan, the task owner can choose extra project-approved checks;
-required project readiness checks are always included.
-
-To talk to the chat agent instead, start the request with `chat:`:
-
-```text
-@AgentX chat: inspect the project and implement the navigation fix. Run the relevant tests.
-@AgentX chat: create a pull request for the personal-website repository titled "Improve navigation".
-```
-
-In a thread the chat agent is already answering, mention AgentX as before (no `chat:` needed), for
-example `@AgentX stop` or `@AgentX close this workspace`.
-
-> **Changed:** a plain top-level `@AgentX <request>` used to go to the chat agent. It is now routed:
-> a question still reaches the chat agent, and a change gets a card suggesting Quick or Full in every
-> bound channel. Add `chat:` to always reach the chat agent.
-
-Every reply in a task's thread, from the owner or a teammate, is saved for the task's next step.
-Only the owner's buttons move the task on. After the coding plan is approved, the checks and reviews
-run on their own. If a review finds a problem, the owner can press **Send back to coding**. When
-everything passes, AgentX opens a draft pull request and posts the link in the thread.
-
-> **Reinstall the Slack app on an existing install.** Saving replies that do not mention AgentX
-> needs the `channels:history` and `groups:history` bot scopes and the `message.channels` and
-> `message.groups` events. Update the app from the manifest `rovara init` generates, then reinstall
-> it to the workspace. Until then only `@AgentX` replies are saved. AgentX ignores channel messages
-> outside task threads. See [Replies in a Slack task's thread](docs/project-configuration.md#replies-in-a-slack-tasks-thread).
-
-From your own machine (no AWS credentials needed):
-
-```bash
-rovara login <control plane URL>
-rovara mcp install --client claude-code   # or codex, cursor
-```
-
-After the install, `rovara --env <name> project add`, `channel add` and
-`connector add linear|jira|asana|mcp` add more, and `doctor`, `config`, `upgrade` and `destroy` run
-the environment. See [the install overview](docs/getting-started.md) for the full tour and [E2E setup](docs/e2e-onboarding.md) for the connect, inspect and owner-decision flow.
-
-<br/>
-
-## FAQ
-
-**Q: Does Rovara verify that the change is correct?**
-
-**A:** No. It reruns the checks it has (the project's readiness commands, or recognized test
-commands the agent ran) and reports what passed, failed, timed out, or could not be verified. A task
-with no usable checks is reported as not verified. A person reviews the pull request.
-[What the check report means](docs/how-it-works.md#what-the-check-report-means)
-
-<br/>
-
-**Q: Do developers need AWS access?**
-
-**A:** No. Developers sign in with Slack, your company's sign-in (OIDC), or both. Only the
-installer and day-2 operators use AWS credentials.
-
-<br/>
-
-**Q: What does it cost to run?**
-
-**A:** AWS and model charges depend on your configuration and use. `rovara init` prints an
-estimated monthly cost before it creates anything and sets a monthly budget with an alert. Idle
-workspaces stop their compute and keep only their disk. By default each member can hold 3
-workspaces and the organization 20.
-
-<br/>
-
-**Q: Where does my code go?**
-
-**A:** Onto EBS volumes in your AWS account, attached to workers in private subnets. The model
-provider you choose sees the prompts. Turn records keep redacted tool calls for 30 days; tokens,
-request text and response text are never written to CloudWatch Logs.
-
-<br/>
-
-**Q: What happens when a thread goes quiet?**
-
-**A:** The idle reaper stops the instance. The volume, with the thread's files and conversation,
-stays. The next mention starts compute again and carries on.
-
-<br/>
-
-**Q: Can I use it without Slack?**
-
-**A:** Developers can start and drive tasks from Claude Code, Codex or Cursor through
-`rovara mcp`, and share them into Slack when they want the team to see. Administration happens in
-the `rovara` CLI.
-
-<br/>
-
-## Documentation
-
-| Guide                                                         | What it covers                                                                 |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| [Install overview](docs/getting-started.md)                   | `init`, day-2 commands and developer sign-in on one page                       |
-| [Installing Rovara](docs/install.md)                          | Published templates, CDK, platform-team export, CloudShell                     |
-| [Running Rovara](docs/day-two.md)                             | The operator role, `doctor`, `upgrade`, `config`, projects and connectors      |
-| [How Rovara works](docs/how-it-works.md)                      | Request path, the check report, context files, usage records, stack names     |
-| [Production architecture](docs/architecture-production.md)    | EC2 workers, EBS, networking, devcontainers, isolation and release             |
-| [Working in Slack](docs/slack.md)                             | Threads, connectors, confirmations, shared tasks, memory, diagnostics         |
-| [Administration client](docs/administration.md)               | Registering projects, binding channels, the full command surface              |
-| [Project configuration](docs/project-configuration.md)        | Every field of a project file, and how the checks work                         |
-| [Pull requests](docs/pull-requests.md)                        | Publication, maintenance, GitHub App permissions, CodeBuild gates              |
-| [Use Rovara from your AI tool](docs/mcp-install.md)           | `rovara mcp` for Claude Code, Codex and Cursor, and sharing to Slack           |
-| [Rovara loop](docs/loop.md)                                   | Rovara's workflow on your GitHub issues, run locally by your own Claude Code   |
-| [Model providers](docs/openrouter.md) · [your own key](docs/model-providers.md) · [Sign in with ChatGPT](docs/chatgpt.md) | Bedrock, OpenRouter, Anthropic and OpenAI, and each developer's own ChatGPT plan |
-| Connectors: [Linear](docs/connectors/linear.md) · [Jira](docs/connectors/jira.md) · [Asana](docs/connectors/asana.md) · [any MCP server](docs/connectors/custom-mcp.md) | Credentials and setup per connector |
-| [SWE-bench evals](docs/swebench-eval.md)                      | Running SWE-bench tasks against the coding agent from Slack                    |
-| [Removing an environment](docs/teardown.md) · [Moving accounts](docs/move-account.md) | Teardown and migration                                 |
-| [Releases](docs/releases.md) · [npm package](docs/npm-package.md) | What a release contains, how one is cut, and the published package         |
-| [Maintainers' production release](docs/maintainers-release.md) | The maintainers' own deployment and release pipeline                         |
-
-<br/>
-
-## Development
-
-```bash
+- **Sign-in:** people sign in through Code (single sign-on). Cloud is Code's sign-in client
+  `rovara-cloud`. Code's tokens stay on Cloud's server; the browser holds only a session cookie.
+- **The app's API:** each `/v1/app/*` route in `packages/cloud-server/src/routes.ts` answers from
+  Code, in the shape the web app reads. A route Code cannot answer yet returns 501 `NOT_ON_CODE_YET`.
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `packages/cloud-server` | Cloud's server: sign-in through Code, sessions, and the app's API answered from Code. Node built-ins only. |
+| `packages/web` | The web app's shell and build (Vite), and the handler that serves its pages (`src/server/handler.js`). |
+| `packages/ui` | The web app's pages and components. |
+| `packages/contracts` | Shared types and schemas (zod). The web app imports `@agentx/contracts/web`. |
+| `packages/design-tokens` | The web app's design tokens. |
+| `packages/audit-verifier` | The audit ledger's offline verifier, which `contracts` uses. |
+| `scripts/cloud-server.ts` | Runs Cloud against a Code install: on this computer (`npm run cloud:local`) and in its container. |
+| `infra/` | Cloud's CDK app: the stack `rovara-cloud-<env>-app` (`infra/lib/cloud-app.ts`) and its release pipeline (`infra/lib/cloud-release-pipeline.ts`). |
+| `environments/cloud/Dockerfile` | Cloud's container image (Fargate, linux/arm64). |
+| `tests/` | `unit` (cloud-server), `contract` (contracts, audit verifier, repository checks) and `web` (the app). |
+
+## Run it on this computer
+
+You need Node.js 22 (`.node-version`) and a Rovara Code install that has the `rovara-cloud` client.
+
+```sh
 npm ci
-npm run build          # Build every package
+npm run build
+ROVARA_CODE_URL=https://<code api> ROVARA_CLIENT_SECRET_FILE=<file> npm run cloud:local
+```
+
+Then open http://127.0.0.1:8787/app. The options are in
+[packages/cloud-server/README.md](packages/cloud-server/README.md).
+
+## Deploy
+
+Cloud deploys as one stack on top of an existing Rovara Code install, through a release pipeline: a
+`vX.Y.Z` tag waits for a person to approve, then deploys. See
+[Deploying Rovara Cloud](docs/rovara-cloud-install.md).
+
+## Develop
+
+```sh
+npm run build          # Build every package and the web app
 npm run typecheck      # Type-check the packages
 npm run typecheck:all  # Also tests/ and scripts/, against tests/typecheck-baseline.json
-npm run lint           # ESLint
-npm test               # Vitest (no Docker or AWS needed)
-npm run infra:synth    # Synthesize the CDK app
+npm run lint           # ESLint, in shards
+npm test               # Vitest
+npm run infra:synth    # Synthesize the Cloud stack and its pipeline
 ```
-
-See [Developing Rovara](docs/development.md) for the typecheck baseline, the spec documents and the
-GitHub Spec Kit setup.
-
-<br/>
-
-## Roadmap
-
-- ✅ Hosted Slack orchestrator with one workspace per thread
-- ✅ EC2 workers with persistent EBS volumes, idle reaper and reconciler
-- ✅ Check report: readiness checks or replayed test commands, rerun after the agent finishes
-- ✅ Pull-request lifecycle: create, append, sync, replace and revert
-- ✅ CodeBuild gates on the candidate commit
-- ✅ GitHub MCP, Linear, Jira, Asana and generic MCP connectors
-- ✅ Action gate with confirmations, rules and a **Details** view
-- ✅ Conversation continuity across turns
-- ✅ `rovara init` installer, with `upgrade`, `config`, `doctor` and `destroy`
-- ✅ Developer sign-in and tasks from Claude Code, Codex and Cursor
-- ✅ Sharing tasks into Slack, view only or open to the channel
-- ✅ Dev containers
-- ✅ Per-project model choice: Bedrock, OpenRouter, Anthropic and OpenAI
-- 🟡 Install page in the browser (phase 1 built; phases 2 to 4 next)
-- ⚪ Admin tools for AI tools: reading Rovara's state (spec 025 phase 25d) and confirmed changes (25e)
-- ⚪ Multi-repository change sets that test and publish several repositories together
-- ⚪ First public release on npm and a public image registry
-
-<br/>
 
 ## Contributing and security
 
 Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). To report a vulnerability, see
 [SECURITY.md](SECURITY.md).
 
-<br/>
-
 ## License
 
 Licensed under the [MIT License](LICENSE). PrepLabsAI also preserves its prior Apache 2.0 grant for
 PrepLabsAI-owned Rovara work, including earlier releases; see [RELICENSED.md](RELICENSED.md).
-Third-party components retain their own licenses.
+Third-party components retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 &copy; 2026 PrepLabs
-
----
-
-<p align="center">
-  <sub>The open-source alternative to Claude Tag!</sub>
-</p>

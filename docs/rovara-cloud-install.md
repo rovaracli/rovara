@@ -7,7 +7,7 @@ anyone Code lets in can use Cloud, with the projects Code gives them.
 
 For a new company the order is always:
 
-1. **Deploy Rovara Code.** See [Installing Rovara](install.md). Code brings the sign-in, the user pool (or
+1. **Deploy Rovara Code.** See [Installing Rovara](https://github.com/PrepLabsAI/Rovara/blob/mainline/docs/install.md). Code brings the sign-in, the user pool (or
    Slack, or the company's OIDC), the workers and everything else.
 2. **Deploy Rovara Cloud** through its release pipeline. That's this guide.
 3. **Register Cloud with Code**, once, as a Code administrator.

@@ -8,11 +8,11 @@
 
 ## How it was tested
 
-<!-- The tests you added or ran. CI runs typecheck, lint, test and infra:synth. -->
+<!-- The tests you added or ran. CI runs typecheck, lint and test. -->
 
 ## Checklist
 
 - [ ] It targets `mainline` and holds one change.
 - [ ] Tests cover the new behaviour, and they failed before the change.
-- [ ] The README, `docs/` and the relevant spec still say what the code does. New pages under `docs/` were added with `git add -f`.
+- [ ] The README and the relevant spec still say what the code does.
 - [ ] Nothing in it holds a token, secret, account ID or customer data.

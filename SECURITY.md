@@ -30,14 +30,14 @@ Please include:
 
 ## Supported versions
 
-We fix security problems in the latest release. Upgrade with `agentx --env <name> upgrade`; see
-[Running Rovara](docs/day-two.md).
+We fix security problems in the latest release.
 
 ## Scope
 
-In scope: this repository's code, including the CLI, the control plane, the Slack service, the
-coding worker, the MCP server, the CloudFormation templates and the release artifacts built from
-this repository.
+In scope: this repository's code: Rovara Cloud's server (`packages/cloud-server`), its web app
+(`packages/web`, `packages/ui`), the packages they use, and Cloud's CDK stack, release pipeline and
+container image (`infra/`, `environments/cloud`). Rovara Code, the engine Cloud calls, is
+reported to the Rovara Code repository.
 
 Out of scope:
 
