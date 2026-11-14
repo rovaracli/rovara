@@ -12,7 +12,7 @@ import {
   BlockedError, ITEMS, LISTEN_JS, catalogRegistry, ciPostgresEntry, embeddedResolverLines, PROBE_JS, RELAY_LISTENER_JS, SSM_CHUNK_CHARS, TSL_WORKSPACE, blockedLines, formatLine, hasDefaultRoute, labelArgsFrom, loadVerifiedCatalog, manifestFilesPort, parseProbeOutput, parseUids, postgresEntry, pullList, resolvePostgres, runLiveChecks, ssmCommands, unexpected,
   type EmbeddedResolverEvidence, type RunLayer,
 } from "../../scripts/linux-check-test-services-live.js";
-import { CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf, type VerifiedCatalog } from "@rovara-code/contracts";
+import { CATALOG_REGISTRY_ROOT, CATALOG_SIGNATURE_ALGORITHM, catalogSigningMessage, parseBundlePublicKey, sha256HexOf, type VerifiedCatalog } from "@rovara-code/contracts";
 import { loadSignedCatalogWithKeys } from "@agentx/cloud-contracts/testing";
 import { pinnedCatalog, sha, testSigner } from "../support/catalog-pinning.js";
 
@@ -413,6 +413,13 @@ describe("the whole run, with a launcher that fails", () => {
     // the real worker's value (`${config.registry}/rovara-catalog/${catalogEnv}`), not the bare ECR host
     expect(registries[0]).toBe(`${REGISTRY}/rovara-catalog/staging`);
     expect(registries[0]).toBe(catalogRegistry({ registry: REGISTRY, env: "staging" }));
+  });
+  it("builds the catalog prefix and the manifest repository name from the shared CATALOG_REGISTRY_ROOT constant, never from its own copy of the word (the driver shipped the literal twice)", async () => {
+    const driver = await readFile(new URL("../../scripts/linux-check-test-services-live.ts", import.meta.url), "utf8");
+    const code = driver.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/u.test(line)).join("\n");
+    expect(code).not.toContain("rovara-catalog");
+    expect(code).toContain("CATALOG_REGISTRY_ROOT");
+    expect(catalogRegistry({ registry: REGISTRY, env: "staging" })).toBe(`${REGISTRY}/${CATALOG_REGISTRY_ROOT}/staging`);
   });
   it("CI mode starts the lab under the same prefix, so CI exercises the staging shape (the image CI pushes is localhost:5000/rovara-catalog/ci/svc/postgres)", async () => {
     const digest = "c".repeat(64);

@@ -165,6 +165,12 @@ function selfTest(s: Setup, env: Record<string, string>, output = checkerOutput(
   writeFileSync(out, output);
   return run(s, SELFTEST, { INSTANCE_ID: INSTANCE, CHECKS_OUT: out, ...env }, tweak);
 }
+/** The same, under the options boot.sh really runs stage 2 with (`set -euo pipefail`, the harness already sets -u): a pipeline that fails, such as a grep with no match, ends the shell here as it does at boot. */
+function selfTestStrict(s: Setup, env: Record<string, string>, output = checkerOutput()) {
+  const out = join(s.dir, "checks.out");
+  writeFileSync(out, output);
+  return run(s, `set -eo pipefail\n${SELFTEST}`, { INSTANCE_ID: INSTANCE, CHECKS_OUT: out, ...env });
+}
 /** The parsed result, or a failed test. */
 function parsedOf(s: Setup) {
   const parsed = parseSelfTest(recorded(s));
@@ -762,7 +768,7 @@ describe("condition 4: the output is fixed ids, fixed codes and the four identit
     const ref = `${IMAGE.split("@")[0]}/rovara-catalog/staging/svc/postgres@sha256:${"d".repeat(64)}`;
     const long = `the check could not run: docker run ${ref} failed: ${"x".repeat(400)}`;
     const s = setup();
-    selfTest(s, STAGING, checkerOutput({ "L4.live": `FAIL helpers-start-non-root | ${long}\u001b[31m "quoted" \`tick\`` , "L6.live": "FAIL killed-worker-sweep | second" }, ["TSL ERROR pull-list: broke at the registry"]));
+    expect(selfTestStrict(s, STAGING, checkerOutput({ "L4.live": `FAIL helpers-start-non-root | ${long}\u001b[31m "quoted" \`tick\`` , "L6.live": "FAIL killed-worker-sweep | second" }, ["TSL ERROR pull-list: broke at the registry"])).stdout).toContain("rc=0");
     const lines = logOf(s).split("\n").filter((line) => line.startsWith("TS-L self-test:") && (line.includes("failing item(s)") || line.includes("checker reported")));
     expect(lines).toHaveLength(2);
     const failing = lines.find((line) => line.includes("failing item(s)"))!;
@@ -779,9 +785,30 @@ describe("condition 4: the output is fixed ids, fixed codes and the four identit
     expect(parsedOf(s).items.find((entry) => entry.id === "L4.live")).toEqual({ id: "L4.live", status: "fail", reason: "driver_error" });
     // a clean run logs nothing of this kind
     const clean = setup();
-    selfTest(clean, STAGING);
+    expect(selfTestStrict(clean, STAGING).stdout).toContain("rc=0");
     expect(logOf(clean)).not.toContain("failing item(s)");
     expect(logOf(clean)).not.toContain("checker reported");
+  });
+
+  it("logs nothing, and never ends the boot shell, when the checker's output is empty or missing (set -euo pipefail, the options boot.sh runs under)", () => {
+    const s = setup();
+    const empty = join(s.dir, "empty.out");
+    writeFileSync(empty, "");
+    const result = run(s, `set -eo pipefail; tsl_log_first_failure "${empty}"; echo "empty=$?"; tsl_log_first_failure "${join(s.dir, "missing.out")}"; echo "missing=$?"; echo reached-the-end`);
+    expect(result.stdout).toContain("empty=0");
+    expect(result.stdout).toContain("missing=0");
+    expect(result.stdout).toContain("reached-the-end");
+    expect(logOf(s)).not.toContain("self-test");
+    // output with a FAIL line but no ERROR or BLOCKED line (and the reverse) logs only what it has
+    const failOnly = join(s.dir, "fail-only.out");
+    writeFileSync(failOnly, "TSL L4.live FAIL helpers-start | one reason\n");
+    expect(run(s, `set -eo pipefail; tsl_log_first_failure "${failOnly}"; echo reached-the-end`).stdout).toContain("reached-the-end");
+    expect(logOf(s)).toContain("TS-L self-test: 1 failing item(s); first: TSL L4.live FAIL helpers-start | one reason");
+    expect(logOf(s)).not.toContain("checker reported");
+    const errorOnly = join(s.dir, "error-only.out");
+    writeFileSync(errorOnly, "TSL ERROR pull-list: broke\n");
+    expect(run(s, `set -eo pipefail; tsl_log_first_failure "${errorOnly}"; echo reached-the-end`).stdout).toContain("reached-the-end");
+    expect(logOf(s)).toContain("TS-L self-test: checker reported: TSL ERROR pull-list: broke");
   });
 
   it("an untrusted catalog, a registry login or manifest read that failed, and a pull that failed each have their own fixed code (the first two are `pending: no_pull_grant`, the pull `pending: pull_failed`)", () => {

@@ -27,7 +27,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { CatalogEntrySchema, type CatalogEntry, type RegistryManifestPort, type SubstituteApprovalPort, type VerifiedCatalog } from "@rovara-code/contracts";
+import { CATALOG_REGISTRY_ROOT, CatalogEntrySchema, type CatalogEntry, type RegistryManifestPort, type SubstituteApprovalPort, type VerifiedCatalog } from "@rovara-code/contracts";
 import { checkMirrorServesDigest, resolveCatalogImage } from "@agentx/cloud-contracts";
 import { loadSignedCatalog } from "@agentx/cloud-contracts";
 import type * as RunNetworkModule from "../packages/worker/src/run-network.js";
@@ -223,7 +223,7 @@ export function postgresEntry(catalog: VerifiedCatalog): CatalogEntry & { image:
  * CI mode uses it too (its local registry holds `localhost:5000/rovara-catalog/ci/svc/postgres`), so CI exercises the staging shape.
  */
 export function catalogRegistry(input: { registry: string; env: string }): string {
-  return `${input.registry}/rovara-catalog/${input.env}`;
+  return `${input.registry}/${CATALOG_REGISTRY_ROOT}/${input.env}`;
 }
 
 /** The references the shell script pulls before the run: only what this slice uses, always by digest. */
@@ -241,7 +241,7 @@ export function manifestFilesPort(read: (digest: string) => Promise<Uint8Array |
 export async function resolvePostgres(input: Pick<LiveInput, "catalog" | "manifests" | "env">): Promise<void> {
   if (input.catalog === undefined || input.manifests === undefined) throw new Error("the signed catalog and the registry's manifests are needed");
   const entry = postgresEntry(input.catalog);
-  const check = await checkMirrorServesDigest(input.manifests, { id: POSTGRES_ID, repositoryName: `rovara-catalog/${input.env}/${entry.image.repository}`, digest: entry.image.digest });
+  const check = await checkMirrorServesDigest(input.manifests, { id: POSTGRES_ID, repositoryName: `${CATALOG_REGISTRY_ROOT}/${input.env}/${entry.image.repository}`, digest: entry.image.digest });
   const noApprovals: SubstituteApprovalPort = { find: async () => undefined };
   const resolved = await resolveCatalogImage({ catalog: input.catalog, catalogId: POSTGRES_ID, edition: "public", served: { source: "rovara_registry", check }, approvals: noApprovals });
   if (!resolved.ok) throw new Error(resolved.message);
