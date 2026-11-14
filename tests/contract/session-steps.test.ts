@@ -139,7 +139,7 @@ describe("session steps", () => {
       const { handler } = setup(undefined, { modelProxyRequired: true }, named(proxyUrl, null));
       const error = await launch(handler).catch((caught: unknown) => caught);
       expect(error).toMatchObject({ code: "RUNTIME_UNAVAILABLE" });
-      expect((error as Error).message).toBe("RUNTIME_UNAVAILABLE: this control plane has no boot hash for its worker image; run agentx upgrade");
+      expect((error as Error).message).toBe("RUNTIME_UNAVAILABLE: this control plane has no boot hash for its worker image; run rovara upgrade");
     });
 
     it("boots the legacy deployment from boot-legacy.sh, whose hash is boot.sh's at the branch base, with no stage 2 hash", async () => {

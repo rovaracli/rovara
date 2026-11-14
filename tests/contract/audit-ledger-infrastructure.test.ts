@@ -125,8 +125,8 @@ describe("auditTsaSettings", () => {
   });
 
   it("takes one or two http(s) URLs and a roots parameter for custom", () => {
-    expect(auditTsaSettings({ tsa: "custom", tsaUrls: "https://tsa.example.com/ts", tsaRootsParameter: "/agentx/acme/tsa-roots" }))
-      .toStrictEqual({ kind: "custom", urls: ["https://tsa.example.com/ts"], rootsParameter: "/agentx/acme/tsa-roots" });
+    expect(auditTsaSettings({ tsa: "custom", tsaUrls: "https://tsa.example.com/ts", tsaRootsParameter: "/rovara-cloud/acme/tsa-roots" }))
+      .toStrictEqual({ kind: "custom", urls: ["https://tsa.example.com/ts"], rootsParameter: "/rovara-cloud/acme/tsa-roots" });
     expect(auditTsaSettings({ tsa: "custom", tsaUrls: "http://a.example.com, https://b.example.com", tsaRootsParameter: "/r" }))
       .toStrictEqual({ kind: "custom", urls: ["http://a.example.com", "https://b.example.com"], rootsParameter: "/r" });
   });
@@ -310,7 +310,7 @@ describe("the audit ledger in templates", () => {
   describe("the buckets", () => {
     it("the ledger bucket is named by environment, account and region, blocked, encrypted, owner-enforced and never expires anything", () => {
       const [id, bucket] = one(production.template, "AWS::S3::Bucket", "AuditLedgerAuditLedgerBucket");
-      expect(concreteAws(bucket.Properties.BucketName)).toBe(`agentx-production-audit-ledger-${ACCOUNT}-${REGION}`);
+      expect(concreteAws(bucket.Properties.BucketName)).toBe(`rovara-cloud-production-audit-ledger-${ACCOUNT}-${REGION}`);
       expect(bucket.Properties.PublicAccessBlockConfiguration).toStrictEqual({ BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true });
       expect(bucket.Properties.BucketEncryption).toStrictEqual({ ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } }] });
       expect(bucket.Properties.OwnershipControls).toStrictEqual({ Rules: [{ ObjectOwnership: "BucketOwnerEnforced" }] });
@@ -341,7 +341,7 @@ describe("the audit ledger in templates", () => {
       expect(policies).toHaveLength(1);
       return { document: policies[0]!.Properties.PolicyDocument, statements: (policies[0]!.Properties.PolicyDocument as { Statement: Statement[] }).Statement.map((statement) => underProfile(synthesis, statement, profile) as Statement) };
     };
-    const bucketArn = (env: string) => `arn:aws:s3:::agentx-${env}-audit-ledger-${ACCOUNT}-${REGION}`;
+    const bucketArn = (env: string) => `arn:aws:s3:::rovara-cloud-${env}-audit-ledger-${ACCOUNT}-${REGION}`;
     const roleArn = (name: string) => `arn:aws:iam::${ACCOUNT}:role/${name}`;
     const expected = (env: string, mode: "COMPLIANCE" | "GOVERNANCE", days: number): Statement[] => {
       const naming = environmentNaming(env);
@@ -401,9 +401,9 @@ describe("the audit ledger in templates", () => {
           // The evaluator resolves the same document, with the profile chosen, to what the anchor reads back from the bucket.
           const text = canonicalJson(underProfile(synthesis, document, profile, placeholders));
           expect(text).toContain("{{account}}");
-          expect(text).toContain(`agentx-${env}-`);
+          expect(text).toContain(`rovara-cloud-${env}-`);
           // The environment's name is a placeholder too (Task 9): a published template is rendered by text replacement, which cannot recompute a hash.
-          expect(synthesis.ledger.bucketPolicySha256ByProfile[profile]).toBe(createHash("sha256").update(text.replaceAll(`agentx-${env}-`, "agentx-{{env}}-")).digest("hex"));
+          expect(synthesis.ledger.bucketPolicySha256ByProfile[profile]).toBe(createHash("sha256").update(text.replaceAll(`rovara-cloud-${env}-`, "agentx-{{env}}-")).digest("hex"));
           hashes.push(synthesis.ledger.bucketPolicySha256ByProfile[profile]);
         }
       }
@@ -561,7 +561,7 @@ describe("the audit ledger in templates", () => {
       // resource by design (R53: the service role manages every key; the boundary is only a ceiling). That reaches
       // nothing here: the key policy delegates no use action to IAM (AdminWithoutUse above), so an IAM allow cannot
       // open it. Any other statement that could reach the key is an offender.
-      const baseline = (stack: string, where: string) => /^agentx-[a-z0-9-]+-access$/.test(stack) && /^(DefaultPermissionsBoundary|CloudFormationServiceRole)/.test(where);
+      const baseline = (stack: string, where: string) => /^rovara-cloud-[a-z0-9-]+-access$/.test(stack) && /^(DefaultPermissionsBoundary|CloudFormationServiceRole)/.test(where);
 
       // Managed policies that grant nothing on KMS. Any other attachment to a role is an offender, because an
       // AWS-managed policy such as AdministratorAccess or PowerUserAccess cannot be read here.
@@ -686,9 +686,9 @@ describe("the audit ledger in templates", () => {
     it("is FIFO, per message group, with 180 s of visibility, 14 days, SQS-managed encryption and a dead-letter queue", () => {
       const { intake, dlqId } = queues(production);
       const { Tags: tags, ...properties } = intake.Properties;
-      expect(tags).toStrictEqual([{ Key: "agentx:env", Value: "production" }]);
+      expect(tags).toStrictEqual([{ Key: "rovara-cloud:env", Value: "production" }]);
       expect(properties).toStrictEqual({
-        QueueName: "agentx-production-audit-intake.fifo",
+        QueueName: "rovara-cloud-production-audit-intake.fifo",
         FifoQueue: true,
         ContentBasedDeduplication: false,
         DeduplicationScope: "messageGroup",
@@ -703,7 +703,7 @@ describe("the audit ledger in templates", () => {
 
     it("has a FIFO dead-letter queue that keeps messages 14 days", () => {
       const { dlq } = queues(production);
-      expect(dlq.Properties).toMatchObject({ QueueName: "agentx-production-audit-intake-dlq.fifo", FifoQueue: true, MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true });
+      expect(dlq.Properties).toMatchObject({ QueueName: "rovara-cloud-production-audit-intake-dlq.fifo", FifoQueue: true, MessageRetentionPeriod: 1209600, SqsManagedSseEnabled: true });
     });
 
     it("refuses plain HTTP on both, and keeps both on delete", () => {
@@ -719,8 +719,8 @@ describe("the audit ledger in templates", () => {
     });
 
     it("is named by environment", () => {
-      expect(queues(staging).intake.Properties.QueueName).toBe("agentx-staging-audit-intake.fifo");
-      expect(queues(acme).dlq.Properties.QueueName).toBe("agentx-acme-audit-intake-dlq.fifo");
+      expect(queues(staging).intake.Properties.QueueName).toBe("rovara-cloud-staging-audit-intake.fifo");
+      expect(queues(acme).dlq.Properties.QueueName).toBe("rovara-cloud-acme-audit-intake-dlq.fifo");
     });
   });
 
@@ -803,8 +803,8 @@ describe("the audit ledger in templates", () => {
 
   describe("the anchor's timestamp settings (Task 10)", () => {
     const ROLE = "AuditLedgerAuditAnchorRole";
-    const PARAMETER = "/agentx/acme/tsa-roots";
-    const PARAMETER_ARN = `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/agentx/acme/tsa-roots`;
+    const PARAMETER = "/rovara-cloud/acme/tsa-roots";
+    const PARAMETER_ARN = `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/rovara-cloud/acme/tsa-roots`;
     const custom = (urls: string, parameter: string = PARAMETER) => named("acme", { agentxAuditTsa: "custom", agentxAuditTsaUrls: urls, agentxAuditTsaRootsParameter: parameter });
     const variables = (synthesis: Synth) => (one(synthesis.template, "AWS::Lambda::Function", "AuditLedgerAuditAnchor")[1].Properties.Environment as { Variables: Record<string, unknown> }).Variables;
     const tsaVariables = (synthesis: Synth) => Object.fromEntries(Object.entries(variables(synthesis)).filter(([name]) => name.startsWith("AUDIT_TSA_")));
@@ -853,7 +853,7 @@ describe("the audit ledger in templates", () => {
       const synthesis = custom("https://tsa.example.test/ts");
       const can = (action: string, resource: string) => simulateIam(identity(synthesis), { action, resource });
       expect(can("ssm:GetParameter", PARAMETER_ARN)).toMatchObject({ allowed: true });
-      for (const resource of [`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/agentx/acme/other`, `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/agentx/acme/tsa-roots-2`, `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/agentx/acme`]) {
+      for (const resource of [`arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/rovara-cloud/acme/other`, `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/rovara-cloud/acme/tsa-roots-2`, `arn:aws:ssm:${REGION}:${ACCOUNT}:parameter/rovara-cloud/acme`]) {
         expect(can("ssm:GetParameter", resource), resource).toMatchObject({ allowed: false });
       }
       for (const action of ["ssm:GetParameters", "ssm:GetParametersByPath", "ssm:PutParameter", "ssm:DeleteParameter", "ssm:DescribeParameters"]) {
@@ -872,7 +872,7 @@ describe("the audit ledger in templates", () => {
 
     it("keeps the alarm for a custom and an off install too (the health route reads every alarm by name)", () => {
       for (const synthesis of [custom("https://tsa.example.test/ts"), named("acme", { agentxAuditTsa: "off" })]) {
-        expect(one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditTimestampFailedAlarm")[1].Properties).toMatchObject({ AlarmName: "agentx-acme-AuditTimestampFailed" });
+        expect(one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditTimestampFailedAlarm")[1].Properties).toMatchObject({ AlarmName: "rovara-cloud-acme-AuditTimestampFailed" });
       }
     });
   });
@@ -883,8 +883,8 @@ describe("the audit ledger in templates", () => {
     });
 
     it("custom with both is accepted and held on the construct", () => {
-      const synthesis = named("acme", { agentxAuditTsa: "custom", agentxAuditTsaUrls: "https://tsa.example.com", agentxAuditTsaRootsParameter: "/agentx/acme/tsa-roots" });
-      expect(synthesis.ledger.tsa).toStrictEqual({ kind: "custom", urls: ["https://tsa.example.com"], rootsParameter: "/agentx/acme/tsa-roots" });
+      const synthesis = named("acme", { agentxAuditTsa: "custom", agentxAuditTsaUrls: "https://tsa.example.com", agentxAuditTsaRootsParameter: "/rovara-cloud/acme/tsa-roots" });
+      expect(synthesis.ledger.tsa).toStrictEqual({ kind: "custom", urls: ["https://tsa.example.com"], rootsParameter: "/rovara-cloud/acme/tsa-roots" });
       expect(production.ledger.tsa).toStrictEqual({ kind: "public" });
     });
   });
@@ -969,7 +969,7 @@ describe("the audit ledger in templates", () => {
           expect(variables.AUDIT_INTAKE_QUEUE_URL).toBeUndefined();
           expect(brokerNamesIn(variables)).not.toHaveProperty("auditIntakeQueue");
           // The queue is created with the fixed name the broker derives its URL from (derived-names.test.ts holds the two together).
-          expect(one(synthesis.template, "AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue")[1].Properties.QueueName).toMatch(/^agentx-[a-z0-9-]+-audit-intake\.fifo$/);
+          expect(one(synthesis.template, "AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue")[1].Properties.QueueName).toMatch(/^rovara-cloud-[a-z0-9-]+-audit-intake\.fifo$/);
         });
 
         it("drains every minute: one schedule, invoking the broker through a scheduler role with { source: agentx.audit-drain }", () => {
@@ -1019,7 +1019,7 @@ describe("the audit ledger in templates", () => {
           });
           const [, alarm] = one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditRecordFailedAlarm");
           expect(alarm.Properties).toMatchObject({
-            AlarmName: `agentx-${env}-AuditRecordFailed`,
+            AlarmName: `rovara-cloud-${env}-AuditRecordFailed`,
             MetricName: "AuditRecordFailed", Namespace: environmentNaming(env).metricsNamespace, Statistic: "Sum",
             Period: 300, EvaluationPeriods: 1, Threshold: 1,
             ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
@@ -1050,7 +1050,7 @@ describe("the audit ledger in templates", () => {
           });
           const [, alarm] = one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditPendingStuckAlarm");
           expect(alarm.Properties).toMatchObject({
-            AlarmName: `agentx-${env}-AuditPendingStuck`,
+            AlarmName: `rovara-cloud-${env}-AuditPendingStuck`,
             MetricName: "AuditPendingStuck", Statistic: "Sum", Period: 300, EvaluationPeriods: 1, Threshold: 1,
             ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
           });
@@ -1288,7 +1288,7 @@ describe("the audit ledger in templates", () => {
           const topicId = one(synthesis.template, "AWS::SNS::Topic", "OperatorAlerts")[0];
           const [, deadLetters] = one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditIntakeDeadLettersAlarm");
           expect(concreteAws(deadLetters.Properties)).toMatchObject({
-            AlarmName: `agentx-${env}-AuditIntakeDeadLetters`,
+            AlarmName: `rovara-cloud-${env}-AuditIntakeDeadLetters`,
             Namespace: "AWS/SQS", MetricName: "ApproximateNumberOfMessagesVisible", Statistic: "Maximum",
             Dimensions: [{ Name: "QueueName", Value: "AuditLedgerAuditIntakeDeadLetterQueue.QueueName" }],
             Period: 300, EvaluationPeriods: 1, Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
@@ -1296,7 +1296,7 @@ describe("the audit ledger in templates", () => {
           expect(deadLetters.Properties.AlarmActions).toStrictEqual([{ Ref: topicId }]);
           const [, backlog] = one(synthesis.template, "AWS::CloudWatch::Alarm", "AuditLedgerAuditIntakeBacklogAlarm");
           expect(concreteAws(backlog.Properties)).toMatchObject({
-            AlarmName: `agentx-${env}-AuditIntakeBacklog`,
+            AlarmName: `rovara-cloud-${env}-AuditIntakeBacklog`,
             Namespace: "AWS/SQS", MetricName: "ApproximateAgeOfOldestMessage", Statistic: "Maximum",
             Dimensions: [{ Name: "QueueName", Value: "AuditLedgerAuditIntakeQueue.QueueName" }],
             Period: 300, EvaluationPeriods: 2, DatapointsToAlarm: 2, Threshold: 900, ComparisonOperator: "GreaterThanThreshold", TreatMissingData: "notBreaching",
@@ -1622,7 +1622,7 @@ describe("the audit ledger in templates", () => {
             expect(policies).toHaveLength(1);
             return ((policies[0]!.Properties.PolicyDocument as { Statement: Statement[] }).Statement).map((statement) => underProfile(synthesis, statement, profile) as IamStatement);
           };
-          const bucketArn = `arn:aws:s3:::agentx-${env}-audit-ledger-${ACCOUNT}-${REGION}`;
+          const bucketArn = `arn:aws:s3:::rovara-cloud-${env}-audit-ledger-${ACCOUNT}-${REGION}`;
           // The bucket policy is all Deny statements; the anchor's identity policy supplies the Allow (pinned above).
           const identityAllow: IamStatement = { Sid: "AnchorIdentity", Effect: "Allow", Action: ["s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion", "s3:PutObjectRetention", "s3:PutObjectLegalHold", "s3:BypassGovernanceRetention", "s3:PutBucketObjectLockConfiguration"], Resource: "*" };
           const put = (profile: Profile, context: Record<string, string>) => simulateIam([...bucketPolicy(profile), identityAllow], {
@@ -1733,18 +1733,18 @@ describe("the audit ledger in templates", () => {
           });
           // One or more failures in each of two consecutive 15-minute periods (a single slow authority is not an alarm).
           expect(alarm("AuditLedgerAuditTimestampFailedAlarm")).toMatchObject({
-            AlarmName: `agentx-${env}-AuditTimestampFailed`, MetricName: "AuditTimestampFailed", Namespace: namespace, Statistic: "Sum",
+            AlarmName: `rovara-cloud-${env}-AuditTimestampFailed`, MetricName: "AuditTimestampFailed", Namespace: namespace, Statistic: "Sum",
             Period: 900, EvaluationPeriods: 2, DatapointsToAlarm: 2, Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
           });
           const overdue = alarm("AuditLedgerAuditSealOverdueAlarm");
           expect(overdue).toMatchObject({
-            AlarmName: `agentx-${env}-AuditSealOverdue`, MetricName: "AuditEpochSealed", Namespace: namespace, Statistic: "Sum",
+            AlarmName: `rovara-cloud-${env}-AuditSealOverdue`, MetricName: "AuditEpochSealed", Namespace: namespace, Statistic: "Sum",
             // Three 15-minute periods with fewer than one completed epoch each: 45 minutes. A missing period counts.
             Period: 900, EvaluationPeriods: 3, DatapointsToAlarm: 3, Threshold: 1, ComparisonOperator: "LessThanThreshold", TreatMissingData: "breaching",
           });
           for (const [id, name] of [["AuditLedgerAuditChainMismatchAlarm", "AuditChainMismatch"], ["AuditLedgerAuditObjectConflictAlarm", "AuditObjectConflict"], ["AuditLedgerAuditLockDriftAlarm", "AuditLockDrift"], ["AuditLedgerAuditShredFailedAlarm", "AuditShredFailed"]] as const) {
             expect(alarm(id)).toMatchObject({
-              AlarmName: `agentx-${env}-${name}`, MetricName: name, Namespace: namespace, Statistic: "Sum",
+              AlarmName: `rovara-cloud-${env}-${name}`, MetricName: name, Namespace: namespace, Statistic: "Sum",
               Period: 300, EvaluationPeriods: 1, Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
             });
           }

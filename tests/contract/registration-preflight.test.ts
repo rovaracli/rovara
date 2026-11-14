@@ -291,7 +291,7 @@ describe("registering a project with a jira connector", () => {
     const { handler, db } = await createAdminBroker({ connectorCredentials });
     const refused = await register(handler, withJira());
     expect(refused.status).toBe(400);
-    expect(refused.body).toMatchObject({ error: { code: "CONFIG_INVALID", message: "connector jira: credential jira-sa is not registered; run agentx admin credential register first" } });
+    expect(refused.body).toMatchObject({ error: { code: "CONFIG_INVALID", message: "connector jira: credential jira-sa is not registered; run rovara admin credential register first" } });
     expect(db.get(projectRevisionKey(TEST_ORG, "payments", 1))).toBeUndefined();
   });
 

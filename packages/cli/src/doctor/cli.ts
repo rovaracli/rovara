@@ -1,4 +1,4 @@
-// The `agentx doctor` command (FR-050, FR-051): prints every check, then exits non-zero when any
+// The `rovara doctor` command (FR-050, FR-051): prints every check, then exits non-zero when any
 // failed. --json prints the whole report to stdout as {"ok": <no check failed>, "data": <report>};
 // on a failure, stderr also gets agentx's usual {"ok": false, "error": ...} document and the exit
 // code is 2.
@@ -39,7 +39,7 @@ export function registerDoctorCommand(program: Command, context: DoctorCommandCo
       // document on stderr (and exit code 2) says the same, as every agentx error does.
       context.stdout.write(globals.json ? `${JSON.stringify({ ok: report.failed === 0, data: report })}\n` : reportText(report));
       if (report.failed > 0) {
-        throw agentXError("CONFIG_INVALID", `${report.failed} doctor ${report.failed === 1 ? "check" : "checks"} failed; fix what each one names, then run agentx doctor again`);
+        throw agentXError("CONFIG_INVALID", `${report.failed} doctor ${report.failed === 1 ? "check" : "checks"} failed; fix what each one names, then run rovara doctor again`);
       }
     });
 }

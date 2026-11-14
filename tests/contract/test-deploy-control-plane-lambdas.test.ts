@@ -12,11 +12,11 @@ type Resource = { Type: string; Properties?: { Code?: { ZipFile?: unknown; S3Buc
 
 /** The real TEST installation's control-plane stack template, as head synthesizes it. */
 function controlPlaneTemplate(context: Record<string, unknown> = { "agentx:e2eQualificationTransport": "enabled" }): CfnTemplate {
-  const env = "agentxlivetest123";
+  const env = "rovaralivetest";
   // By default as TEST runs it: the standing qualification transport is lifted into the live stack, so it is synthesized here too.
   const stack = buildAgentXApp({ agentxEnv: env, ...context }).node.children
     .filter((child): child is Stack => Stack.isStack(child))
-    .find((candidate) => candidate.stackName === `agentx-${env}-control-plane`);
+    .find((candidate) => candidate.stackName === `rovara-cloud-${env}-control-plane`);
   if (stack === undefined) throw new Error(`expected the real ${env} control-plane stack`);
   return Template.fromStack(stack).toJSON();
 }

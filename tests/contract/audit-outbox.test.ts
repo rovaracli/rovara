@@ -44,7 +44,7 @@ function harness() {
   const clock = { now: START };
   const documentClient = { send: db.send } as unknown as DynamoDBDocumentClient;
   const deps: AuditDeps = {
-    audit: { sqs: sqs.client, queueUrl: "https://sqs.test/agentx-test-audit-intake.fifo", documentClient, tableName: "state", now: () => clock.now, log: (entry) => logs.push(entry) },
+    audit: { sqs: sqs.client, queueUrl: "https://sqs.test/rovara-cloud-test-audit-intake.fifo", documentClient, tableName: "state", now: () => clock.now, log: (entry) => logs.push(entry) },
   };
   return { db, sqs, logs, clock, deps, documentClient };
 }

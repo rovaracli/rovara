@@ -22,7 +22,7 @@ describe("finding the channel (Review Focus 3)", () => {
   });
 });
 
-describe("agentx channel add (FR-041)", () => {
+describe("rovara channel add (FR-041)", () => {
   it("joins a public channel the bot is not in, then binds it to the project", async () => {
     const plane = fakeControlPlane();
     const slack = fakeSlackChannels([{ id: "C0PAY00001", name: "payments", isPrivate: false, isMember: false }]);
@@ -164,20 +164,20 @@ describe("the Slack channel API", () => {
     const pages = Array.from({ length: 51 }, (_, index) => ({ ok: true, channels: [], response_metadata: { next_cursor: `c${index}` } }));
     const slack = fakeSlack(pages);
     await expect(slackChannelApi(slack.fetch).find(BOT_TOKEN, "payments"))
-      .rejects.toThrow("the workspace has more than 50000 channels to search; bind the channel by id with agentx admin slack bind --team <team-id> --channel <channel-id> --project <name>");
+      .rejects.toThrow("the workspace has more than 50000 channels to search; bind the channel by id with rovara admin slack bind --team <team-id> --channel <channel-id> --project <name>");
     expect(slack.calls).toHaveLength(50);
   });
 });
 
 describe("the stored bot token (F25)", () => {
   it("reads the bot token from the environment's Slack secret", async () => {
-    expect(await readSlackBotToken(memoryInitSecrets({ "agentx/staging/slack": JSON.stringify({ botToken: BOT_TOKEN, signingSecret: "s" }) }), "staging")).toBe(BOT_TOKEN);
+    expect(await readSlackBotToken(memoryInitSecrets({ "rovara-cloud/staging/slack": JSON.stringify({ botToken: BOT_TOKEN, signingSecret: "s" }) }), "staging")).toBe(BOT_TOKEN);
   });
 
   it("says what to do when there is none, without echoing what the secret holds", async () => {
-    const secrets = memoryInitSecrets({ "agentx/staging/slack": JSON.stringify({ botToken: "not-a-bot-token-value" }) });
+    const secrets = memoryInitSecrets({ "rovara-cloud/staging/slack": JSON.stringify({ botToken: "not-a-bot-token-value" }) });
     const error = await readSlackBotToken(secrets, "staging").then(() => undefined, (caught: unknown) => caught as Error);
-    expect(error?.message).toBe("CONFIG_INVALID: secret agentx/staging/slack holds no Slack bot token; run agentx init again so the Slack app step stores it");
+    expect(error?.message).toBe("CONFIG_INVALID: secret rovara-cloud/staging/slack holds no Slack bot token; run rovara init again so the Slack app step stores it");
     await expect(readSlackBotToken(memoryInitSecrets(), "staging")).rejects.toThrow("holds no Slack bot token");
   });
 });
@@ -187,7 +187,7 @@ describe("waiting for the threaded reply (FR-018 step 11)", () => {
     const plane = fakeControlPlane();
     const time = clock();
     const lines: string[] = [];
-    const pending = waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "agentx init", write: (line) => lines.push(line), ...time,
+    const pending = waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "rovara init", write: (line) => lines.push(line), ...time,
       sleep: async (ms) => { await time.sleep(ms); plane.turns = [turn({ subject: `${TEAM}/C0PAY00001/1790000000.000100`, receivedAt: new Date(time.now()).toISOString(), disposition: "answered" })]; } });
     expect((await pending).eventId).toMatch(/^Ev/);
     // Live check L2: a workspace that had an older AgentX app shows two bots in the mention list.
@@ -201,21 +201,21 @@ describe("waiting for the threaded reply (FR-018 step 11)", () => {
       turn({ subject: `${TEAM}/C0OTHER001/1.1`, receivedAt: new Date(T0 + 1000).toISOString(), disposition: "answered" }),
       turn({ subject: `${TEAM}/C0PAY00001/1.1`, receivedAt: new Date(T0 - 60_000).toISOString(), disposition: "answered" }),
     ];
-    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "agentx init", write: () => undefined, ...clock(), timeoutMs: 60_000 }))
-      .rejects.toThrow("no AgentX reply in #payments within 1 minute; check that the message mentioned the bot, that Slack shows the Request URL as Verified, and agentx --env staging admin turns export --since 15m, then run agentx init again");
+    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "rovara init", write: () => undefined, ...clock(), timeoutMs: 60_000 }))
+      .rejects.toThrow("no AgentX reply in #payments within 1 minute; check that the message mentioned the bot, that Slack shows the Request URL as Verified, and rovara --env staging admin turns export --since 15m, then run rovara init again");
   });
 
   it("gives up after 10 minutes by default, naming the next step", async () => {
     const plane = fakeControlPlane();
     const time = clock();
-    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "agentx init", write: () => undefined, ...time }))
-      .rejects.toThrow("no AgentX reply in #payments within 10 minutes; check that the message mentioned the bot, that Slack shows the Request URL as Verified, and agentx --env staging admin turns export --since 15m, then run agentx init again");
+    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "rovara init", write: () => undefined, ...time }))
+      .rejects.toThrow("no AgentX reply in #payments within 10 minutes; check that the message mentioned the bot, that Slack shows the Request URL as Verified, and rovara --env staging admin turns export --since 15m, then run rovara init again");
     expect(time.now() - T0).toBe(10 * 60_000);
   });
 
   it("says 1 minute, not 1 minutes, when it asks for the mention (fix round 1)", async () => {
     const lines: string[] = [];
-    await expect(waitForThreadedReply({ env: "staging", session, fetch: fakeControlPlane().fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "agentx init", write: (line) => lines.push(line), ...clock(), timeoutMs: 60_000 }))
+    await expect(waitForThreadedReply({ env: "staging", session, fetch: fakeControlPlane().fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "rovara init", write: (line) => lines.push(line), ...clock(), timeoutMs: 60_000 }))
       .rejects.toThrow("within 1 minute;");
     expect(lines[0]).toContain("Waiting up to 1 minute for AgentX to reply in its thread.");
   });
@@ -223,15 +223,15 @@ describe("waiting for the threaded reply (FR-018 step 11)", () => {
   it("names the command that is running as the one to run again (fix round 1)", async () => {
     const plane = fakeControlPlane();
     plane.turns = [turn({ subject: `${TEAM}/C0PAY00001/1.1`, receivedAt: new Date(T0 + 1000).toISOString(), disposition: "failed", error: { name: "WorkerUnavailable" } })];
-    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "agentx channel add --project payments-api --channel payments", write: () => undefined, ...clock() }))
-      .rejects.toThrow("fix it, then run agentx channel add --project payments-api --channel payments again");
+    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "rovara channel add --project payments-api --channel payments", write: () => undefined, ...clock() }))
+      .rejects.toThrow("fix it, then run rovara channel add --project payments-api --channel payments again");
   });
 
   it("does not pass on an error reply, naming the turn's disposition (Review Focus 4)", async () => {
     const plane = fakeControlPlane();
     plane.turns = [turn({ subject: `${TEAM}/C0PAY00001/1.1`, receivedAt: new Date(T0 + 1000).toISOString(), disposition: "failed", error: { name: "WorkerUnavailable" } })];
-    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "agentx init", write: () => undefined, ...clock() }))
-      .rejects.toThrow("AgentX replied in #payments, but the turn ended as failed (WorkerUnavailable); see agentx --env staging admin turns export --since 15m, fix it, then run agentx init again");
+    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "rovara init", write: () => undefined, ...clock() }))
+      .rejects.toThrow("AgentX replied in #payments, but the turn ended as failed (WorkerUnavailable); see rovara --env staging admin turns export --since 15m, fix it, then run rovara init again");
   });
 
   it("skips turns already reported, and adds a newly failed one before it throws (spec 040 FR-051)", async () => {
@@ -240,11 +240,11 @@ describe("waiting for the threaded reply (FR-018 step 11)", () => {
     const fresh = turn({ subject: `${TEAM}/C0PAY00001/2.1`, receivedAt: new Date(T0 + 2000).toISOString(), disposition: "failed" });
     plane.turns = [old, fresh];
     const reported = new Set([String(old.eventId)]);
-    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "agentx init", write: () => undefined, ...clock(), reported }))
+    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "rovara init", write: () => undefined, ...clock(), reported }))
       .rejects.toThrow("but the turn ended as failed;");
     expect([...reported]).toEqual([String(old.eventId), String(fresh.eventId)]);
     // With both reported, the watch waits for a new mention and gives up at the deadline instead.
-    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "agentx init", write: () => undefined, ...clock(), timeoutMs: 60_000, reported }))
+    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "rovara init", write: () => undefined, ...clock(), timeoutMs: 60_000, reported }))
       .rejects.toThrow("no AgentX reply in #payments within 1 minute;");
   });
 
@@ -254,30 +254,30 @@ describe("waiting for the threaded reply (FR-018 step 11)", () => {
     const second = turn({ subject: `${TEAM}/C0PAY00001/2.1`, receivedAt: new Date(T0 + 2000).toISOString(), disposition: "failed" });
     plane.turns = [first, second];
     const reported = new Set<string>();
-    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "agentx init", write: () => undefined, ...clock(), reported }))
+    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "rovara init", write: () => undefined, ...clock(), reported }))
       .rejects.toThrow("but the turn ended as error;");
     expect([...reported]).toEqual([String(first.eventId), String(second.eventId)]);
-    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "agentx init", write: () => undefined, ...clock(), timeoutMs: 60_000, reported }))
+    await expect(waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "rovara init", write: () => undefined, ...clock(), timeoutMs: 60_000, reported }))
       .rejects.toThrow("no AgentX reply in #payments within 1 minute;");
   });
 
   it("asks the export for turns since just before the prompt", async () => {
     const plane = fakeControlPlane();
     plane.turns = [turn({ subject: `${TEAM}/C0PAY00001/1.1`, receivedAt: new Date(T0 + 1000).toISOString() })];
-    await waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "agentx init", write: () => undefined, ...clock() });
+    await waitForThreadedReply({ env: "staging", session, fetch: plane.fetch, teamId: TEAM, channelId: "C0PAY00001", channelName: "payments", botUserId: BOT, rerun: "rovara init", write: () => undefined, ...clock() });
     expect(plane.requests.map((request) => request.path)).toEqual(["/v1/admin/turns"]);
     expect(plane.requests[0]!.token).toBe("admin-token");
   });
 });
 
-describe("agentx channel add on the command line (F9)", () => {
+describe("rovara channel add on the command line (F9)", () => {
   const SLACK_SECRET = JSON.stringify({ botToken: BOT_TOKEN, signingSecret: "0123456789abcdef0123456789abcdef" });
   function fakeSetupContext(plane = fakeControlPlane(), slack = fakeSlackChannels([{ id: "C0PAY00001", name: "payments", isPrivate: false, isMember: false }])) {
     const time = clock();
     const lines: string[] = [];
     const run = (): SetupRun => ({
-      env: "staging", settings: STAGING_SETTINGS, session: { controlPlaneUrl: CONTROL_PLANE, accessToken: accessToken({ "cognito:groups": ["agentx-admin"] }) },
-      secrets: memoryInitSecrets({ "agentx/staging/slack": SLACK_SECRET }),
+      env: "staging", settings: STAGING_SETTINGS, session: { controlPlaneUrl: CONTROL_PLANE, accessToken: accessToken({ "cognito:groups": ["rovara-cloud-admin"] }) },
+      secrets: memoryInitSecrets({ "rovara-cloud/staging/slack": SLACK_SECRET }),
       services: setupServices({ fetch: plane.fetch, slackChannels: slack }),
       prompter: scriptedPrompter([]), write: (line) => { lines.push(line); }, ...time,
       print: (_result, text) => { lines.push(text); },
@@ -334,14 +334,14 @@ describe("agentx channel add on the command line (F9)", () => {
   });
 });
 
-describe("agentx channel add's next step (fix round 1)", () => {
-  it("tells the engineer to run agentx channel add again, not agentx init", async () => {
+describe("rovara channel add's next step (fix round 1)", () => {
+  it("tells the engineer to run rovara channel add again, not rovara init", async () => {
     const plane = fakeControlPlane();
     plane.turns = [turn({ subject: `${TEAM}/C0PAY00001/1.1`, receivedAt: new Date(T0 + 1000).toISOString(), disposition: "failed", error: { name: "WorkerUnavailable" } })];
     const time = clock();
     const setup: SetupCommandContext = {
       open: async () => ({
-        env: "staging", settings: STAGING_SETTINGS, session, secrets: memoryInitSecrets({ "agentx/staging/slack": JSON.stringify({ botToken: BOT_TOKEN }) }),
+        env: "staging", settings: STAGING_SETTINGS, session, secrets: memoryInitSecrets({ "rovara-cloud/staging/slack": JSON.stringify({ botToken: BOT_TOKEN }) }),
         services: setupServices({ fetch: plane.fetch, slackChannels: fakeSlackChannels([{ id: "C0PAY00001", name: "payments", isPrivate: false, isMember: true }]) }),
         prompter: scriptedPrompter([]), write: () => undefined, ...time, print: () => undefined,
       }),
@@ -350,8 +350,8 @@ describe("agentx channel add's next step (fix round 1)", () => {
     const stderr: string[] = [];
     const code = await executeCli(["--project", "payments-api", "channel", "add", "--env", "staging", "--channel", "#Payments"], { setup, stdout: { write: () => undefined }, stderr: { write: (text: string) => stderr.push(text) } });
     expect(code).not.toBe(0);
-    expect(stderr.join("")).toContain("fix it, then run agentx --env staging channel add --project payments-api --channel payments again");
-    expect(stderr.join("")).not.toContain("agentx init");
+    expect(stderr.join("")).toContain("fix it, then run rovara --env staging channel add --project payments-api --channel payments again");
+    expect(stderr.join("")).not.toContain("rovara init");
   });
 });
 
@@ -360,10 +360,10 @@ describe("the first-project init step's channel", () => {
   const SLACK = { appId: "A0APP00001", teamId: TEAM, botUserId: BOT };
   function context(plane = fakeControlPlane(), slack = fakeSlackChannels([{ id: "C0PAY00001", name: "payments", isPrivate: false, isMember: false }])) {
     const made = initContext({
-      secrets: memoryInitSecrets({ "agentx/staging/slack": JSON.stringify({ botToken: BOT_TOKEN }) }),
+      secrets: memoryInitSecrets({ "rovara-cloud/staging/slack": JSON.stringify({ botToken: BOT_TOKEN }) }),
       flags: { channel: "#payments" }, setup: setupServices({ fetch: plane.fetch, slackChannels: slack }),
     });
-    (made.store as MemoryParameterStore).values.set("/agentx/staging/settings", JSON.stringify(STAGING_SETTINGS));
+    (made.store as MemoryParameterStore).values.set("/rovara-cloud/staging/settings", JSON.stringify(STAGING_SETTINGS));
     return made;
   }
 
@@ -389,7 +389,7 @@ describe("the first-project init step's channel", () => {
   it("says the Slack app step must finish first when progress has no Slack facts", async () => {
     const progress = progressHandle({ ...progressHandle().value(), project: PROJECT });
     await expect(firstProjectStep().run(context(), progress))
-      .rejects.toThrow("install progress has no Slack app facts; the Slack app step must finish first, so run agentx init again");
+      .rejects.toThrow("install progress has no Slack app facts; the Slack app step must finish first, so run rovara init again");
   });
 });
 

@@ -19,7 +19,7 @@ import {
 } from "../../packages/worker/src/task-sandbox.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
-const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@sha256:" + "a".repeat(64);
+const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/rovara-cloud-staging/worker@sha256:" + "a".repeat(64);
 const TASK = "0b9f6a1e-6c1e-4c53-9d0a-5d3a1d6f2c11";
 const EC2 = { AGENTX_WORKER_PROCESS_SCOPE: "container" };
 

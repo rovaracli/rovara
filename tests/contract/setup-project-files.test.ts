@@ -81,26 +81,26 @@ describe("proposing setup and test commands from the repository's files (FR-040)
 
 describe("the installation token", () => {
   it("uses the recorded installation, reading the app key from its secret", async () => {
-    const secrets = memoryInitSecrets({ "agentx/staging/github-app": JSON.stringify({ appId: "42", slug: "agentx-acme", account: "acme", privateKey: TEST_PRIVATE_KEY }) });
+    const secrets = memoryInitSecrets({ "rovara-cloud/staging/github-app": JSON.stringify({ appId: "42", slug: "agentx-acme", account: "acme", privateKey: TEST_PRIVATE_KEY }) });
     const github = fakeGitHubApi({ installationId: 7 });
     expect(await installationToken({ env: "staging", secrets, github, installationId: "7", nowSeconds: 1_790_000_000 })).toMatch(/^ghs_/);
   });
 
   it("finds the only installation when none is recorded, and refuses when there are several", async () => {
-    const secrets = memoryInitSecrets({ "agentx/staging/github-app": JSON.stringify({ appId: "42", slug: "s", account: "acme", privateKey: TEST_PRIVATE_KEY }) });
+    const secrets = memoryInitSecrets({ "rovara-cloud/staging/github-app": JSON.stringify({ appId: "42", slug: "s", account: "acme", privateKey: TEST_PRIVATE_KEY }) });
     await expect(installationToken({ env: "staging", secrets, github: { ...fakeGitHubApi(), listInstallations: async () => [{ id: 1, account: { login: "a" } }, { id: 2, account: { login: "b" } }] }, nowSeconds: 1 }))
       .rejects.toThrow("the GitHub App is installed on 2 accounts (a, b); AgentX uses one");
   });
 
   it("refuses when the GitHub App's secret does not exist", async () => {
     await expect(installationToken({ env: "staging", secrets: memoryInitSecrets(), github: fakeGitHubApi(), nowSeconds: 1 }))
-      .rejects.toThrow("secret agentx/staging/github-app does not exist; run agentx init again so the GitHub App step stores it");
+      .rejects.toThrow("secret rovara-cloud/staging/github-app does not exist; run rovara init again so the GitHub App step stores it");
   });
 
   it("refuses a malformed secret with parseAppSecret's own message, not a second parser's", async () => {
-    const secrets = memoryInitSecrets({ "agentx/staging/github-app": JSON.stringify({ appId: "42" }) });
+    const secrets = memoryInitSecrets({ "rovara-cloud/staging/github-app": JSON.stringify({ appId: "42" }) });
     await expect(installationToken({ env: "staging", secrets, github: fakeGitHubApi(), nowSeconds: 1 }))
-      .rejects.toThrow("secret agentx/staging/github-app is not an AgentX GitHub App secret; delete it (aws secretsmanager delete-secret --secret-id agentx/staging/github-app --force-delete-without-recovery) and run agentx init again");
+      .rejects.toThrow("secret rovara-cloud/staging/github-app is not an AgentX GitHub App secret; delete it (aws secretsmanager delete-secret --secret-id rovara-cloud/staging/github-app --force-delete-without-recovery) and run rovara init again");
   });
 });
 

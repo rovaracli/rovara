@@ -1,6 +1,6 @@
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TaskDispatchProofRequest } from "@agentx/contracts";
+import { TASK_PERSON_PROOF_ENV, type TaskDispatchProofRequest } from "@agentx/contracts";
 
 const runtimeModulePath: string = "../../../packages/broker/src/aws/task-person-proof-runtime.js";
 type RuntimeModule = {
@@ -17,7 +17,7 @@ const loadRuntime = async (): Promise<RuntimeModule | undefined> => {
 const TEAM = "T0BSHLLUGBD";
 const USER = "U12345678";
 const CHANNEL = "C12345678";
-const SECRET_ARN = "arn:aws:secretsmanager:us-east-1:944937319445:secret:agentx/agentxlivetest123/slack-z7WaUV";
+const SECRET_ARN = `arn:aws:secretsmanager:us-east-1:944937319445:secret:rovara-cloud/${TASK_PERSON_PROOF_ENV}/slack-z7WaUV`;
 const request = (id: string): TaskDispatchProofRequest => ({
   kind: "task-dispatch-person-proof",
   request: { kind: "task-person-proof", slackUserId: USER, channelIds: [CHANNEL] },
@@ -37,7 +37,7 @@ function slackReply(url: URL): Response {
 
 describe("the dedicated Task Person proof Lambda entrypoint", () => {
   beforeEach(() => {
-    vi.stubEnv("AGENTX_ENV", "agentxlivetest123");
+    vi.stubEnv("AGENTX_ENV", TASK_PERSON_PROOF_ENV);
     vi.stubEnv("AWS_REGION", "us-east-1");
     vi.stubEnv("SLACK_TEAM_ID", TEAM);
     vi.stubEnv("SLACK_SECRET_ARN", SECRET_ARN);

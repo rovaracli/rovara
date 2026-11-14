@@ -56,7 +56,7 @@ function expectRuntimeCatalogEnvironment(template: TemplateJson, prefix: string)
     // A named environment's broker derives both from its environment name (the broker's variables are held to Lambda's 4 KB), to the same ids.
     expect(broker).not.toHaveProperty("AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID");
     expect(broker).not.toHaveProperty("AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID");
-    const derived: MutableEnvironment = { AGENTX_ENV: prefix.replace(/^agentx-/, ""), AGENTX_NAMES: "{}", AWS_REGION: "us-east-1", AGENTX_ACCOUNT_ID: "123456789012" };
+    const derived: MutableEnvironment = { AGENTX_ENV: prefix.replace(/^rovara-cloud-/, ""), AGENTX_NAMES: "{}", AWS_REGION: "us-east-1", AGENTX_ACCOUNT_ID: "123456789012" };
     hydrateBrokerEnvironment(derived);
     expect(derived.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID).toBe(setupId);
     expect(derived.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID).toBe(featureId);
@@ -67,7 +67,7 @@ function expectRuntimeCatalogEnvironment(template: TemplateJson, prefix: string)
 
 function appControlPlane(env: string): TemplateJson {
   const stacks = buildAgentXApp({ agentxEnv: env }).node.children.filter((child): child is Stack => Stack.isStack(child));
-  const stack = stacks.find((candidate) => candidate.stackName === `agentx-${env}-control-plane`);
+  const stack = stacks.find((candidate) => candidate.stackName === `rovara-cloud-${env}-control-plane`);
   if (stack === undefined) throw new Error(`expected the real ${env} control-plane stack`);
   return Template.fromStack(stack).toJSON();
 }
@@ -178,7 +178,7 @@ function parentRemainderDigest(template: TemplateJson): string {
 function realAppControlPlane(env?: string): TemplateJson {
   const app = buildAgentXApp(env === undefined ? {} : { agentxEnv: env });
   const stacks = app.node.children.filter((child): child is Stack => Stack.isStack(child));
-  const stackName = env === undefined ? "AgentXControlPlane" : `agentx-${env}-control-plane`;
+  const stackName = env === undefined ? "AgentXControlPlane" : `rovara-cloud-${env}-control-plane`;
   const stack = stacks.find((candidate) => candidate.stackName === stackName);
   if (stack === undefined) throw new Error(`expected actual app control-plane stack ${stackName}`);
   return Template.fromStack(stack).toJSON();
@@ -219,9 +219,9 @@ function developerSignInConditionCheckEntries(template: TemplateJson): Array<{ p
 
 describe("the named TEST proof-only installation gate", () => {
   it("declares a distinct default-OFF gate only for the approved named environment", () => {
-    const approved = namedTemplate("agentxlivetest123");
+    const approved = namedTemplate("rovaralivetest");
     const foreign = namedTemplate("staging", "123456789012");
-    const wrongAccount = namedTemplate("agentxlivetest123", "123456789012");
+    const wrongAccount = namedTemplate("rovaralivetest", "123456789012");
     const legacy = Template.fromStack(new ControlPlaneStack(new App(), "Legacy")).toJSON() as TemplateJson;
 
     expect(approved.Parameters?.TaskPersonProofEnabled).toMatchObject({
@@ -242,11 +242,11 @@ describe("the named TEST proof-only installation gate", () => {
   });
 
   it("preserves exact parent app templates outside the named proof addition", () => {
-    const named = realAppControlPlane("agentxlivetest123");
+    const named = realAppControlPlane("rovaralivetest");
     const foreign = realAppControlPlane("staging");
     const legacy = realAppControlPlane();
-    expectRuntimeCatalogEnvironment(named, "agentx-agentxlivetest123");
-    expectRuntimeCatalogEnvironment(foreign, "agentx-staging");
+    expectRuntimeCatalogEnvironment(named, "rovara-cloud-rovaralivetest");
+    expectRuntimeCatalogEnvironment(foreign, "rovara-cloud-staging");
     expectRuntimeCatalogEnvironment(legacy, "agentx-production");
 
     for (const [label, template] of [["staging", foreign], ["legacy", legacy]] as const) {
@@ -344,7 +344,7 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-02, feat/saved-env-wire: the four named and foreign digests were retaken for TWO intended additions (the legacy digests did not move; named environments only): the broker's AGENTX_NAMES gains `sk` (the saved
     // environment images key's id: Ref SavedEnvImagesImagesKey...), and the Dispatcher function gains the plain variable SAVED_ENV_ENABLED (Ref SavedEnvEnabled), which it honours when it hands a rebuild job's lease to the worker.
     // 2026-11-03, staging 0.5.0 fix (ECR CustomRoleArn takes no IAM path): the four named and foreign digests were retaken after ONE intended change, the same one the named-templates snapshot shows (nothing else moved): the saved
-    // environment images' creation role sits at the root path ("/") instead of /agentx/<env>/, and the deploy role and the boundary name that one role ARN (IamRoles, IamRequireBoundary, IamKeepBoundary, PassRoles) and no longer list it in the
+    // environment images' creation role sits at the root path ("/") instead of /rovara-cloud/<env>/, and the deploy role and the boundary name that one role ARN (IamRoles, IamRequireBoundary, IamKeepBoundary, PassRoles) and no longer list it in the
     // fixed-name lookup statement. The legacy digests did not move (named environments only).
     // 2026-11-03, feat/saved-env-wire (SV-2): the four named and foreign digests were retaken after ONE intended change to the saved environment images key policy (the legacy digests did not move; named environments only):
     // the creation role's single allow statement (CreateGrant and DescribeKey under a GrantIsForAWSResource condition, which a DescribeKey request never matches) became two, CreationRoleGrantForEcr (CreateGrant, both
@@ -354,7 +354,7 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-03, merge of the test-services chain (ts-fakes to ts-repack, with ts-images' service catalog image repositories and their key) onto saved-env-wire and ts-run-network: the four named and foreign digests were
     // retaken from the values the digest test itself reports for the merged template (nothing hand-computed); the named-templates snapshot merged cleanly and matches. The legacy digests did not move.
     // 2026-11-02, TS26 (test accounts, lane ts-accounts): the named and foreign digests were retaken after ONE intended IAM addition to the named control plane (legacy did not move): the TestAccountSecretsRole (fixed name
-    // agentx-<env>-connector-secrets-test-accounts, trust and permissions in infra/lib/test-account-secrets-policy.ts), the broker's AssumeTestAccountSecretsRole statement, and the access stack's boundary and deploy-role
+    // rovara-cloud-<env>-connector-secrets-test-accounts, trust and permissions in infra/lib/test-account-secrets-policy.ts), the broker's AssumeTestAccountSecretsRole statement, and the access stack's boundary and deploy-role
     // lookups naming it (the boundary through the one `connector-secrets*` ARN, so it did not grow).
     // 2026-11-03, ts-accounts review fixes (Opus review of bc5719055): the named and foreign digests were retaken after ONE intended IAM change to the named control plane (legacy did not move): the TestAccountSecretsRole's
     // permissions gained `secretsmanager:UpdateSecretVersionStage` (the store purpose only, same org and use tags; denied to resolve) for rotation's pending-then-promote. No role was added, so the boundary did not change.
@@ -370,26 +370,29 @@ describe("the named TEST proof-only installation gate", () => {
     // 2026-11-03, merge of lane ts-accounts (df8703c51) onto cf34811c6: the four named and foreign digests were retaken from the values the digest test itself reports (nothing hand-computed); the only template additions are
     // ts-accounts' TestAccountSecretsRole, the broker's AssumeTestAccountSecretsRole statement and the lookup ARN. TEST_ACCOUNT_SECRETS_ROLE_ARN is derived in the process, so AGENTX_SETTINGS did not change. Legacy did not move.
     // 2026-11-03 (s3-fakes-store): the named and foreign digests moved for the control plane's FixtureKey (a retained KMS key and the broker's kms:GenerateDataKey and kms:Decrypt on it). Legacy is unchanged.
-    // 2026-11-03 (s3-integration, M4 and the key condition): retaken again from the values the test reports: the key has the alias alias/agentx/<env>/fixtures, the broker's grant carries kms:ViaService = s3.<region>.amazonaws.com, and the `fk` name is gone (the broker builds the alias ARN from AGENTX_ENV). Legacy did not move.
+    // 2026-11-03 (s3-integration, M4 and the key condition): retaken again from the values the test reports: the key has the alias alias/rovara-cloud/<env>/fixtures, the broker's grant carries kms:ViaService = s3.<region>.amazonaws.com, and the `fk` name is gone (the broker builds the alias ARN from AGENTX_ENV). Legacy did not move.
     // 2026-11-04, 0.5.5 integration (f797f3d68: s1-staging-pin-2 + s3-integration-054 + the rest): the named and foreign digests were retaken from the values the digest test itself reports (nothing hand-computed). The control plane's template gained, from the staging pin lane, the session steps' TEST_SERVICES_ENABLED value (see the named-templates snapshot), on top of the FixtureKey and its broker grant recorded above. The legacy digests did not move.
+    // 2026-11-14, feat/rovara-cloud-names (resources renamed agentx -> rovara-cloud, the live-test environment agentxlivetest123 -> rovaralivetest): all six digests were retaken. Checked by dumping each remainder at v0.6.0
+    // and on the branch: with the branch's names mapped back (rovara-cloud -> agentx, RovaraCloud -> AgentX, rovaralivetest -> agentxlivetest123, `rovara <command>` hints -> `agentx <command>`) the legacy remainders hash to the
+    // old pins exactly, and the named and foreign ones differ only in the order of the web assets bucket's two tags (CDK sorts tags by key, and rovara-cloud:env sorts after aws-cdk:cr-owned:..., agentx:env before it).
     const digestCases = [
       {
         label: "named",
         template: named,
-        withRoute: "84b1dbf07e254f9c54a5a7cdd4910478a9f3b5c8e93787f63e3ce4de06fa84c6",
-        withoutRoute: "c098fee583368814fca9e4ec9f52900ccb80f63f8e5dff92f936cd8946e06714",
+        withRoute: "55799fe75ecafceddf8ea3a069f85787e544fa7b6ed9eeee4ec5a0511833cf61",
+        withoutRoute: "8e979ce65d33bd08f047c75658d71991f4ae31a51189165e26b0f65e9b4ebea4",
       },
       {
         label: "foreign",
         template: foreign,
-        withRoute: "e38666c5a3e18a76b21d882b697ad3c4acb1b20103a08b02ac134fd94516821f",
-        withoutRoute: "2e8c8a7a0b1c10dbb9528378e25b983a3ad6d20e7f574cb53bf048cc92cf3a02",
+        withRoute: "4a8d8bd557263a2c74f60634ea4fb2fbf4d0af3618e9c7932d1fbc7904814759",
+        withoutRoute: "1d9180996eec06c87246d9a7e6d8d7f7ef04985ced59e7eba25a9f15cee57a5a",
       },
       {
         label: "legacy",
         template: legacy,
-        withRoute: "78282844236d0c6c124f4597de047d7f66cb3080b24aaa72c116393e72b15df6",
-        withoutRoute: "c9cef330a90941527ceaf6b43d405e8aa2bb21a12ee3f0ae32ccb65b51ed64cf",
+        withRoute: "361d80351f66e848833b17db15c9f94313f94299389e419ae9a77c1f9e44b4ee",
+        withoutRoute: "1bde7ef2eb1f218d6dfb6f652622d988fad7c32983ba1833811243296d81b5e8",
       },
     ] as const;
     for (const { label, template, withRoute, withoutRoute } of digestCases) {
@@ -423,7 +426,7 @@ describe("the named TEST proof-only installation gate", () => {
   });
 
   it("conditions the isolated proof resources on the switch, exact account and region", () => {
-    const approved = namedTemplate("agentxlivetest123");
+    const approved = namedTemplate("rovaralivetest");
     const proofResources = proofEntries(approved);
     const conditionId = Object.keys(approved.Conditions ?? {}).find((id) => id.includes("InstallTaskPersonProof"));
     expect(conditionId).toBeDefined();
@@ -443,7 +446,7 @@ describe("the named TEST proof-only installation gate", () => {
   });
 
   it("keeps the proof function and role free of unrelated runtime permissions", () => {
-    const approved = namedTemplate("agentxlivetest123");
+    const approved = namedTemplate("rovaralivetest");
     const resources = approved.Resources ?? {};
     const [functionId, proofFunction] = Object.entries(resources).find(([id, resource]) =>
       id.includes("TaskPersonProofFunction") && resource.Type === "AWS::Lambda::Function",
@@ -453,7 +456,7 @@ describe("the named TEST proof-only installation gate", () => {
     expect(properties).not.toHaveProperty("TracingConfig");
     expect(properties).not.toHaveProperty("VpcConfig");
     const variables = (properties.Environment as { Variables: Record<string, unknown> }).Variables;
-    expect(variables).toMatchObject({ AGENTX_ENV: "agentxlivetest123" });
+    expect(variables).toMatchObject({ AGENTX_ENV: "rovaralivetest" });
     expect(Object.keys(variables).sort()).toEqual(["AGENTX_ENV", "SLACK_SECRET_ARN", "SLACK_TEAM_ID"]);
     const roleId = ((properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"])[0];
     expect(roleId).toContain("TaskPersonProofRole");
@@ -472,7 +475,7 @@ describe("the named TEST proof-only installation gate", () => {
   });
 
   it("limits the dispatcher addition to projected Developer GetItem and the published proof version", () => {
-    const approved = appControlPlane("agentxlivetest123");
+    const approved = appControlPlane("rovaralivetest");
     const resources = approved.Resources ?? {};
     const conditionId = Object.keys(approved.Conditions ?? {}).find((id) => id.includes("InstallTaskPersonProof"));
     expect(conditionId).toBeDefined();

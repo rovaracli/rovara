@@ -9,7 +9,7 @@ import {
 
 const IMAGE = `111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara-mcp-runner@sha256:${"a".repeat(64)}`;
 const ROLE = "arn:aws:iam::111111111111:role/rovara-mcp-execution";
-const SECRET = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcpsim000001-AbCdEf";
+const SECRET = "arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/test/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcpsim000001-AbCdEf";
 const ENDPOINTS = { endpointGroupIds: ["sg-0eeeeeeeeeeeeeeee", "sg-0ffffffffffffffff"], s3PrefixListId: "pl-0123456789abcdef0", controllerGroupId: "sg-0123456789abcdef0", controllerPort: 8443 };
 const ID = "mcpsim000001";
 
@@ -60,7 +60,7 @@ describe("runner task definition", () => {
       { image: "x/rovara-mcp-runner:latest" }, { image: `x@sha256:${"a".repeat(63)}` }, { image: `x@sha256:${"A".repeat(64)}` }, { image: "" },
       { family: "other-serve" }, { family: "rovara-mcp-" }, { family: "rovara-mcp-a b" },
       { executionRoleArn: "arn:aws:iam::111111111111:user/me" }, { executionRoleArn: "role" },
-      { secretRef: undefined }, { secretRef: "other/secret" }, { secretRef: "agentx/test/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcpsim000001" }, { secretRef: SECRET.replace("-AbCdEf", "") }, { secretRef: SECRET.replace("agentx/", "other/") }, { secretRef: SECRET.replace("secretsmanager", "ssm") }, { secretRef: `${SECRET}:x` }, { secretRef: "agentx/../x" }, { secretRef: "agentx//x" },
+      { secretRef: undefined }, { secretRef: "other/secret" }, { secretRef: "rovara-cloud/test/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcpsim000001" }, { secretRef: SECRET.replace("-AbCdEf", "") }, { secretRef: SECRET.replace("rovara-cloud/", "other/") }, { secretRef: SECRET.replace("secretsmanager", "ssm") }, { secretRef: `${SECRET}:x` }, { secretRef: "rovara-cloud/../x" }, { secretRef: "rovara-cloud//x" },
       { secretEnv: ["lower"] }, { secretEnv: ["PATH;x"] }, { secretEnv: Array.from({ length: 9 }, (_, index) => `NAME_${index}`) },
       { size: { cpu: 2048, memoryMiB: 512 } }, { size: { cpu: 256, memoryMiB: 4096 } },
     ];

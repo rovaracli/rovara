@@ -1,5 +1,5 @@
 // Plan 2, Task 16: an owner or admin of a cloud org creates a project from a repository the org's own GitHub connection reaches (the
-// route checks that), and the project is built here, from the repository alone, the way `agentx project add` builds it.
+// route checks that), and the project is built here, from the repository alone, the way `rovara project add` builds it.
 import {
   CreateProjectBodySchema,
   DEFAULT_ORCHESTRATOR_INSTRUCTIONS,
@@ -23,7 +23,7 @@ export interface CloudProjectDefaults {
   githubCredentialRef: string;
 }
 
-// What `agentx project add` registers: 20 GiB gp3 volumes.
+// What `rovara project add` registers: 20 GiB gp3 volumes.
 const VOLUME_SIZE_GIB = 20;
 const VOLUME_TYPE = "gp3";
 
@@ -103,7 +103,7 @@ export function parseCreateProjectBody(body: unknown): CreateProjectInput {
 }
 
 /**
- * The repository entry `agentx project add` builds for a repository, from what the GitHub App says about it; settings use it for an added one.
+ * The repository entry `rovara project add` builds for a repository, from what the GitHub App says about it; settings use it for an added one.
  * `connection` is what the org's GitHub connection answered (the installation and GitHub's id of the repository): the entry pins them, so a
  * repository that moves to another installation must be connected again on purpose.
  */
@@ -120,7 +120,7 @@ export function cloudRepositoryEntry(input: {
   };
 }
 
-/** The project definition `agentx project add` builds for a repository, from what the GitHub App says about it. */
+/** The project definition `rovara project add` builds for a repository, from what the GitHub App says about it. */
 export function cloudProjectDefinition(input: {
   input: CreateProjectInput;
   repository: { fullName: string; defaultBranch: string };

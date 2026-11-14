@@ -19,7 +19,7 @@ export interface SsoBootstrapInput {
   env: string;
   /** The company sign-in's issuer, as `rovara signin enable oidc` stored it. */
   oidcIssuer: string;
-  /** The recorded edition of the install (`/agentx/<env>/edition`); anything but Enterprise is refused. */
+  /** The recorded edition of the install (`/rovara-cloud/<env>/edition`); anything but Enterprise is refused. */
   recordedEdition: string | undefined;
   claim: string;
   adminGroups: readonly string[];

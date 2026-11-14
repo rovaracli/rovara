@@ -48,7 +48,7 @@ export function modelSentenceContext(definition: Readonly<{ provider: string; mo
 }
 
 /** The command that runs a model's driving test (Task 4.10C), as the owner-approved sentences name it. */
-const DRIVING_TEST_COMMAND = "agentx project model-check test --model <id>";
+const DRIVING_TEST_COMMAND = "rovara project model-check test --model <id>";
 
 /** How a sentence names the provider (at the start of a sentence, and inside one) and the model, with a plain fallback when no definition is known. */
 type Who = Readonly<{ start: string; mid: string; model: string; named: boolean }>;

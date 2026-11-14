@@ -115,7 +115,7 @@ describe("project access (E7, E8, FR-013.1)", () => {
     const { deps, identity, db } = await harness();
     db.set({ ...projectMemberKey(TEST_ORG, MAYA.developerId, "payments"), entityType: "MEMBERSHIP", ownerKey: MAYA.developerId, projectName: "payments", role: "viewer", projectRole: "viewer", grantId: randomUUID() });
     await expect(planChange(deps, identity, { kind: "grant_project_access", project: "payments", developer: MAYA.developerId })).rejects.toMatchObject({
-      code: "CONFIG_INVALID", message: expect.stringContaining("is a viewer of payments; change their role with agentx project add-member") as string,
+      code: "CONFIG_INVALID", message: expect.stringContaining("is a viewer of payments; change their role with rovara project add-member") as string,
     });
     const revoke = await planChange(deps, identity, { kind: "revoke_project_access", project: "payments", developer: MAYA.developerId });
     await revoke.apply(identity);
@@ -129,7 +129,7 @@ describe("project access (E7, E8, FR-013.1)", () => {
 
   it("refuses a project that is not registered, or whose name is not a project name", async () => {
     const { deps, identity } = await harness();
-    await expect(planChange(deps, identity, { kind: "grant_project_access", project: "ledger", developer: "U0NEW00001" })).rejects.toMatchObject({ code: "NOT_FOUND", message: "NOT_FOUND: project ledger is not registered; check the project's name, or register it with agentx admin project register" });
+    await expect(planChange(deps, identity, { kind: "grant_project_access", project: "ledger", developer: "U0NEW00001" })).rejects.toMatchObject({ code: "NOT_FOUND", message: "NOT_FOUND: project ledger is not registered; check the project's name, or register it with rovara admin project register" });
     await expect(planChange(deps, identity, { kind: "revoke_project_access", project: "pay#ments", developer: MAYA.developerId })).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 
@@ -147,7 +147,7 @@ describe("project access (E7, E8, FR-013.1)", () => {
 describe("ending a sign-in (E9, Q3)", () => {
   it("says every session ends at once and that they may sign in again", async () => {
     const { deps, identity } = await harness();
-    expect((await planChange(deps, identity, { kind: "revoke_signin", developer: MAYA.developerId })).effect).toBe("End every AgentX sign-in session of Maya Chen (signs in with Slack). Their AI tools stop reaching AgentX at once; they may sign in again with agentx login. Their running tasks keep running.");
+    expect((await planChange(deps, identity, { kind: "revoke_signin", developer: MAYA.developerId })).effect).toBe("End every AgentX sign-in session of Maya Chen (signs in with Slack). Their AI tools stop reaching AgentX at once; they may sign in again with rovara login. Their running tasks keep running.");
     await expect(planChange(deps, identity, { kind: "revoke_signin", developer: "U0NEW00001" })).rejects.toMatchObject({ code: "NOT_FOUND", message: "NOT_FOUND: Slack user U0NEW00001 has never signed in to AgentX, so there is no sign-in to end" });
     await expect(planChange(deps, identity, { kind: "revoke_project_access", project: "payments", developer: "U0NEW00001" })).rejects.toMatchObject({ code: "NOT_FOUND", message: "NOT_FOUND: Slack user U0NEW00001 has no grant for payments, so there is nothing to revoke" });
   });

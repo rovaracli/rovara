@@ -53,7 +53,7 @@ describe("the fixture key", () => {
     const aliases = Object.values(named.findResources("AWS::KMS::Alias")) as Array<{ Properties: { AliasName: string; TargetKeyId: unknown } }>;
     const mine = aliases.filter((alias) => alias.Properties.AliasName === fixtureKeyAlias("staging"));
     expect(mine).toHaveLength(1);
-    expect(fixtureKeyAlias("staging")).toBe("alias/agentx/staging/fixtures");
+    expect(fixtureKeyAlias("staging")).toBe("alias/rovara-cloud/staging/fixtures");
     expect(JSON.stringify(Object.values(legacy.findResources("AWS::KMS::Alias")))).not.toContain("fixtures");
   });
   it("passes the broker nothing for the key (M4): no name, no variable; the broker builds the alias ARN from AGENTX_ENV", () => {
@@ -64,7 +64,7 @@ describe("the fixture key", () => {
     expect(JSON.stringify(brokerNamesIn(variables))).not.toContain("fk");
     const env: MutableEnvironment = { [BROKER_NAMES_VARIABLE]: "{}", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "944937319445", AGENTX_ENV: "staging" };
     hydrateBrokerEnvironment(env);
-    expect(env["FIXTURE_KEY_ARN"]).toBe("arn:aws:kms:us-west-2:944937319445:alias/agentx/staging/fixtures");
+    expect(env["FIXTURE_KEY_ARN"]).toBe("arn:aws:kms:us-west-2:944937319445:alias/rovara-cloud/staging/fixtures");
     const bare: MutableEnvironment = { AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "944937319445" };
     hydrateBrokerEnvironment(bare);
     expect(bare["FIXTURE_KEY_ARN"]).toBeUndefined();
@@ -95,17 +95,17 @@ describe("the bucket", () => {
 describe("the service role and the default boundary are untouched", () => {
   const size = (statements: unknown[]) => JSON.stringify({ Version: "2012-10-17", Statement: statements }).replace(/\s/g, "").length;
   const scope = (env: string): PolicyScope => ({
-    env, partition: "aws", region: "ap-southeast-2", account: "944937319445", cloudFormationRoleName: `agentx-${env}-cloudformation`, artifactBucketArn: `arn:aws:s3:::agentx-${env}-access-artifactbucket-abcdefghijkl`, rovaraOrganizationId: `o-${"a".repeat(32)}`,
+    env, partition: "aws", region: "ap-southeast-2", account: "944937319445", cloudFormationRoleName: `rovara-cloud-${env}-cloudformation`, artifactBucketArn: `arn:aws:s3:::rovara-cloud-${env}-access-artifactbucket-abcdefghijkl`, rovaraOrganizationId: `o-${"a".repeat(32)}`,
   } as PolicyScope);
-  it("the service role's inline policy is 7,864 of 10,240 in the worst case, as before this lane (the service role already allows s3, kms and dynamodb on the stack)", () => {
-    const longest = scope("a".repeat(20));
-    expect(size(serviceRoleStatements(longest))).toBe(7864);
+  it("the service role's inline policy is 7,876 of 10,240 in the worst case (7,864 before the rovara-cloud tag keys, which carry no environment name), as before this lane (the service role already allows s3, kms and dynamodb on the stack)", () => {
+    const longest = scope("a".repeat(14));
+    expect(size(serviceRoleStatements(longest))).toBe(7876);
     const statements = serviceRoleStatements(longest);
     expect(JSON.stringify(statements)).not.toContain("fixtures");
     const services = statements.find((statement) => statement.Sid === "Services")!.Action;
     expect(services).toEqual(expect.arrayContaining(["s3:*", "kms:*", "dynamodb:*"]));
   });
   it("the default boundary is 5,585 of 6,144 in the worst case (integ/054 tightened it from 6,048; this lane adds nothing to it)", () => {
-    expect(size(withoutSids(defaultBoundaryStatements(scope("a".repeat(20)))))).toBe(5585);
+    expect(size(withoutSids(defaultBoundaryStatements(scope("a".repeat(14)))))).toBe(5585);
   });
 });

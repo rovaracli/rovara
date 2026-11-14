@@ -7,6 +7,7 @@ import { defaultBoundaryName, defaultBoundaryStatements, environmentRolePath, op
 import type { AgentXNaming } from "./naming.js";
 import { OperatorAccess, type OperatorAccessSettings } from "./operator-access.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
+import { RESOURCE_PREFIX } from "@agentx/contracts";
 
 export interface AccessStackProps extends StackProps {
   naming: AgentXNaming;
@@ -39,7 +40,7 @@ export class AccessStack extends Stack {
     const { naming, rovaraOrganizationId, bundleImageRepositories, operatorAccess } = props;
     const env = naming.env;
     if (env === undefined) throw new Error("the access stack exists only for named environments");
-    const ecsFailureRuleArn = Fn.sub(`arn:${"${AWS::Partition}"}:events:${"${AWS::Region}"}:${"${AWS::AccountId}"}:rule/agentx-${env}-*-service-failures`);
+    const ecsFailureRuleArn = Fn.sub(`arn:${"${AWS::Partition}"}:events:${"${AWS::Region}"}:${"${AWS::AccountId}"}:rule/${RESOURCE_PREFIX}-${env}-*-service-failures`);
 
     // The default boundary applies whenever the company gives none, so every AgentX role always has
     // one. It exists only under UseDefaultBoundary; the roles and the Deny statements Ref it inside
@@ -54,7 +55,7 @@ export class AccessStack extends Stack {
         const policy = new iam.CfnManagedPolicy(this, "DefaultPermissionsBoundary", {
           managedPolicyName: defaultBoundaryName(env),
           path: environmentRolePath(env),
-          description: `Default permission boundary for every agentx-${env} role`,
+          description: `Default permission boundary for every ${RESOURCE_PREFIX}-${env} role`,
           policyDocument: {
             Version: "2012-10-17",
             Statement: withoutSids(defaultBoundaryStatements({ env, partition: Aws.PARTITION, region: Aws.REGION, account: this.account, cloudFormationRoleName: naming.cloudFormationRoleName, ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }) })

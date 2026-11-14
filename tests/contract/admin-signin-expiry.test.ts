@@ -61,7 +61,7 @@ describe("the admin sign-in's expiry, in words (#218)", () => {
 
 describe("agentx admin commands with an expired admin sign-in (#218)", () => {
   async function run(token: { expiresAt: number } | undefined, cliInvocation: CliInvocation = INSTALLED_BARE) {
-    const home = await mkdtemp(join(tmpdir(), "agentx-admin-expiry-"));
+    const home = await mkdtemp(join(tmpdir(), "rovara-cloud-admin-expiry-"));
     const tokenStore = new InMemoryTokenStore();
     await writeEnvironmentCache(home, stagingSettings);
     if (token !== undefined) await tokenStore.set(tokenStoreKey(cacheFromSettings(stagingSettings).auth), { accessToken: ADMIN_TOKEN, expiresAt: token.expiresAt });
@@ -127,7 +127,7 @@ const controlPlane = () => vi.fn<typeof fetch>(async (input) => {
 
 describe("agentx mcp with an expired admin sign-in (#218)", () => {
   async function cli(admin: { expiresAt: number }, cliInvocation: CliInvocation = INSTALLED_BARE) {
-    const home = await mkdtemp(join(tmpdir(), "agentx-admin-expiry-mcp-"));
+    const home = await mkdtemp(join(tmpdir(), "rovara-cloud-admin-expiry-mcp-"));
     const tokenStore = new InMemoryTokenStore();
     await writeEnvironmentCache(home, stagingSettings);
     await saveDeveloperEnvironment(home, "staging", { url: URL_BASE, issuer: ISSUER, tokenEndpoint: `${ISSUER}/token`, revocationEndpoint: `${ISSUER}/revoke` });
@@ -175,7 +175,7 @@ describe("agentx mcp with an expired admin sign-in (#218)", () => {
 
 describe("an admin sign-in about to expire (#218)", () => {
   async function server(expiresAt: number, cliInvocation: CliInvocation = INSTALLED_BARE) {
-    const home = await mkdtemp(join(tmpdir(), "agentx-admin-expiring-"));
+    const home = await mkdtemp(join(tmpdir(), "rovara-cloud-admin-expiring-"));
     const tokenStore = new InMemoryTokenStore();
     await saveDeveloperEnvironment(home, "staging", { url: URL_BASE, issuer: ISSUER, tokenEndpoint: `${ISSUER}/token`, revocationEndpoint: `${ISSUER}/revoke` });
     await tokenStore.set(developerTokenKey(ISSUER), { accessToken: "developer-token", refreshToken: `agxr_${"a".repeat(43)}`, expiresAt: Date.now() + 3_600_000 });

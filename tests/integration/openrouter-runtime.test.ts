@@ -9,7 +9,7 @@ import { Type } from "typebox";
 import { createConfiguredModelRuntime, createModelRuntimeWithFallback, openRouterRouting, readOpenRouterKey } from "../../packages/model-runtime/src/index.js";
 import type { Context } from "@earendil-works/pi-ai";
 
-const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/openrouter-AbCdEf";
+const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/openrouter-AbCdEf";
 const secret = "sk-or-test-never-persist-this";
 const selected = { provider: "openrouter", modelId: "anthropic/claude-sonnet-4.5" };
 const environment = { AGENTX_OPENROUTER_SECRET_ARN: secretArn, AGENTX_OPENROUTER_PROVIDERS: "anthropic" };

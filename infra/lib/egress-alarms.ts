@@ -8,6 +8,7 @@ import {
   aws_sns as sns,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
+import { RESOURCE_PREFIX, environmentMetricsNamespace } from "@agentx/contracts";
 
 /** The blocked-lookup alarm goes off when this many queries are blocked within 5 minutes. */
 export const BLOCKED_DNS_ALARM_THRESHOLD = 200;
@@ -15,11 +16,11 @@ export const BLOCKED_DNS_ALARM_THRESHOLD = 200;
 export const NAT_EGRESS_ALARM_BYTES_PER_HOUR = 20 * 1024 ** 3;
 
 export interface EgressAlarmsProps {
-  /** The install, for the alarm names and the metric namespace AgentX/<env>. */
+  /** The install, for the alarm names and the metric namespace RovaraCloud/<env>. */
   env: string;
-  /** The alarm and metric name prefix, for example agentx-<env>. */
+  /** The alarm and metric name prefix, for example rovara-cloud-<env>. */
   resourcePrefix: string;
-  /** The DNS firewall query log group (Task 17), /agentx/<env>/dns-firewall. */
+  /** The DNS firewall query log group (Task 17), /rovara-cloud/<env>/dns-firewall. */
   dnsFirewallLogGroup: logs.ILogGroup;
   /** The install's NAT gateways, each with the availability zone it serves; one alarm per entry. */
   natGateways: ReadonlyArray<{ az: string; natGateway: ec2.CfnNatGateway }>;
@@ -29,7 +30,7 @@ export interface EgressAlarmsProps {
 
 /**
  * Alarms for unusual outbound traffic. A metric filter turns the firewall's blocked lookups into
- * AgentX/<env>/BlockedDnsQueries, and one alarm per NAT gateway watches the bytes sent out. A
+ * RovaraCloud/<env>/BlockedDnsQueries, and one alarm per NAT gateway watches the bytes sent out. A
  * firewall that blocks a burst of lookups, or a large transfer out, is the signal that an agent
  * machine is doing something unexpected. They notify the existing operator alerts topic.
  */
@@ -40,9 +41,9 @@ export class EgressAlarms extends Construct {
   constructor(scope: Construct, id: string, props: EgressAlarmsProps) {
     super(scope, id);
     const notify = new cloudwatchActions.SnsAction(props.alertsTopic);
-    const namespace = `AgentX/${props.env}`;
+    const namespace = environmentMetricsNamespace(props.env);
     // The documented name, not the log group's token, so the description reads plainly.
-    const logGroupName = `/agentx/${props.env}/dns-firewall`;
+    const logGroupName = `/${RESOURCE_PREFIX}/${props.env}/dns-firewall`;
 
     // Route 53 Resolver query logs are JSON; a query the firewall blocked carries firewall_rule_action BLOCK.
     new logs.MetricFilter(this, "BlockedDnsQueriesFilter", {

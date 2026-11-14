@@ -11,8 +11,8 @@ const actionPattern = (pattern: string) => new RegExp(`^${pattern.replace(/[.+^$
 
 const scope: PolicyScope = {
   env: "staging", partition: "aws", region: "us-east-1", account: "123456789012",
-  artifactBucketArn: "arn:aws:s3:::agentx-staging-access-artifactbucket-abc", pullThroughPrefix: "agentx-staging",
-  cloudFormationRoleName: "agentx-staging-cloudformation",
+  artifactBucketArn: "arn:aws:s3:::rovara-cloud-staging-access-artifactbucket-abc", pullThroughPrefix: "rovara-cloud-staging",
+  cloudFormationRoleName: "rovara-cloud-staging-cloudformation",
 };
 // Inline and attached policy actions on roles: the regex below catches them by name, but they are
 // role-scoped (the first test pins their resource to this environment's role path), not user, group or
@@ -29,7 +29,7 @@ describe("service role policy", () => {
       Sid: "EcsFailureEventsRule",
       Effect: "Allow",
       Action: ["events:*"],
-      Resource: "arn:aws:events:us-east-1:123456789012:rule/agentx-staging-*-service-failures",
+      Resource: "arn:aws:events:us-east-1:123456789012:rule/rovara-cloud-staging-*-service-failures",
     });
   });
 
@@ -39,7 +39,7 @@ describe("service role policy", () => {
       if (statement.Sid === "IamKeepBoundaryPolicy") {
         // Ruling M2 review: the boundary in force is never versioned, tagged or deleted by the deploy.
         expect(statement.Effect).toBe("Deny");
-        expect(resources).toEqual(["arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary"]);
+        expect(resources).toEqual(["arn:aws:iam::123456789012:policy/rovara-cloud/staging/rovara-cloud-staging-boundary"]);
       } else if (statement.Sid === "CognitoEmailServiceLinkedRole") {
         expect(resources).toEqual([COGNITO_EMAIL_SLR]);
       } else if (statement.Sid === "EcrTemplateServiceLinkedRole") {
@@ -50,22 +50,22 @@ describe("service role policy", () => {
       } else if (statement.Sid === "IamFixedNameRolesNotYetCreated") {
         // The fixed-name roles: IAM authorizes CloudFormation's lookup of each before it exists against its path-less ARN.
         // Reads and deletes only, never create or change (tests/contract/role-paths.test.ts proves what each action may do).
-        expect(resources).toEqual(["connector-secrets", "connector-secrets-test-accounts", "broker-role", "model-proxy-task", "model-access-probe", "chain-schedule", "img-push", "img-pull", "img-manage"].map((name) => `arn:aws:iam::123456789012:role/agentx-staging-${name}`));
+        expect(resources).toEqual(["connector-secrets", "connector-secrets-test-accounts", "broker-role", "model-proxy-task", "model-access-probe", "chain-schedule", "img-push", "img-pull", "img-manage"].map((name) => `arn:aws:iam::123456789012:role/rovara-cloud-staging-${name}`));
         expect(statement.Action.every((a) => /^iam:(Get|List|Delete|Detach)/.test(a))).toBe(true);
       } else if (statement.Sid === "IamInstanceProfiles") {
         // The EC2 workers' instance profile, under the same path as the environment's roles.
-        expect(resources).toEqual(["arn:aws:iam::123456789012:instance-profile/agentx/staging/*"]);
+        expect(resources).toEqual(["arn:aws:iam::123456789012:instance-profile/rovara-cloud/staging/*"]);
         expect(statement.Action.every((a) => /^iam:[A-Za-z]*InstanceProfile$/.test(a))).toBe(true);
       } else if (statement.Sid === "IamManagedPolicies") {
         // Ruling M2 (owner-approved 2026-10-21): the broker's named managed policies, agentx-* only, and only the
         // create/read/update/delete actions CloudFormation's AWS::IAM::ManagedPolicy handlers use.
-        expect(resources).toEqual(["arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*"]);
+        expect(resources).toEqual(["arn:aws:iam::123456789012:policy/rovara-cloud/staging/rovara-cloud-staging-broker-*"]);
         expect([...statement.Action].sort()).toEqual([...MANAGED_POLICY_ACTIONS].sort());
       } else {
-        // A path, not a name prefix: generated role names are truncated, and agentx-prod-* would
+        // A path, not a name prefix: generated role names are truncated, and rovara-cloud-prod-* would
         // also match the prod-eu environment's roles.
         // The environment's path, and the one root-path role (ECR's creation role: the CustomRoleArn pattern allows no path).
-        expect(resources).toEqual(["arn:aws:iam::123456789012:role/agentx/staging/*", "arn:aws:iam::123456789012:role/agentx-staging-img-create"]);
+        expect(resources).toEqual(["arn:aws:iam::123456789012:role/rovara-cloud/staging/*", "arn:aws:iam::123456789012:role/rovara-cloud-staging-img-create"]);
       }
     }
   });
@@ -82,15 +82,15 @@ describe("service role policy", () => {
     for (const keyless of ["iam:UpdateAssumeRolePolicy", "iam:TagRole", "iam:UntagRole", "iam:DeleteRole", "iam:GetRole", "iam:UpdateRole", "iam:UpdateRoleDescription"]) {
       expect(require.Action).not.toContain(keyless);
     }
-    expect([require.Resource].flat()).toEqual(["arn:aws:iam::123456789012:role/agentx/staging/*", "arn:aws:iam::123456789012:role/agentx-staging-img-create"]);
-    expect([withBoundary.find((s) => s.Sid === "IamKeepBoundary")!.Resource].flat()).toEqual(["arn:aws:iam::123456789012:role/agentx/staging/*", "arn:aws:iam::123456789012:role/agentx-staging-img-create"]);
+    expect([require.Resource].flat()).toEqual(["arn:aws:iam::123456789012:role/rovara-cloud/staging/*", "arn:aws:iam::123456789012:role/rovara-cloud-staging-img-create"]);
+    expect([withBoundary.find((s) => s.Sid === "IamKeepBoundary")!.Resource].flat()).toEqual(["arn:aws:iam::123456789012:role/rovara-cloud/staging/*", "arn:aws:iam::123456789012:role/rovara-cloud-staging-img-create"]);
     expect(require.Condition).toEqual({ StringNotEquals: { "iam:PermissionsBoundary": "arn:aws:iam::123456789012:policy/Boundary" } });
     expect(withBoundary.find((s) => s.Sid === "IamKeepBoundary")!.Action).toEqual(["iam:DeleteRolePermissionsBoundary"]);
   });
 
   it("uses the default boundary in the Deny statements when no boundary is given", () => {
     const require = serviceRoleStatements(scope).find((s) => s.Sid === "IamRequireBoundary")!;
-    expect(require.Condition).toEqual({ StringNotEquals: { "iam:PermissionsBoundary": "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary" } });
+    expect(require.Condition).toEqual({ StringNotEquals: { "iam:PermissionsBoundary": "arn:aws:iam::123456789012:policy/rovara-cloud/staging/rovara-cloud-staging-boundary" } });
     expect(serviceRoleStatements(scope).some((s) => s.Sid === "IamKeepBoundary")).toBe(true);
   });
 
@@ -168,7 +168,7 @@ describe("service role policy", () => {
     const budget = serviceRoleStatements(scope).find((s) => s.Sid === "Budget")!;
     expect(budget.Action.sort()).toEqual(["budgets:ListTagsForResource", "budgets:ModifyBudget", "budgets:TagResource", "budgets:UntagResource", "budgets:ViewBudget"]);
     // Exactly this one budget, never another: no wildcard suffix, no other environment's budget name.
-    expect(budget.Resource).toBe("arn:aws:budgets::123456789012:budget/agentx-staging-monthly");
+    expect(budget.Resource).toBe("arn:aws:budgets::123456789012:budget/rovara-cloud-staging-monthly");
     expect(SERVICE_ROLE_SERVICES).not.toContain("budgets");
     expect(serviceRoleStatements(scope).find((s) => s.Sid === "Services")!.Action).not.toContain("budgets:*");
   });
@@ -217,28 +217,28 @@ describe("operator role policy", () => {
   it("may pass only the CloudFormation service role, and only to CloudFormation", () => {
     const pass = operatorRoleStatements(scope).filter((s) => s.Action.includes("iam:PassRole"));
     expect(pass).toHaveLength(1);
-    expect(pass[0]!.Resource).toBe("arn:aws:iam::123456789012:role/agentx-staging-cloudformation");
+    expect(pass[0]!.Resource).toBe("arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation");
     expect(pass[0]!.Condition).toEqual({ StringEquals: { "iam:PassedToService": "cloudformation.amazonaws.com" } });
     expect(operatorRoleStatements(scope).flatMap((s) => s.Action).filter((a) => a.startsWith("iam:") && a !== "iam:PassRole")).toEqual([]);
   });
 
   it("changes only this environment's stacks, settings and secrets", () => {
     const byId = Object.fromEntries(operatorRoleStatements(scope).map((s) => [s.Sid, [s.Resource].flat()]));
-    const stack = (part: string) => `arn:aws:cloudformation:us-east-1:123456789012:stack/agentx-staging-${part}/*`;
+    const stack = (part: string) => `arn:aws:cloudformation:us-east-1:123456789012:stack/rovara-cloud-staging-${part}/*`;
     const deployed = ["foundation", "identity", "runtime", "control-plane", "slack"].map(stack);
     expect(byId.Stacks).toEqual([stack("access"), ...deployed]);
     expect(byId.ChangeSets).toEqual(deployed);
-    expect(byId.Settings).toEqual(["arn:aws:ssm:us-east-1:123456789012:parameter/agentx/staging", "arn:aws:ssm:us-east-1:123456789012:parameter/agentx/staging/*"]);
-    expect(byId.Secrets).toEqual(["arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/*"]);
+    expect(byId.Settings).toEqual(["arn:aws:ssm:us-east-1:123456789012:parameter/rovara-cloud/staging", "arn:aws:ssm:us-east-1:123456789012:parameter/rovara-cloud/staging/*"]);
+    expect(byId.Secrets).toEqual(["arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/*"]);
   });
 
   it("can never change the access stack, and names every stack exactly", () => {
     const statements = operatorRoleStatements(scope);
     const changeSetStatements = statements.filter((s) => s.Action.some((a) => /ChangeSet/.test(a)));
     expect(changeSetStatements.map((s) => s.Sid)).toEqual(["ChangeSets"]);
-    expect([changeSetStatements[0]!.Resource ?? []].flat().filter((r) => r.includes("agentx-staging-access"))).toEqual([]);
+    expect([changeSetStatements[0]!.Resource ?? []].flat().filter((r) => r.includes("rovara-cloud-staging-access"))).toEqual([]);
     const resources = statements.flatMap((s) => [s.Resource ?? []].flat());
-    expect(resources.filter((r) => r.includes("agentx-staging-*"))).toEqual([]);
+    expect(resources.filter((r) => r.includes("rovara-cloud-staging-*"))).toEqual([]);
     const list = statements.find((s) => s.Action.includes("cloudformation:ListStacks"))!;
     expect(list.Action).toEqual(["cloudformation:ListStacks"]);
     expect(list.Resource).toBe("*");
@@ -253,14 +253,14 @@ describe("operator role policy", () => {
     const logs = operatorRoleStatements(scope).find((s) => s.Sid === "Logs")!;
     expect(logs.Action).toEqual(["logs:FilterLogEvents", "logs:StartQuery"]);
     const resources = [logs.Resource ?? []].flat();
-    expect(resources).toContain("arn:aws:logs:us-east-1:123456789012:log-group:agentx-staging-control-plane-*");
-    expect(resources.every((resource) => resource.includes(":log-group:agentx-staging-"))).toBe(true);
+    expect(resources).toContain("arn:aws:logs:us-east-1:123456789012:log-group:rovara-cloud-staging-control-plane-*");
+    expect(resources.every((resource) => resource.includes(":log-group:rovara-cloud-staging-"))).toBe(true);
   });
 
   it("may turn on termination protection for the five stacks it deploys, and only those", () => {
     const statements = operatorRoleStatements(scope).filter((s) => s.Action.includes("cloudformation:UpdateTerminationProtection"));
     expect(statements.map((s) => s.Sid)).toEqual(["ChangeSets"]);
-    const stack = (part: string) => `arn:aws:cloudformation:us-east-1:123456789012:stack/agentx-staging-${part}/*`;
+    const stack = (part: string) => `arn:aws:cloudformation:us-east-1:123456789012:stack/rovara-cloud-staging-${part}/*`;
     expect([statements[0]!.Resource].flat()).toEqual(["foundation", "identity", "runtime", "control-plane", "slack"].map(stack));
   });
 
@@ -268,13 +268,13 @@ describe("operator role policy", () => {
     const admin = operatorRoleStatements(scope).find((s) => s.Sid === "AdminUser")!;
     expect(admin.Action.sort()).toEqual(["cognito-idp:AdminAddUserToGroup", "cognito-idp:AdminCreateUser", "cognito-idp:AdminGetUser", "cognito-idp:AdminListGroupsForUser"]);
     expect(admin.Resource).toBe("arn:aws:cognito-idp:us-east-1:123456789012:userpool/*");
-    expect(admin.Condition).toEqual({ StringEquals: { "aws:ResourceTag/agentx:env": "staging" } });
+    expect(admin.Condition).toEqual({ StringEquals: { "aws:ResourceTag/rovara-cloud:env": "staging" } });
   });
 
   it("may subscribe to and read only this environment's alert topic, and never publish or unsubscribe", () => {
     const statements = operatorRoleStatements(scope);
     const snsResources = new Set(statements.filter((s) => s.Action.some((a) => a.startsWith("sns:"))).flatMap((s) => [s.Resource].flat()));
-    expect(snsResources).toEqual(new Set(["arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts"]));
+    expect(snsResources).toEqual(new Set(["arn:aws:sns:us-east-1:123456789012:rovara-cloud-staging-alerts"]));
     expect(actions(statements).filter((a) => a.startsWith("sns:")).sort()).toEqual(["sns:ListSubscriptionsByTopic", "sns:Subscribe"]);
     expect(actions(statements)).not.toContain("sns:Publish");
     expect(actions(statements)).not.toContain("sns:Unsubscribe");
@@ -283,15 +283,15 @@ describe("operator role policy", () => {
   it("may subscribe only email or the alert webhook to the topic, never sqs, lambda or sms", () => {
     const subscribe = operatorRoleStatements(scope).find((s) => s.Action.includes("sns:Subscribe"))!;
     expect(subscribe.Action).toEqual(["sns:Subscribe"]);
-    expect(subscribe.Resource).toBe("arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts");
+    expect(subscribe.Resource).toBe("arn:aws:sns:us-east-1:123456789012:rovara-cloud-staging-alerts");
     expect(subscribe.Condition).toEqual({ StringEquals: { "sns:Protocol": ["email", "https"] } });
   });
 
   it("may flip only the test alarm, by its exact name", () => {
     const alarm = operatorRoleStatements(scope).find((s) => s.Sid === "TestAlarm")!;
     expect(alarm.Action.sort()).toEqual(["cloudwatch:DescribeAlarmHistory", "cloudwatch:SetAlarmState"]);
-    // Exact, never agentx-staging-*: that would also match a sibling environment named staging-eu.
-    expect(alarm.Resource).toBe("arn:aws:cloudwatch:us-east-1:123456789012:alarm:agentx-staging-TestAlarm");
+    // Exact, never rovara-cloud-staging-*: that would also match a sibling environment named staging-eu.
+    expect(alarm.Resource).toBe("arn:aws:cloudwatch:us-east-1:123456789012:alarm:rovara-cloud-staging-TestAlarm");
   });
 
   it("may read SES identities and the account's sending status for agentx signin cloud --email-from (Task 7), and send or change nothing", () => {
@@ -309,7 +309,7 @@ describe("operator role policy", () => {
   it("may read only this environment's budget, and change none", () => {
     const budget = operatorRoleStatements(scope).find((s) => s.Sid === "Budget")!;
     expect(budget.Action).toEqual(["budgets:ViewBudget"]);
-    expect(budget.Resource).toBe("arn:aws:budgets::123456789012:budget/agentx-staging-monthly");
+    expect(budget.Resource).toBe("arn:aws:budgets::123456789012:budget/rovara-cloud-staging-monthly");
     expect(actions(operatorRoleStatements(scope)).filter((a) => a.startsWith("budgets:"))).toEqual(["budgets:ViewBudget"]);
   });
 
@@ -336,9 +336,9 @@ describe("operator role policy", () => {
 // Owner decision A (task-15-16-review.md, "AssumeOrgRoles: recommendation for the owner"): the ceiling is raised for the broker, the model proxy task role and the
 // model access probe only, and the exclusion covers every account of Rovara's own AWS Organization when one is configured.
 const THREE_ROLE_ARNS = [
-  "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role",
-  "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-model-proxy-task",
-  "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-model-access-probe",
+  "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-broker-role",
+  "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-model-proxy-task",
+  "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-model-access-probe",
 ];
 const ASSUME_ORG_ROLES_WITHOUT_ORGANIZATION = {
   Sid: "AssumeOrgRoles", Effect: "Allow", Action: ["sts:AssumeRole"], Resource: "arn:aws:iam::*:role/*",
@@ -385,18 +385,18 @@ describe("AssumeOrgRoles in the default permission boundary (owner decision A)",
   });
 
   it("names the three roles by their fixed names under the environment's path", () => {
-    expect(brokerRoleName("staging")).toBe("agentx-staging-broker-role");
-    expect(modelProxyTaskRoleName("staging")).toBe("agentx-staging-model-proxy-task");
-    expect(modelAccessProbeRoleName("staging")).toBe("agentx-staging-model-access-probe");
+    expect(brokerRoleName("staging")).toBe("rovara-cloud-staging-broker-role");
+    expect(modelProxyTaskRoleName("staging")).toBe("rovara-cloud-staging-model-proxy-task");
+    expect(modelAccessProbeRoleName("staging")).toBe("rovara-cloud-staging-model-access-probe");
     expect(assumeOrgRoles(scope).Condition!.ArnLike!["aws:PrincipalArn"]).toEqual(THREE_ROLE_ARNS);
   });
 
   it("keeps the three names distinct from every other fixed role name and within IAM's 64 characters, for the longest environment name", () => {
-    const longest = "a".repeat(20);
+    const longest = "a".repeat(14);
     const names = [brokerRoleName(longest), modelProxyTaskRoleName(longest), modelAccessProbeRoleName(longest)];
     expect(new Set(names).size).toBe(3);
     for (const name of names) expect(name.length).toBeLessThanOrEqual(64);
-    for (const other of [`agentx-${longest}-connector-secrets`, `agentx-${longest}-cloudformation`, `agentx-${longest}-operator`, `agentx-${longest}-boundary`]) expect(names).not.toContain(other);
+    for (const other of [`rovara-cloud-${longest}-connector-secrets`, `rovara-cloud-${longest}-cloudformation`, `rovara-cloud-${longest}-operator`, `rovara-cloud-${longest}-boundary`]) expect(names).not.toContain(other);
   });
 
   it("raises the ceiling for the three roles and no other principal", () => {
@@ -404,18 +404,18 @@ describe("AssumeOrgRoles in the default permission boundary (owner decision A)",
     for (const arn of THREE_ROLE_ARNS) expect(raisesCeilingFor(statement, arn), arn).toBe(true);
     for (const arn of [
       // Another role of the same environment: the ConnectorSecretsRole, the CloudFormation and operator roles, a generated worker or orchestrator role.
-      "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets",
-      "arn:aws:iam::123456789012:role/agentx-staging-cloudformation",
-      "arn:aws:iam::123456789012:role/agentx-staging-operator",
-      "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-control-plane-SlackOrchestratorTaskRole1A2B3C4D-XYZ",
-      "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-runtime-WorkerInstanceRole-ABCDEF",
+      "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-connector-secrets",
+      "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation",
+      "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator",
+      "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-control-plane-SlackOrchestratorTaskRole1A2B3C4D-XYZ",
+      "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-runtime-WorkerInstanceRole-ABCDEF",
       // A prefix, a suffix or a case change of a listed name, the same name outside the environment's path, in another environment, or in another account.
-      "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role-extra",
-      "arn:aws:iam::123456789012:role/agentx/staging/xagentx-staging-broker-role",
-      "arn:aws:iam::123456789012:role/agentx/staging/AGENTX-STAGING-BROKER-ROLE",
-      "arn:aws:iam::123456789012:role/agentx-staging-broker-role",
-      "arn:aws:iam::123456789012:role/agentx/prod/agentx-prod-broker-role",
-      "arn:aws:iam::999999999999:role/agentx/staging/agentx-staging-broker-role",
+      "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-broker-role-extra",
+      "arn:aws:iam::123456789012:role/rovara-cloud/staging/xagentx-staging-broker-role",
+      "arn:aws:iam::123456789012:role/rovara-cloud/staging/AGENTX-STAGING-BROKER-ROLE",
+      "arn:aws:iam::123456789012:role/rovara-cloud-staging-broker-role",
+      "arn:aws:iam::123456789012:role/rovara-cloud/prod/rovara-cloud-prod-broker-role",
+      "arn:aws:iam::999999999999:role/rovara-cloud/staging/rovara-cloud-staging-broker-role",
     ]) expect(raisesCeilingFor(statement, arn), arn).toBe(false);
   });
 
@@ -439,8 +439,8 @@ describe("default permission boundary", () => {
   const denies = statements.filter((s) => s.Effect === "Deny");
 
   it("has a deterministic name and ARN under the environment's IAM path", () => {
-    expect(defaultBoundaryName("staging")).toBe("agentx-staging-boundary");
-    expect(defaultBoundaryArn(scope)).toBe("arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary");
+    expect(defaultBoundaryName("staging")).toBe("rovara-cloud-staging-boundary");
+    expect(defaultBoundaryArn(scope)).toBe("arn:aws:iam::123456789012:policy/rovara-cloud/staging/rovara-cloud-staging-boundary");
   });
 
   it("allows each needed service by wildcard, never IAM, Organizations or Account", () => {
@@ -460,7 +460,7 @@ describe("default permission boundary", () => {
       Sid: "EcsFailureEventsRule",
       Effect: "Allow",
       Action: ["events:*"],
-      Resource: "arn:aws:events:us-east-1:123456789012:rule/agentx-staging-*-service-failures",
+      Resource: "arn:aws:events:us-east-1:123456789012:rule/rovara-cloud-staging-*-service-failures",
     });
     expect(allows.find((s) => s.Sid === "Services")!.Action).not.toContain("events:*");
   });
@@ -474,12 +474,12 @@ describe("default permission boundary", () => {
     expect(allows.find((s) => s.Sid === "AssumeOrgRoles")).toEqual(ASSUME_ORG_ROLES_WITHOUT_ORGANIZATION);
     // 2026-11-03: sts:GetCallerIdentity is in the Services statement (Resource "*", no condition), not a statement of its own.
     expect(allows.find((s) => s.Sid === "Services")!.Action).toContain("sts:GetCallerIdentity");
-    // Plan 3 (R62): the broker assumes the connector secrets role, named exactly. Setup and test health SH22 adds one wildcard for the saved-environment roles (agentx-<env>-saved-env-*): the boundary
+    // Plan 3 (R62): the broker assumes the connector secrets role, named exactly. Setup and test health SH22 adds one wildcard for the saved-environment roles (rovara-cloud-<env>-saved-env-*): the boundary
     // has room for one more ARN, not three, and the broker's own policy names the three exactly.
     expect(allows.find((s) => s.Sid === "ConnectorSecretsRole")).toEqual({
       Sid: "ConnectorSecretsRole", Effect: "Allow", Action: ["sts:AssumeRole", "sts:TagSession"],
       // Test services TS26: the TestAccountSecretsRole shares the connector role's name as a prefix, so the one ARN ends in a wildcard (the boundary has no room for another; the broker's own policy names each role exactly).
-      Resource: ["arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-img-*"],
+      Resource: ["arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-connector-secrets*", "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-img-*"],
     });
     expect(allows.flatMap((s) => s.Action).filter((a) => a === "*" || a === "sts:*")).toEqual([]);
     expect(allows.filter((s) => s.Action.some((a) => /^sts:(AssumeRole|TagSession)/.test(a))).map((s) => s.Sid)).toEqual(["ConnectorSecretsRole", "AssumeOrgRoles"]);
@@ -487,7 +487,7 @@ describe("default permission boundary", () => {
 
   it("never allows iam:* or any user, group, access key, login profile or managed-policy action, except agentx-* managed policies (ruling M2)", () => {
     const managedPolicies = allows.find((statement) => statement.Sid === "IamManagedPolicies");
-    expect(managedPolicies?.Resource).toBe("arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*");
+    expect(managedPolicies?.Resource).toBe("arn:aws:iam::123456789012:policy/rovara-cloud/staging/rovara-cloud-staging-broker-*");
     expect([...managedPolicies!.Action].sort()).toEqual([...MANAGED_POLICY_ACTIONS].sort());
     const iam = allows.filter((statement) => statement.Sid !== "IamManagedPolicies").flatMap((s) => s.Action).filter((a) => a.startsWith("iam:") || a === "*");
     expect(iam).not.toContain("iam:*");
@@ -499,12 +499,12 @@ describe("default permission boundary", () => {
 
   it("scopes role actions and PassRole to AgentX's own roles", () => {
     const byId = Object.fromEntries(allows.map((s) => [s.Sid, s]));
-    expect([byId.IamRoles!.Resource].flat()).toEqual(["arn:aws:iam::123456789012:role/agentx/staging/*", "arn:aws:iam::123456789012:role/agentx-staging-img-create"]);
+    expect([byId.IamRoles!.Resource].flat()).toEqual(["arn:aws:iam::123456789012:role/rovara-cloud/staging/*", "arn:aws:iam::123456789012:role/rovara-cloud-staging-img-create"]);
     expect(byId.IamRoles!.Action.every((a) => /^iam:[A-Za-z]*Role[A-Za-z]*$/.test(a))).toBe(true);
     // 2026-11-03: iam:PassRole is in IamRoles (the same two ARNs), and the service role is passed by PassServiceRole alone: the union of what is allowed is what PassRoles and IamRoles allowed before.
     expect(byId.IamRoles!.Action).toContain("iam:PassRole");
     expect(byId.PassRoles).toBeUndefined();
-    expect(byId.PassServiceRole).toEqual({ Sid: "PassServiceRole", Effect: "Allow", Action: ["iam:PassRole"], Resource: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation" });
+    expect(byId.PassServiceRole).toEqual({ Sid: "PassServiceRole", Effect: "Allow", Action: ["iam:PassRole"], Resource: "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation" });
     // No pass-role for retired runtime's default instance role: the capacity provider was removed (#118).
     expect(byId.PassDefaultInstanceRole).toBeUndefined();
     expect(byId.ServiceLinkedRoles).toEqual({
@@ -531,8 +531,8 @@ describe("default permission boundary", () => {
       { Action: ["organizations:*", "account:*", "iam:*User*", "iam:*Group*"], Resource: "*" },
       // Every policy except the agentx-* managed policies the service role creates (ruling M2); the boundary itself stays denied below.
       // iam:SetDefaultPolicyVersion is matched by iam:*PolicyVersion* (checked below), so it is not listed again.
-      { Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy"], Resource: { NotResource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*" } },
-      { Action: ["iam:*Policy*"], Resource: "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary" },
+      { Action: ["iam:CreatePolicy*", "iam:*PolicyVersion*", "iam:DeletePolicy"], Resource: { NotResource: "arn:aws:iam::123456789012:policy/rovara-cloud/staging/rovara-cloud-staging-broker-*" } },
+      { Action: ["iam:*Policy*"], Resource: "arn:aws:iam::123456789012:policy/rovara-cloud/staging/rovara-cloud-staging-boundary" },
     ]);
     expect(denies.every((s) => s.Condition === undefined)).toBe(true);
   });
@@ -561,7 +561,7 @@ describe("default permission boundary", () => {
     expect(named).toHaveLength(7);
     const matched = iamActions.actions.filter((action) => actionPattern(BOUNDARY_INSTANCE_PROFILE_ACTIONS).test(action));
     expect([...matched].sort()).toEqual([...named].sort());
-    expect(boundary.Resource).toBe("arn:aws:iam::123456789012:instance-profile/agentx/staging/*");
+    expect(boundary.Resource).toBe("arn:aws:iam::123456789012:instance-profile/rovara-cloud/staging/*");
   });
 
   it("lets the roles it bounds read Bedrock model availability (bedrock:GetFoundationModelAvailability has no resource type, so it needs Resource \"*\"), through the Services statement's bedrock:* and no Deny", () => {
@@ -593,28 +593,28 @@ describe("CloudFront permissions (web app deploy)", () => {
 
   it("creates a distribution, and tags on create, only with this environment's tag", () => {
     const create = service.find((s) => s.Sid === "CloudFrontDistributionCreate")!;
-    expect(create).toEqual({ Sid: "CloudFrontDistributionCreate", Effect: "Allow", Action: ["cloudfront:CreateDistribution"], Resource: "*", Condition: { StringEquals: { "aws:RequestTag/agentx:env": "staging" } } });
+    expect(create).toEqual({ Sid: "CloudFrontDistributionCreate", Effect: "Allow", Action: ["cloudfront:CreateDistribution"], Resource: "*", Condition: { StringEquals: { "aws:RequestTag/rovara-cloud:env": "staging" } } });
     // On "*": which resource CloudFront authorizes the create-time tag call against is not known, so it works whichever way CloudFormation tags; the request tag and the two Denies keep it narrow.
     const tag = service.find((s) => s.Sid === "CloudFrontDistributionTag")!;
-    expect(tag).toEqual({ Sid: "CloudFrontDistributionTag", Effect: "Allow", Action: ["cloudfront:TagResource"], Resource: "*", Condition: { StringEquals: { "aws:RequestTag/agentx:env": "staging" } } });
+    expect(tag).toEqual({ Sid: "CloudFrontDistributionTag", Effect: "Allow", Action: ["cloudfront:TagResource"], Resource: "*", Condition: { StringEquals: { "aws:RequestTag/rovara-cloud:env": "staging" } } });
   });
 
   it("changes a distribution, a tag-only update included, only when it carries this environment's tag", () => {
     const manage = service.find((s) => s.Sid === "CloudFrontDistributions")!;
     expect(manage.Resource).toBe(arn("distribution"));
-    expect(manage.Condition).toEqual({ StringEquals: { "aws:ResourceTag/agentx:env": "staging" } });
+    expect(manage.Condition).toEqual({ StringEquals: { "aws:ResourceTag/rovara-cloud:env": "staging" } });
     expect([...manage.Action].sort()).toEqual(["cloudfront:DeleteDistribution", "cloudfront:GetDistribution", "cloudfront:GetDistributionConfig", "cloudfront:ListTagsForResource", "cloudfront:TagResource", "cloudfront:UntagResource", "cloudfront:UpdateDistribution"]);
   });
 
   it("denies tagging a distribution that carries another environment's tag, and setting another environment's value", () => {
     expect(service.find((s) => s.Sid === "CloudFrontKeepEnvironmentTag")).toEqual({
       Sid: "CloudFrontKeepEnvironmentTag", Effect: "Deny", Action: ["cloudfront:TagResource"], Resource: arn("distribution"),
-      Condition: { Null: { "aws:ResourceTag/agentx:env": "false" }, StringNotEquals: { "aws:ResourceTag/agentx:env": "staging" } },
+      Condition: { Null: { "aws:ResourceTag/rovara-cloud:env": "false" }, StringNotEquals: { "aws:ResourceTag/rovara-cloud:env": "staging" } },
     });
-    // Present and different. A call that sends no agentx:env (a tag-only update of other tags) is not matched, so the ResourceTag Allow above takes it.
+    // Present and different. A call that sends no rovara-cloud:env (a tag-only update of other tags) is not matched, so the ResourceTag Allow above takes it.
     expect(service.find((s) => s.Sid === "CloudFrontOnlyOwnEnvironmentTag")).toEqual({
       Sid: "CloudFrontOnlyOwnEnvironmentTag", Effect: "Deny", Action: ["cloudfront:TagResource"], Resource: "*",
-      Condition: { Null: { "aws:RequestTag/agentx:env": "false" }, StringNotEquals: { "aws:RequestTag/agentx:env": "staging" } },
+      Condition: { Null: { "aws:RequestTag/rovara-cloud:env": "false" }, StringNotEquals: { "aws:RequestTag/rovara-cloud:env": "staging" } },
     });
   });
 
@@ -641,19 +641,19 @@ describe("CloudFront permissions (web app deploy)", () => {
     const size = (statements: unknown[]) => JSON.stringify({ Version: "2012-10-17", Statement: statements }).replace(/\s/g, "").length;
     const orgId = `o-${"a".repeat(32)}`;
     let worst = 0;
-    for (const env of ["staging", "agentxlivetest123", "a".repeat(20)]) {
+    for (const env of ["staging", "rovaralivetest", "a".repeat(14)]) {
       for (const rovaraOrganizationId of [undefined, orgId]) {
         const longest: PolicyScope = {
-          ...scope, env, account: "944937319445", region: "ap-southeast-2", cloudFormationRoleName: `agentx-${env}-cloudformation`, artifactBucketArn: `arn:aws:s3:::agentx-${env}-access-artifactbucket-abcdefghijkl`,
+          ...scope, env, account: "944937319445", region: "ap-southeast-2", cloudFormationRoleName: `rovara-cloud-${env}-cloudformation`, artifactBucketArn: `arn:aws:s3:::rovara-cloud-${env}-access-artifactbucket-abcdefghijkl`,
           ...(rovaraOrganizationId === undefined ? {} : { rovaraOrganizationId }),
         };
         // As deployed: without the Sids (infra/lib/access.ts).
-        // Setup and test health SH22: one ARN (the saved-environment roles) in the boundary and four more in its fixed-name lookup list. The worst case (20-character environment, organization id) is 5,951 of 6,144,
+        // Setup and test health SH22: one ARN (the saved-environment roles) in the boundary and four more in its fixed-name lookup list. The worst case (14-character environment, organization id) is 5,951 of 6,144,
         // so the margin that was 300 is 150. The base had 41 characters of room above the old margin. The next addition to the boundary needs it split or tightened first.
         // 2026-11-03: ECR's creation role moved to the root path (CustomRoleArn takes no path), so the boundary names it once in IamRoles and once in PassRoles (and no longer in the lookup list, which IamRoles covers):
-        // one more ARN, the worst case (20-character environment, organization id) is 6,046 of 6,144, so the margin is 90. The next addition to the boundary MUST split it or tighten it first.
+        // one more ARN, the worst case (14-character environment, organization id) is 6,046 of 6,144, so the margin is 90. The next addition to the boundary MUST split it or tighten it first.
         // 2026-11-03 (tightened, nothing new allowed): the stale 6,046 above was really 6,048. Merging statements with the same Effect and Resource (CallerIdentity and Quotas into Services, the two Denies on "*",
-        // PassRoles into IamRoles), dropping iam:SetDefaultPolicyVersion (matched by iam:*PolicyVersion*) and naming the instance profile actions with iam:*InstanceProfile brought the same worst case (20-character environment, organization id) from 6,048 to 5,585 of 6,144, so 559 characters are free.
+        // PassRoles into IamRoles), dropping iam:SetDefaultPolicyVersion (matched by iam:*PolicyVersion*) and naming the instance profile actions with iam:*InstanceProfile brought the same worst case (14-character environment, organization id) from 6,048 to 5,585 of 6,144, so 559 characters are free.
         // tests/contract/default-boundary-equivalence.test.ts proves it permits what v0.5.2's did. The limit below is unchanged (6144 - 90).
         const boundary = size(withoutSids(defaultBoundaryStatements(longest)));
         worst = Math.max(worst, boundary);

@@ -8,17 +8,17 @@ import { MemoryParameterStore } from "../support/memory-parameter-store.js";
 const slackOnly: DeveloperSignInSettings = { schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: "arn:aws:iam::123456789012:user/alice" };
 const both: DeveloperSignInSettings = {
   ...slackOnly,
-  oidc: { issuer: "https://acme.okta.com", clientId: "0oa1", requiredClaim: "groups", requiredValues: ["engineering"], displayName: "Okta", clientSecretName: "agentx/staging/developer-oidc" },
+  oidc: { issuer: "https://acme.okta.com", clientId: "0oa1", requiredClaim: "groups", requiredValues: ["engineering"], displayName: "Okta", clientSecretName: "rovara-cloud/staging/developer-oidc" },
 };
 
 describe("sign-in settings in SSM (FR-010, R7)", () => {
-  it("round-trip at /agentx/<env>/signin and hold no secret value", async () => {
+  it("round-trip at /rovara-cloud/<env>/signin and hold no secret value", async () => {
     const store = new MemoryParameterStore();
     await writeSignInSettings(store, both);
     expect(store.values.has(signInParameterName("staging"))).toBe(true);
-    expect(signInParameterName("staging")).toBe("/agentx/staging/signin");
+    expect(signInParameterName("staging")).toBe("/rovara-cloud/staging/signin");
     expect(await readSignInSettings(store, "staging")).toEqual(both);
-    expect(store.values.get("/agentx/staging/signin")).not.toMatch(/clientSecret"/);
+    expect(store.values.get("/rovara-cloud/staging/signin")).not.toMatch(/clientSecret"/);
   });
 
   it("round-trip each method's enabled-since cutoff, and still read settings written without one (FR-045)", async () => {
@@ -34,8 +34,8 @@ describe("sign-in settings in SSM (FR-010, R7)", () => {
     const store = new MemoryParameterStore();
     await expect(writeSignInSettings(store, { ...slackOnly, slack: false })).rejects.toThrow(/Slack sign-in, company sign-in, or both/);
     await expect(writeSignInSettings(store, { ...both, oidc: { ...both.oidc!, issuer: "http://acme.okta.com" } })).rejects.toThrow(/https/);
-    await expect(writeSignInSettings(store, { ...both, oidc: { ...both.oidc!, clientSecretName: "agentx/prod/developer-oidc" } })).rejects.toThrow(/agentx\/staging\/developer-oidc/);
-    store.values.set("/agentx/staging/signin", JSON.stringify({ ...slackOnly, env: "other" }));
+    await expect(writeSignInSettings(store, { ...both, oidc: { ...both.oidc!, clientSecretName: "rovara-cloud/prod/developer-oidc" } })).rejects.toThrow(/rovara-cloud\/staging\/developer-oidc/);
+    store.values.set("/rovara-cloud/staging/signin", JSON.stringify({ ...slackOnly, env: "other" }));
     await expect(readSignInSettings(store, "staging")).rejects.toThrow(/names environment other/);
   });
 
@@ -44,7 +44,7 @@ describe("sign-in settings in SSM (FR-010, R7)", () => {
     expect(await readStoredDeveloperSignIn(store, "staging")).toBeUndefined();
     await writeSlackTeamId(store, "staging", "T0TEAM1");
     expect(store.values.get(slackTeamIdParameterName("staging"))).toBe("T0TEAM1");
-    expect(slackTeamIdParameterName("staging")).toBe("/agentx/staging/slack/teamId");
+    expect(slackTeamIdParameterName("staging")).toBe("/rovara-cloud/staging/slack/teamId");
     await expect(writeSlackTeamId(store, "staging", "not-a-team")).rejects.toThrow(/team ID/);
     expect(await readStoredDeveloperSignIn(store, "staging")).toEqual({ slackTeamId: "T0TEAM1" });
   });
@@ -66,7 +66,7 @@ describe("sign-in settings in SSM (FR-010, R7)", () => {
         requiredClaim: "groups",
         requiredValues: Array.from({ length: 20 }, () => "v".repeat(128)),
         displayName: "Okta",
-        clientSecretName: "agentx/staging/developer-oidc",
+        clientSecretName: "rovara-cloud/staging/developer-oidc",
       },
       updatedAt: "2026-09-27T00:00:00.000Z",
       updatedBy: "x".repeat(2048),

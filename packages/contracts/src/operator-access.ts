@@ -2,6 +2,7 @@
 // customer's account. It can start the deployment of a release bundle whose id the customer approved, through the customer's own deploy role, and nothing
 // else; the customer can suspend it at any moment. This file holds the names and settings both the infrastructure code and the CLI need.
 
+import { RESOURCE_PREFIX } from "./resource-prefix.js";
 export const OPERATOR_ACCESS_STATES = ["enabled", "suspended"] as const;
 export type OperatorAccessState = (typeof OPERATOR_ACCESS_STATES)[number];
 
@@ -24,7 +25,7 @@ export const APPROVED_BUNDLE_PREFIX = "approved/";
 
 /** The operator role's fixed name. It never matches `environmentOperatorRoleName` (the customer's own platform-team role). */
 export function rovaraOperatorRoleName(env: string): string {
-  return `agentx-${env}-rovara-operator`;
+  return `${RESOURCE_PREFIX}-${env}-rovara-operator`;
 }
 
 /** True for a session of the Rovara operator role of `env`. */

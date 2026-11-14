@@ -185,7 +185,7 @@ describe("GET /v1/dev/projects (FR-016, FR-013)", () => {
 
 describe("the developer check on every /v1/dev request (FR-009, R12, R13)", () => {
   it.each([
-    ["an admin token", { iss: adminIssuer, aud: "agentx-admin-client" }],
+    ["an admin token", { iss: adminIssuer, aud: "rovara-cloud-admin-client" }],
     ["another audience", { aud: "something-else" }],
     ["a token from another environment", { env: "production" }],
     ["no session id", { sid: undefined }],

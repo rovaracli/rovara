@@ -1,4 +1,4 @@
-// Task 23: `agentx project create` (a cloud org's owner or admin creates a project) and the whoami wording for Rovara Cloud sign-ins.
+// Task 23: `rovara project create` (a cloud org's owner or admin creates a project) and the whoami wording for Rovara Cloud sign-ins.
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,14 +37,14 @@ async function signedIn(answer: () => Response) {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const created = (duplicate = false) => Response.json({ duplicate, project: { definition: { name: "web", revision: 1 }, runtimeBinding: {} } }, { status: duplicate ? 200 : 201 });
 
-describe("agentx project create", () => {
+describe("rovara project create", () => {
   it("sends a request id and the repository to POST /v1/app/projects with the developer session, and prints the project and the next step", async () => {
     const h = await signedIn(created);
     expect(await h.run(["project", "create", "--repository", "acme/web"])).toBe(0);
     expect(h.requests).toEqual([{ method: "POST", path: "/v1/app/projects", authorization: "Bearer access", body: { requestId: expect.stringMatching(UUID) as string, repository: "acme/web" } }]);
     expect(h.out.join("")).toBe([
       "Created project web in AgentX environment staging. You have access to it.",
-      "Next: start a task in web from your coding tool (agentx mcp install connects it), or run agentx whoami to see your projects.",
+      "Next: start a task in web from your coding tool (rovara mcp install connects it), or run rovara whoami to see your projects.",
       "",
     ].join("\n"));
     expect(h.err.join("")).toBe("");
@@ -98,9 +98,9 @@ describe("agentx project create", () => {
   });
 
   it("shows the server's reason when it refuses", async () => {
-    const h = await signedIn(() => Response.json({ error: { code: "FORBIDDEN", message: "Rovara can't reach acme/web through your organization's GitHub connection. Connect it with: agentx github connect" } }, { status: 403 }));
+    const h = await signedIn(() => Response.json({ error: { code: "FORBIDDEN", message: "Rovara can't reach acme/web through your organization's GitHub connection. Connect it with: rovara github connect" } }, { status: 403 }));
     expect(await h.run(["project", "create", "--repository", "acme/web"])).not.toBe(0);
-    expect(h.err.join("")).toContain("Connect it with: agentx github connect");
+    expect(h.err.join("")).toContain("Connect it with: rovara github connect");
   });
 
   it("asks for the repository before calling anything", async () => {
@@ -127,7 +127,7 @@ describe("whoamiText", () => {
   it("tells an owner or admin of a cloud org with no projects how to create one", () => {
     for (const provider of ["cloud", "github"] as const) {
       for (const role of ["owner", "admin"] as const) {
-        expect(text(provider, role)).toContain("Connect GitHub with agentx github connect, then: agentx project create --repository <owner/name>");
+        expect(text(provider, role)).toContain("Connect GitHub with rovara github connect, then: rovara project create --repository <owner/name>");
       }
     }
   });
@@ -136,20 +136,20 @@ describe("whoamiText", () => {
     for (const provider of ["cloud", "github"] as const) {
       const member = text(provider, "member");
       expect(member).toContain("ask your org's owner to create one");
-      expect(member).not.toContain("agentx project create");
+      expect(member).not.toContain("rovara project create");
     }
   });
 
   it("keeps the Slack and company sign-in wording for no projects as it was", () => {
     for (const provider of ["slack", "oidc"] as const) {
       expect(text(provider, "owner")).toContain("You cannot use any project yet: join a project's Slack channel, or ask an admin for access.");
-      expect(text(provider, "owner")).not.toContain("agentx project create");
+      expect(text(provider, "owner")).not.toContain("rovara project create");
     }
   });
 
   it("lists projects as it did, and adds no creation hint when there are some", () => {
     const listed = text("cloud", "owner", [{ name: "web", latestRevision: 1, access: "granted", channels: [], role: "maintainer", roleSource: "org_role" }]);
     expect(listed).toContain("Projects you can use:\n  web: maintainer (as org owner)");
-    expect(listed).not.toContain("agentx project create");
+    expect(listed).not.toContain("rovara project create");
   });
 });

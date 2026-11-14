@@ -46,7 +46,7 @@ describe("the broker's grant to assume a customer's CloudWatch role", () => {
   });
 
   it("lives in the broker's orchestration managed policy, the group an sts action belongs to", () => {
-    expect(assumesOf(cloud)[0]!.policy).toBe("agentx-staging-broker-orchestration");
+    expect(assumesOf(cloud)[0]!.policy).toBe("rovara-cloud-staging-broker-orchestration");
   });
 
   it("adds no other sts action to the broker, and keeps the ConnectorSecretsRole's assume as it was", () => {

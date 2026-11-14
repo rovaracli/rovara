@@ -66,7 +66,7 @@ export function mergeRoleStatements(role: iam.IRole): void {
 
 /**
  * The named managed policies the broker's grants move into (ruling M2, owner-approved 2026-10-21): IAM caps a role's inline
- * policies at 10,240 characters in total, and the deploy's CloudFormation role may create managed policies named agentx-<env>-broker-* under /agentx/<env>/ only.
+ * policies at 10,240 characters in total, and the deploy's CloudFormation role may create managed policies named rovara-cloud-<env>-broker-* under /rovara-cloud/<env>/ only.
  * A statement moves whole into the group its first action's service belongs to, so each role keeps exactly the same grants.
  */
 export const BROKER_POLICY_GROUPS = ["state", "orchestration", "integrations"] as const;

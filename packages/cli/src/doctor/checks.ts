@@ -1,4 +1,4 @@
-// agentx doctor's shared shapes (FR-050, FR-051): every check says what it found and, when something
+// rovara doctor's shared shapes (FR-050, FR-051): every check says what it found and, when something
 // is wrong, how to fix it. A check never carries a secret value: checks read secrets only to judge
 // their shape, and every message here is built from names and fixed words.
 import type { ReleaseManifest } from "@agentx/contracts";
@@ -42,7 +42,7 @@ export interface DoctorServices {
   fetch: typeof fetch;
   /** Where project files live (the global --config-dir). */
   configDir: string;
-  /** Spec 025 FR-046: agentx signin check's checks, unchanged (R5). */
+  /** Spec 025 FR-046: rovara signin check's checks, unchanged (R5). */
   signIn: (settings: EnvironmentSettings) => Promise<SignInCheck[]>;
   /** #343: Sign in with ChatGPT, as the control plane reports it through this computer's admin sign-in. */
   chatgpt?: () => Promise<ChatGptHealthRead>;
@@ -63,17 +63,17 @@ export function check(group: DoctorGroup, name: string, status: CheckStatus, det
  * service that group talks to: Slack and GitHub over the network, the AWS-only groups at AWS, and the
  * groups that mix several (connectors, sign-in) at the problem named. */
 const GUARDED_FIX: Record<DoctorGroup, string> = {
-  stacks: "check this computer's network access and AWS credentials, then run agentx doctor again",
-  secrets: "check this computer's network access and AWS credentials, then run agentx doctor again",
-  models: "check this computer's network access and AWS credentials, then run agentx doctor again",
-  alerts: "check this computer's network access and AWS credentials, then run agentx doctor again",
-  capacity: "check this computer's network access and AWS credentials, then run agentx doctor again",
-  slack: "check this computer's network access to slack.com, then run agentx doctor again",
-  github: "check this computer's network access to github.com, then run agentx doctor again",
-  connectors: "fix the problem named above, then run agentx doctor again",
-  "sign-in": "fix the problem named above, then run agentx doctor again",
-  chatgpt: "check this computer's network access to the control plane and its admin sign-in, then run agentx doctor again",
-  runtime: "check this computer's network access to the control plane and its admin sign-in, then run agentx doctor again",
+  stacks: "check this computer's network access and AWS credentials, then run rovara doctor again",
+  secrets: "check this computer's network access and AWS credentials, then run rovara doctor again",
+  models: "check this computer's network access and AWS credentials, then run rovara doctor again",
+  alerts: "check this computer's network access and AWS credentials, then run rovara doctor again",
+  capacity: "check this computer's network access and AWS credentials, then run rovara doctor again",
+  slack: "check this computer's network access to slack.com, then run rovara doctor again",
+  github: "check this computer's network access to github.com, then run rovara doctor again",
+  connectors: "fix the problem named above, then run rovara doctor again",
+  "sign-in": "fix the problem named above, then run rovara doctor again",
+  chatgpt: "check this computer's network access to the control plane and its admin sign-in, then run rovara doctor again",
+  runtime: "check this computer's network access to the control plane and its admin sign-in, then run rovara doctor again",
 };
 
 /** A group that throws becomes one failed check, so one broken dependency never hides the others. */
@@ -93,7 +93,7 @@ export function doctorReport(settings: EnvironmentSettings, checks: DoctorCheck[
 const LABEL: Record<CheckStatus, string> = { ok: "ok  ", warn: "warn", fail: "FAIL", skip: "skip" };
 
 export function reportText(report: DoctorReport): string {
-  const lines = [`agentx doctor: environment ${report.env} (release ${report.version}, ${report.engine} engine, ${report.region})`];
+  const lines = [`rovara doctor: environment ${report.env} (release ${report.version}, ${report.engine} engine, ${report.region})`];
   for (const entry of report.checks) {
     lines.push(`${LABEL[entry.status]}  ${entry.group.padEnd(10)}  ${entry.name}: ${entry.detail}`);
     if (entry.fix !== undefined && entry.status !== "ok") lines.push(`      fix: ${entry.fix}`);

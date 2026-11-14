@@ -59,7 +59,7 @@ function readsOf(path: string): string[] {
 }
 
 describe("what the broker reads is still there when it starts (final review C1)", () => {
-  for (const env of ["staging", "a1234567890123456789"]) {
+  for (const env of ["staging", "a1234567890123"]) {
     describe(`a cloud install, environment ${env}`, () => {
       const given = brokerEnvironment(env, { agentxCloud: true });
       const started: MutableEnvironment = { ...given, AWS_REGION: REGION };
@@ -75,22 +75,22 @@ describe("what the broker reads is still there when it starts (final review C1)"
 
       it("has the names, URLs and ARNs it had, to the text it had them in", () => {
         const account = given.AGENTX_ACCOUNT_ID!;
-        expect(started.SLACK_REQUEST_QUEUE_URL).toMatch(new RegExp(`^https://sqs\\.${REGION}\\.amazonaws\\.com/${account}/agentx-${env}-control-plane-`));
-        expect(started.AUDIT_INTAKE_QUEUE_URL).toBe(`https://sqs.${REGION}.amazonaws.com/${account}/agentx-${env}-audit-intake.fifo`);
+        expect(started.SLACK_REQUEST_QUEUE_URL).toMatch(new RegExp(`^https://sqs\\.${REGION}\\.amazonaws\\.com/${account}/rovara-cloud-${env}-control-plane-`));
+        expect(started.AUDIT_INTAKE_QUEUE_URL).toBe(`https://sqs.${REGION}.amazonaws.com/${account}/rovara-cloud-${env}-audit-intake.fifo`);
         expect(started.AUDIT_VAULT_KEY_ARN).toMatch(new RegExp(`^arn:aws:kms:${REGION}:${account}:key/[0-9a-f-]{36}$`));
         expect(started.CHATGPT_CONNECTION_KEY_ARN).toMatch(new RegExp(`^arn:aws:kms:${REGION}:${account}:key/[0-9a-f-]{36}$`));
-        expect(started.PROVISIONER_ARN).toMatch(new RegExp(`^arn:aws:states:${REGION}:${account}:stateMachine:agentx-${env}-control-plane-`));
-        expect(started.DELETER_ARN).toMatch(new RegExp(`^arn:aws:states:${REGION}:${account}:stateMachine:agentx-${env}-control-plane-`));
+        expect(started.PROVISIONER_ARN).toMatch(new RegExp(`^arn:aws:states:${REGION}:${account}:stateMachine:rovara-cloud-${env}-control-plane-`));
+        expect(started.DELETER_ARN).toMatch(new RegExp(`^arn:aws:states:${REGION}:${account}:stateMachine:rovara-cloud-${env}-control-plane-`));
         // (A role's name is cut at 64 characters, so for a long environment name only its start is the same.)
-        expect(started.SLACK_ORCHESTRATOR_ROLE_ARN).toMatch(new RegExp(`^arn:aws:iam::${account}:role/agentx/${env}/agentx-${env}-control-plane-`));
-        expect(started.CONNECTOR_SECRETS_ROLE_ARN).toBe(`arn:aws:iam::${account}:role/agentx/${env}/agentx-${env}-connector-secrets`);
+        expect(started.SLACK_ORCHESTRATOR_ROLE_ARN).toMatch(new RegExp(`^arn:aws:iam::${account}:role/rovara-cloud/${env}/rovara-cloud-${env}-control-plane-`));
+        expect(started.CONNECTOR_SECRETS_ROLE_ARN).toBe(`arn:aws:iam::${account}:role/rovara-cloud/${env}/rovara-cloud-${env}-connector-secrets`);
         expect(started.DEVELOPER_CLOUD_ISSUER).toBe(`https://cognito-idp.${REGION}.amazonaws.com/${REGION}_AbCdEfGhI`);
         expect(started.DEVELOPER_TOKEN_ISSUER).toBe(`https://abcdefghij.execute-api.${REGION}.amazonaws.com/v1/auth`);
         expect(Object.keys(JSON.parse(started.HEALTH_DEAD_LETTER_QUEUES!) as object)).toEqual(["dispatch", "slack-requests", "developer-notices", "developer-notice-stream"]);
-        for (const url of Object.values(JSON.parse(started.HEALTH_DEAD_LETTER_QUEUES!) as Record<string, string>)) expect(url).toMatch(new RegExp(`^https://sqs\\.${REGION}\\.amazonaws\\.com/${account}/agentx-${env}-control-plane-`));
+        for (const url of Object.values(JSON.parse(started.HEALTH_DEAD_LETTER_QUEUES!) as Record<string, string>)) expect(url).toMatch(new RegExp(`^https://sqs\\.${REGION}\\.amazonaws\\.com/${account}/rovara-cloud-${env}-control-plane-`));
         expect([started.CONNECTOR_SECRET_PREFIX, started.SWEBENCH_SETTINGS_PREFIX, started.AGENTX_ALARM_PREFIX, started.AGENTX_METRICS_NAMESPACE])
-          .toEqual([`agentx/${env}/connectors/`, `/agentx/${env}/`, `agentx-${env}-`, `AgentX/${env}`]);
-        expect([started.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID, started.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID]).toEqual([`agentx-${env}-project-setup-runtime-v1`, `agentx-${env}-e2e-mock-runtime-v1`]);
+          .toEqual([`rovara-cloud/${env}/connectors/`, `/rovara-cloud/${env}/`, `rovara-cloud-${env}-`, `RovaraCloud/${env}`]);
+        expect([started.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID, started.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID]).toEqual([`rovara-cloud-${env}-project-setup-runtime-v1`, `rovara-cloud-${env}-e2e-mock-runtime-v1`]);
       });
 
       it("provides, or marks optional, every variable the broker's code reads", () => {

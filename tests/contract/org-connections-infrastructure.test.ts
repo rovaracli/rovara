@@ -77,7 +77,7 @@ describe("ConnectorSecretsRole (named environments)", () => {
     const statements = statementsOfRole(roleId);
     const resourcesOf = (statement: Statement) => asList(statement.Resource as string | string[]).map(flatten);
     const paths = (resource: string) => resource.replace(/^arn:aws:secretsmanager:us-west-2:111122223333:secret:/, "");
-    const own = [`agentx/staging/org-connectors/${PRINCIPAL_TAG}/*`, `agentx/staging/org-hooks/${PRINCIPAL_TAG}/*`];
+    const own = [`rovara-cloud/staging/org-connectors/${PRINCIPAL_TAG}/*`, `rovara-cloud/staging/org-hooks/${PRINCIPAL_TAG}/*`];
 
     const byAction = (action: string) => statements.filter((statement) => asList(statement.Action).includes(action));
     const [readWrite] = byAction("secretsmanager:GetSecretValue");
@@ -123,8 +123,8 @@ describe("ConnectorSecretsRole (named environments)", () => {
   });
 
   it("is the only workload role that can read, write, create, tag or delete the org connector and hook secret paths", () => {
-    const connectorSecret = "arn:aws:secretsmanager:us-west-2:111122223333:secret:agentx/staging/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/con_aaaaaaaaaaaaaaaaaaaa-AbCdEf";
-    const hookSecret = "arn:aws:secretsmanager:us-west-2:111122223333:secret:agentx/staging/org-hooks/org_aaaaaaaaaaaaaaaaaaaa/hok_aaaaaaaaaaaaaaaaaaaa-AbCdEf";
+    const connectorSecret = "arn:aws:secretsmanager:us-west-2:111122223333:secret:rovara-cloud/staging/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/con_aaaaaaaaaaaaaaaaaaaa-AbCdEf";
+    const hookSecret = "arn:aws:secretsmanager:us-west-2:111122223333:secret:rovara-cloud/staging/org-hooks/org_aaaaaaaaaaaaaaaaaaaa/hok_aaaaaaaaaaaaaaaaaaaa-AbCdEf";
     // Every Secrets Manager action that reads or changes a secret, so no other role can write or delete org secrets either.
     const actionsToCheck = ["GetSecretValue", "BatchGetSecretValue", "DescribeSecret", "PutSecretValue", "CreateSecret", "UpdateSecret", "DeleteSecret", "RestoreSecret", "RotateSecret", "TagResource", "UntagResource", "PutResourcePolicy", "ReplicateSecretToRegions"];
     const reaching: Record<string, string[]> = Object.fromEntries(actionsToCheck.map((action) => [action, []]));
@@ -177,15 +177,15 @@ describe("ConnectorSecretsRole (named environments)", () => {
     const built: MutableEnvironment = { AGENTX_ENV: "staging", AGENTX_NAMES: "{}", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "111122223333" };
     hydrateBrokerEnvironment(built);
     expect(built.CONNECTOR_SECRETS_ROLE_ARN).toBe(`arn:aws:iam::111122223333:role${String(role.Properties.Path)}${String(role.Properties.RoleName)}`);
-    expect(built.CONNECTOR_SECRETS_ROLE_ARN).toBe("arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets");
+    expect(built.CONNECTOR_SECRETS_ROLE_ARN).toBe("arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-connector-secrets");
   });
 
   it("sits at the environment role path, because the permissions boundary names the role by that path", () => {
-    expect(role.Properties.Path).toBe("/agentx/staging/");
+    expect(role.Properties.Path).toBe("/rovara-cloud/staging/");
   });
 
   it("has a fixed name, which the default permissions boundary names as the one role a bounded role may assume", () => {
-    expect(role.Properties.RoleName).toBe("agentx-staging-connector-secrets");
+    expect(role.Properties.RoleName).toBe("rovara-cloud-staging-connector-secrets");
     const boundary = defaultBoundaryStatements({ env: "staging", partition: "aws", region: "us-west-2", account: "111122223333", cloudFormationRoleName: "x" });
     const sts = boundary.filter((statement) => [statement.Action].flat().some((action) => action.startsWith("sts:") && action !== "sts:GetCallerIdentity"));
     // Plan 4 Task 16 adds one more, for other accounts' roles only (a customer's CloudWatch role, a company's Bedrock role): it names this account in a NotEquals
@@ -197,14 +197,14 @@ describe("ConnectorSecretsRole (named environments)", () => {
       Action: ["sts:AssumeRole", "sts:TagSession"],
       // Setup and test health SH22: and one wildcard for the saved environment image roles (the broker's own policy names the three exactly).
       // Test services TS26: and the TestAccountSecretsRole, whose name starts the same way (one wildcard ARN; see test-account-secrets-infrastructure.test.ts).
-      Resource: ["arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-img-*"],
+      Resource: ["arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-connector-secrets*", "arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-img-*"],
     });
     // Owner decision A narrows it to the broker, the model proxy task role and the model access probe (ArnLike on the principal): see access-policies.test.ts for the exact JSON.
     expect(sts[1]!.Condition).toEqual({
       ArnLike: { "aws:PrincipalArn": [
-        "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-broker-role",
-        "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-proxy-task",
-        "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-access-probe",
+        "arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-broker-role",
+        "arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-model-proxy-task",
+        "arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-model-access-probe",
       ] },
       StringNotEquals: { "aws:ResourceAccount": "111122223333" },
       StringLike: { "sts:ExternalId": "rovara-org_*" },
@@ -230,9 +230,9 @@ describe("ConnectorSecretsRole (named environments)", () => {
 describe("the three roles that may assume a customer's role (named environments)", () => {
   const rolesByPrefix = (resources: Resources, prefix: string) => Object.entries(resources).filter(([id, resource]) => resource.Type === "AWS::IAM::Role" && id.startsWith(prefix));
   const boundaryPrincipals = [
-    "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-broker-role",
-    "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-proxy-task",
-    "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-access-probe",
+    "arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-broker-role",
+    "arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-model-proxy-task",
+    "arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-model-access-probe",
   ];
   let resources: Resources;
   beforeAll(() => {
@@ -240,12 +240,12 @@ describe("the three roles that may assume a customer's role (named environments)
   }, 240_000);
 
   it("are named exactly as the boundary names them, on the environment's role path", () => {
-    const named = [["BrokerServiceRole", "agentx-staging-broker-role"], ["ModelProxyTaskRole", "agentx-staging-model-proxy-task"], ["ModelAccessFunctionServiceRole", "agentx-staging-model-access-probe"]] as const;
+    const named = [["BrokerServiceRole", "rovara-cloud-staging-broker-role"], ["ModelProxyTaskRole", "rovara-cloud-staging-model-proxy-task"], ["ModelAccessFunctionServiceRole", "rovara-cloud-staging-model-access-probe"]] as const;
     for (const [prefix, name] of named) {
       const found = rolesByPrefix(resources, prefix);
       expect(found.map(([id]) => id), prefix).toHaveLength(1);
       expect(found[0]![1].Properties.RoleName, prefix).toBe(name);
-      expect(found[0]![1].Properties.Path, prefix).toBe("/agentx/staging/");
+      expect(found[0]![1].Properties.Path, prefix).toBe("/rovara-cloud/staging/");
       expect(boundaryPrincipals).toContain(`arn:aws:iam::111122223333:role${found[0]![1].Properties.Path as string}${name}`);
     }
   });
@@ -271,7 +271,7 @@ describe("the access stack's boundary takes Rovara's AWS Organization id from co
   const boundaryStatement = (context: Record<string, unknown>) => {
     const app = buildAgentXApp({ agentxEnv: "staging", ...context });
     const access = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXAccess")!;
-    const policy = Object.values(Template.fromStack(access).toJSON().Resources as Resources).find((resource) => resource.Type === "AWS::IAM::ManagedPolicy" && resource.Properties.ManagedPolicyName === "agentx-staging-boundary")!;
+    const policy = Object.values(Template.fromStack(access).toJSON().Resources as Resources).find((resource) => resource.Type === "AWS::IAM::ManagedPolicy" && resource.Properties.ManagedPolicyName === "rovara-cloud-staging-boundary")!;
     return boundaryWithSids(policy.Properties.PolicyDocument!.Statement).find((statement) => statement.Sid === "AssumeOrgRoles")!;
   };
 
@@ -286,9 +286,9 @@ describe("the access stack's boundary takes Rovara's AWS Organization id from co
   it("names the three roles by ARN built from the partition and account of the deploy", () => {
     const principals = boundaryStatement({}).Condition!.ArnLike!["aws:PrincipalArn"] as unknown[];
     expect(principals.map(flatten)).toEqual([
-      "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-broker-role",
-      "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-proxy-task",
-      "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-model-access-probe",
+      "arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-broker-role",
+      "arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-model-proxy-task",
+      "arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-model-access-probe",
     ]);
   });
 

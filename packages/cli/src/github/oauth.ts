@@ -1,4 +1,4 @@
-// agentx github oauth set (Plan 2, Task 12): the shared GitHub App of a Rovara Cloud install asks each installer for user
+// rovara github oauth set (Plan 2, Task 12): the shared GitHub App of a Rovara Cloud install asks each installer for user
 // authorization, so its OAuth client id and client secret must be in the App secret. A new App gets both from GitHub's manifest
 // conversion; an App made before this plan has neither, and this command stores them. Only that App secret changes: the other
 // fields (the private key, the webhook secret) are kept as they are. The client secret is read hidden (or from stdin), is never
@@ -56,7 +56,7 @@ export async function runGithubOauthSet(services: GithubOauthServices, env: stri
   if (settings.cloud !== true) throw agentXError("CONFIG_INVALID", "only a Rovara Cloud install connects GitHub per organization");
   const name = githubAppSecretName(env);
   const raw = await services.secrets.get(name);
-  if (raw === undefined) throw agentXError("CONFIG_INVALID", `secret ${name} does not exist; run agentx init so its GitHub App step creates the App`);
+  if (raw === undefined) throw agentXError("CONFIG_INVALID", `secret ${name} does not exist; run rovara init so its GitHub App step creates the App`);
   const app = parseAppSecret(raw, name);
   const stored = secretObject(raw, name);
 

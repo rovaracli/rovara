@@ -1,4 +1,4 @@
-// agentx signin show|enable|disable|check (spec 025 FR-045, FR-046), under the operator role.
+// rovara signin show|enable|disable|check (spec 025 FR-045, FR-046), under the operator role.
 import { CLI_PACKAGE_NAME, agentXError } from "@agentx/contracts";
 import type { CallerIdentity } from "../environments/adopt.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
@@ -22,7 +22,7 @@ export interface SigninServices {
 export async function installed(services: SigninServices, env: string): Promise<EnvironmentSettings> {
   const settings = await readEnvironmentSettings(services.store, env);
   if (settings === undefined) throw agentXError("CONFIG_INVALID", `environment ${env} is not installed in this account and region; check --env and --region`);
-  if (settings.naming !== "environment") throw agentXError("CONFIG_INVALID", `developer sign-in needs an environment installed with agentx init; ${env} uses the legacy stack names`);
+  if (settings.naming !== "environment") throw agentXError("CONFIG_INVALID", `developer sign-in needs an environment installed with rovara init; ${env} uses the legacy stack names`);
   return settings;
 }
 
@@ -68,7 +68,7 @@ export async function runSigninEnable(services: SigninServices, env: string, met
   const settings = await installed(services, env);
   const holder = (await services.identity.get()).arn;
   const questions = { env, apiEndpoint: settings.controlPlaneUrl, secrets: services.secrets, prompter: services.prompter, processEnv: services.processEnv, flags, secretFlags, write: services.write };
-  const common = { env, store: services.store, cloudFormation: services.cloudFormation, holder, settings, rerun: `agentx signin enable ${method}`, ...applyOptions(services, yes) };
+  const common = { env, store: services.store, cloudFormation: services.cloudFormation, holder, settings, rerun: `rovara signin enable ${method}`, ...applyOptions(services, yes) };
   // Each `next` reads the settings under the lock, so a change made while the questions were asked is kept.
   if (method === "slack") {
     const { teamId, credentials } = await enableSlackSignIn({ ...questions, slackApi: services.slackApi });
@@ -84,15 +84,15 @@ export async function runSigninDisable(services: SigninServices, env: string, me
   const settings = await installed(services, env);
   const holder = (await services.identity.get()).arn;
   const next = (current: DeveloperSignInSettings | undefined): SignInChoice => {
-    if (current === undefined) throw agentXError("CONFIG_INVALID", "developer sign-in is not set up, so there is nothing to disable; run agentx signin show to see the settings");
+    if (current === undefined) throw agentXError("CONFIG_INVALID", "developer sign-in is not set up, so there is nothing to disable; run rovara signin show to see the settings");
     const choice = { slack: method === "slack" ? false : current.slack, ...(method === "oidc" || current.oidc === undefined ? {} : { oidc: current.oidc }) };
     if (!choice.slack && choice.oidc === undefined) {
-      const other = method === "slack" ? "company sign-in first (agentx signin enable oidc)" : "Slack sign-in first (agentx signin enable slack)";
+      const other = method === "slack" ? "company sign-in first (rovara signin enable oidc)" : "Slack sign-in first (rovara signin enable slack)";
       throw agentXError("CONFIG_INVALID", `${method === "slack" ? "Slack" : "Company"} sign-in is the only method enabled; enable ${other}, because at least one method must stay on`);
     }
     return choice;
   };
-  const result = await applySignInChange({ env, store: services.store, cloudFormation: services.cloudFormation, holder, settings, next, rerun: `agentx signin disable ${method}`, ...applyOptions(services, yes) });
+  const result = await applySignInChange({ env, store: services.store, cloudFormation: services.cloudFormation, holder, settings, next, rerun: `rovara signin disable ${method}`, ...applyOptions(services, yes) });
   return { changed: result.changed };
 }
 

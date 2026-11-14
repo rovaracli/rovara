@@ -5,7 +5,7 @@ import { BUNDLE_PUBLIC_DEPLOYED_KINDS, BundleManifestSchema, approvedFileKey, bu
 import { runDeployer, type DeployerPorts, type StackState } from "../../packages/broker/src/bundle-deployer/deploy.js";
 import type { BuiltBundle } from "./bundle-fixture.js";
 
-export const DEPLOY_ROLE = "arn:aws:iam::123456789012:role/agentx-ent-cloudformation";
+export const DEPLOY_ROLE = "arn:aws:iam::123456789012:role/rovara-cloud-ent-cloudformation";
 export const T0 = Date.parse("2026-10-31T12:00:00.000Z");
 
 export class World {
@@ -80,7 +80,7 @@ export class World {
 
   /** The install as an administrator left it: settings, every stack, the trusted key. */
   seed(options: { key: string; version?: string; identityMode?: "cognito" | "oidc"; accessTemplate?: string; stackParameters?: Record<string, Record<string, string>> }): void {
-    this.params.set("/agentx/ent/settings", JSON.stringify({ version: options.version ?? "1.2.3", region: "us-east-1", identity: { mode: options.identityMode ?? "cognito" }, updatedAt: "2026-10-01T00:00:00.000Z" }));
+    this.params.set("/rovara-cloud/ent/settings", JSON.stringify({ version: options.version ?? "1.2.3", region: "us-east-1", identity: { mode: options.identityMode ?? "cognito" }, updatedAt: "2026-10-01T00:00:00.000Z" }));
     this.params.set(bundleTrustParameter("ent"), JSON.stringify([options.key]));
     this.params.set(operatorAccessStateParameter("ent"), "enabled");
     for (const part of ["access", "foundation", "identity", "runtime", "control-plane", "slack"] as const) {

@@ -1,4 +1,4 @@
-// The developer-signin init step (spec 025 FR-044): the last agentx init step (R9 corrected by
+// The developer-signin init step (spec 025 FR-044): the last rovara init step (R9 corrected by
 // F15). Nothing here reaches AWS, Slack or an identity provider.
 import { rm } from "node:fs/promises";
 import { afterEach, describe, expect, it } from "vitest";
@@ -17,12 +17,12 @@ import {
 const homes: string[] = [];
 afterEach(async () => { await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))); });
 const CLIENT_SECRET = "fedcba9876543210fedcba9876543210";
-const installed = { ...stagingSettings, controlPlaneUrl: "https://abc123.execute-api.us-east-1.amazonaws.com", access: { artifactBucket: "b", cloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation", operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator", pullThroughPrefix: "agentx-staging" } };
+const installed = { ...stagingSettings, controlPlaneUrl: "https://abc123.execute-api.us-east-1.amazonaws.com", access: { artifactBucket: "b", cloudFormationRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation", operatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator", pullThroughPrefix: "rovara-cloud-staging" } };
 const withScopes = fakeSlackApi({ authTest: async () => ({ ok: true, team_id: "T0TEAM", user_id: "U0BOT", bot_id: "B0BOT", scopes: ["channels:read", "groups:read", "im:write", "users:read", "users:read.email"] }) });
 
 async function context(prompts: Array<string | boolean>, finalStatus?: string, overrides: Partial<Omit<InitContext, "secrets">> = {}, prompter: Prompter = scriptedPrompter(prompts)) {
   const cloudFormation = fakeCloudFormation({ parameters: SIGN_IN_PARAMETERS, ...(finalStatus === undefined ? {} : { finalStatus }) });
-  const secrets = memoryInitSecrets({ "agentx/staging/slack": JSON.stringify({ signingSecret: TEST_SIGNING_SECRET, botToken: TEST_BOT_TOKEN }) });
+  const secrets = memoryInitSecrets({ "rovara-cloud/staging/slack": JSON.stringify({ signingSecret: TEST_SIGNING_SECRET, botToken: TEST_BOT_TOKEN }) });
   // F13: InitContext.store is a ParameterStore, which has no `calls`; a MemoryParameterStore made
   // here (rather than read back off ctx.store) keeps its concrete type, so tests can inspect calls.
   const store = storeWithInitLock();
@@ -57,9 +57,9 @@ describe("the developer-signin init step (FR-044)", () => {
 
   it("puts the Slack secret back as it was when the stack update rolls back (Task 12 fix round 1)", async () => {
     const { ctx, progress } = await context(["1111111111.2222222222222", CLIENT_SECRET], "UPDATE_ROLLBACK_COMPLETE");
-    const before = ctx.secrets.values.get("agentx/staging/slack");
-    await expect(developerSignInStep({ slack: withScopes }).run(ctx, progress)).rejects.toThrow("the previous client credentials were put back in agentx/staging/slack");
-    expect(ctx.secrets.values.get("agentx/staging/slack")).toBe(before);
+    const before = ctx.secrets.values.get("rovara-cloud/staging/slack");
+    await expect(developerSignInStep({ slack: withScopes }).run(ctx, progress)).rejects.toThrow("the previous client credentials were put back in rovara-cloud/staging/slack");
+    expect(ctx.secrets.values.get("rovara-cloud/staging/slack")).toBe(before);
     expect(await readSignInSettings(ctx.store, "staging")).toBeUndefined();
   });
 
@@ -81,18 +81,18 @@ describe("the developer-signin init step (FR-044)", () => {
     it("stores both secrets and records both methods", async () => {
       const { ctx, cloudFormation, progress } = await context([], undefined, both);
       expect(await developerSignInStep({ slack: withScopes }).run(ctx, progress)).toEqual({ status: "done", note: "developer sign-in: Slack and company sign-in" });
-      expect(JSON.parse(ctx.secrets.values.get("agentx/staging/slack")!)).toMatchObject({ clientId: "1111111111.2222222222222", clientSecret: CLIENT_SECRET });
-      expect(JSON.parse(ctx.secrets.values.get("agentx/staging/developer-oidc")!)).toEqual({ clientSecret: OIDC_SECRET });
+      expect(JSON.parse(ctx.secrets.values.get("rovara-cloud/staging/slack")!)).toMatchObject({ clientId: "1111111111.2222222222222", clientSecret: CLIENT_SECRET });
+      expect(JSON.parse(ctx.secrets.values.get("rovara-cloud/staging/developer-oidc")!)).toEqual({ clientSecret: OIDC_SECRET });
       expect(await readSignInSettings(ctx.store, "staging")).toMatchObject({ slack: true, oidc: { issuer: ISSUER, clientId: "0oa1", displayName: "Okta" } });
       expect(cloudFormation.parameters).toMatchObject({ DeveloperSignInSlack: "enabled", SlackTeamId: "T0TEAM", DeveloperOidcIssuer: ISSUER });
     });
 
     it("puts the Slack secret back, writes no settings and names the failure when the company secret cannot be stored", async () => {
       const { ctx, cloudFormation, progress } = await context([], undefined, both);
-      const before = ctx.secrets.values.get("agentx/staging/slack");
+      const before = ctx.secrets.values.get("rovara-cloud/staging/slack");
       ctx.secrets.create = async () => { throw Object.assign(new Error("User is not authorized to perform secretsmanager:CreateSecret"), { name: "AccessDeniedException" }); };
       await expect(developerSignInStep({ slack: withScopes }).run(ctx, progress)).rejects.toThrow("User is not authorized to perform secretsmanager:CreateSecret");
-      expect(ctx.secrets.values.get("agentx/staging/slack")).toBe(before);
+      expect(ctx.secrets.values.get("rovara-cloud/staging/slack")).toBe(before);
       expect(await readSignInSettings(ctx.store, "staging")).toBeUndefined();
       expect(cloudFormation.calls.map((call) => call.name)).not.toContain("ExecuteChangeSetCommand");
     });
@@ -103,16 +103,16 @@ describe("the developer-signin init step (FR-044)", () => {
       const order: string[] = [];
       let slackPuts = 0;
       ctx.secrets.put = async (name, value) => {
-        if (name === "agentx/staging/slack" && ++slackPuts > 1) { order.push("slack restore"); throw new Error("Rate exceeded"); }
+        if (name === "rovara-cloud/staging/slack" && ++slackPuts > 1) { order.push("slack restore"); throw new Error("Rate exceeded"); }
         await put(name, value);
       };
       const create = ctx.secrets.create.bind(ctx.secrets);
       ctx.secrets.create = async (name, value) => { await create(name, value); order.push("oidc create"); };
       const error = await developerSignInStep({ slack: withScopes }).run(ctx, progress).then(() => undefined, (caught: unknown) => caught);
       const message = error instanceof Error ? error.message : "";
-      expect(message).toContain("agentx/staging/developer-oidc did not exist before, so it stays, unused until company sign-in is on");
-      expect(message).toContain("agentx/staging/slack: Rate exceeded");
-      expect(message).toContain("run agentx init again");
+      expect(message).toContain("rovara-cloud/staging/developer-oidc did not exist before, so it stays, unused until company sign-in is on");
+      expect(message).toContain("rovara-cloud/staging/slack: Rate exceeded");
+      expect(message).toContain("run rovara init again");
       expect(order).toEqual(["oidc create", "slack restore"]);
     });
   });
@@ -149,7 +149,7 @@ describe("the developer-signin init step (FR-044)", () => {
 
   it("is done at once when sign-in was already set up (a re-run after a crash)", async () => {
     const { ctx, cloudFormation, progress } = await context([]);
-    await ctx.store.put("/agentx/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: "x" }));
+    await ctx.store.put("/rovara-cloud/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: "x" }));
     expect(await developerSignInStep({ slack: withScopes }).run(ctx, progress)).toEqual({ status: "done", note: "developer sign-in was already set up" });
     expect(cloudFormation.calls).toEqual([]);
   });
@@ -161,7 +161,7 @@ describe("spec 048 FR-030: developer sign-in is part of the confirmed plan", () 
     const { ctx, cloudFormation, progress } = await context([], undefined, {
       answers: sampleAnswers({ signinMethods: "slack" }),
     }, prompter);
-    ctx.secrets.values.set("agentx/staging/slack", JSON.stringify({
+    ctx.secrets.values.set("rovara-cloud/staging/slack", JSON.stringify({
       botToken: TEST_BOT_TOKEN,
       signingSecret: TEST_SIGNING_SECRET,
       clientId: "1111111111.2222222222222",

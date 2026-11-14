@@ -1,9 +1,9 @@
-// `agentx init`'s own state in SSM, beside the environment settings: the answers (never a secret)
+// `rovara init`'s own state in SSM, beside the environment settings: the answers (never a secret)
 // and the progress (step outcomes, and the GitHub and Slack facts collected so far). Settings are
 // written only by deployEnvironment once the Slack stack exists; these two let a stopped init
 // resume before that, from any machine with access to the account.
 import { z } from "zod";
-import { agentXError, AGENTX_NAME_PATTERN, BOOT_STAGE2_SHA256_PATTERN, EditionSchema, EnvironmentNameSchema, environmentSettingsPrefix, ImageDigest } from "@agentx/contracts";
+import { agentXError, AGENTX_NAME_PATTERN, BOOT_STAGE2_SHA256_PATTERN, EditionSchema, EnvironmentNameSchema, environmentSettingsPrefix, ImageDigest, RESOURCE_PREFIX } from "@agentx/contracts";
 import { AlertEmailSchema, ACCOUNT_PATTERN, AuditLockProfileSchema, BudgetAnswersSchema, CloudSignInAnswersSchema, GITHUB_LOGIN_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "../deploy/answer-schemas.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 
@@ -31,7 +31,7 @@ const WEBHOOK_DISPLAY_PATTERN = /^https:\/\/[A-Za-z0-9.-]+(:\d+)?\/\.\.\.$/;
 
 const AlertAnswersSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("email"), address: AlertEmailSchema }).strict(),
-  z.object({ kind: z.literal("webhook"), display: z.string().regex(WEBHOOK_DISPLAY_PATTERN), secretName: z.string().regex(/^agentx\/[a-z0-9-]+\/alert-endpoint$/) }).strict(),
+  z.object({ kind: z.literal("webhook"), display: z.string().regex(WEBHOOK_DISPLAY_PATTERN), secretName: z.string().regex(new RegExp(`^${RESOURCE_PREFIX}/[a-z0-9-]+/alert-endpoint$`)) }).strict(),
   z.object({ kind: z.literal("none") }).strict(),
 ]);
 
@@ -41,7 +41,7 @@ const AlertAnswersSchema = z.discriminatedUnion("kind", [
  * that reader will trust this field as-is. */
 function requireWebhookSecretMatchesEnv(answers: { env: string; alert: z.infer<typeof AlertAnswersSchema> }, context: z.RefinementCtx): void {
   if (answers.alert.kind !== "webhook") return;
-  const expected = `agentx/${answers.env}/alert-endpoint`;
+  const expected = `${RESOURCE_PREFIX}/${answers.env}/alert-endpoint`;
   if (answers.alert.secretName !== expected) {
     context.addIssue({ code: "custom", path: ["alert", "secretName"], message: `must be ${expected} for this environment's own alert secret` });
   }
@@ -146,7 +146,7 @@ const ANSWERS_SIZE_HINT = "shorten the longest answer (for example the admin val
  * shortened (every field comes from GitHub, Slack or agentx itself), so this is agentx's own bug to
  * fix, not something to work around; deleting the parameter is always safe because the answers
  * (which everything else needs to resume) live in a separate parameter. */
-const PROGRESS_SIZE_HINT = "this is an internal limit, not something you did; report it as an AgentX bug, and delete the install/progress parameter to restart agentx init safely (its answers are stored separately and are unaffected)";
+const PROGRESS_SIZE_HINT = "this is an internal limit, not something you did; report it as an AgentX bug, and delete the install/progress parameter to restart rovara init safely (its answers are stored separately and are unaffected)";
 
 async function writeJson(store: ParameterStore, name: string, what: string, env: string, hint: string, value: unknown): Promise<void> {
   const json = JSON.stringify(value);
@@ -191,14 +191,14 @@ async function readJson<T extends { env: string }>(store: ParameterStore, name: 
   if (parsed.data.env !== env) {
     throw agentXError(
       "CONFIG_INVALID",
-      `${name} is stored for environment ${env} but names environment ${parsed.data.env}; run agentx init --env ${parsed.data.env}, or delete ${name} to start over`,
+      `${name} is stored for environment ${env} but names environment ${parsed.data.env}; run rovara init --env ${parsed.data.env}, or delete ${name} to start over`,
     );
   }
   return parsed.data;
 }
 
 export async function readInstallAnswers(store: ParameterStore, env: string): Promise<InitAnswers | undefined> {
-  return readJson(store, installAnswersParameterName(env), InitAnswersSchema, env, `install answers for environment ${env} are invalid or were written by a newer agentx; upgrade agentx and run it again`);
+  return readJson(store, installAnswersParameterName(env), InitAnswersSchema, env, `install answers for environment ${env} are invalid or were written by a newer rovara; upgrade rovara and run it again`);
 }
 
 export async function writeInstallAnswers(store: ParameterStore, answers: InitAnswers): Promise<void> {
@@ -210,7 +210,7 @@ export async function writeInstallAnswers(store: ParameterStore, answers: InitAn
 export async function readInstallProgress(store: ParameterStore, env: string): Promise<InstallProgress | undefined> {
   return readJson(
     store, installProgressParameterName(env), InstallProgressSchema, env,
-    `install progress for environment ${env} is invalid or was written by a newer agentx; upgrade agentx and run it again`,
+    `install progress for environment ${env} is invalid or was written by a newer rovara; upgrade rovara and run it again`,
     dropUnknownSteps,
   );
 }

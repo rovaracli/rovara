@@ -1,4 +1,4 @@
-// `agentx bundle approve` for an Enterprise install (owner decision 2026-10-31, option A: upgrades are built at approval). The customer's administrator, with their own
+// `rovara bundle approve` for an Enterprise install (owner decision 2026-10-31, option A: upgrades are built at approval). The customer's administrator, with their own
 // credentials: verifies the signed bundle (done by the caller), reads the install's recorded settings, builds the install's exact templates from the release's own pinned
 // CDK app, shows what it built against what is deployed, and only then places the build and writes the approval, which pins the hash of the result and every setting.
 // The Rovara operator supplies no input to any of this: it has no command here, no access to the settings and no say in the bundle's kit.
@@ -72,7 +72,7 @@ export async function approveEnterpriseBundle(input: ApproveEnterpriseInput): Pr
   await input.beforeApproval?.();
   // The settings are read again just before the approval is written: a record changed while this ran would otherwise be pinned under a hash that is not the one built.
   const again = await readSynthSettings(store, install);
-  if (synthSettingsSha256(again) !== build.settingsSha256) throw agentXError("CONFIG_INVALID", "the recorded build settings changed while the build was made; run agentx bundle approve again. Nothing was approved");
+  if (synthSettingsSha256(again) !== build.settingsSha256) throw agentXError("CONFIG_INVALID", "the recorded build settings changed while the build was made; run rovara bundle approve again. Nothing was approved");
 
   const record = await approveBundle({ bundle, approvedBy: input.approvedBy, parameters: input.parameters, rollback: input.rollback, store: input.approvalStore, now: input.now, built: { build, settings } });
   return { record, build };

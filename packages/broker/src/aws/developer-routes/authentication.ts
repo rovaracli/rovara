@@ -16,14 +16,14 @@ import {
 } from "../../developer/store.js";
 import type { DeveloperApiConfiguration, DeveloperCaller, DeveloperRouteDependencies } from "./types.js";
 
-const SIGN_IN_AGAIN = "your AgentX sign-in has ended; run agentx login <url> again";
+const SIGN_IN_AGAIN = "your AgentX sign-in has ended; run rovara login <url> again";
 
 /** What a verified developer token names: who, which sign-in, and the org and role the token was issued for. */
 export interface DeveloperTokenClaims { developerId: string; sessionId: string; amr: DeveloperSignInMethod; orgId: OrgId; orgRole: OrgRole }
 
 export function developerClaims(claims: Record<string, unknown> | undefined, config: DeveloperApiConfiguration): DeveloperTokenClaims {
   if (claims === undefined || claims.iss !== config.issuer || claims.aud !== DEVELOPER_TOKEN_AUDIENCE || claims.env !== config.env) {
-    throw agentXError("AUTH_REQUIRED", "this route needs an AgentX developer sign-in; run agentx login <url>");
+    throw agentXError("AUTH_REQUIRED", "this route needs an AgentX developer sign-in; run rovara login <url>");
   }
   if (typeof claims.sub !== "string" || !/^[a-f0-9]{64}$/.test(claims.sub) || typeof claims.sid !== "string" || claims.sid === "") {
     throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
@@ -31,7 +31,7 @@ export function developerClaims(claims: Record<string, unknown> | undefined, con
   const amr = claims.amr;
   if (amr !== "slack" && amr !== "oidc" && amr !== "cloud" && amr !== "github" && amr !== "saml") throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   if (config.methods[amr] !== true) {
-    throw agentXError("AUTH_REQUIRED", `${amr === "slack" ? "Slack" : amr === "cloud" ? "Cloud" : amr === "github" ? "GitHub" : amr === "saml" ? "SAML" : "Company"} sign-in is turned off in this environment; sign in another way with agentx login <url>`);
+    throw agentXError("AUTH_REQUIRED", `${amr === "slack" ? "Slack" : amr === "cloud" ? "Cloud" : amr === "github" ? "GitHub" : amr === "saml" ? "SAML" : "Company"} sign-in is turned off in this environment; sign in another way with rovara login <url>`);
   }
   // A token with no org (one issued before orgs, or forged) is refused like a token with no session: sign in again.
   const orgId = OrgIdSchema.safeParse(claims.org);
@@ -74,7 +74,7 @@ export async function authenticateSession(deps: DeveloperRouteDependencies, toke
   // The broker may only read the sign-in table (R13), so it refuses; the token endpoint revokes the
   // session at its next refresh.
   if (startedBeforeMethodOn(session.startedAt, deps.developer.since?.[token.amr])) {
-    throw agentXError("AUTH_REQUIRED", `your sign-in ended when ${token.amr === "slack" ? "Slack" : token.amr === "cloud" ? "cloud sign-in" : token.amr === "github" ? "GitHub sign-in" : "company sign-in"} was turned off; sign in again with agentx login <url>`);
+    throw agentXError("AUTH_REQUIRED", `your sign-in ended when ${token.amr === "slack" ? "Slack" : token.amr === "cloud" ? "cloud sign-in" : token.amr === "github" ? "GitHub sign-in" : "company sign-in"} was turned off; sign in again with rovara login <url>`);
   }
   // SAML is turned off, and its certificate rotated, by the saved settings (not the environment): their cutoff ends the sessions that started before it (Enterprise foundations I4, review S3).
   // Settings that cannot be read, or none, end the session: a SAML session with nothing to stand on is not kept.
@@ -95,11 +95,11 @@ export async function authenticateSession(deps: DeveloperRouteDependencies, toke
   if (developer === undefined || developer.revoked) throw agentXError("AUTH_REQUIRED", SIGN_IN_AGAIN);
   if (endedByAdmin(session.startedAt, developer.sessionsEndedAt)) {
     // E9: D16's per-request check ends the session at once; the token endpoint revokes it at its next refresh.
-    throw agentXError("AUTH_REQUIRED", "an AgentX admin ended your sign-in; run agentx login <url> again");
+    throw agentXError("AUTH_REQUIRED", "an AgentX admin ended your sign-in; run rovara login <url> again");
   }
   // Plan 2, Task 8: the person removed this session's sign-in method from their account (the others' sessions go on).
   if (endedByUnlink(session, developer)) {
-    throw agentXError("AUTH_REQUIRED", "this sign-in method was removed from your account; run agentx login <url> again");
+    throw agentXError("AUTH_REQUIRED", "this sign-in method was removed from your account; run rovara login <url> again");
   }
   // The org is the developer's membership now: a person removed from the org, or moved to another, is refused even
   // while their token is still valid. The role is the current one, so a demotion applies at once.

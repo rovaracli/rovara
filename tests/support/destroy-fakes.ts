@@ -34,33 +34,33 @@ export const retainedTemplate = (resources: Array<{ logicalId: string; type: str
 export function installedAccount(env = "staging"): FakeAccount {
   const stack = (part: StackPart, resources: FakeStack["resources"] = [], extra: Partial<FakeStack> = {}): [string, FakeStack] => [environmentStackName(env, part), {
     status: "UPDATE_COMPLETE", terminationProtection: ["access", "foundation", "identity", "runtime"].includes(part), outputs: {},
-    ...(part === "access" ? {} : { roleArn: `arn:aws:iam::123456789012:role/agentx-${env}-cloudformation` }),
+    ...(part === "access" ? {} : { roleArn: `arn:aws:iam::123456789012:role/rovara-cloud-${env}-cloudformation` }),
     template: retainedTemplate(resources), resources, ...extra,
   }];
   const account: FakeAccount = {
     stacks: new Map([
-      stack("access", [{ logicalId: "ArtifactBucket", type: "AWS::S3::Bucket", physicalId: `agentx-${env}-access-artifactbucket-1a` }]),
-      stack("foundation", [{ logicalId: "VpcFlowLogs", type: "AWS::Logs::LogGroup", physicalId: `agentx-${env}-foundation-VpcFlowLogs-2b` }, { logicalId: "WorkspaceKey", type: "AWS::KMS::Key", physicalId: "key-3c" }], { outputs: { Ec2WorkerLaunchTemplateId: "lt-0123456789abcdef0" } }),
+      stack("access", [{ logicalId: "ArtifactBucket", type: "AWS::S3::Bucket", physicalId: `rovara-cloud-${env}-access-artifactbucket-1a` }]),
+      stack("foundation", [{ logicalId: "VpcFlowLogs", type: "AWS::Logs::LogGroup", physicalId: `rovara-cloud-${env}-foundation-VpcFlowLogs-2b` }, { logicalId: "WorkspaceKey", type: "AWS::KMS::Key", physicalId: "key-3c" }], { outputs: { Ec2WorkerLaunchTemplateId: "lt-0123456789abcdef0" } }),
       stack("identity", [{ logicalId: "UserPool", type: "AWS::Cognito::UserPool", physicalId: "us-east-1_Pool4d" }]),
       stack("control-plane", [
-        { logicalId: "State", type: "AWS::DynamoDB::Table", physicalId: `agentx-${env}-control-plane-State-5e` },
-        { logicalId: "SlackThreadSessions", type: "AWS::S3::Bucket", physicalId: `agentx-${env}-control-plane-slackthreadsessions-6f` },
-        { logicalId: "SlackSecret", type: "AWS::SecretsManager::Secret", physicalId: `arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/${env}/slack-AbCdEf` },
+        { logicalId: "State", type: "AWS::DynamoDB::Table", physicalId: `rovara-cloud-${env}-control-plane-State-5e` },
+        { logicalId: "SlackThreadSessions", type: "AWS::S3::Bucket", physicalId: `rovara-cloud-${env}-control-plane-slackthreadsessions-6f` },
+        { logicalId: "SlackSecret", type: "AWS::SecretsManager::Secret", physicalId: `arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/${env}/slack-AbCdEf` },
       ], { deleteMinutes: 30 }),
       stack("runtime"),
       stack("slack"),
     ]),
-    instances: [{ id: "i-worker1", state: "running", tags: { DeploymentMode: "ec2-ebs", Environment: env, "agentx:env": env } }],
+    instances: [{ id: "i-worker1", state: "running", tags: { DeploymentMode: "ec2-ebs", Environment: env, "rovara-cloud:env": env } }],
     volumes: [
-      { id: "vol-root1", state: "in-use", tags: { DeploymentMode: "ec2-ebs", Environment: env, "agentx:env": env } },
-      { id: "vol-ws1", state: "available", tags: { DeploymentMode: "ec2-ebs", Environment: env, "agentx:env": env } },
+      { id: "vol-root1", state: "in-use", tags: { DeploymentMode: "ec2-ebs", Environment: env, "rovara-cloud:env": env } },
+      { id: "vol-ws1", state: "available", tags: { DeploymentMode: "ec2-ebs", Environment: env, "rovara-cloud:env": env } },
     ],
     tags: new Map(),
-    secrets: [{ name: `agentx/${env}/slack`, scheduled: false }, { name: `agentx/${env}/callback-signing-key`, scheduled: false }, { name: `agentx/${env}/github-app`, scheduled: false }],
-    aliases: [`alias/agentx/${env}/workspaces`],
+    secrets: [{ name: `rovara-cloud/${env}/slack`, scheduled: false }, { name: `rovara-cloud/${env}/callback-signing-key`, scheduled: false }, { name: `rovara-cloud/${env}/github-app`, scheduled: false }],
+    aliases: [`alias/rovara-cloud/${env}/workspaces`],
     calls: [],
   };
-  for (const [, entry] of account.stacks) for (const resource of entry.resources) account.tags.set(resource.physicalId, { "agentx:env": env });
+  for (const [, entry] of account.stacks) for (const resource of entry.resources) account.tags.set(resource.physicalId, { "rovara-cloud:env": env });
   return account;
 }
 
@@ -114,7 +114,7 @@ export function fakeDestroyApi(account: FakeAccount, clock: { now: () => number 
     async aliases() { return account.aliases.map((name) => ({ name })); },
     async deleteAlias(name) { account.calls.push(`delete alias ${name}`); account.aliases = account.aliases.filter((alias) => alias !== name); },
     async secrets() { return account.secrets; },
-    async pullThroughRepositories(env) { account.repositoriesListedAfter = account.calls.length; if (account.repositoriesError !== undefined) throw account.repositoriesError; return (account.repositories ?? []).filter((name) => name.startsWith(`agentx-${env}/`)); },
+    async pullThroughRepositories(env) { account.repositoriesListedAfter = account.calls.length; if (account.repositoriesError !== undefined) throw account.repositoriesError; return (account.repositories ?? []).filter((name) => name.startsWith(`rovara-cloud-${env}/`)); },
     async deleteSecret(name) {
       const matches = account.secrets.filter((secret) => isSecretId(name, secret.name));
       if (matches.some((secret) => forceDeleted.has(secret.name))) throw new Error(`test: ${name} was already force-deleted; RestoreSecret fails on it`);

@@ -35,7 +35,7 @@ export const ReleaseManifestSchema = z
     schemaVersion: z.literal(1),
     version: z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/),
     gitCommit: z.string().regex(/^[a-f0-9]{40}$/),
-    environmentPlaceholder: z.literal("qqenv-placeholderqq"),
+    environmentPlaceholder: z.literal("qqenv-phldrqq"),
     templates: z
       .array(
         z

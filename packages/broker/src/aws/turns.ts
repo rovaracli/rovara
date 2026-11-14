@@ -78,7 +78,7 @@ export function workspaceProjectReader(client: Client, stateTableName: string): 
 }
 
 /**
- * Pages turn records for `agentx admin turns export`, newest first; read-only. Records hold
+ * Pages turn records for `rovara admin turns export`, newest first; read-only. Records hold
  * redacted request and response text, so log lines carry keys, counts and error classes only.
  */
 export class TurnRecordExport {

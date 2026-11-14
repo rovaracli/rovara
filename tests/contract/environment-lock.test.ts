@@ -14,35 +14,35 @@ describe("environment lock", () => {
       return 42;
     });
     expect(result).toBe(42);
-    expect(store.values.has("/agentx/staging/lock")).toBe(false);
+    expect(store.values.has("/rovara-cloud/staging/lock")).toBe(false);
   });
 
   it("releases the lock when the work fails", async () => {
     const store = new MemoryParameterStore();
     await expect(withEnvironmentLock({ ...base, store }, async () => { throw new Error("boom"); })).rejects.toThrow("boom");
-    expect(store.values.has("/agentx/staging/lock")).toBe(false);
+    expect(store.values.has("/rovara-cloud/staging/lock")).toBe(false);
   });
 
   it("refuses a fresh lock and names its holder, without running the work", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/lock", JSON.stringify({ holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - 60_000).toISOString() }));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify({ holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - 60_000).toISOString() }));
     const work = vi.fn(async () => 1);
     await expect(withEnvironmentLock({ ...base, store, now: () => t0 }, work))
-      .rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining(`locked by bob running "upgrade" since ${new Date(t0 - 60_000).toISOString()}; wait for it to finish, then run the same agentx command again`) as unknown });
+      .rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining(`locked by bob running "upgrade" since ${new Date(t0 - 60_000).toISOString()}; wait for it to finish, then run the same rovara command again`) as unknown });
     expect(work).not.toHaveBeenCalled();
-    expect(store.values.has("/agentx/staging/lock")).toBe(true);
+    expect(store.values.has("/rovara-cloud/staging/lock")).toBe(true);
   });
 
   it("tells the caller what to do when the fresh lock's command is no longer running (final review M1)", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/lock", JSON.stringify({ holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - 60_000).toISOString() }));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify({ holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - 60_000).toISOString() }));
     await expect(withEnvironmentLock({ ...base, command: "destroy", store, now: () => t0, takeOverOwn: true, confirmTakeover: async () => true }, async () => 1))
-      .rejects.toThrow(`; wait for it to finish, then run the same agentx command again. If it is no longer running, agentx init, upgrade and destroy offer a takeover once the lock is 2 hours old, or delete it now (aws ssm delete-parameter --name /agentx/staging/lock --region <region>)`);
+      .rejects.toThrow(`; wait for it to finish, then run the same rovara command again. If it is no longer running, rovara init, upgrade and destroy offer a takeover once the lock is 2 hours old, or delete it now (aws ssm delete-parameter --name /rovara-cloud/staging/lock --region <region>)`);
   });
 
   it("does not offer takeover of a fresh lock", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/lock", JSON.stringify({ holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - 60_000).toISOString() }));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify({ holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - 60_000).toISOString() }));
     const confirmTakeover = vi.fn(async () => true);
     await expect(withEnvironmentLock({ ...base, store, now: () => t0, confirmTakeover }, async () => 1)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
     expect(confirmTakeover).not.toHaveBeenCalled();
@@ -51,23 +51,23 @@ describe("environment lock", () => {
   it("refuses a stale lock without confirmTakeover, naming how to clear it instead of offering takeover", async () => {
     const store = new MemoryParameterStore();
     const stale = { holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - STALE_LOCK_MS - 1).toISOString() };
-    store.values.set("/agentx/staging/lock", JSON.stringify(stale));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify(stale));
     const error = await withEnvironmentLock({ ...base, store, now: () => t0 }, async () => 1)
       .catch((caught: unknown) => caught) as { code?: string; message?: string };
     expect(error.code).toBe("CONFIG_INVALID");
     expect(error.message).toContain("older than 2 hours");
     expect(error.message).not.toContain("confirm to take it over");
-    expect(error.message).toContain("/agentx/staging/lock");
+    expect(error.message).toContain("/rovara-cloud/staging/lock");
     expect(error.message).toMatch(/no AgentX command is running/);
   });
 
   it("says the lock was released while waiting for takeover confirmation, when the recheck finds it gone", async () => {
     const store = new MemoryParameterStore();
     const stale = { holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - STALE_LOCK_MS - 1).toISOString() };
-    store.values.set("/agentx/staging/lock", JSON.stringify(stale));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify(stale));
     const confirmTakeover = async () => {
       // The original stale lock is released (e.g. cleaned up) while we wait for confirmation.
-      store.values.delete("/agentx/staging/lock");
+      store.values.delete("/rovara-cloud/staging/lock");
       return true;
     };
     const error = await withEnvironmentLock({ ...base, store, now: () => t0, confirmTakeover }, async () => 1)
@@ -93,17 +93,17 @@ describe("environment lock", () => {
   it("says the lock is unreadable, not released, when the recheck after takeover confirmation finds garbage", async () => {
     const store = new MemoryParameterStore();
     const stale = { holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - STALE_LOCK_MS - 1).toISOString() };
-    store.values.set("/agentx/staging/lock", JSON.stringify(stale));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify(stale));
     const confirmTakeover = async () => {
       // Something unparseable replaces the stale lock while we wait for takeover confirmation.
-      store.values.set("/agentx/staging/lock", "not json");
+      store.values.set("/rovara-cloud/staging/lock", "not json");
       return true;
     };
     const error = await withEnvironmentLock({ ...base, store, now: () => t0, confirmTakeover }, async () => 1)
       .catch((caught: unknown) => caught) as { code?: string; message?: string };
     expect(error.code).toBe("CONFIG_INVALID");
     expect(error.message).toContain("unreadable");
-    expect(error.message).toContain("/agentx/staging/lock");
+    expect(error.message).toContain("/rovara-cloud/staging/lock");
     expect(error.message).toContain("no AgentX command is running");
     expect(error.message).not.toContain("released");
   });
@@ -117,14 +117,14 @@ describe("environment lock", () => {
     }).catch((caught: unknown) => caught) as { code?: string; message?: string };
     expect(error.code).toBe("CONFIG_INVALID");
     expect(error.message).toContain("unreadable");
-    expect(error.message).toContain("/agentx/staging/lock");
+    expect(error.message).toContain("/rovara-cloud/staging/lock");
     expect(error.message).not.toContain("removed by someone else");
   });
 
   it("distinguishes an unreadable lock from another command's re-create in the post-delete race", async () => {
     const store = new MemoryParameterStore();
     const stale = { holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - STALE_LOCK_MS - 1).toISOString() };
-    store.values.set("/agentx/staging/lock", JSON.stringify(stale));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify(stale));
     const realDelete = store.delete.bind(store);
     vi.spyOn(store, "delete").mockImplementation(async (name: string) => {
       await realDelete(name);
@@ -135,14 +135,14 @@ describe("environment lock", () => {
       .catch((caught: unknown) => caught) as { code?: string; message?: string };
     expect(error.code).toBe("CONFIG_INVALID");
     expect(error.message).toContain("unreadable");
-    expect(error.message).toContain("/agentx/staging/lock");
+    expect(error.message).toContain("/rovara-cloud/staging/lock");
     expect(error.message).not.toContain("between this command's delete and re-create");
   });
 
   it("names the command that raced this one to re-create the lock right after this one deleted it", async () => {
     const store = new MemoryParameterStore();
     const stale = { holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - STALE_LOCK_MS - 1).toISOString() };
-    store.values.set("/agentx/staging/lock", JSON.stringify(stale));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify(stale));
     const realDelete = store.delete.bind(store);
     const otherLock = JSON.stringify({ holder: "carol", command: "env upgrade", acquiredAt: new Date(t0).toISOString() });
     vi.spyOn(store, "delete").mockImplementation(async (name: string) => {
@@ -154,14 +154,14 @@ describe("environment lock", () => {
       .catch((caught: unknown) => caught) as { code?: string; message?: string };
     expect(error.code).toBe("CONFIG_INVALID");
     expect(error.message).toContain("carol");
-    expect(error.message).toContain("between this command's delete and re-create; wait for it to finish, then run the same agentx command again");
+    expect(error.message).toContain("between this command's delete and re-create; wait for it to finish, then run the same rovara command again");
     expect(error.message).not.toContain("took over the lock first");
   });
 
   it("takes over a stale lock only after confirmation", async () => {
     const store = new MemoryParameterStore();
     const stale = { holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - STALE_LOCK_MS - 1).toISOString() };
-    store.values.set("/agentx/staging/lock", JSON.stringify(stale));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify(stale));
     await expect(withEnvironmentLock({ ...base, store, now: () => t0, confirmTakeover: async () => false }, async () => 1))
       .rejects.toMatchObject({ message: expect.stringContaining("older than 2 hours") as unknown });
     const confirmTakeover = vi.fn(async () => true);
@@ -171,7 +171,7 @@ describe("environment lock", () => {
 
   it("treats an unreadable lock as held, not as free", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/lock", "not json");
+    store.values.set("/rovara-cloud/staging/lock", "not json");
     await expect(withEnvironmentLock({ ...base, store, now: () => t0 }, async () => 1)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 
@@ -188,10 +188,10 @@ describe("environment lock", () => {
     // The release failure is not swallowed: it is reachable as the cause, and the user is told the
     // lock may still be there plus the exact ways to clear it.
     expect(error.cause).toBe(deleteError);
-    expect(error.message).toContain("/agentx/staging/lock");
+    expect(error.message).toContain("/rovara-cloud/staging/lock");
     expect(error.message).toMatch(/may remain|left behind|still (?:be )?there/);
-    expect(error.message).toContain("agentx init");
-    expect(error.message).toContain("agentx deploy");
+    expect(error.message).toContain("rovara init");
+    expect(error.message).toContain("rovara deploy");
     expect(error.message).toContain("aws ssm delete-parameter");
     expect(error.message).toContain("--region");
   });
@@ -203,10 +203,10 @@ describe("environment lock", () => {
     const error = await withEnvironmentLock({ ...base, store, now: () => t0 }, async () => 1)
       .catch((caught: unknown) => caught) as Error;
     expect(error.message).toContain("ssm unavailable");
-    expect(error.message).toContain("/agentx/staging/lock");
+    expect(error.message).toContain("/rovara-cloud/staging/lock");
     expect(error.message).toMatch(/may remain|left behind|still (?:be )?there/);
-    expect(error.message).toContain("agentx init");
-    expect(error.message).toContain("agentx deploy");
+    expect(error.message).toContain("rovara init");
+    expect(error.message).toContain("rovara deploy");
     expect(error.message).toContain("aws ssm delete-parameter");
     expect(error.message).toContain("--region");
   });
@@ -214,7 +214,7 @@ describe("environment lock", () => {
   it("two commands racing to take over the same stale lock: exactly one wins", async () => {
     const store = new MemoryParameterStore();
     const stale = { holder: "bob", command: "upgrade", acquiredAt: new Date(t0 - STALE_LOCK_MS - 1).toISOString() };
-    store.values.set("/agentx/staging/lock", JSON.stringify(stale));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify(stale));
 
     // The second command's work starts only once it has actually re-acquired the lock (deleted the
     // stale one and put its own with createOnly). The first command's confirmTakeover doesn't resolve
@@ -254,7 +254,7 @@ describe("environment lock", () => {
 
     resolveSecondWork("second");
     await expect(secondPromise).resolves.toBe("second");
-    expect(store.values.has("/agentx/staging/lock")).toBe(false);
+    expect(store.values.has("/rovara-cloud/staging/lock")).toBe(false);
   });
 
   it("reports a takeover that happened during the work, and leaves the new holder's lock alone", async () => {
@@ -285,17 +285,17 @@ describe("environment lock", () => {
 
   it("offers a takeover of the caller's own fresh lock for the same command when takeOverOwn is set (Review Focus 1)", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/lock", JSON.stringify({ holder: base.holder, command: "init", acquiredAt: new Date(t0 - 60_000).toISOString() }));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify({ holder: base.holder, command: "init", acquiredAt: new Date(t0 - 60_000).toISOString() }));
     const confirmTakeover = vi.fn(async () => true);
     const result = await withEnvironmentLock({ ...base, command: "init", store, now: () => t0, takeOverOwn: true, confirmTakeover }, async () => 7);
     expect(result).toBe(7);
     expect(confirmTakeover).toHaveBeenCalledOnce();
-    expect(store.values.has("/agentx/staging/lock")).toBe(false);
+    expect(store.values.has("/rovara-cloud/staging/lock")).toBe(false);
   });
 
   it("refuses the caller's own fresh lock, saying how, when the takeover is declined", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/lock", JSON.stringify({ holder: base.holder, command: "init", acquiredAt: new Date(t0 - 60_000).toISOString() }));
+    store.values.set("/rovara-cloud/staging/lock", JSON.stringify({ holder: base.holder, command: "init", acquiredAt: new Date(t0 - 60_000).toISOString() }));
     await expect(withEnvironmentLock({ ...base, command: "init", store, now: () => t0, takeOverOwn: true, confirmTakeover: async () => false }, async () => 1))
       .rejects.toThrow("(your own earlier \"init\"; confirm the takeover only if that run is no longer going)");
   });
@@ -303,11 +303,11 @@ describe("environment lock", () => {
   it("never offers a takeover of someone else's fresh lock, or of the caller's own lock for another command", async () => {
     const confirmTakeover = vi.fn(async () => true);
     const other = new MemoryParameterStore();
-    other.values.set("/agentx/staging/lock", JSON.stringify({ holder: "bob", command: "init", acquiredAt: new Date(t0 - 60_000).toISOString() }));
+    other.values.set("/rovara-cloud/staging/lock", JSON.stringify({ holder: "bob", command: "init", acquiredAt: new Date(t0 - 60_000).toISOString() }));
     await expect(withEnvironmentLock({ ...base, command: "init", store: other, now: () => t0, takeOverOwn: true, confirmTakeover }, async () => 1)).rejects.toThrow("locked by bob running \"init\" since 2026");
-    await expect(withEnvironmentLock({ ...base, command: "init", store: other, now: () => t0, takeOverOwn: true, confirmTakeover }, async () => 1)).rejects.toThrow("; wait for it to finish, then run the same agentx command again");
+    await expect(withEnvironmentLock({ ...base, command: "init", store: other, now: () => t0, takeOverOwn: true, confirmTakeover }, async () => 1)).rejects.toThrow("; wait for it to finish, then run the same rovara command again");
     const own = new MemoryParameterStore();
-    own.values.set("/agentx/staging/lock", JSON.stringify({ holder: base.holder, command: "deploy install", acquiredAt: new Date(t0 - 60_000).toISOString() }));
+    own.values.set("/rovara-cloud/staging/lock", JSON.stringify({ holder: base.holder, command: "deploy install", acquiredAt: new Date(t0 - 60_000).toISOString() }));
     await expect(withEnvironmentLock({ ...base, command: "init", store: own, now: () => t0, takeOverOwn: true, confirmTakeover }, async () => 1)).rejects.toThrow("running \"deploy install\"");
     expect(confirmTakeover).not.toHaveBeenCalled();
   });

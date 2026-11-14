@@ -9,7 +9,7 @@ function namedSlackTemplate(): Template {
   const app = new App();
   const stack = new SlackOrchestratorStack(app, "NamedSlack", {
     env: { region: "us-east-1" },
-    naming: environmentNaming("diagnostic-retry"),
+    naming: environmentNaming("diag-retry"),
   });
   Aspects.of(app).add(new RetainExceptOnCreate());
   return Template.fromStack(stack);

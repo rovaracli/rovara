@@ -235,7 +235,7 @@ export async function installationToken(input: {
   const name = githubAppSecretName(input.env);
   const raw = await input.secrets.get(name);
   if (raw === undefined) {
-    throw agentXError("CONFIG_INVALID", `secret ${name} does not exist; run agentx init again so the GitHub App step stores it`);
+    throw agentXError("CONFIG_INVALID", `secret ${name} does not exist; run rovara init again so the GitHub App step stores it`);
   }
   const app = parseAppSecret(raw, name);
   const jwt = githubAppJwt({ appId: app.appId, privateKey: app.privateKey, nowSeconds: input.nowSeconds });

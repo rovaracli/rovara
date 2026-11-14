@@ -1,4 +1,4 @@
-// Everything `agentx init` asks a person, and every way a secret reaches it: a hidden prompt, a
+// Everything `rovara init` asks a person, and every way a secret reaches it: a hidden prompt, a
 // file, or an environment variable, never a flag's value (FR-020). Secrets are read whole: no
 // 128-character cut like macOS `security add-generic-password -w`.
 import { readFile as readFileFromDisk } from "node:fs/promises";

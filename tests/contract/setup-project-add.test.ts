@@ -29,7 +29,7 @@ const repositoriesFake = () => fakeRepositories({
 });
 const services = (plane = fakeControlPlane(), repositories = repositoriesFake()) => {
   bindSetupSourceProvider(plane, repositories);
-  return { fetch: plane.fetch, repositories, configDir, stackOutputs: async (name: string) => (name === "agentx-staging-foundation" ? FOUNDATION : undefined) };
+  return { fetch: plane.fetch, repositories, configDir, stackOutputs: async (name: string) => (name === "rovara-cloud-staging-foundation" ? FOUNDATION : undefined) };
 };
 const session = { controlPlaneUrl: CONTROL_PLANE, accessToken: "admin-token" };
 const sourceBackedSetup = async (bytes: Buffer) => {
@@ -44,7 +44,7 @@ const sourceBackedSetup = async (bytes: Buffer) => {
 
 describe("the ec2-ebs binding from the foundation's outputs", () => {
   it("uses the launch template and every zone's subnet, 20 GiB gp3", () => {
-    expect(ec2Binding(FOUNDATION, "agentx-staging-foundation")).toEqual({
+    expect(ec2Binding(FOUNDATION, "rovara-cloud-staging-foundation")).toEqual({
       deploymentMode: "ec2-ebs", launchTemplateId: "lt-0123456789abcdef0",
       subnets: [{ availabilityZone: "us-east-1a", subnetId: "subnet-0aaa1111bbbb2222c" }, { availabilityZone: "us-east-1b", subnetId: "subnet-0ddd3333eeee4444f" }],
       volumeSizeGiB: 20, volumeType: "gp3",
@@ -52,16 +52,16 @@ describe("the ec2-ebs binding from the foundation's outputs", () => {
   });
 
   it("says which output is missing and what to do", () => {
-    expect(() => ec2Binding({}, "agentx-staging-foundation")).toThrow("stack agentx-staging-foundation has no Ec2WorkerLaunchTemplateId output; upgrade the environment to a release with EC2 workers, then run this again");
-    expect(() => ec2Binding({ Ec2WorkerLaunchTemplateId: FOUNDATION.Ec2WorkerLaunchTemplateId }, "agentx-staging-foundation")).toThrow("stack agentx-staging-foundation has no Ec2WorkerSubnets output");
+    expect(() => ec2Binding({}, "rovara-cloud-staging-foundation")).toThrow("stack rovara-cloud-staging-foundation has no Ec2WorkerLaunchTemplateId output; upgrade the environment to a release with EC2 workers, then run this again");
+    expect(() => ec2Binding({ Ec2WorkerLaunchTemplateId: FOUNDATION.Ec2WorkerLaunchTemplateId }, "rovara-cloud-staging-foundation")).toThrow("stack rovara-cloud-staging-foundation has no Ec2WorkerSubnets output");
   });
 
   it("says when the foundation stack does not exist at all, rather than blaming a missing output", () => {
-    expect(() => ec2Binding(undefined, "agentx-staging-foundation")).toThrow("stack agentx-staging-foundation does not exist in this account and region; check --env and --region, or finish agentx init first");
+    expect(() => ec2Binding(undefined, "rovara-cloud-staging-foundation")).toThrow("stack rovara-cloud-staging-foundation does not exist in this account and region; check --env and --region, or finish rovara init first");
   });
 });
 
-describe("agentx project add (FR-040)", () => {
+describe("rovara project add (FR-040)", () => {
   it("offers the repositories, proposes the commands, registers revision 1 on ec2-ebs and writes the file", async () => {
     const plane = fakeControlPlane();
     // repository, project name (default), use the proposed commands
@@ -344,7 +344,7 @@ describe("agentx project add (FR-040)", () => {
     await addProject({ env: "staging", session, githubToken: "ghs_x", prompter: scriptedPrompter(["acme/payments-api", "", false]), write: () => undefined, services: services(plane), flags: {} });
     const result = await addConnectorRevision({
       env: "staging", session, projectName: "payments-api", services: { fetch: plane.fetch, configDir, stackOutputs: async () => FOUNDATION },
-      write: () => undefined, rerun: "agentx --env staging connector add linear --project payments-api",
+      write: () => undefined, rerun: "rovara --env staging connector add linear --project payments-api",
       connector: { name: "linear", type: "linear", credentialRef: "linear", scopes: [{ alias: "pay", teamId: "c408e946-78aa-4db8-923e-f78053dd954f" }], tools: [{ name: "list_issues", access: "read" }] },
     });
     expect(result).toEqual({ revision: 2 });
@@ -353,11 +353,11 @@ describe("agentx project add (FR-040)", () => {
     expect((plane.registered.at(-1) as { setupApproval?: unknown }).setupApproval).toBeUndefined();
   });
 
-  it("writes a file agentx admin project register --file reads back, whose header gives the whole register command (F27)", async () => {
+  it("writes a file rovara admin project register --file reads back, whose header gives the whole register command (F27)", async () => {
     const result = await addProject({ env: "staging", session, githubToken: "ghs_x", prompter: scriptedPrompter(["acme/payments-api", "", true]), write: () => undefined, services: services(), flags: {} });
     const file = await readFile(result.file, "utf8");
-    expect(file).toContain(`agentx admin project register --env staging --file ${result.file} --deployment-mode ec2-ebs --launch-template-id lt-0123456789abcdef0 --subnets us-east-1a=subnet-0aaa1111bbbb2222c,us-east-1b=subnet-0ddd3333eeee4444f`);
-    expect(file).toContain("agentx connector add");
+    expect(file).toContain(`rovara admin project register --env staging --file ${result.file} --deployment-mode ec2-ebs --launch-template-id lt-0123456789abcdef0 --subnets us-east-1a=subnet-0aaa1111bbbb2222c,us-east-1b=subnet-0ddd3333eeee4444f`);
+    expect(file).toContain("rovara connector add");
     const loaded = await loadProjectConfig({ projectName: "payments-api", configDirectory: configDir });
     expect(loaded).toMatchObject({ name: "payments-api", revision: 1 });
   });
@@ -515,7 +515,7 @@ describe("agentx project add (FR-040)", () => {
     const before = plane.requests.length;
     const result = await addConnectorRevision({
       env: "staging", session, projectName: "payments-api", services: { fetch: plane.fetch, configDir, stackOutputs: async () => FOUNDATION },
-      write: () => undefined, rerun: "agentx --env staging connector add linear --project payments-api",
+      write: () => undefined, rerun: "rovara --env staging connector add linear --project payments-api",
       connector: { name: "linear", type: "linear", credentialRef: "linear", scopes: [{ alias: "pay", teamId: "c408e946-78aa-4db8-923e-f78053dd954f" }], tools: [{ name: "list_issues", access: "read" }] },
     });
     expect(result).toEqual({ revision: 2 });
@@ -549,7 +549,7 @@ describe("agentx project add (FR-040)", () => {
     const requestCount = plane.requests.length;
     await expect(addConnectorRevision({
       env: "staging", session, projectName: "payments-api", services: { fetch: plane.fetch, configDir, stackOutputs: async () => FOUNDATION },
-      write: () => undefined, rerun: "agentx --env staging connector add linear --project payments-api",
+      write: () => undefined, rerun: "rovara --env staging connector add linear --project payments-api",
       connector: { name: "linear", type: "linear", credentialRef: "linear", scopes: [{ alias: "pay", teamId: "c408e946-78aa-4db8-923e-f78053dd954f" }], tools: [{ name: "list_issues", access: "read" }] },
     })).rejects.toThrow("no longer matches its project, environment, control plane, repository, or E2E policy");
     expect(plane.requests).toHaveLength(requestCount);
@@ -568,7 +568,7 @@ describe("agentx project add (FR-040)", () => {
     await writeFile(sidecarPath, `${JSON.stringify(sidecar, null, 2)}\n`);
     await expect(addConnectorRevision({
       env: "staging", session, projectName: "payments-api", services: { fetch: plane.fetch, configDir, stackOutputs: async () => FOUNDATION },
-      write: () => undefined, rerun: "agentx --env staging connector add linear --project payments-api",
+      write: () => undefined, rerun: "rovara --env staging connector add linear --project payments-api",
       connector: { name: "linear", type: "linear", credentialRef: "linear", scopes: [{ alias: "pay", teamId: "c408e946-78aa-4db8-923e-f78053dd954f" }], tools: [{ name: "list_issues", access: "read" }] },
     })).rejects.toThrow("project registration failed with HTTP 403");
     expect(plane.registered).toHaveLength(1);
@@ -605,8 +605,8 @@ describe("the first-project init step", () => {
 
   // Task 8: the step also binds the channel, from the recorded Slack facts and the stored bot token.
   const githubSecret = () => memoryInitSecrets({
-    "agentx/staging/github-app": JSON.stringify({ appId: "42", slug: "agentx-acme", account: "acme", privateKey: TEST_PRIVATE_KEY }),
-    "agentx/staging/slack": JSON.stringify({ botToken: "xoxb-fake-bot-token-value" }),
+    "rovara-cloud/staging/github-app": JSON.stringify({ appId: "42", slug: "agentx-acme", account: "acme", privateKey: TEST_PRIVATE_KEY }),
+    "rovara-cloud/staging/slack": JSON.stringify({ botToken: "xoxb-fake-bot-token-value" }),
   });
   const SLACK = { appId: "A0APP00001", teamId: "T0123456789", botUserId: "U0BOT00001" };
   const slackChannels = () => fakeSlackChannels([{ id: "C0PAY00001", name: "payments", isPrivate: false, isMember: true }, { id: "C0DOCS0001", name: "docs", isPrivate: false, isMember: true }]);
@@ -616,10 +616,10 @@ describe("the first-project init step", () => {
     const github = fakeGitHubApi({ installationId: 777 });
     context = initContext({
       secrets: githubSecret(), prompter: scriptedPrompter(["acme/payments-api", "", true, "#payments"]),
-      setup: setupServices({ fetch: plane.fetch, repositories: repositoriesFake(), github, configDir, stackOutputs: async (name) => (name === "agentx-staging-foundation" ? FOUNDATION : undefined), slackChannels: slackChannels() }),
+      setup: setupServices({ fetch: plane.fetch, repositories: repositoriesFake(), github, configDir, stackOutputs: async (name) => (name === "rovara-cloud-staging-foundation" ? FOUNDATION : undefined), slackChannels: slackChannels() }),
     });
-    (context.store as MemoryParameterStore).values.set("/agentx/staging/settings", JSON.stringify(STAGING_SETTINGS));
-    const progress = progressHandle({ ...progressHandle().value(), slack: SLACK, github: { account: "acme", appId: "42", slug: "agentx-acme", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf", installationId: "777" } });
+    (context.store as MemoryParameterStore).values.set("/rovara-cloud/staging/settings", JSON.stringify(STAGING_SETTINGS));
+    const progress = progressHandle({ ...progressHandle().value(), slack: SLACK, github: { account: "acme", appId: "42", slug: "agentx-acme", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf", installationId: "777" } });
     expect(await firstProjectStep().run(context, progress)).toEqual({ status: "done", note: "project payments-api in #payments" });
     expect(progress.value().project).toEqual({ name: "payments-api", revision: 1, channelId: "C0PAY00001", channelName: "payments", teamId: "T0123456789" });
     expect(github.polls()).toBe(0);
@@ -635,7 +635,7 @@ describe("the first-project init step", () => {
       flags: { repository: "acme/docs", projectName: "docs", setupCommand: "", testCommand: "make check", channel: "docs" },
       setup: setupServices({ fetch: plane.fetch, repositories: repositoriesFake(), configDir, stackOutputs: async () => FOUNDATION, slackChannels: slackChannels() }),
     });
-    (context.store as MemoryParameterStore).values.set("/agentx/staging/settings", JSON.stringify(STAGING_SETTINGS));
+    (context.store as MemoryParameterStore).values.set("/rovara-cloud/staging/settings", JSON.stringify(STAGING_SETTINGS));
     const progress = progressHandle({ ...progressHandle().value(), slack: SLACK });
     await firstProjectStep().run(context, progress);
     expect(progress.value().project).toEqual({ name: "docs", revision: 1, channelId: "C0DOCS0001", channelName: "docs", teamId: "T0123456789" });
@@ -644,7 +644,7 @@ describe("the first-project init step", () => {
   it("registers nothing again on a rerun that already recorded the project", async () => {
     const plane = fakeControlPlane();
     context = initContext({ prompter: scriptedPrompter([]), setup: setupServices({ fetch: plane.fetch, configDir }) });
-    (context.store as MemoryParameterStore).values.set("/agentx/staging/settings", JSON.stringify(STAGING_SETTINGS));
+    (context.store as MemoryParameterStore).values.set("/rovara-cloud/staging/settings", JSON.stringify(STAGING_SETTINGS));
     const progress = progressHandle({ ...progressHandle().value(), project: { name: "payments-api", revision: 1, channelId: "C0PAY00001", channelName: "payments", teamId: "T0123456789" } });
     expect(await firstProjectStep().run(context, progress)).toEqual({ status: "done", note: "project payments-api in #payments" });
     expect(plane.registered).toEqual([]);
@@ -652,14 +652,14 @@ describe("the first-project init step", () => {
   });
 });
 
-describe("agentx project add on the command line", () => {
+describe("rovara project add on the command line", () => {
   function fakeSetupContext(plane = fakeControlPlane()): SetupCommandContext & { regions: Array<string | undefined> } {
     const regions: Array<string | undefined> = [];
     const run = (command: Command): Omit<SetupRun, "session"> => {
       regions.push(command.optsWithGlobals<{ region?: string }>().region);
       return {
         env: "staging", settings: STAGING_SETTINGS,
-        secrets: memoryInitSecrets({ "agentx/staging/github-app": JSON.stringify({ appId: "42", slug: "agentx-acme", account: "acme", privateKey: TEST_PRIVATE_KEY }) }),
+        secrets: memoryInitSecrets({ "rovara-cloud/staging/github-app": JSON.stringify({ appId: "42", slug: "agentx-acme", account: "acme", privateKey: TEST_PRIVATE_KEY }) }),
         services: setupServices({ fetch: plane.fetch, repositories: repositoriesFake(), configDir, stackOutputs: async () => FOUNDATION }),
         prompter: scriptedPrompter([true]), write: () => undefined,
         sleep: async () => undefined, now: () => Date.parse("2026-09-27T00:00:00.000Z"),
@@ -669,7 +669,7 @@ describe("agentx project add on the command line", () => {
     return {
       regions,
       openAws: async (command) => run(command),
-      open: async (command) => ({ ...run(command), session: { controlPlaneUrl: CONTROL_PLANE, accessToken: accessToken({ "cognito:groups": ["agentx-admin"] }) } }),
+      open: async (command) => ({ ...run(command), session: { controlPlaneUrl: CONTROL_PLANE, accessToken: accessToken({ "cognito:groups": ["rovara-cloud-admin"] }) } }),
     };
   }
 
@@ -710,12 +710,12 @@ describe("the real setup command context", () => {
   });
 
   it("says where it looked when the environment has no settings, and what to do", async () => {
-    await expect(context(new MemoryParameterStore()).openAws(command("eu-west-1"))).rejects.toThrow("environment staging has no settings in eu-west-1; pass --region, or run agentx env list");
+    await expect(context(new MemoryParameterStore()).openAws(command("eu-west-1"))).rejects.toThrow("environment staging has no settings in eu-west-1; pass --region, or run rovara env list");
   });
 
   it("with no terminal, never guesses between several choices, but takes the only one", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/settings", JSON.stringify(STAGING_SETTINGS));
+    store.values.set("/rovara-cloud/staging/settings", JSON.stringify(STAGING_SETTINGS));
     const run = await context(store).openAws(command("us-east-1"));
     expect(run.services.configDir).toBe(configDir);
     const choices = [{ value: "acme/a", label: "acme/a" }, { value: "acme/b", label: "acme/b" }];

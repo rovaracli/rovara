@@ -1,5 +1,5 @@
 // Plan 2, Task 8: a notice for each new sign-in method, and unlinking one. The email goes to the account's address when a second sign-in
-// route is linked to it; a person can remove that route (agentx signin unlink), which ends its sessions and nothing else.
+// route is linked to it; a person can remove that route (rovara signin unlink), which ends its sessions and nothing else.
 import type { SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UnlinkIdentityRequest } from "@agentx/contracts";
@@ -72,7 +72,7 @@ describe("the notice of a newly linked sign-in method", () => {
     expect(email!.Content!.Simple!.Subject!.Data).toBe("A new way to sign in to your Rovara account");
     expect(IDENTITY_NOTICE_SUBJECT).toBe("A new way to sign in to your Rovara account");
     const sentence = "GitHub account octo can now sign in to your Rovara account. If this was you, there is nothing to do. "
-      + "If it wasn't, remove it now: run agentx signin unlink github, or sign in at https://rovara.dev and remove it from your account.";
+      + "If it wasn't, remove it now: run rovara signin unlink github, or sign in at https://rovara.dev and remove it from your account.";
     expect(email!.Content!.Simple!.Body!.Text!.Data).toBe(sentence);
     expect(email!.Content!.Simple!.Body!.Html!.Data).toBe(`<p>${sentence.replace("wasn't", "wasn&#39;t")}</p>`);
     // The log names the provider and nothing about the person.
@@ -87,7 +87,7 @@ describe("the notice of a newly linked sign-in method", () => {
     const [email] = emailsSent(ses);
     expect(emailsSent(ses)).toHaveLength(1);
     expect(email!.Content!.Simple!.Body!.Text!.Data).toMatch(/^Email code account can now sign in to your Rovara account\. /);
-    expect(email!.Content!.Simple!.Body!.Text!.Data).toContain("run agentx signin unlink cloud,");
+    expect(email!.Content!.Simple!.Body!.Text!.Data).toContain("run rovara signin unlink cloud,");
   });
 
   it("sends nothing for a first sign-in (new-self) or a return visit (existing)", async () => {
@@ -160,7 +160,7 @@ describe("the notice that a GitHub organization was connected (Plan 2, Task 14)"
     expect(command.Content!.Simple!.Body!.Text!.Data).toBe(
       "Rhea Requester (rhea@acme.dev) asked to connect the GitHub organization acme-co (https://github.com/acme-co) to your Rovara organization Acme. "
       + "gh-admin, an admin of acme-co on GitHub, approved it. Rovara can now work in the repositories acme-co gave it access to. "
-      + "If this isn't the GitHub organization you expected, remove it with agentx github disconnect acme-co.",
+      + "If this isn't the GitHub organization you expected, remove it with rovara github disconnect acme-co.",
     );
     expect(JSON.stringify(log.mock.calls)).not.toMatch(/olive|rhea|acme-co|gh-admin/);
     const options = (ses.client as unknown as { send: { mock: { calls: Array<[unknown, { abortSignal?: AbortSignal }]> } } }).send.mock.calls[0]![1];

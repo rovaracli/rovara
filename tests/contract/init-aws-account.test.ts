@@ -31,7 +31,7 @@ describe("the AWS profiles on this machine", () => {
     const dir = await home();
     await writeFile(join(dir, ".aws", "config"), [
       "[default]", "region = us-west-2", "",
-      "[profile agentx-admin]", "login_session = arn:aws:iam::944937319445:user/owner", "region = us-east-1", "",
+      "[profile rovara-cloud-admin]", "login_session = arn:aws:iam::944937319445:user/owner", "region = us-east-1", "",
       "[profile dev]", "sso_session = acme", "sso_account_id = 111111111111", "sso_role_name = Admin", "",
       "[sso-session acme]", "sso_start_url = https://acme.awsapps.com/start", "",
       "[profile ci]", "role_arn = arn:aws:iam::222222222222:role/ci", "source_profile = default", "",
@@ -43,10 +43,10 @@ describe("the AWS profiles on this machine", () => {
     const profiles = await listAwsProfiles({ home: dir, processEnv: {} });
     expect(profiles).toEqual([
       { name: "default", kind: "keys", region: "us-west-2" },
-      { name: "agentx-admin", kind: "login", region: "us-east-1" },
       { name: "ci", kind: "other" },
       { name: "dev", kind: "sso" },
       { name: "legacy", kind: "keys" },
+      { name: "rovara-cloud-admin", kind: "login", region: "us-east-1" },
     ]);
     const listed = JSON.stringify(profiles);
     for (const secret of ["AKIAEXAMPLEKEY", "SECRETexampleVALUE", "AKIAOTHERKEY", "SECRETotherVALUE"]) expect(listed).not.toContain(secret);
@@ -68,7 +68,7 @@ describe("the AWS profiles on this machine", () => {
 
   it("signs in to an IAM Identity Center profile with aws sso login, and an aws login profile with aws login", () => {
     expect(signInCommand(DEV)).toEqual({ command: "aws", args: ["sso", "login", "--profile", "dev"], display: "aws sso login --profile dev" });
-    expect(signInCommand({ name: "agentx-admin", kind: "login" })).toEqual({ command: "aws", args: ["login", "--profile", "agentx-admin"], display: "aws login --profile agentx-admin" });
+    expect(signInCommand({ name: "rovara-cloud-admin", kind: "login" })).toEqual({ command: "aws", args: ["login", "--profile", "rovara-cloud-admin"], display: "aws login --profile rovara-cloud-admin" });
     expect(signInCommand({ name: "ci", kind: "other" })).toBeUndefined();
     expect(signInCommand({ name: "legacy", kind: "keys" })).toBeUndefined();
   });

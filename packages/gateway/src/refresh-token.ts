@@ -135,7 +135,7 @@ export function oauthRefreshTokenProvider(options: {
     try { body = JSON.parse(text); } catch { body = undefined; }
     if (response.status === 400 || response.status === 401 || response.status === 403) {
       const code = isObject(body) && typeof body.error === "string" && /^[a-z_]{1,64}$/.test(body.error) ? ` (${body.error})` : "";
-      throw new CredentialUnavailable(`credential ${options.ref}: the token endpoint refused the refresh token with HTTP ${response.status}${code}; the bot user must sign in again with agentx admin credential authorize --ref ${options.ref}`);
+      throw new CredentialUnavailable(`credential ${options.ref}: the token endpoint refused the refresh token with HTTP ${response.status}${code}; the bot user must sign in again with rovara admin credential authorize --ref ${options.ref}`);
     }
     if (!response.ok) throw new Error(`token endpoint returned HTTP ${response.status}`);
     if (!isObject(body) || typeof body.access_token !== "string" || body.access_token.length === 0) throw new Error("token endpoint returned no access token");

@@ -231,7 +231,7 @@ export async function registerProjectFor(
     const authority = await getMembership(dependencies, orgId, actor.ownerKey, definition.name);
     if (authority?.role === "administrator") return "administrator";
     if (takeover !== undefined) return "takeover";
-    throw agentXError("FORBIDDEN", `only an administrator of project ${definition.name} can register a new revision of it. An instance administrator who is not one can take the project over by asking explicitly: send takeOwnership: true with a takeOwnershipReason (agentx admin project register --take-ownership --reason "...")`);
+    throw agentXError("FORBIDDEN", `only an administrator of project ${definition.name} can register a new revision of it. An instance administrator who is not one can take the project over by asking explicitly: send takeOwnership: true with a takeOwnershipReason (rovara admin project register --take-ownership --reason "...")`);
   };
   const readCatalogSnapshot = () => readProjectCatalogSnapshot(dependencies, orgId, definition.name);
   const domainWideningFence = (snapshot: Awaited<ReturnType<typeof readCatalogSnapshot>>) => {

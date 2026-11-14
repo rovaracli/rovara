@@ -30,8 +30,8 @@ describe("the AI navigation model setting (named environment)", () => {
   beforeAll(() => {
     const staging = stacksOf(buildAgentXApp({ agentxEnv: "staging" }));
     const byName = (name: string) => Template.fromStack(staging.find((stack) => stack.stackName === name)!);
-    runtime = byName("agentx-staging-runtime");
-    controlPlane = byName("agentx-staging-control-plane");
+    runtime = byName("rovara-cloud-staging-runtime");
+    controlPlane = byName("rovara-cloud-staging-control-plane");
     legacy = stacksOf(buildAgentXApp()).map((stack) => Template.fromStack(stack));
   }, 240_000);
 
@@ -43,7 +43,7 @@ describe("the AI navigation model setting (named environment)", () => {
     runtime.hasParameter("E2eAgentModelId", { Type: "String", Default: "default", AllowedPattern: "^(default|[A-Za-z0-9][A-Za-z0-9._:/-]{0,199})$" });
     const setting = ofType(runtime, "AWS::SSM::Parameter").find(([id]) => id.startsWith("WorkerE2eAgentModelParameter"));
     expect(setting).toBeDefined();
-    expect(setting![1].Properties).toMatchObject({ Name: "/agentx/staging/worker-e2e-agent-model", Value: { Ref: "E2eAgentModelId" } });
+    expect(setting![1].Properties).toMatchObject({ Name: "/rovara-cloud/staging/worker-e2e-agent-model", Value: { Ref: "E2eAgentModelId" } });
     // The pattern admits a model id and refuses anything else (no spaces, no quotes, at most 200 characters).
     const pattern = new RegExp("^(default|[A-Za-z0-9][A-Za-z0-9._:/-]{0,199})$");
     for (const ok of ["default", "us.anthropic.claude-haiku-4-5-20251001-v1:0", "anthropic/claude-haiku-5.5", "gpt-5.4-mini"]) expect(pattern.test(ok), ok).toBe(true);
@@ -53,7 +53,7 @@ describe("the AI navigation model setting (named environment)", () => {
   it("lets the broker read the setting with ssm:GetParameters, and no worker boot variable carries it", () => {
     const reads = statements(controlPlane).filter((statement) => [statement.Action].flat().includes("ssm:GetParameters"));
     const arns = JSON.stringify(reads.map((statement) => statement.Resource));
-    expect(arns).toContain("/agentx/staging/worker-e2e-agent-model");
+    expect(arns).toContain("/rovara-cloud/staging/worker-e2e-agent-model");
   });
 
   // MERGE-DECISION (ENV-ROOM): mainline passed this prefix as a broker variable (PREFIXGAP). The broker's environment is at its Lambda ceiling, so the broker builds the prefix from the
@@ -62,10 +62,10 @@ describe("the AI navigation model setting (named environment)", () => {
     expect(brokerEnvironment(controlPlane)).not.toHaveProperty("AGENTX_E2E_AGENT_SETTINGS_PREFIX");
     const derived = DERIVED_BROKER_VARIABLES.find((entry) => entry.variable === "AGENTX_E2E_AGENT_SETTINGS_PREFIX");
     expect(derived?.kind).toBe("text");
-    expect(derived?.kind === "text" ? derived.value("staging") : undefined).toBe("/agentx/staging/");
+    expect(derived?.kind === "text" ? derived.value("staging") : undefined).toBe("/rovara-cloud/staging/");
     const hydrated: Record<string, string | undefined> = { AGENTX_ENV: "staging", AWS_REGION: "us-east-1", AGENTX_ACCOUNT_ID: "123456789012", AGENTX_NAMES: "{}" };
     hydrateBrokerEnvironment(hydrated);
-    expect(hydrated["AGENTX_E2E_AGENT_SETTINGS_PREFIX"]).toBe("/agentx/staging/");
+    expect(hydrated["AGENTX_E2E_AGENT_SETTINGS_PREFIX"]).toBe("/rovara-cloud/staging/");
   });
 
   it("changes the production templates only by the new parameter and setting, and leaves the broker environment alone", () => {

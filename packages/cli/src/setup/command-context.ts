@@ -70,7 +70,7 @@ export function realSetupContext(input: {
     const globals = command.optsWithGlobals<{ env: string; json: boolean; configDir: string; region?: string; acceptUncheckedModel?: string }>();
     const settings = await readEnvironmentSettings(input.parameterStore(globals.region), globals.env);
     if (settings === undefined) {
-      throw agentXError("CONFIG_INVALID", `environment ${globals.env} has no settings in ${globals.region ?? "your AWS configuration's region"}; pass --region, or run agentx env list`);
+      throw agentXError("CONFIG_INVALID", `environment ${globals.env} has no settings in ${globals.region ?? "your AWS configuration's region"}; pass --region, or run rovara env list`);
     }
     return {
       env: globals.env, settings,

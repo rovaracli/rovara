@@ -1,4 +1,4 @@
-// Plan 2, Task 22: `agentx project check <name>` against a fake control plane. It posts a fresh request id to the setup-check route, then reads the project
+// Plan 2, Task 22: `rovara project check <name>` against a fake control plane. It posts a fresh request id to the setup-check route, then reads the project
 // every 10 seconds until the check is no longer running, and says how it ended: ready, failed (with the failing step, and a non-zero exit) or outdated.
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -62,7 +62,7 @@ describe("the contract", () => {
   });
 });
 
-describe("agentx project check", () => {
+describe("rovara project check", () => {
   it("posts a request id to the setup-check route, waits 10 seconds between reads while it is checking, and says it passed", async () => {
     const h = await cli(server(CHECKING, CHECKING, CHECKING, { status: "ready", checkedRevision: 2, checkedAt: "2026-10-21T00:00:00.000Z" }));
     expect(await h.run(["project", "check", "web"])).toBe(0);
@@ -93,7 +93,7 @@ describe("agentx project check", () => {
     const h = await cli((method) => method === "POST" ? Response.json({ project: detail(CHECKING) }, { status: 202 })
       : Response.json(detail({ status: "outdated", checkedRevision: 2, checkedAt: "x" }, 3)));
     expect(await h.run(["project", "check", "web"])).toBe(0);
-    expect(h.out.join("")).toBe("The settings of web changed while it was being checked (it ran at revision 2, the project is now at revision 3). Run agentx project check web again.\n");
+    expect(h.out.join("")).toBe("The settings of web changed while it was being checked (it ran at revision 2, the project is now at revision 3). Run rovara project check web again.\n");
   });
 
   it("prints nothing a server can use to move the terminal: control characters and tokens are removed from the failing step", async () => {

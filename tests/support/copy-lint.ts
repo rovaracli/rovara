@@ -23,7 +23,7 @@ export const COPY_RULES: readonly CopyRule[] = [
   { id: "empty-leave-empty-for", pattern: /\bLeave empty for\s*(?:$|[.,;:)])/, allowedIn: [] },
   { id: "error-code", pattern: /\b[A-Z]{2,}_[A-Z_]{2,}\b/, allowedIn: ["details"] },
   { id: "finished-on-failed-run", pattern: /\bFinished\b/, allowedIn: [], onlyOnFailedRun: true },
-  { id: "day-two-without-env", pattern: /\bagentx\s+(?!--env\s)(?:doctor|destroy|connector|project|channel|alerts|config|upgrade|deploy|signin|env)\b/, allowedIn: [] },
+  { id: "day-two-without-env", pattern: /\b(?:rovara|agentx)\s+(?!--env\s)(?:doctor|destroy|connector|project|channel|alerts|config|upgrade|deploy|signin|env)\b/, allowedIn: [] },
   { id: "unpublished-package", pattern: /@preplabsai\/rovara-code\b(?!@\d)/, allowedIn: [] },
   {
     id: "terminal-instruction",

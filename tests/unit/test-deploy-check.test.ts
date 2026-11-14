@@ -33,7 +33,7 @@ import { CHECK_READ_VERBS, DeployCheckFindingsError, assertCheckAllowsApply, che
 
 const NOW = new Date("2026-10-20T18:00:00.000Z");
 const hoursFromNow = (hours: number) => new Date(NOW.getTime() + hours * 3_600_000).toISOString();
-const ARN = (name: string) => ({ "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":ssm:", { Ref: "AWS::Region" }, ":", { Ref: "AWS::AccountId" }, `:parameter/agentx/agentxlivetest123/${name}`]] });
+const ARN = (name: string) => ({ "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":ssm:", { Ref: "AWS::Region" }, ":", { Ref: "AWS::AccountId" }, `:parameter/rovara-cloud/rovaralivetest/${name}`]] });
 
 const SESSIONS_POLICY = "SessionsStepsServiceRoleDefaultPolicy9F4B87C9";
 const BROKER_POLICY = "BrokerServiceRoleDefaultPolicyDDFD9E7E";
@@ -222,7 +222,7 @@ describe("evaluateTestDeployCheck", () => {
   // Evaluation fix RUN-3: a runtime that expires within 48 hours is a warning (it never fails the check); one that expires within 24 hours or has expired stays an error, as it was. Each
   // names the expiry time and the exact command that renews it, and so does a runner whose image no longer matches (the other way a qualification stops being good).
   describe("a runtime registration that is about to expire, or has (RUN-3)", () => {
-    const RENEW = "npx tsx scripts/test-qualify-runtime.ts --env agentxlivetest123 --profile agentx-test --apply";
+    const RENEW = "npx tsx scripts/test-qualify-runtime.ts --env rovaralivetest --profile agentx-test --apply";
     const withRenew = (overrides: Partial<CheckInput> = {}) => input({ renewCommand: RENEW, ...overrides });
 
     it("warns between 24 and 48 hours, naming the expiry time and the renew command, and does not fail the check", () => {
@@ -360,7 +360,7 @@ describe("the e2e model route", () => {
   const MODEL_ARNS = ["us-east-1", "us-east-2", "us-west-2"].map((region) => `arn:aws:bedrock:${region}::foundation-model/anthropic.claude-haiku-5-5`);
   const WORKER_ROLE = "Ec2WorkersInstanceRole5F1A2B3C";
   const WORKER_POLICY = "Ec2WorkersInstanceRoleDefaultPolicy7D8E9F0A";
-  const WORKER_ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/agentx/agentxlivetest123/worker-role`;
+  const WORKER_ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/rovara-cloud/rovaralivetest/worker-role`;
   const SCOPE = { partition: "aws", region: "us-east-1", accountId: ACCOUNT };
   /** The grant infra/lib/ec2-workers.ts declares, as CDK emits it. */
   const BEDROCK_SID = {
@@ -624,7 +624,7 @@ describe("the e2e model route", () => {
   // ---- keyed providers: a Secrets Manager ARN, the worker role's grant on it, and what cannot be checked without a call ----
   type KeyedProvider = "anthropic" | "openai" | "openrouter";
   const PREFIX: Record<KeyedProvider, string> = { anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter" };
-  const secretArnFor = (provider: KeyedProvider) => `arn:aws:secretsmanager:us-east-1:${ACCOUNT}:secret:agentx/agentxlivetest123/${provider}-AbCdEf`;
+  const secretArnFor = (provider: KeyedProvider) => `arn:aws:secretsmanager:us-east-1:${ACCOUNT}:secret:rovara-cloud/rovaralivetest/${provider}-AbCdEf`;
   const WORKER_ROLE_EXPRESSION = { "Fn::Select": [3, { "Fn::Split": ["/", { Ref: "Ec2WorkerInstanceRoleArn" }] }] };
   /** The control-plane stack as model-keys.ts emits it: <Prefix>Enabled, and <Prefix>SecretRead on the orchestrator role and the worker role. */
   const controlPlaneTemplate = (provider: KeyedProvider, options: { roles?: unknown[] } = {}): CfnTemplate => ({
@@ -1110,8 +1110,8 @@ describe("lambda-env-missing", () => {
 describe("check report and exit codes", () => {
   it("reports ok, the counts, the findings and the notes as one JSON-ready object", () => {
     const result = evaluateTestDeployCheck(input({ lambdaCodeShas: { ...SHAS, [NOTIFIER]: "x" } }));
-    const report = checkReport(result, ["a note"], { env: "agentxlivetest123", revision: "abc" });
-    expect(report).toMatchObject({ ok: false, env: "agentxlivetest123", revision: "abc", errors: 1, warnings: 0, notes: ["a note"] });
+    const report = checkReport(result, ["a note"], { env: "rovaralivetest", revision: "abc" });
+    expect(report).toMatchObject({ ok: false, env: "rovaralivetest", revision: "abc", errors: 1, warnings: 0, notes: ["a note"] });
     expect(report.findings).toEqual(result.findings);
     expect(JSON.parse(JSON.stringify(report))).toEqual(report);
   });
@@ -1224,8 +1224,8 @@ describe("test-deploy --check", () => {
   });
 
   it("takes neither --apply nor --only, so a check can never change anything", async () => {
-    await expect(main(["--env", "agentxlivetest123", "--profile", "agentx-test", "--check", "--apply"])).rejects.toThrow(/--check is read-only/);
-    await expect(main(["--env", "agentxlivetest123", "--profile", "agentx-test", "--check", "--only", "broker"])).rejects.toThrow(/--check checks every unit/);
+    await expect(main(["--env", "rovaralivetest", "--profile", "agentx-test", "--check", "--apply"])).rejects.toThrow(/--check is read-only/);
+    await expect(main(["--env", "rovaralivetest", "--profile", "agentx-test", "--check", "--only", "broker"])).rejects.toThrow(/--check checks every unit/);
   });
 });
 
@@ -1254,12 +1254,12 @@ describe("parseTestDeployArgs --check", () => {
 
 describe("gatherCheckFacts", () => {
   type CommandResult = ReturnType<Parameters<typeof gatherCheckFacts>[0]["runner"]["aws"]>;
-  const ENV = "agentxlivetest123";
-  const ACCOUNT_IMAGE = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-test/executor@sha256:${"a".repeat(64)}`;
+  const ENV = "rovaralivetest";
+  const ACCOUNT_IMAGE = `123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/executor@sha256:${"a".repeat(64)}`;
   const brokerTemplate = (): CfnTemplate => {
     const deployed = template();
     const broker = deployed.Resources?.BrokerE1355FD6;
-    if (broker?.Properties) broker.Properties.Environment = { Variables: { AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID: "agentx-agentxlivetest123-e2e-mock-runtime-v1" } };
+    if (broker?.Properties) broker.Properties.Environment = { Variables: { AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID: "rovara-cloud-rovaralivetest-e2e-mock-runtime-v1" } };
     return deployed;
   };
   const ok = (stdout: unknown): CommandResult => ({ status: 0, stdout: typeof stdout === "string" ? stdout : JSON.stringify(stdout), stderr: "" });
@@ -1291,9 +1291,9 @@ describe("gatherCheckFacts", () => {
   const failed = (stderr: string): CommandResult => ({ status: 254, stdout: "", stderr });
   type BedrockMode = "ok" | "not-found" | "denied" | "unauthorized-model";
   const KEYED_ARN = {
-    anthropic: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/agentxlivetest123/anthropic-AbCdEf",
-    openai: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/agentxlivetest123/openai-AbCdEf",
-    openrouter: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/agentxlivetest123/openrouter-AbCdEf",
+    anthropic: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/rovaralivetest/anthropic-AbCdEf",
+    openai: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/rovaralivetest/openai-AbCdEf",
+    openrouter: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/rovaralivetest/openrouter-AbCdEf",
   };
   /** The SSM worker settings of an installation on each provider. "DENIED" makes the read fail with AccessDenied. */
   const PROVIDERS: Record<"bedrock" | "anthropic" | "openai" | "openrouter", Record<string, string>> = {
@@ -1332,20 +1332,20 @@ describe("gatherCheckFacts", () => {
         const line = args.join(" ");
         if (args[0] === "cloudformation" && args[1] === "describe-stacks") {
           const stack = args[args.indexOf("--stack-name") + 1];
-          if (stack === `agentx-${ENV}-control-plane`) {
+          if (stack === `rovara-cloud-${ENV}-control-plane`) {
             const secretParameter = overrides.secretPolicy === undefined ? [] : [{ ParameterKey: `${SECRET_PREFIX[overrides.secretPolicy]}SecretArn`, ParameterValue: KEYED_ARN[overrides.secretPolicy] }];
             return ok({
               Outputs: [{ OutputKey: "StateTableName", OutputValue: "state-table" }, { OutputKey: "ArtifactBucketName", OutputValue: "artifacts" }],
-              Parameters: [...secretParameter, { ParameterKey: "Ec2WorkerInstanceRoleArn", ParameterValue: "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/worker-role" }],
+              Parameters: [...secretParameter, { ParameterKey: "Ec2WorkerInstanceRoleArn", ParameterValue: "arn:aws:iam::123456789012:role/rovara-cloud/rovaralivetest/worker-role" }],
             });
           }
-          if (stack === `agentx-${ENV}-runtime`) return ok({ Parameters: [{ ParameterKey: "ExecutorImageUri", ParameterValue: ACCOUNT_IMAGE }] });
-          if (stack === `agentx-${ENV}-foundation`) return ok({ Outputs: [{ OutputKey: "Ec2WorkerInstanceRoleArn", OutputValue: "arn:aws:iam::123456789012:role/worker-role" }] });
+          if (stack === `rovara-cloud-${ENV}-runtime`) return ok({ Parameters: [{ ParameterKey: "ExecutorImageUri", ParameterValue: ACCOUNT_IMAGE }] });
+          if (stack === `rovara-cloud-${ENV}-foundation`) return ok({ Outputs: [{ OutputKey: "Ec2WorkerInstanceRoleArn", OutputValue: "arn:aws:iam::123456789012:role/worker-role" }] });
         }
-        if (args[0] === "cloudformation" && args[1] === "get-template" && args[args.indexOf("--stack-name") + 1] === `agentx-${ENV}-foundation`) return ok(foundationTemplate());
+        if (args[0] === "cloudformation" && args[1] === "get-template" && args[args.indexOf("--stack-name") + 1] === `rovara-cloud-${ENV}-foundation`) return ok(foundationTemplate());
         if (args[0] === "ssm" && args[1] === "get-parameter") {
           const name = args[args.indexOf("--name") + 1] ?? "";
-          const setting = name.startsWith(`/agentx/${ENV}/`) ? name.slice(`/agentx/${ENV}/`.length) : name;
+          const setting = name.startsWith(`/rovara-cloud/${ENV}/`) ? name.slice(`/rovara-cloud/${ENV}/`.length) : name;
           const values = overrides.ssm ?? PROVIDERS.bedrock;
           const value = values[setting];
           if (value === "DENIED") return failed(`An error occurred (AccessDeniedException) when calling the GetParameter operation: User is not authorized to perform: ssm:GetParameter on resource: ${name}`);
@@ -1468,7 +1468,7 @@ describe("gatherCheckFacts", () => {
       const ssm = fake.calls.filter((call) => call[0] === "ssm");
       expect(ssm.map((call) => call[1])).toEqual(["get-parameter", "get-parameter"]);
       // The provider, then the AI navigation model the installation chose (Task 4.10).
-      expect(ssm.map((call) => call[call.indexOf("--name") + 1])).toEqual([`/agentx/${ENV}/worker-model-provider`, `/agentx/${ENV}/worker-e2e-agent-model`]);
+      expect(ssm.map((call) => call[call.indexOf("--name") + 1])).toEqual([`/rovara-cloud/${ENV}/worker-model-provider`, `/rovara-cloud/${ENV}/worker-e2e-agent-model`]);
     });
 
     it("derives the route from the setting and DEFAULT_E2E_AGENT_MODELS, and checks the pinned route's model, approval row and the worker role's grants", async () => {
@@ -1710,9 +1710,9 @@ describe("gatherCheckFacts", () => {
         expect(facts.modelRoute?.bedrock).toBeUndefined();
         expect(fake.calls.filter((call) => call[0]?.startsWith("bedrock"))).toEqual([]);
         const read = fake.calls.filter((call) => call[0] === "ssm").map((call) => call[call.indexOf("--name") + 1]);
-        expect(read).toContain(`/agentx/${ENV}/worker-${provider === "openrouter" ? "openrouter" : provider}-secret-arn`);
-        expect(read).toContain(`/agentx/${ENV}/worker-model-provider`);
-        expect(read.includes(`/agentx/${ENV}/worker-openrouter-providers`)).toBe(provider === "openrouter");
+        expect(read).toContain(`/rovara-cloud/${ENV}/worker-${provider === "openrouter" ? "openrouter" : provider}-secret-arn`);
+        expect(read).toContain(`/rovara-cloud/${ENV}/worker-model-provider`);
+        expect(read.includes(`/rovara-cloud/${ENV}/worker-openrouter-providers`)).toBe(provider === "openrouter");
         expect(facts.modelRoute?.keyed?.secretArn).toEqual({ state: "read", value: KEYED_ARN[provider] });
         expect(facts.modelRoute?.keyed?.iam.roleLogicalId).toBe(WORKER_ROLE);
         expect(facts.modelRoute?.keyed?.iam.roleName).toBe("worker-role");
@@ -1760,7 +1760,7 @@ describe("gatherCheckFacts", () => {
     // The catalog is the Broker's own, read from the table by its key.
     const query = fake.calls.find((call) => call[1] === "query")?.join(" ") ?? "";
     expect(query).toContain("--table-name state-table");
-    expect(query).toContain("E2E_FEATURE_VERIFIER#agentx-agentxlivetest123-e2e-mock-runtime-v1");
+    expect(query).toContain("E2E_FEATURE_VERIFIER#rovara-cloud-rovaralivetest-e2e-mock-runtime-v1");
   });
 
   it("reads the runner instance's launch time and the rows' qualification times, so a restart after qualification is warned about (HARDEN-C I-4)", async () => {
@@ -1836,7 +1836,7 @@ describe("gatherCheckFacts", () => {
       const fake = fakeAws();
       const original = fake.runner.aws.bind(fake.runner);
       fake.runner.aws = (args: readonly string[]): CommandResult => {
-        if (installed && args[0] === "cloudformation" && args[1] === "get-template" && args[args.indexOf("--stack-name") + 1] === `agentx-${ENV}-control-plane`) {
+        if (installed && args[0] === "cloudformation" && args[1] === "get-template" && args[args.indexOf("--stack-name") + 1] === `rovara-cloud-${ENV}-control-plane`) {
           const deployed = brokerTemplate();
           return ok({ ...deployed, Resources: {
             ...deployed.Resources, [RENEWAL]: lambda("BrokerServiceRole1938BCC9"),

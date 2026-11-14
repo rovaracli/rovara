@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 import { SANDBOX_PYTHON_USER_BASE_DIRECTORY, TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
 
-const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@sha256:" + "d".repeat(64);
+const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/rovara-cloud-staging/worker@sha256:" + "d".repeat(64);
 const cleanup: string[] = [];
 afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));

@@ -1,4 +1,4 @@
-// agentx upgrade (FR-042 to FR-044): read the environment's version and engine from SSM, show the
+// rovara upgrade (FR-042 to FR-044): read the environment's version and engine from SSM, show the
 // target release's notes and every change, deploy in upgrade order (stopping at the first failure,
 // which leaves earlier stacks upgraded and is safe to re-run), then run doctor.
 import { GetTemplateCommand } from "@aws-sdk/client-cloudformation";
@@ -157,7 +157,7 @@ async function exportUpgrade(input: { options: UpgradeOptions; deps: UpgradeDepe
 /** The settings an upgrade may run on. Read before the environment lock, and read again under it. */
 function upgradableSettings(settings: EnvironmentSettings | undefined, env: string): EnvironmentSettings {
   if (settings === undefined) throw agentXError("CONFIG_INVALID", `environment ${env} is not installed in this account and region; check --env and --region`);
-  if (settings.naming !== "environment") throw agentXError("CONFIG_INVALID", `agentx upgrade works on environments installed with agentx init; ${env} uses the legacy stack names`);
+  if (settings.naming !== "environment") throw agentXError("CONFIG_INVALID", `rovara upgrade works on environments installed with rovara init; ${env} uses the legacy stack names`);
   return settings;
 }
 
@@ -184,7 +184,7 @@ async function setUpGithubWebhook(env: string, deps: UpgradeDependencies): Promi
     deps.write(`GitHub webhook: ${outcome.status}`);
     for (const line of [activeHintLine(outcome), missingEventsLine(outcome)]) if (line !== undefined) deps.write(line);
   } catch (error) {
-    deps.write(`GitHub webhook: could not be set up (${plainMessage(error)}); run agentx upgrade again`);
+    deps.write(`GitHub webhook: could not be set up (${plainMessage(error)}); run rovara upgrade again`);
   }
 }
 
@@ -224,7 +224,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
   // Ruling F19 (FR-013): the bundle holds the published templates; deploying them onto cdk-deployed
   // stacks would switch the environment's engine.
   if (options.exportDir !== undefined && first.engine === "cdk") {
-    throw agentXError("CONFIG_INVALID", "upgrade --export writes the published templates; a cdk environment upgrades with --source. Run agentx upgrade --source <dir> with admin credentials instead");
+    throw agentXError("CONFIG_INVALID", "upgrade --export writes the published templates; a cdk environment upgrades with --source. Run rovara upgrade --source <dir> with admin credentials instead");
   }
   // The templates engine deploys the release's prebuilt templates, whose reservations are fixed; saying nothing would leave them on.
   if (options.reservedConcurrency === false && first.engine !== "cdk") {
@@ -232,24 +232,24 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
   }
   // A bundle on a cdk install is built at approval, from the install's recorded settings alone: a flag that would change what is built is refused, never ignored.
   if (bundle !== undefined && first.engine === "cdk" && options.reservedConcurrency === false) {
-    throw agentXError("CONFIG_INVALID", "--no-reserved-concurrency cannot be combined with --bundle: an Enterprise install's templates are built from the settings recorded for it (agentx bundle record-settings), and from nothing given here. Nothing was changed");
+    throw agentXError("CONFIG_INVALID", "--no-reserved-concurrency cannot be combined with --bundle: an Enterprise install's templates are built from the settings recorded for it (rovara bundle record-settings), and from nothing given here. Nothing was changed");
   }
   if (first.engine === "cdk" && options.source === undefined && bundle === undefined) {
     throw agentXError("CONFIG_INVALID", "the cdk engine upgrades from a checkout of the target release's tag; pass --source <dir>");
   }
-  if (options.exportDir === undefined && !options.yes && !deps.isInteractive()) throw agentXError("CONFIG_INVALID", "agentx upgrade needs --yes when stdin is not a terminal");
+  if (options.exportDir === undefined && !options.yes && !deps.isInteractive()) throw agentXError("CONFIG_INVALID", "rovara upgrade needs --yes when stdin is not a terminal");
 
   const caller = await deps.identity.get();
   // N6: the standing Rovara operator role never runs an upgrade from its own disk or from any release it names: it starts the customer's deployer for an
   // approved bundle id (`--deploy-approved`), and the deployer does the rest. Anything else here is refused before a lock, a restore point or a stack is touched.
   if (isRovaraOperatorArn(caller.arn, env)) {
-    throw agentXError("CONFIG_INVALID", "the Rovara operator role starts approved deployments with `agentx upgrade --deploy-approved <bundle id>`; it does not run an upgrade itself, so nothing was changed");
+    throw agentXError("CONFIG_INVALID", "the Rovara operator role starts approved deployments with `rovara upgrade --deploy-approved <bundle id>`; it does not run an upgrade itself, so nothing was changed");
   }
   const operator = isOperatorRole(caller.arn, env);
   // Ruling F20: the cdk engine reads CDK's bootstrap version parameter and deploys through the
   // bootstrap roles and bucket, none of which the operator role may use.
   if (operator && first.engine === "cdk") {
-    throw agentXError("CONFIG_INVALID", "a cdk environment upgrades with admin credentials (the operator role cannot use CDK's bootstrap resources); run agentx upgrade again with admin credentials");
+    throw agentXError("CONFIG_INVALID", "a cdk environment upgrades with admin credentials (the operator role cannot use CDK's bootstrap resources); run rovara upgrade again with admin credentials");
   }
 
   if (bundle !== undefined && first.engine === "cdk") return runBuiltBundleUpgrade({ options, deps, bundle, first });
@@ -285,7 +285,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
   const { settings, parts } = await withEnvironmentLock({ store: deps.store, env, holder: caller.arn, command: "upgrade", now: deps.now, takeOverOwn: true, ...(confirmTakeover === undefined ? {} : { confirmTakeover }) }, async () => {
     const settings = upgradableSettings(await readEnvironmentSettings(deps.store, env), env);
     if (settings.engine !== first.engine) {
-      throw agentXError("CONFIG_INVALID", `environment ${env}'s settings changed to the ${settings.engine} engine while agentx upgrade was starting; run agentx upgrade again`);
+      throw agentXError("CONFIG_INVALID", `environment ${env}'s settings changed to the ${settings.engine} engine while rovara upgrade was starting; run rovara upgrade again`);
     }
     const direction = upgradeDirection(env, settings.version, target);
     deps.write(direction === "same" ? `Environment ${env} already runs ${target}; checking that every stack is on it` : `Upgrading ${env} from ${settings.version} to ${target} (${settings.engine} engine)`);
@@ -300,7 +300,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
       parts = parts.filter((part) => part !== "access");
       const accessStack = settings.stacks.access ?? environmentStackName(env, "access");
       if (await accessChanged({ cloudFormation: deps.cloudFormation, stackName: accessStack, release, region: settings.region, env })) {
-        throw agentXError("CONFIG_INVALID", `release ${target} changes the access stack, which only admin credentials can deploy. Ask your platform team to deploy it (agentx --env ${env} upgrade --export <dir> writes what they need), or run agentx upgrade with admin credentials; then run agentx upgrade again`);
+        throw agentXError("CONFIG_INVALID", `release ${target} changes the access stack, which only admin credentials can deploy. Ask your platform team to deploy it (rovara --env ${env} upgrade --export <dir> writes what they need), or run rovara upgrade with admin credentials; then run rovara upgrade again`);
       }
     }
 
@@ -331,7 +331,7 @@ async function runVerifiedUpgrade(options: UpgradeOptions, deps: UpgradeDependen
         const refusal = await guardData({ stackName: request.stackName, data: risks.data, allowReplace, yes: options.yes, ask: deps.ask });
         if (refusal !== undefined) throw agentXError("CONFIG_INVALID", refusal);
         if (!options.yes && !/^y(es)?$/i.test((await deps.ask(`Deploy ${request.stackName}? [y/N] `)).trim())) {
-          throw agentXError("CONFIG_INVALID", `upgrade stopped before ${request.stackName}: nothing in it changed. Stacks upgraded before it keep the new release; run agentx upgrade again to continue`);
+          throw agentXError("CONFIG_INVALID", `upgrade stopped before ${request.stackName}: nothing in it changed. Stacks upgraded before it keep the new release; run rovara upgrade again to continue`);
         }
       });
       try {
@@ -367,16 +367,16 @@ async function finishUpgrade(input: { env: string; from: string; target: string;
   const { env, from, target, parts, deps } = input;
   await setUpGithubWebhook(env, deps);
 
-  deps.write("Checking the environment with agentx doctor");
+  deps.write("Checking the environment with rovara doctor");
   let report: DoctorReport;
   try {
     report = await deps.doctor(env);
   } catch (error) {
-    throw agentXError("CONFIG_INVALID", `upgraded ${env} to ${target}, but doctor could not run: ${plainMessage(error)}; run agentx doctor`);
+    throw agentXError("CONFIG_INVALID", `upgraded ${env} to ${target}, but doctor could not run: ${plainMessage(error)}; run rovara doctor`);
   }
   deps.write(reportText(report).trimEnd());
   if (report.failed > 0) {
-    throw agentXError("CONFIG_INVALID", `upgraded ${env} to ${target}, but ${report.failed} doctor ${report.failed === 1 ? "check" : "checks"} failed; fix what each one names, then run agentx doctor again`);
+    throw agentXError("CONFIG_INVALID", `upgraded ${env} to ${target}, but ${report.failed} doctor ${report.failed === 1 ? "check" : "checks"} failed; fix what each one names, then run rovara doctor again`);
   }
   return { env, from, to: target, parts, doctor: { failed: report.failed, warned: report.warned } };
 }
@@ -392,7 +392,7 @@ async function runBuiltBundleUpgrade(input: { options: UpgradeOptions; deps: Upg
   // `--yes` answers the upgrade's own questions; it does not approve a build nobody read. Only `--approve-build` does that.
   const outcome = await deps.approveAndDeploy({ bundle, settings: first, yes: options.approveBuild === true });
   if (outcome.status !== "done") {
-    throw agentXError("CONFIG_INVALID", `the deployer did not finish (${outcome.status}); stacks done so far: ${outcome.done.length === 0 ? "none" : outcome.done.join(", ")}. Run agentx upgrade again; the approval stands`);
+    throw agentXError("CONFIG_INVALID", `the deployer did not finish (${outcome.status}); stacks done so far: ${outcome.done.length === 0 ? "none" : outcome.done.join(", ")}. Run rovara upgrade again; the approval stands`);
   }
   return finishUpgrade({ env: first.env, from: first.version, target, parts: outcome.done as DeployPart[], deps });
 }

@@ -149,10 +149,10 @@ describe("cloud identity infrastructure", () => {
   it("stores the client secret as {clientSecret} in Secrets Manager under the environment's name", () => {
     const template = cloud();
     template.hasResourceProperties("AWS::SecretsManager::Secret", {
-      Name: "agentx/staging/developer-cloud",
+      Name: "rovara-cloud/staging/developer-cloud",
       SecretString: Match.anyValue(),
     });
-    const secret = resourcesOf(template, "AWS::SecretsManager::Secret").find(([, resource]) => resource.Properties.Name === "agentx/staging/developer-cloud")![1];
+    const secret = resourcesOf(template, "AWS::SecretsManager::Secret").find(([, resource]) => resource.Properties.Name === "rovara-cloud/staging/developer-cloud")![1];
     const text = JSON.stringify(secret.Properties.SecretString);
     expect(text).toContain("clientSecret");
     // Read from the client resource directly, not through a custom resource.
@@ -167,7 +167,7 @@ describe("cloud identity infrastructure", () => {
     for (const key of ["DEVELOPER_CLOUD_ISSUER", "DEVELOPER_CLOUD_CLIENT_ID", "DEVELOPER_CLOUD_SECRET_ID", "DEVELOPER_CLOUD_DISPLAY_NAME"]) {
       expect(identity[key], key).toBeDefined();
     }
-    expect(identity.DEVELOPER_CLOUD_SECRET_ID).toBe("agentx/staging/developer-cloud");
+    expect(identity.DEVELOPER_CLOUD_SECRET_ID).toBe("rovara-cloud/staging/developer-cloud");
     expect(JSON.stringify(identity.DEVELOPER_CLOUD_ISSUER)).toContain("https://cognito-idp.");
     const broker = brokerEnvironment(template);
     // The broker is given the pool's id in its one variable of names (its variables are held to Lambda's 4 KB) and builds the issuer from
@@ -185,7 +185,7 @@ describe("cloud identity infrastructure", () => {
 
   it("lets only the sign-in function read the cloud client secret", () => {
     const template = cloud();
-    const secretId = resourcesOf(template, "AWS::SecretsManager::Secret").find(([, resource]) => resource.Properties.Name === "agentx/staging/developer-cloud")![0];
+    const secretId = resourcesOf(template, "AWS::SecretsManager::Secret").find(([, resource]) => resource.Properties.Name === "rovara-cloud/staging/developer-cloud")![0];
     const readers = resourcesOf(template, "AWS::IAM::Policy").filter(([, policy]) =>
       policy.Properties.PolicyDocument.Statement.some(
         (statement) => JSON.stringify(statement.Resource) === JSON.stringify({ Ref: secretId }) && [statement.Action].flat().includes("secretsmanager:GetSecretValue"),

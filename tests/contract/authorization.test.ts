@@ -25,7 +25,7 @@ async function signedIdentity(subject: string, groups: string[] = []) {
       issuer: "https://issuer.example.com",
       audience: "agentx",
       adminClaim: "groups",
-      adminValues: ["agentx-admin"],
+      adminValues: ["rovara-cloud-admin"],
     },
     getKey,
   );
@@ -42,7 +42,7 @@ describe("authentication and authorization", () => {
   });
 
   it("recognizes only verified administrator claims", async () => {
-    expect((await signedIdentity("admin", ["agentx-admin"])).isAdministrator).toBe(true);
+    expect((await signedIdentity("admin", ["rovara-cloud-admin"])).isAdministrator).toBe(true);
   });
 
   it("denies project and workspace access without matching membership and ownership", async () => {

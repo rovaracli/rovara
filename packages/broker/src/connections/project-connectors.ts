@@ -1,7 +1,7 @@
 // Plan 3 Task 13: a project's maintainers attach the org's connections to it as connectors, from the app
 // (`GET /v1/app/projects/{p}/connectors`, `PUT` and `DELETE /v1/app/projects/{p}/connectors/{name}`). Each change is a new immutable project revision,
 // written through `registerProjectFor` (the same registration every revision goes through, its checks and live preflight included) and built from the
-// revision the person saw. Rovara Cloud only: another install's connectors change with `agentx admin project register`.
+// revision the person saw. Rovara Cloud only: another install's connectors change with `rovara admin project register`.
 //
 // A connector that links a Linear, Jira or MCP connection names it by `credentialRef`, which must be a connection of the caller's own org of the same
 // type; a tool approved to write needs a connection that may write. A tool newly approved to write (the stored revision had it as read, or not at all)
@@ -109,7 +109,7 @@ export const PROJECT_CONNECTOR_TOOLS: Record<NativeConnectorType, readonly strin
   sentry: SENTRY_TOOL_NAMES, datadog: DATADOG_TOOL_NAMES, cloudwatch: CLOUDWATCH_TOOL_NAMES, "github-actions": GITHUB_ACTIONS_TOOL_NAMES, grafana: GRAFANA_TOOL_NAMES, vercel: VERCEL_TOOL_NAMES, pagerduty: PAGERDUTY_TOOL_NAMES,
 };
 
-const PRIVATE_INSTALL_MESSAGE = "ask an administrator to change this project's connectors with agentx admin project register";
+const PRIVATE_INSTALL_MESSAGE = "ask an administrator to change this project's connectors with rovara admin project register";
 const NOT_SET_UP_MESSAGE = "project connectors are not set up in this deployment";
 
 const invalid = (message: string) => agentXError("CONFIG_INVALID", message);
@@ -371,7 +371,7 @@ async function loadCurrent(deps: Deps, orgId: OrgId, project: string, expectedRe
   if (expectedRevision !== undefined && latest.definition.revision !== expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
   // The same refusal the settings route gives: a revision with an end-to-end policy or a setup approval is registered only with its approval.
   if (latest.definition.e2e !== undefined || latest.setupApproval !== undefined) {
-    throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register");
+    throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with rovara admin project register");
   }
   return latest;
 }

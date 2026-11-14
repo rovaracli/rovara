@@ -1,4 +1,4 @@
-// `agentx project check <name>` (Plan 2, Task 22): a maintainer has the project's setup and test commands run on a fresh workspace. One signed-in call
+// `rovara project check <name>` (Plan 2, Task 22): a maintainer has the project's setup and test commands run on a fresh workspace. One signed-in call
 // starts the check (`POST /v1/app/projects/{name}/setup-check`), then the project is read every 10 seconds until the check is no longer running. The
 // control plane decides who may check and what it costs; this starts it, waits, and says how it ended.
 import { randomUUID } from "node:crypto";
@@ -29,7 +29,7 @@ export async function checkDeveloperProject(
   let waited = 0;
   while (project.setup.status === "checking") {
     if (waited >= CHECK_WAIT_MS) {
-      throw agentXError("RUNTIME_UNAVAILABLE", `the setup check of ${shown(name)} is still running after an hour; run agentx project show ${shown(name)} later to see how it ended`);
+      throw agentXError("RUNTIME_UNAVAILABLE", `the setup check of ${shown(name)} is still running after an hour; run rovara project show ${shown(name)} later to see how it ended`);
     }
     await options.sleep(CHECK_POLL_MS);
     waited += CHECK_POLL_MS;
@@ -49,7 +49,7 @@ export function projectCheckText(project: AppProjectDetail): string {
     throw agentXError("CONFIG_INVALID", `Setup check failed for ${name} (revision ${String(checked ?? project.latestRevision)})${project.setup.failedStep === undefined ? "" : `: ${shown(project.setup.failedStep)}`}`);
   }
   if (project.setup.status === "outdated") {
-    return `The settings of ${name} changed while it was being checked (it ran at revision ${String(checked)}, the project is now at revision ${String(project.latestRevision)}). Run agentx project check ${name} again.\n`;
+    return `The settings of ${name} changed while it was being checked (it ran at revision ${String(checked)}, the project is now at revision ${String(project.latestRevision)}). Run rovara project check ${name} again.\n`;
   }
   if (project.setup.status === "ready") return `Setup check passed for ${name} (revision ${String(checked ?? project.latestRevision)}): the setup and test commands ran cleanly on a fresh workspace.\n`;
   return `The setup check of ${name} has not run.\n`;

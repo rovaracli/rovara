@@ -1,4 +1,4 @@
-// FR-036 to FR-039: agentx connector add jira. The token's own search for an issue inside the
+// FR-036 to FR-039: rovara connector add jira. The token's own search for an issue inside the
 // project is the test read (FR-038); issues found outside the project do not stop it (owner
 // decision 6, 2026-09-28): the connector is saved with a warning naming those projects. The
 // project gets a new revision, only once the control plane confirms the connector is connected.
@@ -53,7 +53,7 @@ describe("the Jira site", () => {
   });
 });
 
-describe("agentx connector add jira (FR-036 to FR-039)", () => {
+describe("rovara connector add jira (FR-036 to FR-039)", () => {
   it("proves the token sees the project before storing it, then scopes it with siteUrl", async () => {
     const plane = fakeControlPlane();
     const vendors = fakeVendors({ jiraCloudId: CLOUD, jiraInside: ["PAY-1"], jiraOutside: [] });
@@ -63,7 +63,7 @@ describe("agentx connector add jira (FR-036 to FR-039)", () => {
     expect(await addJira(input({ plane, vendors, secrets, lines, script: ["acme", TOKEN, "PAY"] }))).toEqual({ ref: "jira", revision: 2 });
     expect(lines[0]).toBe(JIRA_GUIDE);
     expect(vendors.calls).toEqual(["jiraCloudId https://acme.atlassian.net", "jiraSearch project = PAY max 5", "jiraSearch project not in (PAY) max 50"]);
-    expect(JSON.parse(secrets.values.get("agentx/staging/connectors/jira")!)).toEqual({ apiKey: TOKEN });
+    expect(JSON.parse(secrets.values.get("rovara-cloud/staging/connectors/jira")!)).toEqual({ apiKey: TOKEN });
     const registered = plane.registered.at(-1) as { definition: { integrations: { connectors: Array<Record<string, unknown>> } } };
     expect(registered.definition.integrations.connectors[0]).toMatchObject({
       name: "jira", type: "jira", credentialRef: "jira",
@@ -82,8 +82,8 @@ describe("agentx connector add jira (FR-036 to FR-039)", () => {
     expect(result).toEqual({ ref: "jira", revision: 2, warning });
     expect(lines).toContain(`Warning: ${warning}`);
     // Saved all the same: the secret, the credential and the revision.
-    expect(JSON.parse(secrets.values.get("agentx/staging/connectors/jira")!)).toEqual({ apiKey: TOKEN });
-    expect(plane.credentials).toContainEqual({ ref: "jira", type: "static-secret", secretName: "agentx/staging/connectors/jira" });
+    expect(JSON.parse(secrets.values.get("rovara-cloud/staging/connectors/jira")!)).toEqual({ apiKey: TOKEN });
+    expect(plane.credentials).toContainEqual({ ref: "jira", type: "static-secret", secretName: "rovara-cloud/staging/connectors/jira" });
     expect(plane.registered).toHaveLength(1);
     // The outside search reads enough issues to name several projects.
     expect(vendors.calls).toContain("jiraSearch project not in (PAY) max 50");
@@ -120,7 +120,7 @@ describe("agentx connector add jira (FR-036 to FR-039)", () => {
     const secrets = memoryInitSecrets();
     const vendors = { ...fakeVendors({ jiraCloudId: CLOUD }), jiraSearch: async () => { throw new TypeError("fetch failed: upstream said SECRET-vendor-detail"); } };
     const failure = addJira({ ...input({ secrets, script: ["acme", TOKEN, "PAY"] }), services: { ...input().services, vendors } });
-    await expect(failure).rejects.toThrow("could not search Jira through Rovo MCP (TypeError), so nothing was stored; check that Rovo MCP allows API token authentication (docs/connectors/jira.md, Step 1), then run agentx --env staging connector add jira --project payments-api again");
+    await expect(failure).rejects.toThrow("could not search Jira through Rovo MCP (TypeError), so nothing was stored; check that Rovo MCP allows API token authentication (docs/connectors/jira.md, Step 1), then run rovara --env staging connector add jira --project payments-api again");
     await expect(failure).rejects.not.toThrow("SECRET-vendor-detail");
     expect(secrets.values.size).toBe(0);
   });

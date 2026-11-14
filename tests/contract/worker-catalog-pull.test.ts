@@ -13,8 +13,8 @@ skipLambdaBundling();
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
 const ACCOUNT = "123456789012";
-const ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/agentx/staging/agentx-staging-worker-InstanceRole-ABC123`;
-const WORKER_IMAGE = `${ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/agentx-staging/worker@${DIGEST}`;
+const ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/rovara-cloud/staging/rovara-cloud-staging-worker-InstanceRole-ABC123`;
+const WORKER_IMAGE = `${ACCOUNT}.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-staging/worker@${DIGEST}`;
 
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource?: unknown; NotResource?: unknown; Condition?: unknown };
 type PolicyResource = { Type: string; Condition?: string; Properties: { PolicyName: string; Roles: unknown; PolicyDocument: { Statement: Statement[] } } };
@@ -43,7 +43,7 @@ describe("the named environment's worker role and the catalog images (TS-IMG-1)"
       const stack = app.node.children.filter((child): child is Stack => Stack.isStack(child)).find((entry) => entry.stackName === name)!;
       return Template.fromStack(stack).toJSON() as Record<string, unknown>;
     };
-    staging = runtime("staging", "agentx-staging-runtime");
+    staging = runtime("staging", "rovara-cloud-staging-runtime");
     legacy = runtime(undefined, "AgentXProductionRuntime");
   }, 480_000);
 
@@ -51,7 +51,7 @@ describe("the named environment's worker role and the catalog images (TS-IMG-1)"
     const [policy, ...rest] = catalogPolicies(staging);
     expect(rest).toEqual([]);
     expect(policy!.condition).toBeUndefined();
-    expect(policy!.roles).toEqual(["agentx-staging-worker-InstanceRole-ABC123"]);
+    expect(policy!.roles).toEqual(["rovara-cloud-staging-worker-InstanceRole-ABC123"]);
     expect(policy!.statements).toEqual([
       {
         Sid: "PullCatalogImages",

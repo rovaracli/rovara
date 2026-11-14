@@ -1,5 +1,5 @@
 // packages/cli/src/admin/changes.ts
-// Spec 025 FR-052, E17 (Q6): the CLI's side of the admin change path. A person typing an agentx
+// Spec 025 FR-052, E17 (Q6): the CLI's side of the admin change path. A person typing a rovara
 // command is the confirmation (D12), recorded as the cli method; nothing applies before they say
 // yes. Answers are read with the loose wire schemas (R1): a newer control plane's status, kind or
 // method is a plain string here, and a status this CLI does not know is never taken as applied.
@@ -16,7 +16,7 @@ import { adminResponseBody, readJsonResponse, serverError } from "./http.js";
 const PAGE_LIMIT = "100";
 /** Guards against an endless export if the control plane ever hands back a growing cursor chain. */
 const MAX_PAGES = 10_000;
-const CHECK_STEP = "run agentx admin changes --since 1h to see how it ended";
+const CHECK_STEP = "run rovara admin changes --since 1h to see how it ended";
 
 /** Text from the control plane, without terminal control characters (a newline and a tab stay). */
 function plain(text: string): string {
@@ -140,7 +140,7 @@ export async function runCliChange(input: CliChangeInput, fetchImplementation: t
 }
 
 /**
- * Issue #205: records a change this CLI applies itself (agentx config set's stack update), after the
+ * Issue #205: records a change this CLI applies itself (rovara config set's stack update), after the
  * yes and before the change: the record starts applying, with the cli method. Returns its change ID.
  */
 export async function recordConfigChange(input: { controlPlaneUrl: string; accessToken: string; cliVersion: string; requestId: string; change: ConfigChange; requestedAt?: string; answeredAt: string }, fetchImplementation: typeof fetch = fetch): Promise<{ changeId: string; traceId: string }> {

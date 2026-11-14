@@ -344,7 +344,7 @@ describe("ReleaseManifestSchema: (region, part) uniqueness", () => {
     schemaVersion: 1 as const,
     version: "1.2.3",
     gitCommit: "b".repeat(40),
-    environmentPlaceholder: "qqenv-placeholderqq" as const,
+    environmentPlaceholder: "qqenv-phldrqq" as const,
     packages: [],
     images: {},
   };
@@ -374,7 +374,7 @@ describe("ReleaseManifestSchema: file path containment", () => {
     schemaVersion: 1 as const,
     version: "1.2.3",
     gitCommit: "b".repeat(40),
-    environmentPlaceholder: "qqenv-placeholderqq" as const,
+    environmentPlaceholder: "qqenv-phldrqq" as const,
     images: {},
   };
   const assetId = "a".repeat(64);

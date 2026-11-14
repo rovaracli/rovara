@@ -18,7 +18,7 @@ describe("identity stack", () => {
   it("creates an invite-only user pool named for the environment, kept on delete", () => {
     const template = identityTemplate();
     template.hasResourceProperties("AWS::Cognito::UserPool", {
-      UserPoolName: "agentx-staging",
+      UserPoolName: "rovara-cloud-staging",
       AdminCreateUserConfig: { AllowAdminCreateUserOnly: true },
       UsernameAttributes: ["email"],
       DeletionProtection: "ACTIVE",
@@ -28,8 +28,8 @@ describe("identity stack", () => {
   });
 
   it("creates the admin group the control plane expects", () => {
-    expect(ADMIN_GROUP).toBe("agentx-admin");
-    identityTemplate().hasResourceProperties("AWS::Cognito::UserPoolGroup", { GroupName: "agentx-admin" });
+    expect(ADMIN_GROUP).toBe("rovara-cloud-admin");
+    identityTemplate().hasResourceProperties("AWS::Cognito::UserPoolGroup", { GroupName: "rovara-cloud-admin" });
   });
 
   it("creates a public PKCE app client for the CLI's loopback login", () => {
@@ -61,7 +61,7 @@ describe("identity stack", () => {
   });
 
   it("uses a hosted UI domain prefix with the environment and account", () => {
-    identityTemplate().hasResourceProperties("AWS::Cognito::UserPoolDomain", { Domain: "agentx-staging-123456789012" });
+    identityTemplate().hasResourceProperties("AWS::Cognito::UserPoolDomain", { Domain: "rovara-cloud-staging-123456789012" });
   });
 
   it("refuses an environment name Cognito would reject in the hosted UI domain", () => {
@@ -80,8 +80,8 @@ describe("identity stack", () => {
     const names = (app: App) => app.node.children.filter((c): c is Stack => Stack.isStack(c)).map((s) => s.stackName);
     expect(names(buildAgentXApp())).not.toContain("agentx-production-identity");
     expect(names(buildAgentXApp()).some((n) => n.toLowerCase().includes("identity"))).toBe(false);
-    expect(names(buildAgentXApp({ agentxEnv: "staging" }))).toContain("agentx-staging-identity");
-    expect(names(buildAgentXApp({ agentxEnv: "staging", agentxIdentity: "oidc" }))).not.toContain("agentx-staging-identity");
+    expect(names(buildAgentXApp({ agentxEnv: "staging" }))).toContain("rovara-cloud-staging-identity");
+    expect(names(buildAgentXApp({ agentxEnv: "staging", agentxIdentity: "oidc" }))).not.toContain("rovara-cloud-staging-identity");
   }, 240_000);
 
   it("refuses an agentxIdentity value that is neither cognito, oidc, nor unset, naming it", () => {
@@ -96,7 +96,7 @@ describe("identity stack", () => {
 
   it("termination-protects the identity stack like the foundation and runtime stacks", () => {
     const stacks = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((c): c is Stack => Stack.isStack(c));
-    const identity = stacks.find((stack) => stack.stackName === "agentx-staging-identity");
+    const identity = stacks.find((stack) => stack.stackName === "rovara-cloud-staging-identity");
     expect(identity?.terminationProtection).toBe(true);
   }, 240_000);
 });

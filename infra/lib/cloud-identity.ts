@@ -6,6 +6,7 @@
 import { Aws, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, SecretValue, Stack, aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import { Construct } from "constructs";
+import { RESOURCE_PREFIX } from "@agentx/contracts";
 
 /** Where the sign-in server finishes a cloud sign-in: `${DEVELOPER_TOKEN_ISSUER}/callback/cloud` (developer/server.ts). */
 export const CLOUD_CALLBACK_PATH = "/callback/cloud";
@@ -192,7 +193,7 @@ export class CloudIdentity extends Construct {
     branding.node.addDependency(domain);
 
     // The sign-in function reads the secret as {"clientSecret": ...} (parseCloudClientSecret).
-    this.secretName = `agentx/${props.env}/developer-cloud`;
+    this.secretName = `${RESOURCE_PREFIX}/${props.env}/developer-cloud`;
     this.secret = new secretsmanager.Secret(this, "ClientSecret", {
       secretName: this.secretName,
       description: `The Rovara cloud sign-in app client secret for ${props.env}`,

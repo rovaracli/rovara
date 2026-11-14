@@ -172,7 +172,7 @@ describe("the switch on: Public cloud", () => {
   it("creates the durable queue with a dead-letter queue (five tries), a visibility timeout above the broker's, and drains it with partial-batch answers", () => {
     const queues = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::SQS::Queue" && /^TeamRecordOps/.test(String(Object.keys(resources).find((id) => resources[id] === resource))));
     const ops = queues.find(([id]) => /^TeamRecordOps[0-9A-F]{8}$/.test(id))![1].Properties;
-    expect(ops).toMatchObject({ QueueName: "agentx-staging-team-record-ops", MessageRetentionPeriod: 345600, VisibilityTimeout: 180, RedrivePolicy: { maxReceiveCount: TEAM_RECORD_OPS_MAX_RECEIVES } });
+    expect(ops).toMatchObject({ QueueName: "rovara-cloud-staging-team-record-ops", MessageRetentionPeriod: 345600, VisibilityTimeout: 180, RedrivePolicy: { maxReceiveCount: TEAM_RECORD_OPS_MAX_RECEIVES } });
     // The consumer drops a text-carrying put at THIS delivery, so the dead-letter queue never holds its text (TRW-3 R4): the two numbers are one constant.
     expect(TEAM_RECORD_OPS_MAX_RECEIVES).toBe(5);
     const mapping = Object.values(resources).find((resource) => resource.Type === "AWS::Lambda::EventSourceMapping" && JSON.stringify(resource.Properties).includes("TeamRecordOps"));
@@ -215,7 +215,7 @@ describe("the switch on: Public cloud", () => {
     const glue = statements.find((statement) => statement.Sid === "TeamRecordGlueCatalog");
     expect(glue).toBeDefined();
     const text = JSON.stringify(glue!.Resource);
-    expect(text).toContain("s3tablescatalog/agentx-staging-record-lake/record");
+    expect(text).toContain("s3tablescatalog/rovara-cloud-staging-record-lake/record");
     expect(text).not.toMatch(/:database\/\*"|:table\/\*"|"database\/\*"|"table\/\*"/);
     expect(text).not.toMatch(/"(?:database|table)\/\*/);
   }, 180_000);
@@ -225,7 +225,7 @@ describe("the switch on: Public cloud", () => {
     const wide = statements.filter((statement) => JSON.stringify(statement.Resource) === "\"*\"" || [statement.Resource].flat().includes("*")).map((statement) => [statement.Sid, [statement.Action].flat()]);
     expect(wide).toStrictEqual([["TeamRecordLakeFormationData", ["lakeformation:GetDataAccess"]]]);
     const byId = Object.fromEntries(statements.map((statement) => [statement.Sid, JSON.stringify(statement.Resource)]));
-    expect(byId.TeamRecordAthena).toContain("workgroup/agentx-staging-record");
+    expect(byId.TeamRecordAthena).toContain("workgroup/rovara-cloud-staging-record");
     expect(byId.TeamRecordAthena).not.toContain("workgroup/*");
     expect(byId.TeamRecordLakeTables).toContain("TableBucket");
     expect(byId.TeamRecordAthenaResults).toContain("/results/*");
@@ -284,7 +284,7 @@ describe("the broker's environment still fits Lambda's 4 KB with the record on",
   // The same ceiling and headroom as tests/contract/lambda-environment-size.test.ts, for an install with the switch ON (that test measures the default, switch-off installs).
   const CEILING = 3800;
   const HEADROOM = 400;
-  it.each([["staging"], ["a1234567890123456789"]])("environment %s: the broker keeps its headroom and the Slack ingress stays small", (env) => {
+  it.each([["staging"], ["a1234567890123"]])("environment %s: the broker keeps its headroom and the Slack ingress stays small", (env) => {
     const stack = buildAgentXApp({ agentxEnv: env, agentxCloud: true, agentxTeamRecord: "enabled" }).node.children.find((child): child is Stack => Stack.isStack(child) && child.node.id === "AgentXControlPlane")!;
     const found = lambdaEnvironments(Template.fromStack(stack).toJSON() as ResolvableTemplate, { env, stackName: stack.stackName, parameterValues: DEPLOY_PARAMETER_VALUES });
     const broker = found.find((entry) => /^Broker[0-9A-F]{8}$/.test(entry.logicalId))!;

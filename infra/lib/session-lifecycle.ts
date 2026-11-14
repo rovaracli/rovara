@@ -70,7 +70,7 @@ export class SessionLifecycle extends Construct {
     this.privateSubnetIds = privateSubnetIds;
     const workspaceKmsKeyArn = parameter("WorkspaceKmsKeyArn", "The foundation's workspace volume KMS key");
     const instanceRoleArn = parameter("Ec2WorkerInstanceRoleArn", "The EC2 workers' instance role");
-    // Foundation roles use / for legacy deployments and /agentx/<env>/ for named environments.
+    // Foundation roles use / for legacy deployments and /rovara-cloud/<env>/ for named environments.
     // IAM inline-policy attachments require the name, without the role's path.
     this.instanceRoleName = Fn.select(naming.env === undefined ? 1 : 3, Fn.split("/", instanceRoleArn.valueAsString));
     const launchTemplateId = parameter("Ec2WorkerLaunchTemplateId", "The EC2 workers' launch template",
@@ -261,7 +261,7 @@ export class SessionLifecycle extends Construct {
       sid: "QuarantineOwnVolumes",
       actions: ["ec2:CreateTags"],
       resources: [ec2Arn("volume/*")],
-      conditions: { ...ownResources, "ForAllValues:StringEquals": { "aws:TagKeys": ["agentx:quarantined"] } },
+      conditions: { ...ownResources, "ForAllValues:StringEquals": { "aws:TagKeys": ["rovara-cloud:quarantined"] } },
     }));
     new scheduler.Schedule(this, "ReconcilerSchedule", {
       description: "Runs the AgentX EC2 session reconciler",
@@ -278,7 +278,7 @@ export class SessionLifecycle extends Construct {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     }).addAlarmAction(props.notifyOperator);
     findingAlarm("QuarantinedVolumesAlarm", "ReconcilerQuarantinedVolumes",
-      "An ec2-ebs workspace volume no session claims was tagged agentx:quarantined. It is never deleted automatically: find its workspace from its agentx:workspace tag and decide.");
+      "An ec2-ebs workspace volume no session claims was tagged rovara-cloud:quarantined. It is never deleted automatically: find its workspace from its rovara-cloud:workspace tag and decide.");
     findingAlarm("LostInstancesAlarm", "ReconcilerLostInstances",
       "A READY EC2 worker's instance disappeared; its session was stopped and its running operation failed. Check the reconciler's logs and the instance's EC2 history.");
     findingAlarm("StuckProvisioningAlarm", "ReconcilerStuckProvisioning",

@@ -1,4 +1,4 @@
-// Plan 3 Task 35a and 35b: an agent's budget and a project's AI settings from the command line (`agentx agents budget`, `agentx project ai set`).
+// Plan 3 Task 35a and 35b: an agent's budget and a project's AI settings from the command line (`rovara agents budget`, `rovara project ai set`).
 // An amount is US dollars, or `none` to clear it. A change that goes past a cap someone else must raise answers (from Task 32) 202
 // { status: "NEEDS_ADMIN_APPROVAL", spendRequestId, message }; the broker's words and the request's id are printed and it is not a failure.
 import { randomUUID } from "node:crypto";
@@ -124,7 +124,7 @@ export async function orgSpend(deps: DeveloperSessionDeps, env: string | undefin
       `  ${str(line.at)}  ${dollars(line.settledUsd ?? line.usd)}${line.finalized === true ? "" : " (not final)"}  ${str(line.model)}  ${str(line.project)}  ${str(line.origin)}  ${str(line.taskId ?? line.operationId, "-")}`);
     // The cursor is printed only as the broker sent it: URL-safe base64 characters, which no cleaning changes.
     const next = typeof body.next !== "string" ? []
-      : /^[A-Za-z0-9_-]+$/.test(body.next) ? [`More lines follow: agentx org spend --ledger --month ${str(body.month)} --cursor ${body.next}`]
+      : /^[A-Za-z0-9_-]+$/.test(body.next) ? [`More lines follow: rovara org spend --ledger --month ${str(body.month)} --cursor ${body.next}`]
         : ["More lines follow, but the cursor AgentX sent is not one this command can use, so the ledger can't be paged from here."];
     return result(answer, body, `${[`Settled spend lines of ${str(body.month)}, newest first:`, ...(lines.length === 0 ? ["  none"] : lines), ...next].join("\n")}\n`);
   }
@@ -145,7 +145,7 @@ export async function spendRequestsList(deps: DeveloperSessionDeps, env: string 
   if (requests.length === 0) return result(answer, { spendRequests: requests }, "No spend requests wait for you.\n");
   const lines = requests.map((request) =>
     `  ${str(request.spendRequestId)}  ${str(request.kind)}  ${str(request.status)}  ${dollars(request.amountUsd)}${typeof request.newLimitUsd === "number" ? ` (new limit ${dollars(request.newLimitUsd)})` : ""}  until ${str(request.expiresAt)}\n      ${str(request.reason)}`);
-  return result(answer, { spendRequests: requests }, `${["Spend requests (decide each on its page: agentx spend-requests open <id>):", ...lines].join("\n")}\n`);
+  return result(answer, { spendRequests: requests }, `${["Spend requests (decide each on its page: rovara spend-requests open <id>):", ...lines].join("\n")}\n`);
 }
 
 // ---- a task's way past its limit (Task 32 and the re-ask)
@@ -160,7 +160,7 @@ export async function taskContinueAsTask(deps: DeveloperSessionDeps, env: string
 export async function taskAskRunLimit(deps: DeveloperSessionDeps, env: string | undefined, taskId: string): Promise<AppResult> {
   const answer = await appRequest(deps, env, `/v1/app/tasks/${seg(taskId)}/run-limit-request`, { method: "POST", body: { requestId: randomUUID() } });
   const id = str(answer.body.spendRequestId);
-  const text = answer.body.created === true ? `The run limit was asked for again. Request: ${id}\nA person who may approve it does so on its page: agentx spend-requests open ${id}\n`
-    : `A request for this run limit is already open, so none was made. Request: ${id}\nA person who may approve it does so on its page: agentx spend-requests open ${id}\n`;
+  const text = answer.body.created === true ? `The run limit was asked for again. Request: ${id}\nA person who may approve it does so on its page: rovara spend-requests open ${id}\n`
+    : `A request for this run limit is already open, so none was made. Request: ${id}\nA person who may approve it does so on its page: rovara spend-requests open ${id}\n`;
   return result(answer, answer.body, text);
 }

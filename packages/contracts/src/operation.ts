@@ -156,7 +156,7 @@ export const CodeBuildStatusSchema = z.enum([
 export const CodeBuildCheckResultSchema = z
   .object({
     gate: z.string().regex(/^[a-z][a-z0-9-]{0,62}$/),
-    projectName: z.string().regex(/^agentx-[A-Za-z0-9_-]+$/),
+    projectName: z.string().regex(/^rovara-cloud-[A-Za-z0-9_-]+$/),
     buildId: z.string().min(3).max(1_024),
     status: CodeBuildStatusSchema,
     requestedSourceVersion: z.string().regex(/^[a-f0-9]{40,64}$/),

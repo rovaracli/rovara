@@ -1,4 +1,4 @@
-// Blind test 02 (staging 0.4.13): a Rovara Code question could not be answered from the CLI. `session tell` said "Queued" and nothing resumed; only the web route answered. `agentx session answer
+// Blind test 02 (staging 0.4.13): a Rovara Code question could not be answered from the CLI. `session tell` said "Queued" and nothing resumed; only the web route answered. `rovara session answer
 // <task-or-session> --q1 ... --q2 ...` answers the questions on the same route the web uses (`POST /v1/app/sessions/{id}/answers`), and `session tell` on a task that waits for answers says where to
 // answer. These tests run the real CLI against the real broker handler.
 import { randomUUID } from "node:crypto";
@@ -43,7 +43,7 @@ async function cliAgainst(h: QuestionsBroker, who: Developer = MAYA) {
   return { run, text: () => out.join(""), errors: () => err.join(""), calls, posts: (suffix: string) => calls.filter((call) => call.method === "POST" && call.path.endsWith(suffix)) };
 }
 
-describe("agentx session answer against the real broker", () => {
+describe("rovara session answer against the real broker", () => {
   it("answers every question on the answers route, an option by its letter and an open question by its words, and Understand runs again", async () => {
     const h = await questionsBroker();
     const task = await h.waitingTask();
@@ -76,7 +76,7 @@ describe("agentx session answer against the real broker", () => {
     expect(cli.text()).toContain("1. What response shape should the paginated endpoint return?");
     expect(cli.text()).toContain("b) Envelope: items, total, limit, offset (recommended)");
     expect(cli.text()).toContain("2. Which page size by default?");
-    expect(cli.text()).toContain(`agentx session answer ${task.sessionId} --q1 <a|b|your own words> --q2 <your own words>`);
+    expect(cli.text()).toContain(`rovara session answer ${task.sessionId} --q1 <a|b|your own words> --q2 <your own words>`);
     expect(h.meta(task.taskId).workflow.state).toBe("WAITING");
   });
 
@@ -123,7 +123,7 @@ describe("agentx session answer against the real broker", () => {
   });
 });
 
-describe("agentx session tell on a task that waits for answers", () => {
+describe("rovara session tell on a task that waits for answers", () => {
   it("says it was not delivered and where to answer, instead of \"Queued\"", async () => {
     const h = await questionsBroker();
     const task = await h.waitingTask();
@@ -131,7 +131,7 @@ describe("agentx session tell on a task that waits for answers", () => {
     expect(await cli.run(["session", "tell", task.sessionId, "use the envelope"]), cli.errors()).toBe(0);
     expect(cli.text()).not.toContain("Queued");
     expect(cli.text()).toContain("Not delivered");
-    expect(cli.text()).toContain(`agentx session answer ${task.sessionId}`);
+    expect(cli.text()).toContain(`rovara session answer ${task.sessionId}`);
     expect(h.meta(task.taskId).workflow.state).toBe("WAITING");
   });
 });

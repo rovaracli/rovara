@@ -1,4 +1,4 @@
-// `agentx deploy` and `agentx init --export`: executeCli end to end, with every AWS-facing piece
+// `rovara deploy` and `rovara init --export`: executeCli end to end, with every AWS-facing piece
 // injected through CliDependencies.deploy (main.ts follows the same pattern env commands use). No
 // AWS is ever touched by any test here.
 import { createHash } from "node:crypto";
@@ -72,7 +72,7 @@ async function emptyReleaseDir(): Promise<string> {
       schemaVersion: 1,
       version: RELEASE_VERSION,
       gitCommit: "a".repeat(40),
-      environmentPlaceholder: "qqenv-placeholderqq",
+      environmentPlaceholder: "qqenv-phldrqq",
       templates,
       packages: [],
       images: {},
@@ -101,7 +101,7 @@ async function fullReleaseDir(): Promise<string> {
       schemaVersion: 1,
       version: RELEASE_VERSION,
       gitCommit: "a".repeat(40),
-      environmentPlaceholder: "qqenv-placeholderqq",
+      environmentPlaceholder: "qqenv-phldrqq",
       templates,
       packages: [],
       images: {
@@ -120,7 +120,7 @@ function answersJson(overrides: Record<string, unknown> = {}): Record<string, un
     account: ACCOUNT,
     models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" },
     identity: { mode: "cognito" },
-    github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf" },
+    github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf" },
     // Testing-only override (parameters.ts): lets stackParameters resolve runtime/slack's image
     // parameters without needing a real release image digest, since `emptyReleaseDir` has none.
     images: {
@@ -169,13 +169,13 @@ function unexpectedAwsCall(): never {
 }
 
 /**
- * `agentx deploy`'s dependency overrides, with `identity`, `store` and `secrets` always present and
+ * `rovara deploy`'s dependency overrides, with `identity`, `store` and `secrets` always present and
  * throwing "unexpected AWS call in test" by default: `runDeploy` falls back to constructing *real*
  * STS/SSM/SecretsManager clients for whichever of these a test omits, so a deploy test that forgets
  * one no longer silently risks reaching them (and, through them, real AWS) — it fails loudly instead,
  * the moment that fake is actually invoked. `overrides` replaces any of these three, and adds
  * whichever of `deployer`/`commandRunner`/`confirm`/`isInteractive`/`now` the test needs; every
- * `describe("agentx deploy", ...)` test builds its dependencies through this helper.
+ * `describe("rovara deploy", ...)` test builds its dependencies through this helper.
  */
 function safeDeployDeps(overrides: DeployCliDependencies = {}): DeployCliDependencies {
   return {
@@ -223,10 +223,10 @@ function memorySecrets(): SecretValueStore & { creates: Array<{ name: string; va
 function scriptedOutputs(): Record<string, StackOutputs> {
   return {
     [stackName("access")]: {
-      ArtifactBucketName: "agentx-staging-access-artifactbucket-abc",
-      CloudFormationRoleArn: `arn:aws:iam::${ACCOUNT}:role/agentx-staging-cloudformation`,
-      OperatorRoleArn: `arn:aws:iam::${ACCOUNT}:role/agentx-staging-operator`,
-      PullThroughPrefix: "agentx-staging",
+      ArtifactBucketName: "rovara-cloud-staging-access-artifactbucket-abc",
+      CloudFormationRoleArn: `arn:aws:iam::${ACCOUNT}:role/rovara-cloud-staging-cloudformation`,
+      OperatorRoleArn: `arn:aws:iam::${ACCOUNT}:role/rovara-cloud-staging-operator`,
+      PullThroughPrefix: "rovara-cloud-staging",
     },
     [stackName("foundation")]: {
       VpcId: "vpc-0123456789abcdef0",
@@ -244,13 +244,13 @@ function scriptedOutputs(): Record<string, StackOutputs> {
     },
     [stackName("control-plane")]: {
       ApiEndpoint: `https://abc.execute-api.${REGION}.amazonaws.com`,
-      SlackOrchestratorTaskRoleArn: `arn:aws:iam::${ACCOUNT}:role/agentx-staging-control-plane-SlackTask`,
+      SlackOrchestratorTaskRoleArn: `arn:aws:iam::${ACCOUNT}:role/rovara-cloud-staging-control-plane-SlackTask`,
       SlackRequestQueueUrl: `https://sqs.${REGION}.amazonaws.com/${ACCOUNT}/q.fifo`,
       SlackThreadsTableName: "t",
       TurnRecordsTableName: "tr",
       SlackThreadSessionBucketName: "b",
       SlackSecretArn: `arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:SlackSecret-x`,
-      OperatorAlertsTopicArn: `arn:aws:sns:${REGION}:${ACCOUNT}:agentx-staging-alerts`,
+      OperatorAlertsTopicArn: `arn:aws:sns:${REGION}:${ACCOUNT}:rovara-cloud-staging-alerts`,
       ModelProxyUrl: "http://internal-proxy.example.test:4000",
       ModelProxySecurityGroupId: "sg-0123456789abcdef0",
     },
@@ -341,7 +341,7 @@ function cleanCdkRunner(scripted: Record<string, StackOutputs>, declared: Partia
   return runner;
 }
 
-describe("agentx init --export", () => {
+describe("rovara init --export", () => {
   it("writes a bundle and makes no AWS write call", async () => {
     const releaseDir = await fullReleaseDir();
     const exportDir = join(await tmp("agentx-deploy-cli-export-"), "bundle");
@@ -397,7 +397,7 @@ describe("agentx init --export", () => {
     const exportDir = join(await tmp("agentx-deploy-cli-export-"), "bundle");
     const io = capture();
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/production/settings", "{}");
+    store.values.set("/rovara-cloud/production/settings", "{}");
 
     const code = await executeCli(
       ["--env", "production", "init", "--export", exportDir, "--region", REGION, "--account", ACCOUNT, "--release", releaseDir],
@@ -485,7 +485,7 @@ describe("agentx init --export", () => {
     const exportDir = join(await tmp("agentx-deploy-cli-export-"), "bundle");
     const io = capture();
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/production/settings", "{}");
+    store.values.set("/rovara-cloud/production/settings", "{}");
 
     const code = await executeCli(
       ["--env", "production", "init", "--export", exportDir, "--region", REGION, "--account", "999999999999", "--release", releaseDir],
@@ -576,7 +576,7 @@ describe("agentx init --export", () => {
   });
 });
 
-describe("agentx deploy", () => {
+describe("rovara deploy", () => {
   it("refuses answers that do not match the schema, naming the field", async () => {
     const answersPath = await writeAnswers({ region: undefined });
     const io = capture();
@@ -622,7 +622,7 @@ describe("agentx deploy", () => {
     );
 
     expect(code).toBe(2);
-    expect(io.err.join("")).toContain("agentx deploy needs --yes when stdin is not a terminal");
+    expect(io.err.join("")).toContain("rovara deploy needs --yes when stdin is not a terminal");
   });
 
   it("--engine cdk refuses a source checkout with uncommitted changes, before deploying anything", async () => {
@@ -730,8 +730,8 @@ describe("agentx deploy", () => {
     const answersPath = await writeAnswers();
     const store = new MemoryParameterStore();
     await store.put("/cdk-bootstrap/hnb659fds/version", "21");
-    await store.put("/agentx/staging/slack/teamId", "T0TEAM1");
-    await store.put("/agentx/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: `arn:aws:iam::${ACCOUNT}:user/alice` }));
+    await store.put("/rovara-cloud/staging/slack/teamId", "T0TEAM1");
+    await store.put("/rovara-cloud/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: `arn:aws:iam::${ACCOUNT}:user/alice` }));
     const inner = cleanCdkRunner(scriptedOutputs(), { "control-plane": ["SlackTeamId", "DeveloperSignInSlack"] });
     const deploys: string[][] = [];
     const runner: CommandRunner = {
@@ -1024,7 +1024,7 @@ describe("agentx deploy", () => {
         "Deployed parts: access, foundation",
         "Missing parts: identity, control-plane, runtime, slack",
         "Environment settings are written once every part is deployed.",
-        `Resume with: agentx deploy --mode install --parts identity,control-plane,runtime,slack --release ${releaseDir} --answers ${answersPath} --yes`,
+        `Resume with: rovara deploy --mode install --parts identity,control-plane,runtime,slack --release ${releaseDir} --answers ${answersPath} --yes`,
         "",
       ].join("\n"),
     );
@@ -1075,7 +1075,7 @@ describe("agentx deploy", () => {
 
     expect(code).toBe(0);
     expect(io.out.join("")).toContain(
-      `Resume with: agentx deploy --mode install --engine cdk --source /some/source --parts foundation,identity,control-plane,runtime,slack --release ${releaseDir} --answers ${answersPath} --yes\n`,
+      `Resume with: rovara deploy --mode install --engine cdk --source /some/source --parts foundation,identity,control-plane,runtime,slack --release ${releaseDir} --answers ${answersPath} --yes\n`,
     );
   });
 });
@@ -1091,11 +1091,11 @@ async function releaseDirDeclaringBudget(): Promise<string> {
     await writeFile(join(dir, file), body);
     templates.push({ region: REGION, part, file, sha256: sha256(body) });
   }
-  await writeFile(join(dir, "release.json"), JSON.stringify({ schemaVersion: 1, version: RELEASE_VERSION, gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-placeholderqq", templates, packages: [], images: {} }));
+  await writeFile(join(dir, "release.json"), JSON.stringify({ schemaVersion: 1, version: RELEASE_VERSION, gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-phldrqq", templates, packages: [], images: {} }));
   return dir;
 }
 
-describe("agentx deploy --mode upgrade keeps the deployed budget", () => {
+describe("rovara deploy --mode upgrade keeps the deployed budget", () => {
   it("reads the control-plane stack's parameters and sends its budget back", async () => {
     const store = new MemoryParameterStore();
     // Every part's outputs, including every foundation output the control plane takes.
@@ -1112,7 +1112,7 @@ describe("agentx deploy --mode upgrade keeps the deployed budget", () => {
     const answersFile = join(answersDir, "answers.json");
     await writeFile(answersFile, JSON.stringify({
       env: ENV, region: REGION, account: ACCOUNT, models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" }, identity: { mode: "cognito" },
-      github: { appId: "123", privateKeySecretArn: `arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:agentx/staging/github-app-AbCdEf` },
+      github: { appId: "123", privateKeySecretArn: `arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:rovara-cloud/staging/github-app-AbCdEf` },
       images: { worker: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/w@sha256:${"b".repeat(64)}`, slack: `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/s@sha256:${"c".repeat(64)}`, bootStage2Sha256: "5a".repeat(32) },
     }));
     const reads: string[] = [];
@@ -1132,10 +1132,10 @@ describe("agentx deploy --mode upgrade keeps the deployed budget", () => {
   });
 
   it("names what it kept and what this release no longer takes, never their values", () => {
-    expect(progressLine({ kind: "kept", stackName: "agentx-staging-control-plane", kept: ["BudgetMonthlyUsd", "BudgetScope"], dropped: [] }))
-      .toBe("kept agentx-staging-control-plane: BudgetMonthlyUsd, BudgetScope");
-    expect(progressLine({ kind: "kept", stackName: "agentx-staging-slack", kept: [], dropped: ["SlowTurnMinutes"] }))
-      .toBe("kept agentx-staging-slack: nothing; not in this release, so not sent: SlowTurnMinutes");
+    expect(progressLine({ kind: "kept", stackName: "rovara-cloud-staging-control-plane", kept: ["BudgetMonthlyUsd", "BudgetScope"], dropped: [] }))
+      .toBe("kept rovara-cloud-staging-control-plane: BudgetMonthlyUsd, BudgetScope");
+    expect(progressLine({ kind: "kept", stackName: "rovara-cloud-staging-slack", kept: [], dropped: ["SlowTurnMinutes"] }))
+      .toBe("kept rovara-cloud-staging-slack: nothing; not in this release, so not sent: SlowTurnMinutes");
   });
 });
 

@@ -60,7 +60,7 @@ import { clearOrgLearning } from "../../learning/cleanup.js";
  * install registers projects through an administrator.
  */
 export async function createProject(deps: DeveloperRouteDependencies, caller: DeveloperCaller, body: unknown): Promise<StatusReply> {
-  if (deps.cloud !== true) throw agentXError("FORBIDDEN", "projects on this install are created by an administrator; ask an administrator to run agentx project add");
+  if (deps.cloud !== true) throw agentXError("FORBIDDEN", "projects on this install are created by an administrator; ask an administrator to run rovara project add");
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can create a project; ask your organization's owner");
   // Meta repo lane A: a body with a `metaRepository` starts a project from a meta repo.
   if (isCreateFromMetaBody(body)) {
@@ -266,7 +266,7 @@ const STOPS_AFTER_STEP = (name: string) => `${name}'s running tasks will stop af
 export async function removeOrganizationMember(deps: DeveloperRouteDependencies, caller: DeveloperCaller, developerId: string): Promise<{ removed: { developerId: string; name: string }; message: string }> {
   if (deps.orgs === undefined) throw agentXError("NOT_FOUND", "organizations are not set up in this deployment");
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can remove people from the organization");
-  if (developerId === caller.developerId) throw agentXError("FORBIDDEN", "use agentx org leave to leave");
+  if (developerId === caller.developerId) throw agentXError("FORBIDDEN", "use rovara org leave to leave");
   const target = (await deps.orgs.listMembers(caller.orgId)).find((member) => member.developerId === developerId);
   if (target === undefined) throw agentXError("NOT_FOUND", "that person is not a member of the organization");
   if (caller.orgRole === "admin" && target.role !== "member") throw agentXError("FORBIDDEN", "an admin can remove members only; ask an owner to remove an owner or admin");

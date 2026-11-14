@@ -1,11 +1,11 @@
 // The cdk engine deploys the access stack's other stacks through the AgentX CloudFormation role,
-// and the CDK deploy role must be allowed to hand that role to CloudFormation. agentx init adds
+// and the CDK deploy role must be allowed to hand that role to CloudFormation. rovara init adds
 // that one narrow inline permission to the deploy role, after printing it and with no question
-// (a human decision: it is narrow, printed, and removed again by agentx destroy). When the AWS
+// (a human decision: it is narrow, printed, and removed again by rovara destroy). When the AWS
 // credentials cannot add it, init stops with the exact policy so a cloud team can add it.
 import { DeleteRolePolicyCommand, GetRolePolicyCommand, PutRolePolicyCommand, type IAMClient } from "@aws-sdk/client-iam";
 import { ListStacksCommand, StackStatus, type CloudFormationClient } from "@aws-sdk/client-cloudformation";
-import { agentXError } from "@agentx/contracts";
+import { agentXError, RESOURCE_PREFIX } from "@agentx/contracts";
 
 export const CDK_PASS_ROLE_POLICY_NAME = "AgentXPassCloudFormationRole";
 /** The qualifier `cdk bootstrap` uses unless told otherwise. */
@@ -32,7 +32,7 @@ export function passRolePolicyDocument(input: { partition: string; account: stri
       Sid: "PassAgentXCloudFormationRole",
       Effect: "Allow",
       Action: "iam:PassRole",
-      Resource: [`${prefix}/agentx-*-cloudformation`, `${prefix}/*/agentx-*-cloudformation`],
+      Resource: [`${prefix}/${RESOURCE_PREFIX}-*-cloudformation`, `${prefix}/*/${RESOURCE_PREFIX}-*-cloudformation`],
       Condition: { StringEquals: { "iam:PassedToService": "cloudformation.amazonaws.com" } },
     }],
   };
@@ -95,14 +95,14 @@ export async function ensureCdkPassRole(input: {
   } catch (error) {
     if (isAccessDenied(error)) throw denied();
     if (isNoSuchEntity(error)) {
-      throw agentXError("CONFIG_INVALID", `init cannot continue: the CDK deploy role ${role} does not exist. Bootstrap CDK in ${input.region} with the default qualifier (npx cdk bootstrap aws://${input.account}/${input.region}), then run agentx init again`);
+      throw agentXError("CONFIG_INVALID", `init cannot continue: the CDK deploy role ${role} does not exist. Bootstrap CDK in ${input.region} with the default qualifier (npx cdk bootstrap aws://${input.account}/${input.region}), then run rovara init again`);
     }
     throw error;
   }
   return "added";
 }
 
-const ACCESS_STACK = /^agentx-([a-z0-9-]+)-access$/;
+const ACCESS_STACK = new RegExp(`^${RESOURCE_PREFIX}-([a-z0-9-]+)-access$`);
 const LIVE_STATUSES = Object.values(StackStatus).filter((status) => status !== StackStatus.DELETE_COMPLETE);
 
 /** The environments, other than `env`, that still have an access stack in the region. */

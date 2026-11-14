@@ -301,7 +301,7 @@ describe("AWS control-plane handlers", () => {
             path: "repo/demo",
             defaultBranch: "main",
             credentialRef: "github-app",
-            codeBuildGates: [{ name: "quality", projectName: "agentx-demo-quality", timeoutMinutes: 30 }],
+            codeBuildGates: [{ name: "quality", projectName: "rovara-cloud-demo-quality", timeoutMinutes: 30 }],
           },
           { name: "other", url: "https://github.com/example/other.git", path: "repo/other", defaultBranch: "main", credentialRef: "github-app" },
         ],
@@ -335,7 +335,7 @@ describe("AWS control-plane handlers", () => {
             path: "repo/demo",
             defaultBranch: "main",
             credentialRef: "github-app",
-            codeBuildGates: [{ name: "quality", projectName: "agentx-demo-quality-v2", timeoutMinutes: 45 }],
+            codeBuildGates: [{ name: "quality", projectName: "rovara-cloud-demo-quality-v2", timeoutMinutes: 45 }],
           },
           { name: "other", url: "https://github.com/example/other.git", path: "repo/other", defaultBranch: "main", credentialRef: "github-app" },
         ],
@@ -530,7 +530,7 @@ describe("AWS control-plane handlers", () => {
     };
     expect(accepted.settingsRevision).toBe(2);
     expect(accepted.publication?.codeBuildGates).toEqual([
-      { name: "quality", projectName: "agentx-demo-quality-v2", timeoutMinutes: 45 },
+      { name: "quality", projectName: "rovara-cloud-demo-quality-v2", timeoutMinutes: 45 },
     ]);
     const dispatched = written.find((record) => record.entityType === "OUTBOX")?.invocation as {
       projectRevision: number;
@@ -564,7 +564,7 @@ describe("AWS control-plane handlers", () => {
         action: "start",
         repository: "demo",
         gate: "quality",
-        projectName: "agentx-demo-quality-v2",
+        projectName: "rovara-cloud-demo-quality-v2",
         commit: buildCommit,
       }),
       requestContext: { requestId: "codebuild-start", http: { method: "POST" } },
@@ -585,7 +585,7 @@ describe("AWS control-plane handlers", () => {
         action: "status",
         repository: "demo",
         gate: "quality",
-        projectName: "agentx-demo-quality-v2",
+        projectName: "rovara-cloud-demo-quality-v2",
         commit: buildCommit,
         buildId: startedBuildBody.buildId,
       }),
@@ -726,7 +726,7 @@ describe("AWS control-plane handlers", () => {
       headers: { "x-agentx-callback-capability": replacementInvocation.callbackCapability },
       body: JSON.stringify({
         action: "start", repository: "demo", gate: "quality",
-        projectName: "agentx-demo-quality-v2", commit: replacementCommit,
+        projectName: "rovara-cloud-demo-quality-v2", commit: replacementCommit,
       }),
       requestContext: { requestId: "replacement-build-start", http: { method: "POST" } },
     });
@@ -737,7 +737,7 @@ describe("AWS control-plane handlers", () => {
       headers: { "x-agentx-callback-capability": replacementInvocation.callbackCapability },
       body: JSON.stringify({
         action: "status", repository: "demo", gate: "quality",
-        projectName: "agentx-demo-quality-v2", commit: replacementCommit,
+        projectName: "rovara-cloud-demo-quality-v2", commit: replacementCommit,
         buildId: replacementBuild.buildId,
       }),
       requestContext: { requestId: "replacement-build-status", http: { method: "POST" } },

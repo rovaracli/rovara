@@ -51,16 +51,16 @@ describe("the e2e step (FR-018 step 11)", () => {
     expect(await e2eStep().run(context, progress())).toEqual({ status: "done", note: "a mention in #payments got a threaded reply in 12 seconds" });
   });
 
-  it("tells the engineer to run agentx init again when the reply failed", async () => {
+  it("tells the engineer to run rovara init again when the reply failed", async () => {
     const plane = fakeControlPlane();
     plane.turns = [turn({ subject: "T0123456789/C0PAY00001/1790000000.000100", receivedAt: new Date(T0 + 2000).toISOString(), disposition: "error" })];
     context = initContext({ setup: setupServices({ fetch: plane.fetch }), adminSession: async () => ({ controlPlaneUrl: "https://cp.example.test", accessToken: "t" }) });
-    await expect(e2eStep().run(context, progress())).rejects.toThrow("but the turn ended as error; see agentx --env staging admin turns export --since 15m, fix it, then run agentx --env staging init again");
+    await expect(e2eStep().run(context, progress())).rejects.toThrow("but the turn ended as error; see rovara --env staging admin turns export --since 15m, fix it, then run rovara --env staging init again");
   });
 
   it("needs the channel from the first-project step", async () => {
     context = initContext();
-    await expect(e2eStep().run(context, progressHandle())).rejects.toThrow("install progress has no bound channel; the first-project step must finish first, so run agentx init again");
+    await expect(e2eStep().run(context, progressHandle())).rejects.toThrow("install progress has no bound channel; the first-project step must finish first, so run rovara init again");
   });
 });
 

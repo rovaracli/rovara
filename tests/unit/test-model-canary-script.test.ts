@@ -5,7 +5,7 @@ import { formatCanaryPlan, parseCanaryArgs, runModelCanary, type CanaryEffects, 
 
 // M1.4 Task 4.9 step 3, as Task 4.10C changed it: the operator's plan-first model check command, driven with fakes. Nothing here calls AWS or a model.
 
-const ENV = "agentxlivetest123";
+const ENV = "rovaralivetest";
 const ROLE_ID = "AROAEXAMPLEROLEID123";
 const INSTANCE_ID = "i-0123456789abcdef0";
 const PREFIX = `e2e-runtime/${ROLE_ID}:${INSTANCE_ID}/`;
@@ -19,7 +19,7 @@ const defs = (() => {
   return { standard: standard.definition, minimal: minimal.definition };
 })();
 const digest = e2eAgentRouteDefinitionDigest(defs.standard);
-const facts: CanaryFacts = { bucket: "agentx-agentxlivetest123-control-artifacts", stateTable: "agentx-agentxlivetest123-state", roleId: ROLE_ID, installation };
+const facts: CanaryFacts = { bucket: "rovara-cloud-rovaralivetest-control-artifacts", stateTable: "rovara-cloud-rovaralivetest-state", roleId: ROLE_ID, installation };
 const args = parseCanaryArgs(["--env", ENV, "--profile", "agentx-test", "--instance", INSTANCE_ID, "--model", MODEL, "--apply"]);
 
 let n = 0;

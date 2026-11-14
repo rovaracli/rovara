@@ -2,7 +2,7 @@
  * The names and variables a Lambda function builds at run time instead of being given them (ENV-ROOM, owner decision 2026-10-24).
  *
  * Lambda holds all of a function's environment variables, keys and values together, to 4 KB, and the broker's reached the ceiling again and again. A value the function can
- * compute is not passed: a resource with a fixed name under the `agentx-<env>-...` naming, or a value the environment's name decides, is built from the environment's name
+ * compute is not passed: a resource with a fixed name under the `rovara-cloud-<env>-...` naming, or a value the environment's name decides, is built from the environment's name
  * (AGENTX_ENV), the region (AWS_REGION) and the account (AGENTX_ACCOUNT_ID). This module is the ONE place such a derivation is written:
  *  - CDK names the resource with these functions (`auditIntakeQueueName` for the queue, `connectorSecretsRoleName` for the role, and so on), so a resource cannot be named
  *    one way and looked for another;
@@ -13,6 +13,7 @@
  * (a feature flag, a parameter, a generated name or id) is passed: see AGENTX_NAMES and AGENTX_SETTINGS in broker-names.ts. tests/contract/lambda-environment-size.test.ts
  * holds the broker to 400 bytes of room under its ceiling, so a variable that is added anyway fails there.
  */
+import { RESOURCE_PREFIX } from "./resource-prefix.js";
 import {
   environmentAlarmPrefix,
   environmentConnectorSecretPrefix,
@@ -25,21 +26,21 @@ import { brokerRoleName, chainScheduleQueueName, chainScheduleRoleName, connecto
 
 /** The audit ledger's intake queue (FIFO, one appender per org). The queue is created with this name, and the broker builds its URL from it. */
 export function auditIntakeQueueName(env: string): string {
-  return `agentx-${env}-audit-intake.fifo`;
+  return `${RESOURCE_PREFIX}-${env}-audit-intake.fifo`;
 }
 
 /**
- * Team record (wire-team-record): the names of the record's storage under the `agentx-<env>-...` naming. CDK names the resources with these (infra/lib/team-record-wiring.ts) and the broker
+ * Team record (wire-team-record): the names of the record's storage under the `rovara-cloud-<env>-...` naming. CDK names the resources with these (infra/lib/team-record-wiring.ts) and the broker
  * builds the variables from the same functions, so nothing is passed. `TeamRecordStorage` appends `-record-vectors`, `-record-lake` and `-record` to the prefix.
  */
-export const teamRecordNamePrefix = (env: string): string => `agentx-${env}`;
-export const teamRecordTableName = (env: string): string => `agentx-${env}-team-record`;
-export const teamRecordOpsQueueName = (env: string): string => `agentx-${env}-team-record-ops`;
+export const teamRecordNamePrefix = (env: string): string => `${RESOURCE_PREFIX}-${env}`;
+export const teamRecordTableName = (env: string): string => `${RESOURCE_PREFIX}-${env}-team-record`;
+export const teamRecordOpsQueueName = (env: string): string => `${RESOURCE_PREFIX}-${env}-team-record-ops`;
 /** The durable queue's redrive limit (CDK sets it; the consumer drops a text-carrying put at this delivery instead of letting it be dead-lettered with its text). */
 export const TEAM_RECORD_OPS_MAX_RECEIVES = 5;
 /** A queued put (it holds text) is dropped unapplied once it is older than this, so its text does not wait for a consumer past a day. */
 export const TEAM_RECORD_QUEUED_PUT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-export const teamRecordOpsDeadLetterName = (env: string): string => `agentx-${env}-team-record-ops-dead`;
+export const teamRecordOpsDeadLetterName = (env: string): string => `${RESOURCE_PREFIX}-${env}-team-record-ops-dead`;
 export const teamRecordVectorBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-vectors`;
 export const teamRecordTableBucketName = (env: string): string => `${teamRecordNamePrefix(env)}-record-lake`;
 export const teamRecordWorkGroupName = (env: string): string => `${teamRecordNamePrefix(env)}-record`;
@@ -48,7 +49,7 @@ export const teamRecordWorkGroupName = (env: string): string => `${teamRecordNam
  * Test services, slice 3: the alias of the key the answer sets (fakes) are encrypted with (SSE-KMS accepts an alias). CDK names the key's alias with this; the broker builds the alias ARN from it, so no variable is passed
  * (M4: 40 bytes of Lambda environment saved). The broker's grant is on the key itself, not on the alias: an alias repointed at another key gives the broker nothing there, and the broker's writes fail instead of going elsewhere.
  */
-export const fixtureKeyAlias = (env: string): string => `alias/agentx/${env}/fixtures`;
+export const fixtureKeyAlias = (env: string): string => `alias/${RESOURCE_PREFIX}/${env}/fixtures`;
 
 /** The port the model proxy's inference listener serves on; the broker builds the proxy's URL from the load balancer's name and this. */
 export const MODEL_PROXY_INFERENCE_PORT = 4000;
@@ -56,7 +57,7 @@ export const MODEL_PROXY_INFERENCE_PORT = 4000;
 /**
  * A variable the broker builds, by what it is:
  *  - `text`: a string the environment's name decides;
- *  - `roleArn`: the ARN of a role with a fixed name, in the environment's role path (`/agentx/<env>/`);
+ *  - `roleArn`: the ARN of a role with a fixed name, in the environment's role path (`/rovara-cloud/<env>/`);
  *  - `queueUrl`: the URL of a queue with a fixed name.
  * `cloudOnly`: built only on the hosted cloud (AGENTX_CLOUD is "true"), the one condition under which the control plane creates the resource.
  */

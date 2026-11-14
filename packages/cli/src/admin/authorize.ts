@@ -11,7 +11,7 @@ import { registerCredential } from "./credential.js";
 import { discoverOAuth, registerClient } from "./oauth-discovery.js";
 
 /** The tag the broker role's PutSecretValue grant requires (infra/lib/control-plane.ts). */
-export const WRITABLE_TAG = { Key: "agentx-writable", Value: "refresh-token" } as const;
+export const WRITABLE_TAG = { Key: "rovara-cloud-writable", Value: "refresh-token" } as const;
 const SIGN_IN_TIMEOUT_MS = 300_000;
 const TOKEN_TIMEOUT_MS = 10_000;
 const MAX_ACCOUNT_FIELD = 128;
@@ -184,7 +184,7 @@ export async function authorizeCredential(input: AuthorizeInput): Promise<unknow
   } catch (error) {
     // The sign-in already succeeded: say how to finish without signing in again.
     const flags = generic === undefined ? "" : ` --host ${generic.host} --token-url ${generic.tokenUrl}${generic.resource === undefined ? "" : ` --resource ${generic.resource}`}`;
-    const register = `finish with \`agentx admin credential register --ref ${input.ref} --type oauth-refresh-token --secret ${input.secretName}${flags}\` (no new sign-in needed)`;
+    const register = `finish with \`rovara admin credential register --ref ${input.ref} --type oauth-refresh-token --secret ${input.secretName}${flags}\` (no new sign-in needed)`;
     // The control plane refusing the secret itself (CONFIG_INVALID) is most often a secret written in
     // another region than the control plane's, where registering again would only fail the same way.
     const wrongRegion = error instanceof AgentXError && error.code === "CONFIG_INVALID";

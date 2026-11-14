@@ -1,3 +1,4 @@
+import { RESOURCE_PREFIX } from "./resource-prefix.js";
 import { z } from "zod";
 import { EnvironmentNameSchema } from "./environments.js";
 import { DnsHostSchema, publicHttpsUrlSchema } from "./mcp-connector.js";
@@ -18,12 +19,12 @@ const SECRET_LEAF = "(?!\\.+$)[A-Za-z0-9_+=.@-]{1,128}";
 // agentx/connectors/<name> (deployments that predate environments): the literal legacy prefix, checked
 // first so a plain legacy name is never reinterpreted as an environment form.
 const LEGACY_SECRET_NAME_PATTERN = new RegExp(`^${escapeRegExp(CONNECTOR_SECRET_PREFIX)}${SECRET_LEAF}$`);
-// agentx/<env>/connectors/<name>: the environment segment is validated with EnvironmentNameSchema
+// rovara-cloud/<env>/connectors/<name>: the environment segment is validated with EnvironmentNameSchema
 // itself (not just this shape), so every environment-name rule applies here too, including the
-// reserved name "connectors" (agentx/connectors/connectors/<name> would otherwise be ambiguous with
+// reserved name "connectors" (it is reserved so connectors/connectors/<name> can never be ambiguous with
 // the legacy prefix above).
-const ENVIRONMENT_SECRET_NAME_PATTERN = new RegExp(`^agentx/([^/]+)/connectors/(${SECRET_LEAF})$`);
-const SECRET_NAME_MESSAGE = "secret name must be agentx/connectors/<name> or agentx/<environment>/connectors/<name>";
+const ENVIRONMENT_SECRET_NAME_PATTERN = new RegExp(`^${RESOURCE_PREFIX}/([^/]+)/connectors/(${SECRET_LEAF})$`);
+const SECRET_NAME_MESSAGE = `secret name must be agentx/connectors/<name> or ${RESOURCE_PREFIX}/<environment>/connectors/<name>`;
 const SecretNameSchema = z.string().refine((name) => {
   if (LEGACY_SECRET_NAME_PATTERN.test(name)) return true;
   const match = ENVIRONMENT_SECRET_NAME_PATTERN.exec(name);

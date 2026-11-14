@@ -1,4 +1,4 @@
-// agentx project add, channel add, connector add and alerts test (phase 15d2): day-2 forms of
+// rovara project add, channel add, connector add and alerts test (phase 15d2): day-2 forms of
 // init's finishing steps, built on the same setup/ modules.
 import { agentXError, AgentXNameSchema } from "@agentx/contracts";
 import type { Command } from "commander";
@@ -104,14 +104,14 @@ export function registerSetupCommands(program: Command, context: SetupCommandCon
       if (options.check) {
         await waitForThreadedReply({
           env: run.env, session: run.session, fetch: run.services.fetch, teamId: identity.teamId, channelId: bound.channelId, channelName: bound.channelName, botUserId: identity.botUserId,
-          rerun: `agentx --env ${run.env} channel add --project ${projectName} --channel ${bound.channelName}`, write: run.write, sleep: run.sleep, now: run.now,
+          rerun: `rovara --env ${run.env} channel add --project ${projectName} --channel ${bound.channelName}`, write: run.write, sleep: run.sleep, now: run.now,
         });
       }
       run.print({ ...bound, projectName }, `Bound #${bound.channelName} to ${projectName}\n`);
     });
 
-  // agentx connector add linear|jira|asana, the words FR-036 uses, and mcp for any other server (spec 055).
-  const connector = program.command("connector").description("connect a project to Linear, Jira, Asana or any MCP server (which of them a project's agents may use: agentx project connectors)");
+  // rovara connector add linear|jira|asana, the words FR-036 uses, and mcp for any other server (spec 055).
+  const connector = program.command("connector").description("connect a project to Linear, Jira, Asana or any MCP server (which of them a project's agents may use: rovara project connectors)");
   const connectorAdd = connector.command("add").description("add a connector to a project");
   withRegion(connectorAdd.command("linear"))
     .description("add Linear to a project: guide, key, test read, team, new revision")
@@ -210,7 +210,7 @@ export function registerSetupCommands(program: Command, context: SetupCommandCon
       const run = await context.openAws(command);
       const topicArn = await alertsTopicArn({
         stackOutputs: run.services.stackOutputs, stackName: run.settings.stacks["control-plane"],
-        next: `run agentx init --env ${run.env} to update it, then run agentx alerts test`,
+        next: `run rovara init --env ${run.env} to update it, then run rovara alerts test`,
       });
       const shownAs = run.settings.alertAddress ?? "the alert address";
       await sendTestAlarm({ api: run.services.alerts, topicArn, env: run.env, shownAs, prompter: run.prompter, write: run.write, sleep: run.sleep, now: run.now });

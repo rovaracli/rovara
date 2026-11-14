@@ -1,7 +1,7 @@
 // The install/upgrade deploy parameter model as pure functions: no AWS SDK calls, no CDK imports.
 // It turns the operator's answers, a release manifest, and the stack outputs collected so far into
-// the exact CloudFormation Parameters map for one environment stack. The caller (phase 15d's `agentx
-// init`/`agentx upgrade`) reads secrets and calls CloudFormation; this file only computes values.
+// the exact CloudFormation Parameters map for one environment stack. The caller (phase 15d's `rovara
+// init`/`rovara upgrade`) reads secrets and calls CloudFormation; this file only computes values.
 import type { Edition } from "@agentx/contracts";
 import { CLOUD_PROJECT_FOUNDATION_PARAMETERS, CONTROL_PLANE_FOUNDATION_PARAMETERS, ImageDigest, MODEL_PROXY_FOUNDATION_PARAMETERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, environmentStackName } from "@agentx/contracts";
 import type { ReleaseManifest, StackPart } from "@agentx/contracts";
@@ -30,11 +30,11 @@ export interface InstallAnswers {
         /** Required together: bringing your own OIDC provider means there is no identity stack's fixed admin group to fall back on. */
         adminClaim?: string;
         adminValues?: string[];
-        /** Required to write environment settings (the deploy orchestrator's clientId for `agentx login`): bringing
+        /** Required to write environment settings (the deploy orchestrator's clientId for `rovara login`): bringing
          * your own OIDC provider means there is no identity stack's ClientId output to read it from instead. */
         clientId?: string;
       };
-  // account and installationId are what `agentx init` set up; the control plane no longer takes them (#123).
+  // account and installationId are what `rovara init` set up; the control plane no longer takes them (#123).
   github: { account?: string; appId: string; installationId?: string; privateKeySecretArn: string; credentialRef?: string };
   /** The value; the caller reads it from Secrets Manager, never logs it. */
   callbackSigningKey: string;
@@ -71,7 +71,7 @@ const MIN_CALLBACK_SIGNING_KEY_LENGTH = 32;
 export const SECRET_PARAMETERS: ReadonlySet<string> = new Set(["CallbackSigningKey"]);
 
 /**
- * Stack parameters an operator sets after install (the budget question, agentx config set) that an
+ * Stack parameters an operator sets after install (the budget question, rovara config set) that an
  * upgrade's answers do not carry. An upgrade keeps each one's deployed value unless its answers set
  * it, so no upgrade resets them to the template default. Models are not here: they live in the
  * settings, which the upgrade's answers read.
@@ -80,8 +80,8 @@ export const OPERATOR_PARAMETERS: Readonly<Record<DeployPart, readonly string[]>
   access: [],
   foundation: [],
   identity: [],
-  // The AI navigation model the customer chose (agentx config set models.e2eAgent): a stack parameter and not a model role, so it is not in the settings the upgrade's answers read.
-  // MODEL3: the fallback model the customer chose (agentx config set models.fallback), also a parameter of the Slack stack.
+  // The AI navigation model the customer chose (rovara config set models.e2eAgent): a stack parameter and not a model role, so it is not in the settings the upgrade's answers read.
+  // MODEL3: the fallback model the customer chose (rovara config set models.fallback), also a parameter of the Slack stack.
   runtime: ["E2eAgentModelId", "ModelFallback"],
   "control-plane": ["BudgetMonthlyUsd", "BudgetScope", "SlackAppPostedMessages", "SlackThreadTurnsPerMinute", "SlackMemberWorkspaceLimit", "SlackOrganizationWorkspaceLimit", "McpConfirmElicitation", "TaskPeopleChangesEnabled", "TaskPeoplePublicInvitationsEnabled", "TaskPeoplePrivateInvitationsEnabled", "TaskPersonProofEnabled", "WorkflowDependenciesEnabled", "RovaraCodeV2Enabled", "PlanSelfCheckEnabled", "AutofixEnabled", "LiveSteerEnabled", "LiveRedirectEnabled", "LiveAskEnabled", "LiveFixEnabled", "ProofEvidenceEnabled", "DecisionCardsEnabled", "TestEnvironmentEnabled", "LearnedLessonsEnabled", "VerifyResultsEnabled", "SetupAgentEnabled", "TestServicesEnabled", "TestAccountsEnabled", "ProjectImagesEnabled", "SecondReviewEnabled", "SavedEnvEnabled", "DesignReviewEnabled", "DesignReviewProjects", "SetupRecipesEnabled", "NightlyHealthEnabled", "LearningSuggestionsDefault", "AuditLockProfile"],
   slack: ["SlowTurnMinutes", "ModelFallback"],
@@ -224,7 +224,7 @@ function packageParameters(release: ReleaseManifest, part: DeployPart, outputs: 
     // The access stack is the one template the service role cannot deploy itself, so it is
     // synthesized without the legacy asset-parameter machinery and has no ArtifactBucketName
     // output of its own to resolve pkg.bucketParameter against (required() below would throw a
-    // confusing "stack agentx-<env>-access has no output ArtifactBucketName" instead of naming
+    // confusing "stack rovara-cloud-<env>-access has no output ArtifactBucketName" instead of naming
     // the actual problem: the release manifest itself is wrong).
     if (pkg.parts.includes("access")) {
       throw new Error(`release package ${pkg.assetId} lists "access" among its parts, but the access stack carries no zip assets`);
@@ -247,7 +247,7 @@ function imageTarget(answers: InstallAnswers, prefix: string): { account: string
   };
 }
 
-/** Throws when your own OIDC provider is given without naming its administrators; returns nothing for Cognito, whose template defaults (cognito:groups / ["agentx-admin"]) already match the identity stack's admin group. */
+/** Throws when your own OIDC provider is given without naming its administrators; returns nothing for Cognito, whose template defaults (cognito:groups / ["rovara-cloud-admin"]) already match the identity stack's admin group. */
 function adminParameters(identity: InstallAnswers["identity"]): Record<string, string> {
   if (identity.mode === "cognito") return {};
   const { adminClaim, adminValues } = identity;

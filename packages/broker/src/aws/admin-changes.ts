@@ -198,7 +198,7 @@ const storedIdentity = (change: PendingChange): AuthenticatedIdentity => ({ issu
 
 async function requireOwn(deps: AdminChangeDependencies, identity: AuthenticatedIdentity, changeId: string): Promise<PendingChange> {
   const change = await getPending(deps, changeId);
-  if (change === undefined) throw agentXError("NOT_FOUND", `no change ${changeId}; list the changes with agentx admin changes`);
+  if (change === undefined) throw agentXError("NOT_FOUND", `no change ${changeId}; list the changes with rovara admin changes`);
   if (!isPlanner(change, identity)) {
     await refuseAttempt(deps, changeId, "another_admin");
     logChangeStep(deps.log, "refused", { ...traced(change), error: "another_admin" });
@@ -240,7 +240,7 @@ function unavailableMessage(deps: AdminChangeDependencies, methods: readonly Con
   const slackSetUp = deps.confirm.slack && deps.identity !== undefined;
   const checkFailed = methods.includes("slack") && slackSetUp && lookupFailed;
   if (methods.includes("slack")) reasons.push(!slackSetUp ? "Slack confirmation is not set up in this environment" : lookupFailed ? "AgentX could not check your Slack link just now" : "your admin sign-in matches no Slack user");
-  return `no confirmation method is available: ${reasons.join(", and ")}; ${checkFailed ? "try again, or use" : "use"} agentx admin commands instead`;
+  return `no confirmation method is available: ${reasons.join(", and ")}; ${checkFailed ? "try again, or use" : "use"} rovara admin commands instead`;
 }
 
 /**
@@ -689,7 +689,7 @@ async function list(deps: AdminChangeDependencies, url: URL): Promise<Answer> {
 }
 
 /**
- * Issue #205: agentx config set applies a stack-parameter (or alert address) change from the
+ * Issue #205: rovara config set applies a stack-parameter (or alert address) change from the
  * operator's computer, not through a handler here, so the CLI records it: after the admin's yes and
  * before the change, a record that starts applying (the cli method), then its outcome once. There
  * is no pending item, so the confirmation routes never find it and the 2-minute stale rule (which
@@ -761,7 +761,7 @@ async function recordConfigChange(deps: AdminChangeDependencies, identity: Authe
 /** Issue #205: how a recorded config change ended, once, by the admin who recorded it. */
 async function recordConfigOutcome(deps: AdminChangeDependencies, identity: AuthenticatedIdentity, changeId: string, value: unknown): Promise<Answer> {
   const record = await readAudit(deps.audit, changeId);
-  if (record === undefined) throw agentXError("NOT_FOUND", `no change ${changeId}; list the changes with agentx admin changes`);
+  if (record === undefined) throw agentXError("NOT_FOUND", `no change ${changeId}; list the changes with rovara admin changes`);
   if (record.kind !== "set_config" || (await getPending(deps, changeId)) !== undefined) {
     throw agentXError("CONFIG_INVALID", `change ${changeId} is not a recorded config change; confirm or decline it instead`);
   }
@@ -821,7 +821,7 @@ async function routeChange(deps: AdminChangeDependencies, identity: Authenticate
   if (changeId !== undefined) {
     if (request.method === "GET" && match?.[2] === undefined) {
       const change = await getPending(deps, changeId);
-      if (change === undefined) throw agentXError("NOT_FOUND", `no change ${changeId}; list the changes with agentx admin changes`);
+      if (change === undefined) throw agentXError("NOT_FOUND", `no change ${changeId}; list the changes with rovara admin changes`);
       return { status: 200, body: { change: viewOf(deps, await settle(deps, change), isPlanner(change, identity)) } };
     }
     if (request.method === "POST" && match?.[2] === "slack") return startSlack(deps, identity, changeId);

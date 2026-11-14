@@ -37,7 +37,7 @@ const expectUnauthorized = async (promise: Promise<unknown>) => {
   const error = await refusal(promise);
   expect(error.code).toBe("AUTH_REQUIRED");
   // One answer for every failure: nothing that tells an attacker which check failed.
-  expect(error.message).toBe("AUTH_REQUIRED: this route needs an AgentX developer sign-in; run agentx login <url>");
+  expect(error.message).toBe("AUTH_REQUIRED: this route needs an AgentX developer sign-in; run rovara login <url>");
 };
 
 describe("the broker's developer token check (D17)", () => {
@@ -91,7 +91,7 @@ describe("the broker's developer token check (D17)", () => {
 
   it.each([
     ["a wrong issuer", { iss: "https://other.example.test/v1/auth" }],
-    ["a wrong audience", { aud: "agentx-admin-client" }],
+    ["a wrong audience", { aud: "rovara-cloud-admin-client" }],
     ["an expired token, past the 30-second leeway", { exp: T0 / 1000 - 31 }],
     ["an nbf in the future, past the 30-second leeway", { nbf: T0 / 1000 + 31 }],
     ["no exp", { exp: undefined }],

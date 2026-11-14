@@ -14,7 +14,7 @@ import { createPiSessionRuntime, runOrchestratorTurn } from "../../packages/orch
 import { createModelClassifier } from "../../packages/orchestrator/src/action-classifier.js";
 import { createFixtureDirectory } from "../fixtures/index.js";
 
-const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/openrouter-AbCdEf";
+const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/openrouter-AbCdEf";
 const secret = "sk-or-test-never-persist-this";
 const selected = { provider: "openrouter", modelId: "anthropic/claude-sonnet-4.5" };
 const environment = { AGENTX_OPENROUTER_SECRET_ARN: secretArn, AGENTX_OPENROUTER_PROVIDERS: "anthropic" };

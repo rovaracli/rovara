@@ -13,11 +13,11 @@ import { PROFILE, webApiRow } from "../support/e2e-application-plan-fixtures.js"
 
 const NOW = Date.parse("2026-10-20T18:00:00.000Z");
 const at = (hours: number) => new Date(NOW + hours * 3_600_000).toISOString();
-const RENEW = "npx tsx scripts/test-qualify-runtime.ts --env agentxlivetest123 --profile agentx-test --apply";
+const RENEW = "npx tsx scripts/test-qualify-runtime.ts --env rovaralivetest --profile agentx-test --apply";
 
 describe("the renew command and the expiry notice", () => {
   it("is the one command that qualifies the runtime again, with the environment and the AWS profile", () => {
-    expect(e2eRuntimeRenewCommand({ env: "agentxlivetest123", profile: "agentx-test" })).toBe(RENEW);
+    expect(e2eRuntimeRenewCommand({ env: "rovaralivetest", profile: "agentx-test" })).toBe(RENEW);
     expect(E2E_RUNTIME_GENERIC_RENEW_COMMAND).toBe("npx tsx scripts/test-qualify-runtime.ts --env <env> --profile <aws-profile> --apply");
   });
 
@@ -37,8 +37,8 @@ describe("the renew command and the expiry notice", () => {
   });
 
   it("names the owner's start command for the automatic renewal, and explains that a notice on an installation with it means the renewal did not succeed (AR-5)", () => {
-    expect(e2eRuntimeRequalifyNowCommand({ env: "agentxlivetest123", profile: "agentx-test" }))
-      .toBe("npx tsx scripts/test-deploy.ts --env agentxlivetest123 --profile agentx-test --only requalify-now --apply");
+    expect(e2eRuntimeRequalifyNowCommand({ env: "rovaralivetest", profile: "agentx-test" }))
+      .toBe("npx tsx scripts/test-deploy.ts --env rovaralivetest --profile agentx-test --only requalify-now --apply");
     expect(E2E_RUNTIME_AUTO_RENEWAL_NOTE).toMatch(/72 hours/);
     expect(E2E_RUNTIME_AUTO_RENEWAL_NOTE).toMatch(/did not succeed/);
     // The note is added only by a caller that knows the renewal is installed (the TEST deploy check): the public doctor and installations without it never see it.
@@ -110,7 +110,7 @@ describe("readRuntimeStatus", () => {
 describe("agentx doctor's browser and API runtime checks", () => {
   const row = (kind: "web" | "api", overrides: Partial<{ state: string; expiresAt: string }> = {}) =>
     ({ kind, profileId: PROFILE, state: "READY", qualifiedAt: at(-24), expiresAt: at(24 * 6), ...overrides });
-  const context = (read: (() => Promise<RuntimeStatusRead>) | undefined) => ({ env: "agentxlivetest123", services: { now: () => NOW, ...(read === undefined ? {} : { runtime: read }) } }) as unknown as DoctorContext;
+  const context = (read: (() => Promise<RuntimeStatusRead>) | undefined) => ({ env: "rovaralivetest", services: { now: () => NOW, ...(read === undefined ? {} : { runtime: read }) } }) as unknown as DoctorContext;
   const lines = async (result: RuntimeStatusRead) => (await runtimeChecks(context(async () => result))).map(({ name, status, detail, fix }) => ({ name, status, detail, ...(fix === undefined ? {} : { fix }) }));
   const status = (rows: ReturnType<typeof row>[], awsProfile: string | null = "agentx-test"): RuntimeStatusRead => ({ kind: "status", status: { rows }, ...(awsProfile === null ? {} : { awsProfile }) });
 
@@ -135,7 +135,7 @@ describe("agentx doctor's browser and API runtime checks", () => {
 
   it("fills the environment in and leaves the AWS profile to the reader when this computer names none", async () => {
     const [web] = await lines(status([row("web", { expiresAt: at(30) })], null));
-    expect(web!.fix).toBe("renew it with: npx tsx scripts/test-qualify-runtime.ts --env agentxlivetest123 --profile <aws-profile> --apply");
+    expect(web!.fix).toBe("renew it with: npx tsx scripts/test-qualify-runtime.ts --env rovaralivetest --profile <aws-profile> --apply");
   });
 
   it("skips, saying why, with no sign-in, no deployment support, no rows, or an agentx that cannot check", async () => {

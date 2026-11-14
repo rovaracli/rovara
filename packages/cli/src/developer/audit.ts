@@ -1,4 +1,4 @@
-// `agentx audit log | export | verify | open` (Task 14): an organization's owners and admins read, export and check their audit log
+// `rovara audit log | export | verify | open` (Task 14): an organization's owners and admins read, export and check their audit log
 // with their own developer sign-in, over `/v1/dev/org/audit/*`. The staff commands (admin/audit.ts) share everything below the
 // transport: the export flow, the verification and, above all, how a value from the ledger is shown.
 //

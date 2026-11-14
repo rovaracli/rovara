@@ -40,7 +40,7 @@ describe("Slack hand-off infrastructure (Task 19)", () => {
   it("alarms the operator on every lost request, not only while the queue holds one", () => {
     const queueId = idOf("AWS::SQS::Queue", "SlackHandOffFailureQueue");
     named.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmName: "agentx-live19-SlackHandOffFailures", Threshold: 1, EvaluationPeriods: 1, Period: 300,
+      AlarmName: "rovara-cloud-live19-SlackHandOffFailures", Threshold: 1, EvaluationPeriods: 1, Period: 300,
       MetricName: "NumberOfMessagesSent", Namespace: "AWS/SQS", Statistic: "Sum",
       AlarmDescription: Match.stringLikeRegexp("background request \\(a Slack button press or a scheduled retry\\) was lost.*Check the queue"),
       ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",

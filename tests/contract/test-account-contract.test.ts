@@ -73,7 +73,7 @@ describe("TestAccount record", () => {
 
   describe("secret reference", () => {
     it("must be a test-account reference at all", () => {
-      for (const secretRef of ["", "plain-value", stripeTest(), "{{resolve:secretsmanager:agentx/staging/org-connectors/" + ORG + "/payments-test:SecretString:apiKey}}", "{{resolve:ssm:/x}}", "agentx/staging/org-test-accounts/x/y"]) expect(ok(account({ secretRef })), secretRef.slice(0, 20)).toBe(false);
+      for (const secretRef of ["", "plain-value", stripeTest(), "{{resolve:secretsmanager:rovara-cloud/staging/org-connectors/" + ORG + "/payments-test:SecretString:apiKey}}", "{{resolve:ssm:/x}}", "rovara-cloud/staging/org-test-accounts/x/y"]) expect(ok(account({ secretRef })), secretRef.slice(0, 20)).toBe(false);
     });
     it("must point at this org's own path", () => {
       expect(ok(account({ secretRef: ref({ org: OTHER_ORG }) }))).toBe(false);
@@ -82,7 +82,7 @@ describe("TestAccount record", () => {
       expect(ok(account({ secretRef: ref({ id: "someone-elses" }) }))).toBe(false);
     });
     it("is refused with extra segments or traversal", () => {
-      const base = `{{resolve:secretsmanager:agentx/staging/org-test-accounts/${ORG}/payments-test:SecretString:apiKey}}`;
+      const base = `{{resolve:secretsmanager:rovara-cloud/staging/org-test-accounts/${ORG}/payments-test:SecretString:apiKey}}`;
       expect(ok(account({ secretRef: base }))).toBe(true);
       for (const bad of [base.replace("payments-test", "payments-test/../x"), base.replace("/payments-test", "/a/payments-test"), base.replace("apiKey", "api/Key"), base.replace(":SecretString:apiKey", ""), `${base} `, ` ${base}`, base.replace("}}", ":v1}}"), base.replace("staging", "../staging")]) expect(ok(account({ secretRef: bad })), bad).toBe(false);
     });
@@ -369,8 +369,8 @@ describe("TestAccount record", () => {
 
 describe("secret name, tags and reference", () => {
   it("builds the org-tagged path", () => {
-    expect(acc.testAccountSecretName("staging", ORG, "payments-test")).toBe(`agentx/staging/org-test-accounts/${ORG}/payments-test`);
-    expect(acc.testAccountSecretPrefix("staging", ORG)).toBe(`agentx/staging/org-test-accounts/${ORG}/`);
+    expect(acc.testAccountSecretName("staging", ORG, "payments-test")).toBe(`rovara-cloud/staging/org-test-accounts/${ORG}/payments-test`);
+    expect(acc.testAccountSecretPrefix("staging", ORG)).toBe(`rovara-cloud/staging/org-test-accounts/${ORG}/`);
     expect(acc.testAccountSecretName("staging", ORG, "payments-test").startsWith(acc.testAccountSecretPrefix("staging", ORG))).toBe(true);
   });
   it("keeps test-account secrets apart from connector and hook secrets", () => {
@@ -398,7 +398,7 @@ describe("secret name, tags and reference", () => {
   });
   it("builds a resolve reference and reads it back", () => {
     const reference = acc.testAccountSecretRef("staging", ORG, "payments-test", "apiKey");
-    expect(reference).toBe(`{{resolve:secretsmanager:agentx/staging/org-test-accounts/${ORG}/payments-test:SecretString:apiKey}}`);
+    expect(reference).toBe(`{{resolve:secretsmanager:rovara-cloud/staging/org-test-accounts/${ORG}/payments-test:SecretString:apiKey}}`);
     expect(acc.parseTestAccountSecretRef(reference)).toEqual({ env: "staging", orgId: ORG, accountId: "payments-test", key: "apiKey" });
   });
   it("takes a plain JSON key", () => {
@@ -406,11 +406,13 @@ describe("secret name, tags and reference", () => {
     expect(() => acc.testAccountSecretRef("staging", ORG, "payments-test", "client_secret-2")).not.toThrow();
   });
   it("reads back only an exact test-account reference", () => {
-    expect(acc.parseTestAccountSecretRef(`{{resolve:secretsmanager:agentx/staging/org-connectors/${ORG}/payments-test:SecretString:apiKey}}`)).toBeUndefined();
-    expect(acc.parseTestAccountSecretRef(`agentx/staging/org-test-accounts/${ORG}/payments-test`)).toBeUndefined();
-    expect(acc.parseTestAccountSecretRef(`prefix {{resolve:secretsmanager:agentx/staging/org-test-accounts/${ORG}/payments-test:SecretString:apiKey}}`)).toBeUndefined();
-    expect(acc.parseTestAccountSecretRef(`{{resolve:secretsmanager:agentx/staging/org-test-accounts/org_short/payments-test:SecretString:apiKey}}`)).toBeUndefined();
-    expect(acc.parseTestAccountSecretRef(`{{resolve:secretsmanager:agentx/staging/org-test-accounts/${ORG}/payments-test:SecretString:apiKey}}{{x}}`)).toBeUndefined();
+    expect(acc.parseTestAccountSecretRef(`{{resolve:secretsmanager:rovara-cloud/staging/org-connectors/${ORG}/payments-test:SecretString:apiKey}}`)).toBeUndefined();
+    expect(acc.parseTestAccountSecretRef(`rovara-cloud/staging/org-test-accounts/${ORG}/payments-test`)).toBeUndefined();
+    // Environments named under the old agentx prefix are not supported (2026-11-14 rename).
+    expect(acc.parseTestAccountSecretRef(`{{resolve:secretsmanager:agentx/staging/org-test-accounts/${ORG}/payments-test:SecretString:apiKey}}`)).toBeUndefined();
+    expect(acc.parseTestAccountSecretRef(`prefix {{resolve:secretsmanager:rovara-cloud/staging/org-test-accounts/${ORG}/payments-test:SecretString:apiKey}}`)).toBeUndefined();
+    expect(acc.parseTestAccountSecretRef(`{{resolve:secretsmanager:rovara-cloud/staging/org-test-accounts/org_short/payments-test:SecretString:apiKey}}`)).toBeUndefined();
+    expect(acc.parseTestAccountSecretRef(`{{resolve:secretsmanager:rovara-cloud/staging/org-test-accounts/${ORG}/payments-test:SecretString:apiKey}}{{x}}`)).toBeUndefined();
     expect(acc.parseTestAccountSecretRef("")).toBeUndefined();
   });
 });

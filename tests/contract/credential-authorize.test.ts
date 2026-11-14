@@ -79,7 +79,7 @@ const base = (secrets: AuthorizeSecrets, fetchImplementation: typeof fetch, play
   secrets, fetchImplementation, openBrowser: play.openBrowser, onListening: play.onListening, listenPort: 0, showUrl: () => undefined,
 });
 
-describe("agentx admin credential authorize", () => {
+describe("rovara admin credential authorize", () => {
   it("signs in with PKCE S256 and a state, stores the refresh token beside the client, tags the secret and registers it", async () => {
     const secrets = secretsWith(JSON.stringify(CLIENT));
     const { fetchImplementation, exchanges, registrations } = vendorAndControlPlane();
@@ -226,7 +226,7 @@ describe("agentx admin credential authorize", () => {
     expect(write).toBeInstanceOf(PutSecretValueCommand);
     expect(write!.input).toEqual({ SecretId: SECRET, SecretString: "value" });
     expect(tag).toBeInstanceOf(TagResourceCommand);
-    expect(tag!.input).toEqual({ SecretId: SECRET, Tags: [{ Key: "agentx-writable", Value: "refresh-token" }] });
+    expect(tag!.input).toEqual({ SecretId: SECRET, Tags: [{ Key: "rovara-cloud-writable", Value: "refresh-token" }] });
     const missing = secretsManagerAuthorizeSecrets({ send: vi.fn(async () => { throw Object.assign(new Error("nope"), { name: "ResourceNotFoundException" }); }) } as never);
     expect(await missing.read(SECRET)).toBeUndefined();
   });
@@ -416,7 +416,7 @@ describe("agentx admin credential authorize", () => {
       expect(registrations).toHaveLength(1);
       expect(secrets.writes).toHaveLength(1);
       expect(secrets.tags).toEqual([SECRET]);
-      expect(stderr).toContain(`AgentX error [${failure.code}]: ${failure.message}; the refresh token is stored and tagged in secret ${SECRET}; finish with \`agentx admin credential register --ref asana-bot --type oauth-refresh-token --secret ${SECRET}\` (no new sign-in needed)`);
+      expect(stderr).toContain(`AgentX error [${failure.code}]: ${failure.message}; the refresh token is stored and tagged in secret ${SECRET}; finish with \`rovara admin credential register --ref asana-bot --type oauth-refresh-token --secret ${SECRET}\` (no new sign-in needed)`);
       expect(stderr).not.toContain("Stored the refresh token in");
       // The account is shown before registration, so a failed registration still shows who signed in.
       expect(stderr).toContain("Signed in to Asana (the account could not be shown).");
@@ -435,7 +435,7 @@ describe("agentx admin credential authorize", () => {
       const failure = await authorizeCredential({ ...base(secrets, fetchImplementation, play), ...(region === undefined ? {} : { region }) }).catch((error: unknown) => error) as Error & { code?: string };
       expect(failure.code).toBe("CONFIG_INVALID");
       const where = region === undefined ? "your default AWS region" : region;
-      expect(failure.message).toBe(`CONFIG_INVALID: credential asana-bot: secret ${SECRET} was not found; the refresh token is stored and tagged in secret ${SECRET} in ${where}, but the control plane reads secrets in its own AWS region: if that is a different region, run the command again with --region set to the control plane's region; otherwise finish with \`agentx admin credential register --ref asana-bot --type oauth-refresh-token --secret ${SECRET}\` (no new sign-in needed)`);
+      expect(failure.message).toBe(`CONFIG_INVALID: credential asana-bot: secret ${SECRET} was not found; the refresh token is stored and tagged in secret ${SECRET} in ${where}, but the control plane reads secrets in its own AWS region: if that is a different region, run the command again with --region set to the control plane's region; otherwise finish with \`rovara admin credential register --ref asana-bot --type oauth-refresh-token --secret ${SECRET}\` (no new sign-in needed)`);
     }
   });
 
@@ -445,7 +445,7 @@ describe("agentx admin credential authorize", () => {
     const play = browser((authorize) => [{ code: CODE, state: authorize.searchParams.get("state")! }]);
     const failure = await authorizeCredential(base(secrets, fetchImplementation, play)).catch((error: unknown) => error) as Error;
     expect(failure).not.toHaveProperty("code");
-    expect(failure.message).toBe(`could not register the credential (TypeError); the refresh token is stored and tagged in secret ${SECRET}; finish with \`agentx admin credential register --ref asana-bot --type oauth-refresh-token --secret ${SECRET}\` (no new sign-in needed)`);
+    expect(failure.message).toBe(`could not register the credential (TypeError); the refresh token is stored and tagged in secret ${SECRET}; finish with \`rovara admin credential register --ref asana-bot --type oauth-refresh-token --secret ${SECRET}\` (no new sign-in needed)`);
   });
 
   describe("--expect-account and --no-browser", () => {

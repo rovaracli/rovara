@@ -46,7 +46,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { BROKER_SETTINGS, fixtureKeyAlias, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX } from "@agentx/contracts";
+import { BROKER_SETTINGS, fixtureKeyAlias, SERVICE_CATALOG_REPOSITORIES, E2E_ARTIFACT_RETENTION_DAYS, EVIDENCE_RETENTION_DAYS, evidenceRetentionDays, evidenceRetentionSetting, E2E_ARTIFACT_RETENTION_TAG_KEY, E2E_ARTIFACT_RETENTION_TAG_VALUE, HEALTH_ALARM_SUFFIXES, chainScheduleGroupName, chainScheduleQueueName, chainScheduleRoleName, brokerRoleName, brokerManagedPolicyPath, modelAccessProbeRoleName, brokerManagedPolicyPrefix, connectorSecretsRoleName, testAccountSecretsRoleName, environmentE2eFeatureRuntimeCatalogId, environmentProjectSetupRuntimeCatalogId, INDEX_EXPIRY_ATTRIBUTE, WORKER_SETTING_PARAMETERS, WORKFLOW_DISPATCH_DUE_INDEX, WORKSPACE_PROJECT_INDEX, WORKSPACE_SESSION_STATE_INDEX, RESOURCE_PREFIX, ENVIRONMENT_TAG_KEY, CODEBUILD_PROJECT_PREFIX, TASK_PERSON_PROOF_ENV } from "@agentx/contracts";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
 import { grantEditionRecordRead } from "./edition-env.js";
 import { DeveloperSignIn, developerSignInParameters } from "./developer-signin.js";
@@ -126,7 +126,7 @@ function unlistedAlarms(scope: Construct, prefix: string): string[] {
     // CloudWatch returns a composite alarm only to a DescribeAlarms grant on *, which the broker has not.
     if (construct instanceof cloudwatch.CfnCompositeAlarm) return [`the health probe cannot read composite alarm ${construct.node.path}`];
     if (!(construct instanceof cloudwatch.CfnAlarm)) return [];
-    // The egress alarms (foundation stack, cloud installs) are named agentx-<env>-nat-egress-spike-<az> and
+    // The egress alarms (foundation stack, cloud installs) are named rovara-cloud-<env>-nat-egress-spike-<az> and
     // blocked-dns-spike; the probe's single-word suffixes cannot list them. They notify the alerts topic
     // and are not on the admin health route.
     if (construct.node.scopes.some((scope) => scope instanceof EgressAlarms)) return [];
@@ -159,7 +159,7 @@ export class ControlPlaneStack extends Stack {
     });
     const adminValues = new CfnParameter(this, "AdminValues", {
       type: "String",
-      default: '["agentx-admin"]',
+      default: '["rovara-cloud-admin"]',
       description: "JSON string array of claim values that grant AgentX administrator access",
     });
     // A named environment's broker is given these two in its settings (BrokerSettings, ENV-ROOM), which are joined unescaped, so the parameter admits plain text only. The legacy install keeps them whole.
@@ -170,7 +170,7 @@ export class ControlPlaneStack extends Stack {
       ...plainText,
     });
     // No account or installation: the broker looks up the App's installation per repository owner (#123).
-    // Empty: the broker reads the id from the private-key secret's appId. agentx init deploys the
+    // Empty: the broker reads the id from the private-key secret's appId. rovara init deploys the
     // control plane before it creates the GitHub App, so it has no id to pass yet.
     const githubAppId = new CfnParameter(this, "GitHubAppId", {
       type: "String",
@@ -184,7 +184,7 @@ export class ControlPlaneStack extends Stack {
     });
     // Spec 025 phase 25a: declared on the stack itself so the names are exact; named environments only (R3).
     const signInParameters = naming.env === undefined ? undefined : developerSignInParameters(this);
-    const taskPersonProofEnabled = naming.env === "agentxlivetest123" ? new CfnParameter(this, "TaskPersonProofEnabled", {
+    const taskPersonProofEnabled = naming.env === TASK_PERSON_PROOF_ENV ? new CfnParameter(this, "TaskPersonProofEnabled", {
       type: "String",
       default: "false",
       allowedValues: ["true", "false"],
@@ -279,8 +279,8 @@ export class ControlPlaneStack extends Stack {
     }
     // The merged control plane's broker policy is past CDK's 10,000-character inline limit, and CDK would move the overflow into a
     // managed policy, which the deploy's CloudFormation role may not create (R53). Merge same-shaped statements instead.
-    // Then they move into named managed policies (agentx-<env>-broker-<group>, ruling M2): a role's inline policies are capped at 10,240
-    // characters in total, and the deploy's CloudFormation role may create managed policies named agentx-* only.
+    // Then they move into named managed policies (rovara-cloud-<env>-broker-<group>, ruling M2): a role's inline policies are capped at 10,240
+    // characters in total, and the deploy's CloudFormation role may create managed policies named rovara-cloud-<env>-broker-* only.
     if (naming.env !== undefined && props?.mergeBrokerStatements !== false) {
       mergeRoleStatementsOnSynth(broker.role!, { managedPolicyPrefix: brokerManagedPolicyPrefix(naming.env), managedPolicyPath: brokerManagedPolicyPath(naming.env) });
     }
@@ -297,15 +297,17 @@ export class ControlPlaneStack extends Stack {
       resources: [this.formatArn({ service: "secretsmanager", resource: "secret", resourceName: `${naming.connectorSecretPrefix}*`, arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
     }));
     // A rotated OAuth refresh token is written back to its own secret. Only secrets that
-    // `agentx admin credential authorize` tagged for it are writable, never other connector secrets.
+    // `rovara admin credential authorize` tagged for it are writable, never other connector secrets.
     broker.addToRolePolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:PutSecretValue"],
       resources: [this.formatArn({ service: "secretsmanager", resource: "secret", resourceName: `${naming.connectorSecretPrefix}*`, arnFormat: ArnFormat.COLON_RESOURCE_NAME })],
-      conditions: { StringEquals: { "secretsmanager:ResourceTag/agentx-writable": "refresh-token" } },
+      conditions: { StringEquals: { "secretsmanager:ResourceTag/rovara-cloud-writable": "refresh-token" } },
     }));
+    // The projects the broker may start are exactly those a project's CodeBuild node may name (CODEBUILD_PROJECT_PREFIX, which
+    // contracts' ProjectNode schema enforces for every deployment, the legacy one included).
     broker.addToRolePolicy(new iam.PolicyStatement({
       actions: ["codebuild:StartBuild", "codebuild:BatchGetBuilds"],
-      resources: [this.formatArn({ service: "codebuild", resource: "project", resourceName: "agentx-*" })],
+      resources: [this.formatArn({ service: "codebuild", resource: "project", resourceName: `${CODEBUILD_PROJECT_PREFIX}*` })],
     }));
     // Owner decision 2026-11-03: the broker learns which of Rovara's catalog models the account has enabled in Amazon Bedrock (an agreement per model) so no default choice offers one it cannot call. One read-only action: it names
     // no resource type in the Service Authorization Reference (the runner's E2eModelDiscovery policy grants it the same way), reveals only a model's agreement and authorization status, and reaches no model or data. Named environments only (the model proxy is).
@@ -315,8 +317,8 @@ export class ControlPlaneStack extends Stack {
     // A named environment's broker derives its connector secret prefix from AGENTX_ENV (broker-environment.ts), so it is not given it.
     // A fixed name, so the default boundary's AssumeOrgRoles statement can name this role as one of the three that may be granted a cross-account assume.
     if (naming.env !== undefined) (broker.role!.node.defaultChild as iam.CfnRole).roleName = brokerRoleName(naming.env);
-    // Plan 3, ruling R62: an org's connection keys and event hook secrets (agentx/<env>/org-connectors/<org>/... and
-    // agentx/<env>/org-hooks/<org>/...) are readable only through this role, in a session the broker tags with the org.
+    // Plan 3, ruling R62: an org's connection keys and event hook secrets (rovara-cloud/<env>/org-connectors/<org>/... and
+    // rovara-cloud/<env>/org-hooks/<org>/...) are readable only through this role, in a session the broker tags with the org.
     // The broker role may assume it and holds no Secrets Manager permission on those paths. Named environments only.
     if (naming.env !== undefined) {
       const connectorSecretsRole = new iam.CfnRole(this, "ConnectorSecretsRole", {
@@ -340,7 +342,7 @@ export class ControlPlaneStack extends Stack {
         actions: ["sts:AssumeRole", "sts:TagSession"],
         resources: [connectorSecretsRole.attrArn],
       }));
-      // Test services TS26 (design 6.2): a customer test account's secret (agentx/<env>/org-test-accounts/<org>/...) is kept and read only through THIS role, in a session the broker tags with the org and a
+      // Test services TS26 (design 6.2): a customer test account's secret (rovara-cloud/<env>/org-test-accounts/<org>/...) is kept and read only through THIS role, in a session the broker tags with the org and a
       // purpose. The broker's own session (`store`) can write and never read a value; the session it mints for a sealed round's worker (`resolve`) reads one secret and writes nothing. The broker role
       // may assume it and holds no Secrets Manager permission on the path. The role exists whether or not the `ta` switch is on; no code assumes it while `ta` is off.
       const testAccountSecretsRole = new iam.CfnRole(this, "TestAccountSecretsRole", {
@@ -611,9 +613,9 @@ export class ControlPlaneStack extends Stack {
     });
     // Operators store the real values with put-secret-value; the generated placeholder rejects every request until then.
     const slackSecret = new secretsmanager.Secret(this, "SlackSecret", {
-      // Under environment naming, a fixed name under agentx/<env>/ so the operator role's secrets
+      // Under environment naming, a fixed name under rovara-cloud/<env>/ so the operator role's secrets
       // scope covers it. The legacy deployment keeps its generated name.
-      ...(naming.env === undefined ? {} : { secretName: `agentx/${naming.env}/slack` }),
+      ...(naming.env === undefined ? {} : { secretName: `${RESOURCE_PREFIX}/${naming.env}/slack` }),
       description: "AgentX Slack app credentials as JSON: {\"signingSecret\":\"...\",\"botToken\":\"xoxb-...\"}",
       generateSecretString: {
         secretStringTemplate: JSON.stringify({ botToken: "unset" }),
@@ -746,7 +748,7 @@ export class ControlPlaneStack extends Stack {
       });
       const scope = new CfnParameter(this, "BudgetScope", {
         type: "String", default: "tag", allowedValues: ["tag", "account"],
-        description: "tag: costs tagged agentx:env for this environment (the tag must be activated in Billing); account: the whole account",
+        description: "tag: costs tagged rovara-cloud:env for this environment (the tag must be activated in Billing); account: the whole account",
       });
       const hasBudget = new CfnCondition(this, "HasBudget", { expression: Fn.conditionNot(Fn.conditionEquals(monthlyUsd.valueAsString, "0")) });
       const byTag = new CfnCondition(this, "BudgetByTag", { expression: Fn.conditionEquals(scope.valueAsString, "tag") });
@@ -761,13 +763,13 @@ export class ControlPlaneStack extends Stack {
           timeUnit: "MONTHLY",
           // CloudFormation passes the parameter's string; the Budgets resource accepts it as its number.
           budgetLimit: { amount: Token.asNumber(monthlyUsd.valueAsString), unit: "USD" },
-          costFilters: Fn.conditionIf(byTag.logicalId, { TagKeyValue: [`user:agentx:env$${naming.env}`] }, Aws.NO_VALUE),
+          costFilters: Fn.conditionIf(byTag.logicalId, { TagKeyValue: [`user:${ENVIRONMENT_TAG_KEY}$${naming.env}`] }, Aws.NO_VALUE),
         },
         notificationsWithSubscribers: [notify("ACTUAL", 80), notify("FORECASTED", 100)],
-        // C5 / FR-047: every resource the installer creates carries agentx:env. AWS::Budgets::Budget
+        // C5 / FR-047: every resource the installer creates carries rovara-cloud:env. AWS::Budgets::Budget
         // takes tags through ResourceTags rather than the stack's Tags.of(app), so it is set here
         // explicitly; Tags.of(app) does not reach this resource.
-        resourceTags: [{ key: "agentx:env", value: naming.env }],
+        resourceTags: [{ key: ENVIRONMENT_TAG_KEY, value: naming.env }],
       });
       budget.cfnOptions.condition = hasBudget;
       // AWS Budgets creates the notification's SNS subscriber as part of creating the budget, so the
@@ -800,7 +802,7 @@ export class ControlPlaneStack extends Stack {
     }).addAlarmAction(notifyOperator);
     new cloudwatch.Alarm(this, "ConnectorNotConnectedAlarm", {
       alarmName: naming.alarmName("ConnectorNotConnected"),
-      alarmDescription: "A connector's vendor credential is missing, revoked or rejected. Check the broker logs for the connector, then reconnect it with agentx connectors.",
+      alarmDescription: "A connector's vendor credential is missing, revoked or rejected. Check the broker logs for the connector, then reconnect it with rovara connectors.",
       metric: agentxSum("ConnectorNotConnected", Duration.minutes(5)),
       threshold: 1,
       evaluationPeriods: 1,
@@ -809,7 +811,7 @@ export class ControlPlaneStack extends Stack {
     }).addAlarmAction(notifyOperator);
     new cloudwatch.Alarm(this, "EmptyResponsesAlarm", {
       alarmName: naming.alarmName("EmptyResponses"),
-      alarmDescription: "More than three orchestrator turns in an hour ended without text. Export recent turns with agentx admin turns export.",
+      alarmDescription: "More than three orchestrator turns in an hour ended without text. Export recent turns with rovara admin turns export.",
       metric: agentxSum("TurnEmptyResponse", Duration.hours(1)),
       threshold: 3,
       evaluationPeriods: 1,
@@ -864,7 +866,7 @@ export class ControlPlaneStack extends Stack {
       }).addAlarmAction(notifyOperator);
     }
 
-    // A named environment's broker is given the role's name (BrokerNames): the role is under /agentx/<env>/, so the broker builds the ARN.
+    // A named environment's broker is given the role's name (BrokerNames): the role is under /rovara-cloud/<env>/, so the broker builds the ARN.
     if (naming.env === undefined) broker.addEnvironment("SLACK_ORCHESTRATOR_ROLE_ARN", slackOrchestratorRole.roleArn);
     else BrokerNames.of(broker).add("slackOrchestratorRole", slackOrchestratorRole.roleName);
     // A named environment's broker is given the limits in its settings (BrokerSettings: Number parameters, so plain text), not as variables of their own: its variables are held to Lambda's 4 KB.
@@ -952,7 +954,7 @@ export class ControlPlaneStack extends Stack {
       apiId: api.ref,
       authorizerType: "JWT",
       identitySource: ["$request.header.Authorization"],
-      name: "agentx-jwt",
+      name: naming.env === undefined ? "agentx-jwt" : `${RESOURCE_PREFIX}-jwt`,
       jwtConfiguration: {
         audience: [oidcAudience.valueAsString],
         issuer: oidcIssuer.valueAsString,
@@ -1322,7 +1324,7 @@ export class ControlPlaneStack extends Stack {
       realtime.grantPublish(outboxPublisher);
       outboxPublisher.addEnvironment("REALTIME_HTTP_ENDPOINT", realtime.httpEndpoint);
       BrokerNames.of(broker).add("realtimeApi", realtime.dnsPrefix);
-      if (naming.env === "agentxlivetest123" && taskPersonProofEnabled !== undefined) {
+      if (naming.env === TASK_PERSON_PROOF_ENV && taskPersonProofEnabled !== undefined) {
         new TaskPersonProof(this, "TaskPersonProof", {
           naming,
           enabled: taskPersonProofEnabled,
@@ -1540,7 +1542,7 @@ export class ControlPlaneStack extends Stack {
       grantProviderKeySecrets(this, [slackOrchestratorRole.roleName, sessions.instanceRoleName]);
     } else {
       const vpcId = new CfnParameter(this, "VpcId", { type: "String", description: "The foundation's VPC" }).valueAsString;
-      // Ruling R55: the broker binds a cloud org's new project to the same EC2 workers `agentx project add` binds to
+      // Ruling R55: the broker binds a cloud org's new project to the same EC2 workers `rovara project add` binds to
       // (launch template, and one private subnet per availability zone as availabilityZone=subnetId pairs).
       // In the broker's names (BrokerNames): an AWS-generated id, and its variables are held to Lambda's 4 KB.
       BrokerNames.of(broker).add("launchTemplate", sessions.launchTemplateId.valueAsString);

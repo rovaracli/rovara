@@ -623,6 +623,6 @@ describe("where the retry is wired", () => {
     expect(stuckCancelRetrier({}, state)).toBeUndefined();
     expect(stuckCancelRetrier({ CALLBACK_SIGNING_KEY: "" }, state)).toBeUndefined();
     // The broker's name no longer turns the retry on: the reconciler never invokes the broker.
-    expect(stuckCancelRetrier({ BROKER_FUNCTION_NAME: "agentx-staging-broker" }, state)).toBeUndefined();
+    expect(stuckCancelRetrier({ BROKER_FUNCTION_NAME: "rovara-cloud-staging-broker" }, state)).toBeUndefined();
   });
 });

@@ -25,7 +25,7 @@ async function deliveriesCheck(context: DoctorContext, jwt: string, settingsPage
   try {
     deliveries = await context.services.github.listHookDeliveries(jwt);
   } catch (error) {
-    return check("github", name, "warn", `could not read the App's recent webhook deliveries from GitHub: ${plainMessage(error)}`, "run agentx doctor again in a minute");
+    return check("github", name, "warn", `could not read the App's recent webhook deliveries from GitHub: ${plainMessage(error)}`, "run rovara doctor again in a minute");
   }
   const since = context.services.now() - DELIVERY_WINDOW_MS;
   const recent = deliveries
@@ -60,7 +60,7 @@ export async function githubChecks(context: DoctorContext): Promise<DoctorCheck[
     if (/\bHTTP 401\b/.test(plainMessage(error))) {
       return [check("github", "GitHub App", "fail", "GitHub refused the app's key (HTTP 401)", `generate a new private key on the app's settings page and store it in ${githubAppSecretName(env)}`)];
     }
-    return [check("github", "GitHub App", "fail", `could not reach GitHub to list the app's installations: ${plainMessage(error)}`, "check this computer's network access to github.com, then run agentx doctor again")];
+    return [check("github", "GitHub App", "fail", `could not reach GitHub to list the app's installations: ${plainMessage(error)}`, "check this computer's network access to github.com, then run rovara doctor again")];
   }
   const wanted = progress?.github?.installationId;
   const installation = wanted === undefined
@@ -77,8 +77,8 @@ export async function githubChecks(context: DoctorContext): Promise<DoctorCheck[
     const message = plainMessage(error);
     // GitHub answers 403 or 404 for a suspended or removed installation; anything else is not blamed on it.
     const fix = /\bHTTP (403|404)\b/.test(message)
-      ? "the installation may be suspended; check it in the installation settings on GitHub, then run agentx doctor again"
-      : "run agentx doctor again in a minute; if it keeps failing, check githubstatus.com and the app's installation settings on GitHub";
+      ? "the installation may be suspended; check it in the installation settings on GitHub, then run rovara doctor again"
+      : "run rovara doctor again in a minute; if it keeps failing, check githubstatus.com and the app's installation settings on GitHub";
     return [check("github", "GitHub App", "fail", `installed on ${installation.account.login}, but its repositories could not be read: ${message}`, fix)];
   }
   if (count === 0) return [check("github", "GitHub App", "fail", `installed on ${installation.account.login}, but it sees no repository`, "choose the repositories AgentX may use in the app's installation settings on GitHub")];
@@ -86,7 +86,7 @@ export async function githubChecks(context: DoctorContext): Promise<DoctorCheck[
 }
 
 /** The App's webhook: where it sends events, which events, and whether the secret that verifies them is stored. Warnings, not
- * failures: nothing here stops AgentX working, and agentx upgrade fixes the first and the last. */
+ * failures: nothing here stops AgentX working, and rovara upgrade fixes the first and the last. */
 export async function githubWebhookChecks(context: DoctorContext): Promise<DoctorCheck[]> {
   const { env, settings, services } = context;
   const secretName = githubAppSecretName(env);
@@ -98,7 +98,7 @@ export async function githubWebhookChecks(context: DoctorContext): Promise<Docto
   } catch {
     return [];
   }
-  const upgradeFix = `run agentx --env ${env} upgrade: it`;
+  const upgradeFix = `run rovara --env ${env} upgrade: it`;
   const checks: DoctorCheck[] = [];
   let settingsPage: string | undefined;
   let hookUrl: string | undefined;
@@ -133,7 +133,7 @@ export async function githubWebhookChecks(context: DoctorContext): Promise<Docto
       checks.push(check("github", "GitHub webhook", "warn", detail, fix));
     }
   } catch (error) {
-    checks.push(check("github", "GitHub webhook", "warn", `could not read the App's webhook settings from GitHub: ${plainMessage(error)}`, "run agentx doctor again in a minute"));
+    checks.push(check("github", "GitHub webhook", "warn", `could not read the App's webhook settings from GitHub: ${plainMessage(error)}`, "run rovara doctor again in a minute"));
   }
   checks.push(storedWebhookSecret(jsonObject(raw) ?? {}) === undefined
     ? check("github", "GitHub webhook secret", "warn", `${secretName} holds no webhook secret, so GitHub's deliveries cannot be verified`, `${upgradeFix} stores a webhook secret and gives it to GitHub`)

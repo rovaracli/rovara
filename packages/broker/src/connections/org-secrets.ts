@@ -1,12 +1,12 @@
 // Org-tagged secrets (Plan 3, ruling R62). A connection's key or token and an event hook's secret are Secrets Manager
-// secrets named `agentx/<env>/org-connectors/<orgId>/<connectionId>` and `agentx/<env>/org-hooks/<orgId>/<hookId>`,
+// secrets named `rovara-cloud/<env>/org-connectors/<orgId>/<connectionId>` and `rovara-cloud/<env>/org-hooks/<orgId>/<hookId>`,
 // tagged `rovara:org=<orgId>`. The broker's own role has no Secrets Manager permission on those paths: every call goes
 // through a ConnectorSecretsRole session that AssumeRole tagged with the org, and the role's policy lets that session
 // reach only its own org's secrets. This class checks the org id and the secret name before any AWS call, so a
 // key-building mistake is refused here as well as by IAM. A value is never logged and never put in an error.
 import { CreateSecretCommand, DeleteSecretCommand, DescribeSecretCommand, GetSecretValueCommand, PutSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import { AssumeRoleCommand, type AssumeRoleCommandOutput } from "@aws-sdk/client-sts";
-import { OrgIdSchema, agentXError, type OrgId } from "@agentx/contracts";
+import { OrgIdSchema, RESOURCE_PREFIX, agentXError, type OrgId } from "@agentx/contracts";
 
 export const ORG_TAG_KEY = "rovara:org";
 const SESSION_SECONDS = 900;
@@ -18,16 +18,16 @@ export const BEING_REMOVED_MESSAGE = "this connection is being removed; remove i
 const LEAF = /^[A-Za-z0-9_-]{1,128}$/;
 
 export function orgConnectorSecretName(env: string, orgId: string, connectionId: string): string {
-  return `agentx/${env}/org-connectors/${orgId}/${connectionId}`;
+  return `${RESOURCE_PREFIX}/${env}/org-connectors/${orgId}/${connectionId}`;
 }
 
 /** A registered MCP server's own token: under the connector path, so the one org-tagged role that reaches an org's connection secrets reaches it and nothing else does. */
 export function orgMcpServerSecretName(env: string, orgId: string, serverId: string): string {
-  return `agentx/${env}/org-connectors/${orgId}/${serverId}`;
+  return `${RESOURCE_PREFIX}/${env}/org-connectors/${orgId}/${serverId}`;
 }
 
 export function orgHookSecretName(env: string, orgId: string, hookId: string): string {
-  return `agentx/${env}/org-hooks/${orgId}/${hookId}`;
+  return `${RESOURCE_PREFIX}/${env}/org-hooks/${orgId}/${hookId}`;
 }
 
 /** Whether `leaf` can be the last segment of an org secret name. */
@@ -151,7 +151,7 @@ export class OrgSecrets {
     if (!parsed.success) throw agentXError("FORBIDDEN", "that is not an organization id");
     const org = parsed.data;
     const { env } = this.input;
-    for (const prefix of [`agentx/${env}/org-connectors/${org}/`, `agentx/${env}/org-hooks/${org}/`]) {
+    for (const prefix of [`${RESOURCE_PREFIX}/${env}/org-connectors/${org}/`, `${RESOURCE_PREFIX}/${env}/org-hooks/${org}/`]) {
       if (name.startsWith(prefix) && LEAF.test(name.slice(prefix.length))) return org;
     }
     throw agentXError("FORBIDDEN", "that secret does not belong to this organization");

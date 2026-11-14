@@ -4,7 +4,7 @@
 // only the value itself, to hold in memory for the length of one deploy.
 import { randomBytes } from "node:crypto";
 import { CreateSecretCommand, GetSecretValueCommand, type SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { agentXError } from "@agentx/contracts";
+import { agentXError, ENVIRONMENT_TAG_KEY, RESOURCE_PREFIX } from "@agentx/contracts";
 
 /** The number of random bytes in a freshly created callback signing key (before base64url encoding).
  * Exported so callers that must bound a buffer against "the longest secret we ever redact"
@@ -23,17 +23,20 @@ export class SecretAlreadyExistsError extends Error {
   }
 }
 
-/** FR-047: every resource carries agentx:env. A secret the CLI creates under agentx/<env>/ is
- * tagged with that environment; the legacy agentx/connectors/ name is not (it names no single
+/** FR-047: every resource carries rovara-cloud:env. A secret the CLI creates under rovara-cloud/<env>/ is
+ * tagged with that environment; the legacy deployment's agentx/connectors/ name is not (it names no single
  * environment). Any other name is not a value the caller chose but a name it built wrong, so this
  * refuses it rather than silently creating an untagged secret. */
+/** rovara-cloud/<env>/...: the environment segment is at most 14 characters, an environment name's limit. */
+const ENVIRONMENT_SECRET_NAME = new RegExp(`^${RESOURCE_PREFIX}/([a-z0-9-]{1,14})/`);
+
 export function secretTags(name: string): Array<{ Key: string; Value: string }> {
   if (name.startsWith("agentx/connectors/")) return [];
-  const match = /^agentx\/([a-z0-9-]{1,20})\//.exec(name);
+  const match = ENVIRONMENT_SECRET_NAME.exec(name);
   if (match === null) {
-    throw agentXError("CONFIG_INVALID", `secret name "${name}" is not a valid agentx secret name; it must start with agentx/<env>/ or be the legacy agentx/connectors/...`);
+    throw agentXError("CONFIG_INVALID", `secret name "${name}" is not a valid Rovara secret name; it must start with ${RESOURCE_PREFIX}/<env>/ or be the legacy agentx/connectors/...`);
   }
-  return [{ Key: "agentx:env", Value: match[1]! }];
+  return [{ Key: ENVIRONMENT_TAG_KEY, Value: match[1]! }];
 }
 
 /** What `callbackSigningKey` needs from Secrets Manager. */
@@ -69,9 +72,9 @@ export function secretsManagerValueStore(client: SecretsManagerClient): SecretVa
   };
 }
 
-/** `agentx/<env>/callback-signing-key`, exactly as the control-plane stack's operator guide names it. */
+/** `rovara-cloud/<env>/callback-signing-key`, exactly as the control-plane stack's operator guide names it. */
 export function callbackSigningKeySecretName(env: string): string {
-  return `agentx/${env}/callback-signing-key`;
+  return `${RESOURCE_PREFIX}/${env}/callback-signing-key`;
 }
 
 /**

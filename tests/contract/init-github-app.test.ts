@@ -103,7 +103,7 @@ describe("GitHub App manifest", () => {
   it("takes a pasted redirect address or a bare code, and refuses another run's address", () => {
     expect(parseManifestCallback("http://127.0.0.1:50123/github/created?code=abc123def456&state=s1", "s1")).toBe("abc123def456");
     expect(parseManifestCallback("  abc123def456\n", "s1")).toBe("abc123def456");
-    expect(() => parseManifestCallback("http://127.0.0.1:1/github/created?code=abc123def456&state=other", "s1")).toThrow("that address is from a different agentx init run");
+    expect(() => parseManifestCallback("http://127.0.0.1:1/github/created?code=abc123def456&state=other", "s1")).toThrow("that address is from a different rovara init run");
     expect(() => parseManifestCallback("http://127.0.0.1:1/github/created?state=s1", "s1")).toThrow("that address has no code");
     expect(() => parseManifestCallback("no", "s1")).toThrow("that is not a GitHub manifest code");
   });
@@ -146,7 +146,7 @@ describe("GitHub App step", () => {
     expect(outcome.status).toBe("done");
     expect(api.conversions).toEqual(["0123456789abcdef0123"]);
     expect(JSON.parse(context.secrets.values.get(SECRET)!)).toMatchObject({ appId: "424242", slug: "agentx-acme-staging", account: "acme", privateKey: TEST_PRIVATE_KEY });
-    expect(progress.value().github).toEqual({ account: "acme", appId: "424242", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf", installationId: "777" });
+    expect(progress.value().github).toEqual({ account: "acme", appId: "424242", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf", installationId: "777" });
     expect(opened).toContain("https://github.com/apps/agentx-acme-staging/installations/new");
     expect(context.lines.join("\n")).not.toContain("PRIVATE KEY");
     expect(JSON.stringify(progress.value())).not.toContain("PRIVATE KEY");
@@ -306,7 +306,7 @@ describe("GitHub App step", () => {
     const secrets = memoryInitSecrets({ [SECRET]: JSON.stringify({ appId: "424242", slug: "agentx-acme-staging", account: "acme", privateKey: TEST_PRIVATE_KEY, webhookSecret: GITHUB_WEBHOOK_SECRET }) });
     const context = initContext({ secrets });
     homes.push(context.home);
-    const progress = progressHandle({ ...emptyProgress("staging", T0), github: { account: "acme", appId: "424242", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf" } });
+    const progress = progressHandle({ ...emptyProgress("staging", T0), github: { account: "acme", appId: "424242", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf" } });
     await githubAppStep(api).run(context, progress);
     expect((JSON.parse(secrets.values.get(SECRET)!) as { webhookSecret: string }).webhookSecret).toBe(GITHUB_WEBHOOK_SECRET);
     expect(api.hookWrites).toEqual([{ url: WEBHOOK_URL, secret: GITHUB_WEBHOOK_SECRET }]);
@@ -331,7 +331,7 @@ describe("GitHub App step", () => {
     homes.push(context.home);
     let message = "";
     try { await githubAppStep(fakeGitHubApi({ owner: "someone-else", ownerType: "User" })).run(context, progressHandle()); } catch (error) { message = (error as Error).message; }
-    expect(message).toContain("the GitHub App was created under someone-else, not acme; nothing was saved. Delete it at https://github.com/settings/apps/agentx-acme-staging/advanced and run agentx init again");
+    expect(message).toContain("the GitHub App was created under someone-else, not acme; nothing was saved. Delete it at https://github.com/settings/apps/agentx-acme-staging/advanced and run rovara init again");
     expect(message).not.toContain("PRIVATE KEY");
     expect(context.secrets.values.size).toBe(0);
   });
@@ -341,7 +341,7 @@ describe("GitHub App step", () => {
     const secrets = memoryInitSecrets({ [SECRET]: JSON.stringify({ appId: "424242", slug: "agentx-acme-staging", account: "acme", privateKey: TEST_PRIVATE_KEY }) });
     const context = initContext({ secrets });
     homes.push(context.home);
-    const progress = progressHandle({ ...emptyProgress("staging", T0), github: { account: "acme", appId: "424242", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf" } });
+    const progress = progressHandle({ ...emptyProgress("staging", T0), github: { account: "acme", appId: "424242", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf" } });
     await githubAppStep(api).run(context, progress);
     expect(api.conversions).toEqual([]);
     expect(progress.value().github?.installationId).toBe("777");
@@ -369,13 +369,13 @@ describe("GitHub App step", () => {
     const context = initContext({ openBrowser: browserThatCreatesGitHubApp([]) });
     homes.push(context.home);
     await expect(githubAppStep(fakeGitHubApi({ installAfterPolls: 1_000_000 })).run(context, progressHandle()))
-      .rejects.toThrow("the GitHub App was not installed on acme within 15 minutes; install it at https://github.com/apps/agentx-acme-staging/installations/new, then run agentx init again");
+      .rejects.toThrow("the GitHub App was not installed on acme within 15 minutes; install it at https://github.com/apps/agentx-acme-staging/installations/new, then run rovara init again");
   });
 
   describe("a wait that fails on the page shows a failed card", () => {
     const recorded = () => ({
       secrets: memoryInitSecrets({ [SECRET]: JSON.stringify({ appId: "424242", slug: "agentx-acme-staging", account: "acme", privateKey: TEST_PRIVATE_KEY }) }),
-      progress: progressHandle({ ...emptyProgress("staging", T0), github: { account: "acme", appId: "424242", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf" } }),
+      progress: progressHandle({ ...emptyProgress("staging", T0), github: { account: "acme", appId: "424242", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf" } }),
     });
 
     it("an installation wait that times out shows the failed GitHub card, and the page drops the install page's button", async () => {
@@ -385,11 +385,11 @@ describe("GitHub App step", () => {
         const context = initContext({ secrets, surface: wizard.surface, openBrowser: wizard.openLink });
         homes.push(context.home);
         const failure = await githubAppStep(fakeGitHubApi({ installAfterPolls: 1_000_000 })).run(context, progress).then(() => undefined, (error: unknown) => error);
-        expect((failure as Error).message).toBe("CONFIG_INVALID: the GitHub App was not installed on acme within 15 minutes; install it at https://github.com/apps/agentx-acme-staging/installations/new, then run agentx init again");
+        expect((failure as Error).message).toBe("CONFIG_INVALID: the GitHub App was not installed on acme within 15 minutes; install it at https://github.com/apps/agentx-acme-staging/installations/new, then run rovara init again");
         const card = wizard.hub.state().cards?.find((shown) => shown.id === "github");
         expect(card).toEqual(githubCard({ stage: "failed", problem: problemText(failure) }));
         expect(card?.lines).toEqual(["The GitHub app was not set up."]);
-        expect(card?.details).toEqual(["the GitHub App was not installed on acme within 15 minutes; install it at https://github.com/apps/agentx-acme-staging/installations/new, then run agentx init again"]);
+        expect(card?.details).toEqual(["the GitHub App was not installed on acme within 15 minutes; install it at https://github.com/apps/agentx-acme-staging/installations/new, then run rovara init again"]);
         expect(wizard.hub.state().link).toBeUndefined();
       } finally {
         await wizard.close();
@@ -481,7 +481,7 @@ describe("GitHub App step", () => {
     const secrets = memoryInitSecrets({ [SECRET]: JSON.stringify({ appId: "424242", slug: "agentx-acme-staging", account: "acme", privateKey: TEST_PRIVATE_KEY }) });
     const context = initContext({ secrets, preMadeGitHubApp: { appId: "999999", installationId: "555" }, secretFlags: { githubPrivateKey: { envName: "GH_KEY" } }, processEnv: { GH_KEY: TEST_PRIVATE_KEY } });
     homes.push(context.home);
-    const progress = progressHandle({ ...emptyProgress("staging", T0), github: { account: "acme", appId: "424242", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf" } });
+    const progress = progressHandle({ ...emptyProgress("staging", T0), github: { account: "acme", appId: "424242", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf" } });
     await expect(githubAppStep(api).run(context, progress))
       .rejects.toThrow("this install already uses GitHub App 424242, not 999999 from --github-app-id; pass --github-app-id 424242, or leave the GitHub App flags off to continue with the recorded app");
     expect(progress.value().github?.installationId).toBeUndefined();
@@ -514,7 +514,7 @@ describe("manifest listener, every path closes it", () => {
     try {
       expect((await fetch(`http://127.0.0.1:${listener.port}/elsewhere`)).status).toBe(404);
       expect((await fetch(`${listener.redirectUrl}?state=s1`)).status).toBe(400);
-      await expect(listener.code).rejects.toThrow(/no GitHub App was created within \d+ minutes; run agentx init again/);
+      await expect(listener.code).rejects.toThrow(/no GitHub App was created within \d+ minutes; run rovara init again/);
     } finally {
       listener.close();
     }
@@ -549,7 +549,7 @@ describe("manifest listener, every path closes it", () => {
     const context = initContext({ prompter: scriptedPrompter(["http://127.0.0.1:1/github/created?code=abc123def456&state=other"]) });
     delete (context as { openBrowser?: unknown }).openBrowser;
     homes.push(context.home);
-    await expect(githubAppStep(fakeGitHubApi()).run(context, progressHandle())).rejects.toThrow("that address is from a different agentx init run");
+    await expect(githubAppStep(fakeGitHubApi()).run(context, progressHandle())).rejects.toThrow("that address is from a different rovara init run");
     const startUrl = /Open (http:\/\/127\.0\.0\.1:\d+\/github\/start)/.exec(context.lines.join("\n"))?.[1];
     expect(startUrl).toBeDefined();
     await expect(fetch(startUrl!)).rejects.toThrow();
@@ -628,7 +628,7 @@ describe("GitHub App made beforehand", () => {
     homes.push(context.home);
     let message = "";
     try { await githubAppStep(fakeGitHubApi({ owner: "someone-else", ownerType: "User" })).run(context, progressHandle()); } catch (error) { message = (error as Error).message; }
-    expect(message).toContain("GitHub App 424242 belongs to someone-else, not acme; nothing was saved. Check --github-app-id and run agentx init again");
+    expect(message).toContain("GitHub App 424242 belongs to someone-else, not acme; nothing was saved. Check --github-app-id and run rovara init again");
     expect(message).not.toContain("Delete it");
     expect(context.secrets.values.size).toBe(0);
   });
@@ -678,7 +678,7 @@ describe("fix round 1 hardening", () => {
     const port = typeof address === "object" && address !== null ? address.port : 0;
     try {
       await expect(startManifestListener({ state: "s1", page: () => "", timeoutMs: 60_000, port }))
-        .rejects.toThrow(/could not open a local port on 127\.0\.0\.1 for the GitHub App page \(EADDRINUSE\); .*run agentx init again/);
+        .rejects.toThrow(/could not open a local port on 127\.0\.0\.1 for the GitHub App page \(EADDRINUSE\); .*run rovara init again/);
     } finally {
       taken.close();
     }
@@ -696,8 +696,8 @@ describe("fix round 1 hardening", () => {
     homes.push(context.home);
     let message = "";
     try { await githubAppStep(fakeGitHubApi()).run(context, progressHandle()); } catch (error) { message = (error as Error).message; }
-    expect(message).toContain("could not store the private key of the new GitHub App agentx-acme-staging in agentx/staging/github-app (AccessDeniedException)");
-    expect(message).toContain("delete the app at https://github.com/organizations/acme/settings/apps/agentx-acme-staging/advanced and run agentx init again");
+    expect(message).toContain("could not store the private key of the new GitHub App agentx-acme-staging in rovara-cloud/staging/github-app (AccessDeniedException)");
+    expect(message).toContain("delete the app at https://github.com/organizations/acme/settings/apps/agentx-acme-staging/advanced and run rovara init again");
     expect(message).not.toContain("PRIVATE KEY");
     expect(context.lines.join("\n")).not.toContain("PRIVATE KEY");
   });
@@ -708,7 +708,7 @@ describe("fix round 1 hardening", () => {
     homes.push(context.home);
     const progress = progressHandle();
     await expect(githubAppStep(fakeGitHubApi()).run(context, progress))
-      .rejects.toThrow("secret agentx/staging/github-app holds GitHub App 111, not 424242 from --github-app-id");
+      .rejects.toThrow("secret rovara-cloud/staging/github-app holds GitHub App 111, not 424242 from --github-app-id");
     expect(progress.value().github).toBeUndefined();
   });
 

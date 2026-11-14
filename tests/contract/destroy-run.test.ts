@@ -27,13 +27,13 @@ async function harness(input: { account?: FakeAccount; typed?: string[]; caller?
   const account = input.account ?? installedAccount(env);
   const store = new MemoryParameterStore();
   if (input.installed !== false) {
-    await writeEnvironmentSettings(store, { ...SETTINGS, env, stacks: { access: `agentx-${env}-access`, foundation: `agentx-${env}-foundation`, identity: `agentx-${env}-identity`, runtime: `agentx-${env}-runtime`, "control-plane": `agentx-${env}-control-plane`, slack: `agentx-${env}-slack` } });
+    await writeEnvironmentSettings(store, { ...SETTINGS, env, stacks: { access: `rovara-cloud-${env}-access`, foundation: `rovara-cloud-${env}-foundation`, identity: `rovara-cloud-${env}-identity`, runtime: `rovara-cloud-${env}-runtime`, "control-plane": `rovara-cloud-${env}-control-plane`, slack: `rovara-cloud-${env}-slack` } });
     await writeInstallAnswers(store, sampleAnswers({ env }));
     await writeInstallProgress(store, { ...PROGRESS, env, connectors: [{ type: "linear", ref: "linear" }] });
-    store.values.set(`/agentx/${env}/worker/image`, "x");
+    store.values.set(`/rovara-cloud/${env}/worker/image`, "x");
   }
   // A sibling environment whose name extends this one: nothing of it may be touched.
-  store.values.set(`/agentx/${env}-eu/settings`, "{}");
+  store.values.set(`/rovara-cloud/${env}-eu/settings`, "{}");
   const home = await mkdtemp(join(tmpdir(), "agentx-destroy-home-"));
   const configDir = join(home, ".agentx", "projects");
   dirs.push(home);
@@ -56,10 +56,10 @@ async function harness(input: { account?: FakeAccount; typed?: string[]; caller?
   return { deps, account, store, lines, asked, home, configDir, env };
 }
 
-describe("agentx destroy (FR-055, item 3)", () => {
+describe("rovara destroy (FR-055, item 3)", () => {
   it("refuses a region other than the environment's, before asking or deleting anything", async () => {
     const h = await harness();
-    await expect(runDestroy({ env: "staging", keepData: false }, { ...h.deps, region: "eu-west-1" })).rejects.toThrow("environment staging is installed in us-east-1, not eu-west-1; run agentx --env staging destroy --region us-east-1");
+    await expect(runDestroy({ env: "staging", keepData: false }, { ...h.deps, region: "eu-west-1" })).rejects.toThrow("environment staging is installed in us-east-1, not eu-west-1; run rovara --env staging destroy --region us-east-1");
     expect(h.asked).toEqual([]);
     expect(h.account.calls).toEqual([]);
   });
@@ -69,21 +69,21 @@ describe("agentx destroy (FR-055, item 3)", () => {
     const result = await runDestroy({ env: "staging", keepData: false }, h.deps);
     const order = h.account.calls;
     const at = (text: string) => order.findIndex((call) => call === text);
-    expect(order.slice(0, 5)).toEqual(["delete stack agentx-staging-slack", "protection off agentx-staging-runtime", "delete stack agentx-staging-runtime", "delete stack agentx-staging-control-plane", "terminate i-worker1"]);
-    expect(at("delete volume vol-ws1")).toBeLessThan(at("protection off agentx-staging-identity"));
-    expect(at("delete stack agentx-staging-identity")).toBeLessThan(at("delete stack agentx-staging-foundation"));
-    expect(at("delete stack agentx-staging-foundation")).toBeLessThan(at("delete stack agentx-staging-access"));
-    expect(at("delete stack agentx-staging-access")).toBeLessThan(at("delete bucket agentx-staging-access-artifactbucket-1a"));
+    expect(order.slice(0, 5)).toEqual(["delete stack rovara-cloud-staging-slack", "protection off rovara-cloud-staging-runtime", "delete stack rovara-cloud-staging-runtime", "delete stack rovara-cloud-staging-control-plane", "terminate i-worker1"]);
+    expect(at("delete volume vol-ws1")).toBeLessThan(at("protection off rovara-cloud-staging-identity"));
+    expect(at("delete stack rovara-cloud-staging-identity")).toBeLessThan(at("delete stack rovara-cloud-staging-foundation"));
+    expect(at("delete stack rovara-cloud-staging-foundation")).toBeLessThan(at("delete stack rovara-cloud-staging-access"));
+    expect(at("delete stack rovara-cloud-staging-access")).toBeLessThan(at("delete bucket rovara-cloud-staging-access-artifactbucket-1a"));
     expect(order).toEqual(expect.arrayContaining([
-      "delete table agentx-staging-control-plane-State-5e", "delete bucket agentx-staging-control-plane-slackthreadsessions-6f",
-      "delete log group agentx-staging-foundation-VpcFlowLogs-2b", "delete user pool us-east-1_Pool4d (domain agentx-staging-123456789012)",
-      "schedule key key-3c", "delete alias alias/agentx/staging/workspaces",
-      "delete secret agentx/staging/callback-signing-key", "delete secret agentx/staging/github-app",
+      "delete table rovara-cloud-staging-control-plane-State-5e", "delete bucket rovara-cloud-staging-control-plane-slackthreadsessions-6f",
+      "delete log group rovara-cloud-staging-foundation-VpcFlowLogs-2b", "delete user pool us-east-1_Pool4d (domain rovara-cloud-staging-123456789012)",
+      "schedule key key-3c", "delete alias alias/rovara-cloud/staging/workspaces",
+      "delete secret rovara-cloud/staging/callback-signing-key", "delete secret rovara-cloud/staging/github-app",
     ]));
     expect(h.store.values.has(settingsParameterName("staging"))).toBe(false);
     expect(h.store.values.has(lockParameterName("staging"))).toBe(false);
     expect(h.store.values.has(inventoryParameterName("staging"))).toBe(false);
-    expect(h.store.values.has("/agentx/staging/worker/image")).toBe(false);
+    expect(h.store.values.has("/rovara-cloud/staging/worker/image")).toBe(false);
     const settingsDelete = h.store.calls.filter((call) => call.op === "delete").map((call) => call.name);
     expect(settingsDelete.indexOf(settingsParameterName("staging"))).toBe(settingsDelete.length - 2); // then the lock
     expect(settingsDelete.indexOf(inventoryParameterName("staging"))).toBe(settingsDelete.length - 3); // just before the settings
@@ -93,34 +93,34 @@ describe("agentx destroy (FR-055, item 3)", () => {
     ]));
     expect(result.localFiles).toEqual(expect.arrayContaining([environmentCachePath(h.home, "staging"), join(h.configDir, "payments.yaml")]));
     expect(await readdir(h.configDir)).toEqual(["eu-app.yaml"]);
-    expect(h.lines).toContain("Deleting agentx-staging-control-plane: this usually takes 20 to 40 minutes while its Lambda functions release their network interfaces.");
+    expect(h.lines).toContain("Deleting rovara-cloud-staging-control-plane: this usually takes 20 to 40 minutes while its Lambda functions release their network interfaces.");
   });
 
   it("never touches a sibling environment, the legacy deployment's workers, or a retained resource with another tag", async () => {
     const account = installedAccount("staging");
     account.instances.push({ id: "i-legacy", state: "running", tags: { DeploymentMode: "ec2-ebs", Environment: "staging" } });
-    account.secrets.push({ name: "agentx/staging-eu/slack", scheduled: false });
-    account.aliases.push("alias/agentx/staging-eu/workspaces");
-    account.tags.set("key-3c", { "agentx:env": "staging-eu" });
+    account.secrets.push({ name: "rovara-cloud/staging-eu/slack", scheduled: false });
+    account.aliases.push("alias/rovara-cloud/staging-eu/workspaces");
+    account.tags.set("key-3c", { "rovara-cloud:env": "staging-eu" });
     const h = await harness({ account });
     const result = await runDestroy({ env: "staging", keepData: false }, h.deps);
     expect(h.account.calls.join("\n")).not.toMatch(/staging-eu|i-legacy|schedule key key-3c/);
-    expect(h.store.values.has("/agentx/staging-eu/settings")).toBe(true);
-    expect(result.leftInPlace).toEqual(["AWS::KMS::Key key-3c (it does not carry agentx:env=staging)"]);
+    expect(h.store.values.has("/rovara-cloud/staging-eu/settings")).toBe(true);
+    expect(result.leftInPlace).toEqual(["AWS::KMS::Key key-3c (it does not carry rovara-cloud:env=staging)"]);
   });
 
   it("says which check a retained resource failed: the tag, or the name (review M4)", async () => {
     const account = installedAccount("staging");
-    const access = account.stacks.get("agentx-staging-access")!;
-    access.resources = [{ logicalId: "ArtifactBucket", type: "AWS::S3::Bucket", physicalId: "agentx-staging-foundation-artifactbucket-1a" }];
-    account.tags.set("agentx-staging-foundation-artifactbucket-1a", { "agentx:env": "staging" });
-    account.tags.set("key-3c", { "agentx:env": "staging-eu" });
+    const access = account.stacks.get("rovara-cloud-staging-access")!;
+    access.resources = [{ logicalId: "ArtifactBucket", type: "AWS::S3::Bucket", physicalId: "rovara-cloud-staging-foundation-artifactbucket-1a" }];
+    account.tags.set("rovara-cloud-staging-foundation-artifactbucket-1a", { "rovara-cloud:env": "staging" });
+    account.tags.set("key-3c", { "rovara-cloud:env": "staging-eu" });
     const h = await harness({ account });
     const result = await runDestroy({ env: "staging", keepData: false }, h.deps);
-    expect(h.account.calls.join("\n")).not.toContain("delete bucket agentx-staging-foundation-artifactbucket-1a");
+    expect(h.account.calls.join("\n")).not.toContain("delete bucket rovara-cloud-staging-foundation-artifactbucket-1a");
     expect(result.leftInPlace).toEqual([
-      "AWS::KMS::Key key-3c (it does not carry agentx:env=staging)",
-      "AWS::S3::Bucket agentx-staging-foundation-artifactbucket-1a (its name does not match stack agentx-staging-access)",
+      "AWS::KMS::Key key-3c (it does not carry rovara-cloud:env=staging)",
+      "AWS::S3::Bucket rovara-cloud-staging-foundation-artifactbucket-1a (its name does not match stack rovara-cloud-staging-access)",
     ]);
   });
 
@@ -142,9 +142,9 @@ describe("agentx destroy (FR-055, item 3)", () => {
   it("refuses the legacy deployment, the operator role, and credentials for another account", async () => {
     const legacy = await harness();
     await writeEnvironmentSettings(legacy.store, { ...SETTINGS, naming: "legacy" });
-    await expect(runDestroy({ env: "staging", keepData: false }, legacy.deps)).rejects.toThrow("agentx destroy never removes the legacy deployment");
-    const operator = await harness({ caller: "arn:aws:sts::123456789012:assumed-role/agentx-staging-operator/alice" });
-    await expect(runDestroy({ env: "staging", keepData: false }, operator.deps)).rejects.toThrow("agentx destroy needs admin credentials");
+    await expect(runDestroy({ env: "staging", keepData: false }, legacy.deps)).rejects.toThrow("rovara destroy never removes the legacy deployment");
+    const operator = await harness({ caller: "arn:aws:sts::123456789012:assumed-role/rovara-cloud-staging-operator/alice" });
+    await expect(runDestroy({ env: "staging", keepData: false }, operator.deps)).rejects.toThrow("rovara destroy needs admin credentials");
     const other = await harness();
     other.deps.identity = { get: async () => ({ account: "999999999999", arn: ADMIN }) };
     await expect(runDestroy({ env: "staging", keepData: false }, other.deps)).rejects.toThrow("environment staging is installed in account 123456789012, but your AWS credentials are for 999999999999");
@@ -154,16 +154,16 @@ describe("agentx destroy (FR-055, item 3)", () => {
     const h = await harness();
     const result = await runDestroy({ env: "staging", keepData: true }, h.deps);
     expect(h.account.calls.join("\n")).not.toMatch(/delete table|delete bucket|delete user pool|schedule key|delete secret|delete alias/);
-    expect(h.account.calls).toContain("delete log group agentx-staging-foundation-VpcFlowLogs-2b");
+    expect(h.account.calls).toContain("delete log group rovara-cloud-staging-foundation-VpcFlowLogs-2b");
     expect(h.store.values.has(settingsParameterName("staging"))).toBe(false);
-    expect(result.kept).toEqual(expect.arrayContaining(["AWS::DynamoDB::Table agentx-staging-control-plane-State-5e", "AWS::Cognito::UserPool us-east-1_Pool4d"]));
+    expect(result.kept).toEqual(expect.arrayContaining(["AWS::DynamoDB::Table rovara-cloud-staging-control-plane-State-5e", "AWS::Cognito::UserPool us-east-1_Pool4d"]));
   });
 
   it("stops at a stack that cannot be deleted, keeps the inventory, and continues on the next run", async () => {
     const account = installedAccount();
-    account.stacks.get("agentx-staging-foundation")!.failDeletes = 1;
+    account.stacks.get("rovara-cloud-staging-foundation")!.failDeletes = 1;
     const first = await harness({ account });
-    await expect(runDestroy({ env: "staging", keepData: false }, first.deps)).rejects.toThrow("stack agentx-staging-foundation could not be deleted");
+    await expect(runDestroy({ env: "staging", keepData: false }, first.deps)).rejects.toThrow("stack rovara-cloud-staging-foundation could not be deleted");
     expect(first.store.values.has(settingsParameterName("staging"))).toBe(true);
     expect(first.store.values.has(inventoryParameterName("staging"))).toBe(true);
     expect(first.store.values.has(lockParameterName("staging"))).toBe(false);
@@ -172,21 +172,21 @@ describe("agentx destroy (FR-055, item 3)", () => {
     // The next run: control-plane and identity are gone, but their retained resources come from the saved inventory.
     first.deps.confirmLine = async () => "staging";
     await runDestroy({ env: "staging", keepData: false }, first.deps);
-    expect(first.account.calls).toContain("delete table agentx-staging-control-plane-State-5e");
-    expect(first.account.calls).toContain("delete user pool us-east-1_Pool4d (domain agentx-staging-123456789012)");
+    expect(first.account.calls).toContain("delete table rovara-cloud-staging-control-plane-State-5e");
+    expect(first.account.calls).toContain("delete user pool us-east-1_Pool4d (domain rovara-cloud-staging-123456789012)");
     expect(first.store.values.has(settingsParameterName("staging"))).toBe(false);
   });
 
   it("deletes a stack left in ROLLBACK_COMPLETE by a failed first install", async () => {
     const account = installedAccount();
-    for (const name of [...account.stacks.keys()]) if (name !== "agentx-staging-access" && name !== "agentx-staging-identity") account.stacks.delete(name);
-    account.stacks.get("agentx-staging-identity")!.status = "ROLLBACK_COMPLETE";
-    account.stacks.get("agentx-staging-identity")!.terminationProtection = false;
+    for (const name of [...account.stacks.keys()]) if (name !== "rovara-cloud-staging-access" && name !== "rovara-cloud-staging-identity") account.stacks.delete(name);
+    account.stacks.get("rovara-cloud-staging-identity")!.status = "ROLLBACK_COMPLETE";
+    account.stacks.get("rovara-cloud-staging-identity")!.terminationProtection = false;
     account.instances = [];
     account.volumes = [];
     const h = await harness({ account, installed: false, typed: ["staging", "123456789012"] });
     await runDestroy({ env: "staging", keepData: false }, h.deps);
-    expect(h.account.calls).toContain("delete stack agentx-staging-identity");
+    expect(h.account.calls).toContain("delete stack rovara-cloud-staging-identity");
   });
 
   it("offers to take over its own lock after a closed terminal", async () => {
@@ -212,8 +212,8 @@ describe("agentx destroy (FR-055, item 3)", () => {
     h.store.values.set(installAnswersParameterName("staging"), "{\"SECRETanswer\": ");
     h.store.values.set(installProgressParameterName("staging"), "[\"SECRETprogress\"]");
     await runDestroy({ env: "staging", keepData: false }, h.deps);
-    expect(h.lines).toContain(`Could not read ${installAnswersParameterName("staging")}, so agentx destroy goes on without the install answers: it may ask for the account id, and the steps printed at the end name no GitHub App of this environment.`);
-    expect(h.lines).toContain(`Could not read ${installProgressParameterName("staging")}, so agentx destroy goes on without the install progress: the steps printed at the end name no app of this environment.`);
+    expect(h.lines).toContain(`Could not read ${installAnswersParameterName("staging")}, so rovara destroy goes on without the install answers: it may ask for the account id, and the steps printed at the end name no GitHub App of this environment.`);
+    expect(h.lines).toContain(`Could not read ${installProgressParameterName("staging")}, so rovara destroy goes on without the install progress: the steps printed at the end name no app of this environment.`);
     expect(h.lines.join("\n")).not.toContain("SECRET");
   });
 
@@ -269,9 +269,9 @@ describe("agentx destroy (FR-055, item 3)", () => {
 
   it("refuses up front when the access stack is gone but a stack deployed through its role remains", async () => {
     const account = installedAccount();
-    account.stacks.delete("agentx-staging-access");
+    account.stacks.delete("rovara-cloud-staging-access");
     const h = await harness({ account });
-    await expect(runDestroy({ env: "staging", keepData: false }, h.deps)).rejects.toThrow("stack agentx-staging-slack was deployed through the role arn:aws:iam::123456789012:role/agentx-staging-cloudformation, which the access stack held and which is gone");
+    await expect(runDestroy({ env: "staging", keepData: false }, h.deps)).rejects.toThrow("stack rovara-cloud-staging-slack was deployed through the role arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation, which the access stack held and which is gone");
     expect(h.account.calls).toEqual([]);
   });
 
@@ -288,7 +288,7 @@ describe("agentx destroy (FR-055, item 3)", () => {
     const account = installedAccount("production");
     account.stacks.set("AgentXControlPlane", { status: "UPDATE_COMPLETE", terminationProtection: false, outputs: {}, template: "{}", resources: [] });
     const h = await harness({ env: "production", account, installed: false, typed: ["production", "123456789012"] });
-    await expect(runDestroy({ env: "production", keepData: false }, h.deps)).rejects.toThrow("agentx destroy never removes the legacy deployment");
+    await expect(runDestroy({ env: "production", keepData: false }, h.deps)).rejects.toThrow("rovara destroy never removes the legacy deployment");
     expect(h.account.calls).toEqual([]);
     expect(h.asked).toEqual([]);
     expect(h.store.calls.filter((call) => call.op === "delete")).toEqual([]);
@@ -297,7 +297,7 @@ describe("agentx destroy (FR-055, item 3)", () => {
   it("ruling F21: refuses when the settings cannot be read, naming the parameter, instead of treating them as absent", async () => {
     const h = await harness();
     h.store.values.set(settingsParameterName("staging"), "{not json");
-    await expect(runDestroy({ env: "staging", keepData: false }, h.deps)).rejects.toThrow("/agentx/staging/settings");
+    await expect(runDestroy({ env: "staging", keepData: false }, h.deps)).rejects.toThrow("/rovara-cloud/staging/settings");
     expect(h.account.calls).toEqual([]);
     expect(h.asked).toEqual([]);
   });
@@ -306,26 +306,26 @@ describe("agentx destroy (FR-055, item 3)", () => {
     const h = await harness();
     const first = await runDestroy({ env: "staging", keepData: true }, h.deps);
     expect(h.store.values.has(inventoryParameterName("staging"))).toBe(true);
-    expect(first.manualSteps).toContain("Run agentx destroy again, without --keep-data, to remove what was kept.");
+    expect(first.manualSteps).toContain("Run rovara destroy again, without --keep-data, to remove what was kept.");
     h.deps.confirmLine = async (question) => (question.includes("account id") ? "123456789012" : "staging");
     const second = await runDestroy({ env: "staging", keepData: false }, h.deps);
     // Only the inventory was left: the settings delete that finds nothing is not counted.
     expect(second.parameters).toBe(1);
     expect(h.account.calls).toEqual(expect.arrayContaining([
-      "delete table agentx-staging-control-plane-State-5e", "delete user pool us-east-1_Pool4d (domain agentx-staging-123456789012)", "schedule key key-3c",
-      "delete secret agentx/staging/callback-signing-key",
+      "delete table rovara-cloud-staging-control-plane-State-5e", "delete user pool us-east-1_Pool4d (domain rovara-cloud-staging-123456789012)", "schedule key key-3c",
+      "delete secret rovara-cloud/staging/callback-signing-key",
     ]));
     expect(h.store.values.has(inventoryParameterName("staging"))).toBe(false);
   });
 
-  it("ruling F32: names the ECR repositories under agentx-<env>/ as a manual step", async () => {
+  it("ruling F32: names the ECR repositories under rovara-cloud-<env>/ as a manual step", async () => {
     // Live check L6: the step is printed only when the pull-through cache made a repository.
     const account = installedAccount();
-    account.repositories = ["agentx-staging/ghcr/preplabsai/agentx-worker", "agentx-staging-eu/ghcr/preplabsai/agentx-worker", "other/repo"];
+    account.repositories = ["rovara-cloud-staging/ghcr/preplabsai/agentx-worker", "rovara-cloud-staging-eu/ghcr/preplabsai/agentx-worker", "other/repo"];
     const h = await harness({ account });
     const result = await runDestroy({ env: "staging", keepData: false }, h.deps);
     expect(result.manualSteps.filter((step) => step.includes("ECR"))).toEqual([
-      "Delete the ECR repositories under agentx-staging/ that the image pull-through cache created (agentx-staging/ghcr/preplabsai/agentx-worker): in the ECR console for us-east-1, Private registry, Repositories, filter by agentx-staging/ and delete each one (or aws ecr delete-repository --force --region us-east-1 --repository-name <name>).",
+      "Delete the ECR repositories under rovara-cloud-staging/ that the image pull-through cache created (rovara-cloud-staging/ghcr/preplabsai/agentx-worker): in the ECR console for us-east-1, Private registry, Repositories, filter by rovara-cloud-staging/ and delete each one (or aws ecr delete-repository --force --region us-east-1 --repository-name <name>).",
     ]);
   });
 
@@ -340,14 +340,14 @@ describe("agentx destroy (FR-055, item 3)", () => {
     expect(result.manualSteps.some((step) => step.startsWith("Delete the Slack app"))).toBe(true);
     expect(result.manualSteps.some((step) => step.startsWith("Revoke the Linear API key"))).toBe(true);
     expect(result.manualSteps.filter((step) => step.includes("ECR"))).toEqual([
-      "Delete the ECR repositories under agentx-staging/ that the image pull-through cache created: in the ECR console for us-east-1, Private registry, Repositories, filter by agentx-staging/ and delete each one (or aws ecr delete-repository --force --region us-east-1 --repository-name <name>).",
+      "Delete the ECR repositories under rovara-cloud-staging/ that the image pull-through cache created: in the ECR console for us-east-1, Private registry, Repositories, filter by rovara-cloud-staging/ and delete each one (or aws ecr delete-repository --force --region us-east-1 --repository-name <name>).",
     ]);
-    expect(h.lines).toContain("Could not list the ECR repositories under agentx-staging/ (AccessDeniedException), so the step to delete them is printed at the end anyway.");
+    expect(h.lines).toContain("Could not list the ECR repositories under rovara-cloud-staging/ (AccessDeniedException), so the step to delete them is printed at the end anyway.");
   });
 
-  it("prints no ECR step when no repository under agentx-<env>/ exists (live check L6)", async () => {
+  it("prints no ECR step when no repository under rovara-cloud-<env>/ exists (live check L6)", async () => {
     const account = installedAccount();
-    account.repositories = ["agentx-staging-eu/ghcr/preplabsai/agentx-worker"];
+    account.repositories = ["rovara-cloud-staging-eu/ghcr/preplabsai/agentx-worker"];
     const h = await harness({ account });
     const result = await runDestroy({ env: "staging", keepData: false }, h.deps);
     expect(result.manualSteps.filter((step) => step.includes("ECR"))).toEqual([]);
@@ -355,106 +355,106 @@ describe("agentx destroy (FR-055, item 3)", () => {
 
   it("deletes a stack left in REVIEW_IN_PROGRESS by an interrupted init, without waiting for it", async () => {
     const account = installedAccount();
-    account.stacks.get("agentx-staging-slack")!.status = "REVIEW_IN_PROGRESS";
+    account.stacks.get("rovara-cloud-staging-slack")!.status = "REVIEW_IN_PROGRESS";
     const h = await harness({ account });
     await runDestroy({ env: "staging", keepData: false }, h.deps);
-    expect(h.account.calls[0]).toBe("delete stack agentx-staging-slack");
-    expect(h.lines.join("\n")).not.toContain("Waiting for agentx-staging-slack");
+    expect(h.account.calls[0]).toBe("delete stack rovara-cloud-staging-slack");
+    expect(h.lines.join("\n")).not.toContain("Waiting for rovara-cloud-staging-slack");
   });
 
   it("waits for a busy stack to finish, then deletes it", async () => {
     const account = installedAccount();
-    Object.assign(account.stacks.get("agentx-staging-runtime")!, { status: "UPDATE_IN_PROGRESS", busyMinutes: 10, settledStatus: "UPDATE_ROLLBACK_COMPLETE" });
+    Object.assign(account.stacks.get("rovara-cloud-staging-runtime")!, { status: "UPDATE_IN_PROGRESS", busyMinutes: 10, settledStatus: "UPDATE_ROLLBACK_COMPLETE" });
     const h = await harness({ account });
     await runDestroy({ env: "staging", keepData: false }, h.deps);
-    expect(h.lines).toContain("Waiting for agentx-staging-runtime: it is UPDATE_IN_PROGRESS");
-    expect(h.account.calls).toContain("delete stack agentx-staging-runtime");
+    expect(h.lines).toContain("Waiting for rovara-cloud-staging-runtime: it is UPDATE_IN_PROGRESS");
+    expect(h.account.calls).toContain("delete stack rovara-cloud-staging-runtime");
   });
 
-  it("deletes the retained Slack secret once, and leaves it out of the agentx/<env>/ sweep and its count", async () => {
+  it("deletes the retained Slack secret once, and leaves it out of the rovara-cloud/<env>/ sweep and its count", async () => {
     const h = await harness();
     const result = await runDestroy({ env: "staging", keepData: false }, h.deps);
     const secretCalls = h.account.calls.filter((call) => call.startsWith("delete secret"));
     expect(secretCalls).toEqual([
-      "delete secret arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/slack-AbCdEf",
-      "delete secret agentx/staging/callback-signing-key", "delete secret agentx/staging/github-app",
+      "delete secret arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/slack-AbCdEf",
+      "delete secret rovara-cloud/staging/callback-signing-key", "delete secret rovara-cloud/staging/github-app",
     ]);
     expect(result.secrets).toBe(2);
   });
 
   it("builds the inventory inside the lock, from what the stacks hold after the confirmation", async () => {
     const h = await harness();
-    const controlPlane = h.account.stacks.get("agentx-staging-control-plane")!;
+    const controlPlane = h.account.stacks.get("rovara-cloud-staging-control-plane")!;
     const answer = h.deps.confirmLine;
     h.deps.confirmLine = async (question) => {
       // A stack update lands between the plan and the lock: a new retained table.
-      controlPlane.resources.push({ logicalId: "Late", type: "AWS::DynamoDB::Table", physicalId: "agentx-staging-control-plane-Late-9z" });
+      controlPlane.resources.push({ logicalId: "Late", type: "AWS::DynamoDB::Table", physicalId: "rovara-cloud-staging-control-plane-Late-9z" });
       controlPlane.template = JSON.stringify({ Resources: Object.fromEntries(controlPlane.resources.map((resource) => [resource.logicalId, { Type: resource.type, DeletionPolicy: "Retain" }])) });
-      h.account.tags.set("agentx-staging-control-plane-Late-9z", { "agentx:env": "staging" });
+      h.account.tags.set("rovara-cloud-staging-control-plane-Late-9z", { "rovara-cloud:env": "staging" });
       return answer(question);
     };
     await runDestroy({ env: "staging", keepData: false }, h.deps);
-    expect(h.account.calls).toContain("delete table agentx-staging-control-plane-Late-9z");
+    expect(h.account.calls).toContain("delete table rovara-cloud-staging-control-plane-Late-9z");
   });
 
-  it("with --keep-data, names every kept agentx/<env>/ secret in the manual step", async () => {
+  it("with --keep-data, names every kept rovara-cloud/<env>/ secret in the manual step", async () => {
     const h = await harness();
     const result = await runDestroy({ env: "staging", keepData: true }, h.deps);
     const kept = result.manualSteps.find((step) => step.startsWith("Kept, as --keep-data asked:"));
-    expect(kept).toContain("agentx/staging/callback-signing-key");
-    expect(kept).toContain("agentx/staging/github-app");
+    expect(kept).toContain("rovara-cloud/staging/callback-signing-key");
+    expect(kept).toContain("rovara-cloud/staging/github-app");
   });
 
   it("tells the operator role that destroy needs admin credentials, and that a role without delete rights fails partway", async () => {
-    const operator = await harness({ caller: "arn:aws:sts::123456789012:assumed-role/agentx-staging-operator/alice" });
-    await expect(runDestroy({ env: "staging", keepData: false }, operator.deps)).rejects.toThrow("any other role without the rights to delete all of it fails partway; run agentx destroy again with admin credentials to continue");
+    const operator = await harness({ caller: "arn:aws:sts::123456789012:assumed-role/rovara-cloud-staging-operator/alice" });
+    await expect(runDestroy({ env: "staging", keepData: false }, operator.deps)).rejects.toThrow("any other role without the rights to delete all of it fails partway; run rovara destroy again with admin credentials to continue");
   });
 
-  it("sweeps agentx/<env>/github even though the retained agentx/<env>/github-app shares its start", async () => {
+  it("sweeps rovara-cloud/<env>/github even though the retained rovara-cloud/<env>/github-app shares its start", async () => {
     const account = installedAccount();
-    account.stacks.get("agentx-staging-control-plane")!.resources.push({ logicalId: "GitHubSecret", type: "AWS::SecretsManager::Secret", physicalId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-XyZ123" });
-    account.stacks.get("agentx-staging-control-plane")!.template = JSON.stringify({ Resources: Object.fromEntries(account.stacks.get("agentx-staging-control-plane")!.resources.map((resource) => [resource.logicalId, { Type: resource.type, DeletionPolicy: "Retain" }])) });
-    account.tags.set("arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-XyZ123", { "agentx:env": "staging" });
-    account.secrets.push({ name: "agentx/staging/github", scheduled: false });
+    account.stacks.get("rovara-cloud-staging-control-plane")!.resources.push({ logicalId: "GitHubSecret", type: "AWS::SecretsManager::Secret", physicalId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-XyZ123" });
+    account.stacks.get("rovara-cloud-staging-control-plane")!.template = JSON.stringify({ Resources: Object.fromEntries(account.stacks.get("rovara-cloud-staging-control-plane")!.resources.map((resource) => [resource.logicalId, { Type: resource.type, DeletionPolicy: "Retain" }])) });
+    account.tags.set("arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-XyZ123", { "rovara-cloud:env": "staging" });
+    account.secrets.push({ name: "rovara-cloud/staging/github", scheduled: false });
     const h = await harness({ account });
     const result = await runDestroy({ env: "staging", keepData: false }, h.deps);
-    expect(h.account.calls).toContain("delete secret agentx/staging/github");
-    expect(h.account.calls).not.toContain("delete secret agentx/staging/github-app");
+    expect(h.account.calls).toContain("delete secret rovara-cloud/staging/github");
+    expect(h.account.calls).not.toContain("delete secret rovara-cloud/staging/github-app");
     expect(result.secrets).toBe(2);
   });
 
   it("passes the token DeleteStack answered to the failure report", async () => {
     const account = installedAccount();
-    account.stacks.get("agentx-staging-foundation")!.failDeletes = 1;
+    account.stacks.get("rovara-cloud-staging-foundation")!.failDeletes = 1;
     const h = await harness({ account });
-    await expect(runDestroy({ env: "staging", keepData: false }, h.deps)).rejects.toThrow("stack agentx-staging-foundation could not be deleted");
-    expect(h.account.failedTokens).toEqual(["agentx-destroy-test-agentx-staging-foundation"]);
+    await expect(runDestroy({ env: "staging", keepData: false }, h.deps)).rejects.toThrow("stack rovara-cloud-staging-foundation could not be deleted");
+    expect(h.account.failedTokens).toEqual(["agentx-destroy-test-rovara-cloud-staging-foundation"]);
   });
 
   it("finishes when a secret an earlier run force-deleted is still listed and refuses RestoreSecret", async () => {
     const h = await harness();
     let time = 0;
-    const sdk = forceDeletedSecretsClient(["agentx/staging/github-app"]);
+    const sdk = forceDeletedSecretsClient(["rovara-cloud/staging/github-app"]);
     const real = awsDestroyApi(sdk.clients, { sleep: async (ms) => { time += ms; } });
     h.deps.api = { ...h.deps.api, deleteSecret: (name) => real.deleteSecret(name) };
     const result = await runDestroy({ env: "staging", keepData: false }, h.deps);
     expect(result.removed).toBe(true);
-    expect(sdk.calls).toEqual(expect.arrayContaining(["RestoreSecret agentx/staging/github-app", "DeleteSecret agentx/staging/callback-signing-key"]));
-    expect(sdk.calls).not.toContain("DeleteSecret agentx/staging/github-app");
+    expect(sdk.calls).toEqual(expect.arrayContaining(["RestoreSecret rovara-cloud/staging/github-app", "DeleteSecret rovara-cloud/staging/callback-signing-key"]));
+    expect(sdk.calls).not.toContain("DeleteSecret rovara-cloud/staging/github-app");
     expect(time).toBeGreaterThan(0);
   });
 
   it("deletes a REVIEW_IN_PROGRESS stack whose template cannot be read, as retaining nothing", async () => {
     const account = installedAccount();
-    Object.assign(account.stacks.get("agentx-staging-slack")!, { status: "REVIEW_IN_PROGRESS", noTemplate: true });
+    Object.assign(account.stacks.get("rovara-cloud-staging-slack")!, { status: "REVIEW_IN_PROGRESS", noTemplate: true });
     const h = await harness({ account });
     await runDestroy({ env: "staging", keepData: false }, h.deps);
-    expect(h.account.calls[0]).toBe("delete stack agentx-staging-slack");
+    expect(h.account.calls[0]).toBe("delete stack rovara-cloud-staging-slack");
   });
 
   it("works out this computer's files from the inventory read inside the lock", async () => {
     const account = installedAccount();
-    const foundation = account.stacks.get("agentx-staging-foundation")!;
+    const foundation = account.stacks.get("rovara-cloud-staging-foundation")!;
     foundation.outputs = {};
     const h = await harness({ account });
     const answer = h.deps.confirmLine;

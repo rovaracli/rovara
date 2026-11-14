@@ -25,9 +25,9 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
   beforeAll(() => {
     const staging = stacksOf(buildAgentXApp({ agentxEnv: "staging" }));
     const byName = (name: string) => Template.fromStack(staging.find((s) => s.stackName === name)!);
-    foundation = byName("agentx-staging-foundation");
-    controlPlane = byName("agentx-staging-control-plane");
-    runtime = byName("agentx-staging-runtime");
+    foundation = byName("rovara-cloud-staging-foundation");
+    controlPlane = byName("rovara-cloud-staging-control-plane");
+    runtime = byName("rovara-cloud-staging-runtime");
     legacy = stacksOf(buildAgentXApp()).map((stack) => Template.fromStack(stack));
   }, 240_000);
 
@@ -41,7 +41,7 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     }
     expect(JSON.stringify(foundation.toJSON())).not.toContain(prefix);
     // Both role attachments live in the control plane, including correct path removal for
-    // /agentx/<env>/ worker roles and the legacy production role at /.
+    // /rovara-cloud/<env>/ worker roles and the legacy production role at /.
     // A named environment's key reads belong to the model proxy alone (ruling R4); the legacy
     // deployment keeps them on the orchestrator and the worker role.
     const namedPolicies = ofType(controlPlane, "AWS::IAM::Policy").filter(([, policy]) => policy.Properties.PolicyName === `${prefix}SecretRead`);
@@ -67,14 +67,14 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
       const data = launch.Properties.LaunchTemplateData as { TagSpecifications: Array<{ ResourceType: string; Tags: Array<{ Key: string; Value: string }> }> };
       expect(data.TagSpecifications.map((s) => s.ResourceType).sort()).toEqual(["instance", "volume"]);
       for (const spec of data.TagSpecifications) {
-        expect(spec.Tags.filter((tag) => tag.Key === "agentx:env")).toEqual(env === undefined ? [] : [{ Key: "agentx:env", Value: env }]);
+        expect(spec.Tags.filter((tag) => tag.Key === "rovara-cloud:env")).toEqual(env === undefined ? [] : [{ Key: "rovara-cloud:env", Value: env }]);
       }
     }
     // Check the actual lifecycle wiring, not just the standalone definition helper.
     const definitions = ofType(controlPlane, "AWS::StepFunctions::StateMachine").map(([, r]) => JSON.stringify(r.Properties.DefinitionString).replaceAll("\\", ""));
     const provisioner = definitions.find((definition) => definition.includes("createVolume"))!;
     // The workspace volume, and the instance launch in both its forms (launch template AMI, pinned AMI).
-    expect(provisioner.match(/"Key":"agentx:env","Value":"staging"/g)).toHaveLength(3);
+    expect(provisioner.match(/"Key":"rovara-cloud:env","Value":"staging"/g)).toHaveLength(3);
     expect(provisioner.match(/"ResourceType":"instance"/g)).toHaveLength(2);
   });
 
@@ -129,7 +129,7 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
   it("launches arm64 Amazon Linux 2023 m6g.large with IMDSv2 at one hop and an encrypted root volume", () => {
     const [[, template]] = ofType(foundation, "AWS::EC2::LaunchTemplate") as [[string, Resource]];
     const data = (template.Properties.LaunchTemplateData ?? {}) as Record<string, unknown>;
-    expect(template.Properties.LaunchTemplateName).toBe("agentx-staging-worker");
+    expect(template.Properties.LaunchTemplateName).toBe("rovara-cloud-staging-worker");
     expect(data.ImageId).toBe(`resolve:ssm:${EC2_WORKER_AMI_PARAMETER}`);
     expect(data.InstanceType).toBe("m6g.large");
     expect(data.MetadataOptions).toEqual({
@@ -154,7 +154,7 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
   });
 
   it("opens the worker port only to the dispatcher and the session manager, and allows only HTTPS out", () => {
-    const [[workerId, worker]] = ofType(foundation, "AWS::EC2::SecurityGroup").filter(([, r]) => r.Properties.GroupName === "agentx-staging-ec2-workers") as [[string, Resource]];
+    const [[workerId, worker]] = ofType(foundation, "AWS::EC2::SecurityGroup").filter(([, r]) => r.Properties.GroupName === "rovara-cloud-staging-ec2-workers") as [[string, Resource]];
     expect(worker.Properties.SecurityGroupIngress).toBeUndefined();
     expect(worker.Properties.SecurityGroupEgress).toEqual([expect.objectContaining({ IpProtocol: "tcp", FromPort: 443, ToPort: 443, CidrIp: "0.0.0.0/0" })]);
     const ingress = ofType(foundation, "AWS::EC2::SecurityGroupIngress").map(([, r]) => r.Properties);
@@ -164,7 +164,7 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
       return (rule.SourceSecurityGroupId as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
     });
     const callerNames = callerIds.map((id) => resourcesOf(foundation)[id]!.Properties.GroupName);
-    expect(callerNames.sort()).toEqual(["agentx-staging-dispatcher", "agentx-staging-session-manager"]);
+    expect(callerNames.sort()).toEqual(["rovara-cloud-staging-dispatcher", "rovara-cloud-staging-session-manager"]);
     for (const id of callerIds) {
       const egress = ofType(foundation, "AWS::EC2::SecurityGroupEgress").map(([, r]) => r.Properties).filter((rule) => JSON.stringify(rule.GroupId).includes(id));
       expect(egress).toEqual([expect.objectContaining({ FromPort: EC2_WORKER_PORT, ToPort: EC2_WORKER_PORT, DestinationSecurityGroupId: { "Fn::GetAtt": [workerId, "GroupId"] } })]);
@@ -172,12 +172,12 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
   });
 
   it("no longer has the retired runtime workers' security group (#118)", () => {
-    expect(ofType(foundation, "AWS::EC2::SecurityGroup").map(([, r]) => r.Properties.GroupName)).not.toContain("agentx-staging-workers");
+    expect(ofType(foundation, "AWS::EC2::SecurityGroup").map(([, r]) => r.Properties.GroupName)).not.toContain("rovara-cloud-staging-workers");
   });
 
   it("gives instances the ECR token and their own log group, and nothing of Bedrock, retired runtime, KMS or SSM", () => {
     const [[, profile]] = ofType(foundation, "AWS::IAM::InstanceProfile") as [[string, Resource]];
-    expect(profile.Properties.Path).toBe("/agentx/staging/");
+    expect(profile.Properties.Path).toBe("/rovara-cloud/staging/");
     const roleId = (profile.Properties.Roles as Array<{ Ref: string }>)[0]!.Ref;
     const role = resourcesOf(foundation)[roleId]!;
     expect(JSON.stringify(role.Properties.AssumeRolePolicyDocument)).toContain("ec2.amazonaws.com");
@@ -185,7 +185,7 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     const actions = actionsOf(policies.flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Array<{ Action: string | string[] }> }).Statement));
     // The image's own repository is granted by the runtime stack (worker-image-pull.test.ts), so only the token is here.
     expect(new Set(actions)).toEqual(new Set(["ecr:GetAuthorizationToken", "logs:CreateLogStream", "logs:PutLogEvents"]));
-    foundation.hasResourceProperties("AWS::Logs::LogGroup", { LogGroupName: "/agentx/staging/worker", RetentionInDays: 30 });
+    foundation.hasResourceProperties("AWS::Logs::LogGroup", { LogGroupName: "/rovara-cloud/staging/worker", RetentionInDays: 30 });
   });
 
   it("outputs what the session provisioner and an ec2-ebs binding need", () => {
@@ -232,12 +232,12 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     const signers = ofType(controlPlane, "AWS::IAM::Policy").filter(([, p]) => (p.Properties.PolicyDocument as { Statement: Array<{ Action: string | string[]; Resource?: unknown }> }).Statement.some(signsThisKey));
     expect(signers.map(([, p]) => JSON.stringify(p.Properties.Roles))).toEqual([expect.stringMatching(/DispatcherServiceRole/)]);
     expect(JSON.stringify(signers[0]![1].Properties.PolicyDocument)).toContain(keyId);
-    controlPlane.hasResourceProperties("AWS::KMS::Alias", { AliasName: "alias/agentx/staging/invoke-signing" });
+    controlPlane.hasResourceProperties("AWS::KMS::Alias", { AliasName: "alias/rovara-cloud/staging/invoke-signing" });
   });
 
   it("publishes the released worker image for the provisioner", () => {
     runtime.hasResourceProperties("AWS::SSM::Parameter", {
-      Name: "/agentx/staging/worker-image",
+      Name: "/rovara-cloud/staging/worker-image",
       Type: "String",
       Value: { Ref: "WorkerImageUri" },
     });
@@ -250,8 +250,8 @@ describe("EC2 worker infrastructure (issue #82), shown for a named environment",
     expect(pattern.test("none")).toBe(true);
     expect(pattern.test("ab".repeat(32))).toBe(true);
     for (const bad of ["AB".repeat(32), "ab".repeat(31), "latest", ""]) expect(pattern.test(bad), bad).toBe(false);
-    runtime.hasResourceProperties("AWS::SSM::Parameter", { Name: "/agentx/staging/worker-boot-stage2-sha256", Type: "String", Value: { Ref: "BootStage2Sha256" } });
-    expect(JSON.stringify(controlPlane.toJSON())).toContain("/agentx/staging/worker-boot-stage2-sha256");
+    runtime.hasResourceProperties("AWS::SSM::Parameter", { Name: "/rovara-cloud/staging/worker-boot-stage2-sha256", Type: "String", Value: { Ref: "BootStage2Sha256" } });
+    expect(JSON.stringify(controlPlane.toJSON())).toContain("/rovara-cloud/staging/worker-boot-stage2-sha256");
     for (const template of legacy) expect(JSON.stringify(template.toJSON())).not.toMatch(/BootStage2|boot-stage2/u);
   });
 });
@@ -270,7 +270,7 @@ describe("workers and the orchestrator hold no provider keys or Bedrock access (
   const stacks = (agentxEnv?: string) => stacksOf(buildAgentXApp(agentxEnv === undefined ? {} : { agentxEnv })).map((stack) => [stack.stackName, Template.fromStack(stack)] as const);
   let staging: ReadonlyArray<readonly [string, Template]>;
   let production: ReadonlyArray<readonly [string, Template]>;
-  const stagingStack = (suffix: string) => staging.find(([name]) => name === `agentx-staging-${suffix}`)![1];
+  const stagingStack = (suffix: string) => staging.find(([name]) => name === `rovara-cloud-staging-${suffix}`)![1];
 
   beforeAll(() => {
     staging = stacks("staging");
@@ -322,7 +322,7 @@ describe("workers and the orchestrator hold no provider keys or Bedrock access (
       IpProtocol: "tcp", FromPort: 4000, ToPort: 4000, DestinationSecurityGroupId: { "Fn::GetAtt": [loadBalancerGroup[0], "GroupId"] },
     })]);
     // The worker group's own inline rule is unchanged: HTTPS out, no ingress.
-    const [[, worker]] = ofType(stagingStack("foundation"), "AWS::EC2::SecurityGroup").filter(([, group]) => group.Properties.GroupName === "agentx-staging-ec2-workers") as [[string, Resource]];
+    const [[, worker]] = ofType(stagingStack("foundation"), "AWS::EC2::SecurityGroup").filter(([, group]) => group.Properties.GroupName === "rovara-cloud-staging-ec2-workers") as [[string, Resource]];
     expect(worker.Properties.SecurityGroupEgress).toEqual([expect.objectContaining({ FromPort: 443, ToPort: 443 })]);
   });
 
@@ -335,8 +335,8 @@ describe("workers and the orchestrator hold no provider keys or Bedrock access (
     };
     const control = stagingStack("control-plane");
     const legacyControl = production.find(([name]) => name === "AgentXControlPlane")![1];
-    expect(variables(control)).toMatchObject({ MODEL_PROXY_REQUIRED: "true", WORKER_SETTINGS_PREFIX: "/agentx/staging/" });
-    expect(readableParameters(control)).toContain("/agentx/staging/model-proxy-url");
+    expect(variables(control)).toMatchObject({ MODEL_PROXY_REQUIRED: "true", WORKER_SETTINGS_PREFIX: "/rovara-cloud/staging/" });
+    expect(readableParameters(control)).toContain("/rovara-cloud/staging/model-proxy-url");
     expect(variables(legacyControl)).not.toHaveProperty("MODEL_PROXY_REQUIRED");
     expect(readableParameters(legacyControl)).not.toContain("model-proxy-url");
   });
@@ -363,7 +363,7 @@ describe("standing E2E qualification transport (agentx:e2eQualificationTransport
   const synth = (context: Record<string, unknown> = {}) => {
     const stacks = stacksOf(buildAgentXApp({ agentxEnv: "staging", ...context }));
     const byName = (name: string) => Template.fromStack(stacks.find((s) => s.stackName === name)!);
-    return { foundation: byName("agentx-staging-foundation"), controlPlane: byName("agentx-staging-control-plane") };
+    return { foundation: byName("rovara-cloud-staging-foundation"), controlPlane: byName("rovara-cloud-staging-control-plane") };
   };
   const statementsOf = (template: Template): Statement[] => ofType(template, "AWS::IAM::Policy")
     .concat(ofType(template, "AWS::IAM::ManagedPolicy"))

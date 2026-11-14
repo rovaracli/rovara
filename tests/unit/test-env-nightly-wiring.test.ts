@@ -12,8 +12,8 @@ const ORG = "org_aaaaaaaaaaaaaaaaaaaa" as OrgId;
 const PROJECT = "service";
 const ON = { TEST_ENVIRONMENT_ENABLED: "1" };
 const SCHEDULER_ENV = {
-  ...ON, AGENTX_ENV: "staging", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AWS_LAMBDA_FUNCTION_NAME: "agentx-staging-broker",
-  CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx-staging-chain-schedule", CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-chain-schedule",
+  ...ON, AGENTX_ENV: "staging", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AWS_LAMBDA_FUNCTION_NAME: "rovara-cloud-staging-broker",
+  CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::123456789012:role/rovara-cloud-staging-chain-schedule", CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/rovara-cloud-staging-chain-schedule",
 } as NodeJS.ProcessEnv;
 const cmd = { cwd: "service", executable: "pytest", args: ["-q"], timeoutSeconds: 600 };
 const body = (nightly = { enabled: true, cronUtc: "0 6 * * *", branch: "main" }): TestEnvironmentBody => TestEnvironmentBodySchema.parse({

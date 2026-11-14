@@ -44,7 +44,7 @@ const BINDING = {
   subnets: [{ availabilityZone: "us-west-2a", subnetId: "subnet-0123456789abcdef0" }], volumeSizeGiB: 20, volumeType: "gp3",
 } as const;
 const STALE = "someone changed this project's settings; reload and try again";
-const PRIVATE = "ask an administrator to change this project's connectors with agentx admin project register";
+const PRIVATE = "ask an administrator to change this project's connectors with rovara admin project register";
 const LINEAR_KEY = "lin_api_PROJECTCONNECTORKEY0123456789";
 
 const person = (digit: string, name: string): Developer => ({ developerId: digit.repeat(64), name, provider: "oidc", sessionId: `s-${name.toLowerCase()}` });

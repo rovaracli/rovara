@@ -89,7 +89,7 @@ function fakeRelease(): LoadedRelease {
     schemaVersion: 1,
     version: "1.2.3",
     gitCommit: "a".repeat(40),
-    environmentPlaceholder: "qqenv-placeholderqq",
+    environmentPlaceholder: "qqenv-phldrqq",
     templates: [],
     packages: [],
     images: {
@@ -135,17 +135,17 @@ const baseAnswers = (): DeployAnswers => ({
   account: "123456789012",
   models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" },
   identity: { mode: "cognito" },
-  github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf" },
+  github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf" },
 });
 
 /** Every part's scripted stack outputs, exactly enough for `stackParameters` to succeed for all six parts. */
 function scriptedOutputs(): Record<string, StackOutputs> {
   return {
     [stackName("access")]: {
-      ArtifactBucketName: "agentx-staging-access-artifactbucket-abc",
-      CloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation",
-      OperatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator",
-      PullThroughPrefix: "agentx-staging",
+      ArtifactBucketName: "rovara-cloud-staging-access-artifactbucket-abc",
+      CloudFormationRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation",
+      OperatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator",
+      PullThroughPrefix: "rovara-cloud-staging",
     },
     [stackName("foundation")]: {
       VpcId: "vpc-0123456789abcdef0",
@@ -165,13 +165,13 @@ function scriptedOutputs(): Record<string, StackOutputs> {
     },
     [stackName("control-plane")]: {
       ApiEndpoint: "https://abc.execute-api.us-east-1.amazonaws.com",
-      SlackOrchestratorTaskRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-control-plane-SlackTask",
+      SlackOrchestratorTaskRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-control-plane-SlackTask",
       SlackRequestQueueUrl: "https://sqs.us-east-1.amazonaws.com/123456789012/q.fifo",
       SlackThreadsTableName: "t",
       TurnRecordsTableName: "tr",
       SlackThreadSessionBucketName: "b",
       SlackSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:SlackSecret-x",
-      OperatorAlertsTopicArn: "arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts",
+      OperatorAlertsTopicArn: "arn:aws:sns:us-east-1:123456789012:rovara-cloud-staging-alerts",
       ModelProxyUrl: "http://internal-proxy.example.test:4000",
       ModelProxySecurityGroupId: "sg-0123456789abcdef0",
     },
@@ -278,10 +278,10 @@ describe("deploy environment", () => {
       identity: { mode: "cognito", issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc", audience: "client123", clientId: "client123" },
       models: answers.models,
       access: {
-        artifactBucket: "agentx-staging-access-artifactbucket-abc",
-        cloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation",
-        operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator",
-        pullThroughPrefix: "agentx-staging",
+        artifactBucket: "rovara-cloud-staging-access-artifactbucket-abc",
+        cloudFormationRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation",
+        operatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator",
+        pullThroughPrefix: "rovara-cloud-staging",
         permissionsBoundaryArn: "arn:aws:iam::123456789012:policy/agentx-boundary",
       },
       updatedAt: "2026-09-26T00:00:00.000Z",
@@ -304,7 +304,7 @@ describe("deploy environment", () => {
 
   it("puts the edition record back when the foundation deploy fails after the record was taken out of the way, and drops the backup when it completes (fix round 2)", async () => {
     const editions = new MemoryParameterStore();
-    const record = "/agentx/staging/edition";
+    const record = "/rovara-cloud/staging/edition";
     editions.values.set(record, "enterprise");
     const adopt = () => adoptOrphanedEditionRecord({ store: editions, env: "staging", edition: "enterprise", foundationResources: async () => [] });
     const settle = (completed: boolean) => settleEditionRecord({ store: editions, env: "staging", completed });
@@ -315,14 +315,14 @@ describe("deploy environment", () => {
       adoptEditionRecord: adopt, settleEditionRecord: settle,
     })).rejects.toThrow("the foundation deploy failed");
     expect(editions.values.get(record)).toBe("enterprise");
-    expect(editions.values.get("/agentx/staging/edition-backup")).toBe("enterprise");
+    expect(editions.values.get("/rovara-cloud/staging/edition-backup")).toBe("enterprise");
 
     // A deploy that completes: the stack creates the record again, and the backup is removed.
     const scripted = fakeDeployer(scriptedOutputs());
     const creating: StackDeployer = { outputs: (name) => scripted.deployer.outputs(name), async deploy(request) { if (request.part === "foundation") editions.values.set(record, "enterprise"); return scripted.deployer.deploy(request); } };
     editions.values.delete(record);
     await deployEnvironment({ mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: creating, store: new MemoryParameterStore(), secrets: memorySecrets(), holder: HOLDER, adoptEditionRecord: adopt, settleEditionRecord: settle });
-    expect(editions.values.has("/agentx/staging/edition-backup")).toBe(false);
+    expect(editions.values.has("/rovara-cloud/staging/edition-backup")).toBe(false);
     expect(editions.values.get(record)).toBe("enterprise");
   });
 
@@ -360,7 +360,7 @@ describe("deploy environment", () => {
       deployEnvironment({ mode: "upgrade", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: attempt.deployer, store, secrets, holder: HOLDER, deployedParameters: nothingDeployed }),
     ).rejects.toThrow("environment staging was installed with the templates engine; switching engines is not supported");
     expect(attempt.requests).toEqual([]);
-    expect(store.values.has("/agentx/staging/lock")).toBe(false);
+    expect(store.values.has("/rovara-cloud/staging/lock")).toBe(false);
     expect(secrets.creates).toEqual([]);
   });
 
@@ -372,9 +372,9 @@ describe("deploy environment", () => {
 
     await expect(
       deployEnvironment({ mode: "upgrade", engine: "cdk", answers: baseAnswers(), release: fakeRelease(), deployer: attempt.deployer, store, secrets, holder: HOLDER, deployedParameters: nothingDeployed }),
-    ).rejects.toThrow("environment staging uses the legacy stack names; upgrading it with agentx deploy is not supported yet");
+    ).rejects.toThrow("environment staging uses the legacy stack names; upgrading it with rovara deploy is not supported yet");
     expect(attempt.requests).toEqual([]);
-    expect(store.values.has("/agentx/staging/lock")).toBe(false);
+    expect(store.values.has("/rovara-cloud/staging/lock")).toBe(false);
     expect(secrets.creates).toEqual([]);
   });
 
@@ -386,10 +386,10 @@ describe("deploy environment", () => {
 
     await expect(
       deployEnvironment({ mode: "install", engine: "templates", answers, release: fakeRelease(), deployer, store, secrets, holder: HOLDER }),
-    ).rejects.toThrow("bringing your own OIDC provider requires clientId to write environment settings (needed for agentx login)");
+    ).rejects.toThrow("bringing your own OIDC provider requires clientId to write environment settings (needed for rovara login)");
 
     expect(requests).toEqual([]);
-    expect(store.values.has("/agentx/staging/lock")).toBe(false);
+    expect(store.values.has("/rovara-cloud/staging/lock")).toBe(false);
     expect(secrets.creates).toEqual([]);
   });
 
@@ -515,7 +515,7 @@ describe("deploy environment", () => {
     const deployer: StackDeployer = {
       async deploy(request) {
         if (request.part === "foundation") {
-          sawLockHeld = store.values.has("/agentx/staging/lock");
+          sawLockHeld = store.values.has("/rovara-cloud/staging/lock");
           throw new Error("boom");
         }
         return outputs[request.stackName]!;
@@ -530,7 +530,7 @@ describe("deploy environment", () => {
     ).rejects.toThrow("boom");
 
     expect(sawLockHeld).toBe(true);
-    expect(store.values.has("/agentx/staging/lock")).toBe(false);
+    expect(store.values.has("/rovara-cloud/staging/lock")).toBe(false);
   });
 
   it.each([
@@ -546,8 +546,8 @@ describe("deploy environment", () => {
       const seed = fakeDeployer(scriptedOutputs());
       await deployEnvironment({ mode: "install", engine: "templates", answers: baseAnswers(), release, deployer: seed.deployer, store, secrets, holder: HOLDER });
     }
-    await store.put("/agentx/staging/slack/teamId", "T0TEAM1");
-    await store.put("/agentx/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
+    await store.put("/rovara-cloud/staging/slack/teamId", "T0TEAM1");
+    await store.put("/rovara-cloud/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
 
     const { deployer, requests } = fakeDeployer(scriptedOutputs());
     await deployEnvironment({ mode, engine: "templates", answers: baseAnswers(), release, deployer, store, secrets, holder: HOLDER, deployedParameters: nothingDeployed, ...(parts === undefined ? {} : { parts }) });
@@ -557,8 +557,8 @@ describe("deploy environment", () => {
   it("filters stored sign-in down to the keys an older release's control-plane template actually declares (F24)", async () => {
     const store = new MemoryParameterStore();
     const secrets = memorySecrets();
-    await store.put("/agentx/staging/slack/teamId", "T0TEAM1");
-    await store.put("/agentx/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
+    await store.put("/rovara-cloud/staging/slack/teamId", "T0TEAM1");
+    await store.put("/rovara-cloud/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
 
     // This release's control-plane template declares none of the sign-in parameters (a release from
     // before phase 25a, or the legacy template) — the sign-in keys must be dropped, not sent to a
@@ -574,8 +574,8 @@ describe("deploy environment", () => {
   it("passes the stored enabled-since cutoffs, and drops them for a release from before them (FR-045, F24)", async () => {
     const store = new MemoryParameterStore();
     const secrets = memorySecrets();
-    await store.put("/agentx/staging/slack/teamId", "T0TEAM1");
-    await store.put("/agentx/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, since: { slack: 1790000000 }, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
+    await store.put("/rovara-cloud/staging/slack/teamId", "T0TEAM1");
+    await store.put("/rovara-cloud/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, since: { slack: 1790000000 }, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
     const current = fakeDeployer(scriptedOutputs());
     await deployEnvironment({ mode: "install", engine: "templates", answers: baseAnswers(), release: fakeReleaseWithControlPlaneParameters([...SIGN_IN_PARAMETER_NAMES]), deployer: current.deployer, store, secrets, holder: HOLDER });
     expect(current.requests.find((request) => request.part === "control-plane")!.parameters).toMatchObject({ DeveloperSignInSlack: "enabled", DeveloperSignInSlackSince: "1790000000", DeveloperOidcSince: "0" });
@@ -592,8 +592,8 @@ describe("deploy environment", () => {
   it("names the release version and region, instead of a bare SyntaxError, when the control-plane template cannot be read", async () => {
     const store = new MemoryParameterStore();
     const secrets = memorySecrets();
-    await store.put("/agentx/staging/slack/teamId", "T0TEAM1");
-    await store.put("/agentx/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
+    await store.put("/rovara-cloud/staging/slack/teamId", "T0TEAM1");
+    await store.put("/rovara-cloud/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
 
     const corruptRelease: LoadedRelease = {
       ...fakeRelease(),
@@ -612,8 +612,8 @@ describe("deploy environment", () => {
   it("passes every sign-in key through when the release covers no region at all, instead of silently dropping them all (F24 fallback)", async () => {
     const store = new MemoryParameterStore();
     const secrets = memorySecrets();
-    await store.put("/agentx/staging/slack/teamId", "T0TEAM1");
-    await store.put("/agentx/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
+    await store.put("/rovara-cloud/staging/slack/teamId", "T0TEAM1");
+    await store.put("/rovara-cloud/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
 
     // fakeRelease()'s own template() always throws "not expected to be called by the orchestrator";
     // an empty regions() must mean it is never even asked (see templateParameterNames).
@@ -647,7 +647,7 @@ describe("deploy environment", () => {
   });
 });
 
-/** Sets up `store`'s lock parameter as already held by `holder`, the way agentx init's step runner
+/** Sets up `store`'s lock parameter as already held by `holder`, the way rovara init's step runner
  * leaves it while it calls deployEnvironment repeatedly with lockHeld. */
 function seedOwnLock(store: MemoryParameterStore, holder: string): void {
   store.values.set(lockParameterName(ENV), JSON.stringify({ holder, command: "init", acquiredAt: "2026-09-27T00:00:00.000Z" }));
@@ -937,8 +937,8 @@ describe("the cdk engine's declared parameters come from its synth (issue 152)",
 
   it("filters the stored sign-in keys by the synth's set, not the release's template", async () => {
     const store = new MemoryParameterStore();
-    await store.put("/agentx/staging/slack/teamId", "T0TEAM1");
-    await store.put("/agentx/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
+    await store.put("/rovara-cloud/staging/slack/teamId", "T0TEAM1");
+    await store.put("/rovara-cloud/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
     const { deployer, requests } = fakeDeployer(scriptedOutputs());
     await deployEnvironment({
       mode: "install", engine: "cdk", answers: baseAnswers(), release: fakeReleaseWithControlPlaneParameters([]), deployer, store, secrets: memorySecrets(), holder: HOLDER,
@@ -951,8 +951,8 @@ describe("the cdk engine's declared parameters come from its synth (issue 152)",
 
   it("never reads the release's templates when the synth's set is given", async () => {
     const store = new MemoryParameterStore();
-    await store.put("/agentx/staging/slack/teamId", "T0TEAM1");
-    await store.put("/agentx/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
+    await store.put("/rovara-cloud/staging/slack/teamId", "T0TEAM1");
+    await store.put("/rovara-cloud/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER }));
     const release = { ...fakeRelease(), template: () => { throw new Error("the release's template must not be read"); } };
     const { deployer } = fakeDeployer(scriptedOutputs());
     await expect(deployEnvironment({
@@ -1009,7 +1009,7 @@ describe("keptOperatorParameters", () => {
 });
 
 describe("the hosted Rovara cloud switch is stored and survives every deploy (R45)", () => {
-  const SIGN_IN = { googleClientId: "google-id.apps.example", googleClientSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/google-AbCdEf", domainPrefix: "rovara-acme", githubClientId: "Iv1.githubapp", githubClientSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-AbCdEf" };
+  const SIGN_IN = { googleClientId: "google-id.apps.example", googleClientSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/google-AbCdEf", domainPrefix: "rovara-acme", githubClientId: "Iv1.githubapp", githubClientSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-AbCdEf" };
 
   /** A cdk runner that records every command and writes the scripted outputs of the stack it was asked to deploy. */
   function cdkRunner(): CommandRunner & { calls: string[][] } {
@@ -1034,7 +1034,7 @@ describe("the hosted Rovara cloud switch is stored and survives every deploy (R4
   const deployedControlPlane = (settings: NonNullable<Awaited<ReturnType<typeof readEnvironmentSettings>>>) => ({
     async describe(name: string): Promise<StackDescription | undefined> {
       const parameters = name === settings.stacks["control-plane"]
-        ? { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: baseAnswers().github.privateKeySecretArn, AdminClaim: "cognito:groups", AdminValues: "[\"agentx-admin\"]" }
+        ? { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: baseAnswers().github.privateKeySecretArn, AdminClaim: "cognito:groups", AdminValues: "[\"rovara-cloud-admin\"]" }
         : { OperatorPrincipalArn: "" };
       return { status: "UPDATE_COMPLETE", outputs: {}, parameters };
     },
@@ -1084,7 +1084,7 @@ describe("the hosted Rovara cloud switch is stored and survives every deploy (R4
     expect(answers).toMatchObject({ cloud: true, cloudSignIn: SIGN_IN });
     const runner = cdkRunner();
     await deployEnvironment({
-      mode: "upgrade", engine: settings.engine, answers, release: fakeRelease(), deployer: cdk(runner, settings.cloud === true), store, secrets: memorySecrets({ [`agentx/${ENV}/callback-signing-key`]: "k".repeat(40) }), holder: HOLDER,
+      mode: "upgrade", engine: settings.engine, answers, release: fakeRelease(), deployer: cdk(runner, settings.cloud === true), store, secrets: memorySecrets({ [`rovara-cloud/${ENV}/callback-signing-key`]: "k".repeat(40) }), holder: HOLDER,
       deployedParameters: nothingDeployed, declaredParameters: () => new Set(),
     });
     expect(runner.calls.length).toBeGreaterThan(0);

@@ -18,12 +18,12 @@ export const CONTROL_PLANE = "https://cp.example.test";
 export const ADMIN_EMAIL = "alice@example.com";
 /** The staging environment's alerts topic ARN (OperatorAlertsTopicArn), as the control-plane stack
  * reports it; shared so every test that fakes it uses the same value. */
-export const ALERTS_TOPIC_ARN = "arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts";
+export const ALERTS_TOPIC_ARN = "arn:aws:sns:us-east-1:123456789012:rovara-cloud-staging-alerts";
 
-/** A staging environment's settings (/agentx/staging/settings), with Cognito sign-in. */
+/** A staging environment's settings (/rovara-cloud/staging/settings), with Cognito sign-in. */
 export const STAGING_SETTINGS: EnvironmentSettings = {
   schemaVersion: 1, env: "staging", account: "123456789012", region: "us-east-1", engine: "templates", version: "1.2.3", naming: "environment",
-  stacks: { foundation: "agentx-staging-foundation", runtime: "agentx-staging-runtime", "control-plane": "agentx-staging-control-plane", slack: "agentx-staging-slack" },
+  stacks: { foundation: "rovara-cloud-staging-foundation", runtime: "rovara-cloud-staging-runtime", "control-plane": "rovara-cloud-staging-control-plane", slack: "rovara-cloud-staging-slack" },
   controlPlaneUrl: CONTROL_PLANE,
   identity: { mode: "cognito", issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEf123", audience: "client123", clientId: "client123" },
   models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" },
@@ -105,7 +105,7 @@ export interface FakeControlPlane {
 export function fakeControlPlane(): FakeControlPlane {
   const plane: FakeControlPlane = {
     requests: [], forbidden: new Set(), registered: [], preflight: {}, bindings: [], turns: [], setupProposals: new Map(), setupDecisions: new Map(), registryHeads: new Map(),
-    credentials: [{ ref: "github-agentx-sdlc", type: "github-app", secretName: "agentx/staging/github-app", builtIn: true, tokenCached: false }],
+    credentials: [{ ref: "github-agentx-sdlc", type: "github-app", secretName: "rovara-cloud/staging/github-app", builtIn: true, tokenCached: false }],
     fetch: async (url, init) => {
       const parsed = new URL(typeof url === "string" ? url : url instanceof URL ? url.href : url.url);
       const method = init?.method ?? "GET";
@@ -360,7 +360,7 @@ export function fakeAlerts(options: { existing?: Subscription[]; confirmAfterPol
   const subscriptions = [...(options.existing ?? [])];
   let polls = 0;
   let reads = 0;
-  const confirmed = (entry: Subscription, index: number): Subscription => ({ ...entry, arn: `arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts:${index + 1}` });
+  const confirmed = (entry: Subscription, index: number): Subscription => ({ ...entry, arn: `arn:aws:sns:us-east-1:123456789012:rovara-cloud-staging-alerts:${index + 1}` });
   return {
     subscribed, states, reads: () => reads,
     confirmAll() { subscriptions.forEach((entry, index) => { if (entry.arn === "PendingConfirmation") subscriptions[index] = confirmed(entry, index); }); },
@@ -387,7 +387,7 @@ export function setupServices(overrides: Partial<SetupServices> = {}): SetupServ
   return {
     tokenStore: memoryTokenStore(),
     cognito: fakeCognito(),
-    login: fakeLogin({ accessToken: accessToken({ "cognito:groups": ["agentx-admin"] }), expiresAt: Date.parse("2026-09-27T01:00:00.000Z") }),
+    login: fakeLogin({ accessToken: accessToken({ "cognito:groups": ["rovara-cloud-admin"] }), expiresAt: Date.parse("2026-09-27T01:00:00.000Z") }),
     fetch: configuredFetch,
     repositories,
     github: fakeGitHubApi(),

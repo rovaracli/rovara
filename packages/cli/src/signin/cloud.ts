@@ -1,4 +1,4 @@
-// agentx signin cloud (Task 24): turn sign in with GitHub and Google on, change or off on an installed
+// rovara signin cloud (Task 24): turn sign in with GitHub and Google on, change or off on an installed
 // Rovara Cloud environment. init is the only other place these are set, and a resumed init refuses a
 // changed answer, so an installed environment could never turn them on. The change goes where init
 // stores it (the environment settings' cloudSignIn and init's own answers, so a later resume does not
@@ -8,7 +8,7 @@
 // domain, and the account's sandbox status is reported (a warning, never a refusal).
 import { DescribeStacksCommand, type Stack } from "@aws-sdk/client-cloudformation";
 import { GetAccountCommand, GetEmailIdentityCommand } from "@aws-sdk/client-sesv2";
-import { AgentXError, agentXError, environmentStackName } from "@agentx/contracts";
+import { AgentXError, agentXError, environmentStackName, RESOURCE_PREFIX } from "@agentx/contracts";
 import { CloudSignInAnswersSchema, type CloudSignInAnswers } from "../deploy/answer-schemas.js";
 import { updateStackParameters } from "../deploy/parameter-update.js";
 import { withEnvironmentLock } from "../environments/lock.js";
@@ -116,7 +116,7 @@ async function checkSender(services: SigninServices, settings: EnvironmentSettin
 /**
  * The secret must be this environment's own, and in its region and account: the sign-in function is
  * granted exactly the ARN it is given, but the operator role can only describe secrets named
- * agentx/<env>/*, and AgentX does not widen that, so the name needs that prefix. DescribeSecret
+ * rovara-cloud/<env>/*, and AgentX does not widen that, so the name needs that prefix. DescribeSecret
  * (never GetSecretValue) proves it exists.
  */
 async function checkSecret(services: SigninServices, settings: EnvironmentSettings, flag: string, arn: string): Promise<void> {
@@ -128,7 +128,7 @@ async function checkSecret(services: SigninServices, settings: EnvironmentSettin
   }
   const name = SECRET_SUFFIX.exec(nameAndSuffix)?.[1];
   if (name === undefined) throw agentXError("CONFIG_INVALID", `${flag} needs the secret's full ARN, which ends in a hyphen and six characters; ${arn} does not`);
-  const prefix = `agentx/${settings.env}/`;
+  const prefix = `${RESOURCE_PREFIX}/${settings.env}/`;
   if (!name.startsWith(prefix)) {
     throw agentXError("CONFIG_INVALID", `${flag}: the secret's name must start with ${prefix} (this one is ${name}); the operator role can only look at secrets under that prefix, and AgentX does not widen it. Create the secret as ${prefix}<name>, holding {"clientSecret": "..."}`);
   }
@@ -224,7 +224,7 @@ export async function runSigninCloud(services: SigninServices, env: string, flag
     // Read again under the lock, so a change made while the secrets were checked is kept.
     const settings = (await readEnvironmentSettings(services.store, env)) ?? first;
     const roleArn = settings.access?.cloudFormationRoleArn;
-    if (roleArn === undefined) throw agentXError("CONFIG_INVALID", `environment ${env}'s settings name no CloudFormation role; run agentx env use --env ${env}, or agentx init --resume`);
+    if (roleArn === undefined) throw agentXError("CONFIG_INVALID", `environment ${env}'s settings name no CloudFormation role; run rovara env use --env ${env}, or rovara init --resume`);
     const stackName = settings.stacks["control-plane"] ?? environmentStackName(env, "control-plane");
     // Read before the stack changes, so answers that cannot be read stop the change instead of following it.
     const answers = await readInstallAnswers(services.store, env);
@@ -252,8 +252,8 @@ export async function runSigninCloud(services: SigninServices, env: string, flag
       } catch (error) {
         const what = stackChanged ? `${stackName} was updated` : `${stackName} already had these parameters`;
         throw error instanceof AgentXError
-          ? agentXError(error.code, `${what}, but recording the sign-in settings failed (${errorReason(error)}); run agentx signin cloud again with the same flags to record them`)
-          : agentXError("RUNTIME_UNAVAILABLE", `${what}, but recording the sign-in settings failed (${errorReason(error)}); run agentx signin cloud again with the same flags to record them`);
+          ? agentXError(error.code, `${what}, but recording the sign-in settings failed (${errorReason(error)}); run rovara signin cloud again with the same flags to record them`)
+          : agentXError("RUNTIME_UNAVAILABLE", `${what}, but recording the sign-in settings failed (${errorReason(error)}); run rovara signin cloud again with the same flags to record them`);
       }
     }
     const outputs = next?.githubClientId === undefined && next?.googleClientId === undefined ? {} : await stackOutputs(services, stackName);

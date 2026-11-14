@@ -177,7 +177,7 @@ describe("the worker image carries stage 2", () => {
 // PATH. The fake docker keeps the worker image's boot-stage2.sh in a file, as `docker cp` reads it out of the image.
 // ---------------------------------------------------------------------------------------------------------------------------------------
 const IMAGE = `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx/worker@sha256:${"b".repeat(64)}`;
-const MISMATCH_MESSAGE = "the worker image's boot steps do not match this control plane; the two come from different releases, so run agentx upgrade";
+const MISMATCH_MESSAGE = "the worker image's boot steps do not match this control plane; the two come from different releases, so run rovara upgrade";
 
 const bootConfig = (sha: string): Ec2WorkerBootConfig => ({
   workspaceId: randomUUID(),
@@ -190,7 +190,7 @@ const bootConfig = (sha: string): Ec2WorkerBootConfig => ({
   modelProvider: "amazon-bedrock",
   modelId: "us.anthropic.claude-sonnet-5-v1:0",
   promptCacheRetention: "long",
-  logGroupName: "/agentx/test/worker",
+  logGroupName: "/rovara-cloud/test/worker",
   environmentKind: "named",
   modelProxyUrl: "http://proxy.example.test:4000",
   bootStage2Sha256: sha,

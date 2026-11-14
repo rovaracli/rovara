@@ -63,11 +63,11 @@ describe("controller main: the registry", () => {
   const spec: McpStdioSpec = { registry: "npm", name: "@acme/sim-mcp", version: "1.4.2", args: [], integrity: `sha512-${"A".repeat(86)}==`, lockfileHash: "1".repeat(64), bundleHash: "2".repeat(64), destinations: [], secretEnv: [], size: { cpu: 256, memoryMiB: 512 } };
   const probe = summariseProbe([], 0);
   const entry = (over: Partial<McpServerEntry> = {}): McpServerEntry => ({ serverId: "mcpsim000001", label: "Wiki", status: "approved", transport: { kind: "stdio", spec }, probe, requestedBy: "dev1", requestedAt: "2026-11-01T10:00:00Z", ...over });
-  const registry = (found: McpServerEntry | undefined) => registryFor({ get: async () => found } as never, "org_aaaaaaaaaaaaaaaaaaaa", async (id) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`);
+  const registry = (found: McpServerEntry | undefined) => registryFor({ get: async () => found } as never, "org_aaaaaaaaaaaaaaaaaaaa", async (id) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/test/org-connectors/org/${id}-AbCdEf`);
 
   it("serves an approved entry with its install pinned, with the tools hash the admin approved and its secret version", async () => {
     const approved = await registry(entry({ hasSecret: true, secretVersion: "v1" })).approved("mcpsim000001");
-    expect(approved).toMatchObject({ spec, toolsHash: probe.toolsHash, secretVersion: "v1", secretRef: "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/mcpsim000001-AbCdEf" });
+    expect(approved).toMatchObject({ spec, toolsHash: probe.toolsHash, secretVersion: "v1", secretRef: "arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/test/org-connectors/org/mcpsim000001-AbCdEf" });
   });
   it("gives no secret reference to an entry without a secret, and none when the ARN cannot be looked up", async () => {
     expect((await registry(entry()).approved("mcpsim000001"))?.secretRef).toBeUndefined();
@@ -85,7 +85,7 @@ describe("controller main: the registry", () => {
     expect(await registry(undefined).approved("mcpsim000001")).toBeUndefined();
   });
   it("T9: a test reads a proposal's secret only while the proposal has no entry or its entry waits for approval (never an approved, disabled or other entry's)", async () => {
-    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/test/org-connectors/org/${id}-AbCdEf`;
     expect(await registry(undefined).probeSecret!("mcppkgnew00001")).toBe(arn("mcppkgnew00001"));
     expect(await registry(entry({ status: "awaiting_approval", hasSecret: true })).probeSecret!("mcpsim000001")).toBe(arn("mcpsim000001"));
     for (const status of ["approved", "disabled", "needs_reapproval"] as const) expect(await registry(entry({ status, hasSecret: true })).probeSecret!("mcpsim000001"), status).toBeUndefined();
@@ -94,7 +94,7 @@ describe("controller main: the registry", () => {
     expect(await registryFor({ get: async () => undefined } as never, "org_aaaaaaaaaaaaaaaaaaaa", async () => { throw new Error("denied"); }).probeSecret!("mcppkgnew00001")).toBeUndefined();
   });
   it("fix round 2 N1: a paused entry's secret goes only into the review and re-approve test of that same server's pinned package", async () => {
-    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/test/org-connectors/org/${id}-AbCdEf`;
     const withSecret = { ...spec, secretEnv: ["API_KEY"] };
     const paused = registry(entry({ status: "changed_needs_review", hasSecret: true, transport: { kind: "stdio", spec: withSecret } }));
     const own = { spec: { registry: "npm" as const, name: spec.name, version: spec.version, args: spec.args, integrity: spec.integrity, destinations: [], secretEnv: withSecret.secretEnv, size: spec.size }, pinned: { lockfileHash: spec.lockfileHash, bundleHash: spec.bundleHash } };
@@ -127,17 +127,17 @@ describe("controller main: the registry", () => {
     await expect(reg(async () => { throw new Error("table down"); }).referencedBundles!()).rejects.toThrow();
   });
   it("review N1: with no entry, a test reads a secret only under a package-run proposal id (an address-based server's token, between its storing and its entry, is never handed out)", async () => {
-    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/test/org-connectors/org/${id}-AbCdEf`;
     const none = registry(undefined);
     expect(await none.probeSecret!("mcppkgnew00001")).toBe(arn("mcppkgnew00001"));
     for (const id of ["mcpnew0000001", "mcp0123456789abcdef", "mcpxpkgabcdef01", "mcppk", "mcpPKGnew0001"]) expect(await none.probeSecret!(id), id).toBeUndefined();
   });
   it("review S1: the name of a secret a task may be given is built only for a package-run id, and is the one the execution role reads", () => {
-    expect(packageSecretName("ent", "org_aaaaaaaaaaaaaaaaaaaa", "mcppkg0123456789abc")).toBe("agentx/ent/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcppkg0123456789abc");
+    expect(packageSecretName("ent", "org_aaaaaaaaaaaaaaaaaaaa", "mcppkg0123456789abc")).toBe("rovara-cloud/ent/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcppkg0123456789abc");
     for (const id of ["mcp0123456789abcdef", "mcpsim000001", "mcpxpkg0123456789", "../mcppkg0123456", "mcppkg/../x", ""]) expect(() => packageSecretName("ent", "org_aaaaaaaaaaaaaaaaaaaa", id), id).toThrow(/package-run/u);
   });
   it("SR-7 H1: the equality check also holds the destinations, the size and the tarball's integrity: a paused entry's secret never goes to a task that may reach other addresses, or is another size, or another tarball", async () => {
-    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/test/org-connectors/org/${id}-AbCdEf`;
     const withSecret: McpStdioSpec = { ...spec, secretEnv: ["API_KEY"], destinations: [{ host: "jira.corp.example", port: 443 }, { host: "wiki.corp.example", port: 8443 }], size: { cpu: 512, memoryMiB: 1024 } };
     const paused = registry(entry({ status: "changed_needs_review", hasSecret: true, transport: { kind: "stdio", spec: withSecret } }));
     const own = { spec: { registry: "npm" as const, name: withSecret.name, version: withSecret.version, args: withSecret.args, integrity: withSecret.integrity, destinations: withSecret.destinations, secretEnv: withSecret.secretEnv, size: withSecret.size }, pinned: { lockfileHash: withSecret.lockfileHash, bundleHash: withSecret.bundleHash } };
@@ -159,7 +159,7 @@ describe("controller main: the registry", () => {
     expect(await paused.probeSecret!("mcpsim000001", { ...own, spec: withoutIntegrity }), "no integrity").toBeUndefined();
   });
   it("SR-7 H1 / review M4: a waiting entry gives its secret to a test only when it is a package-run entry (an http server's token never goes into a package test), and a proposal with no entry still does", async () => {
-    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org/${id}-AbCdEf`;
+    const arn = (id: string) => `arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/test/org-connectors/org/${id}-AbCdEf`;
     const http = entry({ status: "awaiting_approval", hasSecret: true, transport: { kind: "http", address: "https://mcp.corp.example/mcp" } });
     expect(await registry(http).probeSecret!("mcpsim000001")).toBeUndefined();
     expect(await registry({ ...http, status: "changed_needs_review" }).probeSecret!("mcpsim000001")).toBeUndefined();

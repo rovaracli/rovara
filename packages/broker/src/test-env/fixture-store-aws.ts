@@ -13,7 +13,7 @@
 import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { GetCommand, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { AGENTX_NAME_PATTERN, FIXTURE_PROTOCOLS, OrgIdSchema, orgPk } from "@agentx/contracts";
+import { AGENTX_NAME_PATTERN, FIXTURE_PROTOCOLS, OrgIdSchema, RESOURCE_PREFIX, orgPk } from "@agentx/contracts";
 import { z } from "zod";
 import {
   FIXTURE_READ_URL_SECONDS, createFixtureStore,
@@ -23,7 +23,7 @@ import { testServicesEnabled } from "./test-services-switch.js";
 
 const DIGEST = /^[a-f0-9]{64}$/u;
 const PREFIX = /^[A-Za-z0-9._-]{1,64}$/u;
-const KMS_KEY_ARN = /^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:(?:key\/(?:mrk-[0-9a-f]{32}|[0-9a-f-]{36})|alias\/agentx\/[a-z][a-z0-9-]{0,62}\/fixtures)$/u;
+const KMS_KEY_ARN = new RegExp(String.raw`^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:(?:key/(?:mrk-[0-9a-f]{32}|[0-9a-f-]{36})|alias/${RESOURCE_PREFIX}/[a-z][a-z0-9-]{0,62}/fixtures)$`, "u");
 /** The most pages one listing reads; a longer list is cut (the answer errs towards "no earlier approved set", which only makes a review stricter). */
 const LIST_PAGES_MAX = 10;
 

@@ -291,7 +291,7 @@ describe("the sweep event's time", () => {
 describe("the sweep's schedule", () => {
   const sweeps = (stack: Stack) => Object.values(Template.fromStack(stack).findResources("AWS::Scheduler::Schedule") as Record<string, { Properties: Record<string, unknown> }>)
     .map((resource) => resource.Properties).filter((properties) => JSON.stringify(properties.Target).includes("agentx.session-sweep"));
-  const named = () => buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "agentx-staging-control-plane")!;
+  const named = () => buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "rovara-cloud-staging-control-plane")!;
 
   // One synth of the whole named app (the slowest step on a CI runner) serves both reads, within the full-app synth budget the infrastructure tests use.
   it("is an own schedule of a named environment: every 5 minutes, with the exact input, on the recovery role", () => {

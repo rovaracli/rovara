@@ -137,7 +137,7 @@ describe("init questions", () => {
     const flags = withExplicitUndefined(everyFlag, "alertEmail");
     const prompter = scriptedPrompter([...settingsScript({ flags, advanced: { alertKind: "webhook" } }), `  ${WEBHOOK}\r\n`]);
     const collected = await collectInitAnswers({ ...base, flags, prompter });
-    expect(collected.answers.alert).toEqual({ kind: "webhook", display: "https://api.opsgenie.com/...", secretName: "agentx/staging/alert-endpoint" });
+    expect(collected.answers.alert).toEqual({ kind: "webhook", display: "https://api.opsgenie.com/...", secretName: "rovara-cloud/staging/alert-endpoint" });
     expect(JSON.stringify(collected.answers)).not.toContain("SECRET-KEY");
     expect(collected.alertWebhook).toBe(WEBHOOK);
 
@@ -145,7 +145,7 @@ describe("init questions", () => {
     const secrets = memoryAlertSecrets();
     await persistInitAnswers({ store, secrets, collected });
     expect(secrets.values.get(alertWebhookSecretName("staging"))).toBe(WEBHOOK);
-    expect(store.values.get("/agentx/staging/install/answers")).not.toContain("SECRET-KEY");
+    expect(store.values.get("/rovara-cloud/staging/install/answers")).not.toContain("SECRET-KEY");
     expect(await readInstallAnswers(store, "staging")).toEqual(collected.answers);
   });
 
@@ -153,9 +153,9 @@ describe("init questions", () => {
     const flags = withExplicitUndefined({ ...everyFlag, alertWebhook: { envName: "AGENTX_ALERT_WEBHOOK" } }, "alertEmail");
     const collected = await collectWithFlags({ ...base, processEnv: { AGENTX_ALERT_WEBHOOK: WEBHOOK }, flags });
     const secrets = memoryAlertSecrets();
-    secrets.values.set("agentx/staging/alert-endpoint", "https://stale.example.com/x");
+    secrets.values.set("rovara-cloud/staging/alert-endpoint", "https://stale.example.com/x");
     await persistInitAnswers({ store: new MemoryParameterStore(), secrets, collected });
-    expect(secrets.values.get("agentx/staging/alert-endpoint")).toBe(WEBHOOK);
+    expect(secrets.values.get("rovara-cloud/staging/alert-endpoint")).toBe(WEBHOOK);
 
     let message = "";
     try {
@@ -305,7 +305,7 @@ describe("the hosted Rovara cloud (R45, R46)", () => {
   const cdkFlags: InitFlags = { ...everyFlag, engine: "cdk" };
   // A new cdk install must choose its edition (Enterprise foundations E2): Enterprise here, and the hosted cloud (Public) with --rovara-cloud.
   const enterpriseFlags: InitFlags = { ...cdkFlags, edition: "enterprise" };
-  const SECRET = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/google-AbCdEf";
+  const SECRET = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/google-AbCdEf";
 
   it("--rovara-cloud stores cloud: true with the cdk engine, and the sign-in flags beside it", async () => {
     const { answers } = await collectWithFlags({ ...base, flags: { ...cdkFlags, rovaraCloud: true, googleClientId: "gid", googleClientSecretArn: SECRET, cloudDomainPrefix: "rovara-acme" } });
@@ -315,7 +315,7 @@ describe("the hosted Rovara cloud (R45, R46)", () => {
   });
 
   it("the GitHub sign-in flags are stored beside the Google ones, go together, and need --rovara-cloud", async () => {
-    const githubSecret = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-AbCdEf";
+    const githubSecret = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-AbCdEf";
     const { answers } = await collectWithFlags({ ...base, flags: { ...cdkFlags, rovaraCloud: true, githubSignInClientId: "Iv1.app", githubSignInClientSecretArn: githubSecret } });
     expect(answers).toMatchObject({ cloud: true, cloudSignIn: { githubClientId: "Iv1.app", githubClientSecretArn: githubSecret } });
     await expect(collectWithFlags({ ...base, flags: { ...cdkFlags, rovaraCloud: true, githubSignInClientId: "Iv1.app" } })).rejects.toThrow(/--github-sign-in-client-id and --github-sign-in-client-secret-arn go together/);
@@ -341,7 +341,7 @@ describe("OpenRouter from init", () => {
     "qwen/qwen3-coder", "qwen/qwen3-coder", "anthropic/claude-sonnet-4.5", OPENROUTER_KEY, "",
   ];
 
-  it("choosing OpenRouter asks the three model ids and the key (hidden), and stores the raw key as agentx/<env>/openrouter with only its ARN in the answers", async () => {
+  it("choosing OpenRouter asks the three model ids and the key (hidden), and stores the raw key as rovara-cloud/<env>/openrouter with only its ARN in the answers", async () => {
     const scripted = scriptedPrompter(OPENROUTER_RUN);
     const { prompter, hidden } = recordingSecrets(scripted);
     const collected = await collectInitAnswers({ ...base, flags: {}, prompter });
@@ -360,8 +360,8 @@ describe("OpenRouter from init", () => {
     const store = new MemoryParameterStore();
     const secrets = memoryInitSecrets();
     const saved = await persistInitAnswers({ store, secrets, collected });
-    expect(secrets.values.get("agentx/staging/openrouter")).toBe(OPENROUTER_KEY);
-    expect(saved.models.openRouter).toEqual({ secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/openrouter-AbCdEf" });
+    expect(secrets.values.get("rovara-cloud/staging/openrouter")).toBe(OPENROUTER_KEY);
+    expect(saved.models.openRouter).toEqual({ secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/openrouter-AbCdEf" });
     expect(await readInstallAnswers(store, "staging")).toEqual(saved);
     expect([...store.values.values()].join("\n")).not.toContain(OPENROUTER_KEY);
   });
@@ -432,7 +432,7 @@ describe("resuming with flags", () => {
     const { answers } = await collectWithFlags({ ...base, flags: everyFlag });
     expect(() => assertResumeFlagsMatch(answers, { orchestratorModel: "us.anthropic.claude-sonnet-4-6" })).not.toThrow();
     expect(() => assertResumeFlagsMatch(answers, { orchestratorModel: "zai.glm-4.7" })).toThrow(
-      "--orchestrator-model zai.glm-4.7 differs from what this install started with (us.anthropic.claude-sonnet-4-6); an install's answers cannot change halfway. Run agentx init without that flag to continue",
+      "--orchestrator-model zai.glm-4.7 differs from what this install started with (us.anthropic.claude-sonnet-4-6); an install's answers cannot change halfway. Run rovara init without that flag to continue",
     );
     expect(() => assertResumeFlagsMatch(answers, { engine: "cdk" })).toThrow("--engine cdk differs");
   });
@@ -442,14 +442,14 @@ describe("resuming with flags", () => {
     const { answers } = await collectWithFlags({ ...base, flags });
     expect(() => assertResumeFlagsMatch(answers, { oidcIssuer: "https://id.example.com", oidcAudience: "agentx", oidcClientId: "cli", adminClaim: "groups", adminValues: "agentx-admins, platform" })).not.toThrow();
     expect(() => assertResumeFlagsMatch(answers, { oidcIssuer: "https://other.example.com" })).toThrow(
-      "--oidc-issuer https://other.example.com differs from what this install started with (https://id.example.com); an install's answers cannot change halfway. Run agentx init without that flag to continue",
+      "--oidc-issuer https://other.example.com differs from what this install started with (https://id.example.com); an install's answers cannot change halfway. Run rovara init without that flag to continue",
     );
     expect(() => assertResumeFlagsMatch(answers, { adminClaim: "role" })).toThrow("--admin-claim role differs");
     expect(() => assertResumeFlagsMatch(answers, { adminValues: "other-group, platform" })).toThrow("--admin-values other-group, platform differs");
 
     const { answers: cognitoAnswers } = await collectWithFlags({ ...base, flags: everyFlag });
     expect(() => assertResumeFlagsMatch(cognitoAnswers, { oidcIssuer: "https://id.example.com" })).toThrow(
-      "--oidc-issuer https://id.example.com differs from what this install started with (not set); an install's answers cannot change halfway. Run agentx init without that flag to continue",
+      "--oidc-issuer https://id.example.com differs from what this install started with (not set); an install's answers cannot change halfway. Run rovara init without that flag to continue",
     );
   });
 
@@ -461,7 +461,7 @@ describe("resuming with flags", () => {
     // different issuer must still be refused.
     expect(() => assertResumeFlagsMatch(answers, { oidcIssuer: "https://id.example.com/" })).not.toThrow();
     expect(() => assertResumeFlagsMatch(answers, { oidcIssuer: "https://other.example.com" })).toThrow(
-      "--oidc-issuer https://other.example.com differs from what this install started with (https://id.example.com); an install's answers cannot change halfway. Run agentx init without that flag to continue",
+      "--oidc-issuer https://other.example.com differs from what this install started with (https://id.example.com); an install's answers cannot change halfway. Run rovara init without that flag to continue",
     );
 
     // Admin values compare as a set: reordered or reformatted (no space after the comma) is the
@@ -486,10 +486,10 @@ describe("resuming with flags", () => {
   it("also checks --alert-webhook-* and --no-alerts (F10) against the stored alert kind", async () => {
     const { answers: emailAnswers } = await collectWithFlags({ ...base, flags: everyFlag });
     expect(() => assertResumeFlagsMatch(emailAnswers, { alerts: false })).toThrow(
-      "--no-alerts differs from what this install started with (email); an install's answers cannot change halfway. Run agentx init without that flag to continue",
+      "--no-alerts differs from what this install started with (email); an install's answers cannot change halfway. Run rovara init without that flag to continue",
     );
     expect(() => assertResumeFlagsMatch(emailAnswers, { alertWebhook: { envName: "AGENTX_ALERT_WEBHOOK" } })).toThrow(
-      "--alert-webhook-env AGENTX_ALERT_WEBHOOK differs from what this install started with (email); an install's answers cannot change halfway. Run agentx init without that flag to continue",
+      "--alert-webhook-env AGENTX_ALERT_WEBHOOK differs from what this install started with (email); an install's answers cannot change halfway. Run rovara init without that flag to continue",
     );
     expect(() => assertResumeFlagsMatch(emailAnswers, { alertWebhook: { file: "/tmp/webhook.txt" } })).toThrow("--alert-webhook-file /tmp/webhook.txt differs");
 
@@ -497,7 +497,7 @@ describe("resuming with flags", () => {
     const { answers: noneAnswers } = await collectWithFlags({ ...base, flags: noneFlags });
     expect(() => assertResumeFlagsMatch(noneAnswers, { alerts: false })).not.toThrow();
     expect(() => assertResumeFlagsMatch(noneAnswers, { alertEmail: "ops@example.com" })).toThrow(
-      "--alert-email ops@example.com differs from what this install started with (not set); an install's answers cannot change halfway. Run agentx init without that flag to continue",
+      "--alert-email ops@example.com differs from what this install started with (not set); an install's answers cannot change halfway. Run rovara init without that flag to continue",
     );
 
     const webhookFlags = withExplicitUndefined({ ...everyFlag, alertWebhook: { envName: "AGENTX_ALERT_WEBHOOK" } }, "alertEmail");
@@ -537,10 +537,10 @@ describe("spec 048 FR-026: app names", () => {
 
   it("the longest owner and install name still fit, and both apps match", async () => {
     const owner = "a".repeat(39);
-    const env = "abcdefghij-klmnopqrs";
-    expect(env.length).toBe(20);
+    const env = "abcdefg-hijklm";
+    expect(env.length).toBe(14);
     const name = defaultAppName({ owner, env });
-    expect(name).toBe("AgentX (abcdefghij-klmnopqrs)");
+    expect(name).toBe("AgentX (abcdefg-hijklm)");
     expect(name.length).toBeLessThanOrEqual(GITHUB_APP_NAME_LIMIT);
 
     const prompter = scriptedPrompter([...settingsScript({ env, owner, advanced: { alertEmail: "ops@example.com" } }), ""]);

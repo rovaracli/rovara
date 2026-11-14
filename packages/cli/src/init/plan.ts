@@ -4,6 +4,8 @@
 // 2026-09-25 evaluation in the spec's Decisions.
 import {
   keyedProviderSecretName, KEYED_MODEL_PROVIDERS, defaultBoundaryName, environmentCloudFormationRoleName, environmentOperatorRoleName, environmentRolePath, environmentStackName,
+  RESOURCE_PREFIX,
+  ENVIRONMENT_TAG_KEY,
 } from "@agentx/contracts";
 import type { DirectProvider } from "../deploy/answer-schemas.js";
 import { installOrder } from "../deploy/parameters.js";
@@ -26,7 +28,7 @@ export function installPlanText(answers: InitAnswers, estimate: CostEstimate, no
   const stacks = installOrder(answers.identity.mode).map((part) => environmentStackName(env, part));
   const boundary = answers.permissionsBoundaryArn ?? defaultBoundaryName(env);
   const secrets = [
-    callbackSigningKeySecretName(env), `agentx/${env}/github-app`, `agentx/${env}/slack`,
+    callbackSigningKeySecretName(env), `${RESOURCE_PREFIX}/${env}/github-app`, `${RESOURCE_PREFIX}/${env}/slack`,
     ...(answers.alert.kind === "webhook" ? [answers.alert.secretName] : []),
     ...(extras.storesOpenRouterKey === true ? [openRouterSecretName(env)] : []),
     ...(extras.storesProviderKeys ?? []).map((provider) => keyedProviderSecretName(env, provider)),
@@ -44,7 +46,7 @@ export function installPlanText(answers: InitAnswers, estimate: CostEstimate, no
     `- Stacks, in this order: ${stacks.join(", ")}`,
     `- IAM roles ${environmentCloudFormationRoleName(env)} (CloudFormation deploys through it) and ${environmentOperatorRoleName(env)} (day-2 commands), and the permission boundary ${boundary}, which every AgentX role carries; the stacks' own roles live under the IAM path ${environmentRolePath(env)}`,
     `- Secrets ${secrets.join(", ")}`,
-    `- Settings under /agentx/${env}/`,
+    `- Settings under /${RESOURCE_PREFIX}/${env}/`,
     `- In GitHub: an app named "${answers.github.appName}" owned by ${answers.github.account}, with read and write access to contents, pull requests and issues, and read access to metadata, and a webhook that sends pull request and comment events to the control plane.`,
     `- In Slack: an app named "${answers.slack.appName}".`,
     `- Models: main model ${modelName(answers.models.orchestrator)} (${provider("orchestrator")}), safety check model ${modelName(answers.models.classifier)} (${provider("classifier")}), coding model ${modelName(answers.models.worker)} (${provider("worker")})`,
@@ -59,7 +61,7 @@ export function installPlanText(answers: InitAnswers, estimate: CostEstimate, no
         `- Alerts: ${alerts}${answers.alert.kind === "none" ? "" : ", subscribed and tested at the end of the install"}`,
     answers.budget === undefined
       ? "- Budget: none"
-      : `- Budget agentx-${env}-monthly: $${answers.budget.monthlyUsd} a month for ${answers.budget.scope === "tag" ? `costs tagged agentx:env=${env}` : "the whole account"}, alerting at 80% spent and 100% forecast`,
+      : `- Budget ${RESOURCE_PREFIX}-${env}-monthly: $${answers.budget.monthlyUsd} a month for ${answers.budget.scope === "tag" ? `costs tagged ${ENVIRONMENT_TAG_KEY}=${env}` : "the whole account"}, alerting at 80% spent and 100% forecast`,
     ...(answers.auditLock === undefined ? [] : [answers.auditLock === "trial"
       ? "- Audit ledger: trial lock. Records are locked for 1 day and an operator can remove them. You can move to the production lock later, never back."
       : "- Audit ledger: production lock. Records are locked for 3 years and nobody can delete or shorten them."]),

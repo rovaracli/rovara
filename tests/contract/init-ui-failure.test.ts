@@ -13,8 +13,8 @@ describe("the failure screen", () => {
       title: "The install stopped",
       what: "Start the AgentX service did not finish. Resource limit exceeded.",
       next: "Nothing is lost: the steps that finished are kept. Try this step again, or stop for now and continue later.",
-      details: ["Resource limit exceeded", "Stack: agentx-staging-control-plane", "Stack: agentx-staging-runtime", "Log file: /home/a/.agentx/logs/init-staging.log"],
-      link: { url: "https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks?filteringText=agentx-staging-", label: "Open the stacks in the AWS console" },
+      details: ["Resource limit exceeded", "Stack: rovara-cloud-staging-control-plane", "Stack: rovara-cloud-staging-runtime", "Log file: /home/a/.agentx/logs/init-staging.log"],
+      link: { url: "https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks?filteringText=rovara-cloud-staging-", label: "Open the stacks in the AWS console" },
     });
   });
 

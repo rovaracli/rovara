@@ -431,7 +431,7 @@ describe("a task that cannot take a message", () => {
     const questions = [{ id: "q1", text: "Which response shape?", options: [{ id: "a", label: "Array" }, { id: "b", label: "Envelope" }], recommended: "b" }];
     f.w.db.set({ ...f.task(), workflow: { ...WORKFLOW, definitionVersion: "1.1.0", stage: "UNDERSTAND", state: "WAITING", intent: { rounds: 1, pathFrom: "understand", answers: [], assessment: { kind: "questions", restatement: "x", questions } } } });
     const message = await f.send(ARJUN, "use the envelope");
-    const reason = `it is waiting for your answers to its questions; answer them in the app, with agentx session answer ${f.sid}, or with agentx_answer_task_questions`;
+    const reason = `it is waiting for your answers to its questions; answer them in the app, with rovara session answer ${f.sid}, or with agentx_answer_task_questions`;
     expect(message.delivery).toMatchObject({ state: "not_delivered", reason });
     expect(f.messageItems()[0]).toMatchObject({ delivery: { state: "not_delivered", reason } });
     expect(f.notes()).toHaveLength(0);

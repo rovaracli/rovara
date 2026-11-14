@@ -945,7 +945,7 @@ describe("endpointSecretReader (N8)", () => {
   it("asks only for a name under rovara/model-endpoints/, refusing every other secret before it calls AWS", async () => {
     const { asked, secrets } = secretsOf(() => ({ SecretString: VENDOR_KEY }));
     const read = endpointSecretReader(secrets as never);
-    for (const bad of ["agentx/staging/model-proxy-master-key", "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf", "rovara/model-endpoints/", "rovara/model-endpoints/../master", "rovara/model-endpoints//x", "rovara/other/x", "rovara/model-endpoints/gateway-key", "", `${VENDOR_KEY}`]) {
+    for (const bad of ["rovara-cloud/staging/model-proxy-master-key", "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf", "rovara/model-endpoints/", "rovara/model-endpoints/../master", "rovara/model-endpoints//x", "rovara/other/x", "rovara/model-endpoints/gateway-key", "", `${VENDOR_KEY}`]) {
       expect((await failure(read(bad))).code, bad).toBe("CONFIG_INVALID");
     }
     expect(asked).toEqual([]);
@@ -982,7 +982,7 @@ describe("the handler and the invoker carry an endpoint's secret reference (N8)"
   it("refuses a reference that is an ARN, another secret, or a pasted value by its field path, never quoting it", async () => {
     const upsertSource = vi.fn(async () => undefined);
     const handler = createModelAccessHandler({ access: { upsertSource } as unknown as ModelAccess, log: () => undefined });
-    for (const value of ["arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf", "agentx/staging/master-key", VENDOR_KEY]) {
+    for (const value of ["arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf", "rovara-cloud/staging/master-key", VENDOR_KEY]) {
       const answer = await handler(sourceArgs(withReference(value)));
       expect(answer).toMatchObject({ ok: false, code: "CONFIG_INVALID" });
       expect(JSON.stringify(answer)).not.toContain(value);

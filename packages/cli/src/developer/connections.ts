@@ -1,4 +1,4 @@
-// `agentx connections list | add | remove | check` (Plan 3 Task 12b): the Linear, Jira and MCP connections an organization has given Rovara.
+// `rovara connections list | add | remove | check` (Plan 3 Task 12b): the Linear, Jira and MCP connections an organization has given Rovara.
 // Each command is one signed-in call to the control plane's /v1/app/connections routes. The secret of a new connection is read from stdin
 // (hidden on a terminal), sent once in the request body and never printed, logged or kept; the control plane stores it where only the
 // organization's own role session can read it, and never returns it.
@@ -34,7 +34,7 @@ export async function connectionsList(deps: DeveloperSessionDeps, env: string | 
 }
 
 export function connectionsListText(result: { env: string; url: string; connections: readonly ConnectionView[] }): string {
-  if (result.connections.length === 0) return `No connections yet on ${result.env} (${result.url}). Add one with agentx connections add <linear|jira|mcp>.\n`;
+  if (result.connections.length === 0) return `No connections yet on ${result.env} (${result.url}). Add one with rovara connections add <linear|jira|mcp>.\n`;
   const lines = [`Connections of your organization on ${result.env} (${result.url}):`];
   for (const connection of result.connections) {
     const where = connection.siteUrl ?? connection.endpoint;
@@ -44,7 +44,7 @@ export function connectionsListText(result: { env: string; url: string; connecti
   return `${lines.join("\n")}\n`;
 }
 
-/** What `agentx connections add` takes besides the secret. Only the options of the type are allowed. */
+/** What `rovara connections add` takes besides the secret. Only the options of the type are allowed. */
 export interface ConnectionAddInput {
   type: string;
   label?: string | undefined;
@@ -121,7 +121,7 @@ export async function connectionsAdd(
 }
 
 export const connectionsAddText = (result: { connection: ConnectionView }) =>
-  `Added the ${sanitizeServerText(result.connection.type)} connection ${sanitizeServerText(result.connection.label)} (${sanitizeServerText(result.connection.connectionId)}). Run agentx connections check ${sanitizeServerText(result.connection.connectionId)} to test it.\n`;
+  `Added the ${sanitizeServerText(result.connection.type)} connection ${sanitizeServerText(result.connection.label)} (${sanitizeServerText(result.connection.connectionId)}). Run rovara connections check ${sanitizeServerText(result.connection.connectionId)} to test it.\n`;
 
 export async function connectionsRemove(deps: DeveloperSessionDeps, env: string | undefined, connectionId: string): Promise<{ env: string; url: string; connectionId: string }> {
   const { env: resolved, url, body } = await developerRequest(deps, env, `/v1/app/connections/${encodeURIComponent(connectionId)}`, RemovedSchema, { method: "DELETE", body: { requestId: randomUUID() }, explain: true });

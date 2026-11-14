@@ -18,6 +18,8 @@ import { EgressAlarms, alertsTopicFromName } from "./egress-alarms.js";
 import { Ec2WorkerFoundation } from "./ec2-workers.js";
 import { EnterpriseVpcEndpoints, endpointPolicyDocument, enterpriseAllowDomains, workerDockerRangeOf, type InternetEgress } from "./vpc-endpoints.js";
 import { type AgentXNaming, legacyNaming } from "./naming.js";
+import { editionRecordParameterName } from "./edition-env.js";
+import { APPLICATION_TAG_VALUE } from "@agentx/contracts";
 
 export const AGENTX_PRODUCTION_DEPLOYMENT_MODE = "ec2-ebs";
 export const AGENTX_PRODUCTION_VPC_CIDR = "10.42.0.0/16";
@@ -269,7 +271,7 @@ export class ProductionFoundationStack extends Stack {
     if (enterprise) {
       // Retained: deleting this stack, or a synth that no longer names the edition, must not delete the record. The broker and the sign-in server refuse to serve an install
       // whose stamp is missing or differs from it (review I-2).
-      const record = new ssm.CfnParameter(this, "EditionRecord", { name: `/agentx/${naming.env!}/edition`, type: "String", value: "enterprise", description: "The edition this install was deployed as. It never changes." });
+      const record = new ssm.CfnParameter(this, "EditionRecord", { name: editionRecordParameterName(naming.env!), type: "String", value: "enterprise", description: "The edition this install was deployed as. It never changes." });
       record.cfnOptions.deletionPolicy = CfnDeletionPolicy.RETAIN;
       record.cfnOptions.updateReplacePolicy = CfnDeletionPolicy.RETAIN;
     }
@@ -320,7 +322,7 @@ export class ProductionFoundationStack extends Stack {
 function resourceTags(name: string, naming: AgentXNaming): CfnTag[] {
   return [
     { key: "Name", value: name },
-    { key: "Application", value: "AgentX" },
+    { key: "Application", value: APPLICATION_TAG_VALUE },
     { key: "Environment", value: naming.environmentTagValue },
   ];
 }

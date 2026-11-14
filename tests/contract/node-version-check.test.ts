@@ -143,9 +143,9 @@ describe("the agentx executable (packages/cli/src/bin.ts)", () => {
     }
   });
 
-  it("is the bin of the CLI package and of npm run agentx", async () => {
+  it("is the bin of the CLI package (rovara, and agentx as an alias) and of npm run agentx", async () => {
     const cliManifest = JSON.parse(await readFile(join(repoRoot, "packages", "cli", "package.json"), "utf8")) as { bin: Record<string, string> };
-    expect(cliManifest.bin).toEqual({ agentx: "./dist/bin.js" });
+    expect(cliManifest.bin).toEqual({ rovara: "./dist/bin.js", agentx: "./dist/bin.js" });
     const rootManifest = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8")) as { scripts: Record<string, string> };
     expect(rootManifest.scripts.agentx).toBe("node packages/cli/dist/bin.js");
   });

@@ -29,7 +29,7 @@ const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (c) => ENTITIES[c]
 function noticeText(input: { provider: DeveloperSignInMethod; login?: string; cellUrl: string }): string {
   const login = input.login !== undefined && GITHUB_LOGIN.test(input.login) ? ` ${input.login}` : "";
   return `${PROVIDER_LABEL[input.provider]} account${login} can now sign in to your Rovara account. If this was you, there is nothing to do. `
-    + `If it wasn't, remove it now: run agentx signin unlink ${input.provider}, or sign in at ${input.cellUrl} and remove it from your account.`;
+    + `If it wasn't, remove it now: run rovara signin unlink ${input.provider}, or sign in at ${input.cellUrl} and remove it from your account.`;
 }
 
 /**
@@ -71,7 +71,7 @@ export async function sendDecideSignInAddedNotice(deps: IdentityNoticeDependenci
     return "skipped";
   }
   const text = `${DECIDE_NOTICE_SENTENCE} If this was you, there is nothing to do. `
-    + `If it wasn't, remove it now: run agentx signin unlink cloud, or sign in at ${input.cellUrl} and remove it from your account.`;
+    + `If it wasn't, remove it now: run rovara signin unlink cloud, or sign in at ${input.cellUrl} and remove it from your account.`;
   await deps.ses.send(new SendEmailCommand({
     FromEmailAddress: deps.from,
     Destination: { ToAddresses: [input.to] },
@@ -100,7 +100,7 @@ export function githubConnectedNoticeText(input: GithubConnectedNotice): string 
   const requester = input.requester.email === undefined ? oneLine(input.requester.name) : `${oneLine(input.requester.name)} (${oneLine(input.requester.email)})`;
   return `${requester} asked to connect the GitHub organization ${account} (https://github.com/${account}) to your Rovara organization ${oneLine(input.orgName)}. `
     + `${input.approverLogin}, an admin of ${account} on GitHub, approved it. Rovara can now work in the repositories ${account} gave it access to. `
-    + `If this isn't the GitHub organization you expected, remove it with agentx github disconnect ${account}.`;
+    + `If this isn't the GitHub organization you expected, remove it with rovara github disconnect ${account}.`;
 }
 
 /**
@@ -141,7 +141,7 @@ export function githubRequestReminderText(input: GithubRequestReminder): string 
   const target = input.requestedAccountLogin !== undefined && GITHUB_ACCOUNT.test(input.requestedAccountLogin) ? input.requestedAccountLogin : "your GitHub organization";
   const expires = new Date(input.expiresAt).toISOString().slice(0, 10);
   return `You asked an admin of ${target} to approve Rovara 2 days ago, and it's still waiting. The request expires on ${expires}. `
-    + "Remind them, or ask them to run agentx github connect themselves.";
+    + "Remind them, or ask them to run rovara github connect themselves.";
 }
 
 /** Emails the requester their one reminder. "skipped" when no SES sender is configured; a failed send throws and the sweep logs its name. */

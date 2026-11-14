@@ -1,9 +1,9 @@
 // The installer: the one stack the Launch in AWS button creates. It installs an AgentX environment
-// with no terminal: a CodeBuild job runs `agentx init` in the customer's own account, and a setup
+// with no terminal: a CodeBuild job runs `rovara init` in the customer's own account, and a setup
 // page (a Lambda function behind an HTTP API) asks the questions that need a person, through a
 // DynamoDB table both share (packages/cli/src/init/ui/setup-*.ts).
 //
-// It holds only the installer. Everything the install makes is in its own agentx-<name>-* stacks,
+// It holds only the installer. Everything the install makes is in its own rovara-cloud-<name>-* stacks,
 // so deleting this stack removes the installer and leaves the environment running; `agentx
 // destroy` removes the environment.
 import {
@@ -16,7 +16,7 @@ import {
   aws_lambda as lambda,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { CLI_PACKAGE_NAME, ENVIRONMENT_NAME_PATTERN } from "@agentx/contracts";
+import { CLI_PACKAGE_NAME, ENVIRONMENT_NAME_PATTERN, RESOURCE_PREFIX } from "@agentx/contracts";
 import { packagedFunction } from "./control-plane.js";
 
 /** Starts the installer job on Create and answers CloudFormation; Update and Delete only answer.
@@ -54,8 +54,8 @@ export class InstallerStack extends Stack {
       type: "String",
       default: "prod",
       allowedPattern: ENVIRONMENT_NAME_PATTERN.source,
-      constraintDescription: "lowercase letters, digits and hyphens, starting with a letter, at most 20 characters",
-      description: "A short name for this AgentX install; its stacks are named agentx-<name>-*",
+      constraintDescription: "lowercase letters, digits and hyphens, starting with a letter, at most 14 characters",
+      description: `A short name for this AgentX install; its stacks are named ${RESOURCE_PREFIX}-<name>-*`,
     });
     const adminEmail = new CfnParameter(this, "AdminEmail", {
       type: "String",
@@ -119,9 +119,9 @@ export class InstallerStack extends Stack {
     key.grant(page, "kms:Encrypt");
     page.addToRolePolicy(new iam.PolicyStatement({
       actions: ["cloudformation:DescribeStacks"],
-      resources: [`arn:${Aws.PARTITION}:cloudformation:${Aws.REGION}:${Aws.ACCOUNT_ID}:stack/agentx-${installName.valueAsString}-identity/*`],
+      resources: [`arn:${Aws.PARTITION}:cloudformation:${Aws.REGION}:${Aws.ACCOUNT_ID}:stack/${RESOURCE_PREFIX}-${installName.valueAsString}-identity/*`],
     }));
-    const api = new apigwv2.CfnApi(this, "SetupApi", { name: `agentx-installer-${installName.valueAsString}`, protocolType: "HTTP" });
+    const api = new apigwv2.CfnApi(this, "SetupApi", { name: `${RESOURCE_PREFIX}-installer-${installName.valueAsString}`, protocolType: "HTTP" });
     const integration = new apigwv2.CfnIntegration(this, "SetupIntegration", {
       apiId: api.ref, integrationType: "AWS_PROXY", integrationUri: page.functionArn, payloadFormatVersion: "2.0",
     });
@@ -133,16 +133,16 @@ export class InstallerStack extends Stack {
     });
     const setupUrl = api.attrApiEndpoint;
 
-    // The installer job. `agentx init` creates IAM roles (the access stack) and deploys every other
+    // The installer job. `rovara init` creates IAM roles (the access stack) and deploys every other
     // stack, as an administrator running it on a computer does: the role is AdministratorAccess,
     // and is deleted with this stack.
     const role = new iam.Role(this, "InstallerRole", {
       assumedBy: new iam.ServicePrincipal("codebuild.amazonaws.com"),
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("AdministratorAccess")],
-      description: "AgentX installer: runs agentx init in this account; deleted with the installer stack",
+      description: "AgentX installer: runs rovara init in this account; deleted with the installer stack",
     });
     const project = new codebuild.Project(this, "InstallerJob", {
-      description: "AgentX installer: runs agentx init, asking its questions on the setup page",
+      description: "AgentX installer: runs rovara init, asking its questions on the setup page",
       role,
       timeout: INSTALLER_TIMEOUT,
       environment: { buildImage: codebuild.LinuxBuildImage.STANDARD_7_0, computeType: codebuild.ComputeType.SMALL },

@@ -21,12 +21,12 @@ const CEILING_BYTES = 3800;
 const BROKER_HEADROOM_BYTES = 400;
 const DERIVE_DONT_ADD = [
   "Derive it, don't add an environment variable.",
-  "A name or ARN that follows the agentx-<env>-... naming is built at run time from AGENTX_ENV, AWS_REGION and the account: add it to DERIVED_BROKER_VARIABLES in packages/contracts/src/derived-names.ts",
+  "A name or ARN that follows the rovara-cloud-<env>-... naming is built at run time from AGENTX_ENV, AWS_REGION and the account: add it to DERIVED_BROKER_VARIABLES in packages/contracts/src/derived-names.ts",
   "(the module CDK names the resource with and broker-environment.ts reads), not to the function's environment.",
   "A generated name or an id goes in AGENTX_NAMES (BROKER_NAMES), a constrained setting in AGENTX_SETTINGS (BROKER_SETTINGS), both in packages/contracts/src/broker-names.ts.",
 ].join(" ");
-/** An environment name of the longest length the installer accepts (20 characters), and the usual one. */
-const LONGEST_ENVIRONMENT = "a1234567890123456789";
+/** An environment name of the longest length the installer accepts (14 characters), and the usual one. */
+const LONGEST_ENVIRONMENT = "a1234567890123";
 const ENVIRONMENTS = [LONGEST_ENVIRONMENT, "staging"] as const;
 
 function environmentsOf(env: string | undefined, context: Record<string, unknown>, parameterValues: Record<string, string> = DEPLOY_PARAMETER_VALUES): Array<LambdaEnvironment & { stack: string }> {
@@ -108,27 +108,27 @@ describe("the measuring", () => {
       Long: { Type: "AWS::Lambda::Function", Properties: {} },
       Reader: { Type: "AWS::Lambda::Function", Properties: { Environment: { Variables: { NAME: { Ref: "Long" } } } } },
     } };
-    const [entry] = lambdaEnvironments(template, { env: "x", stackName: "agentx-x-control-plane" });
-    expect(entry!.variables.NAME).toBe("agentx-x-control-plane-Long-A1B2C3D4E5F6G");
-    const capped = lambdaEnvironments({ Resources: { ...template.Resources, ["L".repeat(80)]: template.Resources.Long! } }, { env: "x", stackName: "agentx-x-control-plane" });
+    const [entry] = lambdaEnvironments(template, { env: "x", stackName: "rovara-cloud-x-control-plane" });
+    expect(entry!.variables.NAME).toBe("rovara-cloud-x-control-plane-Long-A1B2C3D4E5F6G");
+    const capped = lambdaEnvironments({ Resources: { ...template.Resources, ["L".repeat(80)]: template.Resources.Long! } }, { env: "x", stackName: "rovara-cloud-x-control-plane" });
     expect(capped).toHaveLength(1);
   });
 
   it("takes a fixed name where the template sets one, a queue's URL for its Ref and a role's path into its ARN", () => {
     const template: ResolvableTemplate = { Resources: {
-      Queue: { Type: "AWS::SQS::Queue", Properties: { QueueName: "agentx-x-audit-intake.fifo" } },
-      Role: { Type: "AWS::IAM::Role", Properties: { RoleName: "agentx-x-role" } },
+      Queue: { Type: "AWS::SQS::Queue", Properties: { QueueName: "rovara-cloud-x-audit-intake.fifo" } },
+      Role: { Type: "AWS::IAM::Role", Properties: { RoleName: "rovara-cloud-x-role" } },
       Reader: { Type: "AWS::Lambda::Function", Properties: { Environment: { Variables: {
         URL: { Ref: "Queue" },
         ROLE: { "Fn::GetAtt": ["Role", "Arn"] },
         NAME: { "Fn::GetAtt": ["Queue", "QueueName"] },
       } } } },
     } };
-    const [entry] = lambdaEnvironments(template, { env: "x", stackName: "agentx-x-control-plane" });
+    const [entry] = lambdaEnvironments(template, { env: "x", stackName: "rovara-cloud-x-control-plane" });
     expect(entry!.variables).toEqual({
-      URL: "https://sqs.ap-southeast-4.amazonaws.com/123456789012/agentx-x-audit-intake.fifo",
-      ROLE: "arn:aws:iam::123456789012:role/agentx/x/agentx-x-role",
-      NAME: "agentx-x-audit-intake.fifo",
+      URL: "https://sqs.ap-southeast-4.amazonaws.com/123456789012/rovara-cloud-x-audit-intake.fifo",
+      ROLE: "arn:aws:iam::123456789012:role/rovara-cloud/x/rovara-cloud-x-role",
+      NAME: "rovara-cloud-x-audit-intake.fifo",
     });
   });
 });

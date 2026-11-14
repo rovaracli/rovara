@@ -23,7 +23,7 @@ import { join } from "node:path";
 
 export interface SmokeConfig {
   hostUrl: string;
-  /** The staging install's environment name (`/agentx/<environment>/synth-settings` holds the MCP host name its install recorded). */
+  /** The staging install's environment name (`/rovara-cloud/<environment>/synth-settings` holds the MCP host name its install recorded). */
   environment: string;
   hostToken: string;
   /** The approved server's id (`mcp...`). */
@@ -83,7 +83,7 @@ export async function checkStagingTarget(config: SmokeConfig, deps: SmokeDeps): 
   } catch { checks.push(bad("the cluster is staging's", "the cluster could not be read")); }
   // Review N2: the address the host token is sent to must be the MCP host name staging recorded for itself, so the token and the start phase cannot be pointed at another install.
   try {
-    const value = (await deps.aws(["ssm", "get-parameter", "--name", `/agentx/${config.environment}/synth-settings`, "--query", "Parameter.Value", "--output", "text"])).trim();
+    const value = (await deps.aws(["ssm", "get-parameter", "--name", `/rovara-cloud/${config.environment}/synth-settings`, "--query", "Parameter.Value", "--output", "text"])).trim();
     const recorded = (JSON.parse(value) as { context?: { rovaraMcpHostName?: unknown } }).context?.rovaraMcpHostName;
     const wanted = new URL(config.hostUrl).hostname.toLowerCase();
     checks.push(typeof recorded === "string" && recorded !== "" && recorded.toLowerCase() === wanted ? ok("the host is staging's", "the host name is the one staging recorded") : bad("the host is staging's", "the host name is not the one staging recorded for its MCP host"));

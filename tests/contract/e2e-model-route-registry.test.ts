@@ -17,7 +17,7 @@ import { TEST_ORG, testProjectPk } from "../support/orgs.js";
 assumeDrivingTestsPassed();
 
 const TABLE = "state";
-const OTHER_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/other-key-ZyXwVu";
+const OTHER_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/other-key-ZyXwVu";
 const DAY = Date.parse("2026-10-21T10:00:00.000Z");
 
 const bedrock: E2EAgentInstallation = { provider: "amazon-bedrock", region: "us-east-1" };

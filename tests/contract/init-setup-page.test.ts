@@ -1,6 +1,6 @@
 // The install page in the cloud: the setup table both sides share (setup-store.ts), the job's relay
 // (relay.ts), the page's handler (setup-handler.ts), and a whole install run through them with
-// `agentx init --setup-table`. Nothing here reaches AWS, GitHub or Slack.
+// `rovara init --setup-table`. Nothing here reaches AWS, GitHub or Slack.
 import { describe, expect, it } from "vitest";
 import { DeleteItemCommand, GetItemCommand, PutItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
 import { wizardHtml } from "../../packages/cli/src/init/ui/page.js";
@@ -162,9 +162,9 @@ describe("the setup page's handler", () => {
     const before = JSON.parse((await handle(request({ path: "/state" }))).body) as { installerClosed: boolean; phases?: unknown };
     expect(before).toMatchObject({ ...createWizardHub("staging").snapshot(), installerClosed: false });
     const hub = createWizardHub("staging");
-    hub.log("deploying agentx-staging-access");
+    hub.log("deploying rovara-cloud-staging-access");
     await store.putState(hub.snapshot(), true);
-    expect(JSON.parse((await handle(request({ path: "/state" }))).body)).toMatchObject({ log: ["deploying agentx-staging-access"], installerClosed: true });
+    expect(JSON.parse((await handle(request({ path: "/state" }))).body)).toMatchObject({ log: ["deploying rovara-cloud-staging-access"], installerClosed: true });
   });
 
   it("replies to an answer with the job's verdict, or that it was sent when the job has not read it in time", async () => {
@@ -238,7 +238,7 @@ describe("the GitHub App from the setup page", () => {
   });
 });
 
-describe("agentx init --setup-table", () => {
+describe("rovara init --setup-table", () => {
   it("runs a whole install with every question answered on the setup page, through the table", async () => {
     const h = await harness();
     const store = memorySetupStore();
@@ -250,7 +250,7 @@ describe("agentx init --setup-table", () => {
     // are played by the operator, and nobody confirms the request URL by hand.
     const operator = setupPageOperator({ script: ["token", CONFIG_TOKEN, ...SIGNIN, ...FINISH], handle, token: TOKEN });
     // The admin signed in on the setup page, which left their sign-in for the job (setup-auth.ts).
-    await store.putAdminToken(`sealed:${accessToken({ "cognito:groups": ["agentx-admin"] })}`, Date.now() + 3_600_000);
+    await store.putAdminToken(`sealed:${accessToken({ "cognito:groups": ["rovara-cloud-admin"] })}`, Date.now() + 3_600_000);
     const running = operator.run();
     const code = await h.run(
       [
@@ -274,7 +274,7 @@ describe("agentx init --setup-table", () => {
     expect(slack.manifests[0]?.manifest.oauth_config.redirect_urls).toContain(`${SETUP_ORIGIN}/slack/callback`);
     expect(slack.exchanged).toEqual(["slack-code-0123"]);
     expect(operator.asked).not.toContain("Does Slack show the Request URL as Verified?");
-    const stored = JSON.parse(h.secrets.values.get("agentx/staging/slack") ?? "{}") as Record<string, string>;
+    const stored = JSON.parse(h.secrets.values.get("rovara-cloud/staging/slack") ?? "{}") as Record<string, string>;
     expect(stored).toMatchObject({ botToken: TEST_BOT_TOKEN, signingSecret: TEST_SIGNING_SECRET, clientId: FAKE_SLACK_CLIENT.clientId });
     expect(JSON.stringify(stored)).not.toContain(CONFIG_TOKEN);
     expect(operator.asked).not.toContain("Your settings");

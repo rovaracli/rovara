@@ -23,7 +23,7 @@ const FAILURE_PAUSE_MS = 10_000;
 const COMPACT_JWT = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*)$/;
 const STRING_CLAIMS = ["sub", "sid", "amr", "env", "org", "org_role"] as const;
 
-const refused = () => agentXError("AUTH_REQUIRED", "this route needs an AgentX developer sign-in; run agentx login <url>");
+const refused = () => agentXError("AUTH_REQUIRED", "this route needs an AgentX developer sign-in; run rovara login <url>");
 const unavailable = () => agentXError("RUNTIME_UNAVAILABLE", "AgentX could not check your sign-in just now; try again in a moment");
 
 async function importKeys(jwks: unknown[]): Promise<Map<string, VerifyKey>> {

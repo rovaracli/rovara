@@ -6,7 +6,7 @@ import { isIamRole } from "./iam-roles.js";
 
 /**
  * Puts every IAM role in the visited stacks under the environment's path, so the CloudFormation
- * service role can be scoped to `role/agentx/<env>/*` whatever name CloudFormation generates (it
+ * service role can be scoped to `role/rovara-cloud/<env>/*` whatever name CloudFormation generates (it
  * truncates long generated names, dropping any name prefix). Roles built as plain CfnResource
  * (CDK's custom-resource providers) get the same property through an override. Stacks listed in
  * `except` are skipped: the access stack's fixed-name roles stay at the root path. So does a role that

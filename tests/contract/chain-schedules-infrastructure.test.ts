@@ -21,7 +21,7 @@ const build = (id: string, over: { cloud?: boolean; env?: string | null } = {}) 
   ...(over.env === null ? {} : { naming: environmentNaming(over.env ?? "staging") }), ...(over.cloud === true ? { cloud: true } : {}),
 }));
 const named = build("SchedNamed");
-const GROUP = "agentx-staging-chain-triggers";
+const GROUP = "rovara-cloud-staging-chain-triggers";
 const resources = (template: Template) => template.toJSON().Resources as Record<string, Resource>;
 const byType = (template: Template, type: string) => Object.entries(resources(template)).filter(([, resource]) => resource.Type === type);
 const brokerId = Object.keys(named.findResources("AWS::Lambda::Function")).find((id) => /^Broker[0-9A-F]{8}$/.test(id))!;
@@ -129,7 +129,7 @@ describe("the broker's grants", () => {
     expect(alarms).toHaveLength(1);
     const alarm = alarms[0]![1] as { Properties: Record<string, unknown> };
     expect(alarm.Properties).toMatchObject({
-      AlarmName: "agentx-staging-ChainScheduleDeadLetters", Threshold: 0, EvaluationPeriods: 3, DatapointsToAlarm: 3, ComparisonOperator: "GreaterThanThreshold", TreatMissingData: "notBreaching",
+      AlarmName: "rovara-cloud-staging-ChainScheduleDeadLetters", Threshold: 0, EvaluationPeriods: 3, DatapointsToAlarm: 3, ComparisonOperator: "GreaterThanThreshold", TreatMissingData: "notBreaching",
     });
     expect(alarm.Properties["MetricName"]).toBeUndefined();
     const metrics = alarm.Properties["Metrics"] as Array<{ Id: string; Expression?: string; ReturnData?: boolean; MetricStat?: { Period: number; Stat: string; Metric: { MetricName: string; Namespace: string; Dimensions: unknown } } }>;
@@ -158,11 +158,11 @@ describe("the broker's grants", () => {
   });
 
   it("falls in the integrations managed policy (the orchestration one has no room), the drain of the queue beside the other sqs grants, and every broker policy stays under the 5,500 characters the M2 guard allows", () => {
-    expect(sid("ManageChainSchedules")[0]!.policy).toBe("agentx-staging-broker-integrations");
-    expect(sid("PassChainScheduleRole")[0]!.policy).toBe("agentx-staging-broker-integrations");
-    expect(sid("UseChainScheduleDeadLetters")[0]!.policy).toBe("agentx-staging-broker-orchestration");
+    expect(sid("ManageChainSchedules")[0]!.policy).toBe("rovara-cloud-staging-broker-integrations");
+    expect(sid("PassChainScheduleRole")[0]!.policy).toBe("rovara-cloud-staging-broker-integrations");
+    expect(sid("UseChainScheduleDeadLetters")[0]!.policy).toBe("rovara-cloud-staging-broker-orchestration");
     for (const policy of Object.values(named.findResources("AWS::IAM::ManagedPolicy")) as Policy[]) {
-      if (!(policy.Properties.ManagedPolicyName ?? "").startsWith("agentx-staging-broker-")) continue;
+      if (!(policy.Properties.ManagedPolicyName ?? "").startsWith("rovara-cloud-staging-broker-")) continue;
       expect(JSON.stringify(policy.Properties.PolicyDocument).length, policy.Properties.ManagedPolicyName).toBeLessThan(5500);
     }
   });
@@ -172,20 +172,20 @@ describe("what the broker is told", () => {
   const broker = (named.findResources("AWS::Lambda::Function") as Record<string, { Properties: { Environment?: { Variables?: Record<string, unknown> } } }>)[brokerId]!;
 
   it("gets nothing: the role and the queue have fixed names the broker builds from the environment, so its environment (Lambda's 4 KB) does not grow", () => {
-    expect(chainScheduleRoleName("staging")).toBe("agentx-staging-chain-schedule");
-    expect(chainScheduleQueueName("staging")).toBe("agentx-staging-chain-schedule-dead-letters");
+    expect(chainScheduleRoleName("staging")).toBe("rovara-cloud-staging-chain-schedule");
+    expect(chainScheduleQueueName("staging")).toBe("rovara-cloud-staging-chain-schedule-dead-letters");
     const [, role] = byType(named, "AWS::IAM::Role").find(([id]) => id.startsWith("ChainScheduleInvokeRole"))!;
-    expect(role.Properties["RoleName"]).toBe("agentx-staging-chain-schedule");
+    expect(role.Properties["RoleName"]).toBe("rovara-cloud-staging-chain-schedule");
     const [, queue] = byType(named, "AWS::SQS::Queue").find(([id]) => id.startsWith("ChainScheduleDeadLetters"))!;
-    expect(queue.Properties["QueueName"]).toBe("agentx-staging-chain-schedule-dead-letters");
+    expect(queue.Properties["QueueName"]).toBe("rovara-cloud-staging-chain-schedule-dead-letters");
     const names = brokerNamesIn(broker.Properties.Environment?.Variables);
     expect(Object.keys(names).filter((key) => key.toLowerCase().includes("chainschedule"))).toEqual([]);
     const variables = broker.Properties.Environment?.Variables ?? {};
     for (const variable of ["CHAIN_SCHEDULE_ROLE_ARN", "CHAIN_SCHEDULE_QUEUE_URL", "CHAIN_SCHEDULE_GROUP"]) expect(variables[variable]).toBeUndefined();
   });
 
-  it("names are the longest an environment of 20 characters can make, and stay within the limits of a role (64) and a queue (80)", () => {
-    const longest = "a1234567890123456789";
+  it("names are the longest an environment of 14 characters can make, and stay within the limits of a role (64) and a queue (80)", () => {
+    const longest = "a1234567890123";
     expect(chainScheduleRoleName(longest).length).toBeLessThanOrEqual(64);
     expect(chainScheduleQueueName(longest).length).toBeLessThanOrEqual(80);
     expect(chainScheduleGroupName(longest).length).toBeLessThanOrEqual(64);

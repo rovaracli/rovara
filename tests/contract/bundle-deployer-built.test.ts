@@ -53,9 +53,9 @@ describe("the deployer installs a build made at approval", () => {
     }
     const asset = record.files.find((f) => f.file.startsWith("built/packages/"))!;
     expect(ew.world.uploaded.get(`deploying/${id}/${asset.file}`)!.equals(bodyOf(ew, id, record, asset.file))).toBe(true);
-    const control = ew.world.changeSets.find((set) => set.stackName === "agentx-ent-control-plane")!;
+    const control = ew.world.changeSets.find((set) => set.stackName === "rovara-cloud-ent-control-plane")!;
     expect(control.parameters).toEqual(expect.arrayContaining([expect.objectContaining({ key: expect.stringMatching(/AssetParameters.*S3Bucket/), value: "approvals-bucket" }), expect.objectContaining({ key: expect.stringMatching(/AssetParameters.*S3VersionKey/), value: `deploying/${id}/${asset.file}` })]));
-    expect(JSON.parse(ew.world.params.get("/agentx/ent/settings")!)).toMatchObject({ version: "1.4.0" });
+    expect(JSON.parse(ew.world.params.get("/rovara-cloud/ent/settings")!)).toMatchObject({ version: "1.4.0" });
   });
 
   it("refuses a built template whose stored bytes changed after the approval, a package that did, and the build's manifest that did", async () => {
@@ -210,12 +210,12 @@ describe("the deployer installs a build made at approval", () => {
 
   it("does not take an install for Public because both edition records are gone: the deployed stacks still say Enterprise (review M4)", async () => {
     const stamp = JSON.stringify({ Resources: { Fn: { Type: "AWS::Lambda::Function", Properties: { Environment: { Variables: { ROVARA_EDITION: "enterprise" } } } } } });
-    const record = JSON.stringify({ Resources: { EditionRecord: { Type: "AWS::SSM::Parameter", Properties: { Description: "d", Name: "/agentx/ent/edition", Type: "String", Value: "enterprise" } } } }, null, 2);
+    const record = JSON.stringify({ Resources: { EditionRecord: { Type: "AWS::SSM::Parameter", Properties: { Description: "d", Name: "/rovara-cloud/ent/edition", Type: "String", Value: "enterprise" } } } }, null, 2);
     for (const [name, part, template] of [["control-plane stamp", "control-plane", stamp], ["foundation record", "foundation", record]] as const) {
       const ew = await EnterpriseWorld.create(made);
       ew.world.params.delete(editionRecordParameter("ent"));
       await ew.world.approve(ew.bundle);
-      ew.world.stacks.set(`agentx-ent-${part}`, { ...ew.world.stacks.get(`agentx-ent-${part}`)!, template });
+      ew.world.stacks.set(`rovara-cloud-ent-${part}`, { ...ew.world.stacks.get(`rovara-cloud-ent-${part}`)!, template });
       expect(await ew.world.run({ bundleId: ew.bundle.bundleSha256 }), name).toMatchObject({ status: "refused", reason: expect.stringMatching(/Enterprise install takes only/) });
       expect(changes(ew), name).toEqual([]);
     }
@@ -228,7 +228,7 @@ describe("the deployer installs a build made at approval", () => {
     const plain = await EnterpriseWorld.create(made);
     plain.world.params.delete(editionRecordParameter("ent"));
     await plain.world.approve(plain.bundle);
-    for (const part of ["foundation", "control-plane"]) plain.world.stacks.set(`agentx-ent-${part}`, { ...plain.world.stacks.get(`agentx-ent-${part}`)!, template: JSON.stringify({ Resources: {} }) });
+    for (const part of ["foundation", "control-plane"]) plain.world.stacks.set(`rovara-cloud-ent-${part}`, { ...plain.world.stacks.get(`rovara-cloud-ent-${part}`)!, template: JSON.stringify({ Resources: {} }) });
     expect(await plain.world.run({ bundleId: plain.bundle.bundleSha256 })).toMatchObject({ status: "done" });
   });
 
@@ -244,7 +244,7 @@ describe("the deployer installs a build made at approval", () => {
 
   it("refuses when the access stack is not the deployed one, and accepts the same stack read from another code location", async () => {
     const { ew, id } = await approved();
-    ew.world.stacks.set("agentx-ent-access", { ...ew.world.stacks.get("agentx-ent-access")!, template: JSON.stringify({ Resources: { Different: { Type: "AWS::SSM::Parameter", Properties: {} } } }) });
+    ew.world.stacks.set("rovara-cloud-ent-access", { ...ew.world.stacks.get("rovara-cloud-ent-access")!, template: JSON.stringify({ Resources: { Different: { Type: "AWS::SSM::Parameter", Properties: {} } } }) });
     expect(await ew.world.run({ bundleId: id })).toMatchObject({ status: "refused", reason: expect.stringMatching(/access stack is not the deployed one/) });
     expect(changes(ew)).toEqual([]);
   });

@@ -1,4 +1,4 @@
-// Spec 055 phase 2: how an MCP server says where to sign in, so `agentx admin credential authorize
+// Spec 055 phase 2: how an MCP server says where to sign in, so `rovara admin credential authorize
 // --endpoint` needs no vendor profile. RFC 9728 (protected resource metadata), RFC 8414
 // (authorization server metadata) and RFC 7591 (dynamic client registration), as the MCP
 // authorization specification uses them. Nothing here sends a credential.

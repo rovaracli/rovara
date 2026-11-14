@@ -1,9 +1,9 @@
-// What agentx destroy must remove after the stacks are gone: every resource a stack retains
+// What rovara destroy must remove after the stacks are gone: every resource a stack retains
 // (DeletionPolicy Retain or RetainExceptOnCreate), recorded in SSM before any stack is deleted, so
 // a re-run after the stacks are gone still knows them. Also the plan shown before confirming, the
 // typed confirmation, and the vendor steps printed at the end.
 import { z } from "zod";
-import { agentXError, EnvironmentNameSchema, environmentSettingsPrefix, environmentStackName, STACK_PARTS, type StackPart } from "@agentx/contracts";
+import { agentXError, EnvironmentNameSchema, environmentSettingsPrefix, environmentStackName, RESOURCE_PREFIX, STACK_PARTS, type StackPart } from "@agentx/contracts";
 import type { ParameterStore } from "../environments/parameter-store.js";
 import { CONNECTOR_TYPES, SSM_STANDARD_VALUE_LIMIT, type ConnectorType } from "../init/install-state.js";
 
@@ -85,7 +85,7 @@ export async function readInventory(store: ParameterStore, env: string): Promise
   try { json = JSON.parse(stored.value); } catch { json = undefined; }
   const compact = StoredInventorySchema.safeParse(json);
   const parsed = InventorySchema.safeParse(compact.success ? decodeInventory(compact.data) : json);
-  if (!parsed.success || parsed.data.env !== env) throw agentXError("CONFIG_INVALID", `${inventoryParameterName(env)} is not an agentx destroy inventory for ${env}; delete it only if you are sure nothing of ${env} is left, then run agentx destroy again`);
+  if (!parsed.success || parsed.data.env !== env) throw agentXError("CONFIG_INVALID", `${inventoryParameterName(env)} is not a rovara destroy inventory for ${env}; delete it only if you are sure nothing of ${env} is left, then run rovara destroy again`);
   return parsed.data;
 }
 
@@ -164,7 +164,7 @@ const listed = (items: string[]) => (items.length <= 1 ? items.join("") : `${ite
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
 export function destroyPlanText(plan: DestroyPlan): string[] {
-  // The stacks' secrets live under agentx/<env>/ and are counted in plan.secrets, so they are left
+  // The stacks' secrets live under rovara-cloud/<env>/ and are counted in plan.secrets, so they are left
   // out of the retained counts here to count each secret once.
   const retained = plan.resources.filter((resource) => resource.type !== "AWS::SecretsManager::Secret");
   const deleted = plan.keepData ? retained.filter((resource) => !KEPT_BY_KEEP_DATA.has(resource.type)) : retained;
@@ -175,8 +175,8 @@ export function destroyPlanText(plan: DestroyPlan): string[] {
     ...(plan.stacks.length === 0 ? [] : [`  stacks, in this order: ${plan.stacks.map((stack) => `${stack.name} (${stack.status})`).join(", ")}`]),
     ...(plan.instances + plan.volumes === 0 ? [] : [`  EC2 workers: ${plural(plan.instances, "instance", "instances")} and ${plural(plan.volumes, "workspace volume", "workspace volumes")}; deleting the volumes deletes every worker session's workspace`]),
     ...(deleted.length === 0 ? [] : [`  what the stacks keep, deleted after them: ${listed(counted(deleted))}`]),
-    ...(plan.keepData ? [] : [`  secrets: ${plural(plan.secrets, "secret", "secrets")} under agentx/${plan.env}/, deleted without recovery`]),
-    `  settings: ${plural(plan.parameters, "parameter", "parameters")} under /agentx/${plan.env}/`,
+    ...(plan.keepData ? [] : [`  secrets: ${plural(plan.secrets, "secret", "secrets")} under ${RESOURCE_PREFIX}/${plan.env}/, deleted without recovery`]),
+    `  settings: ${plural(plan.parameters, "parameter", "parameters")} under ${environmentSettingsPrefix(plan.env)}`,
     ...(plan.localFiles.length === 0 ? [] : [`  on this computer: ${plan.localFiles.join(", ")}`]),
     ...(plan.keepData ? [`  --keep-data keeps: ${listed([...counted(kept, KEPT_NOUNS), plural(plan.secrets, "secret", "secrets")])}`] : []),
     ...(plan.stacks.some((stack) => stack.name === controlPlane) ? [`  Deleting ${controlPlane} usually takes 20 to 40 minutes: its Lambda functions release their network interfaces slowly.`] : []),

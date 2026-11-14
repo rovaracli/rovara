@@ -22,7 +22,7 @@ describe("GitHub App credentials", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-10T12:00:00.000Z"));
-    vi.stubEnv("GITHUB_APP_PRIVATE_KEY_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf");
+    vi.stubEnv("GITHUB_APP_PRIVATE_KEY_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf");
     vi.stubEnv("GITHUB_APP_CREDENTIAL_REF", "github-app");
     vi.stubEnv("GITHUB_APP_ID", "12345");
   });

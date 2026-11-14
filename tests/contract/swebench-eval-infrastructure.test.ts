@@ -48,7 +48,7 @@ describe("the SWE-bench eval stack (spec 043 FR-016, FR-017)", () => {
       BlockDeviceMappings: [{ Ebs: { VolumeSize: 150, VolumeType: "gp3", Encrypted: true, DeleteOnTermination: true } }],
     });
     // The boot script is in the template; the run's capability never is.
-    expect(JSON.stringify(data.UserData)).toContain("agentx-eval-run");
+    expect(JSON.stringify(data.UserData)).toContain("rovara-cloud-eval-run");
     expect(JSON.stringify(data.UserData)).not.toContain("capability=");
   });
 

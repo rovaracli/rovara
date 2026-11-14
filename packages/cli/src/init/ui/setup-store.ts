@@ -1,5 +1,5 @@
 // The install page in the cloud: what the installer job and the setup page share, in one DynamoDB
-// table. The job runs `agentx init --cloud` with the hub it always has; the relay (relay.ts) writes
+// table. The job runs `rovara init --cloud` with the hub it always has; the relay (relay.ts) writes
 // the hub's state here and reads the answers the page posts. The page (setup-handler.ts) reads the
 // state and writes the answers. Neither side reaches the other directly.
 //

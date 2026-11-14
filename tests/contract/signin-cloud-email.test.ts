@@ -23,7 +23,7 @@ const SANDBOX_WARNING = "Amazon SES is in its sandbox in us-east-1: sign-in code
 const installed: EnvironmentSettings = {
   ...stagingSettings,
   cloud: true,
-  access: { artifactBucket: "b", cloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation", operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator", pullThroughPrefix: "agentx-staging" },
+  access: { artifactBucket: "b", cloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation", operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator", pullThroughPrefix: "rovara-cloud-staging" },
 };
 const CLOUD_PARAMETERS = { ...SIGN_IN_PARAMETERS, GitHubClientId: "", GitHubClientSecretArn: "", GoogleClientId: "", GoogleClientSecretArn: "", CloudSignInEmailFrom: "", CloudSignInEmailSourceArn: "" };
 

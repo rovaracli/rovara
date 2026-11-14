@@ -95,7 +95,7 @@ export const CodeBuildGateDefinitionSchema = z
       .string()
       .min(2)
       .max(255)
-      .regex(/^agentx-[A-Za-z0-9_-]+$/, "CodeBuild projectName must begin with agentx-"),
+      .regex(/^rovara-cloud-[A-Za-z0-9_-]+$/, "CodeBuild projectName must begin with rovara-cloud-"),
     timeoutMinutes: z.number().int().min(5).max(420),
   })
   .strict();

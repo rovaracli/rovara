@@ -1,10 +1,10 @@
-// agentx connector add asana (FR-036 to FR-039), from docs/connectors/asana.md. The bot user signs
+// rovara connector add asana (FR-036 to FR-039), from docs/connectors/asana.md. The bot user signs
 // in once (FR-037: no browser is opened, and only --expect-account's sign-in is kept), then one
 // refresh gets an access token (a rotated refresh token is written back at once), and the test read
 // is get_project as the bot, before the project revision is saved.
 //
 // C3 (accepted, 2026-09-28): authorizeCredential itself stores the refresh token beside the app's
-// client, tags the secret agentx-writable=refresh-token and registers the credential as
+// client, tags the secret rovara-cloud-writable=refresh-token and registers the credential as
 // oauth-refresh-token, all before get_project. Only the project revision waits for the read.
 // The sign-in listens on 127.0.0.1:8765 only, and closes on every path (admin/authorize.ts).
 import { agentXError, OAuthAppSecretSchema, type ConnectorConfig } from "@agentx/contracts";
@@ -57,7 +57,7 @@ export async function addAsana(input: ConnectorAddInput & { services: ConnectorA
 
   const secretName = connectorSecretName(input.env, "asana");
   const client = JSON.stringify({ clientId, clientSecret });
-  // A first run creates the secret (tagged agentx:env) with the app's client only: there is nothing
+  // A first run creates the secret (tagged rovara-cloud:env) with the app's client only: there is nothing
   // to lose yet. A rerun leaves the stored secret alone: the sign-in reads the new client from
   // memory and writes the whole secret (client and refresh token) only after the bot's sign-in
   // succeeds, so a refused, cancelled or timed-out rerun leaves a working connector exactly as it was.

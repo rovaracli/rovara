@@ -1,4 +1,4 @@
-// Spec 025 A14: the admin tools' view of the control plane, with the admin sign-in `agentx login
+// Spec 025 A14: the admin tools' view of the control plane, with the admin sign-in `rovara login
 // --admin` stored. Every answer is parsed with the contracts' schemas; every refusal becomes one of
 // FR-049's codes. The token is never part of an error, a log line or a result.
 import { CLI_PACKAGE_NAME } from "@agentx/contracts";

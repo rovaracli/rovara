@@ -35,7 +35,7 @@ describe.each([["chains", "chain", CHN], ["agents", "agent", AGT]] as const)("ag
     const h = await agentsCli({ [`GET ${base}`]: Response.json({ triggers: [] }) });
     expect(await h.run([kind, "triggers", "list", id])).toBe(0);
     expect(h.stdout()).toContain(`has no triggers`);
-    expect(h.stdout()).toContain(`agentx ${kind} triggers set`);
+    expect(h.stdout()).toContain(`rovara ${kind} triggers set`);
     expect(noun).toBeDefined();
   });
 

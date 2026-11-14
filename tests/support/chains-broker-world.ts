@@ -56,7 +56,7 @@ const BINDING = {
   deploymentMode: "ec2-ebs", launchTemplateId: "lt-0123456789abcdef0", subnets: [{ availabilityZone: "us-west-2a", subnetId: "subnet-0123456789abcdef0" }], volumeSizeGiB: 20, volumeType: "gp3",
 } as const;
 export const SCHEDULE_SETTINGS = {
-  groupName: "agentx-staging-chain-triggers", roleArn: "arn:aws:iam::123456789012:role/r", functionArn: "arn:aws:lambda:us-east-1:123456789012:function:f", queueArn: "arn:aws:sqs:us-east-1:123456789012:q",
+  groupName: "rovara-cloud-staging-chain-triggers", roleArn: "arn:aws:iam::123456789012:role/r", functionArn: "arn:aws:lambda:us-east-1:123456789012:function:f", queueArn: "arn:aws:sqs:us-east-1:123456789012:q",
 };
 
 export type Reply = { status: number; body: Record<string, unknown> };

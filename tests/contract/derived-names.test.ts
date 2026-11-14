@@ -39,14 +39,14 @@ describe("DERIVED_BROKER_VARIABLES", () => {
     expect(names).toEqual(expect.arrayContaining(["AUDIT_INTAKE_QUEUE_URL", "BROKER_ROLE_ARN", "CONNECTOR_SECRETS_ROLE_ARN", "CHAIN_SCHEDULE_ROLE_ARN", "CHAIN_SCHEDULE_QUEUE_URL"]));
   });
 
-  it("names the audit intake queue agentx-<env>-audit-intake.fifo, as the queue has always been", () => {
-    expect(auditIntakeQueueName("staging")).toBe("agentx-staging-audit-intake.fifo");
+  it("names the audit intake queue rovara-cloud-<env>-audit-intake.fifo, as the queue has always been", () => {
+    expect(auditIntakeQueueName("staging")).toBe("rovara-cloud-staging-audit-intake.fifo");
   });
 });
 
 for (const [label, env, context, cloud] of [
   ["cloud", "staging", { agentxCloud: true }, true],
-  ["cloud, the longest environment name", "a1234567890123456789", { agentxCloud: true }, true],
+  ["cloud, the longest environment name", "a1234567890123", { agentxCloud: true }, true],
   ["named, not cloud", "staging", {}, false],
 ] as const) {
   describe(`${label}: what the broker derives is what CDK named`, () => {
@@ -65,7 +65,7 @@ for (const [label, env, context, cloud] of [
           const roles = withName(resources, "AWS::IAM::Role", "RoleName", entry.roleName(env));
           expect(roles).toHaveLength(1);
           const path = roles[0]!.Properties?.Path;
-          expect(path, "the role is in the environment's role path").toBe(`/agentx/${env}/`);
+          expect(path, "the role is in the environment's role path").toBe(`/rovara-cloud/${env}/`);
           if (!expected) {
             expect(started[entry.variable]).toBeUndefined();
             return;

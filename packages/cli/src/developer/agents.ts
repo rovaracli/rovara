@@ -1,5 +1,5 @@
-// Plan 3 Task 35a: the agent platform from the command line. `agentx agents …`, `agentx project agents | connectors …`, `agentx skills …`,
-// `agentx approvals …` and `agentx org guardrails | sources …`, each one or two signed-in calls to the control plane's /v1/app routes. The
+// Plan 3 Task 35a: the agent platform from the command line. `rovara agents …`, `rovara project agents | connectors …`, `rovara skills …`,
+// `rovara approvals …` and `rovara org guardrails | sources …`, each one or two signed-in calls to the control plane's /v1/app routes. The
 // control plane decides who may do what; a refusal is printed as the broker wrote it (a revision conflict exits 1). A change that waits for a
 // person prints the confirmation page's link. Nothing here decides an approval (R66): `approvals open` only fetches the page's link.
 import { randomUUID } from "node:crypto";
@@ -105,7 +105,7 @@ export async function agentsList(deps: DeveloperSessionDeps, env: string | undef
   const query = filter.project !== undefined ? `?project=${seg(filter.project)}` : `?scope=${filter.scope ?? "all"}`;
   const answer = await appRequest(deps, env, `/v1/app/agents${query}`);
   const agents = list(answer.body.agents);
-  const text = agents.length === 0 ? `No agents here on ${answer.env}. Create one with agentx agents create --name <name>.\n` : `${[`Agents on ${answer.env} (${answer.url}):`, ...agents.map(agentLine)].join("\n")}\n`;
+  const text = agents.length === 0 ? `No agents here on ${answer.env}. Create one with rovara agents create --name <name>.\n` : `${[`Agents on ${answer.env} (${answer.url}):`, ...agents.map(agentLine)].join("\n")}\n`;
   return result(answer, { agents }, text);
 }
 
@@ -148,7 +148,7 @@ export async function agentsCreate(
     },
   });
   const agent = (answer.body.agent ?? {}) as Body;
-  return result(answer, answer.body, `Created ${str(agent.name)} (${str(agent.agentId)}). Edit its draft with agentx agents draft set ${str(agent.agentId)} --file <overlay.json>, then publish it.\n`);
+  return result(answer, answer.body, `Created ${str(agent.name)} (${str(agent.agentId)}). Edit its draft with rovara agents draft set ${str(agent.agentId)} --file <overlay.json>, then publish it.\n`);
 }
 
 async function draftOf(deps: DeveloperSessionDeps, env: string | undefined, agentId: string) {
@@ -171,7 +171,7 @@ export async function agentsDraftSet(deps: DeveloperSessionDeps, env: string | u
   const { revision } = await draftOf(deps, env, agentId);
   const answer = await appRequest(deps, env, `/v1/app/agents/${seg(agentId)}/draft`, { method: "PUT", body: { requestId: randomUUID(), expectedRevision: revision, overlay } });
   const draft = (answer.body.draft ?? {}) as Body;
-  return result(answer, answer.body, `Saved the draft of ${clean(agentId)}; it is at revision ${str(draft.revision)}. Publish it with agentx agents publish ${clean(agentId)}.\n`);
+  return result(answer, answer.body, `Saved the draft of ${clean(agentId)}; it is at revision ${str(draft.revision)}. Publish it with rovara agents publish ${clean(agentId)}.\n`);
 }
 
 export async function agentsPublish(deps: DeveloperSessionDeps, env: string | undefined, agentId: string, note: string | undefined): Promise<AppResult> {
@@ -236,7 +236,7 @@ export async function agentsShare(deps: DeveloperSessionDeps, env: string | unde
 
 export async function agentsArchive(deps: DeveloperSessionDeps, env: string | undefined, agentId: string, archive: boolean): Promise<AppResult> {
   const answer = await appRequest(deps, env, `/v1/app/agents/${seg(agentId)}/${archive ? "archive" : "unarchive"}`, { method: "POST", body: { requestId: randomUUID() } });
-  return result(answer, answer.body, archive ? `Archived ${clean(agentId)}; it no longer runs. Bring it back with agentx agents unarchive ${clean(agentId)}.\n` : `${clean(agentId)} is active again.\n`);
+  return result(answer, answer.body, archive ? `Archived ${clean(agentId)}; it no longer runs. Bring it back with rovara agents unarchive ${clean(agentId)}.\n` : `${clean(agentId)} is active again.\n`);
 }
 
 export async function agentsAccountable(deps: DeveloperSessionDeps, env: string | undefined, agentId: string, who: string): Promise<AppResult> {
@@ -296,7 +296,7 @@ export async function projectConnectorsSet(deps: DeveloperSessionDeps, env: stri
   const { revision } = await connectorsOf(deps, env, project);
   const answer = await appRequest(deps, env, `/v1/app/projects/${seg(project)}/connectors/${seg(name)}`, { method: "PUT", body: { requestId: randomUUID(), expectedRevision: revision, connector } });
   if (answer.body.status === "EXECUTING") {
-    return result(answer, answer.body, `The change to the connector ${clean(name)} on ${clean(project)} is being applied; check it with agentx project connectors list ${clean(project)}.\n`);
+    return result(answer, answer.body, `The change to the connector ${clean(name)} on ${clean(project)} is being applied; check it with rovara project connectors list ${clean(project)}.\n`);
   }
   return result(answer, answer.body, waitingText(answer.body) ?? `Saved the connector ${clean(name)} on ${clean(project)}${answer.body.revision === undefined ? "" : ` (revision ${str(answer.body.revision)})`}.\n`);
 }
@@ -358,7 +358,7 @@ export async function skillsAdd(deps: DeveloperSessionDeps, env: string | undefi
 export async function skillsList(deps: DeveloperSessionDeps, env: string | undefined): Promise<AppResult> {
   const answer = await appRequest(deps, env, "/v1/app/skills");
   const skills = list(answer.body.skills);
-  const text = skills.length === 0 ? "Your organization has no skills yet. Add one with agentx skills add --file SKILL.md.\n"
+  const text = skills.length === 0 ? "Your organization has no skills yet. Add one with rovara skills add --file SKILL.md.\n"
     : `${["Skills of your organization:", ...skills.map((skill) => `  ${str(skill.skillId)}  ${str(skill.name)}  ${str(skill.description)}`)].join("\n")}\n`;
   return result(answer, { skills }, text);
 }
@@ -369,7 +369,7 @@ export async function approvalsList(deps: DeveloperSessionDeps, env: string | un
   const answer = await appRequest(deps, env, "/v1/app/approvals?status=PENDING");
   const approvals = list(answer.body.approvals);
   const lines = approvals.map((approval) => `  ${str(approval.approvalId)}  ${str(approval.kind)}  ${str(approval.summary ?? approval.prompt ?? approval.subjectKind)}  until ${str(approval.expiresAt)}`);
-  const text = approvals.length === 0 ? "Nothing waits for your approval.\n" : `${["Waiting for your approval (decide each on its page: agentx approvals open <id>):", ...lines].join("\n")}\n`;
+  const text = approvals.length === 0 ? "Nothing waits for your approval.\n" : `${["Waiting for your approval (decide each on its page: rovara approvals open <id>):", ...lines].join("\n")}\n`;
   return result(answer, { approvals }, text);
 }
 
@@ -405,7 +405,7 @@ function confirmationPage(raw: string, cellUrl: string): string | undefined {
 export const approvalsConfirmLink = (deps: DeveloperSessionDeps, env: string | undefined, approvalId: string): Promise<AppResult & { openUrl?: string }> =>
   confirmLink(deps, env, `/v1/app/approvals/${seg(approvalId)}/confirm-link`);
 
-/** The same for a spend request (`agentx spend-requests open`): its page is the one place it is decided. */
+/** The same for a spend request (`rovara spend-requests open`): its page is the one place it is decided. */
 export const spendRequestConfirmLink = (deps: DeveloperSessionDeps, env: string | undefined, spendRequestId: string): Promise<AppResult & { openUrl?: string }> =>
   confirmLink(deps, env, `/v1/app/spend-requests/${seg(spendRequestId)}/confirm-link`);
 
@@ -463,7 +463,7 @@ export async function sourcesAdd(deps: DeveloperSessionDeps, env: string | undef
   // A server that echoed the key would have it printed; it is taken out of the answer first, in text and in --json (review M4).
   const body = apiKey === undefined ? answer.body : withoutSecret(answer.body, apiKey) as Body;
   const extra = [body.message, body.warning].filter((line): line is string => typeof line === "string").map((line) => `${clean(line)}\n`).join("");
-  return result(answer, body, `Added the AI source ${str(answer.body.sourceId)}. Test it with agentx org sources check ${str(answer.body.sourceId)}.\n${extra}`);
+  return result(answer, body, `Added the AI source ${str(answer.body.sourceId)}. Test it with rovara org sources check ${str(answer.body.sourceId)}.\n${extra}`);
 }
 
 /** Every string in a value with the secret replaced by [REDACTED]. */

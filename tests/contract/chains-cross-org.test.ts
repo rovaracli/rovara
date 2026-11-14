@@ -204,7 +204,7 @@ describe("across paths", () => {
     expect(reply).toMatchObject({ statusCode: 200 });
     expect(JSON.parse((reply as { body: string }).body)).toMatchObject({ outcome: "stale" });
     expect(runs().filter((run) => (run.startedBy as { kind?: string }).kind === "schedule")).toEqual([]);
-    expect(x.w.schedulerClient.get("agentx-staging-chain-triggers", x.T.schedule.triggerId)).toBeDefined();
+    expect(x.w.schedulerClient.get("rovara-cloud-staging-chain-triggers", x.T.schedule.triggerId)).toBeDefined();
     expect(x.aState() === before).toBe(true);
     // The control: A's own invocation of the same trigger does start its run (so the refusal above was the org line).
     const own = await x.w.h.handler({ source: "agentx.chain-schedule", orgId: ORG_A, triggerId: x.T.schedule.triggerId, scheduledAt: slot });

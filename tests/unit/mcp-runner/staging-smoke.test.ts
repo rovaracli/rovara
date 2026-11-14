@@ -321,7 +321,7 @@ describe("T12 smoke: safety", () => {
     // the recorded name is read from the install's own settings through the guard, with the environment the operator names
     const w = healthy();
     expect(await main(["--run", "start"], smokeEnv, deps(w))).toBe(0);
-    expect(w.calls.find((call) => call[0] === "ssm")).toEqual(["ssm", "get-parameter", "--name", "/agentx/staging/synth-settings", "--query", "Parameter.Value", "--output", "text"]);
+    expect(w.calls.find((call) => call[0] === "ssm")).toEqual(["ssm", "get-parameter", "--name", "/rovara-cloud/staging/synth-settings", "--query", "Parameter.Value", "--output", "text"]);
   });
   it("review N2: refuses when staging recorded no host, the settings cannot be read or do not parse, or the environment name is not a plain name", async () => {
     for (const [label, change] of [

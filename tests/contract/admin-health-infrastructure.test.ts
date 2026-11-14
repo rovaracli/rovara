@@ -39,7 +39,7 @@ describe("the health route's grants (A13)", () => {
   it("lets the broker describe the environment's alarms, by their name prefix only", () => {
     const describe = brokerStatements(named).filter((statement) => statement.Action === "cloudwatch:DescribeAlarms");
     expect(describe).toHaveLength(1);
-    expect(JSON.stringify(describe[0]?.Resource)).toContain(":alarm:agentx-live25d-*");
+    expect(JSON.stringify(describe[0]?.Resource)).toContain(":alarm:rovara-cloud-live25d-*");
     // The prefix is not a variable of the broker's (its variables are held to Lambda's 4 KB): the broker derives it from AGENTX_ENV, and
     // what it derives is the prefix every alarm of the environment is named with.
     expect(brokerEnvironment(named).AGENTX_ALARM_PREFIX).toBeUndefined();
@@ -47,7 +47,7 @@ describe("the health route's grants (A13)", () => {
     const derived: MutableEnvironment = { AGENTX_ENV: "live25d", AGENTX_NAMES: "{}", AWS_REGION: "us-east-1", AGENTX_ACCOUNT_ID: "123456789012" };
     hydrateBrokerEnvironment(derived);
     expect(derived.AGENTX_ALARM_PREFIX).toBe(environmentNaming("live25d").alarmName(""));
-    expect(derived.AGENTX_ALARM_PREFIX).toBe("agentx-live25d-");
+    expect(derived.AGENTX_ALARM_PREFIX).toBe("rovara-cloud-live25d-");
   });
 
   // Issue 206: a DescribeAlarms call by name prefix is authorized against *, so the probe asks for
@@ -58,8 +58,8 @@ describe("the health route's grants (A13)", () => {
       .map((alarm) => alarm.Properties.AlarmName);
     const stacks = buildAgentXApp({ agentxEnv: "live25d" }).node.children.filter((child): child is Stack => Stack.isStack(child));
     // The automatic renewal's alarms exist only where its CDK context is on (AR-2).
-    expect([...alarmNamesOf({})].sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.filter((suffix) => !suffix.startsWith("RuntimeRequalify")).map((suffix) => `agentx-live25d-${suffix}`).sort());
-    expect([...alarmNamesOf({ "agentx:autoRequalify": "enabled" })].sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.map((suffix) => `agentx-live25d-${suffix}`).sort());
+    expect([...alarmNamesOf({})].sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.filter((suffix) => !suffix.startsWith("RuntimeRequalify")).map((suffix) => `rovara-cloud-live25d-${suffix}`).sort());
+    expect([...alarmNamesOf({ "agentx:autoRequalify": "enabled" })].sort()).toStrictEqual(HEALTH_ALARM_SUFFIXES.map((suffix) => `rovara-cloud-live25d-${suffix}`).sort());
     expect(stacks.flatMap((stack) => Object.keys(Template.fromStack(stack).findResources("AWS::CloudWatch::CompositeAlarm")))).toEqual([]);
   }, 120_000);
 
@@ -67,21 +67,21 @@ describe("the health route's grants (A13)", () => {
     expect(brokerStatements(named).filter((statement) => statement.Action === "cloudwatch:DescribeAlarms")).toStrictEqual([{
       Action: "cloudwatch:DescribeAlarms",
       Effect: "Allow",
-      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":cloudwatch:", { Ref: "AWS::Region" }, ":", { Ref: "AWS::AccountId" }, ":alarm:agentx-live25d-*"]] },
+      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":cloudwatch:", { Ref: "AWS::Region" }, ":", { Ref: "AWS::AccountId" }, ":alarm:rovara-cloud-live25d-*"]] },
     }]);
     for (const suffix of HEALTH_ALARM_SUFFIXES) expect(suffix).toMatch(/^[A-Za-z0-9]+$/);
   });
 
   it("refuses to synthesize an alarm the probe would not read: unlisted, outside the prefix, or composite (issue 206)", () => {
-    const metric = new Metric({ namespace: "AgentX/live25d", metricName: "Stray" });
-    for (const alarmName of ["other-SlackDeadLetters", "agentx-live25d-Unlisted", "agentx-live25d-eu-SlackDeadLetters"]) {
+    const metric = new Metric({ namespace: "RovaraCloud/live25d", metricName: "Stray" });
+    for (const alarmName of ["other-SlackDeadLetters", "rovara-cloud-live25d-Unlisted", "rovara-cloud-live25d-eu-SlackDeadLetters"]) {
       const stack = new ControlPlaneStack(new App(), "StrayAlarmControlPlane", { naming: environmentNaming("live25d") });
       new Alarm(stack, "Stray", { alarmName, metric, threshold: 1, evaluationPeriods: 1 });
       expect(() => Template.fromStack(stack)).toThrow(`the health probe does not read alarm StrayAlarmControlPlane/Stray/Resource (${alarmName})`);
     }
     const stack = new ControlPlaneStack(new App(), "CompositeControlPlane", { naming: environmentNaming("live25d") });
-    const member = new Alarm(stack, "Member", { alarmName: "agentx-live25d-TestAlarm", metric, threshold: 1, evaluationPeriods: 1 });
-    new CompositeAlarm(stack, "Composite", { compositeAlarmName: "agentx-live25d-Composite", alarmRule: AlarmRule.fromAlarm(member, AlarmState.ALARM) });
+    const member = new Alarm(stack, "Member", { alarmName: "rovara-cloud-live25d-TestAlarm", metric, threshold: 1, evaluationPeriods: 1 });
+    new CompositeAlarm(stack, "Composite", { compositeAlarmName: "rovara-cloud-live25d-Composite", alarmRule: AlarmRule.fromAlarm(member, AlarmState.ALARM) });
     expect(() => Template.fromStack(stack)).toThrow("the health probe cannot read composite alarm CompositeControlPlane/Composite/Resource");
     }, 120_000);
 

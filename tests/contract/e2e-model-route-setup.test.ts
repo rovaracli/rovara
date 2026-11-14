@@ -34,7 +34,7 @@ beforeAll(async () => {
 
 const admin = { subject: "admin-subject", admin: true };
 const anthropic: E2EAgentInstallation = { provider: "anthropic", secretArn: SECRET_ARN };
-const OTHER_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/other-key-ZyXwVu";
+const OTHER_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/other-key-ZyXwVu";
 
 async function harnessFor(installation: (() => Promise<E2EAgentInstallation>) | undefined) {
   const state = { current: installation };
@@ -439,7 +439,7 @@ describe("the dispatch wiring in broker.ts", () => {
 });
 
 describe("the installation's settings as SSM holds them", () => {
-  const PREFIX = "/agentx/test/";
+  const PREFIX = "/rovara-cloud/test/";
   const read = (values: Record<string, string>) => async (names: readonly string[]) => new Map(Object.entries(values).filter(([name]) => names.includes(name)));
 
   it("reads the provider, the matching provider's secret ARN and the OpenRouter allowlist, and the region it is given", async () => {

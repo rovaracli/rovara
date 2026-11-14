@@ -1,4 +1,4 @@
-// agentx connector add linear (FR-036 to FR-039), from docs/connectors/linear.md. The key's own
+// rovara connector add linear (FR-036 to FR-039), from docs/connectors/linear.md. The key's own
 // team list is the test read (FR-038), and the engineer picks the team from it. The key never
 // appears in a log, an error or the project file: only a Secrets Manager reference does.
 import { agentXError, type ConnectorConfig } from "@agentx/contracts";

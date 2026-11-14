@@ -1,5 +1,5 @@
 // A failed first create must clean up after itself in a named environment (live check, 2026-09-27):
-// a create rolled back with DeletionPolicy Retain left the fixed-name secret agentx/<env>/slack
+// a create rolled back with DeletionPolicy Retain left the fixed-name secret rovara-cloud/<env>/slack
 // behind, and every retry then failed with "already exists". RetainExceptOnCreate still keeps the
 // data on a delete or a replacing update. The legacy deployment does not change.
 import { Stack } from "aws-cdk-lib";
@@ -27,14 +27,14 @@ beforeAll(() => { named = templates({ agentxEnv: "staging" }); }, 300_000);
 describe("retained resources in a named environment", () => {
   it("covers every stack the installer creates", () => {
     expect(Object.keys(named).sort()).toEqual([
-      "agentx-staging-access", "agentx-staging-control-plane", "agentx-staging-foundation", "agentx-staging-identity", "agentx-staging-runtime", "agentx-staging-slack",
+      "rovara-cloud-staging-access", "rovara-cloud-staging-control-plane", "rovara-cloud-staging-foundation", "rovara-cloud-staging-identity", "rovara-cloud-staging-runtime", "rovara-cloud-staging-slack",
     ]);
   });
 
   it("are RetainExceptOnCreate, so a failed first create deletes them, and still kept on replacement", () => {
     const expected: Record<string, string[]> = {
-      "agentx-staging-access": ["ArtifactBucket AWS::S3::Bucket"],
-      "agentx-staging-control-plane": [
+      "rovara-cloud-staging-access": ["ArtifactBucket AWS::S3::Bucket"],
+      "rovara-cloud-staging-control-plane": [
         "Artifacts AWS::S3::Bucket",
         // The Audit Ledger (Task 5 of its plan): the queues and buckets. Its tables, vault key and alias are in the plain Retain list below.
         "AuditLedgerAuditExportsBucket AWS::S3::Bucket", "AuditLedgerAuditIntakeDeadLetterQueue AWS::SQS::Queue", "AuditLedgerAuditIntakeQueue AWS::SQS::Queue",
@@ -49,10 +49,10 @@ describe("retained resources in a named environment", () => {
         "SlackSecret AWS::SecretsManager::Secret", "SlackThreadSessions AWS::S3::Bucket",
         "SlackThreads AWS::DynamoDB::Table", "State AWS::DynamoDB::Table", "TurnRecords AWS::DynamoDB::Table", "WebAppAssets AWS::S3::Bucket",
       ],
-      "agentx-staging-foundation": ["VpcFlowLogs AWS::Logs::LogGroup", "WorkspaceKey AWS::KMS::Key"],
-      "agentx-staging-identity": [],
-      "agentx-staging-runtime": [],
-      "agentx-staging-slack": [],
+      "rovara-cloud-staging-foundation": ["VpcFlowLogs AWS::Logs::LogGroup", "WorkspaceKey AWS::KMS::Key"],
+      "rovara-cloud-staging-identity": [],
+      "rovara-cloud-staging-runtime": [],
+      "rovara-cloud-staging-slack": [],
     };
     for (const [stackName, resources] of Object.entries(named)) {
       expect(kept(resources, "RetainExceptOnCreate"), stackName).toEqual(expected[stackName]);
@@ -67,23 +67,23 @@ describe("retained resources in a named environment", () => {
     expect(retained).toEqual([
       // The Audit Ledger's tables have deletion protection, which would make a rolled-back first create's delete fail
       // and leave the stack in ROLLBACK_FAILED, so (like the user pool) they keep plain Retain.
-      "agentx-staging-control-plane AuditLedgerAuditKeysTable AWS::DynamoDB::Table",
-      "agentx-staging-control-plane AuditLedgerAuditLedgerTable AWS::DynamoDB::Table",
-      "agentx-staging-control-plane AuditLedgerAuditSealsTable AWS::DynamoDB::Table",
+      "rovara-cloud-staging-control-plane AuditLedgerAuditKeysTable AWS::DynamoDB::Table",
+      "rovara-cloud-staging-control-plane AuditLedgerAuditLedgerTable AWS::DynamoDB::Table",
+      "rovara-cloud-staging-control-plane AuditLedgerAuditSealsTable AWS::DynamoDB::Table",
       // The vault key: the key policy lets nobody ScheduleKeyDeletion, so a rollback could not delete it. It has no alias (a retained
       // alias would make every retry of a failed first deploy fail), so no KMS alias is retained.
-      "agentx-staging-control-plane AuditLedgerAuditVaultKey AWS::KMS::Key",
+      "rovara-cloud-staging-control-plane AuditLedgerAuditVaultKey AWS::KMS::Key",
       // The saved environment images key (SH22) follows the same precedent: its key policy lets nobody but the deploy role schedule a deletion, so a rolled-back first create could not delete it.
       // (infra/lib/saved-env-images.ts marks it with the keep-on-rollback metadata; no alias is made for it.)
-      "agentx-staging-control-plane SavedEnvImagesImagesKey AWS::KMS::Key",
+      "rovara-cloud-staging-control-plane SavedEnvImagesImagesKey AWS::KMS::Key",
       // The service catalog images key (TS19) too: its policy lets nobody schedule a deletion either, so a rolled-back first create could not delete it (infra/lib/service-catalog-images.ts marks it). Its repositories
       // are empty on a first create and are RetainExceptOnCreate above.
-      "agentx-staging-control-plane ServiceCatalogImagesImagesKey AWS::KMS::Key",
-      "agentx-staging-identity UserPool AWS::Cognito::UserPool",
-      "agentx-staging-slack ActionLogs AWS::Logs::LogGroup",
-      "agentx-staging-slack ActionLogsKey AWS::KMS::Key",
-      "agentx-staging-slack ActionLogsSource AWS::Logs::DeliverySource",
-      "agentx-staging-slack Logs AWS::Logs::LogGroup",
+      "rovara-cloud-staging-control-plane ServiceCatalogImagesImagesKey AWS::KMS::Key",
+      "rovara-cloud-staging-identity UserPool AWS::Cognito::UserPool",
+      "rovara-cloud-staging-slack ActionLogs AWS::Logs::LogGroup",
+      "rovara-cloud-staging-slack ActionLogsKey AWS::KMS::Key",
+      "rovara-cloud-staging-slack ActionLogsSource AWS::Logs::DeliverySource",
+      "rovara-cloud-staging-slack Logs AWS::Logs::LogGroup",
     ]);
   });
 

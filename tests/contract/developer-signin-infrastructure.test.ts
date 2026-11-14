@@ -96,12 +96,12 @@ const rolesThatMay = (template: TemplateJson, action: string, logicalId: string,
 const statementsOfRole = (template: TemplateJson, roleName: string) => grants(template).filter(({ role }) => withoutHash(role) === roleName).map(({ statement }) => statement);
 
 const SAMPLE_KEY_ARN = "arn:aws:kms:us-east-1:111122223333:key/0b8a3c2e-1111-2222-3333-444455556666";
-const SAMPLE_SLACK_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111122223333:secret:agentx/staging/slack-AbCdEf";
-const SAMPLE_FUNCTION_ARN = "arn:aws:lambda:us-east-1:111122223333:function:agentx-staging-control-p-DeveloperSignInFunction-AbCdEf";
-const SAMPLE_TABLE_ARN = "arn:aws:dynamodb:us-east-1:111122223333:table/agentx-staging-control-plane-DeveloperSignInTable-AbCdEf";
+const SAMPLE_SLACK_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111122223333:secret:rovara-cloud/staging/slack-AbCdEf";
+const SAMPLE_FUNCTION_ARN = "arn:aws:lambda:us-east-1:111122223333:function:rovara-cloud-staging-control-p-DeveloperSignInFunction-AbCdEf";
+const SAMPLE_TABLE_ARN = "arn:aws:dynamodb:us-east-1:111122223333:table/rovara-cloud-staging-control-plane-DeveloperSignInTable-AbCdEf";
 
 beforeAll(() => {
-  named = controlPlane(buildAgentXApp({ agentxEnv: "staging" }), "agentx-staging-control-plane");
+  named = controlPlane(buildAgentXApp({ agentxEnv: "staging" }), "rovara-cloud-staging-control-plane");
   legacy = controlPlane(buildAgentXApp(), "AgentXControlPlane");
 }, 300_000);
 
@@ -135,7 +135,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
       for (const apiId of apiIds) expect(issuer).not.toContain(apiId);
       expect(issuer).not.toContain("/v1/auth");
     }
-    expect(authorizers.map((properties) => properties.Name)).toEqual(["agentx-jwt"]);
+    expect(authorizers.map((properties) => properties.Name)).toEqual(["rovara-cloud-jwt"]);
   });
 
   it("routes /v1/dev/* and /review/* and /s/* to the broker without JWT, keeps /v1/auth/* on DeveloperIdentity, and leaves ANY /{proxy+} protected", () => {
@@ -148,7 +148,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     // Plan 5: a session's link, `/s/<sessionId>`, is a browser page like the review pages: the broker's integration, no JWT.
     expect(routes["ANY /s/{proxy+}"]).toMatchObject({ AuthorizationType: "NONE", Target: routes["ANY /{proxy+}"]!.Target });
     expect(routes["ANY /s/{proxy+}"]!.AuthorizerId).toBeUndefined();
-    expect(routes["ANY /{proxy+}"]).toMatchObject({ AuthorizationType: "JWT", AuthorizerId: authorizerId("agentx-jwt") });
+    expect(routes["ANY /{proxy+}"]).toMatchObject({ AuthorizationType: "JWT", AuthorizerId: authorizerId("rovara-cloud-jwt") });
     const auth = routes["ANY /v1/auth/{proxy+}"]!;
     expect(auth.AuthorizationType).toBe("NONE");
     expect(auth.AuthorizerId).toBeUndefined();
@@ -179,12 +179,12 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(rolesThatMay(named, "kms:Sign", keyId, SAMPLE_KEY_ARN)).toEqual(["DeveloperSignInFunctionServiceRole"]);
     expect(rolesThatMay(named, "kms:GetPublicKey", keyId, SAMPLE_KEY_ARN)).toEqual(["DeveloperSignInFunctionServiceRole", "RealtimeAuthorizerServiceRole"]);
     const aliases = ofType(named, "AWS::KMS::Alias").map(([, resource]) => resource.Properties);
-    expect(aliases.find((alias) => alias.AliasName === "alias/agentx/staging/developer-tokens")).toMatchObject({ TargetKeyId: { "Fn::GetAtt": [keyId, "Arn"] } });
+    expect(aliases.find((alias) => alias.AliasName === "alias/rovara-cloud/staging/developer-tokens")).toMatchObject({ TargetKeyId: { "Fn::GetAtt": [keyId, "Arn"] } });
   });
 
   // Issue 173: the reconciler reads it too, for the unwaited task note's bot token (named environments only).
   it("lets only the ingress, the orchestrator task role, DeveloperIdentity, the task notifier and the reconciler read the Slack secret (R2, FR-034, #173)", () => {
-    const [secretId] = ofType(named, "AWS::SecretsManager::Secret").find(([, resource]) => resource.Properties.Name === "agentx/staging/slack")!;
+    const [secretId] = ofType(named, "AWS::SecretsManager::Secret").find(([, resource]) => resource.Properties.Name === "rovara-cloud/staging/slack")!;
     const readers = rolesThatMay(named, "secretsmanager:GetSecretValue", secretId, SAMPLE_SLACK_SECRET_ARN);
     expect(readers).toEqual(["DeveloperSignInFunctionServiceRole", "DeveloperTaskNotifierFunctionServiceRole", "SessionsReconcilerServiceRole", "SlackIngressServiceRole", "SlackOrchestratorTaskRole"]);
   });
@@ -192,7 +192,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
   it("lets DeveloperIdentity read only its own company sign-in secret besides the Slack secret", () => {
     const reads = statementsOfRole(named, "DeveloperSignInFunctionServiceRole").filter((s) => allows(s, "secretsmanager:GetSecretValue"));
     expect(reads).toHaveLength(2);
-    expect(JSON.stringify(reads.map((s) => s.Resource))).toContain(":secret:agentx/staging/developer-oidc-??????");
+    expect(JSON.stringify(reads.map((s) => s.Resource))).toContain(":secret:rovara-cloud/staging/developer-oidc-??????");
   });
 
   it("lets only the broker invoke DeveloperIdentity directly, and API Gateway only on /v1/auth/*", () => {
@@ -315,7 +315,7 @@ describe("developer sign-in infrastructure (named environments)", () => {
     expect(check).toHaveLength(1);
     expect(leadingKeysOf(check[0]!)).toEqual(["DEVELOPER#*"]);
     // The name item (DEVELOPER_NAME#<id>) and the audit's pending item are in the State table, where the broker reads, writes and batch-reads without a key limit.
-    const SAMPLE_STATE_ARN = "arn:aws:dynamodb:us-east-1:111122223333:table/agentx-staging-control-plane-State-AbCdEf";
+    const SAMPLE_STATE_ARN = "arn:aws:dynamodb:us-east-1:111122223333:table/rovara-cloud-staging-control-plane-State-AbCdEf";
     for (const action of ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:BatchGetItem"]) {
       const granting = grants(named).filter(({ role, statement }) => withoutHash(role) === "BrokerServiceRole" && statement.Effect !== "Deny" && allows(statement, action) && reaches(named, statement, stateId, SAMPLE_STATE_ARN));
       expect(granting.some(({ statement }) => statement.Condition === undefined), action).toBe(true);
@@ -532,12 +532,12 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
     const [, notifier] = ofType(named, "AWS::Lambda::Function").find(([id]) => withoutHash(id) === "DeveloperTaskNotifierFunction")!;
     const variables = (notifier.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
     const idOf = (type: string, prefix: string) => ofType(named, type).find(([id]) => withoutHash(id) === prefix)![0];
-    const [secretId] = ofType(named, "AWS::SecretsManager::Secret").find(([, resource]) => resource.Properties.Name === "agentx/staging/slack")!;
+    const [secretId] = ofType(named, "AWS::SecretsManager::Secret").find(([, resource]) => resource.Properties.Name === "rovara-cloud/staging/slack")!;
     expect(variables).toMatchObject({
       STATE_TABLE_NAME: { Ref: stateId() },
       NOTICE_QUEUE_URL: { Ref: idOf("AWS::SQS::Queue", "DeveloperTaskNotifierNoticeQueue") },
       SLACK_SECRET_ARN: { Ref: secretId },
-      AGENTX_METRICS_NAMESPACE: "AgentX/staging",
+      AGENTX_METRICS_NAMESPACE: "RovaraCloud/staging",
       AGENTX_TASK_PEOPLE_CHANGES_ENABLED: { Ref: "TaskPeopleChangesEnabled" },
     });
   });
@@ -587,7 +587,7 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
     expect(actionsOf(closeout[0]!).sort()).toEqual(["s3:GetObject", "s3:PutObject"]);
     expect(JSON.stringify(closeout[0]!.Resource)).toContain("private/task-closeouts/*/*");
     // The existing notice DLQ alarm is the exhausted closeout-work alarm; no new queue/service is introduced.
-    expect(ofType(named, "AWS::CloudWatch::Alarm").some(([, alarm]) => alarm.Properties.AlarmName === "agentx-staging-DeveloperNoticeDeadLetters")).toBe(true);
+    expect(ofType(named, "AWS::CloudWatch::Alarm").some(([, alarm]) => alarm.Properties.AlarmName === "rovara-cloud-staging-DeveloperNoticeDeadLetters")).toBe(true);
   });
 
   it("gives the notifier only key-limited item access on the state table: no scan, no delete", () => {
@@ -629,7 +629,7 @@ describe("the developer task notifier (spec 025 phase 25c, named environments)",
   });
 
   it("tells the operator when a notice or a stream batch is dead-lettered", () => {
-    for (const [queue, name] of [["DeveloperTaskNotifierNoticeDeadLetterQueue", "agentx-staging-DeveloperNoticeDeadLetters"], ["DeveloperTaskNotifierStreamFailureQueue", "agentx-staging-DeveloperNoticeStreamFailures"]] as const) {
+    for (const [queue, name] of [["DeveloperTaskNotifierNoticeDeadLetterQueue", "rovara-cloud-staging-DeveloperNoticeDeadLetters"], ["DeveloperTaskNotifierStreamFailureQueue", "rovara-cloud-staging-DeveloperNoticeStreamFailures"]] as const) {
       const [queueId] = ofType(named, "AWS::SQS::Queue").find(([id]) => withoutHash(id) === queue)!;
       const [, alarm] = ofType(named, "AWS::CloudWatch::Alarm").find(([, resource]) => resource.Properties.AlarmName === name)!;
       expect(alarm.Properties).toMatchObject({
@@ -653,7 +653,7 @@ describe("the notice of a newly linked sign-in method (Plan 2, Task 8, cloud ins
   let cloud: TemplateJson;
   const FROM = "Rovara <signin@rovara.dev>";
   const SOURCE_ARN = "arn:aws:ses:us-west-2:123456789012:identity/rovara.dev";
-  beforeAll(() => { cloud = controlPlane(buildAgentXApp({ agentxEnv: "staging", agentxCloud: true }), "agentx-staging-control-plane"); }, 300_000);
+  beforeAll(() => { cloud = controlPlane(buildAgentXApp({ agentxEnv: "staging", agentxCloud: true }), "rovara-cloud-staging-control-plane"); }, 300_000);
   const sesGrants = (template: TemplateJson) => grants(template).filter(({ statement }) => touches(statement, "ses"));
   const identityVariables = (template: TemplateJson) => (template.Resources[functionId(template, "DeveloperSignInFunction")]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
   const conditionsOf = (template: TemplateJson) => (template as unknown as { Conditions: Record<string, unknown> }).Conditions;
@@ -735,7 +735,7 @@ describe("the notice of a newly linked sign-in method (Plan 2, Task 8, cloud ins
 
 describe("the decide flow's grants and pool (Plan 3, Task 21a-presence, cloud installs)", () => {
   let cloud: TemplateJson;
-  beforeAll(() => { cloud = controlPlane(buildAgentXApp({ agentxEnv: "staging", agentxCloud: true }), "agentx-staging-control-plane"); }, 300_000);
+  beforeAll(() => { cloud = controlPlane(buildAgentXApp({ agentxEnv: "staging", agentxCloud: true }), "rovara-cloud-staging-control-plane"); }, 300_000);
   const tableId = () => ofType(cloud, "AWS::DynamoDB::Table").find(([logicalId]) => logicalId.startsWith("DeveloperSignInTable"))![0];
   const onTable = (role: string) => statementsOfRole(cloud, role).filter((statement) => touches(statement, "dynamodb") && reaches(cloud, statement, tableId(), SAMPLE_TABLE_ARN));
   const decideStatements = (role: string) => onTable(role).filter((statement) => JSON.stringify(statement.Condition ?? {}).includes("DECIDE_"));
@@ -814,10 +814,10 @@ describe("the decide flow's grants and pool (Plan 3, Task 21a-presence, cloud in
 
   it("keeps each broker managed-policy group under 5,500 characters on a cloud install (the guard under IAM's 6,144)", () => {
     const app = buildAgentXApp({ agentxEnv: "staging", agentxCloud: true });
-    const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "agentx-staging-control-plane")!;
+    const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "rovara-cloud-staging-control-plane")!;
     Template.fromStack(stack); // synthesizes, so the merge-and-move aspect has run
-    const policies = stack.node.findAll().filter((node): node is iam.ManagedPolicy => node instanceof iam.ManagedPolicy && /^agentx-.+-broker-/.test(String((node.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName)));
-    expect(policies.map((policy) => String((policy.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName)).sort()).toEqual(["agentx-staging-broker-integrations", "agentx-staging-broker-orchestration", "agentx-staging-broker-state"]);
+    const policies = stack.node.findAll().filter((node): node is iam.ManagedPolicy => node instanceof iam.ManagedPolicy && /^rovara-cloud-.+-broker-/.test(String((node.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName)));
+    expect(policies.map((policy) => String((policy.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName)).sort()).toEqual(["rovara-cloud-staging-broker-integrations", "rovara-cloud-staging-broker-orchestration", "rovara-cloud-staging-broker-state"]);
     for (const policy of policies) {
       // PolicyStatement._estimateSize is an internal API (pinned with aws-cdk-lib): 20 characters per action and 150 per unresolved token.
       const estimate = (policy.document as unknown as { statements: Array<{ _estimateSize(options: { actionEstimate: number; arnEstimate: number }): number }> }).statements
@@ -835,8 +835,8 @@ describe("the decide flow's grants and pool (Plan 3, Task 21a-presence, cloud in
 
 describe("the sign-in function asks the broker whether a member may decide (Plan 3, Task 21a-wiring, hand-off 1, cloud installs)", () => {
   let cloud: TemplateJson;
-  beforeAll(() => { cloud = controlPlane(buildAgentXApp({ agentxEnv: "staging", agentxCloud: true }), "agentx-staging-control-plane"); }, 300_000);
-  const BROKER_NAME = "agentx-staging-broker";
+  beforeAll(() => { cloud = controlPlane(buildAgentXApp({ agentxEnv: "staging", agentxCloud: true }), "rovara-cloud-staging-control-plane"); }, 300_000);
+  const BROKER_NAME = "rovara-cloud-staging-broker";
   const variablesOf = (template: TemplateJson, prefix: string) => (template.Resources[functionId(template, prefix)]!.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
   const invokeGrants = (template: TemplateJson, role: string) => statementsOfRole(template, role).filter((statement) => allows(statement, "lambda:InvokeFunction"));
 
@@ -876,7 +876,7 @@ describe("the sign-in function asks the broker whether a member may decide (Plan
     return undefined;
   }
 
-  it("names the broker function (agentx-<env>-broker) on a cloud install, so neither function refers to the other's generated name", () => {
+  it("names the broker function (rovara-cloud-<env>-broker) on a cloud install, so neither function refers to the other's generated name", () => {
     const broker = cloud.Resources[functionId(cloud, "Broker")]!;
     expect(broker.Properties.FunctionName).toBe(BROKER_NAME);
     expect(variablesOf(cloud, "DeveloperSignInFunction").DECIDE_INSPECT_FUNCTION_NAME).toBe(BROKER_NAME);

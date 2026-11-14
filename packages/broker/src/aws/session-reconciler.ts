@@ -11,7 +11,7 @@ import { DescribeExecutionCommand, SFNClient, StartExecutionCommand } from "@aws
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SSMClient } from "@aws-sdk/client-ssm";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
-import type { Ec2RuntimeBinding, WorkspaceSession, WorkspaceSessionState } from "@agentx/contracts";
+import { RESOURCE_PREFIX, type Ec2RuntimeBinding, type WorkspaceSession, type WorkspaceSessionState } from "@agentx/contracts";
 import { installOrgIdFromEnvironment } from "../org/resolve.js";
 import { requiredEnvironment } from "./lambda.js";
 import { failActiveOperation } from "./outbox-failure.js";
@@ -39,7 +39,9 @@ export const UNRESPONSIVE_PROBES = 3;
  */
 export const STALE_AMI_IDLE_MS = 5 * 60_000;
 export const MAX_STALE_AMI_RECYCLES_PER_RUN = 2;
-export const QUARANTINE_TAG = "agentx:quarantined";
+export const QUARANTINE_TAG = `${RESOURCE_PREFIX}:quarantined`;
+/** The tag the session state machines put on a workspace's instance and volume, valued with the workspace id. */
+export const WORKSPACE_TAG = `${RESOURCE_PREFIX}:workspace`;
 const WORKER_PORT = 8080;
 const PING_TIMEOUT_MS = 2_000;
 
@@ -570,7 +572,7 @@ export const handler = createReconcilerHandler({
       }));
       for (const reservation of page.Reservations ?? []) {
         for (const instance of reservation.Instances ?? []) {
-          const workspaceId = tag(instance.Tags, "agentx:workspace");
+          const workspaceId = tag(instance.Tags, WORKSPACE_TAG);
           found.push({
             instanceId: instance.InstanceId!,
             state: instance.State?.Name ?? "unknown",
@@ -588,10 +590,10 @@ export const handler = createReconcilerHandler({
     const found: VolumeView[] = [];
     let NextToken: string | undefined;
     do {
-      // Workspace volumes only: root volumes carry no agentx:workspace tag and go with their instance.
-      const page = await ec2.send(new DescribeVolumesCommand({ Filters: [...ownFilters(), { Name: "tag-key", Values: ["agentx:workspace"] }], ...(NextToken ? { NextToken } : {}) }));
+      // Workspace volumes only: root volumes carry no rovara-cloud:workspace tag and go with their instance.
+      const page = await ec2.send(new DescribeVolumesCommand({ Filters: [...ownFilters(), { Name: "tag-key", Values: [WORKSPACE_TAG] }], ...(NextToken ? { NextToken } : {}) }));
       for (const volume of page.Volumes ?? []) {
-        const workspaceId = tag(volume.Tags, "agentx:workspace");
+        const workspaceId = tag(volume.Tags, WORKSPACE_TAG);
         found.push({
           volumeId: volume.VolumeId!,
           state: volume.State ?? "unknown",

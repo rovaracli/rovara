@@ -1,11 +1,11 @@
-// FR-026: `agentx upgrade --export <dir>` writes the upgrade for a platform team's pipeline. It makes
+// FR-026: `rovara upgrade --export <dir>` writes the upgrade for a platform team's pipeline. It makes
 // no AWS write. Each stack's parameter file names every value this upgrade sets (developer sign-in
-// included, from SSM, as agentx upgrade sends it), and marks each deployed parameter an upgrade keeps
+// included, from SSM, as rovara upgrade sends it), and marks each deployed parameter an upgrade keeps
 // (ruling F29: the operator's settings and the callback signing key) UsePreviousValue, so the change
 // set keeps them and no secret is in any file.
 import { chmod, copyFile, mkdir, mkdtemp, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { agentXError, environmentStackName } from "@agentx/contracts";
+import { agentXError, environmentStackName, RESOURCE_PREFIX } from "@agentx/contracts";
 import { templateParameterNames, upgradeKeptParameterNames, withDeclaredSignIn, type DeployAnswers } from "../deploy/deploy-environment.js";
 import { assertClaimable } from "../deploy/export-bundle.js";
 import { MissingStackOutputError, SECRET_PARAMETERS, stackParameters, type DeployPart, type StackOutputs } from "../deploy/parameters.js";
@@ -26,7 +26,7 @@ function parameterFile(input: { part: DeployPart; version: string; computed: Rec
   for (const secret of SECRET_PARAMETERS) {
     delete computed[secret];
     if (input.declared?.has(secret) === true && input.deployed?.[secret] === undefined) {
-      throw agentXError("CONFIG_INVALID", `release ${input.version} adds secret ${secret}, which a bundle cannot carry; run agentx upgrade with admin credentials`);
+      throw agentXError("CONFIG_INVALID", `release ${input.version} adds secret ${secret}, which a bundle cannot carry; run rovara upgrade with admin credentials`);
     }
   }
   const kept = [...upgradeKeptParameterNames(input.part)].filter((name) =>
@@ -69,7 +69,7 @@ export async function writeUpgradeBundle(input: {
     const uploads: string[] = [];
     const sums: string[] = [];
     const steps: string[] = [];
-    const changeSet = `agentx-upgrade-${version.replaceAll(".", "-")}`;
+    const changeSet = `${RESOURCE_PREFIX}-upgrade-${version.replaceAll(".", "-")}`;
     await mkdir(join(scratchDir, "packages"), { recursive: true });
     for (const part of input.parts) {
       const stackName = environmentStackName(env, part);
@@ -83,7 +83,7 @@ export async function writeUpgradeBundle(input: {
         // The outputs are the deployed ones: a target release that adds an output a later stack reads
         // cannot be written as one bundle, since the earlier stack must run the release first.
         if (!(error instanceof MissingStackOutputError)) throw error;
-        throw agentXError("CONFIG_INVALID", `release ${version} needs output ${error.output} of stack ${error.stackName}, which the deployed stack does not have yet, so one bundle cannot upgrade ${stackName}. Run agentx --env ${env} upgrade --to ${version} with admin credentials instead: it deploys ${error.stackName} first, then reads its new output`);
+        throw agentXError("CONFIG_INVALID", `release ${version} needs output ${error.output} of stack ${error.stackName}, which the deployed stack does not have yet, so one bundle cannot upgrade ${stackName}. Run rovara --env ${env} upgrade --to ${version} with admin credentials instead: it deploys ${error.stackName} first, then reads its new output`);
       }
       const computed = part === "control-plane" && input.answers.developerSignIn !== undefined ? withDeclaredSignIn(raw, declared) : raw;
       const parameters = parameterFile({ part, version, computed, deployed: input.deployed[part], declared });
@@ -113,7 +113,7 @@ export async function writeUpgradeBundle(input: {
     const readme = [
       `# Upgrade AgentX environment ${env} to ${version}`, "",
       `Environment ${env} (account ${settings.account}, region ${region}) runs ${settings.version}. This bundle upgrades it to ${version}.`,
-      "No file here holds a secret. The parameters an upgrade keeps (the operator's settings, the callback signing key and developer sign-in) are marked UsePreviousValue, so they keep their values. Any other parameter set by hand in the console goes back to the template's default, as it does with agentx upgrade.", "",
+      "No file here holds a secret. The parameters an upgrade keeps (the operator's settings, the callback signing key and developer sign-in) are marked UsePreviousValue, so they keep their values. Any other parameter set by hand in the console goes back to the template's default, as it does with rovara upgrade.", "",
       "Run every command below from this bundle's directory.",
       `Deploy the stacks in this order, one at a time, each only after the one before it finished: ${input.parts.map((part) => environmentStackName(env, part)).join(", ")}.`,
       "Read each change set before executing it: a replaced or deleted table, user pool, bucket, key or secret loses its data.",
@@ -122,7 +122,7 @@ export async function writeUpgradeBundle(input: {
       "## 1. Check and upload the code packages", "", "```", "shasum -a 256 -c SHA256SUMS", ...(uploads.length === 0 ? ["# this release changes no code package"] : uploads), "```", "",
       "## 2. Deploy each stack", "", ...steps,
       "## 3. Record the new release", "",
-      `When every stack is updated, the AgentX operator runs \`agentx --env ${env} upgrade --to ${version}\`. It finds no change left, records ${version} in the settings, and runs agentx doctor.`, "",
+      `When every stack is updated, the AgentX operator runs \`rovara --env ${env} upgrade --to ${version}\`. It finds no change left, records ${version} in the settings, and runs rovara doctor.`, "",
     ].join("\n");
     await write("SHA256SUMS", sums.length === 0 ? "" : `${sums.join("\n")}\n`);
     await write("README.md", readme);

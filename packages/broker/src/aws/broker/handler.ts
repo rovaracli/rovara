@@ -1110,7 +1110,7 @@ export function createAwsBrokerHandler(input: AwsBrokerInput) {
           ? json(await dependencies.credentialRegistry.register(identity, body), request.requestId, 201)
           : json(await dependencies.credentialRegistry.list(identity), request.requestId);
       }
-      // RUN-3: when the browser and API runtime registrations expire, for agentx doctor (an administrator reads state and times only).
+      // RUN-3: when the browser and API runtime registrations expire, for rovara doctor (an administrator reads state and times only).
       if (request.method === "GET" && url.pathname === "/v1/admin/runtime-installation/status") {
         if (!identity.isAdministrator) throw agentXError("FORBIDDEN", "administrator claim is required");
         if (!dependencies.e2eFeatureRuntimeCatalogId) throw agentXError("NOT_FOUND", "browser and API runtimes are not set up in this deployment");

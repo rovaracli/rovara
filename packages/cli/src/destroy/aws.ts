@@ -1,4 +1,4 @@
-// agentx destroy's AWS calls, one method per step, each treating "already gone" as done so a
+// rovara destroy's AWS calls, one method per step, each treating "already gone" as done so a
 // re-run after a failure continues. Run with admin credentials (question 7). Every list method keeps
 // only what the names.ts guards say belongs to the environment; runDestroy checks each name with
 // those guards again before it calls a delete method here.
@@ -12,7 +12,7 @@ import { DeleteAliasCommand, DescribeKeyCommand, ListAliasesCommand, ListResourc
 import { DeleteLogGroupCommand, DescribeLogGroupsCommand, ListTagsForResourceCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { DeleteBucketCommand, DeleteObjectsCommand, GetBucketTaggingCommand, ListObjectVersionsCommand } from "@aws-sdk/client-s3";
 import { DeleteSecretCommand, DescribeSecretCommand, ListSecretsCommand, RestoreSecretCommand } from "@aws-sdk/client-secrets-manager";
-import { agentXError, environmentPullThroughPrefix } from "@agentx/contracts";
+import { agentXError, ENVIRONMENT_TAG_KEY, environmentPullThroughPrefix, RESOURCE_PREFIX } from "@agentx/contracts";
 import type { RetainedResource } from "./inventory.js";
 import { isOwnedAlias, isOwnedSecret, isOwnedWorker } from "./names.js";
 
@@ -43,7 +43,7 @@ export interface DestroyApi {
   secrets(env: string): Promise<Array<{ name: string; scheduled: boolean }>>;
   /** Reads whether the secret is scheduled for deletion itself, so one scheduled by hand is handled too. */
   deleteSecret(name: string): Promise<void>;
-  /** The ECR repositories under agentx-<env>/ that the image pull-through cache created (ruling F32).
+  /** The ECR repositories under rovara-cloud-<env>/ that the image pull-through cache created (ruling F32).
    * destroy only names them: it does not delete them. */
   pullThroughRepositories(env: string): Promise<string[]>;
 }
@@ -58,7 +58,7 @@ async function unlessGone<T>(run: () => Promise<T>, gone: T): Promise<T> {
 export const isVolumeGone = (error: unknown) => error instanceof Error && (error.name === "InvalidVolume.NotFound" || (error.name === "IncorrectState" && /delet/i.test(error.message)));
 const tagMap = (tags: Array<{ Key?: string; Value?: string }> | undefined) => Object.fromEntries((tags ?? []).flatMap((tag) => (tag.Key === undefined ? [] : [[tag.Key, tag.Value ?? ""]])));
 const workerFilters = (env: string) => [
-  { Name: "tag:DeploymentMode", Values: ["ec2-ebs"] }, { Name: "tag:Environment", Values: [env] }, { Name: "tag:agentx:env", Values: [env] },
+  { Name: "tag:DeploymentMode", Values: ["ec2-ebs"] }, { Name: "tag:Environment", Values: [env] }, { Name: `tag:${ENVIRONMENT_TAG_KEY}`, Values: [env] },
 ];
 
 const SECRET_POLL_MS = 5_000;
@@ -211,7 +211,7 @@ export function awsDestroyApi(
           for (let start = 0; start < objects.length; start += 1000) {
             const batch = objects.slice(start, start + 1000);
             const result = (await s3.send(new DeleteObjectsCommand({ Bucket: name, Delete: { Objects: batch, Quiet: true } }))) as { Errors?: Array<{ Key?: string; Code?: string }> };
-            if ((result.Errors ?? []).length > 0) throw agentXError("RUNTIME_UNAVAILABLE", `bucket ${name}: ${result.Errors!.length} objects could not be deleted (${result.Errors![0]?.Code ?? "no code"}); run agentx destroy again`);
+            if ((result.Errors ?? []).length > 0) throw agentXError("RUNTIME_UNAVAILABLE", `bucket ${name}: ${result.Errors!.length} objects could not be deleted (${result.Errors![0]?.Code ?? "no code"}); run rovara destroy again`);
             deleted += batch.length;
             onProgress(deleted);
           }
@@ -238,7 +238,7 @@ export function awsDestroyApi(
               return;
             } catch (error) {
               if (!(error instanceof Error && error.name === "ResourceInUseException")) throw error;
-              if (attempt >= TABLE_ATTEMPTS) throw agentXError("RUNTIME_UNAVAILABLE", `table ${name} is still busy after ${(TABLE_ATTEMPTS * TABLE_RETRY_MS) / 60_000} minutes; run agentx destroy again to continue`);
+              if (attempt >= TABLE_ATTEMPTS) throw agentXError("RUNTIME_UNAVAILABLE", `table ${name} is still busy after ${(TABLE_ATTEMPTS * TABLE_RETRY_MS) / 60_000} minutes; run rovara destroy again to continue`);
               await sleep(TABLE_RETRY_MS);
             }
           }
@@ -253,7 +253,7 @@ export function awsDestroyApi(
         const pool = ((await cognito.send(new DescribeUserPoolCommand({ UserPoolId: id }))) as { UserPool?: { DeletionProtection?: string; Domain?: string } }).UserPool;
         if (pool === undefined) return;
         if (pool.Domain !== undefined && pool.Domain !== domainPrefix) {
-          throw agentXError("CONFIG_INVALID", `user pool ${id} has the domain ${pool.Domain}, which is not ${domainPrefix}; delete that domain yourself, then run agentx destroy again`);
+          throw agentXError("CONFIG_INVALID", `user pool ${id} has the domain ${pool.Domain}, which is not ${domainPrefix}; delete that domain yourself, then run rovara destroy again`);
         }
         // UpdateUserPool resets settings it is not given; the pool is deleted next, so that is fine.
         if (pool.DeletionProtection === "ACTIVE") await cognito.send(new UpdateUserPoolCommand({ UserPoolId: id, DeletionProtection: "INACTIVE" }));
@@ -285,7 +285,7 @@ export function awsDestroyApi(
       const found: Array<{ name: string; scheduled: boolean }> = [];
       let token: string | undefined;
       do {
-        const page = (await secrets.send(new ListSecretsCommand({ Filters: [{ Key: "name", Values: [`agentx/${env}/`] }], IncludePlannedDeletion: true, ...(token === undefined ? {} : { NextToken: token }) }))) as { SecretList?: Array<{ Name?: string; DeletedDate?: Date }>; NextToken?: string };
+        const page = (await secrets.send(new ListSecretsCommand({ Filters: [{ Key: "name", Values: [`${RESOURCE_PREFIX}/${env}/`] }], IncludePlannedDeletion: true, ...(token === undefined ? {} : { NextToken: token }) }))) as { SecretList?: Array<{ Name?: string; DeletedDate?: Date }>; NextToken?: string };
         found.push(...(page.SecretList ?? []).flatMap((secret) => (secret.Name !== undefined && isOwnedSecret(env, secret.Name) ? [{ name: secret.Name, scheduled: secret.DeletedDate !== undefined }] : [])));
         token = page.NextToken;
       } while (token !== undefined);
@@ -308,7 +308,7 @@ export function awsDestroyApi(
               const gone = await unlessGone(async () => { await secrets.send(new DescribeSecretCommand({ SecretId: name })); return false; }, true);
               if (gone) return;
             }
-            throw agentXError("RUNTIME_UNAVAILABLE", `secret ${name} refused RestoreSecret and is still listed after ${SECRET_GONE_TIMEOUT_MS / 60_000} minutes; run agentx destroy again to continue`);
+            throw agentXError("RUNTIME_UNAVAILABLE", `secret ${name} refused RestoreSecret and is still listed after ${SECRET_GONE_TIMEOUT_MS / 60_000} minutes; run rovara destroy again to continue`);
           }
         }
         await secrets.send(new DeleteSecretCommand({ SecretId: name, ForceDeleteWithoutRecovery: true }));

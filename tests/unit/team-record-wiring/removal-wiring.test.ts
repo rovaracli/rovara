@@ -52,7 +52,7 @@ describe("the queue drain gets the function's clock", () => {
 
 describe("the dead-letter queue port", () => {
   it("builds its URL from the environment's name, and reads and deletes on that one queue", async () => {
-    expect(deadLetterUrlOf({ AGENTX_ENV: "staging", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012" })).toBe("https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-team-record-ops-dead");
+    expect(deadLetterUrlOf({ AGENTX_ENV: "staging", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012" })).toBe("https://sqs.us-west-2.amazonaws.com/123456789012/rovara-cloud-staging-team-record-ops-dead");
     expect(deadLetterUrlOf({ AGENTX_ENV: "staging" })).toBeUndefined();
     const commands: Array<ReceiveMessageCommand | DeleteMessageCommand> = [];
     const port = sqsDeadLetters({ send: async (command) => { commands.push(command); return { Messages: [{ ReceiptHandle: "h1", Body: "{}" }, { Body: "no handle" }] }; } }, "https://sqs/dead");

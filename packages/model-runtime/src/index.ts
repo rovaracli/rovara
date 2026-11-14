@@ -136,7 +136,7 @@ export function modelFallbackModel(value: string | undefined): { provider: "amaz
   return catalogModel({ provider: "amazon-bedrock", modelId: id }) === undefined ? undefined : { provider: "amazon-bedrock", modelId: id };
 }
 
-const FALLBACK_COMMAND = "`agentx --env <env> config set models.fallback <bedrock model id>`";
+const FALLBACK_COMMAND = "`rovara --env <env> config set models.fallback <bedrock model id>`";
 
 /**
  * Resolve a missing provider secret before creating a session, so its model and usage agree. There is no default fallback (MODEL3): with no chosen fallback the call fails by name, and with

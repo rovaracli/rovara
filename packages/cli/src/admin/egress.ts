@@ -1,4 +1,4 @@
-// `agentx admin egress pending | approve | reject` (Plan 2, Task 18): Rovara staff decide the domains projects (and, in Plan 3, model sources)
+// `rovara admin egress pending | approve | reject` (Plan 2, Task 18): Rovara staff decide the domains projects (and, in Plan 3, model sources)
 // ask for. On Rovara Cloud a new domain reaches the DNS firewall only after staff approve it.
 import { randomUUID } from "node:crypto";
 import { EgressPendingResponseSchema, agentXError, formatEgressOwner, parseEgressOwnerText, type EgressOwner, type EgressPendingResponse } from "@agentx/contracts";
@@ -8,7 +8,7 @@ import { adminResponseBody } from "./http.js";
 /** An owner as typed: `project:<name>` or `model-source:<id>`. */
 export function parseOwnerArgument(text: string): EgressOwner {
   const owner = parseEgressOwnerText(text);
-  if (owner === undefined) throw agentXError("CONFIG_INVALID", "the owner is project:<name> or model-source:<id>, as `agentx admin egress pending` prints it");
+  if (owner === undefined) throw agentXError("CONFIG_INVALID", "the owner is project:<name> or model-source:<id>, as `rovara admin egress pending` prints it");
   return owner;
 }
 
@@ -44,7 +44,7 @@ const clean = sanitizeServerText;
 export function pendingText(response: EgressPendingResponse): string {
   if (response.pending.length === 0) return "Nothing is waiting for approval.\n";
   const lines = response.pending.map((row) => `${row.orgId}  ${clean(row.orgName)}  ${formatEgressOwner(row.owner)}  ${clean(row.domain)}  asked by ${clean(row.requestedBy.name)} at ${row.requestedAt}`);
-  return `${lines.join("\n")}\n\nDecide with: agentx admin egress approve <org> <owner> <domain>, or reject <org> <owner> <domain> --reason <text>\n`;
+  return `${lines.join("\n")}\n\nDecide with: rovara admin egress approve <org> <owner> <domain>, or reject <org> <owner> <domain> --reason <text>\n`;
 }
 
 export function decisionText(result: { orgId: string; owner: EgressOwner; domain: string; status: string; warning?: string }): string {

@@ -1,6 +1,6 @@
 // Plan-first qualification of the web/API runtime on one fresh TEST worker, then registration of what it proved.
 //
-//   npx tsx scripts/test-qualify-runtime.ts --env agentxlivetest123 --profile agentx-test [--apply]
+//   npx tsx scripts/test-qualify-runtime.ts --env rovaralivetest --profile agentx-test [--apply]
 //
 // Without --apply it prints the plan and exits 0, with no AWS call. With --apply it first proves the
 // operator can use the transport (puts, reads back and deletes e2e-runtime/<run id>/preflight.json) and
@@ -169,7 +169,7 @@ export function roleNameFromArn(arn: string): string {
 export function formatQualificationPlan(steps: readonly QualificationStep[], input: QualificationInput): string {
   const describe = (step: QualificationStep): string => {
     switch (step.kind) {
-      case "check-admin-session": return "check the Rovara admin sign-in (agentx admin workspace list) before anything is created";
+      case "check-admin-session": return "check the Rovara admin sign-in (rovara admin workspace list) before anything is created";
       case "resolve-facts": return "read the live stacks (control plane, foundation, runtime), the worker settings, the signing key, the launch template and the worker role's unique ID (iam get-role); refuse unless the executor image and the qualification transport are deployed";
       case "preflight": return `put, read back and delete s3://<control artifacts bucket>/${step.key}; refuse to launch anything, naming the permission, if any of the three fails`;
       case "create-volume": return `create one new encrypted ${VOLUME_SIZE_GIB} GiB gp3 workspace volume (client token ${step.clientToken})`;
@@ -178,11 +178,11 @@ export function formatQualificationPlan(steps: readonly QualificationStep[], inp
       case "volume-delete-on-termination": return `once the attachment is confirmed, set DeleteOnTermination=true on ${step.device} (ec2:ModifyInstanceAttribute, BlockDeviceMappings) so the volume goes when the owner terminates this runner; if that fails the run continues, says so and prints the delete-volume command to run by hand after the runner is retired`;
       case "read-private-ip": return "read the instance's private IP address";
       case "wait-ready": return `wait up to ${step.timeoutMs / 60_000} minutes for the worker to upload ${PLAN_PREFIX}${step.object} (it is healthy), so boot time does not use the challenge's lifetime`;
-      case "issue-challenge": return `issue a ${step.profile} challenge (agentx admin runtime-installation challenge) for http://<private ip>:${step.port}, generation ${step.generation} or one past the registered runtime if that is higher, correlation ${step.transportCorrelationId}`;
+      case "issue-challenge": return `issue a ${step.profile} challenge (rovara admin runtime-installation challenge) for http://<private ip>:${step.port}, generation ${step.generation} or one past the registered runtime if that is higher, correlation ${step.transportCorrelationId}`;
       case "upload-challenge": return `upload challenge.json to s3://<control artifacts bucket>/${PLAN_PREFIX}${step.object}`;
       case "poll-status": return `poll ${PLAN_PREFIX}${step.object} every ${step.intervalMs / 1000}s for up to ${step.timeoutMs / 60_000} minutes (the challenge's lifetime)`;
       case "download-proposal": return `only if the status is SUCCEEDED: download ${PLAN_PREFIX}${step.object}`;
-      case "register": return "register the proposal (agentx admin runtime-installation register --proposal-file)";
+      case "register": return "register the proposal (rovara admin runtime-installation register --proposal-file)";
       case "record-model-check-runner": return `record this runner for model checks (E2E_MODEL_ROUTES / E2E_MODEL_CHECK_RUNNER#${WEB_API_RUNTIME_PROFILE_ID}: its role ID, instance ID and transport correlation ${step.transportCorrelationId})`;
       case "delete-challenge": return `after a successful registration, delete the one-use ${PLAN_PREFIX}${step.object} from the bucket (a failure only warns and prints the command)`;
       case "print-registered-rows": return "print the registered catalog rows";
@@ -511,7 +511,7 @@ function reportLeftovers(state: RunState, options: RunOptions, print: (line: str
   reportObjectLeftovers(state, options, print);
   if (state.launchRun !== undefined) {
     print(`\nThe launch used client token ${state.launchRun}. If RunInstances failed after it created an instance, find it by its tag:`);
-    print(`  aws ec2 describe-instances --filters Name=tag:agentx:qualification-run,Values=${state.launchRun} --profile ${options.profile} --region ${options.region}`);
+    print(`  aws ec2 describe-instances --filters Name=tag:rovara-cloud:qualification-run,Values=${state.launchRun} --profile ${options.profile} --region ${options.region}`);
   }
   if (state.instanceId !== undefined) {
     print(`\nThe qualification instance ${state.instanceId} is still running (${INSTANCE_TYPE}, billed until it is ended), left for diagnosis. End it with:`);
@@ -610,7 +610,7 @@ function createAwsEffects(args: QualifyArgs, runner: Runner): QualificationEffec
   return {
     async checkAdminSession() {
       const result = cli(["admin", "workspace", "list"]);
-      if (result.status !== 0) throw new Error(`the Rovara admin sign-in is not usable (agentx admin workspace list failed): ${result.stderr.trim().slice(0, 500)}; sign in with \`agentx --env ${args.env} login --admin\``);
+      if (result.status !== 0) throw new Error(`the Rovara admin sign-in is not usable (rovara admin workspace list failed): ${result.stderr.trim().slice(0, 500)}; sign in with \`rovara --env ${args.env} login --admin\``);
     },
 
     async resolveFacts() {

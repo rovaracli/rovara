@@ -13,9 +13,9 @@ const EXISTING_BOUNDARY = "arn:aws:iam::123456789012:policy/existing-boundary";
 
 describe("permission boundary", () => {
   it("is a parameter on every environment stack, and every role gets the given boundary or the default", () => {
-    const defaultArn = { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::", { Ref: "AWS::AccountId" }, ":policy/agentx/staging/agentx-staging-boundary"]] };
+    const defaultArn = { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::", { Ref: "AWS::AccountId" }, ":policy/rovara-cloud/staging/rovara-cloud-staging-boundary"]] };
     const stacks = stacksOf(buildAgentXApp({ agentxEnv: "staging" }));
-    expect(stacks.map((s) => s.stackName).sort()).toEqual(["access", "control-plane", "foundation", "identity", "runtime", "slack"].map((p) => `agentx-staging-${p}`));
+    expect(stacks.map((s) => s.stackName).sort()).toEqual(["access", "control-plane", "foundation", "identity", "runtime", "slack"].map((p) => `rovara-cloud-staging-${p}`));
     let roles = 0;
     for (const stack of stacks) {
       const json = Template.fromStack(stack).toJSON() as { Parameters: Record<string, { Default?: string; AllowedPattern?: string }>; Conditions: Record<string, unknown>; Resources: Record<string, { Type: string; Properties: { PermissionsBoundary?: unknown } }> };
@@ -23,12 +23,12 @@ describe("permission boundary", () => {
       expect(json.Conditions.HasPermissionsBoundary, stack.stackName).toBeDefined();
       // The access stack creates the default boundary, so its roles Ref it (which also orders the
       // policy before the roles); every other stack names its deterministic ARN.
-      // The broker's named grant policies (agentx-<env>-broker-<group>, ruling M2) are managed policies too, but not boundaries.
+      // The broker's named grant policies (rovara-cloud-<env>-broker-<group>, ruling M2) are managed policies too, but not boundaries.
       const policyIds = Object.entries(json.Resources)
-        .filter(([, r]) => r.Type === "AWS::IAM::ManagedPolicy" && !/^agentx-.+-broker-/.test(((name) => (typeof name === "string" ? name : ""))((r.Properties as { ManagedPolicyName?: unknown }).ManagedPolicyName)))
+        .filter(([, r]) => r.Type === "AWS::IAM::ManagedPolicy" && !/^rovara-cloud-.+-broker-/.test(((name) => (typeof name === "string" ? name : ""))((r.Properties as { ManagedPolicyName?: unknown }).ManagedPolicyName)))
         .map(([id]) => id);
-      const elseBranch = stack.stackName === "agentx-staging-access" ? { Ref: policyIds[0] } : defaultArn;
-      expect(policyIds, stack.stackName).toHaveLength(stack.stackName === "agentx-staging-access" ? 1 : 0);
+      const elseBranch = stack.stackName === "rovara-cloud-staging-access" ? { Ref: policyIds[0] } : defaultArn;
+      expect(policyIds, stack.stackName).toHaveLength(stack.stackName === "rovara-cloud-staging-access" ? 1 : 0);
       for (const [id, resource] of Object.entries(json.Resources).filter(([, r]) => r.Type === "AWS::IAM::Role")) {
         roles += 1;
         expect(resource.Properties.PermissionsBoundary, `${stack.stackName} ${id}`).toEqual({ "Fn::If": ["HasPermissionsBoundary", { Ref: "PermissionsBoundaryArn" }, elseBranch] });

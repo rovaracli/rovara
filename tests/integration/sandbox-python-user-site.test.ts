@@ -15,7 +15,7 @@ import type { DockerCli } from "../../packages/worker/src/swebench/containers.js
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
 
 const run = promisify(execFile);
-const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@sha256:" + "c".repeat(64);
+const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/rovara-cloud-staging/worker@sha256:" + "c".repeat(64);
 
 const cleanup: string[] = [];
 afterEach(async () => {

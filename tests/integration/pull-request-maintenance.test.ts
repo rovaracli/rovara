@@ -125,7 +125,7 @@ describe("pull request maintenance", () => {
           ...fixture.invocation.payload.project,
           repositories: fixture.invocation.payload.project.repositories.map((repository) => ({
             ...repository,
-            codeBuildGates: [{ name: "quality", projectName: "agentx-demo-quality", timeoutMinutes: 5 }],
+            codeBuildGates: [{ name: "quality", projectName: "rovara-cloud-demo-quality", timeoutMinutes: 5 }],
           })),
         },
       },
@@ -161,7 +161,7 @@ describe("pull request maintenance", () => {
           ...fixture.invocation.payload.project,
           repositories: fixture.invocation.payload.project.repositories.map((repository) => ({
             ...repository,
-            codeBuildGates: [{ name: "quality", projectName: "agentx-demo-quality", timeoutMinutes: 5 }],
+            codeBuildGates: [{ name: "quality", projectName: "rovara-cloud-demo-quality", timeoutMinutes: 5 }],
           })),
         },
       },
@@ -353,7 +353,7 @@ describe("pull request maintenance", () => {
         const reviewedTree = await workspaceTree(fixture.checkout);
         const invocation = failingReadiness(fixture.invocation, reviewedTree, { workflowBaseCommit: fixture.baseCommit });
         const gated = { ...invocation, payload: { ...invocation.payload, project: { ...invocation.payload.project,
-          repositories: invocation.payload.project.repositories.map((repository) => ({ ...repository, codeBuildGates: [{ name: "quality", projectName: "agentx-demo-quality", timeoutMinutes: 5 }] })) } } } as typeof invocation;
+          repositories: invocation.payload.project.repositories.map((repository) => ({ ...repository, codeBuildGates: [{ name: "quality", projectName: "rovara-cloud-demo-quality", timeoutMinutes: 5 }] })) } } } as typeof invocation;
         let after: string | undefined;
         const update = sink();
         await expect(pushFix({

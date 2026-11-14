@@ -552,7 +552,7 @@ describe("workflow E2E application rounds: the model channel", () => {
     const budget = budgetEvents();
     const s = await setup({ route: STALE, agent: true });
     s.fake.onExecutor = s.okOutput;
-    const result = await s.run({ modelBudget: budget.post, modelChannel: { environment: { AGENTX_MODEL_PROVIDER: "anthropic", AGENTX_ANTHROPIC_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/key-AbCdEf", AWS_REGION: "us-east-1" } } });
+    const result = await s.run({ modelBudget: budget.post, modelChannel: { environment: { AGENTX_MODEL_PROVIDER: "anthropic", AGENTX_ANTHROPIC_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/key-AbCdEf", AWS_REGION: "us-east-1" } } });
     expect(result.processStatus).toBe("FAILED");
     expect(s.createHost).not.toHaveBeenCalled();
     expect(s.fake.calls).toEqual([]);

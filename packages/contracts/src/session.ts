@@ -241,7 +241,7 @@ export function sessionProvisioningName(workspaceId: string, generation: number)
 }
 
 /**
- * SSM parameters under the environment's settings prefix (`/agentx/<env>/`) that each release sets
+ * SSM parameters under the environment's settings prefix (`/rovara-cloud/<env>/`) that each release sets
  * in the runtime stack, and the session provisioner reads to boot an EC2 worker.
  */
 export const WORKER_SETTING_PARAMETERS = {

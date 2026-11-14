@@ -1,4 +1,4 @@
-// Plan 3 Task 35a: `agentx agents budget` and `agentx project ai set` against a fake control plane: the amounts each sends (a number, or null
+// Plan 3 Task 35a: `rovara agents budget` and `rovara project ai set` against a fake control plane: the amounts each sends (a number, or null
 // for "none"), what a request waiting on someone else prints, and the refusals made before anything is sent.
 import { afterEach, describe, expect, it } from "vitest";
 import { UUID, agentsCli, cleanHarnessDirs } from "../support/agents-cli-harness.js";
@@ -8,7 +8,7 @@ afterEach(cleanHarnessDirs);
 const AGT = "agt_aaaaaaaaaaaaaaaaaaaa";
 const agent = { agentId: AGT, name: "Triage helper", builtin: false, status: "active", monthlyBudgetUsd: 50, access: "manage" };
 
-describe("agentx agents budget", () => {
+describe("rovara agents budget", () => {
   it("sends a monthly amount and clears the per-run limit with none", async () => {
     const h = await agentsCli({ [`PUT /v1/app/agents/${AGT}/budget`]: Response.json({ agent }) });
     expect(await h.run(["agents", "budget", AGT, "--monthly", "50", "--max-per-run", "none"])).toBe(0);
@@ -44,7 +44,7 @@ describe("agentx agents budget", () => {
   });
 });
 
-describe("agentx project ai set", () => {
+describe("rovara project ai set", () => {
   it("sends the budget, who pays and the planning limits", async () => {
     const answer = { settings: { monthlyBudgetUsd: 300, projectPays: true, planningLimitUsd: { QUICK: 2, FULL: 5 } }, revision: 3, effective: { sourceOrder: ["rovara"], planningLimitUsd: { QUICK: 2, FULL: 5 } } };
     const h = await agentsCli({ "PUT /v1/app/projects/payments/ai": Response.json(answer) });
@@ -92,7 +92,7 @@ const SPR = "spr_cccccccccccccccccccc";
 const SPR_CONFIRM = `https://abc123.execute-api.us-west-2.amazonaws.com/v1/app/approve/${SPR}`;
 const TASK = "44444444-4444-4444-8444-444444444444";
 
-describe("agentx agents spend", () => {
+describe("rovara agents spend", () => {
   const spend = {
     month: "2026-10", totalUsd: 12.5, byOrigin: { person: 8, autonomous: 4.5, test: 0 },
     recentRuns: [{ taskId: TASK, project: "payments", origin: "person", usd: 3.25, lastAt: "2026-10-21T10:00:00.000Z" }],
@@ -143,7 +143,7 @@ describe("agentx agents spend", () => {
   });
 });
 
-describe("agentx org spend", () => {
+describe("rovara org spend", () => {
   const org = {
     month: "2026-10", totalUsd: 120.75, committedUsd: 4, limitUsd: 500,
     byProject: [{ project: "payments", spentUsd: 100, committedUsd: 4 }], byMember: [{ developerId: "a".repeat(64), spentUsd: 70 }],
@@ -213,7 +213,7 @@ describe("agentx org spend", () => {
   });
 });
 
-describe("agentx spend-requests (R66: read and link only)", () => {
+describe("rovara spend-requests (R66: read and link only)", () => {
   const request = {
     spendRequestId: SPR, kind: "run_limit", status: "PENDING", amountUsd: 18, newLimitUsd: 20, taskId: TASK, reason: "Approving this plan sets a run limit of $20, which needs a project maintainer's approval.",
     requestedBy: { kind: "member", developerId: "b".repeat(64) }, approverRole: "project_maintainer", createdAt: "2026-10-22T09:00:00.000Z", expiresAt: "2026-10-29T09:00:00.000Z", confirmUrl: SPR_CONFIRM,
@@ -223,7 +223,7 @@ describe("agentx spend-requests (R66: read and link only)", () => {
     const h = await agentsCli({ "GET /v1/app/spend-requests": Response.json({ spendRequests: [request] }) });
     expect(await h.run(["spend-requests", "list"])).toBe(0);
     expect(h.calls).toEqual([{ method: "GET", path: "/v1/app/spend-requests", query: "", body: undefined }]);
-    for (const wanted of [SPR, "run_limit", "$18", "$20", "needs a project maintainer", "agentx spend-requests open"]) expect(h.stdout(), wanted).toContain(wanted);
+    for (const wanted of [SPR, "run_limit", "$18", "$20", "needs a project maintainer", "rovara spend-requests open"]) expect(h.stdout(), wanted).toContain(wanted);
   });
 
   it("list says so when nothing waits", async () => {
@@ -271,7 +271,7 @@ describe("agentx spend-requests (R66: read and link only)", () => {
   });
 });
 
-describe("agentx task continue-as-task and ask-run-limit", () => {
+describe("rovara task continue-as-task and ask-run-limit", () => {
   it("continue-as-task posts a new request ID and prints where the task is now", async () => {
     const h = await agentsCli({ [`POST /v1/app/tasks/${TASK}/continue-as-task`]: Response.json({ task: { taskId: TASK, status: "RUNNING", project: "payments" } }) });
     expect(await h.run(["task", "continue-as-task", TASK])).toBe(0);

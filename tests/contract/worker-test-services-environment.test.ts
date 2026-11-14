@@ -9,7 +9,7 @@ import { parseBootFacts } from "../../packages/worker/src/test-services-report.j
 const stage2 = readFileSync(new URL("../../packages/worker/ec2/boot-stage2.sh", import.meta.url), "utf8");
 const dockerfile = readFileSync(new URL("../../environments/base/Dockerfile", import.meta.url), "utf8");
 const fn = (name: string): string => new RegExp(`^${name}\\(\\) \\{\\n[\\s\\S]*?^\\}$`, "mu").exec(stage2)?.[0] ?? "";
-const IMAGE = `944937319445.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@sha256:${"a".repeat(64)}`;
+const IMAGE = `944937319445.dkr.ecr.us-west-2.amazonaws.com/rovara-cloud-staging/worker@sha256:${"a".repeat(64)}`;
 
 function tools(directory: string, body: Record<string, string>): string {
   const bin = join(directory, "bin");
@@ -26,7 +26,7 @@ describe("the worker's test services settings", () => {
     // A curl that records any call: the settings need no metadata service any more (the worker trusts the catalog baked into its own image, so it needs no account id).
     const path = tools(directory, { curl: `echo "$@" >> "${directory}/curl.calls"; exit 22` });
     const program = `readonly WORKER_ENV_FILE=${envFile}\n${fn("write_test_services_environment")}\nwrite_test_services_environment`;
-    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: options.image ?? IMAGE, AGENTX_LOG_GROUP: options.logGroup ?? "/agentx/staging/worker" } });
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: options.image ?? IMAGE, AGENTX_LOG_GROUP: options.logGroup ?? "/rovara-cloud/staging/worker" } });
     let calls = "";
     try { calls = readFileSync(join(directory, "curl.calls"), "utf8"); } catch { /* none */ }
     return { status: ran.status, written: readFileSync(envFile, "utf8"), calls };
@@ -50,7 +50,7 @@ describe("the worker's test services settings", () => {
     expect(r.written).not.toMatch(/KEY|SECRET|TOKEN|PASSWORD/u);
   });
   it("writes nothing when the image or the log group is not in the expected form (the settings are derived, never guessed)", () => {
-    for (const options of [{ image: `docker.io/library/node@sha256:${"a".repeat(64)}` }, { logGroup: "/agentx/production/../worker" }, { logGroup: "/aws/other" }, { logGroup: "/agentx/Staging/worker" }]) {
+    for (const options of [{ image: `docker.io/library/node@sha256:${"a".repeat(64)}` }, { logGroup: "/rovara-cloud/production/../worker" }, { logGroup: "/aws/other" }, { logGroup: "/rovara-cloud/Staging/worker" }]) {
       const r = run(options);
       expect(r.status, JSON.stringify(options)).not.toBe(0);
       expect(r.written, JSON.stringify(options)).toBe("AGENTX_RUNTIME=ec2\n");
@@ -93,7 +93,7 @@ describe("root pulls the catalog images by digest before the worker starts (H2)"
       ].join("\n"),
     });
     const program = `log() { echo "$*" >> "${directory}/log"; }\n${fn("catalog_seconds")}\n${fn("pull_catalog_images")}\npull_catalog_images us-west-2`;
-    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/agentx/staging/worker", TMPDIR: directory, AGENTX_TEST_SERVICES: "1", ...options.env } });
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/rovara-cloud/staging/worker", TMPDIR: directory, AGENTX_TEST_SERVICES: "1", ...options.env } });
     const read = (name: string): string => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
     return { status: ran.status, calls: read("calls"), log: read("log"), directory, read };
   };
@@ -166,7 +166,7 @@ describe("the boot pulls are bounded per image and run in parallel (slice-1 foll
     });
     const program = `log() { echo "$*" >> "${directory}/log"; }\n${fn("catalog_seconds")}\n${fn("pull_catalog_images")}\npull_catalog_images us-west-2`;
     const started = Date.now();
-    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/agentx/staging/worker", TMPDIR: directory, AGENTX_TEST_SERVICES: "1", ...options.env } });
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/rovara-cloud/staging/worker", TMPDIR: directory, AGENTX_TEST_SERVICES: "1", ...options.env } });
     const read = (name: string): string => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
     return { status: ran.status, calls: read("calls"), log: read("log"), pulls: read("pulls").split("\n").filter((line) => line !== ""), seconds: (Date.now() - started) / 1000, read };
   }
@@ -322,7 +322,7 @@ describe("the facts root hands to the worker for its CloudWatch self-report (sta
       const envFile = join(directory, "worker.env");
       writeFileSync(envFile, "AGENTX_RUNTIME=ec2\n");
       const program = [`readonly WORKER_ENV_FILE=${envFile}`, `PREPULL_FAILED_REPOS='${repos}'`, fn("write_test_services_environment"), "write_test_services_environment"].join("\n");
-      spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/agentx/staging/worker" } });
+      spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: process.env["PATH"] ?? "", AGENTX_WORKER_IMAGE: IMAGE, AGENTX_LOG_GROUP: "/rovara-cloud/staging/worker" } });
       return readFileSync(envFile, "utf8");
     };
     expect(write("svc/local-aws,svc/postgres")).toContain("AGENTX_TEST_SERVICES_NOT_PULLED=svc/local-aws,svc/postgres\n");
@@ -368,7 +368,7 @@ describe("the pre-pull runs only with test services on, from the install's own r
     const envFile = join(directory, "worker.env");
     writeFileSync(envFile, "");
     const program = `log() { echo "$*" >> "${directory}/log"; }\nreadonly WORKER_ENV_FILE=${envFile}\n${fn("catalog_seconds")}\n${fn("pull_catalog_images")}\n${fn("write_test_services_environment")}\npull_catalog_images us-west-2; rc=$?\nwrite_test_services_environment\necho "rc=$rc result=$PREPULL_RESULT failed=$PREPULL_FAILED_REPOS count=$PREPULL_COUNT" > "${directory}/summary"\n${options.after ?? ""}`;
-    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: options.image ?? OTHER_IMAGE, AGENTX_LOG_GROUP: options.logGroup ?? "/agentx/production/worker", TMPDIR: directory, ...options.env } });
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: options.image ?? OTHER_IMAGE, AGENTX_LOG_GROUP: options.logGroup ?? "/rovara-cloud/production/worker", TMPDIR: directory, ...options.env } });
     const read = (name: string): string => { try { return readFileSync(join(directory, name), "utf8"); } catch { return ""; } };
     return { status: ran.status, calls: read("calls"), log: read("log"), summary: read("summary").trim(), worker: read("worker.env") };
   }
@@ -442,7 +442,7 @@ describe("the pre-pull runs only with test services on, from the install's own r
       docker: ['case "$1" in', `  run) cat "${directory}/prepull.json" ;;`, "  login) cat >/dev/null ;;", "  image) exit 1 ;;", "  pull) sleep 60 ;;", "  logout) ;;", "esac"].join("\n"),
     });
     const program = `log() { :; }\n${fn("catalog_seconds")}\n${fn("pull_catalog_images")}\npull_catalog_images us-west-2; echo "result=$PREPULL_RESULT"; echo "elapsed=$SECONDS"`;
-    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: OTHER_IMAGE, AGENTX_LOG_GROUP: "/agentx/production/worker", TMPDIR: directory, AGENTX_TEST_SERVICES: "1", BOOT_DEADLINE: "42" } });
+    const ran = spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: path, AGENTX_WORKER_IMAGE: OTHER_IMAGE, AGENTX_LOG_GROUP: "/rovara-cloud/production/worker", TMPDIR: directory, AGENTX_TEST_SERVICES: "1", BOOT_DEADLINE: "42" } });
     expect(ran.stdout).toContain("result=failed");
     expect(Number(/elapsed=(\d+)/u.exec(ran.stdout)?.[1])).toBeLessThanOrEqual(42);
   }, 90_000);
@@ -461,7 +461,7 @@ describe("a worker withheld for IPv6 stays withheld after the pre-pull's per-ima
       `readonly WORKER_ENV_FILE=${envFile}`,
       "metadata_blocked() { return 0; }",
       fn("withhold_test_services_for_ipv6"), fn("write_test_services_environment"), fn("write_test_services_boot_facts"),
-      `AGENTX_WORKER_IMAGE=${IMAGE}; AGENTX_LOG_GROUP=/agentx/staging/worker; PREPULL_LOGGED_OUT=true; IPV6_WALL_REASON=""`,
+      `AGENTX_WORKER_IMAGE=${IMAGE}; AGENTX_LOG_GROUP=/rovara-cloud/staging/worker; PREPULL_LOGGED_OUT=true; IPV6_WALL_REASON=""`,
       prepull,
       ...(order === "withhold-after"
         ? ["write_test_services_environment", "withhold_test_services_for_ipv6 rule-not-added", "write_test_services_boot_facts"]
@@ -493,7 +493,7 @@ describe("a worker withheld for IPv6 stays withheld after the pre-pull's per-ima
     const directory = mkdtempSync(join(tmpdir(), "tsl-nowithhold-"));
     const envFile = join(directory, "worker.env");
     writeFileSync(envFile, "AGENTX_RUNTIME=ec2\n");
-    const program = [`readonly WORKER_ENV_FILE=${envFile}`, fn("write_test_services_environment"), `AGENTX_WORKER_IMAGE=${IMAGE}; AGENTX_LOG_GROUP=/agentx/staging/worker; PREPULL_FAILED_REPOS=svc/local-aws`, "write_test_services_environment"].join("\n");
+    const program = [`readonly WORKER_ENV_FILE=${envFile}`, fn("write_test_services_environment"), `AGENTX_WORKER_IMAGE=${IMAGE}; AGENTX_LOG_GROUP=/rovara-cloud/staging/worker; PREPULL_FAILED_REPOS=svc/local-aws`, "write_test_services_environment"].join("\n");
     expect(spawnSync("/bin/bash", ["-c", program], { encoding: "utf8", env: { PATH: "/usr/bin:/bin" } }).status).toBe(0);
     expect(readFileSync(envFile, "utf8")).toContain("AGENTX_TEST_SERVICES_NOT_PULLED=svc/local-aws\n");
   });

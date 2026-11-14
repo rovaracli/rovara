@@ -85,7 +85,7 @@ export function decisionRouteDepsOf(deps: DeveloperRouteDependencies, caller: De
   };
   // Setup agent (SH12): the host-ask cards and their handler exist only while `su` is on; with it off nothing here reads or writes anything.
   // Cloud only (F5): the website change the card runs is Cloud's (proposal, second person, staff step). On a private install a person adds a website the way they do today (an administrator runs
-  // `agentx project add`), so no card exists and no handler is registered there.
+  // `rovara project add`), so no card exists and no handler is registered there.
   const hostsOn = setupAgentEnabled(env) && deps.cloud === true;
   const hostDeps: HostDecisionDeps = {
     documentClient: deps.documentClient, tableName: deps.tableName, signInTableName: deps.developer.signInTableName, now: deps.now, ...(deps.audit === undefined ? {} : { audit: deps.audit }),

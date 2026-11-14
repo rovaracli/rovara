@@ -8,7 +8,7 @@ const MAX_DEPLOYMENT_BYTES = 65_536;
 
 // One AgentX deployment serves every project, so its control-plane URL and login settings live
 // beside the project files rather than inside each one. `env` is absent on the legacy file and
-// present on a cache written by `agentx env use`, naming which environment it was built for.
+// present on a cache written by `rovara env use`, naming which environment it was built for.
 export const DeploymentSettingsSchema = z
   .object({
     env: EnvironmentNameSchema.optional(),
@@ -51,7 +51,7 @@ export async function loadDeploymentSettings(options: {
   if (options.expectedEnv !== undefined && settings.env !== undefined && settings.env !== options.expectedEnv) {
     throw agentXError(
       "CONFIG_INVALID",
-      `deployment file ${canonicalPath} is for environment ${settings.env}, not ${options.expectedEnv}; run agentx --env ${options.expectedEnv} env use`,
+      `deployment file ${canonicalPath} is for environment ${settings.env}, not ${options.expectedEnv}; run rovara --env ${options.expectedEnv} env use`,
     );
   }
   if (!options.allowLoopback) assertHttps(settings);

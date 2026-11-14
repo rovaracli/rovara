@@ -171,7 +171,7 @@ export function agentXError(code: AgentXErrorCode, message: string): AgentXError
 }
 
 /** What a refusal to reach a repository through the org's GitHub connection says (GITHUB_NOT_CONNECTED, Plan 2). */
-export const githubNotConnectedMessage = (fullName: string) => `Rovara can't reach ${fullName} through your organization's GitHub connection. Connect it with: agentx github connect`;
+export const githubNotConnectedMessage = (fullName: string) => `Rovara can't reach ${fullName} through your organization's GitHub connection. Connect it with: rovara github connect`;
 
 // ---- chains (Plan 4): the exact texts of the chain error codes. Chain, step and agent names are the caller's own, never another org's.
 

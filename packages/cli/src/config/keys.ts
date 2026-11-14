@@ -1,7 +1,7 @@
-// FR-048: agentx config's fixed, documented keys. Each maps to exactly one place: a stack parameter,
+// FR-048: rovara config's fixed, documented keys. Each maps to exactly one place: a stack parameter,
 // an SSM value (the environment settings) or a control-plane setting. docs/day-two.md lists the
 // same table.
-import { CHATGPT_DEFAULT_PREFERRED_MODEL, ChatGptModelIdSchema, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, agentXError, environmentSettingsPrefix, environmentStackName } from "@agentx/contracts";
+import { CHATGPT_DEFAULT_PREFERRED_MODEL, ChatGptModelIdSchema, ENVIRONMENT_TAG_KEY, MODEL_FALLBACK_NONE, MODEL_FALLBACK_PATTERN, agentXError, environmentSettingsPrefix, environmentStackName } from "@agentx/contracts";
 import { catalogModel } from "@agentx/model-runtime/catalog";
 import { AlertEmailSchema, MAX_BUDGET_USD } from "../deploy/answer-schemas.js";
 import type { DeployPart } from "../deploy/parameters.js";
@@ -110,7 +110,7 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
   { key: "alerts.address", description: "where alarms go: an email address, or a PagerDuty or Opsgenie address (kept secret)", target: { kind: "settings", field: "alertAddress" }, parse: email("alerts.address") },
   { key: "alerts.slowTurnMinutes", description: "a turn slower than this many minutes raises the SlowTurns alarm", target: parameter("slack", "SlowTurnMinutes"), defaultValue: "5", parse: wholeNumber("alerts.slowTurnMinutes", 1, 60) },
   { key: "budget.monthlyUsd", description: "the monthly AWS budget in whole US dollars; 0 for none", target: parameter("control-plane", "BudgetMonthlyUsd"), defaultValue: "0", parse: wholeNumber("budget.monthlyUsd", 0, MAX_BUDGET_USD) },
-  { key: "budget.scope", description: "tag: costs tagged agentx:env for this environment; account: the whole account", target: parameter("control-plane", "BudgetScope"), defaultValue: "tag", parse: oneOf("budget.scope", ["tag", "account"]) },
+  { key: "budget.scope", description: `tag: costs tagged ${ENVIRONMENT_TAG_KEY} for this environment; account: the whole account`, target: parameter("control-plane", "BudgetScope"), defaultValue: "tag", parse: oneOf("budget.scope", ["tag", "account"]) },
   {
     key: "audit.lock", description: "production: audit records written from now on are locked for 3 years; trial: locked for 1 day. An install can move from trial to production, never back",
     target: parameter("control-plane", "AuditLockProfile"), parse: oneOf("audit.lock", ["production", "trial"]),
@@ -142,7 +142,7 @@ export const CONFIG_KEYS: readonly ConfigKey[] = [
 
 export function configKey(name: string): ConfigKey {
   const found = CONFIG_KEYS.find((entry) => entry.key === name);
-  if (found === undefined) throw agentXError("CONFIG_INVALID", `unknown config key ${name}; agentx config list shows every key`);
+  if (found === undefined) throw agentXError("CONFIG_INVALID", `unknown config key ${name}; rovara config list shows every key`);
   return found;
 }
 

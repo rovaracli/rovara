@@ -9,7 +9,7 @@
 # NO SSM, NO ROOT ON THE WORKER. Staging workers are not SSM-managed (their instance profile has no SSM permission, by design). Everything here is one of:
 #   - the Rovara API (propose, check, prove, a task on the escape project, the task's view, a cancel), with ONE bearer token read from a file (mode 600; never printed, never in an argument: curl reads the header from a file);
 #   - the staging guard (~/.local/share/rovara-tools/staging-aws.sh, account 944937319445, us-west-2) for READ-ONLY AWS calls: sts, ecr describe-images, logs filter-log-events. It creates nothing, deploys nothing, reads no secret;
-#   - the WORKER'S OWN SELF-REPORT in CloudWatch Logs (log group /agentx/<env>/worker): after every test-services run and at every worker start the worker logs ONE `test-services.report` line with fixed fields (leftover
+#   - the WORKER'S OWN SELF-REPORT in CloudWatch Logs (log group /rovara-cloud/<env>/worker): after every test-services run and at every worker start the worker logs ONE `test-services.report` line with fixed fields (leftover
 #     labelled containers and networks, run directory empty and tmpfs, working sandbox paused or not) and, at start, the facts root wrote at boot (metadata block, run-network walls, IPv6 drops, pre-pull, registry
 #     logout). See packages/worker/src/test-services-report.ts. No name, path or secret is in them. A run's outcome is completed | checks_failed | failed | cancelled.
 #   - the ESCAPE PROJECT (tests/fixtures/test-services-escape-project): a project whose tests try to get out of a sealed round and pass only if each attempt fails. It is five CHECKS, one per test file (see its README), and the
@@ -340,7 +340,7 @@ newid() { uuidgen | tr 'A-Z' 'a-z'; }
 ENV_PATH="/v1/app/projects/$ROVARA_STAGING_PROJECT/test-environment"
 
 # ---- the worker's self-report, read from CloudWatch Logs through the staging guard (read-only)
-LOG_GROUP="/agentx/$ENV_NAME/worker"
+LOG_GROUP="/rovara-cloud/$ENV_NAME/worker"
 # reports PHASE FROM_MS -> prints each `test-services.report` line of that phase since FROM_MS as one compact JSON object per line (oldest first) into $WORK/reports. Returns 1 (reason in $WORK/reports.err) when the read
 # failed or the answer was not JSON; returns 0 with an EMPTY file when the log simply has none (callers decide: no report is never a pass).
 reports() {

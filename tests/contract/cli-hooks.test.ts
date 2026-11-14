@@ -21,7 +21,7 @@ describe("agentx project hooks", () => {
     const none = await agentsCli({ [`GET ${BASE}`]: Response.json({ hooks: [] }) });
     expect(await none.run(["project", "hooks", "list", "web"])).toBe(0);
     expect(none.stdout()).toContain("has no event hooks");
-    expect(none.stdout()).toContain("agentx project hooks create web");
+    expect(none.stdout()).toContain("rovara project hooks create web");
   });
 
   it("creates a hook with the vendor's secret read from a file, and never prints that secret", async () => {

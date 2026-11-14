@@ -41,8 +41,8 @@ import {
   type RequalifyReader,
 } from "../../scripts/test-deploy-requalify.js";
 
-const ENV = "agentxlivetest123";
-const CONTROL_PLANE = `agentx-${ENV}-control-plane`;
+const ENV = "rovaralivetest";
+const CONTROL_PLANE = `rovara-cloud-${ENV}-control-plane`;
 const artifacts: BuiltArtifacts = { revision: "0123456789ab", outputDir: "/tmp/test-deploy-0123456789ab", bootStage2Sha256: "c".repeat(64) };
 const previous: StackParameters = { "control-plane": { OidcIssuer: "https://issuer.example", AdminValues: "admin" }, runtime: {} };
 const plan = (only: Parameters<typeof planTestDeploy>[0]["only"], requalifyInstalled?: boolean) => planTestDeploy({ env: ENV, only, artifacts, previous, ...(requalifyInstalled === undefined ? {} : { requalifyInstalled }) });
@@ -115,7 +115,7 @@ describe("the requalify-now unit", () => {
     // The ready check comes first, and the lock step is honest that the machine, not this step, takes the lock (AR-5 review M1).
     expect(text.indexOf("check-requalify-ready")).toBeLessThan(text.indexOf("check-requalify-lock"));
     expect(text).toContain("control-plane-code and the stack are current");
-    expect(text).toContain("agentx:requalify-managed=true");
+    expect(text).toContain("rovara-cloud:requalify-managed=true");
     expect(text).toContain("this step does not take the lock, the renewal machine's first step does");
     expect(text).toContain(REQUALIFY_NOW_PAYLOAD);
     expect(REQUALIFY_NOW_PAYLOAD).toBe('{"action":"due","force":true}');
@@ -457,7 +457,7 @@ describe("the requalify-schedule unit (AR-5 review I1)", () => {
 
   it("names the owner's order: stack update, control-plane-code, requalify-infra, tags, requalify-now, then the schedule", () => {
     const at = (needle: string) => REQUALIFY_DEPLOY_ORDER.indexOf(needle);
-    const order = ["Tier 3", "control-plane-code", "requalify-infra", "agentx:requalify-managed=true", "requalify-now", "requalify-schedule"].map(at);
+    const order = ["Tier 3", "control-plane-code", "requalify-infra", "rovara-cloud:requalify-managed=true", "requalify-now", "requalify-schedule"].map(at);
     expect(order.every((position) => position >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(REQUALIFY_DEPLOY_ORDER).toContain("DISABLED");
@@ -465,7 +465,7 @@ describe("the requalify-schedule unit (AR-5 review I1)", () => {
 });
 
 describe("readiness before a renewal starts", () => {
-  const TAGS = { DeploymentMode: "e2e-qualification", Environment: ENV, "agentx:requalify-managed": "true" };
+  const TAGS = { DeploymentMode: "e2e-qualification", Environment: ENV, "rovara-cloud:requalify-managed": "true" };
   const ready = { state: "read", instanceId: "i-0fcff78d50c71bc57", instanceState: "running", instanceTags: TAGS, volumes: [{ volumeId: "vol-02fd92eeeb0b1b1d4", tags: TAGS }] } as const;
   const finding = (kind: Finding["kind"], severity: Finding["severity"] = "error"): Finding => ({ kind, severity, subject: "X", label: "Broker", message: "m" });
 

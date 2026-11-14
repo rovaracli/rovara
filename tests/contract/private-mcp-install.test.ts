@@ -15,7 +15,7 @@ import {
 const context = (values: Record<string, unknown>) => (key: string): unknown => values[key];
 const KEYS = PRIVATE_MCP_CONTEXT_KEYS;
 const CERT = "arn:aws:acm:us-east-1:111111111111:certificate/0a1b2c3d-0000-1111-2222-333344445555";
-const TLS_SECRET = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/mcp-controller-tls-AbCdEf";
+const TLS_SECRET = "arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/ent/mcp-controller-tls-AbCdEf";
 
 describe("the private MCP context", () => {
   it("is empty, and adds nothing to the broker, when nothing is set (any edition)", () => {

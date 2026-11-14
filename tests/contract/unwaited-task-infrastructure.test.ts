@@ -28,7 +28,7 @@ const threadsTableId = (template: Template) => Object.keys(template.findResource
 const slackSecretId = (template: Template) => Object.keys(template.findResources("AWS::SecretsManager::Secret")).find((id) => id.startsWith("SlackSecret"))!;
 const actionsOf = (statements: Statement[]) => statements.flatMap((statement) => [statement.Action].flat());
 const backstopAlarms = (template: Template) => (Object.values(template.findResources("AWS::CloudWatch::Alarm")) as Alarm[])
-  .filter((alarm) => alarm.Properties.AlarmName === "agentx-staging-UnwaitedTaskFailures" || JSON.stringify(alarm.Properties).includes("ReconcilerUnwaitedTask"));
+  .filter((alarm) => alarm.Properties.AlarmName === "rovara-cloud-staging-UnwaitedTaskFailures" || JSON.stringify(alarm.Properties).includes("ReconcilerUnwaitedTask"));
 
 describe("the unwaited task backstop's infrastructure (#173)", () => {
   const named = Template.fromStack(new ControlPlaneStack(new App(), "UnwaitedControlPlane", { naming: environmentNaming("staging") }));
@@ -74,13 +74,13 @@ describe("the unwaited task backstop's infrastructure (#173)", () => {
     expect(alarms).toHaveLength(1);
     const alarm = alarms[0]!.Properties;
     expect(alarm).toMatchObject({
-      AlarmName: "agentx-staging-UnwaitedTaskFailures", EvaluationPeriods: 2, Threshold: 1,
+      AlarmName: "rovara-cloud-staging-UnwaitedTaskFailures", EvaluationPeriods: 2, Threshold: 1,
       ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
     });
     expect(alarm.AlarmActions).toHaveLength(1);
     const stats = (alarm.Metrics ?? []).filter((metric) => metric.MetricStat !== undefined).map((metric) => metric.MetricStat!);
     expect(stats.map((stat) => stat.Metric.MetricName).sort()).toEqual(["ReconcilerUnwaitedTaskFailures", "ReconcilerUnwaitedTaskReadFailures"]);
-    for (const stat of stats) expect(stat).toMatchObject({ Metric: { Namespace: "AgentX/staging" }, Period: 600, Stat: "Maximum" });
+    for (const stat of stats) expect(stat).toMatchObject({ Metric: { Namespace: "RovaraCloud/staging" }, Period: 600, Stat: "Maximum" });
     const expression = (alarm.Metrics ?? []).find((metric) => metric.Expression !== undefined)?.Expression;
     expect(expression).toMatch(/^FILL\(\w+, ?0\) \+ FILL\(\w+, ?0\)$/);
   });

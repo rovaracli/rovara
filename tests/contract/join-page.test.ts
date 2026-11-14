@@ -90,7 +90,7 @@ describe("GET /v1/auth/join", () => {
     expect(page.title).toBe("Join Acme on Rovara");
     expect(page.paragraphs).toEqual([
       "Maya Chen invited you to join Acme as a member.",
-      `Using the terminal? Run: agentx login --invite ${ISSUER}/join?invite=${token}`,
+      `Using the terminal? Run: rovara login --invite ${ISSUER}/join?invite=${token}`,
     ]);
     expect(page.labels).toEqual(["Join Acme"]);
     expect(page.hrefs).toEqual([`${ISSUER}/join/start?invite=${token}`]);
@@ -146,7 +146,7 @@ describe("GET /v1/auth/join", () => {
   });
 });
 
-describe("GET /v1/auth/join as JSON (agentx login --invite)", () => {
+describe("GET /v1/auth/join as JSON (rovara login --invite)", () => {
   const getJson = (h: Harness, path: string, accept = "application/json"): Promise<HttpResult> => h.http({ ...httpEvent("GET", path), headers: { accept } });
 
   it("answers an open invite with its organization and role, and nothing else", async () => {
@@ -216,7 +216,7 @@ describe("the join sign-in", () => {
     expect(done?.statusCode).toBe(200);
     expect(copy(done!)).toMatchObject({
       title: "You joined Acme",
-      paragraphs: ["You're now a member of Acme.", `Using the terminal? Run: agentx login ${API}`],
+      paragraphs: ["You're now a member of Acme.", `Using the terminal? Run: rovara login ${API}`],
     });
     expect(h.state.get(orgInviteKey(sha256Hex(token)))).toMatchObject({ acceptedBy: idOf(bea) });
     expect(h.state.get(orgInviteKey(sha256Hex(token)))?.acceptedAt).toBeDefined();

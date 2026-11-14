@@ -29,7 +29,7 @@ import {
   aws_sqs as sqs,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { AUDIT_EXPORT_FILE_LIFECYCLE_DAYS, AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_RETRY_ATTEMPTS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, auditIntakeQueueName, canonicalJson } from "@agentx/contracts";
+import { AUDIT_EXPORT_FILE_LIFECYCLE_DAYS, AUDIT_EXPORT_MAX_EVENT_AGE_SECONDS, AUDIT_EXPORT_RETRY_ATTEMPTS, AUDIT_EXPORT_TIMEOUT_SECONDS, AUDIT_GOVERNANCE_RETENTION_DAYS, AUDIT_INTAKE_MAX_RECEIVES, AUDIT_RETENTION_DAYS_DEFAULT, AUDIT_SEAL_INTERVAL_MINUTES, AUDIT_TSA_SPACING_MS, AUDIT_TSA_TIMEOUT_MS, auditIntakeQueueName, canonicalJson, RESOURCE_PREFIX } from "@agentx/contracts";
 import { BrokerNames } from "./broker-names.js";
 import type { AgentXNaming } from "./naming.js";
 import {
@@ -48,7 +48,7 @@ const BUCKET_NAME_MAX = 63;
 const ACCOUNT_ID_LENGTH = 12;
 
 /** Read by the retention aspect: a table with deletion protection cannot be deleted by a rolled-back first create. */
-const KEEP_ON_ROLLBACK_METADATA = "agentx:retain-on-create-rollback";
+const KEEP_ON_ROLLBACK_METADATA = "rovara-cloud:retain-on-create-rollback";
 
 export interface AuditBucketPolicyInputs {
   readonly partition: string;
@@ -70,7 +70,7 @@ interface PolicyStatementJson {
   readonly Condition?: Record<string, Record<string, string | string[]>>;
 }
 
-/** `agentx-<env>-audit-ledger-<account>-<region>`. */
+/** `rovara-cloud-<env>-audit-ledger-<account>-<region>`. */
 export function auditLedgerBucketName(inputs: Pick<AuditBucketPolicyInputs, "resourcePrefix" | "account" | "region">): string {
   return `${inputs.resourcePrefix}-audit-ledger-${inputs.account}-${inputs.region}`;
 }
@@ -249,7 +249,7 @@ export class AuditLedger extends Construct {
   readonly trialCondition: CfnCondition;
   /**
    * SHA-256 (hex) of the canonical JSON of the bucket policy document with `{{partition}}`, `{{account}}`, `{{region}}` and
-   * `agentx-{{env}}-` in place of the deployment's values, for each lock profile: the policy differs between them (operator
+   * `agentx-{{env}}-` (a fixed hash placeholder, shared with the broker's lock check; it replaces `rovara-cloud-<env>-`) in place of the deployment's values, for each lock profile: the policy differs between them (operator
    * exceptions, retention days), so there is one hash per profile. It does not depend on the environment's name.
    */
   readonly bucketPolicySha256ByProfile: Readonly<Record<AuditLockProfile, string>>;
@@ -481,10 +481,10 @@ export class AuditLedger extends Construct {
 
     // The same documents with placeholders where the deployment's values go; resolving them through CDK gives the
     // serialization CloudFormation receives, so the anchor can compare against what the bucket reports. The environment's
-    // name is a placeholder too (`agentx-{{env}}-`): a published template is synthesized for a placeholder name and rendered
+    // name is a placeholder too (`rovara-cloud-<env>-` becomes the fixed text `agentx-{{env}}-`, which the broker's lock check writes the same way): a published template is synthesized for a placeholder name and rendered
     // by text replacement, which cannot recompute a hash, so the hash must not depend on the name.
     const hashOf = (profile: AuditLockProfileSettings): string => createHash("sha256")
-      .update(canonicalJson(stack.resolve(documentOf({ partition: "{{partition}}", account: "{{account}}", region: "{{region}}" }, profile).toJSON())).replaceAll(`agentx-${env}-`, "agentx-{{env}}-"))
+      .update(canonicalJson(stack.resolve(documentOf({ partition: "{{partition}}", account: "{{account}}", region: "{{region}}" }, profile).toJSON())).replaceAll(`${RESOURCE_PREFIX}-${env}-`, "agentx-{{env}}-"))
       .digest("hex");
     this.bucketPolicySha256ByProfile = { production: hashOf(this.lockProfiles.production), trial: hashOf(this.lockProfiles.trial) };
     this.bucketPolicySha256 = Fn.conditionIf(this.trialCondition.logicalId, this.bucketPolicySha256ByProfile.trial, this.bucketPolicySha256ByProfile.production).toString() as TemplateTokenString;

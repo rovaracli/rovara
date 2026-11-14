@@ -516,7 +516,7 @@ export async function undoToProvenSetup(deps: DeveloperRouteDependencies, caller
   if (latest === undefined) throw agentXError("PROJECT_NOT_FOUND", PROJECT_NOT_FOUND_IN_APP);
   const current = latest.definition;
   if (current.revision !== body.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
-  if (current.e2e !== undefined || latest.setupApproval !== undefined) throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register");
+  if (current.e2e !== undefined || latest.setupApproval !== undefined) throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with rovara admin project register");
   const proven = proof.proven;
   if (sameProofLists(proven, listsOfDefinition(current))) return { project: await getAppProjectWithProof(deps, caller, rawName), warnings: [] };
   const fieldsBack: ProjectOriginField[] = ["setup", "readiness", "devcontainer"];

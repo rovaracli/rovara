@@ -98,7 +98,7 @@ export const REFRESH_MS = 15_000;
 
 /** The page's module. Plain browser JavaScript held as text, not TypeScript: nothing here is
  * compiled, imported by Node, or type-checked with the rest of the CLI. */
-export const WORKSPACES_JS = `// AgentX workspaces. Served from 127.0.0.1 by \`agentx workspaces\`; loopback only.
+export const WORKSPACES_JS = `// AgentX workspaces. Served from 127.0.0.1 by \`rovara workspaces\`; loopback only.
 const token = new URL(import.meta.url).searchParams.get(${JSON.stringify(UI_TOKEN_QUERY)}) ?? "";
 const TOKEN_HEADER = ${JSON.stringify(UI_TOKEN_HEADER)};
 const REFRESH_MS = ${REFRESH_MS};
@@ -206,7 +206,7 @@ function load() {
       }
     })
     .catch((error) => {
-      byId("error").textContent = "could not reach agentx on this computer: " + error;
+      byId("error").textContent = "could not reach rovara on this computer: " + error;
       show("error", true);
     })
     .finally(() => { button.disabled = false; });

@@ -9,7 +9,7 @@ import { SECRET_ARN } from "../support/e2e-model-fixtures.js";
 
 // Task 4.3a, test case 2 (Ruling DB-7): the worker re-derives the route an admission names from its own settings and holds it to the admission's revision.
 
-const OTHER_SECRET = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/other-key-ZyXwVu";
+const OTHER_SECRET = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/other-key-ZyXwVu";
 const bedrockEnv = { AGENTX_MODEL_PROVIDER: "amazon-bedrock", AWS_REGION: "us-east-1" };
 const anthropicEnv = { AGENTX_MODEL_PROVIDER: "anthropic", AGENTX_ANTHROPIC_SECRET_ARN: SECRET_ARN, AWS_REGION: "us-east-1" };
 
@@ -92,7 +92,7 @@ describe("resolveE2EAgentRouteForAdmission", () => {
 
 describe("the broker and the worker derive the same route", () => {
   const parameters = (values: Record<string, string>) => async (names: readonly string[]) => new Map(names.flatMap((name) => (values[name] === undefined ? [] : [[name, values[name]] as [string, string]])));
-  const prefix = "/agentx/test/";
+  const prefix = "/rovara-cloud/test/";
 
   it("byte-equal in parsed form, for Bedrock, a keyed provider and OpenRouter with an allowlist", async () => {
     const settings: Array<{ environment: NodeJS.ProcessEnv; values: Record<string, string> }> = [

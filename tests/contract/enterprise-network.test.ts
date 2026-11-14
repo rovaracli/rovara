@@ -21,6 +21,8 @@ skipLambdaBundling();
 if (!existsSync("packages/web/dist/app/assets")) mkdirSync("packages/web/dist/app/assets", { recursive: true });
 const VPC = AGENTX_PRODUCTION_VPC_CIDR;
 const APPROVED = "10.99.0.0/16";
+// 0.7.0: the base templates were regenerated with the rovara-cloud names (rovara-cloud-<env>-..., the rovara-cloud:* tag keys, the
+// RovaraCloud Application tag); a script checked that they equal fd7cd3c35's with only those names changed and tags in key order.
 const BASE_TEMPLATES = JSON.parse(readFileSync(join(import.meta.dirname, "..", "fixtures", "enterprise-foundation-base-templates.json"), "utf8")) as Record<string, unknown>;
 
 type Resource = { Type: string; Properties: Record<string, unknown> };
@@ -183,7 +185,7 @@ describe("the Enterprise edition's network", () => {
 
   it("records the edition, so a redeploy as another edition can be refused", () => {
     const parameter = resourcesOf(template, "AWS::SSM::Parameter");
-    expect(parameter.map(([, resource]) => [resource.Properties.Name, resource.Properties.Value])).toEqual([["/agentx/ent/edition", "enterprise"]]);
+    expect(parameter.map(([, resource]) => [resource.Properties.Name, resource.Properties.Value])).toEqual([["/rovara-cloud/ent/edition", "enterprise"]]);
     expect(resourcesOf(foundation({ env: "staging", cloud: true }), "AWS::SSM::Parameter")).toEqual([]);
   });
 

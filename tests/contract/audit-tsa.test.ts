@@ -273,10 +273,10 @@ describe("loading the settings from the function's environment", () => {
   it("custom reads exactly the configured roots parameter, once", async () => {
     const read = vi.fn((name: string) => Promise.resolve(name === "" ? "" : pkiOne.root.x509.toString()));
     const deps = await loadTsaDeps({
-      AUDIT_TSA_KIND: "custom", AUDIT_TSA_URLS: "https://tsa.example.test/ts", AUDIT_TSA_ROOTS_PARAMETER: "/agentx/acme/tsa-roots",
+      AUDIT_TSA_KIND: "custom", AUDIT_TSA_URLS: "https://tsa.example.test/ts", AUDIT_TSA_ROOTS_PARAMETER: "/rovara-cloud/acme/tsa-roots",
       AUDIT_TSA_TIMEOUT_MS: "10000", AUDIT_TSA_SPACING_MS: "15000",
     }, { readParameter: read, fetch: never, log });
-    expect(read.mock.calls).toStrictEqual([["/agentx/acme/tsa-roots"]]);
+    expect(read.mock.calls).toStrictEqual([["/rovara-cloud/acme/tsa-roots"]]);
     expect(deps.settings).toMatchObject({ kind: "custom", targets: [{ label: "custom-1", url: "https://tsa.example.test/ts" }] });
   });
 

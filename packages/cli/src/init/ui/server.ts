@@ -151,7 +151,7 @@ export async function startWizardServer(input: { hub: WizardHub; port?: number; 
       response.writeHead(status, { ...CALLBACK_HEADERS, "content-security-policy": csp ?? "", "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(body) });
       response.end(body);
     };
-    if (!tokensMatch(url.searchParams.get("state") ?? undefined, route.state)) return answer(400, "This page is from a different agentx init run.");
+    if (!tokensMatch(url.searchParams.get("state") ?? undefined, route.state)) return answer(400, "This page is from a different rovara init run.");
     const code = url.searchParams.get("code");
     if (code === null || code === "") return answer(400, "GitHub sent no code. Go back to the Install AgentX tab.");
     manifest = undefined;
@@ -248,13 +248,13 @@ export async function startWizardServer(input: { hub: WizardHub; port?: number; 
 
   await new Promise<void>((resolvePromise, reject) => {
     const onError = (error: NodeJS.ErrnoException) => {
-      reject(agentXError("CONFIG_INVALID", `could not open a local port on 127.0.0.1 for the install wizard (${error.code ?? error.name}); check that no firewall or security tool blocks local ports, or run agentx init --no-ui`));
+      reject(agentXError("CONFIG_INVALID", `could not open a local port on 127.0.0.1 for the install wizard (${error.code ?? error.name}); check that no firewall or security tool blocks local ports, or run rovara init --no-ui`));
     };
     server.once("error", onError);
     server.listen(input.port ?? 0, "127.0.0.1", () => { server.removeListener("error", onError); resolvePromise(); });
   });
   const address = server.address();
-  if (address === null || typeof address === "string") throw agentXError("CONFIG_INVALID", "the install wizard's listener did not bind a TCP port; run agentx init --no-ui");
+  if (address === null || typeof address === "string") throw agentXError("CONFIG_INVALID", "the install wizard's listener did not bind a TCP port; run rovara init --no-ui");
   const { port } = address;
   expectedOrigin = `http://127.0.0.1:${port}`;
   expectedHost = `127.0.0.1:${port}`;
@@ -274,7 +274,7 @@ export async function startWizardServer(input: { hub: WizardHub; port?: number; 
       code.catch(() => undefined);
       const timer = setTimeout(() => {
         if (manifest?.timer === timer) manifest = undefined;
-        rejectCode(agentXError("CONFIG_INVALID", `no GitHub App was created within ${Math.round(next.timeoutMs / 60_000)} minutes; run agentx init again`));
+        rejectCode(agentXError("CONFIG_INVALID", `no GitHub App was created within ${Math.round(next.timeoutMs / 60_000)} minutes; run rovara init again`));
       }, next.timeoutMs);
       timer.unref();
       manifest = { state: next.state, page: next.page, resolve: resolveCode, reject: rejectCode, timer };

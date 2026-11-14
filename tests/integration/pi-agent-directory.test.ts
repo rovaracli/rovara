@@ -16,7 +16,7 @@ import { runTaskInvocation } from "../../packages/worker/src/run-task.js";
 import type { DockerCli } from "../../packages/worker/src/swebench/containers.js";
 
 const run = promisify(execFile);
-const IMAGE = `123456789012.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@sha256:${"d".repeat(64)}`;
+const IMAGE = `123456789012.dkr.ecr.us-west-2.amazonaws.com/rovara-cloud-staging/worker@sha256:${"d".repeat(64)}`;
 const UP_OUTPUT = "{\"outcome\":\"success\",\"containerId\":\"f832494aef96\",\"remoteUser\":\"node\",\"remoteWorkspaceFolder\":\"/workspaces/sample\"}";
 
 const cleanup: string[] = [];

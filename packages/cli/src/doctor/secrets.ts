@@ -1,6 +1,6 @@
 // FR-050: that secrets exist and have the right shape. Values are read only to judge their shape;
 // no message here is built from a value.
-import { KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, keyedProviderSecretName, type KeyedModelProvider } from "@agentx/contracts";
+import { KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, keyedProviderSecretName, type KeyedModelProvider, RESOURCE_PREFIX } from "@agentx/contracts";
 import { providerKeyProblem } from "@agentx/model-runtime/config";
 import { providerSecretArn } from "../deploy/answer-schemas.js";
 import { githubAppSecretName, parseAppSecret } from "../init/github-app.js";
@@ -31,7 +31,7 @@ function slackShape(value: string): string | undefined {
 }
 
 /** The secret init creates for a keyed provider, by its ARN: Secrets Manager adds a six-character
- * suffix to the name, and anchoring on it keeps agentx/<env>/openrouter-mine from passing for it. */
+ * suffix to the name, and anchoring on it keeps rovara-cloud/<env>/openrouter-mine from passing for it. */
 const ownProviderSecret = (env: string, provider: KeyedModelProvider) => new RegExp(`:secret:${keyedProviderSecretName(env, provider)}-[A-Za-z0-9]{6}$`);
 
 export async function secretChecks(context: DoctorContext): Promise<DoctorCheck[]> {
@@ -39,11 +39,11 @@ export async function secretChecks(context: DoctorContext): Promise<DoctorCheck[
   const put = (name: string, shape: string) => `aws secretsmanager put-secret-value --secret-id ${name} --secret-string file://${shape} --region ${settings.region}`;
   const rules: SecretRule[] = [
     {
-      name: `agentx/${env}/callback-signing-key`,
+      name: `${RESOURCE_PREFIX}/${env}/callback-signing-key`,
       shape: (value) => (value.length >= 32 ? undefined : "is shorter than the 32 characters the control plane needs"),
-      fix: `run agentx --env ${env} upgrade: it makes a new key and redeploys the control plane with it`,
+      fix: `run rovara --env ${env} upgrade: it makes a new key and redeploys the control plane with it`,
       // Upgrade keeps any key that exists (callbackSigningKey), so a short one must go first.
-      shapeFix: `with admin credentials, delete it (aws secretsmanager delete-secret --secret-id agentx/${env}/callback-signing-key --force-delete-without-recovery --region ${settings.region}), then run agentx --env ${env} upgrade: it makes a new key and redeploys the control plane with it`,
+      shapeFix: `with admin credentials, delete it (aws secretsmanager delete-secret --secret-id ${RESOURCE_PREFIX}/${env}/callback-signing-key --force-delete-without-recovery --region ${settings.region}), then run rovara --env ${env} upgrade: it makes a new key and redeploys the control plane with it`,
     },
     {
       name: slackSecretName(env),
@@ -60,7 +60,7 @@ export async function secretChecks(context: DoctorContext): Promise<DoctorCheck[
     rules.push({
       name: answers.alert.secretName,
       shape: (value) => { try { checkAlertWebhook(value.trim()); return undefined; } catch { return "is not an https:// address"; } },
-      fix: `agentx --env ${env} config set alerts.address --value-file <file holding the PagerDuty or Opsgenie address>`,
+      fix: `rovara --env ${env} config set alerts.address --value-file <file holding the PagerDuty or Opsgenie address>`,
     });
   }
   const checks: DoctorCheck[] = [];

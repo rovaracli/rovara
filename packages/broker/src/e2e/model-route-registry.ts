@@ -111,7 +111,7 @@ export async function readE2EModelRouteShape(store: E2EModelRouteStore, routeId:
 }
 
 /**
- * Reads the installation's worker model settings from the SSM parameters under its settings prefix (`/agentx/<env>/`): the provider, a keyed provider's secret ARN, the
+ * Reads the installation's worker model settings from the SSM parameters under its settings prefix (`/rovara-cloud/<env>/`): the provider, a keyed provider's secret ARN, the
  * OpenRouter allowlist and the AI navigation model the installation chose (`worker-e2e-agent-model`; `default`, `none` or absent is Rovara's recommendation). They hold an id and an
  * ARN, never a secret. A value that is absent or `none` is not configured. `read` returns the values found by parameter name. `options.readShape` answers the request shape the
  * driving test recorded for a model; with it, the installation carries `payloadShape: "minimal"` when that is the tested shape, so setup approval derives exactly what was tested.

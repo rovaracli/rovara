@@ -343,7 +343,7 @@ export const REQUALIFY_DEPLOY_ORDER = [
   "1. Tier 3 and the control-plane stack update (AR-4 grants, the new alarm, environment variables); the owner runs the guarded change set.",
   "2. control-plane-code (the renewal's Lambda is left out until it is installed).",
   "3. requalify-infra (Add only; the daily schedule is created DISABLED).",
-  "4. The owner tags the current runner and its workspace volume: DeploymentMode=e2e-qualification, Environment=<env>, agentx:requalify-managed=true.",
+  "4. The owner tags the current runner and its workspace volume: DeploymentMode=e2e-qualification, Environment=<env>, rovara-cloud:requalify-managed=true.",
   "5. requalify-now, once, and the live check (new runner registered, generation +1, old runner and volume gone, --check clean).",
   "6. requalify-schedule, to enable the daily check.",
 ].join("\n");

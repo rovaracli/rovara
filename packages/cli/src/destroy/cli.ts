@@ -1,4 +1,4 @@
-// The `agentx destroy` command (FR-055), kept out of main.ts. It needs admin credentials (question 7)
+// The `rovara destroy` command (FR-055), kept out of main.ts. It needs admin credentials (question 7)
 // and an explicit --env, and it reads each typed confirmation from the terminal or, when stdin is not
 // a terminal, from piped stdin (question 11). No flag skips the typed name.
 import { createInterface } from "node:readline";
@@ -67,14 +67,14 @@ export function registerDestroyCommand(program: Command, context: DestroyCommand
     .option("--keep-data", "keep the tables, buckets, secrets, Cognito user pool and KMS keys; remove the rest", false)
     .action(async (options: { region?: string; keepData: boolean }, command: Command) => {
       if (command.getOptionValueSourceWithGlobals("env") !== "cli") {
-        throw agentXError("CONFIG_INVALID", "agentx destroy requires an explicit --env, so it can never remove production by default; run agentx --env <name> destroy");
+        throw agentXError("CONFIG_INVALID", "rovara destroy requires an explicit --env, so it can never remove production by default; run rovara --env <name> destroy");
       }
       const globals = command.optsWithGlobals<{ env: string; json: boolean; configDir: string }>();
       const overrides = context.overrides ?? {};
       // Every client, the settings store and the plan use this one region, so runDestroy's check
       // against the environment's own region covers everything it touches.
       const region = options.region ?? overrides.region ?? await configuredRegion();
-      if (region === undefined) throw agentXError("CONFIG_INVALID", "agentx destroy could not find an AWS region in your configuration; pass --region <the environment's region>");
+      if (region === undefined) throw agentXError("CONFIG_INVALID", "rovara destroy could not find an AWS region in your configuration; pass --region <the environment's region>");
       const aws = { region };
       const write = overrides.write ?? ((line: string) => { context.stderr.write(`${line}\n`); });
       const reader = overrides.confirmLine === undefined ? lineReader({ stdin: context.stdin, stderr: context.stderr }) : undefined;

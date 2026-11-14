@@ -1,4 +1,4 @@
-// Spec 025 FR-026: `agentx mcp`, a stdio MCP server for the developer signed in on this computer.
+// Spec 025 FR-026: `rovara mcp`, a stdio MCP server for the developer signed in on this computer.
 // stdout carries only MCP messages; logs go to stderr and never hold a token.
 import { CLI_PACKAGE_NAME } from "@agentx/contracts";
 import { randomUUID } from "node:crypto";
@@ -25,7 +25,7 @@ export interface McpServeDeps extends DeveloperSessionDeps {
    */
   adminSignInExpiry?(env: string | undefined): Promise<{ env: string; expiresAt: number } | undefined>;
   /**
-   * Owner decision 2026-10-02 (#218 follow-up): how this `agentx mcp` process was launched, so its
+   * Owner decision 2026-10-02 (#218 follow-up): how this `rovara mcp` process was launched, so its
    * admin sign-in notices show the command the way this computer actually runs it. Defaults to
    * `currentCliInvocation()`, for tests only.
    */
@@ -77,7 +77,7 @@ export function agentxMcpServer(deps: McpServeDeps): McpServer {
   // One checker for the server's life, outside the per-call context, so its 10-minute cache holds.
   const compatibility = compatibilityChecker(client, { now });
   const log = stderrLog(deps);
-  // Owner decision 2026-10-02: the command these notices suggest matches how this `agentx mcp`
+  // Owner decision 2026-10-02: the command these notices suggest matches how this `rovara mcp`
   // process itself was launched (bare, or through npx), the same helper the install ready screen uses.
   const invocation = deps.cliInvocation ?? currentCliInvocation();
   const commandFor = (args: string): string => cliCommandLine(invocation, args);

@@ -1,5 +1,5 @@
-// Spec 025 C25: `agentx admin task share-mode`, a person typing an admin command (D12: no
-// confirmation beyond the admin sign-in, like every other `agentx admin` command).
+// Spec 025 C25: `rovara admin task share-mode`, a person typing an admin command (D12: no
+// confirmation beyond the admin sign-in, like every other `rovara admin` command).
 import { randomUUID } from "node:crypto";
 import { adminResponseBody } from "./http.js";
 

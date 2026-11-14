@@ -1,4 +1,4 @@
-// Spec 040 phase 3: each finishing step on the install page. The steps are the ones agentx init
+// Spec 040 phase 3: each finishing step on the install page. The steps are the ones rovara init
 // already runs (phase 15d2); these tests check what each shows on the page, and that a wait that
 // fails can be tried again there, while the terminal path stops exactly as it did.
 import { rm } from "node:fs/promises";
@@ -18,7 +18,7 @@ let context: TestInitContext | undefined;
 afterEach(async () => { if (context !== undefined) await rm(context.home, { recursive: true, force: true }); context = undefined; });
 const page = () => { const cards: WizardCard[] = []; return { cards, card: (card: WizardCard) => { cards.push(card); } }; };
 const session = { controlPlaneUrl: CONTROL_PLANE, accessToken: "t" };
-const TIMED_OUT = agentXError("OPERATION_INTERRUPTED", "the AgentX sign-in did not finish within 10 minutes; run agentx init again and finish signing in as the admin user in the browser");
+const TIMED_OUT = agentXError("OPERATION_INTERRUPTED", "the AgentX sign-in did not finish within 10 minutes; run rovara init again and finish signing in as the admin user in the browser");
 
 describe("the admin user on the page (FR-050)", () => {
   it("shows the new admin user and the sign-in wait, then who signed in", async () => {
@@ -63,7 +63,7 @@ describe("the admin user on the page (FR-050)", () => {
     await adminUserStep().run(context, progressHandle());
     expect(sessions).toBe(2);
     expect((context.prompter as ReturnType<typeof scriptedPrompter>).asked).toEqual(["Your email address, for your AgentX admin user", "Sign in again?"]);
-    expect(surface.cards.find((card) => card.status === "failed")?.lines[0]).toBe("the AgentX sign-in did not finish within 10 minutes; run agentx init again and finish signing in as the admin user in the browser");
+    expect(surface.cards.find((card) => card.status === "failed")?.lines[0]).toBe("the AgentX sign-in did not finish within 10 minutes; run rovara init again and finish signing in as the admin user in the browser");
     expect(surface.cards.map((card) => [card.id, card.status])).toEqual([["admin", "waiting"], ["admin", "failed"], ["admin", "waiting"], ["admin", "ok"]]);
   });
 
@@ -171,7 +171,7 @@ describe("the first project on the page, resumed (M6)", () => {
 });
 
 describe("the first project's channel wait on the page", () => {
-  const slackSecrets = () => memoryInitSecrets({ "agentx/staging/slack": JSON.stringify({ botToken: TEST_BOT_TOKEN, signingSecret: TEST_SIGNING_SECRET }) });
+  const slackSecrets = () => memoryInitSecrets({ "rovara-cloud/staging/slack": JSON.stringify({ botToken: TEST_BOT_TOKEN, signingSecret: TEST_SIGNING_SECRET }) });
   const recordedProject = () => progressHandle({
     ...emptyProgress("staging", T0),
     slack: { appId: "A0APP00001", teamId: "T0123456789", botUserId: "U0BOT00001" },
@@ -254,7 +254,7 @@ describe("the alerts on the page", () => {
     expect(surface.cards[1]?.details).toEqual([problemText(failure)]);
   });
 
-  it("the terminal path still stops and says to run agentx init again when nobody has confirmed", async () => {
+  it("the terminal path still stops and says to run rovara init again when nobody has confirmed", async () => {
     const alerts = fakeAlerts({ confirmAfterPolls: 1_000_000, budgetUsd: 100 });
     context = initContext({ answers, prompter: scriptedPrompter([]), setup: setupFor(alerts) });
     await writeEnvironmentSettings(context.store, STAGING_SETTINGS);
@@ -331,6 +331,6 @@ describe("the test reply on the page (FR-051)", () => {
     const plane = fakeControlPlane();
     plane.turns = [turn({ subject: SUBJECT, receivedAt: new Date(T0 + 2000).toISOString(), disposition: "error" })];
     context = initContext({ setup: setupServices({ fetch: plane.fetch }), adminSession: async () => session });
-    await expect(e2eStep().run(context, progress())).rejects.toThrow("but the turn ended as error; see agentx --env staging admin turns export --since 15m, fix it, then run agentx --env staging init again");
+    await expect(e2eStep().run(context, progress())).rejects.toThrow("but the turn ended as error; see rovara --env staging admin turns export --since 15m, fix it, then run rovara --env staging init again");
   });
 });

@@ -7,12 +7,12 @@ import { e2eModelCheckRunnerKey } from "../../packages/broker/src/e2e/model-rout
 import { e2eRegisteredRuntimeKey } from "../../packages/broker/src/aws/e2e-runtime-readiness.js";
 import type { RequalifyStepsDependencies } from "../../packages/broker/src/aws/runtime-requalify-steps.js";
 
-export const ENV = "agentxlivetest123";
+export const ENV = "rovaralivetest";
 export const CATALOG = "feature-catalog-1";
 export const ROLE_ID = "AROAABCDEFGHIJKLMNOP";
-export const ROLE_ARN = `arn:aws:iam::111122223333:role/agentx/${ENV}/worker`;
-export const WORKER_IMAGE = `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker@sha256:${"a".repeat(64)}`;
-export const EXECUTOR_IMAGE = `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/executor@sha256:${"b".repeat(64)}`;
+export const ROLE_ARN = `arn:aws:iam::111122223333:role/rovara-cloud/${ENV}/worker`;
+export const WORKER_IMAGE = `111122223333.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/worker@sha256:${"a".repeat(64)}`;
+export const EXECUTOR_IMAGE = `111122223333.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/executor@sha256:${"b".repeat(64)}`;
 export const SECRET = "challenge-secret-9f2c7a1d44b0";
 export const BINDING: Ec2RuntimeBinding = { deploymentMode: "ec2-ebs", launchTemplateId: "lt-0123456789abcdef0", subnets: [{ availabilityZone: "us-east-1a", subnetId: "subnet-0aaaaaaaaaaaaaaaa" }], volumeSizeGiB: 20, volumeType: "gp3" };
 const HOUR = 3_600_000;
@@ -52,7 +52,7 @@ export class FakeCloud {
 
   constructor() {
     for (const [name, value] of Object.entries({ "worker-image": WORKER_IMAGE, "worker-executor-image": EXECUTOR_IMAGE, "worker-model-provider": "amazon-bedrock", "worker-model-id": "model-1", "worker-prompt-cache-retention": "short", "worker-boot-stage2-sha256": "b".repeat(64) })) {
-      this.ssm.set(`/agentx/${ENV}/${name}`, value);
+      this.ssm.set(`/rovara-cloud/${ENV}/${name}`, value);
     }
     this.ssm.set("/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64", "ami-0abcdef1234567890");
   }
@@ -66,7 +66,7 @@ export class FakeCloud {
     const id = `i-${hex(this.counter++)}`;
     const rootId = `vol-${hex(this.counter++)}`;
     const volumeId = `vol-${hex(this.counter++)}`;
-    const tags: Record<string, string> = { DeploymentMode: "e2e-qualification", Environment: options.environment ?? ENV, ...(options.managed === false ? {} : { "agentx:requalify-managed": "true" }), ...(options.runId ? { "agentx:qualification-run": options.runId } : {}) };
+    const tags: Record<string, string> = { DeploymentMode: "e2e-qualification", Environment: options.environment ?? ENV, ...(options.managed === false ? {} : { "rovara-cloud:requalify-managed": "true" }), ...(options.runId ? { "rovara-cloud:qualification-run": options.runId } : {}) };
     const instance: FakeInstance = { id, state: options.state ?? "running", tags, ip: `10.0.0.${this.counter}`, volumes: [rootId, volumeId], polls: 0 };
     this.instances.set(id, instance);
     this.volumes.set(rootId, { id: rootId, state: "in-use", tags: {}, attachedTo: id });
@@ -255,7 +255,7 @@ export class FakeCloud {
         const instance = this.instances.get(instanceId);
         return instance === undefined ? undefined : { instanceId, state: instance.state, privateIp: instance.ip, tags: instance.tags };
       },
-      config: { workerRoleArn: ROLE_ARN, workerSettingsPrefix: `/agentx/${ENV}/`, amiParameterName: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64", controlPlaneUrl: "https://cp.example", logGroupName: "/agentx/worker",
+      config: { workerRoleArn: ROLE_ARN, workerSettingsPrefix: `/rovara-cloud/${ENV}/`, amiParameterName: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64", controlPlaneUrl: "https://cp.example", logGroupName: "/agentx/worker",
         operatorTopicArn: "arn:aws:sns:us-east-1:111122223333:alerts", metricsNamespace: "AgentX", stateMachineArn: "arn:aws:states:us-east-1:111122223333:stateMachine:renew" },
       ec2: this.ec2 as never, ssm: this.ssmClient as never, iam: this.iam as never, sns: this.sns_ as never, cloudwatch: this.cloudwatch as never, sfn: this.sfn as never,
       drain: { activeWork: async () => { if (this.drainReadFails) throw Object.assign(new Error("User: arn:aws:sts::123456789012:assumed-role/x is not authorized to perform: dynamodb:Query"), { name: "AccessDeniedException" }); return this.activeWork; } },

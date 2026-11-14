@@ -7,7 +7,7 @@ import { HEALTH_ALARM_CONDITIONAL_SUFFIXES, HEALTH_ALARM_SUFFIXES } from "@agent
 import { healthProbes, type HealthProbeInput } from "../../packages/broker/src/aws/health-probes.js";
 import { createAdminReadBroker } from "../support/admin-read-broker.js";
 
-const QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/111111111111/agentx-live25d-planted-queue";
+const QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/111111111111/rovara-cloud-live25d-planted-queue";
 
 function fakes(options: { pages?: DescribeAlarmsCommandOutput[]; queues?: Record<string, GetQueueAttributesCommandOutput | Error> } = {}) {
   const alarmCalls: DescribeAlarmsCommand["input"][] = [];
@@ -52,47 +52,47 @@ describe("the broker's production health probes (A13)", () => {
   });
 
   it("asks for every alarm a named environment can create, by exact name under the prefix, never by prefix (issue 206)", async () => {
-    const { input, alarmCalls } = fakes({ pages: [{ $metadata: {}, MetricAlarms: [{ AlarmName: "agentx-live25d-SlackDeadLetters", StateValue: "OK" }] }] });
-    const probes = healthProbes({ ...input, alarmPrefix: "agentx-live25d-" });
+    const { input, alarmCalls } = fakes({ pages: [{ $metadata: {}, MetricAlarms: [{ AlarmName: "rovara-cloud-live25d-SlackDeadLetters", StateValue: "OK" }] }] });
+    const probes = healthProbes({ ...input, alarmPrefix: "rovara-cloud-live25d-" });
     expect(alarmCalls).toEqual([]);
     // Every other listed alarm is reported missing, except the conditional ones (Bedrock-only, and the automatic renewal's).
     expect(await probes.alarms?.()).toStrictEqual([
-      { name: "agentx-live25d-SlackDeadLetters", state: "OK" },
+      { name: "rovara-cloud-live25d-SlackDeadLetters", state: "OK" },
       ...HEALTH_ALARM_SUFFIXES.filter((suffix) => !["SlackDeadLetters", ...HEALTH_ALARM_CONDITIONAL_SUFFIXES].includes(suffix))
-        .map((suffix) => ({ name: `agentx-live25d-${suffix}`, state: "MISSING" })),
+        .map((suffix) => ({ name: `rovara-cloud-live25d-${suffix}`, state: "MISSING" })),
     ]);
     // A prefix listing is authorized against *, which the broker is not granted; named alarms are
-    // authorized against their own ARNs, which its agentx-<env>-* grant covers.
-    expect(alarmCalls).toStrictEqual([{ AlarmNames: HEALTH_ALARM_SUFFIXES.map((suffix) => `agentx-live25d-${suffix}`), AlarmTypes: ["MetricAlarm"], MaxRecords: 100 }]);
+    // authorized against their own ARNs, which its rovara-cloud-<env>-* grant covers.
+    expect(alarmCalls).toStrictEqual([{ AlarmNames: HEALTH_ALARM_SUFFIXES.map((suffix) => `rovara-cloud-live25d-${suffix}`), AlarmTypes: ["MetricAlarm"], MaxRecords: 100 }]);
   });
 
   it("reads every page of the named metric alarms, only when asked (issue 206)", async () => {
     const { input, alarmCalls } = fakes({ pages: [
-      { $metadata: {}, MetricAlarms: [{ AlarmName: "agentx-live25d-A", StateValue: "OK" }], NextToken: "page-2" },
-      { $metadata: {}, MetricAlarms: [{ AlarmName: "agentx-live25d-B", StateValue: "ALARM" }, {}] },
+      { $metadata: {}, MetricAlarms: [{ AlarmName: "rovara-cloud-live25d-A", StateValue: "OK" }], NextToken: "page-2" },
+      { $metadata: {}, MetricAlarms: [{ AlarmName: "rovara-cloud-live25d-B", StateValue: "ALARM" }, {}] },
     ] });
-    const probes = healthProbes({ ...input, alarmPrefix: "agentx-live25d-", alarmSuffixes: ["A", "B"] });
+    const probes = healthProbes({ ...input, alarmPrefix: "rovara-cloud-live25d-", alarmSuffixes: ["A", "B"] });
     expect(alarmCalls).toEqual([]);
     expect(await probes.alarms?.()).toEqual([
-      { name: "agentx-live25d-A", state: "OK" },
-      { name: "agentx-live25d-B", state: "ALARM" },
+      { name: "rovara-cloud-live25d-A", state: "OK" },
+      { name: "rovara-cloud-live25d-B", state: "ALARM" },
       { name: "", state: "INSUFFICIENT_DATA" },
     ]);
     expect(alarmCalls).toStrictEqual([
-      { AlarmNames: ["agentx-live25d-A", "agentx-live25d-B"], AlarmTypes: ["MetricAlarm"], MaxRecords: 100 },
-      { AlarmNames: ["agentx-live25d-A", "agentx-live25d-B"], AlarmTypes: ["MetricAlarm"], MaxRecords: 100, NextToken: "page-2" },
+      { AlarmNames: ["rovara-cloud-live25d-A", "rovara-cloud-live25d-B"], AlarmTypes: ["MetricAlarm"], MaxRecords: 100 },
+      { AlarmNames: ["rovara-cloud-live25d-A", "rovara-cloud-live25d-B"], AlarmTypes: ["MetricAlarm"], MaxRecords: 100, NextToken: "page-2" },
     ]);
   });
 
   it("asks for at most 100 names a call, in order, so a long list is read in chunks (issue 206)", async () => {
     const suffixes = Array.from({ length: 205 }, (_, index) => `Alarm${index}`);
-    const names = suffixes.map((suffix) => `agentx-live25d-${suffix}`);
+    const names = suffixes.map((suffix) => `rovara-cloud-live25d-${suffix}`);
     const { input, alarmCalls } = fakes({ pages: [
       { $metadata: {}, MetricAlarms: [{ AlarmName: names[0], StateValue: "OK" }] },
       { $metadata: {}, MetricAlarms: [{ AlarmName: names[100], StateValue: "ALARM" }] },
       { $metadata: {}, MetricAlarms: [{ AlarmName: names[204], StateValue: "OK" }] },
     ] });
-    const probes = healthProbes({ ...input, alarmPrefix: "agentx-live25d-", alarmSuffixes: suffixes });
+    const probes = healthProbes({ ...input, alarmPrefix: "rovara-cloud-live25d-", alarmSuffixes: suffixes });
     const found = await probes.alarms?.();
     expect(found?.slice(0, 3)).toStrictEqual([
       { name: names[0], state: "OK" },
@@ -109,33 +109,33 @@ describe("the broker's production health probes (A13)", () => {
 
   it("calls nothing for an empty list, and reports no alarms", async () => {
     const { input, alarmCalls } = fakes();
-    const probes = healthProbes({ ...input, alarmPrefix: "agentx-live25d-", alarmSuffixes: [] });
+    const probes = healthProbes({ ...input, alarmPrefix: "rovara-cloud-live25d-", alarmSuffixes: [] });
     expect(await probes.alarms?.()).toEqual([]);
     expect(alarmCalls).toEqual([]);
   });
 
   it("leaves out a sibling environment's alarms that share the prefix (prod's prefix also matches prod-eu)", async () => {
     // Alarm suffixes are single words (infra naming.alarmName), so a further hyphen after the
-    // prefix belongs to another environment: agentx-prod-eu-SlackDeadLetters is prod-eu's.
+    // prefix belongs to another environment: rovara-cloud-prod-eu-SlackDeadLetters is prod-eu's.
     const { input } = fakes({ pages: [
       { $metadata: {}, MetricAlarms: [
-        { AlarmName: "agentx-prod-SlackDeadLetters", StateValue: "OK" },
-        { AlarmName: "agentx-prod-eu-SlackDeadLetters", StateValue: "ALARM" },
-        { AlarmName: "agentx-prod-foundation-SessionReaperErrors", StateValue: "ALARM" },
+        { AlarmName: "rovara-cloud-prod-SlackDeadLetters", StateValue: "OK" },
+        { AlarmName: "rovara-cloud-prod-eu-SlackDeadLetters", StateValue: "ALARM" },
+        { AlarmName: "rovara-cloud-prod-foundation-SessionReaperErrors", StateValue: "ALARM" },
       ] },
     ] });
-    const probes = healthProbes({ ...input, alarmPrefix: "agentx-prod-", alarmSuffixes: ["SlackDeadLetters", "eu-SlackDeadLetters", "foundation-SessionReaperErrors"] });
+    const probes = healthProbes({ ...input, alarmPrefix: "rovara-cloud-prod-", alarmSuffixes: ["SlackDeadLetters", "eu-SlackDeadLetters", "foundation-SessionReaperErrors"] });
     expect(await probes.alarms?.()).toStrictEqual([
-      { name: "agentx-prod-SlackDeadLetters", state: "OK" },
-      { name: "agentx-prod-eu-SlackDeadLetters", state: "MISSING" },
-      { name: "agentx-prod-foundation-SessionReaperErrors", state: "MISSING" },
+      { name: "rovara-cloud-prod-SlackDeadLetters", state: "OK" },
+      { name: "rovara-cloud-prod-eu-SlackDeadLetters", state: "MISSING" },
+      { name: "rovara-cloud-prod-foundation-SessionReaperErrors", state: "MISSING" },
     ]);
   });
 
   it("answers the alarms unknown when CloudWatch refuses the call", async () => {
     const { input } = fakes();
     const denied = { ...input, cloudWatch: { send: async () => { throw Object.assign(new Error("not authorized"), { name: "AccessDenied" }); } } };
-    const probes = healthProbes({ ...denied, alarmPrefix: "agentx-live25d-" });
+    const probes = healthProbes({ ...denied, alarmPrefix: "rovara-cloud-live25d-" });
     const { admin } = await createAdminReadBroker({ brokerExtra: { adminReads: { health: probes } } });
     const answer = await admin("GET", "/v1/admin/health");
     expect(answer.status).toBe(200);

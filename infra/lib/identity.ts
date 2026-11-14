@@ -1,10 +1,10 @@
 import { Aws, CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Stack, type StackProps } from "aws-cdk-lib";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import type { Construct } from "constructs";
-import { assertCognitoDomainSafe } from "@agentx/contracts";
+import { assertCognitoDomainSafe, RESOURCE_PREFIX } from "@agentx/contracts";
 import type { AgentXNaming } from "./naming.js";
 
-export const ADMIN_GROUP = "agentx-admin";
+export const ADMIN_GROUP = "rovara-cloud-admin";
 // Must be exactly what the CLI's loopback listener sends: packages/cli/src/auth.ts builds
 // `http://127.0.0.1:${port}/callback`, and packages/cli/src/main.ts's `login --callback-port`
 // defaults that port to DEFAULT_CALLBACK_PORT (8765). tests/contract/identity-stack.test.ts ties
@@ -17,7 +17,7 @@ export interface IdentityStackProps extends StackProps {
   naming: AgentXNaming;
 }
 
-/** Sign-in for a fresh install. The control plane's AdminValues default is agentx-admin. */
+/** Sign-in for a fresh install. The control plane's AdminValues default is rovara-cloud-admin. */
 export class IdentityStack extends Stack {
   constructor(scope: Construct, id: string, props: IdentityStackProps) {
     super(scope, id, props);
@@ -37,7 +37,7 @@ export class IdentityStack extends Stack {
     // (no SES configuration here), which is capped at roughly 50 emails/day per user pool. That's
     // fine for an invite-only admin pool; move to SES if an environment ever needs more.
     const pool = new cognito.UserPool(this, "UserPool", {
-      userPoolName: `agentx-${env}`,
+      userPoolName: `${RESOURCE_PREFIX}-${env}`,
       selfSignUpEnabled: false,
       signInAliases: { email: true },
       autoVerify: { email: true },
@@ -54,7 +54,7 @@ export class IdentityStack extends Stack {
       groupName: ADMIN_GROUP,
       description: "AgentX administrators",
     });
-    const domain = pool.addDomain("HostedUi", { cognitoDomain: { domainPrefix: `agentx-${env}-${this.account}` } });
+    const domain = pool.addDomain("HostedUi", { cognitoDomain: { domainPrefix: `${RESOURCE_PREFIX}-${env}-${this.account}` } });
     const client = pool.addClient("Cli", {
       generateSecret: false,
       // No interactive-auth API flows for this app client: sign-in happens through the hosted UI's
@@ -68,7 +68,7 @@ export class IdentityStack extends Stack {
       },
       supportedIdentityProviders: [cognito.UserPoolClientIdentityProvider.COGNITO],
       preventUserExistenceErrors: true,
-      // The admin sign-in is never refreshed (spec 025 Q4), so this is how long `agentx login --admin` lasts.
+      // The admin sign-in is never refreshed (spec 025 Q4), so this is how long `rovara login --admin` lasts.
       accessTokenValidity: Duration.hours(6),
       idTokenValidity: Duration.hours(6),
       refreshTokenValidity: Duration.days(30),

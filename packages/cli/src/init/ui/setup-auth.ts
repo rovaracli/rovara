@@ -4,7 +4,7 @@
 // (the CLI's), whose callbacks include the page's while the install runs in the cloud (the identity
 // stack's SetupPageUrl). So the token the page gets is one the control plane already accepts, and
 // the job uses it for the steps that need an administrator (registering the first project, binding
-// its channel), as `agentx init` on a computer uses the one its own browser sign-in gets.
+// its channel), as `rovara init` on a computer uses the one its own browser sign-in gets.
 //
 // The page keeps no token in the browser: its cookie holds a random session id, and the table holds
 // only that id's hash. The admin's token goes to the job sealed with the table's KMS key, and is
@@ -22,11 +22,11 @@ export const SETUP_LOGIN_PATH = "/auth/login";
 export const SESSION_COOKIE = "rovara_setup";
 const LOGIN_COOKIE = "rovara_login";
 /** The group the identity stack makes for administrators (infra/lib/identity.ts ADMIN_GROUP). */
-const ADMIN_GROUP = "agentx-admin";
+const ADMIN_GROUP = "rovara-cloud-admin";
 const LOGIN_COOKIE_SECONDS = 10 * 60;
 
 export interface SetupIdentity {
-  /** The hosted sign-in's address, such as https://agentx-prod-123.auth.us-east-1.amazoncognito.com. */
+  /** The hosted sign-in's address, such as https://rovara-cloud-prod-123.auth.us-east-1.amazoncognito.com. */
   hostedUiDomain: string;
   clientId: string;
 }

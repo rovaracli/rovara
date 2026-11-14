@@ -1,5 +1,5 @@
-// `agentx init --ui`: the local install wizard, assembled. The hub holds the state, the server
-// serves it on 127.0.0.1, and `browserPrompter` turns every question `agentx init` already asks
+// `rovara init --ui`: the local install wizard, assembled. The hub holds the state, the server
+// serves it on 127.0.0.1, and `browserPrompter` turns every question `rovara init` already asks
 // into a field on the page.
 //
 // Nothing about what init does changes here. This module is injected through the seams init already
@@ -26,7 +26,7 @@ const REMINDER_CHECK_MS = 5_000;
 const PAGE_OPEN_GRACE_MS = 1_000;
 
 export function pageClosedLine(url: string): string {
-  return `The install page is closed. Open ${url} to continue, or press Ctrl-C to stop; agentx init continues from here next time.`;
+  return `The install page is closed. Open ${url} to continue, or press Ctrl-C to stop; rovara init continues from here next time.`;
 }
 
 /** Says once per wait, in the terminal, where to reopen a page that has been closed for a minute.
@@ -152,7 +152,7 @@ export async function startInstallWizard(input: {
   });
 }
 
-/** `agentx init --cloud`: the same wizard, with the page served by the setup page's function and
+/** `rovara init --cloud`: the same wizard, with the page served by the setup page's function and
  * everything in between through the setup table (relay.ts). Nothing is served from this machine. */
 export function startCloudInstallWizard(input: {
   env: string;

@@ -1,5 +1,5 @@
 import { SERVER_PAGE_ICON, serverPageCss } from "@agentx/design-tokens";
-// Plan 2, Task 13: the pages a person sees at the end of "agentx github connect": GitHub sends their browser to the callback, and the
+// Plan 2, Task 13: the pages a person sees at the end of "rovara github connect": GitHub sends their browser to the callback, and the
 // callback answers with one of these. Every value that came from GitHub or from a name a person chose is escaped; the policy allows
 // only this page's own style and a form back to the same origin. Nothing here is a secret: the confirmation token travels in a cookie.
 import { randomBytes } from "node:crypto";
@@ -34,15 +34,15 @@ function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
         body: [`Rovara will be able to read and write the repositories you gave it access to in ${account}, for everyone in ${org}.`],
       };
     case "connected":
-      return { status: 200, title: "GitHub connected", body: [`${account} is now connected to ${org}.`], code: `agentx project create --repository ${account}/<repository>` };
+      return { status: 200, title: "GitHub connected", body: [`${account} is now connected to ${org}.`], code: `rovara project create --repository ${account}/<repository>` };
     case "connected_trial_used":
       return {
         status: 200, title: "GitHub connected",
         body: [`${account} is now connected to ${org}.`, "Your free trial stays locked: this GitHub account already started a trial for another organization."],
-        code: `agentx project create --repository ${account}/<repository>`,
+        code: `rovara project create --repository ${account}/<repository>`,
       };
     case "cancelled":
-      return { status: 200, title: "Nothing was connected", body: ["Run agentx github connect again if you change your mind."] };
+      return { status: 200, title: "Nothing was connected", body: ["Run rovara github connect again if you change your mind."] };
     case "requested": {
       const waiting = githubInstallRequestCopy("waiting", { orgName: data.orgName, ownerName: data.ownerName });
       return { status: 200, title: waiting.title, body: waiting.lines };
@@ -50,28 +50,28 @@ function copyFor(kind: ConnectPageKind, data: ConnectPageData): PageCopy {
     case "not_linked":
       return {
         status: 403, title: "Sign in to Rovara with this GitHub account first",
-        body: ["This connect link was started by someone else in Rovara, or your GitHub account isn't linked to your Rovara account. Sign in with GitHub (agentx login, then choose GitHub), then run agentx github connect yourself."],
+        body: ["This connect link was started by someone else in Rovara, or your GitHub account isn't linked to your Rovara account. Sign in with GitHub (rovara login, then choose GitHub), then run rovara github connect yourself."],
       };
     case "taken":
       return { status: 409, title: GITHUB_INSTALLATION_TAKEN_MESSAGE, body: [] };
     case "not_yours":
       return {
         status: 403, title: "Only the account's owner or an admin of the GitHub organization can connect it",
-        body: [`Ask an admin of ${account} on GitHub to run agentx github connect.`],
+        body: [`Ask an admin of ${account} on GitHub to run rovara github connect.`],
       };
     case "not_allowed":
       return {
         status: 403, title: "Nothing was connected",
-        body: [`The Rovara organization ${org} was closed, or you are no longer its owner or admin. Ask an owner or admin of ${org} to run agentx github connect.`],
+        body: [`The Rovara organization ${org} was closed, or you are no longer its owner or admin. Ask an owner or admin of ${org} to run rovara github connect.`],
       };
     case "unattributed":
       // GitHub's "request" callback came back with no user authorization code, so Rovara cannot say who asked and records nothing.
       return {
         status: 403, title: "Rovara couldn't confirm who asked",
-        body: ["GitHub did not tell Rovara who sent the request, so Rovara recorded nothing and will not connect anything when it is approved. Ask your GitHub admin to run agentx github connect."],
+        body: ["GitHub did not tell Rovara who sent the request, so Rovara recorded nothing and will not connect anything when it is approved. Ask your GitHub admin to run rovara github connect."],
       };
     case "expired":
-      return { status: 410, title: "This connect link has expired. Run agentx github connect again.", body: [] };
+      return { status: 410, title: "This connect link has expired. Run rovara github connect again.", body: [] };
   }
 }
 

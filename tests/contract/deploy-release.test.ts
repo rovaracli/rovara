@@ -24,7 +24,7 @@ describe("loading a release for install", () => {
     const release = await loadRelease(dir);
     expect(release.regions()).toEqual([...SUPPORTED_REGIONS]);
     const text = release.template("access", "us-east-1", "staging");
-    expect(text).toContain("agentx-staging");
+    expect(text).toContain("rovara-cloud-staging");
     expect(text).not.toContain("qqenv");
   });
 

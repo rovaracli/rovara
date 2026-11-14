@@ -62,7 +62,7 @@ const KEY_ARN = "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-3333-4444-
 const KEYS = "keys";
 const STATE = "state";
 const EXPORTS_BUCKET = "audit-exports-bucket";
-const QUEUE_URL = "https://sqs.test/agentx-test-audit-intake.fifo";
+const QUEUE_URL = "https://sqs.test/rovara-cloud-test-audit-intake.fifo";
 const PLAINTEXT = "Alice Example";
 
 /** The exports bucket: put, get and delete of whole objects, with every call kept. */
@@ -844,12 +844,12 @@ describe("the broker's wiring: the download link and the start of an export", ()
     const sent: Array<{ input: Record<string, unknown> }> = [];
     let status = 202;
     const lambda = { send: async (command: unknown) => { sent.push(command as { input: Record<string, unknown> }); return { StatusCode: status }; } };
-    const invoke = exportInvoker(lambda as never, "agentx-acme-AuditExport");
+    const invoke = exportInvoker(lambda as never, "rovara-cloud-acme-AuditExport");
     const event = { source: AUDIT_EXPORT_SOURCE, orgId: A, exportId: "aex_1" } as const;
     await invoke(event);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toBeInstanceOf(InvokeCommand);
-    expect(sent[0]!.input).toMatchObject({ FunctionName: "agentx-acme-AuditExport", InvocationType: "Event" });
+    expect(sent[0]!.input).toMatchObject({ FunctionName: "rovara-cloud-acme-AuditExport", InvocationType: "Event" });
     expect(JSON.parse(Buffer.from(sent[0]!.input.Payload as Uint8Array).toString("utf8"))).toStrictEqual(event);
     status = 200;
     await expect(invoke(event)).rejects.toThrow(/answered 200/);

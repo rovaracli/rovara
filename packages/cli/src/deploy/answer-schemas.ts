@@ -1,6 +1,6 @@
 // Validation building blocks shared by every place that reads or writes deploy-shaped answers:
-// `DeployAnswersSchema` (commands.ts, the `agentx deploy` answers file) and `InitAnswersSchema`
-// (../init/install-state.ts, `agentx init`'s own saved answers), plus `agentx init`'s prompts
+// `DeployAnswersSchema` (commands.ts, the `rovara deploy` answers file) and `InitAnswersSchema`
+// (../init/install-state.ts, `rovara init`'s own saved answers), plus `rovara init`'s prompts
 // themselves where they validate the same shapes fresh from a person typing them in. Living here,
 // instead of inside commands.ts, means neither the init nor the deploy side owns the other's
 // validation: both import the same regex or schema object, so a region, account, identity, models,
@@ -14,7 +14,7 @@ export const REGION_PATTERN = /^[a-z]{2}(-[a-z]+)+-\d$/;
 export const ACCOUNT_PATTERN = /^\d{12}$/;
 
 /** Shared between `InitAnswersSchema` (../init/install-state.js, parsing a GitHub account already
- * stored) and `agentx init`'s own `--github-account` prompt and flag validation, so a GitHub
+ * stored) and `rovara init`'s own `--github-account` prompt and flag validation, so a GitHub
  * organization or user name is accepted or refused identically wherever it is checked. */
 export const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
@@ -98,7 +98,7 @@ export const ImagesAnswersSchema = z.object({
 });
 
 /** The one email check an alert-by-email answer goes through, whether it is being parsed back out of
- * install answers already stored in SSM or validated fresh at the `agentx init` prompt: both call
+ * install answers already stored in SSM or validated fresh at the `rovara init` prompt: both call
  * this schema rather than each keeping their own regex that could quietly drift apart. */
 export const AlertEmailSchema = z.email();
 

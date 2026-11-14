@@ -39,6 +39,7 @@ import {
   parseBundlePublicKey,
   rovaraOperatorRoleName,
   type OperatorAccessState,
+  RESOURCE_PREFIX,
 } from "@agentx/contracts";
 import type { AgentXNaming } from "./naming.js";
 
@@ -110,7 +111,7 @@ export function parseOperatorAccessContext(input: { edition: string | undefined;
   const rovaraAccount = principal.split(":")[4];
   if (accounts.has(rovaraAccount)) throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} may not name principals of Rovara's account (${OPERATOR_PRINCIPAL_CONTEXT_KEY} is in it): approvals are the customer's own act`);
   // (The principal is in Rovara's account, so the account check above already bars it and any pattern that could match it.)
-  for (const barred of [rovaraOperatorRoleName(input.env), `agentx-${input.env}-cloudformation`, bundleDeployerRoleName(input.env)]) {
+  for (const barred of [rovaraOperatorRoleName(input.env), `${RESOURCE_PREFIX}-${input.env}-cloudformation`, bundleDeployerRoleName(input.env)]) {
     for (const arn of approverArns) {
       const pattern = new RegExp(`^${arn.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`);
       if (pattern.test(`arn:${arn.split(":")[1]}:iam::${arn.split(":")[4]}:role/${barred}`)) throw new Error(`${OPERATOR_APPROVERS_CONTEXT_KEY} may not name ${barred}: it cannot approve its own deployments`);
@@ -234,7 +235,7 @@ export class OperatorAccess extends Construct {
     new ssm.StringParameter(this, "BundleTrustedKeys", { parameterName: bundleTrustParameter(env), stringValue: JSON.stringify(settings.signingKeys), description: "PEM public keys that may sign the bundles the deployer accepts; empty refuses every bundle" });
 
     // The customer's alert topic: assumptions of the operator role (an EventBridge rule) and every start and end of the deployer (published by the deployer itself, first).
-    this.alertTopic = new sns.Topic(this, "UseAlerts", { topicName: `agentx-${env}-rovara-operator-use`, displayName: "Rovara operator role or bundle deployer was used" });
+    this.alertTopic = new sns.Topic(this, "UseAlerts", { topicName: `${RESOURCE_PREFIX}-${env}-rovara-operator-use`, displayName: "Rovara operator role or bundle deployer was used" });
     // The switch, mirrored where a deployer run that is already going can read it.
     new ssm.StringParameter(this, "OperatorAccessStateRecord", { parameterName: operatorAccessStateParameter(env), stringValue: state.valueAsString, description: "enabled or suspended: the deployer checks it before every stack" });
 
@@ -350,7 +351,7 @@ export class OperatorAccess extends Construct {
     // Every assumption of the role goes to the customer's alert topic, with the name of the person (the event carries the source identity). The trust policy lets
     // the role be assumed through this region's endpoint only, so the assumption is always recorded where this rule listens. The topic holds no content.
     new events.Rule(this, "AssumptionRule", {
-      ruleName: `agentx-${env}-rovara-operator-assumed`,
+      ruleName: `${RESOURCE_PREFIX}-${env}-rovara-operator-assumed`,
       description: "Every assumption of the Rovara operator role",
       eventPattern: { source: ["aws.sts"], detailType: ["AWS API Call via CloudTrail"], detail: { eventSource: ["sts.amazonaws.com"], eventName: ["AssumeRole"], requestParameters: { roleArn: [roleArn] } } },
       targets: [new targets.SnsTopic(this.alertTopic)],

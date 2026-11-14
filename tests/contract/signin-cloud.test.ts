@@ -1,4 +1,4 @@
-// agentx signin cloud (Task 24): turn GitHub and Google sign-in on, change or off on an installed Rovara Cloud environment.
+// rovara signin cloud (Task 24): turn GitHub and Google sign-in on, change or off on an installed Rovara Cloud environment.
 import { environmentStackName, type ReleaseManifest } from "@agentx/contracts";
 import { describe, expect, it } from "vitest";
 import { stackParameters } from "../../packages/cli/src/deploy/parameters.js";
@@ -15,15 +15,15 @@ import { MemoryParameterStore } from "../support/memory-parameter-store.js";
 
 const ACCOUNT = "123456789012";
 const arnOf = (name: string, region = "us-east-1", account = ACCOUNT) => `arn:aws:secretsmanager:${region}:${account}:secret:${name}-AbCdEf`;
-const GITHUB_ARN = arnOf("agentx/staging/github-oauth");
-const GOOGLE_ARN = arnOf("agentx/staging/google-oauth");
+const GITHUB_ARN = arnOf("rovara-cloud/staging/github-oauth");
+const GOOGLE_ARN = arnOf("rovara-cloud/staging/google-oauth");
 const GITHUB_URL = "https://abc.execute-api.us-east-1.amazonaws.com/v1/auth/callback/github";
 const GOOGLE_URI = "https://rovara-staging.auth.us-east-1.amazoncognito.com/oauth2/idpresponse";
 
 const installed: EnvironmentSettings = {
   ...stagingSettings,
   cloud: true,
-  access: { artifactBucket: "b", cloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation", operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator", pullThroughPrefix: "agentx-staging" },
+  access: { artifactBucket: "b", cloudFormationRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation", operatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator", pullThroughPrefix: "rovara-cloud-staging" },
 };
 const CLOUD_PARAMETERS = { ...SIGN_IN_PARAMETERS, GitHubClientId: "", GitHubClientSecretArn: "", GoogleClientId: "", GoogleClientSecretArn: "" };
 
@@ -32,7 +32,7 @@ async function harness(options: { settings?: EnvironmentSettings; answers?: bool
   await writeEnvironmentSettings(store, options.settings ?? installed);
   const answers = options.answers === false ? undefined : sampleAnswers({ cloud: true, ...(options.settings?.cloudSignIn === undefined ? {} : { cloudSignIn: options.settings.cloudSignIn }) });
   if (answers !== undefined) await writeInstallAnswers(store, answers);
-  const secrets = memoryInitSecrets(options.secrets ?? { "agentx/staging/github-oauth": "{}", "agentx/staging/google-oauth": "{}" });
+  const secrets = memoryInitSecrets(options.secrets ?? { "rovara-cloud/staging/github-oauth": "{}", "rovara-cloud/staging/google-oauth": "{}" });
   const cloudFormation = fakeCloudFormation({
     parameters: options.parameters ?? CLOUD_PARAMETERS,
     outputs: { CloudIdentityGitHubCallbackUrl: GITHUB_URL, CloudIdentityGoogleRedirectUri: GOOGLE_URI },
@@ -55,7 +55,7 @@ const NOTHING_CHANGED = (h: Awaited<ReturnType<typeof harness>>) => {
   expect(h.cloudFormation.parameters).toEqual(CLOUD_PARAMETERS);
 };
 
-describe("agentx signin cloud", () => {
+describe("rovara signin cloud", () => {
   it("turns GitHub sign-in on: settings, stored answers and the control-plane parameters, then the callback URL to register", async () => {
     const h = await harness();
     const result = await run(h, github);
@@ -63,7 +63,7 @@ describe("agentx signin cloud", () => {
     expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toEqual(github);
     expect((await readInstallAnswers(h.store, "staging"))?.cloudSignIn).toEqual(github);
     expect(h.cloudFormation.parameters).toMatchObject({ GitHubClientId: github.githubClientId, GitHubClientSecretArn: GITHUB_ARN, GoogleClientId: "", GoogleClientSecretArn: "" });
-    expect(h.store.values.has("/agentx/staging/lock")).toBe(false);
+    expect(h.store.values.has("/rovara-cloud/staging/lock")).toBe(false);
   });
 
   it("turns Google sign-in on, and reports the redirect URI to register", async () => {
@@ -93,18 +93,18 @@ describe("agentx signin cloud", () => {
 
   it("replaces GitHub's client id and secret, showing old -> new with the client id in full and only the secret's name", async () => {
     const before = github;
-    const h = await harness({ settings: { ...installed, cloudSignIn: before }, parameters: { ...CLOUD_PARAMETERS, GitHubClientId: github.githubClientId, GitHubClientSecretArn: GITHUB_ARN }, secrets: { "agentx/staging/github-oauth": "{}", "agentx/staging/github-oauth-2": "{}" } });
-    await run(h, { githubClientId: "Iv1.fedcba9876543210", githubClientSecretArn: arnOf("agentx/staging/github-oauth-2") });
+    const h = await harness({ settings: { ...installed, cloudSignIn: before }, parameters: { ...CLOUD_PARAMETERS, GitHubClientId: github.githubClientId, GitHubClientSecretArn: GITHUB_ARN }, secrets: { "rovara-cloud/staging/github-oauth": "{}", "rovara-cloud/staging/github-oauth-2": "{}" } });
+    await run(h, { githubClientId: "Iv1.fedcba9876543210", githubClientSecretArn: arnOf("rovara-cloud/staging/github-oauth-2") });
     const printed = h.lines.join("\n");
-    expect(printed).toContain("GitHub sign-in: on (client Iv1.0123456789abcdef, secret agentx/staging/github-oauth) -> on (client Iv1.fedcba9876543210, secret agentx/staging/github-oauth-2)");
+    expect(printed).toContain("GitHub sign-in: on (client Iv1.0123456789abcdef, secret rovara-cloud/staging/github-oauth) -> on (client Iv1.fedcba9876543210, secret rovara-cloud/staging/github-oauth-2)");
     expect(printed).not.toContain("arn:aws:secretsmanager");
-    expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toEqual({ githubClientId: "Iv1.fedcba9876543210", githubClientSecretArn: arnOf("agentx/staging/github-oauth-2") });
+    expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toEqual({ githubClientId: "Iv1.fedcba9876543210", githubClientSecretArn: arnOf("rovara-cloud/staging/github-oauth-2") });
   });
 
   it("shows an off -> on change and asks once; --yes still prints it and asks nothing", async () => {
     const asked = await harness();
     await run(asked, github);
-    expect(asked.lines.join("\n")).toContain("GitHub sign-in: off -> on (client Iv1.0123456789abcdef, secret agentx/staging/github-oauth)");
+    expect(asked.lines.join("\n")).toContain("GitHub sign-in: off -> on (client Iv1.0123456789abcdef, secret rovara-cloud/staging/github-oauth)");
     expect(asked.prompter.asked).toEqual(["Apply this change?"]);
     const unasked = await harness({ prompts: [] });
     await run(unasked, github, true);
@@ -133,7 +133,7 @@ describe("agentx signin cloud", () => {
       expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toEqual(expected);
       expect((await readInstallAnswers(h.store, "staging"))?.cloudSignIn).toEqual(expected);
       expect(h.cloudFormation.parameters).toMatchObject({ GitHubClientId: "", GitHubClientSecretArn: "", GoogleClientId: google.googleClientId });
-      expect(h.lines.join("\n")).toContain("GitHub sign-in: on (client Iv1.0123456789abcdef, secret agentx/staging/github-oauth) -> off");
+      expect(h.lines.join("\n")).toContain("GitHub sign-in: on (client Iv1.0123456789abcdef, secret rovara-cloud/staging/github-oauth) -> off");
     });
 
     it("--no-google removes Google, and the whole cloudSignIn once nothing is left", async () => {
@@ -162,13 +162,13 @@ describe("agentx signin cloud", () => {
   describe("refusals, with nothing written", () => {
     const untouched = async (h: Awaited<ReturnType<typeof harness>>, before: string | undefined) => {
       expect(h.cloudFormation.calls.map((call) => call.name)).not.toContain("CreateChangeSetCommand");
-      expect(h.store.values.get("/agentx/staging/settings")).toBe(before);
-      expect(h.store.values.has("/agentx/staging/lock")).toBe(false);
+      expect(h.store.values.get("/rovara-cloud/staging/settings")).toBe(before);
+      expect(h.store.values.has("/rovara-cloud/staging/lock")).toBe(false);
     };
 
     it("refuses a half pair, in the same words init uses", async () => {
       const h = await harness();
-      const before = h.store.values.get("/agentx/staging/settings");
+      const before = h.store.values.get("/rovara-cloud/staging/settings");
       await expect(run(h, { githubClientId: github.githubClientId })).rejects.toThrow("CONFIG_INVALID: --github-client-id and --github-client-secret-arn go together");
       await expect(run(h, { githubClientSecretArn: GITHUB_ARN })).rejects.toThrow("--github-client-id and --github-client-secret-arn go together");
       await expect(run(h, { googleClientId: google.googleClientId })).rejects.toThrow("--google-client-id and --google-client-secret-arn go together");
@@ -186,7 +186,7 @@ describe("agentx signin cloud", () => {
       const plain: EnvironmentSettings = { ...installed };
       delete plain.cloud;
       const h = await harness({ settings: plain });
-      const before = h.store.values.get("/agentx/staging/settings");
+      const before = h.store.values.get("/rovara-cloud/staging/settings");
       await expect(run(h, github)).rejects.toThrow("CONFIG_INVALID: only a Rovara Cloud install has these sign-in methods");
       await untouched(h, before);
     });
@@ -197,15 +197,15 @@ describe("agentx signin cloud", () => {
     });
 
     it.each([
-      ["a secret in another region", arnOf("agentx/staging/github-oauth", "us-west-2"), "in this environment's own region and account (us-east-1, 123456789012)"],
-      ["a secret in another account", arnOf("agentx/staging/github-oauth", "us-east-1", "999999999999"), "in this environment's own region and account (us-east-1, 123456789012)"],
-      ["a secret outside the environment's prefix", arnOf("shared/github-oauth"), "must start with agentx/staging/"],
-      ["another environment's secret", arnOf("agentx/prod/github-oauth"), "must start with agentx/staging/"],
-      ["a secret that does not exist", arnOf("agentx/staging/no-such-secret"), "no secret exists at"],
+      ["a secret in another region", arnOf("rovara-cloud/staging/github-oauth", "us-west-2"), "in this environment's own region and account (us-east-1, 123456789012)"],
+      ["a secret in another account", arnOf("rovara-cloud/staging/github-oauth", "us-east-1", "999999999999"), "in this environment's own region and account (us-east-1, 123456789012)"],
+      ["a secret outside the environment's prefix", arnOf("shared/github-oauth"), "must start with rovara-cloud/staging/"],
+      ["another environment's secret", arnOf("rovara-cloud/prod/github-oauth"), "must start with rovara-cloud/staging/"],
+      ["a secret that does not exist", arnOf("rovara-cloud/staging/no-such-secret"), "no secret exists at"],
       ["something that is not a Secrets Manager ARN", "arn:aws:s3:::bucket", "is not a Secrets Manager secret ARN"],
     ])("refuses %s", async (_name, arn, message) => {
       const h = await harness();
-      const before = h.store.values.get("/agentx/staging/settings");
+      const before = h.store.values.get("/rovara-cloud/staging/settings");
       await expect(run(h, { githubClientId: github.githubClientId, githubClientSecretArn: arn })).rejects.toThrow(message);
       await untouched(h, before);
       expect(await readInstallAnswers(h.store, "staging")).not.toHaveProperty("cloudSignIn");
@@ -214,7 +214,7 @@ describe("agentx signin cloud", () => {
     it("names the prefix a secret must start with, and why, rather than widening the operator role", async () => {
       const h = await harness();
       const error = await run(h, { githubClientId: github.githubClientId, githubClientSecretArn: arnOf("shared/github-oauth") }).then(() => new Error("test setup: expected a refusal"), (caught: unknown) => caught as Error);
-      expect(error.message).toContain("agentx/staging/");
+      expect(error.message).toContain("rovara-cloud/staging/");
       expect(error.message).toContain("operator role");
     });
 
@@ -235,7 +235,7 @@ describe("agentx signin cloud", () => {
 
   it("refuses, writing nothing, a control-plane stack from before GitHub sign-in, and says to upgrade", async () => {
     const h = await harness({ parameters: SIGN_IN_PARAMETERS });
-    await expect(run(h, github)).rejects.toThrow(/has no GitHubClientId, GitHubClientSecretArn parameter; it runs an older AgentX release, so upgrade it with agentx upgrade/);
+    await expect(run(h, github)).rejects.toThrow(/has no GitHubClientId, GitHubClientSecretArn parameter; it runs an older AgentX release, so upgrade it with rovara upgrade/);
     expect(h.cloudFormation.calls.map((call) => call.name)).not.toContain("CreateChangeSetCommand");
     expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toBeUndefined();
     expect((await readInstallAnswers(h.store, "staging"))?.cloudSignIn).toBeUndefined();
@@ -261,10 +261,10 @@ describe("agentx signin cloud", () => {
     const h = await harness();
     const put = h.store.put.bind(h.store);
     h.store.put = async (name, value, options) => {
-      if (name === "/agentx/staging/settings") throw Object.assign(new Error("ThrottlingException"), { name: "ThrottlingException" });
+      if (name === "/rovara-cloud/staging/settings") throw Object.assign(new Error("ThrottlingException"), { name: "ThrottlingException" });
       return put(name, value, options);
     };
-    await expect(run(h, github)).rejects.toThrow(/agentx-staging-control-plane was updated, but recording the sign-in settings failed \(ThrottlingException\); run agentx signin cloud again with the same flags to record them/);
+    await expect(run(h, github)).rejects.toThrow(/rovara-cloud-staging-control-plane was updated, but recording the sign-in settings failed \(ThrottlingException\); run rovara signin cloud again with the same flags to record them/);
     expect(h.cloudFormation.parameters.GitHubClientId).toBe(github.githubClientId);
   });
 
@@ -286,7 +286,7 @@ describe("agentx signin cloud", () => {
       const outputs = { access: stacks[environmentStackName("staging", "access")]!, foundation: stacks[environmentStackName("staging", "foundation")]!, identity: stacks[environmentStackName("staging", "identity")]!, "control-plane": stacks[environmentStackName("staging", "control-plane")]! };
       const parameters = stackParameters("control-plane", {
         env: "staging", region: settings.region, account: settings.account, release: {} as ReleaseManifest, models: settings.models, identity: { mode: "cognito" },
-        github: { appId: "1", privateKeySecretArn: arnOf("agentx/staging/github-app") }, callbackSigningKey: "k".repeat(40),
+        github: { appId: "1", privateKeySecretArn: arnOf("rovara-cloud/staging/github-app") }, callbackSigningKey: "k".repeat(40),
         ...(settings.cloud === true ? { cloud: true as const } : {}), ...(settings.cloudSignIn === undefined ? {} : { cloudSignIn: settings.cloudSignIn }),
       }, outputs, { packages: false });
       expect(parameters).toMatchObject({ GitHubClientId: github.githubClientId, GitHubClientSecretArn: GITHUB_ARN });
@@ -294,7 +294,7 @@ describe("agentx signin cloud", () => {
   });
 
   describe("on the command line", () => {
-    it("agentx signin cloud applies the change and prints the callback URL on stdout", async () => {
+    it("rovara signin cloud applies the change and prints the callback URL on stdout", async () => {
       const h = await harness({ prompts: [] });
       const stdout: string[] = [];
       const stderr: string[] = [];
@@ -309,7 +309,7 @@ describe("agentx signin cloud", () => {
       expect((await readEnvironmentSettings(h.store, "staging"))?.cloudSignIn).toEqual(github);
     });
 
-    it("agentx signin cloud --no-github turns GitHub off", async () => {
+    it("rovara signin cloud --no-github turns GitHub off", async () => {
       const h = await harness({ prompts: [], settings: { ...installed, cloudSignIn: github }, parameters: { ...CLOUD_PARAMETERS, GitHubClientId: github.githubClientId, GitHubClientSecretArn: GITHUB_ARN } });
       const stdout: string[] = [];
       const code = await executeCli(["--env", "staging", "signin", "cloud", "--yes", "--no-github"], { stdout: { write: (text: string) => stdout.push(text) }, stderr: { write: () => true }, signin: h.services });
@@ -318,7 +318,7 @@ describe("agentx signin cloud", () => {
       expect(await readEnvironmentSettings(h.store, "staging")).not.toHaveProperty("cloudSignIn");
     });
 
-    it("agentx signin cloud --json answers with the result", async () => {
+    it("rovara signin cloud --json answers with the result", async () => {
       const h = await harness({ prompts: [] });
       const stdout: string[] = [];
       const code = await executeCli(["--env", "staging", "--json", "signin", "cloud", "--yes", "--github-client-id", github.githubClientId, "--github-client-secret-arn", GITHUB_ARN], { stdout: { write: (text: string) => stdout.push(text) }, stderr: { write: () => true }, signin: h.services });

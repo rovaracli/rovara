@@ -56,7 +56,7 @@ describe("SSM GetParameters batching", () => {
 });
 
 describe("the session steps' worker settings read", () => {
-  const prefix = "/agentx/staging/";
+  const prefix = "/rovara-cloud/staging/";
   const everything = (): Record<string, string> => ({
     ...Object.fromEntries(Object.values(WORKER_SETTING_PARAMETERS).map((name) => [`${prefix}${name}`, "none"])),
     [`${prefix}${WORKER_SETTING_PARAMETERS.workerImage}`]: `111122223333.dkr.ecr.us-west-2.amazonaws.com/agentx-worker@sha256:${"a".repeat(64)}`,

@@ -273,7 +273,7 @@ describe("the CLI's own version", () => {
 });
 
 describe("readReleaseManifest (doctor's release check)", () => {
-  const manifest = { schemaVersion: 1, version: "1.2.3", gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-placeholderqq", templates: [], packages: [], images: {} };
+  const manifest = { schemaVersion: 1, version: "1.2.3", gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-phldrqq", templates: [], packages: [], images: {} };
 
   it("reads the cached release.json without downloading", async () => {
     const home = await mkdtemp(join(tmpdir(), "agentx-manifest-"));
@@ -311,7 +311,7 @@ describe("sourceRelease (issue 152)", () => {
     },
   };
   const published = (overrides: Record<string, unknown> = {}) => JSON.stringify({
-    schemaVersion: 1, version: "1.4.0", gitCommit: HEAD, environmentPlaceholder: "qqenv-placeholderqq",
+    schemaVersion: 1, version: "1.4.0", gitCommit: HEAD, environmentPlaceholder: "qqenv-phldrqq",
     templates: ["us-east-1", "us-west-2"].map((region) => ({ region, part: "access", file: `templates/${region}/access.template.json`, sha256: "0".repeat(64) })),
     packages: [], images: { worker: WORKER, slack: SLACK }, ...overrides,
   });
@@ -319,7 +319,7 @@ describe("sourceRelease (issue 152)", () => {
 
   it("needs no release when both image flags are given: the version is the tag's, and nothing is fetched", async () => {
     const { release, regions } = await sourceRelease({ runner: tagged, source: "/src", images: { worker: OVERRIDE, slack: OVERRIDE }, fetch: noFetch });
-    expect(release.manifest).toEqual({ schemaVersion: 1, version: "1.4.0", gitCommit: HEAD, environmentPlaceholder: "qqenv-placeholderqq", templates: [], packages: [], images: {} });
+    expect(release.manifest).toEqual({ schemaVersion: 1, version: "1.4.0", gitCommit: HEAD, environmentPlaceholder: "qqenv-phldrqq", templates: [], packages: [], images: {} });
     expect(release.regions()).toEqual([]);
     expect(regions).toBeUndefined();
   });

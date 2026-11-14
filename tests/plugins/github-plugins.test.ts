@@ -82,7 +82,7 @@ function codeBuildWorld(): CheckRunnerWorld & { gateway: FakeCodeBuild } {
   const gateway = new FakeCodeBuild();
   const runner = codeBuildCheckRunner({ gateway, allowedRepositories: [GITHUB_REPO_URL] });
   return {
-    runner, model, gateway, repository: { url: GITHUB_REPO_URL }, unregistered: { url: GITHUB_OTHER_URL }, scope: GITHUB_ORG_SCOPE, project: "agentx-unit",
+    runner, model, gateway, repository: { url: GITHUB_REPO_URL }, unregistered: { url: GITHUB_OTHER_URL }, scope: GITHUB_ORG_SCOPE, project: "rovara-cloud-unit",
     changeRequest: () => { throw new Error("CodeBuild has no change requests"); },
     finishRun: (runId, conclusion) => { gateway.finish(runId, conclusion === "success" ? "SUCCEEDED" : "FAILED"); },
   };

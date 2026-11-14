@@ -15,7 +15,7 @@ import { loadSignedCatalogWithKeys } from "@agentx/contracts/testing";
 import { pinnedCatalog, sha, testSigner } from "../support/catalog-pinning.js";
 
 const REGISTRY = "944937319445.dkr.ecr.us-west-2.amazonaws.com";
-const IMAGE = `${REGISTRY}/agentx-staging/worker@sha256:${"a".repeat(64)}`;
+const IMAGE = `${REGISTRY}/rovara-cloud-staging/worker@sha256:${"a".repeat(64)}`;
 
 describe("the live driver's lines and probe output", () => {
   it("the relay listener survives a peer that connects and resets before reading (it used to die on ECONNRESET, so the working sandbox exited)", async () => {

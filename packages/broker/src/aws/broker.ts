@@ -577,7 +577,7 @@ export const handler = createAwsBrokerHandler({
   artifactBucketName: requiredEnvironment("ARTIFACT_BUCKET_NAME"),
   issuer: requiredEnvironment("OIDC_ISSUER"),
   adminClaim: process.env.ADMIN_CLAIM ?? "cognito:groups",
-  adminValues: JSON.parse(process.env.ADMIN_VALUES ?? "[\"agentx-admin\"]") as string[],
+  adminValues: JSON.parse(process.env.ADMIN_VALUES ?? "[\"rovara-cloud-admin\"]") as string[],
   callbackSigningKey: requiredEnvironment("CALLBACK_SIGNING_KEY"),
   repositoryGrants,
   githubPullRequests: githubCredentials,

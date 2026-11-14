@@ -499,7 +499,7 @@ describe("T6 controller: probe", () => {
   });
   describe("T9: a test of a proposal that declares secrets, and a refused destination", () => {
     const withSecrets = { ...proposal, secretEnv: ["JIRA_TOKEN"] };
-    const SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcpnew0000001-AbCdEf";
+    const SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/ent/org-connectors/org_aaaaaaaaaaaaaaaaaaaa/mcpnew0000001-AbCdEf";
     /** A resources fake that records what each probe was made with. */
     function recording(refuse = false) {
       const ensured: Array<{ kind: string; secretRef: string | undefined }> = [];

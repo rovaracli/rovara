@@ -6,7 +6,7 @@ import { parseReplayArgs, runReplayRound, viewOfRecord, type CliResult, type Rep
 
 const TASK = "44444444-4444-4444-8444-444444444444";
 const ROUND = "55555555-5555-4555-8555-555555555555";
-const ARGS = ["--env", "agentxlivetest123", "--task", TASK, "--round", ROUND];
+const ARGS = ["--env", "rovaralivetest", "--task", TASK, "--round", ROUND];
 const ok = (body: unknown): CliResult => ({ status: 0, stdout: JSON.stringify(body), stderr: "" });
 function fakeDependencies(answers: { start: CliResult; show: CliResult[] }) {
   const calls: string[][] = []; const out: string[] = []; const err: string[] = []; const slept: number[] = [];
@@ -21,10 +21,10 @@ const recorded = { attempt: 1, state: "RECORDED", requestedAt: "t0", startedAt: 
 
 describe("the arguments", () => {
   it("need an environment, a task and a round that are what they say, and refuse anything else", () => {
-    expect(parseReplayArgs(ARGS)).toMatchObject({ env: "agentxlivetest123", task: TASK, round: ROUND, pollSeconds: 15, timeoutMinutes: 40, wait: true });
+    expect(parseReplayArgs(ARGS)).toMatchObject({ env: "rovaralivetest", task: TASK, round: ROUND, pollSeconds: 15, timeoutMinutes: 40, wait: true });
     expect(parseReplayArgs([...ARGS, "--no-wait", "--poll-seconds", "5", "--timeout-minutes", "10", "--profile", "p", "--region", "us-east-1"])).toMatchObject({ wait: false, pollSeconds: 5, timeoutMinutes: 10, profile: "p", region: "us-east-1" });
     for (const bad of [["--env", "x"], ["--task", TASK, "--round", ROUND], [...ARGS, "--force"], [...ARGS, "--task", TASK], ["--env", "AgentX!", "--task", TASK, "--round", ROUND],
-      ["--env", "agentxlivetest123", "--task", "nope", "--round", ROUND], [...ARGS, "--poll-seconds", "0"], [...ARGS, "--timeout-minutes", "1000"]]) {
+      ["--env", "rovaralivetest", "--task", "nope", "--round", ROUND], [...ARGS, "--poll-seconds", "0"], [...ARGS, "--timeout-minutes", "1000"]]) {
       expect(() => parseReplayArgs(bad), bad.join(" ")).toThrow();
     }
   });

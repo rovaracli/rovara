@@ -1,4 +1,4 @@
-// Spec 041: what `agentx workspaces` reads from the control plane, and what it prints when there is
+// Spec 041: what `rovara workspaces` reads from the control plane, and what it prints when there is
 // no browser to show it in. The page in ../workspaces-ui/ renders the same response.
 import { DeveloperWorkspacesResponseSchema, type DeveloperWorkspace, type DeveloperWorkspacesResponse } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
@@ -47,7 +47,7 @@ export function workspacesOfProject(response: DeveloperWorkspacesResponse, proje
   return response.workspaces.filter((workspace) => workspace.projectName === project);
 }
 
-/** The text `agentx workspaces --no-ui` prints: every project, with the workspaces in it. */
+/** The text `rovara workspaces --no-ui` prints: every project, with the workspaces in it. */
 export function workspacesText(result: DeveloperWorkspacesResult): string {
   const { developer, projects, notices } = result.workspaces;
   const lines = [`AgentX environment ${result.env} (${result.url}), signed in as ${sanitizeServerText(developer.name)}.`];

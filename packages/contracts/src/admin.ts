@@ -199,7 +199,7 @@ export const AdminWorkspacesResponseSchema = z.object({
 export type AdminWorkspacesResponse = z.infer<typeof AdminWorkspacesResponseSchema>;
 
 /**
- * Issue 206: the suffix of every alarm a named environment can create (`agentx-<env>-<suffix>`). The
+ * Issue 206: the suffix of every alarm a named environment can create (`rovara-cloud-<env>-<suffix>`). The
  * admin health probe asks CloudWatch for exactly these names, because a call that names its alarms
  * is authorized against each alarm's ARN while a prefix listing is authorized against *. The infra
  * refuses to synthesize a named environment with an alarm missing from this list, and

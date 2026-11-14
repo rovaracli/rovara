@@ -103,7 +103,7 @@ export interface EnterpriseVpcEndpointsProps {
   region: string;
   privateSubnets: readonly ec2.CfnSubnet[];
   privateRouteTables: readonly ec2.CfnRouteTable[];
-  /** The Name tag prefix, for example agentx-<env>. */
+  /** The Name tag prefix, for example rovara-cloud-<env>. */
   resourcePrefix: string;
   tags: (name: string) => CfnTag[];
   /**

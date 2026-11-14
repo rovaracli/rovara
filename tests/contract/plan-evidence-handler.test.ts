@@ -112,7 +112,7 @@ describe("the PlanEvidence job", () => {
     const { taskId, artifact } = await plannedTask(harness, ["repo/demo/src/charge.ts", "repo/demo/src/other.ts"]);
     const time = clock(rows(harness)[0]!.nextAttemptAt + 1_000);
     const reads: string[] = [];
-    const getFile: GetFile = async (_url, path) => { reads.push(path); throw agentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: agentx github connect"); };
+    const getFile: GetFile = async (_url, path) => { reads.push(path); throw agentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: rovara github connect"); };
     expect(await runPlanEvidenceJob(jobDeps(harness, getFile, time.now), { taskId, artifactId: artifact.id })).toBe("attached");
     expect(rows(harness)).toEqual([]);
     expect(bundleOf(harness, taskId, artifact.id).excerpts).toEqual([expect.objectContaining({ status: "unavailable" }), expect.objectContaining({ status: "unavailable" })]);
@@ -129,7 +129,7 @@ describe("the PlanEvidence job", () => {
     harness.db.set({ ...taskRecord(harness, planned.taskId), preparedBase: [{ repositoryId: "demo", baseCommitSha: "e".repeat(40) }, { repositoryId: "web", baseCommitSha: "f".repeat(40) }] });
     return { harness, ...planned };
   }
-  const NOT_CONNECTED = () => agentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: agentx github connect");
+  const NOT_CONNECTED = () => agentXError("GITHUB_NOT_CONNECTED", "Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: rovara github connect");
 
   it("keeps the excerpts already read and the repositories on other connected installations: only the failing repository's places are unavailable, and no retry follows", async () => {
     // Four demo places fill the reader's four slots and fail at once; the web places are read only after a demo read has been refused,

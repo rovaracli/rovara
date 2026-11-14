@@ -18,7 +18,7 @@ const IAM_INLINE_LIMIT = 10_240;
 /** The bound this test holds the broker to: about 12% under IAM's, which covers the estimate below being rough. */
 const SAFE_BOUND = 9_000;
 /** What the pseudo parameters are in a real account and region (a longer region name than any in use). */
-const PSEUDO: Record<string, string> = { "AWS::Partition": "aws", "AWS::Region": "ap-southeast-2", "AWS::AccountId": "123456789012", "AWS::URLSuffix": "amazonaws.com", "AWS::StackName": "agentx-staging-control-plane" };
+const PSEUDO: Record<string, string> = { "AWS::Partition": "aws", "AWS::Region": "ap-southeast-2", "AWS::AccountId": "123456789012", "AWS::URLSuffix": "amazonaws.com", "AWS::StackName": "rovara-cloud-staging-control-plane" };
 /** A physical name or id CloudFormation fills in for a `Ref` to a resource or parameter (a table name with its suffix, a function name). */
 const RESOLVED_NAME_LENGTH = 48;
 /** A whole resource ARN, which an `Fn::GetAtt ... Arn` stands for: longer than any this stack builds. */
@@ -58,7 +58,7 @@ const MANAGED_SAFE_BOUND = 5_500;
 
 describe("the broker role's policies (final review M9, reconciled with Plan 3's managed policies)", () => {
   const app = buildAgentXApp({ agentxEnv: "staging", agentxCloud: true });
-  const stack = app.node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === "agentx-staging-control-plane")!;
+  const stack = app.node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === "rovara-cloud-staging-control-plane")!;
   const { inline, managed } = brokerPolicies(Template.fromStack(stack).toJSON().Resources as Record<string, Resource>);
   const total = inline.reduce((sum, policy) => sum + policy.characters, 0);
 

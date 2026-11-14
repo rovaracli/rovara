@@ -43,7 +43,7 @@ export interface WizardHub {
   connected(): number;
   /** Resolves when the first page has connected its event stream. */
   whenConnected(): Promise<void>;
-  /** One line for the log pane (the same line `agentx init` writes to stderr). */
+  /** One line for the log pane (the same line `rovara init` writes to stderr). */
   log(line: string): void;
   /** The checklist, in the order the steps run, before any of them has. */
   setSteps(steps: ReadonlyArray<{ id: InitStepId; title: string }>): void;

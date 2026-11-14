@@ -104,7 +104,7 @@ describe("openE2EModelChannelSession", () => {
 
   it("refuses a route the worker's settings do not reproduce with model-route-changed-reapprove, before anything listens or a provider is built", async () => {
     const invoke = vi.fn(okInvoke);
-    await expect(openE2EModelChannelSession(options({ modelRoute: anthropicRoute, environment: { ...anthropicEnv, AGENTX_ANTHROPIC_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/other-key-ZyXwVu" }, invoke })))
+    await expect(openE2EModelChannelSession(options({ modelRoute: anthropicRoute, environment: { ...anthropicEnv, AGENTX_ANTHROPIC_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/other-key-ZyXwVu" }, invoke })))
       .rejects.toMatchObject({ code: "model-route-changed-reapprove" });
     await expect(openE2EModelChannelSession(options({ modelRoute: { ...scripted, routeRevision: "r1-ffffffffffff" }, invoke }))).rejects.toMatchObject({ code: "model-route-changed-reapprove" });
     expect(invoke).not.toHaveBeenCalled();

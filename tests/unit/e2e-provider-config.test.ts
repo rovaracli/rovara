@@ -91,7 +91,7 @@ describe("the environment guard: a worker whose environment can redirect model c
     expect(() => assertE2ERouteMatchesInstallation(definition, { AGENTX_MODEL_PROVIDER: "amazon-bedrock" })).toThrow(/model-route-changed-reapprove/);
     vi.stubEnv("AGENTX_MODEL_PROVIDER", undefined);
     // Where the process says nothing, the caller's environment supplies the setting.
-    const arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/anthropic-AbCdEf";
+    const arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/anthropic-AbCdEf";
     const keyed = { provider: "anthropic" as const, secretArn: arn };
     expect(() => assertE2ERouteMatchesInstallation(keyed, { AGENTX_MODEL_PROVIDER: "anthropic", AGENTX_ANTHROPIC_SECRET_ARN: arn })).not.toThrow();
     vi.stubEnv("AGENTX_ANTHROPIC_SECRET_ARN", arn.replace("AbCdEf", "ZzZzZz"));

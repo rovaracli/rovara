@@ -1,6 +1,6 @@
-// FR-040: agentx project add, and init's first-project step. Every new project runs on EC2 workers
+// FR-040: rovara project add, and init's first-project step. Every new project runs on EC2 workers
 // (ec2-ebs), bound with the foundation's launch template and subnets. The definition is also
-// written to <config dir>/<name>.yaml, the file agentx admin project register --file takes, so
+// written to <config dir>/<name>.yaml, the file rovara admin project register --file takes, so
 // connector add can build the next revision from it. The file holds no secret: the repository's
 // credential is a reference (the built-in GitHub App's ref), never a token.
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
@@ -34,7 +34,7 @@ const VOLUME_TYPE = "gp3";
 
 export function ec2Binding(outputs: StackOutputs | undefined, stackName: string): Ec2RuntimeBinding {
   if (outputs === undefined) {
-    throw agentXError("CONFIG_INVALID", `stack ${stackName} does not exist in this account and region; check --env and --region, or finish agentx init first`);
+    throw agentXError("CONFIG_INVALID", `stack ${stackName} does not exist in this account and region; check --env and --region, or finish rovara init first`);
   }
   const launchTemplateId = outputs[LAUNCH_TEMPLATE_OUTPUT];
   const subnets = outputs[SUBNETS_OUTPUT];
@@ -63,10 +63,10 @@ function fileHeader(path: string, register?: { env: string; binding: Ec2RuntimeB
   const subnets = register?.binding.subnets.map((subnet) => `${subnet.availabilityZone}=${subnet.subnetId}`).join(",") ?? "<the foundation's Ec2WorkerSubnets>";
   const env = register === undefined ? "" : ` --env ${register.env}`;
   return [
-    "# Registered by agentx. It holds no secret, only credential references.",
-    "# To change the project, edit this file and raise revision, then either run agentx connector add",
+    "# Registered by rovara. It holds no secret, only credential references.",
+    "# To change the project, edit this file and raise revision, then either run rovara connector add",
     "# (which rebuilds it) or register it yourself:",
-    `#   agentx admin project register${env} --file ${path} --deployment-mode ec2-ebs --launch-template-id ${launchTemplate} --subnets ${subnets}`,
+    `#   rovara admin project register${env} --file ${path} --deployment-mode ec2-ebs --launch-template-id ${launchTemplate} --subnets ${subnets}`,
     "",
   ].join("\n");
 }
@@ -79,7 +79,7 @@ function fileHeader(path: string, register?: { env: string; binding: Ec2RuntimeB
 export interface EnvironmentProjectFile { path: string; name: string; launchTemplateId: string; definition: Record<string, unknown>; error?: "unreadable" | "invalid-yaml"; errorCode?: string }
 
 /** fileHeader's register line; kept beside fileHeader so the reader and the writer change together (ruling F26). */
-const REGISTER_LINE = /^#\s+agentx admin project register --env (\S+) --file .+? --deployment-mode ec2-ebs --launch-template-id (\S+)/m;
+const REGISTER_LINE = /^#\s+rovara admin project register --env (\S+) --file .+? --deployment-mode ec2-ebs --launch-template-id (\S+)/m;
 
 /** The project files environment `env` wrote in configDir (doctor and destroy read them). A file
  * without fileHeader's register line (hand-written) belongs to no environment. A missing directory
@@ -367,7 +367,7 @@ async function confirmSetupPlan(input: { prompter: Prompter; write: (line: strin
   input.write(proposal.missingInputs.length === 0 ? "Detected source-backed E2E setup." : "Detected source-backed E2E setup with unresolved inputs: " + blockerSummary);
   // An untested route says which model to test and the exact command (Task 4.10C); with no route at all the older sentence stands.
   const untestedSummary = input.aiNavigationUntested === undefined || input.aiNavigationUntested === null ? undefined
-    : `${input.aiNavigationUntested.sentence}. Run \`agentx${input.env === undefined ? "" : ` --env ${input.env}`} project model-check test --model ${input.aiNavigationUntested.modelId}\``;
+    : `${input.aiNavigationUntested.sentence}. Run \`rovara${input.env === undefined ? "" : ` --env ${input.env}`} project model-check test --model ${input.aiNavigationUntested.modelId}\``;
   const aiNavigationSummary = input.aiNavigation ?? untestedSummary ?? "AI navigation steps will not run: this installation has no usable model route for them (it needs a configured model provider with its key), so only deterministic checks run";
   input.write(aiNavigationSummary);
   const commandSummary = "setup: " + input.setup.map(commandLine).join("; ") + "; readiness: " + input.readiness.map(commandLine).join("; ");
@@ -418,12 +418,12 @@ async function registeredHead(input: { session: AdminSession; fetch: typeof fetc
   }
   if (!listing.success) throw unreadable(" (the answer was not a project list)");
   const found = listing.data.projects.find((project) => project.name === input.name);
-  if (found === undefined) throw agentXError("CONFIG_INVALID", `${input.name} is not registered with this control plane (check --env), so there is no revision to build on; nothing was approved or registered. Register it with agentx project add first`);
+  if (found === undefined) throw agentXError("CONFIG_INVALID", `${input.name} is not registered with this control plane (check --env), so there is no revision to build on; nothing was approved or registered. Register it with rovara project add first`);
   return { revision: found.latestRevision };
 }
 
 /**
- * `agentx project setup-approve` (M1.4 Task 4.9): proposes the setup of a project already registered from this machine again, from its registered repository and default
+ * `rovara project setup-approve` (M1.4 Task 4.9): proposes the setup of a project already registered from this machine again, from its registered repository and default
  * branch, and asks the administrator the same one question `project add` asks (with the AI navigation sentence, D5). An approval is recorded with the control plane, through the
  * same `/v1/admin/projects/setup-approvals` route, and registers the next revision with the approved policy, so the project pins the route the approval wrote. A decline is
  * recorded and registers nothing. `project add` never does this: for a registered project it changes nothing and asks nothing.
@@ -438,7 +438,7 @@ export async function reapproveProjectSetup(input: {
   const configDir = input.services.configDir;
   const existing = await existingProject(configDir, name);
   const file = projectFilePath(configDir, name);
-  if (existing === undefined) throw agentXError("CONFIG_INVALID", `project ${name} is not registered from this machine (no ${file}); register it with agentx project add first`);
+  if (existing === undefined) throw agentXError("CONFIG_INVALID", `project ${name} is not registered from this machine (no ${file}); register it with rovara project add first`);
   const repository = existing.repositories[0];
   if (repository === undefined) throw agentXError("CONFIG_INVALID", `project ${name} has no repository to propose its setup from`);
   // I-2: read the registry's head before anything is proposed or recorded.
@@ -466,7 +466,7 @@ export async function reapproveProjectSetup(input: {
     // The control plane needs the recorded decision before it accepts the revision, so a failure here leaves an approval that no revision carries. Say so, and what to run.
     const code = error instanceof AgentXError ? error.code : "RUNTIME_UNAVAILABLE";
     const cause = error instanceof AgentXError ? error.message : "an unexpected error";
-    throw agentXError(code, `your approval of the setup proposal is recorded, but revision ${definition.revision} of ${name} was NOT registered, so no revision carries it and tasks keep running on revision ${head.revision} (${cause}). Run agentx --env ${input.env} project setup-approve --project-name ${name} again; it proposes and asks again, and registers the revision`);
+    throw agentXError(code, `your approval of the setup proposal is recorded, but revision ${definition.revision} of ${name} was NOT registered, so no revision carries it and tasks keep running on revision ${head.revision} (${cause}). Run rovara --env ${input.env} project setup-approve --project-name ${name} again; it proposes and asks again, and registers the revision`);
   }
   input.write(`Approved the setup of ${name} and registered revision ${definition.revision}${trusted.policy.modelRouteRevision === null ? "" : `, pinning AI navigation route revision ${trusted.policy.modelRouteRevision}`}. Its file is ${registered.file}.`);
   for (const warning of registered.warnings) input.write(`Warning: ${warning}`);

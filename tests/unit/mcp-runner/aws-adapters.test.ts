@@ -240,13 +240,13 @@ describe("EC2 security group adapter (T7)", () => {
 });
 
 describe("secret ARN resolver (fix round 1, m3)", () => {
-  const ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/test/org-connectors/org_a/mcpsim000001-AbCdEf";
+  const ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/test/org-connectors/org_a/mcpsim000001-AbCdEf";
   it("looks up the full ARN of the server's secret by name once, and remembers it", async () => {
     const sent: unknown[] = [];
-    const resolve = secretArnResolver({ send: async (command: { input: unknown }) => { sent.push(command.input); return { ARN }; } } as never, (serverId) => `agentx/test/org-connectors/org_a/${serverId}`);
+    const resolve = secretArnResolver({ send: async (command: { input: unknown }) => { sent.push(command.input); return { ARN }; } } as never, (serverId) => `rovara-cloud/test/org-connectors/org_a/${serverId}`);
     expect(await resolve("mcpsim000001")).toBe(ARN);
     expect(await resolve("mcpsim000001")).toBe(ARN);
-    expect(sent).toEqual([{ SecretId: "agentx/test/org-connectors/org_a/mcpsim000001" }]);
+    expect(sent).toEqual([{ SecretId: "rovara-cloud/test/org-connectors/org_a/mcpsim000001" }]);
   });
   it("has no ARN when the secret does not say one, and lets a failed lookup fail", async () => {
     expect(await secretArnResolver({ send: async () => ({}) } as never, (id) => id)("mcpsim000001")).toBeUndefined();

@@ -1,4 +1,4 @@
-// Plan 2, Task 20: `agentx project archive <name>` (asks first) and `agentx project restore <name>` against a fake control plane: the request each
+// Plan 2, Task 20: `rovara project archive <name>` (asks first) and `rovara project restore <name>` against a fake control plane: the request each
 // sends and the lines it prints.
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -44,14 +44,14 @@ async function cli(answer: (method: string, path: string) => Response, options: 
   return { run, out, err, calls };
 }
 
-describe("agentx project archive", () => {
+describe("rovara project archive", () => {
   it("asks first, then posts a request id to the archive route with the developer session and says what changed", async () => {
     const questions: string[] = [];
     const h = await cli(() => Response.json({ project: detail("archived"), warnings: [], requestId: "r" }), { confirm: async (question) => { questions.push(question); return true; } });
     expect(await h.run(["project", "archive", "web"])).toBe(0);
     expect(questions).toEqual(["Archive web? Nobody can start new tasks in it until it is restored. Tasks already running keep going, but lose access to this project's approved extra domains."]);
     expect(h.calls).toEqual([{ method: "POST", path: "/v1/app/projects/web/archive", authorization: "Bearer access", body: { requestId: expect.stringMatching(UUID) as string } }]);
-    expect(h.out.join("")).toBe("Archived web. To bring it back, run: agentx project restore web\n");
+    expect(h.out.join("")).toBe("Archived web. To bring it back, run: rovara project restore web\n");
   });
 
   it("does nothing when the person says no", async () => {
@@ -85,7 +85,7 @@ describe("warnings and help", () => {
   it("prints each warning the server sent after the archive and restore lines, and --json carries them", async () => {
     const archived = await cli(() => Response.json({ project: detail("archived"), warnings: [WARNING], requestId: "r" }));
     expect(await archived.run(["project", "archive", "web", "--yes"])).toBe(0);
-    expect(archived.out.join("")).toBe(`Archived web. To bring it back, run: agentx project restore web\nNote: ${WARNING}\n`);
+    expect(archived.out.join("")).toBe(`Archived web. To bring it back, run: rovara project restore web\nNote: ${WARNING}\n`);
     const restored = await cli(() => Response.json({ project: detail("active"), warnings: [WARNING], requestId: "r" }));
     expect(await restored.run(["project", "restore", "web"])).toBe(0);
     expect(restored.out.join("")).toBe(`Restored web. People can start tasks in it again, and its approved domains are allowed again.\nNote: ${WARNING}\n`);
@@ -102,7 +102,7 @@ describe("warnings and help", () => {
   });
 });
 
-describe("agentx project restore", () => {
+describe("rovara project restore", () => {
   it("posts a request id to the restore route without asking, and says what changed", async () => {
     const h = await cli(() => Response.json({ project: detail("active"), warnings: [], requestId: "r" }));
     expect(await h.run(["project", "restore", "web"])).toBe(0);

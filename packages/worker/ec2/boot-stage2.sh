@@ -113,14 +113,14 @@ UNIT
 
 # Test services (slice 1): the values the worker's service runner needs, for a named environment only. Nothing here is a secret and nothing comes from a customer setting:
 #   AGENTX_TEST_SERVICES_REGISTRY  the registry host of the worker image the control plane launched this worker with (the catalog repositories are in the same registry);
-#   AGENTX_TEST_SERVICES_ENV       the environment name, cut from the launch's log group `/agentx/<env>/worker` (written by the control plane).
+#   AGENTX_TEST_SERVICES_ENV       the environment name, cut from the launch's log group `/rovara-cloud/<env>/worker` (written by the control plane).
 # AGENTX_TEST_SERVICES_RUN_DIR is NOT written here: the launcher adds it only when the tmpfs run directory was really mounted (so a worker whose mount failed has no complete configuration and does not offer test services).
 # The catalog the worker trusts is the one baked into its own image, with the digests it pins; it checks no signature and needs no account id or key (the broker keeps the signed-catalog check). AGENTX_SANDBOX_IMAGE (the
 # worker's own image, the probe image) is already written by write_worker_environment.
 write_test_services_environment() {
   local registry=${AGENTX_WORKER_IMAGE%%/*} environment
   [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 1
-  [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 1
+  [[ "${AGENTX_LOG_GROUP:-}" =~ ^/rovara-cloud/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 1
   environment=${BASH_REMATCH[1]}
   { printf 'AGENTX_TEST_SERVICES_REGISTRY=%s\n' "$registry"; printf 'AGENTX_TEST_SERVICES_ENV=%s\n' "$environment"; } >>"$WORKER_ENV_FILE"
   # Per image: the repositories that did not pre-pull (a comma list of svc/<name>); the worker does not offer them. FAIL CLOSED: a list that is not well formed or has more than 16 names is written as `all`
@@ -155,7 +155,7 @@ pull_catalog_images() {
   [[ "${CATALOG_PULL_TIMEOUT_S:-}" =~ ^[1-9][0-9]*$ ]] && timeout_s=$CATALOG_PULL_TIMEOUT_S
   [[ "${CATALOG_PULL_PARALLEL:-}" =~ ^[1-9][0-9]*$ ]] && parallel=$CATALOG_PULL_PARALLEL
   [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com$ ]] || return 0
-  [[ "${AGENTX_LOG_GROUP:-}" =~ ^/agentx/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 0
+  [[ "${AGENTX_LOG_GROUP:-}" =~ ^/rovara-cloud/([a-z][a-z0-9-]{0,19})/worker$ ]] || return 0
   environment=${BASH_REMATCH[1]}
   # The list is read with a throwaway `cat` of the image's own file (no network, read-only, no capability): not a second copy-out of the image (stage 1 copies out stage 2 only, once).
   list=$(mktemp) || return 1

@@ -1,7 +1,7 @@
 // The destroy inventory must fit SSM's 4096-byte standard tier (final review M6). It is measured here
-// against the retained resources of a real synth of the installer's stacks, for a 20-character
+// against the retained resources of a real synth of the installer's stacks, for a 14-character
 // environment name, with every optional field filled and each physical ID as long as AWS makes it,
-// so a new retained resource that would break agentx destroy fails this test first.
+// so a new retained resource that would break rovara destroy fails this test first.
 import { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -14,7 +14,7 @@ import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
 
-const ENV = "abcdefghij-klmnopq12";
+const ENV = "abcdefgh-klmn4";
 const REGION = "us-east-1";
 const ACCOUNT = "123456789012";
 
@@ -43,7 +43,7 @@ beforeAll(() => {
   resources = [];
   retainedCount = 0;
   for (const stack of app.node.children.filter((child): child is Stack => Stack.isStack(child))) {
-    const part = STACK_PARTS.find((candidate) => stack.stackName === `agentx-${ENV}-${candidate}`) as StackPart;
+    const part = STACK_PARTS.find((candidate) => stack.stackName === `rovara-cloud-${ENV}-${candidate}`) as StackPart;
     const template = Template.fromStack(stack).toJSON() as { Resources: Record<string, Resource> };
     retainedCount += Object.values(template.Resources).filter((resource) => resource.DeletionPolicy === "Retain" || resource.DeletionPolicy === "RetainExceptOnCreate").length;
     const listed = Object.entries(template.Resources).map(([logicalId, resource]) => ({ logicalId, type: resource.Type, physicalId: physicalId(stack.stackName, logicalId, resource) }));
@@ -52,8 +52,8 @@ beforeAll(() => {
 }, 300_000);
 
 describe("the destroy inventory's size (final review M6)", () => {
-  it("fits SSM's standard tier for a 20-character environment, with every retained resource of a real synth", async () => {
-    expect(ENV).toHaveLength(20);
+  it("fits SSM's standard tier for a 14-character environment, with every retained resource of a real synth", async () => {
+    expect(ENV).toHaveLength(14);
     expect(resources.length).toBe(retainedCount);
     expect(resources.length).toBeGreaterThanOrEqual(11);
     const inventory = mergeInventory(undefined, {

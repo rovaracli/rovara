@@ -1,6 +1,6 @@
 // Wires the deploy engines (templates-engine.ts, cdk-engine.ts), the deploy orchestrator
-// (deploy-environment.ts) and the export bundle (export-bundle.ts) together for `agentx deploy` and
-// `agentx init --export`. Everything that would otherwise touch AWS is overridable through
+// (deploy-environment.ts) and the export bundle (export-bundle.ts) together for `rovara deploy` and
+// `rovara init --export`. Everything that would otherwise touch AWS is overridable through
 // `DeployCliDependencies` (main.ts's `CliDependencies.deploy`), the same seam the `env` commands use
 // (`CliDependencies.environments`), so tests exercise the real wiring against fakes, never AWS.
 import { spawn } from "node:child_process";
@@ -42,7 +42,7 @@ export interface Writer {
 export type ConfirmFn = (event: { stackName: string; changes: ChangeSetChange[] }) => Promise<boolean>;
 export type Ask = (prompt: string) => Promise<string>;
 
-/** Overrides for `agentx deploy` and `agentx init --export`, for tests: never touch AWS. */
+/** Overrides for `rovara deploy` and `rovara init --export`, for tests: never touch AWS. */
 export interface DeployCliDependencies {
   store?: ParameterStore;
   secrets?: SecretValueStore;
@@ -72,7 +72,7 @@ export interface DeployCliDependencies {
 
 // ---- DeployAnswersSchema: mirrors DeployAnswers (deploy-environment.ts), strict -----------------
 // Identity, models, images and the region/account patterns live in answer-schemas.ts, shared with
-// `agentx init`'s own InitAnswersSchema (install-state.ts), so both answer files agree on what a
+// `rovara init`'s own InitAnswersSchema (install-state.ts), so both answer files agree on what a
 // valid region, account, identity, models or images answer looks like.
 
 const GithubAnswersSchema = z
@@ -87,7 +87,7 @@ const GithubAnswersSchema = z
   .strict();
 
 /** Your own OIDC provider must name who administers AgentX (adminClaim and adminValues) and the
- * client `agentx login` uses (clientId): without them the deploy either grants nobody admin or
+ * client `rovara login` uses (clientId): without them the deploy either grants nobody admin or
  * never writes environment settings, so the answers file is refused before anything is deployed. */
 function requireOidcAdminAndClient(answers: { identity: z.infer<typeof IdentityAnswersSchema> }, context: z.RefinementCtx): void {
   if (answers.identity.mode !== "oidc") return;
@@ -99,7 +99,7 @@ function requireOidcAdminAndClient(answers: { identity: z.infer<typeof IdentityA
     context.addIssue({ code: "custom", path: ["identity", "adminValues"], message: "is required with your own OIDC provider" });
   }
   if (identity.clientId === undefined) {
-    context.addIssue({ code: "custom", path: ["identity", "clientId"], message: "is required with your own OIDC provider (agentx login needs it)" });
+    context.addIssue({ code: "custom", path: ["identity", "clientId"], message: "is required with your own OIDC provider (rovara login needs it)" });
   }
 }
 
@@ -146,7 +146,7 @@ function firstIssueMessage(prefix: string, error: z.ZodError): string {
 // Parsed answers are rebuilt into `DeployAnswers` field by field (rather than trusted as-is) because
 // zod's `.optional()` infers `T | undefined`, which `exactOptionalPropertyTypes` treats as a different
 // type than an absent `T`-typed optional key. The identity and images rebuilds are shared with
-// `agentx init` (../init/deploy-steps.ts), whose saved answers use the same schemas.
+// `rovara init` (../init/deploy-steps.ts), whose saved answers use the same schemas.
 
 /** A parsed identity answer (answer-schemas.ts's IdentityAnswersSchema) as `DeployAnswers["identity"]`. */
 export function deployIdentityAnswers(identity: z.infer<typeof IdentityAnswersSchema>): DeployAnswers["identity"] {
@@ -543,7 +543,7 @@ export function cliErrorFor(error: unknown): unknown {
   return error;
 }
 
-// ---- agentx deploy -------------------------------------------------------------------------------
+// ---- rovara deploy -------------------------------------------------------------------------------
 
 export interface DeployCommandOptions {
   mode: "install" | "upgrade";
@@ -570,10 +570,10 @@ export type DeployCommandResult = DeployEnvironmentResult & {
   missingParts: DeployPart[];
 };
 
-/** The exact `agentx deploy` command that deploys `missingParts` with the same release, answers and engine. */
+/** The exact `rovara deploy` command that deploys `missingParts` with the same release, answers and engine. */
 export function resumeCommand(options: DeployCommandOptions, missingParts: DeployPart[]): string {
   return [
-    "agentx deploy --mode install",
+    "rovara deploy --mode install",
     ...(options.engine === "cdk" ? [`--engine cdk --source ${options.source ?? "<source>"}`] : []),
     `--parts ${missingParts.join(",")}`,
     `--release ${options.releaseDir}`,
@@ -615,7 +615,7 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
       confirm = deps.confirm;
     } else {
       const interactive = (deps.isInteractive ?? (() => process.stdin.isTTY === true))();
-      if (!interactive) throw agentXError("CONFIG_INVALID", "agentx deploy needs --yes when stdin is not a terminal");
+      if (!interactive) throw agentXError("CONFIG_INVALID", "rovara deploy needs --yes when stdin is not a terminal");
       confirm = interactiveConfirm(services.stderr, readlineAsk());
     }
   }
@@ -670,7 +670,7 @@ async function deployCommand(options: DeployCommandOptions, deps: DeployCliDepen
   }
 }
 
-// ---- preparing a deployment: shared by agentx deploy and agentx init's deploy steps --------------
+// ---- preparing a deployment: shared by rovara deploy and rovara init's deploy steps --------------
 
 export interface PreparedDeployment {
   deployer: StackDeployer;
@@ -695,10 +695,10 @@ export interface PreparedDeployment {
 }
 
 /**
- * Everything `agentx deploy` does between loading the answers and calling deployEnvironment: the
+ * Everything `rovara deploy` does between loading the answers and calling deployEnvironment: the
  * region coverage check (templates engine), the caller's account and partition checks, the
  * parameter and secret stores, and the engine (cdk: the source checkout at the release tag, the
- * bootstrap check, the build and an outputs directory). `agentx init` builds its deployment here
+ * bootstrap check, the build and an outputs directory). `rovara init` builds its deployment here
  * too, once per run, so both commands refuse and deploy identically.
  */
 export async function prepareDeployment(input: {
@@ -710,7 +710,7 @@ export async function prepareDeployment(input: {
   identityMode: "cognito" | "oidc";
   /** The hosted Rovara cloud (R45): the cdk app is synthesized with agentxCloud=true; the templates engine cannot deploy it. */
   cloud?: boolean;
-  /** `agentx upgrade --no-reserved-concurrency`: the cdk app is synthesized with agentxReservedConcurrency=false. */
+  /** `rovara upgrade --no-reserved-concurrency`: the cdk app is synthesized with agentxReservedConcurrency=false. */
   reservedConcurrency?: false;
   /** Enterprise foundations E2: the edition this run asks for (`rovara init --edition`); absent, the recorded edition is kept. Refused when it differs from the recorded one. */
   edition?: Edition;
@@ -822,7 +822,7 @@ export async function prepareDeployment(input: {
   };
 }
 
-// ---- agentx init --export ------------------------------------------------------------------------
+// ---- rovara init --export ------------------------------------------------------------------------
 
 export interface InitExportOptions {
   env: string;
@@ -883,7 +883,7 @@ function buildIdentityAnswers(options: InitExportOptions): DeployAnswers["identi
  * given, must match), then that account's settings parameter in SSM (an environment already
  * installed there, production included, is refused). It writes nothing to AWS. Validates
  * `--region` and `--account` with the same patterns `DeployAnswersSchema` validates
- * `agentx deploy`'s answers file with, since `writeExportBundle` itself only ever refuses a region
+ * `rovara deploy`'s answers file with, since `writeExportBundle` itself only ever refuses a region
  * the release doesn't cover, not a malformed one. */
 export async function runInitExport(options: InitExportOptions, deps: DeployCliDependencies): Promise<InitExportResult> {
   try {

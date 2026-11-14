@@ -1,10 +1,10 @@
-// Realtime change notices (Plan 5 Task 8): an AppSync Events API, `agentx-<env>-realtime`, with one channel namespace, `rovara`. Clients connect and subscribe with a
+// Realtime change notices (Plan 5 Task 8): an AppSync Events API, `rovara-cloud-<env>-realtime`, with one channel namespace, `rovara`. Clients connect and subscribe with a
 // short-lived token that a Lambda authorizer checks; only the broker and the outbox publisher publish, over IAM (SigV4), and only to the namespace. Named environments
 // only; the legacy install has no events API. API logging is off: a channel's name and a notice's content are ids, and nothing is gained by keeping them in a log.
 import type { aws_dynamodb as dynamodb} from "aws-cdk-lib";
 import { Duration, Fn, aws_appsync as appsync, aws_iam as iam, type aws_kms as kms, type aws_lambda_nodejs as lambdaNodejs } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { REALTIME_NAMESPACE } from "@agentx/contracts";
+import { REALTIME_NAMESPACE, RESOURCE_PREFIX } from "@agentx/contracts";
 import { packagedFunction } from "./control-plane.js";
 
 export interface RealtimeEventsProps {
@@ -35,7 +35,7 @@ export class RealtimeEvents extends Construct {
     props.allowPublicKeyRead(this.authorizer.role!);
 
     this.api = new appsync.EventApi(this, "Api", {
-      apiName: `agentx-${props.env}-realtime`,
+      apiName: `${RESOURCE_PREFIX}-${props.env}-realtime`,
       authorizationConfig: {
         authProviders: [
           { authorizationType: appsync.AppSyncAuthorizationType.LAMBDA, lambdaAuthorizerConfig: { handler: this.authorizer, resultsCacheTtl: Duration.seconds(0) } },

@@ -1,7 +1,7 @@
 import { EnvironmentNameSchema, assertCognitoDomainSafe } from "./environments.js";
 
 /** A valid environment name no real environment can use (EnvironmentNameSchema refuses "qqenv"). */
-export const ENVIRONMENT_PLACEHOLDER = "qqenv-placeholderqq";
+export const ENVIRONMENT_PLACEHOLDER = "qqenv-phldrqq";
 /** Turns a published template (synthesized for the placeholder) into the template for env. */
 export function renderTemplate(text: string, env: string): string {
   const parsed = EnvironmentNameSchema.safeParse(env);

@@ -9,6 +9,7 @@
 //
 // What an image holds: only `/rovara/seed` (the repositories at the proved commits with their dependency folders and warm caches) and `/rovara/manifest.json`. It is built `FROM scratch`: it holds no
 // operating system, and nothing in it is ever run. The worker copies the seed out of it.
+import { RESOURCE_PREFIX } from "./resource-prefix.js";
 import { z } from "zod";
 import { SavedEnvManifestSchema, ImageDigestSchema, SAVED_ENV_KEEP_MAX, SAVED_ENV_KEEP_MIN } from "./saved-env.js";
 import { sha256Hex } from "./web-hash.js";
@@ -66,12 +67,12 @@ export function isSavedEnvRepositoryName(name: string): boolean {
 
 /** The fixed names of the three roles the broker assumes. Fixed, so the broker builds their ARNs from the environment alone and the deploy role can look them up before they exist. */
 /** What the names of the broker-assumed roles start with (the boundary names them with a trailing `*`). */
-export const savedEnvRolePrefix = (env: string): string => `agentx-${EnvName.parse(env)}-img-`;
-export const savedEnvPushRoleName = (env: string): string => `agentx-${EnvName.parse(env)}-img-push`;
-export const savedEnvPullRoleName = (env: string): string => `agentx-${EnvName.parse(env)}-img-pull`;
-export const savedEnvManageRoleName = (env: string): string => `agentx-${EnvName.parse(env)}-img-manage`;
-/** The role ECR assumes to create a repository from the creation template. Fixed too, so Enterprise can name it in its own key policy BEFORE the install is deployed (the ARN is `arn:<partition>:iam::<account>:role/agentx/<env>/<this name>`). */
-export const savedEnvCreateRoleName = (env: string): string => `agentx-${EnvName.parse(env)}-img-create`;
+export const savedEnvRolePrefix = (env: string): string => `${RESOURCE_PREFIX}-${EnvName.parse(env)}-img-`;
+export const savedEnvPushRoleName = (env: string): string => `${RESOURCE_PREFIX}-${EnvName.parse(env)}-img-push`;
+export const savedEnvPullRoleName = (env: string): string => `${RESOURCE_PREFIX}-${EnvName.parse(env)}-img-pull`;
+export const savedEnvManageRoleName = (env: string): string => `${RESOURCE_PREFIX}-${EnvName.parse(env)}-img-manage`;
+/** The role ECR assumes to create a repository from the creation template. Fixed too, so Enterprise can name it in its own key policy BEFORE the install is deployed (the ARN is `arn:<partition>:iam::<account>:role/rovara-cloud/<env>/<this name>`). */
+export const savedEnvCreateRoleName = (env: string): string => `${RESOURCE_PREFIX}-${EnvName.parse(env)}-img-create`;
 
 export interface SavedEnvAccountScope { partition: string; region: string; account: string }
 

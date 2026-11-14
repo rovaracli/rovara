@@ -27,7 +27,7 @@ describe("the closed-tab reminder", () => {
     expect(lines).toEqual([pageClosedLine(URL)]);
     advance(PAGE_CLOSED_MS * 5);
     expect(lines).toHaveLength(1);
-    expect(pageClosedLine(URL)).toBe(`The install page is closed. Open ${URL} to continue, or press Ctrl-C to stop; agentx init continues from here next time.`);
+    expect(pageClosedLine(URL)).toBe(`The install page is closed. Open ${URL} to continue, or press Ctrl-C to stop; rovara init continues from here next time.`);
   });
 
   it("reminds at the next check when a question arrives after the page has been closed for 2 minutes", () => {

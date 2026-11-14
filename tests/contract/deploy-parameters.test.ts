@@ -12,7 +12,7 @@ beforeAll(() => {
   templates = new Map();
   const packages = new Map<string, ReleaseManifest["packages"][number]>();
   for (const stack of assembly.stacks) {
-    const part = stack.stackName.replace(`agentx-${ENVIRONMENT_PLACEHOLDER}-`, "");
+    const part = stack.stackName.replace(`rovara-cloud-${ENVIRONMENT_PLACEHOLDER}-`, "");
     templates.set(part, JSON.parse(renderTemplate(JSON.stringify(stack.template), "staging")) as never);
     for (const asset of stack.assets.filter((a) => a.packaging === "zip")) {
       const existing = packages.get(asset.id);
@@ -33,18 +33,18 @@ const answers = (): InstallAnswers => ({
   env: "staging", region: "us-east-1", account: "123456789012", release,
   models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" },
   identity: { mode: "cognito" },
-  github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf" },
+  github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf" },
   callbackSigningKey: "k".repeat(40),
 });
 const outputs = {
-  access: { ArtifactBucketName: "agentx-staging-access-artifactbucket-abc", CloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation", OperatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator", PullThroughPrefix: "agentx-staging" },
+  access: { ArtifactBucketName: "rovara-cloud-staging-access-artifactbucket-abc", CloudFormationRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation", OperatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator", PullThroughPrefix: "rovara-cloud-staging" },
   foundation: {
     VpcId: "vpc-0123456789abcdef0", PrivateSubnetIds: "subnet-1,subnet-2",
     SessionManagerSecurityGroupId: "sg-0123456789abcdef0", DispatcherSecurityGroupId: "sg-0fedcba9876543210", WorkspaceKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/k",
-    Ec2WorkerInstanceRoleArn: "arn:aws:iam::123456789012:role/agentx/staging/worker", Ec2WorkerLaunchTemplateId: "lt-0123456789abcdef0", Ec2WorkerSubnets: "us-east-1a=subnet-1,us-east-1b=subnet-2", Ec2WorkerSecurityGroupId: "sg-0fedcba9876543210",
+    Ec2WorkerInstanceRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud/staging/worker", Ec2WorkerLaunchTemplateId: "lt-0123456789abcdef0", Ec2WorkerSubnets: "us-east-1a=subnet-1,us-east-1b=subnet-2", Ec2WorkerSecurityGroupId: "sg-0fedcba9876543210",
   },
   identity: { Issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc", Audience: "client123" },
-  "control-plane": { ApiEndpoint: "https://abc.execute-api.us-east-1.amazonaws.com", SlackOrchestratorTaskRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-control-plane-SlackTask", SlackRequestQueueUrl: "https://sqs.us-east-1.amazonaws.com/123456789012/q.fifo", SlackThreadsTableName: "t", TurnRecordsTableName: "tr", SlackThreadSessionBucketName: "b", SlackSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:SlackSecret-x", OperatorAlertsTopicArn: "arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts", ModelProxyUrl: "http://internal-proxy.example.test:4000", ModelProxySecurityGroupId: "sg-0123456789abcdef0" },
+  "control-plane": { ApiEndpoint: "https://abc.execute-api.us-east-1.amazonaws.com", SlackOrchestratorTaskRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-control-plane-SlackTask", SlackRequestQueueUrl: "https://sqs.us-east-1.amazonaws.com/123456789012/q.fifo", SlackThreadsTableName: "t", TurnRecordsTableName: "tr", SlackThreadSessionBucketName: "b", SlackSecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:SlackSecret-x", OperatorAlertsTopicArn: "arn:aws:sns:us-east-1:123456789012:rovara-cloud-staging-alerts", ModelProxyUrl: "http://internal-proxy.example.test:4000", ModelProxySecurityGroupId: "sg-0123456789abcdef0" },
 };
 // No "identity" key: your own OIDC provider means there is no identity stack to read outputs from.
 const oidcOutputs = { access: outputs.access, foundation: outputs.foundation, "control-plane": outputs["control-plane"] };
@@ -70,8 +70,8 @@ describe("deploy parameters", () => {
   it("passes Anthropic and OpenAI secret references to the stacks that declare them, and nothing when unset (spec 054)", () => {
     const configured = answers();
     configured.models.providers = { orchestrator: "anthropic", classifier: "anthropic", worker: "openai" };
-    configured.models.anthropic = { secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/anthropic-AbCdEf" };
-    configured.models.openai = { secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/openai-AbCdEf" };
+    configured.models.anthropic = { secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/anthropic-AbCdEf" };
+    configured.models.openai = { secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/openai-AbCdEf" };
     for (const part of ["control-plane", "runtime", "slack"] as const) {
       const params = stackParameters(part, configured, outputs, { packages: true });
       expect(params).toMatchObject({ AnthropicSecretArn: configured.models.anthropic.secretArn, OpenAISecretArn: configured.models.openai.secretArn });
@@ -122,17 +122,17 @@ describe("deploy parameters", () => {
   });
 
   it("maps a public image to its private pull-through address", () => {
-    expect(privateImageUri(`public.ecr.aws/agentx/agentx-worker@sha256:${d("b")}`, { account: "123456789012", region: "us-east-1", prefix: "agentx-staging" }))
-      .toBe(`123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-staging/agentx/agentx-worker@sha256:${d("b")}`);
+    expect(privateImageUri(`public.ecr.aws/agentx/agentx-worker@sha256:${d("b")}`, { account: "123456789012", region: "us-east-1", prefix: "rovara-cloud-staging" }))
+      .toBe(`123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-staging/agentx/agentx-worker@sha256:${d("b")}`);
     expect(() => privateImageUri("public.ecr.aws/agentx/agentx-worker:latest", { account: "1", region: "r", prefix: "p" })).toThrow(/digest/);
     expect(() => privateImageUri(`docker.io/x/y@sha256:${d("b")}`, { account: "1", region: "r", prefix: "p" })).toThrow(/public.ecr.aws/);
   });
 
   it("derives the ECR host suffix from the target partition, defaulting to aws", () => {
-    expect(privateImageUri(`public.ecr.aws/agentx/agentx-worker@sha256:${d("b")}`, { account: "123456789012", region: "cn-north-1", prefix: "agentx-staging", partition: "aws-cn" }))
-      .toBe(`123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/agentx-staging/agentx/agentx-worker@sha256:${d("b")}`);
-    expect(privateImageUri(`public.ecr.aws/agentx/agentx-worker@sha256:${d("b")}`, { account: "123456789012", region: "us-gov-west-1", prefix: "agentx-staging", partition: "aws-us-gov" }))
-      .toBe(`123456789012.dkr.ecr.us-gov-west-1.amazonaws.com/agentx-staging/agentx/agentx-worker@sha256:${d("b")}`);
+    expect(privateImageUri(`public.ecr.aws/agentx/agentx-worker@sha256:${d("b")}`, { account: "123456789012", region: "cn-north-1", prefix: "rovara-cloud-staging", partition: "aws-cn" }))
+      .toBe(`123456789012.dkr.ecr.cn-north-1.amazonaws.com.cn/rovara-cloud-staging/agentx/agentx-worker@sha256:${d("b")}`);
+    expect(privateImageUri(`public.ecr.aws/agentx/agentx-worker@sha256:${d("b")}`, { account: "123456789012", region: "us-gov-west-1", prefix: "rovara-cloud-staging", partition: "aws-us-gov" }))
+      .toBe(`123456789012.dkr.ecr.us-gov-west-1.amazonaws.com/rovara-cloud-staging/agentx/agentx-worker@sha256:${d("b")}`);
     expect(() => privateImageUri(`public.ecr.aws/agentx/agentx-worker@sha256:${d("b")}`, { account: "1", region: "r", prefix: "p", partition: "aws-mars" })).toThrow(/partition/);
   });
 
@@ -200,7 +200,7 @@ describe("deploy parameters", () => {
   it("names the missing output or image", () => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the key
     const { VpcId: _gone, ...foundation } = outputs.foundation;
-    expect(() => stackParameters("slack", answers(), { ...outputs, foundation }, { packages: true })).toThrow("stack agentx-staging-foundation has no output VpcId");
+    expect(() => stackParameters("slack", answers(), { ...outputs, foundation }, { packages: true })).toThrow("stack rovara-cloud-staging-foundation has no output VpcId");
     const noWorker = { ...answers(), release: { ...release, images: {} } };
     expect(() => stackParameters("runtime", noWorker, outputs, { packages: true })).toThrow("release 1.0.0 has no worker image digest");
   });
@@ -208,11 +208,11 @@ describe("deploy parameters", () => {
   it("names a missing access output", () => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the key
     const { PullThroughPrefix: _prefixGone, ...accessNoPrefix } = outputs.access;
-    expect(() => stackParameters("runtime", answers(), { ...outputs, access: accessNoPrefix }, { packages: true })).toThrow("stack agentx-staging-access has no output PullThroughPrefix");
+    expect(() => stackParameters("runtime", answers(), { ...outputs, access: accessNoPrefix }, { packages: true })).toThrow("stack rovara-cloud-staging-access has no output PullThroughPrefix");
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the key
     const { ArtifactBucketName: _bucketGone, ...accessNoBucket } = outputs.access;
-    expect(() => stackParameters("control-plane", answers(), { ...outputs, access: accessNoBucket }, { packages: true })).toThrow("stack agentx-staging-access has no output ArtifactBucketName");
+    expect(() => stackParameters("control-plane", answers(), { ...outputs, access: accessNoBucket }, { packages: true })).toThrow("stack rovara-cloud-staging-access has no output ArtifactBucketName");
   });
 
   it("refuses a release package that lists the access stack (it has no zip assets of its own)", () => {
@@ -275,7 +275,7 @@ describe("deploy parameters", () => {
     const executor = `public.ecr.aws/agentx/agentx-executor@sha256:${d("d")}`;
     const withExecutor = { ...answers(), release: { ...release, images: { ...release.images, executor } } };
     const params = stackParameters("runtime", withExecutor, outputs, { packages: true });
-    expect(params.ExecutorImageUri).toBe(`123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-staging/agentx/agentx-executor@sha256:${d("d")}`);
+    expect(params.ExecutorImageUri).toBe(`123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-staging/agentx/agentx-executor@sha256:${d("d")}`);
     // Only the runtime stack takes it, and it is declared there with a default, so a release without an executor needs no value.
     for (const part of ["control-plane", "slack"] as const) expect(stackParameters(part, withExecutor, outputs, { packages: true })).not.toHaveProperty("ExecutorImageUri");
     expect(stackParameters("runtime", answers(), outputs, { packages: true })).not.toHaveProperty("ExecutorImageUri");
@@ -293,7 +293,7 @@ describe("deploy parameters", () => {
   it("writes the stage 2 boot hash beside the worker image, in the same runtime parameters, from the same release", () => {
     const hash = d("5");
     const params = stackParameters("runtime", { ...answers(), release: { ...release, bootStage2Sha256: hash } }, outputs, { packages: true });
-    expect(params.WorkerImageUri).toBe(`123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-staging/agentx/agentx-worker@sha256:${d("b")}`);
+    expect(params.WorkerImageUri).toBe(`123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-staging/agentx/agentx-worker@sha256:${d("b")}`);
     expect(params.BootStage2Sha256).toBe(hash);
     for (const part of ["control-plane", "slack"] as const) expect(stackParameters(part, { ...answers(), release: { ...release, bootStage2Sha256: hash } }, outputs, { packages: true })).not.toHaveProperty("BootStage2Sha256");
     // A release from before the boot split carries none, and the runtime template's default ("none") stands.
@@ -329,7 +329,7 @@ describe("deploy parameters", () => {
 
   it("pins the selected public Slack image to its exact ECR cache repository", () => {
     expect(stackParameters("slack", answers(), outputs, { packages: true }).OrchestratorImageRepositoryName)
-      .toBe("agentx-staging/agentx/agentx-slack");
+      .toBe("rovara-cloud-staging/agentx/agentx-slack");
   });
 
   it("a worker image override does not require the access stack's PullThroughPrefix output", () => {
@@ -349,7 +349,7 @@ describe("deploy parameters", () => {
   it("without an override, the slack stack still requires the access stack's PullThroughPrefix output, naming it", () => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructured only to drop the key
     const { PullThroughPrefix: _prefixGone, ...accessNoPrefix } = outputs.access;
-    expect(() => stackParameters("slack", answers(), { ...outputs, access: accessNoPrefix }, { packages: true })).toThrow("stack agentx-staging-access has no output PullThroughPrefix");
+    expect(() => stackParameters("slack", answers(), { ...outputs, access: accessNoPrefix }, { packages: true })).toThrow("stack rovara-cloud-staging-access has no output PullThroughPrefix");
   });
 
   it("passes stored developer sign-in to the control plane, every key declared by the template", () => {

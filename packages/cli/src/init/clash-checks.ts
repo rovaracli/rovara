@@ -52,7 +52,7 @@ export async function clashChecks(input: {
       label: "Install name", ok: false,
       detail: page
         ? "AgentX could not check whether the install name is free. Check your access to AWS, then check again."
-        : `could not check whether environment ${answers.env} is free (${reason(error)}); check your AWS access and run agentx init again`,
+        : `could not check whether environment ${answers.env} is free (${reason(error)}); check your AWS access and run rovara init again`,
       ...(page ? { technical: reason(error) } : {}),
     });
   }
@@ -79,7 +79,7 @@ export async function clashChecks(input: {
     } catch (error) {
       checks.push({
         label: "GitHub owner", ok: false,
-        detail: page ? `AgentX could not reach GitHub to check ${owner}. Check your network, then check again.` : `could not check the GitHub owner ${owner} (${reason(error)}); check your network and run agentx init again`,
+        detail: page ? `AgentX could not reach GitHub to check ${owner}. Check your network, then check again.` : `could not check the GitHub owner ${owner} (${reason(error)}); check your network and run rovara init again`,
         ...(page ? { technical: reason(error) } : {}),
       });
     }
@@ -98,7 +98,7 @@ export async function clashChecks(input: {
     } catch (error) {
       checks.push({
         label: "App name", ok: false,
-        detail: page ? "AgentX could not reach GitHub to check the app name. Check your network, then check again." : `could not check the app name on GitHub (${reason(error)}); check your network and run agentx init again`,
+        detail: page ? "AgentX could not reach GitHub to check the app name. Check your network, then check again." : `could not check the app name on GitHub (${reason(error)}); check your network and run rovara init again`,
         ...(page ? { technical: reason(error) } : {}),
       });
     }

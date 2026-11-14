@@ -31,7 +31,7 @@ describe("the schema: Public refuses the endpoint kind and its secret reference"
   it("accepts a secret reference only as a name under the model-endpoint prefix", () => {
     for (const good of [REF, `rovara/model-endpoints/${ORG}/llm.corp.example.com/team-a/gateway_key.v2`, `rovara/model-endpoints/${ORG}/gw.example.com/k+=@-1`]) expect(isModelEndpointSecretRef(good), good).toBe(true);
     const bad = [
-      "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf", "agentx/staging/master-key", "rovara/model-endpoints", "rovara/model-endpoints/",
+      "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf", "rovara-cloud/staging/master-key", "rovara/model-endpoints", "rovara/model-endpoints/",
       "rovara/model-endpoints//x", "rovara/model-endpoints/x/", "rovara/model-endpoints/..", "rovara/model-endpoints/a/../b", "rovara/model-endpoints/./x", "/rovara/model-endpoints/x",
       "rovara/model-endpoints/with space", "rovara/model-endpoints/x?versionId=1", "rovara/model-endpoints/x#frag", "rovara/model-endpoints/ünï", `${MODEL_ENDPOINT_SECRET_PREFIX}${"a".repeat(200)}`, "sk-planted-value-0123456789abcdef", "",
       // The old shape, with no organization or host in the name, and shapes with a bad organization, host or name segment.

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { MODEL_PROXY_URL_PARAMETER, BOOT_STAGE2_SHA256_PARAMETER, WORKER_SETTING_PARAMETERS } from "@agentx/contracts";
 import { baseImageDigestOfWorkerImage, savedEnvBaseImageDigestReader, SAVED_ENV_BASE_IMAGE_CACHE_MS } from "../../packages/broker/src/aws/broker/saved-env-real.js";
 
-const PREFIX = "/agentx/staging/";
+const PREFIX = "/rovara-cloud/staging/";
 const DIGEST = `sha256:${"a".repeat(64)}`;
 const settings = (image: string | undefined, over: Record<string, string | undefined> = {}): Record<string, string> => {
   const base: Record<string, string> = {

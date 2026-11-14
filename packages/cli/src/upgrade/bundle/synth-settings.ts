@@ -1,5 +1,5 @@
 // Enterprise upgrades are built at approval (owner decision 2026-10-31, option A). The settings a build is made from are the install's OWN, recorded by the
-// customer's administrators in Parameter Store (`/agentx/<env>/synth-settings`). They are read here, from the install, and from nowhere else: not from a bundle,
+// customer's administrators in Parameter Store (`/rovara-cloud/<env>/synth-settings`). They are read here, from the install, and from nowhere else: not from a bundle,
 // not from a flag, not from anything the Rovara operator can reach (the operator role has no Parameter Store access).
 import { SynthSettingsSchema, agentXError, synthSettingsParameter, synthSettingsSha256, type SynthSettings } from "@agentx/contracts";
 import type { EnvironmentSettings } from "../../environments/settings.js";
@@ -12,13 +12,13 @@ export async function readSynthSettings(store: ParameterStore, install: Pick<Env
   const name = synthSettingsParameter(install.env);
   const stored = await store.get(name);
   if (stored === undefined) {
-    throw agentXError("CONFIG_INVALID", `this Enterprise install has no recorded build settings at ${name}; your administrators record them with: agentx bundle record-settings --file <settings.json>. Nothing was built`);
+    throw agentXError("CONFIG_INVALID", `this Enterprise install has no recorded build settings at ${name}; your administrators record them with: rovara bundle record-settings --file <settings.json>. Nothing was built`);
   }
   let settings: SynthSettings;
   try {
     settings = SynthSettingsSchema.parse(JSON.parse(stored.value));
   } catch {
-    throw agentXError("CONFIG_INVALID", `the recorded build settings at ${name} are not valid; record them again with: agentx bundle record-settings --file <settings.json>. Nothing was built`);
+    throw agentXError("CONFIG_INVALID", `the recorded build settings at ${name} are not valid; record them again with: rovara bundle record-settings --file <settings.json>. Nothing was built`);
   }
   assertSettingsAreThisInstalls(settings, install);
   return settings;

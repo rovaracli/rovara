@@ -1,3 +1,4 @@
+import { RESOURCE_PREFIX } from "@agentx/contracts";
 // The ConnectorSecretsRole's two policies (Plan 3, ruling R62), as plain IAM JSON. The control plane puts them on the
 // role, and the Secrets Manager fake in tests/support/fake-org-secrets.ts evaluates the same text, so a test proves
 // what the role allows rather than what a test author hoped it allows.
@@ -38,7 +39,7 @@ export function connectorSecretsTrustPolicy(brokerRoleArn: string | Record<strin
 }
 
 /**
- * What a session may do, on `secret:agentx/<env>/org-connectors/<its org>/*` and `.../org-hooks/<its org>/*` only.
+ * What a session may do, on `secret:rovara-cloud/<env>/org-connectors/<its org>/*` and `.../org-hooks/<its org>/*` only.
  * `secretArnPrefix` is everything in the ARN up to and including `secret:`.
  *
  * - Get, Put, Describe and Delete need the secret's own `rovara:org` tag to equal the session's org.
@@ -52,8 +53,8 @@ export function connectorSecretsTrustPolicy(brokerRoleArn: string | Record<strin
  */
 export function connectorSecretsPolicyStatements(options: { secretArnPrefix: string; env: string }): PolicyStatementJson[] {
   const own = [
-    `${options.secretArnPrefix}agentx/${options.env}/org-connectors/${PRINCIPAL_ORG_TAG}/*`,
-    `${options.secretArnPrefix}agentx/${options.env}/org-hooks/${PRINCIPAL_ORG_TAG}/*`,
+    `${options.secretArnPrefix}${RESOURCE_PREFIX}/${options.env}/org-connectors/${PRINCIPAL_ORG_TAG}/*`,
+    `${options.secretArnPrefix}${RESOURCE_PREFIX}/${options.env}/org-hooks/${PRINCIPAL_ORG_TAG}/*`,
   ];
   const tagged = {
     StringEquals: { [`aws:RequestTag/${ORG_TAG_KEY}`]: PRINCIPAL_ORG_TAG },

@@ -190,7 +190,7 @@ function foundationParameterDefaults(): Record<string, string> {
 export function allStackOutputs(env = "staging"): Record<string, StackOutputs> {
   const name = (part: Parameters<typeof environmentStackName>[1]) => environmentStackName(env, part);
   return {
-    [name("access")]: { ArtifactBucketName: `agentx-${env}-access-artifactbucket-abc`, CloudFormationRoleArn: `arn:aws:iam::123456789012:role/agentx-${env}-cloudformation`, OperatorRoleArn: `arn:aws:iam::123456789012:role/agentx-${env}-operator`, PullThroughPrefix: `agentx-${env}` },
+    [name("access")]: { ArtifactBucketName: `rovara-cloud-${env}-access-artifactbucket-abc`, CloudFormationRoleArn: `arn:aws:iam::123456789012:role/rovara-cloud-${env}-cloudformation`, OperatorRoleArn: `arn:aws:iam::123456789012:role/rovara-cloud-${env}-operator`, PullThroughPrefix: `rovara-cloud-${env}` },
     [name("foundation")]: { VpcId: "vpc-0123456789abcdef0", PrivateSubnetIds: "subnet-1,subnet-2", SessionManagerSecurityGroupId: "sg-0123456789abcdef0", WorkspaceKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/k", Ec2WorkerInstanceRoleArn: `arn:aws:iam::123456789012:role/agentx/${env}/worker`, Ec2WorkerLaunchTemplateId: "lt-0123456789abcdef0", Ec2WorkerSubnets: "us-east-1a=subnet-1,us-east-1b=subnet-2", Ec2WorkerSecurityGroupId: "sg-0fedcba9876543210", ProjectAllowListId: "rslvr-fdl-0123456789abcdef", ...foundationParameterDefaults() },
     [name("identity")]: { Issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc", Audience: "client123", ClientId: "client123", UserPoolId: "us-east-1_abc" },
     [name("control-plane")]: {
@@ -198,11 +198,11 @@ export function allStackOutputs(env = "staging"): Record<string, StackOutputs> {
       GithubWebhookUrl: "https://abc123.execute-api.us-east-1.amazonaws.com/v1/github/webhooks",
       SlackEventsUrl: "https://abc123.execute-api.us-east-1.amazonaws.com/v1/slack/events",
       SlackInteractivityUrl: "https://abc123.execute-api.us-east-1.amazonaws.com/v1/slack/interactions",
-      SlackSecretArn: `arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/${env}/slack-AbCdEf`,
+      SlackSecretArn: `arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/${env}/slack-AbCdEf`,
       SlackOrchestratorTaskRoleArn: `arn:aws:iam::123456789012:role/agentx/${env}/slack-task`,
       SlackRequestQueueUrl: "https://sqs.us-east-1.amazonaws.com/123456789012/requests",
       SlackThreadsTableName: "threads", TurnRecordsTableName: "turns", SlackThreadSessionBucketName: "sessions",
-      OperatorAlertsTopicArn: `arn:aws:sns:us-east-1:123456789012:agentx-${env}-alerts`,
+      OperatorAlertsTopicArn: `arn:aws:sns:us-east-1:123456789012:rovara-cloud-${env}-alerts`,
       ModelProxyUrl: "http://internal-proxy.example.test:4000",
       ModelProxySecurityGroupId: "sg-0123456789abcdef0",
     },
@@ -235,7 +235,7 @@ export function scriptedDeployer(outputsByStack: Record<string, StackOutputs>, e
 
 export function fakeRelease(version = "1.2.3"): LoadedRelease {
   const manifest: ReleaseManifest = {
-    schemaVersion: 1, version, gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-placeholderqq", templates: [], packages: [],
+    schemaVersion: 1, version, gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-phldrqq", templates: [], packages: [],
     images: { worker: `public.ecr.aws/agentx/agentx-worker@sha256:${"b".repeat(64)}`, slack: `public.ecr.aws/agentx/agentx-slack@sha256:${"c".repeat(64)}` },
   };
   return { manifest, dir: "/nonexistent", regions: () => ["us-east-1"], template: () => { throw new Error("not used"); }, packagePath: () => { throw new Error("not used"); } };

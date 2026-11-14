@@ -353,7 +353,7 @@ describe("pull request publication", () => {
       ...fixture.invocation.payload.project,
       repositories: fixture.invocation.payload.project.repositories.map((repository) => ({
         ...repository,
-        codeBuildGates: [{ name: "quality", projectName: "agentx-demo-quality", timeoutMinutes: 5 }],
+        codeBuildGates: [{ name: "quality", projectName: "rovara-cloud-demo-quality", timeoutMinutes: 5 }],
       })),
     };
     const invocation = {
@@ -396,7 +396,7 @@ describe("pull request publication", () => {
           ...fixture.invocation.payload.project,
           repositories: fixture.invocation.payload.project.repositories.map((repository) => ({
             ...repository,
-            codeBuildGates: [{ name: "quality", projectName: "agentx-demo-quality", timeoutMinutes: 5 }],
+            codeBuildGates: [{ name: "quality", projectName: "rovara-cloud-demo-quality", timeoutMinutes: 5 }],
           })),
         },
       },

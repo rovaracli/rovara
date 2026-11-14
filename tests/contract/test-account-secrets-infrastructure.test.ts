@@ -153,9 +153,9 @@ describe("the TestAccountSecretsRole, as the policy text says", () => {
 
   it("is a different path from the connector role's: neither role reaches the other's secrets", async () => {
     const secrets = fake();
-    secrets.seed(`agentx/staging/org-connectors/${ORG_A}/conn-1`, secretValue(), { "rovara:org": ORG_A, "rovara:use": "test-account" });
+    secrets.seed(`rovara-cloud/staging/org-connectors/${ORG_A}/conn-1`, secretValue(), { "rovara:org": ORG_A, "rovara:use": "test-account" });
     const resolve = await session(secrets, tagsOf(ORG_A, "resolve"));
-    expect(await refused(resolve.send(new GetSecretValueCommand({ SecretId: `agentx/staging/org-connectors/${ORG_A}/conn-1` })))).toBe(true);
+    expect(await refused(resolve.send(new GetSecretValueCommand({ SecretId: `rovara-cloud/staging/org-connectors/${ORG_A}/conn-1` })))).toBe(true);
     expect(testAccountSecretName("staging", ORG_A, "payments-test")).not.toContain("org-connectors");
   });
 
@@ -205,9 +205,9 @@ describe("TestAccountSecretsRole (named environments)", () => {
   }, 240_000);
 
   it("has a fixed name on the environment role path, and the connector role's name as its prefix", () => {
-    expect(role.Properties.RoleName).toBe("agentx-staging-connector-secrets-test-accounts");
+    expect(role.Properties.RoleName).toBe("rovara-cloud-staging-connector-secrets-test-accounts");
     expect(role.Properties.RoleName).toBe(testAccountSecretsRoleName("staging"));
-    expect(role.Properties.Path).toBe("/agentx/staging/");
+    expect(role.Properties.Path).toBe("/rovara-cloud/staging/");
     expect(fixedNameEnvironmentRoleNames("staging")).toContain(testAccountSecretsRoleName("staging"));
   });
 
@@ -222,7 +222,7 @@ describe("TestAccountSecretsRole (named environments)", () => {
     const expected = testAccountSecretsPolicyStatements({ secretArnPrefix: "PREFIX:", env: "staging" });
     expect(statements.map((statement) => statement.Sid)).toEqual(expected.map((statement) => statement.Sid));
     for (const statement of statements.filter((entry) => entry.Effect === "Allow")) {
-      expect(JSON.stringify(statement.Resource)).toContain("agentx/staging/org-test-accounts/${aws:PrincipalTag/rovara:org}/*");
+      expect(JSON.stringify(statement.Resource)).toContain("rovara-cloud/staging/org-test-accounts/${aws:PrincipalTag/rovara:org}/*");
     }
   });
 
@@ -248,12 +248,12 @@ describe("TestAccountSecretsRole (named environments)", () => {
   it("is covered by the default boundary's one connector-secrets* ARN, which stays the only sts:AssumeRole grant of this account's roles besides the saved environment's", () => {
     const boundary = defaultBoundaryStatements({ env: "staging", partition: "aws", region: "us-west-2", account: "111122223333", cloudFormationRoleName: "x" });
     const statement = boundary.find((entry) => entry.Sid === "ConnectorSecretsRole")!;
-    expect(statement.Resource).toEqual(["arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets*", "arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-img-*"]);
-    expect("arn:aws:iam::111122223333:role/agentx/staging/agentx-staging-connector-secrets-test-accounts").toMatch(new RegExp(`^${(statement.Resource as string[])[0]!.replace(/\*/gu, ".*")}$`, "u"));
+    expect(statement.Resource).toEqual(["arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-connector-secrets*", "arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-img-*"]);
+    expect("arn:aws:iam::111122223333:role/rovara-cloud/staging/rovara-cloud-staging-connector-secrets-test-accounts").toMatch(new RegExp(`^${(statement.Resource as string[])[0]!.replace(/\*/gu, ".*")}$`, "u"));
   });
 
   it("L9: no other fixed or generated role name starts with the connector secrets role's name, which the boundary and the deploy role cover by prefix", () => {
-    const prefix = "agentx-staging-connector-secrets";
+    const prefix = "rovara-cloud-staging-connector-secrets";
     const expected = [accessPolicies.connectorSecretsRoleName("staging"), testAccountSecretsRoleName("staging")].sort();
     // Every fixed name the control plane gives a role.
     expect(fixedNameEnvironmentRoleNames("staging").filter((name) => name.startsWith(prefix)).sort()).toEqual(expected);

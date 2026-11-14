@@ -740,7 +740,7 @@ export async function readConnection(deps: OrgConnectionDeps, orgId: OrgId, conn
   return item === undefined ? undefined : (item as unknown as OrgConnectionRecord);
 }
 
-/** Hook secrets (for Plan 4's event hooks), each through OrgSecrets under `agentx/<env>/org-hooks/<orgId>/<hookId>`. */
+/** Hook secrets (for Plan 4's event hooks), each through OrgSecrets under `rovara-cloud/<env>/org-hooks/<orgId>/<hookId>`. */
 export class HookSecretStore {
   constructor(private readonly input: { env: string; secrets: Pick<OrgSecrets, "read" | "put" | "scheduleDelete"> }) {}
 

@@ -63,7 +63,7 @@ describe("clash checks", () => {
     const [name] = await clashChecks({ answers: sampleAnswers(), stackStatus: nothing, github: fakeGitHubApi(), audience: "terminal", installUsed: broken });
     expect(name).toEqual({
       label: "Install name", ok: false,
-      detail: "could not check whether environment staging is free (AccessDenied: not authorized to read the parameter); check your AWS access and run agentx init again",
+      detail: "could not check whether environment staging is free (AccessDenied: not authorized to read the parameter); check your AWS access and run rovara init again",
     });
   });
 

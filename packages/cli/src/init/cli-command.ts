@@ -4,7 +4,7 @@
 // its own path.
 // Owner decision 2026-10-02 (#218, #235 follow-up): a live message about the command running right
 // now goes further, when it knows how npm launched this very process: the installed package's bin
-// shows as the bare `agentx` command, not as the universally-working `npx` suggestion that a
+// shows as the bare `rovara` command, not as the universally-working `npx` suggestion that a
 // persisted (not live) hint still falls back to when it was never told.
 import { realpathSync } from "node:fs";
 import { CLI_COMMAND_NAME, CLI_PACKAGE_NAME } from "@agentx/contracts";

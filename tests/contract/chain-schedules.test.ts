@@ -18,12 +18,12 @@ import { DANA, ORG_A, ORG_B, PRIYA, disposeGateWorlds, setupTriggerWorld, type T
 
 afterEach(disposeGateWorlds);
 
-const GROUP = "agentx-staging-chain-triggers";
+const GROUP = "rovara-cloud-staging-chain-triggers";
 const SETTINGS: ScheduleSettings = {
   groupName: GROUP,
-  roleArn: "arn:aws:iam::123456789012:role/agentx/staging/ChainScheduleInvokeRole-ABC",
-  functionArn: "arn:aws:lambda:us-east-1:123456789012:function:agentx-staging-broker",
-  queueArn: "arn:aws:sqs:us-east-1:123456789012:agentx-staging-chain-schedule-dead-letters",
+  roleArn: "arn:aws:iam::123456789012:role/rovara-cloud/staging/ChainScheduleInvokeRole-ABC",
+  functionArn: "arn:aws:lambda:us-east-1:123456789012:function:rovara-cloud-staging-broker",
+  queueArn: "arn:aws:sqs:us-east-1:123456789012:rovara-cloud-staging-chain-schedule-dead-letters",
 };
 const ONE_STEP: ChainDefinitionInput = { start: "look", steps: [{ kind: "agent", id: "look", name: "Look", agent: { agentId: "root-cause-analyst", version: "current" }, next: { kind: "end" } }], limits: { maxRunUsd: 5 } };
 const MINUTE = 60_000;
@@ -660,12 +660,12 @@ describe("a schedule that is still pending is repaired by the sweep", () => {
 // ---- pins from the mutation pass
 
 describe("pins: settings, scheduler calls and edges", () => {
-  const ENV = { AGENTX_ENV: "staging", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AWS_LAMBDA_FUNCTION_NAME: "agentx-staging-broker", CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx/staging/r", CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/q" };
+  const ENV = { AGENTX_ENV: "staging", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AWS_LAMBDA_FUNCTION_NAME: "rovara-cloud-staging-broker", CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::123456789012:role/rovara-cloud/staging/r", CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/q" };
   it("accepts the settings as they should be, and refuses a role of another account, an account that is not 12 digits, a function name or a queue name with odd characters", () => {
     expect(scheduleSettingsFromEnvironment(ENV)).toBeDefined();
-    expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::999999999999:role/agentx/staging/r" })).toBeUndefined();
+    expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::999999999999:role/rovara-cloud/staging/r" })).toBeUndefined();
     expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::123456789012:user/x" })).toBeUndefined();
-    expect(scheduleSettingsFromEnvironment({ ...ENV, AGENTX_ACCOUNT_ID: "12345", CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::12345:role/agentx/staging/r", CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/12345/q" })).toBeUndefined();
+    expect(scheduleSettingsFromEnvironment({ ...ENV, AGENTX_ACCOUNT_ID: "12345", CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::12345:role/rovara-cloud/staging/r", CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/12345/q" })).toBeUndefined();
     expect(scheduleSettingsFromEnvironment({ ...ENV, AWS_LAMBDA_FUNCTION_NAME: "a:b" })).toBeUndefined();
     expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/q%2Fx" })).toBeUndefined();
     expect(scheduleSettingsFromEnvironment({ ...ENV, CHAIN_SCHEDULE_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/${"q".repeat(81)}` })).toBeUndefined();

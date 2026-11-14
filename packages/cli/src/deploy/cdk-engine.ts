@@ -199,7 +199,7 @@ export function cdkAppArguments(input: { env: string; region: string; identityMo
   // Enterprise foundations E2: the edition is synth-time only too (it stamps ROVARA_EDITION on every function). `rovara init` also marks a new install, so that a new install with no edition is refused at synth.
   if (input.edition !== undefined) args.push("-c", `${EDITION_CONTEXT_KEY}=${input.edition}`);
   if (input.newInstall === true) args.push("-c", `${NEW_INSTALL_CONTEXT_KEY}=true`);
-  // `agentx upgrade --no-reserved-concurrency`: for an account whose Lambda concurrency limit is too low to reserve any. Unset keeps the default (reserved).
+  // `rovara upgrade --no-reserved-concurrency`: for an account whose Lambda concurrency limit is too low to reserve any. Unset keeps the default (reserved).
   if (input.reservedConcurrency === false) args.push("-c", "agentxReservedConcurrency=false");
   return args;
 }

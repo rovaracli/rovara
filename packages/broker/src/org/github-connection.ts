@@ -1,4 +1,4 @@
-// Plan 2, Task 13: an org connects its own GitHub App installation (Rovara Cloud). `agentx github connect` makes a one-use state bound to
+// Plan 2, Task 13: an org connects its own GitHub App installation (Rovara Cloud). `rovara github connect` makes a one-use state bound to
 // the org owner or admin who started it; GitHub sends their browser back with a user authorization code. The callback proves who is
 // there (the GitHub account linked to the starting developer) and that they manage the installation's account (the account itself, or an
 // admin of the GitHub organization), then shows "Connect <account> to <org>?". Only the confirmation, from the same browser, binds.
@@ -61,7 +61,7 @@ const HASH_PATTERN = /^[0-9a-f]{64}$/;
 const COOKIE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const INSTALLATION_ID_PATTERN = /^[1-9][0-9]{0,14}$/;
 const USER_INSTALLATION_PAGES = 10;
-const NOT_LINKED_START_MESSAGE = "sign in to Rovara with GitHub once (agentx login, then choose GitHub), then run agentx github connect again";
+const NOT_LINKED_START_MESSAGE = "sign in to Rovara with GitHub once (rovara login, then choose GitHub), then run rovara github connect again";
 
 
 /** The Set-Cookie value that carries the confirmation token to the confirm page's form post, and only to this host. */
@@ -78,7 +78,7 @@ export async function startGithubConnect(
   deps: GithubConnectionDependencies,
   caller: { developerId: string; orgId: OrgId; orgRole: OrgRole },
 ): Promise<{ installUrl: string; expiresAt: string; orgName?: string; ownerName?: string }> {
-  if (!deps.cloud) throw agentXError("FORBIDDEN", "on this install, GitHub is connected by the administrator during agentx init");
+  if (!deps.cloud) throw agentXError("FORBIDDEN", "on this install, GitHub is connected by the administrator during rovara init");
   if (!isOwnerOrAdmin(caller.orgRole)) throw agentXError("FORBIDDEN", "only an owner or admin can connect GitHub");
   if (!await hasLinkedGithubIdentity(deps, caller.developerId)) throw agentXError("FORBIDDEN", NOT_LINKED_START_MESSAGE);
   // The callback cannot exchange a code without the App's OAuth client: say so now rather than after a person installed the App.
@@ -364,7 +364,7 @@ export async function confirmGithubConnect(
 
 const INSTALLATION_ITEM_PREFIX = "GITHUB_INSTALLATION#";
 const INSTALLATION_EVENT_ATTEMPTS = 3;
-const NOT_CONNECTED_UNNAMED = "Rovara can't reach GitHub through your organization's GitHub connection. Connect it with: agentx github connect";
+const NOT_CONNECTED_UNNAMED = "Rovara can't reach GitHub through your organization's GitHub connection. Connect it with: rovara github connect";
 
 /** One installation of an org, as `GET /v1/app/github/installations` shows it. */
 export interface InstallationView {
@@ -406,7 +406,7 @@ export async function disconnectGithubInstallation(
   caller: { developerId: string; orgId: OrgId; orgRole: OrgRole },
   installationId: number,
 ): Promise<{ installationId: number; accountLogin: string; message: string }> {
-  if (!deps.cloud) throw agentXError("FORBIDDEN", "on this install, GitHub is connected by the administrator during agentx init");
+  if (!deps.cloud) throw agentXError("FORBIDDEN", "on this install, GitHub is connected by the administrator during rovara init");
   if (!isOwnerOrAdmin(caller.orgRole)) throw agentXError("FORBIDDEN", "only an owner or admin can disconnect GitHub");
   const found = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: orgGithubInstallationKey(caller.orgId, installationId), ConsistentRead: true })) as { Item?: { accountLogin?: unknown; accountType?: unknown; boundAt?: unknown } };
   if (found.Item === undefined || typeof found.Item.accountLogin !== "string") throw agentXError("NOT_FOUND", "this organization has no such GitHub installation");
@@ -540,7 +540,7 @@ export async function listInstallationRepositories(
   orgId: OrgId,
   installationId: number,
 ): Promise<{ repositories: InstallationRepositoryView[] }> {
-  if (!deps.cloud) throw agentXError("FORBIDDEN", "on this install, GitHub is connected by the administrator during agentx init");
+  if (!deps.cloud) throw agentXError("FORBIDDEN", "on this install, GitHub is connected by the administrator during rovara init");
   const global = await deps.documentClient.send(new GetCommand({ TableName: deps.tableName, Key: githubInstallationKey(installationId), ConsistentRead: true })) as { Item?: { orgId?: unknown } };
   if (global.Item?.orgId !== orgId) throw agentXError("NOT_FOUND", "this organization has no such GitHub installation");
   if (deps.app.listInstallationRepositories === undefined) throw agentXError("RUNTIME_UNAVAILABLE", "listing GitHub repositories is not set up in this deployment; ask Rovara support");

@@ -340,8 +340,8 @@ describe("a task's checks", () => {
 
 describe("the nightly schedule after an approval", () => {
   const SCHEDULER_ENV = {
-    AGENTX_ENV: "staging", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AWS_LAMBDA_FUNCTION_NAME: "agentx-staging-broker",
-    CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx-staging-chain-schedule", CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-chain-schedule",
+    AGENTX_ENV: "staging", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AWS_LAMBDA_FUNCTION_NAME: "rovara-cloud-staging-broker",
+    CHAIN_SCHEDULE_ROLE_ARN: "arn:aws:iam::123456789012:role/rovara-cloud-staging-chain-schedule", CHAIN_SCHEDULE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/rovara-cloud-staging-chain-schedule",
   };
   const withSchedulerEnv = async <T>(run: () => Promise<T>): Promise<T> => {
     const before = Object.fromEntries(Object.keys(SCHEDULER_ENV).map((key) => [key, process.env[key]]));

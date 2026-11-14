@@ -28,7 +28,7 @@ export async function ensureCognitoAdmin(input: {
   }
   if ((await cognito.groups(poolId, email)).includes(ADMIN_GROUP)) return { created: false, temporaryPassword: false };
   if (status === "CONFIRMED" && !(await input.confirm(`The user ${email} already exists and has signed in before. Make it an AgentX administrator (group ${ADMIN_GROUP})?`))) {
-    throw agentXError("CONFIG_INVALID", `you chose not to make ${email} an AgentX administrator; run agentx init again and give the email address of the admin you want (--admin-email)`);
+    throw agentXError("CONFIG_INVALID", `you chose not to make ${email} an AgentX administrator; run rovara init again and give the email address of the admin you want (--admin-email)`);
   }
   input.write(`The user ${email} already exists (status ${status}); adding it to ${ADMIN_GROUP}.`);
   await cognito.addToGroup(poolId, email, ADMIN_GROUP);

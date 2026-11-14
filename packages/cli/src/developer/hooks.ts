@@ -1,4 +1,4 @@
-// Plan 4 Task 19: event hooks from the command line. `agentx project hooks list | create | rotate | delete <project>`, each one signed-in call to the control plane's
+// Plan 4 Task 19: event hooks from the command line. `rovara project hooks list | create | rotate | delete <project>`, each one signed-in call to the control plane's
 // `/v1/app/projects/{p}/event-hooks` routes. A secret is never a command-line argument (it would sit in the shell's history): a vendor's secret is read from a file, and one that
 // Rovara makes is printed once, by the call that made it.
 import { randomUUID } from "node:crypto";
@@ -28,7 +28,7 @@ const hookLine = (hook: Body): string => `  ${str(hook.hookId)}  ${str(hook.sour
 export async function hooksList(deps: DeveloperSessionDeps, env: string | undefined, project: string): Promise<AppResult> {
   const answer = await appRequest(deps, env, base(project));
   const hooks = list(answer.body.hooks);
-  const text = hooks.length === 0 ? `${clean(project)} has no event hooks. Add one with agentx project hooks create ${clean(project)} --source <source> --tenant <tenant.json>.\n` : `${[`Event hooks of ${clean(project)}:`, ...hooks.map(hookLine)].join("\n")}\n`;
+  const text = hooks.length === 0 ? `${clean(project)} has no event hooks. Add one with rovara project hooks create ${clean(project)} --source <source> --tenant <tenant.json>.\n` : `${[`Event hooks of ${clean(project)}:`, ...hooks.map(hookLine)].join("\n")}\n`;
   return result(answer, { hooks }, text);
 }
 

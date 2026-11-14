@@ -9,6 +9,7 @@ import { modelEndpointSecretsStatement } from "./model-endpoints.js";
 import { MODEL_PROXY_MANAGEMENT_PORT, assumeOrgBedrockRoles, type ModelProxy } from "./model-proxy.js";
 import type { AgentXNaming } from "./naming.js";
 import { enterpriseHttpsEgress } from "./vpc-endpoints.js";
+import { APPLICATION_TAG_VALUE, ENVIRONMENT_TAG_KEY } from "@agentx/contracts";
 
 export interface ModelAccessProps {
   naming: AgentXNaming;
@@ -38,7 +39,7 @@ export class ModelAccess extends Construct {
   constructor(scope: Construct, id: string, props: ModelAccessProps) {
     super(scope, id);
     const { naming, handler, proxy } = props;
-    const tags = [{ key: "Application", value: "AgentX" }, ...(naming.env === undefined ? [] : [{ key: "agentx:env", value: naming.env }])];
+    const tags = [{ key: "Application", value: APPLICATION_TAG_VALUE }, ...(naming.env === undefined ? [] : [{ key: ENVIRONMENT_TAG_KEY, value: naming.env }])];
     const port = MODEL_PROXY_MANAGEMENT_PORT;
 
     // Its own group: the management port (4001) of the proxy load balancer, which no other group may reach (ruling R48), and HTTPS (through the NAT) for Secrets Manager.

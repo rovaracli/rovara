@@ -156,11 +156,11 @@ describe("DELETE /v1/app/org/members/{developerId}", () => {
     expect(roleOf(harness, OMAR)).toBe("owner");
   });
 
-  it("refuses removing yourself, pointing at agentx org leave", async () => {
+  it("refuses removing yourself, pointing at rovara org leave", async () => {
     const { remove } = await org();
     const refused = await remove(OMAR, OMAR);
     expect(refused.status).toBe(403);
-    expect(errorOf(refused)).toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("use agentx org leave to leave") as string });
+    expect(errorOf(refused)).toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("use rovara org leave to leave") as string });
   });
 
   it("answers 404 for a person who is not a member", async () => {

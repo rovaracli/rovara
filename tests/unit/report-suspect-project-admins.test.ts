@@ -255,8 +255,8 @@ describe("report-suspect-project-admins", () => {
         adminRow("mallory", "billing"),
         projectRow("orphaned", 1, "dave", "2026-01-01T00:00:00.000Z"),
       ]);
-      const text = formatReportTable(await collectReport(client, TABLE), { label: "env agentxlivetest123", region: "us-east-1" });
-      expect(text).toContain("agentxlivetest123");
+      const text = formatReportTable(await collectReport(client, TABLE), { label: "env rovaralivetest", region: "us-east-1" });
+      expect(text).toContain("rovaralivetest");
       expect(text).toMatch(/billing\s+mallory\s+-\s+-\s+2@2026-02-01T00:00:00\.000Z\s+alice/);
       expect(text).toMatch(/orphaned\s+dave/);
       expect(text).toContain("Suspect administrators: 1");
@@ -494,9 +494,9 @@ describe("report-suspect-project-admins", () => {
 
     it("resolves the table from the named environment's control-plane stack", async () => {
       const h = harness();
-      await main(["--env", "agentxlivetest123", "--profile", "agentx-test"], h.deps);
-      expect(h.describedStacks).toEqual(["agentx-agentxlivetest123-control-plane"]);
-      expect(h.out.join("\n")).toContain("env agentxlivetest123");
+      await main(["--env", "rovaralivetest", "--profile", "agentx-test"], h.deps);
+      expect(h.describedStacks).toEqual(["rovara-cloud-rovaralivetest-control-plane"]);
+      expect(h.out.join("\n")).toContain("env rovaralivetest");
     });
 
     it("resolves the table from --stack as given, for production's legacy stack name", async () => {

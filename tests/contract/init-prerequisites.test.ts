@@ -190,7 +190,7 @@ describe("init prerequisites", () => {
     await expect(run(sampleAnswers({ models: { orchestrator: "a", classifier: "a", worker: "a" } }), flaky)).resolves.toBeDefined();
     expect(calls).toBe(2);
     const throttled = passingChecks({ converse: async () => { throw awsError("ThrottlingException", "Too many requests"); } });
-    await expect(run(sampleAnswers({ models: { orchestrator: "a", classifier: "a", worker: "a" } }), throttled)).rejects.toThrow("Bedrock throttled the check of a; wait a minute and run agentx init again");
+    await expect(run(sampleAnswers({ models: { orchestrator: "a", classifier: "a", worker: "a" } }), throttled)).rejects.toThrow("Bedrock throttled the check of a; wait a minute and run rovara init again");
   });
 
   it("reports every problem at once", async () => {
@@ -315,7 +315,7 @@ describe("fix round 1", () => {
   });
 
   // Item 2: the one-token Bedrock call must be bounded so a hung network call fails clearly
-  // instead of hanging `agentx init` forever, and the SDK's own retry loop must be off (the
+  // instead of hanging `rovara init` forever, and the SDK's own retry loop must be off (the
   // outer checkPrerequisites retry already attempts the call at most twice).
   it("item 2: pins the Bedrock client to a single SDK attempt and its own request/connection timeouts", () => {
     expect(CONVERSE_CLIENT_MAX_ATTEMPTS).toBe(1);

@@ -1,4 +1,4 @@
-// agentx init's deploy steps: each drives deployEnvironment for its own parts under the lock the
+// rovara init's deploy steps: each drives deployEnvironment for its own parts under the lock the
 // step runner already holds, and first waits out any of its stacks an interrupted run left busy
 // (Review Focus 2). No test here reaches AWS, GitHub or Slack.
 import { rm } from "node:fs/promises";
@@ -13,7 +13,7 @@ import { initContext, progressHandle, sampleAnswers, T0 } from "../support/init-
 const homes: string[] = [];
 afterEach(async () => { await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))); });
 
-const GITHUB = { account: "acme", appId: "42", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf", installationId: "777" };
+const GITHUB = { account: "acme", appId: "42", slug: "agentx-acme-staging", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf", installationId: "777" };
 
 describe("init deploy answers", () => {
   it("maps the install answers, and fills GitHub only once the app is installed", () => {
@@ -45,7 +45,7 @@ describe("init deploy answers", () => {
     const deploy = initDeployAnswers(sampleAnswers(), emptyProgress("staging", T0), ["control-plane"], GITHUB.privateKeySecretArn);
     expect(deploy.github).toEqual({ account: "", appId: "", installationId: "", privateKeySecretArn: GITHUB.privateKeySecretArn });
     expect(() => initDeployAnswers(sampleAnswers(), emptyProgress("staging", T0), ["control-plane"]))
-      .toThrow("the control plane needs the GitHub App's secret; run agentx init again");
+      .toThrow("the control plane needs the GitHub App's secret; run rovara init again");
   });
 });
 
@@ -60,11 +60,11 @@ describe("init deploy steps", () => {
     await deployStep({ id: "access", title: "Deploy the access stack" }).run(context, progressHandle());
     await deployStep({ id: "core", title: "Build the network and sign-in" }).run(context, progressHandle());
     expect(context.deployer.requests.map((request) => request.part)).toEqual(["access", "foundation", "identity"]);
-    expect(context.deployer.requests[1]?.roleArn).toBe("arn:aws:iam::123456789012:role/agentx-staging-cloudformation");
+    expect(context.deployer.requests[1]?.roleArn).toBe("arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation");
     // deployEnvironment reads the lock to confirm the runner holds it; it never writes or deletes it.
     const store = context.store as MemoryParameterStore;
     expect(store.calls.filter((call) => call.name.endsWith("/lock") && call.op !== "get")).toEqual([]);
-    expect(context.lines).toContain("deployed agentx-staging-access");
+    expect(context.lines).toContain("deployed rovara-cloud-staging-access");
   });
 
   it("refuses when the runner does not hold the lock", async () => {
@@ -87,8 +87,8 @@ describe("init deploy steps", () => {
     homes.push(context.home);
     for (const id of ["access", "core", "control-plane"] as const) await deployStep({ id, title: id }).run(context, progressHandle());
     const parameters = context.deployer.requests.find((request) => request.part === "control-plane")?.parameters;
-    expect(parameters).toMatchObject({ GitHubAppId: "", GitHubAppPrivateKeySecretArn: await context.secrets.arn("agentx/staging/github-app") });
-    expect(await context.secrets.get("agentx/staging/github-app")).toBeUndefined();
+    expect(parameters).toMatchObject({ GitHubAppId: "", GitHubAppPrivateKeySecretArn: await context.secrets.arn("rovara-cloud/staging/github-app") });
+    expect(await context.secrets.get("rovara-cloud/staging/github-app")).toBeUndefined();
   });
 
   it("passes the Slack app-posted-messages choice to the control plane", async () => {
@@ -135,8 +135,8 @@ describe("init deploy steps", () => {
   it("hands deployEnvironment the deployment's declared parameters, the cdk engine's synth (issue 152)", async () => {
     const context = initContext({ answers: sampleAnswers({ engine: "cdk" }) });
     homes.push(context.home);
-    await context.store.put("/agentx/staging/slack/teamId", "T0TEAM1");
-    await context.store.put("/agentx/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: "arn:aws:iam::123456789012:user/alice" }));
+    await context.store.put("/rovara-cloud/staging/slack/teamId", "T0TEAM1");
+    await context.store.put("/rovara-cloud/staging/signin", JSON.stringify({ schemaVersion: 1, env: "staging", slack: true, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: "arn:aws:iam::123456789012:user/alice" }));
     const inner = context.deployment.bind(context);
     // fakeRelease's template() throws: only the synth's set can answer for the control plane.
     context.deployment = async () => ({ ...(await inner()), declaredParameters: (part) => new Set(part === "control-plane" ? ["SlackTeamId"] : []) });
@@ -166,8 +166,8 @@ describe("waiting for stacks left busy by an interrupted run (Review Focus 2)", 
     const statuses = ["UPDATE_IN_PROGRESS", "UPDATE_IN_PROGRESS", "UPDATE_COMPLETE"];
     let clock = T0;
     const lines: string[] = [];
-    await waitForIdleStacks({ reader: { status: async () => statuses.shift() }, stackNames: ["agentx-staging-foundation"], sleep: async (ms) => { clock += ms; }, write: (line) => lines.push(line), now: () => clock });
-    expect(lines).toEqual(["Waiting for agentx-staging-foundation: it is UPDATE_IN_PROGRESS from an earlier run"]);
+    await waitForIdleStacks({ reader: { status: async () => statuses.shift() }, stackNames: ["rovara-cloud-staging-foundation"], sleep: async (ms) => { clock += ms; }, write: (line) => lines.push(line), now: () => clock });
+    expect(lines).toEqual(["Waiting for rovara-cloud-staging-foundation: it is UPDATE_IN_PROGRESS from an earlier run"]);
     expect(clock - T0).toBe(30_000);
   });
 
@@ -180,7 +180,7 @@ describe("waiting for stacks left busy by an interrupted run (Review Focus 2)", 
   it("gives up after 60 minutes with what to do", async () => {
     let clock = T0;
     await expect(waitForIdleStacks({ reader: { status: async () => "ROLLBACK_IN_PROGRESS" }, stackNames: ["agentx-staging-core"], sleep: async (ms) => { clock += ms; }, write: () => undefined, now: () => clock }))
-      .rejects.toThrow("stack agentx-staging-core is still ROLLBACK_IN_PROGRESS after 60 minutes; check it in the CloudFormation console, then run agentx init again");
+      .rejects.toThrow("stack agentx-staging-core is still ROLLBACK_IN_PROGRESS after 60 minutes; check it in the CloudFormation console, then run rovara init again");
     expect(clock - T0).toBe(60 * 60 * 1000);
   });
 
@@ -188,14 +188,14 @@ describe("waiting for stacks left busy by an interrupted run (Review Focus 2)", 
     let clock = T0;
     // The first stack settles after 40 minutes; the second never does.
     const status = async (name: string) => (name.endsWith("foundation") && clock - T0 >= 40 * 60_000 ? "UPDATE_COMPLETE" : "UPDATE_IN_PROGRESS");
-    await expect(waitForIdleStacks({ reader: { status }, stackNames: ["agentx-staging-foundation", "agentx-staging-identity"], sleep: async (ms) => { clock += ms; }, write: () => undefined, now: () => clock }))
-      .rejects.toThrow("stack agentx-staging-identity is still UPDATE_IN_PROGRESS after 60 minutes");
+    await expect(waitForIdleStacks({ reader: { status }, stackNames: ["rovara-cloud-staging-foundation", "rovara-cloud-staging-identity"], sleep: async (ms) => { clock += ms; }, write: () => undefined, now: () => clock }))
+      .rejects.toThrow("stack rovara-cloud-staging-identity is still UPDATE_IN_PROGRESS after 60 minutes");
     expect(clock - T0).toBe(60 * 60_000);
   });
 
   it.each(["ROLLBACK_COMPLETE", "UPDATE_ROLLBACK_FAILED", "UPDATE_COMPLETE"])("does not wait for a settled stack (%s): the deploy handles it", async (settled) => {
     const sleep = vi.fn(async () => undefined);
-    await waitForIdleStacks({ reader: { status: async () => settled }, stackNames: ["agentx-staging-access"], sleep, write: () => undefined, now: () => T0 });
+    await waitForIdleStacks({ reader: { status: async () => settled }, stackNames: ["rovara-cloud-staging-access"], sleep, write: () => undefined, now: () => T0 });
     expect(sleep).not.toHaveBeenCalled();
     const context = initContext({ stackStatus: { status: async () => settled } });
     homes.push(context.home);
@@ -209,7 +209,7 @@ describe("waiting for stacks left busy by an interrupted run (Review Focus 2)", 
     const context = initContext({ stackStatus: { status: async () => statuses.shift() } });
     homes.push(context.home);
     await deployStep({ id: "access", title: "a" }).run(context, progressHandle());
-    expect(context.lines[0]).toBe("Waiting for agentx-staging-access: it is CREATE_IN_PROGRESS from an earlier run");
+    expect(context.lines[0]).toBe("Waiting for rovara-cloud-staging-access: it is CREATE_IN_PROGRESS from an earlier run");
     expect(context.deployer.requests).toHaveLength(1);
   });
 });

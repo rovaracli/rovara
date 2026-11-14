@@ -1,4 +1,4 @@
-// The `agentx config` command group (FR-048, FR-049), kept out of main.ts. Builds real AWS clients
+// The `rovara config` command group (FR-048, FR-049), kept out of main.ts. Builds real AWS clients
 // only when a test has not overridden them.
 import { agentXError } from "@agentx/contracts";
 import { BudgetsClient } from "@aws-sdk/client-budgets";

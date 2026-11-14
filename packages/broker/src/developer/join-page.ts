@@ -38,7 +38,7 @@ export function openInvitePage(invite: InviteView, startUrl: string, pageUrl: st
     paragraphs: [
       `${invite.inviterName} invited you to join ${invite.orgName} as ${roleInSentence(invite.role)}.`,
       ...(invite.maskedEmail === undefined ? [] : [`This invite is for ${invite.maskedEmail}.`]),
-      `Using the terminal? Run: agentx login --invite ${pageUrl}`,
+      `Using the terminal? Run: rovara login --invite ${pageUrl}`,
     ],
     links: [{ href: startUrl, label: `Join ${invite.orgName}` }],
   };
@@ -69,7 +69,7 @@ export function joinDonePage(result: JoinResultRecord, cellUrl: string): PageSpe
       return {
         statusCode: 200,
         title: `You joined ${result.orgName}`,
-        paragraphs: [`You're now ${roleInSentence(result.role)} of ${result.orgName}.`, `Using the terminal? Run: agentx login ${cellUrl}`],
+        paragraphs: [`You're now ${roleInSentence(result.role)} of ${result.orgName}.`, `Using the terminal? Run: rovara login ${cellUrl}`],
         links: [{ href: "/app/welcome?joined=1", label: "Open Rovara" }],
       };
     case "ALREADY_IN_ORG": {

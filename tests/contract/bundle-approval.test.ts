@@ -18,7 +18,7 @@ function storeOf(world: World): ApprovalStore & { puts: string[] } {
   return { puts, put: async (key, body) => { puts.push(key); return { versionId: world.putObject(key, body) }; }, remove: async (key) => { world.deleteObject(key); } };
 }
 
-describe("agentx bundle approve", () => {
+describe("rovara bundle approve", () => {
   it("places the deployable files (never the images), pins their object versions, and writes the approval record last; the deployer then deploys exactly it", async () => {
     const bundle = await build();
     const verified = await verifyBundle({ dir: bundle.dir, trustedKeys: [bundle.key.publicKeyPem], approvedBundleSha256: bundle.bundleSha256 });
@@ -72,7 +72,7 @@ describe("the operator's client", () => {
     const lines: string[] = [];
     const result = await startApprovedDeployment({ env: "ent", bundleId: ID.toUpperCase(), write: (line) => lines.push(line), invoker: { invoke: async (name, payload) => { calls.push({ name, payload }); return answers.shift(); } } });
     expect(result.status).toBe("done");
-    expect(calls).toEqual([{ name: "agentx-ent-bundle-deployer", payload: { bundleId: ID } }, { name: "agentx-ent-bundle-deployer", payload: { bundleId: ID } }]);
+    expect(calls).toEqual([{ name: "rovara-cloud-ent-bundle-deployer", payload: { bundleId: ID } }, { name: "rovara-cloud-ent-bundle-deployer", payload: { bundleId: ID } }]);
     expect(lines.join("\n")).toContain("to do: identity");
   });
 
@@ -93,7 +93,7 @@ describe("the operator's client", () => {
   });
 });
 
-describe("agentx bundle reset-deployment (review N8)", () => {
+describe("rovara bundle reset-deployment (review N8)", () => {
   it("clears a stuck progress record and lock, says which bundle it belonged to, and leaves everything else", async () => {
     const { MemoryParameterStore } = await import("../support/memory-parameter-store.js");
     const { resetDeployment } = await import("../../packages/cli/src/upgrade/bundle/reset-deployment.js");
@@ -101,9 +101,9 @@ describe("agentx bundle reset-deployment (review N8)", () => {
     const store = new MemoryParameterStore();
     await store.put(deployProgressParameter("ent"), JSON.stringify({ schemaVersion: 1, bundleId: "b".repeat(64), startedAt: "2026-10-31T10:00:00.000Z", done: ["foundation"] }));
     await store.put(deployLockParameter("ent"), JSON.stringify({ startedAt: 1 }));
-    await store.put("/agentx/ent/settings", "{}");
+    await store.put("/rovara-cloud/ent/settings", "{}");
     expect(await resetDeployment({ store, env: "ent", now: 1 + 21 * 60_000 })).toEqual({ bundleId: "b".repeat(64), clearedProgress: true, clearedLock: true });
-    expect([...store.values.keys()]).toEqual(["/agentx/ent/settings"]);
+    expect([...store.values.keys()]).toEqual(["/rovara-cloud/ent/settings"]);
     expect(await resetDeployment({ store, env: "ent", now: 1 + 21 * 60_000 })).toEqual({ bundleId: undefined, clearedProgress: false, clearedLock: false });
   });
 

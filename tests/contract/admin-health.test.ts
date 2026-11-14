@@ -12,7 +12,7 @@ const TEST_PRIVATE_KEY = generateKeyPairSync("rsa", { modulusLength: 2048 }).pri
 
 const probes = {
   release: "0.0.6",
-  alarms: async () => [{ name: "agentx-live25d-SlackDeadLetters", state: "OK" }, { name: "agentx-live25d-ConnectorBroken", state: "ALARM" }],
+  alarms: async () => [{ name: "rovara-cloud-live25d-SlackDeadLetters", state: "OK" }, { name: "rovara-cloud-live25d-ConnectorBroken", state: "ALARM" }],
   queueDepths: async () => [{ name: "dispatch", depth: 0 }, { name: "slack-requests", depth: 2 }],
   slackAuthCheck: async () => ({ ok: true as const, teamId: "T0BSHLLUGBD" }),
   githubInstallations: async () => 1,
@@ -27,7 +27,7 @@ describe("GET /v1/admin/health (FR-030, A13)", () => {
     const answer = await admin("GET", "/v1/admin/health");
     expect(answer.body).toEqual({
       version: { developerApi: "1.2", adminApi: "1.1", release: "0.0.6" },
-      alarms: [{ name: "agentx-live25d-ConnectorBroken", state: "ALARM" }, { name: "agentx-live25d-SlackDeadLetters", state: "OK" }],
+      alarms: [{ name: "rovara-cloud-live25d-ConnectorBroken", state: "ALARM" }, { name: "rovara-cloud-live25d-SlackDeadLetters", state: "OK" }],
       alarmsCheck: { status: "warn", detail: "1 alarm in ALARM" },
       deadLetterQueues: [{ name: "dispatch", depth: 0 }, { name: "slack-requests", depth: 2 }],
       deadLetterQueuesCheck: { status: "warn", detail: "1 queue holds messages" },
@@ -58,11 +58,11 @@ describe("GET /v1/admin/health (FR-030, A13)", () => {
       const { admin } = await createAdminReadBroker({ brokerExtra: { adminReads: { health: { alarms: async () => alarms } } } });
       return (await admin("GET", "/v1/admin/health")).body.alarmsCheck;
     };
-    expect(await answer([{ name: "agentx-live25d-SlackDeadLetters", state: "MISSING" }, { name: "agentx-live25d-TurnErrors", state: "OK" }]))
+    expect(await answer([{ name: "rovara-cloud-live25d-SlackDeadLetters", state: "MISSING" }, { name: "rovara-cloud-live25d-TurnErrors", state: "OK" }]))
       .toStrictEqual({ status: "warn", detail: "1 alarm missing" });
-    expect(await answer([{ name: "agentx-live25d-SlackDeadLetters", state: "MISSING" }, { name: "agentx-live25d-TestAlarm", state: "MISSING" }, { name: "agentx-live25d-TurnErrors", state: "ALARM" }]))
+    expect(await answer([{ name: "rovara-cloud-live25d-SlackDeadLetters", state: "MISSING" }, { name: "rovara-cloud-live25d-TestAlarm", state: "MISSING" }, { name: "rovara-cloud-live25d-TurnErrors", state: "ALARM" }]))
       .toStrictEqual({ status: "warn", detail: "1 alarm in ALARM, 2 alarms missing" });
-    expect(await answer([{ name: "agentx-live25d-TurnErrors", state: "OK" }])).toStrictEqual({ status: "ok", detail: "1 alarms, none in ALARM" });
+    expect(await answer([{ name: "rovara-cloud-live25d-TurnErrors", state: "OK" }])).toStrictEqual({ status: "ok", detail: "1 alarms, none in ALARM" });
   });
 
   it("gives up on a slow probe after its time limit", async () => {

@@ -1,7 +1,7 @@
 // Spec 025 FR-006 and FR-010 (R7): the developer sign-in choice, kept in SSM beside the environment
 // settings. No secret value is ever stored here, only the company client secret's name.
 import { z } from "zod";
-import { EnvironmentNameSchema, SlackTeamIdSchema, agentXError, environmentSettingsPrefix } from "@agentx/contracts";
+import { EnvironmentNameSchema, SlackTeamIdSchema, agentXError, environmentSettingsPrefix, RESOURCE_PREFIX } from "@agentx/contracts";
 import type { CloudSignInAnswers } from "../deploy/answer-schemas.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 
@@ -15,7 +15,7 @@ export const DeveloperSignInSettingsSchema = z.object({
     requiredClaim: z.string().min(1).max(128).optional(),
     requiredValues: z.array(z.string().min(1).max(128)).min(1).max(20).optional(),
     displayName: z.string().min(1).max(40),
-    clientSecretName: z.string().regex(/^agentx\/[a-z0-9-]+\/developer-oidc$/),
+    clientSecretName: z.string().regex(new RegExp(`^${RESOURCE_PREFIX}/[a-z0-9-]+/developer-oidc$`)),
   }).strict()
     .refine((oidc) => (oidc.requiredClaim === undefined) === (oidc.requiredValues === undefined), "requiredClaim and requiredValues must be set together or not at all")
     .optional(),
@@ -40,7 +40,7 @@ export interface StoredDeveloperSignIn { settings?: DeveloperSignInSettings; sla
 
 export const signInParameterName = (env: string) => `${environmentSettingsPrefix(env)}signin`;
 export const slackTeamIdParameterName = (env: string) => `${environmentSettingsPrefix(env)}slack/teamId`;
-export const oidcSecretName = (env: string) => `agentx/${env}/developer-oidc`;
+export const oidcSecretName = (env: string) => `${RESOURCE_PREFIX}/${env}/developer-oidc`;
 
 const firstIssue = (error: z.ZodError) => `${error.issues[0]?.path.join(".") ?? ""} ${error.issues[0]?.message ?? ""}`.trim();
 
@@ -48,10 +48,10 @@ export async function readSignInSettings(store: ParameterStore, env: string): Pr
   const stored = await store.get(signInParameterName(env));
   if (stored === undefined) return undefined;
   let json: unknown;
-  try { json = JSON.parse(stored.value); } catch { throw agentXError("CONFIG_INVALID", `${signInParameterName(env)} is not valid JSON; run agentx signin enable again`); }
+  try { json = JSON.parse(stored.value); } catch { throw agentXError("CONFIG_INVALID", `${signInParameterName(env)} is not valid JSON; run rovara signin enable again`); }
   const parsed = DeveloperSignInSettingsSchema.safeParse(json);
-  if (!parsed.success) throw agentXError("CONFIG_INVALID", `${signInParameterName(env)} is invalid (${firstIssue(parsed.error)}); run agentx signin enable again`);
-  if (parsed.data.env !== env) throw agentXError("CONFIG_INVALID", `${signInParameterName(env)} names environment ${parsed.data.env}; run agentx signin enable again`);
+  if (!parsed.success) throw agentXError("CONFIG_INVALID", `${signInParameterName(env)} is invalid (${firstIssue(parsed.error)}); run rovara signin enable again`);
+  if (parsed.data.env !== env) throw agentXError("CONFIG_INVALID", `${signInParameterName(env)} names environment ${parsed.data.env}; run rovara signin enable again`);
   return parsed.data;
 }
 

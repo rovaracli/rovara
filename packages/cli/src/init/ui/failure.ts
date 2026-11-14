@@ -2,7 +2,7 @@
 // Spec 048 FR-060 (and the first action of FR-061): a failure is a screen, not the end of the page.
 // What happened in plain words, what to do as page actions, and the technical details collapsed.
 // Phase 3 adds the other kinds of failure and their actions here.
-import { environmentStackName } from "@agentx/contracts";
+import { environmentStackName, RESOURCE_PREFIX } from "@agentx/contracts";
 import { cliErrorFor } from "../../deploy/commands.js";
 import { DEPLOY_STEP_PARTS, type DeployStepId } from "../deploy-steps.js";
 import type { InitStepId } from "../install-state.js";
@@ -19,7 +19,7 @@ export const isRetryableStep = (id: InitStepId): id is DeployStepId => Object.ha
 
 /** Words that belong in technical details only (FR-060, FR-081). */
 const TECHNICAL = /arn:aws|\b[A-Z]{2,}_[A-Z_]{2,}\b|AWS::|(?:^|\s)--[a-z]|<[@#!]|\b[A-Z][a-z]+(?:[A-Z][a-z]+)*[0-9A-F]{8}\b/;
-const RESUME_TAIL = /\.? Run agentx init --env \S+ --region \S+ again to continue from this step\..*$/s;
+const RESUME_TAIL = /\.? Run rovara init --env \S+ --region \S+ again to continue from this step\..*$/s;
 
 /** An address is kept as it is written: "Https://" is not an address. */
 const capitalize = (text: string): string => (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `${text.charAt(0).toUpperCase()}${text.slice(1)}`);
@@ -52,7 +52,7 @@ export function failureScreen(input: { env: string; region: string; stepTitle?: 
       : "Your progress is saved. Stop for now and continue later.",
     details: [raw, ...stacks.map((stack) => `Stack: ${stack}`), ...(input.logPath === undefined ? [] : [`Log file: ${input.logPath}`])],
     ...(stacks.length === 0 ? {} : {
-      link: { url: `https://${input.region}.console.aws.amazon.com/cloudformation/home?region=${input.region}#/stacks?filteringText=agentx-${input.env}-`, label: "Open the stacks in the AWS console" },
+      link: { url: `https://${input.region}.console.aws.amazon.com/cloudformation/home?region=${input.region}#/stacks?filteringText=${RESOURCE_PREFIX}-${input.env}-`, label: "Open the stacks in the AWS console" },
     }),
   };
 }

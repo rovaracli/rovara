@@ -8,10 +8,10 @@ import { readFileSync } from "node:fs";
 
 // M1.4 Task 4.10A, test 12: the test-deploy units that put the AI navigation model setting on TEST.
 
-const ENV = "agentxlivetest123";
-const CONTROL_PLANE = "agentx-agentxlivetest123-control-plane";
-const RUNTIME = "agentx-agentxlivetest123-runtime";
-const OLD_IMAGE = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker@sha256:${"a".repeat(64)}`;
+const ENV = "rovaralivetest";
+const CONTROL_PLANE = "rovara-cloud-rovaralivetest-control-plane";
+const RUNTIME = "rovara-cloud-rovaralivetest-runtime";
+const OLD_IMAGE = `123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/worker@sha256:${"a".repeat(64)}`;
 const HAIKU_45_US = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 const artifacts: BuiltArtifacts = { revision: "0123456789ab", outputDir: "/tmp/test-deploy-0123456789ab", bootStage2Sha256: "b".repeat(64) };
 const previous: StackParameters = {
@@ -125,7 +125,7 @@ describe("the e2e-agent-settings unit", () => {
       source: "lift-declared", construct: "AgentXControlPlane", cdkContext: { "agentx:e2eQualificationTransport": "enabled" }, identityMode: "cognito",
       environment: [],
       // Both settings' ARNs in both policies: 4.10A's worker-e2e-agent-model and 4.10D's worker-model-fallback.
-      grants: E2E_AGENT_SETTINGS_UNIT.policies.flatMap((logicalId) => [`/agentx/${ENV}/worker-e2e-agent-model`, `/agentx/${ENV}/worker-model-fallback`].map((parameterName) => ({ logicalId, parameterName }))),
+      grants: E2E_AGENT_SETTINGS_UNIT.policies.flatMap((logicalId) => [`/rovara-cloud/${ENV}/worker-e2e-agent-model`, `/rovara-cloud/${ENV}/worker-model-fallback`].map((parameterName) => ({ logicalId, parameterName }))),
     });
     // The broker's grants are in a managed policy of its role at head (the role is split to stay under IAM's size limit, and the worker-settings read is in the integrations group); the session steps' stay a role policy.
     expect(E2E_AGENT_SETTINGS_UNIT.policies).toEqual(["BrokerServiceRoleServiceRoleIntegrationsPolicy942FF081", "SessionsStepsServiceRoleDefaultPolicy9F4B87C9"]);
@@ -282,9 +282,9 @@ describe("the model-fallback-settings unit", () => {
 });
 
 describe("liftDeclaredSettings", () => {
-  const PARAMETER = `/agentx/${ENV}/worker-e2e-agent-model`;
-  const FALLBACK = `/agentx/${ENV}/worker-model-fallback`;
-  const arn = (name: string) => ({ "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":ssm:", { Ref: "AWS::Region" }, ":", { Ref: "AWS::AccountId" }, `:parameter/agentx/${ENV}/${name}`]] });
+  const PARAMETER = `/rovara-cloud/${ENV}/worker-e2e-agent-model`;
+  const FALLBACK = `/rovara-cloud/${ENV}/worker-model-fallback`;
+  const arn = (name: string) => ({ "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":ssm:", { Ref: "AWS::Region" }, ":", { Ref: "AWS::AccountId" }, `:parameter/rovara-cloud/${ENV}/${name}`]] });
   const policy = (resources: unknown[], extra: unknown[] = []) => ({
     Type: "AWS::IAM::Policy", Properties: { PolicyName: "P", Roles: [{ Ref: "R" }], PolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "ssm:GetParameters", Resource: resources }, ...extra] } },
   });
@@ -292,7 +292,7 @@ describe("liftDeclaredSettings", () => {
   // `added` names the settings whose ARN the policies carry: both in head, none in the deployed template of TEST, or one of them in a half-applied one.
   const template = (withNew: boolean, added: readonly string[] = withNew ? ["worker-e2e-agent-model", "worker-model-fallback"] : []): CfnTemplate => ({
     Resources: {
-      BrokerE1355FD6: { Type: "AWS::Lambda::Function", Properties: { Code: { S3Key: "k" }, Environment: { Variables: { STATE_TABLE_NAME: "t", ...(withNew ? { AGENTX_E2E_AGENT_SETTINGS_PREFIX: `/agentx/${ENV}/` } : {}) } } } },
+      BrokerE1355FD6: { Type: "AWS::Lambda::Function", Properties: { Code: { S3Key: "k" }, Environment: { Variables: { STATE_TABLE_NAME: "t", ...(withNew ? { AGENTX_E2E_AGENT_SETTINGS_PREFIX: `/rovara-cloud/${ENV}/` } : {}) } } } },
       P1: policy([arn("worker-image"), ...added.map(arn)], [OTHER]),
       P2: policy([arn("worker-image"), ...added.map(arn)]),
       Unrelated: { Type: "AWS::SQS::Queue", Properties: {} },
@@ -369,7 +369,7 @@ describe("liftDeclaredSettings", () => {
 
   it("refuses an ARN that is not declared: head carries the fallback's ARN and only the other setting is declared (what the unit did at df5a5a1e)", () => {
     const onlyFirst = { environment: declared.environment, grants: ["P1", "P2"].map((logicalId) => ({ logicalId, parameterName: PARAMETER })) };
-    expect(() => liftDeclaredSettings(template(false), template(true), onlyFirst)).toThrow(/more than the declared grant for \/agentx\/agentxlivetest123\/worker-e2e-agent-model/);
+    expect(() => liftDeclaredSettings(template(false), template(true), onlyFirst)).toThrow(/more than the declared grant for \/rovara-cloud\/rovaralivetest\/worker-e2e-agent-model/);
   });
 
   describe("matches a declared ARN only as the exact entry CDK synthesizes (DEPLOYFIX review I-1, M-1)", () => {

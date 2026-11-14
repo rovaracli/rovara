@@ -48,7 +48,7 @@ const tokenPartition = (ref: string) => `CREDENTIAL#${ref}`;
 /**
  * Reads a Secrets Manager secret, and replaces one for a rotated refresh token. A missing secret is
  * `undefined`; an access denial names only the secret. The broker role may write only secrets the
- * administrator tagged `agentx-writable: refresh-token` (see infra/lib/control-plane.ts).
+ * administrator tagged `rovara-cloud-writable: refresh-token` (see infra/lib/control-plane.ts).
  */
 export function secretsManagerSource(
   client: {
@@ -226,7 +226,7 @@ export function tokenUrlProblem(ref: string, recordTokenUrl: string | undefined,
  */
 export function credentialSetupCommand(accepts: readonly CredentialType[] | undefined): string {
   const signIn = accepts !== undefined && accepts.length > 0 && accepts.every((type) => type === "oauth-refresh-token");
-  return signIn ? "agentx admin credential authorize" : "agentx admin credential register";
+  return signIn ? "rovara admin credential authorize" : "rovara admin credential register";
 }
 
 /**
@@ -386,7 +386,7 @@ export class CredentialRegistry {
     const mismatch = tokenUrlProblem(record.ref, record.tokenUrl, typeEndpoint);
     if (mismatch !== undefined) throw new CredentialUnavailable(mismatch);
     const tokenEndpoint = typeEndpoint ?? (record.tokenUrl === undefined ? undefined : new URL(record.tokenUrl));
-    if (!tokenEndpoint) throw new CredentialUnavailable(`credential ${record.ref} has no token URL; sign in again with agentx admin credential authorize --ref ${record.ref} --endpoint <mcp url>, or register it with --token-url`);
+    if (!tokenEndpoint) throw new CredentialUnavailable(`credential ${record.ref} has no token URL; sign in again with rovara admin credential authorize --ref ${record.ref} --endpoint <mcp url>, or register it with --token-url`);
     if (record.type === "oauth-refresh-token") {
       const secrets = this.options.secrets;
       if (!("write" in secrets)) throw new CredentialUnavailable(`credential ${record.ref}: this deployment cannot save a rotated refresh token`);

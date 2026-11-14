@@ -1,4 +1,4 @@
-// `agentx project code-settings <project> [--self-approval on|off] [--merge-method squash|merge] [--reviewers a,b]` (Plan 6 Task 19, with the Task 25 slice): a project's code settings
+// `rovara project code-settings <project> [--self-approval on|off] [--merge-method squash|merge] [--reviewers a,b]` (Plan 6 Task 19, with the Task 25 slice): a project's code settings
 // from the command line. It reads the settings and their revision (`GET /v1/app/projects/{p}/code-settings`), and for a change sends the PUT under that revision. Everything applies at
 // once except self-approval turned on, which answers `202 NEEDS_CONFIRMATION`: the command prints the link where an organization owner or admin confirms it and exits 0. Nothing here
 // decides anything (R66): the CLI never decides an approval.

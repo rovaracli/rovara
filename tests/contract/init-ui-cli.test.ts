@@ -1,4 +1,4 @@
-// SC-003: a full `agentx init --ui` install driven entirely from the page, with nothing typed in
+// SC-003: a full `rovara init --ui` install driven entirely from the page, with nothing typed in
 // the terminal after the command. The wizard server and the GitHub manifest listener are both
 // real, on 127.0.0.1; every AWS, GitHub, Slack and clock dependency is injected, so nothing here
 // reaches AWS, GitHub or Slack.
@@ -42,7 +42,7 @@ const LINEAR_KEY = `lin_api_${"k".repeat(40)}SECRETlinearKEY`;
 // default, the key's only team), then no to Jira and Asana.
 const FINISH_WITH_LINEAR = ["acme/payments-api", "", true, "payments", true, LINEAR_KEY, "", false, false, true];
 
-describe("agentx init --ui", () => {
+describe("rovara init --ui", () => {
   it("FR-009: the page is open before the release is fetched, so a failed download is a failure screen", async () => {
     const h = await harness();
     const operator = fakeWizardOperator([]);
@@ -146,9 +146,9 @@ describe("agentx init --ui", () => {
       expect(everywhere).not.toContain(secret);
     }
     // The secrets really were collected and stored, so the absence above means something.
-    expect(h.secrets.values.get("agentx/staging/slack")).toContain(TEST_BOT_TOKEN);
-    expect(JSON.parse(h.secrets.values.get("agentx/staging/connectors/linear") ?? "{}")).toEqual({ apiKey: LINEAR_KEY });
-    expect(h.plane.credentials).toContainEqual({ ref: "linear", type: "static-secret", secretName: "agentx/staging/connectors/linear" });
+    expect(h.secrets.values.get("rovara-cloud/staging/slack")).toContain(TEST_BOT_TOKEN);
+    expect(JSON.parse(h.secrets.values.get("rovara-cloud/staging/connectors/linear") ?? "{}")).toEqual({ apiKey: LINEAR_KEY });
+    expect(h.plane.credentials).toContainEqual({ ref: "linear", type: "static-secret", secretName: "rovara-cloud/staging/connectors/linear" });
   });
 
   // Spec 048 FR-029 and FR-030: on the page, the plan's review screen offers Create AgentX and
@@ -244,7 +244,7 @@ describe("agentx init --ui", () => {
   it("--ui and --yes are refused together, and --no-ui is the terminal path", async () => {
     const h = await harness();
     expect(await h.run(["--ui", "--yes"])).not.toBe(0);
-    expect(h.printed()).toContain("agentx init --ui asks its questions on a page; --yes answers them without asking");
+    expect(h.printed()).toContain("rovara init --ui asks its questions on a page; --yes answers them without asking");
     expect(await h.run(["--no-ui"], { prompter: scriptedPrompter([...TERMINAL_FIRST_RUN, ...TERMINAL_SLACK, ...SIGNIN, ...FINISH]) })).toBe(0);
   });
 
@@ -258,7 +258,7 @@ describe("agentx init --ui", () => {
     expect(finishing).toHaveLength(FINISH.length);
     // Spec 048 FR-020: your email comes from the settings, so the first finishing question is the repository.
     expect(finishing[0]).toBe("Which repository is the first project's?");
-    expect(finishing).toContain("Connect Linear to payments-api now? (You can add it later with agentx connector add linear)");
+    expect(finishing).toContain("Connect Linear to payments-api now? (You can add it later with rovara connector add linear)");
     // Nothing was asked in the terminal: no scripted terminal prompter exists in this run, and the
     // terminal output carries no question text.
     expect(h.printed()).not.toContain("Your email address, for your AgentX admin user");
@@ -299,8 +299,8 @@ describe("agentx init --ui", () => {
     const operator = fakeWizardOperator([...FIRST_RUN, "stop"]);
     const code = await h.run(["--ui", "--resume", "--from-bundle", dir], {
       openBrowser: operator.open,
-      stackStatus: { status: async (name: string) => (name === "agentx-staging-access" ? "CREATE_COMPLETE" : undefined) },
-      deploy: { identity: { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/agentx-staging-operator/alice" }) }, store: h.store, secrets: h.secrets, deployer },
+      stackStatus: { status: async (name: string) => (name === "rovara-cloud-staging-access" ? "CREATE_COMPLETE" : undefined) },
+      deploy: { identity: { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/rovara-cloud-staging-operator/alice" }) }, store: h.store, secrets: h.secrets, deployer },
     });
     await operator.settled();
     expect(code).not.toBe(0);
@@ -634,7 +634,7 @@ describe("agentx init --ui", () => {
     const operator = fakeWizardOperator([...FIRST_RUN, "installed", SLACK_VALUES, true, SLACK_VALUES, true, true, ...SIGNIN, ...FINISH], {
       beforeAnswer: async (question) => {
         if (question.text === "Paste the Slack values again?") {
-          atRefusal = { secret: h.secrets.values.get("agentx/staging/slack"), slack: (await readInstallProgress(h.store, "staging"))?.slack };
+          atRefusal = { secret: h.secrets.values.get("rovara-cloud/staging/slack"), slack: (await readInstallProgress(h.store, "staging"))?.slack };
         }
       },
     });
@@ -644,7 +644,7 @@ describe("agentx init --ui", () => {
     // Nothing was saved after the refusal: the secret holds what it held before, and no Slack app is recorded.
     expect(atRefusal).toEqual({ secret: JSON.stringify({ botToken: "unset", signingSecret: "placeholder" }), slack: undefined });
     // Once a token worked, both were stored.
-    expect(JSON.parse(h.secrets.values.get("agentx/staging/slack") ?? "{}")).toMatchObject({ botToken: TEST_BOT_TOKEN, signingSecret: TEST_SIGNING_SECRET });
+    expect(JSON.parse(h.secrets.values.get("rovara-cloud/staging/slack") ?? "{}")).toMatchObject({ botToken: TEST_BOT_TOKEN, signingSecret: TEST_SIGNING_SECRET });
     const refused = operator.states.flatMap((state) => state.cards ?? []).find((card) => card.id === "slack" && card.status === "failed");
     expect(refused?.lines).toContain("Slack refused the bot token (invalid_auth); copy it again from OAuth & Permissions");
   });
@@ -689,11 +689,11 @@ describe("agentx init --ui", () => {
     }
     // Every secret really went through the run and was stored, so the absence above means something.
     expect(operator.remaining()).toBe(0);
-    const app = JSON.parse(h.secrets.values.get("agentx/staging/github-app") ?? "{}") as { privateKey?: string };
+    const app = JSON.parse(h.secrets.values.get("rovara-cloud/staging/github-app") ?? "{}") as { privateKey?: string };
     expect(app.privateKey).toContain(TEST_PRIVATE_KEY.split("\n")[1] ?? "missing");
-    const slack = JSON.parse(h.secrets.values.get("agentx/staging/slack") ?? "{}") as Record<string, string>;
+    const slack = JSON.parse(h.secrets.values.get("rovara-cloud/staging/slack") ?? "{}") as Record<string, string>;
     expect(slack).toMatchObject({ botToken: TEST_BOT_TOKEN, signingSecret: TEST_SIGNING_SECRET, clientSecret: "fedcba9876543210fedcba9876543210" });
-    expect(JSON.parse(h.secrets.values.get("agentx/staging/connectors/linear") ?? "{}")).toEqual({ apiKey: LINEAR_KEY });
+    expect(JSON.parse(h.secrets.values.get("rovara-cloud/staging/connectors/linear") ?? "{}")).toEqual({ apiKey: LINEAR_KEY });
   });
 
   it("a page that reconnects mid-install gets every card back in its snapshot", async () => {
@@ -880,10 +880,10 @@ describe("agentx init --ui", () => {
     expect(code).toBe(0);
     expect(operator.remaining()).toBe(0);
     expect(linearKeys).toContain(LINEAR_KEY);
-    expect(JSON.parse(h.secrets.values.get("agentx/staging/connectors/linear") ?? "{}")).toEqual({ apiKey: LINEAR_KEY });
+    expect(JSON.parse(h.secrets.values.get("rovara-cloud/staging/connectors/linear") ?? "{}")).toEqual({ apiKey: LINEAR_KEY });
     expect(slackChannels.tokens.length).toBeGreaterThan(0);
     expect(slackChannels.tokens.every((token) => token === TEST_BOT_TOKEN)).toBe(true);
-    expect(JSON.parse(h.secrets.values.get("agentx/staging/slack") ?? "{}")).toMatchObject({ botToken: TEST_BOT_TOKEN, clientSecret: "fedcba9876543210fedcba9876543210" });
+    expect(JSON.parse(h.secrets.values.get("rovara-cloud/staging/slack") ?? "{}")).toMatchObject({ botToken: TEST_BOT_TOKEN, clientSecret: "fedcba9876543210fedcba9876543210" });
     const cards = JSON.stringify(operator.states.map((state) => state.cards));
     expect(cards).toContain("\"ready\"");
     for (const secret of [LINEAR_KEY, TEST_BOT_TOKEN, "fedcba9876543210fedcba9876543210"]) expect(cards).not.toContain(secret);
@@ -919,7 +919,7 @@ describe("agentx init --ui", () => {
     // No TTY in the test process: the terminal path refuses, as before, but only after the line.
     expect(await h.run([], { openBrowser: refused.open, isInteractive: () => true, browserAvailable: () => false })).not.toBe(0);
     expect(refused.opened).toEqual([]);
-    expect(h.printed()).toContain("No browser here, so agentx init asks in this terminal. To use the install page instead, run agentx init --ui --no-browser and open the address it prints (over SSH, forward its port with ssh -L).");
+    expect(h.printed()).toContain("No browser here, so rovara init asks in this terminal. To use the install page instead, run rovara init --ui --no-browser and open the address it prints (over SSH, forward its port with ssh -L).");
   });
 
   it.skipIf(process.stdin.isTTY === true)("--no-browser with neither flag is the terminal, with the same line", async () => {
@@ -927,7 +927,7 @@ describe("agentx init --ui", () => {
     const none = fakeWizardOperator([]);
     expect(await h.run(["--no-browser"], { openBrowser: none.open, isInteractive: () => true, browserAvailable: () => true })).not.toBe(0);
     expect(none.opened).toEqual([]);
-    expect(h.printed()).toContain("No browser here, so agentx init asks in this terminal.");
+    expect(h.printed()).toContain("No browser here, so rovara init asks in this terminal.");
   });
 
   it.skipIf(process.stdin.isTTY === true)("over SSH (the run's own environment) the default is the terminal, with the same line", async () => {

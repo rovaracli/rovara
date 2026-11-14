@@ -15,7 +15,7 @@ export const asanaConnectorType = presetConnectorType<typeof AsanaConnectorSchem
     requireHostPin: false,
     accepts: ["oauth-refresh-token"],
     // Asana's MCP server takes only OAuth user tokens: no API keys and no client credentials.
-    wrongType: (ref, type) => `credential ${ref} is ${type}; an Asana connector needs an oauth-refresh-token credential from agentx admin credential authorize`,
+    wrongType: (ref, type) => `credential ${ref} is ${type}; an Asana connector needs an oauth-refresh-token credential from rovara admin credential authorize`,
     tokenEndpoint: ASANA_TOKEN_ENDPOINT,
     definition: asanaConnector,
   }),

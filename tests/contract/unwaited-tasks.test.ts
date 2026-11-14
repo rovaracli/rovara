@@ -308,7 +308,7 @@ describe("the backstop: the bot token (#173)", () => {
 describe("the backstop: where it runs (#173)", () => {
   it("is wired only where the threads table, the Slack secret and the signing key are named (named environments)", async () => {
     const { unwaitedTaskBackstopWanted } = await import("../../packages/broker/src/aws/unwaited-tasks.js");
-    const named = { SLACK_THREADS_TABLE_NAME: "threads", SLACK_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:111122223333:secret:agentx/staging/slack-AbCdEf", CALLBACK_SIGNING_KEY: "k".repeat(32) };
+    const named = { SLACK_THREADS_TABLE_NAME: "threads", SLACK_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:111122223333:secret:rovara-cloud/staging/slack-AbCdEf", CALLBACK_SIGNING_KEY: "k".repeat(32) };
     expect(unwaitedTaskBackstopWanted(named)).toBe(true);
     for (const missing of Object.keys(named)) {
       expect(unwaitedTaskBackstopWanted({ ...named, [missing]: undefined })).toBe(false);
@@ -375,7 +375,7 @@ describe("the backstop: review hardening (#173)", () => {
 
   it("says when its configuration is only partly present, so a half-wired environment is visible", async () => {
     const { unwaitedTaskBackstopConfiguration } = await import("../../packages/broker/src/aws/unwaited-tasks.js");
-    const named = { SLACK_THREADS_TABLE_NAME: "threads", SLACK_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:111122223333:secret:agentx/staging/slack-AbCdEf", CALLBACK_SIGNING_KEY: "k".repeat(32) };
+    const named = { SLACK_THREADS_TABLE_NAME: "threads", SLACK_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:111122223333:secret:rovara-cloud/staging/slack-AbCdEf", CALLBACK_SIGNING_KEY: "k".repeat(32) };
     expect(unwaitedTaskBackstopConfiguration(named)).toEqual({ state: "on" });
     expect(unwaitedTaskBackstopConfiguration({})).toEqual({ state: "off" });
     expect(unwaitedTaskBackstopConfiguration({ ...named, CALLBACK_SIGNING_KEY: undefined })).toEqual({ state: "partial", missing: ["CALLBACK_SIGNING_KEY"] });

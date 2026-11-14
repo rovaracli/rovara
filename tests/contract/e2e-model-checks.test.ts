@@ -283,7 +283,7 @@ describe("GET: reading a check", () => {
     answer(h, asCheck(checkId, drive({ outcome: "failed", failure: { class: "limit-or-rate-limited", signal: "ThrottlingException" }, caseVerdict: "none", reported: null }, [failed])));
     const view = await readModelCheck(h.deps, checkId);
     expect(view.status).toBe("failed");
-    expect(view.sentence).toContain("Raise the limit, or choose another model and run its driving test (agentx project model-check test --model <id>), then retry the checks");
+    expect(view.sentence).toContain("Raise the limit, or choose another model and run its driving test (rovara project model-check test --model <id>), then retry the checks");
     expect(rows(h)).toEqual(["E2E_MODEL_TEST"]);
     expect(h.db.get("E2E_MODEL_ROUTES", e2eModelRouteTestKey(route.routeId, MODEL).sk)).toMatchObject({ outcome: "failed", failureClass: "limit-or-rate-limited", signal: "ThrottlingException" });
   });
@@ -367,7 +367,7 @@ describe("what was approved is exactly what was tested (test 35)", () => {
     expect(await readModelCheck(h.deps, checkId)).toMatchObject({ status: "passed", drive: { payloadShape: "minimal" } });
     const store = { documentClient: h.deps.documentClient, tableName: "state" };
     // Setup approval reads the installation's setting and the shape row; the model chosen here is the tested one.
-    const chosen = await e2eAgentInstallationFromParameters("/agentx/e/", async () => new Map([["/agentx/e/worker-model-provider", "amazon-bedrock"], ["/agentx/e/worker-e2e-agent-model", MODEL]]), "us-east-1",
+    const chosen = await e2eAgentInstallationFromParameters("/rovara-cloud/e/", async () => new Map([["/rovara-cloud/e/worker-model-provider", "amazon-bedrock"], ["/rovara-cloud/e/worker-e2e-agent-model", MODEL]]), "us-east-1",
       { readShape: (modelId) => readE2EModelRouteShape(store, route.routeId, modelId) });
     expect(chosen.payloadShape).toBe("minimal");
     const planned = await planE2EAgentRoute(store, chosen);

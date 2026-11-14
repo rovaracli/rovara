@@ -24,7 +24,7 @@ vi.mock("../../packages/broker/src/aws/runtime-requalify.js", async () => {
       heldBy(cloud, input.runId);
       // As the real one: the challenge carries the workspace id and generation the runner was booted with, and only if the generation is still the next one.
       if (input.generation !== generationOf(cloud) + 1) throw new Error("requalify-refused:generation-not-next");
-      if (cloud.instances.get(input.instanceId)?.tags["agentx:qualification-run"] !== input.runId) throw new Error("requalify-refused:endpoint-not-managed-instance");
+      if (cloud.instances.get(input.instanceId)?.tags["rovara-cloud:qualification-run"] !== input.runId) throw new Error("requalify-refused:endpoint-not-managed-instance");
       // The secret reaches the runner's prefix and nothing else.
       await cloud.s3Client.send(new PutObjectCommand({ Bucket: "artifacts", Key: `${contracts.e2eQualificationPrefix(input.roleId, input.instanceId)}challenge.json`, Body: Buffer.from(JSON.stringify({ secret: SECRET })) }));
       return { challengeId: uuid(), expiresAt: new Date(cloud.clock + 60 * 60_000).toISOString(), generation: input.generation, transportCorrelationId: input.workspaceId };
@@ -78,7 +78,7 @@ function oldInstallation(options: { managed?: boolean; environment?: string; exp
 }
 
 const alert = () => cloud.sns.map((message) => ({ subject: message.subject, reason: /^reason: ([a-z-]+)/m.exec(message.message)?.[1], text: message.message }));
-const survivingRunnerVolumes = (runId: string) => [...cloud.volumes.values()].filter((volume) => volume.tags["agentx:qualification-run"] === runId);
+const survivingRunnerVolumes = (runId: string) => [...cloud.volumes.values()].filter((volume) => volume.tags["rovara-cloud:qualification-run"] === runId);
 
 describe("a successful renewal", () => {
   it("launches a pinned, tagged runner, switches the rows and the pointer to it, and retires only the old runner and its volume", async () => {
@@ -93,14 +93,14 @@ describe("a successful renewal", () => {
     expect(cloud.row("api")?.["generation"]).toBe(2);
     expect(cloud.pointer()?.["instanceId"]).toBe(fresh);
     expect(cloud.instances.get(fresh!)?.state).toBe("running");
-    expect(cloud.instances.get(fresh!)?.tags).toMatchObject({ DeploymentMode: "e2e-qualification", Environment: ENV, "agentx:requalify-managed": "true", "agentx:qualification-run": runId });
+    expect(cloud.instances.get(fresh!)?.tags).toMatchObject({ DeploymentMode: "e2e-qualification", Environment: ENV, "rovara-cloud:requalify-managed": "true", "rovara-cloud:qualification-run": runId });
     // Only the old runner was ended, and its workspace volume deleted; the new volume (tagged for this run) is attached and still there.
     expect(cloud.terminated).toEqual([old.id]);
     expect(cloud.instances.get(old.id)?.state).toBe("terminated");
     expect(cloud.deleted).toEqual([oldVolume]);
     expect(survivingRunnerVolumes(runId)).toHaveLength(1);
     // The pin task workers boot from (AR-4 reads exactly this name): the AMI the new runner was launched with, in the shape AR-4 accepts.
-    const pin = cloud.ssm.get(`/agentx/${ENV}/worker-qualified-ami`);
+    const pin = cloud.ssm.get(`/rovara-cloud/${ENV}/worker-qualified-ami`);
     expect(pin).toBe(cloud.instances.get(fresh!)?.imageId);
     expect(pin).toMatch(/^ami-[0-9a-f]{8,17}$/);
     expect(cloud.metrics).toEqual(["RequalifySucceeded"]);
@@ -124,9 +124,9 @@ describe("a successful renewal", () => {
 
   it("does not write the pin when the renewal fails before the switch, so task workers keep the AMI they have", async () => {
     oldInstallation();
-    cloud.ssm.set(`/agentx/${ENV}/worker-qualified-ami`, "ami-0123456789abcdef0");
+    cloud.ssm.set(`/rovara-cloud/${ENV}/worker-qualified-ami`, "ami-0123456789abcdef0");
     await renew(randomUUID(), { failAction: "awaitQualification" });
-    expect(cloud.ssm.get(`/agentx/${ENV}/worker-qualified-ami`)).toBe("ami-0123456789abcdef0");
+    expect(cloud.ssm.get(`/rovara-cloud/${ENV}/worker-qualified-ami`)).toBe("ami-0123456789abcdef0");
   });
 
   it("launches the first runner when nothing is registered yet (no old runner to retire)", async () => {
@@ -271,7 +271,7 @@ describe("a failure before the switch", () => {
     expect(cloud.volumes.get(oldVolume)?.state).toBe("in-use");
     // Whatever was ended carries this run's tag; and nothing of this run is left billing.
     expect(cloud.terminated.every((id) => cloud.launches.includes(id))).toBe(true);
-    expect([...cloud.instances.values()].filter((instance) => instance.tags["agentx:qualification-run"] === runId && instance.state !== "terminated")).toEqual([]);
+    expect([...cloud.instances.values()].filter((instance) => instance.tags["rovara-cloud:qualification-run"] === runId && instance.state !== "terminated")).toEqual([]);
     expect(survivingRunnerVolumes(runId)).toEqual([]);
     const sent = alert();
     expect(sent.map((entry) => entry.reason)).toEqual([reason]);
@@ -374,7 +374,7 @@ describe("a failure before the switch", () => {
 
   it("abandons without a switch when the worker settings changed during the run", async () => {
     const old = oldInstallation();
-    const { run } = await renew(randomUUID(), { after: (action) => { if (action === "putHold") cloud.ssm.set(`/agentx/${ENV}/worker-image`, `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker@sha256:${"c".repeat(64)}`); } });
+    const { run } = await renew(randomUUID(), { after: (action) => { if (action === "putHold") cloud.ssm.set(`/rovara-cloud/${ENV}/worker-image`, `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker@sha256:${"c".repeat(64)}`); } });
     expect(run.trace).toContain("ReasonSettingsChanged");
     expect(alert().map((entry) => entry.reason)).toEqual(["settings-changed"]);
     expect(cloud.row("web")?.["generation"]).toBe(1);
@@ -385,7 +385,7 @@ describe("a failure before the switch", () => {
 
   it("abandons when settings change between preflight and launch, before anything is launched", async () => {
     oldInstallation();
-    const { run } = await renew(randomUUID(), { after: (action) => { if (action === "preflight") cloud.ssm.set(`/agentx/${ENV}/worker-model-id`, "model-2"); } });
+    const { run } = await renew(randomUUID(), { after: (action) => { if (action === "preflight") cloud.ssm.set(`/rovara-cloud/${ENV}/worker-model-id`, "model-2"); } });
     expect(run.trace).toContain("ReasonLaunchFailed");
     expect(cloud.launches).toEqual([]);
   });
@@ -427,7 +427,7 @@ describe("a switch that committed but whose step then failed (review M-2)", () =
     expect(cloud.terminated).toEqual([old.id]);
     expect(cloud.instances.get(old.id)?.state).toBe("terminated");
     expect(cloud.pointer()?.["instanceId"]).toBe(cloud.launches[0]);
-    expect(cloud.ssm.get(`/agentx/${ENV}/worker-qualified-ami`)).toBe("ami-0abcdef1234567890");
+    expect(cloud.ssm.get(`/rovara-cloud/${ENV}/worker-qualified-ami`)).toBe("ami-0abcdef1234567890");
     expect(cloud.sns).toEqual([]);
     expect(cloud.hold()).toBeUndefined();
     expect(cloud.lock()).toBeUndefined();
@@ -579,7 +579,7 @@ describe("the daily check", () => {
     cloud.seedRegistered({ pointerInstance: old.id, runId: lastRun, expiresInMs: 6 * 24 * HOUR });
     cloud.ddb.set(cloud.key(requalifyRunKey(lastRun)), { images: { worker: WORKER_IMAGE, executor: EXECUTOR_IMAGE } });
     expect(await due()).toEqual({ started: false, reason: "not-due" });
-    cloud.ssm.set(`/agentx/${ENV}/worker-executor-image`, `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/executor@sha256:${"d".repeat(64)}`);
+    cloud.ssm.set(`/rovara-cloud/${ENV}/worker-executor-image`, `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/executor@sha256:${"d".repeat(64)}`);
     expect(await due()).toEqual({ started: true, reason: "images-changed" });
   });
 

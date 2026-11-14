@@ -2,7 +2,7 @@
 // UsePreviousTemplate and UsePreviousValue for every other parameter, so NoEcho values are never
 // sent again. It shows the parameter changes and the resource changes, and asks first.
 import { CreateChangeSetCommand, DeleteChangeSetCommand, DescribeChangeSetCommand, DescribeStacksCommand, ExecuteChangeSetCommand, type Change, type Stack } from "@aws-sdk/client-cloudformation";
-import { agentXError } from "@agentx/contracts";
+import { agentXError, RESOURCE_PREFIX } from "@agentx/contracts";
 import { ADOPTED_STACK_NAMES } from "../environments/adopt.js";
 import { SIGN_IN_SINCE_PARAMETER_NAMES } from "../signin/settings.js";
 import { assertAuditLockNotLowered } from "./answer-schemas.js";
@@ -57,13 +57,13 @@ export async function updateStackParameters(input: ParameterUpdateInput): Promis
   const current = new Map((stack.Parameters ?? []).map((parameter) => [parameter.ParameterKey ?? "", parameter.ParameterValue ?? ""]));
   const missing = Object.keys(input.changes).filter((name) => !current.has(name));
   if (missing.length > 0 && LEGACY_STACK_NAMES.has(stackName) && missing.every((name) => NAMED_ENVIRONMENT_ONLY_PARAMETERS.has(name))) {
-    throw agentXError("CONFIG_INVALID", `stack ${stackName} has no ${missing.join(", ")} parameter; that setting exists only in environments installed with agentx init, not in the legacy deployment; nothing changed`);
+    throw agentXError("CONFIG_INVALID", `stack ${stackName} has no ${missing.join(", ")} parameter; that setting exists only in environments installed with rovara init, not in the legacy deployment; nothing changed`);
   }
   if (missing.length > 0 && label === "config") {
-    throw agentXError("CONFIG_INVALID", `stack ${stackName} has no ${missing.join(", ")} parameter; it runs an older AgentX release, so upgrade it with agentx upgrade, then run this again`);
+    throw agentXError("CONFIG_INVALID", `stack ${stackName} has no ${missing.join(", ")} parameter; it runs an older AgentX release, so upgrade it with rovara upgrade, then run this again`);
   }
   if (missing.length > 0 && missing.every((name) => SIGN_IN_SINCE_PARAMETER_NAMES.has(name))) {
-    throw agentXError("CONFIG_INVALID", `stack ${stackName} was deployed from an older AgentX release (it has no ${missing.join(", ")} parameter); upgrade the environment with agentx deploy, then run this again`);
+    throw agentXError("CONFIG_INVALID", `stack ${stackName} was deployed from an older AgentX release (it has no ${missing.join(", ")} parameter); upgrade the environment with rovara deploy, then run this again`);
   }
   if (missing.length > 0) {
     throw agentXError("CONFIG_INVALID", `stack ${stackName} was deployed from an AgentX release without developer sign-in (it has no ${missing.join(", ")} parameter); upgrade the environment to a release with developer sign-in, then run this again`);
@@ -72,7 +72,7 @@ export async function updateStackParameters(input: ParameterUpdateInput): Promis
   const parameters = Object.entries(input.changes).filter(([name, to]) => current.get(name) !== to).map(([name, to]) => ({ name, from: current.get(name) ?? "", to }));
   if (parameters.length === 0) return { changed: false };
 
-  const changeSetName = `agentx-${label === "config" ? "config" : "signin"}-${Math.floor(now() / 1000)}`;
+  const changeSetName = `${RESOURCE_PREFIX}-${label === "config" ? "config" : "signin"}-${Math.floor(now() / 1000)}`;
   const id = { StackName: stackName, ChangeSetName: changeSetName };
   await input.cloudFormation.send(new CreateChangeSetCommand({
     ...id,

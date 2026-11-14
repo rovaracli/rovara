@@ -6,6 +6,7 @@
 //   - a SECURITY GROUP `rovara-mcp-<kind>-<id>` that holds only what the admin approved: the endpoints the task needs to start, the controller, and each approved destination's
 //     resolved addresses as /32. EC2 gives a new group "all traffic out"; that rule is removed before anything else is added, and no rule here is ever 0.0.0.0/0.
 // The cloud calls go through the narrow interfaces below (the real clients are adapted in the broker's aws-adapters.ts), so every rule is tested against a fake.
+import { RESOURCE_PREFIX } from "@agentx/contracts";
 import { RUNNER_FAMILY_PREFIX, serveFamily } from "./task-runner.js";
 import type { ServerResources } from "../mcp-controller.js";
 
@@ -60,7 +61,7 @@ interface ContainerDefinition {
 const IMAGE_BY_DIGEST = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,300}@sha256:[0-9a-f]{64}$/u;
 const EXECUTION_ROLE = /^arn:aws(?:-[a-z]+)*:iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,200}$/u;
 /** The secret's FULL ARN (with the random suffix Secrets Manager adds): ECS reads a JSON key of it as `<arn>:<key>::`. A bare name is not accepted. */
-const SECRET_REF = /^arn:aws(?:-[a-z]+)*:secretsmanager:[a-z0-9-]+:\d{12}:secret:agentx\/[A-Za-z0-9/_+=.@-]{1,300}-[A-Za-z0-9]{6}$/u;
+const SECRET_REF = new RegExp(String.raw`^arn:aws(?:-[a-z]+)*:secretsmanager:[a-z0-9-]+:\d{12}:secret:${RESOURCE_PREFIX}/[A-Za-z0-9/_+=.@-]{1,300}-[A-Za-z0-9]{6}$`, "u");
 const SECRET_NAME = /^[A-Z][A-Z0-9_]{1,63}$/u;
 const NODE = "/usr/local/bin/node";
 

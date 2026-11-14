@@ -1,4 +1,4 @@
-import { MODEL_PROVIDERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS } from "@agentx/contracts";
+import { MODEL_PROVIDERS, KEYED_MODEL_PROVIDERS, KEYED_PROVIDER_IDS, RESOURCE_PREFIX, APPLICATION_TAG_VALUE } from "@agentx/contracts";
 import { enterpriseHttpsEgress } from "./vpc-endpoints.js";
 import { providerKeyParameters } from "./model-keys.js";
 import { openRouterRoutingParameter } from "./openrouter.js";
@@ -113,7 +113,7 @@ export class SlackOrchestratorStack extends Stack {
         cidrIp: "0.0.0.0/0",
         description: "HTTPS to Slack, Amazon Bedrock, the AgentX control plane, and AWS APIs",
       }] : enterpriseHttpsEgress(props.privateEgressCidrs, "HTTPS to the approved ranges"),
-      tags: [{ key: "Application", value: "AgentX" }],
+      tags: [{ key: "Application", value: APPLICATION_TAG_VALUE }],
     });
     if (modelProxySecurityGroupId !== undefined) {
       // Orchestrator -> proxy load balancer on the proxy port, and only that: a separate pair of rules, as in ModelProxy.
@@ -132,16 +132,16 @@ export class SlackOrchestratorStack extends Stack {
     }
     const cluster = new ecs.CfnCluster(this, "Cluster", {
       clusterSettings: [{ name: "containerInsights", value: "disabled" }],
-      tags: [{ key: "Application", value: "AgentX" }],
+      tags: [{ key: "Application", value: APPLICATION_TAG_VALUE }],
     });
     const stackAttempt = Fn.select(2, Fn.split("/", this.stackId));
     const attemptShort = Fn.select(0, Fn.split("-", stackAttempt));
     const logGroup = new logs.LogGroup(this, "Logs", {
-      ...(naming.env === undefined ? {} : { logGroupName: Fn.join("", ["/agentx/", naming.env, "/slack/", stackAttempt, "/application"]) }),
+      ...(naming.env === undefined ? {} : { logGroupName: Fn.join("", [`/${RESOURCE_PREFIX}/`, naming.env, "/slack/", stackAttempt, "/application"]) }),
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: naming.env === undefined ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN,
     });
-    if (naming.env !== undefined) (logGroup.node.defaultChild as logs.CfnLogGroup).addMetadata("agentx:retain-on-create-rollback", true);
+    if (naming.env !== undefined) (logGroup.node.defaultChild as logs.CfnLogGroup).addMetadata("rovara-cloud:retain-on-create-rollback", true);
 
     let actionLogGroup: logs.LogGroup | undefined;
     let actionLogDelivery: logs.CfnDelivery | undefined;
@@ -152,7 +152,7 @@ export class SlackOrchestratorStack extends Stack {
         enableKeyRotation: true,
         removalPolicy: RemovalPolicy.RETAIN,
       });
-      const actionLogGroupName = Fn.join("", ["/aws/vendedlogs/ecs/action-logs/agentx-", naming.env, "-", stackAttempt]);
+      const actionLogGroupName = Fn.join("", [`/aws/vendedlogs/ecs/action-logs/${RESOURCE_PREFIX}-`, naming.env, "-", stackAttempt]);
       const actionLogGroupArn = Fn.join("", ["arn:", Aws.PARTITION, ":logs:", Aws.REGION, ":", Aws.ACCOUNT_ID, ":log-group:", actionLogGroupName]);
       const actionLogStreamArn = Fn.join("", [actionLogGroupArn, ":log-stream:*"]);
       actionLogGroup = new logs.LogGroup(this, "ActionLogs", {
@@ -161,9 +161,9 @@ export class SlackOrchestratorStack extends Stack {
         encryptionKey: actionKey,
         removalPolicy: RemovalPolicy.RETAIN,
       });
-      (actionKey.node.defaultChild as kms.CfnKey).addMetadata("agentx:retain-on-create-rollback", true);
+      (actionKey.node.defaultChild as kms.CfnKey).addMetadata("rovara-cloud:retain-on-create-rollback", true);
       const actionLogGroupResource = actionLogGroup.node.defaultChild as logs.CfnLogGroup;
-      actionLogGroupResource.addMetadata("agentx:retain-on-create-rollback", true);
+      actionLogGroupResource.addMetadata("rovara-cloud:retain-on-create-rollback", true);
       actionLogGroupResource.addPropertyOverride("ResourcePolicyDocument", {
         Version: "2012-10-17",
         Statement: [
@@ -198,16 +198,16 @@ export class SlackOrchestratorStack extends Stack {
       }));
 
       const actionSource = new logs.CfnDeliverySource(this, "ActionLogsSource", {
-        name: Fn.join("", ["agentx-", naming.env, "-", attemptShort, "-action-source"]),
+        name: Fn.join("", [`${RESOURCE_PREFIX}-`, naming.env, "-", attemptShort, "-action-source"]),
         resourceArn: cluster.attrArn,
         logType: "ACTION_LOGS",
       });
       // Preserve the per-attempt diagnostic source if a first stack create rolls back. The
       // delivery itself must be removed before this source on rollback/delete.
       actionSource.applyRemovalPolicy(RemovalPolicy.RETAIN);
-      actionSource.addMetadata("agentx:retain-on-create-rollback", true);
+      actionSource.addMetadata("rovara-cloud:retain-on-create-rollback", true);
       const actionDestination = new logs.CfnDeliveryDestination(this, "ActionLogsDestination", {
-        name: Fn.join("", ["agentx-", naming.env, "-", attemptShort, "-action-dest"]),
+        name: Fn.join("", [`${RESOURCE_PREFIX}-`, naming.env, "-", attemptShort, "-action-dest"]),
         deliveryDestinationType: "CWL",
         destinationResourceArn: actionLogGroup.logGroupArn,
         outputFormat: "json",
@@ -222,7 +222,7 @@ export class SlackOrchestratorStack extends Stack {
 
       deploymentFailureRule = new events.CfnRule(this, "ServiceDeploymentFailureEvents", {
         description: `ECS deployment failure events for AgentX ${naming.env} Slack test attempt`,
-        name: Fn.join("", ["agentx-", naming.env, "-", attemptShort, "-service-failures"]),
+        name: Fn.join("", [`${RESOURCE_PREFIX}-`, naming.env, "-", attemptShort, "-service-failures"]),
         state: "ENABLED",
         eventPattern: {
           source: ["aws.ecs"],
@@ -310,7 +310,7 @@ export class SlackOrchestratorStack extends Stack {
         return created;
       };
       alarm("TurnErrorsAlarm", { suffix: "TurnErrors", threshold: 1, metric: agentx("TurnFailed", "Sum"),
-        description: "An orchestrator turn failed. Export recent turns with agentx admin turns export --since 1h." });
+        description: "An orchestrator turn failed. Export recent turns with rovara admin turns export --since 1h." });
       alarm("SlowTurnsAlarm", {
         suffix: "SlowTurns",
         threshold: slowTurnMinutes.valueAsNumber,
@@ -320,7 +320,7 @@ export class SlackOrchestratorStack extends Stack {
           period: Duration.minutes(5),
           label: "Slowest turn in minutes",
         }),
-        description: "A turn took longer than alerts.slowTurnMinutes. Export recent turns with agentx admin turns export --since 1h.",
+        description: "A turn took longer than alerts.slowTurnMinutes. Export recent turns with rovara admin turns export --since 1h.",
       });
       alarm("SlackDeliveryFailedAlarm", { suffix: "SlackDeliveryFailed", threshold: 1, metric: agentx("SlackDeliveryFailed", "Sum"),
         description: "A Slack request was given up after its last attempt, so the member got no answer. Check the Slack service logs for request.abandoned." });
@@ -338,7 +338,7 @@ export class SlackOrchestratorStack extends Stack {
       throttles("BedrockThrottlingAlarm", "BedrockThrottling", modelId, onBedrock("OrchestratorOnBedrock", modelProvider), "orchestrator");
       throttles("ClassifierThrottlingAlarm", "ClassifierThrottling", gateClassifierModelId, onBedrock("ClassifierOnBedrock", classifierProvider), "classifier");
       alarm("TestAlarm", { suffix: "TestAlarm", threshold: 1, metric: agentx("TestAlarmNeverEmitted", "Sum"),
-        description: "agentx alerts test sets this alarm to ALARM and back to OK. It never fires on its own." });
+        description: "rovara alerts test sets this alarm to ALARM and back to OK. It never fires on its own." });
     }
     const executionRole = new iam.Role(this, "ExecutionRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {

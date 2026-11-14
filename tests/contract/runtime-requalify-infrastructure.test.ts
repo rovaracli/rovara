@@ -16,10 +16,10 @@ skipLambdaBundling();
 
 type Resource = { Type: string; Properties: Record<string, unknown> };
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>> };
-const ENV = "agentxlivetest123";
+const ENV = "rovaralivetest";
 
 function controlPlane(context: Record<string, unknown>): Record<string, Resource> {
-  const stack = buildAgentXApp({ agentxEnv: ENV, ...context }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === `agentx-${ENV}-control-plane`);
+  const stack = buildAgentXApp({ agentxEnv: ENV, ...context }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === `rovara-cloud-${ENV}-control-plane`);
   if (stack === undefined) throw new Error("no control-plane stack");
   return Template.fromStack(stack).toJSON().Resources as Record<string, Resource>;
 }
@@ -64,7 +64,7 @@ describe("the renewal's infrastructure", () => {
       expect(found.length, action).toBeGreaterThan(0);
       for (const statement of found) {
         expect(tagConditions(statement), action).toEqual({
-          "aws:ResourceTag/DeploymentMode": "e2e-qualification", "aws:ResourceTag/Environment": ENV, "aws:ResourceTag/agentx:requalify-managed": "true",
+          "aws:ResourceTag/DeploymentMode": "e2e-qualification", "aws:ResourceTag/Environment": ENV, "aws:ResourceTag/rovara-cloud:requalify-managed": "true",
         });
         expect(JSON.stringify(statement.Resource), action).toMatch(/:(instance|volume)\/\*/);
       }
@@ -81,10 +81,10 @@ describe("the renewal's infrastructure", () => {
     expect(runOnInstance).toHaveLength(1);
     const condition = runOnInstance[0]!.Condition!;
     expect(JSON.stringify(condition["ArnEquals"])).toContain("ec2:LaunchTemplate");
-    expect(condition["StringEquals"]).toEqual({ "aws:RequestTag/DeploymentMode": "e2e-qualification", "aws:RequestTag/Environment": ENV, "aws:RequestTag/agentx:requalify-managed": "true" });
+    expect(condition["StringEquals"]).toEqual({ "aws:RequestTag/DeploymentMode": "e2e-qualification", "aws:RequestTag/Environment": ENV, "aws:RequestTag/rovara-cloud:requalify-managed": "true" });
     const create = withAction("ec2:CreateVolume");
     expect(create).toHaveLength(1);
-    expect(create[0]!.Condition!["StringEquals"]).toEqual({ "aws:RequestTag/DeploymentMode": "e2e-qualification", "aws:RequestTag/Environment": ENV, "aws:RequestTag/agentx:requalify-managed": "true" });
+    expect(create[0]!.Condition!["StringEquals"]).toEqual({ "aws:RequestTag/DeploymentMode": "e2e-qualification", "aws:RequestTag/Environment": ENV, "aws:RequestTag/rovara-cloud:requalify-managed": "true" });
     // Amazon's own images only.
     const image = withAction("ec2:RunInstances").find((statement) => JSON.stringify(statement.Resource).includes("::image/*"));
     expect(image?.Condition?.["StringEquals"]).toEqual({ "ec2:Owner": "amazon" });
@@ -142,7 +142,7 @@ describe("the renewal's infrastructure", () => {
     const put = withAction("ssm:PutParameter");
     expect(put).toHaveLength(1);
     // Exactly the one parameter AR-4's provisioner and reconciler read: <worker settings prefix>worker-qualified-ami.
-    expect(JSON.stringify(put[0]!.Resource)).toContain(`parameter/agentx/${ENV}/worker-qualified-ami`);
+    expect(JSON.stringify(put[0]!.Resource)).toContain(`parameter/rovara-cloud/${ENV}/worker-qualified-ami`);
     expect([put[0]!.Resource].flat()).toHaveLength(1);
     expect(all).not.toContain("ssm:GetParameterHistory");
   });

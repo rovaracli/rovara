@@ -4,7 +4,7 @@
 // `cloud` flag. An install with no stamp is an existing install (it was deployed before editions): it keeps today's behaviour, which is "no edition gates", and it
 // is never treated as Enterprise. A stamp that is present but wrong stops the process from starting.
 import { GetParameterCommand, type SSMClient } from "@aws-sdk/client-ssm";
-import { EDITION_ENV_VAR, EditionSchema, agentXError, editionPolicy, resolveEdition, type EditionPolicy } from "@agentx/contracts";
+import { EDITION_ENV_VAR, EditionSchema, RESOURCE_PREFIX, agentXError, editionPolicy, resolveEdition, type EditionPolicy } from "@agentx/contracts";
 
 /**
  * @param environment the process environment
@@ -25,9 +25,9 @@ export function installEditionPolicy(environment: Record<string, string | undefi
 // ---- the retained edition record (review I-2)
 
 /** The SSM parameter the foundation keeps for an install that has an edition. */
-export const editionRecordName = (env: string): string => `/agentx/${env}/edition`;
+export const editionRecordName = (env: string): string => `/${RESOURCE_PREFIX}/${env}/edition`;
 /** The backup the CLI keeps while it has the record out of the way (an interrupted deploy): while the record is missing it IS the edition on record. */
-export const editionBackupName = (env: string): string => `/agentx/${env}/edition-backup`;
+export const editionBackupName = (env: string): string => `/${RESOURCE_PREFIX}/${env}/edition-backup`;
 
 export const EDITION_STAMP_MISSING_MESSAGE = "This install has an edition on record, but this process was started without it. It will not serve until it is deployed with its edition.";
 export const EDITION_STAMP_DIFFERS_MESSAGE = "This process's edition is not the edition this install has on record. It will not serve until it is deployed with the edition on record.";

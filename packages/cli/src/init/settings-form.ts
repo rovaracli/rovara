@@ -5,7 +5,7 @@
 // left out: the flag answers it. The page shows the form as one screen; the terminal asks the four,
 // then ADVANCED_QUESTION (prompts.ts askForm).
 import { DEFAULT_BEDROCK_MODELS } from "@agentx/model-runtime/config";
-import { ENVIRONMENT_NAME_PATTERN, ENVIRONMENT_PLACEHOLDER, EnvironmentNameSchema } from "@agentx/contracts";
+import { ENVIRONMENT_NAME_PATTERN, ENVIRONMENT_PLACEHOLDER, ENVIRONMENT_TAG_KEY, EnvironmentNameSchema } from "@agentx/contracts";
 import { AlertEmailSchema, defaultAuditLockProfile, GITHUB_LOGIN_PATTERN, MAX_BUDGET_USD } from "../deploy/answer-schemas.js";
 import type { InitFlags } from "./answers.js";
 import { estimateMonthlyCost, modelName, modelPriceLabel, money, suggestedBudgetUsd } from "./cost.js";
@@ -63,7 +63,7 @@ const PROVIDER_CHOICES = [
 ];
 const BUDGET_SCOPE_CHOICES = [
   { value: "account", label: "The whole account (recommended)" },
-  { value: "tag", label: "Only this environment's (tagged agentx:env; the tag must be activated in Billing)" },
+  { value: "tag", label: `Only this environment's (tagged ${ENVIRONMENT_TAG_KEY}; the tag must be activated in Billing)` },
 ];
 /** The audit ledger's lock profile (Task 5b). Production is the default and cannot be undone: an install never goes back to trial. */
 const AUDIT_LOCK_CHOICES = [
@@ -84,7 +84,7 @@ const loginProblem = (value: string): string | undefined => (GITHUB_LOGIN_PATTER
  * describe it exactly; any other refusal of the schema is a reserved name. */
 export function installNameProblem(value: string): string | undefined {
   if (!ENVIRONMENT_NAME_PATTERN.test(value) || value.includes("--")) {
-    return "use lowercase letters, numbers and single hyphens, starting with a letter and ending with a letter or number, at most 20 characters";
+    return "use lowercase letters, numbers and single hyphens, starting with a letter and ending with a letter or number, at most 14 characters";
   }
   return !EnvironmentNameSchema.safeParse(value).success || value === ENVIRONMENT_PLACEHOLDER ? "that name is reserved; choose another" : undefined;
 }

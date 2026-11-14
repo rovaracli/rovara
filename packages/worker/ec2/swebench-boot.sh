@@ -3,7 +3,7 @@
 # SWE-bench mode once, and shuts the instance down, which terminates it.
 #
 # Runs once, as root, as the eval launch template's user data. The eval stack prepends
-# AGENTX_ARTIFACT_BUCKET. The run ID comes from the instance's agentx-eval-run tag (instance metadata
+# AGENTX_ARTIFACT_BUCKET. The run ID comes from the instance's rovara-cloud-eval-run tag (instance metadata
 # tags are on for eval instances), and everything else from s3://$AGENTX_ARTIFACT_BUCKET/evals/<run>/launch.json,
 # which the broker wrote and validated. The run's callback capability never enters user data.
 # Any failure shuts the instance down; the eval state machine then marks the run FAILED.
@@ -37,7 +37,7 @@ main() {
   local region instance_id run_id runner_image log_group docker_gid
   region=$(imds placement/region)
   instance_id=$(imds instance-id)
-  run_id=$(imds tags/instance/agentx-eval-run)
+  run_id=$(imds tags/instance/rovara-cloud-eval-run)
   [[ "$run_id" =~ ^[0-9a-f-]{36}$ ]] || { log "invalid run ID tag"; exit 1; }
   log "run $run_id on $instance_id"
 

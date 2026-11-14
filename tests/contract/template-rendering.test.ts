@@ -15,7 +15,7 @@ function templates(env: string): Map<string, string> {
   const assembly = buildAgentXApp({ agentxEnv: env, agentxSynthesizer: "legacy", agentxAuditLockMode: "COMPLIANCE", agentxAuditRetentionDays: 1096 }).synth();
   const byPart = new Map<string, string>();
   for (const stack of assembly.stacks) {
-    const part = stack.stackName.replace(`agentx-${env}-`, "");
+    const part = stack.stackName.replace(`rovara-cloud-${env}-`, "");
     byPart.set(part, JSON.stringify(stack.template));
   }
   return byPart;
@@ -62,7 +62,7 @@ describe("templates for any environment", () => {
   }, 300_000);
 
   it("uses a placeholder that is a valid name and that no real environment can take", () => {
-    expect(ENVIRONMENT_PLACEHOLDER).toBe("qqenv-placeholderqq");
+    expect(ENVIRONMENT_PLACEHOLDER).toBe("qqenv-phldrqq");
     expect(EnvironmentNameSchema.safeParse(ENVIRONMENT_PLACEHOLDER).success).toBe(true);
     expect(EnvironmentNameSchema.safeParse("myqqenv").success).toBe(false);
   });

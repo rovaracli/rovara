@@ -29,7 +29,7 @@ describe("the destroy adapter", () => {
       DeleteBucket: () => ({}),
     });
     const progress: number[] = [];
-    await awsDestroyApi(fake.clients).deleteBucket("agentx-staging-control-plane-artifacts-1", (count) => progress.push(count));
+    await awsDestroyApi(fake.clients).deleteBucket("rovara-cloud-staging-control-plane-artifacts-1", (count) => progress.push(count));
     const batches = fake.calls.filter((call) => call.name === "DeleteObjects").map((call) => ((call.input.Delete as { Objects: unknown[] }).Objects).length);
     expect(batches.every((size) => size <= 1000)).toBe(true);
     expect(batches.reduce((sum, size) => sum + size, 0)).toBe(1102);
@@ -41,10 +41,10 @@ describe("the destroy adapter", () => {
     let page = 0;
     const fake = fakeClients({
       DescribeRepositories: () => (page++ === 0
-        ? { repositories: [{ repositoryName: "agentx-staging/ghcr/preplabsai/agentx-worker" }, { repositoryName: "agentx-staging-eu/ghcr/x" }], nextToken: "t1" }
-        : { repositories: [{ repositoryName: "agentx-staging/ghcr/preplabsai/agentx-slack" }, { repositoryName: "other" }] }),
+        ? { repositories: [{ repositoryName: "rovara-cloud-staging/ghcr/preplabsai/agentx-worker" }, { repositoryName: "rovara-cloud-staging-eu/ghcr/x" }], nextToken: "t1" }
+        : { repositories: [{ repositoryName: "rovara-cloud-staging/ghcr/preplabsai/agentx-slack" }, { repositoryName: "other" }] }),
     });
-    expect(await awsDestroyApi(fake.clients).pullThroughRepositories("staging")).toEqual(["agentx-staging/ghcr/preplabsai/agentx-worker", "agentx-staging/ghcr/preplabsai/agentx-slack"]);
+    expect(await awsDestroyApi(fake.clients).pullThroughRepositories("staging")).toEqual(["rovara-cloud-staging/ghcr/preplabsai/agentx-worker", "rovara-cloud-staging/ghcr/preplabsai/agentx-slack"]);
     expect(fake.calls.map((call) => call.input)).toEqual([{}, { nextToken: "t1" }]);
   });
 
@@ -55,41 +55,41 @@ describe("the destroy adapter", () => {
 
   it("turns a user pool's deletion protection off and deletes its own domain before the pool, refusing a domain that is not its own", async () => {
     const fake = fakeClients({
-      DescribeUserPool: () => ({ UserPool: { Id: "us-east-1_AbC", DeletionProtection: "ACTIVE", Domain: "agentx-staging-123456789012" } }),
+      DescribeUserPool: () => ({ UserPool: { Id: "us-east-1_AbC", DeletionProtection: "ACTIVE", Domain: "rovara-cloud-staging-123456789012" } }),
       UpdateUserPool: () => ({}), DeleteUserPoolDomain: () => ({}), DeleteUserPool: () => ({}),
     });
-    await awsDestroyApi(fake.clients).deleteUserPool("us-east-1_AbC", "agentx-staging-123456789012");
+    await awsDestroyApi(fake.clients).deleteUserPool("us-east-1_AbC", "rovara-cloud-staging-123456789012");
     expect(fake.calls.map((call) => call.name)).toEqual(["DescribeUserPool", "UpdateUserPool", "DeleteUserPoolDomain", "DeleteUserPool"]);
     expect(fake.calls[1]!.input).toMatchObject({ UserPoolId: "us-east-1_AbC", DeletionProtection: "INACTIVE" });
     const foreign = fakeClients({ DescribeUserPool: () => ({ UserPool: { Id: "us-east-1_AbC", DeletionProtection: "INACTIVE", Domain: "someone-else" } }) });
-    await expect(awsDestroyApi(foreign.clients).deleteUserPool("us-east-1_AbC", "agentx-staging-123456789012")).rejects.toThrow("user pool us-east-1_AbC has the domain someone-else, which is not agentx-staging-123456789012; delete that domain yourself, then run agentx destroy again");
+    await expect(awsDestroyApi(foreign.clients).deleteUserPool("us-east-1_AbC", "rovara-cloud-staging-123456789012")).rejects.toThrow("user pool us-east-1_AbC has the domain someone-else, which is not rovara-cloud-staging-123456789012; delete that domain yourself, then run rovara destroy again");
   });
 
   it("finds workers by all three tags, and drops any answer that does not carry them", async () => {
     const fake = fakeClients({
       DescribeInstances: () => ({ Reservations: [{ Instances: [
-        { InstanceId: "i-1", State: { Name: "running" }, Tags: [{ Key: "DeploymentMode", Value: "ec2-ebs" }, { Key: "Environment", Value: "staging" }, { Key: "agentx:env", Value: "staging" }] },
+        { InstanceId: "i-1", State: { Name: "running" }, Tags: [{ Key: "DeploymentMode", Value: "ec2-ebs" }, { Key: "Environment", Value: "staging" }, { Key: "rovara-cloud:env", Value: "staging" }] },
         { InstanceId: "i-2", State: { Name: "running" }, Tags: [{ Key: "DeploymentMode", Value: "ec2-ebs" }, { Key: "Environment", Value: "staging" }] },
       ] }] }),
     });
     const found = await awsDestroyApi(fake.clients).workerInstances("staging");
     expect(found.map((instance) => instance.id)).toEqual(["i-1"]);
     expect(fake.calls[0]!.input.Filters).toEqual(expect.arrayContaining([
-      { Name: "tag:DeploymentMode", Values: ["ec2-ebs"] }, { Name: "tag:Environment", Values: ["staging"] }, { Name: "tag:agentx:env", Values: ["staging"] },
+      { Name: "tag:DeploymentMode", Values: ["ec2-ebs"] }, { Name: "tag:Environment", Values: ["staging"] }, { Name: "tag:rovara-cloud:env", Values: ["staging"] },
     ]));
   });
 
   it("lists only this environment's secrets, and force-deletes one already scheduled for deletion by restoring it first", async () => {
     const fake = fakeClients({
-      ListSecrets: () => ({ SecretList: [{ Name: "agentx/staging/slack" }, { Name: "agentx/staging-eu/slack" }, { Name: "agentx/staging/github-app", DeletedDate: new Date() }] }),
-      RestoreSecret: () => ({}), DeleteSecret: () => ({}), DescribeSecret: () => ({ Name: "agentx/staging/github-app", DeletedDate: new Date() }),
+      ListSecrets: () => ({ SecretList: [{ Name: "rovara-cloud/staging/slack" }, { Name: "rovara-cloud/staging-eu/slack" }, { Name: "rovara-cloud/staging/github-app", DeletedDate: new Date() }] }),
+      RestoreSecret: () => ({}), DeleteSecret: () => ({}), DescribeSecret: () => ({ Name: "rovara-cloud/staging/github-app", DeletedDate: new Date() }),
     });
     const api = awsDestroyApi(fake.clients);
-    expect(await api.secrets("staging")).toEqual([{ name: "agentx/staging/slack", scheduled: false }, { name: "agentx/staging/github-app", scheduled: true }]);
-    expect(fake.calls[0]!.input).toMatchObject({ Filters: [{ Key: "name", Values: ["agentx/staging/"] }], IncludePlannedDeletion: true });
-    await api.deleteSecret("agentx/staging/github-app");
+    expect(await api.secrets("staging")).toEqual([{ name: "rovara-cloud/staging/slack", scheduled: false }, { name: "rovara-cloud/staging/github-app", scheduled: true }]);
+    expect(fake.calls[0]!.input).toMatchObject({ Filters: [{ Key: "name", Values: ["rovara-cloud/staging/"] }], IncludePlannedDeletion: true });
+    await api.deleteSecret("rovara-cloud/staging/github-app");
     expect(fake.calls.slice(-2).map((call) => call.name)).toEqual(["RestoreSecret", "DeleteSecret"]);
-    expect(fake.calls.at(-1)!.input).toEqual({ SecretId: "agentx/staging/github-app", ForceDeleteWithoutRecovery: true });
+    expect(fake.calls.at(-1)!.input).toEqual({ SecretId: "rovara-cloud/staging/github-app", ForceDeleteWithoutRecovery: true });
   });
 
   it("schedules a KMS key's deletion in 7 days, once", async () => {
@@ -107,8 +107,8 @@ describe("the destroy adapter", () => {
   });
 
   it("reads a table's tags through its ARN, and answers undefined for one already gone", async () => {
-    const fake = fakeClients({ DescribeTable: () => ({ Table: { TableArn: "arn:aws:dynamodb:us-east-1:1:table/t" } }), ListTagsOfResource: () => ({ Tags: [{ Key: "agentx:env", Value: "staging" }] }) });
-    expect(await awsDestroyApi(fake.clients).resourceTags({ part: "control-plane", logicalId: "State", type: "AWS::DynamoDB::Table", physicalId: "t" })).toEqual({ "agentx:env": "staging" });
+    const fake = fakeClients({ DescribeTable: () => ({ Table: { TableArn: "arn:aws:dynamodb:us-east-1:1:table/t" } }), ListTagsOfResource: () => ({ Tags: [{ Key: "rovara-cloud:env", Value: "staging" }] }) });
+    expect(await awsDestroyApi(fake.clients).resourceTags({ part: "control-plane", logicalId: "State", type: "AWS::DynamoDB::Table", physicalId: "t" })).toEqual({ "rovara-cloud:env": "staging" });
     const gone = fakeClients({ DescribeTable: notFound("ResourceNotFoundException") });
     expect(await awsDestroyApi(gone.clients).resourceTags({ part: "control-plane", logicalId: "State", type: "AWS::DynamoDB::Table", physicalId: "t" })).toBeUndefined();
   });
@@ -128,21 +128,21 @@ describe("waiting for a stack delete", () => {
   it("waits through a 40-minute control-plane delete, with a progress line each minute, and never gives up early", async () => {
     const statuses = [...Array.from({ length: 160 }, () => "DELETE_IN_PROGRESS"), undefined];
     const lines: string[] = [];
-    await waitForStackDelete({ api: stackApi(statuses), name: "agentx-staging-control-plane", write: (line) => lines.push(line), ...clock() });
-    expect(lines.filter((line) => line.startsWith("still deleting agentx-staging-control-plane")).length).toBeGreaterThanOrEqual(39);
-    expect(lines).toContain("still deleting agentx-staging-control-plane: 1 minute so far; last event: SlackIngressFunction DELETE_IN_PROGRESS");
-    expect(lines.at(-1)).toBe("deleted agentx-staging-control-plane (40 minutes)");
+    await waitForStackDelete({ api: stackApi(statuses), name: "rovara-cloud-staging-control-plane", write: (line) => lines.push(line), ...clock() });
+    expect(lines.filter((line) => line.startsWith("still deleting rovara-cloud-staging-control-plane")).length).toBeGreaterThanOrEqual(39);
+    expect(lines).toContain("still deleting rovara-cloud-staging-control-plane: 1 minute so far; last event: SlackIngressFunction DELETE_IN_PROGRESS");
+    expect(lines.at(-1)).toBe("deleted rovara-cloud-staging-control-plane (40 minutes)");
   });
 
   it("gives up only after 3 hours, saying a re-run keeps waiting", async () => {
     const time = clock();
-    await expect(waitForStackDelete({ api: stackApi(["DELETE_IN_PROGRESS"]), name: "s", write: () => undefined, ...time })).rejects.toThrow("stack s is still DELETE_IN_PROGRESS after 3 hours; it may still finish. Run agentx destroy again to keep waiting and continue");
+    await expect(waitForStackDelete({ api: stackApi(["DELETE_IN_PROGRESS"]), name: "s", write: () => undefined, ...time })).rejects.toThrow("stack s is still DELETE_IN_PROGRESS after 3 hours; it may still finish. Run rovara destroy again to keep waiting and continue");
     expect(time.now()).toBeGreaterThanOrEqual(STACK_DELETE_TIMEOUT_MS);
   });
 
   it("stops on DELETE_FAILED with the failing resources", async () => {
-    await expect(waitForStackDelete({ api: stackApi(["DELETE_FAILED"]), name: "agentx-staging-foundation", write: () => undefined, ...clock() }))
-      .rejects.toThrow("stack agentx-staging-foundation could not be deleted: WorkerSecurityGroup: resource sg-1 has a dependent object. Fix that, then run agentx destroy again to continue");
+    await expect(waitForStackDelete({ api: stackApi(["DELETE_FAILED"]), name: "rovara-cloud-staging-foundation", write: () => undefined, ...clock() }))
+      .rejects.toThrow("stack rovara-cloud-staging-foundation could not be deleted: WorkerSecurityGroup: resource sg-1 has a dependent object. Fix that, then run rovara destroy again to continue");
   });
 
   it("retries a volume that is still attached until it is free", async () => {
@@ -156,7 +156,7 @@ describe("waiting for a stack delete", () => {
     const time = clock();
     const api = { workerInstances: async () => [{ id: "i-1", state: "shutting-down", tags: {} }] } as unknown as DestroyApi;
     await expect(waitForInstancesGone({ api, env: "staging", ids: ["i-1"], ...time }))
-      .rejects.toThrow("worker instances i-1 are still shutting-down after 30 minutes; check them in the EC2 console, then run agentx destroy again");
+      .rejects.toThrow("worker instances i-1 are still shutting-down after 30 minutes; check them in the EC2 console, then run rovara destroy again");
     expect(time.now()).toBeGreaterThanOrEqual(30 * 60_000);
   });
 
@@ -167,7 +167,7 @@ describe("waiting for a stack delete", () => {
 });
 
 describe("the destroy adapter, fix round 1", () => {
-  const tags = (env: string) => [{ Key: "DeploymentMode", Value: "ec2-ebs" }, { Key: "Environment", Value: env }, { Key: "agentx:env", Value: env }];
+  const tags = (env: string) => [{ Key: "DeploymentMode", Value: "ec2-ebs" }, { Key: "Environment", Value: env }, { Key: "rovara-cloud:env", Value: env }];
 
   it("never returns a volume EC2 is already deleting after termination", async () => {
     const fake = fakeClients({ DescribeVolumes: () => ({ Volumes: [
@@ -180,14 +180,14 @@ describe("the destroy adapter, fix round 1", () => {
   });
 
   it("finds a secret scheduled for deletion by itself, restores it, then force-deletes it", async () => {
-    const scheduled = fakeClients({ DescribeSecret: () => ({ Name: "agentx/staging/slack", DeletedDate: new Date() }), RestoreSecret: () => ({}), DeleteSecret: () => ({}) });
-    await awsDestroyApi(scheduled.clients).deleteSecret("agentx/staging/slack");
+    const scheduled = fakeClients({ DescribeSecret: () => ({ Name: "rovara-cloud/staging/slack", DeletedDate: new Date() }), RestoreSecret: () => ({}), DeleteSecret: () => ({}) });
+    await awsDestroyApi(scheduled.clients).deleteSecret("rovara-cloud/staging/slack");
     expect(scheduled.calls.map((call) => call.name)).toEqual(["DescribeSecret", "RestoreSecret", "DeleteSecret"]);
-    const live = fakeClients({ DescribeSecret: () => ({ Name: "agentx/staging/slack" }), DeleteSecret: () => ({}) });
-    await awsDestroyApi(live.clients).deleteSecret("agentx/staging/slack");
+    const live = fakeClients({ DescribeSecret: () => ({ Name: "rovara-cloud/staging/slack" }), DeleteSecret: () => ({}) });
+    await awsDestroyApi(live.clients).deleteSecret("rovara-cloud/staging/slack");
     expect(live.calls.map((call) => call.name)).toEqual(["DescribeSecret", "DeleteSecret"]);
     const gone = fakeClients({ DescribeSecret: notFound("ResourceNotFoundException") });
-    await expect(awsDestroyApi(gone.clients).deleteSecret("agentx/staging/slack")).resolves.toBeUndefined();
+    await expect(awsDestroyApi(gone.clients).deleteSecret("rovara-cloud/staging/slack")).resolves.toBeUndefined();
   });
 
   it("leaves a table that is already deleting, and retries the delete while the protection change settles", async () => {
@@ -215,16 +215,16 @@ describe("the destroy adapter, fix round 1", () => {
     const fake = fakeClients({ DeleteLogGroup: () => ({}), DeleteAlias: () => ({}) });
     const api = awsDestroyApi(fake.clients);
     await api.deleteLogGroup("g");
-    await api.deleteAlias("alias/agentx/staging/workspaces");
-    expect(fake.calls).toEqual([{ name: "DeleteLogGroup", input: { logGroupName: "g" } }, { name: "DeleteAlias", input: { AliasName: "alias/agentx/staging/workspaces" } }]);
+    await api.deleteAlias("alias/rovara-cloud/staging/workspaces");
+    expect(fake.calls).toEqual([{ name: "DeleteLogGroup", input: { logGroupName: "g" } }, { name: "DeleteAlias", input: { AliasName: "alias/rovara-cloud/staging/workspaces" } }]);
     const gone = fakeClients({ DeleteLogGroup: notFound("ResourceNotFoundException"), DeleteAlias: notFound("NotFoundException") });
     await expect(awsDestroyApi(gone.clients).deleteLogGroup("g")).resolves.toBeUndefined();
-    await expect(awsDestroyApi(gone.clients).deleteAlias("alias/agentx/staging/workspaces")).resolves.toBeUndefined();
+    await expect(awsDestroyApi(gone.clients).deleteAlias("alias/rovara-cloud/staging/workspaces")).resolves.toBeUndefined();
   });
 
   it("throws when S3 cannot delete some objects", async () => {
     const fake = fakeClients({ ListObjectVersions: () => ({ Versions: [{ Key: "k", VersionId: "v" }], IsTruncated: false }), DeleteObjects: () => ({ Errors: [{ Key: "k", Code: "AccessDenied" }] }) });
-    await expect(awsDestroyApi(fake.clients).deleteBucket("b", () => undefined)).rejects.toThrow("bucket b: 1 objects could not be deleted (AccessDenied); run agentx destroy again");
+    await expect(awsDestroyApi(fake.clients).deleteBucket("b", () => undefined)).rejects.toThrow("bucket b: 1 objects could not be deleted (AccessDenied); run rovara destroy again");
     expect(fake.calls.map((call) => call.name)).not.toContain("DeleteBucket");
   });
 
@@ -238,33 +238,33 @@ describe("the destroy adapter, fix round 1", () => {
       DescribeLogGroups: (input) => (input.nextToken === undefined
         ? { logGroups: [{ logGroupName: "g-longer", logGroupArn: "arn:other" }], nextToken: "p2" }
         : { logGroups: [{ logGroupName: "g", logGroupArn: "arn:g" }] }),
-      ListTagsForResource: (input) => ({ tags: input.resourceArn === "arn:g" ? { "agentx:env": "staging" } : { "agentx:env": "other" } }),
+      ListTagsForResource: (input) => ({ tags: input.resourceArn === "arn:g" ? { "rovara-cloud:env": "staging" } : { "rovara-cloud:env": "other" } }),
     });
-    expect(await awsDestroyApi(fake.clients).resourceTags({ part: "foundation", logicalId: "L", type: "AWS::Logs::LogGroup", physicalId: "g" })).toEqual({ "agentx:env": "staging" });
+    expect(await awsDestroyApi(fake.clients).resourceTags({ part: "foundation", logicalId: "L", type: "AWS::Logs::LogGroup", physicalId: "g" })).toEqual({ "rovara-cloud:env": "staging" });
   });
 
   it("deletes a user pool without protection or a domain, and one already gone", async () => {
     const plain = fakeClients({ DescribeUserPool: () => ({ UserPool: { Id: "p", DeletionProtection: "INACTIVE" } }), DeleteUserPool: () => ({}) });
-    await awsDestroyApi(plain.clients).deleteUserPool("p", "agentx-staging-123456789012");
+    await awsDestroyApi(plain.clients).deleteUserPool("p", "rovara-cloud-staging-123456789012");
     expect(plain.calls.map((call) => call.name)).toEqual(["DescribeUserPool", "DeleteUserPool"]);
     const gone = fakeClients({ DescribeUserPool: notFound("ResourceNotFoundException") });
-    await expect(awsDestroyApi(gone.clients).deleteUserPool("p", "agentx-staging-123456789012")).resolves.toBeUndefined();
+    await expect(awsDestroyApi(gone.clients).deleteUserPool("p", "rovara-cloud-staging-123456789012")).resolves.toBeUndefined();
   });
 
   it("reads every page of secrets, instances, volumes, aliases and stack resources", async () => {
     const paged = <T>(first: T, second: T, token: string) => (input: Record<string, unknown>) => (input[token] === undefined ? first : second);
     const fake = fakeClients({
-      ListSecrets: paged({ SecretList: [{ Name: "agentx/staging/a" }], NextToken: "t" }, { SecretList: [{ Name: "agentx/staging/b" }] }, "NextToken"),
+      ListSecrets: paged({ SecretList: [{ Name: "rovara-cloud/staging/a" }], NextToken: "t" }, { SecretList: [{ Name: "rovara-cloud/staging/b" }] }, "NextToken"),
       DescribeInstances: paged({ Reservations: [{ Instances: [{ InstanceId: "i-1", State: { Name: "running" }, Tags: tags("staging") }] }], NextToken: "t" }, { Reservations: [{ Instances: [{ InstanceId: "i-2", State: { Name: "running" }, Tags: tags("staging") }] }] }, "NextToken"),
       DescribeVolumes: paged({ Volumes: [{ VolumeId: "vol-1", State: "available", Tags: tags("staging") }], NextToken: "t" }, { Volumes: [{ VolumeId: "vol-2", State: "in-use", Tags: tags("staging") }] }, "NextToken"),
-      ListAliases: paged({ Aliases: [{ AliasName: "alias/agentx/staging/a" }], Truncated: true, NextMarker: "m" }, { Aliases: [{ AliasName: "alias/agentx/staging/b" }], Truncated: false }, "Marker"),
+      ListAliases: paged({ Aliases: [{ AliasName: "alias/rovara-cloud/staging/a" }], Truncated: true, NextMarker: "m" }, { Aliases: [{ AliasName: "alias/rovara-cloud/staging/b" }], Truncated: false }, "Marker"),
       ListStackResources: paged({ StackResourceSummaries: [{ LogicalResourceId: "A", ResourceType: "AWS::S3::Bucket", PhysicalResourceId: "a" }], NextToken: "t" }, { StackResourceSummaries: [{ LogicalResourceId: "B", ResourceType: "AWS::KMS::Key", PhysicalResourceId: "b" }] }, "NextToken"),
     });
     const api = awsDestroyApi(fake.clients);
-    expect((await api.secrets("staging")).map((entry) => entry.name)).toEqual(["agentx/staging/a", "agentx/staging/b"]);
+    expect((await api.secrets("staging")).map((entry) => entry.name)).toEqual(["rovara-cloud/staging/a", "rovara-cloud/staging/b"]);
     expect((await api.workerInstances("staging")).map((entry) => entry.id)).toEqual(["i-1", "i-2"]);
     expect((await api.workerVolumes("staging")).map((entry) => entry.id)).toEqual(["vol-1", "vol-2"]);
-    expect((await api.aliases("staging")).map((entry) => entry.name)).toEqual(["alias/agentx/staging/a", "alias/agentx/staging/b"]);
+    expect((await api.aliases("staging")).map((entry) => entry.name)).toEqual(["alias/rovara-cloud/staging/a", "alias/rovara-cloud/staging/b"]);
     expect((await api.stackResources("s")).map((entry) => entry.logicalId)).toEqual(["A", "B"]);
   });
 
@@ -298,9 +298,9 @@ describe("waits, fix round 1", () => {
   it("ends every AWS error that stops a wait with what to do next", async () => {
     const throttled = () => { throw Object.assign(new Error("Rate exceeded"), { name: "Throttling" }); };
     const api = { stack: throttled, workerInstances: throttled, deleteVolume: throttled } as unknown as DestroyApi;
-    await expect(waitForStackDelete({ api, name: "s", write: () => undefined, ...clock() })).rejects.toThrow(/Rate exceeded.*run agentx destroy again to continue$/);
-    await expect(waitForInstancesGone({ api, env: "staging", ids: ["i-1"], ...clock() })).rejects.toThrow(/Rate exceeded.*run agentx destroy again to continue$/);
-    await expect(deleteVolumesWhenFree({ api, ids: ["vol-1"], ...clock() })).rejects.toThrow(/Rate exceeded.*run agentx destroy again to continue$/);
+    await expect(waitForStackDelete({ api, name: "s", write: () => undefined, ...clock() })).rejects.toThrow(/Rate exceeded.*run rovara destroy again to continue$/);
+    await expect(waitForInstancesGone({ api, env: "staging", ids: ["i-1"], ...clock() })).rejects.toThrow(/Rate exceeded.*run rovara destroy again to continue$/);
+    await expect(deleteVolumesWhenFree({ api, ids: ["vol-1"], ...clock() })).rejects.toThrow(/Rate exceeded.*run rovara destroy again to continue$/);
   });
 
   it("counts a volume that is already gone or being deleted as done", async () => {
@@ -356,26 +356,26 @@ describe("deleting a secret that is being force-deleted", () => {
   it("confirms by describing again that a secret refusing RestoreSecret is gone", async () => {
     let described = 0;
     const fake = fakeClients({
-      DescribeSecret: () => { described += 1; if (described <= 2) return { Name: "agentx/staging/a", DeletedDate: new Date() }; throw Object.assign(new Error("gone"), { name: "ResourceNotFoundException" }); },
+      DescribeSecret: () => { described += 1; if (described <= 2) return { Name: "rovara-cloud/staging/a", DeletedDate: new Date() }; throw Object.assign(new Error("gone"), { name: "ResourceNotFoundException" }); },
       RestoreSecret: refused,
     });
     const slept: number[] = [];
-    await awsDestroyApi(fake.clients, { sleep: async (ms) => { slept.push(ms); } }).deleteSecret("agentx/staging/a");
+    await awsDestroyApi(fake.clients, { sleep: async (ms) => { slept.push(ms); } }).deleteSecret("rovara-cloud/staging/a");
     expect(fake.calls.map((call) => call.name)).toEqual(["DescribeSecret", "RestoreSecret", "DescribeSecret", "DescribeSecret"]);
     expect(slept).toEqual([5000, 5000]);
   });
 
   it("gives up after 2 minutes when the secret is still there, saying to run destroy again", async () => {
-    const fake = fakeClients({ DescribeSecret: () => ({ Name: "agentx/staging/a", DeletedDate: new Date() }), RestoreSecret: refused });
+    const fake = fakeClients({ DescribeSecret: () => ({ Name: "rovara-cloud/staging/a", DeletedDate: new Date() }), RestoreSecret: refused });
     let time = 0;
-    await expect(awsDestroyApi(fake.clients, { sleep: async (ms) => { time += ms; } }).deleteSecret("agentx/staging/a"))
-      .rejects.toThrow("secret agentx/staging/a refused RestoreSecret and is still listed after 2 minutes; run agentx destroy again to continue");
+    await expect(awsDestroyApi(fake.clients, { sleep: async (ms) => { time += ms; } }).deleteSecret("rovara-cloud/staging/a"))
+      .rejects.toThrow("secret rovara-cloud/staging/a refused RestoreSecret and is still listed after 2 minutes; run rovara destroy again to continue");
     expect(time).toBe(120_000);
     expect(fake.calls.map((call) => call.name)).not.toContain("DeleteSecret");
   });
 
   it("does not treat another RestoreSecret error as gone", async () => {
-    const fake = fakeClients({ DescribeSecret: () => ({ Name: "agentx/staging/a", DeletedDate: new Date() }), RestoreSecret: () => { throw Object.assign(new Error("denied"), { name: "AccessDeniedException" }); } });
-    await expect(awsDestroyApi(fake.clients, { sleep: async () => undefined }).deleteSecret("agentx/staging/a")).rejects.toThrow("denied");
+    const fake = fakeClients({ DescribeSecret: () => ({ Name: "rovara-cloud/staging/a", DeletedDate: new Date() }), RestoreSecret: () => { throw Object.assign(new Error("denied"), { name: "AccessDeniedException" }); } });
+    await expect(awsDestroyApi(fake.clients, { sleep: async () => undefined }).deleteSecret("rovara-cloud/staging/a")).rejects.toThrow("denied");
   });
 });

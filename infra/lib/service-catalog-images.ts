@@ -26,10 +26,10 @@
 //     policy expires UNTAGGED images after one day, and an image pushed by digest alone would vanish.
 import { Aws, RemovalPolicy, Stack, Token, aws_ecr as ecr, aws_iam as iam, aws_kms as kms } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { catalogRepositoryName } from "@agentx/contracts";
+import { catalogRepositoryName, ENVIRONMENT_TAG_KEY } from "@agentx/contracts";
 
 /** The metadata `retention.ts` reads: the resource stays plain `Retain` where the aspect would make it `RetainExceptOnCreate`. */
-const KEEP_ON_ROLLBACK_METADATA = "agentx:retain-on-create-rollback";
+const KEEP_ON_ROLLBACK_METADATA = "rovara-cloud:retain-on-create-rollback";
 
 /** Tagged images kept per repository beyond which the oldest expire. Large on purpose: a retired digest may still be pinned by a saved environment or an older revision. */
 export const SERVICE_CATALOG_KEEP_TAGGED = 60;
@@ -135,7 +135,7 @@ export class ServiceCatalogImages extends Construct {
         imageScanningConfiguration: { scanOnPush: true },
         encryptionConfiguration: { encryptionType: "KMS", kmsKey },
         lifecyclePolicy: { lifecyclePolicyText },
-        tags: [{ key: "agentx:env", value: props.env }, { key: "rovara:purpose", value: "service-catalog-image" }],
+        tags: [{ key: ENVIRONMENT_TAG_KEY, value: props.env }, { key: "rovara:purpose", value: "service-catalog-image" }],
       });
       created.applyRemovalPolicy(RemovalPolicy.RETAIN);
       this.repositories.push(created);

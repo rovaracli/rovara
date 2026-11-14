@@ -99,7 +99,7 @@ function makeRelease(templateText?: (part: DeployPart, region: string, env: stri
     schemaVersion: 1,
     version: "1.2.3",
     gitCommit: "c".repeat(40),
-    environmentPlaceholder: "qqenv-placeholderqq",
+    environmentPlaceholder: "qqenv-phldrqq",
     templates: [],
     packages: [pkg(RUNTIME_ASSET, "runtime"), pkg(CONTROL_PLANE_ASSET, "control-plane")],
     images: {},
@@ -114,8 +114,8 @@ function makeRelease(templateText?: (part: DeployPart, region: string, env: stri
 }
 
 const NOW = 1_700_000_000_123;
-const CHANGE_SET = "agentx-1-2-3-1700000000";
-const ROLE = "arn:aws:iam::123456789012:role/agentx-staging-cloudformation";
+const CHANGE_SET = "rovara-cloud-1-2-3-1700000000";
+const ROLE = "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation";
 const TEMPLATE_KEY = (part: DeployPart) => `templates/1.2.3/us-east-1/${part}.template.json`;
 const TEMPLATE_URL = (part: DeployPart) => `https://bucket.s3.us-east-1.amazonaws.com/${TEMPLATE_KEY(part)}`;
 const NO_CHANGES_REASON = "The submitted information didn't contain changes. Submit different information to create a change set.";
@@ -138,7 +138,7 @@ function request(part: DeployPart, extra: Partial<DeployRequest> = {}): DeployRe
   const events: DeployEvent[] = [];
   return {
     part,
-    stackName: `agentx-staging-${part}`,
+    stackName: `rovara-cloud-staging-${part}`,
     parameters: { PermissionsBoundaryArn: "" },
     ...(part === "access" ? {} : { roleArn: ROLE }),
     terminationProtection: PROTECTED_PARTS.has(part),
@@ -156,7 +156,7 @@ describe("templates engine", () => {
       HeadObject: [notFound()],
       PutObject: [{}, {}],
       // Only the read after the execution is over counts: no stale in-progress read in between.
-      DescribeStacks: [stackAbsent("agentx-staging-runtime"), stack("CREATE_COMPLETE", { RuntimeArn: "arn:runtime" })],
+      DescribeStacks: [stackAbsent("rovara-cloud-staging-runtime"), stack("CREATE_COMPLETE", { RuntimeArn: "arn:runtime" })],
       CreateChangeSet: [{ Id: "arn:changeset" }],
       DescribeChangeSet: [
         { Status: "CREATE_IN_PROGRESS", ExecutionStatus: "UNAVAILABLE" },
@@ -197,10 +197,10 @@ describe("templates engine", () => {
     expect(Buffer.from(packagePut!.Body as Uint8Array).equals(zipBytes[RUNTIME_ASSET]!)).toBe(true);
     expect(templatePut).toMatchObject({ Bucket: "bucket", Key: TEMPLATE_KEY("runtime") });
     expect(String(templatePut!.Body)).toBe(JSON.stringify({ part: "runtime", region: "us-east-1", env: "staging" }));
-    expect(fake.inputs("DescribeStacks")[0]).toEqual({ StackName: "agentx-staging-runtime" });
+    expect(fake.inputs("DescribeStacks")[0]).toEqual({ StackName: "rovara-cloud-staging-runtime" });
     expect(fake.inputs("CreateChangeSet")).toEqual([
       {
-        StackName: "agentx-staging-runtime",
+        StackName: "rovara-cloud-staging-runtime",
         ChangeSetName: CHANGE_SET,
         ChangeSetType: "CREATE",
         TemplateURL: TEMPLATE_URL("runtime"),
@@ -212,23 +212,23 @@ describe("templates engine", () => {
         RoleARN: ROLE,
       },
     ]);
-    expect(fake.inputs("DescribeChangeSet")[0]).toEqual({ StackName: "agentx-staging-runtime", ChangeSetName: CHANGE_SET });
-    expect(fake.inputs("ExecuteChangeSet")).toEqual([{ StackName: "agentx-staging-runtime", ChangeSetName: CHANGE_SET, ClientRequestToken: CHANGE_SET }]);
-    expect(fake.inputs("DescribeChangeSet").slice(2)).toEqual(Array(3).fill({ StackName: "agentx-staging-runtime", ChangeSetName: CHANGE_SET }));
-    expect(fake.inputs("UpdateTerminationProtection")).toEqual([{ StackName: "agentx-staging-runtime", EnableTerminationProtection: true }]);
+    expect(fake.inputs("DescribeChangeSet")[0]).toEqual({ StackName: "rovara-cloud-staging-runtime", ChangeSetName: CHANGE_SET });
+    expect(fake.inputs("ExecuteChangeSet")).toEqual([{ StackName: "rovara-cloud-staging-runtime", ChangeSetName: CHANGE_SET, ClientRequestToken: CHANGE_SET }]);
+    expect(fake.inputs("DescribeChangeSet").slice(2)).toEqual(Array(3).fill({ StackName: "rovara-cloud-staging-runtime", ChangeSetName: CHANGE_SET }));
+    expect(fake.inputs("UpdateTerminationProtection")).toEqual([{ StackName: "rovara-cloud-staging-runtime", EnableTerminationProtection: true }]);
     expect(req.events).toEqual([
       { kind: "uploading", what: `package ${RUNTIME_ASSET}` },
       { kind: "uploading", what: `template ${TEMPLATE_KEY("runtime")}` },
       {
         kind: "changes",
-        stackName: "agentx-staging-runtime",
+        stackName: "rovara-cloud-staging-runtime",
         changes: [
           { action: "Add", logicalId: "Worker", type: "AWS::SSM::Parameter", replacement: "" },
           { action: "Modify", logicalId: "Role", type: "AWS::IAM::Role", replacement: "False" },
         ],
       },
-      { kind: "deploying", stackName: "agentx-staging-runtime" },
-      { kind: "deployed", stackName: "agentx-staging-runtime" },
+      { kind: "deploying", stackName: "rovara-cloud-staging-runtime" },
+      { kind: "deployed", stackName: "rovara-cloud-staging-runtime" },
     ]);
   });
 
@@ -236,7 +236,7 @@ describe("templates engine", () => {
     const fake = fakeClients({
       HeadObject: [{ Metadata: { sha256: sha256(zipBytes[CONTROL_PLANE_ASSET]!) } }],
       PutObject: [{}],
-      DescribeStacks: [stackAbsent("agentx-staging-control-plane"), stack("CREATE_COMPLETE", { ApiEndpoint: "https://api" })],
+      DescribeStacks: [stackAbsent("rovara-cloud-staging-control-plane"), stack("CREATE_COMPLETE", { ApiEndpoint: "https://api" })],
       CreateChangeSet: [{}],
       DescribeChangeSet: [ready([{ Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: "Foo", ResourceType: "AWS::X" } }]), executed()],
       ExecuteChangeSet: [{}],
@@ -252,7 +252,7 @@ describe("templates engine", () => {
     await expect(deployer(fake).deploy(req)).resolves.toEqual({ ApiEndpoint: "https://api" });
 
     expect(seen).toEqual([
-      { stackName: "agentx-staging-control-plane", changes: [{ action: "Add", logicalId: "Foo", type: "AWS::X", replacement: "" }] },
+      { stackName: "rovara-cloud-staging-control-plane", changes: [{ action: "Add", logicalId: "Foo", type: "AWS::X", replacement: "" }] },
     ]);
     expect(fake.inputs("DeleteChangeSet")).toEqual([]);
     expect(fake.inputs("ExecuteChangeSet")).toHaveLength(1);
@@ -263,16 +263,16 @@ describe("templates engine", () => {
     const fake = fakeClients({
       HeadObject: [{ Metadata: { sha256: sha256(zipBytes[CONTROL_PLANE_ASSET]!) } }],
       PutObject: [{}],
-      DescribeStacks: [stackAbsent("agentx-staging-control-plane")],
+      DescribeStacks: [stackAbsent("rovara-cloud-staging-control-plane")],
       CreateChangeSet: [{}],
       DescribeChangeSet: [ready([{ Type: "Resource", ResourceChange: { Action: "Add", LogicalResourceId: "Foo", ResourceType: "AWS::X" } }])],
       DeleteChangeSet: [{}],
     });
     const req = request("control-plane", { confirm: async () => false });
 
-    await expect(deployer(fake).deploy(req)).rejects.toThrow("deploy of agentx-staging-control-plane not executed; confirmation declined");
+    await expect(deployer(fake).deploy(req)).rejects.toThrow("deploy of rovara-cloud-staging-control-plane not executed; confirmation declined");
 
-    expect(fake.inputs("DeleteChangeSet")).toEqual([{ StackName: "agentx-staging-control-plane", ChangeSetName: CHANGE_SET }]);
+    expect(fake.inputs("DeleteChangeSet")).toEqual([{ StackName: "rovara-cloud-staging-control-plane", ChangeSetName: CHANGE_SET }]);
     expect(fake.inputs("ExecuteChangeSet")).toEqual([]);
     expect(req.events.map((event) => event.kind)).toEqual(["uploading", "changes"]);
   });
@@ -281,7 +281,7 @@ describe("templates engine", () => {
     const fake = fakeClients({
       HeadObject: [{ Metadata: { sha256: sha256(zipBytes[CONTROL_PLANE_ASSET]!) } }],
       PutObject: [{}],
-      DescribeStacks: [stackAbsent("agentx-staging-control-plane"), stack("CREATE_COMPLETE", { ApiEndpoint: "https://api" })],
+      DescribeStacks: [stackAbsent("rovara-cloud-staging-control-plane"), stack("CREATE_COMPLETE", { ApiEndpoint: "https://api" })],
       CreateChangeSet: [{}],
       DescribeChangeSet: [ready(), executed()],
       ExecuteChangeSet: [{}],
@@ -295,7 +295,7 @@ describe("templates engine", () => {
 
   it("deploys the access stack inline with the caller's credentials (no RoleARN, TemplateBody)", async () => {
     const fake = fakeClients({
-      DescribeStacks: [stackAbsent("agentx-staging-access"), stack("CREATE_COMPLETE", { ArtifactBucketName: "bucket" })],
+      DescribeStacks: [stackAbsent("rovara-cloud-staging-access"), stack("CREATE_COMPLETE", { ArtifactBucketName: "bucket" })],
       CreateChangeSet: [{}],
       DescribeChangeSet: [ready(), executed()],
       ExecuteChangeSet: [{}],
@@ -312,7 +312,7 @@ describe("templates engine", () => {
     expect(fake.calls.filter((call) => call.client === "s3")).toEqual([]);
     expect(fake.inputs("CreateChangeSet")).toEqual([
       {
-        StackName: "agentx-staging-access",
+        StackName: "rovara-cloud-staging-access",
         ChangeSetName: CHANGE_SET,
         ChangeSetType: "CREATE",
         TemplateBody: JSON.stringify({ part: "access", region: "us-east-1", env: "staging" }),
@@ -323,7 +323,7 @@ describe("templates engine", () => {
         Capabilities: ["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM"],
       },
     ]);
-    expect(fake.inputs("UpdateTerminationProtection")).toEqual([{ StackName: "agentx-staging-access", EnableTerminationProtection: true }]);
+    expect(fake.inputs("UpdateTerminationProtection")).toEqual([{ StackName: "rovara-cloud-staging-access", EnableTerminationProtection: true }]);
     expect(req.events.map((event) => event.kind)).toEqual(["changes", "deploying", "deployed"]);
   });
 
@@ -331,7 +331,7 @@ describe("templates engine", () => {
     // Seen live on 2026-09-27: the access stack reached CREATE_COMPLETE, but DescribeChangeSet right after
     // ExecuteChangeSet answered "ChangeSet [...] does not exist", and the deploy failed before protecting it.
     const fake = fakeClients({
-      DescribeStacks: [stackAbsent("agentx-staging-access"), stack("CREATE_COMPLETE", { ArtifactBucketName: "bucket" }, { CreationTime: new Date(NOW - 5_000), LastUpdatedTime: new Date(NOW) })],
+      DescribeStacks: [stackAbsent("rovara-cloud-staging-access"), stack("CREATE_COMPLETE", { ArtifactBucketName: "bucket" }, { CreationTime: new Date(NOW - 5_000), LastUpdatedTime: new Date(NOW) })],
       CreateChangeSet: [{}],
       DescribeChangeSet: [ready(), awsError("ChangeSetNotFoundException", `ChangeSet [${CHANGE_SET}] does not exist`, 404)],
       ExecuteChangeSet: [{}],
@@ -342,7 +342,7 @@ describe("templates engine", () => {
     const outputs = await deployer(fake).deploy(req);
 
     expect(outputs).toEqual({ ArtifactBucketName: "bucket" });
-    expect(fake.inputs("UpdateTerminationProtection")).toEqual([{ StackName: "agentx-staging-access", EnableTerminationProtection: true }]);
+    expect(fake.inputs("UpdateTerminationProtection")).toEqual([{ StackName: "rovara-cloud-staging-access", EnableTerminationProtection: true }]);
     expect(req.events.map((event) => event.kind)).toEqual(["changes", "deploying", "deployed"]);
   });
 
@@ -373,7 +373,7 @@ describe("templates engine", () => {
       const changeSetCreated = new Date("2026-09-27T02:33:02.400Z");
       const fake = fakeClients({
         DescribeStacks: [
-          stackAbsent("agentx-staging-access"),
+          stackAbsent("rovara-cloud-staging-access"),
           stack("CREATE_COMPLETE", { ArtifactBucketName: "bucket" }, { CreationTime: new Date("2026-09-27T02:33:02.000Z"), LastUpdatedTime: new Date("2026-09-27T02:33:13.000Z") }),
         ],
         CreateChangeSet: [{}],
@@ -387,7 +387,7 @@ describe("templates engine", () => {
 
     it("accepts a new stack with no LastUpdatedTime whose CreationTime is just before the change set's", async () => {
       const fake = fakeClients({
-        DescribeStacks: [stackAbsent("agentx-staging-access"), stack("CREATE_COMPLETE", { ArtifactBucketName: "bucket" }, { CreationTime: new Date(CHANGE_SET_CREATED.getTime() - 500) })],
+        DescribeStacks: [stackAbsent("rovara-cloud-staging-access"), stack("CREATE_COMPLETE", { ArtifactBucketName: "bucket" }, { CreationTime: new Date(CHANGE_SET_CREATED.getTime() - 500) })],
         CreateChangeSet: [{}],
         DescribeChangeSet: [readyAt(), gone()],
         ExecuteChangeSet: [{}],
@@ -416,13 +416,13 @@ describe("templates engine", () => {
     it("throws when the stack then shows ROLLBACK_COMPLETE", async () => {
       const fake = fakeClients({
         PutObject: [{}],
-        DescribeStacks: [stackAbsent("agentx-staging-identity"), stack("ROLLBACK_COMPLETE", {}, { CreationTime: new Date(NOW - 5_000), ...fresh })],
+        DescribeStacks: [stackAbsent("rovara-cloud-staging-identity"), stack("ROLLBACK_COMPLETE", {}, { CreationTime: new Date(NOW - 5_000), ...fresh })],
         CreateChangeSet: [{}],
         DescribeChangeSet: [readyAt(), gone()],
         ExecuteChangeSet: [{}],
         DescribeStackEvents: [{ StackEvents: [] }],
       });
-      await expect(deployer(fake).deploy(request("identity"))).rejects.toThrow("stack agentx-staging-identity ended in ROLLBACK_COMPLETE");
+      await expect(deployer(fake).deploy(request("identity"))).rejects.toThrow("stack rovara-cloud-staging-identity ended in ROLLBACK_COMPLETE");
       expect(fake.inputs("UpdateTerminationProtection")).toEqual([]);
     });
 
@@ -435,7 +435,7 @@ describe("templates engine", () => {
         ExecuteChangeSet: [{}],
         DescribeStackEvents: [{ StackEvents: [] }],
       });
-      await expect(deployer(fake).deploy(request("foundation"))).rejects.toThrow("stack agentx-staging-foundation ended in UPDATE_ROLLBACK_COMPLETE");
+      await expect(deployer(fake).deploy(request("foundation"))).rejects.toThrow("stack rovara-cloud-staging-foundation ended in UPDATE_ROLLBACK_COMPLETE");
     });
 
     it("keeps polling past a stale UPDATE_COMPLETE (older than the execute) until a fresh one arrives", async () => {
@@ -490,7 +490,7 @@ describe("templates engine", () => {
         pollMs: 0,
         timeoutMs: 60_000,
       });
-      await expect(engine.deploy(request("foundation"))).rejects.toThrow("stack agentx-staging-foundation is still UPDATE_COMPLETE");
+      await expect(engine.deploy(request("foundation"))).rejects.toThrow("stack rovara-cloud-staging-foundation is still UPDATE_COMPLETE");
     });
   });
 
@@ -622,12 +622,12 @@ describe("templates engine", () => {
     await expect(deployer(fake).deploy(req)).resolves.toEqual({ VpcId: "vpc-1" });
 
     expect(fake.inputs("CreateChangeSet")[0]).toMatchObject({ ChangeSetType: "UPDATE", TemplateURL: TEMPLATE_URL("foundation") });
-    expect(fake.inputs("DeleteChangeSet")).toEqual([{ StackName: "agentx-staging-foundation", ChangeSetName: CHANGE_SET }]);
+    expect(fake.inputs("DeleteChangeSet")).toEqual([{ StackName: "rovara-cloud-staging-foundation", ChangeSetName: CHANGE_SET }]);
     expect(fake.inputs("ExecuteChangeSet")).toEqual([]);
     expect(fake.inputs("UpdateTerminationProtection")).toEqual([]);
     expect(req.events).toEqual([
       { kind: "uploading", what: `template ${TEMPLATE_KEY("foundation")}` },
-      { kind: "no-changes", stackName: "agentx-staging-foundation" },
+      { kind: "no-changes", stackName: "rovara-cloud-staging-foundation" },
     ]);
   });
 
@@ -643,8 +643,8 @@ describe("templates engine", () => {
     const req = request("foundation");
     await expect(deployer(fake).deploy(req)).resolves.toEqual({ VpcId: "vpc-1" });
     expect(fake.names().slice(-2)).toEqual(["cloudFormation:DeleteChangeSet", "cloudFormation:UpdateTerminationProtection"]);
-    expect(fake.inputs("UpdateTerminationProtection")).toEqual([{ StackName: "agentx-staging-foundation", EnableTerminationProtection: true }]);
-    expect(req.events.at(-1)).toEqual({ kind: "no-changes", stackName: "agentx-staging-foundation" });
+    expect(fake.inputs("UpdateTerminationProtection")).toEqual([{ StackName: "rovara-cloud-staging-foundation", EnableTerminationProtection: true }]);
+    expect(req.events.at(-1)).toEqual({ kind: "no-changes", stackName: "rovara-cloud-staging-foundation" });
   });
 
   it("reports a change set with no changes that cannot be deleted, clearly", async () => {
@@ -656,7 +656,7 @@ describe("templates engine", () => {
       DeleteChangeSet: [awsError("AccessDenied", "not authorized to perform cloudformation:DeleteChangeSet", 403)],
     });
     await expect(deployer(fake).deploy(request("foundation"))).rejects.toThrow(
-      `stack agentx-staging-foundation has no changes, and its change set ${CHANGE_SET} could not be deleted: not authorized to perform cloudformation:DeleteChangeSet`,
+      `stack rovara-cloud-staging-foundation has no changes, and its change set ${CHANGE_SET} could not be deleted: not authorized to perform cloudformation:DeleteChangeSet`,
     );
   });
 
@@ -690,25 +690,25 @@ describe("templates engine", () => {
       DeleteChangeSet: [{}],
     });
     await expect(deployer(fake).deploy(request("foundation"))).rejects.toThrow(
-      "change set for agentx-staging-foundation failed: Template format error: Unresolved resource dependencies [Missing]; CloudFormation validation: PROPERTY_VALIDATION at /Resources/ActionLogsDelivery/Properties/DeliverySourceName: The referenced delivery source does not exist",
+      "change set for rovara-cloud-staging-foundation failed: Template format error: Unresolved resource dependencies [Missing]; CloudFormation validation: PROPERTY_VALIDATION at /Resources/ActionLogsDelivery/Properties/DeliverySourceName: The referenced delivery source does not exist",
     );
     expect(fake.names().indexOf("cloudFormation:DescribeEvents")).toBeLessThan(fake.names().indexOf("cloudFormation:DeleteChangeSet"));
-    expect(fake.inputs("DescribeEvents")).toEqual([{ StackName: "agentx-staging-foundation", ChangeSetName: CHANGE_SET }]);
-    expect(fake.inputs("DeleteChangeSet")).toEqual([{ StackName: "agentx-staging-foundation", ChangeSetName: CHANGE_SET }]);
+    expect(fake.inputs("DescribeEvents")).toEqual([{ StackName: "rovara-cloud-staging-foundation", ChangeSetName: CHANGE_SET }]);
+    expect(fake.inputs("DeleteChangeSet")).toEqual([{ StackName: "rovara-cloud-staging-foundation", ChangeSetName: CHANGE_SET }]);
     expect(fake.inputs("ExecuteChangeSet")).toEqual([]);
   });
 
   it("refuses a stack in ROLLBACK_COMPLETE with the delete command to run", async () => {
     const fake = fakeClients({ PutObject: [{}], DescribeStacks: [stack("ROLLBACK_COMPLETE")] });
     await expect(deployer(fake).deploy(request("identity"))).rejects.toThrow(
-      "stack agentx-staging-identity failed to create earlier and must be deleted before it can be deployed again (aws cloudformation delete-stack --stack-name agentx-staging-identity --region us-east-1)",
+      "stack rovara-cloud-staging-identity failed to create earlier and must be deleted before it can be deployed again (aws cloudformation delete-stack --stack-name rovara-cloud-staging-identity --region us-east-1)",
     );
     expect(fake.inputs("CreateChangeSet")).toEqual([]);
   });
 
-  it("offers agentx destroy for a stack in ROLLBACK_COMPLETE, as well as the exact delete", async () => {
+  it("offers rovara destroy for a stack in ROLLBACK_COMPLETE, as well as the exact delete", async () => {
     const fake = fakeClients({ PutObject: [{}], DescribeStacks: [stack("ROLLBACK_COMPLETE")] });
-    await expect(deployer(fake).deploy(request("identity"))).rejects.toThrow("or remove the whole environment with agentx --env staging destroy --region us-east-1");
+    await expect(deployer(fake).deploy(request("identity"))).rejects.toThrow("or remove the whole environment with rovara --env staging destroy --region us-east-1");
   });
 
   it("treats REVIEW_IN_PROGRESS as a create", async () => {
@@ -723,14 +723,14 @@ describe("templates engine", () => {
     });
     await expect(deployer(fake).deploy(request("runtime"))).resolves.toEqual({ RuntimeArn: "arn:runtime" });
     expect(fake.inputs("CreateChangeSet")[0]).toMatchObject({ ChangeSetType: "CREATE", RoleARN: ROLE });
-    expect(fake.inputs("UpdateTerminationProtection")).toEqual([{ StackName: "agentx-staging-runtime", EnableTerminationProtection: true }]);
+    expect(fake.inputs("UpdateTerminationProtection")).toEqual([{ StackName: "rovara-cloud-staging-runtime", EnableTerminationProtection: true }]);
   });
 
   it.each(["CREATE_IN_PROGRESS", "UPDATE_IN_PROGRESS", "UPDATE_ROLLBACK_IN_PROGRESS", "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS", "DELETE_IN_PROGRESS"])(
     "refuses a stack that is busy (%s), naming its status",
     async (status) => {
       const fake = fakeClients({ PutObject: [{}], DescribeStacks: [stack(status)] });
-      await expect(deployer(fake).deploy(request("foundation"))).rejects.toThrow(`stack agentx-staging-foundation is busy (${status}); try again when it finishes`);
+      await expect(deployer(fake).deploy(request("foundation"))).rejects.toThrow(`stack rovara-cloud-staging-foundation is busy (${status}); try again when it finishes`);
       expect(fake.inputs("CreateChangeSet")).toEqual([]);
     },
   );
@@ -738,7 +738,7 @@ describe("templates engine", () => {
   it.each(["CREATE_FAILED", "ROLLBACK_FAILED", "UPDATE_ROLLBACK_FAILED", "DELETE_FAILED"])("refuses a stack that is failed (%s), naming its status", async (status) => {
     const fake = fakeClients({ PutObject: [{}], DescribeStacks: [stack(status)] });
     await expect(deployer(fake).deploy(request("foundation"))).rejects.toThrow(
-      `stack agentx-staging-foundation is ${status}; fix it in the AWS console before deploying`,
+      `stack rovara-cloud-staging-foundation is ${status}; fix it in the AWS console before deploying`,
     );
     expect(fake.inputs("CreateChangeSet")).toEqual([]);
   });
@@ -762,27 +762,27 @@ describe("templates engine", () => {
     });
   }
   const ours = { ClientRequestToken: CHANGE_SET };
-  const earlier = { ClientRequestToken: "agentx-1-2-2-1600000000" };
+  const earlier = { ClientRequestToken: "rovara-cloud-1-2-2-1600000000" };
 
   it("reports the root cause when a deploy rolls back, not the cancelled siblings after it", async () => {
     const fake = rollbackScript([
       {
         StackEvents: [
-          { LogicalResourceId: "agentx-staging-runtime", ResourceStatus: "UPDATE_ROLLBACK_COMPLETE", ...ours },
-          { LogicalResourceId: "agentx-staging-runtime", ResourceStatus: "UPDATE_ROLLBACK_IN_PROGRESS", ResourceStatusReason: "The following resource(s) failed to update: [Worker].", ...ours },
+          { LogicalResourceId: "rovara-cloud-staging-runtime", ResourceStatus: "UPDATE_ROLLBACK_COMPLETE", ...ours },
+          { LogicalResourceId: "rovara-cloud-staging-runtime", ResourceStatus: "UPDATE_ROLLBACK_IN_PROGRESS", ResourceStatusReason: "The following resource(s) failed to update: [Worker].", ...ours },
           { LogicalResourceId: "Endpoint", ResourceStatus: "UPDATE_FAILED", ResourceStatusReason: "Resource update cancelled", ...ours },
           { LogicalResourceId: "Alarm", ResourceStatus: "CREATE_FAILED", ResourceStatusReason: "Resource creation CANCELLED", ...ours },
           { LogicalResourceId: "Worker", ResourceStatus: "UPDATE_FAILED", ResourceStatusReason: "Resource handler returned message: image not found", ...ours },
-          { LogicalResourceId: "agentx-staging-runtime", ResourceStatus: "UPDATE_IN_PROGRESS", ResourceStatusReason: "User Initiated", ...ours },
+          { LogicalResourceId: "rovara-cloud-staging-runtime", ResourceStatus: "UPDATE_IN_PROGRESS", ResourceStatusReason: "User Initiated", ...ours },
           { LogicalResourceId: "Old", ResourceStatus: "CREATE_FAILED", ResourceStatusReason: "an older failure", ...earlier },
         ],
       },
     ]);
     const req = request("runtime");
     await expect(deployer(fake).deploy(req)).rejects.toThrow(
-      "stack agentx-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: Resource handler returned message: image not found",
+      "stack rovara-cloud-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: Resource handler returned message: image not found",
     );
-    expect(fake.inputs("DescribeStackEvents")).toEqual([{ StackName: "agentx-staging-runtime" }]);
+    expect(fake.inputs("DescribeStackEvents")).toEqual([{ StackName: "rovara-cloud-staging-runtime" }]);
     expect(fake.inputs("UpdateTerminationProtection")).toEqual([]);
     expect(req.events.map((event) => event.kind)).toEqual(["uploading", "changes", "deploying"]);
   });
@@ -791,7 +791,7 @@ describe("templates engine", () => {
     const fake = rollbackScript([
       {
         StackEvents: [
-          { LogicalResourceId: "agentx-staging-runtime", ResourceStatus: "UPDATE_ROLLBACK_COMPLETE", ...ours },
+          { LogicalResourceId: "rovara-cloud-staging-runtime", ResourceStatus: "UPDATE_ROLLBACK_COMPLETE", ...ours },
           { LogicalResourceId: "Endpoint", ResourceStatus: "UPDATE_FAILED", ResourceStatusReason: "Resource update cancelled", ...ours },
         ],
         NextToken: "page-2",
@@ -804,8 +804,8 @@ describe("templates engine", () => {
         NextToken: "page-3",
       },
     ]);
-    await expect(deployer(fake).deploy(request("runtime"))).rejects.toThrow("stack agentx-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: image not found");
-    expect(fake.inputs("DescribeStackEvents")).toEqual([{ StackName: "agentx-staging-runtime" }, { StackName: "agentx-staging-runtime", NextToken: "page-2" }]);
+    await expect(deployer(fake).deploy(request("runtime"))).rejects.toThrow("stack rovara-cloud-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: image not found");
+    expect(fake.inputs("DescribeStackEvents")).toEqual([{ StackName: "rovara-cloud-staging-runtime" }, { StackName: "rovara-cloud-staging-runtime", NextToken: "page-2" }]);
   });
 
   it("never names a failure from an earlier deploy; falls back to the stack's own reason", async () => {
@@ -813,7 +813,7 @@ describe("templates engine", () => {
       [
         {
           StackEvents: [
-            { LogicalResourceId: "agentx-staging-runtime", ResourceStatus: "UPDATE_ROLLBACK_COMPLETE", ...ours },
+            { LogicalResourceId: "rovara-cloud-staging-runtime", ResourceStatus: "UPDATE_ROLLBACK_COMPLETE", ...ours },
             { LogicalResourceId: "Endpoint", ResourceStatus: "UPDATE_FAILED", ResourceStatusReason: "Resource update cancelled", ...ours },
             { LogicalResourceId: "Old", ResourceStatus: "UPDATE_FAILED", ResourceStatusReason: "a stale failure from the last deploy", ...earlier },
           ],
@@ -822,27 +822,27 @@ describe("templates engine", () => {
       stack("UPDATE_ROLLBACK_COMPLETE", {}, { StackStatusReason: "The following resource(s) failed to update: [Worker]." }),
     );
     await expect(deployer(fake).deploy(request("runtime"))).rejects.toThrow(
-      "stack agentx-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: The following resource(s) failed to update: [Worker].",
+      "stack rovara-cloud-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: The following resource(s) failed to update: [Worker].",
     );
   });
 
   it("says no resource reported a reason when neither the events nor the stack give one", async () => {
     const fake = rollbackScript([{ StackEvents: [{ LogicalResourceId: "Old", ResourceStatus: "UPDATE_FAILED", ResourceStatusReason: "stale", ...earlier }] }]);
     await expect(deployer(fake).deploy(request("runtime"))).rejects.toThrow(
-      "stack agentx-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: no failed resource reported a reason",
+      "stack rovara-cloud-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: no failed resource reported a reason",
     );
   });
 
   it("does not protect a new stack whose create rolled back", async () => {
     const fake = fakeClients({
       PutObject: [{}],
-      DescribeStacks: [stackAbsent("agentx-staging-identity"), stack("ROLLBACK_COMPLETE")],
+      DescribeStacks: [stackAbsent("rovara-cloud-staging-identity"), stack("ROLLBACK_COMPLETE")],
       CreateChangeSet: [{}],
       DescribeChangeSet: [ready(), executed("EXECUTE_FAILED")],
       ExecuteChangeSet: [{}],
       DescribeStackEvents: [{ StackEvents: [{ LogicalResourceId: "UserPool", ResourceStatus: "CREATE_FAILED", ResourceStatusReason: "domain already taken", ...ours }] }],
     });
-    await expect(deployer(fake).deploy(request("identity"))).rejects.toThrow("stack agentx-staging-identity ended in ROLLBACK_COMPLETE: domain already taken");
+    await expect(deployer(fake).deploy(request("identity"))).rejects.toThrow("stack rovara-cloud-staging-identity ended in ROLLBACK_COMPLETE: domain already taken");
     expect(fake.inputs("UpdateTerminationProtection")).toEqual([]);
   });
 
@@ -855,9 +855,9 @@ describe("templates engine", () => {
       DeleteChangeSet: [{}],
     });
     await expect(deployer(fake).deploy(request("foundation"))).rejects.toThrow(
-      "change set for agentx-staging-foundation cannot be executed (OBSOLETE): the stack changed after this change set was created",
+      "change set for rovara-cloud-staging-foundation cannot be executed (OBSOLETE): the stack changed after this change set was created",
     );
-    expect(fake.inputs("DeleteChangeSet")).toEqual([{ StackName: "agentx-staging-foundation", ChangeSetName: CHANGE_SET }]);
+    expect(fake.inputs("DeleteChangeSet")).toEqual([{ StackName: "rovara-cloud-staging-foundation", ChangeSetName: CHANGE_SET }]);
     expect(fake.inputs("ExecuteChangeSet")).toEqual([]);
   });
 
@@ -882,7 +882,7 @@ describe("templates engine", () => {
       timeoutMs: 60_000,
     });
     await expect(engine.deploy(request("foundation"))).rejects.toThrow(
-      "stack agentx-staging-foundation is still UPDATE_IN_PROGRESS after 1 minute; it may still finish; watch it with aws cloudformation describe-stacks --stack-name agentx-staging-foundation",
+      "stack rovara-cloud-staging-foundation is still UPDATE_IN_PROGRESS after 1 minute; it may still finish; watch it with aws cloudformation describe-stacks --stack-name rovara-cloud-staging-foundation",
     );
   });
 
@@ -916,9 +916,9 @@ describe("templates engine", () => {
       timeoutMs: 60_000,
     });
     await expect(engine.deploy(request("foundation"))).rejects.toThrow(
-      `change set ${CHANGE_SET} for stack agentx-staging-foundation is still CREATE_IN_PROGRESS after 1 minute; it was deleted`,
+      `change set ${CHANGE_SET} for stack rovara-cloud-staging-foundation is still CREATE_IN_PROGRESS after 1 minute; it was deleted`,
     );
-    expect(fake.inputs("DeleteChangeSet")).toEqual([{ StackName: "agentx-staging-foundation", ChangeSetName: CHANGE_SET }]);
+    expect(fake.inputs("DeleteChangeSet")).toEqual([{ StackName: "rovara-cloud-staging-foundation", ChangeSetName: CHANGE_SET }]);
   });
 
   it("mentions a failed delete of the timed-out change set without masking the timeout error", async () => {
@@ -945,7 +945,7 @@ describe("templates engine", () => {
       timeoutMs: 60_000,
     });
     await expect(engine.deploy(request("foundation"))).rejects.toThrow(
-      `change set ${CHANGE_SET} for stack agentx-staging-foundation is still CREATE_IN_PROGRESS after 1 minute; it could not be deleted: not authorized to perform cloudformation:DeleteChangeSet`,
+      `change set ${CHANGE_SET} for stack rovara-cloud-staging-foundation is still CREATE_IN_PROGRESS after 1 minute; it could not be deleted: not authorized to perform cloudformation:DeleteChangeSet`,
     );
   });
 
@@ -959,7 +959,7 @@ describe("templates engine", () => {
         DescribeChangeSet: [{ Status: status }],
       });
       await expect(deployer(fake).deploy(request("foundation"))).rejects.toThrow(
-        `change set ${CHANGE_SET} for stack agentx-staging-foundation is ${status}; deploy again`,
+        `change set ${CHANGE_SET} for stack rovara-cloud-staging-foundation is ${status}; deploy again`,
       );
       expect(fake.names().filter((name) => name === "cloudFormation:DescribeChangeSet")).toHaveLength(1);
       expect(fake.inputs("DeleteChangeSet")).toEqual([]);
@@ -974,7 +974,7 @@ describe("templates engine", () => {
     const pages = Array.from({ length: MAX_EVENT_PAGES }, (_, index) => foreignPage(index + 1));
     const fake = rollbackScript(pages);
     await expect(deployer(fake).deploy(request("runtime"))).rejects.toThrow(
-      "stack agentx-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: no failed resource reported a reason",
+      "stack rovara-cloud-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: no failed resource reported a reason",
     );
     expect(fake.inputs("DescribeStackEvents")).toHaveLength(MAX_EVENT_PAGES);
   });
@@ -990,9 +990,9 @@ describe("templates engine", () => {
       },
     ]);
     await expect(deployer(fake).deploy(request("runtime"))).rejects.toThrow(
-      "stack agentx-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: no failed resource reported a reason",
+      "stack rovara-cloud-staging-runtime ended in UPDATE_ROLLBACK_COMPLETE: no failed resource reported a reason",
     );
-    expect(fake.inputs("DescribeStackEvents")).toEqual([{ StackName: "agentx-staging-runtime" }]);
+    expect(fake.inputs("DescribeStackEvents")).toEqual([{ StackName: "rovara-cloud-staging-runtime" }]);
   });
 
   it("uses the partition's S3 host in the template URL", async () => {
@@ -1061,7 +1061,7 @@ describe("templates engine", () => {
       const first = secretRequest();
       const firstError = await failure(changeSetFails, first);
       // A refused change set is CONFIG_INVALID, and keeps that code once the secret is redacted.
-      expect(firstError.message).toMatch(/^CONFIG_INVALID: change set for agentx-staging-control-plane failed: /);
+      expect(firstError.message).toMatch(/^CONFIG_INVALID: change set for rovara-cloud-staging-control-plane failed: /);
       expect(changeSetFails.inputs("CreateChangeSet")[0]!.Parameters).toContainEqual({ ParameterKey: "CallbackSigningKey", ParameterValue: SECRET });
       messages.push(firstError.message);
       events.push(...first.events);
@@ -1086,7 +1086,7 @@ describe("templates engine", () => {
       });
       const second = secretRequest();
       const secondError = await failure(rollsBack, second);
-      expect(secondError.message).toMatch(/^stack agentx-staging-control-plane ended in UPDATE_ROLLBACK_COMPLETE: /);
+      expect(secondError.message).toMatch(/^stack rovara-cloud-staging-control-plane ended in UPDATE_ROLLBACK_COMPLETE: /);
       messages.push(secondError.message);
       events.push(...second.events);
 
@@ -1121,12 +1121,12 @@ describe("templates engine", () => {
   describe("outputs", () => {
     it("returns a stack's outputs, and undefined only when the stack does not exist", async () => {
       const fake = fakeClients({
-        DescribeStacks: [stack("UPDATE_COMPLETE", { ApiEndpoint: "https://api" }), stackAbsent("agentx-staging-slack"), awsError("AccessDenied", "not allowed", 403)],
+        DescribeStacks: [stack("UPDATE_COMPLETE", { ApiEndpoint: "https://api" }), stackAbsent("rovara-cloud-staging-slack"), awsError("AccessDenied", "not allowed", 403)],
       });
       const engine = deployer(fake);
-      await expect(engine.outputs("agentx-staging-control-plane")).resolves.toEqual({ ApiEndpoint: "https://api" });
-      await expect(engine.outputs("agentx-staging-slack")).resolves.toBeUndefined();
-      await expect(engine.outputs("agentx-staging-slack")).rejects.toThrow("not allowed");
+      await expect(engine.outputs("rovara-cloud-staging-control-plane")).resolves.toEqual({ ApiEndpoint: "https://api" });
+      await expect(engine.outputs("rovara-cloud-staging-slack")).resolves.toBeUndefined();
+      await expect(engine.outputs("rovara-cloud-staging-slack")).rejects.toThrow("not allowed");
     });
   });
 });

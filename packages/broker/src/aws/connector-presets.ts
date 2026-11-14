@@ -85,7 +85,7 @@ export function presetConnectorType<Config extends PresetConfig, Scope>(preset: 
         if (type === "static-secret" || record === undefined) return undefined;
         // OAuth: the token endpoint is the type's own, or for a generic connector the credential's.
         if (described.tokenEndpoint === undefined && record.tokenUrl === undefined) {
-          return `credential ${ref} has no token URL; sign in with agentx admin credential authorize --ref ${ref} --endpoint ${described.endpoint.href}, or register it with --token-url`;
+          return `credential ${ref} has no token URL; sign in with rovara admin credential authorize --ref ${ref} --endpoint ${described.endpoint.href}, or register it with --token-url`;
         }
         return tokenUrlProblem(ref, record.tokenUrl, described.tokenEndpoint);
       };

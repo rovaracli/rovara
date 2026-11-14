@@ -20,12 +20,12 @@ beforeAll(async () => { await loadSlackBroker(); });
 afterEach(disposeGateWorlds);
 
 const SETTINGS: ScheduleSettings = {
-  groupName: "agentx-staging-chain-triggers",
-  roleArn: "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-chain-schedule",
-  functionArn: "arn:aws:lambda:us-east-1:123456789012:function:agentx-staging-broker",
-  queueArn: "arn:aws:sqs:us-east-1:123456789012:agentx-staging-chain-schedule-dead-letters",
+  groupName: "rovara-cloud-staging-chain-triggers",
+  roleArn: "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-chain-schedule",
+  functionArn: "arn:aws:lambda:us-east-1:123456789012:function:rovara-cloud-staging-broker",
+  queueArn: "arn:aws:sqs:us-east-1:123456789012:rovara-cloud-staging-chain-schedule-dead-letters",
 };
-const QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123456789012/agentx-staging-chain-schedule-dead-letters";
+const QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123456789012/rovara-cloud-staging-chain-schedule-dead-letters";
 const ONE_STEP: ChainDefinitionInput = { start: "look", steps: [{ kind: "agent", id: "look", name: "Look", agent: { agentId: "root-cause-analyst", version: "current" }, next: { kind: "end" } }], limits: { maxRunUsd: 5 } };
 const MINUTE = 60_000;
 const HOUR = 3_600_000;

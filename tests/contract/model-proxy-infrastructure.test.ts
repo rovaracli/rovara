@@ -313,7 +313,7 @@ describe("model proxy infrastructure (named environments)", () => {
     const url = { "Fn::Join": ["", ["http://", { "Fn::GetAtt": [balancer, "DNSName"] }, ":4000"]] };
     expect(outputs.ModelProxyUrl!.Value).toEqual(url);
     expect(outputs.ModelProxyMasterKeySecretArn!.Value).toEqual({ Ref: idOf(resources, "AWS::SecretsManager::Secret", "ModelProxyMasterKey") });
-    const parameter = ofType(resources, "AWS::SSM::Parameter").find(([, resource]) => resource.Properties.Name === "/agentx/staging/model-proxy-url")!;
+    const parameter = ofType(resources, "AWS::SSM::Parameter").find(([, resource]) => resource.Properties.Name === "/rovara-cloud/staging/model-proxy-url")!;
     expect(parameter[1].Properties).toMatchObject({ Type: "String", Value: url });
   });
 

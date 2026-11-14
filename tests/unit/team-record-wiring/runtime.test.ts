@@ -80,7 +80,7 @@ function fakeAws() {
   };
   return { sdk, sts, vectorCalls, embedBodies, sessions, athenaCalls, athena };
 }
-const VECTORS_ENV = { TEAM_RECORD_VECTORS_ROLE_ARN: "arn:aws:iam::123456789012:role/agentx/ent/vr", TEAM_RECORD_VECTOR_BUCKETS: "agentx-ent-record-vectors", AGENTX_ACCOUNT_ID: "123456789012" } as const;
+const VECTORS_ENV = { TEAM_RECORD_VECTORS_ROLE_ARN: "arn:aws:iam::123456789012:role/rovara-cloud/ent/vr", TEAM_RECORD_VECTOR_BUCKETS: "rovara-cloud-ent-record-vectors", AGENTX_ACCOUNT_ID: "123456789012" } as const;
 const everything = (db: FakeDynamoDb): string => JSON.stringify(db.find(() => true));
 
 /** TRW-4: a row is stored only for a linked author. By default the GitHub account 123 and the Slack user U0123456789 are the member dev-1 of both orgs. */
@@ -598,7 +598,7 @@ describe("a delete that arrives during a store failure is retried and lands", ()
   });
 
   it("the queue's event is recognised only from the record's own queue, and a broker with the record off fails the whole batch", async () => {
-    const arn = "arn:aws:sqs:us-west-2:123456789012:agentx-staging-team-record-ops";
+    const arn = "arn:aws:sqs:us-west-2:123456789012:rovara-cloud-staging-team-record-ops";
     const record = (eventSourceARN: string) => ({ eventSource: "aws:sqs", eventSourceARN, messageId: "m1", body: "{}" });
     const env = { AGENTX_ENV: "staging" };
     expect(isTeamRecordQueueEvent({ Records: [record(arn)] }, env)).toBe(true);
@@ -612,7 +612,7 @@ describe("a delete that arrives during a store failure is retried and lands", ()
 
 // ---- fix round 1, B2 and S5: an erase is recorded first, bounded inline, and finished by the hourly job, the lake included
 describe("an erase that does not finish is resumed, and a company stays in the directory until its lake delete has run", () => {
-  const LAKE = { TEAM_RECORD_LAKE_ENABLED: "1", TEAM_RECORD_TABLE_BUCKET: "agentx-ent-record-lake", TEAM_RECORD_ATHENA_WORKGROUP: "agentx-ent-record" } as const;
+  const LAKE = { TEAM_RECORD_LAKE_ENABLED: "1", TEAM_RECORD_TABLE_BUCKET: "rovara-cloud-ent-record-lake", TEAM_RECORD_ATHENA_WORKGROUP: "rovara-cloud-ent-record" } as const;
   const orgMeta = (db: FakeDynamoDb, extra: Record<string, unknown>) => db.set({ ...orgMetaKey(ORG_A), orgId: ORG_A, ...extra });
   const directory = (db: FakeDynamoDb) => db.find((item) => item.pk === "TEAM_RECORD_ORGS" && item.sk === ORG_A);
   const jobs = (db: FakeDynamoDb) => db.find((item) => item.entityType === "TEAM_RECORD_ERASE_JOB");
@@ -944,7 +944,7 @@ describe("TRW-4: a row is stored only when its author is linked to a Rovara pers
 describe("TRW-4: a person's erase takes their rows from all four sources, queues, lake and vectors, and their links", () => {
   const SLACK_SCOPE = "slack:T0123456789/C0123456789";
   const channel = { teamId: "T0123456789", channelId: "C0123456789", info: { kind: "public" as const, extShared: false } };
-  const LAKE = { TEAM_RECORD_LAKE_ENABLED: "1", TEAM_RECORD_TABLE_BUCKET: "agentx-ent-record-lake", TEAM_RECORD_ATHENA_WORKGROUP: "agentx-ent-record" } as const;
+  const LAKE = { TEAM_RECORD_LAKE_ENABLED: "1", TEAM_RECORD_TABLE_BUCKET: "rovara-cloud-ent-record-lake", TEAM_RECORD_ATHENA_WORKGROUP: "rovara-cloud-ent-record" } as const;
 
   it("Slack, GitHub, Linear and Jira rows of one person, an unfinished queued put of theirs, and a put of theirs in the dead-letter queue: nothing of them is left anywhere", async () => {
     const db = dbOf();
@@ -1518,7 +1518,7 @@ describe("the production wiring of the person erase (LA-5)", () => {
 // ---- per-editor rows (lane team-record-links): every change is its own row under the person who made it
 describe("per-editor rows: Priya creates LIN-42, Sam edits it, Priya moves it to Done", () => {
   const SAM_WORDS = "SAMWORDS-reproduced-on-Safari";
-  const LAKE = { TEAM_RECORD_LAKE_ENABLED: "1", TEAM_RECORD_TABLE_BUCKET: "agentx-ent-record-lake", TEAM_RECORD_ATHENA_WORKGROUP: "agentx-ent-record" } as const;
+  const LAKE = { TEAM_RECORD_LAKE_ENABLED: "1", TEAM_RECORD_TABLE_BUCKET: "rovara-cloud-ent-record-lake", TEAM_RECORD_ATHENA_WORKGROUP: "rovara-cloud-ent-record" } as const;
   const linearHook = { source: "linear" as const, project: "web", tenant: { organizationId: "lin-org", teamId: "t1" } };
   const issue = (action: "create" | "update", actor: string, at: string, description: string, extra: Record<string, unknown> = {}, data: Record<string, unknown> = {}) => ({
     type: "Issue", action, organizationId: "lin-org", actor: { id: actor }, ...extra,

@@ -1,7 +1,7 @@
 // The setup page's function (the installer stack, infra/lib/installer.ts): API Gateway's HTTP API
 // events in, setup-handler.ts's responses out. Everything it needs is in its environment:
 //   SETUP_TABLE      the setup table the installer job's relay writes
-//   INSTALL_NAME     the install's name (agentx-<name>-* stacks)
+//   INSTALL_NAME     the install's name (rovara-cloud-<name>-* stacks)
 //   SETUP_KEY_ID     the table's KMS key, which seals the admin's sign-in for the job
 import { CloudFormationClient, DescribeStacksCommand } from "@aws-sdk/client-cloudformation";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";

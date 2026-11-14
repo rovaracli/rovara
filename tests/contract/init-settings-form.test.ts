@@ -127,10 +127,10 @@ describe("answers from the settings", () => {
 describe("the settings form's own checks", () => {
   it("the install name follows --env's rules, in plain words", () => {
     expect(installNameProblem("trial-2")).toBeUndefined();
-    for (const bad of ["Trial", "2trial", "trial-", "tri--al", "a".repeat(21)]) {
-      expect(installNameProblem(bad)).toBe("use lowercase letters, numbers and single hyphens, starting with a letter and ending with a letter or number, at most 20 characters");
+    for (const bad of ["Trial", "2trial", "trial-", "tri--al", "a".repeat(15)]) {
+      expect(installNameProblem(bad)).toBe("use lowercase letters, numbers and single hyphens, starting with a letter and ending with a letter or number, at most 14 characters");
     }
-    for (const reserved of ["connectors", "qqenv-placeholderqq", "my-qqenv"]) expect(installNameProblem(reserved)).toBe("that name is reserved; choose another");
+    for (const reserved of ["connectors", "qqenv-phldrqq", "my-qqenv"]) expect(installNameProblem(reserved)).toBe("that name is reserved; choose another");
   });
 
   it("FR-025: --admin-email with no alert flag sends alerts to that address, under --yes too", async () => {

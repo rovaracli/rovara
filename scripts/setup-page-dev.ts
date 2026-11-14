@@ -1,4 +1,4 @@
-// The setup page on this computer, for trying `agentx init --setup-table` before the bootstrap
+// The setup page on this computer, for trying `rovara init --setup-table` before the bootstrap
 // stack exists: it serves the same handler the setup page's function will (setup-handler.ts),
 // against a real setup table, on 127.0.0.1.
 //

@@ -40,7 +40,7 @@ describe("push session", () => {
     expect(p.assumed).toHaveLength(2);
     expect(p.assumed[0]!.roleArn).toContain("img-manage");
     const push = p.assumed[1]!;
-    expect(push.roleArn).toBe("arn:aws:iam::111122223333:role/agentx/test/agentx-test-img-push");
+    expect(push.roleArn).toBe("arn:aws:iam::111122223333:role/rovara-cloud/test/rovara-cloud-test-img-push");
     expect(push.durationSeconds).toBe(SAVED_ENV_PUSH_SESSION_SECONDS);
     expect(push.durationSeconds).toBe(3_600);
     const policy = JSON.parse(push.policy) as { Statement: Array<{ Resource: string }> };

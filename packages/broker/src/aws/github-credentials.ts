@@ -40,9 +40,9 @@ export function createGitHubAppCredentials(
       return secret;
     }).catch((error: unknown) => {
       appSecret = undefined;
-      // The secret has no version until `agentx init` creates the GitHub App.
+      // The secret has no version until `rovara init` creates the GitHub App.
       if (error instanceof Error && error.name === "ResourceNotFoundException") {
-        throw agentXError("RUNTIME_UNAVAILABLE", "GitHub App private-key secret is empty; finish agentx init to create the GitHub App");
+        throw agentXError("RUNTIME_UNAVAILABLE", "GitHub App private-key secret is empty; finish rovara init to create the GitHub App");
       }
       throw error;
     });

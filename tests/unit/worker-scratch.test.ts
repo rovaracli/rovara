@@ -57,7 +57,7 @@ describe("worker scratch is not made on the workspace volume (TF12)", () => {
 
   it("makes a private directory in that base", async () => {
     undo.push(useScratchDeviceProbeForTests(productionLayout));
-    const made = await makeWorkerScratch("agentx-scratch-test-", { environment });
+    const made = await makeWorkerScratch("rovara-cloud-scratch-test-", { environment });
     cleanup.push(made);
     expect(["/tmp", "/var/tmp"]).toContain(dirname(await realpath(made)).replace(/^\/private/u, ""));
   });
@@ -71,7 +71,7 @@ describe("worker scratch is not made on the workspace volume (TF12)", () => {
 
 describe("the throwaway Git repository and the credential folder use it (TF12)", () => {
   it("withIsolatedGit makes its repository outside the workspace volume", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "agentx-scratch-repo-"));
+    const directory = await mkdtemp(join(tmpdir(), "rovara-cloud-scratch-repo-"));
     cleanup.push(directory);
     await execFile("git", ["init", "--quiet", "--initial-branch=main", directory]);
     await writeFile(join(directory, "a.txt"), "a\n");
@@ -104,7 +104,7 @@ describe("the throwaway Git repository and the credential folder use it (TF12)",
     const previous = process.env.AGENTX_WORKSPACE_ROOT;
     process.env.AGENTX_WORKSPACE_ROOT = WORKSPACE;
     undo.push(() => { if (previous === undefined) delete process.env.AGENTX_WORKSPACE_ROOT; else process.env.AGENTX_WORKSPACE_ROOT = previous; });
-    const objects = join(await mkdtemp(join(tmpdir(), "agentx-scratch-objects-")), "objects");
+    const objects = join(await mkdtemp(join(tmpdir(), "rovara-cloud-scratch-objects-")), "objects");
     cleanup.push(dirname(objects));
     await mkdir(objects, { recursive: true });
     let cwd: string | undefined;

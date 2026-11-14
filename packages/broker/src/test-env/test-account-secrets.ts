@@ -1,4 +1,4 @@
-// Test services TS26 (design test-services.md 6.2): a customer test account's secret, kept in Secrets Manager under `agentx/<env>/org-test-accounts/<org>/<account>`, tagged `rovara:org=<org>` and
+// Test services TS26 (design test-services.md 6.2): a customer test account's secret, kept in Secrets Manager under `rovara-cloud/<env>/org-test-accounts/<org>/<account>`, tagged `rovara:org=<org>` and
 // `rovara:use=test-account`. Every call goes through a TestAccountSecretsRole session that AssumeRole tagged with the org AND a purpose (infra/lib/test-account-secrets-policy.ts):
 //   - `store`: the broker's own session. It can create a secret, put a new version, and schedule its deletion. The client type below has no GetSecretValue in it, and the role denies the read as well, so the
 //     broker NEVER holds a value after writing it, and nothing here returns one;

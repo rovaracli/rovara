@@ -74,12 +74,12 @@ describe("config keys (FR-048)", () => {
   });
 
   it("refuses an unknown key and points at config list", () => {
-    expect(() => configKey("models.checker")).toThrow("unknown config key models.checker; agentx config list shows every key");
+    expect(() => configKey("models.checker")).toThrow("unknown config key models.checker; rovara config list shows every key");
   });
 
   it("says where each key lives", () => {
-    expect(whereText(configKey("alerts.slowTurnMinutes").target, "staging")).toBe("stack parameter SlowTurnMinutes on agentx-staging-slack");
-    expect(whereText(configKey("alerts.address").target, "staging")).toBe("SSM /agentx/staging/settings (alertAddress)");
+    expect(whereText(configKey("alerts.slowTurnMinutes").target, "staging")).toBe("stack parameter SlowTurnMinutes on rovara-cloud-staging-slack");
+    expect(whereText(configKey("alerts.address").target, "staging")).toBe("SSM /rovara-cloud/staging/settings (alertAddress)");
     expect(whereText(configKey("limits.workspacesPerOrg").target, "staging")).toBe("control-plane setting WORKSPACE_LIMITS.perOrganization (install-time default SlackOrganizationWorkspaceLimit)");
   });
 });

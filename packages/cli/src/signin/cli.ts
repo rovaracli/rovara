@@ -1,7 +1,7 @@
-// The `agentx signin` command group (spec 025 FR-045, FR-046) and the developer sign-in flags that
-// agentx init shares (F14), kept out of main.ts. Builds real AWS and Slack clients only when a test
+// The `rovara signin` command group (spec 025 FR-045, FR-046) and the developer sign-in flags that
+// rovara init shares (F14), kept out of main.ts. Builds real AWS and Slack clients only when a test
 // has not overridden them.
-import { agentXError } from "@agentx/contracts";
+import { agentXError, RESOURCE_PREFIX } from "@agentx/contracts";
 import { CloudFormationClient } from "@aws-sdk/client-cloudformation";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { SESv2Client } from "@aws-sdk/client-sesv2";
@@ -35,7 +35,7 @@ export interface SignInCommandOptions {
   signinOidcRequiredClaim?: string; signinOidcRequiredValues?: string; signinOidcDisplayName?: string;
 }
 
-/** Adds the developer sign-in flags (F14): the same names on agentx signin enable and agentx init. */
+/** Adds the developer sign-in flags (F14): the same names on rovara signin enable and rovara init. */
 export function addSignInOptions(command: Command): Command {
   const names = SIGNIN_FLAG_NAMES;
   return command
@@ -142,9 +142,9 @@ export function registerSigninCommands(program: Command, context: SigninCommandC
     .command("cloud")
     .description("turn GitHub and Google sign-in on, change or off, and choose the sender of sign-in code emails, on a Rovara Cloud install; shows the change and asks first")
     .option("--github-client-id <id>", "the GitHub OAuth app's client id (with --github-client-secret-arn)")
-    .option("--github-client-secret-arn <arn>", "the Secrets Manager secret holding the GitHub OAuth client secret as {\"clientSecret\": ...}; its name must start with agentx/<env>/")
+    .option("--github-client-secret-arn <arn>", `the Secrets Manager secret holding the GitHub OAuth client secret as {"clientSecret": ...}; its name must start with ${RESOURCE_PREFIX}/<env>/`)
     .option("--google-client-id <id>", "the Google OAuth client id (with --google-client-secret-arn)")
-    .option("--google-client-secret-arn <arn>", "the Secrets Manager secret holding the Google client secret as {\"clientSecret\": ...}; its name must start with agentx/<env>/")
+    .option("--google-client-secret-arn <arn>", `the Secrets Manager secret holding the Google client secret as {"clientSecret": ...}; its name must start with ${RESOURCE_PREFIX}/<env>/`)
     .option("--email-from <sender>", "send sign-in codes from this Amazon SES sender, \"Name <address>\" or an address; its domain must be verified in SES in the environment's region")
     .option("--no-email-from", "send sign-in codes from Amazon Cognito's default sender again")
     .option("--no-github", "turn GitHub sign-in off")
@@ -177,6 +177,6 @@ export function registerSigninCommands(program: Command, context: SigninCommandC
       const checks = await runSigninCheck(signinServices(options.region, false), globals.env);
       context.stdout.write(globals.json ? formatSuccess(checks, true) : `${checkLines(checks).join("\n")}\n`);
       const failed = checks.filter((check) => !check.ok).length;
-      if (failed > 0) throw agentXError("CONFIG_INVALID", `${failed} developer sign-in check${failed === 1 ? "" : "s"} failed; fix what each one names, then run agentx signin check again`);
+      if (failed > 0) throw agentXError("CONFIG_INVALID", `${failed} developer sign-in check${failed === 1 ? "" : "s"} failed; fix what each one names, then run rovara signin check again`);
     });
 }

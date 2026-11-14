@@ -29,25 +29,25 @@ class PutFailsOnce extends MemoryParameterStore {
 
 const lockOps = (store: MemoryParameterStore) => store.calls.filter((call) => call.name === lockParameterName(ENV)).map((call) => call.op);
 
-describe("agentx config list and get", () => {
+describe("rovara config list and get", () => {
   it("lists every key with its value and where it lives", async () => {
     const rows = await runConfigList(services({ store: await seeded() }), ENV);
-    expect(rows.find((row) => row.key === "limits.threadTurnsPerMinute")).toMatchObject({ value: "6", where: "stack parameter SlackThreadTurnsPerMinute on agentx-staging-control-plane" });
+    expect(rows.find((row) => row.key === "limits.threadTurnsPerMinute")).toMatchObject({ value: "6", where: "stack parameter SlackThreadTurnsPerMinute on rovara-cloud-staging-control-plane" });
     expect(rows.find((row) => row.key === "models.orchestrator")?.value).toBe("us.anthropic.claude-sonnet-4-6");
     expect(rows.find((row) => row.key === "alerts.address")?.value).toBe("none");
     expect(rows.find((row) => row.key === "limits.workspacesPerMember")?.value).toBe("3 (install-time default; the control plane may hold a newer setting)");
     expect(rows.find((row) => row.key === "models.chatgpt.enabled")).toMatchObject({ value: "false unless an admin changed it (the control plane holds the setting)", where: "control-plane setting CHATGPT.enabled" });
     // The two switches a9fbe07a4 added (packed settings on the control-plane stack), both on unless an admin turns them off; rovaraCode.v2 (d4c4e9136) is off by default.
-    expect(rows.find((row) => row.key === "planSelfCheck.enabled")).toMatchObject({ value: "true", where: "stack parameter PlanSelfCheckEnabled on agentx-staging-control-plane" });
-    expect(rows.find((row) => row.key === "autofix.enabled")).toMatchObject({ value: "true", where: "stack parameter AutofixEnabled on agentx-staging-control-plane" });
-    expect(rows.find((row) => row.key === "rovaraCode.v2")).toMatchObject({ value: "false", where: "stack parameter RovaraCodeV2Enabled on agentx-staging-control-plane" });
-    expect(rows.find((row) => row.key === "liveSteer.enabled")).toMatchObject({ value: "0", where: "stack parameter LiveSteerEnabled on agentx-staging-control-plane" });
-    expect(rows.find((row) => row.key === "liveRedirect.enabled")).toMatchObject({ value: "0", where: "stack parameter LiveRedirectEnabled on agentx-staging-control-plane" });
+    expect(rows.find((row) => row.key === "planSelfCheck.enabled")).toMatchObject({ value: "true", where: "stack parameter PlanSelfCheckEnabled on rovara-cloud-staging-control-plane" });
+    expect(rows.find((row) => row.key === "autofix.enabled")).toMatchObject({ value: "true", where: "stack parameter AutofixEnabled on rovara-cloud-staging-control-plane" });
+    expect(rows.find((row) => row.key === "rovaraCode.v2")).toMatchObject({ value: "false", where: "stack parameter RovaraCodeV2Enabled on rovara-cloud-staging-control-plane" });
+    expect(rows.find((row) => row.key === "liveSteer.enabled")).toMatchObject({ value: "0", where: "stack parameter LiveSteerEnabled on rovara-cloud-staging-control-plane" });
+    expect(rows.find((row) => row.key === "liveRedirect.enabled")).toMatchObject({ value: "0", where: "stack parameter LiveRedirectEnabled on rovara-cloud-staging-control-plane" });
     // The saved project images switch (SH22-SH26, `sv`), off by default.
-    expect(rows.find((row) => row.key === "savedEnv.enabled")).toMatchObject({ value: "0", where: "stack parameter SavedEnvEnabled on agentx-staging-control-plane" });
+    expect(rows.find((row) => row.key === "savedEnv.enabled")).toMatchObject({ value: "0", where: "stack parameter SavedEnvEnabled on rovara-cloud-staging-control-plane" });
     // The three test-services switches (TS37, `tx`, `ta`, `pj`), all off by default.
     for (const [key, parameter] of [["testServices.enabled", "TestServicesEnabled"], ["testAccounts.enabled", "TestAccountsEnabled"], ["projectImages.enabled", "ProjectImagesEnabled"]] as const) {
-      expect(rows.find((row) => row.key === key)).toMatchObject({ value: "0", where: `stack parameter ${parameter} on agentx-staging-control-plane` });
+      expect(rows.find((row) => row.key === key)).toMatchObject({ value: "0", where: `stack parameter ${parameter} on rovara-cloud-staging-control-plane` });
     }
     // 2026-11-03: the install-wide ceiling on Rovara-paid diagnoses (liveFix.rovaraPaidDailyCents) is gone: the company pays for a diagnosis, so there is no key for it.
     expect(rows.find((row) => row.key === "liveFix.rovaraPaidDailyCents")).toBeUndefined();
@@ -68,7 +68,7 @@ describe("agentx config list and get", () => {
     await writeInstallAnswers(email, sampleAnswers({ alert: { kind: "email", address: "ops@example.com" } }));
     expect((await runConfigGet(services({ store: email }), ENV, "alerts.address")).value).toBe("set (email address)");
     const webhook = await seeded();
-    await writeInstallAnswers(webhook, sampleAnswers({ alert: { kind: "webhook", display: "https://events.pagerduty.com/...", secretName: "agentx/staging/alert-endpoint" } }));
+    await writeInstallAnswers(webhook, sampleAnswers({ alert: { kind: "webhook", display: "https://events.pagerduty.com/...", secretName: "rovara-cloud/staging/alert-endpoint" } }));
     const row = await runConfigGet(services({ store: webhook }), ENV, "alerts.address");
     expect(row.value).toBe("set (webhook)");
     expect(row.value).not.toContain("pagerduty");
@@ -82,17 +82,17 @@ describe("agentx config list and get", () => {
     await expect(runConfigList(services({ store: new MemoryParameterStore() }), ENV)).rejects.toThrow("environment staging is not installed in this account and region");
     const legacy = new MemoryParameterStore();
     await writeEnvironmentSettings(legacy, { ...STAGING_SETTINGS, naming: "legacy" });
-    await expect(runConfigList(services({ store: legacy }), ENV)).rejects.toThrow("agentx config works on environments installed with agentx init; staging uses the legacy stack names");
+    await expect(runConfigList(services({ store: legacy }), ENV)).rejects.toThrow("rovara config works on environments installed with rovara init; staging uses the legacy stack names");
   });
 });
 
-describe("agentx config set", () => {
+describe("rovara config set", () => {
   it("refuses a held lock with the same next step as the other commands, even for its own killed run (final review M2)", async () => {
     const store = await seeded();
-    const holder = "arn:aws:sts::123456789012:assumed-role/agentx-staging-operator/alice";
+    const holder = "arn:aws:sts::123456789012:assumed-role/rovara-cloud-staging-operator/alice";
     store.values.set(lockParameterName(ENV), JSON.stringify({ holder, command: "config set limits.threadTurnsPerMinute", acquiredAt: new Date(T0).toISOString() }));
     await expect(runConfigSet(services({ store, now: () => T0 + 60_000 }), ENV, { key: "limits.threadTurnsPerMinute", value: "12", yes: true }))
-      .rejects.toThrow(`locked by ${holder} running "config set limits.threadTurnsPerMinute" since ${new Date(T0).toISOString()}; wait for it to finish, then run the same agentx command again. If it is no longer running, agentx init, upgrade and destroy offer a takeover once the lock is 2 hours old, or delete it now (aws ssm delete-parameter --name ${lockParameterName(ENV)} --region <region>)`);
+      .rejects.toThrow(`locked by ${holder} running "config set limits.threadTurnsPerMinute" since ${new Date(T0).toISOString()}; wait for it to finish, then run the same rovara command again. If it is no longer running, rovara init, upgrade and destroy offer a takeover once the lock is 2 hours old, or delete it now (aws ssm delete-parameter --name ${lockParameterName(ENV)} --region <region>)`);
   });
 
   it("changes one stack parameter with a parameter-only update, keeping every other value, under the lock", async () => {
@@ -103,7 +103,7 @@ describe("agentx config set", () => {
     const create = cloudFormation.calls.find((call) => call.name === "CreateChangeSetCommand")!.input;
     expect(create.RoleARN).toBe(ROLE);
     expect(create.UsePreviousTemplate).toBe(true);
-    expect(create.ChangeSetName).toMatch(/^agentx-config-\d+$/);
+    expect(create.ChangeSetName).toMatch(/^rovara-cloud-config-\d+$/);
     expect(create.Parameters).toEqual(expect.arrayContaining([
       { ParameterKey: "SlackThreadTurnsPerMinute", ParameterValue: "12" },
       { ParameterKey: "CallbackSigningKey", UsePreviousValue: true },
@@ -113,7 +113,7 @@ describe("agentx config set", () => {
 
   describe("audit.lock (the audit ledger's lock profile)", () => {
     const REFUSAL = "audit ledger: an install in production mode can't go back to trial; its records are locked for 3 years";
-    const controlPlane = (profile: string) => stacks({ "agentx-staging-control-plane": { AuditLockProfile: profile } });
+    const controlPlane = (profile: string) => stacks({ "rovara-cloud-staging-control-plane": { AuditLockProfile: profile } });
 
     it("moves trial to production with a one-line statement of what it means, and keeps the install answers in step", async () => {
       const store = await seeded();
@@ -165,7 +165,7 @@ describe("agentx config set", () => {
     const store = await seeded();
     const cloudFormation = fakeCloudFormation({ parameters: { BudgetMonthlyUsd: "100" }, changeSet: { status: "FAILED", reason: "Parameter BudgetMonthlyUsd failed to satisfy constraint" } });
     await expect(runConfigSet(services({ store, cloudFormation }), ENV, { key: "budget.monthlyUsd", value: "1000000", yes: true }))
-      .rejects.toThrow("the change set for agentx-staging-control-plane failed: Parameter BudgetMonthlyUsd failed to satisfy constraint; nothing changed");
+      .rejects.toThrow("the change set for rovara-cloud-staging-control-plane failed: Parameter BudgetMonthlyUsd failed to satisfy constraint; nothing changed");
     expect(cloudFormation.calls.filter((call) => call.name === "ExecuteChangeSetCommand")).toEqual([]);
     expect(lockOps(store)).toEqual(["put", "get", "delete"]);
   });
@@ -174,10 +174,10 @@ describe("agentx config set", () => {
     const store = await seeded();
     const notFound = passingChecks({ converse: async () => { throw Object.assign(new Error("model not found"), { name: "ResourceNotFoundException" }); } });
     await expect(runConfigSet(services({ store, cloudFormation: fakeCloudFormation(), checks: () => notFound }), ENV, { key: "models.worker", value: "us.made-up-v1", yes: true }))
-      .rejects.toThrow("us.made-up-v1 is not a Bedrock model id available in us-east-1; check the id, or choose another with agentx --env staging config set models.worker <another model id>; nothing changed");
+      .rejects.toThrow("us.made-up-v1 is not a Bedrock model id available in us-east-1; check the id, or choose another with rovara --env staging config set models.worker <another model id>; nothing changed");
     const denied = passingChecks({ converse: async () => { throw Object.assign(new Error("You don't have access to the model"), { name: "AccessDeniedException" }); } });
     const error = await runConfigSet(services({ store, cloudFormation: fakeCloudFormation(), checks: () => denied }), ENV, { key: "models.orchestrator", value: "us.anthropic.claude-opus-4-1", yes: true }).then(() => undefined, (caught: unknown) => caught as Error);
-    expect(error?.message).toContain("or choose another model with agentx --env staging config set models.orchestrator <another model id>; nothing changed");
+    expect(error?.message).toContain("or choose another model with rovara --env staging config set models.orchestrator <another model id>; nothing changed");
     expect(error?.message).not.toContain("--orchestrator-model");
   });
 
@@ -217,13 +217,13 @@ describe("agentx config set", () => {
 
   it("says how to finish when the stack changed but the answers could not be written, and a rerun records it", async () => {
     const store = new PutFailsOnce(installAnswersParameterName(ENV));
-    await writeEnvironmentSettings(store, { ...STAGING_SETTINGS, access: { artifactBucket: "b", cloudFormationRoleArn: ROLE, operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator", pullThroughPrefix: "agentx-staging" } });
+    await writeEnvironmentSettings(store, { ...STAGING_SETTINGS, access: { artifactBucket: "b", cloudFormationRoleArn: ROLE, operatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator", pullThroughPrefix: "rovara-cloud-staging" } });
     await writeInstallAnswers(store, sampleAnswers());
     store.failNext = true;
     store.calls.length = 0;
     const cloudFormation = fakeCloudFormation({ parameters: { ModelId: "us.anthropic.claude-sonnet-4-6" } });
     const error = await runConfigSet(services({ store, cloudFormation }), ENV, { key: "models.worker", value: "zai.glm-4.7", yes: true }).catch((caught: unknown) => caught);
-    expect((error as Error).message).toContain("stack agentx-staging-runtime now uses zai.glm-4.7, but the install answers were not updated; run the same agentx config set again to record it");
+    expect((error as Error).message).toContain("stack rovara-cloud-staging-runtime now uses zai.glm-4.7, but the install answers were not updated; run the same rovara config set again to record it");
     expect(((error as Error).cause as Error).message).toBe("Rate exceeded");
     expect(cloudFormation.parameters.ModelId).toBe("zai.glm-4.7");
     expect((await readInstallAnswers(store, ENV))?.models.worker).toBe("us.anthropic.claude-sonnet-4-6");
@@ -231,7 +231,7 @@ describe("agentx config set", () => {
 
     store.calls.length = 0;
     const rerunStack = fakeCloudFormation({ parameters: { ModelId: "zai.glm-4.7" } });
-    const rerun = services({ store, cloudFormation: rerunStack, stacks: stacks({ "agentx-staging-runtime": { ModelId: "zai.glm-4.7" } }) });
+    const rerun = services({ store, cloudFormation: rerunStack, stacks: stacks({ "rovara-cloud-staging-runtime": { ModelId: "zai.glm-4.7" } }) });
     const result = await runConfigSet(rerun, ENV, { key: "models.worker", value: "zai.glm-4.7", yes: true });
     expect(result.changed).toBe(true);
     expect(rerunStack.calls.filter((call) => call.name === "CreateChangeSetCommand")).toEqual([]);
@@ -242,11 +242,11 @@ describe("agentx config set", () => {
 
   it("names the settings when their write fails after the stack change, keeping the cause", async () => {
     const store = new PutFailsOnce(settingsParameterName(ENV));
-    await writeEnvironmentSettings(store, { ...STAGING_SETTINGS, access: { artifactBucket: "b", cloudFormationRoleArn: ROLE, operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator", pullThroughPrefix: "agentx-staging" } });
+    await writeEnvironmentSettings(store, { ...STAGING_SETTINGS, access: { artifactBucket: "b", cloudFormationRoleArn: ROLE, operatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator", pullThroughPrefix: "rovara-cloud-staging" } });
     await writeInstallAnswers(store, sampleAnswers());
     store.failNext = true;
     const error = await runConfigSet(services({ store, cloudFormation: fakeCloudFormation({ parameters: { ModelId: "us.anthropic.claude-sonnet-4-6" } }) }), ENV, { key: "models.worker", value: "zai.glm-4.7", yes: true }).catch((caught: unknown) => caught);
-    expect((error as Error).message).toContain("stack agentx-staging-runtime now uses zai.glm-4.7, but the settings were not updated; run the same agentx config set again to record it");
+    expect((error as Error).message).toContain("stack rovara-cloud-staging-runtime now uses zai.glm-4.7, but the settings were not updated; run the same rovara config set again to record it");
     expect(((error as Error).cause as Error).message).toBe("Rate exceeded");
     expect((await readInstallAnswers(store, ENV))?.models.worker).toBe("us.anthropic.claude-sonnet-4-6");
   });
@@ -277,25 +277,25 @@ describe("agentx config set", () => {
 
   it("needs the admin sign-in for the workspace limits, which change through the admin change path (spec 025 phase 25e)", async () => {
     await expect(runConfigSet(services({ store: await seeded(), adminSession: async () => undefined }), ENV, { key: "limits.workspacesPerMember", value: "5", yes: true }))
-      .rejects.toThrow(`limits.workspacesPerMember changes through AgentX's admin change path, which needs this computer's admin sign-in; run agentx --env ${ENV} login --admin, then try again`);
+      .rejects.toThrow(`limits.workspacesPerMember changes through AgentX's admin change path, which needs this computer's admin sign-in; run rovara --env ${ENV} login --admin, then try again`);
   });
 
   it("asks before applying without --yes, and applies nothing on no", async () => {
     const store = await seeded();
     const cloudFormation = fakeCloudFormation({ parameters: { SlowTurnMinutes: "5" } });
     await expect(runConfigSet(services({ store, cloudFormation, prompter: scriptedPrompter([false]) }), ENV, { key: "alerts.slowTurnMinutes", value: "9", yes: false }))
-      .rejects.toThrow("the config change to agentx-staging-slack was not applied; nothing changed");
+      .rejects.toThrow("the config change to rovara-cloud-staging-slack was not applied; nothing changed");
     expect(cloudFormation.calls.filter((call) => call.name === "ExecuteChangeSetCommand")).toEqual([]);
   });
 
   it("subscribes a new email alert address and records it, naming the old subscription an admin must remove", async () => {
     const store = await seeded();
-    const alerts = fakeAlerts({ existing: [{ arn: "arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts:1", protocol: "email", endpoint: "old@example.com" }], confirmAfterPolls: 0 });
+    const alerts = fakeAlerts({ existing: [{ arn: "arn:aws:sns:us-east-1:123456789012:rovara-cloud-staging-alerts:1", protocol: "email", endpoint: "old@example.com" }], confirmAfterPolls: 0 });
     const run = services({ store, alerts });
     await runConfigSet(run, ENV, { key: "alerts.address", value: "ops@example.com", yes: true });
     expect(alerts.subscribed).toEqual(["email ops@example.com"]);
     expect((await readEnvironmentSettings(store, ENV))?.alertAddress).toBe("ops@example.com");
-    expect(run.lines.join("\n")).toContain("aws sns unsubscribe --subscription-arn arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts:1 --region us-east-1");
+    expect(run.lines.join("\n")).toContain("aws sns unsubscribe --subscription-arn arn:aws:sns:us-east-1:123456789012:rovara-cloud-staging-alerts:1 --region us-east-1");
   });
 
   it("shows the alert address change and asks before applying without --yes, and applies nothing on no (F15)", async () => {
@@ -330,7 +330,7 @@ describe("agentx config set", () => {
     const current = (await readEnvironmentSettings(store, ENV))!;
     await writeEnvironmentSettings(store, { ...current, alertAddress: "https://events.pagerduty.com/..." });
     store.calls.length = 0;
-    const secrets = memoryInitSecrets({ "agentx/staging/alert-endpoint": WEBHOOK });
+    const secrets = memoryInitSecrets({ "rovara-cloud/staging/alert-endpoint": WEBHOOK });
     const alerts = fakeAlerts({ confirmAfterPolls: 0 });
     const run = services({ store, secrets, alerts, processEnv: { HOOK: WEBHOOK } });
     expect(await runConfigSet(run, ENV, { key: "alerts.address", valueSource: { envName: "HOOK" }, yes: true })).toEqual({ changed: false });
@@ -341,11 +341,11 @@ describe("agentx config set", () => {
 
   it("keeps the old webhook secret when subscribing the new one fails", async () => {
     const store = await seeded();
-    const secrets = memoryInitSecrets({ "agentx/staging/alert-endpoint": OLD_WEBHOOK });
+    const secrets = memoryInitSecrets({ "rovara-cloud/staging/alert-endpoint": OLD_WEBHOOK });
     const alerts = { ...fakeAlerts({ confirmAfterPolls: 0 }), subscribe: async () => { throw Object.assign(new Error("Rate exceeded"), { name: "ThrottlingException" }); } };
     const run = services({ store, secrets, alerts, processEnv: { HOOK: WEBHOOK } });
     await expect(runConfigSet(run, ENV, { key: "alerts.address", valueSource: { envName: "HOOK" }, yes: true })).rejects.toThrow("Rate exceeded");
-    expect(secrets.values.get("agentx/staging/alert-endpoint")).toBe(OLD_WEBHOOK);
+    expect(secrets.values.get("rovara-cloud/staging/alert-endpoint")).toBe(OLD_WEBHOOK);
     expect((await readEnvironmentSettings(store, ENV))?.alertAddress).toBeUndefined();
     expect(lockOps(store)).toEqual(["put", "get", "delete"]);
   });
@@ -356,7 +356,7 @@ describe("agentx config set", () => {
     const alerts = fakeAlerts({ confirmAfterPolls: 0 });
     const run = services({ store, secrets, alerts, processEnv: { HOOK: WEBHOOK } });
     await runConfigSet(run, ENV, { key: "alerts.address", valueSource: { envName: "HOOK" }, yes: true });
-    expect(secrets.values.get("agentx/staging/alert-endpoint")).toBe(WEBHOOK);
+    expect(secrets.values.get("rovara-cloud/staging/alert-endpoint")).toBe(WEBHOOK);
     expect(alerts.subscribed).toEqual([`https ${WEBHOOK}`]);
     expect((await readEnvironmentSettings(store, ENV))?.alertAddress).toBe("https://events.pagerduty.com/...");
     expect(run.lines.join("\n")).not.toContain("SECRETkey");

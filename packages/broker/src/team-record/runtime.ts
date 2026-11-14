@@ -100,7 +100,7 @@ export interface TeamRecordRuntimeInput {
   /** A model for the distiller (retention B / nightly). Absent: no distiller, B text is dropped. */
   distillModel?: DistillModel;
   /**
-   * The durable queue for removals and edits (`agentx-<env>-team-record-ops`, a dead-letter queue behind it). A tombstone, a member or audience change, or a new version of an item that fails
+   * The durable queue for removals and edits (`rovara-cloud-<env>-team-record-ops`, a dead-letter queue behind it). A tombstone, a member or audience change, or a new version of an item that fails
    * against the record table is sent here and applied by `drain`, so a delete is never swallowed by a tap. Absent (tests, or an install without the queue): a failure is rethrown to the caller.
    */
   opsQueue?: OpsQueue;

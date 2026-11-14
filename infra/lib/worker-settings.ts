@@ -55,14 +55,14 @@ export class WorkerSettingsStack extends Stack {
       description: "pi model identifier available in the deployment region",
     });
     // Task 4.10: the AI navigation model the installation chose, a setting beside the coding model (not a boot variable: the worker searches the eligible models for the revision
-    // an admission names). `agentx config set models.e2eAgent` changes it; the broker reads it from SSM, the worker never does.
+    // an admission names). `rovara config set models.e2eAgent` changes it; the broker reads it from SSM, the worker never does.
     const e2eAgentModelId = new CfnParameter(this, "E2eAgentModelId", {
       type: "String",
       default: "default",
       allowedPattern: "^(default|[A-Za-z0-9][A-Za-z0-9._:/-]{0,199})$",
       description: "AI navigation model for browser checks: default (Rovara's recommendation) or an eligible model id",
     });
-    // MODEL3: the Bedrock model the coding worker runs on when its provider's key secret is missing. `none` (the default) means no fallback: the call fails by name. `agentx config set models.fallback` changes it.
+    // MODEL3: the Bedrock model the coding worker runs on when its provider's key secret is missing. `none` (the default) means no fallback: the call fails by name. `rovara config set models.fallback` changes it.
     const modelFallback = new CfnParameter(this, "ModelFallback", {
       type: "String",
       default: "none",
@@ -149,7 +149,7 @@ export class WorkerSettingsStack extends Stack {
       allowedPattern: "^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$",
       description: "The EC2 workers' instance role, which is allowed to pull the worker image",
     });
-    // arn:<partition>:iam::<account>:role/agentx/<env>/<name>: the name is the fourth part, as the session lifecycle reads it.
+    // arn:<partition>:iam::<account>:role/rovara-cloud/<env>/<name>: the name is the fourth part, as the session lifecycle reads it.
     const roleName = Fn.select(3, Fn.split("/", roleArn.valueAsString));
     const imageName = Fn.select(0, Fn.split("@", imageUri.valueAsString));
     const afterEcr = Fn.select(1, Fn.split(".dkr.ecr.", imageName));

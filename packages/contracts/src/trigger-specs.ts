@@ -2,6 +2,7 @@
 // spec names a time. The same two shapes are what a custom agent's recipe lists as the ways it may be started (G10) and what a trigger record stores as its live spec.
 // This file depends on nothing but zod, so the recipe schema (agent-recipe.ts) and the chain schema can both import it; the records that name a chain or an agent are in
 // triggers.ts. The limits here are the plan's exact names.
+import { RESOURCE_PREFIX } from "./resource-prefix.js";
 import { z } from "zod";
 
 // ---- limits
@@ -20,7 +21,7 @@ export const TRIGGER_FILTER_VALUE_MAX_CHARS = 100;
 
 /** The EventBridge Scheduler group that holds the schedules of an environment's schedule triggers (Task 26). */
 export function chainScheduleGroupName(env: string): string {
-  return `agentx-${env}-chain-triggers`;
+  return `${RESOURCE_PREFIX}-${env}-chain-triggers`;
 }
 
 // ---- event sources, types and filters

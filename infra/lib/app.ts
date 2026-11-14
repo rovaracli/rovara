@@ -11,7 +11,7 @@ import { namingFromContext } from "./naming.js";
 import { applyPermissionsBoundaryParameter } from "./permissions-boundary.js";
 import { AGENTX_PRODUCTION_VPC_CIDR, ProductionFoundationStack } from "./production-foundation.js";
 import { ENTERPRISE_ALLOW_PUBLIC_RANGES_CONTEXT_KEY, ENTERPRISE_EGRESS_CIDRS_CONTEXT_KEY, ENTERPRISE_INTERNET_EGRESS_CONTEXT_KEY, parseEditionContext, parseEnterpriseEgressCidrs, parseInternetEgress } from "./vpc-endpoints.js";
-import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth } from "@agentx/contracts";
+import { EDITION_CONTEXT_KEY, NEW_INSTALL_CONTEXT_KEY, editionAtSynth, ENVIRONMENT_TAG_KEY } from "@agentx/contracts";
 import { EditionEnvironment } from "./edition-env.js";
 import { BUNDLE_IMAGE_NAMES, bundleImageRepository } from "./bundle-images.js";
 import { parseOperatorAccessContext } from "./operator-access.js";
@@ -267,8 +267,8 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     });
   }
   if (naming.env !== undefined) {
-    Tags.of(app).add("agentx:env", naming.env);
-    // Every environment role goes under /agentx/<env>/, the path the CloudFormation service role is
+    Tags.of(app).add(ENVIRONMENT_TAG_KEY, naming.env);
+    // Every environment role goes under /rovara-cloud/<env>/, the path the CloudFormation service role is
     // scoped to; the access stack's own roles are what that scoping protects, so they stay at root.
     Aspects.of(app).add(new EnvironmentRolePath(naming.env, new Set(accessStack === undefined ? [] : [accessStack])));
     // A failed first create cleans up after itself, so a retry never trips over a kept fixed name.

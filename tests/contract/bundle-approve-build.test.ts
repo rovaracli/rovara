@@ -152,15 +152,15 @@ describe("the recorded settings are the install's own", () => {
   it("refuse a missing record, an unreadable one, another environment's, another region's and another identity mode", async () => {
     const s = store();
     await refused(readSynthSettings(s, INSTALL), /no recorded build settings/);
-    await s.put("/agentx/ent/synth-settings", "{not json");
+    await s.put("/rovara-cloud/ent/synth-settings", "{not json");
     await refused(readSynthSettings(s, INSTALL), /not valid/);
-    await s.put("/agentx/ent/synth-settings", JSON.stringify({ schemaVersion: 1 }));
+    await s.put("/rovara-cloud/ent/synth-settings", JSON.stringify({ schemaVersion: 1 }));
     await refused(readSynthSettings(s, INSTALL), /not valid/);
-    await s.put("/agentx/ent/synth-settings", JSON.stringify({ ...SETTINGS_ENT(), env: "other" }));
+    await s.put("/rovara-cloud/ent/synth-settings", JSON.stringify({ ...SETTINGS_ENT(), env: "other" }));
     await refused(readSynthSettings(s, INSTALL), /environment other/);
-    await s.put("/agentx/ent/synth-settings", JSON.stringify({ ...SETTINGS_ENT(), region: "eu-west-1" }));
+    await s.put("/rovara-cloud/ent/synth-settings", JSON.stringify({ ...SETTINGS_ENT(), region: "eu-west-1" }));
     await refused(readSynthSettings(s, INSTALL), /region eu-west-1/);
-    await s.put("/agentx/ent/synth-settings", JSON.stringify({ ...SETTINGS_ENT(), identityMode: "oidc" }));
+    await s.put("/rovara-cloud/ent/synth-settings", JSON.stringify({ ...SETTINGS_ENT(), identityMode: "oidc" }));
     await refused(readSynthSettings(s, INSTALL), /identity mode oidc/);
   });
 
@@ -181,7 +181,7 @@ describe("the recorded settings are the install's own", () => {
     await recordSynthSettings({ store: s, install: INSTALL, settings: SETTINGS_ENT({ agentxEgressAllowDomains: "b\u00fccher.example.com" }) });
     // The DNS firewall allow-list is an install setting too (review I1): an upgrade must rebuild the foundation with it.
     await recordSynthSettings({ store: s, install: INSTALL, settings: SETTINGS_ENT({ agentxEgressAllowDomains: "pypi.internal.corp,*.artifactory.example.com" }) });
-    expect(JSON.parse(s.values.get("/agentx/ent/synth-settings")!).context.agentxEgressAllowDomains).toBe("pypi.internal.corp,*.artifactory.example.com");
+    expect(JSON.parse(s.values.get("/rovara-cloud/ent/synth-settings")!).context.agentxEgressAllowDomains).toBe("pypi.internal.corp,*.artifactory.example.com");
     const ok = await recordSynthSettings({ store: s, install: INSTALL, settings: SETTINGS_ENT() });
     expect(ok.sha256).toBe(synthSettingsSha256(SETTINGS_ENT()));
   });
@@ -191,7 +191,7 @@ describe("the recorded settings are the install's own", () => {
   });
 });
 
-describe("agentx bundle approve, Enterprise", () => {
+describe("rovara bundle approve, Enterprise", () => {
   it("builds, shows the build against the deployed stacks, places only the build, and writes the approval last with the result hash and every setting", async () => {
     const world = await EnterpriseWorld.create(made, { settings: SETTINGS_ENT({ rovaraEnterpriseEgressCidrs: "10.20.0.0/16", rovaraOperatorExternalId: "x".repeat(4) + "externalid-secret-12" }) });
     await world.deployAsBuilt(SETTINGS_ENT({ rovaraEnterpriseEgressCidrs: "10.20.0.0/16", rovaraOperatorExternalId: "x".repeat(4) + "externalid-secret-12" }));
@@ -248,16 +248,16 @@ describe("agentx bundle approve, Enterprise", () => {
   it("is refused when the access stack would change, when a stack is not deployed, and when the settings are not recorded", async () => {
     const changed = await EnterpriseWorld.create(made);
     await changed.deployAsBuilt();
-    changed.world.stacks.set("agentx-ent-access", { ...changed.world.stacks.get("agentx-ent-access")!, template: JSON.stringify({ Resources: { Other: { Type: "AWS::SSM::Parameter", Properties: {} } } }) });
+    changed.world.stacks.set("rovara-cloud-ent-access", { ...changed.world.stacks.get("rovara-cloud-ent-access")!, template: JSON.stringify({ Resources: { Other: { Type: "AWS::SSM::Parameter", Properties: {} } } }) });
     await refused(changed.approve(), /access stack is not the deployed one/);
     expect(changed.puts).toEqual([]);
     const missing = await EnterpriseWorld.create(made);
     await missing.deployAsBuilt();
-    missing.world.stacks.delete("agentx-ent-runtime");
+    missing.world.stacks.delete("rovara-cloud-ent-runtime");
     await refused(missing.approve(), /runtime stack is not deployed/);
     const unrecorded = await EnterpriseWorld.create(made);
     await unrecorded.deployAsBuilt();
-    await unrecorded.store.delete("/agentx/ent/synth-settings");
+    await unrecorded.store.delete("/rovara-cloud/ent/synth-settings");
     await refused(unrecorded.approve(), /no recorded build settings/);
     expect(unrecorded.puts).toEqual([]);
   });
@@ -279,12 +279,12 @@ describe("agentx bundle approve, Enterprise", () => {
     const world = await EnterpriseWorld.create(made);
     await world.deployAsBuilt();
     let loaded = 0;
-    world.world.stacks.delete("agentx-ent-slack");
+    world.world.stacks.delete("rovara-cloud-ent-slack");
     await refused(world.approve({ beforeApproval: async () => { loaded += 1; } }), /slack stack is not deployed/);
     expect(loaded).toBe(0);
     expect(world.puts).toEqual([]);
     await world.deployAsBuilt();
-    await refused(world.approve({ beforeApproval: async () => { await world.store.put("/agentx/ent/synth-settings", JSON.stringify(SETTINGS_ENT({ rovaraEnterpriseEgressCidrs: "10.99.0.0/16" }))); } }), /changed while the build was made/);
+    await refused(world.approve({ beforeApproval: async () => { await world.store.put("/rovara-cloud/ent/synth-settings", JSON.stringify(SETTINGS_ENT({ rovaraEnterpriseEgressCidrs: "10.99.0.0/16" }))); } }), /changed while the build was made/);
     expect(world.puts).toEqual([]);
   });
 

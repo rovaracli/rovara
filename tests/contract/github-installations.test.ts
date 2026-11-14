@@ -164,7 +164,7 @@ describe("the installation lifecycle webhooks", () => {
     const refused = await w.start();
     expect(refused.status).toBe(403);
     expect(error(refused)).toEqual({ code: "GITHUB_NOT_CONNECTED", message: NOT_CONNECTED });
-    expect(error(refused).message).toBe("Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: agentx github connect");
+    expect(error(refused).message).toBe("Rovara can't reach example/demo through your organization's GitHub connection. Connect it with: rovara github connect");
     // No workspace, operation or limit-charge item, and no transaction at all after the webhook's own.
     expect(taskWrites(w)).toHaveLength(before);
     expect(w.db.commandNames().slice(commands).filter((name) => name === "TransactWriteCommand")).toHaveLength(1);
@@ -406,7 +406,7 @@ describe("every token an org's work mints", () => {
     const refused = await exchange();
     expect(refused.status).toBe(403);
     expect(error(refused)).toMatchObject({ code: "GITHUB_NOT_CONNECTED" });
-    await expect(w.provider.reconcilePullRequest({ repositoryUrl: url, headBranch: "agentx/x", baseBranch: "main", title: "t" }, SCOPE_A)).rejects.toMatchObject({ code: "GITHUB_NOT_CONNECTED" });
+    await expect(w.provider.reconcilePullRequest({ repositoryUrl: url, headBranch: "rovara-cloud/x", baseBranch: "main", title: "t" }, SCOPE_A)).rejects.toMatchObject({ code: "GITHUB_NOT_CONNECTED" });
     await expect(w.provider.getPullRequestFeedback(url, 1, SCOPE_A)).rejects.toMatchObject({ code: "GITHUB_NOT_CONNECTED" });
     await expect(w.provider.updatePullRequest(url, 1, { state: "closed" }, SCOPE_A)).rejects.toMatchObject({ code: "GITHUB_NOT_CONNECTED" });
     await expect(w.provider.getCommitTree(url, "a".repeat(40), SCOPE_A)).rejects.toMatchObject({ code: "GITHUB_NOT_CONNECTED" });
@@ -691,7 +691,7 @@ describe("the contract", () => {
   });
 });
 
-describe("agentx github list | disconnect", () => {
+describe("rovara github list | disconnect", () => {
   const CELL = "https://abc123.execute-api.us-east-1.amazonaws.com";
   const ISSUER = `${CELL}/v1/auth`;
   const INSTALLATIONS = [
@@ -737,7 +737,7 @@ describe("agentx github list | disconnect", () => {
   it("list with nothing connected says how to connect, and an older control plane with no requests route still lists", async () => {
     const empty = await cli((method, path) => (method === "GET" && path === "/v1/app/github/installations" ? Response.json({ installations: [], requestId: "r" }) : undefined));
     expect(await empty.run(["github", "list"])).toBe(0);
-    expect(empty.out.join("")).toBe("No GitHub account is connected to your organization on staging. Connect one with: agentx github connect\n");
+    expect(empty.out.join("")).toBe("No GitHub account is connected to your organization on staging. Connect one with: rovara github connect\n");
   });
 
   it("disconnect finds the account without regard to case, sends one DELETE, and prints the server's words", async () => {

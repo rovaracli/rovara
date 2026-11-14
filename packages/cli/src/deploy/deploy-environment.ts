@@ -1,5 +1,5 @@
 // The deploy orchestrator: ties a stack deployer engine to install/upgrade order, the environment
-// lock, the callback signing key and environment settings. Phase 15d's `agentx init`/`agentx
+// lock, the callback signing key and environment settings. Phase 15d's `rovara init`/`rovara
 // upgrade` build a StackDeployer (the templates or cdk engine), collect DeployAnswers, and call
 // deployEnvironment; everything else (order, outputs feeding forward, the lock, settings) lives here.
 import { agentXError, environmentStackName } from "@agentx/contracts";
@@ -37,7 +37,7 @@ export interface DeployEnvironmentInput {
   /** Passed through to every deploy request when given; only the templates engine consults it. */
   confirm?: DeployRequest["confirm"];
   now?: () => number;
-  /** The caller already holds the environment lock (agentx init's step runner): do not take it again. */
+  /** The caller already holds the environment lock (rovara init's step runner): do not take it again. */
   lockHeld?: boolean;
   /** An upgrade reads each deployed stack's parameters here, to keep OPERATOR_PARAMETERS (Task 1 of
    * phase 15e). Required for an upgrade that deploys a part with operator parameters. */
@@ -150,10 +150,10 @@ export function keptOperatorParameters(input: {
 
 /**
  * Ruling F29: the one rule for which of a stack's deployed parameters an upgrade keeps, for
- * `agentx upgrade` and `agentx upgrade --export` alike: the operator's settings (OPERATOR_PARAMETERS)
+ * `rovara upgrade` and `rovara upgrade --export` alike: the operator's settings (OPERATOR_PARAMETERS)
  * and the secrets. keptOperatorParameters takes its candidates from here (sending each kept operator
  * setting's deployed value); the export marks each UsePreviousValue. A secret's value never leaves
- * AWS: agentx upgrade sends it from Secrets Manager, the export keeps the deployed one.
+ * AWS: rovara upgrade sends it from Secrets Manager, the export keeps the deployed one.
  *
  * Developer sign-in is not kept from the stack on either path: both send the choice stored in SSM
  * (readStoredDeveloperSignIn, then withDeclaredSignIn), so when SSM and the stack disagree, both
@@ -187,7 +187,7 @@ function assertDeployAllowed(existing: EnvironmentSettings | undefined, mode: "i
   }
   if (engine === "templates" && (cloud || existing?.cloud === true)) throw agentXError("CONFIG_INVALID", CLOUD_NEEDS_CDK_MESSAGE);
   if (existing !== undefined && existing.naming === "legacy") {
-    throw agentXError("CONFIG_INVALID", `environment ${env} uses the legacy stack names; upgrading it with agentx deploy is not supported yet`);
+    throw agentXError("CONFIG_INVALID", `environment ${env} uses the legacy stack names; upgrading it with rovara deploy is not supported yet`);
   }
   if (existing !== undefined && existing.engine !== engine) {
     throw agentXError("CONFIG_INVALID", `environment ${env} was installed with the ${existing.engine} engine; switching engines is not supported`);
@@ -220,7 +220,7 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
   // Ruling R52: the models must be ones the environment's model proxy serves, before anything deploys.
   assertModelsServedByProxy(answers.models, answers.region);
   if (answers.identity.mode === "oidc" && answers.identity.clientId === undefined) {
-    throw agentXError("CONFIG_INVALID", "bringing your own OIDC provider requires clientId to write environment settings (needed for agentx login)");
+    throw agentXError("CONFIG_INVALID", "bringing your own OIDC provider requires clientId to write environment settings (needed for rovara login)");
   }
   // F6: refused before the lock and the deploy loop, so nothing deploys. An upgrade that could not
   // read the deployed parameters would reset every operator parameter to its template default.
@@ -403,7 +403,7 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
       models: answers.models,
       ...(answers.cloud === true ? { cloud: true as const } : {}),
       ...(answers.cloud === true && answers.cloudSignIn !== undefined ? { cloudSignIn: answers.cloudSignIn } : {}),
-      // F16: set after install (agentx setup alerts, agentx config set alerts.address); no deploy's answers carry it.
+      // F16: set after install (rovara setup alerts, rovara config set alerts.address); no deploy's answers carry it.
       ...(existing?.alertAddress === undefined ? {} : { alertAddress: existing.alertAddress }),
       ...(outputs.access === undefined
         ? {}
@@ -434,7 +434,7 @@ export async function deployEnvironment(input: DeployEnvironmentInput): Promise<
 
 /**
  * The settings identity block: from the identity stack's outputs for Cognito, or from the answers
- * for your own OIDC provider (clientId is required there to write settings — needed for `agentx
+ * for your own OIDC provider (clientId is required there to write settings — needed for `rovara
  * login` — since there is no identity stack's ClientId output to read it from instead). The caller
  * only reaches this once `identityKnown` has already confirmed the source it names is present, and
  * `deployEnvironment` itself already refused a missing OIDC clientId before ever taking the lock.
@@ -449,7 +449,7 @@ function identitySettingsFor(identity: DeployAnswers["identity"], outputs: Parti
     };
   }
   if (identity.clientId === undefined) {
-    throw agentXError("CONFIG_INVALID", "bringing your own OIDC provider requires clientId to write environment settings (needed for agentx login)");
+    throw agentXError("CONFIG_INVALID", "bringing your own OIDC provider requires clientId to write environment settings (needed for rovara login)");
   }
   return { mode: "oidc", issuer: identity.issuer, audience: identity.audience, clientId: identity.clientId };
 }

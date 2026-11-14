@@ -18,7 +18,7 @@ function roleStatements(resources: Record<string, Resource>): Statement[] {
   return Object.values(resources).flatMap((r) => {
     if (r.Type === "AWS::IAM::Role") return ((r.Properties.Policies ?? []) as { PolicyDocument: { Statement: Statement[] } }[]).flatMap((p) => p.PolicyDocument.Statement);
     if (r.Type === "AWS::IAM::Policy") return (r.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
-    if (r.Type === "AWS::IAM::ManagedPolicy" && /^agentx-.+-broker-/.test((typeof r.Properties.ManagedPolicyName === "string" ? r.Properties.ManagedPolicyName : ""))) return (r.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    if (r.Type === "AWS::IAM::ManagedPolicy" && /^rovara-cloud-.+-broker-/.test((typeof r.Properties.ManagedPolicyName === "string" ? r.Properties.ManagedPolicyName : ""))) return (r.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
     return [];
   });
 }
@@ -29,7 +29,7 @@ const CLOUDFRONT_ALL_ACTIONS = [...new Set([...CLOUDFRONT_DISTRIBUTION_CREATE_AC
 
 describe("access stack", () => {
   const app = buildAgentXApp({ agentxEnv: "staging" });
-  const access = stacksOf(app).find((s) => s.stackName === "agentx-staging-access")!;
+  const access = stacksOf(app).find((s) => s.stackName === "rovara-cloud-staging-access")!;
   const template = Template.fromStack(access);
 
   // The hosted-cloud app adds resource types the plain one lacks (Route 53 Resolver DNS firewall and
@@ -42,7 +42,7 @@ describe("access stack", () => {
   /** The AWS service each resource type in the non-access templates is created through. */
   const resourceTypeServices = () => {
     const serviceOf = (type: string) => type.split("::")[1]!.toLowerCase().replace("apigatewayv2", "apigateway").replace("cognito", "cognito-idp").replace("applicationautoscaling", "application-autoscaling").replace("elasticloadbalancingv2", "elasticloadbalancing").replace("stepfunctions", "states");
-    const types = new Set(environmentResources().filter(({ stack }) => stack.stackName !== "agentx-staging-access").flatMap(({ resources }) => Object.values(resources).map((r) => r.Type)));
+    const types = new Set(environmentResources().filter(({ stack }) => stack.stackName !== "rovara-cloud-staging-access").flatMap(({ resources }) => Object.values(resources).map((r) => r.Type)));
     // AWS::CDK::Metadata is a CDK pseudo-resource, not an AWS service call. Custom resources are
     // backed by Lambda, so they need the lambda service. Roles, policies and instance profiles are
     // IAM, checked by action. AWS::Budgets::Budget (spec 015 phase 15d2, FR-047) is also checked by
@@ -57,7 +57,7 @@ describe("access stack", () => {
    * as a need would make the "nothing unused" checks circular.
    */
   const usedActions = () => new Set(environmentResources().flatMap(({ stack, resources }) => roleStatements(resources)
-    .filter((st) => !(stack.stackName === "agentx-staging-access" && (st.Sid === "Services" || st.Sid?.startsWith("CloudFront"))))
+    .filter((st) => !(stack.stackName === "rovara-cloud-staging-access" && (st.Sid === "Services" || st.Sid?.startsWith("CloudFront"))))
     .flatMap((st) => [st.Action].flat())));
 
   it("exists only for named environments, first in the app", () => {
@@ -75,13 +75,13 @@ describe("access stack", () => {
   });
 
   it("creates the pull-through cache rule for ECR Public", () => {
-    template.hasResourceProperties("AWS::ECR::PullThroughCacheRule", { EcrRepositoryPrefix: "agentx-staging", UpstreamRegistryUrl: "public.ecr.aws" });
+    template.hasResourceProperties("AWS::ECR::PullThroughCacheRule", { EcrRepositoryPrefix: "rovara-cloud-staging", UpstreamRegistryUrl: "public.ecr.aws" });
   });
 
   it("creates the CloudFormation service role and the operator role with fixed names", () => {
-    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "agentx-staging-cloudformation",
+    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "rovara-cloud-staging-cloudformation",
       AssumeRolePolicyDocument: Match.objectLike({ Statement: Match.arrayWith([Match.objectLike({ Principal: { Service: "cloudformation.amazonaws.com" } })]) }) });
-    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "agentx-staging-operator", MaxSessionDuration: 3600 });
+    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "rovara-cloud-staging-operator", MaxSessionDuration: 3600 });
   });
 
   it("outputs what later deploys need", () => {
@@ -102,10 +102,10 @@ describe("access stack", () => {
     const [, policy] = boundaryPolicies[0]!;
     expect(policy.Condition).toBe("UseDefaultBoundary");
     expect((template.toJSON() as { Conditions: Record<string, unknown> }).Conditions.UseDefaultBoundary).toEqual({ "Fn::Not": [{ Condition: "HasPermissionsBoundary" }] });
-    // Name and path make its ARN arn:<partition>:iam::<account>:policy/agentx/staging/agentx-staging-boundary,
+    // Name and path make its ARN arn:<partition>:iam::<account>:policy/rovara-cloud/staging/rovara-cloud-staging-boundary,
     // the ARN every other stack names.
-    expect(policy.Properties.ManagedPolicyName).toBe("agentx-staging-boundary");
-    expect(policy.Properties.Path).toBe("/agentx/staging/");
+    expect(policy.Properties.ManagedPolicyName).toBe("rovara-cloud-staging-boundary");
+    expect(policy.Properties.Path).toBe("/rovara-cloud/staging/");
     const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
     // The deployed boundary carries no Sids (its 6,144-character cap), but the same statements in the same order.
     expect(statements.every((st) => st.Sid === undefined)).toBe(true);
@@ -113,13 +113,13 @@ describe("access stack", () => {
   });
 
   it("always applies a boundary to both access roles: the given one, else the default", () => {
-    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "agentx-staging-cloudformation", PermissionsBoundary: effectiveBoundary });
-    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "agentx-staging-operator", PermissionsBoundary: effectiveBoundary });
+    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "rovara-cloud-staging-cloudformation", PermissionsBoundary: effectiveBoundary });
+    template.hasResourceProperties("AWS::IAM::Role", { RoleName: "rovara-cloud-staging-operator", PermissionsBoundary: effectiveBoundary });
     template.hasOutput("EffectiveBoundaryArn", { Value: effectiveBoundary });
   });
 
   it("always emits both boundary Deny statements, naming the effective boundary", () => {
-    const roles = Object.values(template.findResources("AWS::IAM::Role", { Properties: { RoleName: "agentx-staging-cloudformation" } }));
+    const roles = Object.values(template.findResources("AWS::IAM::Role", { Properties: { RoleName: "rovara-cloud-staging-cloudformation" } }));
     expect(roles).toHaveLength(1);
     const statements = (roles[0] as { Properties: { Policies: { PolicyDocument: { Statement: Record<string, unknown>[] } }[] } }).Properties.Policies[0]!.PolicyDocument.Statement;
     expect(statements.filter((st) => "Fn::If" in st)).toEqual([]);
@@ -181,7 +181,7 @@ describe("access stack", () => {
     const permitted = (statement: Statement, action: string) => [statement.Action].flat().some((pattern) => globMatches(pattern, action));
     for (const statement of [service, boundary]) {
       for (const action of ["iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile", "iam:DeleteInstanceProfile"]) expect(permitted(statement, action), action).toBe(true);
-      expect(JSON.stringify(statement.Resource)).toContain("instance-profile/agentx/staging/*");
+      expect(JSON.stringify(statement.Resource)).toContain("instance-profile/rovara-cloud/staging/*");
     }
     for (const action of [service.Action].flat()) expect(permitted(boundary, action), `boundary allows ${action}`).toBe(true);
   }, 240_000);
@@ -199,10 +199,10 @@ describe("access stack", () => {
     expect([...new Set(cloudfront.flatMap((st) => [st.Action].flat()))].sort()).toEqual([...CLOUDFRONT_ALL_ACTIONS].sort());
     const onStar = cloudfront.filter((st) => st.Resource === "*");
     expect(onStar.map((st) => st.Sid).sort()).toEqual(["CloudFrontDistributionCreate", "CloudFrontDistributionTag", "CloudFrontUnscoped"]);
-    expect(onStar.find((st) => st.Sid === "CloudFrontDistributionCreate")!.Condition).toEqual({ StringEquals: { "aws:RequestTag/agentx:env": "staging" } });
-    expect(cloudfront.find((st) => st.Sid === "CloudFrontDistributions")!.Condition).toEqual({ StringEquals: { "aws:ResourceTag/agentx:env": "staging" } });
+    expect(onStar.find((st) => st.Sid === "CloudFrontDistributionCreate")!.Condition).toEqual({ StringEquals: { "aws:RequestTag/rovara-cloud:env": "staging" } });
+    expect(cloudfront.find((st) => st.Sid === "CloudFrontDistributions")!.Condition).toEqual({ StringEquals: { "aws:ResourceTag/rovara-cloud:env": "staging" } });
     // TagResource on "*" only with this environment's request tag (the create path); on an own-tagged distribution it is in CloudFrontDistributions (a tag-only update).
-    expect(onStar.find((st) => st.Sid === "CloudFrontDistributionTag")!.Condition).toEqual({ StringEquals: { "aws:RequestTag/agentx:env": "staging" } });
+    expect(onStar.find((st) => st.Sid === "CloudFrontDistributionTag")!.Condition).toEqual({ StringEquals: { "aws:RequestTag/rovara-cloud:env": "staging" } });
     expect([cloudfront.find((st) => st.Sid === "CloudFrontDistributions")!.Action].flat()).toContain("cloudfront:TagResource");
     const scoped = JSON.stringify(cloudfront.filter((st) => st.Resource !== "*").map((st) => st.Resource));
     expect(scoped).toContain(":cloudfront::");
@@ -220,7 +220,7 @@ describe("access stack", () => {
 
   it("lets only CloudFormation in this account assume the service role", () => {
     template.hasResourceProperties("AWS::IAM::Role", {
-      RoleName: "agentx-staging-cloudformation",
+      RoleName: "rovara-cloud-staging-cloudformation",
       AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{
         Effect: "Allow", Principal: { Service: "cloudformation.amazonaws.com" }, Action: "sts:AssumeRole",
         Condition: { StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } } },
@@ -230,7 +230,7 @@ describe("access stack", () => {
 
   it("trusts the given operator principal, or the account root when none is given", () => {
     template.hasResourceProperties("AWS::IAM::Role", {
-      RoleName: "agentx-staging-operator",
+      RoleName: "rovara-cloud-staging-operator",
       AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [{
         Effect: "Allow", Action: "sts:AssumeRole",
         Principal: { AWS: { "Fn::If": ["HasOperatorPrincipal", { Ref: "OperatorPrincipalArn" },
@@ -247,7 +247,7 @@ describe("access stack", () => {
 
   it("names no literal region in the released access template, so it deploys in any region", () => {
     const released = buildAgentXApp({ agentxEnv: ENVIRONMENT_PLACEHOLDER, agentxSynthesizer: "legacy" }).synth();
-    const text = JSON.stringify(released.getStackByName(`agentx-${ENVIRONMENT_PLACEHOLDER}-access`).template);
+    const text = JSON.stringify(released.getStackByName(`rovara-cloud-${ENVIRONMENT_PLACEHOLDER}-access`).template);
     expect(text).not.toContain("us-east-1");
     expect(text).toContain('"Ref":"AWS::Region"');
   }, 240_000);
@@ -290,7 +290,7 @@ describe("access stack", () => {
     const hasAssociation = resourcesInApp(cloudApp).some(({ resources }) => Object.values(resources).some((r) => r.Type === "AWS::Route53Resolver::ResolverQueryLoggingConfigAssociation"));
     expect(hasAssociation).toBe(true);
     expect(SERVICE_LINKED_ROLE_SERVICES).toContain("route53resolver.amazonaws.com");
-    const scope = { env: "staging", partition: "aws", region: "us-east-1", account: "123456789012", artifactBucketArn: "arn:aws:s3:::b", pullThroughPrefix: "agentx-staging", cloudFormationRoleName: "agentx-staging-cloudformation" };
+    const scope = { env: "staging", partition: "aws", region: "us-east-1", account: "123456789012", artifactBucketArn: "arn:aws:s3:::b", pullThroughPrefix: "rovara-cloud-staging", cloudFormationRoleName: "rovara-cloud-staging-cloudformation" };
     for (const statements of [serviceRoleStatements(scope), defaultBoundaryStatements(scope)]) {
       const linked = statements.find((st) => st.Sid === "ServiceLinkedRoles")!;
       const names = (linked.Condition as { StringLike: { "iam:AWSServiceName": string[] } }).StringLike["iam:AWSServiceName"];

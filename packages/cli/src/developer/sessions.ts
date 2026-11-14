@@ -1,5 +1,5 @@
-// Plan 5 Task 23: sessions from the command line. `agentx sessions`, `agentx session show | follow | unfollow | comment | tell | stop | retry |
-// take-over | share` and `agentx home`, each one or two signed-in calls to the control plane's /v1/app routes. The control plane decides who may do
+// Plan 5 Task 23: sessions from the command line. `rovara sessions`, `rovara session show | follow | unfollow | comment | tell | stop | retry |
+// take-over | share` and `rovara home`, each one or two signed-in calls to the control plane's /v1/app routes. The control plane decides who may do
 // what; a refusal (SESSION_LEVEL_REQUIRED, FORBIDDEN, LOCAL_AGENT_NOT_ALLOWED, ...) is printed as the server wrote it, made safe for a terminal.
 //
 // A take-over and a share with the whole company answer `202 NEEDS_CONFIRMATION`: they wait for the person on a confirmation page. That answer is
@@ -38,7 +38,7 @@ export function safeUrl(value: unknown, origin: string): string | undefined {
 
 /** A session ID the person typed; one that cannot be a session is refused before anything is sent. */
 function sessionIdOf(id: string): string {
-  if (!SessionIdSchema.safeParse(id).success) throw agentXError("CONFIG_INVALID", "that is not a session ID; run agentx sessions to see yours");
+  if (!SessionIdSchema.safeParse(id).success) throw agentXError("CONFIG_INVALID", "that is not a session ID; run rovara sessions to see yours");
   return id;
 }
 
@@ -89,7 +89,7 @@ export async function sessionsList(
     const tiles = list(answer.body.tiles);
     const next = typeof answer.body.next === "string" ? answer.body.next : undefined;
     const lines = tiles.length === 0 ? [`Nothing is live for ${input.live} on ${answer.env}.`] : [`Live (${input.live}) on ${answer.env} (${answer.url}):`, ...tiles.map(liveLine(answer.url))];
-    return result(answer, { tiles, ...(next === undefined ? {} : { next }) }, `${[...lines, ...(next === undefined ? [] : [`More: agentx sessions --live ${input.live} --cursor ${str(next)}`])].join("\n")}\n`);
+    return result(answer, { tiles, ...(next === undefined ? {} : { next }) }, `${[...lines, ...(next === undefined ? [] : [`More: rovara sessions --live ${input.live} --cursor ${str(next)}`])].join("\n")}\n`);
   }
   const chosen = [input.mine === true, input.shared === true, input.project !== undefined].filter(Boolean).length;
   if (chosen > 1) throw agentXError("CONFIG_INVALID", "give one of --mine, --shared, --project and --live");
@@ -99,7 +99,7 @@ export async function sessionsList(
   const next = typeof answer.body.next === "string" ? answer.body.next : undefined;
   const flag = input.shared === true ? " --shared" : input.project !== undefined ? ` --project ${str(input.project)}` : "";
   const lines = sessions.length === 0 ? [`No sessions here on ${answer.env}.`] : [`Sessions on ${answer.env} (${answer.url}):`, ...sessions.map(tileLine)];
-  return result(answer, { sessions, ...(next === undefined ? {} : { next }) }, `${[...lines, ...(next === undefined ? [] : [`More: agentx sessions${flag} --cursor ${str(next)}`])].join("\n")}\n`);
+  return result(answer, { sessions, ...(next === undefined ? {} : { next }) }, `${[...lines, ...(next === undefined ? [] : [`More: rovara sessions${flag} --cursor ${str(next)}`])].join("\n")}\n`);
 }
 
 // ---- one session
@@ -208,7 +208,7 @@ const isLinearIssue = (text: string): boolean => LINEAR_KEY.test(text) || (text.
 /** The session a person named: a session ID, or a task ID, whose session is asked for. */
 async function sessionOfRef(deps: DeveloperSessionDeps, env: string | undefined, ref: string): Promise<string> {
   if (SessionIdSchema.safeParse(ref).success) return ref;
-  if (!TASK_ID.test(ref)) throw agentXError("CONFIG_INVALID", "give a session ID (ses_...) from agentx sessions, or a task ID");
+  if (!TASK_ID.test(ref)) throw agentXError("CONFIG_INVALID", "give a session ID (ses_...) from rovara sessions, or a task ID");
   const answer = await appRequest(deps, env, `/v1/dev/tasks/${seg(ref)}`);
   const sessionId = (answer.body.task as Body | undefined)?.sessionId;
   if (typeof sessionId !== "string" || !SessionIdSchema.safeParse(sessionId).success) throw agentXError("CONFIG_INVALID", "that task has no session, so there is nothing to link; start the work from the app or the CLI to get a session");
@@ -291,7 +291,7 @@ export async function sessionAnswer(
         `  ${index + 1}. ${clean(question.text)}`,
         ...question.options.map((option) => `     ${clean(option.id)}) ${clean(option.label)}${question.recommended === option.id ? " (recommended)" : ""}`),
       ]),
-      `Answer them all: agentx session answer ${id} ${flags}`,
+      `Answer them all: rovara session answer ${id} ${flags}`,
       `Say "${YOUR_CALL_WORDS}" for any you don't mind.`,
       linkOf(read.url, id, view.link),
     ];

@@ -26,7 +26,7 @@ export interface RemovalHelpers {
 /** The rules that were already there: an owner or admin, never yourself, an admin removes members only. `target` is read only when there is one to read. */
 function requireMayRemove(caller: DeveloperCaller, developerId: string): void {
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can remove people from the organization");
-  if (developerId === caller.developerId) throw agentXError("FORBIDDEN", "use agentx org leave to leave");
+  if (developerId === caller.developerId) throw agentXError("FORBIDDEN", "use rovara org leave to leave");
 }
 function requireMayRemoveRole(caller: DeveloperCaller, role: OrgRole): void {
   if (caller.orgRole === "admin" && role !== "member") throw agentXError("FORBIDDEN", "an admin can remove members only; ask an owner to remove an owner or admin");

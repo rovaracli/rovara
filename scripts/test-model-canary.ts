@@ -1,9 +1,9 @@
 // M1.4 Task 4.9 step 3 (gate G1, decision D1), extended by Task 4.10C: the plan-first model check of a TEST installation, run by the qualified runner. The same checks the control
 // plane's admin routes ask for (`POST /v1/admin/e2e/model-checks`), asked here with the operator's own AWS profile where the TEST installation has no admin sign-in for the CLI.
 //
-//   npx tsx scripts/test-model-canary.ts --env agentxlivetest123 --profile agentx-test --instance <runner instance ID> [--model <id>]            # plan only; no AWS call
-//   npx tsx scripts/test-model-canary.ts --env agentxlivetest123 --profile agentx-test --instance <runner instance ID> --model <id> --apply     # gate G1: the owner's explicit OK first
-//   npx tsx scripts/test-model-canary.ts --env agentxlivetest123 --profile agentx-test --instance <runner instance ID> --discover --apply       # lists the models; no model call
+//   npx tsx scripts/test-model-canary.ts --env rovaralivetest --profile agentx-test --instance <runner instance ID> [--model <id>]            # plan only; no AWS call
+//   npx tsx scripts/test-model-canary.ts --env rovaralivetest --profile agentx-test --instance <runner instance ID> --model <id> --apply     # gate G1: the owner's explicit OK first
+//   npx tsx scripts/test-model-canary.ts --env rovaralivetest --profile agentx-test --instance <runner instance ID> --discover --apply       # lists the models; no model call
 //
 // What --apply does, and all it does:
 // 1. reads the control-plane outputs (artifact bucket, state table), the worker role's unique ID (iam get-role) and the worker model settings (SSM, ids and ARNs only; no secret is

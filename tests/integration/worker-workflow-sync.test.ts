@@ -386,7 +386,7 @@ async function createFixture(options: { conflict?: boolean; conflictFile?: strin
   const project = {
     name: "demo", revision: 1,
     repositories: [{ name: "demo", url: remoteUrl, path: "repo/demo", defaultBranch: "main", credentialRef: "github-app",
-      ...(options.gates === true ? { codeBuildGates: [{ name: "quality", projectName: "agentx-demo-quality", timeoutMinutes: 5 }] } : {}) }],
+      ...(options.gates === true ? { codeBuildGates: [{ name: "quality", projectName: "rovara-cloud-demo-quality", timeoutMinutes: 5 }] } : {}) }],
     setup: [], readiness: [{ cwd: "repo/demo", executable: process.execPath, args: ["-e", options.failingReadiness === true ? "process.exit(1)" : "process.exit(0)"], timeoutSeconds: 10 }],
     orchestratorInstructions: "Delegate coding work.",
   };

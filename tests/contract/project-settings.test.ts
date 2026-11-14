@@ -29,7 +29,7 @@ const BINDING = {
 const CLOUD_PROJECTS = { runtimeBinding: BINDING, githubCredentialRef: "github-app" };
 const FIELD_MESSAGE = (field: string) => `${field}: must be a domain name such as artifacts.acme.dev or *.acme.dev`;
 const STALE = "someone changed this project's settings; reload and try again";
-const NOT_CONNECTED = (repository: string) => `Rovara can't reach ${repository} through your organization's GitHub connection. Connect it with: agentx github connect`;
+const NOT_CONNECTED = (repository: string) => `Rovara can't reach ${repository} through your organization's GitHub connection. Connect it with: rovara github connect`;
 
 /** The repositories the fake GitHub App sees, by lower-case full name: default branch and GitHub's repository id. */
 const VISIBLE = new Map([["acme/web", { branch: "main", id: 1 }], ["acme/api", { branch: "trunk", id: 2 }], ["acme/lib", { branch: "main", id: 3 }], ["globex/web", { branch: "main", id: 4 }]]);
@@ -153,7 +153,7 @@ describe("PUT /v1/app/projects/{name}/settings: who and which revision", () => {
     const h = await install({ cloud: false });
     const refused = await h.put(OMAR, { setupCommands: ["npm run setup"] });
     expect(refused.status).toBe(403);
-    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN", message: "ask an administrator to change this project with agentx admin project register" });
+    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN", message: "ask an administrator to change this project with rovara admin project register" });
     expect(h.revisions()).toHaveLength(1);
   });
 
@@ -537,7 +537,7 @@ describe("a project with an E2E policy", () => {
     seedProject(h.db, TEST_ORG, "web", {}, { setupApproval: { proposalRef: "project-setup-proposals/x/y.json", proposalSha256: "a".repeat(64), candidateDigest: "b".repeat(64), decision: "decline" } });
     const refused = await h.put(OMAR, { testCommands: ["npm run check"] });
     expect(refused.status).toBe(403);
-    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN", message: "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register" });
+    expect(refused.body.error).toMatchObject({ code: "FORBIDDEN", message: "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with rovara admin project register" });
     expect(h.revisions()).toHaveLength(1);
   });
 });
@@ -588,7 +588,7 @@ describe("older workers", () => {
   });
 });
 
-describe("agentx project show and agentx project settings", () => {
+describe("rovara project show and rovara project settings", () => {
   const URL_ = "https://abc123.execute-api.us-west-2.amazonaws.com";
   const ISSUER = `${URL_}/v1/auth`;
   const entry = { url: URL_, issuer: ISSUER, tokenEndpoint: `${ISSUER}/token`, revocationEndpoint: `${ISSUER}/revoke` };

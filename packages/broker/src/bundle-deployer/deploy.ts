@@ -300,7 +300,7 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
     try {
       for (const part of ["foundation", "control-plane"] as const) {
         const deployed = await ports.cfn.getTemplate(environmentStackName(env, part));
-        if (deployed !== undefined && /"ROVARA_EDITION"\s*:\s*"enterprise"|"Name"\s*:\s*"\/agentx\/[^"]*\/edition"[^}]*"Value"\s*:\s*"enterprise"/.test(deployed)) stampedEnterprise = true;
+        if (deployed !== undefined && /"ROVARA_EDITION"\s*:\s*"enterprise"|"Name"\s*:\s*"\/rovara-cloud\/[^"]*\/edition"[^}]*"Value"\s*:\s*"enterprise"/.test(deployed)) stampedEnterprise = true;
       }
     } catch {
       return refused("the deployed stacks could not be read to tell the install's edition");
@@ -318,7 +318,7 @@ async function deployVerified(rawRequest: unknown, ports: DeployerPorts): Promis
 
   if (approval.build === undefined) {
     // The bundle's own (Public) templates.
-    if (edition === "enterprise") return refused("an Enterprise install takes only a bundle built at its own approval (agentx bundle approve); this approval holds the bundle's prebuilt templates");
+    if (edition === "enterprise") return refused("an Enterprise install takes only a bundle built at its own approval (rovara bundle approve); this approval holds the bundle's prebuilt templates");
     // The files that are deployed must be exactly the signed ones (images, notes and the synthesis kit stay out of the bucket).
     const needed = manifest.files.filter((entry) => BUNDLE_PUBLIC_DEPLOYED_KINDS.includes(entry.kind));
     const neededNames = new Set(needed.map((entry) => entry.file));

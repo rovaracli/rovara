@@ -147,9 +147,9 @@ function inferenceProfileHint(modelId: string, region: string, change: string): 
 }
 
 /** How modelCheckProblem's messages say to change a model and to try again. init's defaults name its
- * flags; agentx doctor names agentx config set (a model is changed there after install). */
+ * flags; rovara doctor names rovara config set (a model is changed there after install). */
 export interface ModelProblemWording { changeModel: string; rerun: string; region: string }
-const initWording = (role: ModelRole): ModelProblemWording => ({ changeModel: `--${role}-model`, rerun: "run agentx init again", region: "choose another region with --region" });
+const initWording = (role: ModelRole): ModelProblemWording => ({ changeModel: `--${role}-model`, rerun: "run rovara init again", region: "choose another region with --region" });
 /** How a model problem reads on the page: what to do there, not a flag (spec 048 FR-027, FR-080). */
 const pageWording = (): ModelProblemWording => ({ changeModel: "the model question", rerun: "choose Check again", region: "start again in another region" });
 
@@ -279,7 +279,7 @@ export async function checkAccount(input: {
   if (problems.length > 0) throw agentXError("CONFIG_INVALID", `init cannot start; nothing was created:\n${problems.map((problem) => `- ${problem}`).join("\n")}`);
 }
 
-/** Everything `agentx init` must confirm before it creates a single resource: the account and
+/** Everything `rovara init` must confirm before it creates a single resource: the account and
  * region has EC2 capacity quota, each distinct model answers, the identity provider (when self-hosted)
  * agrees with itself, and the chosen engine's tooling is in place. Every problem found is collected
  * and reported together (FR-015): a person fixing an account should not have to run init five
@@ -314,7 +314,7 @@ export async function checkPrerequisites(input: {
   write(`AWS account ${input.caller.account} as ${input.caller.arn}`);
   write(DEDICATED_ACCOUNT_NOTE);
 
-  // The same check and wording as agentx deploy's, collected with every other problem. The cdk
+  // The same check and wording as rovara deploy's, collected with every other problem. The cdk
   // engine synthesizes its own templates for any region (issue 152), so only the templates engine needs it.
   if (answers.engine === "templates") {
     const regionProblem = releaseRegionProblem(input.release, region);
@@ -340,7 +340,7 @@ export async function checkPrerequisites(input: {
     } catch (error) {
       failed("Answer checks", audience === "page"
         ? `AgentX could not finish checking your answers: ${errorMessage(error)}. Check AWS and GitHub access, then check again.`
-        : `could not run the answer checks: ${errorMessage(error)}; check AWS and GitHub access, then run agentx init again`);
+        : `could not run the answer checks: ${errorMessage(error)}; check AWS and GitHub access, then run rovara init again`);
     }
   }
 
@@ -499,7 +499,7 @@ const OIDC_DISCOVERY_TIMEOUT_MS = 10_000;
  * Races `run(signal)` against a `ms` deadline: if the deadline wins, the signal handed to `run` is
  * aborted and the returned promise rejects with a `TimeoutError` carrying `message`. Uses a plain
  * `setTimeout` (not the native, non-fake-timer-friendly `AbortSignal.timeout`) so a hung call fails
- * clearly and deterministically instead of hanging `agentx init` forever, and so this is directly
+ * clearly and deterministically instead of hanging `rovara init` forever, and so this is directly
  * testable with fake timers and a `run` that never resolves.
  */
 export async function withDeadline<T>(run: (signal: AbortSignal) => Promise<T>, ms: number, message: string): Promise<T> {

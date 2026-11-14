@@ -776,7 +776,7 @@ const PULL_REQUEST_UPDATE_CAUSES: Record<string, { cause: string; then: string }
 /** The approved fix could not be pushed to the pull requests: which, and why, when AgentX knows. */
 function pullRequestUpdateFailed(workflow: WorkflowSnapshot): string {
   const failure = workflow.pullRequestUpdateFailure;
-  if (failure?.cause === "WORKER_OUTDATED") return `I couldn't push the fix because this AgentX worker is out of date. Ask an admin to run agentx upgrade. ${STILL_WATCHING}`;
+  if (failure?.cause === "WORKER_OUTDATED") return `I couldn't push the fix because this AgentX worker is out of date. Ask an admin to run rovara upgrade. ${STILL_WATCHING}`;
   const failed = (workflow.pullRequests ?? []).filter((pullRequest) => failure?.numbers.includes(pullRequest.number) === true);
   if (failed.length === 0) return `${plainBlockReason(workflow.blockReason)} ${STILL_WATCHING}`;
   const cause = failure?.cause === undefined ? undefined : PULL_REQUEST_UPDATE_CAUSES[failure.cause];

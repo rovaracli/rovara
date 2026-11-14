@@ -1,11 +1,11 @@
-// Every IAM role of a named cloud environment lives under /agentx/<env>/ (the access stack's two roles are the
+// Every IAM role of a named cloud environment lives under /rovara-cloud/<env>/ (the access stack's two roles are the
 // intentional exception), and every ARN that names a fixed-name role carries that role's real path and name.
 //
 // Why it is more than a Path property: a role with a fixed RoleName is looked up by name before CloudFormation creates it
 // (iam:GetRole), and IAM authorizes a lookup of a role that does not exist yet against the path-less ARN
-// role/<name>, because the path of a missing role is unknown. The deploy role is scoped to role/agentx/<env>/*, so
+// role/<name>, because the path of a missing role is unknown. The deploy role is scoped to role/rovara-cloud/<env>/*, so
 // that first call is refused (staging, 2026-10-23: ConnectorSecretsRole, "iam:GetRole on resource: role
-// agentx-staging-connector-secrets"), and so is the rollback's delete. So each fixed-name role needs its exact
+// rovara-cloud-staging-connector-secrets"), and so is the rollback's delete. So each fixed-name role needs its exact
 // path-less ARN named, for the read and delete actions only, in the deploy role and in the boundary it carries.
 import { Stack } from "aws-cdk-lib";
 import { brokerRoleName, chainScheduleRoleName, connectorSecretsRoleName, modelAccessProbeRoleName, modelProxyTaskRoleName, savedEnvCreateRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, testAccountSecretsRoleName } from "@agentx/contracts";
@@ -23,7 +23,7 @@ type Resource = { Type: string; Properties: Json };
 type Synthesized = { access: Record<string, Resource>; others: Array<{ stack: string; resources: Record<string, Resource> }> };
 
 const ACCOUNT = "111122223333";
-const ENVIRONMENTS = ["staging", "a1234567890123456789", "agentxlivetest123"];
+const ENVIRONMENTS = ["staging", "a1234567890123", "rovaralivetest"];
 
 const synthesized = new Map<string, Synthesized>();
 
@@ -83,18 +83,18 @@ beforeAll(() => {
 }, 600_000);
 
 describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env) => {
-  const path = `/agentx/${env}/`;
+  const path = `/rovara-cloud/${env}/`;
   const scope = (): PolicyScope => ({
     env, partition: "aws", region: "us-west-2", account: ACCOUNT,
-    artifactBucketArn: `arn:aws:s3:::agentx-${env}-access-artifactbucket-abc`, pullThroughPrefix: `agentx-${env}`,
-    cloudFormationRoleName: `agentx-${env}-cloudformation`,
+    artifactBucketArn: `arn:aws:s3:::rovara-cloud-${env}-access-artifactbucket-abc`, pullThroughPrefix: `rovara-cloud-${env}`,
+    cloudFormationRoleName: `rovara-cloud-${env}-cloudformation`,
   });
   const fixedNameRoles = (): Array<{ stack: string; id: string; name: string }> =>
     synthesized.get(env)!.others.flatMap(({ stack, resources }) => roleResources(resources)
       .filter(([, resource]) => resource.Properties.RoleName !== undefined)
       .map(([id, resource]) => ({ stack, id, name: flatten(resource.Properties.RoleName) })));
 
-  it("sit under /agentx/<env>/, except the access stack's two, which stay at the root", () => {
+  it("sit under /rovara-cloud/<env>/, except the access stack's two, which stay at the root", () => {
     const { access, others } = synthesized.get(env)!;
     const wrong: string[] = [];
     let count = 0;
@@ -109,8 +109,8 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
     expect(count).toBeGreaterThan(20);
     expect(wrong).toEqual([]);
     expect(roleResources(access).map(([id, resource]) => [id, resource.Properties.Path, resource.Properties.RoleName])).toEqual([
-      ["CloudFormationServiceRole", undefined, `agentx-${env}-cloudformation`],
-      ["OperatorRole", undefined, `agentx-${env}-operator`],
+      ["CloudFormationServiceRole", undefined, `rovara-cloud-${env}-cloudformation`],
+      ["OperatorRole", undefined, `rovara-cloud-${env}-operator`],
     ]);
   });
 
@@ -119,10 +119,10 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
     // scheduler's invoke role, which the broker passes to the scheduler by an ARN built from the environment; each needs the path-less grant of the lookup statement.
     expect(fixedNameRoles().map((role) => role.name).sort()).toEqual(
       [
-        `agentx-${env}-connector-secrets`, testAccountSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
+        `rovara-cloud-${env}-connector-secrets`, testAccountSecretsRoleName(env), brokerRoleName(env), modelProxyTaskRoleName(env), modelAccessProbeRoleName(env), chainScheduleRoleName(env),
         // Setup and test health SH22: the roles the broker assumes for saved environment images.
         savedEnvPushRoleName(env), savedEnvPullRoleName(env), savedEnvManageRoleName(env), savedEnvCreateRoleName(env),
-        ...(env === "agentxlivetest123" ? [`${env}-task-person-proof`] : []),
+        ...(env === "rovaralivetest" ? [`${env}-task-person-proof`] : []),
       ].sort(),
     );
     expect(fixedNameEnvironmentRoleNames(env).sort()).toEqual(fixedNameRoles().map((role) => role.name).sort());
@@ -141,10 +141,10 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
     }
     for (const text of found) expect(text).toMatch(new RegExp(`:iam::${ACCOUNT}:role(${path}|/)[^/]+$`));
     // The boundary names the connector secrets role, and the broker builds its ARN from the environment alone: all three agree.
-    const arn = `arn:aws:iam::${ACCOUNT}:role${path}agentx-${env}-connector-secrets`;
+    const arn = `arn:aws:iam::${ACCOUNT}:role${path}rovara-cloud-${env}-connector-secrets`;
     const boundaryStatement = defaultBoundaryStatements(scope()).find((statement) => statement.Sid === "ConnectorSecretsRole");
     // Test services TS26: the TestAccountSecretsRole's name starts with the connector role's, and one wildcard ARN names both.
-    expect(boundaryStatement?.Resource).toEqual([`${arn}*`, `arn:aws:iam::${ACCOUNT}:role${path}agentx-${env}-img-*`]);
+    expect(boundaryStatement?.Resource).toEqual([`${arn}*`, `arn:aws:iam::${ACCOUNT}:role${path}rovara-cloud-${env}-img-*`]);
     const built: MutableEnvironment = { AGENTX_ENV: env, AGENTX_NAMES: "{}", AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: ACCOUNT };
     hydrateBrokerEnvironment(built);
     expect(built.CONNECTOR_SECRETS_ROLE_ARN).toBe(arn);
@@ -191,7 +191,7 @@ describe.each(ENVIRONMENTS)("the roles of the named cloud environment %s", (env)
         // the deploy role, which is what allows the lookups, still does.
         const sharedPrefix = label === "boundary" && name.startsWith(connectorSecretsRoleName(env));
         expect(allowed(statements, "iam:GetRole", `arn:aws:iam::${ACCOUNT}:role/${name}-other`), `${label} refuses a similar name`).toBe(sharedPrefix);
-        expect(allowed(statements, "iam:GetRole", `arn:aws:iam::${ACCOUNT}:role/agentx-${env}-operator`), `${label} refuses the access stack's roles`).toBe(false);
+        expect(allowed(statements, "iam:GetRole", `arn:aws:iam::${ACCOUNT}:role/rovara-cloud-${env}-operator`), `${label} refuses the access stack's roles`).toBe(false);
         expect(allowed(statements, "iam:CreateRole", `arn:aws:iam::${ACCOUNT}:role${path}${name}`), `${label} creates it under its path`).toBe(true);
       }
     }

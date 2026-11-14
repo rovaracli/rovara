@@ -20,40 +20,40 @@ import { awsPartitionOf, brokerNamesFromEnvironment, hydrateBrokerEnvironment, t
 const SCOPE = { AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AGENTX_ENV: "staging" };
 const KEY_ID = "0a1b2c3d-4e5f-6789-abcd-ef0123456789";
 const NAMES = {
-  stateTable: "agentx-staging-control-plane-State1C20CC9A-1A2B3C4D5E6F7",
-  artifactBucket: "agentx-staging-control-plane-artifacts82dd59a1-1a2b3c4d5e6f",
+  stateTable: "rovara-cloud-staging-control-plane-State1C20CC9A-1A2B3C4D5E6F7",
+  artifactBucket: "rovara-cloud-staging-control-plane-artifacts82dd59a1-1a2b3c4d5e6f",
   launchTemplate: "lt-0123456789abcdef0",
   projectAllowList: "rslvr-fdl-0123456789abcdef",
   modelProxy: "internal-agentx-staging-proxy-1234567890",
-  auditLedgerTable: "agentx-staging-control-plane-AuditLedgerAuditLedgerTableC60B8D3B-1A2B3C4D5E6F7",
-  auditSealsTable: "agentx-staging-control-plane-AuditLedgerAuditSealsTableF2EABAF8-1A2B3C4D5E6F7",
-  auditKeysTable: "agentx-staging-control-plane-AuditLedgerAuditKeysTableF5520AEA-1A2B3C4D5E6F7",
-  auditExportsBucket: "agentx-staging-control-plane-auditledgerauditexportsbucketde99c-1a2b3c4d5e6f",
-  auditExportFunction: "agentx-staging-control-plane-AuditLedgerAuditExportED90D71C-1A2B3C4D5E6F7",
+  auditLedgerTable: "rovara-cloud-staging-control-plane-AuditLedgerAuditLedgerTableC60B8D3B-1A2B3C4D5E6F7",
+  auditSealsTable: "rovara-cloud-staging-control-plane-AuditLedgerAuditSealsTableF2EABAF8-1A2B3C4D5E6F7",
+  auditKeysTable: "rovara-cloud-staging-control-plane-AuditLedgerAuditKeysTableF5520AEA-1A2B3C4D5E6F7",
+  auditExportsBucket: "rovara-cloud-staging-control-plane-auditledgerauditexportsbucketde99c-1a2b3c4d5e6f",
+  auditExportFunction: "rovara-cloud-staging-control-plane-AuditLedgerAuditExportED90D71C-1A2B3C4D5E6F7",
   auditVaultKey: KEY_ID,
-  signInTable: "agentx-staging-control-plane-DeveloperSignInTable26CE739E-1A2B3C4D5E6F7",
-  identityFunction: "agentx-staging-control-plane-DeveloperSignInFunction10B62B05-1A2B3C4D5E6F7",
-  slackThreadsTable: "agentx-staging-control-plane-SlackThreads36E14C1E-1A2B3C4D5E6F7",
-  turnRecordsTable: "agentx-staging-control-plane-TurnRecords69ECFCD9-1A2B3C4D5E6F7",
-  planEvidenceFunction: "agentx-staging-control-plane-PlanEvidence3615C4CB-1A2B3C4D5E6F7",
-  modelAccessFunction: "agentx-staging-control-plane-ModelAccessFunction1B50ECC9-1A2B3C4D5E6F7",
-  dispatcherFunction: "agentx-staging-control-plane-Dispatcher6C5A7D1F-1A2B3C4D5E6F7",
-  slackRequestQueue: "agentx-staging-control-plane-SlackRequestQueueCC82C864-1A2B3C4D5E6F7",
-  slackOrchestratorRole: "agentx-staging-control-plane-SlackOrchestratorTaskRole2372FE40-1A2B3C4D5E6F7",
+  signInTable: "rovara-cloud-staging-control-plane-DeveloperSignInTable26CE739E-1A2B3C4D5E6F7",
+  identityFunction: "rovara-cloud-staging-control-plane-DeveloperSignInFunction10B62B05-1A2B3C4D5E6F7",
+  slackThreadsTable: "rovara-cloud-staging-control-plane-SlackThreads36E14C1E-1A2B3C4D5E6F7",
+  turnRecordsTable: "rovara-cloud-staging-control-plane-TurnRecords69ECFCD9-1A2B3C4D5E6F7",
+  planEvidenceFunction: "rovara-cloud-staging-control-plane-PlanEvidence3615C4CB-1A2B3C4D5E6F7",
+  modelAccessFunction: "rovara-cloud-staging-control-plane-ModelAccessFunction1B50ECC9-1A2B3C4D5E6F7",
+  dispatcherFunction: "rovara-cloud-staging-control-plane-Dispatcher6C5A7D1F-1A2B3C4D5E6F7",
+  slackRequestQueue: "rovara-cloud-staging-control-plane-SlackRequestQueueCC82C864-1A2B3C4D5E6F7",
+  slackOrchestratorRole: "rovara-cloud-staging-control-plane-SlackOrchestratorTaskRole2372FE40-1A2B3C4D5E6F7",
   // wire-team-record: present only in an install synthesised with the Team record switched on.
-  teamRecordVectorsRole: "agentx-staging-control-plane-TeamRecordVectorsDataRole8A1B2C3D-1A2B3C4D5E6F7",
+  teamRecordVectorsRole: "rovara-cloud-staging-control-plane-TeamRecordVectorsDataRole8A1B2C3D-1A2B3C4D5E6F7",
   teamRecordKmsKey: "1a2b3c4d-4e5f-6789-abcd-ef0123456789",
   savedEnvKey: "1a2b3c4d-4e5f-6789-abcd-ef0123456789",
   chatGptConnectionKey: "1a2b3c4d-4e5f-6789-abcd-ef0123456789",
-  provisionerStateMachine: "agentx-staging-control-plane-SessionsProvisioner9C44055B-1A2B3C4D5E6F7",
-  deleterStateMachine: "agentx-staging-control-plane-SessionsDeleterB48741EA-1A2B3C4D5E6F7",
+  provisionerStateMachine: "rovara-cloud-staging-control-plane-SessionsProvisioner9C44055B-1A2B3C4D5E6F7",
+  deleterStateMachine: "rovara-cloud-staging-control-plane-SessionsDeleterB48741EA-1A2B3C4D5E6F7",
   cloudUserPool: "us-west-2_AbCdEfGhI",
   signInApi: "abcdefghij",
   realtimeApi: "klmnopqrst",
-  dispatchDeadLetters: "agentx-staging-control-plane-DispatchDeadLetterQueue3E30F4B8-1A2B3C4D5E6F7",
-  slackRequestDeadLetters: "agentx-staging-control-plane-SlackDeadLetterQueue8D1F2C3B-1A2B3C4D5E6F7",
-  developerNoticeDeadLetters: "agentx-staging-control-plane-DeveloperTaskNotifierDeadLetters5A6B7C8D-1A2B3C4D5E6F7",
-  developerNoticeStreamFailures: "agentx-staging-control-plane-DeveloperTaskNotifierStreamFailures9E8D7C6B-1A2B3C4D5E6F7",
+  dispatchDeadLetters: "rovara-cloud-staging-control-plane-DispatchDeadLetterQueue3E30F4B8-1A2B3C4D5E6F7",
+  slackRequestDeadLetters: "rovara-cloud-staging-control-plane-SlackDeadLetterQueue8D1F2C3B-1A2B3C4D5E6F7",
+  developerNoticeDeadLetters: "rovara-cloud-staging-control-plane-DeveloperTaskNotifierDeadLetters5A6B7C8D-1A2B3C4D5E6F7",
+  developerNoticeStreamFailures: "rovara-cloud-staging-control-plane-DeveloperTaskNotifierStreamFailures9E8D7C6B-1A2B3C4D5E6F7",
 } as const satisfies Record<keyof typeof BROKER_NAMES, string>;
 
 const bag = (names: Partial<Record<keyof typeof BROKER_NAMES, string>> = NAMES) =>
@@ -87,8 +87,8 @@ describe("awsPartitionOf", () => {
 describe("hydrateBrokerEnvironment: the broker's own role", () => {
   it("builds the ARN of the broker's role from the environment's name on the hosted cloud, in the environment's role path, and on no other install", () => {
     const cloud = hydrated({ ...SCOPE, AGENTX_CLOUD: "true", [BROKER_NAMES_VARIABLE]: bag() });
-    expect(cloud.BROKER_ROLE_ARN).toBe("arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role");
-    expect(hydrated({ ...SCOPE, AGENTX_CLOUD: "true", [BROKER_NAMES_VARIABLE]: bag({ signInTable: "t" }) }).BROKER_ROLE_ARN).toBe("arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role");
+    expect(cloud.BROKER_ROLE_ARN).toBe("arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-broker-role");
+    expect(hydrated({ ...SCOPE, AGENTX_CLOUD: "true", [BROKER_NAMES_VARIABLE]: bag({ signInTable: "t" }) }).BROKER_ROLE_ARN).toBe("arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-broker-role");
     expect(hydrated({ ...SCOPE, AGENTX_CLOUD: "true", [BROKER_NAMES_VARIABLE]: bag(), BROKER_ROLE_ARN: "given" }).BROKER_ROLE_ARN).toBe("given");
   });
 
@@ -110,7 +110,7 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       AUDIT_EXPORTS_BUCKET_NAME: NAMES.auditExportsBucket,
       AUDIT_EXPORT_FUNCTION_NAME: NAMES.auditExportFunction,
       // Derived from the environment's name alone (DERIVED_BROKER_VARIABLES): the queue's name is fixed.
-      AUDIT_INTAKE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-audit-intake.fifo",
+      AUDIT_INTAKE_QUEUE_URL: "https://sqs.us-west-2.amazonaws.com/123456789012/rovara-cloud-staging-audit-intake.fifo",
       STATE_TABLE_NAME: NAMES.stateTable,
       ARTIFACT_BUCKET_NAME: NAMES.artifactBucket,
       EC2_WORKER_LAUNCH_TEMPLATE_ID: NAMES.launchTemplate,
@@ -126,11 +126,11 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       // LA-1 (peek): the dispatcher's name becomes its function ARN.
       DISPATCHER_FUNCTION_ARN: `arn:aws:lambda:us-west-2:123456789012:function:${NAMES.dispatcherFunction}`,
       SLACK_REQUEST_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.slackRequestQueue}`,
-      SLACK_ORCHESTRATOR_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.slackOrchestratorRole}`,
-      TEAM_RECORD_VECTORS_ROLE_ARN: `arn:aws:iam::123456789012:role/agentx/staging/${NAMES.teamRecordVectorsRole}`,
+      SLACK_ORCHESTRATOR_ROLE_ARN: `arn:aws:iam::123456789012:role/rovara-cloud/staging/${NAMES.slackOrchestratorRole}`,
+      TEAM_RECORD_VECTORS_ROLE_ARN: `arn:aws:iam::123456789012:role/rovara-cloud/staging/${NAMES.teamRecordVectorsRole}`,
       CHATGPT_CONNECTION_KEY_ARN: "arn:aws:kms:us-west-2:123456789012:key/1a2b3c4d-4e5f-6789-abcd-ef0123456789",
       // Test services slice 3: derived from AGENTX_ENV (the key's fixed alias), not passed.
-      FIXTURE_KEY_ARN: "arn:aws:kms:us-west-2:123456789012:alias/agentx/staging/fixtures",
+      FIXTURE_KEY_ARN: "arn:aws:kms:us-west-2:123456789012:alias/rovara-cloud/staging/fixtures",
       PROVISIONER_ARN: `arn:aws:states:us-west-2:123456789012:stateMachine:${NAMES.provisionerStateMachine}`,
       DELETER_ARN: `arn:aws:states:us-west-2:123456789012:stateMachine:${NAMES.deleterStateMachine}`,
     });
@@ -152,7 +152,7 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
       "slack-requests": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.slackRequestDeadLetters}`,
       "developer-notices": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.developerNoticeDeadLetters}`,
       "developer-notice-stream": `https://sqs.us-west-2.amazonaws.com/123456789012/${NAMES.developerNoticeStreamFailures}`,
-      "team-record": "https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-team-record-ops-dead",
+      "team-record": "https://sqs.us-west-2.amazonaws.com/123456789012/rovara-cloud-staging-team-record-ops-dead",
     });
     expect(Object.keys(JSON.parse(hydrated({ ...SCOPE, TEAM_RECORD_ENABLED: "1", [BROKER_NAMES_VARIABLE]: bag() }).HEALTH_DEAD_LETTER_QUEUES!) as object).at(-1)).toBe("team-record");
     // Every name in the table came back under its variable.
@@ -162,7 +162,7 @@ describe("hydrateBrokerEnvironment: the names (AGENTX_NAMES)", () => {
   it("gives the same text for a key's ARN as CloudFormation does, in another partition's form too (the install's ChatGPT host id derives from it)", () => {
     const env = hydrated({ AWS_REGION: "cn-north-1", AGENTX_ACCOUNT_ID: "123456789012", AGENTX_ENV: "staging", [BROKER_NAMES_VARIABLE]: bag({ slackRequestQueue: "q", auditVaultKey: KEY_ID, provisionerStateMachine: "sm" }) });
     expect(env.SLACK_REQUEST_QUEUE_URL).toBe("https://sqs.cn-north-1.amazonaws.com.cn/123456789012/q");
-    expect(env.AUDIT_INTAKE_QUEUE_URL).toBe("https://sqs.cn-north-1.amazonaws.com.cn/123456789012/agentx-staging-audit-intake.fifo");
+    expect(env.AUDIT_INTAKE_QUEUE_URL).toBe("https://sqs.cn-north-1.amazonaws.com.cn/123456789012/rovara-cloud-staging-audit-intake.fifo");
     expect(env.AUDIT_VAULT_KEY_ARN).toBe(`arn:aws-cn:kms:cn-north-1:123456789012:key/${KEY_ID}`);
     expect(env.PROVISIONER_ARN).toBe("arn:aws-cn:states:cn-north-1:123456789012:stateMachine:sm");
   });
@@ -230,12 +230,12 @@ describe("hydrateBrokerEnvironment: what an environment's name decides", () => {
       // M1.4 PREFIXGAP, derived here and not passed (ENV-ROOM): where the installation's worker settings are.
       AGENTX_E2E_AGENT_SETTINGS_PREFIX: environmentSettingsPrefix("staging"),
     });
-    expect([env.CONNECTOR_SECRET_PREFIX, env.SWEBENCH_SETTINGS_PREFIX, env.AGENTX_ALARM_PREFIX, env.AGENTX_METRICS_NAMESPACE]).toEqual(["agentx/staging/connectors/", "/agentx/staging/", "agentx-staging-", "AgentX/staging"]);
-    expect([env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID, env.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID]).toEqual(["agentx-staging-project-setup-runtime-v1", "agentx-staging-e2e-mock-runtime-v1"]);
+    expect([env.CONNECTOR_SECRET_PREFIX, env.SWEBENCH_SETTINGS_PREFIX, env.AGENTX_ALARM_PREFIX, env.AGENTX_METRICS_NAMESPACE]).toEqual(["rovara-cloud/staging/connectors/", "/rovara-cloud/staging/", "rovara-cloud-staging-", "RovaraCloud/staging"]);
+    expect([env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID, env.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID]).toEqual(["rovara-cloud-staging-project-setup-runtime-v1", "rovara-cloud-staging-e2e-mock-runtime-v1"]);
   });
 
   it("names the connector secrets role the control plane creates for the environment, under the environment's role path", () => {
-    expect(hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: "{}" }).CONNECTOR_SECRETS_ROLE_ARN).toBe("arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets");
+    expect(hydrated({ ...SCOPE, [BROKER_NAMES_VARIABLE]: "{}" }).CONNECTOR_SECRETS_ROLE_ARN).toBe("arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-connector-secrets");
     expect(() => hydrated({ AGENTX_ENV: "staging", AWS_REGION: "us-west-2", [BROKER_NAMES_VARIABLE]: "{}" })).toThrow(/AGENTX_ACCOUNT_ID/);
   });
 
@@ -249,7 +249,7 @@ describe("hydrateBrokerEnvironment: what an environment's name decides", () => {
 });
 
 describe("what the broker derives is what the infrastructure names", () => {
-  for (const name of ["staging", "a", "live25d", "a1234567890123456789", "eu-prod"]) {
+  for (const name of ["staging", "a", "live25d", "a1234567890123", "eu-prod"]) {
     it(`for the environment ${name}`, () => {
       const naming = environmentNaming(name);
       const env = hydrated({ AGENTX_ENV: name, AWS_REGION: "eu-west-1", AGENTX_ACCOUNT_ID: "123456789012", [BROKER_NAMES_VARIABLE]: "{}" });
@@ -259,9 +259,9 @@ describe("what the broker derives is what the infrastructure names", () => {
       expect(env.AGENTX_METRICS_NAMESPACE).toBe(naming.metricsNamespace);
       expect(env.AGENTX_PROJECT_SETUP_RUNTIME_CATALOG_ID).toBe(`${naming.resourcePrefix}-project-setup-runtime-v1`);
       expect(env.AGENTX_E2E_FEATURE_RUNTIME_CATALOG_ID).toBe(`${naming.resourcePrefix}-e2e-mock-runtime-v1`);
-      expect(env.CONNECTOR_SECRETS_ROLE_ARN).toBe(`arn:aws:iam::123456789012:role/agentx/${name}/${connectorSecretsRoleName(name)}`);
+      expect(env.CONNECTOR_SECRETS_ROLE_ARN).toBe(`arn:aws:iam::123456789012:role/rovara-cloud/${name}/${connectorSecretsRoleName(name)}`);
       // Test services TS26: the test account secrets role is derived the same way.
-      expect(env.TEST_ACCOUNT_SECRETS_ROLE_ARN).toBe(`arn:aws:iam::123456789012:role/agentx/${name}/${testAccountSecretsRoleName(name)}`);
+      expect(env.TEST_ACCOUNT_SECRETS_ROLE_ARN).toBe(`arn:aws:iam::123456789012:role/rovara-cloud/${name}/${testAccountSecretsRoleName(name)}`);
     });
   }
 });

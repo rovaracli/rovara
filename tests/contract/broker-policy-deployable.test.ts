@@ -44,12 +44,12 @@ function grantedCombinations(resources: Record<string, Resource>): string[] {
 }
 
 describe("the merged control plane's broker policy stays deployable", () => {
-  for (const [label, env, cloud] of [["staging", "staging", false], ["staging with the hosted cloud", "staging", true], ["a live-test environment", "agentxlivetest123", false]] as const) {
-    it(`${label}: the broker's grants live in the named agentx-<env>-broker-<group> managed policies the deploy may create (ruling M2)`, () => {
+  for (const [label, env, cloud] of [["staging", "staging", false], ["staging with the hosted cloud", "staging", true], ["a live-test environment", "rovaralivetest", false]] as const) {
+    it(`${label}: the broker's grants live in the named rovara-cloud-<env>-broker-<group> managed policies the deploy may create (ruling M2)`, () => {
       const resources = controlPlane(env, { cloud });
       const managed = Object.entries(resources).filter(([, resource]) => resource.Type === "AWS::IAM::ManagedPolicy");
       const names = managed.map(([, resource]) => (resource.Properties as { ManagedPolicyName?: string }).ManagedPolicyName).sort();
-      expect(names).toEqual([`agentx-${env}-broker-integrations`, `agentx-${env}-broker-orchestration`, `agentx-${env}-broker-state`]);
+      expect(names).toEqual([`rovara-cloud-${env}-broker-integrations`, `rovara-cloud-${env}-broker-orchestration`, `rovara-cloud-${env}-broker-state`]);
       for (const [, resource] of managed) expect(attachedRoles(resource.Properties.Roles)).toContain("BrokerServiceRole");
       // No unnamed overflow policy (CDK's own split), and no broker inline default policy left behind.
       expect(Object.keys(resources).filter((id) => id.startsWith("BrokerServiceRole") && id.includes("Overflow"))).toEqual([]);
@@ -67,11 +67,11 @@ describe("the merged control plane's broker policy stays deployable", () => {
     });
   }
 
-  for (const [label, env, cloud] of [["staging", "staging", false], ["staging with the hosted cloud", "staging", true], ["a live-test environment", "agentxlivetest123", false]] as const) {
+  for (const [label, env, cloud] of [["staging", "staging", false], ["staging with the hosted cloud", "staging", true], ["a live-test environment", "rovaralivetest", false]] as const) {
     it(`${label}: each broker managed policy keeps headroom under IAM's 6,144-character managed policy limit`, () => {
       const stack = controlPlaneStack(env, { cloud });
       Template.fromStack(stack); // synthesizes, so the merge-and-move Aspect has run
-      const policies = stack.node.findAll().filter((node): node is iam.ManagedPolicy => node instanceof iam.ManagedPolicy && /^agentx-.+-broker-/.test(String((node.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName)));
+      const policies = stack.node.findAll().filter((node): node is iam.ManagedPolicy => node instanceof iam.ManagedPolicy && /^rovara-cloud-.+-broker-/.test(String((node.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName)));
       expect(policies).toHaveLength(3);
       for (const policy of policies) {
         const name = String((policy.node.defaultChild as iam.CfnManagedPolicy).managedPolicyName);

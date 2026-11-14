@@ -1,11 +1,11 @@
 import { Aws, CfnCondition, Duration, Fn, aws_iam as iam, aws_lambda as lambda, aws_lambda_nodejs as lambdaNodejs } from "aws-cdk-lib";
 import type { CfnParameter, aws_dynamodb as dynamodb, aws_secretsmanager as secretsmanager } from "aws-cdk-lib";
 import { resolve } from "node:path";
-import { taskPersonProofRoleName } from "@agentx/contracts";
+import { TASK_PERSON_PROOF_ENV, taskPersonProofRoleName } from "@agentx/contracts";
 import { Construct } from "constructs";
 import type { AgentXNaming } from "./naming.js";
 
-const APPROVED_ENV = "agentxlivetest123";
+const APPROVED_ENV = TASK_PERSON_PROOF_ENV;
 const APPROVED_ACCOUNT = "944937319445";
 const APPROVED_REGION = "us-east-1";
 const DEVELOPER_ATTRIBUTES = ["pk", "sk", "developerId", "provider", "issuer", "subject", "slackUserId", "revoked", "displayName"];
@@ -23,7 +23,7 @@ export interface TaskPersonProofProps {
 export class TaskPersonProof extends Construct {
   constructor(scope: Construct, id: string, props: TaskPersonProofProps) {
     super(scope, id);
-    if (props.naming.env !== APPROVED_ENV) throw new Error("Task Person proof is available only in agentxlivetest123");
+    if (props.naming.env !== APPROVED_ENV) throw new Error(`Task Person proof is available only in ${TASK_PERSON_PROOF_ENV}`);
     if (props.dispatcher.role === undefined) throw new Error("the dispatcher has no execution role");
 
     const install = new CfnCondition(this, "InstallTaskPersonProof", {

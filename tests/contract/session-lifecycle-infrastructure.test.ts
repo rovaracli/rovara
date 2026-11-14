@@ -170,7 +170,7 @@ describe("EC2 session lifecycle infrastructure (issue #83)", () => {
       expect(statement.Condition?.StringEquals).toMatchObject({ "aws:ResourceTag/DeploymentMode": "ec2-ebs", "aws:ResourceTag/Environment": "production" });
     }
     const tagging = statements.find((st) => st.Sid === "QuarantineOwnVolumes")!;
-    expect(tagging.Condition?.["ForAllValues:StringEquals"]).toEqual({ "aws:TagKeys": ["agentx:quarantined"] });
+    expect(tagging.Condition?.["ForAllValues:StringEquals"]).toEqual({ "aws:TagKeys": ["rovara-cloud:quarantined"] });
     expect([...actions(statements)]).toEqual(expect.arrayContaining(["states:DescribeExecution", "states:StartExecution"]));
   });
 

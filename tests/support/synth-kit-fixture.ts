@@ -82,7 +82,7 @@ mkdirSync(out + "/packages", { recursive: true });
 const metadata = ${options.recordInputs === true ? '{ Inputs: { context, environment: Object.keys(process.env).sort(), pwd: process.env.PWD ?? null, cwd: process.cwd(), cwdIsWorkDir: (() => { try { return realpathSync(process.cwd()) === realpathSync(dirname(contextFile)); } catch { return false; } })(), pwdIsCwd: (() => { try { return process.env.PWD !== undefined && realpathSync(process.env.PWD) === realpathSync(process.cwd()); } catch { return false; } })() } }' : "{}"};
 let outside = "";
 ${options.readOutside === undefined ? "" : `try { readFileSync(${JSON.stringify(options.readOutside)}); outside = "read"; } catch { outside = "blocked"; }`}
-const base = (part) => ({ Description: ${options.placeholder === true ? '"built for qqenv-placeholderqq"' : "env + \" \" + part"}, Resources: { Marker: { Type: "AWS::SSM::Parameter", Properties: { Name: "/" + env + "/" + part, Type: "String", Value: JSON.stringify({ edition: context.rovaraEdition, cidrs: context.rovaraEnterpriseEgressCidrs ?? null, tsa: context.agentxAuditTsa ?? null }) } } } });
+const base = (part) => ({ Description: ${options.placeholder === true ? '"built for qqenv-phldrqq"' : "env + \" \" + part"}, Resources: { Marker: { Type: "AWS::SSM::Parameter", Properties: { Name: "/" + env + "/" + part, Type: "String", Value: JSON.stringify({ edition: context.rovaraEdition, cidrs: context.rovaraEnterpriseEgressCidrs ?? null, tsa: context.agentxAuditTsa ?? null }) } } } });
 for (const part of ["access", "foundation", "identity", "runtime", "control-plane", "slack"]) {
   if (part === "identity" && context.agentxIdentity === "oidc") continue;
   const template = base(part);

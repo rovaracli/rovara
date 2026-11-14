@@ -1,8 +1,8 @@
 // Spec 025 FR-044: the init step that runs after the Slack service step. R9 does not hold (F15):
-// an environment installed before 25a never reaches this step, because agentx init refuses to
-// resume across a release mismatch (a 25a release is a new one); it turns sign-in on with agentx
+// an environment installed before 25a never reaches this step, because rovara init refuses to
+// resume across a release mismatch (a 25a release is a new one); it turns sign-in on with rovara
 // signin enable instead. This step uses the developer sign-in method approved in the install plan,
-// collects any company OIDC app values that method needs, and applies the same change as agentx
+// collects any company OIDC app values that method needs, and applies the same change as rovara
 // signin enable (F16: enableSlackSignIn and enableOidcSignIn are shared, not copied), under the lock
 // the step runner already holds.
 import { AgentXError, agentXError } from "@agentx/contracts";
@@ -33,7 +33,7 @@ export function combinedCredentials(slack: SignInCredentials | undefined, oidc: 
         try {
           await slack.restore();
         } catch (restoreError) {
-          throw agentXError(error instanceof AgentXError ? error.code : "RUNTIME_UNAVAILABLE", `${errorReason(error)}; putting the previous client credentials back in ${slack.secretName} failed too (${errorReason(restoreError)}), so Slack sign-in may fail until you run agentx init again`);
+          throw agentXError(error instanceof AgentXError ? error.code : "RUNTIME_UNAVAILABLE", `${errorReason(error)}; putting the previous client credentials back in ${slack.secretName} failed too (${errorReason(restoreError)}), so Slack sign-in may fail until you run rovara init again`);
         }
         throw error;
       }
@@ -60,7 +60,7 @@ export function developerSignInStep(input: { slack: SlackApi }): InitStep<InitCo
       const { env } = context;
       if ((await readSignInSettings(context.store, env)) !== undefined) return { status: "done", note: "developer sign-in was already set up" };
       const settings = await readEnvironmentSettings(context.store, env);
-      if (settings === undefined) throw agentXError("CONFIG_INVALID", `environment ${env} has no settings yet; the Slack service step must finish first, so run agentx init again`);
+      if (settings === undefined) throw agentXError("CONFIG_INVALID", `environment ${env} has no settings yet; the Slack service step must finish first, so run rovara init again`);
       // Spec 048 FR-022 and FR-030: the methods were chosen with the settings, and turning them on
       // is part of the confirmed plan, so nothing is asked here. --signin still wins.
       const methods = context.signinFlags.methods ?? context.answers.signinMethods ?? "slack";
@@ -91,7 +91,7 @@ export function developerSignInStep(input: { slack: SlackApi }): InitStep<InitCo
         ...(slackTeamId === undefined ? {} : { slackTeamId }),
         ...(credentials === undefined ? {} : { credentials }),
         confirm: async (text) => { context.write(text); return true; },
-        write: context.write, now: context.now, sleep: context.sleep, lockHeld: true, rerun: "agentx init",
+        write: context.write, now: context.now, sleep: context.sleep, lockHeld: true, rerun: "rovara init",
       });
       context.write(`Developers sign in with: ${cliCommandLine(context.cliInvocation, `login ${settings.controlPlaneUrl}`)}`);
       return { status: "done", note: `developer sign-in: ${methods === "both" ? "Slack and company sign-in" : methods === "slack" ? "Slack" : "company sign-in"}` };

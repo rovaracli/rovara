@@ -12,15 +12,15 @@ describe("CodeBuild broker adapter", () => {
       expect(command).toBeInstanceOf(StartBuildCommand);
       const input = (command as StartBuildCommand).input;
       expect(input).toEqual({
-        projectName: "agentx-website-quality",
+        projectName: "rovara-cloud-website-quality",
         sourceVersion: commit,
         timeoutInMinutesOverride: 30,
         idempotencyToken: "b".repeat(64),
       });
       return {
         build: {
-          id: `agentx-website-quality:${crypto.randomUUID()}`,
-          projectName: "agentx-website-quality",
+          id: `rovara-cloud-website-quality:${crypto.randomUUID()}`,
+          projectName: "rovara-cloud-website-quality",
           buildStatus: "IN_PROGRESS",
           sourceVersion: commit,
           startTime: new Date("2026-09-19T12:00:00.000Z"),
@@ -30,7 +30,7 @@ describe("CodeBuild broker adapter", () => {
     const gateway = new AwsCodeBuildGateway({ send });
     const result = await gateway.start({
       gate: "quality",
-      projectName: "agentx-website-quality",
+      projectName: "rovara-cloud-website-quality",
       commit,
       timeoutMinutes: 30,
       idempotencyToken: "b".repeat(64),
@@ -40,13 +40,13 @@ describe("CodeBuild broker adapter", () => {
 
   it("normalizes terminal evidence and rejects missing or mismatched builds", async () => {
     const commit = "c".repeat(40);
-    const buildId = `agentx-website-quality:${crypto.randomUUID()}`;
+    const buildId = `rovara-cloud-website-quality:${crypto.randomUUID()}`;
     const send = vi.fn(async (command: unknown) => {
       expect(command).toBeInstanceOf(BatchGetBuildsCommand);
       return {
         builds: [{
           id: buildId,
-          projectName: "agentx-website-quality",
+          projectName: "rovara-cloud-website-quality",
           buildStatus: "SUCCEEDED",
           resolvedSourceVersion: commit,
           currentPhase: "COMPLETED",
@@ -59,7 +59,7 @@ describe("CodeBuild broker adapter", () => {
     const gateway = new AwsCodeBuildGateway({ send });
     await expect(gateway.status({
       gate: "quality",
-      projectName: "agentx-website-quality",
+      projectName: "rovara-cloud-website-quality",
       commit,
       buildId,
     })).resolves.toMatchObject({ status: "SUCCEEDED", resolvedSourceVersion: commit, currentPhase: "COMPLETED" });
@@ -68,13 +68,13 @@ describe("CodeBuild broker adapter", () => {
       send: vi.fn(async () => ({ builds: [], buildsNotFound: [buildId] })),
     });
     await expect(missing.status({
-      gate: "quality", projectName: "agentx-website-quality", commit, buildId,
+      gate: "quality", projectName: "rovara-cloud-website-quality", commit, buildId,
     })).rejects.toThrow(/not found/i);
   });
 });
 
 describe("CodeBuild worker gate runner", () => {
-  const gate = { name: "quality", projectName: "agentx-website-quality", timeoutMinutes: 5 } as const;
+  const gate = { name: "quality", projectName: "rovara-cloud-website-quality", timeoutMinutes: 5 } as const;
 
   it("polls to success, verifies the resolved commit, and returns evidence", async () => {
     const commit = "d".repeat(40);
@@ -138,8 +138,8 @@ describe("CodeBuild worker gate runner", () => {
       invocation,
       fetchImplementation: vi.fn(async () => Response.json({
         gate: "quality",
-        projectName: "agentx-website-quality",
-        buildId: `agentx-website-quality:${crypto.randomUUID()}`,
+        projectName: "rovara-cloud-website-quality",
+        buildId: `rovara-cloud-website-quality:${crypto.randomUUID()}`,
         status: "SUCCEEDED",
         requestedSourceVersion: commit,
         resolvedSourceVersion: commit,
@@ -150,7 +150,7 @@ describe("CodeBuild worker gate runner", () => {
       action: "start",
       repository: "website",
       gate: "quality",
-      projectName: "agentx-website-quality",
+      projectName: "rovara-cloud-website-quality",
       commit,
     })).resolves.toMatchObject({ status: "SUCCEEDED", resolvedSourceVersion: commit });
   });

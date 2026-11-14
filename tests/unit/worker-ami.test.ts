@@ -8,7 +8,7 @@ import {
   workerQualifiedAmiParameterName,
 } from "../../packages/broker/src/aws/worker-ami.js";
 
-const NAME = "/agentx/test/worker-qualified-ami";
+const NAME = "/rovara-cloud/test/worker-qualified-ami";
 const ssmReturning = (outcome: { value?: string; error?: Error }) => ({
   send: vi.fn<(command: GetParameterCommand) => Promise<{ Parameter: { Value: string | undefined } }>>(async () => {
     if (outcome.error !== undefined) throw outcome.error;
@@ -19,7 +19,7 @@ const ssmReturning = (outcome: { value?: string; error?: Error }) => ({
 describe("worker AMI pin parameter", () => {
   it("lives under the environment's worker settings prefix, outside the worker's own settings", () => {
     expect(WORKER_QUALIFIED_AMI_SETTING).toBe("worker-qualified-ami");
-    expect(workerQualifiedAmiParameterName("/agentx/test/")).toBe(NAME);
+    expect(workerQualifiedAmiParameterName("/rovara-cloud/test/")).toBe(NAME);
     expect(workerQualifiedAmiParameterName("/agentx/production/")).toBe("/agentx/production/worker-qualified-ami");
   });
 

@@ -1,4 +1,4 @@
-// agentx connector add jira (FR-036 to FR-039), from docs/connectors/jira.md: a service account's
+// rovara connector add jira (FR-036 to FR-039), from docs/connectors/jira.md: a service account's
 // API token against Rovo MCP /v2. The test read is the guide's Step 8: the token must find an issue
 // inside the project before anything is stored. Issues it finds outside the project do not stop it
 // (owner decision 6, 2026-09-28): the connector is saved with a warning naming those projects.

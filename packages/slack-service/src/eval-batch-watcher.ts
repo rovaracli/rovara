@@ -320,7 +320,7 @@ export function summaryMessage(batch: EvalBatchWatched): string {
     opening,
     ...(models.length === 0 ? ["No run has a result row, so there is no table."] : ["```", ...table, "```"]),
     ...(models.some((model) => model.unpricedRuns > 0) ? ["* includes runs that reported no cost, charged at their ceiling."] : []),
-    `Results: \`evals/batches/${batch.batchId}/results.csv\` in the artifact bucket; \`agentx admin eval batch results ${batch.batchId} --csv <path>\` downloads it.`,
+    `Results: \`evals/batches/${batch.batchId}/results.csv\` in the artifact bucket; \`rovara admin eval batch results ${batch.batchId} --csv <path>\` downloads it.`,
   ].join("\n");
 }
 

@@ -16,7 +16,7 @@ assumeDrivingTestsPassed();
 // M1.4 Task 4.10A, tests 8 and 14: what the broker reads of the installation's choice, what it shows the administrator, and the reader the dispatcher uses.
 
 const TABLE = "state";
-const PREFIX = "/agentx/agentxlivetest123/";
+const PREFIX = "/rovara-cloud/rovaralivetest/";
 const HAIKU_45_US = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 const HAIKU_45_GLOBAL = "global.anthropic.claude-haiku-4-5-20251001-v1:0";
 const store = (db: FakeDynamoDb) => ({ documentClient: { send: db.send } as unknown as DynamoDBDocumentClient, tableName: TABLE });

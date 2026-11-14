@@ -11,8 +11,8 @@ const T0 = Date.parse("2026-09-27T00:00:00.000Z");
 
 describe("install state", () => {
   it("names its parameters under the environment's settings prefix", () => {
-    expect(installAnswersParameterName("staging")).toBe("/agentx/staging/install/answers");
-    expect(installProgressParameterName("staging")).toBe("/agentx/staging/install/progress");
+    expect(installAnswersParameterName("staging")).toBe("/rovara-cloud/staging/install/answers");
+    expect(installProgressParameterName("staging")).toBe("/rovara-cloud/staging/install/progress");
   });
 
   it("round-trips answers and progress", async () => {
@@ -67,16 +67,16 @@ describe("install state", () => {
       permissionsBoundaryArn: `arn:aws:iam::123456789012:policy/${"b".repeat(120)}`,
       operatorPrincipalArn: `arn:aws:iam::123456789012:role/${"o".repeat(64)}`,
       images: { worker: `123456789012.dkr.ecr.us-east-1.amazonaws.com/w@sha256:${"a".repeat(64)}`, slack: `123456789012.dkr.ecr.us-east-1.amazonaws.com/s@sha256:${"b".repeat(64)}` },
-      alert: { kind: "webhook", display: "https://events.pagerduty.com/...", secretName: "agentx/staging/alert-endpoint" },
+      alert: { kind: "webhook", display: "https://events.pagerduty.com/...", secretName: "rovara-cloud/staging/alert-endpoint" },
     });
     await writeInstallAnswers(store, big);
-    expect(Buffer.byteLength(store.values.get("/agentx/staging/install/answers")!)).toBeLessThan(2048);
+    expect(Buffer.byteLength(store.values.get("/rovara-cloud/staging/install/answers")!)).toBeLessThan(2048);
   });
 
   it("explains progress written by a newer agentx (a schema version this agentx does not know)", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/install/progress", JSON.stringify({ ...emptyProgress("staging", T0), schemaVersion: 2 }));
-    await expect(readInstallProgress(store, "staging")).rejects.toThrow("install progress for environment staging is invalid or was written by a newer agentx; upgrade agentx and run it again");
+    store.values.set("/rovara-cloud/staging/install/progress", JSON.stringify({ ...emptyProgress("staging", T0), schemaVersion: 2 }));
+    await expect(readInstallProgress(store, "staging")).rejects.toThrow("install progress for environment staging is invalid or was written by a newer rovara; upgrade rovara and run it again");
   });
 
   // Fix round 1, item 6: an unknown step id (one an older or newer agentx used, that this one has
@@ -104,7 +104,7 @@ describe("install state", () => {
         "future-step": { status: "done", at: "2026-09-27T00:00:00.000Z" },
       },
     }));
-    await expect(readInstallProgress(store, "staging")).rejects.toThrow("install progress for environment staging is invalid or was written by a newer agentx; upgrade agentx and run it again");
+    await expect(readInstallProgress(store, "staging")).rejects.toThrow("install progress for environment staging is invalid or was written by a newer rovara; upgrade rovara and run it again");
   });
 
   // F22: reading install state refuses when the stored env does not match the requested one, even
@@ -116,7 +116,7 @@ describe("install state", () => {
     // Copy the value under staging's parameter name, as if it had been restored or copied by hand.
     store.values.set(installAnswersParameterName("staging"), store.values.get(installAnswersParameterName("production"))!);
     await expect(readInstallAnswers(store, "staging")).rejects.toThrow(/staging.*production/);
-    await expect(readInstallAnswers(store, "staging")).rejects.toThrow("run agentx init --env production, or delete /agentx/staging/install/answers to start over");
+    await expect(readInstallAnswers(store, "staging")).rejects.toThrow("run rovara init --env production, or delete /rovara-cloud/staging/install/answers to start over");
   });
 
   it("refuses install progress whose own env field names a different environment than requested, saying what to do next", async () => {
@@ -124,14 +124,14 @@ describe("install state", () => {
     await writeInstallProgress(store, emptyProgress("production", T0));
     store.values.set(installProgressParameterName("staging"), store.values.get(installProgressParameterName("production"))!);
     await expect(readInstallProgress(store, "staging")).rejects.toThrow(/staging.*production/);
-    await expect(readInstallProgress(store, "staging")).rejects.toThrow("run agentx init --env production, or delete /agentx/staging/install/progress to start over");
+    await expect(readInstallProgress(store, "staging")).rejects.toThrow("run rovara init --env production, or delete /rovara-cloud/staging/install/progress to start over");
   });
 
   // Fix round 1, item 1: a webhook display value must never be able to carry an integration key
   // (or any other userinfo) through to what gets stored and shown back.
   it("refuses a webhook display that embeds userinfo, so a key cannot slip into the stored value", async () => {
     const store = new MemoryParameterStore();
-    const withKey = sampleAnswers({ alert: { kind: "webhook", display: "https://KEY@host/...", secretName: "agentx/staging/alert-endpoint" } });
+    const withKey = sampleAnswers({ alert: { kind: "webhook", display: "https://KEY@host/...", secretName: "rovara-cloud/staging/alert-endpoint" } });
     await expect(writeInstallAnswers(store, withKey)).rejects.toThrow("install answers are invalid");
     expect(store.values.size).toBe(0);
   });
@@ -140,14 +140,14 @@ describe("install state", () => {
   // secret, not some other environment's.
   it("refuses a webhook secretName for a different environment than the answers themselves", async () => {
     const store = new MemoryParameterStore();
-    const wrongEnv = sampleAnswers({ alert: { kind: "webhook", display: "https://events.pagerduty.com/...", secretName: "agentx/production/alert-endpoint" } });
-    await expect(writeInstallAnswers(store, wrongEnv)).rejects.toThrow("must be agentx/staging/alert-endpoint");
+    const wrongEnv = sampleAnswers({ alert: { kind: "webhook", display: "https://events.pagerduty.com/...", secretName: "rovara-cloud/production/alert-endpoint" } });
+    await expect(writeInstallAnswers(store, wrongEnv)).rejects.toThrow("must be rovara-cloud/staging/alert-endpoint");
     expect(store.values.size).toBe(0);
   });
 
   it("accepts a webhook secretName that does match the answers' own environment", async () => {
     const store = new MemoryParameterStore();
-    const rightEnv = sampleAnswers({ alert: { kind: "webhook", display: "https://events.pagerduty.com/...", secretName: "agentx/staging/alert-endpoint" } });
+    const rightEnv = sampleAnswers({ alert: { kind: "webhook", display: "https://events.pagerduty.com/...", secretName: "rovara-cloud/staging/alert-endpoint" } });
     await writeInstallAnswers(store, rightEnv);
     expect(await readInstallAnswers(store, "staging")).toEqual(rightEnv);
   });
@@ -173,7 +173,7 @@ describe("install state", () => {
     };
     await expect(writeInstallProgress(store, huge)).rejects.toThrow(/internal limit/);
     await expect(writeInstallProgress(store, huge)).rejects.toThrow(/delete the install\/progress parameter/);
-    await expect(writeInstallProgress(store, huge)).rejects.toThrow(/restart agentx init safely/);
+    await expect(writeInstallProgress(store, huge)).rejects.toThrow(/restart rovara init safely/);
   });
 
   describe("spec 048 phase 2: the install record", () => {
@@ -228,7 +228,7 @@ describe("15d2 install state", () => {
 
   it("still reads progress an older agentx wrote, with none of the new fields", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/install/progress", JSON.stringify({ schemaVersion: 1, env: "staging", steps: { "developer-signin": { status: "done", at: "2026-09-27T00:00:00.000Z" } }, updatedAt: "2026-09-27T00:00:00.000Z" }));
+    store.values.set("/rovara-cloud/staging/install/progress", JSON.stringify({ schemaVersion: 1, env: "staging", steps: { "developer-signin": { status: "done", at: "2026-09-27T00:00:00.000Z" } }, updatedAt: "2026-09-27T00:00:00.000Z" }));
     expect((await readInstallProgress(store, "staging"))?.steps["developer-signin"]?.status).toBe("done");
   });
 });

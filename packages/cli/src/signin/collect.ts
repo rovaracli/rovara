@@ -1,5 +1,5 @@
-// The questions for developer sign-in (spec 025 FR-044, FR-045), shared by agentx init and
-// agentx signin enable. Secrets come only from a hidden prompt, a file or an environment variable.
+// The questions for developer sign-in (spec 025 FR-044, FR-045), shared by rovara init and
+// rovara signin enable. Secrets come only from a hidden prompt, a file or an environment variable.
 import { agentXError } from "@agentx/contracts";
 import type { InitSecrets } from "../init/context.js";
 import { secretFromSource, type Prompter, type SecretSource } from "../init/prompts.js";
@@ -10,12 +10,12 @@ export interface SigninFlags { methods?: "slack" | "oidc" | "both"; slackClientI
 export interface SigninSecretFlags { slackClientSecret?: SecretSource; oidcClientSecret?: SecretSource }
 
 /**
- * The one set of flag names for developer sign-in (F14), used by `agentx init` and
- * `agentx signin enable` alike, and named by every question so `--yes` can say which flag to pass.
+ * The one set of flag names for developer sign-in (F14), used by `rovara init` and
+ * `rovara signin enable` alike, and named by every question so `--yes` can say which flag to pass.
  * A secret's flag takes `-file <path>` or `-env <NAME>` after it, never the value itself.
  */
 export const SIGNIN_FLAG_NAMES = {
-  /** agentx init only: which methods its developer-signin step enables. */
+  /** rovara init only: which methods its developer-signin step enables. */
   methods: "--signin",
   slackClientId: "--slack-client-id",
   slackClientSecret: "--slack-client-secret",
@@ -166,7 +166,7 @@ export interface SignInQuestionsInput {
 }
 
 /**
- * The Slack half of turning sign-in on, shared by agentx init and agentx signin enable (F16):
+ * The Slack half of turning sign-in on, shared by rovara init and rovara signin enable (F16):
  * checks the bot token's workspace and scopes, names the redirect URL, and asks for the app's
  * client credentials. Nothing is stored here: `credentials.store` writes them into the Slack
  * secret, and applySignInChange calls it only once the change is confirmed (F21).
@@ -191,7 +191,7 @@ export async function enableSlackSignIn(input: SignInQuestionsInput & { slackApi
 /**
  * The company half, shared the same way (F16): checks the issuer's discovery document, asks for
  * the app and its rules, and names the redirect URI to register. `credentials.store` writes the
- * client secret to agentx/<env>/developer-oidc, only once the change is confirmed (F21).
+ * client secret to rovara-cloud/<env>/developer-oidc, only once the change is confirmed (F21).
  */
 export async function enableOidcSignIn(input: SignInQuestionsInput & { fetch: typeof fetch }): Promise<{ oidc: NonNullable<DeveloperSignInSettings["oidc"]>; credentials: SignInCredentials }> {
   const { oidc, clientSecret } = await collectOidc(input);

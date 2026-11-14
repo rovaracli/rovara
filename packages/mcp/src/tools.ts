@@ -369,7 +369,7 @@ function nextFor(shown: DeveloperTaskClientView): string {
     if ((task.workflow.state === "RUNNING" || task.workflow.state === "READY") && task.workflow.branchSync !== undefined) return "Rovara is merging the latest base branch into the pull request's branch. Check again with agentx_get_task.";
     if (task.workflow.state === "RUNNING") return "AgentX is reviewing the feedback on the pull request and will propose a fix before changing any code. Check again with agentx_get_task.";
     // Rovara Code (version 2): merging is Rovara's Merge button, pressed by a person. No tool here merges (Plan 6: a person always presses Merge).
-    if (task.merge?.ready === true) return "The pull request is approved and its checks passed. A person presses Merge in Rovara (one click in the web app, after a confirm dialog; `agentx session merge <session id>` only gives a link to confirm in their browser); this tool can't merge. The task finishes when it's merged.";
+    if (task.merge?.ready === true) return "The pull request is approved and its checks passed. A person presses Merge in Rovara (one click in the web app, after a confirm dialog; `rovara session merge <session id>` only gives a link to confirm in their browser); this tool can't merge. The task finishes when it's merged.";
     if (task.merge !== undefined) return `Waiting for the pull request to be merged. It can't be merged yet: ${task.merge.message ?? "it is not ready"} Once that is fixed, a person presses Merge in Rovara; this tool can't merge. The task finishes when it's merged.`;
     return "Waiting for the pull request to be merged. Review and merge it on GitHub; the task finishes when it's merged.";
   }
@@ -1240,7 +1240,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
   {
     name: "agentx_audit_status",
     title: "Show how far the organization's audit log is sealed",
-    description: "Shows how far the signed-in person's organization audit log is sealed, the latest independent time a timestamp service vouched for, and what the log does and does not prove. Only the organization's owners and admins can use it; other members are refused. It shows no records: for those, the person runs agentx audit log or agentx audit open. Each call is itself recorded in the audit log as a read.",
+    description: "Shows how far the signed-in person's organization audit log is sealed, the latest independent time a timestamp service vouched for, and what the log does and does not prove. Only the organization's owners and admins can use it; other members are refused. It shows no records: for those, the person runs rovara audit log or rovara audit open. Each call is itself recorded in the audit log as a read.",
     inputSchema: {},
     outputSchema: {
       head_seq: z.number(), sealed_through_seq: z.number(), unsealed_count: z.number(),
@@ -1355,7 +1355,7 @@ export const DEVELOPER_TOOLS: readonly ToolDefinition[] = [
           confirm_url: approval.confirmUrl,
         });
       }
-      const more = listed.length > approvals.length ? ` ${listed.length - approvals.length} more wait; the person sees them all with agentx approvals list.` : "";
+      const more = listed.length > approvals.length ? ` ${listed.length - approvals.length} more wait; the person sees them all with rovara approvals list.` : "";
       const text = approvals.length === 0 ? "Nothing waits for your approval."
         : `${approvals.map((approval) => `${approval.summary}${approval.scope === undefined ? "" : ` (${approval.repository ?? approval.scope})`}: open ${approval.confirm_url} to approve or decline it.`).join("\n")}${more}`;
       return { structured: { approvals }, text };

@@ -5,7 +5,7 @@
 import { DescribeBudgetCommand } from "@aws-sdk/client-budgets";
 import { DescribeAlarmHistoryCommand, SetAlarmStateCommand } from "@aws-sdk/client-cloudwatch";
 import { ListSubscriptionsByTopicCommand, SubscribeCommand } from "@aws-sdk/client-sns";
-import { agentXError } from "@agentx/contracts";
+import { agentXError, RESOURCE_PREFIX } from "@agentx/contracts";
 import type { Prompter } from "../init/prompts.js";
 
 export interface Subscription { arn: string; protocol: string; endpoint: string }
@@ -32,7 +32,7 @@ const SELF_CONFIRMING = /(^|\.)(pagerduty\.com|opsgenie\.com)$/;
 const PENDING = "PendingConfirmation";
 
 export function testAlarmName(env: string): string {
-  return `agentx-${env}-TestAlarm`;
+  return `${RESOURCE_PREFIX}-${env}-TestAlarm`;
 }
 
 type Send = { send(command: unknown): Promise<unknown> };
@@ -151,12 +151,12 @@ export async function alertsTopicArn(input: { stackOutputs: (stackName: string) 
 /** Owner decision 3: the test alarm goes out only once someone on the topic has confirmed. */
 async function requireConfirmedSubscription(api: AlertsApi, topicArn: string, env: string): Promise<void> {
   const subscriptions = await api.subscriptions(topicArn);
-  const topic = `agentx-${env}-alerts`;
+  const topic = `${RESOURCE_PREFIX}-${env}-alerts`;
   if (subscriptions.length === 0) {
-    throw agentXError("CONFIG_INVALID", `nobody is subscribed to the ${topic} topic; run agentx init --env ${env} to subscribe the alert address, then run agentx alerts test`);
+    throw agentXError("CONFIG_INVALID", `nobody is subscribed to the ${topic} topic; run rovara init --env ${env} to subscribe the alert address, then run rovara alerts test`);
   }
   if (!subscriptions.some(isConfirmed)) {
-    throw agentXError("CONFIG_INVALID", `no subscription to the ${topic} topic is confirmed yet; confirm it (the AWS Notifications email, or your webhook's SubscribeURL), then run agentx alerts test`);
+    throw agentXError("CONFIG_INVALID", `no subscription to the ${topic} topic is confirmed yet; confirm it (the AWS Notifications email, or your webhook's SubscribeURL), then run rovara alerts test`);
   }
 }
 
@@ -164,7 +164,7 @@ export async function sendTestAlarm(input: { api: AlertsApi; topicArn: string; e
   await requireConfirmedSubscription(input.api, input.topicArn, input.env);
   const name = testAlarmName(input.env);
   const since = new Date(input.now() - HISTORY_SLACK_MS);
-  await input.api.setAlarmState(name, "ALARM", "agentx alerts test: a test alarm, not a real problem");
+  await input.api.setAlarmState(name, "ALARM", "rovara alerts test: a test alarm, not a real problem");
   let recorded: boolean;
   try {
     input.write(`Sent a test alarm (${name}) to ${input.shownAs}.`);
@@ -172,10 +172,10 @@ export async function sendTestAlarm(input: { api: AlertsApi; topicArn: string; e
     recorded = await input.api.wentToAlarm(name, since);
   } finally {
     // Always back to OK, so the test alarm never stays raised.
-    await input.api.setAlarmState(name, "OK", "agentx alerts test: done");
+    await input.api.setAlarmState(name, "OK", "rovara alerts test: done");
   }
-  if (!recorded) throw agentXError("RUNTIME_UNAVAILABLE", `CloudWatch did not record the test alarm going off; check that the ${name} alarm exists in the Slack stack (it needs this AgentX release), then run agentx alerts test`);
+  if (!recorded) throw agentXError("RUNTIME_UNAVAILABLE", `CloudWatch did not record the test alarm going off; check that the ${name} alarm exists in the Slack stack (it needs this AgentX release), then run rovara alerts test`);
   if (!(await input.prompter.confirm(`Did a test alarm named ${name} arrive at ${input.shownAs}?`, { defaultValue: true }))) {
-    throw agentXError("CONFIG_INVALID", `the test alarm did not arrive; check the subscription is confirmed (aws sns list-subscriptions-by-topic --topic-arn <the agentx-${input.env}-alerts topic>) and your spam folder, then run agentx alerts test`);
+    throw agentXError("CONFIG_INVALID", `the test alarm did not arrive; check the subscription is confirmed (aws sns list-subscriptions-by-topic --topic-arn <the ${RESOURCE_PREFIX}-${input.env}-alerts topic>) and your spam folder, then run rovara alerts test`);
   }
 }

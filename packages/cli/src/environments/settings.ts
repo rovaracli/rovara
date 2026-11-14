@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { CloudSignInAnswersSchema, ModelsAnswersSchema } from "../deploy/answer-schemas.js";
-import { agentXError, EnvironmentNameSchema, environmentSettingsPrefix } from "@agentx/contracts";
+import { agentXError, EnvironmentNameSchema, environmentSettingsPrefix, RESOURCE_PREFIX } from "@agentx/contracts";
 import { ParameterExistsError, type ParameterStore } from "./parameter-store.js";
 
 export const EnvironmentSettingsSchema = z.object({
@@ -80,9 +80,10 @@ export async function writeEnvironmentSettings(store: ParameterStore, settings: 
 }
 
 export async function listEnvironments(store: ParameterStore): Promise<string[]> {
-  const names = await store.list("/agentx/");
+  const names = await store.list(`/${RESOURCE_PREFIX}/`);
+  const settingsName = new RegExp(`^/${RESOURCE_PREFIX}/([^/]+)/settings$`);
   return names
-    .map((name) => /^\/agentx\/([^/]+)\/settings$/.exec(name)?.[1])
+    .map((name) => settingsName.exec(name)?.[1])
     .filter((env): env is string => env !== undefined && EnvironmentNameSchema.safeParse(env).success)
     .sort();
 }

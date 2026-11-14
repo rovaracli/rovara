@@ -1,5 +1,5 @@
 // tests/contract/config-set-audit.test.ts
-// Issue #205: every agentx config set change is in the admin change history. A stack-parameter key
+// Issue #205: every rovara config set change is in the admin change history. A stack-parameter key
 // (mcp.confirmElicitation, models.*, alerts.slowTurnMinutes, ...) applies as a stack update from
 // this computer, so the CLI records it through the admin API: one record, made after the yes and
 // before the update (applying), then stepped to applied or failed. A secret-bearing key's record
@@ -38,13 +38,13 @@ async function configOver(harness: Harness, overrides: Partial<ConfigServices> =
     adminSession: async () => SESSION,
     fetch: brokerFetch(harness),
     cloudFormation,
-    stacks: stacks({ "agentx-staging-control-plane": { McpConfirmElicitation: mcp, SlackThreadTurnsPerMinute: "6" }, "agentx-staging-slack": { SlowTurnMinutes: "5", ModelId: "us.anthropic.claude-sonnet-4-6" }, "agentx-staging-runtime": { ModelId: "us.anthropic.claude-sonnet-4-6" } }),
+    stacks: stacks({ "rovara-cloud-staging-control-plane": { McpConfirmElicitation: mcp, SlackThreadTurnsPerMinute: "6" }, "rovara-cloud-staging-slack": { SlowTurnMinutes: "5", ModelId: "us.anthropic.claude-sonnet-4-6" }, "rovara-cloud-staging-runtime": { ModelId: "us.anthropic.claude-sonnet-4-6" } }),
     ...overrides,
   });
   return { services, cloudFormation };
 }
 
-describe("agentx config set records stack-parameter changes in the admin change history (#205)", () => {
+describe("rovara config set records stack-parameter changes in the admin change history (#205)", () => {
   it("mcp.confirmElicitation disabled writes one record: admin, cli client, before enabled, after disabled, applied", async () => {
     const harness = await createAdminChangeBroker();
     const { services, cloudFormation } = await configOver(harness);
@@ -57,10 +57,10 @@ describe("agentx config set records stack-parameter changes in the admin change 
       kind: "set_config",
       admin: { subject: "admin-subject", displayName: "Ada" },
       client: { cliVersion: expect.any(String) as unknown },
-      change: { kind: "set_config", key: "mcp.confirmElicitation", target: "stack parameter McpConfirmElicitation on agentx-staging-control-plane", before: "enabled", after: "disabled" },
+      change: { kind: "set_config", key: "mcp.confirmElicitation", target: "stack parameter McpConfirmElicitation on rovara-cloud-staging-control-plane", before: "enabled", after: "disabled" },
       methodsOffered: ["cli"], methodUsed: "cli", status: "applied", outcome: "confirmed",
     });
-    expect(record.effect).toBe("mcp.confirmElicitation: enabled -> disabled (stack parameter McpConfirmElicitation on agentx-staging-control-plane)");
+    expect(record.effect).toBe("mcp.confirmElicitation: enabled -> disabled (stack parameter McpConfirmElicitation on rovara-cloud-staging-control-plane)");
     for (const time of ["proposedAt", "answeredAt", "appliedAt"]) expect(Date.parse(record[time] as string)).not.toBeNaN();
     expect(record.failedAt).toBeUndefined();
     expect(harness.metrics).toEqual(["confirmed"]);
@@ -78,8 +78,8 @@ describe("agentx config set records stack-parameter changes in the admin change 
     const prompter = scriptedPrompter([false]);
     const { services, cloudFormation } = await configOver(harness, { prompter });
     await expect(runConfigSet(services, "staging", { key: "mcp.confirmElicitation", value: "disabled", yes: false }))
-      .rejects.toThrow("the config change to agentx-staging-control-plane was not applied; nothing changed");
-    expect(prompter.asked).toEqual(["Apply this change to agentx-staging-control-plane?"]);
+      .rejects.toThrow("the config change to rovara-cloud-staging-control-plane was not applied; nothing changed");
+    expect(prompter.asked).toEqual(["Apply this change to rovara-cloud-staging-control-plane?"]);
     expect(cloudFormation.calls.filter((call) => call.name === "ExecuteChangeSetCommand")).toEqual([]);
     expect(audits(harness)).toEqual([]);
   });
@@ -101,7 +101,7 @@ describe("agentx config set records stack-parameter changes in the admin change 
     await expect(runConfigSet(services, "staging", { key: "mcp.confirmElicitation", value: "disabled", yes: true })).rejects.toThrow("ended in UPDATE_ROLLBACK_COMPLETE");
     const records = audits(harness);
     expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({ kind: "set_config", status: "failed", outcome: "failed", error: { code: "CONFIG_INVALID", message: expect.stringContaining("stack agentx-staging-control-plane ended in UPDATE_ROLLBACK_COMPLETE") as unknown } });
+    expect(records[0]).toMatchObject({ kind: "set_config", status: "failed", outcome: "failed", error: { code: "CONFIG_INVALID", message: expect.stringContaining("stack rovara-cloud-staging-control-plane ended in UPDATE_ROLLBACK_COMPLETE") as unknown } });
     expect(Date.parse(records[0]!.failedAt as string)).not.toBeNaN();
     expect(records[0]!.appliedAt).toBeUndefined();
     expect(harness.metrics).toEqual(["failed"]);
@@ -118,12 +118,12 @@ describe("agentx config set records stack-parameter changes in the admin change 
     expect(cloudFormation.parameters.McpConfirmElicitation).toBe("enabled");
   });
 
-  it("names agentx upgrade when the control plane is too old to record it", async () => {
+  it("names rovara upgrade when the control plane is too old to record it", async () => {
     const harness = await createAdminChangeBroker();
     const fetch = brokerFetch(harness, (path) => (path === "/v1/admin/changes/config" ? Response.json({ error: { code: "NOT_FOUND", message: "route not found" } }, { status: 404 }) : undefined));
     const { services, cloudFormation } = await configOver(harness, { fetch });
     await expect(runConfigSet(services, "staging", { key: "mcp.confirmElicitation", value: "disabled", yes: true }))
-      .rejects.toThrow("mcp.confirmElicitation was not changed: this environment's control plane cannot record config changes yet; upgrade it with agentx --env staging upgrade, then try again; nothing changed");
+      .rejects.toThrow("mcp.confirmElicitation was not changed: this environment's control plane cannot record config changes yet; upgrade it with rovara --env staging upgrade, then try again; nothing changed");
     expect(cloudFormation.calls.filter((call) => call.name === "ExecuteChangeSetCommand")).toEqual([]);
   });
 
@@ -136,7 +136,7 @@ describe("agentx config set records stack-parameter changes in the admin change 
     const record = audits(harness)[0]!;
     expect(record).toMatchObject({ status: "applying" });
     expect(record.outcome).toBeUndefined();
-    expect(services.lines).toContain(`Warning: mcp.confirmElicitation changed, but AgentX could not record that it applied, so agentx admin changes shows change ${record.changeId as string} as applying.`);
+    expect(services.lines).toContain(`Warning: mcp.confirmElicitation changed, but AgentX could not record that it applied, so rovara admin changes shows change ${record.changeId as string} as applying.`);
   });
 
   it("without the admin sign-in, warns first and the change goes ahead unrecorded, as the operator role alone may (SC-005)", async () => {
@@ -144,7 +144,7 @@ describe("agentx config set records stack-parameter changes in the admin change 
     let fetched = 0;
     const { services, cloudFormation } = await configOver(harness, { adminSession: async () => undefined, fetch: (async () => { fetched += 1; return Response.json({}); }) as unknown as typeof fetch });
     expect(await runConfigSet(services, "staging", { key: "mcp.confirmElicitation", value: "disabled", yes: true })).toEqual({ changed: true });
-    expect(services.lines[0]).toBe("Warning: this change to mcp.confirmElicitation will not be recorded in the admin change history, because this computer has no admin sign-in for staging; it goes ahead now. To record config changes, run agentx --env staging login --admin before config set.");
+    expect(services.lines[0]).toBe("Warning: this change to mcp.confirmElicitation will not be recorded in the admin change history, because this computer has no admin sign-in for staging; it goes ahead now. To record config changes, run rovara --env staging login --admin before config set.");
     expect(cloudFormation.parameters.McpConfirmElicitation).toBe("disabled");
     expect(fetched).toBe(0);
   });
@@ -153,7 +153,7 @@ describe("agentx config set records stack-parameter changes in the admin change 
     const harness = await createAdminChangeBroker();
     const { services, cloudFormation } = await configOver(harness, { adminSession: async () => ({ ...SESSION, expiresAt: T0 + 20 * 60_000 }) });
     await expect(runConfigSet(services, "staging", { key: "mcp.confirmElicitation", value: "disabled", yes: true }))
-      .rejects.toMatchObject({ code: "AUTH_REQUIRED", message: expect.stringContaining("this computer's admin sign-in for staging ends in 20 minutes, too soon to record how this mcp.confirmElicitation change ends; run agentx --env staging login --admin again, then try again; nothing changed") as unknown });
+      .rejects.toMatchObject({ code: "AUTH_REQUIRED", message: expect.stringContaining("this computer's admin sign-in for staging ends in 20 minutes, too soon to record how this mcp.confirmElicitation change ends; run rovara --env staging login --admin again, then try again; nothing changed") as unknown });
     expect(cloudFormation.calls.filter((call) => call.name === "CreateChangeSetCommand")).toEqual([]);
     const later = await configOver(harness, { adminSession: async () => ({ ...SESSION, expiresAt: T0 + 50 * 60_000 }) });
     expect(await runConfigSet(later.services, "staging", { key: "mcp.confirmElicitation", value: "disabled", yes: true })).toEqual({ changed: true });
@@ -174,7 +174,7 @@ describe("agentx config set records stack-parameter changes in the admin change 
     const harness = await createAdminChangeBroker();
     const { services } = await configOver(harness, { adminSession: async () => undefined, prompter: scriptedPrompter([false]) });
     await expect(runConfigSet(services, "staging", { key: "mcp.confirmElicitation", value: "disabled", yes: false })).rejects.toThrow("was not applied");
-    expect(services.lines[0]).toBe("Warning: this change to mcp.confirmElicitation will not be recorded in the admin change history, because this computer has no admin sign-in for staging. To record it, answer no, run agentx --env staging login --admin, then run this again.");
+    expect(services.lines[0]).toBe("Warning: this change to mcp.confirmElicitation will not be recorded in the admin change history, because this computer has no admin sign-in for staging. To record it, answer no, run rovara --env staging login --admin, then run this again.");
   });
 
   it("says to sign in again when AgentX refuses the sign-in it is recorded with", async () => {
@@ -182,7 +182,7 @@ describe("agentx config set records stack-parameter changes in the admin change 
     const fetch = brokerFetch(harness, (path) => (path === "/v1/admin/changes/config" ? Response.json({ error: { code: "AUTH_REQUIRED", message: "the token has expired" } }, { status: 401 }) : undefined));
     const { services, cloudFormation } = await configOver(harness, { fetch });
     await expect(runConfigSet(services, "staging", { key: "mcp.confirmElicitation", value: "disabled", yes: true }))
-      .rejects.toMatchObject({ code: "AUTH_REQUIRED", message: expect.stringContaining("mcp.confirmElicitation was not changed: AgentX would not record the change with this computer's admin sign-in (the token has expired); run agentx --env staging login --admin, then try again; nothing changed") as unknown });
+      .rejects.toMatchObject({ code: "AUTH_REQUIRED", message: expect.stringContaining("mcp.confirmElicitation was not changed: AgentX would not record the change with this computer's admin sign-in (the token has expired); run rovara --env staging login --admin, then try again; nothing changed") as unknown });
     expect(cloudFormation.calls.filter((call) => call.name === "ExecuteChangeSetCommand")).toEqual([]);
   });
 
@@ -218,7 +218,7 @@ describe("agentx config set records stack-parameter changes in the admin change 
     const record = audits(harness)[0]!;
     expect(record).toMatchObject({ status: "applying" });
     expect(record.outcome).toBeUndefined();
-    expect(services.lines).toContain(`Warning: the mcp.confirmElicitation change may still be applying, so agentx admin changes shows change ${record.changeId as string} as applying; check agentx-staging-control-plane in the CloudFormation console.`);
+    expect(services.lines).toContain(`Warning: the mcp.confirmElicitation change may still be applying, so rovara admin changes shows change ${record.changeId as string} as applying; check rovara-cloud-staging-control-plane in the CloudFormation console.`);
   });
 
   it("with --yes, records no prompt time", async () => {
@@ -229,9 +229,9 @@ describe("agentx config set records stack-parameter changes in the admin change 
   });
 
   it.each([
-    ["alerts.slowTurnMinutes", "9", "5", "stack parameter SlowTurnMinutes on agentx-staging-slack"],
-    ["limits.threadTurnsPerMinute", "12", "6", "stack parameter SlackThreadTurnsPerMinute on agentx-staging-control-plane"],
-    ["models.worker", "zai.glm-4.7", "us.anthropic.claude-sonnet-4-6", "stack parameter ModelId on agentx-staging-runtime"],
+    ["alerts.slowTurnMinutes", "9", "5", "stack parameter SlowTurnMinutes on rovara-cloud-staging-slack"],
+    ["limits.threadTurnsPerMinute", "12", "6", "stack parameter SlackThreadTurnsPerMinute on rovara-cloud-staging-control-plane"],
+    ["models.worker", "zai.glm-4.7", "us.anthropic.claude-sonnet-4-6", "stack parameter ModelId on rovara-cloud-staging-runtime"],
   ])("records %s, which shares the stack-parameter path", async (key, value, before, target) => {
     const harness = await createAdminChangeBroker();
     const cloudFormation = fakeCloudFormation({ parameters: { SlowTurnMinutes: "5", SlackThreadTurnsPerMinute: "6", ModelId: "us.anthropic.claude-sonnet-4-6" } });
@@ -248,7 +248,7 @@ describe("agentx config set records stack-parameter changes in the admin change 
   });
 });
 
-describe("agentx config set alerts.address, a secret-bearing key (#205)", () => {
+describe("rovara config set alerts.address, a secret-bearing key (#205)", () => {
   it("records a webhook change as changed, never its value", async () => {
     const harness = await createAdminChangeBroker();
     const { services } = await configOver(harness, { secrets: memoryInitSecrets(), alerts: fakeAlerts({ confirmAfterPolls: 0 }), processEnv: { HOOK: WEBHOOK } });
@@ -282,7 +282,7 @@ describe("agentx config set alerts.address, a secret-bearing key (#205)", () => 
     const harness = await createAdminChangeBroker();
     const store = await seeded();
     const { services } = await configOver(harness, { store, alerts: fakeAlerts({ confirmAfterPolls: 0 }) });
-    store.values.set(lockParameterName("staging"), JSON.stringify({ holder: "arn:aws:sts::123456789012:assumed-role/agentx-staging-operator/bob", command: "upgrade", acquiredAt: new Date(T0).toISOString() }));
+    store.values.set(lockParameterName("staging"), JSON.stringify({ holder: "arn:aws:sts::123456789012:assumed-role/rovara-cloud-staging-operator/bob", command: "upgrade", acquiredAt: new Date(T0).toISOString() }));
     await expect(runConfigSet(services, "staging", { key: "alerts.address", value: "ops@example.com", yes: true })).rejects.toThrow("locked by");
     expect(audits(harness)).toEqual([]);
   });
@@ -298,7 +298,7 @@ describe("agentx config set alerts.address, a secret-bearing key (#205)", () => 
 describe("the recorded config change routes (#205)", () => {
   const record = (harness: Harness, subject?: string) => harness.admin("POST", "/v1/admin/changes/config", {
     ...(subject === undefined ? {} : { subject }),
-    body: { change: { kind: "set_config", key: "budget.monthlyUsd", target: "stack parameter BudgetMonthlyUsd on agentx-staging-control-plane", before: "100", after: "250" }, client: { cliVersion: "0.0.7" } },
+    body: { change: { kind: "set_config", key: "budget.monthlyUsd", target: "stack parameter BudgetMonthlyUsd on rovara-cloud-staging-control-plane", before: "100", after: "250" }, client: { cliVersion: "0.0.7" } },
   });
 
   it("records once: a second outcome, another admin's outcome and an outcome for a confirmable change are refused", async () => {
@@ -331,7 +331,7 @@ describe("the recorded config change routes (#205)", () => {
     expect(harness.audit(changeId)).toMatchObject({ status: "applying" });
 
     const requestId = "7d7a3c1e-1b2f-4c3d-8e9f-0a1b2c3d4e5f";
-    const body = { requestId, change: { kind: "set_config", key: "budget.scope", target: "stack parameter BudgetScope on agentx-staging-control-plane", before: "tag", after: "account" }, client: { cliVersion: "0.0.7" } };
+    const body = { requestId, change: { kind: "set_config", key: "budget.scope", target: "stack parameter BudgetScope on rovara-cloud-staging-control-plane", before: "tag", after: "account" }, client: { cliVersion: "0.0.7" } };
     const first = await harness.admin("POST", "/v1/admin/changes/config", { body });
     const second = await harness.admin("POST", "/v1/admin/changes/config", { body });
     expect(first.status).toBe(201);
@@ -367,7 +367,7 @@ describe("the recorded config change routes (#205)", () => {
   });
 });
 
-describe("agentx admin changes shows config set changes (#205)", () => {
+describe("rovara admin changes shows config set changes (#205)", () => {
   it("lists the change with its key in text, and with before and after in JSON", async () => {
     const harness = await createAdminChangeBroker();
     const { services } = await configOver(harness);

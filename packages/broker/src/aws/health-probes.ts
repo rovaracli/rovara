@@ -12,7 +12,7 @@ export interface HealthProbeInput {
   sqs: { send(command: GetQueueAttributesCommand): Promise<GetQueueAttributesCommandOutput> };
   /** AGENTX_RELEASE_VERSION. */
   release?: string | undefined;
-  /** AGENTX_ALARM_PREFIX: `agentx-<env>-`, named environments only. */
+  /** AGENTX_ALARM_PREFIX: `rovara-cloud-<env>-`, named environments only. */
   alarmPrefix?: string | undefined;
   /** The alarm suffixes to read; HEALTH_ALARM_SUFFIXES unless a test passes its own. */
   alarmSuffixes?: readonly string[] | undefined;
@@ -59,7 +59,7 @@ export function healthProbes(input: HealthProbeInput): AdminHealthProbes {
             for (const alarm of page.MetricAlarms ?? []) {
               const name = alarm.AlarmName ?? "";
               // Alarm suffixes are single words (infra naming.alarmName), so a further hyphen after
-              // the prefix names a sibling environment's alarm (agentx-prod-eu-* under agentx-prod-).
+              // the prefix names a sibling environment's alarm (rovara-cloud-prod-eu-* under rovara-cloud-prod-).
               // The probe asks only for listed single-word names, so this guards a malformed list.
               if (name.startsWith(prefix) && name.slice(prefix.length).includes("-")) continue;
               found.push({ name, state: alarm.StateValue ?? "INSUFFICIENT_DATA" });

@@ -57,7 +57,7 @@ function run(world: World = {}, args: string[] = [], extraEnv: Record<string, st
   tool("stat", `echo 100`);
   writeFileSync(join(dir, "live-lines"), world.liveLines ?? "");
   writeFileSync(join(dir, "pull-list"), world.pullList ?? "944937319445.dkr.ecr.us-west-2.amazonaws.com/rovara-catalog/staging/svc/postgres@sha256:" + "b".repeat(64) + "\n");
-  writeFileSync(join(dir, "worker-image"), "944937319445.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@sha256:" + "a".repeat(64) + "\n");
+  writeFileSync(join(dir, "worker-image"), "944937319445.dkr.ecr.us-west-2.amazonaws.com/rovara-cloud-staging/worker@sha256:" + "a".repeat(64) + "\n");
   writeFileSync(join(dir, "worker.env"), "AWS_REGION=us-west-2\n");
   tool("ip", `[ "$1 $2 $3" = "-4 route show" ] || exit 2\ncat "${dir}/routes"`);
   const listing = (items: string[]) => items.map((item) => `${item}\n`).join("");
@@ -295,7 +295,7 @@ describe("scripts/linux-check-test-services.sh, live parts", () => {
     for (const id of LIVE_IDS) expect(r.byId(id), id).toMatch(/ FAIL /u);
   });
   it("refuses a driver that names an image outside the environment's catalog, before it pulls anything", () => {
-    const r = live({ pullList: `944937319445.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@sha256:${"c".repeat(64)}\n` });
+    const r = live({ pullList: `944937319445.dkr.ecr.us-west-2.amazonaws.com/rovara-cloud-staging/worker@sha256:${"c".repeat(64)}\n` });
     expect(r.stdout).toContain("outside the environment's catalog");
     expect(r.dockerCalls.some((call) => call.startsWith("pull "))).toBe(false);
   });

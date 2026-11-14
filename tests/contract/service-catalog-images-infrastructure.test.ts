@@ -110,10 +110,10 @@ describe("the key policy", () => {
   });
   it("is kept when a first create rolls back (nobody can schedule its deletion, so a rollback could not delete it), like the other narrow-policy keys", () => {
     const key = Object.values(resourcesOf(template)).find((resource) => resource.Type === "AWS::KMS::Key") as Resource & { Metadata?: Record<string, unknown> };
-    expect(key.Metadata?.["agentx:retain-on-create-rollback"]).toBe(true);
+    expect(key.Metadata?.["rovara-cloud:retain-on-create-rollback"]).toBe(true);
     // ...while the empty repositories carry no such mark, so a rolled-back first create deletes them and a retry can create the fixed names again.
     for (const repository of Object.values(resourcesOf(template)).filter((resource) => resource.Type === "AWS::ECR::Repository") as Array<Resource & { Metadata?: Record<string, unknown> }>) {
-      expect(repository.Metadata?.["agentx:retain-on-create-rollback"]).toBeUndefined();
+      expect(repository.Metadata?.["rovara-cloud:retain-on-create-rollback"]).toBeUndefined();
     }
   });
 });
@@ -121,7 +121,7 @@ describe("the key policy", () => {
 describe("what the deploy role needs to create, change and roll back these resources", () => {
   const scope: PolicyScope = {
     env: "staging", partition: "aws", region: "us-west-2", account: ACCOUNT,
-    artifactBucketArn: "arn:aws:s3:::agentx-staging-access-artifactbucket-abc", pullThroughPrefix: "agentx-staging", cloudFormationRoleName: "agentx-staging-cloudformation",
+    artifactBucketArn: "arn:aws:s3:::rovara-cloud-staging-access-artifactbucket-abc", pullThroughPrefix: "rovara-cloud-staging", cloudFormationRoleName: "rovara-cloud-staging-cloudformation",
   };
   const matches = (granted: string, action: string): boolean => (granted.endsWith("*") ? action.toLowerCase().startsWith(granted.slice(0, -1).toLowerCase()) : granted.toLowerCase() === action.toLowerCase());
   const allowed = (statements: ReturnType<typeof serviceRoleStatements>, action: string, resource: string): boolean =>
@@ -226,7 +226,7 @@ describe("what it refuses", () => {
 
 describe("in the stacks", () => {
   it("the staging control plane has the repositories and their key with NO condition; nothing else in it changes because of them", () => {
-    const stack = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === "agentx-staging-control-plane")!;
+    const stack = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === "rovara-cloud-staging-control-plane")!;
     const json = normalizedTemplate(stack) as { Parameters: Record<string, { Default?: string }>; Resources: Record<string, Resource> };
     expect(json.Parameters["TestServicesEnabled"]!.Default).toBe("0");
     const mine = Object.entries(json.Resources).filter(([id]) => id.startsWith("ServiceCatalogImages"));
@@ -245,7 +245,7 @@ describe("in the stacks", () => {
   }, 120_000);
 
   it("the broker's environment gains no variable (its budget is 4 KB)", () => {
-    const stack = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === "agentx-staging-control-plane")!;
+    const stack = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === "rovara-cloud-staging-control-plane")!;
     const variables = Object.values((normalizedTemplate(stack) as { Resources: Record<string, Resource> }).Resources).filter((resource) => resource.Type === "AWS::Lambda::Function").flatMap((resource) => Object.keys(((resource.Properties?.["Environment"] as { Variables?: Record<string, unknown> } | undefined)?.Variables) ?? {}));
     expect(variables.filter((name) => /SERVICE_CATALOG|CATALOG_IMAGE|PREPULL|ROVARA_CATALOG/u.test(name))).toEqual([]);
   }, 120_000);

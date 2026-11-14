@@ -7,7 +7,7 @@
 // release that fails for any other reason still terminates the instance, then fails the execution
 // (SlotReleaseFailed, its only Fail state), so the control plane's EvalExecutionsFailed alarm sees
 // it rather than a slot leaking unseen; the batch tick repairs the slot.
-import { SWEBENCH_RUN_TIME_LIMIT_SECONDS } from "@agentx/contracts";
+import { SWEBENCH_RUN_TIME_LIMIT_SECONDS, APPLICATION_TAG_VALUE, ENVIRONMENT_TAG_KEY } from "@agentx/contracts";
 
 type State = Record<string, unknown>;
 
@@ -25,7 +25,7 @@ export const SWEBENCH_POLL_SECONDS = 30;
 /** Instances and volumes the eval machine creates carry this deployment mode, never ec2-ebs's. */
 export const SWEBENCH_DEPLOYMENT_MODE = "swebench-eval";
 /** The instance tag the boot script reads the run ID from, through instance metadata. */
-export const SWEBENCH_RUN_TAG = "agentx-eval-run";
+export const SWEBENCH_RUN_TAG = "rovara-cloud-eval-run";
 
 const RETRY = [{ ErrorEquals: ["States.ALL"], IntervalSeconds: 2, MaxAttempts: 3, BackoffRate: 2 }];
 const ec2 = (action: string) => `arn:aws:states:::aws-sdk:ec2:${action}`;
@@ -42,10 +42,10 @@ const DYNAMODB_RETRY = [{ ErrorEquals: ["DynamoDb.ProvisionedThroughputExceededE
 export function swebenchEvalDefinition(props: SwebenchEvalDefinitionProps): State {
   const tags = (name: string) => [
     { Key: "Name", Value: name },
-    { Key: "Application", Value: "AgentX" },
+    { Key: "Application", Value: APPLICATION_TAG_VALUE },
     { Key: "DeploymentMode", Value: SWEBENCH_DEPLOYMENT_MODE },
     { Key: "Environment", Value: props.environmentTag },
-    ...(props.env === undefined ? [] : [{ Key: "agentx:env", Value: props.env }]),
+    ...(props.env === undefined ? [] : [{ Key: ENVIRONMENT_TAG_KEY, Value: props.env }]),
     { Key: SWEBENCH_RUN_TAG, Value: "{% $runId %}" },
   ];
   const toEnd = (failure: string) => ({ ErrorEquals: ["States.ALL"], Next: "EndRun", Assign: { endStatus: "FAILED", failure } });

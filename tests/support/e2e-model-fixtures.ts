@@ -21,7 +21,7 @@ export function bedrockRoute(overrides: Record<string, unknown> = {}): E2EModelR
   });
 }
 
-export const SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/provider-key-AbCdEf";
+export const SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/provider-key-AbCdEf";
 export const PROVIDER_KEY = "sk-ant-api03-FAKEKEYFORTESTS0123456789abcdef";
 
 /** The worker settings of an installation whose provider is the route's: `AGENTX_MODEL_PROVIDER` and, for a keyed provider, its secret ARN. */

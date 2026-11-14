@@ -42,7 +42,7 @@ const config: Ec2WorkerBootConfig = {
 
 describe("EC2 worker user data", () => {
   it("passes OpenRouter references to the container and rejects secrets or shell injection", () => {
-    const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/openrouter-AbCdEf";
+    const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/openrouter-AbCdEf";
     const rendered = ec2WorkerBootScript({ ...config, openRouterSecretArn: secretArn, openRouterProviders: "anthropic,openai" }, bootText);
     expect(rendered).toContain(`export AGENTX_OPENROUTER_SECRET_ARN='${secretArn}'`);
     expect(rendered).toContain("for name in AGENTX_OPENROUTER_SECRET_ARN AGENTX_ANTHROPIC_SECRET_ARN AGENTX_OPENAI_SECRET_ARN; do");
@@ -52,7 +52,7 @@ describe("EC2 worker user data", () => {
   });
   it.each([["anthropicSecretArn", "AGENTX_ANTHROPIC_SECRET_ARN", "ANTHROPIC_API_KEY"], ["openaiSecretArn", "AGENTX_OPENAI_SECRET_ARN", "OPENAI_API_KEY"]] as const)(
     "passes the %s reference to the container, never a key", (field, variable, keyVariable) => {
-      const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/direct-AbCdEf";
+      const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/direct-AbCdEf";
       const rendered = ec2WorkerBootScript({ ...config, [field]: secretArn }, bootText);
       expect(rendered).toContain(`export ${variable}='${secretArn}'`);
       expect(rendered).toContain(variable);
@@ -64,7 +64,7 @@ describe("EC2 worker user data", () => {
   // Task 14: with a model proxy the worker holds no provider secret reference; it is told where the proxy is.
   describe("with a model proxy", () => {
     const proxyUrl = "http://internal-agentx-staging-proxy-123456.us-east-1.elb.amazonaws.com:4000";
-    const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/direct-AbCdEf";
+    const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/direct-AbCdEf";
     const writeEnvironment = (environment: Record<string, string>) => {
       const directory = mkdtempSync(join(tmpdir(), "boot-env-"));
       const file = join(directory, "etc", "worker.env");
@@ -103,7 +103,7 @@ describe("EC2 worker user data", () => {
 
   // R56: the task sandbox starts from the worker's own image; the worker learns it from its environment file.
   it("tells the worker its own image as the task sandbox's, in every deployment", () => {
-    const image = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker@sha256:${"c".repeat(64)}`;
+    const image = `123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/worker@sha256:${"c".repeat(64)}`;
     const directory = mkdtempSync(join(tmpdir(), "boot-env-"));
     const file = join(directory, "etc", "worker.env");
     const fn = /^write_worker_environment\(\) \{[\s\S]*?^\}$/m.exec(stage2Script)?.[0] ?? "";
@@ -657,7 +657,7 @@ const executorImage = `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx/execu
 const runId = "0b6e6f0e-5d3b-4f0e-9d3a-2f1c4b7a8e90";
 const roleId = "AROAEXAMPLEROLEID123";
 const instanceId = "i-0123456789abcdef0";
-const qualification = { bucket: "agentx-agentxlivetest123-control-artifacts82dd59a1-syx0unxsewcf", roleId, profile: "linux-arm64-web-api-v1" } as const;
+const qualification = { bucket: "rovara-cloud-rovaralivetest-cont-artifacts82dd59a1-syx0unxsewcf", roleId, profile: "linux-arm64-web-api-v1" } as const;
 /** The key prefix the instance role's `${aws:userid}` grant allows: <role unique id>:<instance id>. */
 const qualificationPrefix = `e2e-runtime/${roleId}:${instanceId}/`;
 

@@ -43,5 +43,5 @@ function modelNames(model: ModelRef): string[] {
 export function modelCheckWarning(model: ModelRef): string {
   const check = model.lastCheck;
   if (check === undefined || check.status !== "failed" || check.class === undefined) return "";
-  return ` The last check of this model failed: ${escapeText(modelCheckClassSentence({ provider: model.provider, modelId: model.modelId, class: check.class }))} Its next turn may fail; ask a project admin to run agentx doctor.`;
+  return ` The last check of this model failed: ${escapeText(modelCheckClassSentence({ provider: model.provider, modelId: model.modelId, class: check.class }))} Its next turn may fail; ask a project admin to run rovara doctor.`;
 }

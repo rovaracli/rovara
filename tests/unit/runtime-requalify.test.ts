@@ -32,7 +32,7 @@ const apiKey = e2eRegisteredRuntimeKey("configured-feature", "linux-arm64-web-ap
 const lockKey = requalifyLockKey("linux-arm64-web-api-v1");
 const pointerKey = e2eModelCheckRunnerKey("linux-arm64-web-api-v1");
 const itemKey = (key: { pk: string; sk: string }) => `${key.pk}|${key.sk}`;
-const managedTags = (runId = RUN): Record<string, string> => ({ DeploymentMode: "e2e-qualification", Environment: ENV, "agentx:requalify-managed": "true", "agentx:qualification-run": runId });
+const managedTags = (runId = RUN): Record<string, string> => ({ DeploymentMode: "e2e-qualification", Environment: ENV, "rovara-cloud:requalify-managed": "true", "rovara-cloud:qualification-run": runId });
 
 function world(options: { instances?: Record<string, RequalifyInstance> } = {}) {
   const registry = createFakeRuntimeRegistry(at);
@@ -135,7 +135,7 @@ describe("AUTOREQUALIFY issue: the product opens its own challenge", () => {
     ["an expired lock", (w: World) => w.hold(RUN, new Date(at - 1000).toISOString()), "lock-not-held"],
     ["an instance that does not exist", (w: World) => { delete w.instances[NEW_ID]; }, "endpoint-not-managed-instance"],
     ["an instance that is not running", (w: World) => { w.instances[NEW_ID] = { ...w.instances[NEW_ID]!, state: "pending" }; }, "endpoint-not-managed-instance"],
-    ["an instance without the managed tag", (w: World) => { const { "agentx:requalify-managed": _m, ...rest } = managedTags(); void _m; w.instances[NEW_ID] = { ...w.instances[NEW_ID]!, tags: rest }; }, "endpoint-not-managed-instance"],
+    ["an instance without the managed tag", (w: World) => { const { "rovara-cloud:requalify-managed": _m, ...rest } = managedTags(); void _m; w.instances[NEW_ID] = { ...w.instances[NEW_ID]!, tags: rest }; }, "endpoint-not-managed-instance"],
     ["an instance of another environment", (w: World) => { w.instances[NEW_ID] = { ...w.instances[NEW_ID]!, tags: { ...managedTags(), Environment: "prod" } }; }, "endpoint-not-managed-instance"],
     ["an instance launched by another run", (w: World) => { w.instances[NEW_ID] = { ...w.instances[NEW_ID]!, tags: managedTags(randomUUID()) }; }, "endpoint-not-managed-instance"],
     ["an instance with no private address", (w: World) => { w.instances[NEW_ID] = { ...w.instances[NEW_ID]!, privateIp: undefined }; }, "endpoint-not-managed-instance"],
@@ -191,7 +191,7 @@ describe("AUTOREQUALIFY switch: one transaction", () => {
     ["the lock is gone", (w: World) => w.items.delete(itemKey(lockKey)), "lock-not-held"],
     ["the lock belongs to another run", (w: World) => w.hold(randomUUID()), "lock-not-held"],
     ["another registration already took the generation the challenge was issued for", (w: World) => w.seedRows(5), "generation-not-next"],
-    ["the instance lost its managed tag", (w: World) => { w.instances[NEW_ID] = { ...w.instances[NEW_ID]!, tags: { ...managedTags(), "agentx:requalify-managed": "false" } }; }, "endpoint-not-managed-instance"],
+    ["the instance lost its managed tag", (w: World) => { w.instances[NEW_ID] = { ...w.instances[NEW_ID]!, tags: { ...managedTags(), "rovara-cloud:requalify-managed": "false" } }; }, "endpoint-not-managed-instance"],
     ["the instance now has another address", (w: World) => { w.instances[NEW_ID] = { ...w.instances[NEW_ID]!, privateIp: "10.0.3.99" }; }, "endpoint-not-managed-instance"],
     ["the pointer names something that is not a runner", (w: World) => w.items.set(itemKey(pointerKey), { ...pointerKey, entityType: "E2E_MODEL_CHECK_RUNNER", instanceId: "not-an-instance" }), "runner-pointer-invalid"],
   ])("refuses when %s, with nothing written", async (_name, arrange, code) => {
@@ -358,7 +358,7 @@ describe("ec2RequalifyInstanceReader and the run record", () => {
   });
 
   it("keeps the run record and the tag names fixed", () => {
-    expect(REQUALIFY_TAGS).toMatchObject({ managedKey: "agentx:requalify-managed", runKey: "agentx:qualification-run", deploymentModeValue: "e2e-qualification" });
+    expect(REQUALIFY_TAGS).toMatchObject({ managedKey: "rovara-cloud:requalify-managed", runKey: "rovara-cloud:qualification-run", deploymentModeValue: "e2e-qualification" });
     expect(RequalifyRunRecordSchema.safeParse({ unknown: true }).success).toBe(false);
   });
 });

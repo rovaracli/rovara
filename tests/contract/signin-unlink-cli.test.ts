@@ -1,4 +1,4 @@
-// Plan 2, Task 8 and 8b: `agentx signin unlink <cloud|github>` and `agentx signin link <cloud|github>` against a fake control plane: the
+// Plan 2, Task 8 and 8b: `rovara signin unlink <cloud|github>` and `rovara signin link <cloud|github>` against a fake control plane: the
 // request they send, the fresh sign-in they run when the server asks for one (and retry once after), and the lines they print.
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -61,7 +61,7 @@ async function cli(answer: (method: string, path: string, authorization: string 
 
 const LEFT = [{ provider: "cloud", email: "priya@acme.dev", linkedAt: "2026-10-01T00:00:00.000Z", lastSignInAt: "2026-10-02T00:00:00.000Z" }];
 
-describe("agentx signin unlink", () => {
+describe("rovara signin unlink", () => {
   it("sends a signed-in DELETE for the method and says what is left", async () => {
     const h = await cli((method, path) => (method === "DELETE" && path === "/v1/app/me/identities/github" ? Response.json({ identities: LEFT, requestId: "r" }) : undefined));
     expect(await h.run(["signin", "unlink", "github"])).toBe(0);
@@ -137,7 +137,7 @@ describe("a fresh sign-in when the server asks for one (Plan 2, Task 8b)", () =>
     expect(h.opened).toEqual([link]);
     expect(h.out.join("")).toBe(
       `Opening your browser to add Rovara sign-in (email code) back to your account. If it does not open, open this link:\n${link}\n`
-      + "When the page says it was added, run agentx whoami to see it. Only a sign-in method you removed from this account can be added back.\n",
+      + "When the page says it was added, run rovara whoami to see it. Only a sign-in method you removed from this account can be added back.\n",
     );
   });
 

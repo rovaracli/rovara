@@ -1,5 +1,5 @@
-// M1.4 Task 4.6b: `agentx admin task e2e-replay`, an administrator's audit replay of a task's qualified AI-navigated round (no model; the result is recorded apart from the task and never
-// changes it). `start` asks for one; `show` reads the record of each attempt. Like every `agentx admin` command, the admin sign-in is the only confirmation.
+// M1.4 Task 4.6b: `rovara admin task e2e-replay`, an administrator's audit replay of a task's qualified AI-navigated round (no model; the result is recorded apart from the task and never
+// changes it). `start` asks for one; `show` reads the record of each attempt. Like every `rovara admin` command, the admin sign-in is the only confirmation.
 import { adminResponseBody } from "./http.js";
 
 const base = (controlPlaneUrl: string, taskId: string) => `${controlPlaneUrl.replace(/\/$/, "")}/v1/admin/tasks/${encodeURIComponent(taskId)}/e2e-replay`;

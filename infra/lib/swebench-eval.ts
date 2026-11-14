@@ -21,7 +21,7 @@ import {
   aws_stepfunctions as sfn,
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
-import { SWEBENCH_SETTING_PARAMETERS, environmentRolePath } from "@agentx/contracts";
+import { SWEBENCH_SETTING_PARAMETERS, environmentRolePath, RESOURCE_PREFIX, APPLICATION_TAG_VALUE, ENVIRONMENT_TAG_KEY } from "@agentx/contracts";
 import type { AgentXNaming } from "./naming.js";
 import { grantProviderKeySecrets } from "./model-keys.js";
 import { SWEBENCH_DEPLOYMENT_MODE, SWEBENCH_RUN_TAG, swebenchEvalDefinition } from "./swebench-eval-definition.js";
@@ -35,7 +35,7 @@ export const SWEBENCH_ROOT_VOLUME_GIB = 150;
 /** Names the control plane grants the broker access to before the eval stack exists. */
 export function swebenchNames(naming: AgentXNaming) {
   return {
-    stackName: naming.env === undefined ? "AgentXEval" : `agentx-${naming.env}-eval`,
+    stackName: naming.env === undefined ? "AgentXEval" : `${RESOURCE_PREFIX}-${naming.env}-eval`,
     stateMachineName: `${naming.resourcePrefix}-swebench-eval`,
     logGroupName: naming.ec2.workerLogGroupName.replace(/\/worker$/, "/swebench"),
     settingsParameterName: `${naming.ec2.workerSettingsPrefix}${SWEBENCH_SETTING_PARAMETERS.settings}`,
@@ -62,10 +62,10 @@ export class SwebenchEvalStack extends Stack {
 
     const tags = (name: string) => [
       { key: "Name", value: name },
-      { key: "Application", value: "AgentX" },
+      { key: "Application", value: APPLICATION_TAG_VALUE },
       { key: "DeploymentMode", value: SWEBENCH_DEPLOYMENT_MODE },
       { key: "Environment", value: naming.environmentTagValue },
-      ...(naming.env === undefined ? [] : [{ key: "agentx:env", value: naming.env }]),
+      ...(naming.env === undefined ? [] : [{ key: ENVIRONMENT_TAG_KEY, value: naming.env }]),
     ];
 
     const logGroup = new logs.LogGroup(this, "RunnerLogs", {

@@ -12,7 +12,7 @@ import type { AuditDeps, AuditPendingItem, AuditRuntime } from "../../packages/b
 import { FakeAuditSqs } from "./fake-audit-sqs.js";
 import { FakeDynamoDb } from "./fake-dynamodb.js";
 
-export const AUDIT_CAPTURE_QUEUE_URL = "https://sqs.test/agentx-test-audit-intake.fifo";
+export const AUDIT_CAPTURE_QUEUE_URL = "https://sqs.test/rovara-cloud-test-audit-intake.fifo";
 /** The State table's name in the broker harnesses. FakeDynamoDb keeps one store and ignores table names; the code under test passes this one. */
 export const AUDIT_CAPTURE_TABLE = "state";
 

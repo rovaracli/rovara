@@ -143,7 +143,7 @@ describe("the dispatcher answering a task-peek event", () => {
 });
 
 describe("a direct invoke of the dispatcher is a peek or the dispatch queue's own batch, nothing else (S2)", () => {
-  const QUEUE = "arn:aws:sqs:us-west-2:123456789012:agentx-staging-dispatch";
+  const QUEUE = "arn:aws:sqs:us-west-2:123456789012:rovara-cloud-staging-dispatch";
   const forged = { Records: [{ messageId: "m1", body: JSON.stringify({ id: "x", invocation: { kind: "steer" } }), attributes: { ApproximateReceiveCount: "1" } }] };
   const build = () => {
     const markDispatching = vi.fn(async () => true);

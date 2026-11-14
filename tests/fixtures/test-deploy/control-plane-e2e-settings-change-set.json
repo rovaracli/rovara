@@ -5,7 +5,7 @@
             "ResourceChange": {
                 "Action": "Modify",
                 "LogicalResourceId": "BrokerApiInvokeC6C766F0",
-                "PhysicalResourceId": "agentx-agentxlivetest123-control-plane-BrokerApiInvokeC6C766F0-rwTIDA7Dn11s",
+                "PhysicalResourceId": "rovara-cloud-rovaralivetest-control-plane-BrokerApiInvokeC6C766F0-rwTIDA7Dn11s",
                 "ResourceType": "AWS::Lambda::Permission",
                 "Replacement": "Conditional",
                 "Scope": [
@@ -30,7 +30,7 @@
             "ResourceChange": {
                 "Action": "Modify",
                 "LogicalResourceId": "BrokerE1355FD6",
-                "PhysicalResourceId": "agentx-agentxlivetest123-control-pl-BrokerE1355FD6-8biQFqdYC9Bk",
+                "PhysicalResourceId": "rovara-cloud-rovaralivetest-control-pl-BrokerE1355FD6-8biQFqdYC9Bk",
                 "ResourceType": "AWS::Lambda::Function",
                 "Replacement": "False",
                 "Scope": [
@@ -128,7 +128,7 @@
             "ResourceChange": {
                 "Action": "Modify",
                 "LogicalResourceId": "GithubWebhookRecoverySchedule",
-                "PhysicalResourceId": "agentx-agentxlivetest123-GithubWebhookRecoverySch-1UT8E40VTUX8H",
+                "PhysicalResourceId": "rovara-cloud-rovaralivetest-GithubWebhookRecoverySch-1UT8E40VTUX8H",
                 "ResourceType": "AWS::Scheduler::Schedule",
                 "Replacement": "False",
                 "Scope": [
@@ -227,7 +227,7 @@
             "ResourceChange": {
                 "Action": "Modify",
                 "LogicalResourceId": "WorkflowDispatchRecoverySchedule",
-                "PhysicalResourceId": "agentx-agentxlivetest123-WorkflowDispatchRecovery-TD3ZHR4KVNID",
+                "PhysicalResourceId": "rovara-cloud-rovaralivetest-WorkflowDispatchRecovery-TD3ZHR4KVNID",
                 "ResourceType": "AWS::Scheduler::Schedule",
                 "Replacement": "False",
                 "Scope": [
@@ -252,7 +252,7 @@
             "ResourceChange": {
                 "Action": "Modify",
                 "LogicalResourceId": "WorkflowMergeRecoverySchedule",
-                "PhysicalResourceId": "agentx-agentxlivetest123-WorkflowMergeRecoverySch-937OL25UEDBR",
+                "PhysicalResourceId": "rovara-cloud-rovaralivetest-WorkflowMergeRecoverySch-937OL25UEDBR",
                 "ResourceType": "AWS::Scheduler::Schedule",
                 "Replacement": "False",
                 "Scope": [

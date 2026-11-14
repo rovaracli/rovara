@@ -5,7 +5,7 @@
    "partition": "aws",
    "region": "us-east-1",
    "account": "123456789012",
-   "cloudFormationRoleName": "agentx-staging-cloudformation"
+   "cloudFormationRoleName": "rovara-cloud-staging-cloudformation"
   },
   "statements": [
    {
@@ -51,7 +51,7 @@
     "Action": [
      "events:*"
     ],
-    "Resource": "arn:aws:events:us-east-1:123456789012:rule/agentx-staging-*-service-failures"
+    "Resource": "arn:aws:events:us-east-1:123456789012:rule/rovara-cloud-staging-*-service-failures"
    },
    {
     "Sid": "AppSyncEvents",
@@ -116,8 +116,8 @@
      "sts:TagSession"
     ],
     "Resource": [
-     "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-connector-secrets*",
-     "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-img-*"
+     "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-connector-secrets*",
+     "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-img-*"
     ]
    },
    {
@@ -130,9 +130,9 @@
     "Condition": {
      "ArnLike": {
       "aws:PrincipalArn": [
-       "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-broker-role",
-       "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-model-proxy-task",
-       "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-model-access-probe"
+       "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-broker-role",
+       "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-model-proxy-task",
+       "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-model-access-probe"
       ]
      },
      "StringNotEquals": {
@@ -173,8 +173,8 @@
      "iam:ListAttachedRolePolicies"
     ],
     "Resource": [
-     "arn:aws:iam::123456789012:role/agentx/staging/*",
-     "arn:aws:iam::123456789012:role/agentx-staging-img-create"
+     "arn:aws:iam::123456789012:role/rovara-cloud/staging/*",
+     "arn:aws:iam::123456789012:role/rovara-cloud-staging-img-create"
     ]
    },
    {
@@ -190,14 +190,14 @@
      "iam:DeleteRole"
     ],
     "Resource": [
-     "arn:aws:iam::123456789012:role/agentx-staging-broker-role",
-     "arn:aws:iam::123456789012:role/agentx-staging-model-proxy-task",
-     "arn:aws:iam::123456789012:role/agentx-staging-model-access-probe",
-     "arn:aws:iam::123456789012:role/agentx-staging-chain-schedule",
-     "arn:aws:iam::123456789012:role/agentx-staging-img-push",
-     "arn:aws:iam::123456789012:role/agentx-staging-img-pull",
-     "arn:aws:iam::123456789012:role/agentx-staging-img-manage",
-     "arn:aws:iam::123456789012:role/agentx-staging-connector-secrets*"
+     "arn:aws:iam::123456789012:role/rovara-cloud-staging-broker-role",
+     "arn:aws:iam::123456789012:role/rovara-cloud-staging-model-proxy-task",
+     "arn:aws:iam::123456789012:role/rovara-cloud-staging-model-access-probe",
+     "arn:aws:iam::123456789012:role/rovara-cloud-staging-chain-schedule",
+     "arn:aws:iam::123456789012:role/rovara-cloud-staging-img-push",
+     "arn:aws:iam::123456789012:role/rovara-cloud-staging-img-pull",
+     "arn:aws:iam::123456789012:role/rovara-cloud-staging-img-manage",
+     "arn:aws:iam::123456789012:role/rovara-cloud-staging-connector-secrets*"
     ]
    },
    {
@@ -212,7 +212,7 @@
      "iam:TagInstanceProfile",
      "iam:UntagInstanceProfile"
     ],
-    "Resource": "arn:aws:iam::123456789012:instance-profile/agentx/staging/*"
+    "Resource": "arn:aws:iam::123456789012:instance-profile/rovara-cloud/staging/*"
    },
    {
     "Sid": "IamManagedPolicies",
@@ -229,7 +229,7 @@
      "iam:UntagPolicy",
      "iam:ListEntitiesForPolicy"
     ],
-    "Resource": "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*"
+    "Resource": "arn:aws:iam::123456789012:policy/rovara-cloud/staging/rovara-cloud-staging-broker-*"
    },
    {
     "Sid": "PassRoles",
@@ -238,9 +238,9 @@
      "iam:PassRole"
     ],
     "Resource": [
-     "arn:aws:iam::123456789012:role/agentx/staging/*",
-     "arn:aws:iam::123456789012:role/agentx-staging-img-create",
-     "arn:aws:iam::123456789012:role/agentx-staging-cloudformation"
+     "arn:aws:iam::123456789012:role/rovara-cloud/staging/*",
+     "arn:aws:iam::123456789012:role/rovara-cloud-staging-img-create",
+     "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation"
     ]
    },
    {
@@ -322,7 +322,7 @@
      "iam:DeletePolicy",
      "iam:SetDefaultPolicyVersion"
     ],
-    "NotResource": "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-broker-*"
+    "NotResource": "arn:aws:iam::123456789012:policy/rovara-cloud/staging/rovara-cloud-staging-broker-*"
    },
    {
     "Sid": "DenyBoundaryChanges",
@@ -330,17 +330,17 @@
     "Action": [
      "iam:*Policy*"
     ],
-    "Resource": "arn:aws:iam::123456789012:policy/agentx/staging/agentx-staging-boundary"
+    "Resource": "arn:aws:iam::123456789012:policy/rovara-cloud/staging/rovara-cloud-staging-boundary"
    }
   ]
  },
- "agentxlivetest123-org": {
+ "rovaralivetest-org": {
   "scope": {
-   "env": "agentxlivetest123",
+   "env": "rovaralivetest",
    "partition": "aws",
    "region": "us-east-1",
    "account": "123456789012",
-   "cloudFormationRoleName": "agentx-agentxlivetest123-cloudformation",
+   "cloudFormationRoleName": "rovara-cloud-rovaralivetest-cloudformation",
    "rovaraOrganizationId": "o-abcdefghij123"
   },
   "statements": [
@@ -387,7 +387,7 @@
     "Action": [
      "events:*"
     ],
-    "Resource": "arn:aws:events:us-east-1:123456789012:rule/agentx-agentxlivetest123-*-service-failures"
+    "Resource": "arn:aws:events:us-east-1:123456789012:rule/rovara-cloud-rovaralivetest-*-service-failures"
    },
    {
     "Sid": "AppSyncEvents",
@@ -452,8 +452,8 @@
      "sts:TagSession"
     ],
     "Resource": [
-     "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/agentx-agentxlivetest123-connector-secrets*",
-     "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/agentx-agentxlivetest123-img-*"
+     "arn:aws:iam::123456789012:role/rovara-cloud/rovaralivetest/rovara-cloud-rovaralivetest-connector-secrets*",
+     "arn:aws:iam::123456789012:role/rovara-cloud/rovaralivetest/rovara-cloud-rovaralivetest-img-*"
     ]
    },
    {
@@ -466,9 +466,9 @@
     "Condition": {
      "ArnLike": {
       "aws:PrincipalArn": [
-       "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/agentx-agentxlivetest123-broker-role",
-       "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/agentx-agentxlivetest123-model-proxy-task",
-       "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/agentx-agentxlivetest123-model-access-probe"
+       "arn:aws:iam::123456789012:role/rovara-cloud/rovaralivetest/rovara-cloud-rovaralivetest-broker-role",
+       "arn:aws:iam::123456789012:role/rovara-cloud/rovaralivetest/rovara-cloud-rovaralivetest-model-proxy-task",
+       "arn:aws:iam::123456789012:role/rovara-cloud/rovaralivetest/rovara-cloud-rovaralivetest-model-access-probe"
       ]
      },
      "StringNotEquals": {
@@ -510,8 +510,8 @@
      "iam:ListAttachedRolePolicies"
     ],
     "Resource": [
-     "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/*",
-     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-img-create"
+     "arn:aws:iam::123456789012:role/rovara-cloud/rovaralivetest/*",
+     "arn:aws:iam::123456789012:role/rovara-cloud-rovaralivetest-img-create"
     ]
    },
    {
@@ -527,15 +527,15 @@
      "iam:DeleteRole"
     ],
     "Resource": [
-     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-broker-role",
-     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-model-proxy-task",
-     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-model-access-probe",
-     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-chain-schedule",
-     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-img-push",
-     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-img-pull",
-     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-img-manage",
-     "arn:aws:iam::123456789012:role/agentxlivetest123-task-person-proof",
-     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-connector-secrets*"
+     "arn:aws:iam::123456789012:role/rovara-cloud-rovaralivetest-broker-role",
+     "arn:aws:iam::123456789012:role/rovara-cloud-rovaralivetest-model-proxy-task",
+     "arn:aws:iam::123456789012:role/rovara-cloud-rovaralivetest-model-access-probe",
+     "arn:aws:iam::123456789012:role/rovara-cloud-rovaralivetest-chain-schedule",
+     "arn:aws:iam::123456789012:role/rovara-cloud-rovaralivetest-img-push",
+     "arn:aws:iam::123456789012:role/rovara-cloud-rovaralivetest-img-pull",
+     "arn:aws:iam::123456789012:role/rovara-cloud-rovaralivetest-img-manage",
+     "arn:aws:iam::123456789012:role/rovaralivetest-task-person-proof",
+     "arn:aws:iam::123456789012:role/rovara-cloud-rovaralivetest-connector-secrets*"
     ]
    },
    {
@@ -550,7 +550,7 @@
      "iam:TagInstanceProfile",
      "iam:UntagInstanceProfile"
     ],
-    "Resource": "arn:aws:iam::123456789012:instance-profile/agentx/agentxlivetest123/*"
+    "Resource": "arn:aws:iam::123456789012:instance-profile/rovara-cloud/rovaralivetest/*"
    },
    {
     "Sid": "IamManagedPolicies",
@@ -567,7 +567,7 @@
      "iam:UntagPolicy",
      "iam:ListEntitiesForPolicy"
     ],
-    "Resource": "arn:aws:iam::123456789012:policy/agentx/agentxlivetest123/agentx-agentxlivetest123-broker-*"
+    "Resource": "arn:aws:iam::123456789012:policy/rovara-cloud/rovaralivetest/rovara-cloud-rovaralivetest-broker-*"
    },
    {
     "Sid": "PassRoles",
@@ -576,9 +576,9 @@
      "iam:PassRole"
     ],
     "Resource": [
-     "arn:aws:iam::123456789012:role/agentx/agentxlivetest123/*",
-     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-img-create",
-     "arn:aws:iam::123456789012:role/agentx-agentxlivetest123-cloudformation"
+     "arn:aws:iam::123456789012:role/rovara-cloud/rovaralivetest/*",
+     "arn:aws:iam::123456789012:role/rovara-cloud-rovaralivetest-img-create",
+     "arn:aws:iam::123456789012:role/rovara-cloud-rovaralivetest-cloudformation"
     ]
    },
    {
@@ -660,7 +660,7 @@
      "iam:DeletePolicy",
      "iam:SetDefaultPolicyVersion"
     ],
-    "NotResource": "arn:aws:iam::123456789012:policy/agentx/agentxlivetest123/agentx-agentxlivetest123-broker-*"
+    "NotResource": "arn:aws:iam::123456789012:policy/rovara-cloud/rovaralivetest/rovara-cloud-rovaralivetest-broker-*"
    },
    {
     "Sid": "DenyBoundaryChanges",
@@ -668,7 +668,7 @@
     "Action": [
      "iam:*Policy*"
     ],
-    "Resource": "arn:aws:iam::123456789012:policy/agentx/agentxlivetest123/agentx-agentxlivetest123-boundary"
+    "Resource": "arn:aws:iam::123456789012:policy/rovara-cloud/rovaralivetest/rovara-cloud-rovaralivetest-boundary"
    }
   ]
  }

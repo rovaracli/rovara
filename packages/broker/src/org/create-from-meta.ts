@@ -186,7 +186,7 @@ export async function createProjectFromMetaRoute<Caller extends CreateFromMetaCa
   caller: Caller,
   body: unknown,
 ): Promise<{ status: number; body: MetaProjectCreated }> {
-  if (!deps.cloud) throw agentXError("FORBIDDEN", "projects on this install are created by an administrator; ask an administrator to run agentx project add");
+  if (!deps.cloud) throw agentXError("FORBIDDEN", "projects on this install are created by an administrator; ask an administrator to run rovara project add");
   if (caller.orgRole !== "owner" && caller.orgRole !== "admin") throw agentXError("FORBIDDEN", "only an owner or admin can create a project; ask your organization's owner");
   if (deps.createFromMeta === undefined) throw agentXError("NOT_FOUND", "project creation is not set up in this deployment");
   const created = await deps.createFromMeta(caller, parseCreateFromMetaBody(body));

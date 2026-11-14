@@ -1,4 +1,4 @@
-// agentx init (FR-015 to FR-020): find the release and region, read any install already under way,
+// rovara init (FR-015 to FR-020): find the release and region, read any install already under way,
 // ask and check and confirm on a first run, then run the steps. Every AWS, GitHub, Slack, browser
 // and clock dependency is overridable through InitCliDependencies (main.ts's CliDependencies.init).
 import { CLI_PACKAGE_NAME } from "@agentx/contracts";
@@ -72,7 +72,7 @@ import { dynamoSetupStore, type SetupStore } from "./ui/setup-store.js";
 export const CLOUD_GITHUB_WAIT_MS = 60 * 60 * 1000;
 
 export interface InitCliDependencies {
-  /** identity, store, deployer, templatesClients, commandRunner: the same seam agentx deploy uses. */
+  /** identity, store, deployer, templatesClients, commandRunner: the same seam rovara deploy uses. */
   deploy?: DeployCliDependencies;
   initSecrets?: InitSecrets;
   prompter?: Prompter;
@@ -124,7 +124,7 @@ export interface InitOptions {
    * can open a browser, else the terminal (resolveUiMode). */
   ui?: boolean;
   /** --setup-table and --setup-url: the install page is the setup page in the cloud, and its
-   * questions and answers go through this table (the installer job, `agentx init --cloud`). */
+   * questions and answers go through this table (the installer job, `rovara init --cloud`). */
   cloud?: { table: string; url: string };
   resume: boolean;
   flags: InitFlags;
@@ -186,7 +186,7 @@ export async function holdReadyScreen(input: { closeRequested: Promise<void>; ms
 }
 
 export const OPERATOR_ACCESS_REFUSAL =
-  "the access stack needs admin rights, and you are using the AgentX operator role; ask your platform team to deploy it (agentx init --export, then deploy-access.sh), or run agentx init with admin credentials";
+  "the access stack needs admin rights, and you are using the AgentX operator role; ask your platform team to deploy it (rovara init --export, then deploy-access.sh), or run rovara init with admin credentials";
 
 /** The note an `access` step deployed by a platform team from an export bundle is recorded with. */
 export const PLATFORM_TEAM_ACCESS_NOTE = "deployed by your platform team from the export bundle";
@@ -269,12 +269,12 @@ export function realSetupServices(input: { region: string; fetch: typeof fetch; 
     // Task 7: the foundation's EC2 worker outputs, and where project files are written.
     stackOutputs: cloudFormationOutputsReader(new CloudFormationClient({ region: input.region })),
     configDir: input.configDir,
-    // Task 8: both use the bot token read from agentx/<env>/slack, only in the authorization header.
+    // Task 8: both use the bot token read from rovara-cloud/<env>/slack, only in the authorization header.
     slackChannels: slackChannelApi(input.fetch),
     slackIdentity: async (token) => {
       const answer = await slackWebApi(input.fetch).authTest(token);
       if (answer.ok !== true || answer.team_id === undefined || answer.user_id === undefined) {
-        throw agentXError("CONFIG_INVALID", "Slack refused the stored bot token; run agentx init again to store a new one");
+        throw agentXError("CONFIG_INVALID", "Slack refused the stored bot token; run rovara init again to store a new one");
       }
       return { teamId: answer.team_id, botUserId: answer.user_id };
     },
@@ -475,7 +475,7 @@ async function resumedAlertWebhook(input: { answers: InitAnswers; flags: InitFla
   if (display !== alert.display) {
     throw agentXError(
       "CONFIG_INVALID",
-      `${webhookFlagDisplay(source)} (${display}) differs from what this install started with (${alert.display}); an install's answers cannot change halfway. Give an address on the same host, or run agentx init without that flag to keep the stored one`,
+      `${webhookFlagDisplay(source)} (${display}) differs from what this install started with (${alert.display}); an install's answers cannot change halfway. Give an address on the same host, or run rovara init without that flag to keep the stored one`,
     );
   }
   return address;
@@ -547,7 +547,7 @@ async function init(options: InitOptions, deps: InitCliDependencies, services: {
   if (bundle !== undefined && bundle.env !== env) throw agentXError("CONFIG_INVALID", `the bundle is for environment ${bundle.env}; pass --env ${bundle.env}`);
   // A resume reads the install from the region's SSM, so --yes never guesses it (a bundle names it).
   if (options.yes && options.region === undefined && bundle === undefined) {
-    throw agentXError("CONFIG_INVALID", "agentx init needs to know the AWS region; with --yes, pass --region <region>");
+    throw agentXError("CONFIG_INVALID", "rovara init needs to know the AWS region; with --yes, pass --region <region>");
   }
   const runner = deployDeps.commandRunner ?? realCommandRunner(session.output);
   const version = deps.releaseVersion === undefined ? RELEASE_VERSION : deps.releaseVersion ?? undefined;
@@ -569,7 +569,7 @@ async function init(options: InitOptions, deps: InitCliDependencies, services: {
   });
   let prompter: Prompter;
   if (uiMode.mode === "page") {
-    if (options.yes) throw agentXError("CONFIG_INVALID", "agentx init --ui asks its questions on a page; --yes answers them without asking. Use one or the other");
+    if (options.yes) throw agentXError("CONFIG_INVALID", "rovara init --ui asks its questions on a page; --yes answers them without asking. Use one or the other");
     session.log = await openInitLog(initLogPath(services.home, env), { onError: (line) => services.stderr.write(`${line}\n`) });
     if (options.cloud !== undefined) {
       session.setupStore = (deps.setupStore ?? ((table) => dynamoSetupStore({ client: new DynamoDBClient({}), table, env })))(options.cloud.table);
@@ -606,7 +606,7 @@ async function init(options: InitOptions, deps: InitCliDependencies, services: {
   } else {
     if (uiMode.noBrowser === true) write(NO_BROWSER_LINE);
     if (process.stdin.isTTY !== true) {
-      throw agentXError("CONFIG_INVALID", "agentx init asks questions; run it in a terminal, pass --ui to answer them in a browser, or pass --yes with a flag for every answer");
+      throw agentXError("CONFIG_INVALID", "rovara init asks questions; run it in a terminal, pass --ui to answer them in a browser, or pass --yes with a flag for every answer");
     }
     prompter = processPrompter(services.stderr);
   }
@@ -649,7 +649,7 @@ async function init(options: InitOptions, deps: InitCliDependencies, services: {
   session.releaseLoaded = true;
   // F23: the saved answers take only x.y.z, so a prerelease would otherwise fail after the plan.
   if (isPrereleaseVersion(release.manifest.version)) {
-    throw agentXError("CONFIG_INVALID", `release ${release.manifest.version} is a prerelease; agentx init installs only published releases (x.y.z). Pass --release <dir> with a published release`);
+    throw agentXError("CONFIG_INVALID", `release ${release.manifest.version} is a prerelease; rovara init installs only published releases (x.y.z). Pass --release <dir> with a published release`);
   }
 
   // Built once: the wizard shows the checklist from it before the first step runs, and the resume
@@ -723,15 +723,15 @@ async function init(options: InitOptions, deps: InitCliDependencies, services: {
   }
   if (stored === undefined && existingSettings !== undefined) {
     throw agentXError("CONFIG_INVALID", existingSettings.naming === "legacy"
-      ? `environment ${env} is the deployment adopted with fixed stack names; agentx init cannot install over it. Choose another --env`
-      : `environment ${env} is already installed, but not by agentx init; there is nothing to resume. Choose another --env, or use agentx deploy --mode upgrade`);
+      ? `environment ${env} is the deployment adopted with fixed stack names; rovara init cannot install over it. Choose another --env`
+      : `environment ${env} is already installed, but not by rovara init; there is nothing to resume. Choose another --env, or use rovara deploy --mode upgrade`);
   }
   // With a bundle and no install yet, the bundle is what is resumed.
   if (options.resume && stored === undefined && bundle === undefined) {
     const nothing = `there is no install of environment ${env} to resume in account ${caller.account} (${region})`;
     throw agentXError("CONFIG_INVALID", isOperatorRole(caller.arn, env)
-      ? `${nothing}; you are using the AgentX operator role, so if your platform team deployed the access stack from an export bundle, run agentx init --resume --from-bundle <the bundle directory>`
-      : `${nothing}; run agentx init without --resume to start one`);
+      ? `${nothing}; you are using the AgentX operator role, so if your platform team deployed the access stack from an export bundle, run rovara init --resume --from-bundle <the bundle directory>`
+      : `${nothing}; run rovara init without --resume to start one`);
   }
   // A first run under --yes (no install under way, and no --resume): the finishing steps can ask
   // nothing, so what they need is checked here, before anything is created. The Cognito admin's
@@ -743,7 +743,7 @@ async function init(options: InitOptions, deps: InitCliDependencies, services: {
       ...(options.finishFlags.channel === undefined ? [["--channel <name>", "the Slack channel for the first project"]] : []),
     ];
     const [first] = missing;
-    if (first !== undefined) throw agentXError("CONFIG_INVALID", `agentx init --yes needs ${first[0]} (${first[1]}); pass it, or run agentx init without --yes to be asked`);
+    if (first !== undefined) throw agentXError("CONFIG_INVALID", `rovara init --yes needs ${first[0]} (${first[1]}); pass it, or run rovara init without --yes to be asked`);
   }
 
   // FR-018: a first run checks the account and region before any setting is asked. On the page a
@@ -942,7 +942,7 @@ async function init(options: InitOptions, deps: InitCliDependencies, services: {
   const saveAnswers = async () => {
     if (firstRun !== undefined) {
       if ((await readInstallAnswers(store, env)) !== undefined) {
-        throw agentXError("CONFIG_INVALID", `another agentx init started installing environment ${env} while this one was asking its questions; nothing was saved. Run agentx init again to continue that install`);
+        throw agentXError("CONFIG_INVALID", `another rovara init started installing environment ${env} while this one was asking its questions; nothing was saved. Run rovara init again to continue that install`);
       }
       // The saved answers carry the stored OpenRouter key's ARN, which every step reads.
       context.answers = await persistInitAnswers({ store, secrets, collected: firstRun });
@@ -1059,7 +1059,7 @@ async function init(options: InitOptions, deps: InitCliDependencies, services: {
       ...(options.yes ? {} : {
         confirmTakeover: (held: LockRecord) => activePrompter.confirm(
           held.holder === caller.arn && held.command === "init"
-            ? `Environment ${env} is locked by your own earlier agentx init since ${held.acquiredAt}. Take the lock over? Say yes only if that run is no longer going.`
+            ? `Environment ${env} is locked by your own earlier rovara init since ${held.acquiredAt}. Take the lock over? Say yes only if that run is no longer going.`
             : `Environment ${env} is locked by ${held.holder} running "${held.command}" since ${held.acquiredAt}, more than 2 hours ago. Take the lock over? Say yes only if that command is no longer running.`,
           { defaultValue: false },
         ),

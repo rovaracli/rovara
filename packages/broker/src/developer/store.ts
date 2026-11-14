@@ -570,7 +570,7 @@ export class DeveloperSignInStore {
     if (current === undefined) return undefined;
     if (isActiveLink(current, identityKey)) return { developerId: current.developerId, created: false };
     if (own) return undefined;
-    throw agentXError("AUTH_REQUIRED", "this sign-in was unlinked from that account and can only start its own; run agentx login again");
+    throw agentXError("AUTH_REQUIRED", "this sign-in was unlinked from that account and can only start its own; run rovara login again");
   }
 
   /**
@@ -752,7 +752,7 @@ export class DeveloperSignInStore {
         }));
       } catch (error) {
         if (!conditionFailed(error)) throw error;
-        throw agentXError("CONFIG_INVALID", "your sign-in methods changed while this ran; check them with agentx whoami and try again");
+        throw agentXError("CONFIG_INVALID", "your sign-in methods changed while this ran; check them with rovara whoami and try again");
       }
       await this.flush(event);
     }
@@ -819,7 +819,7 @@ export class DeveloperSignInStore {
       if (!conditionFailed(error)) throw error;
       // Something moved between the read and the write: say what, when the identity's link now shows it.
       const now = relinkRefusal(await this.getIdentityLink(identityKey), identityKey, developerId, input.provider);
-      throw agentXError("CONFIG_INVALID", now ?? "your sign-in methods changed while this ran; check them with agentx whoami and try again");
+      throw agentXError("CONFIG_INVALID", now ?? "your sign-in methods changed while this ran; check them with rovara whoami and try again");
     }
     await this.flush(event);
     return { developerId };

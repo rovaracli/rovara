@@ -132,7 +132,7 @@ export async function runSessionEndToEnd(options: Options): Promise<void> {
     log(`PASSED: provision, ${options.idleWait ? "idle stop by the reaper, " : ""}resume, failure and delete`);
   } catch (error) {
     log(`FAILED: ${error instanceof Error ? error.message : String(error)}`);
-    log(`clean up: find instances and volumes tagged agentx:workspace=${workspaceId}`);
+    log(`clean up: find instances and volumes tagged rovara-cloud:workspace=${workspaceId}`);
     throw error;
   }
 }

@@ -215,7 +215,7 @@ export async function startSwebenchRun(
   }
   const channel = await getSwebenchChannel(dependencies, context.thread.teamId, context.thread.channelId);
   if (channel === undefined) {
-    return { outcome: "REFUSED", reason: "NOT_ENABLED", message: "Eval runs are not enabled in this channel. An administrator can enable them with `agentx admin eval enable`." };
+    return { outcome: "REFUSED", reason: "NOT_ENABLED", message: "Eval runs are not enabled in this channel. An administrator can enable them with `rovara admin eval enable`." };
   }
   const runnerImage = options.runnerImage ?? deployment.runnerImage;
   const runnerFeatures = runnerImage === deployment.runnerImage ? deployment.runnerFeatures : options.runnerFeatures ?? [];

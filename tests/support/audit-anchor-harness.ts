@@ -35,7 +35,7 @@ export const ENV_NAME = "acme";
 export const PARTITION = "aws";
 export const ACCOUNT = "123456789012";
 export const REGION = "us-east-1";
-export const BUCKET_ARN = `arn:${PARTITION}:s3:::agentx-${ENV_NAME}-audit-ledger-${ACCOUNT}-${REGION}`;
+export const BUCKET_ARN = `arn:${PARTITION}:s3:::rovara-cloud-${ENV_NAME}-audit-ledger-${ACCOUNT}-${REGION}`;
 
 /** A bucket policy as GetBucketPolicy returns it: concrete ARNs, `"Principal": "*"`, one JSON line. Not the real policy: the lock check only hashes it. */
 export function bucketPolicyText(variant = "base"): string {

@@ -68,7 +68,7 @@ describe("the GitHub App flow on the wizard's own address", () => {
     const mount = server.mountManifest({ state: STATE, page, timeoutMs: 60_000 });
     const wrong = await fetch(`${origin}${GITHUB_CALLBACK_PATH}?code=0123456789abcdef0123&state=ffffffffffffffffffffffffffffffff`, { headers: fromGitHub });
     expect(wrong.status).toBe(400);
-    expect(await wrong.text()).toContain("This page is from a different agentx init run.");
+    expect(await wrong.text()).toContain("This page is from a different rovara init run.");
     expect(await settled(mount.code)).toBe("pending");
     expect((await fetch(`${origin}${GITHUB_CALLBACK_PATH}?state=${STATE}`, { headers: fromGitHub })).status).toBe(400);
     expect(await settled(mount.code)).toBe("pending");
@@ -93,7 +93,7 @@ describe("the GitHub App flow on the wizard's own address", () => {
   it("Review Focus 1: a callback after the wait ended is refused like any other request", async () => {
     const { server, origin } = await wizard();
     const mount = server.mountManifest({ state: STATE, page, timeoutMs: 20 });
-    await expect(mount.code).rejects.toThrow("no GitHub App was created within 0 minutes; run agentx init again");
+    await expect(mount.code).rejects.toThrow("no GitHub App was created within 0 minutes; run rovara init again");
     const late = await fetch(`${origin}${GITHUB_CALLBACK_PATH}?code=0123456789abcdef0123&state=${STATE}`, { headers: fromGitHub });
     expect(late.status).toBe(403);
     expect(await late.text()).toBe("cross-site request\n");

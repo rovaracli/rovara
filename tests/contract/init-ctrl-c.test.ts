@@ -27,7 +27,7 @@ async function releaseDir(): Promise<string> {
     }
   }
   await writeFile(join(dir, "release.json"), JSON.stringify({
-    schemaVersion: 1, version: "1.2.3", gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-placeholderqq", templates, packages: [],
+    schemaVersion: 1, version: "1.2.3", gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-phldrqq", templates, packages: [],
     images: { worker: `public.ecr.aws/agentx/worker@sha256:${"a".repeat(64)}`, slack: `public.ecr.aws/agentx/slack@sha256:${"b".repeat(64)}` },
   }));
   return dir;

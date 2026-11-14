@@ -44,13 +44,13 @@ function secretsWrites(template: Template): Statement[] {
 }
 
 describe("refresh-token write-back grant (phase 7)", () => {
-  it("lets the broker replace only connector secrets tagged agentx-writable: refresh-token, and nothing else", { timeout: 30_000 }, () => {
+  it("lets the broker replace only connector secrets tagged rovara-cloud-writable: refresh-token, and nothing else", { timeout: 30_000 }, () => {
     const template = Template.fromStack(new ControlPlaneStack(new App(), "RefreshTokenControlPlane"));
     const writes = secretsWrites(template);
     expect(writes).toHaveLength(1);
     expect([writes[0]!.Action].flat()).toEqual(["secretsmanager:PutSecretValue"]);
     expect(JSON.stringify(writes[0]!.Resource)).toContain("secret:agentx/connectors/*");
-    expect(writes[0]!.Condition).toEqual({ StringEquals: { "secretsmanager:ResourceTag/agentx-writable": "refresh-token" } });
+    expect(writes[0]!.Condition).toEqual({ StringEquals: { "secretsmanager:ResourceTag/rovara-cloud-writable": "refresh-token" } });
   });
 
   it("counts wildcards and any non-read secretsmanager action as a write, in every kind of IAM policy", () => {

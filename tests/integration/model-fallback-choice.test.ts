@@ -5,7 +5,7 @@ import { createModelRuntimeWithFallback, modelFallbackModel, type ModelFallbackN
 // M1.4 Task 4.10D, test 41 (MODEL3): a missing provider secret never moves work to a Bedrock model nobody chose. Without a chosen fallback the call fails by name and makes no Bedrock runtime;
 // with one it runs on that model and says so.
 
-const openaiArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/openai-AbCdEf";
+const openaiArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/openai-AbCdEf";
 const selected = { provider: "openai", modelId: "gpt-5.4" } as const;
 const CHOSEN = "us.anthropic.claude-sonnet-4-6";
 
@@ -18,7 +18,7 @@ describe("no silent fallback (test 41)", () => {
     for (const environment of [{}, { AGENTX_MODEL_FALLBACK: "none" }, { AGENTX_MODEL_FALLBACK: "" }]) {
       create.mockClear();
       await expect(createModelRuntimeWithFallback(selected, role, { environment })).rejects.toThrow(
-        "The OpenAI key secret is missing, and no fallback model was chosen. Add or restore the key, or choose a fallback with `agentx --env <env> config set models.fallback <bedrock model id>`",
+        "The OpenAI key secret is missing, and no fallback model was chosen. Add or restore the key, or choose a fallback with `rovara --env <env> config set models.fallback <bedrock model id>`",
       );
       // The OpenAI runtime is made before its key is read; a Bedrock one would be a second call.
       expect(create).toHaveBeenCalledTimes(1);

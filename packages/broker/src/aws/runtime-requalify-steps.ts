@@ -47,7 +47,7 @@ const ACTIVE_RUNNER_STATES = ["pending", "running", "stopping", "stopped"];
 
 export interface RequalifyConfig {
   workerRoleArn: string;
-  /** `/agentx/<env>/`: where the worker settings and the qualified AMI setting live. */
+  /** `/rovara-cloud/<env>/`: where the worker settings and the qualified AMI setting live. */
   workerSettingsPrefix: string;
   /** The public SSM parameter naming the newest AL2023 arm64 AMI. */
   amiParameterName: string;

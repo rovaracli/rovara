@@ -45,7 +45,7 @@ const orgResolver: OrgResolver = async (subject) => (subject.developerId === OMA
 const KEY = "sk-ant-planted-vendor-key-0123456789abcdef";
 const OTHER_KEY = "sk-ant-planted-second-key-fedcba9876543210";
 const ROLE_ARN = "arn:aws:iam::123456789012:role/rovara/proxy-access";
-const PRINCIPALS = ["arn:aws:iam::210987654321:role/agentx/staging/agentx-staging-model-proxy-task", "arn:aws:iam::210987654321:role/agentx/staging/agentx-staging-model-access"];
+const PRINCIPALS = ["arn:aws:iam::210987654321:role/rovara-cloud/staging/rovara-cloud-staging-model-proxy-task", "arn:aws:iam::210987654321:role/rovara-cloud/staging/rovara-cloud-staging-model-access"];
 const ALL_KINDS: SourceLaunch = { kinds: ["anthropic", "openai", "openrouter", "bedrock", "endpoint"] };
 const HOST = "llm.example.com";
 /** N8: an endpoint's secret is a reference under this prefix, never a value. */
@@ -1841,7 +1841,7 @@ describe("a company's own model endpoint (N8)", () => {
 
     it.each([
       ["a value pasted where the reference goes", KEY], ["an ARN", "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara/model-endpoints/x-AbCdEf"],
-      ["another secret of the install", "agentx/staging/model-proxy-master-key"], ["a path climb", "rovara/model-endpoints/../master"],
+      ["another secret of the install", "rovara-cloud/staging/model-proxy-master-key"], ["a path climb", "rovara/model-endpoints/../master"],
     ])("refuses %s as the reference, and never echoes it", async (_name, value) => {
       const s = await setup();
       const reply = await s.write(DANA, "POST", SIGNED, { source: withRef({ keyRef: value }) });

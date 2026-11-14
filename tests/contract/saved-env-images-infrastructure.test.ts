@@ -33,7 +33,7 @@ const SCOPE = { partition: "aws", region: REGION, account: ACCOUNT };
 function build(props: Partial<ConstructorParameters<typeof SavedEnvImages>[2]> = {}) {
   const stack = new Stack(new App(), "T", { env: { account: ACCOUNT, region: REGION } });
   const broker = new iam.Role(stack, "Broker", { assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"), roleName: "agentx-test-broker-role" });
-  const images = new SavedEnvImages(stack, "S", { env: "test", brokerRole: broker, cloudFormationRoleName: "agentx-test-cfn", ...props });
+  const images = new SavedEnvImages(stack, "S", { env: "test", brokerRole: broker, cloudFormationRoleName: "rovara-cloud-test-cfn", ...props });
   return { stack, broker, images, template: Template.fromStack(stack) };
 }
 
@@ -64,13 +64,13 @@ describe("the creation template", () => {
   });
 
   it("names a creation role at the root path: ECR's CustomRoleArn pattern has no room for an IAM path (staging, 2026-11-03)", () => {
-    // ^arn:aws[-a-z0-9]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,-.@_]*$ : the name part cannot hold a "/", so a role under /agentx/<env>/ is refused at validation.
+    // ^arn:aws[-a-z0-9]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,-.@_]*$ : the name part cannot hold a "/", so a role under /rovara-cloud/<env>/ is refused at validation.
     const arn = props()["CustomRoleArn"] as { "Fn::GetAtt": [string, string] };
     expect(arn["Fn::GetAtt"][1]).toBe("Arn");
     const resources = template.toJSON().Resources as Record<string, { Type: string; Properties: Record<string, unknown> }>;
     const role = resources[arn["Fn::GetAtt"][0]]!;
     expect(role.Type).toBe("AWS::IAM::Role");
-    expect(role.Properties["RoleName"]).toBe("agentx-test-img-create");
+    expect(role.Properties["RoleName"]).toBe("rovara-cloud-test-img-create");
     expect(role.Properties["Path"]).toBe("/");
     const resolved = `arn:aws:iam::${ACCOUNT}:role${String(role.Properties["Path"])}${String(role.Properties["RoleName"])}`;
     expect(resolved).toMatch(/^arn:aws[-a-z0-9]*:iam::[0-9]{12}:role\/[A-Za-z0-9+=,\-.@_]*$/u);
@@ -147,7 +147,7 @@ describe("the key", () => {
     expect(allowed).not.toContain("kms:Create*");
   });
 
-  const CREATE_ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/agentx-test-img-create`;
+  const CREATE_ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/rovara-cloud-test-img-create`;
   const allows = (all: Statement[]) => all.filter((statement) => statement.Effect === "Allow" && (statement.Sid ?? "").startsWith("CreationRole"));
 
   // SV-2: kms:GrantIsForAWSResource exists on the grant actions only, so DescribeKey in a statement with it never matches.
@@ -190,7 +190,7 @@ describe("the key", () => {
   it("only the deploy role may schedule the key's deletion", () => {
     const destroy = statements.find((statement) => statement.Sid === "DenyDestroy")!;
     expect(list(destroy.Action)).toContain("kms:ScheduleKeyDeletion");
-    expect(JSON.stringify(destroy.Condition)).toContain("role/agentx-test-cfn");
+    expect(JSON.stringify(destroy.Condition)).toContain("role/rovara-cloud-test-cfn");
   });
 
   it("Enterprise's own key: no key is made, the template uses it, and the install prints the statements its policy needs", () => {
@@ -247,7 +247,7 @@ describe("the roles", () => {
 
   it("ECR's creation role has a fixed name, so an Enterprise key policy can name it", () => {
     expect(named(savedEnvCreateRoleName("test"))).toBeDefined();
-    expect(savedEnvCreateRoleName("test")).toBe("agentx-test-img-create");
+    expect(savedEnvCreateRoleName("test")).toBe("rovara-cloud-test-img-create");
   });
 
   it("ECR's creation role is assumable by ECR in this account only", () => {

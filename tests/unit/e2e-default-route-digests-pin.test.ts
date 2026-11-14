@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { e2eModelRouteRevision } from "../../packages/contracts/src/e2e-model-channel.js";
 import { deriveE2EAgentRoute, e2eAgentRouteDefinitionDigest } from "../../packages/model-runtime/src/e2e-route-derive.js";
-import { SECRET_ARN } from "../support/e2e-model-fixtures.js";
 
 // M1.4 Task 4.10B must hold: the failure-class work (a receipt field, six verifier codes, sentences) changes no route definition, so the digest of each provider's default route is the
-// value it had at 38b55645. The values below were computed at that head (the keyed ones for the installation's secret ARN of tests/support/e2e-model-fixtures.ts) and are pinned.
+// value it had at 38b55645. The values below were computed at that head (the keyed ones for the installation's secret ARN below, which was tests/support/e2e-model-fixtures.ts's SECRET_ARN
+// then) and are pinned. The ARN is an input, so it stays the one the values were computed for; renaming the fixture's ARN to rovara-cloud must not move this pin.
+const SECRET_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/provider-key-AbCdEf";
 const PINNED = {
   "amazon-bedrock": { installation: { provider: "amazon-bedrock", region: "us-east-1" }, digest: "01552c0c27e0b584697a1eeb8e5eb9570d46adfda8d7d5a58798ea9ebf59e71d", revision: "r1-1ca517bbc9f9" },
   anthropic: { installation: { provider: "anthropic", secretArn: SECRET_ARN }, digest: "60a2697c57d2924c8ece074d1ec9dbf86028cbf942dfe72817f08454e0ad6beb", revision: "r1-e5fe6d5062e9" },

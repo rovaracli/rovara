@@ -40,7 +40,7 @@ describe("the builders the broker's wiring calls", () => {
     const record = (name: string): void => { calls.push(name); };
     const secrets = serverSecretsFromOrgSecrets({ env: "staging", secrets: { put: async (_o: string, name: string) => { record(name); return "v1"; }, read: async (_o: string, name: string) => { record(name); return undefined; }, scheduleDelete: async (_o: string, name: string) => { record(name); } } });
     await secrets.put(ORG, "mcpabc123456", "t");
-    expect(calls).toEqual([`agentx/staging/org-connectors/${ORG}/mcpabc123456`]);
+    expect(calls).toEqual([`rovara-cloud/staging/org-connectors/${ORG}/mcpabc123456`]);
     await expect(secrets.put(ORG, "../con_x", "t")).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
   it("make the MCP servers flow, which Public refuses", async () => {

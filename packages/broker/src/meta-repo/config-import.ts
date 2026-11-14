@@ -294,7 +294,7 @@ const CONFIG_STALE_MESSAGE = "the meta repo's config changed since you looked; r
  */
 export async function applyMetaConfigChange<Caller extends MetaConfigCaller>(deps: MetaConfigDependencies<Caller>, caller: Caller, project: string, rawBody: unknown): Promise<ApplyMetaConfigResult> {
   await requireRole(deps, caller, project, "edit");
-  if (!deps.cloud) throw agentXError("FORBIDDEN", "ask an administrator to change this project with agentx admin project register");
+  if (!deps.cloud) throw agentXError("FORBIDDEN", "ask an administrator to change this project with rovara admin project register");
   if ((await readProjectMeta(deps, caller.orgId, project))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(project));
   const body = parseBody(ApplyMetaConfigBodySchema, rawBody);
   const nowMs = deps.now();
@@ -321,7 +321,7 @@ export async function applyMetaConfigChange<Caller extends MetaConfigCaller>(dep
   const current = latest.definition;
   if (current.revision !== body.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
   if (current.e2e !== undefined || latest.setupApproval !== undefined) {
-    throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register");
+    throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with rovara admin project register");
   }
 
   const pendingGone = (): TransactItem => ({ Delete: { TableName: deps.tableName, Key: metaConfigPendingKey(caller.orgId, project), ConditionExpression: "#commit = :commit", ExpressionAttributeNames: { "#commit": "commit" }, ExpressionAttributeValues: { ":commit": record.commit } } });

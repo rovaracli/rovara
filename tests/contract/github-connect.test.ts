@@ -40,7 +40,7 @@ const CLIENT_SECRET = "client-secret-value-9f3a";
 const OWNER = "owner-dev";
 const ADMIN = "admin-dev";
 const OTHER = "other-dev";
-const STARTED_MESSAGE = "sign in to Rovara with GitHub once (agentx login, then choose GitHub), then run agentx github connect again";
+const STARTED_MESSAGE = "sign in to Rovara with GitHub once (rovara login, then choose GitHub), then run rovara github connect again";
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 
 interface GhUser { id: number; installations: number[]; memberships?: Record<string, { state: string; role: string }> }
@@ -172,7 +172,7 @@ describe("startGithubConnect", () => {
     const w = standard();
     await expect(startGithubConnect(w.deps, { developerId: OTHER, orgId: TEST_ORG, orgRole: "member" })).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("only an owner or admin can connect GitHub") as string });
     const privateInstall = standard({ cloud: false });
-    await expect(startGithubConnect(privateInstall.deps, OWNER_CALLER)).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("on this install, GitHub is connected by the administrator during agentx init") as string });
+    await expect(startGithubConnect(privateInstall.deps, OWNER_CALLER)).rejects.toMatchObject({ code: "FORBIDDEN", message: expect.stringContaining("on this install, GitHub is connected by the administrator during rovara init") as string });
     expect(w.db.find((item) => String(item.pk).startsWith("GITHUB_CONNECT#"))).toEqual([]);
   });
 
@@ -625,7 +625,7 @@ describe("through the broker", () => {
     b.linkGithub();
     const refused = await b.dev(OMAR, "POST", "/v1/app/github/connect");
     expect(refused.status).toBe(403);
-    expect(JSON.stringify(refused.body.error)).toContain("on this install, GitHub is connected by the administrator during agentx init");
+    expect(JSON.stringify(refused.body.error)).toContain("on this install, GitHub is connected by the administrator during rovara init");
     expect((await b.publicCall("GET", "/v1/github/install/callback?state=x")).statusCode).toBe(404);
     expect((await b.publicCall("POST", "/v1/github/install/confirm", {}, "connect=x&decision=connect")).statusCode).toBe(404);
   });
@@ -659,7 +659,7 @@ describe("through the broker", () => {
     expect(confirmed.statusCode).toBe(200);
     expect(confirmed.body).toContain("<h1>GitHub connected</h1>");
     expect(confirmed.body).toContain("acme is now connected to Acme &lt;img src=x onerror=alert(1)&gt;.");
-    expect(confirmed.body).toContain("Next: <code>agentx project create --repository acme/&lt;repository&gt;</code>");
+    expect(confirmed.body).toContain("Next: <code>rovara project create --repository acme/&lt;repository&gt;</code>");
     expect(confirmed.headers["set-cookie"]).toContain("Max-Age=0");
     expect(b.db.get(githubInstallationKey(501))).toMatchObject({ orgId: TEST_ORG, accountLogin: "acme", boundByDeveloperId: OMAR.developerId });
     expect(b.db.get(orgGithubInstallationKey(TEST_ORG, 501))).toMatchObject({ orgId: TEST_ORG });
@@ -667,7 +667,7 @@ describe("through the broker", () => {
     // The same post again is a used state.
     const again = await b.publicCall("POST", "/v1/github/install/confirm", headers, form);
     expect(again.statusCode).toBe(410);
-    expect(again.body).toContain("This connect link has expired. Run agentx github connect again.");
+    expect(again.body).toContain("This connect link has expired. Run rovara github connect again.");
   });
 
   it("the confirmation refuses a foreign Origin with 400 and a missing cookie as expired, and binds nothing", async () => {
@@ -705,7 +705,7 @@ describe("through the broker", () => {
     const b = await broker();
     const expired = await b.publicCall("GET", `/v1/github/install/callback?state=${"z".repeat(43)}`);
     expect(expired.statusCode).toBe(410);
-    expect(expired.body).toContain("<h1>This connect link has expired. Run agentx github connect again.</h1>");
+    expect(expired.body).toContain("<h1>This connect link has expired. Run rovara github connect again.</h1>");
     b.linkGithub();
     const { installUrl } = (await b.dev(OMAR, "POST", "/v1/app/github/connect")).body as { installUrl: string };
     const state = new URL(installUrl).searchParams.get("state")!;
@@ -725,16 +725,16 @@ describe("the pages", () => {
     const text = (kind: Parameters<typeof githubConnectPage>[0], data = { accountLogin: "acme", orgName: "Acme" }) => githubConnectPage(kind, data).body.replace(/<style[^>]*>.*?<\/style>/, "");
     expect(text("connected_trial_used")).toContain("Your free trial stays locked: this GitHub account already started a trial for another organization.");
     expect(text("cancelled")).toContain("<h1>Nothing was connected</h1>");
-    expect(text("cancelled")).toContain("Run agentx github connect again if you change your mind.");
+    expect(text("cancelled")).toContain("Run rovara github connect again if you change your mind.");
     expect(text("taken")).toContain(`<h1>${GITHUB_INSTALLATION_TAKEN_MESSAGE}</h1>`);
     expect(githubConnectPage("taken").statusCode).toBe(409);
     expect(text("not_yours")).toContain("<h1>Only the account&#39;s owner or an admin of the GitHub organization can connect it</h1>");
-    expect(text("not_yours")).toContain("Ask an admin of acme on GitHub to run agentx github connect.");
+    expect(text("not_yours")).toContain("Ask an admin of acme on GitHub to run rovara github connect.");
     expect(githubConnectPage("confirm", { accountLogin: "acme", orgName: "Acme", connectId: "a".repeat(64) }).headers["referrer-policy"]).toBe("same-origin");
     expect(githubConnectPage("not_allowed", { orgName: "Acme" }).statusCode).toBe(403);
     expect(text("not_allowed")).toContain("<h1>Nothing was connected</h1>");
-    expect(text("not_allowed")).toContain("The Rovara organization Acme was closed, or you are no longer its owner or admin. Ask an owner or admin of Acme to run agentx github connect.");
-    expect(text("not_linked")).toContain("This connect link was started by someone else in Rovara, or your GitHub account isn&#39;t linked to your Rovara account. Sign in with GitHub (agentx login, then choose GitHub), then run agentx github connect yourself.");
+    expect(text("not_allowed")).toContain("The Rovara organization Acme was closed, or you are no longer its owner or admin. Ask an owner or admin of Acme to run rovara github connect.");
+    expect(text("not_linked")).toContain("This connect link was started by someone else in Rovara, or your GitHub account isn&#39;t linked to your Rovara account. Sign in with GitHub (rovara login, then choose GitHub), then run rovara github connect yourself.");
   });
 });
 
@@ -742,7 +742,7 @@ describe("infrastructure", () => {
   let template: { Resources: Record<string, { Type: string; Properties: Record<string, unknown>; DependsOn?: string | string[] }> };
   beforeAll(() => {
     const app = buildAgentXApp({ agentxEnv: "staging" });
-    template = Template.fromStack(app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "agentx-staging-control-plane")!).toJSON() as typeof template;
+    template = Template.fromStack(app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "rovara-cloud-staging-control-plane")!).toJSON() as typeof template;
   }, 300_000);
 
   it("routes the callback and the confirmation without an authorizer, and throttles both on the stage like the other public routes", () => {
@@ -763,7 +763,7 @@ describe("infrastructure", () => {
   });
 });
 
-describe("agentx github connect", () => {
+describe("rovara github connect", () => {
   const dirs: string[] = [];
   afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
   const ISSUER = `${CELL}/v1/auth`;
@@ -860,13 +860,13 @@ describe("agentx github connect", () => {
       return noInstallations();
     }, { waitMs: 20 });
     expect(await h.run(["github", "connect"])).toBe(0);
-    expect(h.err.join("")).toContain("Still waiting for your GitHub admin; check later with agentx github list.");
+    expect(h.err.join("")).toContain("Still waiting for your GitHub admin; check later with rovara github list.");
     expect(h.out.join("")).toBe("");
   });
 
   it("ends with the copy for a request that expired, was declined or needs a reinstall", async () => {
     for (const [status, words] of [
-      ["expired", "Your request wasn't approved within 7 days, or your GitHub admin declined it. Run agentx github connect to ask again."],
+      ["expired", "Your request wasn't approved within 7 days, or your GitHub admin declined it. Run rovara github connect to ask again."],
       ["reinstall_needed", "acme was connected to Rovara before, so an approval can't reconnect it on its own."],
     ] as const) {
       const h = await cli((method, path, installations, count) => {

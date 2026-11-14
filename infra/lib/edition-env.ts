@@ -2,7 +2,7 @@
 // process has to guess it from another setting at run time.
 import { Aws, type IAspect, aws_ecs as ecs, aws_iam as iam, aws_lambda as lambda } from "aws-cdk-lib";
 import type { IConstruct } from "constructs";
-import { EDITION_ENV_VAR, type Edition } from "@agentx/contracts";
+import { EDITION_ENV_VAR, environmentSettingsPrefix, type Edition } from "@agentx/contracts";
 
 export class EditionEnvironment implements IAspect {
   constructor(private readonly edition: Edition) {}
@@ -25,7 +25,7 @@ export class EditionEnvironment implements IAspect {
 
 /** The SSM parameter that records an install's edition (written by the foundation for an Enterprise install, and kept when the stack goes). */
 export function editionRecordParameterName(env: string): string {
-  return `/agentx/${env}/edition`;
+  return `${environmentSettingsPrefix(env)}edition`;
 }
 
 /**
@@ -37,6 +37,6 @@ export function grantEditionRecordRead(fn: lambda.Function, env: string): void {
     sid: "ReadEditionRecord",
     actions: ["ssm:GetParameter"],
     // The record, and the backup the CLI keeps while it has the record out of the way.
-    resources: [editionRecordParameterName(env), `/agentx/${env}/edition-backup`].map((name) => `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${name}`),
+    resources: [editionRecordParameterName(env), `${environmentSettingsPrefix(env)}edition-backup`].map((name) => `arn:${Aws.PARTITION}:ssm:${Aws.REGION}:${Aws.ACCOUNT_ID}:parameter${name}`),
   }));
 }

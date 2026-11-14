@@ -16,7 +16,7 @@ const alarm = (name: string) => Object.values(slack.findResources("AWS::CloudWat
 describe("FR-045 alarms in the Slack stack (environment naming)", () => {
   it("creates every alarm the spec names, each sending to the environment's topic", () => {
     for (const name of ["TurnErrors", "SlowTurns", "SlackDeliveryFailed", "CheckerFailures", "BedrockThrottling", "ClassifierThrottling", "TestAlarm"]) {
-      const found = alarm(`agentx-staging-${name}`);
+      const found = alarm(`rovara-cloud-staging-${name}`);
       expect(found, name).toBeDefined();
       expect(found!.Properties.AlarmActions).toEqual([{ Ref: "OperatorAlertsTopicArn" }]);
     }
@@ -25,7 +25,7 @@ describe("FR-045 alarms in the Slack stack (environment naming)", () => {
   it("turns failed turns and abandoned Slack requests into metrics from the service's own log events", () => {
     slack.hasResourceProperties("AWS::Logs::MetricFilter", Match.objectLike({
       FilterPattern: '{ $.event = "task.failed" }',
-      MetricTransformations: [Match.objectLike({ MetricName: "TurnFailed", MetricNamespace: "AgentX/staging", MetricValue: "1" })],
+      MetricTransformations: [Match.objectLike({ MetricName: "TurnFailed", MetricNamespace: "RovaraCloud/staging", MetricValue: "1" })],
     }));
     slack.hasResourceProperties("AWS::Logs::MetricFilter", Match.objectLike({
       FilterPattern: '{ $.event = "request.abandoned" }',
@@ -35,23 +35,23 @@ describe("FR-045 alarms in the Slack stack (environment naming)", () => {
 
   it("compares the slowest turn in 5 minutes with SlowTurnMinutes", () => {
     slack.hasParameter("SlowTurnMinutes", { Type: "Number", Default: 5, MinValue: 1, MaxValue: 60 });
-    expect(alarm("agentx-staging-SlowTurns")!.Properties.Threshold).toEqual({ Ref: "SlowTurnMinutes" });
+    expect(alarm("rovara-cloud-staging-SlowTurns")!.Properties.Threshold).toEqual({ Ref: "SlowTurnMinutes" });
   });
 
   it("watches Bedrock throttling only when the orchestrator or classifier runs on Bedrock", () => {
-    const bedrock = alarm("agentx-staging-BedrockThrottling")!;
+    const bedrock = alarm("rovara-cloud-staging-BedrockThrottling")!;
     expect(bedrock.Properties.Namespace).toBe("AWS/Bedrock");
     expect(bedrock.Properties.MetricName).toBe("InvocationThrottles");
     expect(bedrock.Properties.Dimensions).toEqual([{ Name: "ModelId", Value: { Ref: "ModelId" } }]);
     expect(bedrock.Condition).toBeDefined();
-    expect(alarm("agentx-staging-ClassifierThrottling")!.Condition).toBeDefined();
+    expect(alarm("rovara-cloud-staging-ClassifierThrottling")!.Condition).toBeDefined();
   });
 
   it("keeps the test alarm quiet: it reads a metric nothing emits", () => {
-    const test = alarm("agentx-staging-TestAlarm")!;
+    const test = alarm("rovara-cloud-staging-TestAlarm")!;
     // The exact name matters: the service role's Budget/TestAlarm access grant (spec 015 phase
     // 15d2 Task 1) is scoped to this literal alarm name, not a wildcard.
-    expect(test.Properties.AlarmName).toBe("agentx-staging-TestAlarm");
+    expect(test.Properties.AlarmName).toBe("rovara-cloud-staging-TestAlarm");
     expect(test.Properties.MetricName).toBe("TestAlarmNeverEmitted");
     expect(test.Properties.TreatMissingData).toBe("notBreaching");
   });
@@ -65,19 +65,19 @@ describe("FR-047 budget in the control-plane stack (environment naming)", () => 
     const [budget] = Object.values(budgets) as Array<{ Condition?: string; Properties: { Budget: Record<string, unknown>; NotificationsWithSubscribers: unknown[]; ResourceTags?: unknown[] } }>;
     expect(budget!.Condition).toBeDefined();
     // The exact name matters: the service role's Budget access grant (spec 015 phase 15d2 Task 1)
-    // is scoped to arn:<partition>:budgets::<account>:budget/agentx-<env>-monthly, not a wildcard.
-    expect(budget!.Properties.Budget.BudgetName).toBe("agentx-staging-monthly");
+    // is scoped to arn:<partition>:budgets::<account>:budget/rovara-cloud-<env>-monthly, not a wildcard.
+    expect(budget!.Properties.Budget.BudgetName).toBe("rovara-cloud-staging-monthly");
     expect(JSON.stringify(budget!.Properties.NotificationsWithSubscribers)).toContain("OperatorAlerts");
-    expect(JSON.stringify(budget!.Properties.Budget.CostFilters)).toContain("user:agentx:env$staging");
-    // C5 / FR-047: every resource the installer creates carries agentx:env; AWS::Budgets::Budget
+    expect(JSON.stringify(budget!.Properties.Budget.CostFilters)).toContain("user:rovara-cloud:env$staging");
+    // C5 / FR-047: every resource the installer creates carries rovara-cloud:env; AWS::Budgets::Budget
     // takes tags through ResourceTags rather than the stack's Tags.of(app), so it must be set here.
-    expect(budget!.Properties.ResourceTags).toEqual([{ Key: "agentx:env", Value: "staging" }]);
+    expect(budget!.Properties.ResourceTags).toEqual([{ Key: "rovara-cloud:env", Value: "staging" }]);
   });
 
-  it("filters by the agentx:env tag under tag scope, and nothing at all under account scope", () => {
+  it("filters by the rovara-cloud:env tag under tag scope, and nothing at all under account scope", () => {
     const [budget] = Object.values(controlPlane.findResources("AWS::Budgets::Budget")) as Array<{ Properties: { Budget: { CostFilters: unknown } } }>;
     expect(budget!.Properties.Budget.CostFilters).toEqual({
-      "Fn::If": ["BudgetByTag", { TagKeyValue: ["user:agentx:env$staging"] }, { Ref: "AWS::NoValue" }],
+      "Fn::If": ["BudgetByTag", { TagKeyValue: ["user:rovara-cloud:env$staging"] }, { Ref: "AWS::NoValue" }],
     });
   });
 
@@ -113,7 +113,7 @@ describe("FR-047 budget in the control-plane stack (environment naming)", () => 
 
 describe("issue #46: the dispatch dead-letter queue alarm (environment naming)", () => {
   it("alarms on any visible message in the dispatch dead-letter queue, sending to the environment's topic", () => {
-    const found = Object.values(controlPlane.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: "agentx-staging-DispatchDeadLetters" } })) as Array<{ Properties: Record<string, unknown>; Condition?: string }>;
+    const found = Object.values(controlPlane.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: "rovara-cloud-staging-DispatchDeadLetters" } })) as Array<{ Properties: Record<string, unknown>; Condition?: string }>;
     expect(found).toHaveLength(1);
     const dispatch = found[0]!;
     const [queueId] = Object.keys(controlPlane.findResources("AWS::SQS::Queue")).filter((id) => /^DispatchDeadLetterQueue[0-9A-F]{8}$/.test(id));
@@ -149,12 +149,12 @@ describe("issue #46: the dispatch dead-letter queue alarm (environment naming)",
 
 describe("Plan 4 Task 8 (R41): the autonomous write approver selector alarm (environment naming)", () => {
   const filters = () => Object.values(controlPlane.findResources("AWS::Logs::MetricFilter", { Properties: { FilterPattern: '{ $.event = "write_approver_selector.failed" }' } })) as Array<{ Properties: Record<string, unknown> }>;
-  const alarms = () => Object.values(controlPlane.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: "agentx-staging-ChainWriteApproverSelectorFailed" } })) as Array<{ Properties: Record<string, unknown>; Condition?: string }>;
+  const alarms = () => Object.values(controlPlane.findResources("AWS::CloudWatch::Alarm", { Properties: { AlarmName: "rovara-cloud-staging-ChainWriteApproverSelectorFailed" } })) as Array<{ Properties: Record<string, unknown>; Condition?: string }>;
 
   it("counts the broker's write_approver_selector.failed lines into ChainWriteApproverSelectorFailures", () => {
     expect(filters()).toHaveLength(1);
     const [filter] = filters();
-    expect(filter!.Properties.MetricTransformations).toEqual([{ MetricNamespace: "AgentX/staging", MetricName: "ChainWriteApproverSelectorFailures", MetricValue: "1" }]);
+    expect(filter!.Properties.MetricTransformations).toEqual([{ MetricNamespace: "RovaraCloud/staging", MetricName: "ChainWriteApproverSelectorFailures", MetricValue: "1" }]);
     // On the broker function's own log group, the one the broker's other metric filters read.
     // (The GitHub install-request notice filter was the other one until it became Rovara Cloud only, which this stack is not; the eval batch watcher's is on the broker's group too.)
     const others = Object.entries(controlPlane.findResources("AWS::Logs::MetricFilter")).filter(([id]) => id.startsWith("BrokerLogsEvalBatchWatcher")).map(([, resource]) => resource as { Properties: Record<string, unknown> });
@@ -166,7 +166,7 @@ describe("Plan 4 Task 8 (R41): the autonomous write approver selector alarm (env
     expect(alarms()).toHaveLength(1);
     const [alarm] = alarms();
     expect(alarm!.Properties).toMatchObject({
-      Namespace: "AgentX/staging", MetricName: "ChainWriteApproverSelectorFailures", Statistic: "Sum", Period: 300, EvaluationPeriods: 1, Threshold: 1,
+      Namespace: "RovaraCloud/staging", MetricName: "ChainWriteApproverSelectorFailures", Statistic: "Sum", Period: 300, EvaluationPeriods: 1, Threshold: 1,
       ComparisonOperator: "GreaterThanOrEqualToThreshold", TreatMissingData: "notBreaching",
     });
     const [topicId] = Object.keys(controlPlane.findResources("AWS::SNS::Topic")).filter((id) => id.startsWith("OperatorAlerts"));

@@ -31,7 +31,7 @@ const resources = (template: Template, type: string): Array<[string, Json]> => O
 
 
 const BUCKET = "customer-approved-bundles";
-const FUNCTION_NAME = "agentx-ent-bundle-deployer";
+const FUNCTION_NAME = "rovara-cloud-ent-bundle-deployer";
 const DEPLOYER_ARN = `arn:aws:lambda:us-east-1:123456789012:function:${FUNCTION_NAME}`;
 const walkGetAtt = (template: Template) => {
   const resourcesJson = template.toJSON().Resources as Record<string, Json>;
@@ -65,12 +65,12 @@ function resolve(template: Template, document: unknown, state: "enabled" | "susp
   return policy.Statement.filter((statement): statement is Json => statement !== undefined);
 }
 function statementsFor(template: Template, state: "enabled" | "suspended"): Json[] {
-  const role = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-rovara-operator")![1];
+  const role = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "rovara-cloud-ent-rovara-operator")![1];
   return resolve(template, role.Properties.Policies[0].PolicyDocument, state);
 }
 /** The deployer's role policy (an AWS::IAM::Policy attached to its role). */
 function deployerStatements(template: Template): Json[] {
-  const [roleId] = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-bundle-deployer")!;
+  const [roleId] = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "rovara-cloud-ent-bundle-deployer")!;
   const policy = resources(template, "AWS::IAM::Policy").find(([, p]) => JSON.stringify(p.Properties.Roles).includes(roleId))![1];
   return resolve(template, policy.Properties.PolicyDocument, "enabled");
 }
@@ -109,8 +109,8 @@ function allowed(statements: Json[], action: string, resource: string, context: 
 
 
 const ARN = (service: string, rest: string, region = "us-east-1") => `arn:aws:${service}:${service === "s3" ? "" : region}:${service === "s3" ? "" : "123456789012"}:${rest}`;
-const DEPLOY_ROLE = "arn:aws:iam::123456789012:role/agentx-ent-cloudformation";
-const STACK = (name: string) => `arn:aws:cloudformation:us-east-1:123456789012:stack/agentx-${name}/uuid`;
+const DEPLOY_ROLE = "arn:aws:iam::123456789012:role/rovara-cloud-ent-cloudformation";
+const STACK = (name: string) => `arn:aws:cloudformation:us-east-1:123456789012:stack/rovara-cloud-${name}/uuid`;
 const PARTS = ["foundation", "identity", "runtime", "control-plane", "slack"];
 
 describe("the Rovara operator role", () => {
@@ -140,16 +140,16 @@ describe("the Rovara operator role", () => {
     });
 
     it("lets only log groups that hold no content be named", () => {
-      const parse = (groups: string) => parseOperatorAccessContext({ edition: "enterprise", env: "ent", workerLogGroup: "/agentx/ent/worker", get: (key) => ({ rovaraOperatorAccess: "enabled", rovaraOperatorPrincipalArn: PRINCIPAL, rovaraOperatorExternalId: EXTERNAL_ID, rovaraBundleApproverArns: APPROVERS, rovaraOperatorLogGroups: groups })[key] });
-      expect(parse("/aws/lambda/agentx-ent-doctor")?.logGroups).toEqual(["/aws/lambda/agentx-ent-doctor"]);
-      expect(() => parse("/agentx/ent/worker")).toThrow(/holds task content/);
-      expect(() => parse("/agentx/ent/worker/i-123")).toThrow(/holds task content/);
+      const parse = (groups: string) => parseOperatorAccessContext({ edition: "enterprise", env: "ent", workerLogGroup: "/rovara-cloud/ent/worker", get: (key) => ({ rovaraOperatorAccess: "enabled", rovaraOperatorPrincipalArn: PRINCIPAL, rovaraOperatorExternalId: EXTERNAL_ID, rovaraBundleApproverArns: APPROVERS, rovaraOperatorLogGroups: groups })[key] });
+      expect(parse("/aws/lambda/rovara-cloud-ent-doctor")?.logGroups).toEqual(["/aws/lambda/rovara-cloud-ent-doctor"]);
+      expect(() => parse("/rovara-cloud/ent/worker")).toThrow(/holds task content/);
+      expect(() => parse("/rovara-cloud/ent/worker/i-123")).toThrow(/holds task content/);
       expect(() => parse("/aws/lambda/*")).toThrow(/exact log groups/);
     });
   });
 
   describe("who may assume it", () => {
-    const [, role] = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-rovara-operator")!;
+    const [, role] = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "rovara-cloud-ent-rovara-operator")!;
     const trust = role.Properties.AssumeRolePolicyDocument.Statement;
 
     it("is one named role, with the customer's external id, MFA, a source identity on every session, only through the install's region, and sessions of at most an hour", () => {
@@ -175,8 +175,8 @@ describe("the Rovara operator role", () => {
     it("can invoke the customer-owned deployer, and nothing else it could invoke", () => {
       expect(allowed(enabled, "lambda:InvokeFunction", DEPLOYER_ARN)).toBe(true);
       expect(allowed(enabled, "lambda:InvokeFunction", `${DEPLOYER_ARN}:1`)).toBe(false); // a qualified ARN is not the deployer's
-      expect(allowed(enabled, "lambda:InvokeFunction", ARN("lambda", "function:agentx-ent-broker"))).toBe(false);
-      expect(allowed(enabled, "lambda:InvokeFunction", ARN("lambda", "function:agentx-ent-bundle-deployer-copy"))).toBe(false);
+      expect(allowed(enabled, "lambda:InvokeFunction", ARN("lambda", "function:rovara-cloud-ent-broker"))).toBe(false);
+      expect(allowed(enabled, "lambda:InvokeFunction", ARN("lambda", "function:rovara-cloud-ent-bundle-deployer-copy"))).toBe(false);
     });
 
     it("makes no CloudFormation change itself, whatever template, role or stack it names: it holds no create, execute, update or delete", () => {
@@ -190,7 +190,7 @@ describe("the Rovara operator role", () => {
       for (const part of [...PARTS, "access"]) expect(allowed(enabled, "cloudformation:DescribeStacks", STACK(`ent-${part}`)), part).toBe(true);
       for (const part of [...PARTS, "access"]) expect(allowed(enabled, "cloudformation:DescribeStacks", STACK(`ent-x-${part}`)), `ent-x ${part}`).toBe(false);
       expect(allowed(enabled, "cloudformation:DescribeStacks", STACK("ent-anything"))).toBe(false);
-      expect(JSON.stringify(enabled.filter((statement) => statement.Effect === "Allow" && JSON.stringify(statement.Action).includes("cloudformation")).map((s) => s.Resource))).not.toMatch(/agentx-ent-\*|stack\/\*/);
+      expect(JSON.stringify(enabled.filter((statement) => statement.Effect === "Allow" && JSON.stringify(statement.Action).includes("cloudformation")).map((s) => s.Resource))).not.toMatch(/rovara-cloud-ent-\*|stack\/\*/);
     });
 
     it("has no S3 access at all (the deployer reads the approvals), and cannot write any record: settings, the installed-bundle record, restore points", () => {
@@ -200,10 +200,10 @@ describe("the Rovara operator role", () => {
       }
       for (const name of ["settings", "bundle", "lock", "restore-points/20261031T101500000Z", "bundle-trust/public-keys", "signin"]) {
         for (const action of ["ssm:PutParameter", "ssm:DeleteParameter"]) {
-          expect(allowed(enabled, action, ARN("ssm", `parameter/agentx/ent/${name}`)), `${action} ${name}`).toBe(false);
-          expect(allowed(withBroadAllow(enabled), action, ARN("ssm", `parameter/agentx/ent/${name}`)), `${action} ${name} (with a broad allow)`).toBe(false);
+          expect(allowed(enabled, action, ARN("ssm", `parameter/rovara-cloud/ent/${name}`)), `${action} ${name}`).toBe(false);
+          expect(allowed(withBroadAllow(enabled), action, ARN("ssm", `parameter/rovara-cloud/ent/${name}`)), `${action} ${name} (with a broad allow)`).toBe(false);
         }
-        expect(allowed(enabled, "ssm:GetParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), `get ${name}`).toBe(false);
+        expect(allowed(enabled, "ssm:GetParameter", ARN("ssm", `parameter/rovara-cloud/ent/${name}`)), `get ${name}`).toBe(false);
       }
     });
 
@@ -227,8 +227,8 @@ describe("the Rovara operator role", () => {
     };
 
     it("makes no IAM change, assumes no other role, and cannot widen itself", () => {
-      for (const action of ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:DeleteRolePermissionsBoundary", "iam:CreateAccessKey", "iam:TagRole", "iam:CreatePolicyVersion", "iam:PassRole"]) denied(action, "arn:aws:iam::123456789012:role/agentx-ent-rovara-operator");
-      for (const action of ["sts:AssumeRole", "sts:GetFederationToken", "sts:TagSession"]) denied(action, "arn:aws:iam::123456789012:role/agentx-ent-operator");
+      for (const action of ["iam:CreateRole", "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:UpdateAssumeRolePolicy", "iam:DeleteRolePermissionsBoundary", "iam:CreateAccessKey", "iam:TagRole", "iam:CreatePolicyVersion", "iam:PassRole"]) denied(action, "arn:aws:iam::123456789012:role/rovara-cloud-ent-rovara-operator");
+      for (const action of ["sts:AssumeRole", "sts:GetFederationToken", "sts:TagSession"]) denied(action, "arn:aws:iam::123456789012:role/rovara-cloud-ent-operator");
     });
 
     it("has no shell on, or copy of, a worker", () => {
@@ -237,30 +237,30 @@ describe("the Rovara operator role", () => {
 
     it("cannot read or replace any function's code, read secret values, or use a key", () => {
       for (const action of ["lambda:GetFunction", "lambda:GetFunctionConfiguration", "lambda:UpdateFunctionCode", "lambda:UpdateFunctionConfiguration"]) {
-        denied(action, ARN("lambda", "function:agentx-ent-broker"));
+        denied(action, ARN("lambda", "function:rovara-cloud-ent-broker"));
         denied(action, DEPLOYER_ARN);
       }
-      denied("lambda:InvokeFunction", ARN("lambda", "function:agentx-ent-broker"));
+      denied("lambda:InvokeFunction", ARN("lambda", "function:rovara-cloud-ent-broker"));
       for (const action of ["secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue", "secretsmanager:PutSecretValue"]) denied(action);
       for (const action of ["kms:Decrypt", "kms:GenerateDataKey", "kms:CreateGrant", "kms:PutKeyPolicy", "kms:DeriveSharedSecret"]) denied(action);
     });
 
     it("has no data-plane read of the stores that hold code, tasks, plans, conversations and the Team record", () => {
-      for (const action of ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:ExecuteStatement", "dynamodb:BatchExecuteStatement", "dynamodb:ExecuteTransaction", "dynamodb:TransactGetItems", "dynamodb:TransactWriteItems", "dynamodb:PartiQLSelect", "dynamodb:ExportTableToPointInTime", "dynamodb:PutItem"]) denied(action, "arn:aws:dynamodb:us-east-1:123456789012:table/agentx-ent-tasks");
+      for (const action of ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:ExecuteStatement", "dynamodb:BatchExecuteStatement", "dynamodb:ExecuteTransaction", "dynamodb:TransactGetItems", "dynamodb:TransactWriteItems", "dynamodb:PartiQLSelect", "dynamodb:ExportTableToPointInTime", "dynamodb:PutItem"]) denied(action, "arn:aws:dynamodb:us-east-1:123456789012:table/rovara-cloud-ent-tasks");
       for (const action of ["sqs:ReceiveMessage", "states:GetExecutionHistory", "bedrock:InvokeModel", "s3vectors:QueryVectors", "athena:GetQueryResults"]) denied(action);
     });
 
     it("cannot read log lines of anything but the deployer's own group (it names bundle ids and fixed words) and the groups the customer named", () => {
-      for (const action of ["logs:GetLogEvents", "logs:FilterLogEvents", "logs:StartQuery", "logs:StartLiveTail"]) denied(action, ARN("logs", "log-group:/agentx/ent/worker:*"));
-      denied("logs:FilterLogEvents", ARN("logs", "log-group:/aws/lambda/agentx-ent-doctor:*"));
+      for (const action of ["logs:GetLogEvents", "logs:FilterLogEvents", "logs:StartQuery", "logs:StartLiveTail"]) denied(action, ARN("logs", "log-group:/rovara-cloud/ent/worker:*"));
+      denied("logs:FilterLogEvents", ARN("logs", "log-group:/aws/lambda/rovara-cloud-ent-doctor:*"));
       expect(allowed(enabled, "logs:FilterLogEvents", ARN("logs", `log-group:/aws/lambda/${FUNCTION_NAME}:*`))).toBe(true);
     });
 
     it("can read the named content-free log groups and no others, when the install names some", () => {
-      const named = statementsFor(access({ ...ON, rovaraOperatorLogGroups: "/aws/lambda/agentx-ent-doctor" }), "enabled");
-      expect(allowed(named, "logs:FilterLogEvents", ARN("logs", "log-group:/aws/lambda/agentx-ent-doctor:*"))).toBe(true);
-      expect(allowed(named, "logs:FilterLogEvents", ARN("logs", "log-group:/agentx/ent/worker:*"))).toBe(false);
-      expect(allowed(withBroadAllow(named), "logs:FilterLogEvents", ARN("logs", "log-group:/aws/lambda/agentx-ent-broker:*"))).toBe(false);
+      const named = statementsFor(access({ ...ON, rovaraOperatorLogGroups: "/aws/lambda/rovara-cloud-ent-doctor" }), "enabled");
+      expect(allowed(named, "logs:FilterLogEvents", ARN("logs", "log-group:/aws/lambda/rovara-cloud-ent-doctor:*"))).toBe(true);
+      expect(allowed(named, "logs:FilterLogEvents", ARN("logs", "log-group:/rovara-cloud/ent/worker:*"))).toBe(false);
+      expect(allowed(withBroadAllow(named), "logs:FilterLogEvents", ARN("logs", "log-group:/aws/lambda/rovara-cloud-ent-broker:*"))).toBe(false);
     });
 
     it("can read health, and has no allow statement with a wildcard action or any IAM action", () => {
@@ -318,20 +318,20 @@ describe("the Rovara operator role", () => {
     });
 
     it("writes only the records an upgrade owns, and reads the trusted keys it cannot write", () => {
-      for (const name of ["settings", "bundle", "restore-points/20261031T101500000Z", "deploy/progress"]) expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(true);
-      for (const name of ["bundle-trust/public-keys", "signin", "lock", "install/answers"]) expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
-      expect(allowed(deployer, "ssm:GetParameter", ARN("ssm", "parameter/agentx/ent/bundle-trust/public-keys"))).toBe(true);
-      expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/agentx/ent/deploy/progress"))).toBe(true);
-      expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/agentx/ent/settings"))).toBe(false);
+      for (const name of ["settings", "bundle", "restore-points/20261031T101500000Z", "deploy/progress"]) expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/rovara-cloud/ent/${name}`)), name).toBe(true);
+      for (const name of ["bundle-trust/public-keys", "signin", "lock", "install/answers"]) expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/rovara-cloud/ent/${name}`)), name).toBe(false);
+      expect(allowed(deployer, "ssm:GetParameter", ARN("ssm", "parameter/rovara-cloud/ent/bundle-trust/public-keys"))).toBe(true);
+      expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/rovara-cloud/ent/deploy/progress"))).toBe(true);
+      expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/rovara-cloud/ent/settings"))).toBe(false);
     });
 
     it("reads the install's recorded build settings and edition (to check an approval built for it) and can write neither; the operator reads neither (N3b)", () => {
       for (const name of ["synth-settings", "edition", "edition-backup"]) {
-        expect(allowed(deployer, "ssm:GetParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(true);
-        expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
-        expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
-        expect(allowed(statementsFor(template, "enabled"), "ssm:GetParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
-        expect(allowed(statementsFor(template, "enabled"), "ssm:PutParameter", ARN("ssm", `parameter/agentx/ent/${name}`)), name).toBe(false);
+        expect(allowed(deployer, "ssm:GetParameter", ARN("ssm", `parameter/rovara-cloud/ent/${name}`)), name).toBe(true);
+        expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", `parameter/rovara-cloud/ent/${name}`)), name).toBe(false);
+        expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", `parameter/rovara-cloud/ent/${name}`)), name).toBe(false);
+        expect(allowed(statementsFor(template, "enabled"), "ssm:GetParameter", ARN("ssm", `parameter/rovara-cloud/ent/${name}`)), name).toBe(false);
+        expect(allowed(statementsFor(template, "enabled"), "ssm:PutParameter", ARN("ssm", `parameter/rovara-cloud/ent/${name}`)), name).toBe(false);
       }
     });
 
@@ -347,7 +347,7 @@ describe("the Rovara operator role", () => {
 
   describe("trust anchor and approvals (review I1, I5, M4)", () => {
     it("keeps the trusted signing keys in the install's own parameter, empty by default so every bundle is refused, set only from the install's settings", () => {
-      const parameter = (t: Template) => resources(t, "AWS::SSM::Parameter").find(([, p]) => p.Properties.Name === "/agentx/ent/bundle-trust/public-keys")![1].Properties.Value;
+      const parameter = (t: Template) => resources(t, "AWS::SSM::Parameter").find(([, p]) => p.Properties.Name === "/rovara-cloud/ent/bundle-trust/public-keys")![1].Properties.Value;
       expect(parameter(template)).toBe("[]");
       const key = generateKeyPairSync("ec", { namedCurve: "prime256v1" }).publicKey.export({ type: "spki", format: "pem" }).toString();
       expect(JSON.parse(parameter(access({ ...ON, rovaraBundleSigningKeys: JSON.stringify([key]) })) as string)).toEqual([key]);
@@ -364,12 +364,12 @@ describe("the Rovara operator role", () => {
       const statements = resources(template, "AWS::S3::BucketPolicy").find(([, p]) => JSON.stringify(p.Properties.PolicyDocument).includes("OperatorAndDeployRoleNeverWrite"))![1].Properties.PolicyDocument.Statement as Json[];
       const never = statements.find((statement) => statement.Sid === "OperatorAndDeployRoleNeverWrite")!;
       expect(never.Effect).toBe("Deny");
-      expect(JSON.stringify(never.Condition)).toContain("agentx-ent-rovara-operator");
-      expect(JSON.stringify(never.Condition)).toContain("agentx-ent-cloudformation");
+      expect(JSON.stringify(never.Condition)).toContain("rovara-cloud-ent-rovara-operator");
+      expect(JSON.stringify(never.Condition)).toContain("rovara-cloud-ent-cloudformation");
       expect(list(never.Action)).toEqual(expect.arrayContaining(["s3:PutObject*", "s3:DeleteObject*", "s3:PutBucket*"]));
       const copies = statements.find((statement) => statement.Sid === "DeployerWritesOnlyItsCopies")!;
       expect(copies.Effect).toBe("Deny");
-      expect(JSON.stringify(copies.Condition)).toContain("agentx-ent-bundle-deployer");
+      expect(JSON.stringify(copies.Condition)).toContain("rovara-cloud-ent-bundle-deployer");
       expect(JSON.stringify(copies.NotResource)).toContain("deploying/");
       expect(JSON.stringify(statements)).toContain("aws:SecureTransport");
       expect(statements.find((statement) => statement.Sid === "OnlyNamedApproversApprove")!.Condition).toEqual({ ArnNotLike: { "aws:PrincipalArn": [APPROVERS] } });
@@ -380,7 +380,7 @@ describe("the Rovara operator role", () => {
       void _approvers;
       expect(() => access(withoutApprovers)).toThrow(/must name the roles or users that may approve/);
       expect(() => access({ ...ON, rovaraBundleApproverArns: "" })).toThrow(/must name the roles or users that may approve/);
-      for (const name of ["agentx-ent-rovara-operator", "agentx-ent-cloudformation", "agentx-ent-bundle-deployer", "agentx-ent-*", "agentx-ent-bundle-*"]) {
+      for (const name of ["rovara-cloud-ent-rovara-operator", "rovara-cloud-ent-cloudformation", "rovara-cloud-ent-bundle-deployer", "rovara-cloud-ent-*", "rovara-cloud-ent-bundle-*"]) {
         expect(() => access({ ...ON, rovaraBundleApproverArns: `arn:aws:iam::123456789012:role/${name}` }), name).toThrow(/cannot approve its own deployments/);
       }
     });
@@ -421,7 +421,7 @@ describe("the Rovara operator role", () => {
       expect(Object.keys(only.Condition.ArnNotEquals)).toEqual(["aws:PrincipalArn"]);
       const exempt = only.Condition.ArnNotEquals["aws:PrincipalArn"];
       expect(Array.isArray(exempt)).toBe(false);
-      expect(JSON.stringify(exempt).match(/role\/[A-Za-z0-9-]+/g)).toEqual(["role/agentx-ent-bundle-deployer"]);
+      expect(JSON.stringify(exempt).match(/role\/[A-Za-z0-9-]+/g)).toEqual(["role/rovara-cloud-ent-bundle-deployer"]);
       expect(JSON.stringify(exempt)).not.toContain("*");
       expect(list(only.Action)).toEqual(expect.arrayContaining(["s3:PutObject*", "s3:DeleteObject*"]));
       expect(JSON.stringify(only.Resource)).toMatch(/\/deploying\/\*"/);
@@ -435,7 +435,7 @@ describe("the Rovara operator role", () => {
       const notResource = JSON.stringify(copies.NotResource);
       expect(notResource).toMatch(/\/deploying\/\*"\]\}\]\}$|\/deploying\/\*"\]\}$|deploying\/\*/);
       expect(notResource).not.toMatch(/approv|\/\*"\]\}\]\}$/);
-      expect(JSON.stringify(copies.Condition)).toContain("role/agentx-ent-bundle-deployer");
+      expect(JSON.stringify(copies.Condition)).toContain("role/rovara-cloud-ent-bundle-deployer");
     });
 
     it("bars every principal but the customer's named approvers from approvals, when the install names them", () => {
@@ -451,7 +451,7 @@ describe("the Rovara operator role", () => {
     });
 
     it("gives the deploy role read access to the deployer's verified copies (Lambda code) and nothing else", () => {
-      const deployRole = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-cloudformation")![1];
+      const deployRole = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "rovara-cloud-ent-cloudformation")![1];
       expect((deployRole.Properties.Policies as Json[]).map((policy) => policy.PolicyName)).toEqual(["deploy", "read-approved-bundles"]);
       const extra = (deployRole.Properties.Policies as Json[])[1]!.PolicyDocument.Statement as Json[];
       expect(extra).toHaveLength(1);
@@ -481,10 +481,10 @@ describe("the Rovara operator role", () => {
     });
 
     it("reports every assumption of the role to the customer's alert topic, and the deployer itself publishes at every start and end (not CloudTrail data events)", () => {
-      const [, rule] = resources(template, "AWS::Events::Rule").find(([, r]) => r.Properties.Name === "agentx-ent-rovara-operator-assumed")!;
+      const [, rule] = resources(template, "AWS::Events::Rule").find(([, r]) => r.Properties.Name === "rovara-cloud-ent-rovara-operator-assumed")!;
       expect(rule.Properties.EventPattern.detail.eventName).toEqual(["AssumeRole"]);
-      expect(JSON.stringify(rule.Properties.EventPattern.detail.requestParameters.roleArn)).toContain("role/agentx-ent-rovara-operator");
-      const [topicId] = resources(template, "AWS::SNS::Topic").find(([, topic]) => topic.Properties.TopicName === "agentx-ent-rovara-operator-use")!;
+      expect(JSON.stringify(rule.Properties.EventPattern.detail.requestParameters.roleArn)).toContain("role/rovara-cloud-ent-rovara-operator");
+      const [topicId] = resources(template, "AWS::SNS::Topic").find(([, topic]) => topic.Properties.TopicName === "rovara-cloud-ent-rovara-operator-use")!;
       expect(rule.Properties.Targets).toEqual([{ Arn: { Ref: topicId }, Id: "Target0" }]);
       const topicPolicy = resources(template, "AWS::SNS::TopicPolicy").find(([, p]) => JSON.stringify(p.Properties.Topics).includes(topicId))![1];
       expect(JSON.stringify(topicPolicy.Properties.PolicyDocument)).toContain("events.amazonaws.com");
@@ -499,24 +499,24 @@ describe("the Rovara operator role", () => {
     });
 
     it("mirrors the switch where a deployer run already going can read it, and drops queued calls instead of retrying them", () => {
-      const record = resources(template, "AWS::SSM::Parameter").find(([, p]) => p.Properties.Name === "/agentx/ent/operator-access/state")![1];
+      const record = resources(template, "AWS::SSM::Parameter").find(([, p]) => p.Properties.Name === "/rovara-cloud/ent/operator-access/state")![1];
       expect(record.Properties.Value).toEqual({ Ref: "OperatorAccessState" });
-      expect(allowed(deployerStatements(template), "ssm:GetParameter", ARN("ssm", "parameter/agentx/ent/operator-access/state"))).toBe(true);
-      expect(allowed(deployerStatements(template), "ssm:PutParameter", ARN("ssm", "parameter/agentx/ent/operator-access/state"))).toBe(false);
+      expect(allowed(deployerStatements(template), "ssm:GetParameter", ARN("ssm", "parameter/rovara-cloud/ent/operator-access/state"))).toBe(true);
+      expect(allowed(deployerStatements(template), "ssm:PutParameter", ARN("ssm", "parameter/rovara-cloud/ent/operator-access/state"))).toBe(false);
       const [, config] = resources(template, "AWS::Lambda::EventInvokeConfig")[0]!;
       expect(config.Properties).toMatchObject({ MaximumRetryAttempts: 0, MaximumEventAgeInSeconds: 60 });
     });
 
     it("lets the deployer take and release only its one-run lock, and gives it the partition's S3 suffix", () => {
       const deployer = deployerStatements(template);
-      expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", "parameter/agentx/ent/deploy/lock"))).toBe(true);
-      expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/agentx/ent/deploy/lock"))).toBe(true);
+      expect(allowed(deployer, "ssm:PutParameter", ARN("ssm", "parameter/rovara-cloud/ent/deploy/lock"))).toBe(true);
+      expect(allowed(deployer, "ssm:DeleteParameter", ARN("ssm", "parameter/rovara-cloud/ent/deploy/lock"))).toBe(true);
       const [, fn] = resources(template, "AWS::Lambda::Function").find(([, f]) => f.Properties.FunctionName === FUNCTION_NAME)!;
       expect(fn.Properties.Environment.Variables.URL_SUFFIX).toEqual({ Ref: "AWS::URLSuffix" });
     });
 
     it("keeps the role's policy within IAM's 10,240-character limit for inline role policies", () => {
-      const [, role] = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "agentx-ent-rovara-operator")!;
+      const [, role] = resources(template, "AWS::IAM::Role").find(([, r]) => r.Properties.RoleName === "rovara-cloud-ent-rovara-operator")!;
       expect(JSON.stringify(role.Properties.Policies).replace(/\s/g, "").length).toBeLessThan(10_240);
     });
   });

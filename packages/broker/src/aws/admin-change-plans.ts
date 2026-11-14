@@ -159,7 +159,7 @@ async function labelled(deps: PlanDependencies, channelId: string, options: Plan
 }
 
 const teamOf = (deps: PlanDependencies): string => {
-  if (deps.reads.slackTeamId === undefined) throw agentXError("CONFIG_INVALID", "this environment records no Slack team, so channels cannot be bound from an AI tool; use agentx admin slack bind");
+  if (deps.reads.slackTeamId === undefined) throw agentXError("CONFIG_INVALID", "this environment records no Slack team, so channels cannot be bound from an AI tool; use rovara admin slack bind");
   return deps.reads.slackTeamId;
 };
 const bindingOf = async (deps: PlanDependencies, orgId: OrgId, teamId: string, channelId: string) => {
@@ -186,7 +186,7 @@ const planUnbind: Planner = async (deps, identity, input, options) => {
   const channel = await resolveChannel(deps, orgId, teamId, input.channel, options);
   const { channelId, label } = channel;
   const current = await bindingOf(deps, orgId, teamId, channelId);
-  if (current === undefined) throw agentXError("NOT_FOUND", `channel ${label} is not bound to any project; list the bindings with agentx admin slack bindings`);
+  if (current === undefined) throw agentXError("NOT_FOUND", `channel ${label} is not bound to any project; list the bindings with rovara admin slack bindings`);
   await deps.handlers.requireAdministrator(identity, current.projectName);
   return {
     ...effects(channel, (shown) => `Unbind channel ${shown} from project ${current.projectName}. New messages there will get no reply; existing thread workspaces are kept.`),
@@ -206,7 +206,7 @@ const planRevision: Planner = async (deps, identity, input, options) => {
   if (typeof name !== "string" || !AgentXNameSchema.safeParse(name).success) throw agentXError("CONFIG_INVALID", "the definition needs the project's name, such as \"payments\"");
   const latest = await latestProjectRecord(deps.reads, requireOrgId(identity.orgId), name);
   // Q5: a new revision keeps its project's runtime binding; a first revision needs the CLI's flags.
-  if (latest === undefined) throw agentXError("NOT_FOUND", `project ${name} has no revision yet; register its first revision with agentx admin project register`);
+  if (latest === undefined) throw agentXError("NOT_FOUND", `project ${name} has no revision yet; register its first revision with rovara admin project register`);
   await deps.handlers.requireAdministrator(identity, name);
   const latestRevision = latest.definition.revision;
   // Before the vendor preflight, so a revision that can never register contacts no vendor.
@@ -302,7 +302,7 @@ async function projectMustExist(deps: PlanDependencies, identity: AuthenticatedI
   requireAdminClaim(identity);
   if (!AgentXNameSchema.safeParse(project).success) throw agentXError("CONFIG_INVALID", "project must be a project name such as payments");
   const latest = await latestProjectRecord(deps.reads, requireOrgId(identity.orgId), project);
-  if (latest === undefined) throw agentXError("NOT_FOUND", `project ${project} is not registered; check the project's name, or register it with agentx admin project register`);
+  if (latest === undefined) throw agentXError("NOT_FOUND", `project ${project} is not registered; check the project's name, or register it with rovara admin project register`);
   return latest;
 }
 
@@ -340,7 +340,7 @@ const planGrant: Planner = async (deps, identity, input) => {
   const current = await projectGrant(deps.actions, orgId, input.project, resolved.developerId);
   if (current?.role === "developer") throw agentXError("CONFIG_INVALID", `${describeDeveloper(resolved)} already has a grant for ${input.project}; there is nothing to change`);
   if (current?.role === "administrator") throw agentXError("CONFIG_INVALID", `${describeDeveloper(resolved)} already administers ${input.project}; there is nothing to change`);
-  if (current?.role === "viewer") throw agentXError("CONFIG_INVALID", `${describeDeveloper(resolved)} is a viewer of ${input.project}; change their role with agentx project add-member, so there is nothing to change here`);
+  if (current?.role === "viewer") throw agentXError("CONFIG_INVALID", `${describeDeveloper(resolved)} is a viewer of ${input.project}; change their role with rovara project add-member, so there is nothing to change here`);
   const project = input.project;
   return {
     effect: `Grant ${describeDeveloper(resolved)}${notSignedIn(resolved, true)} access to project ${project}. They have no grant today. They can then hand tasks to ${project} from their AI tool.`,
@@ -384,7 +384,7 @@ const planEndSessions: Planner = async (deps, identity, input) => {
   const resolved = await resolveDeveloper(deps.actions, input.developer);
   if (resolved.profile === undefined) throw agentXError("NOT_FOUND", `${describeDeveloper(resolved)} has never signed in to AgentX, so there is no sign-in to end`);
   return {
-    effect: `End every AgentX sign-in session of ${describeDeveloper(resolved)}. Their AI tools stop reaching AgentX at once; they may sign in again with agentx login. Their running tasks keep running.`,
+    effect: `End every AgentX sign-in session of ${describeDeveloper(resolved)}. Their AI tools stop reaching AgentX at once; they may sign in again with rovara login. Their running tasks keep running.`,
     details: { developerId: resolved.developerId, via: resolved.via },
     snapshot: { sessionsEndedAt: resolved.profile.sessionsEndedAt ?? null, profile: { displayName: resolved.profile.displayName, provider: resolved.profile.provider } },
     apply: async () => endSessions(deps.actions, resolved.developerId),
@@ -540,6 +540,6 @@ export const PLANNERS: Partial<Record<AdminChangeKind, Planner>> = {
  */
 export async function planChange(deps: PlanDependencies, identity: AuthenticatedIdentity, input: AdminChangeInput, options: PlanOptions = {}): Promise<ChangePlan> {
   const planner = PLANNERS[input.kind];
-  if (planner === undefined) throw agentXError("CONFIG_INVALID", `${input.kind} is not a change this AgentX can plan; update AgentX, or make the change with the agentx admin command`);
+  if (planner === undefined) throw agentXError("CONFIG_INVALID", `${input.kind} is not a change this AgentX can plan; update AgentX, or make the change with the rovara admin command`);
   return planner(deps, identity, input, options);
 }

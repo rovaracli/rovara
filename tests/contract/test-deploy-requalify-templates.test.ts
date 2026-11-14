@@ -15,11 +15,11 @@ import { skipLambdaBundling } from "../support/skip-bundling.js";
 
 skipLambdaBundling();
 
-const ENV = "agentxlivetest123";
+const ENV = "rovaralivetest";
 type Resource = { Type: string; Properties?: Record<string, unknown> };
 
 function controlPlane(context: Record<string, unknown>): CfnTemplate {
-  const stack = buildAgentXApp({ agentxEnv: ENV, ...context }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === `agentx-${ENV}-control-plane`);
+  const stack = buildAgentXApp({ agentxEnv: ENV, ...context }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === `rovara-cloud-${ENV}-control-plane`);
   if (stack === undefined) throw new Error("no control-plane stack");
   return Template.fromStack(stack).toJSON();
 }
@@ -89,7 +89,7 @@ describe("the renewal's deploy units against the synthesized control-plane stack
   });
 
   it("prints the AR-4 grants as the exact Tier 3 statements: ssm:GetParameter on the pin for the provisioner's and the reconciler's roles, and nothing wider", () => {
-    const pin = `parameter/agentx/${ENV}/${QUALIFIED_AMI_SETTING_NAME}`;
+    const pin = `parameter/rovara-cloud/${ENV}/${QUALIFIED_AMI_SETTING_NAME}`;
     const withoutPin = clone(deployed);
     let removed = 0;
     for (const [, policy] of policiesOf(withoutPin)) {

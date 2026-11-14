@@ -51,7 +51,7 @@ export interface GithubConnectionDependencies {
   documentClient: { send(command: unknown): Promise<unknown> };
   tableName: string;
   now: () => number;
-  /** A Rovara Cloud install. Anything else connects GitHub through the administrator (agentx init), and these routes refuse. */
+  /** A Rovara Cloud install. Anything else connects GitHub through the administrator (rovara init), and these routes refuse. */
   cloud: boolean;
   /** This cell's origin (scheme and host), which a confirmation's Origin header must equal. */
   origin: string;

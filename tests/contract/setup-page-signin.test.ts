@@ -24,10 +24,10 @@ skipLambdaBundling();
 
 const ORIGIN = "https://setup.example.com";
 const HOST = "setup.example.com";
-const IDENTITY = { hostedUiDomain: "https://agentx-staging-123456789012.auth.us-east-1.amazoncognito.com", clientId: "cli-client-id" };
+const IDENTITY = { hostedUiDomain: "https://rovara-cloud-staging-123456789012.auth.us-east-1.amazoncognito.com", clientId: "cli-client-id" };
 /** Seals by marking, so a test can see what was sealed and that the job opened it. */
 const SEAL: TokenSeal = { seal: async (plain) => `sealed:${plain}`, open: async (sealed) => sealed.replace(/^sealed:/, "") };
-const ADMIN_TOKEN = accessToken({ "cognito:groups": ["agentx-admin"], username: "alice" });
+const ADMIN_TOKEN = accessToken({ "cognito:groups": ["rovara-cloud-admin"], username: "alice" });
 const AUTH = { issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_abc", clientId: "client123", audience: "client123" };
 
 function signedInHandler(options: { identity?: typeof IDENTITY | undefined; token?: string; tokenStatus?: number } = {}) {
@@ -183,7 +183,7 @@ describe("the admin user, in the cloud", () => {
     const cognito = fakeCognito();
     const context = initContext({ setupPageUrl: ORIGIN, setup: setupServices({ cognito }), answers: sampleAnswers({ adminEmail: ADMIN_EMAIL }) });
     // The core step has just deployed the identity stack.
-    await context.deployer.deploy({ stackName: "agentx-staging-identity" } as never);
+    await context.deployer.deploy({ stackName: "rovara-cloud-staging-identity" } as never);
     const progress = progressHandle();
     await adminUserForSetupPage(context, progress);
     expect(cognito.created).toEqual([ADMIN_EMAIL]);

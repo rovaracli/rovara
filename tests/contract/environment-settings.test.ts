@@ -12,7 +12,7 @@ const expectedFixture: EnvironmentSettings = {
   engine: "templates",
   version: "1.0.0",
   naming: "environment",
-  stacks: { foundation: "agentx-staging-foundation", runtime: "agentx-staging-runtime", "control-plane": "agentx-staging-control-plane", slack: "agentx-staging-slack" },
+  stacks: { foundation: "rovara-cloud-staging-foundation", runtime: "rovara-cloud-staging-runtime", "control-plane": "rovara-cloud-staging-control-plane", slack: "rovara-cloud-staging-slack" },
   controlPlaneUrl: "https://abc.execute-api.us-east-1.amazonaws.com",
   identity: { mode: "cognito", issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_x", audience: "client", clientId: "client" },
   models: { orchestrator: "us.anthropic.claude-haiku-4-5-20251001-v1:0", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" },
@@ -24,11 +24,11 @@ describe("environment settings", () => {
     expect(stagingSettings).toEqual(expectedFixture);
   });
 
-  it("round-trips through /agentx/<env>/settings", async () => {
+  it("round-trips through /rovara-cloud/<env>/settings", async () => {
     const store = new MemoryParameterStore();
     await writeEnvironmentSettings(store, stagingSettings);
-    expect(settingsParameterName("staging")).toBe("/agentx/staging/settings");
-    expect(store.values.has("/agentx/staging/settings")).toBe(true);
+    expect(settingsParameterName("staging")).toBe("/rovara-cloud/staging/settings");
+    expect(store.values.has("/rovara-cloud/staging/settings")).toBe(true);
     expect(await readEnvironmentSettings(store, "staging")).toEqual(stagingSettings);
   });
 
@@ -38,13 +38,13 @@ describe("environment settings", () => {
 
   it("refuses stored settings that do not match the schema, naming the environment", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/settings", JSON.stringify({ ...stagingSettings, engine: "terraform" }));
+    store.values.set("/rovara-cloud/staging/settings", JSON.stringify({ ...stagingSettings, engine: "terraform" }));
     await expect(readEnvironmentSettings(store, "staging")).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("staging") as unknown });
   });
 
   it("refuses stored settings that are not valid JSON, naming the environment", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/settings", "not json");
+    store.values.set("/rovara-cloud/staging/settings", "not json");
     await expect(readEnvironmentSettings(store, "staging")).rejects.toMatchObject({
       code: "CONFIG_INVALID",
       message: expect.stringContaining("staging") as unknown,
@@ -53,7 +53,7 @@ describe("environment settings", () => {
 
   it("refuses settings whose env does not match the parameter's environment", async () => {
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/staging/settings", JSON.stringify({ ...stagingSettings, env: "production" }));
+    store.values.set("/rovara-cloud/staging/settings", JSON.stringify({ ...stagingSettings, env: "production" }));
     await expect(readEnvironmentSettings(store, "staging")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 
@@ -69,7 +69,7 @@ describe("environment settings", () => {
 
   it("round-trips settings with an identity stack", async () => {
     const store = new MemoryParameterStore();
-    const withIdentity: EnvironmentSettings = { ...stagingSettings, stacks: { ...stagingSettings.stacks, identity: "agentx-staging-identity" } };
+    const withIdentity: EnvironmentSettings = { ...stagingSettings, stacks: { ...stagingSettings.stacks, identity: "rovara-cloud-staging-identity" } };
     await writeEnvironmentSettings(store, withIdentity);
     expect(await readEnvironmentSettings(store, "staging")).toEqual(withIdentity);
   });
@@ -84,10 +84,10 @@ describe("environment settings", () => {
     const withAccess: EnvironmentSettings = {
       ...stagingSettings,
       access: {
-        artifactBucket: "agentx-staging-access-artifactbucket-abc",
-        cloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation",
-        operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator",
-        pullThroughPrefix: "agentx-staging",
+        artifactBucket: "rovara-cloud-staging-access-artifactbucket-abc",
+        cloudFormationRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation",
+        operatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator",
+        pullThroughPrefix: "rovara-cloud-staging",
         permissionsBoundaryArn: "arn:aws:iam::123456789012:policy/agentx-boundary",
       },
     };
@@ -115,10 +115,10 @@ describe("environment settings", () => {
   });
 
   const validAccess = {
-    artifactBucket: "agentx-staging-access-artifactbucket-abc",
-    cloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation",
-    operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator",
-    pullThroughPrefix: "agentx-staging",
+    artifactBucket: "rovara-cloud-staging-access-artifactbucket-abc",
+    cloudFormationRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation",
+    operatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator",
+    pullThroughPrefix: "rovara-cloud-staging",
   };
 
   it("refuses an access block whose role or boundary fields are not the right kind of ARN", () => {
@@ -139,7 +139,7 @@ describe("environment settings", () => {
     const store = new MemoryParameterStore();
     await writeEnvironmentSettings(store, stagingSettings);
     await writeEnvironmentSettings(store, { ...stagingSettings, env: "production", stacks: { ...stagingSettings.stacks } });
-    store.values.set("/agentx/orphan/lock", "{}");
+    store.values.set("/rovara-cloud/orphan/lock", "{}");
     expect(await listEnvironments(store)).toEqual(["production", "staging"]);
   });
 });

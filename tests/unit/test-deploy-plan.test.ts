@@ -33,10 +33,10 @@ import {
   type TemplatePlan,
 } from "../../scripts/test-deploy.js";
 
-const ENV = "agentxlivetest123";
-const CONTROL_PLANE = "agentx-agentxlivetest123-control-plane";
-const RUNTIME = "agentx-agentxlivetest123-runtime";
-const OLD_IMAGE = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker@sha256:${"a".repeat(64)}`;
+const ENV = "rovaralivetest";
+const CONTROL_PLANE = "rovara-cloud-rovaralivetest-control-plane";
+const RUNTIME = "rovara-cloud-rovaralivetest-runtime";
+const OLD_IMAGE = `123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/worker@sha256:${"a".repeat(64)}`;
 
 const NEW_STAGE2_HASH = "b".repeat(64);
 const OLD_STAGE2_HASH = "c".repeat(64);
@@ -119,7 +119,7 @@ describe("planTestDeploy", () => {
     expect(kinds(steps)).toEqual(["ecr-push", "create-change-set", "execute-change-set", "verify-stack-parameter", "verify-stack-parameter"]);
     const push = steps[0] as Extract<DeployStep, { kind: "ecr-push" }>;
     // The repository comes from the image the stack runs today, never from a new or production one.
-    expect(push.repositoryUri).toBe("123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker");
+    expect(push.repositoryUri).toBe("123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/worker");
     const changeSet = steps[1] as Extract<DeployStep, { kind: "create-change-set" }>;
     expect(changeSet.stack).toBe(RUNTIME);
     expect(changeSet.template).toEqual({ source: "previous" });
@@ -215,7 +215,7 @@ describe("planTestDeploy", () => {
     expect(() => plan(["broker"])).not.toThrow();
   });
 
-  const OLD_EXECUTOR = `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-test/executor@sha256:${"d".repeat(64)}`;
+  const OLD_EXECUTOR = `123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/executor@sha256:${"d".repeat(64)}`;
 
   it("plans an executor-image deploy as ECR push then a runtime change set that changes only ExecutorImageUri", () => {
     const withParameter: StackParameters = { ...previous, runtime: { ...previous.runtime, ExecutorImageUri: OLD_EXECUTOR } };
@@ -223,7 +223,7 @@ describe("planTestDeploy", () => {
     expect(kinds(steps)).toEqual(["ecr-push", "create-change-set", "execute-change-set", "verify-stack-parameter"]);
     const push = steps[0] as Extract<DeployStep, { kind: "ecr-push" }>;
     // Next to the worker's repository, which the stack's current WorkerImageUri names: nothing new is created.
-    expect(push).toMatchObject({ image: "executor", repositoryUri: "123456789012.dkr.ecr.us-east-1.amazonaws.com/agentx-test/executor", revision: artifacts.revision });
+    expect(push).toMatchObject({ image: "executor", repositoryUri: "123456789012.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/executor", revision: artifacts.revision });
     const changeSet = steps[1] as Extract<DeployStep, { kind: "create-change-set" }>;
     expect(changeSet.stack).toBe(RUNTIME);
     expect(changeSet.template).toEqual({ source: "previous" });
@@ -280,9 +280,9 @@ describe("planTestDeploy", () => {
 
   it("derives the executor repository from the worker's, and refuses a worker repository it cannot map", () => {
     const registry = "123456789012.dkr.ecr.us-east-1.amazonaws.com";
-    expect(executorRepositoryUri(`${registry}/agentx-test/worker`)).toBe(`${registry}/agentx-test/executor`);
-    expect(executorRepositoryUri(`${registry}/agentx-staging/agentx/agentx-worker`)).toBe(`${registry}/agentx-staging/agentx/agentx-executor`);
-    expect(() => executorRepositoryUri(`${registry}/agentx-test/images`)).toThrow(/executor repository/);
+    expect(executorRepositoryUri(`${registry}/rovara-cloud-test/worker`)).toBe(`${registry}/rovara-cloud-test/executor`);
+    expect(executorRepositoryUri(`${registry}/rovara-cloud-staging/agentx/agentx-worker`)).toBe(`${registry}/rovara-cloud-staging/agentx/agentx-executor`);
+    expect(() => executorRepositoryUri(`${registry}/rovara-cloud-test/images`)).toThrow(/executor repository/);
     // A worker word elsewhere in the path is not the repository's own name.
     expect(() => executorRepositoryUri(`${registry}/worker-team/images`)).toThrow(/executor repository/);
   });
@@ -290,7 +290,7 @@ describe("planTestDeploy", () => {
   it("states in the printed plan which image is pushed and that no repository is created", () => {
     const text = formatPlan(plan(["executor-image"]));
     expect(text).toContain("executor image");
-    expect(text).toContain("agentx-test/executor");
+    expect(text).toContain("rovara-cloud-test/executor");
     expect(text).toMatch(/never creates a repository/);
   });
 
@@ -344,9 +344,9 @@ describe("resolveTestStacks", () => {
   });
 });
 
-const ACCESS = "agentx-agentxlivetest123-access";
-const ACCESS_BUCKET = "agentx-agentxlivetest123-ac-artifactbucket7410c9ef-tdepjp3jep13";
-const CONTROL_BUCKET = "agentx-agentxlivetest123-control-artifacts82dd59a1-syx0unxsewcf";
+const ACCESS = "rovara-cloud-rovaralivetest-access";
+const ACCESS_BUCKET = "rovara-cloud-rovaralivetest-ac-artifactbucket7410c9ef-tdepjp3jep13";
+const CONTROL_BUCKET = "rovara-cloud-rovaralivetest-control-artifacts82dd59a1-syx0unxsewcf";
 
 /** A runner that answers the AWS reads the bucket guards make and records every call. */
 function fakeAws(options: { versioning?: string; brokerBucket?: unknown } = {}) {

@@ -11,7 +11,7 @@
 // A cloud table keeps each org's projects under `ORG#<org>#...` keys, so two orgs can each have a project of the same name. The report
 // reads both key shapes and groups by (org, project): a cloud project is listed as `<org>/<name>`, a legacy one by its bare name.
 //
-// Exactly one of --env, --stack or --table decides the table: --env reads StateTableName from the stack agentx-<env>-control-plane,
+// Exactly one of --env, --stack or --table decides the table: --env reads StateTableName from the stack rovara-cloud-<env>-control-plane,
 // --stack reads it from the named stack (production's legacy control-plane stack is AgentXControlPlane), --table names the table
 // and skips the stack lookup. There is no default.
 //

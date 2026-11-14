@@ -143,7 +143,7 @@ describe("agentx_continue_task on a task that waits for answers", () => {
     const refused = await tool("agentx_continue_task", { task_id: task.taskId, instructions: "use the envelope" });
     expect(refused.error).toMatchObject({ code: "TASK_BUSY" });
     expect(refused.error?.message).toContain("waiting for your answers to Rovara's questions");
-    expect(refused.error?.message).toContain(`agentx session answer ${task.sessionId}`);
+    expect(refused.error?.message).toContain(`rovara session answer ${task.sessionId}`);
     expect(refused.error?.message).toContain("agentx_answer_task_questions");
     expect(refused.error?.next_step).toContain("agentx_answer_task_questions");
     expect(refused.error?.next_step).not.toContain("agentx_wait_for_task");

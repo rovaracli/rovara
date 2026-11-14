@@ -11,7 +11,7 @@ import {
   aws_logs as logs,
 } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { environmentRolePath } from "@agentx/contracts";
+import { environmentRolePath, APPLICATION_TAG_VALUE, ENVIRONMENT_TAG_KEY } from "@agentx/contracts";
 import type { AgentXNaming } from "./naming.js";
 
 /** The worker's HTTP port: /ping for health probes, /invocations for signed work (#80). */
@@ -53,10 +53,10 @@ export class Ec2WorkerFoundation extends Construct {
     const names = naming.ec2;
     const tags = (name: string): CfnTag[] => [
       { key: "Name", value: name },
-      { key: "Application", value: "AgentX" },
+      { key: "Application", value: APPLICATION_TAG_VALUE },
       { key: "DeploymentMode", value: "ec2-ebs" },
       { key: "Environment", value: naming.environmentTagValue },
-      ...(naming.env === undefined ? [] : [{ key: "agentx:env", value: naming.env }]),
+      ...(naming.env === undefined ? [] : [{ key: ENVIRONMENT_TAG_KEY, value: naming.env }]),
     ];
 
     // Workers take no ingress but the worker port, and only from the two callers below.

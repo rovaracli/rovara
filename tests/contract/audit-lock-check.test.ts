@@ -206,7 +206,7 @@ describe("the bucket policy hash (Task 5 hand-off): the live document, normalize
   });
 
   it("normalizes to placeholders and refuses what is not a policy document", () => {
-    const text = JSON.stringify({ Version: "2012-10-17", Statement: [{ Sid: "X", Effect: "Deny", Principal: { AWS: ["*"] }, Action: ["s3:GetObject"], Resource: [`arn:aws:s3:::agentx-acme-audit-ledger-${ACCOUNT}-${REGION}/*`] }] });
+    const text = JSON.stringify({ Version: "2012-10-17", Statement: [{ Sid: "X", Effect: "Deny", Principal: { AWS: ["*"] }, Action: ["s3:GetObject"], Resource: [`arn:aws:s3:::rovara-cloud-acme-audit-ledger-${ACCOUNT}-${REGION}/*`] }] });
     expect(normalizeBucketPolicy(text, policyContext("acme"))).toStrictEqual({
       Version: "2012-10-17",
       Statement: [{ Sid: "X", Effect: "Deny", Principal: { AWS: "*" }, Action: "s3:GetObject", Resource: "arn:{{partition}}:s3:::agentx-{{env}}-audit-ledger-{{account}}-{{region}}/*" }],

@@ -1,4 +1,4 @@
-// Plan 4 Task 18: triggers from the command line. `agentx chains triggers list | set | remove | activity <chain>` and `agentx agents triggers list | set | remove | activity
+// Plan 4 Task 18: triggers from the command line. `rovara chains triggers list | set | remove | activity <chain>` and `rovara agents triggers list | set | remove | activity
 // <agent>`, each one signed-in call to the control plane's `/v1/app/{chains,agents}/{id}/triggers` routes. The control plane decides who may do what. Turning a trigger on is
 // a person's decision on the confirmation page (R66): a change that does so prints the page's link, and nothing here confirms anything.
 import { randomUUID } from "node:crypto";
@@ -32,7 +32,7 @@ const triggerLine = (trigger: Body): string => {
 export async function triggersList(deps: DeveloperSessionDeps, env: string | undefined, kind: TriggerOwnerKind, id: string): Promise<AppResult> {
   const answer = await appRequest(deps, env, base(kind, id));
   const triggers = list(answer.body.triggers);
-  const text = triggers.length === 0 ? `${clean(id)} has no triggers. Add one with agentx ${kind} triggers set ${clean(id)} --project <project> --file <spec.json>.\n` : `${[`Triggers of ${clean(id)}:`, ...triggers.map(triggerLine)].join("\n")}\n`;
+  const text = triggers.length === 0 ? `${clean(id)} has no triggers. Add one with rovara ${kind} triggers set ${clean(id)} --project <project> --file <spec.json>.\n` : `${[`Triggers of ${clean(id)}:`, ...triggers.map(triggerLine)].join("\n")}\n`;
   return result(answer, { triggers }, text);
 }
 

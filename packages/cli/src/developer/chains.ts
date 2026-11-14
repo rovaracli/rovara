@@ -1,4 +1,4 @@
-// Plan 4 Task 4: chains from the command line. `agentx chains list | show | create | draft get | draft set | publish | versions | rollback | archive |
+// Plan 4 Task 4: chains from the command line. `rovara chains list | show | create | draft get | draft set | publish | versions | rollback | archive |
 // unarchive | share`, each one or two signed-in calls to the control plane's /v1/app/chains routes. The control plane decides who may do what; a refusal is
 // printed as the broker wrote it (a revision conflict exits 1). A change that waits for a person prints the confirmation page's link; nothing here
 // decides an approval (R66).
@@ -20,7 +20,7 @@ export async function chainsList(deps: DeveloperSessionDeps, env: string | undef
   const query = filter.project !== undefined ? `?project=${seg(filter.project)}` : `?scope=${filter.scope ?? "all"}`;
   const answer = await appRequest(deps, env, `/v1/app/chains${query}`);
   const chains = list(answer.body.chains);
-  const text = chains.length === 0 ? `No chains here on ${answer.env}. Create one with agentx chains create --name <name>.\n` : `${[`Chains on ${answer.env} (${answer.url}):`, ...chains.map(chainLine)].join("\n")}\n`;
+  const text = chains.length === 0 ? `No chains here on ${answer.env}. Create one with rovara chains create --name <name>.\n` : `${[`Chains on ${answer.env} (${answer.url}):`, ...chains.map(chainLine)].join("\n")}\n`;
   return result(answer, { chains }, text);
 }
 
@@ -66,7 +66,7 @@ export async function chainsCreate(
     },
   });
   const chain = (answer.body.chain ?? {}) as Body;
-  return result(answer, answer.body, `Created ${str(chain.name)} (${str(chain.chainId)}). Edit its draft with agentx chains draft set ${str(chain.chainId)} --file <definition.json>, then publish it.\n`);
+  return result(answer, answer.body, `Created ${str(chain.name)} (${str(chain.chainId)}). Edit its draft with rovara chains draft set ${str(chain.chainId)} --file <definition.json>, then publish it.\n`);
 }
 
 async function draftOf(deps: DeveloperSessionDeps, env: string | undefined, chainId: string) {
@@ -89,7 +89,7 @@ export async function chainsDraftSet(deps: DeveloperSessionDeps, env: string | u
   const { revision } = await draftOf(deps, env, chainId);
   const answer = await appRequest(deps, env, `/v1/app/chains/${seg(chainId)}/draft`, { method: "PUT", body: { requestId: randomUUID(), expectedRevision: revision, definition } });
   const draft = (answer.body.draft ?? {}) as Body;
-  return result(answer, answer.body, `Saved the draft of ${clean(chainId)}; it is at revision ${str(draft.revision)}. Publish it with agentx chains publish ${clean(chainId)}.\n`);
+  return result(answer, answer.body, `Saved the draft of ${clean(chainId)}; it is at revision ${str(draft.revision)}. Publish it with rovara chains publish ${clean(chainId)}.\n`);
 }
 
 export async function chainsPublish(deps: DeveloperSessionDeps, env: string | undefined, chainId: string, note: string | undefined): Promise<AppResult> {
@@ -118,7 +118,7 @@ export async function chainsRollback(deps: DeveloperSessionDeps, env: string | u
 
 export async function chainsArchive(deps: DeveloperSessionDeps, env: string | undefined, chainId: string, archive: boolean): Promise<AppResult> {
   const answer = await appRequest(deps, env, `/v1/app/chains/${seg(chainId)}/${archive ? "archive" : "unarchive"}`, { method: "POST", body: { requestId: randomUUID() } });
-  return result(answer, answer.body, archive ? `Archived ${clean(chainId)}; it no longer starts runs. Bring it back with agentx chains unarchive ${clean(chainId)}.\n` : `${clean(chainId)} is active again.\n`);
+  return result(answer, answer.body, archive ? `Archived ${clean(chainId)}; it no longer starts runs. Bring it back with rovara chains unarchive ${clean(chainId)}.\n` : `${clean(chainId)} is active again.\n`);
 }
 
 export async function chainsShare(deps: DeveloperSessionDeps, env: string | undefined, chainId: string, file: string | undefined): Promise<AppResult> {

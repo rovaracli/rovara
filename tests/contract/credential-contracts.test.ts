@@ -72,10 +72,12 @@ describe("connector secret names per environment", () => {
 
   it("accepts the legacy and the environment forms", () => {
     expect(registration("agentx/connectors/linear").success).toBe(true);
-    expect(registration("agentx/staging/connectors/linear").success).toBe(true);
+    expect(registration("rovara-cloud/staging/connectors/linear").success).toBe(true);
+    // Environments named under the old agentx prefix are not supported (2026-11-14 rename).
+    expect(registration("agentx/staging/connectors/linear").success).toBe(false);
   });
 
-  it.each(["agentx/Staging/connectors/linear", "agentx/staging/linear", "agentx/staging/connectors/", "agentx/a--b/connectors/x", "agentx/staging/connectors/a/b", "agentx/connectors/connectors/x"])(
+  it.each(["rovara-cloud/Staging/connectors/linear", "rovara-cloud/staging/linear", "rovara-cloud/staging/connectors/", "rovara-cloud/a--b/connectors/x", "rovara-cloud/staging/connectors/a/b", "rovara-cloud/connectors/connectors/x", "agentx/connectors/connectors/x"])(
     "refuses %s",
     (secretName) => {
       expect(registration(secretName).success).toBe(false);

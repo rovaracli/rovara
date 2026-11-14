@@ -1,4 +1,4 @@
-// agentx login <url> (FR-011): the developer sign-in. It needs no AWS credentials.
+// rovara login <url> (FR-011): the developer sign-in. It needs no AWS credentials.
 import { CLI_PACKAGE_NAME, AGENTX_CLI_CLIENT_ID, AgentXConfigurationSchema, DEVELOPER_API_VERSION, DeveloperTokenResponseSchema, agentXError, apiVersionCompatible, type AgentXConfiguration } from "@agentx/contracts";
 import { createCallbackListener, createPkceParameters, openSystemBrowser } from "../auth.js";
 import type { TokenStore } from "../token-store.js";
@@ -33,7 +33,7 @@ async function readConfiguration(options: DeveloperLoginOptions, base: URL, url:
   const version = apiVersionCompatible(configuration.apiVersion, DEVELOPER_API_VERSION);
   if (!version.compatible) throw agentXError("CONFIG_INVALID", `this AgentX (API ${configuration.apiVersion}) needs a newer CLI; upgrade: npx ${CLI_PACKAGE_NAME}@latest login ${url}`);
   if (!configuration.methods.slack && configuration.methods.oidc === null && configuration.methods.cloud == null && configuration.methods.github == null) {
-    throw agentXError("CONFIG_INVALID", "no developer sign-in method is enabled in this AgentX; ask an admin to run agentx signin enable slack");
+    throw agentXError("CONFIG_INVALID", "no developer sign-in method is enabled in this AgentX; ask an admin to run rovara signin enable slack");
   }
   return configuration;
 }
@@ -83,13 +83,13 @@ export async function developerLogin(options: DeveloperLoginOptions): Promise<{ 
         signal: AbortSignal.timeout(15_000),
       });
     } catch {
-      throw agentXError("RUNTIME_UNAVAILABLE", `could not reach AgentX at ${url} to finish signing in; check your connection and run agentx login ${url} again`);
+      throw agentXError("RUNTIME_UNAVAILABLE", `could not reach AgentX at ${url} to finish signing in; check your connection and run rovara login ${url} again`);
     }
     const body: unknown = await response.json().catch(() => ({}));
     const tokens = DeveloperTokenResponseSchema.safeParse(body);
     if (!response.ok || !tokens.success) {
       const fields = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
-      throw agentXError("AUTH_REQUIRED", `sign-in failed: ${serverReason(fields.error_description, `HTTP ${response.status}; run agentx login ${url} again`)}`);
+      throw agentXError("AUTH_REQUIRED", `sign-in failed: ${serverReason(fields.error_description, `HTTP ${response.status}; run rovara login ${url} again`)}`);
     }
     await options.tokenStore.set(developerTokenKey(configuration.issuer), {
       accessToken: tokens.data.access_token, refreshToken: tokens.data.refresh_token, expiresAt: Date.now() + tokens.data.expires_in * 1000,

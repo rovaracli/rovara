@@ -46,7 +46,7 @@ describe("the model runtime with a proxy", () => {
 
   it("registers the served Claude models against the proxy and never reads a provider secret", async () => {
     const readSecret = vi.fn(async () => "sk-ant-never-read-this-0000");
-    const environment = { AGENTX_ANTHROPIC_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/anthropic-AbCdEf" };
+    const environment = { AGENTX_ANTHROPIC_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/anthropic-AbCdEf" };
     const runtime = await createConfiguredModelRuntime({ provider: "amazon-bedrock", modelId: BEDROCK_MODEL }, { environment, readSecret, proxy: { baseUrl: PROXY_URL, apiKey: async () => PROXY_KEY } });
     expect(readSecret).not.toHaveBeenCalled();
     const served = runtime.getModels("amazon-bedrock");

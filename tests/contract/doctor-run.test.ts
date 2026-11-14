@@ -17,7 +17,7 @@ describe("doctor: models (FR-050)", () => {
     const checks = passingChecks({ converse: async (id) => { if (id === "zai.glm-4.7") throw Object.assign(new Error("no access"), { name: "AccessDeniedException" }); } });
     const found = await modelChecks(doctorContext({ settings: DISTINCT_WORKER, services: doctorServices({ checks }) }));
     expect(found.map((entry) => [entry.name, entry.status])).toEqual([["orchestrator", "ok"], ["classifier", "ok"], ["worker", "fail"]]);
-    expect(found[2]!.fix).toBe("choose another model with agentx --env staging config set models.worker <model id>");
+    expect(found[2]!.fix).toBe("choose another model with rovara --env staging config set models.worker <model id>");
   });
 });
 
@@ -30,7 +30,7 @@ describe("doctor: models (Task 8 polish)", () => {
     expect(checks.models).toEqual(["us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-haiku-4-5-20251001-v1:0"]);
   });
 
-  it("words a failed model in doctor's terms: agentx config set, never init's flags", async () => {
+  it("words a failed model in doctor's terms: rovara config set, never init's flags", async () => {
     for (const error of [
       Object.assign(new Error("no access"), { name: "AccessDeniedException" }),
       Object.assign(new Error("Rate exceeded"), { name: "ThrottlingException" }),
@@ -44,11 +44,11 @@ describe("doctor: models (Task 8 polish)", () => {
       const worker = (await modelChecks(doctorContext({ settings: DISTINCT_WORKER, services: doctorServices({ checks }) })))[2]!;
       expect(worker.status).toBe("fail");
       expect(worker.detail).not.toContain("--worker-model");
-      expect(worker.detail).not.toContain("agentx init");
+      expect(worker.detail).not.toContain("rovara init");
       expect(worker.detail).not.toContain("--region");
     }
     const denied = passingChecks({ converse: async (id) => { if (id === "zai.glm-4.7") throw Object.assign(new Error("no access"), { name: "AccessDeniedException" }); } });
-    expect((await modelChecks(doctorContext({ settings: DISTINCT_WORKER, services: doctorServices({ checks: denied }) })))[2]!.detail).toContain("agentx --env staging config set models.worker <model id>");
+    expect((await modelChecks(doctorContext({ settings: DISTINCT_WORKER, services: doctorServices({ checks: denied }) })))[2]!.detail).toContain("rovara --env staging config set models.worker <model id>");
   });
 });
 
@@ -58,7 +58,7 @@ describe("doctor: alerts and the budget (FR-050)", () => {
   });
 
   it("fails when an address is set but nobody is subscribed, and warns when nothing is confirmed yet", async () => {
-    expect((await alertChecks(doctorContext({ services: doctorServices({ alerts: fakeAlerts({ budgetUsd: 100 }) }) })))[0]).toMatchObject({ status: "fail", fix: "agentx --env staging config set alerts.address <email>" });
+    expect((await alertChecks(doctorContext({ services: doctorServices({ alerts: fakeAlerts({ budgetUsd: 100 }) }) })))[0]).toMatchObject({ status: "fail", fix: "rovara --env staging config set alerts.address <email>" });
     const pending = fakeAlerts({ existing: [{ arn: "PendingConfirmation", protocol: "email", endpoint: "ops@example.com" }], confirmAfterPolls: 99, budgetUsd: 100 });
     expect((await alertChecks(doctorContext({ services: doctorServices({ alerts: pending }) })))[0]?.status).toBe("warn");
   });
@@ -69,26 +69,26 @@ describe("doctor: alerts and the budget (FR-050)", () => {
   });
 
   it("fails a missing budget and passes budget.monthlyUsd 0 as no budget", async () => {
-    expect((await alertChecks(doctorContext({ services: doctorServices({ alerts: fakeAlerts({ existing: [{ arn: "arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts:1", protocol: "email", endpoint: "ops@example.com" }] }) }) })))[1]).toMatchObject({ status: "fail", detail: "the budget agentx-staging-monthly is missing" });
+    expect((await alertChecks(doctorContext({ services: doctorServices({ alerts: fakeAlerts({ existing: [{ arn: "arn:aws:sns:us-east-1:123456789012:rovara-cloud-staging-alerts:1", protocol: "email", endpoint: "ops@example.com" }] }) }) })))[1]).toMatchObject({ status: "fail", detail: "the budget rovara-cloud-staging-monthly is missing" });
     const stacks = healthyStacks();
-    stacks["agentx-staging-control-plane"] = { ...stacks["agentx-staging-control-plane"]!, parameters: { ...stacks["agentx-staging-control-plane"]!.parameters, BudgetMonthlyUsd: "0" } };
+    stacks["rovara-cloud-staging-control-plane"] = { ...stacks["rovara-cloud-staging-control-plane"]!, parameters: { ...stacks["rovara-cloud-staging-control-plane"]!.parameters, BudgetMonthlyUsd: "0" } };
     expect((await alertChecks(doctorContext({ services: doctorServices({ stackMap: stacks }) })))[1]).toMatchObject({ status: "ok", detail: "no budget (budget.monthlyUsd is 0)" });
   });
 });
 
 describe("doctor: the budget's fix (final review I1)", () => {
-  const subscribed = [{ arn: "arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts:1", protocol: "email", endpoint: "ops@example.com" }];
-  const monthly = healthyStacks()["agentx-staging-control-plane"]!.parameters.BudgetMonthlyUsd!;
-  const recreate = `agentx --env staging config set budget.monthlyUsd 0, then agentx --env staging config set budget.monthlyUsd ${monthly}: the first removes the budget from the control-plane stack, the second creates it again (an upgrade with no change leaves it as it is)`;
+  const subscribed = [{ arn: "arn:aws:sns:us-east-1:123456789012:rovara-cloud-staging-alerts:1", protocol: "email", endpoint: "ops@example.com" }];
+  const monthly = healthyStacks()["rovara-cloud-staging-control-plane"]!.parameters.BudgetMonthlyUsd!;
+  const recreate = `rovara --env staging config set budget.monthlyUsd 0, then rovara --env staging config set budget.monthlyUsd ${monthly}: the first removes the budget from the control-plane stack, the second creates it again (an upgrade with no change leaves it as it is)`;
 
   it("names the two config sets that recreate a missing budget, never a no-change upgrade", async () => {
     const budget = (await alertChecks(doctorContext({ services: doctorServices({ alerts: fakeAlerts({ existing: subscribed }) }) })))[1]!;
-    expect(budget).toMatchObject({ status: "fail", detail: "the budget agentx-staging-monthly is missing", fix: recreate });
+    expect(budget).toMatchObject({ status: "fail", detail: "the budget rovara-cloud-staging-monthly is missing", fix: recreate });
   });
 
   it("names the Budgets console or the same two config sets for an amount edited by hand", async () => {
     const budget = (await alertChecks(doctorContext({ services: doctorServices({ alerts: fakeAlerts({ existing: subscribed, budgetUsd: Number(monthly) + 1 }) }) })))[1]!;
-    expect(budget).toMatchObject({ status: "warn", fix: `set agentx-staging-monthly back to $${monthly} in the AWS Budgets console, or run ${recreate}` });
+    expect(budget).toMatchObject({ status: "warn", fix: `set rovara-cloud-staging-monthly back to $${monthly} in the AWS Budgets console, or run ${recreate}` });
   });
 });
 
@@ -116,7 +116,7 @@ describe("doctor: capacity (item 5)", () => {
 });
 
 describe("doctor: developer sign-in (spec 025 FR-046)", () => {
-  it("shows agentx signin check's checks as they are", async () => {
+  it("shows rovara signin check's checks as they are", async () => {
     const services = doctorServices({ signIn: async () => [{ name: "Slack redirect URL", ok: true, warn: true, detail: "not verified" }, { name: "Slack team ID", ok: false, detail: "no team ID is recorded" }] });
     expect((await signInChecks(doctorContext({ services }))).map((entry) => [entry.name, entry.status])).toEqual([["Slack redirect URL", "warn"], ["Slack team ID", "fail"]]);
   });
@@ -139,7 +139,7 @@ describe("runDoctor", () => {
 
   it("reports every broken piece at once, and no secret value in text or JSON", async () => {
     const services = () => doctorServices({
-      secrets: memoryInitSecrets({ ...SECRETS, "agentx/staging/slack": JSON.stringify({ botToken: TEST_BOT_TOKEN, signingSecret: "not-hex" }) }),
+      secrets: memoryInitSecrets({ ...SECRETS, "rovara-cloud/staging/slack": JSON.stringify({ botToken: TEST_BOT_TOKEN, signingSecret: "not-hex" }) }),
       slackApi: fakeSlackApi({ authTest: async () => ({ ok: false, error: "invalid_auth" }) }),
       checks: passingChecks({ converse: async () => { throw new Error("throttled"); } }),
       github: { ...doctorServices().github, listInstallations: async () => { throw new Error("401"); } },
@@ -147,21 +147,21 @@ describe("runDoctor", () => {
     const report = await runDoctor({ env: "staging", store: await store(), services });
     expect(report.failed).toBeGreaterThanOrEqual(4);
     for (const output of [JSON.stringify(report), reportText(report)]) {
-      for (const secret of [TEST_BOT_TOKEN, TEST_SIGNING_SECRET, TEST_PRIVATE_KEY.slice(40, 80), SECRETS["agentx/staging/callback-signing-key"]!]) expect(output).not.toContain(secret);
+      for (const secret of [TEST_BOT_TOKEN, TEST_SIGNING_SECRET, TEST_PRIVATE_KEY.slice(40, 80), SECRETS["rovara-cloud/staging/callback-signing-key"]!]) expect(output).not.toContain(secret);
     }
   });
 
   it("refuses an environment that is not installed, and the legacy deployment", async () => {
     await expect(runDoctor({ env: "staging", store: new MemoryParameterStore(), services: () => doctorServices() })).rejects.toThrow("environment staging is not installed in this account and region");
-    await expect(runDoctor({ env: "staging", store: await store({ ...SETTINGS, naming: "legacy" }), services: () => doctorServices() })).rejects.toThrow("agentx doctor checks environments installed with agentx init; staging uses the legacy stack names; check its stacks in the CloudFormation console, or run agentx --env <name> doctor for an environment installed with agentx init");
+    await expect(runDoctor({ env: "staging", store: await store({ ...SETTINGS, naming: "legacy" }), services: () => doctorServices() })).rejects.toThrow("rovara doctor checks environments installed with rovara init; staging uses the legacy stack names; check its stacks in the CloudFormation console, or run rovara --env <name> doctor for an environment installed with rovara init");
   });
 
   it("skips the budget check, not passes it, when the control-plane stack is missing", async () => {
     const stacks = healthyStacks();
-    delete stacks["agentx-staging-control-plane"];
+    delete stacks["rovara-cloud-staging-control-plane"];
     const budget = (await alertChecks(doctorContext({ services: doctorServices({ stackMap: stacks }) })))[1]!;
     expect(budget).toMatchObject({ name: "budget", status: "skip" });
-    expect(budget.detail).toContain("agentx-staging-control-plane does not exist");
+    expect(budget.detail).toContain("rovara-cloud-staging-control-plane does not exist");
   });
 
   it("runs the later groups when an early group throws", async () => {
@@ -175,12 +175,12 @@ describe("runDoctor", () => {
 
   it("says what to do when doctor's clients cannot be set up", async () => {
     await expect(runDoctor({ env: "staging", store: await store(), services: () => { throw new Error("Could not load credentials from any providers"); } }))
-      .rejects.toThrow("could not set up doctor's AWS, Slack and GitHub clients (Could not load credentials from any providers); sign in to AWS for this account and region, then run agentx doctor again");
+      .rejects.toThrow("could not set up doctor's AWS, Slack and GitHub clients (Could not load credentials from any providers); sign in to AWS for this account and region, then run rovara doctor again");
   });
 
   it("keeps going when a group throws, reporting it as one failed check", async () => {
     const services = () => doctorServices({ signIn: async () => { throw new Error("SSM read failed"); } });
     const report = await runDoctor({ env: "staging", store: await store(), services });
-    expect(report.checks).toContainEqual({ group: "sign-in", name: "sign-in checks", status: "fail", detail: "could not run the sign-in checks: SSM read failed", fix: "fix the problem named above, then run agentx doctor again" });
+    expect(report.checks).toContainEqual({ group: "sign-in", name: "sign-in checks", status: "fail", detail: "could not run the sign-in checks: SSM read failed", fix: "fix the problem named above, then run rovara doctor again" });
   });
 });

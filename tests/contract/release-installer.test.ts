@@ -57,7 +57,7 @@ describe("the published installer", () => {
     const page = Object.values(template.Resources).find((resource) => resource.Type === "AWS::Lambda::Function" && JSON.stringify(resource.Properties.Code).includes("S3Bucket"));
     expect(page?.Properties.Code).toMatchObject({ S3Bucket: BUCKET });
     expect(JSON.stringify(page?.Properties.Code)).toContain(`1.2.3/packages/||${built.packages[0]!.split("/").at(-1)}`);
-    for (const absent of ["cdk-hnb659fds", "BootstrapVersion", "qqenv-placeholderqq", "PermissionsBoundaryArn", "AssetParameters"]) expect(text).not.toContain(absent);
+    for (const absent of ["cdk-hnb659fds", "BootstrapVersion", "qqenv-phldrqq", "PermissionsBoundaryArn", "AssetParameters"]) expect(text).not.toContain(absent);
     for (const resource of Object.values(template.Resources).filter((each) => each.Type === "AWS::IAM::Role")) expect(resource.Properties.Path).toBeUndefined();
   });
 

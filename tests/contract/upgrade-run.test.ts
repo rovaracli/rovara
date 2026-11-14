@@ -28,13 +28,13 @@ async function bundleDir(prefix: string): Promise<string> {
 }
 
 const ADMIN = "arn:aws:sts::123456789012:assumed-role/Admin/alice";
-const OPERATOR = "arn:aws:sts::123456789012:assumed-role/agentx-staging-operator/alice";
+const OPERATOR = "arn:aws:sts::123456789012:assumed-role/rovara-cloud-staging-operator/alice";
 const ACCESS_TEMPLATE = JSON.stringify({ Resources: { ArtifactBucket: { Type: "AWS::S3::Bucket" } } });
 const CHANGED_ACCESS_TEMPLATE = JSON.stringify({ Resources: { ArtifactBucket: { Type: "AWS::S3::Bucket" }, NewRole: { Type: "AWS::IAM::Role" } } });
 const CALLBACK_KEY = "k".repeat(43);
 const INSTALLED = {
   ...SETTINGS, version: "1.2.3",
-  access: { artifactBucket: "agentx-staging-access-artifactbucket-abc", cloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation", operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator", pullThroughPrefix: "agentx-staging" },
+  access: { artifactBucket: "rovara-cloud-staging-access-artifactbucket-abc", cloudFormationRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation", operatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator", pullThroughPrefix: "rovara-cloud-staging" },
 };
 
 function release(version = "1.3.0", declared: string[] = ["BudgetMonthlyUsd", "BudgetScope", "SlackThreadTurnsPerMinute"], accessTemplate = ACCESS_TEMPLATE): LoadedRelease {
@@ -59,7 +59,7 @@ function confirmingDeployer(changes: Record<string, ChangeSetChange[]> = {}): St
 
 const healthy: DoctorReport = { env: "staging", region: "us-east-1", version: "1.3.0", engine: "templates", checks: [], failed: 0, warned: 0, passed: 25 };
 
-const GITHUB_APP_SECRET = "agentx/staging/github-app";
+const GITHUB_APP_SECRET = "rovara-cloud/staging/github-app";
 const HAND_SET_WEBHOOK_SECRET = "hand-set-webhook-secret-".padEnd(40, "h");
 const GITHUB_WEBHOOK_URL = "https://abc123.execute-api.us-east-1.amazonaws.com/v1/github/webhooks";
 
@@ -72,10 +72,10 @@ async function harness(overrides: Partial<UpgradeDependencies> & { caller?: stri
   const prepared: string[] = [];
   const github = fakeGitHubApi(overrides.github);
   const githubSecrets = memoryInitSecrets(overrides.githubSecret === null ? {} : { [GITHUB_APP_SECRET]: overrides.githubSecret ?? JSON.stringify({ appId: "123", slug: "agentx-acme-staging", account: "acme", privateKey: TEST_PRIVATE_KEY, webhookSecret: HAND_SET_WEBHOOK_SECRET }) });
-  const controlPlane = overrides.controlPlane ?? { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf", BudgetMonthlyUsd: "250", CallbackSigningKey: "****" };
+  const controlPlane = overrides.controlPlane ?? { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf", BudgetMonthlyUsd: "250", CallbackSigningKey: "****" };
   const deps: UpgradeDependencies = {
     store,
-    stacks: { describe: async (name): Promise<StackDescription | undefined> => ({ status: "UPDATE_COMPLETE", outputs: allStackOutputs()[name] ?? {}, parameters: name === "agentx-staging-control-plane" ? controlPlane : {} }) },
+    stacks: { describe: async (name): Promise<StackDescription | undefined> => ({ status: "UPDATE_COMPLETE", outputs: allStackOutputs()[name] ?? {}, parameters: name === "rovara-cloud-staging-control-plane" ? controlPlane : {} }) },
     cloudFormation: { async send(command: unknown) { if (command instanceof GetTemplateCommand) return { TemplateBody: ACCESS_TEMPLATE }; throw new Error("unexpected"); } },
     identity: { get: async () => ({ account: "123456789012", arn: overrides.caller ?? ADMIN }) },
     loadRelease: async () => release(),
@@ -83,7 +83,7 @@ async function harness(overrides: Partial<UpgradeDependencies> & { caller?: stri
     notes: async () => ({ text: "Fixes.", url: "https://example.test" }),
     prepare: async (input) => {
       prepared.push(input.settings.env);
-      return { deployer, store, secrets: memoryInitSecrets({ "agentx/staging/callback-signing-key": CALLBACK_KEY }), holder: overrides.caller ?? ADMIN, partition: "aws", cleanup: async () => undefined };
+      return { deployer, store, secrets: memoryInitSecrets({ "rovara-cloud/staging/callback-signing-key": CALLBACK_KEY }), holder: overrides.caller ?? ADMIN, partition: "aws", cleanup: async () => undefined };
     },
     cdkDiff: async (request) => `Stack ${request.stackName}\nThere were no differences`,
     ask: async () => "y",
@@ -100,15 +100,15 @@ async function harness(overrides: Partial<UpgradeDependencies> & { caller?: stri
 
 const options = { env: "staging", yes: true, allowReplace: [] as string[] };
 
-describe("agentx upgrade (FR-042 to FR-044)", () => {
+describe("rovara upgrade (FR-042 to FR-044)", () => {
   it("shows the notes, deploys in upgrade order, records the new version, keeps the budget and runs doctor", async () => {
     const h = await harness();
     const result = await runUpgrade(options, h.deps);
     expect(h.lines).toContain("Upgrading staging from 1.2.3 to 1.3.0 (templates engine)");
     expect(h.lines).toContain("Release notes for 1.3.0:\n  Fixes.");
-    expect(h.deployer.deployed).toEqual(["agentx-staging-access", "agentx-staging-foundation", "agentx-staging-identity", "agentx-staging-runtime", "agentx-staging-control-plane", "agentx-staging-slack"]);
+    expect(h.deployer.deployed).toEqual(["rovara-cloud-staging-access", "rovara-cloud-staging-foundation", "rovara-cloud-staging-identity", "rovara-cloud-staging-runtime", "rovara-cloud-staging-control-plane", "rovara-cloud-staging-slack"]);
     // Ruling F7: the operator's budget survives the upgrade.
-    expect(h.deployer.requests.find((request) => request.stackName === "agentx-staging-control-plane")?.parameters.BudgetMonthlyUsd).toBe("250");
+    expect(h.deployer.requests.find((request) => request.stackName === "rovara-cloud-staging-control-plane")?.parameters.BudgetMonthlyUsd).toBe("250");
     expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.3.0");
     expect(h.doctorRuns).toEqual(["staging"]);
     expect(result).toMatchObject({ from: "1.2.3", to: "1.3.0", doctor: { failed: 0 } });
@@ -119,7 +119,7 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
       const h = await harness();
       await runUpgrade(options, h.deps);
       expect(h.lines).toContain("GitHub webhook: configured");
-      expect(h.lines.indexOf("GitHub webhook: configured")).toBeLessThan(h.lines.indexOf("Checking the environment with agentx doctor"));
+      expect(h.lines.indexOf("GitHub webhook: configured")).toBeLessThan(h.lines.indexOf("Checking the environment with rovara doctor"));
       expect(h.github.hookWrites).toEqual([{ url: GITHUB_WEBHOOK_URL, secret: HAND_SET_WEBHOOK_SECRET }]);
       expect((JSON.parse(h.githubSecrets.values.get(GITHUB_APP_SECRET)!) as { webhookSecret: string }).webhookSecret).toBe(HAND_SET_WEBHOOK_SECRET);
     });
@@ -231,7 +231,7 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
   it("refuses while another command holds the environment lock, deploying nothing", async () => {
     const h = await harness();
     h.store.values.set(lockParameterName("staging"), JSON.stringify({ holder: "arn:aws:sts::123456789012:assumed-role/Admin/bob", command: "config set", acquiredAt: new Date(T0).toISOString() }));
-    await expect(runUpgrade(options, h.deps)).rejects.toThrow(`locked by arn:aws:sts::123456789012:assumed-role/Admin/bob running "config set" since ${new Date(T0).toISOString()}; wait for it to finish, then run the same agentx command again`);
+    await expect(runUpgrade(options, h.deps)).rejects.toThrow(`locked by arn:aws:sts::123456789012:assumed-role/Admin/bob running "config set" since ${new Date(T0).toISOString()}; wait for it to finish, then run the same rovara command again`);
     expect(h.deployer.deployed).toEqual([]);
   });
 
@@ -310,20 +310,20 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
   it("refuses the legacy deployment and an environment that is not installed", async () => {
     const h = await harness();
     await writeEnvironmentSettings(h.store, { ...INSTALLED, naming: "legacy" });
-    await expect(runUpgrade(options, h.deps)).rejects.toThrow("agentx upgrade works on environments installed with agentx init; staging uses the legacy stack names");
+    await expect(runUpgrade(options, h.deps)).rejects.toThrow("rovara upgrade works on environments installed with rovara init; staging uses the legacy stack names");
     await expect(runUpgrade({ ...options, env: "other" }, h.deps)).rejects.toThrow("environment other is not installed in this account and region");
   });
 
   it("under the operator role, skips an unchanged access stack", async () => {
     const h = await harness({ caller: OPERATOR });
     await runUpgrade(options, h.deps);
-    expect(h.deployer.deployed[0]).toBe("agentx-staging-foundation");
+    expect(h.deployer.deployed[0]).toBe("rovara-cloud-staging-foundation");
   });
 
   it("under the operator role, stops before deploying when the release changes the access stack (question 9)", async () => {
     const h = await harness({ caller: OPERATOR, loadRelease: async () => release("1.3.0", [], CHANGED_ACCESS_TEMPLATE) });
     await expect(runUpgrade(options, h.deps)).rejects.toThrow("release 1.3.0 changes the access stack, which only admin credentials can deploy");
-    await expect(runUpgrade(options, h.deps)).rejects.toThrow("agentx --env staging upgrade --export <dir>");
+    await expect(runUpgrade(options, h.deps)).rejects.toThrow("rovara --env staging upgrade --export <dir>");
     expect(h.deployer.deployed).toEqual([]);
   });
 
@@ -331,23 +331,23 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
     const sent: unknown[] = [];
     const h = await harness({ loadRelease: async () => release("1.3.0", ["BudgetMonthlyUsd"], CHANGED_ACCESS_TEMPLATE), cloudFormation: { send: async (command) => { sent.push(command); throw new Error("unexpected"); } } });
     await runUpgrade(options, h.deps);
-    expect(h.deployer.deployed[0]).toBe("agentx-staging-access");
+    expect(h.deployer.deployed[0]).toBe("rovara-cloud-staging-access");
     expect(sent).toEqual([]);
   });
 
   it("stops on a data replacement under --yes, deleting nothing, and continues with --allow-replace", async () => {
-    const changes = { "agentx-staging-control-plane": [{ action: "Modify", logicalId: "State", type: "AWS::DynamoDB::Table", replacement: "True" }] };
+    const changes = { "rovara-cloud-staging-control-plane": [{ action: "Modify", logicalId: "State", type: "AWS::DynamoDB::Table", replacement: "True" }] };
     const stopped = await harness({ changes });
-    await expect(runUpgrade(options, stopped.deps)).rejects.toThrow("upgrade stopped: agentx-staging-control-plane would replace State (AWS::DynamoDB::Table)");
-    expect(stopped.deployer.deployed).not.toContain("agentx-staging-control-plane");
+    await expect(runUpgrade(options, stopped.deps)).rejects.toThrow("upgrade stopped: rovara-cloud-staging-control-plane would replace State (AWS::DynamoDB::Table)");
+    expect(stopped.deployer.deployed).not.toContain("rovara-cloud-staging-control-plane");
     const allowed = await harness({ changes });
     await runUpgrade({ ...options, allowReplace: ["State"] }, allowed.deps);
-    expect(allowed.deployer.deployed).toContain("agentx-staging-control-plane");
+    expect(allowed.deployer.deployed).toContain("rovara-cloud-staging-control-plane");
   });
 
   it("stops when the operator declines a stack's changes, naming how to continue", async () => {
     const h = await harness({ ask: async () => "n" });
-    await expect(runUpgrade({ ...options, yes: false }, h.deps)).rejects.toThrow("upgrade stopped before agentx-staging-access: nothing in it changed");
+    await expect(runUpgrade({ ...options, yes: false }, h.deps)).rejects.toThrow("upgrade stopped before rovara-cloud-staging-access: nothing in it changed");
     expect(h.doctorRuns).toEqual([]);
   });
 
@@ -362,14 +362,14 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
 
   it("fails when doctor finds a problem after the upgrade (FR-044)", async () => {
     const h = await harness({ doctor: async () => ({ ...healthy, failed: 2 }) });
-    await expect(runUpgrade(options, h.deps)).rejects.toThrow("upgraded staging to 1.3.0, but 2 doctor checks failed; fix what each one names, then run agentx doctor again");
+    await expect(runUpgrade(options, h.deps)).rejects.toThrow("upgraded staging to 1.3.0, but 2 doctor checks failed; fix what each one names, then run rovara doctor again");
     expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.3.0");
     expect(h.deployer.deployed).toHaveLength(6);
   });
 
   it("says the upgrade finished when doctor itself cannot run", async () => {
     const h = await harness({ doctor: async () => { throw new Error("connect ETIMEDOUT 140.82.112.3:443"); } });
-    await expect(runUpgrade(options, h.deps)).rejects.toThrow("upgraded staging to 1.3.0, but doctor could not run: connect ETIMEDOUT 140.82.112.3:443; run agentx doctor");
+    await expect(runUpgrade(options, h.deps)).rejects.toThrow("upgraded staging to 1.3.0, but doctor could not run: connect ETIMEDOUT 140.82.112.3:443; run rovara doctor");
     expect((await readEnvironmentSettings(h.store, "staging"))?.version).toBe("1.3.0");
   });
 
@@ -382,7 +382,7 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
 
   it("puts no secret in a refusal", async () => {
     const refusals: string[] = [];
-    const changes = { "agentx-staging-control-plane": [{ action: "Modify", logicalId: "State", type: "AWS::DynamoDB::Table", replacement: "True" }] };
+    const changes = { "rovara-cloud-staging-control-plane": [{ action: "Modify", logicalId: "State", type: "AWS::DynamoDB::Table", replacement: "True" }] };
     for (const h of [
       await harness({ changes }),
       await harness({ caller: OPERATOR, loadRelease: async () => release("1.3.0", [], CHANGED_ACCESS_TEMPLATE) }),
@@ -397,7 +397,7 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
 
   it("needs --yes when stdin is not a terminal", async () => {
     const h = await harness({ isInteractive: () => false });
-    await expect(runUpgrade({ ...options, yes: false }, h.deps)).rejects.toThrow("agentx upgrade needs --yes when stdin is not a terminal");
+    await expect(runUpgrade({ ...options, yes: false }, h.deps)).rejects.toThrow("rovara upgrade needs --yes when stdin is not a terminal");
   });
 
   it("with --export, writes the bundle and deploys nothing", async () => {
@@ -420,7 +420,7 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
     const h = await harness({ caller: OPERATOR, isInteractive: () => false, loadRelease: async () => release("1.3.0", [], CHANGED_ACCESS_TEMPLATE) });
     const result = await runUpgrade({ ...options, yes: false, exportDir: out }, h.deps);
     expect(result.parts[0]).toBe("access");
-    expect(await readFile(join(out, "README.md"), "utf8")).toContain("create-change-set --stack-name agentx-staging-access ");
+    expect(await readFile(join(out, "README.md"), "utf8")).toContain("create-change-set --stack-name rovara-cloud-staging-access ");
   });
 
   it("with --export, leaves out an unchanged access stack", async () => {
@@ -428,7 +428,7 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
     const h = await harness();
     const result = await runUpgrade({ ...options, exportDir: out }, h.deps);
     expect(result.parts).not.toContain("access");
-    expect(await readFile(join(out, "README.md"), "utf8")).not.toContain("--stack-name agentx-staging-access ");
+    expect(await readFile(join(out, "README.md"), "utf8")).not.toContain("--stack-name rovara-cloud-staging-access ");
   });
 
   it("with --export, describes each stack once", async () => {
@@ -442,13 +442,13 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
     expect(new Set(described).size).toBe(described.length);
   });
 
-  it("applies the same sign-in values as agentx upgrade when SSM and the stack disagree (ruling F29)", async () => {
+  it("applies the same sign-in values as rovara upgrade when SSM and the stack disagree (ruling F29)", async () => {
     const declared = ["BudgetMonthlyUsd", "SlackTeamId", "DeveloperSignInSlack"];
-    const controlPlane = { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf", BudgetMonthlyUsd: "250", CallbackSigningKey: "****", SlackTeamId: "T0OLD", DeveloperSignInSlack: "enabled" };
+    const controlPlane = { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf", BudgetMonthlyUsd: "250", CallbackSigningKey: "****", SlackTeamId: "T0OLD", DeveloperSignInSlack: "enabled" };
     const upgraded = await harness({ controlPlane, loadRelease: async () => release("1.3.0", declared) });
     await writeSlackTeamId(upgraded.store, "staging", "T0NEW");
     await runUpgrade(options, upgraded.deps);
-    const sent = upgraded.deployer.requests.find((request) => request.stackName === "agentx-staging-control-plane")!.parameters;
+    const sent = upgraded.deployer.requests.find((request) => request.stackName === "rovara-cloud-staging-control-plane")!.parameters;
 
     const out = await bundleDir("agentx-upgrade-run-export-");
     const exported = await harness({ controlPlane, loadRelease: async () => release("1.3.0", declared) });
@@ -469,7 +469,7 @@ describe("agentx upgrade (FR-042 to FR-044)", () => {
   });
 });
 
-describe("agentx upgrade with the cdk engine", () => {
+describe("rovara upgrade with the cdk engine", () => {
   const cdk = async (overrides: Parameters<typeof harness>[0] = {}) => {
     const h = await harness(overrides);
     await writeEnvironmentSettings(h.store, { ...INSTALLED, engine: "cdk" });
@@ -477,16 +477,16 @@ describe("agentx upgrade with the cdk engine", () => {
   };
 
   it("reviews each stack's cdk diff before deploying it", async () => {
-    const h = await cdk({ cdkDiff: async (request) => (request.part === "control-plane" ? "Stack agentx-staging-control-plane\nResources\n[-] AWS::S3::Bucket Artifacts Artifacts9F8E7D destroy" : `Stack ${request.stackName}\nThere were no differences`) });
-    await expect(runUpgrade({ ...options, source: "/src" }, h.deps)).rejects.toThrow("upgrade stopped: agentx-staging-control-plane would delete Artifacts9F8E7D (AWS::S3::Bucket)");
-    expect(h.deployer.deployed).toContain("agentx-staging-runtime");
-    expect(h.deployer.deployed).not.toContain("agentx-staging-control-plane");
+    const h = await cdk({ cdkDiff: async (request) => (request.part === "control-plane" ? "Stack rovara-cloud-staging-control-plane\nResources\n[-] AWS::S3::Bucket Artifacts Artifacts9F8E7D destroy" : `Stack ${request.stackName}\nThere were no differences`) });
+    await expect(runUpgrade({ ...options, source: "/src" }, h.deps)).rejects.toThrow("upgrade stopped: rovara-cloud-staging-control-plane would delete Artifacts9F8E7D (AWS::S3::Bucket)");
+    expect(h.deployer.deployed).toContain("rovara-cloud-staging-runtime");
+    expect(h.deployer.deployed).not.toContain("rovara-cloud-staging-control-plane");
   });
 
   it("upgrades every stack with admin credentials and runs doctor, which must pass (ruling F4)", async () => {
     const h = await cdk();
     const result = await runUpgrade({ ...options, source: "/src" }, h.deps);
-    expect(h.deployer.deployed).toEqual(["agentx-staging-access", "agentx-staging-foundation", "agentx-staging-identity", "agentx-staging-runtime", "agentx-staging-control-plane", "agentx-staging-slack"]);
+    expect(h.deployer.deployed).toEqual(["rovara-cloud-staging-access", "rovara-cloud-staging-foundation", "rovara-cloud-staging-identity", "rovara-cloud-staging-runtime", "rovara-cloud-staging-control-plane", "rovara-cloud-staging-slack"]);
     expect(h.doctorRuns).toEqual(["staging"]);
     expect(result.doctor).toEqual({ failed: 0, warned: 0 });
   });
@@ -542,7 +542,7 @@ describe("agentx upgrade with the cdk engine", () => {
   it("reports the config keys the synth drops, not the ones the release's templates drop (issue 152)", async () => {
     // The release's template declares the thread limit; the synth of the source no longer does.
     const h = await cdk({
-      controlPlane: { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf", BudgetMonthlyUsd: "250", SlackThreadTurnsPerMinute: "12", CallbackSigningKey: "****" },
+      controlPlane: { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf", BudgetMonthlyUsd: "250", SlackThreadTurnsPerMinute: "12", CallbackSigningKey: "****" },
       loadRelease: async () => release("1.3.0", ["BudgetScope", "SlackThreadTurnsPerMinute"]),
     });
     const prepare = h.deps.prepare.bind(h.deps);
@@ -550,8 +550,8 @@ describe("agentx upgrade with the cdk engine", () => {
     await runUpgrade({ ...options, source: "/src" }, h.deps);
     // Exactly the synth's drop: the budget, which the release's template does not declare, is kept.
     expect(h.lines.filter((line) => line.startsWith("config key"))).toEqual(["config key limits.threadTurnsPerMinute (12) is not in release 1.3.0, so the upgrade drops it; nothing replaces it"]);
-    expect(h.lines).toContain("kept agentx-staging-control-plane: BudgetMonthlyUsd; not in this release, so not sent: SlackThreadTurnsPerMinute");
-    const controlPlane = h.deployer.requests.find((request) => request.stackName === "agentx-staging-control-plane")!;
+    expect(h.lines).toContain("kept rovara-cloud-staging-control-plane: BudgetMonthlyUsd; not in this release, so not sent: SlackThreadTurnsPerMinute");
+    const controlPlane = h.deployer.requests.find((request) => request.stackName === "rovara-cloud-staging-control-plane")!;
     expect(controlPlane.parameters.BudgetMonthlyUsd).toBe("250");
     expect(controlPlane.parameters).not.toHaveProperty("SlackThreadTurnsPerMinute");
   });
@@ -582,7 +582,7 @@ function withoutWrite(deps: UpgradeDependencies): Partial<UpgradeDependencies> {
   return copy;
 }
 
-describe("the agentx upgrade command", () => {
+describe("the rovara upgrade command", () => {
   function capture() {
     const out: string[] = [];
     const err: string[] = [];
@@ -652,14 +652,14 @@ describe("the agentx upgrade command", () => {
 
   it("passes --to, --release and --allow-replace through, and prints JSON with --json", async () => {
     const loaded: Array<{ releaseDir?: string; version?: string }> = [];
-    const changes = { "agentx-staging-control-plane": [{ action: "Modify", logicalId: "State", type: "AWS::DynamoDB::Table", replacement: "True" }] };
+    const changes = { "rovara-cloud-staging-control-plane": [{ action: "Modify", logicalId: "State", type: "AWS::DynamoDB::Table", replacement: "True" }] };
     const h = await harness({ changes, loadRelease: async (input) => { loaded.push(input); return release(); } });
     const io = capture();
     const rest = withoutWrite(h.deps);
     const code = await executeCli(["--env", "staging", "--json", "upgrade", "--yes", "--release", "/releases/1.3.0", "--to", "1.3.0", "--allow-replace", "State"], { ...io, upgrade: rest });
     expect(code).toBe(0);
     expect(loaded).toEqual([{ releaseDir: "/releases/1.3.0" }]);
-    expect(h.deployer.deployed).toContain("agentx-staging-control-plane");
+    expect(h.deployer.deployed).toContain("rovara-cloud-staging-control-plane");
     expect(JSON.parse(io.out.join(""))).toMatchObject({ ok: true, data: { env: "staging", from: "1.2.3", to: "1.3.0" } });
   });
 
@@ -679,7 +679,7 @@ describe("the agentx upgrade command", () => {
 describe("accessChanged (question 9)", () => {
   const input = (templateBody: string | undefined) => ({
     cloudFormation: { send: async () => (templateBody === undefined ? {} : { TemplateBody: templateBody }) },
-    stackName: "agentx-staging-access", release: release(), region: "us-east-1", env: "staging",
+    stackName: "rovara-cloud-staging-access", release: release(), region: "us-east-1", env: "staging",
   });
 
   it("is false for the same template written differently", async () => {

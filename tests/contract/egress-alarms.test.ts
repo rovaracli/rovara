@@ -30,22 +30,22 @@ describe("egress alarms (cloud installs)", () => {
   });
 
   it("counts blocked DNS firewall queries from the query log into AgentX/<env>/BlockedDnsQueries", () => {
-    const logGroups = resourcesOf(template, "AWS::Logs::LogGroup").filter(([, resource]) => resource.Properties.LogGroupName === "/agentx/staging/dns-firewall");
+    const logGroups = resourcesOf(template, "AWS::Logs::LogGroup").filter(([, resource]) => resource.Properties.LogGroupName === "/rovara-cloud/staging/dns-firewall");
     expect(logGroups).toHaveLength(1);
     const filters = resourcesOf(template, "AWS::Logs::MetricFilter");
     expect(filters).toHaveLength(1);
     expect(filters[0]![1].Properties).toMatchObject({
       LogGroupName: { Ref: logGroups[0]![0] },
       FilterPattern: '{ $.firewall_rule_action = "BLOCK" }',
-      MetricTransformations: [{ MetricNamespace: "AgentX/staging", MetricName: "BlockedDnsQueries", MetricValue: "1", DefaultValue: 0 }],
+      MetricTransformations: [{ MetricNamespace: "RovaraCloud/staging", MetricName: "BlockedDnsQueries", MetricValue: "1", DefaultValue: 0 }],
     });
   });
 
   it("alarms when blocked lookups reach 200 in 5 minutes", () => {
-    const found = alarmNamed("agentx-staging-blocked-dns-spike");
+    const found = alarmNamed("rovara-cloud-staging-blocked-dns-spike");
     expect(found).toHaveLength(1);
     expect(found[0]![1].Properties).toMatchObject({
-      Namespace: "AgentX/staging",
+      Namespace: "RovaraCloud/staging",
       MetricName: "BlockedDnsQueries",
       Statistic: "Sum",
       Threshold: 200,
@@ -62,8 +62,8 @@ describe("egress alarms (cloud installs)", () => {
     const natAlarms = alarms.filter(([, alarm]) => alarm.Properties.MetricName === "BytesOutToDestination");
     expect(natAlarms).toHaveLength(gateways.length);
     expect(natAlarms.map(([, alarm]) => alarm.Properties.AlarmName as string).sort()).toStrictEqual([
-      "agentx-staging-nat-egress-spike-use1-az1",
-      "agentx-staging-nat-egress-spike-use1-az2",
+      "rovara-cloud-staging-nat-egress-spike-use1-az1",
+      "rovara-cloud-staging-nat-egress-spike-use1-az2",
     ]);
     for (const [id] of gateways) {
       const forGateway = natAlarms.filter(([, alarm]) => JSON.stringify(alarm.Properties.Dimensions) === JSON.stringify([{ Name: "NatGatewayId", Value: { Ref: id } }]));
@@ -88,16 +88,16 @@ describe("egress alarms (cloud installs)", () => {
       const actions = JSON.stringify(alarm.Properties.AlarmActions);
       expect(alarm.Properties.AlarmActions).toHaveLength(1);
       expect(actions).toContain(":sns:");
-      expect(actions).toContain("agentx-staging-alerts");
+      expect(actions).toContain("rovara-cloud-staging-alerts");
     }
   });
 
   it("describes what to check, without em dashes", () => {
     for (const [, alarm] of alarms) expect(alarm.Properties.AlarmDescription).not.toContain("—");
-    expect(alarmNamed("agentx-staging-blocked-dns-spike")[0]![1].Properties.AlarmDescription).toContain("/agentx/staging/dns-firewall");
+    expect(alarmNamed("rovara-cloud-staging-blocked-dns-spike")[0]![1].Properties.AlarmDescription).toContain("/rovara-cloud/staging/dns-firewall");
     for (const [, alarm] of alarms.filter(([, a]) => a.Properties.MetricName === "BytesOutToDestination")) {
       expect(alarm.Properties.AlarmDescription).toMatch(/workspaces were running/);
-      expect(alarm.Properties.AlarmDescription).toContain("/agentx/staging/dns-firewall");
+      expect(alarm.Properties.AlarmDescription).toContain("/rovara-cloud/staging/dns-firewall");
     }
   });
 

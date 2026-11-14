@@ -1,4 +1,4 @@
-// `agentx project members | add-member | remove-member` (Plan 2, Task 21): the people in a project and their roles. Each command is one or two
+// `rovara project members | add-member | remove-member` (Plan 2, Task 21): the people in a project and their roles. Each command is one or two
 // signed-in calls to the control plane's /v1/app/projects/{name}/members routes; the control plane decides who may do what, and this only
 // names the person (by email or ID, from the org's people) and prints what happened.
 import { randomUUID } from "node:crypto";

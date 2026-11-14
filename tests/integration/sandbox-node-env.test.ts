@@ -14,7 +14,7 @@ import type { DockerCli } from "../../packages/worker/src/swebench/containers.js
 import { TaskSandbox } from "../../packages/worker/src/task-sandbox.js";
 
 const run = promisify(execFile);
-const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@sha256:" + "b".repeat(64);
+const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/rovara-cloud-staging/worker@sha256:" + "b".repeat(64);
 /** The ENV of environments/base/Dockerfile that a container started from the worker image carries. */
 const IMAGE_ENV = { NODE_ENV: "production", PORT: "8080" };
 const NPM = join(dirname(process.execPath), "npm");

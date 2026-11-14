@@ -51,11 +51,11 @@ describe("the stuck-cancel retry's infrastructure (#195)", () => {
     expect(alarms).toHaveLength(1);
     const [id, alarm] = alarms[0]!;
     expect(id).toMatch(/^SessionsStuckCancelsAlarm[0-9A-F]{8}$/);
-    const stat = (metricName: string) => ({ MetricName: metricName, Namespace: "AgentX/staging" });
+    const stat = (metricName: string) => ({ MetricName: metricName, Namespace: "RovaraCloud/staging" });
     expect(alarm.Properties).toStrictEqual({
       AlarmActions: [{ Ref: topicId(named) }],
       AlarmDescription: "The reconciler found a task whose cancel never reached its worker, and queued the cancel again or ended the task (or failed to). Check the reconciler's logs for stuck_cancel events: a retried cancel that finishes, or an ended task, needs no action; repeated ones point at a dispatch or worker fault.",
-      AlarmName: "agentx-staging-StuckCancels",
+      AlarmName: "rovara-cloud-staging-StuckCancels",
       ComparisonOperator: "GreaterThanOrEqualToThreshold",
       EvaluationPeriods: 1,
       Metrics: [

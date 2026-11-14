@@ -20,10 +20,10 @@ type Statement = { Effect?: string; Action?: string | string[]; Resource?: unkno
 type Resource = { Type: string; Properties?: Record<string, unknown> };
 
 function controlPlaneTemplate(): CfnTemplate {
-  const env = "agentxlivetest123";
+  const env = "rovaralivetest";
   const stack = buildAgentXApp({ agentxEnv: env, "agentx:e2eQualificationTransport": "enabled" }).node.children
     .filter((child): child is Stack => Stack.isStack(child))
-    .find((candidate) => candidate.stackName === `agentx-${env}-control-plane`);
+    .find((candidate) => candidate.stackName === `rovara-cloud-${env}-control-plane`);
   if (stack === undefined) throw new Error(`expected the real ${env} control-plane stack`);
   return Template.fromStack(stack).toJSON();
 }

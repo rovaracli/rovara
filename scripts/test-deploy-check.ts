@@ -768,13 +768,13 @@ function routeFindings(check: ModelRouteCheck): Finding[] {
   }
   if (check.choice?.state === "unsupported") {
     findings.push(finding("model-route-choice-unsupported", "error",
-      `worker-e2e-agent-model is ${JSON.stringify(check.choice.setting)}, which is not a model Rovara can use with ${providerLabel(route.provider)} in this region, so the broker derives no AI navigation route from it; set a listed model, or default, with agentx config set models.e2eAgent`));
+      `worker-e2e-agent-model is ${JSON.stringify(check.choice.setting)}, which is not a model Rovara can use with ${providerLabel(route.provider)} in this region, so the broker derives no AI navigation route from it; set a listed model, or default, with rovara config set models.e2eAgent`));
     return findings;
   }
   if (check.tested !== undefined) {
     const untested = "unreadable" in check.tested ? `could not be read (${check.tested.unreadable})` : check.tested.tested ? undefined : "has no passing driving test on this installation";
     if (untested !== undefined) {
-      findings.push(finding("model-route-not-tested", "warning", `${routeText} ${untested}; AI navigation steps will not run until the driving test passes (agentx project model-check test)`));
+      findings.push(finding("model-route-not-tested", "warning", `${routeText} ${untested}; AI navigation steps will not run until the driving test passes (rovara project model-check test)`));
     }
   }
   if (check.quota !== undefined) findings.push(...quotaFindings(route, check.quota, finding));
@@ -811,7 +811,7 @@ function quotaFindings(route: E2EModelRoute, quota: QuotaFacts, finding: Maker):
   const owned = quota[own];
   if (owned === null || owned.tokensPerMinute !== 0) return [];
   return [finding("model-quota-zero", "warning",
-    `the Bedrock limit for ${route.modelId} in ${own === "global" ? "the Global scope" : "this geography"} is 0 tokens per minute (${owned.code}), so Bedrock refuses every call; ${quotaText("US-only/geographic limit", quota.geographic)}; ${quotaText("Global limit", quota.global)}; raise the limit, or choose another model with agentx config set models.e2eAgent`)];
+    `the Bedrock limit for ${route.modelId} in ${own === "global" ? "the Global scope" : "this geography"} is 0 tokens per minute (${owned.code}), so Bedrock refuses every call; ${quotaText("US-only/geographic limit", quota.geographic)}; ${quotaText("Global limit", quota.global)}; raise the limit, or choose another model with rovara config set models.e2eAgent`)];
 }
 
 /**

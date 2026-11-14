@@ -129,20 +129,20 @@ describe("callbackSigningKey", () => {
   });
 });
 
-describe("secrets the CLI creates carry agentx:env (FR-047)", () => {
-  it("tags a secret under agentx/<env>/ with its environment", async () => {
+describe("secrets the CLI creates carry rovara-cloud:env (FR-047)", () => {
+  it("tags a secret under rovara-cloud/<env>/ with its environment", async () => {
     const sent: unknown[] = [];
     const client = { send: async (command: unknown) => { sent.push(command); return {}; } };
-    await secretsManagerValueStore(client as never).create("agentx/staging/connectors/linear", "{}");
+    await secretsManagerValueStore(client as never).create("rovara-cloud/staging/connectors/linear", "{}");
     const input = (sent[0] as CreateSecretCommand).input;
-    expect(input.Tags).toEqual([{ Key: "agentx:env", Value: "staging" }]);
+    expect(input.Tags).toEqual([{ Key: "rovara-cloud:env", Value: "staging" }]);
   });
 
   it("adds no tag to the legacy connector secret name", () => {
     expect(secretTags("agentx/connectors/linear-payments")).toEqual([]);
   });
 
-  // Fix round 1: a name that is neither agentx/<env>/... nor the legacy agentx/connectors/... is a
+  // Fix round 1: a name that is neither rovara-cloud/<env>/... nor the legacy agentx/connectors/... is a
   // bug in the caller (a mistyped secret name), not a value to leave silently untagged.
   it("refuses a malformed secret name instead of silently leaving it untagged", () => {
     expect(() => secretTags("something-else")).toThrow("CONFIG_INVALID");

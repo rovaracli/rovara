@@ -1,4 +1,4 @@
-// `agentx admin audit log | export` (Task 14): Rovara staff read one organization's audit log through the administrator sign-in, over
+// `rovara admin audit log | export` (Task 14): Rovara staff read one organization's audit log through the administrator sign-in, over
 // `/v1/admin/audit/{orgId}/*`. The route is fail-closed: it records the read, with the reason and ticket given here, before it
 // reads anything, and answers 503 AUDIT_UNAVAILABLE (nothing read) when it cannot. Nothing here reads another way.
 //

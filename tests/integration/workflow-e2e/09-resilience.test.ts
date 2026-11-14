@@ -33,9 +33,11 @@ import { loadRollback0212Parser } from "../../support/rollback-0212-parser.js";
 import { handler as productionDispatcher, taskPersonProofLambdaClient } from "../../../packages/broker/src/aws/dispatcher.js";
 import { handler as taskPersonProofRuntime } from "../../../packages/broker/src/aws/task-person-proof-runtime.js";
 import { singleOrgIdForEnv } from "../../../packages/contracts/src/org-node.js";
+import { TASK_PERSON_PROOF_ENV } from "../../../packages/contracts/src/access-policies.js";
 
 // The production dispatcher reads AGENTX_ENV (stubbed below), so the install these tests build is that named environment.
-const LIVE_ENV = "agentxlivetest123";
+// The one environment the Task Person proof runs in (contracts names it).
+const LIVE_ENV = TASK_PERSON_PROOF_ENV;
 const TEST_ORG = singleOrgIdForEnv(LIVE_ENV);
 import { projectMemberKey, projectRevisionKey } from "../../../packages/contracts/src/org-scoped-keys.js";
 
@@ -94,7 +96,7 @@ function installProductionDispatcher(e2e: WorkflowE2E, options: {
   vi.stubEnv("TASK_PERSON_PROOF_FUNCTION_ARN", "arn:aws:lambda:us-east-1:123456789012:function:proof");
   vi.stubEnv("SLACK_TEAM_ID", "T0BSHLLUGBD");
   vi.stubEnv("AGENTX_ENV", LIVE_ENV);
-  vi.stubEnv("SLACK_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:944937319445:secret:agentx/agentxlivetest123/slack-z7WaUV");
+  vi.stubEnv("SLACK_SECRET_ARN", `arn:aws:secretsmanager:us-east-1:944937319445:secret:rovara-cloud/${LIVE_ENV}/slack-z7WaUV`);
   vi.stubEnv("INVOKE_SIGNING_KEY_ARN", "arn:aws:kms:us-east-1:123456789012:key/e2e");
   let bindingFenceCount = 0;
   let pauseTransactionCount = 0;
@@ -547,7 +549,7 @@ describe("Suite 9: resilience", () => {
     await e2e.settle();
     expect(fixPushes(e2e)).toEqual([]);
     expect(e2e.workflow()).toMatchObject({ stage: "WAIT_FOR_MERGE", state: "BLOCKED" });
-    expect(said(e2e).at(-1)).toBe(`I couldn't push the fix because this AgentX worker is out of date. Ask an admin to run agentx upgrade. ${STILL_WATCHING}`);
+    expect(said(e2e).at(-1)).toBe(`I couldn't push the fix because this AgentX worker is out of date. Ask an admin to run rovara upgrade. ${STILL_WATCHING}`);
     e2e.worker.features(undefined);
     await merged(e2e, pullRequest.number);
     expect(e2e.workflow()).toMatchObject({ stage: "MERGED", state: "COMPLETE" });
@@ -834,7 +836,7 @@ describe("Suite 9: resilience", () => {
       && request.request.channelIds.includes(SLACK_CHANNEL))).toBe(true);
     expect(production.secretReads).toHaveLength(3);
     expect(production.secretReads.every((command) => command instanceof GetSecretValueCommand
-      && command.input.SecretId === "arn:aws:secretsmanager:us-east-1:944937319445:secret:agentx/agentxlivetest123/slack-z7WaUV")).toBe(true);
+      && command.input.SecretId === `arn:aws:secretsmanager:us-east-1:944937319445:secret:rovara-cloud/${LIVE_ENV}/slack-z7WaUV`)).toBe(true);
     expect(production.slackApiCalls).toEqual(Array.from({ length: 3 }, () => ["/api/users.info", "/api/conversations.members"]).flat());
     expect(production.posts).toHaveLength(1);
     expect(production.posts[0]?.authorization).toMatch(new RegExp(`^${WORKER_INVOKE_AUTHORIZATION_SCHEME} `));

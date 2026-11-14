@@ -1,9 +1,9 @@
 // M1.4 Task 4.6b: asks for the audit replay of a task's qualified AI-navigated round, then waits for its record and prints it.
 //
-//   npx tsx scripts/e2e-replay-round.ts --env agentxlivetest123 --task <task-id> --round <round-id> [--profile <aws profile>] [--region <region>] [--poll-seconds 15] [--timeout-minutes 40] [--no-wait]
+//   npx tsx scripts/e2e-replay-round.ts --env rovaralivetest --task <task-id> --round <round-id> [--profile <aws profile>] [--region <region>] [--poll-seconds 15] [--timeout-minutes 40] [--no-wait]
 //
-// What it does (and all it does): `agentx admin task e2e-replay start`, then `agentx admin task e2e-replay show` until the attempt it started is recorded or could not be run. Both are
-// administrator commands on the control plane, run through the CLI with your admin sign-in (`agentx --env <env> login --admin`). The replay runs the round's candidate again with no model,
+// What it does (and all it does): `rovara admin task e2e-replay start`, then `rovara admin task e2e-replay show` until the attempt it started is recorded or could not be run. Both are
+// administrator commands on the control plane, run through the CLI with your admin sign-in (`rovara --env <env> login --admin`). The replay runs the round's candidate again with no model,
 // serving only the recordings the verified round left; its result is a record kept apart from the task. This script never retries, cancels, approves, sends a task back or publishes
 // anything: it cannot change a task's verdict, and neither can the replay.
 //
@@ -50,7 +50,7 @@ export function parseReplayArgs(argv: readonly string[]): ReplayArgs {
 /** What a CLI call answered: its exit status and JSON output. */
 export type CliResult = { status: number; stdout: string; stderr: string };
 export interface ReplayDependencies {
-  /** Runs `agentx --json --env <env> <arguments>`. The script only ever passes `admin task e2e-replay start` and `admin task e2e-replay show`. */
+  /** Runs `rovara --json --env <env> <arguments>`. The script only ever passes `admin task e2e-replay start` and `admin task e2e-replay show`. */
   cli(argumentsList: readonly string[]): CliResult;
   sleep(ms: number): Promise<void>;
   now(): number;
@@ -68,7 +68,7 @@ const refusalOf = (result: CliResult): string => {
 };
 
 /**
- * What the CLI's answer carries. `agentx --json` wraps a success as `{ ok: true, data: <the broker's answer> }` (packages/cli/src/output.ts formatSuccess), and a failure as
+ * What the CLI's answer carries. `rovara --json` wraps a success as `{ ok: true, data: <the broker's answer> }` (packages/cli/src/output.ts formatSuccess), and a failure as
  * `{ ok: false, error }`. The broker's own answer is read from `data`; a bare answer (no envelope) is read as it is, so an older or direct caller still works. Reading the
  * envelope's top level for `replay` is what made a started replay look refused (REPLAYCLI, 2026-10-24): `replay` is under `data`.
  */
@@ -95,7 +95,7 @@ export async function runReplayRound(args: ReplayArgs, dependencies: ReplayDepen
   const replay = answerOf(started.stdout)?.["replay"] as { attempt?: unknown } | undefined;
   // The CLI succeeded but its answer names no attempt: whether a replay started is not known, so say that (never "refused") and where to look. Fail closed: not a success.
   if (typeof replay?.attempt !== "number") {
-    dependencies.err(`the replay request was answered with exit 0 but the answer did not name an attempt, so it is not known whether a replay started; read it with: agentx --env ${args.env} admin task e2e-replay show --task ${args.task} --round ${args.round}`);
+    dependencies.err(`the replay request was answered with exit 0 but the answer did not name an attempt, so it is not known whether a replay started; read it with: rovara --env ${args.env} admin task e2e-replay show --task ${args.task} --round ${args.round}`);
     return 1;
   }
   const attempt = replay.attempt;
@@ -112,7 +112,7 @@ export async function runReplayRound(args: ReplayArgs, dependencies: ReplayDepen
       }
     }
     if (!args.wait) { dependencies.out(JSON.stringify({ attempt, state: "STARTED" }, null, 2)); return 0; }
-    if (dependencies.now() >= deadline) { dependencies.err(`the replay did not finish within ${args.timeoutMinutes} minutes; read it later with: agentx --env ${args.env} admin task e2e-replay show --task ${args.task} --round ${args.round}`); return 1; }
+    if (dependencies.now() >= deadline) { dependencies.err(`the replay did not finish within ${args.timeoutMinutes} minutes; read it later with: rovara --env ${args.env} admin task e2e-replay show --task ${args.task} --round ${args.round}`); return 1; }
     await dependencies.sleep(args.pollSeconds * 1000);
   }
 }

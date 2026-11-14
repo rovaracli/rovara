@@ -101,7 +101,7 @@ export function recordAuditSinkOf(audit: AuditDeps["audit"], documentClient: { s
   };
 }
 
-/** A batch from the record's durable queue (`agentx-<env>-team-record-ops`): an SQS event whose every record comes from that queue. */
+/** A batch from the record's durable queue (`rovara-cloud-<env>-team-record-ops`): an SQS event whose every record comes from that queue. */
 export interface QueueBatchEvent { Records: Array<{ eventSource: string; eventSourceARN: string; messageId: string; body: string; attributes?: { ApproximateReceiveCount?: string } }> }
 
 export function isTeamRecordQueueEvent(event: unknown, environment: Record<string, string | undefined> = process.env): event is QueueBatchEvent {

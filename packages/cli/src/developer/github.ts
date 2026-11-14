@@ -1,4 +1,4 @@
-// `agentx github connect | list | disconnect` (Plan 2, Tasks 13 to 15): connect your organization's GitHub account to Rovara. One signed-in POST asks the control plane
+// `rovara github connect | list | disconnect` (Plan 2, Tasks 13 to 15): connect your organization's GitHub account to Rovara. One signed-in POST asks the control plane
 // for an install link that only this person can complete; the browser opens it (or the link is printed); then this waits, polling the
 // organization's connected GitHub accounts, until a new one appears. The control plane decides who may connect and what GitHub says.
 import { agentXError, githubAdminMessage, githubInstallRequestCopy, type GithubInstallRequestShownStatus } from "@agentx/contracts";
@@ -37,7 +37,7 @@ export interface GithubConnectOptions {
  */
 export interface GithubConnectResult { env: string; url: string; status: "connected" | "waiting"; account?: string; installationId?: number }
 
-export const GITHUB_STILL_WAITING_TEXT = "Still waiting for your GitHub admin; check later with agentx github list.";
+export const GITHUB_STILL_WAITING_TEXT = "Still waiting for your GitHub admin; check later with rovara github list.";
 
 /** The link the server sent must be GitHub's own install page: nothing else is ever opened. */
 function githubInstallLink(value: string): URL {
@@ -122,7 +122,7 @@ export async function githubConnect(deps: DeveloperSessionDeps, env: string | un
         options.write(GITHUB_STILL_WAITING_TEXT);
         return { ...where, status: "waiting" };
       }
-      throw agentXError("CONFIG_INVALID", "GitHub was not connected within 15 minutes; run agentx github connect again");
+      throw agentXError("CONFIG_INVALID", "GitHub was not connected within 15 minutes; run rovara github connect again");
     }
   }
 }
@@ -140,7 +140,7 @@ const DisconnectResponseSchema = z.object({ installationId: z.number(), accountL
 export type GithubInstallationEntry = z.infer<typeof InstallationSchema>;
 export interface GithubListResult { env: string; url: string; installations: GithubInstallationEntry[]; waiting: RequestEntry[] }
 
-/** `agentx github list`: the GitHub accounts connected to the org, and the requests still waiting for a GitHub admin (best effort: an older control plane has none). */
+/** `rovara github list`: the GitHub accounts connected to the org, and the requests still waiting for a GitHub admin (best effort: an older control plane has none). */
 export async function githubList(deps: DeveloperSessionDeps, env: string | undefined): Promise<GithubListResult> {
   const listed = await developerRequest(deps, env, "/v1/app/github/installations", ListResponseSchema, { explain: true });
   const requests = await developerRequest(deps, env, "/v1/app/github/requests", RequestsResponseSchema, { explain: true }).then((reply) => reply.body.requests, () => []);
@@ -151,7 +151,7 @@ const SELECTION_TEXT = { all: "all repositories", selected: "selected repositori
 const STATUS_TEXT = { active: "connected", suspended: "suspended on GitHub", removed: "removed on GitHub" } as const;
 
 export function githubListText(result: GithubListResult): string {
-  if (result.installations.length === 0 && result.waiting.length === 0) return `No GitHub account is connected to your organization on ${result.env}. Connect one with: agentx github connect\n`;
+  if (result.installations.length === 0 && result.waiting.length === 0) return `No GitHub account is connected to your organization on ${result.env}. Connect one with: rovara github connect\n`;
   const lines = [`GitHub accounts of your organization on ${result.env} (${result.url}):`];
   for (const entry of result.installations) {
     lines.push(`  ${sanitizeServerText(entry.accountLogin)}  ${entry.accountType === "User" ? "personal account" : "organization"}  ${SELECTION_TEXT[entry.repositorySelection]}  ${STATUS_TEXT[entry.status]}  installation ${String(entry.installationId)}`);
@@ -166,12 +166,12 @@ export function githubListText(result: GithubListResult): string {
 export function findInstallation(installations: readonly GithubInstallationEntry[], account: string): GithubInstallationEntry {
   const wanted = account.trim().toLowerCase();
   const found = installations.filter((entry) => entry.accountLogin.toLowerCase() === wanted);
-  if (found.length === 0) throw agentXError("NOT_FOUND", `no GitHub account named ${sanitizeServerText(account)} is connected to your organization; run agentx github list to see them`);
+  if (found.length === 0) throw agentXError("NOT_FOUND", `no GitHub account named ${sanitizeServerText(account)} is connected to your organization; run rovara github list to see them`);
   if (found.length > 1) throw agentXError("CONFIG_INVALID", `more than one installation of ${sanitizeServerText(account)} is connected (${found.map((entry) => String(entry.installationId)).join(", ")}); ask Rovara support to remove the extra one`);
   return found[0]!;
 }
 
-/** `agentx github disconnect <account>`: the org stops using the account's installation. Nothing is changed on GitHub; the answer says how to remove the App there too. */
+/** `rovara github disconnect <account>`: the org stops using the account's installation. Nothing is changed on GitHub; the answer says how to remove the App there too. */
 export async function githubDisconnect(deps: DeveloperSessionDeps, env: string | undefined, account: string): Promise<{ env: string; url: string; installationId: number; accountLogin: string; message: string }> {
   const listed = await developerRequest(deps, env, "/v1/app/github/installations", ListResponseSchema, { explain: true });
   const target = findInstallation(listed.body.installations, account);

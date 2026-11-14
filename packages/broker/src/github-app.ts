@@ -50,7 +50,7 @@ export interface GitHubAppCredentialProviderOptions {
   appId: string | (() => Promise<string>);
   getPrivateKey: () => Promise<string>;
   /**
-   * The App secret's JSON text, for the fields `agentx init` stores beside the key (slug, OAuth client id and secret). `refresh: true`
+   * The App secret's JSON text, for the fields `rovara init` stores beside the key (slug, OAuth client id and secret). `refresh: true`
    * reads it again, for a field set after the first read. Absent: the App's slug is asked of GitHub, and it has no OAuth client.
    */
   getAppSecret?: (options?: { refresh?: boolean }) => Promise<string>;
@@ -1936,7 +1936,7 @@ export class GitHubAppCredentialProvider {
 
   /**
    * The App's OAuth client id and secret, for the install flow's user authorization; undefined when the App secret has neither (an App
-   * made before the install flow: `agentx github oauth set` stores them). A client set while this process runs is found by one fresh read.
+   * made before the install flow: `rovara github oauth set` stores them). A client set while this process runs is found by one fresh read.
    */
   async oauthClient(): Promise<{ clientId: string; clientSecret: string } | undefined> {
     const { getAppSecret } = this.options;
@@ -2429,7 +2429,7 @@ export function privateKeyFromSecret(secret: string): string {
   throw agentXError("RUNTIME_UNAVAILABLE", "GitHub App private-key secret is not a PEM key");
 }
 
-/** The App's id from the secret `agentx init` stores (`{"appId", "privateKey", ...}`). A secret
+/** The App's id from the secret `rovara init` stores (`{"appId", "privateKey", ...}`). A secret
  * holding only a PEM key has none: its control plane passes GITHUB_APP_ID instead. */
 export function appIdFromSecret(secret: string): string {
   try {

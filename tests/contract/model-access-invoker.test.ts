@@ -9,7 +9,7 @@ import { routeFetch } from "../support/developer-fakes.js";
 
 const ORG = "org_abcdefghij0123456789";
 const DEV = "c".repeat(64);
-const FUNCTION_NAME = "agentx-staging-model-access";
+const FUNCTION_NAME = "rovara-cloud-staging-model-access";
 
 // The real Lambda client must fit the invoker's narrow view of it.
 export const realClientFits: ModelAccessInvokerInput["lambda"] = new LambdaClient({});

@@ -341,9 +341,9 @@ describe("T7 lifecycle: crashes and backoff", () => {
 
 describe("T7 lifecycle: a replaced secret", () => {
   it("stops the running task on the next call after the secret changed, and starts one that reads the new value", async () => {
-    const w = await lifecycle({ approved: { [ID]: approvedOf({ secretVersion: "v1", secretRef: "agentx/test/org-connectors/org/mcpsim000001" }) } });
+    const w = await lifecycle({ approved: { [ID]: approvedOf({ secretVersion: "v1", secretRef: "rovara-cloud/test/org-connectors/org/mcpsim000001" }) } });
     await mcp(w.brokerUrl, ID);
-    w.approved.set(ID, approvedOf({ secretVersion: "v2", secretRef: "agentx/test/org-connectors/org/mcpsim000001" }));
+    w.approved.set(ID, approvedOf({ secretVersion: "v2", secretRef: "rovara-cloud/test/org-connectors/org/mcpsim000001" }));
     expect((await mcp(w.brokerUrl, ID)).status).toBe(200);
     const tasks = w.runner.started("serve");
     expect(tasks).toHaveLength(2);
@@ -369,9 +369,9 @@ describe("T7 lifecycle: a replaced secret", () => {
 
 describe("T7 lifecycle: the server's task definition and security group", () => {
   it("makes them before the task starts, from the approved spec, and starts the task in them", async () => {
-    const w = await lifecycle({ approved: { [ID]: approvedOf({ secretRef: "agentx/test/org-connectors/org/mcpsim000001" }) } });
+    const w = await lifecycle({ approved: { [ID]: approvedOf({ secretRef: "rovara-cloud/test/org-connectors/org/mcpsim000001" }) } });
     await mcp(w.brokerUrl, ID);
-    expect(w.resources.ensured).toEqual([{ kind: "serve", id: ID, spec: { name: "@acme/sim-mcp", args: ["--read-only"], secretEnv: ["JIRA_TOKEN"], destinations: [], size: { cpu: 256, memoryMiB: 512 }, bundleHash: BUNDLE }, secretRef: "agentx/test/org-connectors/org/mcpsim000001" }]);
+    expect(w.resources.ensured).toEqual([{ kind: "serve", id: ID, spec: { name: "@acme/sim-mcp", args: ["--read-only"], secretEnv: ["JIRA_TOKEN"], destinations: [], size: { cpu: 256, memoryMiB: 512 }, bundleHash: BUNDLE }, secretRef: "rovara-cloud/test/org-connectors/org/mcpsim000001" }]);
     expect(w.runner.started("serve")[0]!.spec).toMatchObject({ family: `rovara-mcp-serve-${ID}`, taskDefinition: `rovara-mcp-serve-${ID}:checked`, securityGroupId: "sg-0aaaaaaaaaaaaaaaa" });
   });
   it("starts nothing when they cannot be made", async () => {

@@ -65,7 +65,7 @@ export async function writeRelease(dir: string, version = "1.4.0", templates: Pa
     await writeFile(join(dir, file), data);
   }
   const manifest = ReleaseManifestSchema.parse({
-    schemaVersion: 1, version, gitCommit: "b".repeat(40), environmentPlaceholder: "qqenv-placeholderqq",
+    schemaVersion: 1, version, gitCommit: "b".repeat(40), environmentPlaceholder: "qqenv-phldrqq",
     templates: STACK_PARTS.map((part) => ({ region: "us-east-1", part, file: `templates/us-east-1/${part}.template.json`, sha256: sha(templateText(part)) })),
     packages: [{ assetId, file: `packages/${assetId}.zip`, sha256: sha(pkg), parts: ["control-plane"], bucketParameter: "B", keyParameter: "K", hashParameter: "H", keyParameterValue: `packages/||${assetId}.zip` },
       ...(extraPackage ? [{ assetId: SECOND_ASSET, file: `packages/${SECOND_ASSET}.zip`, sha256: sha(second), parts: ["control-plane" as const], bucketParameter: "B2", keyParameter: "K2", hashParameter: "H2", keyParameterValue: `packages/||${SECOND_ASSET}.zip` }] : [])],

@@ -270,7 +270,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   const role = await deps.effectiveRole(caller, name);
   if (role === undefined) throw agentXError("PROJECT_NOT_FOUND", "project not found");
   if (!projectAllows(role, "edit_settings")) throw agentXError("FORBIDDEN", "only a project maintainer can change its settings");
-  if (!deps.cloud) throw agentXError("FORBIDDEN", "ask an administrator to change this project with agentx admin project register");
+  if (!deps.cloud) throw agentXError("FORBIDDEN", "ask an administrator to change this project with rovara admin project register");
   // An archived project's settings are as they were when it was archived; restoring it is how they change again (Task 20).
   if ((await readProjectMeta(deps, caller.orgId, name))?.status === "archived") throw agentXError("PROJECT_ARCHIVED", projectArchivedMessage(name));
   const body = parseProjectSettingsBody(rawBody);
@@ -295,7 +295,7 @@ export async function updateProjectSettings<Caller extends ProjectSettingsCaller
   if (current.revision !== body.expectedRevision) throw agentXError("PROJECT_REVISION_MISMATCH", SETTINGS_STALE_MESSAGE);
   if (deps.cloud && body.allowedDomains !== undefined && isAllowedDomainWidening(current.network?.allowedDomains ?? [], body.allowedDomains)) refuseAllowedDomainWidening();
   if (current.e2e !== undefined || latest.setupApproval !== undefined) {
-    throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with agentx admin project register");
+    throw agentXError("FORBIDDEN", "this project carries an end-to-end policy or a setup approval that only an administrator can change; ask an administrator to change it with rovara admin project register");
   }
 
   // Meta repo lane A: a setting the meta repo's config file manages is changed by changing the file, so a save that touches one is refused before anything is read from GitHub.

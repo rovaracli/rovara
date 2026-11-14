@@ -14,7 +14,7 @@ export const CONFIG_AWS_ACTIONS: readonly string[] = [
   "sns:ListSubscriptionsByTopic", "sns:Subscribe",
 ];
 
-/** agentx doctor's reads. It never starts drift detection (question 5): it reads the last result
+/** rovara doctor's reads. It never starts drift detection (question 5): it reads the last result
  * from DescribeStacks. */
 export const DOCTOR_AWS_ACTIONS: readonly string[] = [
   "ssm:GetParameter", "ssm:GetParametersByPath",
@@ -25,7 +25,7 @@ export const DOCTOR_AWS_ACTIONS: readonly string[] = [
   "sns:ListSubscriptionsByTopic", "budgets:ViewBudget",
 ];
 
-/** agentx upgrade's actions under the operator role: the templates engine's change sets, the access
+/** rovara upgrade's actions under the operator role: the templates engine's change sets, the access
  * stack comparison (GetTemplate), the settings and lock, the callback signing key, and doctor at the
  * end. Deploying a changed access stack, and any cdk-engine upgrade, need admin credentials
  * (question 9, ruling F20), so neither is listed. */
@@ -43,8 +43,8 @@ export const UPGRADE_AWS_ACTIONS: readonly string[] = [
   ...DOCTOR_AWS_ACTIONS,
 ];
 
-/** agentx github oauth set (Plan 2, Task 12): reads the environment's settings, then the GitHub App secret, and writes it back with the
- * App's OAuth client. All of it is the operator role's existing access to agentx/<env>/*; nothing new is granted. */
+/** rovara github oauth set (Plan 2, Task 12): reads the environment's settings, then the GitHub App secret, and writes it back with the
+ * App's OAuth client. All of it is the operator role's existing access to rovara-cloud/<env>/*; nothing new is granted. */
 export const GITHUB_OAUTH_AWS_ACTIONS: readonly string[] = [
   "ssm:GetParameter",
   "secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue",

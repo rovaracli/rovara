@@ -207,10 +207,10 @@ describe("keys and copy", () => {
       ],
     });
     expect(githubInstallRequestCopy("connected", names).title).toBe("Your GitHub admin approved Rovara. acme is now connected to Acme.");
-    expect(githubInstallRequestCopy("declined").title).toBe("Your GitHub admin declined the request. Ask them about it, or ask them to run agentx github connect.");
-    expect(githubInstallRequestCopy("expired").title).toBe("Your request wasn't approved within 7 days, or your GitHub admin declined it. Run agentx github connect to ask again.");
+    expect(githubInstallRequestCopy("declined").title).toBe("Your GitHub admin declined the request. Ask them about it, or ask them to run rovara github connect.");
+    expect(githubInstallRequestCopy("expired").title).toBe("Your request wasn't approved within 7 days, or your GitHub admin declined it. Run rovara github connect to ask again.");
     expect(githubInstallRequestCopy("taken").title).toBe("This GitHub account is already connected to another Rovara organization.");
-    expect(githubInstallRequestCopy("reinstall_needed", names).title).toBe("acme was connected to Rovara before, so an approval can't reconnect it on its own. Ask an admin of acme on GitHub to uninstall Rovara and approve a new request, or to run agentx github connect themselves.");
+    expect(githubInstallRequestCopy("reinstall_needed", names).title).toBe("acme was connected to Rovara before, so an approval can't reconnect it on its own. Ask an admin of acme on GitHub to uninstall Rovara and approve a new request, or to run rovara github connect themselves.");
   });
 });
 
@@ -281,13 +281,13 @@ describe("the request callback (recordInstallRequest)", () => {
     expect(boundTo(w, 601)).toBeUndefined();
   });
 
-  it("the unattributed page says Rovara couldn't confirm who asked, tells them to ask their GitHub admin to run agentx github connect, and is not the expired page", async () => {
+  it("the unattributed page says Rovara couldn't confirm who asked, tells them to ask their GitHub admin to run rovara github connect, and is not the expired page", async () => {
     const { githubConnectPage } = await import("../../packages/broker/src/org/github-connect-page.js");
     const page = githubConnectPage("unattributed", { orgName: "Acme" });
     const text = page.body.replace(/<style[^>]*>.*?<\/style>/, "");
     expect(page.statusCode).toBe(403);
     expect(text).toContain("<h1>Rovara couldn&#39;t confirm who asked</h1>");
-    expect(text).toContain("Ask your GitHub admin to run agentx github connect.");
+    expect(text).toContain("Ask your GitHub admin to run rovara github connect.");
     expect(text).not.toContain("expired");
   });
 
@@ -887,7 +887,7 @@ describe("naming: telling the Rovara side which org asked", () => {
     expect(githubConnectedNoticeText(notice)).toBe(
       "Rhea Requester (rhea@acme.test) asked to connect the GitHub organization acme-co (https://github.com/acme-co) to your Rovara organization Acme. "
       + "gh-admin, an admin of acme-co on GitHub, approved it. Rovara can now work in the repositories acme-co gave it access to. "
-      + "If this isn't the GitHub organization you expected, remove it with agentx github disconnect acme-co.",
+      + "If this isn't the GitHub organization you expected, remove it with rovara github disconnect acme-co.",
     );
     // No email on record: the parentheses go too, and the rest is unchanged.
     const without = githubConnectedNoticeText({ ...notice, requester: { name: "Rhea Requester" } });
@@ -1038,7 +1038,7 @@ describe("one reminder after 2 days (Step 6)", () => {
   it("the email says the exact words, naming the GitHub organization when it is known and 'your GitHub organization' when it is not", () => {
     expect(GITHUB_REQUEST_REMINDER_SUBJECT).toBe("Your GitHub admin hasn't approved Rovara yet");
     expect(githubRequestReminderText({ to: "x", expiresAt: Date.parse("2026-10-28T12:00:00.000Z") })).toBe(
-      "You asked an admin of your GitHub organization to approve Rovara 2 days ago, and it's still waiting. The request expires on 2026-10-28. Remind them, or ask them to run agentx github connect themselves.",
+      "You asked an admin of your GitHub organization to approve Rovara 2 days ago, and it's still waiting. The request expires on 2026-10-28. Remind them, or ask them to run rovara github connect themselves.",
     );
     expect(githubRequestReminderText({ to: "x", requestedAccountLogin: "acme-co", expiresAt: Date.parse("2026-10-28T12:00:00.000Z") })).toContain("You asked an admin of acme-co to approve Rovara 2 days ago");
   });
@@ -1179,7 +1179,7 @@ describe("infrastructure", () => {
   let cloud: { Resources: Record<string, { Type: string; Properties: Record<string, unknown>; Condition?: string }> };
   beforeAll(() => {
     const app = buildAgentXApp({ agentxEnv: "staging", agentxCloud: true });
-    cloud = Template.fromStack(app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "agentx-staging-control-plane")!).toJSON() as typeof cloud;
+    cloud = Template.fromStack(app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "rovara-cloud-staging-control-plane")!).toJSON() as typeof cloud;
   }, 300_000);
 
   it("the broker's ses:SendEmail names only the sender's source ARN parameter, under CloudSignInEmailFromSes, and nothing else about SES", () => {

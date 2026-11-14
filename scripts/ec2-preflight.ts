@@ -83,7 +83,7 @@ export function evaluateEc2Preflight(facts: Ec2PreflightFacts): PreflightCheck[]
     const valid = hash !== undefined && /^[a-f0-9]{64}$/.test(hash);
     checks.push(check("boot stage 2 hash", valid, valid
       ? `boot hash ${hash} comes with the worker image`
-      : `the worker image has no boot hash (${hash === undefined || hash === "" ? "missing" : hash === "none" ? "none" : "not 64 lower-case hex digits"}), so workers cannot launch; run agentx upgrade`));
+      : `the worker image has no boot hash (${hash === undefined || hash === "" ? "missing" : hash === "none" ? "none" : "not 64 lower-case hex digits"}), so workers cannot launch; run rovara upgrade`));
   }
   checks.push(check("session state machines", facts.stateMachines.length === 2 && facts.stateMachines.every((machine) => machine.status === "ACTIVE"),
     facts.stateMachines.map((machine) => `${machine.name} ${machine.status ?? "missing"}`).join(", ") || "not found"));

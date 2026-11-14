@@ -23,7 +23,7 @@ import {
   type QualificationStep,
 } from "../../scripts/test-qualify-runtime.js";
 
-const ENV = "agentxlivetest123";
+const ENV = "rovaralivetest";
 const RUN_ID = "0b6e6f0e-5d3b-4f0e-9d3a-2f1c4b7a8e90";
 const WORKSPACE_ID = "6f1d3a52-77e0-4d57-8c1b-0a7f4f6a2d11";
 const ROLE_ID = "AROAEXAMPLEROLEID123";
@@ -43,22 +43,22 @@ const foundationOutputs = {
   // The foundation lists every worker subnet, in no particular zone order.
   Ec2WorkerSubnets: "us-east-1b=subnet-0bbbbbbbbbbbbbbbb,us-east-1a=subnet-0aaaaaaaaaaaaaaaa,us-east-1c=subnet-0cccccccccccccccc",
 };
-const { binding: projectBinding, launchSubnet } = qualificationBinding(foundationOutputs, "agentx-agentxlivetest123-foundation");
+const { binding: projectBinding, launchSubnet } = qualificationBinding(foundationOutputs, "rovara-cloud-rovaralivetest-foundation");
 
 const facts: QualificationFacts = {
   region: "us-east-1",
-  artifactBucket: "agentx-agentxlivetest123-control-artifacts82dd59a1-syx0unxsewcf",
+  artifactBucket: "rovara-cloud-rovaralivetest-cont-artifacts82dd59a1-syx0unxsewcf",
   controlPlaneUrl: "https://abc123.execute-api.us-east-1.amazonaws.com",
   invokePublicKey: `MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE${"A".repeat(88)}`,
-  logGroupName: "/agentx/agentxlivetest123/worker",
+  logGroupName: "/rovara-cloud/rovaralivetest/worker",
   launchTemplateId: "lt-0123456789abcdef0",
   workerRoleId: ROLE_ID,
   binding: projectBinding,
   subnet: launchSubnet,
   volumeSizeGiB: 20,
   settings: {
-    workerImage: `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/worker@sha256:${"a".repeat(64)}`,
-    executorImage: `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/executor@sha256:${"e".repeat(64)}`,
+    workerImage: `111122223333.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/worker@sha256:${"a".repeat(64)}`,
+    executorImage: `111122223333.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/executor@sha256:${"e".repeat(64)}`,
     // Task 10: stage 2 of the boot ships in the worker image; boot.sh checks it against this hash.
     bootStage2Sha256: "5a".repeat(32),
     modelProvider: "amazon-bedrock",
@@ -187,7 +187,7 @@ describe("the qualification instance's user data", () => {
       renderQualificationUserData({ ...facts, settings: { ...facts.settings, ...settings } }, { workspaceId: WORKSPACE_ID, volumeId: "vol-0123456789abcdef0", generation: 1, qualification }, bootScript);
     expect(() => render({ executorImage: undefined })).toThrow(/executor image/);
     expect(() => render({ bootStage2Sha256: undefined })).toThrow(/boot stage 2 hash/);
-    expect(() => render({ executorImage: "111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-test/executor:latest" })).toThrow();
+    expect(() => render({ executorImage: "111122223333.dkr.ecr.us-east-1.amazonaws.com/rovara-cloud-test/executor:latest" })).toThrow();
   });
 });
 
@@ -199,7 +199,7 @@ describe("qualificationBinding", () => {
       { availabilityZone: "us-east-1c", subnetId: "subnet-0cccccccccccccccc" },
     ]);
     const digest = (binding: unknown) => createHash("sha256").update(canonicalJson(Ec2RuntimeBindingSchema.parse(binding))).digest("hex");
-    // What `agentx project add` registers for the same outputs ...
+    // What `rovara project add` registers for the same outputs ...
     expect(digest(projectBinding)).toBe(digest(ec2Binding(foundationOutputs, "stack")));
     // ... and the literal binding the registered runtime row must equal.
     expect(digest(projectBinding)).toBe(digest({
@@ -244,7 +244,7 @@ describe("buildRunInstancesInput", () => {
     expect(request).not.toHaveProperty("InstanceType");
     expect(request).not.toHaveProperty("IamInstanceProfile");
     const tags = Object.fromEntries((request.TagSpecifications?.[0]?.Tags ?? []).map((tag) => [tag.Key ?? "", tag.Value ?? ""] as const));
-    expect(tags).toMatchObject({ "agentx:env": ENV, "agentx:run": RUN_ID, "agentx:runtime-purpose": "web-api-qualification", "agentx:revision": "0123456789ab", "agentx:qualification-run": RUN_ID });
+    expect(tags).toMatchObject({ "rovara-cloud:env": ENV, "rovara-cloud:run": RUN_ID, "rovara-cloud:runtime-purpose": "web-api-qualification", "rovara-cloud:revision": "0123456789ab", "rovara-cloud:qualification-run": RUN_ID });
     expect(request.TagSpecifications?.[0]?.ResourceType).toBe("instance");
   });
 
@@ -259,7 +259,7 @@ describe("buildRunInstancesInput", () => {
 
 describe("roleNameFromArn", () => {
   it("takes the role name from a role ARN with or without a path, and refuses anything else", () => {
-    expect(roleNameFromArn("arn:aws:iam::111122223333:role/agentx/agentxlivetest123/agentx-worker")).toBe("agentx-worker");
+    expect(roleNameFromArn("arn:aws:iam::111122223333:role/rovara-cloud/rovaralivetest/agentx-worker")).toBe("agentx-worker");
     expect(roleNameFromArn("arn:aws:iam::111122223333:role/worker")).toBe("worker");
     for (const bad of ["", "worker", "arn:aws:iam::111122223333:user/worker", "arn:aws:iam::111122223333:role/", "arn:aws:iam::111122223333:role/a/", "arn:aws:iam::111122223333:role/a b"]) {
       expect(() => roleNameFromArn(bad), bad).toThrow(/role ARN/);
@@ -639,7 +639,7 @@ describe("runTestQualification: readiness, binding and cleanup", () => {
     await expect(runTestQualification(plan(), effects, options)).rejects.toThrow("runInstance failed");
     const text = printed.join("\n");
     expect(text).toContain(`client token ${RUN_ID}`);
-    expect(text).toContain(`aws ec2 describe-instances --filters Name=tag:agentx:qualification-run,Values=${RUN_ID} --profile agentx-test --region us-east-1`);
+    expect(text).toContain(`aws ec2 describe-instances --filters Name=tag:rovara-cloud:qualification-run,Values=${RUN_ID} --profile agentx-test --region us-east-1`);
   });
 });
 

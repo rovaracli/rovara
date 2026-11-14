@@ -10,14 +10,14 @@ import { memoryInitSecrets, passingChecks, scriptedPrompter, T0 } from "./init-f
 import { MemoryParameterStore } from "./memory-parameter-store.js";
 import { fakeAlerts, STAGING_SETTINGS } from "./setup-fakes.js";
 
-export const ROLE = "arn:aws:iam::123456789012:role/agentx-staging-cloudformation";
+export const ROLE = "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation";
 
 export async function seeded(region = STAGING_SETTINGS.region): Promise<MemoryParameterStore> {
   const store = new MemoryParameterStore();
   await writeEnvironmentSettings(store, {
     ...STAGING_SETTINGS,
     region,
-    access: { artifactBucket: "b", cloudFormationRoleArn: ROLE, operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator", pullThroughPrefix: "agentx-staging" },
+    access: { artifactBucket: "b", cloudFormationRoleArn: ROLE, operatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator", pullThroughPrefix: "rovara-cloud-staging" },
   });
   return store;
 }
@@ -26,7 +26,7 @@ export function stacks(parameters: Record<string, Record<string, string>>): Conf
   return {
     async describe(name): Promise<StackDescription | undefined> {
       const values = parameters[name];
-      return values === undefined ? undefined : { status: "UPDATE_COMPLETE", outputs: { OperatorAlertsTopicArn: "arn:aws:sns:us-east-1:123456789012:agentx-staging-alerts" }, parameters: values };
+      return values === undefined ? undefined : { status: "UPDATE_COMPLETE", outputs: { OperatorAlertsTopicArn: "arn:aws:sns:us-east-1:123456789012:rovara-cloud-staging-alerts" }, parameters: values };
     },
   };
 }
@@ -64,8 +64,8 @@ export function services(overrides: Partial<ConfigServices> & { store: MemoryPar
     lines,
     secrets: memoryInitSecrets(),
     cloudFormation: fakeCloudFormation({ parameters: { SlackThreadTurnsPerMinute: "6", BudgetMonthlyUsd: "100", ModelId: "us.anthropic.claude-sonnet-4-6" } }),
-    stacks: stacks({ "agentx-staging-control-plane": { SlackThreadTurnsPerMinute: "6", BudgetMonthlyUsd: "100", BudgetScope: "tag", SlackAppPostedMessages: "accept", SlackMemberWorkspaceLimit: "3", SlackOrganizationWorkspaceLimit: "20" }, "agentx-staging-slack": { ModelId: "us.anthropic.claude-sonnet-4-6", GateClassifierModelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0", SlowTurnMinutes: "5" }, "agentx-staging-runtime": { ModelId: "us.anthropic.claude-sonnet-4-6" } }),
-    identity: { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/agentx-staging-operator/alice" }) },
+    stacks: stacks({ "rovara-cloud-staging-control-plane": { SlackThreadTurnsPerMinute: "6", BudgetMonthlyUsd: "100", BudgetScope: "tag", SlackAppPostedMessages: "accept", SlackMemberWorkspaceLimit: "3", SlackOrganizationWorkspaceLimit: "20" }, "rovara-cloud-staging-slack": { ModelId: "us.anthropic.claude-sonnet-4-6", GateClassifierModelId: "us.anthropic.claude-haiku-4-5-20251001-v1:0", SlowTurnMinutes: "5" }, "rovara-cloud-staging-runtime": { ModelId: "us.anthropic.claude-sonnet-4-6" } }),
+    identity: { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/rovara-cloud-staging-operator/alice" }) },
     checks: () => passingChecks(),
     alerts: fakeAlerts({ confirmAfterPolls: 0 }),
     prompter: scriptedPrompter([]),

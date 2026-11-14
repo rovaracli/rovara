@@ -1,20 +1,20 @@
 // Enterprise foundations E2: the edition of an install, as `rovara init`, `rovara deploy` and `rovara upgrade` carry it into the CDK synth.
 //
-// The foundation stack records an Enterprise install's edition in `/agentx/<env>/edition` (infra/lib/production-foundation.ts). An install's edition is set once:
+// The foundation stack records an Enterprise install's edition in `/rovara-cloud/<env>/edition` (infra/lib/production-foundation.ts). An install's edition is set once:
 //  - a deploy that asks for another edition than the recorded one is refused (`assertEditionUnchanged`);
 //  - a deploy that asks for none but finds a record uses the recorded one, so a redeploy never drops the stamp from the functions (that would turn an Enterprise
 //    install into one with no edition gates, silently);
 //  - an unreadable record is refused, never read as "no record".
-import { EditionSchema, agentXError, assertEditionUnchanged, editionAtSynth, type Edition } from "@agentx/contracts";
+import { EditionSchema, agentXError, assertEditionUnchanged, editionAtSynth, editionRecordParameter, environmentSettingsPrefix, type Edition } from "@agentx/contracts";
 import { CLOUD_NEEDS_CDK_MESSAGE } from "./answer-schemas.js";
 import type { ParameterStore } from "../environments/parameter-store.js";
 
-export const editionRecordName = (env: string): string => `/agentx/${env}/edition`;
+export const editionRecordName = (env: string): string => editionRecordParameter(env);
 
 export const EDITION_NEEDS_CDK_MESSAGE = "The prebuilt templates carry no edition. An install with an edition (Enterprise) must be synthesized from source: use --engine cdk with --source.";
 
 /** The backup of the record, written before the record is ever taken out of the way (see `adoptOrphanedEditionRecord`). No stack owns it. */
-export const editionBackupName = (env: string): string => `/agentx/${env}/edition-backup`;
+export const editionBackupName = (env: string): string => `${environmentSettingsPrefix(env)}edition-backup`;
 
 const parsedEdition = (value: string, name: string, env: string): Edition => {
   const parsed = EditionSchema.safeParse(value);

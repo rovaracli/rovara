@@ -6,7 +6,7 @@ import { createConfiguredModelRuntime } from "../../packages/model-runtime/src/i
 import { createDefaultPiSessionAdapter, createWorkspacePiSession } from "../../packages/worker/src/pi-session.js";
 import { resolveTaskModel } from "../../packages/worker/src/task-model.js";
 
-const environment = { AGENTX_OPENROUTER_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/openrouter-AbCdEf", AGENTX_OPENROUTER_PROVIDERS: "z-ai" };
+const environment = { AGENTX_OPENROUTER_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/openrouter-AbCdEf", AGENTX_OPENROUTER_PROVIDERS: "z-ai" };
 const chunks = [
   { id: "g", model: "z-ai/glm-5.3", provider: "Z.AI", choices: [{ index: 0, delta: { content: "Done" }, finish_reason: null }] },
   { choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } },

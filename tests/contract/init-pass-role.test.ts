@@ -216,7 +216,7 @@ describe("init: the cdk engine adds the permission, the templates engine never t
 
 describe("deployEnvironment: the cdk engine checks the permission before the first non-access stack", () => {
   const manifest: ReleaseManifest = {
-    schemaVersion: 1, version: "1.2.3", gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-placeholderqq", templates: [], packages: [],
+    schemaVersion: 1, version: "1.2.3", gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-phldrqq", templates: [], packages: [],
     images: { worker: `public.ecr.aws/agentx/agentx-worker@sha256:${"b".repeat(64)}`, slack: `public.ecr.aws/agentx/agentx-slack@sha256:${"c".repeat(64)}` },
   };
   const release: LoadedRelease = { manifest, dir: "/nonexistent", regions: () => ["us-east-1"], template: () => { throw new Error("not expected"); }, packagePath: () => { throw new Error("not expected"); } };
@@ -224,7 +224,7 @@ describe("deployEnvironment: the cdk engine checks the permission before the fir
     env: "staging", region: REGION, account: ACCOUNT,
     models: { orchestrator: "us.anthropic.claude-sonnet-4-6", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" },
     identity: { mode: "cognito" },
-    github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf" },
+    github: { account: "acme", appId: "123", installationId: "456", privateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf" },
   };
   const stack = (part: DeployPart) => environmentStackName("staging", part);
 
@@ -232,7 +232,7 @@ describe("deployEnvironment: the cdk engine checks the permission before the fir
     return {
       async deploy(request: DeployRequest): Promise<StackOutputs> {
         events.push(`deploy ${request.part}`);
-        if (request.part === "access") return { ArtifactBucketName: "b", CloudFormationRoleArn: `arn:aws:iam::${ACCOUNT}:role/agentx-staging-cloudformation`, OperatorRoleArn: "o", PullThroughPrefix: "p" };
+        if (request.part === "access") return { ArtifactBucketName: "b", CloudFormationRoleArn: `arn:aws:iam::${ACCOUNT}:role/rovara-cloud-staging-cloudformation`, OperatorRoleArn: "o", PullThroughPrefix: "p" };
         throw new Error("stop after the first non-access stack");
       },
       async outputs() { return undefined; },
@@ -248,7 +248,7 @@ describe("deployEnvironment: the cdk engine checks the permission before the fir
     const events: string[] = [];
     await expect(run("cdk", events, async () => { events.push("pass-role"); return "added"; })).rejects.toThrow("stop after the first non-access stack");
     expect(events).toEqual(["deploy access", "pass-role", "deploy foundation"]);
-    expect(stack("access")).toBe("agentx-staging-access");
+    expect(stack("access")).toBe("rovara-cloud-staging-access");
   });
 
   it("stops before the stack when it fails", async () => {
@@ -269,14 +269,14 @@ describe("destroy removes the permission last, and keeps it while another enviro
     const env = "staging";
     const account = installedAccount(env);
     const store = new MemoryParameterStore();
-    await writeEnvironmentSettings(store, { ...SETTINGS, env, engine: options.engine ?? "cdk", stacks: { access: `agentx-${env}-access`, foundation: `agentx-${env}-foundation`, identity: `agentx-${env}-identity`, runtime: `agentx-${env}-runtime`, "control-plane": `agentx-${env}-control-plane`, slack: `agentx-${env}-slack` } });
+    await writeEnvironmentSettings(store, { ...SETTINGS, env, engine: options.engine ?? "cdk", stacks: { access: `rovara-cloud-${env}-access`, foundation: `rovara-cloud-${env}-foundation`, identity: `rovara-cloud-${env}-identity`, runtime: `rovara-cloud-${env}-runtime`, "control-plane": `rovara-cloud-${env}-control-plane`, slack: `rovara-cloud-${env}-slack` } });
     await writeInstallAnswers(store, sampleAnswers({ env, engine: options.engine ?? "cdk" }));
     await writeInstallProgress(store, { ...PROGRESS, env });
     let time = 0;
     const clock = { now: () => time, sleep: async (ms: number) => { time += ms; } };
     const lines: string[] = [];
     const iam = fakeIam({ log: account.calls, ...(options.deleteError === undefined ? {} : { deleteError: options.deleteError }) });
-    const cloudFormation = fakeCloudFormation([{ name: `agentx-${env}-access` }, ...(options.others ?? [])]);
+    const cloudFormation = fakeCloudFormation([{ name: `rovara-cloud-${env}-access` }, ...(options.others ?? [])]);
     const run = () => runDestroy({ env, keepData: false }, {
       store, api: fakeDestroyApi(account, clock), identity: { get: async () => ({ account: ACCOUNT, arn: `arn:aws:sts::${ACCOUNT}:assumed-role/Admin/alice` }) },
       confirmLine: async () => env, write: (line) => lines.push(line), ...clock, home: "/nonexistent-home",
@@ -296,7 +296,7 @@ describe("destroy removes the permission last, and keeps it while another enviro
     const stackDeletes = h.account.calls.flatMap((call, index) => (call.startsWith("delete stack ") ? [index] : []));
     expect(stackDeletes).toHaveLength(6);
     expect(Math.max(...stackDeletes)).toBeLessThan(deleteAt);
-    expect(h.account.calls[stackDeletes.at(-1)!]).toBe("delete stack agentx-staging-access");
+    expect(h.account.calls[stackDeletes.at(-1)!]).toBe("delete stack rovara-cloud-staging-access");
     expect(h.account.stacks.size).toBe(0);
   });
 
@@ -307,8 +307,8 @@ describe("destroy removes the permission last, and keeps it while another enviro
     expect(result.manualSteps.join("\n")).toContain("inline policy named AgentXPassCloudFormationRole");
   });
 
-  it("keeps it while agentx-other-access is still there, and says so", async () => {
-    const h = await harness({ others: [{ name: "agentx-other-access" }, { name: "agentx-third-access" }, { name: "agentx-gone-access", status: "DELETE_COMPLETE" }, { name: "agentx-other-foundation" }] });
+  it("keeps it while rovara-cloud-other-access is still there, and says so", async () => {
+    const h = await harness({ others: [{ name: "rovara-cloud-other-access" }, { name: "rovara-cloud-third-access" }, { name: "rovara-cloud-gone-access", status: "DELETE_COMPLETE" }, { name: "rovara-cloud-other-foundation" }] });
     await h.run();
     expect(h.iam.calls).toEqual([]);
     expect(h.lines).toContain(`Kept AgentXPassCloudFormationRole: environments other, third in ${REGION} still use it.`);
@@ -330,8 +330,8 @@ describe("destroy removes the permission last, and keeps it while another enviro
 describe("removeCdkPassRole", () => {
   it("answers removed, kept and absent", async () => {
     const input = { env: "staging", account: ACCOUNT, region: REGION, write: () => undefined };
-    expect(await removeCdkPassRole({ ...input, iam: fakeIam().client, cloudformation: fakeCloudFormation([{ name: "agentx-staging-access" }]).client })).toBe("removed");
-    expect(await removeCdkPassRole({ ...input, iam: fakeIam().client, cloudformation: fakeCloudFormation([{ name: "agentx-prod-access" }]).client })).toBe("kept");
+    expect(await removeCdkPassRole({ ...input, iam: fakeIam().client, cloudformation: fakeCloudFormation([{ name: "rovara-cloud-staging-access" }]).client })).toBe("removed");
+    expect(await removeCdkPassRole({ ...input, iam: fakeIam().client, cloudformation: fakeCloudFormation([{ name: "rovara-cloud-prod-access" }]).client })).toBe("kept");
     expect(await removeCdkPassRole({ ...input, iam: fakeIam({ deleteError: "NoSuchEntity" }).client, cloudformation: fakeCloudFormation([]).client })).toBe("absent");
   });
 });
@@ -345,7 +345,7 @@ describe("prepareDeployment hands the permission step to the deploy callers", ()
     const iam = fakeIam();
     const prepared = await prepareDeployment({ ...base, engine: "cdk", source: "/src", deps: { identity: { get: async () => caller }, deployer, store: new MemoryParameterStore(), secrets: { get: async () => undefined, create: async () => undefined }, iam: iam.client } });
     expect(await prepared.ensurePassRole!()).toBe("added");
-    expect((JSON.parse(iam.calls.find((call) => call.kind === "put")!.input.PolicyDocument as string) as PolicyShape).Statement[0]!.Resource[0]).toBe(`arn:aws:iam::${ACCOUNT}:role/agentx-*-cloudformation`);
+    expect((JSON.parse(iam.calls.find((call) => call.kind === "put")!.input.PolicyDocument as string) as PolicyShape).Statement[0]!.Resource[0]).toBe(`arn:aws:iam::${ACCOUNT}:role/rovara-cloud-*-cloudformation`);
   });
 
   it("builds nothing for a fake deployer without an IAM client, nor for the templates engine", async () => {

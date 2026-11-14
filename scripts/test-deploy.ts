@@ -1,15 +1,15 @@
 // One-command, plan-first deploy of a build to an allowlisted TEST installation.
 //
-//   npx tsx scripts/test-deploy.ts --env agentxlivetest123 --profile agentx-test [--apply]
+//   npx tsx scripts/test-deploy.ts --env rovaralivetest --profile agentx-test [--apply]
 //     [--only control-plane-code,broker,dispatcher,worker-image,executor-image,qualification-transport]
-//   npx tsx scripts/test-deploy.ts --env agentxlivetest123 --profile agentx-test --only requalify-infra [--apply]   (adds the automatic test machine renewal: Add-only)
-//   npx tsx scripts/test-deploy.ts --env agentxlivetest123 --profile agentx-test --only requalify-now [--apply]     (owner-run: starts one renewal)
-//   npx tsx scripts/test-deploy.ts --env agentxlivetest123 --profile agentx-test --only requalify-schedule [--apply] (owner-run: enables the daily check, created disabled)
-//   npx tsx scripts/test-deploy.ts --env agentxlivetest123 --profile agentx-test --only requalify-drain-iam [--apply] (owner-run: narrows the renewal's DrainRead grant; the renewal's code must already be live)
-//   npx tsx scripts/test-deploy.ts --env agentxlivetest123 --profile agentx-test --only model-fallback-settings [--apply]
-//   npx tsx scripts/test-deploy.ts --env agentxlivetest123 --profile agentx-test --only e2e-agent-settings [--apply]
-//   npx tsx scripts/test-deploy.ts --env agentxlivetest123 --profile agentx-test --only e2e-agent-model --e2e-model <model id or default> [--apply]
-//   npx tsx scripts/test-deploy.ts --env agentxlivetest123 --profile agentx-test --check
+//   npx tsx scripts/test-deploy.ts --env rovaralivetest --profile agentx-test --only requalify-infra [--apply]   (adds the automatic test machine renewal: Add-only)
+//   npx tsx scripts/test-deploy.ts --env rovaralivetest --profile agentx-test --only requalify-now [--apply]     (owner-run: starts one renewal)
+//   npx tsx scripts/test-deploy.ts --env rovaralivetest --profile agentx-test --only requalify-schedule [--apply] (owner-run: enables the daily check, created disabled)
+//   npx tsx scripts/test-deploy.ts --env rovaralivetest --profile agentx-test --only requalify-drain-iam [--apply] (owner-run: narrows the renewal's DrainRead grant; the renewal's code must already be live)
+//   npx tsx scripts/test-deploy.ts --env rovaralivetest --profile agentx-test --only model-fallback-settings [--apply]
+//   npx tsx scripts/test-deploy.ts --env rovaralivetest --profile agentx-test --only e2e-agent-settings [--apply]
+//   npx tsx scripts/test-deploy.ts --env rovaralivetest --profile agentx-test --only e2e-agent-model --e2e-model <model id or default> [--apply]
+//   npx tsx scripts/test-deploy.ts --env rovaralivetest --profile agentx-test --check
 //
 // `--check [--json]` is read-only and exits 0 only when every check passes (1: findings, 2: the check could not run). It looks for
 // control-plane Lambdas not on head's code (by provenance: the deployed S3Key names the commit, and git says whether anything the
@@ -573,9 +573,9 @@ export function planTestDeploy(
 
   if (units.includes("model-fallback-settings")) {
     // A runtime stack deployed before 4.10D has neither the parameter nor its SSM setting: the change set adds both, lifted from a synth of the runtime stack, and changes nothing else. The
-    // value stays none (no fallback, the worker fails by name when a keyed provider's secret is missing); `agentx config set models.fallback` is how an owner chooses one afterwards.
+    // value stays none (no fallback, the worker fails by name when a keyed provider's secret is missing); `rovara config set models.fallback` is how an owner chooses one afterwards.
     if (input.previous.runtime[MODEL_FALLBACK_PARAMETER] !== undefined) {
-      throw new Error(`the runtime stack already has ${MODEL_FALLBACK_PARAMETER}; model-fallback-settings only adds it. Change its value with agentx config set models.fallback`);
+      throw new Error(`the runtime stack already has ${MODEL_FALLBACK_PARAMETER}; model-fallback-settings only adds it. Change its value with rovara config set models.fallback`);
     }
     const previousKeys = Object.keys(input.previous.runtime);
     steps.push(
@@ -603,7 +603,7 @@ export function planTestDeploy(
     const region = input.region ?? DEFAULT_REGION;
     const known = (MODEL_PROVIDERS as readonly string[]).includes(provider) ? provider as ModelProvider : undefined;
     if (input.e2eModel !== "default" && (known === undefined || eligibleE2EAgentModel(known, input.e2eModel, region) === null)) {
-      throw new Error(`--e2e-model ${JSON.stringify(input.e2eModel)} is not a model Rovara can use with ${provider} in ${region}; choose a model of its table (agentx project model-check discover lists them) or default`);
+      throw new Error(`--e2e-model ${JSON.stringify(input.e2eModel)} is not a model Rovara can use with ${provider} in ${region}; choose a model of its table (rovara project model-check discover lists them) or default`);
     }
     // A runtime stack deployed before the setting has neither the parameter nor its SSM setting: the first change set adds both, lifted from a synth of the runtime stack, and changes nothing else.
     const exists = input.previous.runtime[E2E_AGENT_MODEL_PARAMETER] !== undefined;
@@ -1246,7 +1246,7 @@ export function formatPlan(steps: readonly DeployStep[]): string {
       case "verify-lambda-code": return `${head} verify ${step.logicalId} CodeSha256 equals ${describeRef(step.expectedSha256Base64)}`;
       case "verify-stack-parameter": return `${head} verify ${step.stack} parameter ${step.key} equals ${"literal" in step.expected ? step.expected.literal : describeRef(step.expected)}`;
       case "verify-lambda-environment": return `${head} verify ${step.logicalId} runs with environment variable ${step.key}=${step.expected.literal} (GetFunctionConfiguration)`;
-      case "check-requalify-ready": return `${head} stop unless control-plane-code and the stack are current with this build (the --check comparison) and the current runner and its workspace volume carry DeploymentMode=e2e-qualification, Environment and agentx:requalify-managed=true (read only)`;
+      case "check-requalify-ready": return `${head} stop unless control-plane-code and the stack are current with this build (the --check comparison) and the current runner and its workspace volume carry DeploymentMode=e2e-qualification, Environment and rovara-cloud:requalify-managed=true (read only)`;
       case "check-requalify-lock": return `${head} read the renewal lock in ${step.stack}'s state table (read only) and stop if a renewal or a by-hand qualification holds it; this step does not take the lock, the renewal machine's first step does, so two starts cannot both run`;
       case "verify-requalify-schedule": return `${head} verify with scheduler get-schedule that ${step.logicalId} is ENABLED`;
       case "record-requalify-enabled": return `${head} record in ${step.stack}'s state table (one conditional put, never overwritten) that the daily schedule was enabled; from then on test-deploy --check reports it switched off as an error, and a head synth keeps it enabled`;
@@ -1861,7 +1861,7 @@ function readRouteApproval(readers: CheckReaders, table: string, routeId: string
 }
 
 /**
- * One worker setting from SSM (`/agentx/<env>/<name>`), through `ssm get-parameter` without decryption: these settings hold an id or an ARN,
+ * One worker setting from SSM (`/rovara-cloud/<env>/<name>`), through `ssm get-parameter` without decryption: these settings hold an id or an ARN,
  * never a secret. A parameter that does not exist reads as no value; a denied or failed read is unverifiable, never a pass.
  */
 function readWorkerSetting(readers: CheckReaders, name: string): SettingFact {

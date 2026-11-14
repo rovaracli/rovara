@@ -11,132 +11,138 @@ describe("destroy: the order (docs/architecture-production.md, Tearing down an e
 
 describe("destroy: name guards never reach another environment", () => {
   it("matches this environment's stacks, secrets, parameters and aliases exactly", () => {
-    expect(isOwnedStack("prod", "agentx-prod-slack")).toBe(true);
-    expect(isOwnedStack("prod", "agentx-prod-eu-slack")).toBe(false);
+    expect(isOwnedStack("prod", "rovara-cloud-prod-slack")).toBe(true);
+    expect(isOwnedStack("prod", "rovara-cloud-prod-eu-slack")).toBe(false);
     expect(isOwnedStack("prod", "AgentXControlPlane")).toBe(false);
-    expect(isOwnedSecret("prod", "agentx/prod/slack")).toBe(true);
-    expect(isOwnedSecret("prod", "agentx/prod-eu/slack")).toBe(false);
+    expect(isOwnedSecret("prod", "rovara-cloud/prod/slack")).toBe(true);
+    expect(isOwnedSecret("prod", "rovara-cloud/prod-eu/slack")).toBe(false);
     expect(isOwnedSecret("prod", "agentx/connectors/linear")).toBe(false);
-    expect(isOwnedParameter("prod", "/agentx/prod/settings")).toBe(true);
-    expect(isOwnedParameter("prod", "/agentx/prod-eu/settings")).toBe(false);
-    expect(isOwnedAlias("prod", "alias/agentx/prod/workspaces")).toBe(true);
-    expect(isOwnedAlias("prod", "alias/agentx/prod-eu/workspaces")).toBe(false);
-    expect(isOwnedAlias("production", "alias/agentx/production-workspaces")).toBe(false);
+    expect(isOwnedParameter("prod", "/rovara-cloud/prod/settings")).toBe(true);
+    expect(isOwnedParameter("prod", "/rovara-cloud/prod-eu/settings")).toBe(false);
+    expect(isOwnedAlias("prod", "alias/rovara-cloud/prod/workspaces")).toBe(true);
+    expect(isOwnedAlias("prod", "alias/rovara-cloud/prod-eu/workspaces")).toBe(false);
+    expect(isOwnedAlias("production", "alias/rovara-cloud/production-workspaces")).toBe(false);
   });
 
   it("matches nothing for a name that is not a valid environment name, so an empty or slashed name never widens a prefix", () => {
-    expect(isOwnedStack("", "agentx--slack")).toBe(false);
-    expect(isOwnedSecret("", "agentx//slack")).toBe(false);
-    expect(isOwnedSecret("prod/", "agentx/prod//slack")).toBe(false);
-    expect(isOwnedParameter("", "/agentx//settings")).toBe(false);
-    expect(isOwnedAlias("", "alias/agentx//workspaces")).toBe(false);
-    expect(isOwnedWorker("", { DeploymentMode: "ec2-ebs", Environment: "", "agentx:env": "" })).toBe(false);
-    expect(isOwnedRetained("", { part: "foundation", logicalId: "Key", type: "AWS::KMS::Key", physicalId: "k" }, { "agentx:env": "" })).toBe(false);
+    expect(isOwnedStack("", "rovara-cloud--slack")).toBe(false);
+    expect(isOwnedSecret("", "rovara-cloud//slack")).toBe(false);
+    expect(isOwnedSecret("prod/", "rovara-cloud/prod//slack")).toBe(false);
+    expect(isOwnedParameter("", "/rovara-cloud//settings")).toBe(false);
+    expect(isOwnedAlias("", "alias/rovara-cloud//workspaces")).toBe(false);
+    expect(isOwnedWorker("", { DeploymentMode: "ec2-ebs", Environment: "", "rovara-cloud:env": "" })).toBe(false);
+    expect(isOwnedRetained("", { part: "foundation", logicalId: "Key", type: "AWS::KMS::Key", physicalId: "k" }, { "rovara-cloud:env": "" })).toBe(false);
   });
 
-  it("matches a worker only with all three tags, so the legacy deployment's workers (Environment=production, no agentx:env) are never touched", () => {
-    expect(isOwnedWorker("production", { DeploymentMode: "ec2-ebs", Environment: "production", "agentx:env": "production" })).toBe(true);
+  it("matches a worker only with all three tags, so the legacy deployment's workers (Environment=production, no rovara-cloud:env) are never touched", () => {
+    expect(isOwnedWorker("production", { DeploymentMode: "ec2-ebs", Environment: "production", "rovara-cloud:env": "production" })).toBe(true);
     expect(isOwnedWorker("production", { DeploymentMode: "ec2-ebs", Environment: "production" })).toBe(false);
-    expect(isOwnedWorker("prod", { DeploymentMode: "ec2-ebs", Environment: "prod-eu", "agentx:env": "prod-eu" })).toBe(false);
+    expect(isOwnedWorker("prod", { DeploymentMode: "ec2-ebs", Environment: "prod-eu", "rovara-cloud:env": "prod-eu" })).toBe(false);
   });
 
   it("matches a retained resource only with this environment's tag and, for generated names, its stack's prefix", () => {
-    const bucket: RetainedResource = { part: "foundation", logicalId: "Artifacts", type: "AWS::S3::Bucket", physicalId: "agentx-prod-foundation-access-artifactbucket-1a2b" };
+    const bucket: RetainedResource = { part: "foundation", logicalId: "Artifacts", type: "AWS::S3::Bucket", physicalId: "rovara-cloud-prod-foundation-access-artifactbucket-1a2b" };
     // Env "prod-foundation"'s access bucket starts with env "prod"'s foundation prefix; only the tag tells them apart.
-    expect(isOwnedRetained("prod", bucket, { "agentx:env": "prod-foundation" })).toBe(false);
-    expect(isOwnedRetained("prod", { ...bucket, physicalId: "agentx-prod-foundation-artifacts-9z" }, { "agentx:env": "prod" })).toBe(true);
-    expect(isOwnedRetained("prod", { ...bucket, physicalId: "agentx-prod-eu-foundation-artifacts-9z" }, { "agentx:env": "prod" })).toBe(false);
+    expect(isOwnedRetained("prod", bucket, { "rovara-cloud:env": "prod-foundation" })).toBe(false);
+    expect(isOwnedRetained("prod", { ...bucket, physicalId: "rovara-cloud-prod-foundation-artifacts-9z" }, { "rovara-cloud:env": "prod" })).toBe(true);
+    expect(isOwnedRetained("prod", { ...bucket, physicalId: "rovara-cloud-prod-eu-foundation-artifacts-9z" }, { "rovara-cloud:env": "prod" })).toBe(false);
     expect(isOwnedRetained("prod", { part: "identity", logicalId: "UserPool", type: "AWS::Cognito::UserPool", physicalId: "us-east-1_AbC" }, undefined)).toBe(false);
-    expect(isOwnedRetained("prod", { part: "control-plane", logicalId: "SlackSecret", type: "AWS::SecretsManager::Secret", physicalId: "arn:aws:secretsmanager:us-east-1:1:secret:agentx/prod-eu/slack-AbC" }, { "agentx:env": "prod" })).toBe(false);
+    expect(isOwnedRetained("prod", { part: "control-plane", logicalId: "SlackSecret", type: "AWS::SecretsManager::Secret", physicalId: "arn:aws:secretsmanager:us-east-1:1:secret:rovara-cloud/prod-eu/slack-AbC" }, { "rovara-cloud:env": "prod" })).toBe(false);
   });
 });
 
 describe("destroy: name guards, prefix overlaps and the older production deployment", () => {
   it("never matches a name that only shares a prefix or differs in case", () => {
-    expect(isOwnedStack("live", "agentx-live25b-slack")).toBe(false);
+    expect(isOwnedStack("live", "rovara-cloud-live25b-slack")).toBe(false);
     expect(isOwnedSecret("prod", "agentx/production/slack")).toBe(false);
     expect(isOwnedParameter("prod", "/agentx/production/settings")).toBe(false);
-    expect(isOwnedSecret("prod", "agentx/PROD/slack")).toBe(false);
-    expect(isOwnedWorker("prod", { DeploymentMode: "ec2-ebs", "agentx:env": "prod" })).toBe(false);
+    expect(isOwnedSecret("prod", "rovara-cloud/PROD/slack")).toBe(false);
+    expect(isOwnedWorker("prod", { DeploymentMode: "ec2-ebs", "rovara-cloud:env": "prod" })).toBe(false);
   });
 
-  it("matches the older production deployment's names for env production, so ruling F21 is load-bearing", () => {
+  it("never matches the older production deployment's agentx names, even for env production", () => {
     // The older (adopted) production deployment uses /agentx/production/* parameters and this KMS
-    // alias (infra/lib/naming.ts). These guards cannot tell it from a named environment called
-    // production: only runDestroy's up-front refusal of that deployment (ruling F21) protects it.
-    expect(isOwnedAlias("production", "alias/agentx/production/invoke-signing")).toBe(true);
-    expect(isOwnedParameter("production", "/agentx/production/worker-image")).toBe(true);
+    // alias (infra/lib/naming.ts). Named environments live under rovara-cloud, so the guards never
+    // reach it; runDestroy's up-front refusal of that deployment (ruling F21) protects it besides.
+    expect(isOwnedAlias("production", "alias/agentx/production/invoke-signing")).toBe(false);
+    expect(isOwnedParameter("production", "/agentx/production/worker-image")).toBe(false);
+    expect(isOwnedSecret("production", "agentx/production/slack")).toBe(false);
+    expect(isOwnedAlias("production", "alias/rovara-cloud/production/invoke-signing")).toBe(true);
+    expect(isOwnedParameter("production", "/rovara-cloud/production/worker-image")).toBe(true);
   });
 
   it("matches a tagged generated-name resource by its stack tag, so a bucket name CloudFormation shortened still matches", () => {
-    const bucket: RetainedResource = { part: "control-plane", logicalId: "Artifacts", type: "AWS::S3::Bucket", physicalId: "agentx-a-very-long-envname-contr-artifactsbucket-1x2y3z" };
-    expect(isOwnedRetained("a-very-long-envname", bucket, { "agentx:env": "a-very-long-envname", "aws:cloudformation:stack-name": "agentx-a-very-long-envname-control-plane" })).toBe(true);
-    expect(isOwnedRetained("a-very-long-envname", bucket, { "agentx:env": "a-very-long-envname", "aws:cloudformation:stack-name": "agentx-a-very-long-envname-foundation" })).toBe(false);
-    expect(isOwnedRetained("prod", { part: "foundation", logicalId: "Key", type: "AWS::KMS::Key", physicalId: "k" }, { "agentx:env": "prod", "aws:cloudformation:stack-name": "agentx-prod-eu-foundation" })).toBe(false);
+    const bucket: RetainedResource = { part: "control-plane", logicalId: "Artifacts", type: "AWS::S3::Bucket", physicalId: "rovara-cloud-a-long-envname-contr-artifactsbucket-1x2y3z" };
+    expect(isOwnedRetained("a-long-envname", bucket, { "rovara-cloud:env": "a-long-envname", "aws:cloudformation:stack-name": "rovara-cloud-a-long-envname-control-plane" })).toBe(true);
+    expect(isOwnedRetained("a-long-envname", bucket, { "rovara-cloud:env": "a-long-envname", "aws:cloudformation:stack-name": "rovara-cloud-a-long-envname-foundation" })).toBe(false);
+    expect(isOwnedRetained("prod", { part: "foundation", logicalId: "Key", type: "AWS::KMS::Key", physicalId: "k" }, { "rovara-cloud:env": "prod", "aws:cloudformation:stack-name": "rovara-cloud-prod-eu-foundation" })).toBe(false);
     // Without the stack tag, the name prefix still decides: another part's shortened prefix never matches.
-    expect(isOwnedRetained("a-very-long-envname", { ...bucket, part: "foundation" }, { "agentx:env": "a-very-long-envname" })).toBe(false);
+    expect(isOwnedRetained("a-long-envname", { ...bucket, part: "foundation" }, { "rovara-cloud:env": "a-long-envname" })).toBe(false);
   });
 
   it("matches a bucket whose name CloudFormation shortened when S3 returns no stack tag (Task 20 live check)", () => {
-    // live15ea's Slack thread-session bucket: S3's tag set held only agentx:env, and CloudFormation cut
-    // the stack name agentx-live15ea-control-plane to agentx-live15ea-control-p and the logical id
+    // live15ea's Slack thread-session bucket: S3's tag set held only rovara-cloud:env, and CloudFormation cut
+    // the stack name rovara-cloud-live15ea-control-plane to rovara-cloud-live15ea-con and the logical id
     // SlackThreadSessions6FD21617 to slackthreadsessions6fd21, to fit S3's 63 characters.
-    const bucket: RetainedResource = { part: "control-plane", logicalId: "SlackThreadSessions6FD21617", type: "AWS::S3::Bucket", physicalId: "agentx-live15ea-control-p-slackthreadsessions6fd21-taqjchbygr25" };
+    const bucket: RetainedResource = { part: "control-plane", logicalId: "SlackThreadSessions6FD21617", type: "AWS::S3::Bucket", physicalId: "rovara-cloud-live15ea-con-slackthreadsessions6fd21-taqjchbygr25" };
     expect(bucket.physicalId).toHaveLength(63);
-    expect(isOwnedRetained("live15ea", bucket, { "agentx:env": "live15ea" })).toBe(true);
-    expect(isOwnedRetained("live15ea", bucket, { "agentx:env": "live15eab" })).toBe(false);
-    expect(isOwnedRetained("live15ea", { ...bucket, part: "slack" }, { "agentx:env": "live15ea" })).toBe(false);
-    expect(isOwnedRetained("live15ea", { ...bucket, physicalId: "agentx-live15eab-control-p-slackthreadsessions6fd21-x" }, { "agentx:env": "live15ea" })).toBe(false);
-    expect(isOwnedRetained("live15ea", { ...bucket, physicalId: "agentx-live15ea--slackthreadsessions6fd21-x" }, { "agentx:env": "live15ea" })).toBe(false);
+    expect(isOwnedRetained("live15ea", bucket, { "rovara-cloud:env": "live15ea" })).toBe(true);
+    expect(isOwnedRetained("live15ea", bucket, { "rovara-cloud:env": "live15eab" })).toBe(false);
+    expect(isOwnedRetained("live15ea", { ...bucket, part: "slack" }, { "rovara-cloud:env": "live15ea" })).toBe(false);
+    expect(isOwnedRetained("live15ea", { ...bucket, physicalId: "rovara-cloud-live15eab-con-slackthreadsessions6fd21-x" }, { "rovara-cloud:env": "live15ea" })).toBe(false);
+    expect(isOwnedRetained("live15ea", { ...bucket, physicalId: "rovara-cloud-live15ea--slackthreadsessions6fd21-x" }, { "rovara-cloud:env": "live15ea" })).toBe(false);
   });
 });
 
 describe("destroy: a generated bucket name, shortened (review I2)", () => {
-  const ENV20 = "abcdefghijklmnopqrst";
-  // agentx-abcdefghijklmnopqrst-control-plane cut to 25 characters reaches into agentx-<env>- itself.
-  const long: RetainedResource = { part: "control-plane", logicalId: "SlackThreadSessions6FD21617", type: "AWS::S3::Bucket", physicalId: "agentx-abcdefghijklmnopqr-slackthreadsessions6fd21-taqjchbygr25" };
-  const tagged = { "agentx:env": ENV20 };
+  const ENV14 = "abcdefghijklmn";
+  // rovara-cloud-abcdefghijklmn-control-plane cut to 25 characters reaches into rovara-cloud-<env>- itself.
+  const long: RetainedResource = { part: "control-plane", logicalId: "SlackThreadSessions6FD21617", type: "AWS::S3::Bucket", physicalId: "rovara-cloud-abcdefghijkl-slackthreadsessions6fd21-taqjchbygr25" };
+  const tagged = { "rovara-cloud:env": ENV14 };
 
-  it("matches a 20-character environment's bucket whose stack name was cut inside agentx-<env>-", () => {
+  it("matches a 14-character environment's bucket whose stack name was cut inside rovara-cloud-<env>-", () => {
     expect(long.physicalId).toHaveLength(63);
-    expect(isOwnedRetained(ENV20, long, tagged)).toBe(true);
+    expect(isOwnedRetained(ENV14, long, tagged)).toBe(true);
   });
 
   it("matches the full stack name followed by a hyphen at any length, as before", () => {
-    expect(isOwnedRetained("staging", { part: "access", logicalId: "ArtifactBucket", type: "AWS::S3::Bucket", physicalId: "agentx-staging-access-artifactbucket-1a" }, { "agentx:env": "staging" })).toBe(true);
+    expect(isOwnedRetained("staging", { part: "access", logicalId: "ArtifactBucket", type: "AWS::S3::Bucket", physicalId: "rovara-cloud-staging-access-artifactbucket-1a" }, { "rovara-cloud:env": "staging" })).toBe(true);
   });
 
   it("refuses another part, another environment's tag, a shortened name that is not 63 characters, and another logical id", () => {
-    // Cut inside agentx-<env>-, the name no longer holds the part, so the logical id binds it: another
+    // Cut inside rovara-cloud-<env>-, the name no longer holds the part, so the logical id binds it: another
     // part's bucket has another logical id. (Cut inside the part, as for live15ea, the part itself is
     // checked: see the live check test above.)
-    expect(isOwnedRetained(ENV20, { ...long, part: "slack", logicalId: "SessionArchive1A2B3C4D" }, tagged)).toBe(false);
-    expect(isOwnedRetained("live15ea", { part: "slack", logicalId: "SlackThreadSessions6FD21617", type: "AWS::S3::Bucket", physicalId: "agentx-live15ea-control-p-slackthreadsessions6fd21-taqjchbygr25" }, { "agentx:env": "live15ea" })).toBe(false);
-    expect(isOwnedRetained(ENV20, long, { "agentx:env": "abcdefghijklmnopqrs" })).toBe(false);
-    expect(isOwnedRetained(ENV20, { ...long, physicalId: long.physicalId.slice(0, -1) }, tagged)).toBe(false);
-    expect(isOwnedRetained(ENV20, { ...long, logicalId: "Artifacts" }, tagged)).toBe(false);
+    expect(isOwnedRetained(ENV14, { ...long, part: "slack", logicalId: "SessionArchive1A2B3C4D" }, tagged)).toBe(false);
+    expect(isOwnedRetained("live15ea", { part: "slack", logicalId: "SlackThreadSessions6FD21617", type: "AWS::S3::Bucket", physicalId: "rovara-cloud-live15ea-con-slackthreadsessions6fd21-taqjchbygr25" }, { "rovara-cloud:env": "live15ea" })).toBe(false);
+    expect(isOwnedRetained(ENV14, long, { "rovara-cloud:env": "abcdefghijklm" })).toBe(false);
+    expect(isOwnedRetained(ENV14, { ...long, physicalId: long.physicalId.slice(0, -1) }, tagged)).toBe(false);
+    expect(isOwnedRetained(ENV14, { ...long, logicalId: "Artifacts" }, tagged)).toBe(false);
     // A sibling environment prod-c's unshortened bucket, even carrying prod's tag, is refused by the
-    // 63-character rule: it is not the full stack name agentx-prod-control-plane followed by "-".
-    const sibling: RetainedResource = { part: "control-plane", logicalId: "State", type: "AWS::S3::Bucket", physicalId: "agentx-prod-c-foundation-state-1x" };
-    expect(isOwnedRetained("prod", sibling, { "agentx:env": "prod" })).toBe(false);
-    // At 63 characters, prod-c's name passes prod's name check (agentx-prod-c is a start of
-    // agentx-prod-control-plane): only the agentx:env tag blocks it (re-review R4).
-    const shortenedSibling: RetainedResource = { part: "control-plane", logicalId: "SlackThreadSessions6FD21617", type: "AWS::S3::Bucket", physicalId: `agentx-prod-c-slackthreadsessions6fd21-${"a1".repeat(12)}` };
+    // 63-character rule: it is not the full stack name rovara-cloud-prod-control-plane followed by "-".
+    const sibling: RetainedResource = { part: "control-plane", logicalId: "State", type: "AWS::S3::Bucket", physicalId: "rovara-cloud-prod-c-foundation-state-1x" };
+    expect(isOwnedRetained("prod", sibling, { "rovara-cloud:env": "prod" })).toBe(false);
+    // At 63 characters, prod-c's name passes prod's name check (rovara-cloud-prod-c is a start of
+    // rovara-cloud-prod-control-plane): only the rovara-cloud:env tag blocks it (re-review R4).
+    const shortenedSibling: RetainedResource = { part: "control-plane", logicalId: "SlackThreadSessions6FD21617", type: "AWS::S3::Bucket", physicalId: `rovara-cloud-prod-c-slackthreadsessions6fd21-${"a1".repeat(9)}` };
     expect(shortenedSibling.physicalId).toHaveLength(63);
-    expect(isOwnedRetained("prod", shortenedSibling, { "agentx:env": "prod-c" })).toBe(false);
-    expect(isOwnedRetained("prod", shortenedSibling, { "agentx:env": "prod" })).toBe(true);
+    expect(isOwnedRetained("prod", shortenedSibling, { "rovara-cloud:env": "prod-c" })).toBe(false);
+    expect(isOwnedRetained("prod", shortenedSibling, { "rovara-cloud:env": "prod" })).toBe(true);
   });
 
-  it("never takes a bare agentx as the stack-name part of a shortened name (re-review R3)", () => {
-    const bare: RetainedResource = { part: "control-plane", logicalId: "SlackThreadSessions6FD21617", type: "AWS::S3::Bucket", physicalId: `agentx-slackthreadsessions6fd21617-${"b2".repeat(14)}` };
+  it("never takes a bare rovara or rovara-cloud as the stack-name part of a shortened name (re-review R3)", () => {
+    const bare: RetainedResource = { part: "control-plane", logicalId: "SlackThreadSessions6FD21617", type: "AWS::S3::Bucket", physicalId: `rovara-cloud-slackthreadsessions6fd21617-${"b2".repeat(11)}` };
     expect(bare.physicalId).toHaveLength(63);
-    expect(isOwnedRetained("live15ea", bare, { "agentx:env": "live15ea" })).toBe(false);
+    expect(isOwnedRetained("live15ea", bare, { "rovara-cloud:env": "live15ea" })).toBe(false);
+    const bareRovara: RetainedResource = { ...bare, physicalId: `rovara-slackthreadsessions6fd21617-${"b2".repeat(14)}` };
+    expect(bareRovara.physicalId).toHaveLength(63);
+    expect(isOwnedRetained("live15ea", bareRovara, { "rovara-cloud:env": "live15ea" })).toBe(false);
   });
 
   it("keeps the full-prefix rule for tables and log groups, which S3's limit does not shorten", () => {
     for (const type of ["AWS::DynamoDB::Table", "AWS::Logs::LogGroup"]) {
-      expect(isOwnedRetained(ENV20, { ...long, type }, tagged), type).toBe(false);
-      expect(isOwnedRetained(ENV20, { ...long, type, physicalId: `agentx-${ENV20}-control-plane-state-1x` }, tagged), type).toBe(true);
+      expect(isOwnedRetained(ENV14, { ...long, type }, tagged), type).toBe(false);
+      expect(isOwnedRetained(ENV14, { ...long, type, physicalId: `rovara-cloud-${ENV14}-control-plane-state-1x` }, tagged), type).toBe(true);
     }
   });
 });
@@ -160,7 +166,7 @@ describe("destroy: the inventory of what the stacks retain", () => {
 
   it("lists only resources whose DeletionPolicy retains them", () => {
     const found = retainedResources("control-plane", template, [
-      { logicalId: "State", type: "AWS::DynamoDB::Table", physicalId: "agentx-staging-control-plane-State-1" },
+      { logicalId: "State", type: "AWS::DynamoDB::Table", physicalId: "rovara-cloud-staging-control-plane-State-1" },
       { logicalId: "Pool", type: "AWS::Cognito::UserPool", physicalId: "us-east-1_X" },
       { logicalId: "Fn", type: "AWS::Lambda::Function", physicalId: "fn" },
       { logicalId: "State", type: "AWS::DynamoDB::Table", physicalId: undefined },
@@ -185,14 +191,14 @@ describe("destroy: the inventory of what the stacks retain", () => {
   });
 
   const generated: RetainedResource[] = [
-    { part: "control-plane", logicalId: "State1C20CC9A", type: "AWS::DynamoDB::Table", physicalId: "agentx-staging-control-plane-State1C20CC9A-ABCDEFGHIJKLM" },
-    { part: "control-plane", logicalId: "TurnRecords69ECFCD9", type: "AWS::DynamoDB::Table", physicalId: "agentx-staging-control-plane-TurnRecords69ECFCD9-ABCDEFGHIJKLM" },
-    { part: "control-plane", logicalId: "Artifacts82DD59A1", type: "AWS::S3::Bucket", physicalId: "agentx-staging-control-plane-artifacts82dd59a1-abcdefghijklm" },
-    { part: "control-plane", logicalId: "SlackSecretEA96F13F", type: "AWS::SecretsManager::Secret", physicalId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/slack-AbCdEf" },
-    { part: "foundation", logicalId: "VpcFlowLogsE6FFDEF9", type: "AWS::Logs::LogGroup", physicalId: "agentx-staging-foundation-VpcFlowLogsE6FFDEF9-ABCDEFGHIJKLM" },
+    { part: "control-plane", logicalId: "State1C20CC9A", type: "AWS::DynamoDB::Table", physicalId: "rovara-cloud-staging-control-plane-State1C20CC9A-ABCDEFGHIJKLM" },
+    { part: "control-plane", logicalId: "TurnRecords69ECFCD9", type: "AWS::DynamoDB::Table", physicalId: "rovara-cloud-staging-control-plane-TurnRecords69ECFCD9-ABCDEFGHIJKLM" },
+    { part: "control-plane", logicalId: "Artifacts82DD59A1", type: "AWS::S3::Bucket", physicalId: "rovara-cloud-staging-control-plane-artifacts82dd59a1-abcdefghijklm" },
+    { part: "control-plane", logicalId: "SlackSecretEA96F13F", type: "AWS::SecretsManager::Secret", physicalId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/slack-AbCdEf" },
+    { part: "foundation", logicalId: "VpcFlowLogsE6FFDEF9", type: "AWS::Logs::LogGroup", physicalId: "rovara-cloud-staging-foundation-VpcFlowLogsE6FFDEF9-ABCDEFGHIJKLM" },
     { part: "identity", logicalId: "UserPool6BA7E5F2", type: "AWS::Cognito::UserPool", physicalId: "us-east-1_AbCdEfGhI" },
     // A name that only looks generated by another stack is stored as it is.
-    { part: "slack", logicalId: "Logs6819BB44", type: "AWS::Logs::LogGroup", physicalId: "agentx-staging-foundation-Logs6819BB44-X" },
+    { part: "slack", logicalId: "Logs6819BB44", type: "AWS::Logs::LogGroup", physicalId: "rovara-cloud-staging-foundation-Logs6819BB44-X" },
   ];
 
   it("stores the inventory compactly (schema 2): each stack part and type once, and the stack name derived from the environment", async () => {
@@ -205,11 +211,11 @@ describe("destroy: the inventory of what the stacks retain", () => {
         "control-plane": {
           "AWS::DynamoDB::Table": [["State1C20CC9A", "-ABCDEFGHIJKLM", "sl"], ["TurnRecords69ECFCD9", "-ABCDEFGHIJKLM", "sl"]],
           "AWS::S3::Bucket": [["Artifacts82DD59A1", "artifacts82dd59a1-abcdefghijklm", "s"]],
-          "AWS::SecretsManager::Secret": [["SlackSecretEA96F13F", "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/slack-AbCdEf"]],
+          "AWS::SecretsManager::Secret": [["SlackSecretEA96F13F", "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/slack-AbCdEf"]],
         },
         foundation: { "AWS::Logs::LogGroup": [["VpcFlowLogsE6FFDEF9", "-ABCDEFGHIJKLM", "sl"]] },
         identity: { "AWS::Cognito::UserPool": [["UserPool6BA7E5F2", "us-east-1_AbCdEfGhI"]] },
-        slack: { "AWS::Logs::LogGroup": [["Logs6819BB44", "agentx-staging-foundation-Logs6819BB44-X"]] },
+        slack: { "AWS::Logs::LogGroup": [["Logs6819BB44", "rovara-cloud-staging-foundation-Logs6819BB44-X"]] },
       },
     });
     const read = await readInventory(store, "staging");
@@ -220,9 +226,9 @@ describe("destroy: the inventory of what the stacks retain", () => {
   it("refuses a schema 2 inventory with a stack part or an entry it does not know", async () => {
     const store = new MemoryParameterStore();
     await store.put(inventoryParameterName("staging"), JSON.stringify({ schemaVersion: 2, env: "staging", resources: { elsewhere: { "AWS::KMS::Key": [["Key", "k-1"]] } } }));
-    await expect(readInventory(store, "staging")).rejects.toThrow(/is not an agentx destroy inventory/);
+    await expect(readInventory(store, "staging")).rejects.toThrow(/is not a rovara destroy inventory/);
     await store.put(inventoryParameterName("staging"), JSON.stringify({ schemaVersion: 2, env: "staging", resources: { foundation: { "AWS::KMS::Key": [["Key", "k-1", "x"]] } } }));
-    await expect(readInventory(store, "staging")).rejects.toThrow(/is not an agentx destroy inventory/);
+    await expect(readInventory(store, "staging")).rejects.toThrow(/is not a rovara destroy inventory/);
   });
 
   it("still reads an inventory an earlier agentx wrote in schema 1, and rewrites it in schema 2", async () => {
@@ -249,15 +255,15 @@ describe("destroy: what is shown before, and printed after", () => {
   it("shows every stack in order, the workers with the workspace warning, what is kept, and the slow control-plane delete", () => {
     const lines = destroyPlanText({
       env: "staging", account: "123456789012", region: "us-east-1",
-      stacks: [{ name: "agentx-staging-slack", status: "UPDATE_COMPLETE" }, { name: "agentx-staging-control-plane", status: "UPDATE_COMPLETE" }],
+      stacks: [{ name: "rovara-cloud-staging-slack", status: "UPDATE_COMPLETE" }, { name: "rovara-cloud-staging-control-plane", status: "UPDATE_COMPLETE" }],
       instances: 1, volumes: 2, secrets: 5, parameters: 9, localFiles: ["/home/a/.agentx/environments/staging.yaml"], keepData: false,
       resources: [{ part: "control-plane", logicalId: "State", type: "AWS::DynamoDB::Table", physicalId: "t" }, { part: "foundation", logicalId: "Key", type: "AWS::KMS::Key", physicalId: "k" }],
     });
     expect(lines[0]).toBe("This deletes AgentX environment staging in account 123456789012, region us-east-1:");
-    expect(lines).toContain("  stacks, in this order: agentx-staging-slack (UPDATE_COMPLETE), agentx-staging-control-plane (UPDATE_COMPLETE)");
+    expect(lines).toContain("  stacks, in this order: rovara-cloud-staging-slack (UPDATE_COMPLETE), rovara-cloud-staging-control-plane (UPDATE_COMPLETE)");
     expect(lines).toContain("  EC2 workers: 1 instance and 2 workspace volumes; deleting the volumes deletes every worker session's workspace");
     expect(lines).toContain("  what the stacks keep, deleted after them: 1 table and 1 KMS key (deleted after 7 days)");
-    expect(lines).toContain("  Deleting agentx-staging-control-plane usually takes 20 to 40 minutes: its Lambda functions release their network interfaces slowly.");
+    expect(lines).toContain("  Deleting rovara-cloud-staging-control-plane usually takes 20 to 40 minutes: its Lambda functions release their network interfaces slowly.");
     expect(lines.at(-1)).toBe("Nothing here can be undone.");
     const kept = destroyPlanText({ env: "staging", account: "123456789012", region: "us-east-1", stacks: [], instances: 0, volumes: 0, secrets: 5, parameters: 1, localFiles: [], keepData: true, resources: [{ part: "control-plane", logicalId: "State", type: "AWS::DynamoDB::Table", physicalId: "t" }] });
     expect(kept).toContain("  --keep-data keeps: 1 table and 5 secrets");
@@ -277,16 +283,16 @@ describe("destroy: what is shown before, and printed after", () => {
     expect(destroyPlanText({ ...plan, keepData: false })).toContain("  what the stacks keep, deleted after them: 1 table and 1 KMS key (deleted after 7 days)");
   });
 
-  it("counts the stacks' secrets once, with the secrets under agentx/<env>/, and joins lists as a, b and c", () => {
+  it("counts the stacks' secrets once, with the secrets under rovara-cloud/<env>/, and joins lists as a, b and c", () => {
     const resources: RetainedResource[] = [
       { part: "control-plane", logicalId: "State", type: "AWS::DynamoDB::Table", physicalId: "t" },
       { part: "identity", logicalId: "Pool", type: "AWS::Cognito::UserPool", physicalId: "p" },
-      { part: "control-plane", logicalId: "SlackSecret", type: "AWS::SecretsManager::Secret", physicalId: "agentx/staging/slack" },
+      { part: "control-plane", logicalId: "SlackSecret", type: "AWS::SecretsManager::Secret", physicalId: "rovara-cloud/staging/slack" },
     ];
     const plan = { env: "staging", account: "123456789012", region: "us-east-1", stacks: [], instances: 0, volumes: 0, secrets: 5, parameters: 1, localFiles: [], resources };
     const all = destroyPlanText({ ...plan, keepData: false });
     expect(all).toContain("  what the stacks keep, deleted after them: 1 table and 1 Cognito user pool");
-    expect(all).toContain("  secrets: 5 secrets under agentx/staging/, deleted without recovery");
+    expect(all).toContain("  secrets: 5 secrets under rovara-cloud/staging/, deleted without recovery");
     expect(destroyPlanText({ ...plan, keepData: true })).toContain("  --keep-data keeps: 1 table, 1 Cognito user pool and 5 secrets");
   });
 
@@ -306,10 +312,10 @@ describe("destroy: what is shown before, and printed after", () => {
 
 describe("destroy: matching a secret by name or ARN", () => {
   it("matches the name itself or its ARN with Secrets Manager's six-character suffix, never a longer name", () => {
-    expect(isSecretId("agentx/staging/github", "agentx/staging/github")).toBe(true);
-    expect(isSecretId("arn:aws:secretsmanager:us-east-1:1:secret:agentx/staging/github-AbC123", "agentx/staging/github")).toBe(true);
-    expect(isSecretId("arn:aws:secretsmanager:us-east-1:1:secret:agentx/staging/github-app-AbC123", "agentx/staging/github")).toBe(false);
-    expect(isSecretId("arn:aws:secretsmanager:us-east-1:1:secret:agentx/staging/github-app-AbC123", "agentx/staging/github-app")).toBe(true);
-    expect(isSecretId("arn:aws:secretsmanager:us-east-1:1:secret:agentx/staging/a.b-AbC123", "agentx/staging/aXb")).toBe(false);
+    expect(isSecretId("rovara-cloud/staging/github", "rovara-cloud/staging/github")).toBe(true);
+    expect(isSecretId("arn:aws:secretsmanager:us-east-1:1:secret:rovara-cloud/staging/github-AbC123", "rovara-cloud/staging/github")).toBe(true);
+    expect(isSecretId("arn:aws:secretsmanager:us-east-1:1:secret:rovara-cloud/staging/github-app-AbC123", "rovara-cloud/staging/github")).toBe(false);
+    expect(isSecretId("arn:aws:secretsmanager:us-east-1:1:secret:rovara-cloud/staging/github-app-AbC123", "rovara-cloud/staging/github-app")).toBe(true);
+    expect(isSecretId("arn:aws:secretsmanager:us-east-1:1:secret:rovara-cloud/staging/a.b-AbC123", "rovara-cloud/staging/aXb")).toBe(false);
   });
 });

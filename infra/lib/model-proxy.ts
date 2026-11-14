@@ -1,4 +1,4 @@
-import { INFERENCE_PATHS, MODEL_PROXY_INFERENCE_PORT, MODEL_PROXY_URL_PARAMETER, modelProxyTaskRoleName } from "@agentx/contracts";
+import { INFERENCE_PATHS, MODEL_PROXY_INFERENCE_PORT, MODEL_PROXY_URL_PARAMETER, modelProxyTaskRoleName, APPLICATION_TAG_VALUE, ENVIRONMENT_TAG_KEY } from "@agentx/contracts";
 import { ROVARA_GUARD_PY, litellmConfig } from "@agentx/model-proxy";
 import {
   Duration,
@@ -105,7 +105,7 @@ export class ModelProxy extends Construct {
     super(scope, id);
     const stack = Stack.of(this);
     const { naming } = props;
-    const tags = [{ key: "Application", value: "AgentX" }, ...(naming.env === undefined ? [] : [{ key: "agentx:env", value: naming.env }])];
+    const tags = [{ key: "Application", value: APPLICATION_TAG_VALUE }, ...(naming.env === undefined ? [] : [{ key: ENVIRONMENT_TAG_KEY, value: naming.env }])];
     const port = MODEL_PROXY_PORT;
 
     // Security groups: clients -> load balancer -> service -> database. Every rule between groups is a

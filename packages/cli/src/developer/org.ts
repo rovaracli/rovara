@@ -1,4 +1,4 @@
-// `agentx org members | role | remove | leave` (Plan 2, Task 4): the people in the signed-in developer's organization. Each command is
+// `rovara org members | role | remove | leave` (Plan 2, Task 4): the people in the signed-in developer's organization. Each command is
 // one signed-in call to the control plane's /v1/app/org routes; the control plane decides who may do what, and this only names the
 // person (by email or ID), asks before leaving, and prints what happened.
 import { randomUUID } from "node:crypto";
@@ -45,8 +45,8 @@ export function orgMembersText(result: OrgMembersResult): string {
 export function findMember(members: readonly OrgMember[], who: string): OrgMember {
   const wanted = who.trim().toLowerCase();
   const found = members.filter((member) => member.developerId.toLowerCase() === wanted || member.email?.toLowerCase() === wanted);
-  if (found.length === 0) throw agentXError("NOT_FOUND", `no member of your organization has the email or ID ${sanitizeServerText(who)}; run agentx org members to see them`);
-  if (found.length > 1) throw agentXError("CONFIG_INVALID", `more than one member matches ${sanitizeServerText(who)}; use the developer ID from agentx org members`);
+  if (found.length === 0) throw agentXError("NOT_FOUND", `no member of your organization has the email or ID ${sanitizeServerText(who)}; run rovara org members to see them`);
+  if (found.length > 1) throw agentXError("CONFIG_INVALID", `more than one member matches ${sanitizeServerText(who)}; use the developer ID from rovara org members`);
   return found[0]!;
 }
 
@@ -79,7 +79,7 @@ export async function orgRemove(deps: DeveloperSessionDeps, env: string | undefi
 
 export const orgRemoveText = (result: { member: OrgMember; message: string }) => `Removed ${sanitizeServerText(result.member.name)} from your organization. ${sanitizeServerText(result.message)}\n`;
 
-/** What `agentx org leave` asks first: who is leaving, and, for the only member, that the organization closes. */
+/** What `rovara org leave` asks first: who is leaving, and, for the only member, that the organization closes. */
 export async function orgLeaveQuestion(deps: DeveloperSessionDeps, env: string | undefined): Promise<{ question: string; closes: boolean }> {
   const [me, listed] = await Promise.all([
     developerRequest(deps, env, "/v1/app/me", AppMeResponseSchema, { explain: true }),
@@ -102,7 +102,7 @@ export async function orgLeave(deps: DeveloperSessionDeps, env: string | undefin
 
 export const orgLeaveText = (result: { orgClosed: boolean; message: string }) => `${result.orgClosed ? "You left and the organization is closed." : "You left the organization."}\n`;
 
-// Plan 3, Task 14b: `agentx org comment-triggers list`, the repositories an org admin opted out of the rule that every agent comment needs a person
+// Plan 3, Task 14b: `rovara org comment-triggers list`, the repositories an org admin opted out of the rule that every agent comment needs a person
 // where workflows act on comments or labels. They are read from the guardrails (`GET /v1/app/org/agent-guardrails`); nothing here sets one.
 const GuardrailsOptOutsSchema = z.object({ commentTriggerOptOuts: z.array(CommentTriggerOptOutSchema) });
 export type OrgCommentTriggersResult = { env: string; url: string; optOuts: CommentTriggerOptOut[] };

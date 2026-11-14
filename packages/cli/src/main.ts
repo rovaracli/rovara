@@ -13,7 +13,9 @@ import {
   AgentXNameSchema,
   DEFAULT_ENVIRONMENT,
   ENVIRONMENT_PLACEHOLDER,
+  ENVIRONMENT_TAG_KEY,
   EnvironmentNameSchema,
+  RESOURCE_PREFIX,
   INTENT_QUESTIONS_MAX,
   WorkspaceDeploymentModeSchema,
   MODEL_PROVIDERS,
@@ -140,11 +142,11 @@ export interface CliDependencies {
   /**
    * Owner decision 2026-10-02 (#218, #235 follow-up): how this CLI process was launched, for tests;
    * `currentCliInvocation()` otherwise. Shared by the admin sign-in notices, the Ctrl-C stop line,
-   * and `agentx mcp`.
+   * and `rovara mcp`.
    */
   cliInvocation?: CliInvocation;
   fetchImplementation?: typeof fetch;
-  /** Waits between polls (`agentx project check`), for tests. Defaults to a timer. */
+  /** Waits between polls (`rovara project check`), for tests. Defaults to a timer. */
   sleep?: (ms: number) => Promise<void>;
   tokenStore?: TokenStore;
   stdout?: TextWriter;
@@ -169,27 +171,27 @@ export interface CliDependencies {
      */
     ssmClient?: (region?: string) => SSMClient;
   };
-  /** `agentx deploy` and `agentx init --export` overrides, for tests: never touch AWS. */
+  /** `rovara deploy` and `rovara init --export` overrides, for tests: never touch AWS. */
   deploy?: DeployCliDependencies;
-  /** `agentx init` overrides, for tests: never touch AWS, GitHub or Slack. */
+  /** `rovara init` overrides, for tests: never touch AWS, GitHub or Slack. */
   init?: InitCliDependencies;
   /** `rovara sso` overrides, for tests: never touch AWS. */
   sso?: Partial<SsoBootstrapServices>;
-  /** `agentx signin` overrides, for tests: never touch AWS, Slack or an identity provider. */
+  /** `rovara signin` overrides, for tests: never touch AWS, Slack or an identity provider. */
   signin?: Partial<SigninServices>;
-  /** `agentx config` overrides, for tests: never touch AWS. */
+  /** `rovara config` overrides, for tests: never touch AWS. */
   config?: Partial<ConfigServices>;
-  /** `agentx doctor` overrides, for tests: never touch AWS or a vendor. */
+  /** `rovara doctor` overrides, for tests: never touch AWS or a vendor. */
   doctor?: { store?: ParameterStore; services?: (settings: EnvironmentSettings) => DoctorServices };
-  /** `agentx github oauth set` overrides, for tests: never touch AWS or GitHub. */
+  /** `rovara github oauth set` overrides, for tests: never touch AWS or GitHub. */
   githubOauth?: Partial<GithubOauthServices>;
-  /** `agentx github connect` polling, for tests. */
+  /** `rovara github connect` polling, for tests. */
   githubConnect?: { pollMs?: number; waitMs?: number };
-  /** `agentx upgrade` overrides, for tests: never touch AWS or GitHub. */
+  /** `rovara upgrade` overrides, for tests: never touch AWS or GitHub. */
   upgrade?: Partial<UpgradeDependencies>;
-  /** `agentx destroy` overrides, for tests: never touch AWS. */
+  /** `rovara destroy` overrides, for tests: never touch AWS. */
   destroy?: Partial<DestroyDependencies>;
-  /** `agentx workspaces` overrides, for tests: never reach the control plane or open a browser. */
+  /** `rovara workspaces` overrides, for tests: never reach the control plane or open a browser. */
   workspaces?: {
     read?: () => Promise<DeveloperWorkspacesResult>;
     openBrowser?: (url: string) => Promise<void>;
@@ -197,23 +199,23 @@ export interface CliDependencies {
     isInteractive?: () => boolean;
     port?: number;
   };
-  /** `agentx login` overrides, for tests: never open a browser. */
+  /** `rovara login` overrides, for tests: never open a browser. */
   login?: { openBrowser?: (url: string) => Promise<void> };
   /** `chatgpt connect` overrides, for tests: another port, no browser, and no terminal check. */
   chatgpt?: { port?: number; openBrowser?: (url: string) => Promise<void>; isInteractive?: () => boolean };
-  /** `agentx audit` overrides, for tests: no waiting between export polls, fixed request IDs, and no browser. */
+  /** `rovara audit` overrides, for tests: no waiting between export polls, fixed request IDs, and no browser. */
   audit?: { sleep?: (ms: number) => Promise<void>; newRequestId?: () => string; openBrowser?: (url: string) => Promise<void> };
   /** `rovara loop` overrides, for tests: every outside program (gh, git, tmux, claude) and how to run this CLI. */
   loop?: { exec?: Exec; cliCommand?: readonly string[] };
-  /** `agentx mcp` reads MCP messages from here; process.stdin by default. */
+  /** `rovara mcp` reads MCP messages from here; process.stdin by default. */
   stdin?: Readable;
-  /** `agentx mcp`'s clock for waits, for tests. */
+  /** `rovara mcp`'s clock for waits, for tests. */
   mcpClock?: McpServeDeps["clock"];
-  /** `agentx mcp install`'s runner for the claude command, for tests. */
+  /** `rovara mcp install`'s runner for the claude command, for tests. */
   runCommand?: McpInstallDeps["run"];
-  /** `agentx mcp install`'s Codex settings folder, for tests; CODEX_HOME by default. */
+  /** `rovara mcp install`'s Codex settings folder, for tests; CODEX_HOME by default. */
   codexHome?: string;
-  /** `agentx project add` and the other setup commands (phase 15d2), for tests: never touch AWS,
+  /** `rovara project add` and the other setup commands (phase 15d2), for tests: never touch AWS,
    * GitHub, Slack or the control plane. */
   setup?: SetupCommandContext;
   /** The environment `org sources add --key-from-env` reads a provider key from; process.env by default. */
@@ -272,7 +274,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   // tells the person the command that runs right now.
   const cliInvocation = dependencies.cliInvocation ?? currentCliInvocation();
   const commandFor = (args: string): string => cliCommandLine(cliInvocation, args);
-  // Where `agentx env use` caches settings and, for production only, where the legacy
+  // Where `rovara env use` caches settings and, for production only, where the legacy
   // deployment file lives.
   const home = dependencies.environments?.home ?? homedir();
   const parameterStore = (region?: string): ParameterStore => {
@@ -307,7 +309,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     return { settings, accessToken: tokens.accessToken };
   }
 
-  /** This computer's stored admin sign-in (agentx --env <name> login --admin) for an environment by name, expired or not. */
+  /** This computer's stored admin sign-in (rovara --env <name> login --admin) for an environment by name, expired or not. */
   async function storedAdminSignIn(name: string): Promise<{ baseUrl: string; accessToken: string; expiresAt: number } | undefined> {
     try {
       const settings = await deploymentSettings({ ...globalOptions(program), env: name });
@@ -318,7 +320,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     }
   }
 
-  /** This computer's unexpired admin sign-in (agentx --env <name> login --admin) for an environment by name. Never refreshed (Q4). */
+  /** This computer's unexpired admin sign-in (rovara --env <name> login --admin) for an environment by name. Never refreshed (Q4). */
   async function adminSessionFor(name: string): Promise<(AdminSession & { expiresAt: number }) | undefined> {
     const stored = await storedAdminSignIn(name);
     return stored !== undefined && stored.expiresAt > Date.now() ? stored : undefined;
@@ -356,7 +358,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   program
     .command("login")
-    .description("sign in: agentx login <url> for developers; agentx login --admin (or no URL) for administrators")
+    .description("sign in: rovara login <url> for developers; rovara login --admin (or no URL) for administrators")
     .argument("[url]", "your AgentX URL, for developer sign-in")
     .option("--admin", "sign in as an administrator with the admin identity provider (the default when no URL is given)", false)
     .option("--no-browser", "developer sign-in: print the sign-in link instead of opening a browser")
@@ -366,7 +368,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .action(async (explicitUrl: string | undefined, options: { admin: boolean; browser: boolean; invite?: string; yes: boolean; callbackPort: number }, command: Command) => {
       const globals = globalOptions(command);
       if ((explicitUrl !== undefined || options.invite !== undefined) && options.admin) {
-        throw agentXError("CONFIG_INVALID", options.invite !== undefined ? "use either agentx login --invite <link> (joining an organization) or agentx login --admin, not both" : "use either agentx login <url> (developer sign-in) or agentx login --admin, not both");
+        throw agentXError("CONFIG_INVALID", options.invite !== undefined ? "use either rovara login --invite <link> (joining an organization) or rovara login --admin, not both" : "use either rovara login <url> (developer sign-in) or rovara login --admin, not both");
       }
       // An invite link names the cell to sign in to (an explicit URL wins), and the person is told what they are joining before a browser opens (ruling R19).
       let url = explicitUrl;
@@ -432,7 +434,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(formatSuccess({ controlPlaneUrl: settings.controlPlaneUrl, authenticated: true }, globals.json));
     });
 
-  /** The developer environment: --env when typed, otherwise the default agentx login set. */
+  /** The developer environment: --env when typed, otherwise the default rovara login set. */
   const developerEnv = (command: Command): string | undefined =>
     command.getOptionValueSourceWithGlobals("env") === "cli" ? globalOptions(command).env : undefined;
 
@@ -622,7 +624,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   org
     .command("role")
     .description("change a member's role (owners only)")
-    .argument("<email-or-id>", "the member's email or developer ID, from agentx org members")
+    .argument("<email-or-id>", "the member's email or developer ID, from rovara org members")
     .argument("<role>", "owner, admin or member")
     .action(async (who: string, role: string, _options: unknown, command: Command) => {
       const globals = globalOptions(command);
@@ -634,7 +636,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   org
     .command("remove")
     .description("remove a member from your organization: their sessions end and their running tasks stop after their current step")
-    .argument("<email-or-id>", "the member's email or developer ID, from agentx org members")
+    .argument("<email-or-id>", "the member's email or developer ID, from rovara org members")
     .action(async (who: string, _options: unknown, command: Command) => {
       const globals = globalOptions(command);
       const result = await orgRemove(developerSession(), developerEnv(command), who);
@@ -687,7 +689,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   connections
     .command("remove")
     .description("remove a connection (an organization owner or admin); its secret is scheduled for deletion and can be recovered for 7 days")
-    .argument("<connection-id>", "the connection's ID, from agentx connections list")
+    .argument("<connection-id>", "the connection's ID, from rovara connections list")
     .option("--yes", "remove without asking", false)
     .action(async (connectionId: string, options: { yes: boolean }, command: Command) => {
       const globals = globalOptions(command);
@@ -699,7 +701,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   connections
     .command("check")
     .description("test a connection with its saved secret (an organization owner or admin)")
-    .argument("<connection-id>", "the connection's ID, from agentx connections list")
+    .argument("<connection-id>", "the connection's ID, from rovara connections list")
     .action(async (connectionId: string, _options: unknown, command: Command) => {
       const globals = globalOptions(command);
       const result = await connectionsCheck(developerSession(), developerEnv(command), connectionId);
@@ -741,7 +743,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   chains
     .command("show")
     .description("show a chain: what runs now and its steps")
-    .argument("<chain-id>", "the chain's ID, from agentx chains list")
+    .argument("<chain-id>", "the chain's ID, from rovara chains list")
     .action(async (chainId: string, _options: unknown, command: Command) => printResult(command, await chainsShow(developerSession(), developerEnv(command), chainId)));
   chains
     .command("create")
@@ -815,7 +817,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   session
     .command("show")
     .description("show a session: its link, status, owner, cost and what waits for you")
-    .argument("<session-id>", "the session's ID, from agentx sessions")
+    .argument("<session-id>", "the session's ID, from rovara sessions")
     .action(async (id: string, _options: unknown, command: Command) => printResult(command, await sessionShow(developerSession(), developerEnv(command), id)));
   for (const follow of [true, false]) {
     session
@@ -840,7 +842,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   const answerCommand = session
     .command("answer")
     .description("answer the questions Rovara Code asked before it plans; with no --qN it shows the questions. It needs \"can use\" on the session")
-    .argument("<task-or-session>", "the session's ID (from agentx sessions) or the task's ID");
+    .argument("<task-or-session>", "the session's ID (from rovara sessions) or the task's ID");
   for (let number = 1; number <= INTENT_QUESTIONS_MAX; number += 1) answerCommand.option(`--q${number} <answer>`, `the answer to question ${number}: an option's letter or words, or your own words ("your call" leaves it to Rovara)`);
   answerCommand.action(async (ref: string, options: Record<string, string | undefined>, command: Command) =>
     printResult(command, await sessionAnswer(developerSession(), developerEnv(command), ref, { answers: Array.from({ length: INTENT_QUESTIONS_MAX }, (_unused, index) => options[`q${index + 1}`]) })));
@@ -867,14 +869,14 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   session
     .command("merge")
     .description("press Merge for a Rovara Code task: shows what is approved and whether checks passed, asks, then prints the link where you confirm it in your browser")
-    .argument("<task-or-session>", "the session's ID (from agentx sessions) or the task's ID")
+    .argument("<task-or-session>", "the session's ID (from rovara sessions) or the task's ID")
     .option("--yes", "press without asking; you still confirm in your browser", false)
     .action(async (ref: string, options: { yes: boolean }, command: Command) =>
       printResult(command, await sessionMerge(developerSession(), developerEnv(command), ref, { confirm: changeConfirmer(options.yes) })));
   session
     .command("link")
     .description("link a Rovara Code session to a Linear issue, so its pull request says Fixes <KEY>; needs \"can edit\" on the session")
-    .argument("<task-or-session>", "the session's ID (from agentx sessions) or the task's ID")
+    .argument("<task-or-session>", "the session's ID (from rovara sessions) or the task's ID")
     .option("--linear <issue>", "the Linear issue's key (like TEAM-123) or its linear.app link")
     .option("--replace", "change the issue when the session already follows another", false)
     .option("--unlink", "let go of the session's Linear issue", false)
@@ -885,7 +887,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .description("what needs you now: approvals, plans, spend requests, pull requests and failures")
     .action(async (_options: unknown, command: Command) => printResult(command, await homeCards(developerSession(), developerEnv(command))));
 
-  /** `agentx chains triggers ...` and `agentx agents triggers ...`: the same four commands on a chain and on an agent (Plan 4 Task 18). */
+  /** `rovara chains triggers ...` and `rovara agents triggers ...`: the same four commands on a chain and on an agent (Plan 4 Task 18). */
   const addTriggerCommands = (parent: Command, kind: TriggerOwnerKind, noun: string) => {
     const triggers = parent.command("triggers").description(`what starts a ${noun} without a person: events and schedules`);
     triggers
@@ -941,7 +943,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   agents
     .command("show")
     .description("show an agent: what runs now, whether the draft has changed, its budget")
-    .argument("<agent-id>", "the agent's ID, from agentx agents list")
+    .argument("<agent-id>", "the agent's ID, from rovara agents list")
     .action(async (agentId: string, _options: unknown, command: Command) => printResult(command, await agentsShow(developerSession(), developerEnv(command), agentId)));
   agents
     .command("create")
@@ -1017,7 +1019,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .command("accountable")
     .description("name the person who answers for a project's agent or a built-in one")
     .argument("<agent-id>", "the agent's ID")
-    .argument("<email-or-id>", "the person's email or developer ID, from agentx org members")
+    .argument("<email-or-id>", "the person's email or developer ID, from rovara org members")
     .action(async (agentId: string, who: string, _options: unknown, command: Command) => printResult(command, await agentsAccountable(developerSession(), developerEnv(command), agentId, who)));
   agents
     .command("budget")
@@ -1068,12 +1070,12 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   approvals
     .command("show")
     .description("show one approval: what it would do, its full arguments and its confirmation link")
-    .argument("<approval-id>", "the approval's ID, from agentx approvals list")
+    .argument("<approval-id>", "the approval's ID, from rovara approvals list")
     .action(async (approvalId: string, _options: unknown, command: Command) => printResult(command, await approvalsShow(developerSession(), developerEnv(command), approvalId)));
   approvals
     .command("open")
     .description("open an approval's confirmation page in your browser, where you approve or decline it")
-    .argument("<approval-id>", "the approval's ID, from agentx approvals list")
+    .argument("<approval-id>", "the approval's ID, from rovara approvals list")
     .option("--no-browser", "print the link instead of opening a browser")
     .action(async (approvalId: string, options: { browser: boolean }, command: Command) => {
       const link = await approvalsConfirmLink(developerSession(), developerEnv(command), approvalId);
@@ -1090,7 +1092,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   spendRequests
     .command("open")
     .description("open a spend request's confirmation page in your browser, where you approve or decline it")
-    .argument("<spend-request-id>", "the request's ID, from agentx spend-requests list")
+    .argument("<spend-request-id>", "the request's ID, from rovara spend-requests list")
     .option("--no-browser", "print the link instead of opening a browser")
     .action(async (spendRequestId: string, options: { browser: boolean }, command: Command) => {
       const link = await spendRequestConfirmLink(developerSession(), developerEnv(command), spendRequestId);
@@ -1209,7 +1211,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   githubCommand
     .command("disconnect")
     .description("stop using a connected GitHub account (owners and admins). Its repositories stop working in Rovara; uninstall the app in GitHub's settings to remove its access there too")
-    .argument("<account>", "the GitHub account's login, as agentx github list shows it")
+    .argument("<account>", "the GitHub account's login, as rovara github list shows it")
     .action(async (account: string, _options: unknown, command: Command) => {
       const globals = globalOptions(command);
       const result = await githubDisconnect(developerSession(), developerEnv(command), account);
@@ -1363,7 +1365,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .action(async (options: { bindingFile: string; endpoint: string; generation: string; transportCorrelationId: string; profile: string; out: string }, command: Command) => {
       const globals = globalOptions(command);
       const session = await adminSessionFor(globals.env);
-      if (!session) throw agentXError("AUTH_REQUIRED", "an unexpired administrator session is required; sign in explicitly with `agentx login --admin`");
+      if (!session) throw agentXError("AUTH_REQUIRED", "an unexpired administrator session is required; sign in explicitly with `rovara login --admin`");
       const settings = await deploymentSettings(globals);
       const profileId = options.profile as "linux-arm64-docker-v1" | "darwin-arm64-colima-v1" | "linux-arm64-web-api-v1";
       const result = await requestRuntimeInstallChallenge({
@@ -1379,7 +1381,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .action(async (options: { proposalFile: string }, command: Command) => {
       const globals = globalOptions(command);
       const session = await adminSessionFor(globals.env);
-      if (!session) throw agentXError("AUTH_REQUIRED", "an unexpired administrator session is required; sign in explicitly with `agentx login --admin`");
+      if (!session) throw agentXError("AUTH_REQUIRED", "an unexpired administrator session is required; sign in explicitly with `rovara login --admin`");
       const settings = await deploymentSettings(globals);
       const result = await submitRuntimeInstallProposal({ controlPlaneUrl: settings.controlPlaneUrl, accessToken: session.accessToken, proposalFile: options.proposalFile }, services.fetchImplementation);
       services.stdout.write(formatSuccess(result, globals.json));
@@ -1421,7 +1423,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         const globals = globalOptions(command);
         // The global --project takes the value when given (as for admin slack bind), so read both.
         const projectName = options.project ?? globals.project;
-        if (projectName === undefined) throw agentXError("CONFIG_INVALID", `--project is required: name the project, such as agentx admin project ${action} --project payments --developer U0123456789`);
+        if (projectName === undefined) throw agentXError("CONFIG_INVALID", `--project is required: name the project, such as rovara admin project ${action} --project payments --developer U0123456789`);
         const project = AgentXNameSchema.safeParse(projectName);
         if (!project.success) throw agentXError("CONFIG_INVALID", "--project must be a project name: a lowercase letter, then up to 62 lowercase letters, digits or hyphens");
         // The developer reference is never echoed: it may be an email.
@@ -1522,7 +1524,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .command("approve")
     .description("approve a pending domain: it joins the DNS allowlist of the cell")
     .argument("<org>", "the organization's ID")
-    .argument("<owner>", "project:<name> or model-source:<id>, as `agentx admin egress pending` prints it")
+    .argument("<owner>", "project:<name> or model-source:<id>, as `rovara admin egress pending` prints it")
     .argument("<domain>", "the domain")
     .action(async (org: string, owner: string, domain: string, _options: unknown, command: Command) => {
       const globals = globalOptions(command);
@@ -1535,7 +1537,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .command("reject")
     .description("reject a pending domain; the project's maintainers are told why")
     .argument("<org>", "the organization's ID")
-    .argument("<owner>", "project:<name> or model-source:<id>, as `agentx admin egress pending` prints it")
+    .argument("<owner>", "project:<name> or model-source:<id>, as `rovara admin egress pending` prints it")
     .argument("<domain>", "the domain")
     .option("--reason <text>", "why, 1 to 200 characters; shown to the project's maintainers")
     .action(async (org: string, owner: string, domain: string, options: { reason?: string }, command: Command) => {
@@ -1719,13 +1721,13 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       services.stdout.write(batchOutput(globals, globals.json && options.csv !== undefined ? { ...(result as object), csv: undefined, csvPath: options.csv } : result, text));
     });
 
-  const adminCredential = admin.command("credential").description("register connector credentials stored in Secrets Manager under agentx/connectors/ or agentx/<env>/connectors/");
+  const adminCredential = admin.command("credential").description(`register connector credentials stored in Secrets Manager under agentx/connectors/ or ${RESOURCE_PREFIX}/<env>/connectors/`);
   adminCredential
     .command("register")
     .description("register or replace a credential reference; the secret must already exist")
     .requiredOption("--ref <reference>", "credential reference used by connectors' credentialRef")
     .requiredOption("--type <type>", "static-secret, oauth-client-credentials or oauth-refresh-token")
-    .requiredOption("--secret <name>", "Secrets Manager secret name, agentx/connectors/<name> or agentx/<env>/connectors/<name>")
+    .requiredOption("--secret <name>", `Secrets Manager secret name, agentx/connectors/<name> or ${RESOURCE_PREFIX}/<env>/connectors/<name>`)
     .option("--host <host>", "the one MCP host this credential may be sent to, such as mcp.sentry.dev; required by a generic mcp connector")
     .option("--token-url <url>", "an OAuth credential's token endpoint, for a generic mcp connector")
     .option("--resource <url>", "the RFC 8707 resource an OAuth credential's tokens are for, for a generic mcp connector")
@@ -1743,7 +1745,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .command("authorize")
     .description("sign the connector's bot user in once in a browser, store its refresh token in the secret, and register it as oauth-refresh-token")
     .requiredOption("--ref <reference>", "credential reference used by connectors' credentialRef")
-    .requiredOption("--secret <name>", "Secrets Manager secret holding the app's {\"clientId\", \"clientSecret\"}, agentx/connectors/<name> or agentx/<env>/connectors/<name>")
+    .requiredOption("--secret <name>", `Secrets Manager secret holding the app's {"clientId", "clientSecret"}, agentx/connectors/<name> or ${RESOURCE_PREFIX}/<env>/connectors/<name>`)
     .option("--provider <name>", "a built-in sign-in page: asana")
     .option("--endpoint <url>", "a generic MCP server's endpoint: discover its sign-in, and register the credential pinned to its host")
     .option("--authorize-url <url>", "with --endpoint: the authorization endpoint, when the server does not publish OAuth metadata")
@@ -1868,7 +1870,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .action(async (options: { task: string; mode: string }, command: Command) => {
       if (options.mode !== "view" && options.mode !== "continue") throw agentXError("CONFIG_INVALID", "--mode must be view or continue");
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(options.task)) {
-        throw agentXError("CONFIG_INVALID", "--task must be a task ID, such as 44444444-4444-4444-8444-444444444444; agentx admin turns export shows task IDs");
+        throw agentXError("CONFIG_INVALID", "--task must be a task ID, such as 44444444-4444-4444-8444-444444444444; rovara admin turns export shows task IDs");
       }
       const globals = globalOptions(command);
       const { settings, accessToken } = await authenticate(globals, services.tokenStore);
@@ -1971,7 +1973,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     parameterStore, fetch: services.fetchImplementation, tokenStore: services.tokenStore, stdout: services.stdout, stderr: services.stderr, home,
   }));
 
-  // Ruling R55: on Rovara Cloud an owner or admin creates the org's projects with their own sign-in (agentx project add is the
+  // Ruling R55: on Rovara Cloud an owner or admin creates the org's projects with their own sign-in (rovara project add is the
   // administrator's, for a private install).
   const projectCommand = program.commands.find((candidate) => candidate.name() === "project");
   if (projectCommand === undefined) throw new Error("the project command is registered by registerSetupCommands");
@@ -2009,7 +2011,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   projectCommand
     .command("create")
     .description("create a project from a GitHub repository, on Rovara Cloud (an owner or admin of your organization)")
-    .option("--repository <owner/name>", "the GitHub repository, which your organization's GitHub connection must reach (agentx github connect)")
+    .option("--repository <owner/name>", "the GitHub repository, which your organization's GitHub connection must reach (rovara github connect)")
     .option("--name <name>", "the project's name (default: the repository's)")
     .option("--description <text>", "what the project is, up to 280 characters")
     .option("--setup-command <command>", "a setup command, or \"\" for none; give it again for each one, in order", collect, [] as string[])
@@ -2096,7 +2098,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .command("add-member")
     .description("give someone in your organization a role in a project, or change it (a maintainer of the project)")
     .argument("<name>", "the project's name")
-    .argument("<email-or-id>", "the person's email or developer ID, from agentx org members")
+    .argument("<email-or-id>", "the person's email or developer ID, from rovara org members")
     .addOption(new Option("--role <role>", "what they may do: maintainer (manage the project and its people), contributor (start tasks) or viewer (look only)").choices(["maintainer", "contributor", "viewer"]).makeOptionMandatory())
     .action(async (name: string, who: string, options: { role: ProjectRole }, command: Command) => {
       const globals = globalOptions(command);
@@ -2107,7 +2109,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .command("remove-member")
     .description("take away someone's role in a project (a maintainer of the project); org owners and admins keep maintaining every project")
     .argument("<name>", "the project's name")
-    .argument("<email-or-id>", "the person's email or developer ID, from agentx project members")
+    .argument("<email-or-id>", "the person's email or developer ID, from rovara project members")
     .action(async (name: string, who: string, _options: unknown, command: Command) => {
       const globals = globalOptions(command);
       const result = await projectRemoveMember(developerSession(), developerEnv(command), name, who);
@@ -2167,7 +2169,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       .argument("<agent-id>", "the agent's ID")
       .action(async (project: string, agentId: string, _options: unknown, command: Command) => printResult(command, await projectAgentsChange(developerSession(), developerEnv(command), project, agentId, add)));
   }
-  const projectConnectors = projectCommand.command("connectors").description("a project's connectors: the organization's connections the project's agents may use (to connect a project to Linear, Jira, Asana or an MCP server, see agentx connector)");
+  const projectConnectors = projectCommand.command("connectors").description("a project's connectors: the organization's connections the project's agents may use (to connect a project to Linear, Jira, Asana or an MCP server, see rovara connector)");
   projectConnectors
     .command("list")
     .description("list a project's connectors, their tools and whether each is connected")
@@ -2303,7 +2305,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
         status: "manual-required",
         reason: "deployment does not run a live installation qualification; use a dedicated Linux ARM64 verifier host",
         hostCommand: "docker exec --user node agentx-worker /usr/local/bin/node /opt/agentx/packages/verifier/dist/install-qualification-cli.js --challenge-file /mnt/agentx-runtime/evidence/runtime-install-challenge.json --evidence-root /mnt/agentx-runtime/evidence --out /mnt/agentx-runtime/evidence/runtime-install-proposal.json",
-        registrationCommand: `agentx --env ${result.env} admin runtime-installation register --proposal-file ./runtime-install-proposal.json`,
+        registrationCommand: `rovara --env ${result.env} admin runtime-installation register --proposal-file ./runtime-install-proposal.json`,
         instructions: "docs/runtime-installation.md",
       } as const : undefined;
       if (globals.json) {
@@ -2351,7 +2353,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .addOption(new Option("--identity <mode>", "identity provider").choices(["cognito", "oidc"]).default("cognito"))
     .option("--oidc-issuer <url>", "your OIDC provider's issuer URL (required with --identity oidc)")
     .option("--oidc-audience <audience>", "your OIDC provider's audience (required with --identity oidc)")
-    .option("--oidc-client-id <id>", "your OIDC provider's client id, needed for agentx login")
+    .option("--oidc-client-id <id>", "your OIDC provider's client id, needed for rovara login")
     .option("--admin-claim <claim>", "the OIDC claim that marks AgentX administrators")
     .option("--admin-values <values>", "comma-separated values of --admin-claim that mark an administrator")
     .option("--permission-boundary <arn>", "IAM permissions boundary ARN applied to every role AgentX creates")
@@ -2360,15 +2362,15 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--orchestrator-provider <provider>", "amazon-bedrock (default), openrouter, anthropic or openai")
     .option("--classifier-provider <provider>", "amazon-bedrock (default), openrouter, anthropic or openai")
     .option("--worker-provider <provider>", "amazon-bedrock (default), openrouter, anthropic or openai")
-    .option("--openrouter-key-file <path>", "file holding the OpenRouter API key; init stores it in agentx/<env>/openrouter")
-    .option("--openrouter-key-env <NAME>", "environment variable holding the OpenRouter API key; init stores it in agentx/<env>/openrouter")
+    .option("--openrouter-key-file <path>", `file holding the OpenRouter API key; init stores it in ${RESOURCE_PREFIX}/<env>/openrouter`)
+    .option("--openrouter-key-env <NAME>", `environment variable holding the OpenRouter API key; init stores it in ${RESOURCE_PREFIX}/<env>/openrouter`)
     .option("--openrouter-secret-arn <arn>", "a Secrets Manager secret you made yourself holding the raw OpenRouter key; init then asks for no key")
     .option("--openrouter-providers <slugs>", "comma-separated OpenRouter provider allowlist")
-    .option("--anthropic-key-file <path>", "file holding your Anthropic API key; init stores it in agentx/<env>/anthropic")
-    .option("--anthropic-key-env <NAME>", "environment variable holding your Anthropic API key; init stores it in agentx/<env>/anthropic")
+    .option("--anthropic-key-file <path>", `file holding your Anthropic API key; init stores it in ${RESOURCE_PREFIX}/<env>/anthropic`)
+    .option("--anthropic-key-env <NAME>", `environment variable holding your Anthropic API key; init stores it in ${RESOURCE_PREFIX}/<env>/anthropic`)
     .option("--anthropic-secret-arn <arn>", "a Secrets Manager secret you made yourself holding the raw Anthropic API key; init then asks for no key")
-    .option("--openai-key-file <path>", "file holding your OpenAI API key; init stores it in agentx/<env>/openai")
-    .option("--openai-key-env <NAME>", "environment variable holding your OpenAI API key; init stores it in agentx/<env>/openai")
+    .option("--openai-key-file <path>", `file holding your OpenAI API key; init stores it in ${RESOURCE_PREFIX}/<env>/openai`)
+    .option("--openai-key-env <NAME>", `environment variable holding your OpenAI API key; init stores it in ${RESOURCE_PREFIX}/<env>/openai`)
     .option("--openai-secret-arn <arn>", "a Secrets Manager secret you made yourself holding the raw OpenAI API key; init then asks for no key")
     .option("--orchestrator-model <id>", "Provider model id for the Slack orchestrator", DEFAULT_ORCHESTRATOR_MODEL)
     .option("--classifier-model <id>", "Provider model id for the gate classifier", DEFAULT_CLASSIFIER_MODEL)
@@ -2385,7 +2387,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--github-sign-in-client-id <id>", "with --rovara-cloud: the GitHub OAuth app client id for sign up and sign in with GitHub (omit to not offer it)")
     .option("--github-sign-in-client-secret-arn <arn>", "with --rovara-cloud: the Secrets Manager secret holding the GitHub OAuth client secret as {\"clientSecret\": ...}")
     .option("--budget <usd>", "monthly AWS budget in whole US dollars; 0 for none (default 100)")
-    .addOption(new Option("--budget-scope <scope>", "tag: costs tagged agentx:env; account: the whole account").choices(["tag", "account"]))
+    .addOption(new Option("--budget-scope <scope>", `tag: costs tagged ${ENVIRONMENT_TAG_KEY}; account: the whole account`).choices(["tag", "account"]))
     .addOption(new Option("--audit-lock <profile>", "production: audit records are locked for 3 years (default); trial: locked for 1 day and removable by an operator. An install can move from trial to production, never back").choices(["production", "trial"]))
     .option("--github-account <login>", "GitHub organization or user that will own the AgentX GitHub App")
     .addOption(new Option("--github-account-type <type>", "whether --github-account is an organization or a personal account").choices(["organization", "user"]))
@@ -2426,7 +2428,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
   )
     .addOption(new Option(`${SIGNIN_FLAG_NAMES.methods} <method>`, "how developers sign in: Slack (default), your company's sign-in (oidc), or both").choices(["slack", "oidc", "both"]))
     // Checked in initOptions, not with .choices(): commander would exit the process on a bad value.
-    .option("--stop-after <step>", "run the steps up to and including this one, then stop; agentx init again finishes (for automated tests)")
+    .option("--stop-after <step>", "run the steps up to and including this one, then stop; rovara init again finishes (for automated tests)")
     .action(async (
       options: InitCommandOptions & { export?: string },
       command: Command,
@@ -2460,7 +2462,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
           return;
         }
         if (result.stoppedAfter !== undefined) {
-          services.stdout.write(`Stopped after the ${result.stoppedAfter} step, as --stop-after asked. Run agentx init --env ${result.env} --region ${options.region ?? "<region>"} again to finish.\n`);
+          services.stdout.write(`Stopped after the ${result.stoppedAfter} step, as --stop-after asked. Run rovara init --env ${result.env} --region ${options.region ?? "<region>"} again to finish.\n`);
           return;
         }
         services.stdout.write(`${result.ready ?? `AgentX environment ${result.env} is deployed. Control plane: ${result.controlPlaneUrl ?? "unknown"}`}\n`);
@@ -2469,7 +2471,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
       // --env defaults to production (the live, legacy-adopted deployment): --export must never
       // silently write a bundle for it just because --env was left off.
       if (command.getOptionValueSourceWithGlobals("env") !== "cli") {
-        throw agentXError("CONFIG_INVALID", "agentx init --export requires an explicit --env (the default, production, is the live environment)");
+        throw agentXError("CONFIG_INVALID", "rovara init --export requires an explicit --env (the default, production, is the live environment)");
       }
       if (options.region === undefined) throw agentXError("CONFIG_INVALID", "--region is required with --export");
       if (options.release === undefined) throw agentXError("CONFIG_INVALID", "--release is required with --export");
@@ -2547,7 +2549,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
 
   const mcp = program
     .command("mcp")
-    .description("run the AgentX MCP server for your AI tool (stdio); add it with agentx mcp install")
+    .description("run the AgentX MCP server for your AI tool (stdio); add it with rovara mcp install")
     .action(async (_options: unknown, command: Command) => {
       // FR-026: stdout carries only MCP messages, so everything else this command says goes to stderr.
       const env = developerEnv(command);
@@ -2595,7 +2597,7 @@ function codexHomeFromEnvironment(): string | undefined {
 }
 
 /**
- * `agentx agents run <id> --version <n>`: the program's own --version flag would print the CLI's version wherever it appears, so for that
+ * `rovara agents run <id> --version <n>`: the program's own --version flag would print the CLI's version wherever it appears, so for that
  * one command its `--version <n>` (or `--version=<n>`) is handed over as --run-version. Every other --version is left as it is.
  */
 export function agentRunVersionArgv(argv: readonly string[]): string[] {
@@ -2700,7 +2702,7 @@ interface InitCommandOptions extends SignInCommandOptions {
   workerImage?: string; slackImage?: string; bootStage2Sha256?: string;
   rovaraCloud?: boolean; edition?: string; googleClientId?: string; googleClientSecretArn?: string; cloudDomainPrefix?: string;
   githubSignInClientId?: string; githubSignInClientSecretArn?: string;
-  /** --signin: which developer sign-in methods agentx init's developer-signin step enables. */
+  /** --signin: which developer sign-in methods rovara init's developer-signin step enables. */
   signin?: "slack" | "oidc" | "both";
   adminEmail?: string; repository?: string; projectName?: string; setupCommand?: string; testCommand?: string; channel?: string; connectors?: string;
   linearKeyFile?: string; linearKeyEnv?: string; linearTeam?: string;
@@ -2708,7 +2710,7 @@ interface InitCommandOptions extends SignInCommandOptions {
   asanaClientId?: string; asanaClientSecretFile?: string; asanaClientSecretEnv?: string; asanaBotEmail?: string; asanaProject?: string;
 }
 
-/** `agentx init`'s options, built from only what was typed: a commander default (the models,
+/** `rovara init`'s options, built from only what was typed: a commander default (the models,
  * --identity, --no-alerts's true) must never silently answer a question init would otherwise ask. */
 function initOptions(globals: GlobalOptions, options: InitCommandOptions, command: Command): InitOptions {
   const { env } = globals;

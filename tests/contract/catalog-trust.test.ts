@@ -80,7 +80,7 @@ describe("the catalog's trusted keys", () => {
     for (const runningAccountId of [undefined, "", "944937319446", "9449373194450", " 944937319445", "944937319445\n"]) expect(verifies({ runningAccountId }, "staging"), String(runningAccountId)).toBe(false);
   });
   it("read the account from an ARN of the process's own identity and from nothing else", () => {
-    expect(accountIdOfArn("arn:aws:lambda:us-west-2:944937319445:function:agentx-staging-broker")).toBe("944937319445");
+    expect(accountIdOfArn("arn:aws:lambda:us-west-2:944937319445:function:rovara-cloud-staging-broker")).toBe("944937319445");
     expect(accountIdOfArn("arn:aws-us-gov:sts::123456789012:assumed-role/x/y")).toBe("123456789012");
     for (const bad of [undefined, "", "944937319445", "arn:aws:lambda:us-west-2:94493731944:function:x", "arn:aws:lambda:us-west-2:944937319445"]) expect(accountIdOfArn(bad), String(bad)).toBeUndefined();
   });

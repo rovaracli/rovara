@@ -22,7 +22,7 @@ function capture() {
   return { out, err, stdout: { write: (t: string) => out.push(t) }, stderr: { write: (t: string) => err.push(t) } };
 }
 
-describe("agentx env", () => {
+describe("rovara env", () => {
   it("lists environments from SSM", async () => {
     const store = new MemoryParameterStore();
     await writeEnvironmentSettings(store, stagingSettings);
@@ -127,7 +127,7 @@ describe("agentx env", () => {
   });
 });
 
-describe("agentx env adopt", () => {
+describe("rovara env adopt", () => {
   const liveStacks: Record<string, { outputs: Record<string, string>; parameters: Record<string, string>; status: string }> = {
     AgentXProductionFoundation: { outputs: {}, parameters: {}, status: "UPDATE_COMPLETE" },
     AgentXProductionRuntime: { outputs: {}, parameters: { ModelId: "us.anthropic.claude-sonnet-4-6" }, status: "UPDATE_COMPLETE" },
@@ -162,7 +162,7 @@ describe("agentx env adopt", () => {
       { ...io, environments: { store: new MemoryParameterStore(), home: await home(), stacks, sts: identity } },
     );
     expect(code).toBe(0);
-    expect(io.out.join("")).toBe("Adopted production: https://abc.execute-api.us-east-1.amazonaws.com; settings in /agentx/production/settings\n");
+    expect(io.out.join("")).toBe("Adopted production: https://abc.execute-api.us-east-1.amazonaws.com; settings in /rovara-cloud/production/settings\n");
   });
 
   it("refuses and writes nothing when a stack is missing, reported through the CLI error shape", async () => {
@@ -175,7 +175,7 @@ describe("agentx env adopt", () => {
     );
     expect(code).not.toBe(0);
     expect(JSON.parse(io.err.join(""))).toMatchObject({ ok: false, error: { code: "CONFIG_INVALID", message: expect.stringContaining("AgentXSlackOrchestrator") as unknown } });
-    expect(store.values.has("/agentx/production/settings")).toBe(false);
+    expect(store.values.has("/rovara-cloud/production/settings")).toBe(false);
   });
 
   it("refuses through the CLI when --env is not production, calling nothing", async () => {
@@ -210,8 +210,8 @@ describe("agentx env adopt", () => {
     expect(code).toBe(0);
     expect(slack).toEqual([]);
     expect(io.err.join("")).toBe("");
-    expect(store.values.has("/agentx/production/slack/teamId")).toBe(false);
-    expect(store.values.has("/agentx/production/settings")).toBe(true);
+    expect(store.values.has("/rovara-cloud/production/slack/teamId")).toBe(false);
+    expect(store.values.has("/rovara-cloud/production/settings")).toBe(true);
   });
 
   it("scopes env adopt's SSM, CloudFormation and STS clients to --region", async () => {
@@ -232,7 +232,7 @@ describe("deployment file resolution", () => {
     expect(await resolveDeploymentFile({ home: dir, env: "production" })).toBe(legacy);
     await writeFile(environmentCachePath(dir, "production"), "x");
     expect(await resolveDeploymentFile({ home: dir, env: "production" })).toBe(environmentCachePath(dir, "production"));
-    await expect(resolveDeploymentFile({ home: dir, env: "staging" })).rejects.toMatchObject({ message: expect.stringContaining("agentx --env staging env use") as unknown });
+    await expect(resolveDeploymentFile({ home: dir, env: "staging" })).rejects.toMatchObject({ message: expect.stringContaining("rovara --env staging env use") as unknown });
   });
 
   it("refuses a cache written for another environment", async () => {

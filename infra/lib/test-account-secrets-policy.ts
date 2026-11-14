@@ -1,12 +1,13 @@
 // The TestAccountSecretsRole's two policies (test services TS26; design test-services.md 6.2), as plain IAM JSON. The control plane puts them on the role, and the Secrets Manager fake in
 // tests/support/fake-org-secrets.ts evaluates the same text, so a test proves what the role allows rather than what a test author hoped it allows.
 //
-// This is the connector secrets role's pattern (connector-secrets-policy.ts) with two differences. (1) The path is `agentx/<env>/org-test-accounts/<org>/*`, apart from the connector and hook paths, so a connector
+// This is the connector secrets role's pattern (connector-secrets-policy.ts) with two differences. (1) The path is `rovara-cloud/<env>/org-test-accounts/<org>/*`, apart from the connector and hook paths, so a connector
 // session cannot reach a test account's secret and this role cannot reach a connector's. (2) A session also carries a PURPOSE tag, and the purpose is part of every permission:
 //   - `store`: the broker's own session. It may create a secret, put a new version, describe it and schedule its deletion. It can NEVER read a value (GetSecretValue is denied to it).
 //   - `resolve`: the session the broker mints for the worker of one sealed round, narrowed again by a session policy to the one secret. It may read a value and do nothing else.
 // So the broker, which holds the store session, cannot read a test account's secret even by a mistake, and a worker's session cannot write or delete one.
 import { ORG_ID_TRUST_PATTERN, ORG_TAG_KEY, PRINCIPAL_ORG_TAG, type PolicyStatementJson } from "./connector-secrets-policy.js";
+import { RESOURCE_PREFIX } from "@agentx/contracts";
 
 export { ORG_TAG_KEY, PRINCIPAL_ORG_TAG };
 export const PURPOSE_TAG_KEY = "rovara:purpose";
@@ -35,7 +36,7 @@ export function testAccountSecretsTrustPolicy(brokerRoleArn: string | Record<str
 }
 
 /**
- * What a session may do, on `secret:agentx/<env>/org-test-accounts/<its org>/*` only. `secretArnPrefix` is everything in the ARN up to and including `secret:`.
+ * What a session may do, on `secret:rovara-cloud/<env>/org-test-accounts/<its org>/*` only. `secretArnPrefix` is everything in the ARN up to and including `secret:`.
  *
  * - Put, Describe, UpdateSecretVersionStage and Delete need the secret's own `rovara:org` tag to equal the session's org, its `rovara:use` tag to be `test-account`, and the session's purpose to be `store`.
  * - CreateSecret and TagResource need the request tags to equal the session's org and `test-account`, those two to be the only tag keys, and purpose `store`.
@@ -43,7 +44,7 @@ export function testAccountSecretsTrustPolicy(brokerRoleArn: string | Record<str
  * - Denied whatever else says: UntagResource, DeleteSecret with ForceDeleteWithoutRecovery, any read by a session that is not `resolve`, and any write by a session that is not `store`.
  */
 export function testAccountSecretsPolicyStatements(options: { secretArnPrefix: string; env: string }): PolicyStatementJson[] {
-  const own = [`${options.secretArnPrefix}agentx/${options.env}/org-test-accounts/${PRINCIPAL_ORG_TAG}/*`];
+  const own = [`${options.secretArnPrefix}${RESOURCE_PREFIX}/${options.env}/org-test-accounts/${PRINCIPAL_ORG_TAG}/*`];
   const ownResource = { [`aws:ResourceTag/${ORG_TAG_KEY}`]: PRINCIPAL_ORG_TAG, [`aws:ResourceTag/${USE_TAG_KEY}`]: USE_TAG_VALUE };
   const tagged = {
     StringEquals: { [`aws:RequestTag/${ORG_TAG_KEY}`]: PRINCIPAL_ORG_TAG, [`aws:RequestTag/${USE_TAG_KEY}`]: USE_TAG_VALUE, [`aws:PrincipalTag/${PURPOSE_TAG_KEY}`]: "store" },

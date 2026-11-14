@@ -12,14 +12,14 @@ skipLambdaBundling();
 // MERGE-DECISION (ENV-ROOM): mainline's unit also lifted the broker's AGENTX_E2E_AGENT_SETTINGS_PREFIX variable; the broker now derives that prefix from its environment's name, so the unit lifts the grants only.
 // DEPLOYFIX: head (4.10A + 4.10D) puts two worker-setting ARNs in each of the Broker's and the session steps' policies, and the model-fallback-settings unit puts 4.10D's parameter on the runtime stack.
 
-const ENV = "agentxlivetest123";
-const PARAMETER = `/agentx/${ENV}/worker-e2e-agent-model`;
-const FALLBACK = `/agentx/${ENV}/worker-model-fallback`;
+const ENV = "rovaralivetest";
+const PARAMETER = `/rovara-cloud/${ENV}/worker-e2e-agent-model`;
+const FALLBACK = `/rovara-cloud/${ENV}/worker-model-fallback`;
 const SETTINGS = [PARAMETER, FALLBACK] as const;
 
 function head(): CfnTemplate {
   const stack = buildAgentXApp({ agentxEnv: ENV, "agentx:e2eQualificationTransport": "enabled" }).node.children
-    .filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === `agentx-${ENV}-control-plane`);
+    .filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === `rovara-cloud-${ENV}-control-plane`);
   if (stack === undefined) throw new Error("expected the real control-plane stack");
   return Template.fromStack(stack).toJSON();
 }
@@ -110,7 +110,7 @@ describe("the e2e-agent-settings unit against head's control-plane template", ()
   it("refuses when the policies carry a setting ARN the unit does not declare (the refusal at df5a5a1e: only worker-e2e-agent-model was lifted)", () => {
     const deployed = beforeTheUnit(headTemplate);
     const onlyFirst = declared.grants.filter((grant) => grant.parameterName === PARAMETER);
-    expect(() => liftDeclaredSettings(deployed, headTemplate, { environment: declared.environment, grants: onlyFirst })).toThrow(/more than the declared grant for \/agentx\/agentxlivetest123\/worker-e2e-agent-model/);
+    expect(() => liftDeclaredSettings(deployed, headTemplate, { environment: declared.environment, grants: onlyFirst })).toThrow(/more than the declared grant for \/rovara-cloud\/rovaralivetest\/worker-e2e-agent-model/);
   });
 
   it("refuses a head policy whose holder statement also carries a wildcard or prefix-named ARN of a declared setting (the real synthesized shape)", () => {
@@ -146,7 +146,7 @@ type Runtime = { Parameters: Record<string, { Default?: string; AllowedPattern?:
 
 describe("the model-fallback-settings unit against head's runtime template", () => {
   const headRuntime = (): CfnTemplate => {
-    const stack = buildAgentXApp({ agentxEnv: ENV }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === `agentx-${ENV}-runtime`);
+    const stack = buildAgentXApp({ agentxEnv: ENV }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === `rovara-cloud-${ENV}-runtime`);
     if (stack === undefined) throw new Error("expected the real runtime stack");
     return Template.fromStack(stack).toJSON();
   };

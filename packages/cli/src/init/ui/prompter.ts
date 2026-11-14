@@ -1,5 +1,5 @@
 // FR-003: a `Prompter` that asks on the wizard page instead of the terminal. Every question
-// `agentx init` already asks goes through here unchanged; nothing about what it asks, or in what
+// `rovara init` already asks goes through here unchanged; nothing about what it asks, or in what
 // order, is different from the terminal path.
 //
 // The checks each method gives the hub are `terminalPrompter`'s own, so a refused answer is shown

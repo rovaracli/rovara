@@ -126,7 +126,7 @@ describe("approval with the real kit", () => {
       expect(accessPackages.map((pkg) => pkg.assetId)).toEqual((release.enterprisePackages ?? []).map((pkg) => pkg.assetId));
       expect(result.manifest.packages.filter((pkg) => pkg.parts.includes("control-plane")).length).toBeGreaterThanOrEqual(release.packages.length);
       const access = result.files.find((file) => file.file === "built/templates/access.template.json")!.body.toString("utf8");
-      expect(access).toContain("agentx-ent-rovara-operator");
+      expect(access).toContain("rovara-cloud-ent-rovara-operator");
       expect(access).not.toContain(ENVIRONMENT_PLACEHOLDER);
       const control = JSON.parse(result.files.find((file) => file.file === "built/templates/control-plane.template.json")!.body.toString("utf8"));
       expect(JSON.stringify(control)).toContain("10.20.0.0/16");
@@ -153,7 +153,7 @@ describe("approval with the real kit", () => {
       const { assembly } = synthReleaseProfile({ context, outdir: synthDir });
       const fromSource = new Map(assembly.stacks.map((stack) => [stack.stackName, stack]));
       for (const part of BUILT_PARTS) {
-        const stack = fromSource.get(`agentx-ent-${part}`);
+        const stack = fromSource.get(`rovara-cloud-ent-${part}`);
         expect(stack, part).toBeDefined();
         const kitTemplate = JSON.parse(await readFile(join(outDir, "templates", `${part}.template.json`), "utf8")) as unknown;
         expect(canonicalJson(kitTemplate) === canonicalJson(stack!.template), `${part} template differs from a build from source`).toBe(true);

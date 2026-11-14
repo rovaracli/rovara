@@ -41,11 +41,11 @@ describe("EC2 worker preflight (#87)", () => {
       expect(found(named)).toMatchObject({ level: "pass" });
     });
 
-    it.each([undefined, "none", "F".repeat(64), "f".repeat(63), ""])("fails a named environment whose hash is %j, and points at agentx upgrade", (value) => {
+    it.each([undefined, "none", "F".repeat(64), "f".repeat(63), ""])("fails a named environment whose hash is %j, and points at rovara upgrade", (value) => {
       const facts = { ...named, bootStage2Sha256: value } as Ec2PreflightFacts;
       if (value === undefined) delete facts.bootStage2Sha256;
       expect(found(facts)).toMatchObject({ level: "fail" });
-      expect(found(facts)?.detail).toContain("agentx upgrade");
+      expect(found(facts)?.detail).toContain("rovara upgrade");
     });
 
     it("does not check the legacy (production) deployment, which boots from one script", () => {

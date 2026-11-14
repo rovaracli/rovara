@@ -280,14 +280,14 @@ export function githubInstallRequestCopy(
     case "connected":
       return { title: `Your GitHub admin approved Rovara. ${account} is now connected to ${org}.`, lines: [] };
     case "declined":
-      return { title: "Your GitHub admin declined the request. Ask them about it, or ask them to run agentx github connect.", lines: [] };
+      return { title: "Your GitHub admin declined the request. Ask them about it, or ask them to run rovara github connect.", lines: [] };
     case "expired":
-      return { title: "Your request wasn't approved within 7 days, or your GitHub admin declined it. Run agentx github connect to ask again.", lines: [] };
+      return { title: "Your request wasn't approved within 7 days, or your GitHub admin declined it. Run rovara github connect to ask again.", lines: [] };
     case "taken":
       return { title: GITHUB_INSTALLATION_TAKEN_MESSAGE, lines: [] };
     case "reinstall_needed":
       return {
-        title: `${account} was connected to Rovara before, so an approval can't reconnect it on its own. Ask an admin of ${account} on GitHub to uninstall Rovara and approve a new request, or to run agentx github connect themselves.`,
+        title: `${account} was connected to Rovara before, so an approval can't reconnect it on its own. Ask an admin of ${account} on GitHub to uninstall Rovara and approve a new request, or to run rovara github connect themselves.`,
         lines: [],
       };
     case "cancelled":

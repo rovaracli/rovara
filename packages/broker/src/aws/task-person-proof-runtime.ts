@@ -1,5 +1,5 @@
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
-import { SlackTeamIdSchema, agentXError } from "@agentx/contracts";
+import { RESOURCE_PREFIX, SlackTeamIdSchema, TASK_PERSON_PROOF_ENV, agentXError } from "@agentx/contracts";
 import { slackDirectory } from "../developer/slack-directory.js";
 import { createTaskPersonProofHandler } from "./task-person-proof-handler.js";
 
@@ -8,7 +8,8 @@ export interface TaskPersonProofLambdaContext {
 }
 
 const UNAVAILABLE = () => agentXError("SLACK_UNAVAILABLE", "task person identity proof is unavailable");
-const SECRET_ARN = /^arn:aws:secretsmanager:us-east-1:944937319445:secret:agentx\/agentxlivetest123\/slack-[A-Za-z0-9]+$/;
+/** The proof environment's Slack secret (`<prefix>/<env>/slack-<suffix>`); both name parts are plain lower-case letters, digits and hyphens. */
+const SECRET_ARN = new RegExp(`^arn:aws:secretsmanager:us-east-1:944937319445:secret:${RESOURCE_PREFIX}/${TASK_PERSON_PROOF_ENV}/slack-[A-Za-z0-9]+$`);
 
 function botTokenFromSecret(secretString: string): string {
   let value: unknown;
@@ -28,7 +29,7 @@ export async function handler(event: unknown, context: TaskPersonProofLambdaCont
   const env = process.env;
   const teamId = env.SLACK_TEAM_ID;
   const secretArn = env.SLACK_SECRET_ARN;
-  if (env.AGENTX_ENV !== "agentxlivetest123" || teamId === undefined || !SlackTeamIdSchema.safeParse(teamId).success
+  if (env.AGENTX_ENV !== TASK_PERSON_PROOF_ENV || teamId === undefined || !SlackTeamIdSchema.safeParse(teamId).success
     || secretArn === undefined || !SECRET_ARN.test(secretArn)) throw UNAVAILABLE();
 
   const region = env.AWS_REGION === undefined ? "us-east-1" : env.AWS_REGION;

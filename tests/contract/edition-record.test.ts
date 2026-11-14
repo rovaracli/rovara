@@ -19,7 +19,7 @@ const ENTERPRISE = { agentxEnv: "ent", rovaraEdition: "enterprise", rovaraEnterp
 describe("the edition record in the foundation", () => {
   it("is kept when the stack is deleted or the resource is replaced", () => {
     const foundation = appStacks(ENTERPRISE).AgentXProductionFoundation!;
-    const records = Object.values(foundation.findResources("AWS::SSM::Parameter", { Properties: { Name: "/agentx/ent/edition" } }));
+    const records = Object.values(foundation.findResources("AWS::SSM::Parameter", { Properties: { Name: "/rovara-cloud/ent/edition" } }));
     expect(records).toHaveLength(1);
     // CDK writes Retain as RetainExceptOnCreate for a resource whose first creation may roll back: either way the record survives a delete.
     expect((records[0] as { DeletionPolicy: string }).DeletionPolicy).toMatch(/^Retain/);
@@ -33,8 +33,8 @@ describe("the broker and the sign-in server can read the record in every synth",
       const controlPlane = JSON.stringify(appStacks(context).AgentXControlPlane!.toJSON());
       // Two functions read it: the broker and the sign-in server.
       expect(controlPlane.split('"ReadEditionRecord"').length - 1, JSON.stringify(context)).toBeGreaterThanOrEqual(2);
-      expect(controlPlane).toContain("parameter/agentx/ent/edition");
-      expect(controlPlane).toContain("parameter/agentx/ent/edition-backup");
+      expect(controlPlane).toContain("parameter/rovara-cloud/ent/edition");
+      expect(controlPlane).toContain("parameter/rovara-cloud/ent/edition-backup");
     }
     // Two whole-app synths with real Lambda bundling: about 18 s here and over 60 s on the 2 vCPU runner, so it takes the timeout of the other synth tests.
   }, 240_000);
@@ -56,7 +56,7 @@ describe("the guard", () => {
     await run();
     await run();
     expect(read).toHaveBeenCalledTimes(1);
-    expect(read).toHaveBeenCalledWith("/agentx/ent/edition");
+    expect(read).toHaveBeenCalledWith("/rovara-cloud/ent/edition");
   });
 
   it("refuses a process that lost its stamp while the install has an edition on record", async () => {
@@ -90,9 +90,9 @@ describe("the guard", () => {
 
   it("the SSM reader answers undefined only for a parameter that does not exist, and throws for every other failure", async () => {
     const notFound = Object.assign(new Error("ParameterNotFound"), { name: "ParameterNotFound" });
-    expect(await ssmEditionRecordReader({ send: async () => { throw notFound; } })("/agentx/ent/edition")).toBeUndefined();
-    await expect(ssmEditionRecordReader({ send: async () => { throw Object.assign(new Error("denied"), { name: "AccessDeniedException" }); } })("/agentx/ent/edition")).rejects.toThrow("denied");
-    expect(await ssmEditionRecordReader({ send: async () => ({ Parameter: { Value: "enterprise" } }) })("/agentx/ent/edition")).toBe("enterprise");
+    expect(await ssmEditionRecordReader({ send: async () => { throw notFound; } })("/rovara-cloud/ent/edition")).toBeUndefined();
+    await expect(ssmEditionRecordReader({ send: async () => { throw Object.assign(new Error("denied"), { name: "AccessDeniedException" }); } })("/rovara-cloud/ent/edition")).rejects.toThrow("denied");
+    expect(await ssmEditionRecordReader({ send: async () => ({ Parameter: { Value: "enterprise" } }) })("/rovara-cloud/ent/edition")).toBe("enterprise");
   });
 
   it("a missing record with the backup present is that edition on record, not a legacy install (an interrupted deploy)", async () => {
@@ -110,7 +110,7 @@ describe("the guard", () => {
   it("tries again after a refusal (a read error is not remembered)", async () => {
     let fail = true;
     const read = vi.fn(async () => { if (fail) throw new Error("throttled"); return "enterprise"; });
-    const run = createEditionGuard({ stamp: "enterprise", recordName: "/agentx/ent/edition", read });
+    const run = createEditionGuard({ stamp: "enterprise", recordName: "/rovara-cloud/ent/edition", read });
     expect(await refusal(run)).toBeDefined();
     fail = false;
     await run();

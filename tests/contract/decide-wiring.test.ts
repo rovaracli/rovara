@@ -803,10 +803,10 @@ describe("the sign-in function's kinds ask the broker (hand-off 1)", () => {
       return { StatusCode: 200, Payload: new TextEncoder().encode(JSON.stringify(payload)), ...extra };
     } });
     const request: DecideInspectRequest = { kind: "decide-inspect", ...target };
-    const answer = await lambdaInspectInvoker(respond({ statusCode: 200, body: JSON.stringify({ status: "open" }) }), "agentx-staging-broker")(request);
+    const answer = await lambdaInspectInvoker(respond({ statusCode: 200, body: JSON.stringify({ status: "open" }) }), "rovara-cloud-staging-broker")(request);
     expect(answer).toEqual({ status: "open" });
     expect(calls[0]!.command.constructor.name).toBe("InvokeCommand");
-    expect(calls[0]!.command.input).toMatchObject({ FunctionName: "agentx-staging-broker", InvocationType: "RequestResponse" });
+    expect(calls[0]!.command.input).toMatchObject({ FunctionName: "rovara-cloud-staging-broker", InvocationType: "RequestResponse" });
     expect(JSON.parse(new TextDecoder().decode(calls[0]!.command.input.Payload))).toEqual(request);
     expect(calls[0]!.options).toMatchObject({ abortSignal: expect.anything() as unknown });
     // A function error, a non-200 answer, a non-JSON body, an empty payload and a failed call all throw.
@@ -830,9 +830,9 @@ describe("the sign-in function's kinds come from its environment", () => {
     } };
     expect(decideKindsFromEnvironment({}, lambda)).toEqual({});
     expect(decideKindsFromEnvironment({ DECIDE_INSPECT_FUNCTION_NAME: "" }, lambda)).toEqual({});
-    const kinds = decideKindsFromEnvironment({ DECIDE_INSPECT_FUNCTION_NAME: "agentx-staging-broker" }, lambda);
+    const kinds = decideKindsFromEnvironment({ DECIDE_INSPECT_FUNCTION_NAME: "rovara-cloud-staging-broker" }, lambda);
     expect((await kinds.apr!.inspect(target)).status).toBe("open");
-    expect(sent).toEqual(["agentx-staging-broker"]);
+    expect(sent).toEqual(["rovara-cloud-staging-broker"]);
   });
 });
 

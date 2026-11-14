@@ -19,7 +19,7 @@ describe("workflow dependency runtime configuration", () => {
       DEVELOPER_TOKEN_ISSUER: "https://issuer.example/v1/auth",
       DEVELOPER_IDENTITY_FUNCTION_NAME: "developer-identity",
       DEVELOPER_SIGNIN_TABLE_NAME: "sign-ins",
-      AGENTX_ENV: "agentxlivetest123",
+      AGENTX_ENV: "rovaralivetest",
       DEVELOPER_SIGNIN_SLACK: "enabled",
       AGENTX_WORKFLOW_DEPENDENCIES_ENABLED: flag,
       AGENTX_TASK_PEOPLE_CHANGES_ENABLED: "true",
@@ -55,9 +55,9 @@ describe("workflow dependency runtime configuration", () => {
       seen.push(identityFunctionName);
       return { channelMembers: async () => ({ ok: true as const, memberOf: [] as string[] }), verifyAccessToken: async () => ({}) };
     };
-    createDeveloperApiConfiguration({ ...base, DEVELOPER_IDENTITY_FUNCTION_NAME: "agentx-staging-control-plane-DeveloperSignInFunction10B62B05-1A2B3C4D5E6F7" }, integrations);
+    createDeveloperApiConfiguration({ ...base, DEVELOPER_IDENTITY_FUNCTION_NAME: "rovara-cloud-staging-control-plane-DeveloperSignInFunction10B62B05-1A2B3C4D5E6F7" }, integrations);
     createDeveloperApiConfiguration({ ...base, DEVELOPER_IDENTITY_FUNCTION_ARN: "arn:aws:lambda:us-west-2:123456789012:function:identity" }, integrations);
-    expect(seen).toEqual(["agentx-staging-control-plane-DeveloperSignInFunction10B62B05-1A2B3C4D5E6F7", "arn:aws:lambda:us-west-2:123456789012:function:identity"]);
+    expect(seen).toEqual(["rovara-cloud-staging-control-plane-DeveloperSignInFunction10B62B05-1A2B3C4D5E6F7", "arn:aws:lambda:us-west-2:123456789012:function:identity"]);
     expect(() => createDeveloperApiConfiguration(base, integrations)).toThrow("DEVELOPER_IDENTITY_FUNCTION_NAME is required");
   });
 

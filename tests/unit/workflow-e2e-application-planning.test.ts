@@ -1075,7 +1075,7 @@ describe("ordinary feature PLAN with an approved qualified web target", () => {
   // M1.4 Task 4.2: the route the project's setup pinned is re-derived when a round with AI navigation steps is dispatched. These go through the whole broker path (setup approval that
   // pins the route, plan APPROVE, the dispatch sweep), so deleting the dispatch check from `startApplicationE2EChecksDispatch` fails them.
   describe("a round with AI navigation steps is dispatched only on the route the setup pinned", () => {
-    const anthropic = { provider: "anthropic", secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/provider-key-AbCdEf" };
+    const anthropic = { provider: "anthropic", secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/provider-key-AbCdEf" };
     const agentRows: Rows = { web: webApiRow("web", {}, (value) => ({ ...value, supportedSteps: [...value.supportedSteps, "agent" as const] })), api: webApiRow("api") };
     const agentScenarios = (target: { targetId: string; accountProfileId: string }): E2EScenario[] => [{ ...csvScenario, scenarioId: "agent-orders", requestedTargetIds: [target.targetId],
       accountProfileId: target.accountProfileId, steps: [{ kind: "agent", goal: "Export the orders as a CSV file", maxActions: 4 }], assertions: [{ kind: "visible", testId: "orders", equals: true }] }];

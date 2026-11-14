@@ -32,8 +32,8 @@ export const draftBody = (over: Record<string, unknown> = {}): TestEnvironmentBo
 export const draftOf = (environment = draftBody()): TestEnvDraft => ({ environment, valueSources: [{ field: "repos[0].checks[0]", source: "detector:node" }, { field: "repos[0].setupCommands[0]", source: { path: "Makefile", line: 3 } }], pendingServices: [], notes: ["Found a Makefile."], questions: [] });
 const SETUP_PROPOSAL = { setup: [{ repo: "web", commands: ["npm ci"], confidence: "high", from: [{ kind: "inferred", repo: "web", note: "a package.json" }] }], tests: [], notes: "ok" };
 
-/** The Team record's own table: a store of its own, apart from the State table, as in a deployed cell (`agentx-<env>-team-record`). A read of the wrong table finds nothing. */
-export const TEAM_RECORD_TABLE = "agentx-staging-team-record";
+/** The Team record's own table: a store of its own, apart from the State table, as in a deployed cell (`rovara-cloud-<env>-team-record`). A read of the wrong table finds nothing. */
+export const TEAM_RECORD_TABLE = "rovara-cloud-staging-team-record";
 
 export async function setupWizardBench(options: { agents?: boolean; teamRecord?: boolean; audit?: AuditCapture; cloud?: boolean; modelProxy?: boolean; /** Files the code host holds at any commit, by path (what the broker re-reads a citation from). */ files?: Record<string, string | Error>; /** TE-2: by default a Prove first finds a passing candidate check for the digest (an older suite is about approval, not about where the Prove reads from); `false` leaves every check to the test. */ autoCandidate?: boolean ; /** The Team record's tracker-people calls (the mapping page), when a test reaches them. */ trackerPeople?: unknown; /** More broker dependencies (a registry, a hook) for the test's own feature. */ brokerExtra?: Record<string, unknown>; /** The company connections store's dependencies (the Jira organization admin key route). */ orgConnections?: unknown } = {}) {
   const teamDb = new FakeDynamoDb();

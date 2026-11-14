@@ -64,7 +64,7 @@ export async function loadProjectConfig(options: LoadProjectConfigOptions): Prom
 }
 
 /**
- * `--file` is `agentx admin project register`'s only project selector, so the file's own name
+ * `--file` is `rovara admin project register`'s only project selector, so the file's own name
  * (its basename minus `.yaml`) stands in for `projectName` everywhere else in this module, per the
  * convention documented in the README (`<project-name>.yaml`, selected later with `--project`).
  * That convention is enforced here, early and by name, rather than letting a malformed derived

@@ -8,7 +8,7 @@ import { CONFIG_AWS_ACTIONS, DOCTOR_AWS_ACTIONS, GITHUB_OAUTH_AWS_ACTIONS, UPGRA
 
 const scope = {
   env: "staging", partition: "aws", region: "us-east-1", account: "123456789012",
-  artifactBucketArn: "arn:aws:s3:::agentx-staging-access-artifactbucket", pullThroughPrefix: "agentx-staging", cloudFormationRoleName: "agentx-staging-cloudformation",
+  artifactBucketArn: "arn:aws:s3:::agentx-staging-access-artifactbucket", pullThroughPrefix: "rovara-cloud-staging", cloudFormationRoleName: "agentx-staging-cloudformation",
 };
 const allowed = new Set(operatorRoleStatements(scope).filter((statement) => statement.Effect === "Allow").flatMap((statement) => statement.Action));
 

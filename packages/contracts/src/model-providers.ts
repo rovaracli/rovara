@@ -1,4 +1,5 @@
 /** Every model provider an installation can configure for a role or approve for a project. */
+import { RESOURCE_PREFIX } from "./resource-prefix.js";
 export const MODEL_PROVIDERS = ["amazon-bedrock", "openrouter", "anthropic", "openai"] as const;
 export type ModelProvider = (typeof MODEL_PROVIDERS)[number];
 
@@ -17,7 +18,7 @@ export const SECRET_ARN_MAX_LENGTH = 640;
 export const KEYED_MODEL_PROVIDERS = {
   openrouter: {
     label: "OpenRouter",
-    /** Init's own secret: agentx/<env>/<secretName>. */
+    /** Init's own secret: rovara-cloud/<env>/<secretName>. */
     secretName: "openrouter",
     /** The process environment variable holding the ARN. */
     secretArnVariable: "AGENTX_OPENROUTER_SECRET_ARN",
@@ -60,9 +61,9 @@ export function isKeyedModelProvider(provider: string | undefined): provider is 
   return provider !== undefined && Object.hasOwn(KEYED_MODEL_PROVIDERS, provider);
 }
 
-/** The secret init creates for a keyed provider's key: agentx/<env>/<name>. */
+/** The secret init creates for a keyed provider's key: rovara-cloud/<env>/<name>. */
 export function keyedProviderSecretName(env: string, provider: KeyedModelProvider): string {
-  return `agentx/${env}/${KEYED_MODEL_PROVIDERS[provider].secretName}`;
+  return `${RESOURCE_PREFIX}/${env}/${KEYED_MODEL_PROVIDERS[provider].secretName}`;
 }
 
 /**

@@ -27,7 +27,7 @@ export interface ReleaseCoverage {
 
 /** The templates engine can only deploy the templates a release was built for: refuses any other
  * region, listing the ones it covers. The one place this check and its wording live, shared by
- * `agentx deploy`, `agentx init`, the export bundle and the templates engine itself. */
+ * `rovara deploy`, `rovara init`, the export bundle and the templates engine itself. */
 export function assertReleaseCoversRegion(release: ReleaseCoverage, region: string): void {
   const problem = releaseRegionProblem(release, region);
   if (problem !== undefined) throw agentXError("CONFIG_INVALID", problem);

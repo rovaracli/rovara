@@ -1,3 +1,4 @@
+import { APPLICATION_TAG_VALUE, RESOURCE_PREFIX } from "./resource-prefix.js";
 import { z } from "zod";
 import { REQUALIFY_TAGS } from "./runtime-requalify.js";
 import { ec2WorkerUserData, type E2E_QUALIFICATION_PROFILE_ID, type Ec2RuntimeBinding } from "./session.js";
@@ -112,13 +113,13 @@ export interface QualificationRunInstancesInput {
 /** The tags a renewal-managed volume carries: the three that IAM requires to attach, terminate or delete it, and the run. */
 export function qualificationVolumeTags(run: { env: string; runId: string }): Record<string, string> {
   return {
-    Application: "AgentX",
+    Application: APPLICATION_TAG_VALUE,
     [REQUALIFY_TAGS.deploymentModeKey]: REQUALIFY_TAGS.deploymentModeValue,
     [REQUALIFY_TAGS.environmentKey]: run.env,
     [REQUALIFY_TAGS.managedKey]: REQUALIFY_TAGS.managedValue,
-    "agentx:run": run.runId,
+    "rovara-cloud:run": run.runId,
     [REQUALIFY_TAGS.runKey]: run.runId,
-    "agentx:runtime-purpose": "web-api-qualification",
+    "rovara-cloud:runtime-purpose": "web-api-qualification",
   };
 }
 
@@ -138,19 +139,19 @@ export function buildRunInstancesInput(
     TagSpecifications: [{
       ResourceType: "instance",
       Tags: [
-        { Key: "Application", Value: "AgentX" },
+        { Key: "Application", Value: APPLICATION_TAG_VALUE },
         // Not the launch template's ec2-ebs: the session reconciler ends an ec2-ebs instance of this environment that no session owns once it is
         // 15 minutes old, which would end this one mid-qualification. The request's tags override the template's for the same key.
         { Key: REQUALIFY_TAGS.deploymentModeKey, Value: REQUALIFY_TAGS.deploymentModeValue },
         { Key: REQUALIFY_TAGS.environmentKey, Value: run.env },
-        { Key: "Name", Value: `agentx-${run.env}-web-api-qualification-${run.runId.slice(0, 8)}` },
-        { Key: "agentx:env", Value: run.env },
-        { Key: "agentx:run", Value: run.runId },
+        { Key: "Name", Value: `${RESOURCE_PREFIX}-${run.env}-web-api-qualification-${run.runId.slice(0, 8)}` },
+        { Key: "rovara-cloud:env", Value: run.env },
+        { Key: "rovara-cloud:run", Value: run.runId },
         { Key: REQUALIFY_TAGS.runKey, Value: run.runId },
         // The renewal may retire only what carries this tag; the script's runner carries it too, so the next renewal can replace it.
         { Key: REQUALIFY_TAGS.managedKey, Value: REQUALIFY_TAGS.managedValue },
-        { Key: "agentx:revision", Value: run.revision },
-        { Key: "agentx:runtime-purpose", Value: "web-api-qualification" },
+        { Key: "rovara-cloud:revision", Value: run.revision },
+        { Key: "rovara-cloud:runtime-purpose", Value: "web-api-qualification" },
       ],
     }],
   };

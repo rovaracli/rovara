@@ -10,8 +10,8 @@ import { createConfiguredModelRuntime, createModelRuntimeWithFallback } from "..
 import { createModelClassifier } from "../../packages/orchestrator/src/action-classifier.js";
 import { createPiSessionRuntime, runOrchestratorTurn } from "../../packages/orchestrator/src/orchestrator.js";
 
-const anthropicArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/anthropic-AbCdEf";
-const openaiArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/test/openai-AbCdEf";
+const anthropicArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/anthropic-AbCdEf";
+const openaiArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/test/openai-AbCdEf";
 const anthropicKey = "sk-ant-api03-never-persist-this-key";
 const openaiKey = "sk-proj-never-persist-this-key";
 const environment = { AGENTX_ANTHROPIC_SECRET_ARN: anthropicArn, AGENTX_OPENAI_SECRET_ARN: openaiArn };

@@ -1,4 +1,4 @@
-// Plan 2, Task 6: `agentx login --invite <link>`. Reading the three kinds of invite link, finding the cell, the question asked before a
+// Plan 2, Task 6: `rovara login --invite <link>`. Reading the three kinds of invite link, finding the cell, the question asked before a
 // browser opens (ruling R19), the invite riding the authorize URL, and the exact words for every way the invite can end.
 import { Readable } from "node:stream";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -95,12 +95,12 @@ describe("resolveInviteCell", () => {
 describe("inviteOutcomeText", () => {
   it("has the exact words for each way an invite ends", () => {
     expect(inviteOutcomeText("joined", { name: "Acme", role: "member" })).toBe("You joined Acme as member.");
-    expect(inviteOutcomeText("ALREADY_IN_ORG", { name: "Bea's team", role: "owner" })).toBe("You're already in Bea's team. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of Bea's team to remove you. If Bea's team is a team you made by mistake and no one else is in it, run agentx org leave and try the invite again.");
+    expect(inviteOutcomeText("ALREADY_IN_ORG", { name: "Bea's team", role: "owner" })).toBe("You're already in Bea's team. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of Bea's team to remove you. If Bea's team is a team you made by mistake and no one else is in it, run rovara org leave and try the invite again.");
     expect(inviteOutcomeText("INVITE_WRONG_EMAIL")).toBe(INVITE_WRONG_EMAIL_MESSAGE);
     expect(inviteOutcomeText("INVITE_INVALID")).toBe("That invite can no longer be used; ask for a new one.");
   });
   it("names no organization it could not read, and says so in a sentence that still reads", () => {
-    expect(inviteOutcomeText("ALREADY_IN_ORG")).toBe("You're already in another Rovara organization. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of that organization to remove you. If it is a team you made by mistake and no one else is in it, run agentx org leave and try the invite again.");
+    expect(inviteOutcomeText("ALREADY_IN_ORG")).toBe("You're already in another Rovara organization. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of that organization to remove you. If it is a team you made by mistake and no one else is in it, run rovara org leave and try the invite again.");
     expect(inviteOutcomeText("joined")).toBe("You joined the organization.");
   });
   it("strips terminal escapes from names the server sent", () => {
@@ -171,7 +171,7 @@ async function world(options: World = {}, confirm: (question: string) => Promise
 
 const rovaraLink = `https://rovara.dev/join#invite=${TOKEN}`;
 
-describe("agentx login --invite", () => {
+describe("rovara login --invite", () => {
   it("says what the invite is for, asks, and only then opens the browser with the invite on the authorize URL", async () => {
     const w = await world({ org: { name: "Acme", role: "member" } });
     expect(await w.run(["login", "--invite", rovaraLink])).toBe(0);
@@ -270,7 +270,7 @@ describe("agentx login --invite", () => {
   });
 
   const outcomes: Array<[string, string]> = [
-    ["ALREADY_IN_ORG", "You're already in Bea's team. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of Bea's team to remove you. If Bea's team is a team you made by mistake and no one else is in it, run agentx org leave and try the invite again."],
+    ["ALREADY_IN_ORG", "You're already in Bea's team. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of Bea's team to remove you. If Bea's team is a team you made by mistake and no one else is in it, run rovara org leave and try the invite again."],
     ["INVITE_WRONG_EMAIL", INVITE_WRONG_EMAIL_MESSAGE],
     ["INVITE_INVALID", "That invite can no longer be used; ask for a new one."],
   ];

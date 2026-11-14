@@ -10,7 +10,7 @@ import {
 } from "../../scripts/test-deploy-requalify-schedule.js";
 
 const AT = "2026-10-20T06:00:00.000Z";
-const NOW_COMMAND = "npx tsx scripts/test-deploy.ts --env agentxlivetest123 --profile agentx-test --only requalify-now --apply";
+const NOW_COMMAND = "npx tsx scripts/test-deploy.ts --env rovaralivetest --profile agentx-test --only requalify-now --apply";
 const template = (state: unknown, type = "AWS::Scheduler::Schedule") => ({ Resources: { [REQUALIFY_SCHEDULE_LOGICAL_ID]: { Type: type, Properties: state === undefined ? {} : { State: state } } } });
 const kinds = (fact: ScheduleFact) => scheduleFindings(fact, NOW_COMMAND).map((finding) => `${finding.severity} ${finding.kind}`);
 
@@ -117,7 +117,7 @@ describe("the head synth's context", () => {
 
 describe("the requalify-schedule unit records that the schedule was enabled", () => {
   const plan = (): DeployStep[] => planTestDeploy({
-    env: "agentxlivetest123", only: ["requalify-schedule"], artifacts: { revision: "0123456789ab", outputDir: "/tmp/test-deploy-0123456789ab", bootStage2Sha256: "c".repeat(64) }, previous: { "control-plane": { OidcIssuer: "https://issuer.example" }, runtime: {} },
+    env: "rovaralivetest", only: ["requalify-schedule"], artifacts: { revision: "0123456789ab", outputDir: "/tmp/test-deploy-0123456789ab", bootStage2Sha256: "c".repeat(64) }, previous: { "control-plane": { OidcIssuer: "https://issuer.example" }, runtime: {} },
     requalifyInstalled: true,
   });
 
@@ -141,7 +141,7 @@ describe("the requalify-schedule unit records that the schedule was enabled", ()
 
 describe("a schedule that was already on before the record existed (ARGUARD M2)", () => {
   const plan = (extra: { requalifyInstalled?: boolean; requalifyScheduleOn?: boolean }, only: Parameters<typeof planTestDeploy>[0]["only"] = ["control-plane-code"]): DeployStep[] => planTestDeploy({
-    env: "agentxlivetest123", only, artifacts: { revision: "0123456789ab", outputDir: "/tmp/test-deploy-0123456789ab", bootStage2Sha256: "c".repeat(64) }, previous: { "control-plane": { OidcIssuer: "https://issuer.example" }, runtime: {} }, ...extra,
+    env: "rovaralivetest", only, artifacts: { revision: "0123456789ab", outputDir: "/tmp/test-deploy-0123456789ab", bootStage2Sha256: "c".repeat(64) }, previous: { "control-plane": { OidcIssuer: "https://issuer.example" }, runtime: {} }, ...extra,
   });
   const recorded = (steps: DeployStep[]) => steps.filter((step) => step.kind === "record-requalify-enabled");
 

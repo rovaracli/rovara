@@ -88,7 +88,7 @@ export async function projectGrant(deps: AdminActionDependencies, orgId: OrgId, 
   return { role, grantedAt: typeof response.Item?.grantedAt === "string" ? response.Item.grantedAt : null };
 }
 
-const VIEWER_NOT_CHANGED = (project: string) => `that developer is a viewer of ${project}; change their role with agentx project add-member, so there is nothing to grant here`;
+const VIEWER_NOT_CHANGED = (project: string) => `that developer is a viewer of ${project}; change their role with rovara project add-member, so there is nothing to grant here`;
 
 /**
  * FR-013.1: a `developer` ProjectMembership row, a contributor made by the operator console (`grantedBy: { system: "admin" }`; the operator is

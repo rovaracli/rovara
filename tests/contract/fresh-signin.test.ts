@@ -414,7 +414,7 @@ describe("adding a removed sign-in method back", () => {
     // The same notice as any new method, to the account's address.
     expect(ses.sent).toHaveLength(2);
     expect(ses.sent[1]!.input.Destination).toEqual({ ToAddresses: ["priya@acme.dev"] });
-    expect(ses.sent[1]!.input.Content!.Simple!.Body!.Text!.Data).toMatch(/^Email code account can now sign in to your Rovara account\. .*run agentx signin unlink cloud/);
+    expect(ses.sent[1]!.input.Content!.Simple!.Body!.Text!.Data).toMatch(/^Email code account can now sign in to your Rovara account\. .*run rovara signin unlink cloud/);
 
     // It signs in as the account again, and that is an existing link: no further notice.
     advance(h, 1000);

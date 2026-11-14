@@ -114,7 +114,7 @@ export async function startWorkspacesUiServer(input: {
       try {
         return json(response, 200, { ok: true, data: await input.read() });
       } catch (error) {
-        // An AgentX error already says what to do about it ("run agentx login <url>"), without its
+        // An AgentX error already says what to do about it ("run rovara login <url>"), without its
         // code prefix, which means nothing to whoever is reading the page; anything else is this
         // CLI's own fault and is not repeated back to the page.
         const message = error instanceof AgentXError
@@ -128,20 +128,20 @@ export async function startWorkspacesUiServer(input: {
 
   const server: Server = createServer((request, response) => {
     handle(request, response).catch(() => {
-      if (!response.headersSent) send(response, 500, "text/plain; charset=utf-8", "agentx could not answer that\n");
+      if (!response.headersSent) send(response, 500, "text/plain; charset=utf-8", "rovara could not answer that\n");
       else response.end();
     });
   });
 
   await new Promise<void>((resolvePromise, reject) => {
     const onError = (error: NodeJS.ErrnoException) => {
-      reject(agentXError("CONFIG_INVALID", `could not open a local port on 127.0.0.1 to show your workspaces (${error.code ?? error.name}); check that no firewall or security tool blocks local ports, or run agentx workspaces --no-ui`));
+      reject(agentXError("CONFIG_INVALID", `could not open a local port on 127.0.0.1 to show your workspaces (${error.code ?? error.name}); check that no firewall or security tool blocks local ports, or run rovara workspaces --no-ui`));
     };
     server.once("error", onError);
     server.listen(input.port ?? 0, "127.0.0.1", () => { server.removeListener("error", onError); resolvePromise(); });
   });
   const address = server.address();
-  if (address === null || typeof address === "string") throw agentXError("CONFIG_INVALID", "the workspaces page's listener did not bind a TCP port; run agentx workspaces --no-ui");
+  if (address === null || typeof address === "string") throw agentXError("CONFIG_INVALID", "the workspaces page's listener did not bind a TCP port; run rovara workspaces --no-ui");
   const { port } = address;
   expectedOrigin = `http://127.0.0.1:${port}`;
 

@@ -44,9 +44,9 @@ describe("provisioner", () => {
       expect(tags).toEqual(expect.arrayContaining([
         { Key: "Environment", Value: props.environmentTag },
         { Key: "DeploymentMode", Value: "ec2-ebs" },
-        { Key: "agentx:workspace", Value: "{% $workspaceId %}" },
+        { Key: "rovara-cloud:workspace", Value: "{% $workspaceId %}" },
       ]));
-      expect(tags.filter((tag) => tag.Key === "agentx:env")).toEqual(env === undefined ? [] : [{ Key: "agentx:env", Value: env }]);
+      expect(tags.filter((tag) => tag.Key === "rovara-cloud:env")).toEqual(env === undefined ? [] : [{ Key: "rovara-cloud:env", Value: env }]);
     }
   });
 

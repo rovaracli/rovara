@@ -9,7 +9,7 @@ const { ssmSend, kmsSend } = vi.hoisted(() => ({ ssmSend: vi.fn(), kmsSend: vi.f
 vi.mock("@aws-sdk/client-ssm", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), SSMClient: class { send = ssmSend; } }));
 vi.mock("@aws-sdk/client-kms", async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), KMSClient: class { send = kmsSend; } }));
 
-const PREFIX = "/agentx/test/";
+const PREFIX = "/rovara-cloud/test/";
 const settings: Record<string, string> = {
   "worker-image": `111122223333.dkr.ecr.us-east-1.amazonaws.com/agentx-worker-test@sha256:${"a".repeat(64)}`, "worker-model-provider": "amazon-bedrock", "worker-model-id": "us.anthropic.claude-sonnet-4-6",
   "worker-prompt-cache-retention": "long",
@@ -19,7 +19,7 @@ beforeEach(() => {
   vi.stubEnv("WORKER_SETTINGS_PREFIX", PREFIX);
   vi.stubEnv("INVOKE_SIGNING_KEY_ARN", "arn:aws:kms:us-east-1:111122223333:key/11111111-1111-4111-8111-111111111111");
   vi.stubEnv("CONTROL_PLANE_URL", "https://abc.execute-api.us-east-1.amazonaws.com");
-  vi.stubEnv("WORKER_LOG_GROUP_NAME", "/agentx/test/worker");
+  vi.stubEnv("WORKER_LOG_GROUP_NAME", "/rovara-cloud/test/worker");
   vi.stubEnv("LAMBDA_TASK_ROOT", new URL("../../packages/worker/ec2", import.meta.url).pathname);
   vi.stubEnv("STATE_TABLE_NAME", "state");
   kmsSend.mockReset().mockResolvedValue({ PublicKey: Buffer.from(`MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE${"A".repeat(88)}`, "base64") });

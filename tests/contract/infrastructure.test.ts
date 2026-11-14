@@ -294,7 +294,7 @@ describe("control-plane infrastructure", () => {
     expect(json).toContain("codebuild:StartBuild");
     expect(json).toContain("codebuild:BatchGetBuilds");
     expect(json).toContain(":codebuild:");
-    expect(json).toContain("project/agentx-*");
+    expect(json).toContain("project/rovara-cloud-*");
     // retired runtime was removed (#118).
     expect(json).not.toMatch(/bedrock-[a-z]+:/);
   });

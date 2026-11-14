@@ -97,7 +97,7 @@ function required(stack: StackDescription, stackName: string, kind: "outputs" | 
 }
 
 /**
- * `agentx --env <env> env adopt --region <region>`: register the existing deployment identified by
+ * `rovara --env <env> env adopt --region <region>`: register the existing deployment identified by
  * the fixed legacy stack names as environment `<env>`, reading its CloudFormation stacks and
  * writing settings to SSM. Never changes any stack. Refuses, writing nothing, when a stack is
  * missing or unhealthy, an output or parameter is missing, or the environment already has settings.
@@ -169,7 +169,7 @@ export async function adoptEnvironment(input: {
       const detail = errnoDetail(error);
       throw agentXError(
         "RUNTIME_UNAVAILABLE",
-        `settings for ${input.env} were saved to ${settingsParameterName(input.env)}, but the local cache could not be written${detail}; run agentx --env ${input.env} env use`,
+        `settings for ${input.env} were saved to ${settingsParameterName(input.env)}, but the local cache could not be written${detail}; run rovara --env ${input.env} env use`,
       );
     }
     return settings;

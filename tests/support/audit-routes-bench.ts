@@ -22,7 +22,7 @@ export const KEY_ARN = "arn:aws:kms:us-east-1:123456789012:key/11111111-2222-333
 export const KEYS = "keys";
 export const STATE = "state";
 export const EXPORTS_BUCKET = "audit-exports-bucket";
-export const QUEUE_URL = "https://sqs.test/agentx-test-audit-intake.fifo";
+export const QUEUE_URL = "https://sqs.test/rovara-cloud-test-audit-intake.fifo";
 
 export interface Bench {
   h: Harness;

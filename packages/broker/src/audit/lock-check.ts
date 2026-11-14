@@ -35,6 +35,7 @@ import {
   AUDIT_GOVERNANCE_RETENTION_DAYS,
   AUDIT_RETENTION_DAYS_MIN_COMPLIANCE,
   AUDIT_VERSION_SWEEP_KEYS_PER_RUN,
+  RESOURCE_PREFIX,
   canonicalJson,
   type LockedObjectV1,
 } from "@agentx/contracts";
@@ -169,7 +170,8 @@ function placeholders(value: unknown, context: PolicyContext): unknown {
   if (typeof value !== "string") return value;
   return value
     .replaceAll(`arn:${context.partition}:`, "arn:{{partition}}:")
-    .replaceAll(`agentx-${context.envName}-`, "agentx-{{env}}-")
+    // The placeholder is fixed text, not a name: infra/lib/audit-ledger.ts hashes its template with the same `agentx-{{env}}-`.
+    .replaceAll(`${RESOURCE_PREFIX}-${context.envName}-`, "agentx-{{env}}-")
     .replaceAll(context.accountId, "{{account}}")
     .replaceAll(context.region, "{{region}}");
 }

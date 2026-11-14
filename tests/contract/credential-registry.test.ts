@@ -75,7 +75,7 @@ describe("registry providers", () => {
   it("resolves the record on each issue and reports unregistered or unusable references as unavailable", async () => {
     const { handler, registry } = await createAdminBroker({ connectorCredentials: { secrets, githubApp } });
     const provider = registry!.provider("jira-sa");
-    await expect(provider.issue(undefined, "read")).rejects.toThrow(new CredentialUnavailable("credential jira-sa is not registered; run agentx admin credential register"));
+    await expect(provider.issue(undefined, "read")).rejects.toThrow(new CredentialUnavailable("credential jira-sa is not registered; run rovara admin credential register"));
     await adminCall(handler, { method: "POST", path: "/v1/admin/credentials", body: { ref: "jira-sa", type: "static-secret", secretName: "agentx/connectors/jira-sa" } });
     expect(await provider.issue(undefined, "read")).toEqual({ token: "jira-key-value", bindings: {} });
     await adminCall(handler, { method: "POST", path: "/v1/admin/credentials", body: { ref: "linear", type: "oauth-client-credentials", secretName: "agentx/connectors/linear" } });
@@ -129,9 +129,9 @@ describe("Secrets Manager source and token cache", () => {
   it("names an environment's own connector prefix in the access-denied message, when the source is given one", async () => {
     const { secretsManagerSource } = await import("../../packages/broker/src/aws/credentials.js");
     const failing = { send: vi.fn(async () => { throw Object.assign(new Error("denied"), { name: "AccessDeniedException" }); }) };
-    const error = await secretsManagerSource(failing, "agentx/staging/connectors/").read("agentx/staging/connectors/x").catch((caught: unknown) => caught);
+    const error = await secretsManagerSource(failing, "rovara-cloud/staging/connectors/").read("rovara-cloud/staging/connectors/x").catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(CredentialUnavailable);
-    expect((error as Error).message).toBe("AgentX cannot read secret agentx/staging/connectors/x; connector secrets must be named agentx/staging/connectors/<name> in this account and region, or its KMS key does not allow the AgentX broker");
+    expect((error as Error).message).toBe("AgentX cannot read secret rovara-cloud/staging/connectors/x; connector secrets must be named rovara-cloud/staging/connectors/<name> in this account and region, or its KMS key does not allow the AgentX broker");
   });
 
   it("logs and swallows a token cache write failure without the token", async () => {
@@ -208,7 +208,7 @@ describe("registry failure modes", () => {
   it("treats a malformed stored record as unregistered and skips it in the list with a log line", async () => {
     const { db, handler, registry } = await createAdminBroker({ connectorCredentials: { secrets, githubApp } });
     db.set({ pk: "CREDENTIALS", sk: "REF#broken", entityType: "CREDENTIAL", ref: "broken", type: "static-secret" });
-    await expect(registry!.provider("broken").issue(undefined, "read")).rejects.toThrow(new CredentialUnavailable("credential broken is not registered; run agentx admin credential register"));
+    await expect(registry!.provider("broken").issue(undefined, "read")).rejects.toThrow(new CredentialUnavailable("credential broken is not registered; run rovara admin credential register"));
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {
       const listed = await adminCall(handler, { method: "GET", path: "/v1/admin/credentials" });
@@ -232,9 +232,9 @@ describe("registry failure modes", () => {
   });
 
   it("refuses a secret outside the deployment's own connector prefix", async () => {
-    const { registry } = await createAdminBroker({ connectorCredentials: { secrets, githubApp, connectorSecretPrefix: "agentx/staging/connectors/" } });
-    await expect(registry!.register(administrator, { ref: "linear", type: "static-secret", secretName: "agentx/production/connectors/linear" }))
-      .rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("agentx/staging/connectors/") as unknown });
+    const { registry } = await createAdminBroker({ connectorCredentials: { secrets, githubApp, connectorSecretPrefix: "rovara-cloud/staging/connectors/" } });
+    await expect(registry!.register(administrator, { ref: "linear", type: "static-secret", secretName: "rovara-cloud/production/connectors/linear" }))
+      .rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("rovara-cloud/staging/connectors/") as unknown });
     await expect(registry!.register(administrator, { ref: "linear", type: "static-secret", secretName: "agentx/connectors/linear" }))
       .rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });

@@ -16,7 +16,7 @@ export interface ApplySignInInput {
   env: string; store: ParameterStore; cloudFormation: { send(command: unknown): Promise<unknown> }; holder: string; settings: EnvironmentSettings;
   /** The methods to enable; a function builds them from the settings read under the lock, so a concurrent change is not lost. */
   next: SignInChoice | ((current: DeveloperSignInSettings | undefined) => SignInChoice); slackTeamId?: string;
-  /** The command that finishes a half-done change, named in errors; the same agentx signin command by default. */
+  /** The command that finishes a half-done change, named in errors; the same rovara signin command by default. */
   rerun?: string;
   /** Collected client credentials, stored only after the change is confirmed and before the stack changes. */
   credentials?: SignInCredentials;
@@ -74,10 +74,10 @@ const notApplied = (stackName: string) => agentXError("CONFIG_INVALID", `the sig
 export async function applySignInChange(input: ApplySignInInput): Promise<{ changed: boolean; settings: DeveloperSignInSettings }> {
   const roleArn = input.settings.access?.cloudFormationRoleArn;
   if (input.settings.naming !== "environment" || roleArn === undefined) {
-    throw agentXError("CONFIG_INVALID", `developer sign-in needs an environment installed with agentx init; ${input.env} uses the legacy stack names`);
+    throw agentXError("CONFIG_INVALID", `developer sign-in needs an environment installed with rovara init; ${input.env} uses the legacy stack names`);
   }
   const stackName = input.settings.stacks["control-plane"];
-  const rerun = input.rerun ?? "the same agentx signin command";
+  const rerun = input.rerun ?? "the same rovara signin command";
   const work = async () => {
     const current = await readSignInSettings(input.store, input.env);
     const choice = typeof input.next === "function" ? input.next(current) : input.next;
@@ -98,7 +98,7 @@ export async function applySignInChange(input: ApplySignInInput): Promise<{ chan
     if (!parsed.success) throw agentXError("CONFIG_INVALID", `${parsed.error.issues[0]?.message ?? "developer sign-in settings are invalid"}; check the answers and run this again`);
     const next = parsed.data;
     const teamId = input.slackTeamId ?? await readSlackTeamId(input.store, input.env);
-    if (next.slack && teamId === undefined) throw agentXError("CONFIG_INVALID", "Slack sign-in needs the Slack team ID; run agentx signin enable slack, which records it");
+    if (next.slack && teamId === undefined) throw agentXError("CONFIG_INVALID", "Slack sign-in needs the Slack team ID; run rovara signin enable slack, which records it");
     const before = describeSignIn(current);
     const after = describeSignIn(next);
     const summary = [

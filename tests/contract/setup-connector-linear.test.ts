@@ -1,4 +1,4 @@
-// FR-036 to FR-039: agentx connector add linear. The key's own team list is the test read
+// FR-036 to FR-039: rovara connector add linear. The key's own team list is the test read
 // (FR-038); the engineer picks the team from it; the project gets a new revision, only once the
 // control plane confirms the connector is connected (F17).
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -50,7 +50,7 @@ function withNoPreflight(plane: ReturnType<typeof fakeControlPlane>): ReturnType
   return plane;
 }
 
-describe("agentx connector add linear (FR-036 to FR-039)", () => {
+describe("rovara connector add linear (FR-036 to FR-039)", () => {
   it("prints the guide, lists the key's teams as its test read, then stores, registers and scopes it", async () => {
     const plane = fakeControlPlane();
     const vendors = fakeVendors({ linearTeams: [{ id: "c408e946-78aa-4db8-923e-f78053dd954f", key: "PAY", name: "Payments" }, { id: "d0000000-0000-4000-8000-000000000001", key: "OPS", name: "Ops" }] });
@@ -60,8 +60,8 @@ describe("agentx connector add linear (FR-036 to FR-039)", () => {
     expect(lines[0]).toBe(LINEAR_GUIDE);
     expect(lines.join("\n")).toContain("The key can see 2 teams: PAY (Payments), OPS (Ops).");
     expect(vendors.calls).toEqual(["linearTeams"]);
-    expect(JSON.parse(secrets.values.get("agentx/staging/connectors/linear")!)).toEqual({ apiKey: KEY });
-    expect(plane.credentials).toContainEqual({ ref: "linear", type: "static-secret", secretName: "agentx/staging/connectors/linear" });
+    expect(JSON.parse(secrets.values.get("rovara-cloud/staging/connectors/linear")!)).toEqual({ apiKey: KEY });
+    expect(plane.credentials).toContainEqual({ ref: "linear", type: "static-secret", secretName: "rovara-cloud/staging/connectors/linear" });
     const registered = plane.registered.at(-1) as { definition: { revision: number; integrations: { connectors: Array<Record<string, unknown>> } } };
     expect(registered.definition.revision).toBe(2);
     expect(registered.definition.integrations.connectors[0]).toMatchObject({ name: "linear", type: "linear", credentialRef: "linear", scopes: [{ alias: "pay", teamId: "c408e946-78aa-4db8-923e-f78053dd954f" }] });
@@ -87,13 +87,13 @@ describe("agentx connector add linear (FR-036 to FR-039)", () => {
   it("fails the step when the preflight does not report the connector connected, keeping the revision", async () => {
     const plane = fakeControlPlane();
     plane.preflight.linear = { status: "not_connected", problem: "Linear rejected the credential twice" };
-    await expect(addLinear(input({ plane }))).rejects.toThrow("revision 2 of payments-api is registered, but the linear connector is not_connected: Linear rejected the credential twice. Fix it, then run agentx --env staging connector add linear --project payments-api again");
+    await expect(addLinear(input({ plane }))).rejects.toThrow("revision 2 of payments-api is registered, but the linear connector is not_connected: Linear rejected the credential twice. Fix it, then run rovara --env staging connector add linear --project payments-api again");
   });
 
-  it("inside agentx init, points the fix at init's own rerun, not the day-2 command", async () => {
+  it("inside rovara init, points the fix at init's own rerun, not the day-2 command", async () => {
     const plane = fakeControlPlane();
     plane.preflight.linear = { status: "not_connected", problem: "Linear rejected the credential twice" };
-    await expect(addLinear({ ...input({ plane }), rerun: "agentx --env staging init" })).rejects.toThrow("Fix it, then run agentx --env staging init again");
+    await expect(addLinear({ ...input({ plane }), rerun: "rovara --env staging init" })).rejects.toThrow("Fix it, then run rovara --env staging init again");
   });
 
   it("says where the project file comes from when this machine has none, before the key is asked for or stored", async () => {
@@ -102,7 +102,7 @@ describe("agentx connector add linear (FR-036 to FR-039)", () => {
       const secrets = memoryInitSecrets();
       const prompter = scriptedPrompter([]);
       await expect(addLinear({ ...input({ secrets }), prompter, services: { ...input().services, configDir: empty } }))
-        .rejects.toThrow(`project payments-api has no file in ${empty}; agentx init or agentx project add wrote it on the machine that ran it, in that run's --config-dir. Run this there, or copy payments-api.yaml into ${empty} (or pass --config-dir <the directory that holds it>), then run agentx --env staging connector add linear --project payments-api again`);
+        .rejects.toThrow(`project payments-api has no file in ${empty}; rovara init or rovara project add wrote it on the machine that ran it, in that run's --config-dir. Run this there, or copy payments-api.yaml into ${empty} (or pass --config-dir <the directory that holds it>), then run rovara --env staging connector add linear --project payments-api again`);
       expect(prompter.asked).toEqual([]);
       expect(secrets.values.size).toBe(0);
     } finally {

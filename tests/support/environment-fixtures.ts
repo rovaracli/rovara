@@ -8,7 +8,7 @@ export const stagingSettings: EnvironmentSettings = {
   engine: "templates",
   version: "1.0.0",
   naming: "environment",
-  stacks: { foundation: "agentx-staging-foundation", runtime: "agentx-staging-runtime", "control-plane": "agentx-staging-control-plane", slack: "agentx-staging-slack" },
+  stacks: { foundation: "rovara-cloud-staging-foundation", runtime: "rovara-cloud-staging-runtime", "control-plane": "rovara-cloud-staging-control-plane", slack: "rovara-cloud-staging-slack" },
   controlPlaneUrl: "https://abc.execute-api.us-east-1.amazonaws.com",
   identity: { mode: "cognito", issuer: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_x", audience: "client", clientId: "client" },
   models: { orchestrator: "us.anthropic.claude-haiku-4-5-20251001-v1:0", classifier: "us.anthropic.claude-haiku-4-5-20251001-v1:0", worker: "us.anthropic.claude-sonnet-4-6" },

@@ -143,7 +143,7 @@ class Resolver {
     if (resource === undefined) throw new Error(`GetAtt on ${logicalId}, which is not a resource`);
     const name = this.nameOf(logicalId);
     switch (`${resource.Type}.${attribute}`) {
-      case "AWS::IAM::Role.Arn": return `arn:aws:iam::${ACCOUNT}:role/agentx/${this.options.env}/${name}`;
+      case "AWS::IAM::Role.Arn": return `arn:aws:iam::${ACCOUNT}:role/rovara-cloud/${this.options.env}/${name}`;
       case "AWS::Lambda::Function.Arn": return `arn:aws:lambda:${REGION}:${ACCOUNT}:function:${name}`;
       case "AWS::SQS::Queue.Arn": return `arn:aws:sqs:${REGION}:${ACCOUNT}:${name}`;
       case "AWS::SQS::Queue.QueueName": return name;

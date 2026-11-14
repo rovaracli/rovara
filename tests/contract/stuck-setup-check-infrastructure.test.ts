@@ -29,11 +29,11 @@ describe("the stuck setup check alarm (follow-up N4)", () => {
     expect(alarm.Properties).toStrictEqual({
       AlarmActions: [{ Ref: topicId(named) }],
       AlarmDescription: "The reconciler could not close a project setup check that is over 50 minutes old, on two runs in a row; the check still holds a workspace slot. Check the reconciler's logs for stuck_setup_check.close_failed and stuck_setup_check.kept events.",
-      AlarmName: "agentx-staging-StuckSetupChecks",
+      AlarmName: "rovara-cloud-staging-StuckSetupChecks",
       ComparisonOperator: "GreaterThanOrEqualToThreshold",
       EvaluationPeriods: 2,
       MetricName: "ReconcilerStuckSetupChecksKept",
-      Namespace: "AgentX/staging",
+      Namespace: "RovaraCloud/staging",
       Period: 600,
       Statistic: "Maximum",
       Threshold: 1,

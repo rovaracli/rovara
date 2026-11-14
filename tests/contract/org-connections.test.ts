@@ -107,9 +107,9 @@ describe("OrgSecrets", () => {
   it("refuses names outside the two org paths, other environments and deeper paths", async () => {
     const { fake, secrets } = setup();
     for (const name of [
-      "agentx/staging/connectors/shared", `agentx/prod/org-connectors/${ORG_A}/con_x`, `agentx/staging/org-sources/${ORG_A}/src_x`,
-      `agentx/staging/org-connectors/${ORG_A}`, `agentx/staging/org-connectors/${ORG_A}/`, `agentx/staging/org-connectors/${ORG_A}/a/b`,
-      `agentx/staging/org-connectors/${ORG_A}/..`, `agentx/staging/org-connectors/${ORG_A}x/con_x`, `arn:aws:secretsmanager:us-west-2:1:secret:${nameA()}`,
+      "rovara-cloud/staging/connectors/shared", `rovara-cloud/prod/org-connectors/${ORG_A}/con_x`, `rovara-cloud/staging/org-sources/${ORG_A}/src_x`,
+      `rovara-cloud/staging/org-connectors/${ORG_A}`, `rovara-cloud/staging/org-connectors/${ORG_A}/`, `rovara-cloud/staging/org-connectors/${ORG_A}/a/b`,
+      `rovara-cloud/staging/org-connectors/${ORG_A}/..`, `rovara-cloud/staging/org-connectors/${ORG_A}x/con_x`, `arn:aws:secretsmanager:us-west-2:1:secret:${nameA()}`,
     ]) {
       expect(await code(secrets.read(ORG_A, name)), name).toMatchObject({ code: "FORBIDDEN" });
     }
@@ -119,8 +119,8 @@ describe("OrgSecrets", () => {
   it("refuses an org id that fails OrgIdSchema before AssumeRole", async () => {
     const { fake, secrets } = setup();
     for (const bad of ["org_*", `org_${"a".repeat(21)}`, "org_a/b", "ORG_AAAAAAAAAAAAAAAAAAAA", `org_${"*".repeat(20)}`, "", "org_aaaaaaaaaaaaaaaaaaa"]) {
-      expect(await code(secrets.read(bad, `agentx/staging/org-connectors/${bad}/con_x`)), bad).toMatchObject({ code: "FORBIDDEN" });
-      expect(await code(secrets.put(bad, `agentx/staging/org-connectors/${bad}/con_x`, "v")), bad).toMatchObject({ code: "FORBIDDEN" });
+      expect(await code(secrets.read(bad, `rovara-cloud/staging/org-connectors/${bad}/con_x`)), bad).toMatchObject({ code: "FORBIDDEN" });
+      expect(await code(secrets.put(bad, `rovara-cloud/staging/org-connectors/${bad}/con_x`, "v")), bad).toMatchObject({ code: "FORBIDDEN" });
     }
     expect(fake.calls).toEqual([]);
   });
@@ -267,7 +267,7 @@ describe("the role's trust and permissions as the fake enforces them", () => {
     await expect(a.send(new CreateSecretCommand({ Name: name, SecretString: "v", Tags: [{ Key: "rovara:org", Value: ORG_A }, { Key: "extra", Value: "x" }] }))).rejects.toMatchObject({ name: "AccessDeniedException" });
     await expect(a.send(new CreateSecretCommand({ Name: name, SecretString: "v" }))).rejects.toMatchObject({ name: "AccessDeniedException" });
     await expect(a.send(new CreateSecretCommand({ Name: orgConnectorSecretName(ENV, ORG_B, "con_new"), SecretString: "v", Tags: [{ Key: "rovara:org", Value: ORG_A }] }))).rejects.toMatchObject({ name: "AccessDeniedException" });
-    await expect(a.send(new CreateSecretCommand({ Name: "agentx/staging/connectors/elsewhere", SecretString: "v", Tags: [{ Key: "rovara:org", Value: ORG_A }] }))).rejects.toMatchObject({ name: "AccessDeniedException" });
+    await expect(a.send(new CreateSecretCommand({ Name: "rovara-cloud/staging/connectors/elsewhere", SecretString: "v", Tags: [{ Key: "rovara:org", Value: ORG_A }] }))).rejects.toMatchObject({ name: "AccessDeniedException" });
     expect(fake.secrets.size).toBe(0);
     await expect(a.send(new CreateSecretCommand({ Name: name, SecretString: "v", Tags: [{ Key: "rovara:org", Value: ORG_A }] }))).resolves.toBeDefined();
     expect(fake.stored(name)?.tags).toEqual({ "rovara:org": ORG_A });

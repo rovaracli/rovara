@@ -22,7 +22,7 @@ import type { DockerCli } from "../../packages/worker/src/swebench/containers.js
 import { FAUX_MODEL, fauxModelRuntime } from "../support/faux-model.js";
 
 const run = promisify(execFile);
-const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@sha256:" + "b".repeat(64);
+const IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/rovara-cloud-staging/worker@sha256:" + "b".repeat(64);
 const NODE = "/usr/local/bin/node";
 const SANDBOX = { kind: "sandbox" as const, image: IMAGE };
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");

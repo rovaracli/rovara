@@ -1,4 +1,4 @@
-// agentx init end to end through executeCli, with every AWS, GitHub, Slack, browser and clock
+// rovara init end to end through executeCli, with every AWS, GitHub, Slack, browser and clock
 // dependency injected. Nothing here reaches AWS, GitHub or Slack; the GitHub manifest listener is
 // real, on 127.0.0.1.
 import { createHash } from "node:crypto";
@@ -46,7 +46,7 @@ async function releaseDir(version = "1.2.3", regions = ["us-east-1"]): Promise<s
     }
   }
   await writeFile(join(dir, "release.json"), JSON.stringify({
-    schemaVersion: 1, version, gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-placeholderqq", templates, packages: [],
+    schemaVersion: 1, version, gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-phldrqq", templates, packages: [],
     images: { worker: `public.ecr.aws/agentx/worker@sha256:${"a".repeat(64)}`, slack: `public.ecr.aws/agentx/slack@sha256:${"b".repeat(64)}` },
   }));
   return dir;
@@ -62,8 +62,8 @@ async function finishStackOutputs(name: string): Promise<Record<string, string> 
 async function harness(options: { releaseVersion?: string; regions?: string[] } = {}) {
   let clock = T0;
   const store = new MemoryParameterStore();
-  // The control plane creates agentx/<env>/slack with a placeholder; the fake deployer does not, so it exists up front.
-  const secrets = memoryInitSecrets({ "agentx/staging/slack": JSON.stringify({ botToken: "unset", signingSecret: "placeholder" }) });
+  // The control plane creates rovara-cloud/<env>/slack with a placeholder; the fake deployer does not, so it exists up front.
+  const secrets = memoryInitSecrets({ "rovara-cloud/staging/slack": JSON.stringify({ botToken: "unset", signingSecret: "placeholder" }) });
   const deployer = scriptedDeployer(allStackOutputs());
   const github = fakeGitHubApi();
   const opened: string[] = [];
@@ -168,7 +168,7 @@ const without = (argv: readonly string[], flag: string): string[] => argv.filter
 const UNATTENDED_ENV = { GH_KEY: TEST_PRIVATE_KEY, BOT: TEST_BOT_TOKEN, SIGNING: TEST_SIGNING_SECRET, SLACK_CLIENT_SECRET: "fedcba9876543210fedcba9876543210" };
 const WEBHOOK = "https://events.pagerduty.com/integration/0123SECRETintegrationKEY/enqueue";
 
-describe("agentx init", () => {
+describe("rovara init", () => {
   it("lists its steps in the recorded order", () => {
     expect(initSteps({ github: fakeGitHubApi(), slack: fakeSlackApi() }).map((step) => step.id)).toEqual([...INSTALL_STEP_ORDER]);
   });
@@ -196,7 +196,7 @@ describe("agentx init", () => {
     const github = { ...fakeGitHubApi(), owner: async () => { throw new Error("GitHub owner lookup failed with HTTP 403"); } };
     expect(await h.run([...YES], { github })).not.toBe(0);
     const line = h.printed().split("\n").find((each) => each.startsWith("- could not check the GitHub owner"));
-    expect(line).toBe("- could not check the GitHub owner acme (GitHub owner lookup failed with HTTP 403); check your network and run agentx init again");
+    expect(line).toBe("- could not check the GitHub owner acme (GitHub owner lookup failed with HTTP 403); check your network and run rovara init again");
   });
 
   it("FR-028: an app made beforehand (--github-app-id) is this install's own, so its name is no clash", async () => {
@@ -212,7 +212,7 @@ describe("agentx init", () => {
     const progress = await readInstallProgress(h.store, "staging");
     expect(progress?.steps["developer-signin"]?.status).toBe("done");
     expect(progress?.steps["admin-user"]).toBeUndefined();
-    expect(h.printed()).toContain("Stopped after the developer-signin step, as --stop-after asked. Run agentx init --env staging --region us-east-1 again to finish.");
+    expect(h.printed()).toContain("Stopped after the developer-signin step, as --stop-after asked. Run rovara init --env staging --region us-east-1 again to finish.");
     expect(h.store.values.has(lockParameterName("staging"))).toBe(false);
   });
 
@@ -284,7 +284,7 @@ describe("agentx init", () => {
     expect(h.store.values.has(lockParameterName("staging"))).toBe(false);
     const printed = h.printed();
     expect(printed).toContain("Estimated monthly total");
-    // The manual next steps of earlier installs (create the admin user, agentx login, register
+    // The manual next steps of earlier installs (create the admin user, rovara login, register
     // and bind a project) are gone: init did them.
     expect(printed).toContain("AgentX environment staging is ready.\n  Talk to it: mention @agentx in #payments (project payments-api).");
     expect(printed).not.toContain("aws cognito-idp admin-create-user");
@@ -292,7 +292,7 @@ describe("agentx init", () => {
     const everywhere = await everywhereButSecrets(h);
     expect(everywhere).toContain("abc123.execute-api");
     expect(everywhere).not.toContain("fedcba9876543210fedcba9876543210");
-    for (const secret of [TEST_PRIVATE_KEY.split("\n")[1]!, TEST_BOT_TOKEN, TEST_SIGNING_SECRET, h.secrets.values.get("agentx/staging/callback-signing-key")!]) {
+    for (const secret of [TEST_PRIVATE_KEY.split("\n")[1]!, TEST_BOT_TOKEN, TEST_SIGNING_SECRET, h.secrets.values.get("rovara-cloud/staging/callback-signing-key")!]) {
       expect(secret.length).toBeGreaterThan(10);
       expect(everywhere).not.toContain(secret);
     }
@@ -321,7 +321,7 @@ describe("agentx init", () => {
     const answered = h.plane.turns;
     h.plane.turns = [turn({ subject: "T0TEAM/C0PAY00001/1790000000.000100", receivedAt: new Date(T0 + 86_400_000).toISOString(), disposition: "error" })];
     expect(await h.run([], { prompter: scriptedPrompter([...FIRST_RUN, ...SLACK, ...SIGNIN, ...FINISH]) })).not.toBe(0);
-    expect(h.printed()).toContain("then run agentx --env staging init again");
+    expect(h.printed()).toContain("then run rovara --env staging init again");
     h.plane.turns = answered;
     const mark = h.mark();
     const prompter = scriptedPrompter([]);
@@ -339,7 +339,7 @@ describe("agentx init", () => {
     const h = await harness();
     h.deployer.fail.set(environmentStackName("staging", "control-plane"), new Error("Resource limit exceeded"));
     expect(await h.run([], { prompter: scriptedPrompter(FIRST_RUN) })).not.toBe(0);
-    expect(h.printed()).toContain('init stopped at "Start the AgentX service": Resource limit exceeded. Run agentx init --env staging --region us-east-1 again to continue from this step.');
+    expect(h.printed()).toContain('init stopped at "Start the AgentX service": Resource limit exceeded. Run rovara init --env staging --region us-east-1 again to continue from this step.');
     expect(h.store.values.has(lockParameterName("staging"))).toBe(false);
     h.deployer.fail.clear();
     h.deployer.requests.length = 0;
@@ -356,7 +356,7 @@ describe("agentx init", () => {
     const h = await harness();
     h.deployer.fail.set(environmentStackName("staging", "control-plane"), markOperatorStop(new Error("the person chose not to continue")));
     expect(await h.run([], { prompter: scriptedPrompter(FIRST_RUN) })).not.toBe(0);
-    expect(h.printed()).toContain('init stopped at "Start the AgentX service": the person chose not to continue. Run agentx init --env staging --region us-east-1 again to continue from this step.');
+    expect(h.printed()).toContain('init stopped at "Start the AgentX service": the person chose not to continue. Run rovara init --env staging --region us-east-1 again to continue from this step.');
   });
 
   it("changes nothing when run again after it finished", async () => {
@@ -428,15 +428,15 @@ describe("agentx init", () => {
     expect(h.store.calls).toEqual([]);
   });
 
-  // Init deploys through agentx deploy's engine, but its errors must never send the engineer to agentx deploy or an answers file.
-  it("reports an engine error in a deploy step without mentioning agentx deploy or an answers file", async () => {
+  // Init deploys through rovara deploy's engine, but its errors must never send the engineer to rovara deploy or an answers file.
+  it("reports an engine error in a deploy step without mentioning rovara deploy or an answers file", async () => {
     const h = await harness();
-    h.deployer.fail.set(environmentStackName("staging", "access"), agentXError("CONFIG_INVALID", "stack agentx-staging-access failed to create earlier and must be deleted before it can be deployed again (aws cloudformation delete-stack --stack-name agentx-staging-access --region us-east-1)"));
+    h.deployer.fail.set(environmentStackName("staging", "access"), agentXError("CONFIG_INVALID", "stack rovara-cloud-staging-access failed to create earlier and must be deleted before it can be deployed again (aws cloudformation delete-stack --stack-name rovara-cloud-staging-access --region us-east-1)"));
     expect(await h.run([], { prompter: scriptedPrompter(FIRST_RUN) })).toBe(2);
     const printed = h.printed();
-    expect(printed).toContain('init stopped at "Set up AWS permissions": stack agentx-staging-access failed to create earlier');
-    expect(printed).toContain("Run agentx init --env staging --region us-east-1 again to continue from this step.");
-    expect(printed).not.toContain("agentx deploy");
+    expect(printed).toContain('init stopped at "Set up AWS permissions": stack rovara-cloud-staging-access failed to create earlier');
+    expect(printed).toContain("Run rovara init --env staging --region us-east-1 again to continue from this step.");
+    expect(printed).not.toContain("rovara deploy");
     expect(printed).not.toContain("answers file");
   });
 
@@ -451,18 +451,18 @@ describe("agentx init", () => {
     const legacy = await harness();
     await legacy.store.put(settingsParameterName("staging"), JSON.stringify({ ...stagingSettings, naming: "legacy" }));
     expect(await legacy.run([], { prompter: scriptedPrompter([]) })).toBe(2);
-    expect(legacy.printed()).toContain("environment staging is the deployment adopted with fixed stack names; agentx init cannot install over it");
+    expect(legacy.printed()).toContain("environment staging is the deployment adopted with fixed stack names; rovara init cannot install over it");
 
     const deployed = await harness();
     await deployed.store.put(settingsParameterName("staging"), JSON.stringify(stagingSettings));
     expect(await deployed.run([], { prompter: scriptedPrompter([]) })).toBe(2);
-    expect(deployed.printed()).toContain("environment staging is already installed, but not by agentx init");
+    expect(deployed.printed()).toContain("environment staging is already installed, but not by rovara init");
   });
 
   it("with --resume and nothing to resume, says how to start", async () => {
     const h = await harness();
     expect(await h.run(["--resume"], { prompter: scriptedPrompter([]) })).toBe(2);
-    expect(h.printed()).toContain("there is no install of environment staging to resume in account 123456789012 (us-east-1); run agentx init without --resume to start one");
+    expect(h.printed()).toContain("there is no install of environment staging to resume in account 123456789012 (us-east-1); run rovara init without --resume to start one");
   });
 
   it("runs with no prompts at all under --yes and flags, with a GitHub App made beforehand", async () => {
@@ -495,7 +495,7 @@ describe("agentx init", () => {
     const argv = UNATTENDED.filter((_, index) => UNATTENDED[index] !== "--connectors" && UNATTENDED[index - 1] !== "--connectors");
     expect(argv).not.toContain("--connectors");
     expect(await h.run([...argv, "--alert-email", "ops@example.com"], { processEnv: UNATTENDED_ENV })).toBe(0);
-    expect(h.printed()).toContain("No connectors added; add them later with agentx --env staging connector add linear|jira|asana");
+    expect(h.printed()).toContain("No connectors added; add them later with rovara --env staging connector add linear|jira|asana");
     expect((await readInstallProgress(h.store, "staging"))?.connectors ?? []).toEqual([]);
     expect(h.printed()).toContain("AgentX environment staging is ready.");
   });
@@ -505,9 +505,9 @@ describe("agentx init", () => {
       const h = await harness();
       const argv = without(UNATTENDED, flag);
       expect(await h.run([...argv, "--alert-email", "ops@example.com"], { processEnv: UNATTENDED_ENV })).toBe(2);
-      expect(h.printed()).toContain(`agentx init --yes needs ${flag}`);
+      expect(h.printed()).toContain(`rovara init --yes needs ${flag}`);
       expect(h.store.calls.filter((call) => call.op === "put")).toEqual([]);
-      expect(h.secrets.values.has("agentx/staging/github-app")).toBe(false);
+      expect(h.secrets.values.has("rovara-cloud/staging/github-app")).toBe(false);
       expect(h.deployer.requests).toEqual([]);
     }
   });
@@ -533,7 +533,7 @@ describe("agentx init", () => {
     const mark = h.mark();
     expect(await h.run(without(UNATTENDED, "--channel"), { processEnv: UNATTENDED_ENV })).not.toBe(0);
     const rerun = h.printedSince(mark);
-    expect(rerun).not.toContain("agentx init --yes needs");
+    expect(rerun).not.toContain("rovara init --yes needs");
     expect(rerun).toContain('init stopped at "Set up your first project"');
     expect(rerun).toContain("with --yes, pass --channel");
     const progress = await readInstallProgress(h.store, "staging");
@@ -691,7 +691,7 @@ describe("agentx init", () => {
       return Object.assign(handler, { github: requested });
     };
     const publishedManifest = JSON.stringify({
-      schemaVersion: 1, version: "1.4.0", gitCommit: HEAD, environmentPlaceholder: "qqenv-placeholderqq",
+      schemaVersion: 1, version: "1.4.0", gitCommit: HEAD, environmentPlaceholder: "qqenv-phldrqq",
       templates: ["us-east-1", "us-west-2"].map((region) => ({ region, part: "access", file: `templates/${region}/access.template.json`, sha256: "0".repeat(64) })),
       packages: [], images: { worker: `public.ecr.aws/agentx/agentx-worker@sha256:${"b".repeat(64)}`, slack: `public.ecr.aws/agentx/agentx-slack@sha256:${"c".repeat(64)}` },
     });
@@ -862,9 +862,9 @@ describe("agentx init", () => {
     h.store.values.set(lockParameterName("staging"), JSON.stringify({ holder: "arn:aws:sts::123456789012:assumed-role/Admin/bob", command: "deploy install", acquiredAt: new Date(T0).toISOString() }));
     const code = await h.run([...UNATTENDED, "--alert-webhook-env", "HOOK"], { processEnv: { ...UNATTENDED_ENV, HOOK: WEBHOOK } });
     expect(code).toBe(2);
-    expect(h.printed()).toContain(`locked by arn:aws:sts::123456789012:assumed-role/Admin/bob running "deploy install" since ${new Date(T0).toISOString()}; wait for it to finish, then run the same agentx command again`);
+    expect(h.printed()).toContain(`locked by arn:aws:sts::123456789012:assumed-role/Admin/bob running "deploy install" since ${new Date(T0).toISOString()}; wait for it to finish, then run the same rovara command again`);
     expect(h.store.values.has(installAnswersParameterName("staging"))).toBe(false);
-    expect(h.secrets.values.has("agentx/staging/alert-endpoint")).toBe(false);
+    expect(h.secrets.values.has("rovara-cloud/staging/alert-endpoint")).toBe(false);
   });
 
   it("offers to take over its own lock left by a closed terminal", async () => {
@@ -872,7 +872,7 @@ describe("agentx init", () => {
     h.store.values.set(lockParameterName("staging"), JSON.stringify({ holder: HOLDER, command: "init", acquiredAt: new Date(T0 - 60_000).toISOString() }));
     const prompter = scriptedPrompter([...FIRST_RUN, true, ...SLACK, ...SIGNIN, ...FINISH]);
     expect(await h.run([], { prompter })).toBe(0);
-    expect(prompter.asked).toContain("Environment staging is locked by your own earlier agentx init since 2026-09-26T23:59:00.000Z. Take the lock over? Say yes only if that run is no longer going.");
+    expect(prompter.asked).toContain("Environment staging is locked by your own earlier rovara init since 2026-09-26T23:59:00.000Z. Take the lock over? Say yes only if that run is no longer going.");
     expect(h.store.values.has(lockParameterName("staging"))).toBe(false);
   });
 
@@ -880,18 +880,18 @@ describe("agentx init", () => {
     const h = await harness();
     h.deployer.fail.set(environmentStackName("staging", "control-plane"), new Error("Resource limit exceeded"));
     expect(await h.run([...UNATTENDED, "--alert-webhook-env", "HOOK"], { processEnv: { ...UNATTENDED_ENV, HOOK: WEBHOOK } })).not.toBe(0);
-    expect(h.secrets.values.get("agentx/staging/alert-endpoint")).toBe(WEBHOOK);
+    expect(h.secrets.values.get("rovara-cloud/staging/alert-endpoint")).toBe(WEBHOOK);
     expect(h.printed()).toContain("https://events.pagerduty.com/...");
 
     // A resume without the flag keeps the stored address.
     expect(await h.run(UNATTENDED, { processEnv: UNATTENDED_ENV })).not.toBe(0);
-    expect(h.secrets.values.get("agentx/staging/alert-endpoint")).toBe(WEBHOOK);
+    expect(h.secrets.values.get("rovara-cloud/staging/alert-endpoint")).toBe(WEBHOOK);
 
     // A resume with the flag replaces it.
     const rotated = WEBHOOK.replace("0123SECRET", "4567ROTATED");
     h.deployer.fail.clear();
     expect(await h.run([...UNATTENDED, "--alert-webhook-env", "HOOK"], { processEnv: { ...UNATTENDED_ENV, HOOK: rotated } })).toBe(0);
-    expect(h.secrets.values.get("agentx/staging/alert-endpoint")).toBe(rotated);
+    expect(h.secrets.values.get("rovara-cloud/staging/alert-endpoint")).toBe(rotated);
 
     const everywhere = await everywhereButSecrets(h);
     expect(everywhere).toContain("https://events.pagerduty.com/...");
@@ -906,13 +906,13 @@ describe("agentx init", () => {
     await h.run([...UNATTENDED, "--alert-webhook-env", "HOOK"], { processEnv: { ...UNATTENDED_ENV, HOOK: WEBHOOK } });
     expect(await h.run([...UNATTENDED, "--alert-webhook-env", "HOOK"], { processEnv: { ...UNATTENDED_ENV, HOOK: "https://api.opsgenie.com/v2/SECRETother" } })).toBe(2);
     expect(h.printed()).toContain("--alert-webhook-env HOOK (https://api.opsgenie.com/...) differs from what this install started with (https://events.pagerduty.com/...)");
-    expect(h.secrets.values.get("agentx/staging/alert-endpoint")).toBe(WEBHOOK);
+    expect(h.secrets.values.get("rovara-cloud/staging/alert-endpoint")).toBe(WEBHOOK);
     expect(h.printed()).not.toContain("SECRETother");
   });
 });
 
 const OPENROUTER_KEY = "sk-or-v1-feedface0123456789OPENROUTERSECRET";
-const OPENROUTER_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/openrouter-AbCdEf";
+const OPENROUTER_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/openrouter-AbCdEf";
 // A first run choosing OpenRouter: FIRST_RUN's settings with OpenRouter as the provider, then the
 // three model ids and the key (hidden), then the plan's confirm.
 const OPENROUTER_FIRST_RUN = [
@@ -926,9 +926,9 @@ function recordingOpenRouterChecks() {
   return { calls, checks: passingChecks({ openRouter: async (modelId, config, key) => { calls.push({ modelId, ...(config.secretArn === undefined ? {} : { secretArn: config.secretArn }), ...(key === undefined ? {} : { key }) }); } }) };
 }
 
-describe("agentx init with an Anthropic API key (spec 054)", () => {
+describe("rovara init with an Anthropic API key (spec 054)", () => {
   const ANTHROPIC_KEY = "sk-ant-api03-0123456789abcdefKEYSECRET";
-  const ANTHROPIC_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/anthropic-AbCdEf";
+  const ANTHROPIC_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/anthropic-AbCdEf";
 
   it("stores the key and checks the models with it, then refuses to deploy: the model proxy serves Bedrock Claude only (R52), so no stack is touched", async () => {
     const h = await harness();
@@ -936,7 +936,7 @@ describe("agentx init with an Anthropic API key (spec 054)", () => {
     const checks = passingChecks({ directProvider: async (provider, modelId, _config, key) => { calls.push({ provider, modelId, ...(key === undefined ? {} : { key }) }); } });
     const argv = [...UNATTENDED, "--alert-email", "ops@example.com", "--model-provider", "anthropic", "--anthropic-key-env", "ANTHROPIC_KEY_FOR_AGENTX"];
     expect(await h.run(argv, { processEnv: { ...UNATTENDED_ENV, ANTHROPIC_KEY_FOR_AGENTX: ANTHROPIC_KEY }, checks })).not.toBe(0);
-    expect(h.secrets.values.get("agentx/staging/anthropic")).toBe(ANTHROPIC_KEY);
+    expect(h.secrets.values.get("rovara-cloud/staging/anthropic")).toBe(ANTHROPIC_KEY);
     expect(checks.models).toEqual([]);
     expect(calls).toEqual([
       { provider: "anthropic", modelId: "claude-sonnet-4-6", key: ANTHROPIC_KEY },
@@ -950,8 +950,8 @@ describe("agentx init with an Anthropic API key (spec 054)", () => {
   });
 });
 
-describe("agentx init with OpenRouter", () => {
-  it("asks for the key hidden and stores it raw in agentx/<env>/openrouter, then refuses to deploy: the model proxy serves Bedrock Claude only (R52)", async () => {
+describe("rovara init with OpenRouter", () => {
+  it("asks for the key hidden and stores it raw in rovara-cloud/<env>/openrouter, then refuses to deploy: the model proxy serves Bedrock Claude only (R52)", async () => {
     const h = await harness();
     const { calls, checks } = recordingOpenRouterChecks();
     const prompter = scriptedPrompter([...OPENROUTER_FIRST_RUN]);
@@ -959,11 +959,11 @@ describe("agentx init with OpenRouter", () => {
     const recording = { ...prompter, secret: async (question: string, options: { flag: string; multiline?: boolean }) => { hidden.push(question); return prompter.secret(question, options); } };
     expect(await h.run([], { prompter: recording, checks })).not.toBe(0);
     expect(hidden[0]).toBe("OpenRouter API key");
-    expect(h.secrets.values.get("agentx/staging/openrouter")).toBe(OPENROUTER_KEY);
+    expect(h.secrets.values.get("rovara-cloud/staging/openrouter")).toBe(OPENROUTER_KEY);
     // The preflight used the key before it was stored, so no Bedrock fallback was checked.
     expect(checks.models).toEqual([]);
     expect(calls.map((call) => call.key)).toEqual([OPENROUTER_KEY, OPENROUTER_KEY]);
-    expect(h.printed()).toContain("agentx/staging/openrouter");
+    expect(h.printed()).toContain("rovara-cloud/staging/openrouter");
     expect(h.printed()).toContain("the orchestrator model provider is openrouter, but this install calls every model through its model proxy");
     expect((await readInstallAnswers(h.store, "staging"))?.models.openRouter).toEqual({ secretArn: OPENROUTER_ARN });
     expect(h.deployer.requests).toEqual([]);
@@ -974,7 +974,7 @@ describe("agentx init with OpenRouter", () => {
     const h = await harness();
     const { checks } = recordingOpenRouterChecks();
     expect(await h.run([], { prompter: scriptedPrompter(OPENROUTER_FIRST_RUN), checks })).not.toBe(0);
-    expect(h.secrets.values.get("agentx/staging/openrouter")).toBe(OPENROUTER_KEY);
+    expect(h.secrets.values.get("rovara-cloud/staging/openrouter")).toBe(OPENROUTER_KEY);
     const prompter = scriptedPrompter([]);
     expect(await h.run([], { prompter, checks })).not.toBe(0);
     expect(prompter.asked).not.toContain("OpenRouter API key");
@@ -990,11 +990,11 @@ describe("agentx init with OpenRouter", () => {
     const argv = [...UNATTENDED, "--alert-email", "ops@example.com", ...OPENROUTER_FLAGS, "--openrouter-key-file", keyFile];
     // Each run stops at the deploy, which refuses a provider the model proxy does not serve (R52); the key was stored first.
     expect(await h.run(argv, { processEnv: UNATTENDED_ENV, checks })).not.toBe(0);
-    expect(h.secrets.values.get("agentx/staging/openrouter")).toBe(OPENROUTER_KEY);
+    expect(h.secrets.values.get("rovara-cloud/staging/openrouter")).toBe(OPENROUTER_KEY);
     const rotated = OPENROUTER_KEY.replace("feedface", "0ddba11x");
     await writeFile(keyFile, rotated);
     expect(await h.run(argv, { processEnv: UNATTENDED_ENV, checks })).not.toBe(0);
-    expect(h.secrets.values.get("agentx/staging/openrouter")).toBe(rotated);
+    expect(h.secrets.values.get("rovara-cloud/staging/openrouter")).toBe(rotated);
     expect(h.deployer.requests).toEqual([]);
     const everywhere = await everywhereButSecrets(h);
     for (const key of [OPENROUTER_KEY, rotated]) expect(everywhere).not.toContain(key);
@@ -1005,7 +1005,7 @@ describe("agentx init with OpenRouter", () => {
     expect(await h.run([...UNATTENDED, "--alert-email", "ops@example.com", ...OPENROUTER_FLAGS], { processEnv: UNATTENDED_ENV })).toBe(2);
     for (const flag of ["--openrouter-key-file", "--openrouter-key-env", "--openrouter-secret-arn"]) expect(h.printed()).toContain(flag);
     expect(h.store.values.has(installAnswersParameterName("staging"))).toBe(false);
-    expect(h.secrets.values.has("agentx/staging/openrouter")).toBe(false);
+    expect(h.secrets.values.has("rovara-cloud/staging/openrouter")).toBe(false);
     expect(h.deployer.requests).toEqual([]);
   });
 
@@ -1014,7 +1014,7 @@ describe("agentx init with OpenRouter", () => {
     expect(await h.run([...UNATTENDED, "--alert-email", "ops@example.com", "--worker-provider", "openrouter", "--worker-model", "qwen/qwen3-coder"], { processEnv: UNATTENDED_ENV })).toBe(2);
     for (const flag of ["--openrouter-key-file", "--openrouter-key-env", "--openrouter-secret-arn"]) expect(h.printed()).toContain(flag);
     expect(h.store.values.has(installAnswersParameterName("staging"))).toBe(false);
-    expect(h.secrets.values.has("agentx/staging/openrouter")).toBe(false);
+    expect(h.secrets.values.has("rovara-cloud/staging/openrouter")).toBe(false);
     expect(h.deployer.requests).toEqual([]);
   });
 
@@ -1024,7 +1024,7 @@ describe("agentx init with OpenRouter", () => {
     const { calls, checks } = recordingOpenRouterChecks();
     h.deployer.fail.set(environmentStackName("staging", "control-plane"), new Error("Resource limit exceeded"));
     expect(await h.run([...UNATTENDED, "--alert-email", "ops@example.com", ...OPENROUTER_FLAGS, "--openrouter-secret-arn", own], { processEnv: UNATTENDED_ENV, checks })).not.toBe(0);
-    expect(h.secrets.values.has("agentx/staging/openrouter")).toBe(false);
+    expect(h.secrets.values.has("rovara-cloud/staging/openrouter")).toBe(false);
     expect(calls[0]).toEqual({ modelId: "qwen/qwen3-coder", secretArn: own });
     expect((await readInstallAnswers(h.store, "staging"))?.models.openRouter).toEqual({ secretArn: own });
     expect(await h.run([...UNATTENDED, "--openrouter-key-env", "OR_KEY"], { processEnv: { ...UNATTENDED_ENV, OR_KEY: OPENROUTER_KEY } })).toBe(2);
@@ -1039,7 +1039,7 @@ describe("agentx init with OpenRouter", () => {
     expect(models?.orchestrator).toBe("us.anthropic.claude-sonnet-4-6");
     expect(models?.providers).toBeUndefined();
     expect(models?.openRouter).toBeUndefined();
-    expect(h.secrets.values.has("agentx/staging/openrouter")).toBe(false);
+    expect(h.secrets.values.has("rovara-cloud/staging/openrouter")).toBe(false);
   });
 });
 
@@ -1053,11 +1053,11 @@ async function bundleDir(overrides: Record<string, unknown> = {}): Promise<strin
   }));
   return dir;
 }
-const OPERATOR = "arn:aws:sts::123456789012:assumed-role/agentx-staging-operator/alice";
+const OPERATOR = "arn:aws:sts::123456789012:assumed-role/rovara-cloud-staging-operator/alice";
 // A bundle resume's settings leave out what the export knew (the install name, engine, sign-in,
 // models, boundary and operator); then the plan.
 const BUNDLE_RUN = [...settingsScript({ email: ADMIN_EMAIL, owner: "acme", fixed: true, advanced: { alertEmail: "ops@example.com" } }), true];
-const ACCESS_DEPLOYED = { status: async (name: string) => (name === "agentx-staging-access" ? "CREATE_COMPLETE" : undefined) };
+const ACCESS_DEPLOYED = { status: async (name: string) => (name === "rovara-cloud-staging-access" ? "CREATE_COMPLETE" : undefined) };
 
 describe("init --resume --from-bundle (FR-026)", () => {
   it("asks only what the export did not know, records access as done, and goes on with core", async () => {
@@ -1109,7 +1109,7 @@ describe("init --resume --from-bundle (FR-026)", () => {
     const stackStatus = { ...ACCESS_DEPLOYED, parameters: async () => ({ PermissionsBoundaryArn: "arn:aws:iam::123456789012:policy/other-boundary" }) };
     const code = await h.run(["--resume", "--from-bundle", await bundleDir({ permissionsBoundaryArn: boundary })], { prompter: scriptedPrompter([]), stackStatus });
     expect(code).not.toBe(0);
-    expect(h.printed()).toContain(`the bundle's permission boundary (${boundary}) differs from the one the access stack agentx-staging-access was deployed with (arn:aws:iam::123456789012:policy/other-boundary)`);
+    expect(h.printed()).toContain(`the bundle's permission boundary (${boundary}) differs from the one the access stack rovara-cloud-staging-access was deployed with (arn:aws:iam::123456789012:policy/other-boundary)`);
     expect(h.store.values.has(installAnswersParameterName("staging"))).toBe(false);
     // The default boundary is an empty parameter; a bundle with no boundary matches it.
     const matching = { ...ACCESS_DEPLOYED, parameters: async () => ({ PermissionsBoundaryArn: "" }) };
@@ -1123,14 +1123,14 @@ describe("init --resume --from-bundle (FR-026)", () => {
     const h = await harness();
     const code = await h.run(["--resume", "--from-bundle", await bundleDir()], { prompter: scriptedPrompter([]), stackStatus: { status: async () => undefined } });
     expect(code).not.toBe(0);
-    expect(h.printed()).toContain("the access stack agentx-staging-access does not exist yet; ask your platform team to run deploy-access.sh from the bundle, then run this again");
+    expect(h.printed()).toContain("the access stack rovara-cloud-staging-access does not exist yet; ask your platform team to run deploy-access.sh from the bundle, then run this again");
   });
 
   it("refuses an access stack that rolled back", async () => {
     const h = await harness();
     const code = await h.run(["--resume", "--from-bundle", await bundleDir()], { prompter: scriptedPrompter([]), stackStatus: { status: async () => "ROLLBACK_COMPLETE" } });
     expect(code).not.toBe(0);
-    expect(h.printed()).toContain("the access stack agentx-staging-access is ROLLBACK_COMPLETE; ask your platform team to fix it");
+    expect(h.printed()).toContain("the access stack rovara-cloud-staging-access is ROLLBACK_COMPLETE; ask your platform team to fix it");
     expect(h.store.values.has(installAnswersParameterName("staging"))).toBe(false);
   });
 
@@ -1168,7 +1168,7 @@ describe("a plain --resume under the operator role", () => {
     const h = await harness();
     const operator = { ...h.deps.deploy, identity: { get: async () => ({ account: "123456789012", arn: OPERATOR }) } };
     expect(await h.run(["--resume"], { prompter: scriptedPrompter([]), deploy: operator })).toBe(2);
-    expect(h.printed()).toContain("there is no install of environment staging to resume in account 123456789012 (us-east-1); you are using the AgentX operator role, so if your platform team deployed the access stack from an export bundle, run agentx init --resume --from-bundle <the bundle directory>");
+    expect(h.printed()).toContain("there is no install of environment staging to resume in account 123456789012 (us-east-1); you are using the AgentX operator role, so if your platform team deployed the access stack from an export bundle, run rovara init --resume --from-bundle <the bundle directory>");
   });
 });
 
@@ -1179,7 +1179,7 @@ describe("the access step under the operator role (FR-019)", () => {
     // A first run as the operator: answers are saved, prerequisites pass, then access refuses.
     const code = await h.run([], { prompter: scriptedPrompter([...FIRST_RUN]), deploy: operator });
     expect(code).not.toBe(0);
-    expect(h.printed()).toContain("the access stack needs admin rights, and you are using the AgentX operator role; ask your platform team to deploy it (agentx init --export, then deploy-access.sh), or run agentx init with admin credentials");
+    expect(h.printed()).toContain("the access stack needs admin rights, and you are using the AgentX operator role; ask your platform team to deploy it (rovara init --export, then deploy-access.sh), or run rovara init with admin credentials");
     expect(h.deployer.requests).toEqual([]);
   });
 });
@@ -1197,7 +1197,7 @@ describe("init --export and production (spec decision, 2026-09-27)", () => {
   it("refuses production when SSM already holds its settings", async () => {
     const h = await harness();
     const store = new MemoryParameterStore();
-    store.values.set("/agentx/production/settings", "{}");
+    store.values.set("/rovara-cloud/production/settings", "{}");
     const err: string[] = [];
     const out = await tmp("agentx-export-");
     const code = await executeCli(["--env", "production", "init", "--export", join(out, "bundle"), "--region", "us-east-1", "--release", h.release, "--account", "123456789012"], { deploy: { store, identity: EXPORTER }, stdout: { write: () => true }, stderr: { write: (text: string) => err.push(text) } });

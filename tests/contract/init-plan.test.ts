@@ -1,4 +1,4 @@
-// FR-017 and FR-022: before agentx init creates anything, it shows every stack, role, secret, app
+// FR-017 and FR-022: before rovara init creates anything, it shows every stack, role, secret, app
 // and setting it will create, and an estimated monthly cost at a stated usage, then asks. No test
 // here reaches AWS, GitHub or Slack.
 import { describe, expect, it } from "vitest";
@@ -57,11 +57,11 @@ describe("install plan", () => {
     const text = installPlanText(answers, estimateMonthlyCost(answers.models), []);
     for (const expected of [
       "AgentX will create the install staging in AWS account 123456789012 (us-east-1), from release 1.2.3 with published templates:",
-      "agentx-staging-access, agentx-staging-foundation, agentx-staging-identity, agentx-staging-control-plane, agentx-staging-runtime, agentx-staging-slack",
-      "IAM roles agentx-staging-cloudformation (CloudFormation deploys through it) and agentx-staging-operator (day-2 commands)",
-      "the permission boundary agentx-staging-boundary, which every AgentX role carries; the stacks' own roles live under the IAM path /agentx/staging/",
-      "Secrets agentx/staging/callback-signing-key, agentx/staging/github-app, agentx/staging/slack",
-      "Settings under /agentx/staging/",
+      "rovara-cloud-staging-access, rovara-cloud-staging-foundation, rovara-cloud-staging-identity, rovara-cloud-staging-control-plane, rovara-cloud-staging-runtime, rovara-cloud-staging-slack",
+      "IAM roles rovara-cloud-staging-cloudformation (CloudFormation deploys through it) and rovara-cloud-staging-operator (day-2 commands)",
+      "the permission boundary rovara-cloud-staging-boundary, which every AgentX role carries; the stacks' own roles live under the IAM path /rovara-cloud/staging/",
+      "Secrets rovara-cloud/staging/callback-signing-key, rovara-cloud/staging/github-app, rovara-cloud/staging/slack",
+      "Settings under /rovara-cloud/staging/",
       "In GitHub: an app named \"AgentX acme (staging)\" owned by acme, with read and write access to contents, pull requests and issues, and read access to metadata, and a webhook that sends pull request and comment events to the control plane.",
       "In Slack: an app named \"AgentX acme (staging)\".",
       "- Alerts: email to ops@example.com, subscribed and tested at the end of the install",
@@ -77,40 +77,40 @@ describe("install plan", () => {
   it("names a company boundary, a webhook's host only, no identity stack with your own OIDC, and the notes", () => {
     const answers = sampleAnswers({
       permissionsBoundaryArn: "arn:aws:iam::123456789012:policy/CompanyBoundary",
-      alert: { kind: "webhook", display: "https://events.pagerduty.com/...", secretName: "agentx/staging/alert-endpoint" },
+      alert: { kind: "webhook", display: "https://events.pagerduty.com/...", secretName: "rovara-cloud/staging/alert-endpoint" },
       identity: { mode: "oidc", issuer: "https://id.example.com", audience: "a", clientId: "c", adminClaim: "groups", adminValues: ["x"] },
     });
     const text = installPlanText(answers, estimateMonthlyCost(answers.models), ["a note"]);
     expect(text).toContain("the permission boundary arn:aws:iam::123456789012:policy/CompanyBoundary");
-    expect(text).toContain("- Alerts: https://events.pagerduty.com/... (the full address is kept in agentx/staging/alert-endpoint), subscribed and tested at the end of the install");
-    expect(text).toContain("agentx/staging/alert-endpoint");
-    expect(text).not.toContain("agentx-staging-identity");
+    expect(text).toContain("- Alerts: https://events.pagerduty.com/... (the full address is kept in rovara-cloud/staging/alert-endpoint), subscribed and tested at the end of the install");
+    expect(text).toContain("rovara-cloud/staging/alert-endpoint");
+    expect(text).not.toContain("rovara-cloud-staging-identity");
     expect(text).toContain("a note");
   });
 
-  it("lists agentx/<env>/openrouter when init stores the OpenRouter key, and only reads a secret you made yourself", () => {
+  it("lists rovara-cloud/<env>/openrouter when init stores the OpenRouter key, and only reads a secret you made yourself", () => {
     const openRouterModels = { orchestrator: "a/b", classifier: "a/b", worker: "a/b", providers: { orchestrator: "openrouter", classifier: "openrouter", worker: "openrouter" } } as const;
     const answers = sampleAnswers({ models: openRouterModels });
     const text = installPlanText(answers, estimateMonthlyCost(answers.models), [], { storesOpenRouterKey: true, openRouterProviders: ["deepinfra/turbo"] });
-    expect(text).toContain("Secrets agentx/staging/callback-signing-key, agentx/staging/github-app, agentx/staging/slack, agentx/staging/openrouter");
-    expect(text).toContain("- OpenRouter: your API key is stored in the new secret agentx/staging/openrouter; provider allowlist deepinfra/turbo; fallbacks disabled, data_collection=deny");
+    expect(text).toContain("Secrets rovara-cloud/staging/callback-signing-key, rovara-cloud/staging/github-app, rovara-cloud/staging/slack, rovara-cloud/staging/openrouter");
+    expect(text).toContain("- OpenRouter: your API key is stored in the new secret rovara-cloud/staging/openrouter; provider allowlist deepinfra/turbo; fallbacks disabled, data_collection=deny");
 
     const own = sampleAnswers({ models: { ...openRouterModels, openRouter: { secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:mine-AbCdEf" } } });
     const ownText = installPlanText(own, estimateMonthlyCost(own.models), []);
-    expect(ownText).not.toContain("agentx/staging/openrouter");
+    expect(ownText).not.toContain("rovara-cloud/staging/openrouter");
     expect(ownText).toContain("- OpenRouter: read existing secret arn:aws:secretsmanager:us-east-1:123456789012:secret:mine-AbCdEf");
   });
 
   it("names the budget and says alerts are subscribed during init", () => {
     const text = installPlanText(sampleAnswers({ budget: { monthlyUsd: 100, scope: "tag" } }), estimateMonthlyCost(sampleAnswers().models), []);
     expect(text).toContain("- Alerts: email to ops@example.com, subscribed and tested at the end of the install");
-    expect(text).toContain("- Budget agentx-staging-monthly: $100 a month for costs tagged agentx:env=staging, alerting at 80% spent and 100% forecast");
+    expect(text).toContain("- Budget rovara-cloud-staging-monthly: $100 a month for costs tagged rovara-cloud:env=staging, alerting at 80% spent and 100% forecast");
     expect(installPlanText(sampleAnswers(), estimateMonthlyCost(sampleAnswers().models), [])).toContain("- Budget: none");
   });
 
   it("names the budget for the whole account when the scope is account", () => {
     const text = installPlanText(sampleAnswers({ budget: { monthlyUsd: 250, scope: "account" } }), estimateMonthlyCost(sampleAnswers().models), []);
-    expect(text).toContain("- Budget agentx-staging-monthly: $250 a month for the whole account, alerting at 80% spent and 100% forecast");
+    expect(text).toContain("- Budget rovara-cloud-staging-monthly: $250 a month for the whole account, alerting at 80% spent and 100% forecast");
   });
 
   it("creates nothing when the engineer says no", async () => {

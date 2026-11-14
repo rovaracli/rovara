@@ -19,7 +19,7 @@ export const WORKER_QUALIFIED_AMI_SETTING = "worker-qualified-ami";
  */
 export const WORKER_AMI_ID_PATTERN = /^ami-[0-9a-f]{8}([0-9a-f]{9})?$/;
 
-/** The SSM parameter name for an environment, from its settings prefix (`/agentx/<env>/`). */
+/** The SSM parameter name for an environment, from its settings prefix (`/rovara-cloud/<env>/`). */
 export function workerQualifiedAmiParameterName(settingsPrefix: string): string {
   return `${settingsPrefix}${WORKER_QUALIFIED_AMI_SETTING}`;
 }

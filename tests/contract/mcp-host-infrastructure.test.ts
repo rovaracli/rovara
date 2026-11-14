@@ -15,7 +15,7 @@ const at = (value: unknown, ...path: Array<string | number>): unknown => path.re
 const CERTIFICATE = "arn:aws:acm:us-east-1:111111111111:certificate/abc";
 const ORG = "org_aaaaaaaaaaaaaaaaaaaa";
 const RUNNER_IMAGE = `111111111111.dkr.ecr.us-east-1.amazonaws.com/rovara/mcp-runner@sha256:${"a".repeat(64)}`;
-const TLS_SECRET = "arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/mcp-controller-tls-AbCdEf";
+const TLS_SECRET = "arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/ent/mcp-controller-tls-AbCdEf";
 
 const PUBLIC_NPM = { publicNpm: true, natSubnetId: "subnet-0cccccccccccccccc", registryEgressCidrs: [], npmRegistry: "https://registry.npmjs.org/" } as const;
 
@@ -289,15 +289,15 @@ describe("the runner execution role", () => {
     const statements = statementsOf("RunnerExecutionRole");
     const secrets = statements.find((statement) => statement.Sid === "ReadApprovedServerSecrets")!;
     expect(actionsOf(secrets)).toEqual(["secretsmanager:GetSecretValue"]);
-    expect(JSON.stringify(secrets.Resource)).toContain(`secret:agentx/ent/org-connectors/${ORG}/mcppkg*`);
+    expect(JSON.stringify(secrets.Resource)).toContain(`secret:rovara-cloud/ent/org-connectors/${ORG}/mcppkg*`);
     // review S1: what IAM would match. A package-run server's secret, and not an address-based server's token, a connection's key, a hook's secret or another org's secret.
     const matches = (resource: unknown, arn: string): boolean => {
       const pattern = ((resource as { "Fn::Join": [string, unknown[]] })["Fn::Join"][1]).map((part) => (typeof part === "string" ? part : "aws")).join("");
       return new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, ".*")}$`, "u").test(arn);
     };
-    const own = (leaf: string): string => `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/org-connectors/${ORG}/${leaf}`;
+    const own = (leaf: string): string => `arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/ent/org-connectors/${ORG}/${leaf}`;
     expect(matches(secrets.Resource, own("mcppkg0123456789abc-AbCdEf"))).toBe(true);
-    for (const other of [own("mcp0123456789abcdef-AbCdEf"), own("mcpsim000001-AbCdEf"), own("mcpxpkg0123456789-AbCdEf"), own("con_aaaaaaaaaaaaaaaaaaaa-AbCdEf"), `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/org-connectors/org_bbbbbbbbbbbbbbbbbbbb/mcppkg0123456789abc-AbCdEf`, `arn:aws:secretsmanager:us-east-1:111111111111:secret:agentx/ent/org-hooks/${ORG}/mcppkg0123456789abc-AbCdEf`]) expect(matches(secrets.Resource, other), other).toBe(false);
+    for (const other of [own("mcp0123456789abcdef-AbCdEf"), own("mcpsim000001-AbCdEf"), own("mcpxpkg0123456789-AbCdEf"), own("con_aaaaaaaaaaaaaaaaaaaa-AbCdEf"), `arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/ent/org-connectors/org_bbbbbbbbbbbbbbbbbbbb/mcppkg0123456789abc-AbCdEf`, `arn:aws:secretsmanager:us-east-1:111111111111:secret:rovara-cloud/ent/org-hooks/${ORG}/mcppkg0123456789abc-AbCdEf`]) expect(matches(secrets.Resource, other), other).toBe(false);
     expect(at(secrets, "Condition", "StringEquals", "secretsmanager:ResourceTag/rovara:org")).toBe(ORG);
     const pull = statements.find((statement) => statement.Sid === "PullTheRunnerImage")!;
     expect(JSON.stringify(pull.Resource)).toContain("repository/rovara/mcp-runner");

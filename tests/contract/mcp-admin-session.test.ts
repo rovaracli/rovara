@@ -53,7 +53,7 @@ function toolError(result: Awaited<ReturnType<Client["callTool"]>>) {
 }
 
 async function server(options: { admin?: { expiresAt: number }; adminApiVersion?: string; developerSignIn?: false }) {
-  const home = await mkdtemp(join(tmpdir(), "agentx-admin-mcp-"));
+  const home = await mkdtemp(join(tmpdir(), "rovara-cloud-admin-mcp-"));
   const tokenStore = new InMemoryTokenStore();
   if (options.developerSignIn !== false) {
     await saveDeveloperEnvironment(home, "staging", { url: URL_BASE, issuer: ISSUER, tokenEndpoint: `${ISSUER}/token`, revocationEndpoint: `${ISSUER}/revoke` });
@@ -145,7 +145,7 @@ function streamTransport(toServer: PassThrough, fromServer: PassThrough): Transp
 
 describe("agentx mcp's own admin sign-in (main.ts, A14)", () => {
   async function cli(admin: { expiresAt: number }) {
-    const home = await mkdtemp(join(tmpdir(), "agentx-admin-mcp-cli-"));
+    const home = await mkdtemp(join(tmpdir(), "rovara-cloud-admin-mcp-cli-"));
     const tokenStore = new InMemoryTokenStore();
     // The recorded environment's cache, with a trailing slash on the control plane's URL.
     const settings = { ...stagingSettings, controlPlaneUrl: `${URL_BASE}/` };

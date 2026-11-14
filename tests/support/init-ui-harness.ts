@@ -41,7 +41,7 @@ export async function releaseDir(regions: readonly string[] = ["us-east-1"]): Pr
     }
   }
   await writeFile(join(dir, "release.json"), JSON.stringify({
-    schemaVersion: 1, version: "1.2.3", gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-placeholderqq", templates, packages: [],
+    schemaVersion: 1, version: "1.2.3", gitCommit: "a".repeat(40), environmentPlaceholder: "qqenv-phldrqq", templates, packages: [],
     images: { worker: `public.ecr.aws/agentx/worker@sha256:${"a".repeat(64)}`, slack: `public.ecr.aws/agentx/slack@sha256:${"b".repeat(64)}` },
   }));
   return dir;
@@ -84,7 +84,7 @@ export async function finishStackOutputs(name: string): Promise<Record<string, s
 export async function harness() {
   let clock = T0;
   const store = new MemoryParameterStore();
-  const secrets = memoryInitSecrets({ "agentx/staging/slack": JSON.stringify({ botToken: "unset", signingSecret: "placeholder" }) });
+  const secrets = memoryInitSecrets({ "rovara-cloud/staging/slack": JSON.stringify({ botToken: "unset", signingSecret: "placeholder" }) });
   const deployer = scriptedDeployer(allStackOutputs());
   const github = fakeGitHubApi();
   const out: string[] = [];

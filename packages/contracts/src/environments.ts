@@ -1,22 +1,23 @@
+import { RESOURCE_PREFIX, METRICS_NAMESPACE_ROOT } from "./resource-prefix.js";
 import { z } from "zod";
 
-/** Lowercase letters, digits and single hyphens; starts with a letter; at most 20 characters. */
-export const ENVIRONMENT_NAME_PATTERN = /^[a-z](?:[a-z0-9-]{0,18}[a-z0-9])?$/;
+/** Lowercase letters, digits and single hyphens; starts with a letter; at most 14 characters. */
+export const ENVIRONMENT_NAME_PATTERN = /^[a-z](?:[a-z0-9-]{0,12}[a-z0-9])?$/;
 
 export const EnvironmentNameSchema = z
   .string()
-  .regex(ENVIRONMENT_NAME_PATTERN, "environment name must be lowercase letters, digits and hyphens, start with a letter, and be at most 20 characters")
+  .regex(ENVIRONMENT_NAME_PATTERN, "environment name must be lowercase letters, digits and hyphens, start with a letter, and be at most 14 characters")
   .refine((name) => !name.includes("--"), "environment name must not contain a doubled hyphen")
   .refine(
     (name) => name !== "connectors",
-    'environment name must not be "connectors" (reserved: its connector-secret prefix agentx/connectors/connectors/ would fall under the legacy connector secrets grant agentx/connectors/*)',
+    'environment name must not be "connectors" (reserved: it would read as the legacy deployment connector secrets, agentx/connectors/*)',
   )
-  // The placeholder itself ("qqenv-placeholderqq") must still parse, because
+  // The placeholder itself ("qqenv-phldrqq") must still parse, because
   // environmentNaming(ENVIRONMENT_PLACEHOLDER) has to work; every other name containing "qqenv" is
   // refused so no real environment can collide with the reserved placeholder. templates.ts is not
   // imported here (it would create a cycle); the literal is duplicated and pinned by tests instead.
   .refine(
-    (name) => name === "qqenv-placeholderqq" || !name.includes("qqenv"),
+    (name) => name === "qqenv-phldrqq" || !name.includes("qqenv"),
     'environment name must not contain "qqenv" (reserved for published templates)',
   );
 
@@ -51,15 +52,15 @@ function checked(env: string): string {
 }
 
 export function environmentStackName(env: string, part: StackPart): string {
-  return `agentx-${checked(env)}-${part}`;
+  return `${RESOURCE_PREFIX}-${checked(env)}-${part}`;
 }
 
 export function environmentSettingsPrefix(env: string): string {
-  return `/agentx/${checked(env)}/`;
+  return `/${RESOURCE_PREFIX}/${checked(env)}/`;
 }
 
 export function environmentConnectorSecretPrefix(env: string): string {
-  return `agentx/${checked(env)}/connectors/`;
+  return `${RESOURCE_PREFIX}/${checked(env)}/connectors/`;
 }
 
 /**
@@ -69,35 +70,35 @@ export function environmentConnectorSecretPrefix(env: string): string {
  */
 /** The CloudWatch namespace the environment's metrics are published in. */
 export function environmentMetricsNamespace(env: string): string {
-  return `AgentX/${checked(env)}`;
+  return `${METRICS_NAMESPACE_ROOT}/${checked(env)}`;
 }
 
-/** The prefix of the environment's alarm names (`agentx-<env>-` plus the suffix). */
+/** The prefix of the environment's alarm names (`rovara-cloud-<env>-` plus the suffix). */
 export function environmentAlarmPrefix(env: string): string {
-  return `agentx-${checked(env)}-`;
+  return `${RESOURCE_PREFIX}-${checked(env)}-`;
 }
 
 /** The runtime catalog the environment's project setup records are admitted under. */
 export function environmentProjectSetupRuntimeCatalogId(env: string): string {
-  return `agentx-${checked(env)}-project-setup-runtime-v1`;
+  return `${RESOURCE_PREFIX}-${checked(env)}-project-setup-runtime-v1`;
 }
 
 /** The runtime catalog the environment's end-to-end feature rounds are admitted under. */
 export function environmentE2eFeatureRuntimeCatalogId(env: string): string {
-  return `agentx-${checked(env)}-e2e-mock-runtime-v1`;
+  return `${RESOURCE_PREFIX}-${checked(env)}-e2e-mock-runtime-v1`;
 }
 
 /** ECR pull-through cache rule prefix for `env`'s access stack. */
 export function environmentPullThroughPrefix(env: string): string {
-  return `agentx-${checked(env)}`;
+  return `${RESOURCE_PREFIX}-${checked(env)}`;
 }
 
 /** The role CloudFormation assumes to deploy `env`'s stacks. */
 export function environmentCloudFormationRoleName(env: string): string {
-  return `agentx-${checked(env)}-cloudformation`;
+  return `${RESOURCE_PREFIX}-${checked(env)}-cloudformation`;
 }
 
 /** The role an operator assumes to run `agentx` against `env`. */
 export function environmentOperatorRoleName(env: string): string {
-  return `agentx-${checked(env)}-operator`;
+  return `${RESOURCE_PREFIX}-${checked(env)}-operator`;
 }

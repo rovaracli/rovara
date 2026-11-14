@@ -1,12 +1,12 @@
 // FR-031 to FR-035. The Slack app is created from a manifest AgentX generates; the bot token and
 // signing secret come from hidden prompts (or files or environment variables), are checked with
-// auth.test, and go straight into the control plane's agentx/<env>/slack secret. The ingress
+// auth.test, and go straight into the control plane's rovara-cloud/<env>/slack secret. The ingress
 // still refuses its own and other bots' messages (FR-034): nothing here changes that.
 // FR-033 (amended): Slack has no API that reports whether it verified a Request URL, and it never
 // checks the interactivity URL, so AgentX sends both URLs a correctly signed Slack-style request
 // itself, then asks the engineer to confirm the Event Subscriptions page shows Verified.
 import { createHmac, randomBytes } from "node:crypto";
-import { AgentXError, agentXError, environmentStackName, errorStatus } from "@agentx/contracts";
+import { AgentXError, agentXError, environmentStackName, errorStatus, RESOURCE_PREFIX } from "@agentx/contracts";
 import type { InitContext, InitSecrets, SecretFlags } from "./context.js";
 import { SLACK_BOT_HANDLE_PATTERN, type InstallProgress } from "./install-state.js";
 import { askForm, checkSlackBotToken, checkSlackSigningSecret, cleanSecret, fieldCheck, secretFromSource, type FormField, type SecretSource } from "./prompts.js";
@@ -91,7 +91,7 @@ export interface SlackManifest {
 
 export function slackBotDisplayName(appName: string): string {
   const name = appName.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
-  return name === "" ? "agentx" : name;
+  return name === "" ? "rovara" : name;
 }
 
 export function slackAppManifest(input: { appName: string; eventsUrl: string; interactivityUrl: string; signInCallbackUrl: string; publicInvitations?: boolean; privateInvitations?: boolean }): SlackManifest {
@@ -125,7 +125,7 @@ export function slackCreateAppUrl(manifest: SlackManifest): string {
 }
 
 export function slackSecretName(env: string): string {
-  return `agentx/${env}/slack`;
+  return `${RESOURCE_PREFIX}/${env}/slack`;
 }
 
 /** The Slack secret's JSON object; an empty one when it is missing, not JSON, or not an object. */
@@ -196,11 +196,11 @@ function storedSlackBotToken(raw: string | undefined): string | undefined {
   return typeof token === "string" && token.startsWith("xoxb-") ? token : undefined;
 }
 
-/** The environment's Slack bot token, from agentx/<env>/slack; the error never echoes what the secret holds. */
+/** The environment's Slack bot token, from rovara-cloud/<env>/slack; the error never echoes what the secret holds. */
 export async function readSlackBotToken(secrets: Pick<InitSecrets, "get">, env: string): Promise<string> {
   const token = storedSlackBotToken(await secrets.get(slackSecretName(env)));
   if (token === undefined) {
-    throw agentXError("CONFIG_INVALID", `secret ${slackSecretName(env)} holds no Slack bot token; run agentx init again so the Slack app step stores it`);
+    throw agentXError("CONFIG_INVALID", `secret ${slackSecretName(env)} holds no Slack bot token; run rovara init again so the Slack app step stores it`);
   }
   return token;
 }
@@ -217,9 +217,9 @@ export async function readSlackTeamIdFromSecret(input: { secrets: Pick<InitSecre
   const token = storedSlackBotToken(await input.secrets.get(input.secretId));
   if (token === undefined) {
     throw new SlackTeamIdError(
-      `secret ${input.secretId} has no Slack bot token yet; finish the Slack app step of agentx init first`,
+      `secret ${input.secretId} has no Slack bot token yet; finish the Slack app step of rovara init first`,
       "no bot token in the Slack secret",
-      "finish the Slack app step of agentx init, then run agentx signin enable slack",
+      "finish the Slack app step of rovara init, then run rovara signin enable slack",
     );
   }
   let auth: Awaited<ReturnType<SlackApi["authTest"]>>;
@@ -227,14 +227,14 @@ export async function readSlackTeamIdFromSecret(input: { secrets: Pick<InitSecre
     auth = await input.api.authTest(token);
   } catch {
     // A network failure or an HTTP error from Slack; the underlying message is not kept.
-    throw new SlackTeamIdError("Slack auth.test could not be reached; try again in a minute", "Slack could not be reached", "check this computer's network access to slack.com, then run agentx signin enable slack");
+    throw new SlackTeamIdError("Slack auth.test could not be reached; try again in a minute", "Slack could not be reached", "check this computer's network access to slack.com, then run rovara signin enable slack");
   }
   if (!auth.ok || auth.team_id === undefined) {
     const code = safeSlackErrorCode(auth.error);
     throw new SlackTeamIdError(
       `Slack refused the stored bot token (${code}); ${replaceSlackBotTokenStep(input.secretId)}`,
       `Slack refused the bot token (${code})`,
-      `${replaceSlackBotTokenStep(input.secretId)}, then run agentx signin enable slack`,
+      `${replaceSlackBotTokenStep(input.secretId)}, then run rovara signin enable slack`,
     );
   }
   return { teamId: auth.team_id, ...(auth.scopes === undefined ? {} : { scopes: auth.scopes }) };
@@ -278,7 +278,7 @@ export async function probeSlackUrls(input: {
   });
   const retry = async (url: string) => {
     if (input.now() >= deadline) {
-      throw new SlackSignatureRefusedError(`${url} still refuses requests signed with the new signing secret after ${Math.round(timeoutMs / 60_000)} minutes; check that you pasted the Signing Secret, not the Client Secret, and that this computer's clock is correct (Slack refuses signatures older than 5 minutes), then run agentx init again`, url);
+      throw new SlackSignatureRefusedError(`${url} still refuses requests signed with the new signing secret after ${Math.round(timeoutMs / 60_000)} minutes; check that you pasted the Signing Secret, not the Client Secret, and that this computer's clock is correct (Slack refuses signatures older than 5 minutes), then run rovara init again`, url);
     }
     if (!told) {
       input.write("Waiting for the Slack ingress to pick up the new signing secret (it keeps the old one for up to 5 minutes)");
@@ -307,7 +307,7 @@ export async function probeSlackUrls(input: {
     if (response.status >= 500) throw agentXError("RUNTIME_UNAVAILABLE", `${input.interactivityUrl} answered HTTP ${response.status}; check the control plane's SlackIngress logs`);
     if (response.status >= 200 && response.status < 300) return;
     if (response.status !== 401) {
-      throw agentXError("CONFIG_INVALID", `${input.interactivityUrl} answered HTTP ${response.status}, so the route or stage is wrong; check that the Slack URLs come from this environment's control-plane stack outputs, then run agentx init again`);
+      throw agentXError("CONFIG_INVALID", `${input.interactivityUrl} answered HTTP ${response.status}, so the route or stage is wrong; check that the Slack URLs come from this environment's control-plane stack outputs, then run rovara init again`);
     }
     await retry(input.interactivityUrl);
   }
@@ -372,7 +372,7 @@ async function controlPlaneSlackUrls(context: InitContext): Promise<{ stackName:
   const eventsUrl = outputs?.SlackEventsUrl;
   const interactivityUrl = outputs?.SlackInteractivityUrl;
   if (eventsUrl === undefined || interactivityUrl === undefined) {
-    throw agentXError("CONFIG_INVALID", `stack ${stackName} reports no Slack URLs; the control-plane step must finish first, so run agentx init again`);
+    throw agentXError("CONFIG_INVALID", `stack ${stackName} reports no Slack URLs; the control-plane step must finish first, so run rovara init again`);
   }
   const apiEndpoint = outputs?.ApiEndpoint;
   return { stackName, eventsUrl, interactivityUrl, ...(apiEndpoint === undefined ? {} : { apiEndpoint }) };
@@ -387,7 +387,7 @@ export function slackAppStep(api: SlackApi): InitStep<InitContext> {
       const { appName } = context.answers.slack;
       const { stackName, eventsUrl, interactivityUrl, apiEndpoint } = await controlPlaneSlackUrls(context);
       if (apiEndpoint === undefined) {
-        throw agentXError("CONFIG_INVALID", `stack ${stackName} reports no ApiEndpoint; the control-plane step must finish first, so run agentx init again`);
+        throw agentXError("CONFIG_INVALID", `stack ${stackName} reports no ApiEndpoint; the control-plane step must finish first, so run rovara init again`);
       }
       const resuming = progress.current().steps["slack-app"]?.status === "waiting";
       const url = slackCreateAppUrl(slackAppManifest({ appName, eventsUrl, interactivityUrl, signInCallbackUrl: slackSignInCallbackUrl(apiEndpoint) }));
@@ -427,7 +427,7 @@ export function slackAppStep(api: SlackApi): InitStep<InitContext> {
         if (installed === "installed") break;
         show({ stage: "approval", appName });
         if (context.surface === undefined) {
-          return { status: "waiting", message: `Slack is waiting for a workspace admin to approve "${appName}". Once it is installed, run agentx init --env ${env} --region ${context.answers.region} again; it continues here.` };
+          return { status: "waiting", message: `Slack is waiting for a workspace admin to approve "${appName}". Once it is installed, run rovara init --env ${env} --region ${context.answers.region} again; it continues here.` };
         }
       }
 
@@ -467,7 +467,7 @@ export const SLACK_HOW_QUESTION = "How do you want to make the Slack app?";
  * secret, and records the app, however it was made. */
 async function finishSlackApp(context: InitContext, progress: ProgressHandle, show: (card: SlackCardInput) => void, appName: string, bot: SlackValues): Promise<StepOutcome> {
   const name = slackSecretName(context.env);
-  // Read, merge, write: a concurrent writer (this step alongside `agentx signin enable slack`)
+  // Read, merge, write: a concurrent writer (this step alongside `rovara signin enable slack`)
   // could lose an update. Left for admins to avoid by running one at a time.
   const before = await context.secrets.get(name);
   const withBot = slackSecretWithBot(before, { signingSecret: bot.signingSecret, botToken: bot.botToken });
@@ -524,14 +524,14 @@ async function collectSlackValues(context: InitContext, api: SlackApi, progress:
   const info = await api.botsInfo(botToken, auth.bot_id);
   const appId = info.bot?.app_id;
   if (!info.ok || appId === undefined) {
-    throw agentXError("RUNTIME_UNAVAILABLE", `Slack bots.info did not return the app id (${info.error ?? "no app_id"}); run agentx init again`);
+    throw agentXError("RUNTIME_UNAVAILABLE", `Slack bots.info did not return the app id (${info.error ?? "no app_id"}); run rovara init again`);
   }
 
   const where = auth.url === undefined ? "" : ` (${auth.url})`;
   context.write(`Bot @${auth.user ?? auth.user_id} in workspace ${auth.team ?? auth.team_id}${where}`);
   show({ stage: "bot", user: auth.user ?? auth.user_id, team: auth.team ?? auth.team_id });
   if (!(await context.prompter.confirm("Is this the AgentX bot in the right workspace?", { defaultValue: true }))) {
-    throw agentXError("CONFIG_INVALID", "nothing was saved; copy the Bot User OAuth Token from the AgentX app in the right workspace, then run agentx init again");
+    throw agentXError("CONFIG_INVALID", "nothing was saved; copy the Bot User OAuth Token from the AgentX app in the right workspace, then run rovara init again");
   }
   // A handle Slack sends that does not match the stored handle's own pattern is left out rather
   // than refusing the whole install over a display name AgentX never validated itself.
@@ -558,7 +558,7 @@ function storedSigningSecret(raw: string | undefined): string | undefined {
 export async function verifySlackUrls(context: InitContext, progress: ProgressHandle): Promise<void> {
   const name = slackSecretName(context.env);
   const signingSecret = storedSigningSecret(await context.secrets.get(name));
-  if (signingSecret === undefined) throw agentXError("CONFIG_INVALID", `secret ${name} holds no Slack signing secret; run agentx init again to repeat the Slack app step`);
+  if (signingSecret === undefined) throw agentXError("CONFIG_INVALID", `secret ${name} holds no Slack signing secret; run rovara init again to repeat the Slack app step`);
   const { eventsUrl, interactivityUrl } = await controlPlaneSlackUrls(context);
   const appId = progress.current().slack?.appId;
   const page = appId === undefined ? "https://api.slack.com/apps" : `https://api.slack.com/apps/${appId}/event-subscriptions`;
@@ -587,7 +587,7 @@ export async function verifySlackUrls(context: InitContext, progress: ProgressHa
       show({ stage: "verify", pageUrl: page });
       if (context.openBrowser !== undefined) await context.openBrowser(page);
       if (!(await context.prompter.confirm("Does Slack show the Request URL as Verified?", { defaultValue: true }))) {
-        throw agentXError("CONFIG_INVALID", `Slack has not verified ${eventsUrl}. On ${page}, press Retry; if it still fails, look for invalid_signature in the control plane's SlackIngress logs, then run agentx init again`);
+        throw agentXError("CONFIG_INVALID", `Slack has not verified ${eventsUrl}. On ${page}, press Retry; if it still fails, look for invalid_signature in the control plane's SlackIngress logs, then run rovara init again`);
       }
     },
   });

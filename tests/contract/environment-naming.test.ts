@@ -27,7 +27,7 @@ const NAME_PROPERTY_BY_TYPE = new Set(["AWS::ApiGatewayV2::Api"]);
 // AWS::Cognito::UserPoolGroup also carries a "GroupName" key, but (unlike every other resource
 // PHYSICAL_NAME_KEYS covers, e.g. an EC2 security group) it is unique only within its own user
 // pool, not the account and region, and the identity stack deliberately uses the same group name
-// (agentx-admin) in every environment's own pool. Excluded rather than added to PHYSICAL_NAME_KEYS.
+// (rovara-cloud-admin) in every environment's own pool. Excluded rather than added to PHYSICAL_NAME_KEYS.
 const POOL_SCOPED_TYPES = new Set(["AWS::Cognito::UserPoolGroup"]);
 
 function physicalNames(stack: Stack): string[] {
@@ -77,16 +77,16 @@ describe("environment naming", () => {
   it("names everything with the environment", () => {
     const naming = environmentNaming("dev-2");
     expect(naming.env).toBe("dev-2");
-    expect(naming.stackName("control-plane")).toBe("agentx-dev-2-control-plane");
-    expect(naming.apiName).toBe("agentx-dev-2-control-plane");
-    expect(naming.resourcePrefix).toBe("agentx-dev-2");
-    expect(naming.workspaceKeyAlias).toBe("alias/agentx/dev-2/workspaces");
-    expect(naming.alertsTopicName).toBe("agentx-dev-2-alerts");
-    expect(naming.alarmName("ConnectorBroken")).toBe("agentx-dev-2-ConnectorBroken");
-    expect(naming.connectorSecretPrefix).toBe("agentx/dev-2/connectors/");
-    expect(naming.metricsNamespace).toBe("AgentX/dev-2");
+    expect(naming.stackName("control-plane")).toBe("rovara-cloud-dev-2-control-plane");
+    expect(naming.apiName).toBe("rovara-cloud-dev-2-control-plane");
+    expect(naming.resourcePrefix).toBe("rovara-cloud-dev-2");
+    expect(naming.workspaceKeyAlias).toBe("alias/rovara-cloud/dev-2/workspaces");
+    expect(naming.alertsTopicName).toBe("rovara-cloud-dev-2-alerts");
+    expect(naming.alarmName("ConnectorBroken")).toBe("rovara-cloud-dev-2-ConnectorBroken");
+    expect(naming.connectorSecretPrefix).toBe("rovara-cloud/dev-2/connectors/");
+    expect(naming.metricsNamespace).toBe("RovaraCloud/dev-2");
     expect(naming.environmentTagValue).toBe("dev-2");
-    expect(naming.taskFamily).toBe("agentx-dev-2-slack-orchestrator");
+    expect(naming.taskFamily).toBe("rovara-cloud-dev-2-slack-orchestrator");
   });
 
   it("refuses an invalid environment from context", () => {
@@ -95,14 +95,14 @@ describe("environment naming", () => {
 
   it("names the access stack's pieces with the environment", () => {
     const naming = environmentNaming("dev-2");
-    expect(naming.stackName("access")).toBe("agentx-dev-2-access");
-    expect(naming.pullThroughPrefix).toBe("agentx-dev-2");
-    expect(naming.cloudFormationRoleName).toBe("agentx-dev-2-cloudformation");
-    expect(naming.operatorRoleName).toBe("agentx-dev-2-operator");
+    expect(naming.stackName("access")).toBe("rovara-cloud-dev-2-access");
+    expect(naming.pullThroughPrefix).toBe("rovara-cloud-dev-2");
+    expect(naming.cloudFormationRoleName).toBe("rovara-cloud-dev-2-cloudformation");
+    expect(naming.operatorRoleName).toBe("rovara-cloud-dev-2-operator");
   });
 
   it("keeps the pull-through prefix within ECR's 30-character limit for the longest name", () => {
-    expect(environmentNaming("abcdefghijklmnopqrst").pullThroughPrefix.length).toBeLessThanOrEqual(30);
+    expect(environmentNaming("abcdefghijklmn").pullThroughPrefix.length).toBeLessThanOrEqual(30);
   });
 
   it("has no access stack pieces for the deployment that predates environments", () => {
@@ -117,7 +117,7 @@ describe("environment naming", () => {
     const production = productionStacks(buildAgentXApp({ agentxEnv: "production" }));
     const staging = productionStacks(buildAgentXApp({ agentxEnv: "staging" }));
     expect(production.map((stack) => stack.stackName).sort()).toEqual([
-      "agentx-production-access", "agentx-production-control-plane", "agentx-production-foundation", "agentx-production-identity", "agentx-production-runtime", "agentx-production-slack",
+      "rovara-cloud-production-access", "rovara-cloud-production-control-plane", "rovara-cloud-production-foundation", "rovara-cloud-production-identity", "rovara-cloud-production-runtime", "rovara-cloud-production-slack",
     ]);
     const productionNames = new Set(production.flatMap(physicalNames));
     const shared = staging.flatMap(physicalNames).filter((name) => productionNames.has(name));
@@ -127,25 +127,25 @@ describe("environment naming", () => {
     expect(sharedExports).toEqual([]);
   }, 240_000);
 
-  it("tags every stack's resources with agentx:env", () => {
+  it("tags every stack's resources with rovara-cloud:env", () => {
     const staging = productionStacks(buildAgentXApp({ agentxEnv: "staging" }));
-    const foundation = staging.find((stack) => stack.stackName === "agentx-staging-foundation")!;
-    const runtime = staging.find((stack) => stack.stackName === "agentx-staging-runtime")!;
-    const control = staging.find((stack) => stack.stackName === "agentx-staging-control-plane")!;
-    const slack = staging.find((stack) => stack.stackName === "agentx-staging-slack")!;
+    const foundation = staging.find((stack) => stack.stackName === "rovara-cloud-staging-foundation")!;
+    const runtime = staging.find((stack) => stack.stackName === "rovara-cloud-staging-runtime")!;
+    const control = staging.find((stack) => stack.stackName === "rovara-cloud-staging-control-plane")!;
+    const slack = staging.find((stack) => stack.stackName === "rovara-cloud-staging-slack")!;
 
     Template.fromStack(foundation).hasResourceProperties("AWS::EC2::SecurityGroup", {
-      Tags: Match.arrayWith([{ Key: "agentx:env", Value: "staging" }]),
+      Tags: Match.arrayWith([{ Key: "rovara-cloud:env", Value: "staging" }]),
     });
     // SSM parameters are tagged with a plain string map, not the {Key,Value} array most other resources use.
     Template.fromStack(runtime).hasResourceProperties("AWS::SSM::Parameter", {
-      Tags: Match.objectLike({ "agentx:env": "staging" }),
+      Tags: Match.objectLike({ "rovara-cloud:env": "staging" }),
     });
     Template.fromStack(control).hasResourceProperties("AWS::DynamoDB::Table", {
-      Tags: Match.arrayWith([{ Key: "agentx:env", Value: "staging" }]),
+      Tags: Match.arrayWith([{ Key: "rovara-cloud:env", Value: "staging" }]),
     });
     Template.fromStack(slack).hasResourceProperties("AWS::ECS::Cluster", {
-      Tags: Match.arrayWith([{ Key: "agentx:env", Value: "staging" }]),
+      Tags: Match.arrayWith([{ Key: "rovara-cloud:env", Value: "staging" }]),
     });
   }, 120_000);
 
@@ -166,17 +166,17 @@ describe("environment naming", () => {
 
   it("scopes connector secrets to the environment, and grants nothing of retired runtime", () => {
     const staging = productionStacks(buildAgentXApp({ agentxEnv: "staging" }));
-    const control = staging.find((stack) => stack.stackName === "agentx-staging-control-plane")!;
+    const control = staging.find((stack) => stack.stackName === "rovara-cloud-staging-control-plane")!;
     const text = JSON.stringify(Template.fromStack(control).toJSON());
     expect(text).not.toMatch(/bedrock-[a-z]+:/);
-    expect(text).toContain("secret:agentx/staging/connectors/*");
+    expect(text).toContain("secret:rovara-cloud/staging/connectors/*");
     expect(text).not.toContain("secret:agentx/connectors/*");
   }, 120_000);
 
   it("does not leak the legacy production Environment tag onto foundation or worker settings resources", () => {
     const staging = productionStacks(buildAgentXApp({ agentxEnv: "staging" }));
-    const foundation = staging.find((stack) => stack.stackName === "agentx-staging-foundation")!;
-    const runtime = staging.find((stack) => stack.stackName === "agentx-staging-runtime")!;
+    const foundation = staging.find((stack) => stack.stackName === "rovara-cloud-staging-foundation")!;
+    const runtime = staging.find((stack) => stack.stackName === "rovara-cloud-staging-runtime")!;
     for (const stack of [foundation, runtime]) {
       const text = JSON.stringify(Template.fromStack(stack).toJSON());
       expect(text).not.toContain('"Environment":"production"');
@@ -186,7 +186,7 @@ describe("environment naming", () => {
   }, 120_000);
 
   it("gives the environment's broker its connector secret prefix, by the environment name it derives it from, and leaves legacy unchanged", () => {
-    const stagingControl = productionStacks(buildAgentXApp({ agentxEnv: "staging" })).find((stack) => stack.stackName === "agentx-staging-control-plane")!;
+    const stagingControl = productionStacks(buildAgentXApp({ agentxEnv: "staging" })).find((stack) => stack.stackName === "rovara-cloud-staging-control-plane")!;
     // Not as a variable (the broker's variables are held to Lambda's 4 KB): the broker derives it from AGENTX_ENV (broker-environment.ts), to the
     // prefix the environment's secrets are named with (naming.connectorSecretPrefix).
     const stagingTemplate = JSON.stringify(Template.fromStack(stagingControl).toJSON());
@@ -195,20 +195,20 @@ describe("environment naming", () => {
     const derived: MutableEnvironment = { AGENTX_ENV: "staging", AGENTX_NAMES: "{}", AWS_REGION: "us-east-1", AGENTX_ACCOUNT_ID: "123456789012" };
     hydrateBrokerEnvironment(derived);
     expect(derived.CONNECTOR_SECRET_PREFIX).toBe(environmentNaming("staging").connectorSecretPrefix);
-    expect(derived.CONNECTOR_SECRET_PREFIX).toBe("agentx/staging/connectors/");
+    expect(derived.CONNECTOR_SECRET_PREFIX).toBe("rovara-cloud/staging/connectors/");
     const legacyControl = productionStacks(buildAgentXApp()).find((stack) => stack.stackName === "AgentXControlPlane")!;
     expect(JSON.stringify(Template.fromStack(legacyControl).toJSON())).not.toContain("CONNECTOR_SECRET_PREFIX");
   }, 240_000);
 
-  it("names the environment's Slack secret under agentx/<env>/, which the operator may write", () => {
-    const stagingControl = productionStacks(buildAgentXApp({ agentxEnv: "staging" })).find((stack) => stack.stackName === "agentx-staging-control-plane")!;
+  it("names the environment's Slack secret under rovara-cloud/<env>/, which the operator may write", () => {
+    const stagingControl = productionStacks(buildAgentXApp({ agentxEnv: "staging" })).find((stack) => stack.stackName === "rovara-cloud-staging-control-plane")!;
     const secrets = Object.values(Template.fromStack(stagingControl).findResources("AWS::SecretsManager::Secret") as Record<string, { Properties: { Name?: string; Description?: string } }>)
       .filter((secret) => secret.Properties.Description?.includes("Slack app credentials"));
     expect(secrets).toHaveLength(1);
-    expect(secrets[0]!.Properties.Name).toBe("agentx/staging/slack");
+    expect(secrets[0]!.Properties.Name).toBe("rovara-cloud/staging/slack");
     const operatorSecrets = operatorRoleStatements({
       env: "staging", partition: "aws", region: "us-east-1", account: "123456789012", artifactBucketArn: "arn:aws:s3:::b",
-      pullThroughPrefix: "agentx-staging", cloudFormationRoleName: "agentx-staging-cloudformation",
+      pullThroughPrefix: "rovara-cloud-staging", cloudFormationRoleName: "rovara-cloud-staging-cloudformation",
     }).find((statement) => statement.Sid === "Secrets")!;
     // Secrets Manager appends a six-character suffix to the name in the secret's ARN.
     const secretArn = `arn:aws:secretsmanager:us-east-1:123456789012:secret:${secrets[0]!.Properties.Name}-AbCdEf`;
@@ -220,8 +220,8 @@ describe("environment naming", () => {
     const stacks = productionStacks(buildAgentXApp({ agentxEnv: "staging" }));
     const text = stacks.map((stack) => JSON.stringify(Template.fromStack(stack).toJSON())).join("\n");
     expect(text).not.toMatch(/"(?:Namespace|MetricNamespace)":"AgentX"/);
-    expect(text).toContain("\"AGENTX_METRICS_NAMESPACE\":\"AgentX/staging\"");
-    expect(text).toMatch(/"(?:Namespace|MetricNamespace)":"AgentX\/staging"/);
+    expect(text).toContain("\"AGENTX_METRICS_NAMESPACE\":\"RovaraCloud/staging\"");
+    expect(text).toMatch(/"(?:Namespace|MetricNamespace)":"RovaraCloud\/staging"/);
   }, 240_000);
 
   it("deploys legacy production next to a staging environment with no shared physical name or export name", () => {

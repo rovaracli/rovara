@@ -3,6 +3,7 @@
 // An approval is a record the CUSTOMER writes to the approval bucket after checking a bundle's id (`approvals/<bundle id>.json`). It pins the exact
 // S3 object versions of the files to deploy and the stack parameters the deployment may set. The deployer (a function in the customer's account that
 // the Rovara operator role can only invoke with a bundle id) re-verifies the bundle against it and deploys. Deleting the record withdraws the approval.
+import { RESOURCE_PREFIX } from "./resource-prefix.js";
 import { z } from "zod";
 import { environmentSettingsPrefix } from "./environments.js";
 import { ApprovalBuildSchema } from "./synth-build.js";
@@ -58,8 +59,8 @@ export const DeployerResultSchema = z.object({
 }).strict();
 export type DeployerResult = z.infer<typeof DeployerResultSchema>;
 
-export const bundleDeployerFunctionName = (env: string): string => `agentx-${env}-bundle-deployer`;
-export const bundleDeployerRoleName = (env: string): string => `agentx-${env}-bundle-deployer`;
+export const bundleDeployerFunctionName = (env: string): string => `${RESOURCE_PREFIX}-${env}-bundle-deployer`;
+export const bundleDeployerRoleName = (env: string): string => `${RESOURCE_PREFIX}-${env}-bundle-deployer`;
 export const bundleApprovalKey = (bundleId: string): string => `${APPROVAL_PREFIX}${bundleId}.json`;
 export const approvedFileKey = (bundleId: string, file: string): string => `${APPROVED_FILES_PREFIX}${bundleId}/${file}`;
 export const deployingKey = (bundleId: string, file: string): string => `${DEPLOYING_PREFIX}${bundleId}/${file}`;

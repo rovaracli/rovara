@@ -303,7 +303,7 @@ run_stage2() {
   chmod 0400 "$STAGE2_FILE"
   actual=$(sha256sum "$STAGE2_FILE")
   [[ "${actual%% *}" == "$AGENTX_BOOT_STAGE2_SHA256" ]] \
-    || fail "the worker image's boot steps do not match this control plane; the two come from different releases, so run agentx upgrade"
+    || fail "the worker image's boot steps do not match this control plane; the two come from different releases, so run rovara upgrade"
   source "$STAGE2_FILE"
   stage2_main "$region" "$instance_id"
 }

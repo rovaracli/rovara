@@ -1,4 +1,4 @@
-// agentx connector add mcp (spec 055 phase 3), from docs/connectors/custom-mcp.md: any remote MCP
+// rovara connector add mcp (spec 055 phase 3), from docs/connectors/custom-mcp.md: any remote MCP
 // server, with no AgentX code for it. The test read is the server's own tool list, from which the
 // engineer approves tools; the credential is pinned to the endpoint's host, and the project gets a
 // new revision only once the control plane's preflight confirms the connector is connected.
@@ -118,7 +118,7 @@ export async function addMcp(input: McpAddInput): Promise<{ ref: string; name: s
   const nameProblem = (value: string) => (ConnectorNameSchema.safeParse(value.trim()).success ? undefined : "a connector name is lowercase letters, digits and hyphens, at most 20, starting with a letter");
   const name = (flags.name ?? base.name ?? await input.prompter.ask("A name for this connector (its tools are shown as <name>__<tool>)", { flag: "--name", defaultValue: nameFrom(vendor), validate: nameProblem })).trim();
   if (nameProblem(name) !== undefined) throw agentXError("CONFIG_INVALID", `--name ${name}: ${nameProblem(name)!}`);
-  const rerun = input.rerun ?? `agentx --env ${input.env} connector add mcp --project ${input.projectName} --endpoint ${endpoint} --name ${name}`;
+  const rerun = input.rerun ?? `rovara --env ${input.env} connector add mcp --project ${input.projectName} --endpoint ${endpoint} --name ${name}`;
 
   await refuseLegacyGitHubMcp({ projectName: input.projectName, configDir: input.services.configDir, rerun });
   const existing = (await loadProjectFile({ projectName: input.projectName, configDir: input.services.configDir, rerun })).integrations?.connectors ?? [];

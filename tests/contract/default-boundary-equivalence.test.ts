@@ -4,6 +4,7 @@
 //  - the others are evaluated for every action (all 190 IAM actions in tests/fixtures/iam-actions-2026-11-03.json, from AWS's service authorization reference, every action either boundary
 //    names, and a few sample actions of other services) on every resource (each ARN either boundary names, with wildcards filled in, plus near misses): a matching Deny refuses, else a matching Allow permits.
 // If a later change to the boundary is meant to differ, update the fixture's expectations in the same change and say why; this test exists so a size cut never widens (or narrows) it by accident.
+// 0.7.0 (environments named under rovara-cloud): the fixture's names were rewritten from agentx-<env>-..., agentx/<env>/... and agentx:env to rovara-cloud, nothing else.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { defaultBoundaryStatements, type PolicyScope, type PolicyStatementJson } from "../../infra/lib/access-policies.js";
@@ -75,19 +76,19 @@ describe("the default boundary after the 2026-11-03 tightening", () => {
 
     it(`${name}: still permits what the roles' own policies need, by name`, () => {
       const { account, env, cloudFormationRoleName } = scope;
-      const path = `arn:aws:iam::${account}:role/agentx/${env}/`;
+      const path = `arn:aws:iam::${account}:role/rovara-cloud/${env}/`;
       const cases: Array<[string, string]> = [
-        ["iam:CreateRole", `${path}agentx-${env}-broker-role`],
-        ["iam:PassRole", `${path}agentx-${env}-broker-role`],
+        ["iam:CreateRole", `${path}rovara-cloud-${env}-broker-role`],
+        ["iam:PassRole", `${path}rovara-cloud-${env}-broker-role`],
         ["iam:PassRole", `arn:aws:iam::${account}:role/${cloudFormationRoleName}`],
-        ["iam:PassRole", `arn:aws:iam::${account}:role/agentx-${env}-img-create`],
-        ["iam:AttachRolePolicy", `arn:aws:iam::${account}:role/agentx-${env}-img-create`],
-        ["iam:GetRole", `arn:aws:iam::${account}:role/agentx-${env}-broker-role`],
-        ["iam:DeleteRole", `arn:aws:iam::${account}:role/agentx-${env}-img-push`],
-        ["iam:CreateInstanceProfile", `arn:aws:iam::${account}:instance-profile/agentx/${env}/agentx-${env}-workers`],
-        ["iam:AddRoleToInstanceProfile", `arn:aws:iam::${account}:instance-profile/agentx/${env}/agentx-${env}-workers`],
-        ["iam:RemoveRoleFromInstanceProfile", `arn:aws:iam::${account}:instance-profile/agentx/${env}/agentx-${env}-workers`],
-        ["iam:CreatePolicyVersion", `arn:aws:iam::${account}:policy/agentx/${env}/agentx-${env}-broker-state`],
+        ["iam:PassRole", `arn:aws:iam::${account}:role/rovara-cloud-${env}-img-create`],
+        ["iam:AttachRolePolicy", `arn:aws:iam::${account}:role/rovara-cloud-${env}-img-create`],
+        ["iam:GetRole", `arn:aws:iam::${account}:role/rovara-cloud-${env}-broker-role`],
+        ["iam:DeleteRole", `arn:aws:iam::${account}:role/rovara-cloud-${env}-img-push`],
+        ["iam:CreateInstanceProfile", `arn:aws:iam::${account}:instance-profile/rovara-cloud/${env}/rovara-cloud-${env}-workers`],
+        ["iam:AddRoleToInstanceProfile", `arn:aws:iam::${account}:instance-profile/rovara-cloud/${env}/rovara-cloud-${env}-workers`],
+        ["iam:RemoveRoleFromInstanceProfile", `arn:aws:iam::${account}:instance-profile/rovara-cloud/${env}/rovara-cloud-${env}-workers`],
+        ["iam:CreatePolicyVersion", `arn:aws:iam::${account}:policy/rovara-cloud/${env}/rovara-cloud-${env}-broker-state`],
         ["sts:GetCallerIdentity", "*"],
         ["servicequotas:GetServiceQuota", "*"],
         ["bedrock:GetFoundationModelAvailability", "*"],
@@ -96,10 +97,10 @@ describe("the default boundary after the 2026-11-03 tightening", () => {
       for (const [action, resource] of cases) expect(permits(after, action, resource), `${action} on ${resource}`).toBe(true);
       // And still refuses what it did: other environments' roles, the access stack's roles at the root, the boundary itself, users and groups, organizations, an instance profile outside the path.
       const refused: Array<[string, string]> = [
-        ["iam:CreateRole", `arn:aws:iam::${account}:role/agentx/other/agentx-other-broker-role`],
-        ["iam:PassRole", `arn:aws:iam::${account}:role/agentx-${env}-operator`],
-        ["iam:CreatePolicyVersion", `arn:aws:iam::${account}:policy/agentx/${env}/agentx-${env}-boundary`],
-        ["iam:SetDefaultPolicyVersion", `arn:aws:iam::${account}:policy/agentx/${env}/agentx-${env}-broker-state`],
+        ["iam:CreateRole", `arn:aws:iam::${account}:role/rovara-cloud/other/rovara-cloud-other-broker-role`],
+        ["iam:PassRole", `arn:aws:iam::${account}:role/rovara-cloud-${env}-operator`],
+        ["iam:CreatePolicyVersion", `arn:aws:iam::${account}:policy/rovara-cloud/${env}/rovara-cloud-${env}-boundary`],
+        ["iam:SetDefaultPolicyVersion", `arn:aws:iam::${account}:policy/rovara-cloud/${env}/rovara-cloud-${env}-broker-state`],
         ["iam:CreateUser", `arn:aws:iam::${account}:user/x`],
         ["organizations:CreateAccount", "*"],
         ["iam:CreateInstanceProfile", `arn:aws:iam::${account}:instance-profile/other`],

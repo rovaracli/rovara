@@ -1,4 +1,4 @@
-// agentx whoami and agentx logout (FR-011).
+// rovara whoami and rovara logout (FR-011).
 import { CLI_PACKAGE_NAME, TASK_VIEW_HEADER, TASK_VIEW_VERSION, AGENTX_CLI_CLIENT_ID, AgentXError, AgentXErrorCodeSchema, AppMeResponseSchema, AppProjectDetailSchema, ProjectArchiveResponseSchema, ProjectSettingsResponseSchema, type AppProjectDetail, type ProjectSettingsBody, type ProjectSettingsResponse, DeveloperCreateProjectResponseSchema, DeveloperProjectsResponseSchema, StartIdentityLinkAppResponseSchema, UnlinkIdentityAppResponseSchema, UnlinkableSignInMethodSchema, agentXError, type DeveloperCreateProjectResponse, type DeveloperProject, type DeveloperProjectsResponse, type LinkedIdentity } from "@agentx/contracts";
 import { sanitizeServerText } from "../auth.js";
 import { developerTokenKey, removeDeveloperEnvironment, resolveDeveloperEnvironment } from "./config.js";
@@ -137,7 +137,7 @@ export function whoamiText(result: { env: string; url: string; projects: Develop
     // Only Rovara Cloud signs people in with these two. There an owner or admin creates the org's projects; a member asks one.
     if (developer.provider === "cloud" || developer.provider === "github") {
       lines.push(developer.orgRole === "owner" || developer.orgRole === "admin"
-        ? "Connect GitHub with agentx github connect, then: agentx project create --repository <owner/name>"
+        ? "Connect GitHub with rovara github connect, then: rovara project create --repository <owner/name>"
         : "You cannot use any project yet: ask your org's owner to create one.");
     } else {
       lines.push("You cannot use any project yet: join a project's Slack channel, or ask an admin for access.");
@@ -150,11 +150,11 @@ export function whoamiText(result: { env: string; url: string; projects: Develop
   return `${lines.join("\n")}\n`;
 }
 
-/** What `agentx signin unlink` and `agentx signin link` call each method, for their output. */
+/** What `rovara signin unlink` and `rovara signin link` call each method, for their output. */
 const UNLINK_METHOD_TEXT = { cloud: "Rovara sign-in (email code)", github: "GitHub" } as const;
 
 /**
- * Runs a fresh sign-in for the environment (Plan 2, Task 8b): the browser or email-code sign-in `agentx login` does, with `exclude` (the
+ * Runs a fresh sign-in for the environment (Plan 2, Task 8b): the browser or email-code sign-in `rovara login` does, with `exclude` (the
  * method being removed) left out of the choices. `reason` is the server's words for why one is needed.
  */
 export type FreshSignIn = (input: { env: string; url: string; exclude?: "cloud" | "github"; reason: string }) => Promise<void>;
@@ -176,7 +176,7 @@ export async function withFreshSignIn<T>(deps: DeveloperSessionDeps, env: string
 }
 
 /**
- * `agentx signin unlink <cloud|github>` (Plan 2, Task 8 and 8b): removes one sign-in method from the signed-in developer's own account. Sessions
+ * `rovara signin unlink <cloud|github>` (Plan 2, Task 8 and 8b): removes one sign-in method from the signed-in developer's own account. Sessions
  * made with that method end; the others go on. The server refuses the account's only sign-in method and the one it was created with,
  * in its own words, and wants a sign-in from the last ten minutes with another method (see `withFreshSignIn`).
  */
@@ -195,7 +195,7 @@ export function unlinkText(result: { provider: "cloud" | "github"; identities: L
 }
 
 /**
- * `agentx signin link <cloud|github>` (Plan 2, Task 8b): asks for the sign-in link that adds a method the person removed earlier back to
+ * `rovara signin link <cloud|github>` (Plan 2, Task 8b): asks for the sign-in link that adds a method the person removed earlier back to
  * their own account. It only ever links that identity back to this account; the page the link opens says how it went. Like a removal it
  * wants a sign-in from the last ten minutes (any method).
  */
@@ -213,11 +213,11 @@ export function linkText(result: { provider: "cloud" | "github"; authorizeUrl: s
     ? `Opening your browser to add ${method} back to your account. If it does not open, open this link:`
     : `Open this link in a browser to add ${method} back to your account:`;
   return `${first}\n${result.authorizeUrl}\n`
-    + "When the page says it was added, run agentx whoami to see it. Only a sign-in method you removed from this account can be added back.\n";
+    + "When the page says it was added, run rovara whoami to see it. Only a sign-in method you removed from this account can be added back.\n";
 }
 
 /**
- * `agentx project create` (Plan 2, Task 16): the signed-in owner or admin of a cloud org creates a project from a repository their org's
+ * `rovara project create` (Plan 2, Task 16): the signed-in owner or admin of a cloud org creates a project from a repository their org's
  * GitHub connection reaches. `requestId` makes a retry of the same command answer the same project instead of a second one.
  */
 export async function createDeveloperProject(
@@ -249,16 +249,16 @@ function commandFields(single: "setupCommand" | "testCommand", commands: string[
   return commands.length === 1 ? { [single]: commands[0]! } : { [`${single}s`]: commands };
 }
 
-/** What `agentx project create` prints, with the next step. */
+/** What `rovara project create` prints, with the next step. */
 export function createProjectText(result: { env: string; created: DeveloperCreateProjectResponse }): string {
   const name = result.created.project.definition.name;
   const first = result.created.duplicate
     ? `Project ${name} already exists in AgentX environment ${result.env} with these settings. You have access to it.`
     : `Created project ${name} in AgentX environment ${result.env}. You have access to it.`;
-  return `${first}\nNext: start a task in ${name} from your coding tool (agentx mcp install connects it), or run agentx whoami to see your projects.\n`;
+  return `${first}\nNext: start a task in ${name} from your coding tool (rovara mcp install connects it), or run rovara whoami to see your projects.\n`;
 }
 
-/** `agentx project show <name>` (Plan 2, Task 17): the project as the app shows it, through `GET /v1/app/projects/{name}`. */
+/** `rovara project show <name>` (Plan 2, Task 17): the project as the app shows it, through `GET /v1/app/projects/{name}`. */
 export async function showDeveloperProject(deps: DeveloperSessionDeps, env: string | undefined, name: string): Promise<{ env: string; url: string; project: AppProjectDetail }> {
   const { env: resolved, url, body } = await developerRequest(deps, env, `/v1/app/projects/${encodeURIComponent(name)}`, AppProjectDetailSchema, { explain: true });
   return { env: resolved, url, project: body };
@@ -266,7 +266,7 @@ export async function showDeveloperProject(deps: DeveloperSessionDeps, env: stri
 
 const clean = sanitizeServerText;
 
-/** What `agentx project show` prints: the revision, the people-facing settings and each domain's status. */
+/** What `rovara project show` prints: the revision, the people-facing settings and each domain's status. */
 export function projectShowText(project: AppProjectDetail): string {
   const { settings } = project;
   const lines = [
@@ -286,11 +286,11 @@ export function projectShowText(project: AppProjectDetail): string {
   return `${lines.join("\n")}\n`;
 }
 
-/** The settings `agentx project settings` was given; only a field that is present changes. */
+/** The settings `rovara project settings` was given; only a field that is present changes. */
 export type ProjectSettingsChange = Omit<ProjectSettingsBody, "requestId" | "expectedRevision">;
 
 /**
- * `agentx project settings <name> ...` (Plan 2, Task 17): reads the project to learn the revision the person is changing (the server refuses
+ * `rovara project settings <name> ...` (Plan 2, Task 17): reads the project to learn the revision the person is changing (the server refuses
  * the change if someone saved another since), then sends only the settings given through `PUT /v1/app/projects/{name}/settings`.
  */
 export async function changeDeveloperProjectSettings(
@@ -300,7 +300,7 @@ export async function changeDeveloperProjectSettings(
   change: ProjectSettingsChange,
   requestId: string,
 ): Promise<{ env: string; url: string } & ProjectSettingsResponse> {
-  if (Object.values(change).every((value) => value === undefined)) throw agentXError("CONFIG_INVALID", "give at least one setting to change; run agentx project settings --help");
+  if (Object.values(change).every((value) => value === undefined)) throw agentXError("CONFIG_INVALID", "give at least one setting to change; run rovara project settings --help");
   const shown = await showDeveloperProject(deps, env, name);
   const { url, body } = await developerRequest(deps, env, `/v1/app/projects/${encodeURIComponent(name)}/settings`, ProjectSettingsResponseSchema, {
     method: "PUT",
@@ -310,22 +310,22 @@ export async function changeDeveloperProjectSettings(
   return { env: shown.env, url, ...body };
 }
 
-/** What `agentx project settings` prints: the new revision, then any warnings. */
+/** What `rovara project settings` prints: the new revision, then any warnings. */
 export function projectSettingsText(result: ProjectSettingsResponse): string {
   // TE-4: commands and the dev container sent with an API key are held until their check passes; the reply says so.
   const held = result.held === undefined ? "" : result.held.status === "checking"
-    ? `Held: the ${result.held.fields.join(", ")} change is being checked on a fresh machine and is not saved yet. It is written only if the check passes; run agentx project show to see.\n`
+    ? `Held: the ${result.held.fields.join(", ")} change is being checked on a fresh machine and is not saved yet. It is written only if the check passes; run rovara project show to see.\n`
     : `Not saved: the ${result.held.fields.join(", ")} change${result.held.reason === undefined ? "" : ` (${clean(result.held.reason)})`}. Nothing was changed for it.\n`;
   const saved = result.held === undefined ? `Saved ${clean(result.project.name)}: it is at revision ${String(result.project.latestRevision)}.\n` : `${clean(result.project.name)} is at revision ${String(result.project.latestRevision)}.\n`;
   return saved + held + result.warnings.map((warning) => `Note: ${clean(warning)}\n`).join("");
 }
 
-/** What `agentx project archive` asks before it archives: what stops, and what keeps going. */
+/** What `rovara project archive` asks before it archives: what stops, and what keeps going. */
 export const archiveProjectQuestion = (name: string) =>
   `Archive ${clean(name)}? Nobody can start new tasks in it until it is restored. Tasks already running keep going, but lose access to this project's approved extra domains.`;
 
 /**
- * `agentx project archive <name>` and `agentx project restore <name>` (Plan 2, Task 20): a maintainer of the project, through
+ * `rovara project archive <name>` and `rovara project restore <name>` (Plan 2, Task 20): a maintainer of the project, through
  * `POST /v1/app/projects/{name}/archive|restore`. Repeating one on a project already in that state is harmless; a fresh request id each time.
  */
 export async function changeDeveloperProjectArchive(
@@ -345,7 +345,7 @@ export async function changeDeveloperProjectArchive(
 
 const warningLines = (warnings: readonly string[]) => warnings.map((warning) => `Note: ${clean(warning)}\n`).join("");
 export const archiveProjectText = (result: { project: AppProjectDetail; warnings: readonly string[] }) =>
-  `Archived ${clean(result.project.name)}. To bring it back, run: agentx project restore ${clean(result.project.name)}\n${warningLines(result.warnings)}`;
+  `Archived ${clean(result.project.name)}. To bring it back, run: rovara project restore ${clean(result.project.name)}\n${warningLines(result.warnings)}`;
 export const restoreProjectText = (result: { project: AppProjectDetail; warnings: readonly string[] }) =>
   `Restored ${clean(result.project.name)}. People can start tasks in it again, and its approved domains are allowed again.\n${warningLines(result.warnings)}`;
 
@@ -369,7 +369,7 @@ export async function developerLogout(deps: DeveloperSessionDeps, env: string | 
   } catch (error) {
     // No developer sign-in here: the person may mean the admin one, which --admin ends.
     if (error instanceof AgentXError && error.code === "AUTH_REQUIRED") {
-      throw agentXError("AUTH_REQUIRED", `${error.message.slice(error.code.length + 2)}; for the admin login, run agentx logout --admin`);
+      throw agentXError("AUTH_REQUIRED", `${error.message.slice(error.code.length + 2)}; for the admin login, run rovara logout --admin`);
     }
     throw error;
   }
@@ -403,7 +403,7 @@ export async function developerLogout(deps: DeveloperSessionDeps, env: string | 
   return { env: resolved.env, ...outcome };
 }
 
-/** The text agentx logout prints. */
+/** The text rovara logout prints. */
 export function logoutText(result: DeveloperLogoutResult): string {
   const local = `Signed out of AgentX environment ${result.env}`;
   if (result.problem === "unreachable") {

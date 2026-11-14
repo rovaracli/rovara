@@ -1,4 +1,4 @@
-// The `agentx upgrade` command (FR-042 to FR-044, FR-026's upgrade --export), kept out of main.ts.
+// The `rovara upgrade` command (FR-042 to FR-044, FR-026's upgrade --export), kept out of main.ts.
 import { CloudFormationClient, GetTemplateCommand } from "@aws-sdk/client-cloudformation";
 import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { ECRClient } from "@aws-sdk/client-ecr";
@@ -6,7 +6,7 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { STSClient } from "@aws-sdk/client-sts";
 import { readFile } from "node:fs/promises";
-import { agentXError, bundleTrustParameter, type ApprovalRecord } from "@agentx/contracts";
+import { agentXError, bundleTrustParameter, type ApprovalRecord, environmentStackName } from "@agentx/contracts";
 import type { Command } from "commander";
 import { cdkDiff } from "../deploy/cdk-engine.js";
 import { resolveDeployEdition } from "../deploy/edition.js";
@@ -104,7 +104,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
     .option("--approved-bundle-sha256 <hex>", "with --bundle: the bundle id (SHA-256 of bundle.json) your team approved; any other bundle is refused")
     .option("--bundle-public-key <file>", "with --bundle: a PEM public key to trust for bundle signatures, besides the ones this agentx pins; repeat for each", collect, [])
     .option("--approve-build", "with --bundle on an Enterprise (cdk) install: approve the templates that are built from your recorded settings, without asking (the summary is printed first). --yes alone never approves a build: it is asked for, and without a terminal this flag is required", false)
-    .option("--deploy-approved <bundle id>", "(Rovara operator) start the deployer in your account for a bundle your team approved with `agentx bundle approve`; the deployer re-verifies the bundle and deploys; nothing else is accepted with it")
+    .option("--deploy-approved <bundle id>", "(Rovara operator) start the deployer in your account for a bundle your team approved with `rovara bundle approve`; the deployer re-verifies the bundle and deploys; nothing else is accepted with it")
     .option("--source <dir>", "the cdk engine only: a clean checkout of the target release's tag; --to or --release, when given, must match it")
     .option("--allow-replace <logical-id>", "accept replacing or deleting this table, user pool, bucket, key or secret; repeat for each", collect, [])
     .option("--export <dir>", "write the upgrade for a platform team's pipeline instead of deploying it")
@@ -155,7 +155,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
         loadBundleImages: overrides.loadBundleImages ?? (async ({ bundle, settings }) => loadBundleImages({ bundle, env: settings.env, account: settings.account, region: settings.region, ecr: new ECRClient({ region: settings.region }), runner })),
         approveAndDeploy: overrides.approveAndDeploy ?? (async ({ bundle, settings, yes }) => {
           // The same path `bundle approve` and the operator's deployment take: build at approval from the recorded settings, pin it, then the customer-owned deployer installs those bytes.
-          const bucket = (await cloudFormationStackReader(new CloudFormationClient(aws)).describe(settings.stacks.access ?? `agentx-${settings.env}-access`))?.outputs.ApprovedBundlesBucketName;
+          const bucket = (await cloudFormationStackReader(new CloudFormationClient(aws)).describe(settings.stacks.access ?? environmentStackName(settings.env, "access")))?.outputs.ApprovedBundlesBucketName;
           if (bucket === undefined) throw agentXError("CONFIG_INVALID", "this install has no approval bucket and no bundle deployer; the Rovara operator role is not set up (rovaraOperatorAccess). Nothing was changed");
           const caller = await stsCallerIdentity(new STSClient(aws)).get();
           const record = await enterpriseApproval(context, {
@@ -219,7 +219,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       const store = context.parameterStore(options.region);
       const settings = await readEnvironmentSettings(store, globals.env);
       if (settings === undefined) throw agentXError("CONFIG_INVALID", `environment ${globals.env} is not installed in this account and region`);
-      const outputs = (await cloudFormationStackReader(new CloudFormationClient(aws)).describe(settings.stacks.access ?? `agentx-${globals.env}-access`))?.outputs ?? {};
+      const outputs = (await cloudFormationStackReader(new CloudFormationClient(aws)).describe(settings.stacks.access ?? environmentStackName(globals.env, "access")))?.outputs ?? {};
       const bucket = outputs.ApprovedBundlesBucketName;
       if (bucket === undefined) throw agentXError("CONFIG_INVALID", "this install has no approval bucket; the Rovara operator role is not set up (rovaraOperatorAccess)");
       const extra: string[] = [];
@@ -251,7 +251,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
           await loadImages();
           record = await approveBundle({ bundle, approvedBy: caller.arn, parameters, rollback: options.rollback, store: store_, now: Date.now });
         }
-        context.stdout.write(globals.json ? formatSuccess(record, true) : `Approved bundle ${record.bundleId} (release ${record.version}) for ${globals.env}. The Rovara operator can now start its deployment; withdraw it with: agentx bundle withdraw ${record.bundleId}\n`);
+        context.stdout.write(globals.json ? formatSuccess(record, true) : `Approved bundle ${record.bundleId} (release ${record.version}) for ${globals.env}. The Rovara operator can now start its deployment; withdraw it with: rovara bundle withdraw ${record.bundleId}\n`);
       } finally {
         await bundle.cleanup();
       }
@@ -297,7 +297,7 @@ export function registerUpgradeCommand(program: Command, context: UpgradeCommand
       const aws = options.region === undefined ? {} : { region: options.region };
       const settings = await readEnvironmentSettings(context.parameterStore(options.region), globals.env);
       if (settings === undefined) throw agentXError("CONFIG_INVALID", `environment ${globals.env} is not installed in this account and region`);
-      const bucket = (await cloudFormationStackReader(new CloudFormationClient(aws)).describe(settings.stacks.access ?? `agentx-${globals.env}-access`))?.outputs.ApprovedBundlesBucketName;
+      const bucket = (await cloudFormationStackReader(new CloudFormationClient(aws)).describe(settings.stacks.access ?? environmentStackName(globals.env, "access")))?.outputs.ApprovedBundlesBucketName;
       if (bucket === undefined) throw agentXError("CONFIG_INVALID", "this install has no approval bucket");
       await withdrawApproval({ bundleId: bundleId.toLowerCase(), store: context.approvalStore?.(bucket, settings.region) ?? s3ApprovalStore(new S3Client({ region: settings.region }), bucket) });
       context.stdout.write(`Withdrew the approval of bundle ${bundleId.toLowerCase()}; the deployer will refuse it.\n`);

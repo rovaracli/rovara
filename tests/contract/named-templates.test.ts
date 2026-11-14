@@ -31,7 +31,7 @@ function withoutDispatchDeadLettersAlarm(template: unknown): unknown {
     Properties: {
       AlarmActions: [{ Ref: topicId }],
       AlarmDescription: "A worker dispatch job exhausted its receives and is in the dispatch dead-letter queue. Check the dispatcher logs for its operation ID, then redrive or purge the queue.",
-      AlarmName: "agentx-staging-DispatchDeadLetters",
+      AlarmName: "rovara-cloud-staging-DispatchDeadLetters",
       ComparisonOperator: "GreaterThanOrEqualToThreshold",
       Dimensions: [{ Name: "QueueName", Value: { "Fn::GetAtt": [queueId, "QueueName"] } }],
       EvaluationPeriods: 1,
@@ -39,7 +39,7 @@ function withoutDispatchDeadLettersAlarm(template: unknown): unknown {
       Namespace: "AWS/SQS",
       Period: 300,
       Statistic: "Maximum",
-      Tags: [{ Key: "agentx:env", Value: "staging" }],
+      Tags: [{ Key: "rovara-cloud:env", Value: "staging" }],
       Threshold: 1,
       TreatMissingData: "notBreaching",
     },
@@ -122,14 +122,14 @@ function withoutUnwaitedTaskBackstop(template: unknown): unknown {
   const alarms = Object.keys(resources).filter((id) => id.startsWith("SessionsUnwaitedTaskFailuresAlarm"));
   expect(alarms).toHaveLength(1);
   const failures = (id: string, metricName: string) => ({
-    Id: id, MetricStat: { Metric: { MetricName: metricName, Namespace: "AgentX/staging" }, Period: 600, Stat: "Maximum" }, ReturnData: false,
+    Id: id, MetricStat: { Metric: { MetricName: metricName, Namespace: "RovaraCloud/staging" }, Period: 600, Stat: "Maximum" }, ReturnData: false,
   });
   expect(resources[alarms[0]!]).toStrictEqual({
     Type: "AWS::CloudWatch::Alarm",
     Properties: {
       AlarmActions: [{ Ref: topicId }],
       AlarmDescription: "The reconciler could not check or cancel Slack tasks idle over 24 hours with nobody waiting, on two runs in a row. Check the reconciler's logs for unwaited_task.cancel_failed, unwaited_task.read_failed and reconciler.unwaited_task_sweep_failed.",
-      AlarmName: "agentx-staging-UnwaitedTaskFailures",
+      AlarmName: "rovara-cloud-staging-UnwaitedTaskFailures",
       ComparisonOperator: "GreaterThanOrEqualToThreshold",
       EvaluationPeriods: 2,
       Metrics: [
@@ -137,7 +137,7 @@ function withoutUnwaitedTaskBackstop(template: unknown): unknown {
         failures("cancels", "ReconcilerUnwaitedTaskFailures"),
         failures("reads", "ReconcilerUnwaitedTaskReadFailures"),
       ],
-      Tags: [{ Key: "agentx:env", Value: "staging" }],
+      Tags: [{ Key: "rovara-cloud:env", Value: "staging" }],
       Threshold: 1,
       TreatMissingData: "notBreaching",
     },
@@ -159,14 +159,14 @@ function withoutStuckCancelAlarm(template: unknown): unknown {
   const alarms = Object.keys(resources).filter((id) => id.startsWith("SessionsStuckCancelsAlarm"));
   expect(alarms).toHaveLength(1);
   const stat = (id: string, metricName: string) => ({
-    Id: id, MetricStat: { Metric: { MetricName: metricName, Namespace: "AgentX/staging" }, Period: 900, Stat: "Maximum" }, ReturnData: false,
+    Id: id, MetricStat: { Metric: { MetricName: metricName, Namespace: "RovaraCloud/staging" }, Period: 900, Stat: "Maximum" }, ReturnData: false,
   });
   expect(resources[alarms[0]!]).toStrictEqual({
     Type: "AWS::CloudWatch::Alarm",
     Properties: {
       AlarmActions: [{ Ref: topicId }],
       AlarmDescription: "The reconciler found a task whose cancel never reached its worker, and queued the cancel again or ended the task (or failed to). Check the reconciler's logs for stuck_cancel events: a retried cancel that finishes, or an ended task, needs no action; repeated ones point at a dispatch or worker fault.",
-      AlarmName: "agentx-staging-StuckCancels",
+      AlarmName: "rovara-cloud-staging-StuckCancels",
       ComparisonOperator: "GreaterThanOrEqualToThreshold",
       EvaluationPeriods: 1,
       Metrics: [
@@ -177,7 +177,7 @@ function withoutStuckCancelAlarm(template: unknown): unknown {
         stat("failures", "ReconcilerStuckCancelFailures"),
         stat("unretried", "ReconcilerStuckCancelsUnretried"),
       ],
-      Tags: [{ Key: "agentx:env", Value: "staging" }],
+      Tags: [{ Key: "rovara-cloud:env", Value: "staging" }],
       Threshold: 1,
       TreatMissingData: "notBreaching",
     },
@@ -252,10 +252,10 @@ function withoutTaskPeopleControls(template: unknown): unknown {
 // issue 195's stuck-cancel alarm, the false-default Task People controls and the Audit Ledger's
 // storage, each checked and taken out above. The snapshot was retaken for TS19 (test services image catalog): nine ECR repositories and one KMS key in the control plane, UNCONDITIONAL (fixed names, retained: a
 // condition on TestServicesEnabled would break turning it on, off and on again; service-catalog-images-infrastructure.test.ts checks them), and nothing else.
-// 2026-11-03 (fix/ecr-template-slr): the agentx-staging-access snapshot was re-recorded for one added statement in the CloudFormation service role, EcrTemplateServiceLinkedRole
+// 2026-11-03 (fix/ecr-template-slr): the rovara-cloud-staging-access snapshot was re-recorded for one added statement in the CloudFormation service role, EcrTemplateServiceLinkedRole
 // (iam:CreateServiceLinkedRole for exactly AWSServiceRoleForECRTemplate, condition iam:AWSServiceName = ecr.amazonaws.com). The 0.5.1 staging upgrade rolled back without it.
 // No other snapshot moved.
-// 2026-11-03 (fix/boundary-tighten): the agentx-staging-access snapshot was re-recorded again, for the DEFAULT BOUNDARY only (the managed policy), which was cut by about 460 characters to make room without allowing anything new:
+// 2026-11-03 (fix/boundary-tighten): the rovara-cloud-staging-access snapshot was re-recorded again, for the DEFAULT BOUNDARY only (the managed policy), which was cut by about 460 characters to make room without allowing anything new:
 // sts:GetCallerIdentity and servicequotas:GetServiceQuota moved into the Services statement, iam:PassRole into IamRoles (the service role's own PassRole stays a statement), the two Denies on "*" became one,
 // iam:SetDefaultPolicyVersion left DenyPolicyManagement (iam:*PolicyVersion* matches it), and the instance profile actions became iam:*InstanceProfile. tests/contract/default-boundary-equivalence.test.ts proves the same
 // (action, resource) pairs are permitted and refused as v0.5.2's boundary did. The service role's policy and every other stack's snapshot are unchanged.
@@ -264,13 +264,13 @@ describe("named environment templates", () => {
   for (const stack of stacks) {
     it(`${stack.stackName} is unchanged`, () => {
       const template = normalizedTemplate(stack);
-      expect(stack.stackName === "agentx-staging-control-plane" ? withoutEventHookRoute(withoutAuditLedger(withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(withoutModelProxy(template))))))) : template).toMatchSnapshot();
+      expect(stack.stackName === "rovara-cloud-staging-control-plane" ? withoutEventHookRoute(withoutAuditLedger(withoutTaskPeopleControls(withoutStuckCancelAlarm(withoutUnwaitedTaskBackstop(withoutDispatchDeadLettersAlarm(withoutModelProxy(template))))))) : template).toMatchSnapshot();
     }, 120_000);
   }
 
   // Final review I3: the reconciler's sweep of project setup checks closes a stalled check's workspace, which starts the deleter for its session.
   it("lets the staging reconciler start the deleter, on its exact state machine and nothing wider", () => {
-    const stack = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === "agentx-staging-control-plane")!;
+    const stack = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((candidate) => candidate.stackName === "rovara-cloud-staging-control-plane")!;
     const resources = (normalizedTemplate(stack) as { Resources: Record<string, Resource> }).Resources;
     const reconciler = Object.entries(resources).find(([id, resource]) => id.startsWith("SessionsReconciler") && resource.Type === "AWS::Lambda::Function")![1];
     const roleId = (reconciler.Properties.Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];

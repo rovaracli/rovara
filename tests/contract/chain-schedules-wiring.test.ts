@@ -12,7 +12,7 @@ import { loadSlackBroker } from "../support/slack-broker.js";
 beforeAll(async () => { await loadSlackBroker(); });
 afterEach(() => undefined);
 
-const SCOPE = { AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AGENTX_ENV: "staging", AWS_LAMBDA_FUNCTION_NAME: "agentx-staging-broker-ABC" };
+const SCOPE = { AWS_REGION: "us-west-2", AGENTX_ACCOUNT_ID: "123456789012", AGENTX_ENV: "staging", AWS_LAMBDA_FUNCTION_NAME: "rovara-cloud-staging-broker-ABC" };
 const names = (value: Record<string, string>) => ({ ...SCOPE, AGENTX_NAMES: JSON.stringify(value) });
 
 describe("the settings the broker builds from its environment", () => {
@@ -20,14 +20,14 @@ describe("the settings the broker builds from its environment", () => {
     const env: Record<string, string | undefined> = names({});
     hydrateBrokerEnvironment(env);
     expect(JSON.parse(env["AGENTX_NAMES"]!)).toEqual({});
-    expect(env["CHAIN_SCHEDULE_ROLE_ARN"]).toBe("arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-chain-schedule");
-    expect(env["CHAIN_SCHEDULE_QUEUE_URL"]).toBe("https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-chain-schedule-dead-letters");
+    expect(env["CHAIN_SCHEDULE_ROLE_ARN"]).toBe("arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-chain-schedule");
+    expect(env["CHAIN_SCHEDULE_QUEUE_URL"]).toBe("https://sqs.us-west-2.amazonaws.com/123456789012/rovara-cloud-staging-chain-schedule-dead-letters");
     expect(scheduleSettingsFromEnvironment(env)).toEqual({
-      groupName: "agentx-staging-chain-triggers",
-      roleArn: "arn:aws:iam::123456789012:role/agentx/staging/agentx-staging-chain-schedule",
-      functionArn: "arn:aws:lambda:us-west-2:123456789012:function:agentx-staging-broker-ABC",
-      queueArn: "arn:aws:sqs:us-west-2:123456789012:agentx-staging-chain-schedule-dead-letters",
-      queueUrl: "https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-chain-schedule-dead-letters",
+      groupName: "rovara-cloud-staging-chain-triggers",
+      roleArn: "arn:aws:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-chain-schedule",
+      functionArn: "arn:aws:lambda:us-west-2:123456789012:function:rovara-cloud-staging-broker-ABC",
+      queueArn: "arn:aws:sqs:us-west-2:123456789012:rovara-cloud-staging-chain-schedule-dead-letters",
+      queueUrl: "https://sqs.us-west-2.amazonaws.com/123456789012/rovara-cloud-staging-chain-schedule-dead-letters",
     });
   });
 
@@ -35,7 +35,7 @@ describe("the settings the broker builds from its environment", () => {
     const env: Record<string, string | undefined> = { ...names({}), AWS_REGION: "cn-north-1" };
     hydrateBrokerEnvironment(env);
     expect(scheduleSettingsFromEnvironment(env)).toMatchObject({
-      roleArn: "arn:aws-cn:iam::123456789012:role/agentx/staging/agentx-staging-chain-schedule", functionArn: "arn:aws-cn:lambda:cn-north-1:123456789012:function:agentx-staging-broker-ABC", queueArn: "arn:aws-cn:sqs:cn-north-1:123456789012:agentx-staging-chain-schedule-dead-letters",
+      roleArn: "arn:aws-cn:iam::123456789012:role/rovara-cloud/staging/rovara-cloud-staging-chain-schedule", functionArn: "arn:aws-cn:lambda:cn-north-1:123456789012:function:rovara-cloud-staging-broker-ABC", queueArn: "arn:aws-cn:sqs:cn-north-1:123456789012:rovara-cloud-staging-chain-schedule-dead-letters",
     });
   });
 
@@ -57,7 +57,7 @@ describe("the settings the broker builds from its environment", () => {
 describe("the scheduler's invocation, through the deployed broker's handler", () => {
   const SLOT = () => new Date(Date.now() - 5_000).toISOString();
   const event = (over: Record<string, unknown> = {}) => ({ source: "agentx.chain-schedule", orgId: TEST_ORG, triggerId: "ctr_00000000000000000001", scheduledAt: SLOT(), ...over });
-  const settings = { groupName: "agentx-staging-chain-triggers", roleArn: "arn:aws:iam::123456789012:role/r", functionArn: "arn:aws:lambda:us-east-1:123456789012:function:f", queueArn: "arn:aws:sqs:us-east-1:123456789012:q", queueUrl: "https://sqs.us-east-1.amazonaws.com/123456789012/q" };
+  const settings = { groupName: "rovara-cloud-staging-chain-triggers", roleArn: "arn:aws:iam::123456789012:role/r", functionArn: "arn:aws:lambda:us-east-1:123456789012:function:f", queueArn: "arn:aws:sqs:us-east-1:123456789012:q", queueUrl: "https://sqs.us-east-1.amazonaws.com/123456789012/q" };
   const bodyOf = (reply: unknown) => JSON.parse((reply as { body: string }).body) as Record<string, unknown>;
   async function broker(extra: Record<string, unknown> = {}) {
     const client = new FakeSchedulerClient();

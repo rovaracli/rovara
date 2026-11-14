@@ -100,13 +100,13 @@ describe("the admin read tools (FR-030)", () => {
 
   it("shows the dead-letter queues' own check (ruling R18), and says their status", async () => {
     const health = {
-      version: { developerApi: "1.2", adminApi: "1.0" }, alarms: [{ name: "agentx-staging-errors", state: "OK" }], alarmsCheck: { status: "ok" as const },
-      deadLetterQueues: [{ name: "agentx-staging-dlq", depth: 3 }], deadLetterQueuesCheck: { status: "warn" as const, detail: "3 messages waiting" },
+      version: { developerApi: "1.2", adminApi: "1.0" }, alarms: [{ name: "rovara-cloud-staging-errors", state: "OK" }], alarmsCheck: { status: "ok" as const },
+      deadLetterQueues: [{ name: "rovara-cloud-staging-dlq", depth: 3 }], deadLetterQueuesCheck: { status: "warn" as const, detail: "3 messages waiting" },
       slack: { status: "ok" as const }, github: { status: "ok" as const }, workerModes: [{ mode: "ec2-ebs", configured: true }], workspaces: { READY: 2 }, workspacesTruncated: false,
     };
     const client = await connect({ health: async () => health });
     const result = await client.callTool({ name: "agentx_admin_health", arguments: {} });
-    expect(result.structuredContent).toMatchObject({ dead_letter_queues: [{ name: "agentx-staging-dlq", depth: 3 }], dead_letter_queues_check: { status: "warn", detail: "3 messages waiting" } });
+    expect(result.structuredContent).toMatchObject({ dead_letter_queues: [{ name: "rovara-cloud-staging-dlq", depth: 3 }], dead_letter_queues_check: { status: "warn", detail: "3 messages waiting" } });
     expect(JSON.stringify(result.content)).toContain("Dead-letter queues: warn");
     // An older control plane sends no queue check: the answer still reads, without the field.
     const older: Partial<typeof health> = { ...health };
@@ -119,16 +119,16 @@ describe("the admin read tools (FR-030)", () => {
   it("names missing alarms in the text beside firing ones, never only \"none firing\" (issue 206)", async () => {
     const health = {
       version: { developerApi: "1.2", adminApi: "1.0" },
-      alarms: [{ name: "agentx-staging-TurnErrors", state: "OK" }, { name: "agentx-staging-SlackDeadLetters", state: "MISSING" }, { name: "agentx-staging-TestAlarm", state: "MISSING" }],
+      alarms: [{ name: "rovara-cloud-staging-TurnErrors", state: "OK" }, { name: "rovara-cloud-staging-SlackDeadLetters", state: "MISSING" }, { name: "rovara-cloud-staging-TestAlarm", state: "MISSING" }],
       alarmsCheck: { status: "warn" as const, detail: "2 alarms missing" },
       deadLetterQueues: [], slack: { status: "ok" as const }, github: { status: "ok" as const }, workerModes: [], workspaces: {}, workspacesTruncated: false,
     };
     const result = await (await connect({ health: async () => health })).callTool({ name: "agentx_admin_health", arguments: {} });
-    expect(JSON.stringify(result.content)).toContain("Alarms: none firing; missing: agentx-staging-SlackDeadLetters, agentx-staging-TestAlarm.");
+    expect(JSON.stringify(result.content)).toContain("Alarms: none firing; missing: rovara-cloud-staging-SlackDeadLetters, rovara-cloud-staging-TestAlarm.");
     expect(result.structuredContent).toMatchObject({ alarms_check: { status: "warn", detail: "2 alarms missing" } });
-    const firing = { ...health, alarms: [{ name: "agentx-staging-TurnErrors", state: "ALARM" }] };
+    const firing = { ...health, alarms: [{ name: "rovara-cloud-staging-TurnErrors", state: "ALARM" }] };
     const firingResult = await (await connect({ health: async () => firing })).callTool({ name: "agentx_admin_health", arguments: {} });
-    expect(JSON.stringify(firingResult.content)).toContain("Alarms: in ALARM: agentx-staging-TurnErrors. ");
+    expect(JSON.stringify(firingResult.content)).toContain("Alarms: in ALARM: rovara-cloud-staging-TurnErrors. ");
   });
 
   it("passes the unreadable items' skipped count through for failures and usage", async () => {
@@ -147,9 +147,9 @@ describe("the admin read tools (FR-030)", () => {
   });
 
   it("lists credentials under references, so FR-029's redaction keeps the list and its secret names", async () => {
-    const client = await connect({ credentials: async () => ({ credentials: [{ ref: "jira", type: "static-secret", secretName: "agentx/staging/connectors/jira", registeredAt: "2026-09-01T00:00:00.000Z" }] }) });
+    const client = await connect({ credentials: async () => ({ credentials: [{ ref: "jira", type: "static-secret", secretName: "rovara-cloud/staging/connectors/jira", registeredAt: "2026-09-01T00:00:00.000Z" }] }) });
     const result = await client.callTool({ name: "agentx_admin_list_credentials", arguments: {} });
-    expect(result.structuredContent).toEqual({ references: [{ ref: "jira", type: "static-secret", secret_name: "agentx/staging/connectors/jira", registered_at: "2026-09-01T00:00:00.000Z" }] });
+    expect(result.structuredContent).toEqual({ references: [{ ref: "jira", type: "static-secret", secret_name: "rovara-cloud/staging/connectors/jira", registered_at: "2026-09-01T00:00:00.000Z" }] });
     expect(JSON.stringify(result.content)).toContain("1 connector credential registered: jira (static-secret).");
   });
 
@@ -180,13 +180,13 @@ describe("the admin read tools (FR-030)", () => {
 
   it("shows a secret named by its ARN by the name alone, so FR-029's redaction keeps it", async () => {
     const client = await connect({ credentials: async () => ({ credentials: [
-      { ref: "github-app", type: "github-app", secretName: "arn:aws:secretsmanager:us-east-1:111122223333:secret:agentx/staging/github-app-AbCdEf", builtIn: true },
-      { ref: "gov", type: "static-secret", secretName: "arn:aws-us-gov:secretsmanager:us-gov-west-1:111122223333:secret:agentx/staging/connectors/jira-Q1w2E3" },
+      { ref: "github-app", type: "github-app", secretName: "arn:aws:secretsmanager:us-east-1:111122223333:secret:rovara-cloud/staging/github-app-AbCdEf", builtIn: true },
+      { ref: "gov", type: "static-secret", secretName: "arn:aws-us-gov:secretsmanager:us-gov-west-1:111122223333:secret:rovara-cloud/staging/connectors/jira-Q1w2E3" },
     ] }) });
     const result = await client.callTool({ name: "agentx_admin_list_credentials", arguments: {} });
     expect(result.structuredContent).toEqual({ references: [
-      { ref: "github-app", type: "github-app", secret_name: "agentx/staging/github-app-AbCdEf", built_in: true },
-      { ref: "gov", type: "static-secret", secret_name: "agentx/staging/connectors/jira-Q1w2E3" },
+      { ref: "github-app", type: "github-app", secret_name: "rovara-cloud/staging/github-app-AbCdEf", built_in: true },
+      { ref: "gov", type: "static-secret", secret_name: "rovara-cloud/staging/connectors/jira-Q1w2E3" },
     ] });
     expect(JSON.stringify(result)).not.toContain("[REDACTED]");
   });

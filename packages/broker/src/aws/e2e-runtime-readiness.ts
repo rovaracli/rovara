@@ -121,7 +121,7 @@ async function readAdmittedWebApiRuntimes(input: { runtimeCatalogId: string; pro
 }
 
 /**
- * What an administrator may be told about the web and API registrations of `profileId` (RUN-3, `agentx doctor`): the state and the qualification and expiry times of each kind that
+ * What an administrator may be told about the web and API registrations of `profileId` (RUN-3, `rovara doctor`): the state and the qualification and expiry times of each kind that
  * has a row, and nothing else of it (endpoints, digests and evidence stay in the catalog). A row that does not read as those fields is left out, never guessed at; a failed read throws.
  */
 export async function readE2ERuntimeStatus(input: { runtimeCatalogId: string; profileId: string; read: RuntimeRowReader }): Promise<E2ERuntimeStatus> {

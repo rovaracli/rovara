@@ -1,4 +1,4 @@
-// Plan 3 Task 12b: `agentx connections list | add | remove | check` against a fake control plane: the requests each sends, the lines each
+// Plan 3 Task 12b: `rovara connections list | add | remove | check` against a fake control plane: the requests each sends, the lines each
 // prints, and that a secret is read from stdin (masked on a terminal), sent once, and never printed, logged or put in a file.
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -50,7 +50,7 @@ async function cli(answer: (method: string, path: string) => Response, stdin?: s
 const created = (connection: Record<string, unknown>) => (method: string, path: string): Response =>
   method === "POST" && path === "/v1/app/connections" ? Response.json({ connection, requestId: "r" }, { status: 201 }) : Response.json({ error: { code: "NOT_FOUND", message: `NOT_FOUND: ${method} ${path}` } }, { status: 404 });
 
-describe("agentx connections list", () => {
+describe("rovara connections list", () => {
   it("prints each connection with its type, access, whether a credential is saved and the last check", async () => {
     const h = await cli(() => Response.json({ connections: [
       saved({ lastCheck: { ok: true, at: "2026-10-22T09:30:00.000Z" } }),
@@ -88,7 +88,7 @@ describe("agentx connections list", () => {
   });
 });
 
-describe("agentx connections add", () => {
+describe("rovara connections add", () => {
   it("reads a Linear key from stdin, sends it once with a fresh request id, and prints neither the key nor the secret's name", async () => {
     const h = await cli(created(saved()), `${LINEAR_KEY}\n`);
     expect(await h.run(["connections", "add", "linear", "--label", "Team Linear"])).toBe(0);
@@ -96,7 +96,7 @@ describe("agentx connections add", () => {
       method: "POST", path: "/v1/app/connections", authorization: "Bearer access",
       body: { requestId: expect.stringMatching(UUID) as string, connection: { type: "linear", label: "Team Linear", access: "read" }, secret: { apiKey: LINEAR_KEY } },
     }]);
-    expect(h.out.join("")).toBe(`Added the linear connection Team Linear (${CON}). Run agentx connections check ${CON} to test it.\n`);
+    expect(h.out.join("")).toBe(`Added the linear connection Team Linear (${CON}). Run rovara connections check ${CON} to test it.\n`);
     expect(h.out.join("") + h.err.join("")).not.toContain(LINEAR_KEY);
     // The prompt says it is hidden; the key is not echoed back.
     expect(h.err.join("")).toContain("hidden");
@@ -161,7 +161,7 @@ describe("agentx connections add", () => {
   });
 });
 
-describe("agentx connections remove", () => {
+describe("rovara connections remove", () => {
   it("removes with a request id in the body once the person says yes", async () => {
     const h = await cli((method, path) => (method === "DELETE" && path === `/v1/app/connections/${CON}` ? Response.json({ removed: { connectionId: CON } }) : Response.json({}, { status: 404 })), undefined, { confirm: true });
     expect(await h.run(["connections", "remove", CON])).toBe(0);
@@ -187,7 +187,7 @@ describe("agentx connections remove", () => {
   });
 });
 
-describe("agentx connections check", () => {
+describe("rovara connections check", () => {
   it("posts the check with a request id and prints what it found", async () => {
     let h = await cli(() => Response.json({ ok: true }));
     expect(await h.run(["connections", "check", CON])).toBe(0);

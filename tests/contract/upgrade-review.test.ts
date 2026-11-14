@@ -25,8 +25,8 @@ describe("reviewing an upgrade's changes (FR-042, FR-043)", () => {
       { logicalId: "UserPool", type: "AWS::Cognito::UserPool", verb: "replace" },
     ]);
     expect(reviewed.other.map((entry) => entry.logicalId)).toEqual(["SlackSecret", "Ingress"]);
-    expect(reviewLines("agentx-staging-control-plane", reviewed)).toEqual([
-      "Changes for agentx-staging-control-plane:",
+    expect(reviewLines("rovara-cloud-staging-control-plane", reviewed)).toEqual([
+      "Changes for rovara-cloud-staging-control-plane:",
       "  IAM changes:",
       "    Modify WorkerRole (AWS::IAM::Role)",
       "  Replaces or deletes data:",
@@ -41,7 +41,7 @@ describe("reviewing an upgrade's changes (FR-042, FR-043)", () => {
 
   it("stops a data replacement under --yes unless --allow-replace names it", async () => {
     const data = [{ logicalId: "State", type: "AWS::DynamoDB::Table", verb: "replace" as const }];
-    expect(await guardData({ stackName: "s", data, allowReplace: new Set(), yes: true, ask: answers() })).toBe("upgrade stopped: s would replace State (AWS::DynamoDB::Table) and lose its data; nothing in s changed. If you accept that, run agentx upgrade again with --allow-replace State");
+    expect(await guardData({ stackName: "s", data, allowReplace: new Set(), yes: true, ask: answers() })).toBe("upgrade stopped: s would replace State (AWS::DynamoDB::Table) and lose its data; nothing in s changed. If you accept that, run rovara upgrade again with --allow-replace State");
     expect(await guardData({ stackName: "s", data, allowReplace: new Set(["State"]), yes: true, ask: answers() })).toBeUndefined();
   });
 
@@ -58,13 +58,13 @@ describe("reviewing an upgrade's changes (FR-042, FR-043)", () => {
     expect(lines[0]).toBe("Changes for s:");
     const no = upgradeConfirm({ write: () => undefined, ask: answers("n"), yes: false, allowReplace: new Set() });
     expect(await no.confirm({ stackName: "s", changes: [] })).toBe(false);
-    expect(no.refusal()).toBe("upgrade stopped before s: nothing in it changed. Stacks upgraded before it keep the new release; run agentx upgrade again to continue");
+    expect(no.refusal()).toBe("upgrade stopped before s: nothing in it changed. Stacks upgraded before it keep the new release; run rovara upgrade again to continue");
   });
 });
 
 describe("the cdk engine's review: cdk diff (FR-042)", () => {
   const diff = [
-    "Stack agentx-staging-control-plane",
+    "Stack rovara-cloud-staging-control-plane",
     "IAM Statement Changes",
     "┌───┬──────────┐",
     "Resources",
@@ -86,7 +86,7 @@ describe("the cdk engine's review: cdk diff (FR-042)", () => {
   it("reads a real cdk diff (CDK 2, --method=template): additions and changed functions are no data risk; IAM is (Task 20 live check)", () => {
     // Recorded against live15eb's control plane on 2026-09-29, trimmed to its structure.
     const real = [
-      "Stack AgentXControlPlane (agentx-live15eb-control-plane) (aws://944937319445/us-east-1)",
+      "Stack AgentXControlPlane (rovara-cloud-live15eb-control-plane) (aws://944937319445/us-east-1)",
       "IAM Statement Changes",
       "┌───┬──────────────────────────────────────┬────────┬──────────────────┐",
       "│   │ Resource                             │ Effect │ Action           │",
@@ -109,7 +109,7 @@ describe("the cdk engine's review: cdk diff (FR-042)", () => {
     // multi-line conditions, the IAM Policy Changes table and its NOTE, and the indented property lines
     // under a changed policy and a changed function.
     const verbatim = [
-      "Stack AgentXControlPlane (agentx-live15eb-control-plane) (aws://944937319445/us-east-1)",
+      "Stack AgentXControlPlane (rovara-cloud-live15eb-control-plane) (aws://944937319445/us-east-1)",
       "IAM Statement Changes",
       "┌───┬────────────────────────────────────────────────────┬────────┬───────────────────────────────┬───────────────────────────────────────────────────┬──────────────────────────────────┐",
       "│   │ Resource                                           │ Effect │ Action                        │ Principal                                         │ Condition                        │",
@@ -178,7 +178,7 @@ describe("the cdk engine's review: cdk diff (FR-042)", () => {
 
   it("flags IAM from the IAM Statement Changes table alone, with no IAM resource line (review M8)", () => {
     const statementsOnly = [
-      "Stack AgentXControlPlane (agentx-live15eb-control-plane) (aws://944937319445/us-east-1)",
+      "Stack AgentXControlPlane (rovara-cloud-live15eb-control-plane) (aws://944937319445/us-east-1)",
       "IAM Statement Changes",
       "┌───┬────────────────────────────────────────────────────┬────────┬───────────────────────────────┬───────────────────────────────────────────────────┬──────────────────────────────────┐",
       "│   │ Resource                                           │ Effect │ Action                        │ Principal                                         │ Condition                        │",
@@ -212,7 +212,7 @@ describe("the cdk engine's review: cdk diff (FR-042)", () => {
   it("runs cdk diff as a template diff, redacting the signing key everywhere", async () => {
     const calls: Array<{ args: string[]; display: string }> = [];
     const runner: CommandRunner = { async run(_command, args, options) { calls.push({ args, display: options.display }); return { stdout: "", stderr: `diff with ${"s".repeat(43)}` }; } };
-    const request: DeployRequest = { part: "control-plane", stackName: "agentx-staging-control-plane", parameters: { CallbackSigningKey: "s".repeat(43), GitHubAppId: "123" }, terminationProtection: false };
+    const request: DeployRequest = { part: "control-plane", stackName: "rovara-cloud-staging-control-plane", parameters: { CallbackSigningKey: "s".repeat(43), GitHubAppId: "123" }, terminationProtection: false };
     const text = await cdkDiff({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", request });
     expect(calls[0]!.args.slice(0, 4)).toEqual(["--no-install", "cdk", "diff", "AgentXControlPlane"]);
     // Controller ruling 3(b) and 3(c): CDK 2.1142 ignores --parameters for diff (and warns), and
@@ -229,9 +229,9 @@ describe("the cdk engine's review: cdk diff (FR-042)", () => {
     const deployed: string[] = [];
     const inner: StackDeployer = { async deploy(request) { deployed.push(request.stackName); return {}; }, async outputs() { return undefined; } };
     const reviewed = cdkReviewedDeployer(inner, async (request) => { if (request.part === "control-plane") throw new Error("stopped"); });
-    await reviewed.deploy({ part: "runtime", stackName: "agentx-staging-runtime", parameters: {}, terminationProtection: true });
-    await expect(reviewed.deploy({ part: "control-plane", stackName: "agentx-staging-control-plane", parameters: {}, terminationProtection: false })).rejects.toThrow("stopped");
-    expect(deployed).toEqual(["agentx-staging-runtime"]);
+    await reviewed.deploy({ part: "runtime", stackName: "rovara-cloud-staging-runtime", parameters: {}, terminationProtection: true });
+    await expect(reviewed.deploy({ part: "control-plane", stackName: "rovara-cloud-staging-control-plane", parameters: {}, terminationProtection: false })).rejects.toThrow("stopped");
+    expect(deployed).toEqual(["rovara-cloud-staging-runtime"]);
   });
 });
 
@@ -247,7 +247,7 @@ describe("the replacement guard fails safe (FR-043)", () => {
     for (const [action, replacement, verb] of [["Modify", "True", "replace"], ["Modify", "Conditional", "replace"], ["Remove", "", "delete"]] as const) {
       const reviewed = reviewChanges([change(action, "Data", type, replacement)]);
       expect(reviewed.data).toEqual([{ logicalId: "Data", type, verb }]);
-      expect(await guardData({ stackName: "s", data: reviewed.data, allowReplace: new Set(), yes: true, ask: answers() })).toBe(`upgrade stopped: s would ${verb} Data (${type})${loses(type)}; nothing in s changed. If you accept that, run agentx upgrade again with --allow-replace Data`);
+      expect(await guardData({ stackName: "s", data: reviewed.data, allowReplace: new Set(), yes: true, ask: answers() })).toBe(`upgrade stopped: s would ${verb} Data (${type})${loses(type)}; nothing in s changed. If you accept that, run rovara upgrade again with --allow-replace Data`);
     }
     expect(reviewChanges([change("Modify", "Data", type, "False")]).data).toEqual([]);
     expect(reviewChanges([change("Add", "Data", type, "")]).data).toEqual([]);
@@ -286,11 +286,11 @@ describe("the replacement guard fails safe (FR-043)", () => {
       { logicalId: "", type: "", verb: "unclear", line: "[~] something new" },
     ]);
     const [first, second] = risks.data;
-    expect(await guardData({ stackName: "s", data: [first!], allowReplace: new Set(), yes: true, ask: answers() })).toBe("upgrade stopped: agentx could not read cdk diff's output for s, so it cannot tell whether it replaces or deletes data ([~] AWS::DynamoDB::Table); nothing in s changed. Check the diff above, and run agentx upgrade again without --yes to review it");
-    expect(await guardData({ stackName: "s", data: [second!], allowReplace: new Set(), yes: true, ask: answers() })).toContain("If you accept that, run agentx upgrade again with --allow-replace ArtifactsABC");
+    expect(await guardData({ stackName: "s", data: [first!], allowReplace: new Set(), yes: true, ask: answers() })).toBe("upgrade stopped: rovara could not read cdk diff's output for s, so it cannot tell whether it replaces or deletes data ([~] AWS::DynamoDB::Table); nothing in s changed. Check the diff above, and run rovara upgrade again without --yes to review it");
+    expect(await guardData({ stackName: "s", data: [second!], allowReplace: new Set(), yes: true, ask: answers() })).toContain("If you accept that, run rovara upgrade again with --allow-replace ArtifactsABC");
     expect(await guardData({ stackName: "s", data: [second!], allowReplace: new Set(["ArtifactsABC"]), yes: true, ask: answers() })).toBeUndefined();
     expect(await guardData({ stackName: "s", data: [first!], allowReplace: new Set(), yes: false, ask: answers("accept") })).toBeUndefined();
-    expect(await guardData({ stackName: "s", data: [first!], allowReplace: new Set(), yes: false, ask: answers("y") })).toContain("upgrade stopped: agentx could not read");
+    expect(await guardData({ stackName: "s", data: [first!], allowReplace: new Set(), yes: false, ask: answers("y") })).toContain("upgrade stopped: rovara could not read");
     expect(await guardData({ stackName: "s", data: [second!], allowReplace: new Set(), yes: false, ask: answers("ArtifactsABC") })).toBeUndefined();
   });
 });
@@ -300,7 +300,7 @@ describe("cdk diff as the real formatter prints it (review round 1)", () => {
   // column 0 (inside a colour reset), property lines at " ├─"/" └─", and an array or type change is a
   // JSON hunk of "[ ]", "[-]" and "[+]" lines indented under its property.
   const R = "\u001b[0m";
-  const header = [`Stack ${"\u001b[1m"}AgentXControlPlane${"\u001b[22m"} (agentx-staging-control-plane)`, "\u001b[4m\u001b[1mResources\u001b[22m\u001b[24m"];
+  const header = [`Stack ${"\u001b[1m"}AgentXControlPlane${"\u001b[22m"} (rovara-cloud-staging-control-plane)`, "\u001b[4m\u001b[1mResources\u001b[22m\u001b[24m"];
   const lambdaHunk = [
     `${R}\u001b[33m[~]\u001b[39m \u001b[36mAWS::Lambda::Function\u001b[39m Ingress/Function IngressFnABC12345${R}`,
     `${R} ├─ \u001b[33m[~]\u001b[39m Timeout${R}`,
@@ -336,10 +336,10 @@ describe("cdk diff as the real formatter prints it (review round 1)", () => {
   });
 
   it("must positively find what it read: output with no Resources section and no \"There were no differences\" is unclear", () => {
-    expect(cdkDiffRisks("Stack agentx-staging-runtime\nThere were no differences\n\n\u2728  Number of stacks with differences: 0")).toEqual({ iam: false, data: [] });
+    expect(cdkDiffRisks("Stack rovara-cloud-staging-runtime\nThere were no differences\n\n\u2728  Number of stacks with differences: 0")).toEqual({ iam: false, data: [] });
     // Behaviour correction (review round 2): empty output is no longer read as "no changes".
     expect(cdkDiffRisks("")).toEqual({ iam: false, data: [{ logicalId: "", type: "", verb: "unclear", line: "no \"Stack <name>\" header in cdk diff's output" }] });
-    expect(cdkDiffRisks("Stack agentx-staging-runtime\nRessources\n[~] AWS::Lambda::Function Fn FnABC").data).toEqual([
+    expect(cdkDiffRisks("Stack rovara-cloud-staging-runtime\nRessources\n[~] AWS::Lambda::Function Fn FnABC").data).toEqual([
       { logicalId: "", type: "", verb: "unclear", line: "no Resources section, and not \"There were no differences\"" },
     ]);
   });
@@ -366,10 +366,10 @@ describe("cdk diff as the real formatter prints it (review round 1)", () => {
     ]);
     // Controller ruling 3(d): one refusal names every unaccepted change.
     expect(await guardData({ stackName: "s", data: risks.data, allowReplace: new Set(), yes: true, ask: answers() })).toBe(
-      "upgrade stopped: s would remove VpcFlowLogsABC (AWS::Logs::LogGroup) from the stack, which orphans the retained log group, delete WorkerLogsABC (AWS::Logs::LogGroup), which deletes its logs, and replace JobsABC (AWS::SQS::Queue) and lose its data; nothing in s changed. If you accept that, run agentx upgrade again with --allow-replace VpcFlowLogsABC --allow-replace WorkerLogsABC --allow-replace JobsABC",
+      "upgrade stopped: s would remove VpcFlowLogsABC (AWS::Logs::LogGroup) from the stack, which orphans the retained log group, delete WorkerLogsABC (AWS::Logs::LogGroup), which deletes its logs, and replace JobsABC (AWS::SQS::Queue) and lose its data; nothing in s changed. If you accept that, run rovara upgrade again with --allow-replace VpcFlowLogsABC --allow-replace WorkerLogsABC --allow-replace JobsABC",
     );
     expect(await guardData({ stackName: "s", data: risks.data, allowReplace: new Set(["WorkerLogsABC"]), yes: false, ask: answers("VpcFlowLogsABC", "no") })).toBe(
-      "upgrade stopped: s would replace JobsABC (AWS::SQS::Queue) and lose its data; nothing in s changed. If you accept that, run agentx upgrade again with --allow-replace JobsABC --allow-replace VpcFlowLogsABC --allow-replace WorkerLogsABC (VpcFlowLogsABC and WorkerLogsABC are changes you already accepted; --yes needs them named too)",
+      "upgrade stopped: s would replace JobsABC (AWS::SQS::Queue) and lose its data; nothing in s changed. If you accept that, run rovara upgrade again with --allow-replace JobsABC --allow-replace VpcFlowLogsABC --allow-replace WorkerLogsABC (VpcFlowLogsABC and WorkerLogsABC are changes you already accepted; --yes needs them named too)",
     );
   });
 
@@ -431,7 +431,7 @@ describe("reading aws-cdk 2.1142.0's real cdk diff output", () => {
       expect(realDiff(stack)).toContain(NEW_NO_DIFFERENCES);
       expect(cdkDiffRisks(realDiff(stack))).toEqual({ iam: false, data: [] });
     }
-    expect(cdkDiffRisks(`Stack s (agentx-staging-access)\n${NEW_NO_DIFFERENCES}\n\n\u2728  Number of stacks with differences: 0`)).toEqual({ iam: false, data: [] });
+    expect(cdkDiffRisks(`Stack s (rovara-cloud-staging-access)\n${NEW_NO_DIFFERENCES}\n\n\u2728  Number of stacks with differences: 0`)).toEqual({ iam: false, data: [] });
   });
 
   it("reads the control plane's real diff in full: IAM flagged, its ECS task definition replace is not a data change", () => {
@@ -469,7 +469,7 @@ describe("reading aws-cdk 2.1142.0's real cdk diff output", () => {
 
 describe("custom resources in cdk diff (the v0.4.7 staging diff)", () => {
   const CUSTOM_LINE = "[+] Custom::CDKBucketDeployment WebApp/Upload/CustomResource WebAppUploadCustomResourceC5294313";
-  const stack = (...lines: string[]) => ["Stack AgentXControlPlane (agentx-staging-control-plane)", "Resources", ...lines].join("\n");
+  const stack = (...lines: string[]) => ["Stack AgentXControlPlane (rovara-cloud-staging-control-plane)", "Resources", ...lines].join("\n");
 
   it("reads the control plane's real v0.4.7 diff, with its BucketDeployment addition, as 0 unclear", () => {
     const text = realDiff("AgentXControlPlane-v0.4.7");

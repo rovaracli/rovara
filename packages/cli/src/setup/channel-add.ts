@@ -61,7 +61,7 @@ export function slackChannelApi(fetchImplementation: typeof fetch): SlackChannel
         cursor = (body.response_metadata as { next_cursor?: string } | undefined)?.next_cursor ?? "";
         if (cursor === "") return undefined;
       }
-      throw agentXError("CONFIG_INVALID", `the workspace has more than ${MAX_LIST_PAGES * LIST_PAGE_SIZE} channels to search; bind the channel by id with agentx admin slack bind --team <team-id> --channel <channel-id> --project <name>`);
+      throw agentXError("CONFIG_INVALID", `the workspace has more than ${MAX_LIST_PAGES * LIST_PAGE_SIZE} channels to search; bind the channel by id with rovara admin slack bind --team <team-id> --channel <channel-id> --project <name>`);
     },
     async join(token, channelId) {
       await call("conversations.join", token, { channel: channelId });

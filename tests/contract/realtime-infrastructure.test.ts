@@ -1,4 +1,4 @@
-// Plan 5 Task 8 (I15): the realtime events API. A named environment has one AppSync Events API, `agentx-<env>-realtime`, with the namespace `rovara`, a Lambda authorizer
+// Plan 5 Task 8 (I15): the realtime events API. A named environment has one AppSync Events API, `rovara-cloud-<env>-realtime`, with the namespace `rovara`, a Lambda authorizer
 // for connect and subscribe, IAM for publish and logging off; only the broker and the outbox publisher may publish, and only to the namespace; the authorizer may read the
 // State table and the token key's public half and nothing more; the broker's grants stay in their named policies under the size they were held to, and its variables
 // under Lambda's 4 KB. The legacy install has none of it.
@@ -29,17 +29,17 @@ let namedStack: Stack;
 let legacy: { Resources: Record<string, Resource> };
 
 beforeAll(() => {
-  namedStack = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "agentx-staging-control-plane")!;
+  namedStack = buildAgentXApp({ agentxEnv: "staging" }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "rovara-cloud-staging-control-plane")!;
   named = Template.fromStack(namedStack).toJSON() as typeof named;
   legacy = Template.fromStack(buildAgentXApp().node.children.filter((child): child is Stack => Stack.isStack(child)).find((stack) => stack.stackName === "AgentXControlPlane")!).toJSON() as typeof legacy;
 }, 300_000);
 
 describe("the events API", () => {
-  it("is one API named agentx-<env>-realtime with one namespace, rovara, the authorizer for connect and subscribe, IAM for publish, and logging off", () => {
+  it("is one API named rovara-cloud-<env>-realtime with one namespace, rovara, the authorizer for connect and subscribe, IAM for publish, and logging off", () => {
     const apis = ofType(named, "AWS::AppSync::Api");
     expect(apis).toHaveLength(1);
     const [apiId, api] = apis[0]!;
-    expect(api.Properties.Name).toBe("agentx-staging-realtime");
+    expect(api.Properties.Name).toBe("rovara-cloud-staging-realtime");
     expect(api.Properties.EventConfig).toMatchObject({
       ConnectionAuthModes: [{ AuthType: "AWS_LAMBDA" }],
       DefaultPublishAuthModes: [{ AuthType: "AWS_IAM" }],
@@ -131,12 +131,12 @@ describe("who may publish and who may read", () => {
 
 describe("the broker", () => {
   it("keeps each named grant policy at or under 5,500 characters, and puts nothing of Plan 5 in the orchestration policy", () => {
-    const policies = ofType(named, "AWS::IAM::ManagedPolicy").filter(([, policy]) => /^agentx-staging-broker-(state|orchestration|integrations)$/.test(String(policy.Properties.ManagedPolicyName)));
-    expect(policies.map(([, policy]) => policy.Properties.ManagedPolicyName).sort()).toEqual(["agentx-staging-broker-integrations", "agentx-staging-broker-orchestration", "agentx-staging-broker-state"]);
+    const policies = ofType(named, "AWS::IAM::ManagedPolicy").filter(([, policy]) => /^rovara-cloud-staging-broker-(state|orchestration|integrations)$/.test(String(policy.Properties.ManagedPolicyName)));
+    expect(policies.map(([, policy]) => policy.Properties.ManagedPolicyName).sort()).toEqual(["rovara-cloud-staging-broker-integrations", "rovara-cloud-staging-broker-orchestration", "rovara-cloud-staging-broker-state"]);
     for (const [, policy] of policies) expect(JSON.stringify(policy.Properties.PolicyDocument).length, String(policy.Properties.ManagedPolicyName)).toBeLessThanOrEqual(5_500);
-    const orchestration = policies.find(([, policy]) => policy.Properties.ManagedPolicyName === "agentx-staging-broker-orchestration")![1];
+    const orchestration = policies.find(([, policy]) => policy.Properties.ManagedPolicyName === "rovara-cloud-staging-broker-orchestration")![1];
     expect(JSON.stringify(orchestration.Properties.PolicyDocument)).not.toMatch(/appsync|Realtime/);
-    const integrations = policies.find(([, policy]) => policy.Properties.ManagedPolicyName === "agentx-staging-broker-integrations")![1];
+    const integrations = policies.find(([, policy]) => policy.Properties.ManagedPolicyName === "rovara-cloud-staging-broker-integrations")![1];
     expect(statementsOf(integrations).filter((statement) => actionsOf(statement).some((action) => action.startsWith("appsync:")))).toHaveLength(1);
   });
 
@@ -148,8 +148,8 @@ describe("the broker", () => {
     expect(JSON.stringify(variables.AGENTX_NAMES)).toMatch(/[",]rt=/);
     expect(JSON.stringify(variables.AGENTX_NAMES)).toContain(`"${apiId}","Dns.Http"`);
     expect(variables.REALTIME_HTTP_ENDPOINT).toBeUndefined();
-    for (const env of ["staging", "a1234567890123456789"]) {
-      const stack = buildAgentXApp({ agentxEnv: env, agentxCloud: true }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((s) => s.stackName === `agentx-${env}-control-plane`)!;
+    for (const env of ["staging", "a1234567890123"]) {
+      const stack = buildAgentXApp({ agentxEnv: env, agentxCloud: true }).node.children.filter((child): child is Stack => Stack.isStack(child)).find((s) => s.stackName === `rovara-cloud-${env}-control-plane`)!;
       const found = lambdaEnvironments(Template.fromStack(stack).toJSON() as ResolvableTemplate, { env, stackName: stack.stackName, parameterValues: DEPLOY_PARAMETER_VALUES }).find((entry) => /^Broker[0-9A-F]{8}$/.test(entry.logicalId))!;
       expect(found.bytes, env).toBeLessThanOrEqual(LAMBDA_ENVIRONMENT_LIMIT_BYTES);
     }
@@ -182,7 +182,7 @@ describe("the broker", () => {
 });
 
 describe("the access policies", () => {
-  const scope = { env: "staging", partition: "aws", region: "us-east-1", account: "123456789012", artifactBucketArn: "arn:aws:s3:::b", pullThroughPrefix: "agentx-staging", cloudFormationRoleName: "agentx-staging-cloudformation" };
+  const scope = { env: "staging", partition: "aws", region: "us-east-1", account: "123456789012", artifactBucketArn: "arn:aws:s3:::b", pullThroughPrefix: "rovara-cloud-staging", cloudFormationRoleName: "rovara-cloud-staging-cloudformation" };
 
   it("list the AppSync Events create, update, delete, get and tag actions for the API and its namespaces, and nothing wider", () => {
     // CreateApi and ListApis take no resource type: their own statement on "*" in the deploy region (access-policies.test.ts).

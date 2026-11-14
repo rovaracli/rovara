@@ -42,30 +42,30 @@ describe("cdk engine", () => {
 
   it("deploys one stack exclusively with its parameters and role, and returns its outputs", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-"));
-    const runner = recordingRunner(dir, { "agentx-staging-control-plane": { ApiEndpoint: "https://x" } });
+    const runner = recordingRunner(dir, { "rovara-cloud-staging-control-plane": { ApiEndpoint: "https://x" } });
     const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async () => undefined });
-    const out = await deployer.deploy({ part: "control-plane", stackName: "agentx-staging-control-plane", parameters: { CallbackSigningKey: SECRET, OidcIssuer: "https://i" }, roleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation", terminationProtection: false });
+    const out = await deployer.deploy({ part: "control-plane", stackName: "rovara-cloud-staging-control-plane", parameters: { CallbackSigningKey: SECRET, OidcIssuer: "https://i" }, roleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation", terminationProtection: false });
     expect(out).toEqual({ ApiEndpoint: "https://x" });
     const call = runner.calls[0]!;
     expect(call.command).toBe("npx");
     expect(call.args.slice(0, 5)).toEqual(["--no-install", "cdk", "deploy", "AgentXControlPlane", "--exclusively"]);
     expect(call.args).toContain("agentxEnv=staging");
     expect(call.args).toContain("--role-arn");
-    expect(call.args).toContain(`agentx-staging-control-plane:OidcIssuer=https://i`);
+    expect(call.args).toContain(`rovara-cloud-staging-control-plane:OidcIssuer=https://i`);
     expect(call.display).not.toContain(SECRET);
-    expect(call.display).toContain("agentx-staging-control-plane:CallbackSigningKey=<redacted>");
+    expect(call.display).toContain("rovara-cloud-staging-control-plane:CallbackSigningKey=<redacted>");
   });
 
   it("keys every --parameters value by the physical stack name, which is what the CDK CLI looks parameters up by", async () => {
     // aws-cdk 2.1142 resolves `--parameters Stack:Key=Value` with parameterMap[stack.stackName]: a
     // construct-id prefix (AgentXControlPlane) never matches a named environment's stack
-    // (agentx-staging-control-plane), so every parameter would be silently dropped.
+    // (rovara-cloud-staging-control-plane), so every parameter would be silently dropped.
     const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-"));
-    const runner = recordingRunner(dir, { "agentx-staging-control-plane": {} });
+    const runner = recordingRunner(dir, { "rovara-cloud-staging-control-plane": {} });
     const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async () => undefined });
     await deployer.deploy({
       part: "control-plane",
-      stackName: "agentx-staging-control-plane",
+      stackName: "rovara-cloud-staging-control-plane",
       parameters: { CallbackSigningKey: SECRET, PermissionsBoundaryArn: "arn:aws:iam::1:policy/b", OperatorPrincipalArn: "arn:aws:iam::1:role/o" },
       roleArn: "arn:aws:iam::1:role/r",
       terminationProtection: false,
@@ -73,7 +73,7 @@ describe("cdk engine", () => {
     const { args } = runner.calls[0]!;
     const values = args.flatMap((arg, index) => (args[index - 1] === "--parameters" ? [arg] : []));
     expect(values).toHaveLength(3);
-    for (const value of values) expect(value.slice(0, value.indexOf(":"))).toBe("agentx-staging-control-plane");
+    for (const value of values) expect(value.slice(0, value.indexOf(":"))).toBe("rovara-cloud-staging-control-plane");
   });
 
   it("builds the release source with npm ci then npm run build, through the runner, each with a display string", async () => {
@@ -106,9 +106,9 @@ describe("cdk engine", () => {
 
   it("passes agentxIdentity=oidc when the environment brings its own provider", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-"));
-    const runner = recordingRunner(dir, { "agentx-staging-runtime": {} });
+    const runner = recordingRunner(dir, { "rovara-cloud-staging-runtime": {} });
     await cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "oidc", outputsDir: dir, outputs: async () => undefined })
-      .deploy({ part: "runtime", stackName: "agentx-staging-runtime", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: true });
+      .deploy({ part: "runtime", stackName: "rovara-cloud-staging-runtime", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: true });
     expect(runner.calls[0]!.args).toContain("agentxIdentity=oidc");
   });
 
@@ -175,11 +175,11 @@ describe("cdk engine", () => {
   it("redacts a secret before it is display-quoted, so whitespace and quotes inside it cannot smuggle it through escaped", async () => {
     const SPACEY_SECRET = 'sp ace"quote\\back';
     const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-"));
-    const runner = recordingRunner(dir, { "agentx-staging-control-plane": { ApiEndpoint: "https://x" } });
+    const runner = recordingRunner(dir, { "rovara-cloud-staging-control-plane": { ApiEndpoint: "https://x" } });
     const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async () => undefined });
     await deployer.deploy({
       part: "control-plane",
-      stackName: "agentx-staging-control-plane",
+      stackName: "rovara-cloud-staging-control-plane",
       parameters: { CallbackSigningKey: SPACEY_SECRET },
       roleArn: "arn:aws:iam::1:role/r",
       terminationProtection: false,
@@ -188,25 +188,25 @@ describe("cdk engine", () => {
     expect(display).not.toContain(SPACEY_SECRET);
     expect(display).not.toContain("sp ace");
     expect(display).not.toContain("quote");
-    expect(display).toContain("agentx-staging-control-plane:CallbackSigningKey=<redacted>");
+    expect(display).toContain("rovara-cloud-staging-control-plane:CallbackSigningKey=<redacted>");
   });
 
   it("emits deploying then deployed in order", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-"));
-    const runner = recordingRunner(dir, { "agentx-staging-control-plane": { ApiEndpoint: "https://x" } });
+    const runner = recordingRunner(dir, { "rovara-cloud-staging-control-plane": { ApiEndpoint: "https://x" } });
     const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async () => undefined });
     const events: DeployEvent[] = [];
     await deployer.deploy({
       part: "control-plane",
-      stackName: "agentx-staging-control-plane",
+      stackName: "rovara-cloud-staging-control-plane",
       parameters: {},
       roleArn: "arn:aws:iam::1:role/r",
       terminationProtection: false,
       onEvent: (event) => events.push(event),
     });
     expect(events).toEqual([
-      { kind: "deploying", stackName: "agentx-staging-control-plane" },
-      { kind: "deployed", stackName: "agentx-staging-control-plane" },
+      { kind: "deploying", stackName: "rovara-cloud-staging-control-plane" },
+      { kind: "deployed", stackName: "rovara-cloud-staging-control-plane" },
     ]);
   });
 
@@ -222,14 +222,14 @@ describe("cdk engine", () => {
     await expect(
       deployer.deploy({
         part: "control-plane",
-        stackName: "agentx-staging-control-plane",
+        stackName: "rovara-cloud-staging-control-plane",
         parameters: {},
         roleArn: "arn:aws:iam::1:role/r",
         terminationProtection: false,
         onEvent: (event) => events.push(event),
       }),
     ).rejects.toThrow("cdk deploy failed");
-    expect(events).toEqual([{ kind: "deploying", stackName: "agentx-staging-control-plane" }]);
+    expect(events).toEqual([{ kind: "deploying", stackName: "rovara-cloud-staging-control-plane" }]);
   });
 
   describe("refusals carry CONFIG_INVALID, never an internal error", () => {
@@ -257,15 +257,15 @@ describe("cdk engine", () => {
 
   describe("outputs file handling", () => {
     it("reads a stack with no outputs from CloudFormation: cdk leaves it out of the outputs file (Task 20 live check)", async () => {
-      // live15eb: agentx-live15eb-runtime deployed, but "cdk deploy wrote no outputs ... (stacks written: none)".
+      // live15eb: rovara-cloud-live15eb-runtime deployed, but "cdk deploy wrote no outputs ... (stacks written: none)".
       const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-"));
       const runner = recordingRunner(dir, {});
       const asked: string[] = [];
       const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async (stackName) => { asked.push(stackName); return {}; } });
       await expect(
-        deployer.deploy({ part: "runtime", stackName: "agentx-staging-runtime", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
+        deployer.deploy({ part: "runtime", stackName: "rovara-cloud-staging-runtime", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
       ).resolves.toEqual({});
-      expect(asked).toEqual(["agentx-staging-runtime"]);
+      expect(asked).toEqual(["rovara-cloud-staging-runtime"]);
     });
 
     it("throws naming the stacks actually written when the outputs file has no entry for the requested stack", async () => {
@@ -273,8 +273,8 @@ describe("cdk engine", () => {
       const runner = recordingRunner(dir, { "agentx-staging-other-stack": { ApiEndpoint: "https://x" } });
       const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async () => undefined });
       await expect(
-        deployer.deploy({ part: "control-plane", stackName: "agentx-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
-      ).rejects.toThrow(/cdk deploy wrote no outputs for agentx-staging-control-plane to .*control-plane\.json \(stacks written: agentx-staging-other-stack\)/);
+        deployer.deploy({ part: "control-plane", stackName: "rovara-cloud-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
+      ).rejects.toThrow(/cdk deploy wrote no outputs for rovara-cloud-staging-control-plane to .*control-plane\.json \(stacks written: agentx-staging-other-stack\)/);
     });
 
     it("still throws when the outputs file names another stack, even though the requested stack exists (review I1)", async () => {
@@ -284,8 +284,8 @@ describe("cdk engine", () => {
       const asked: string[] = [];
       const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async (stackName) => { asked.push(stackName); return { ApiEndpoint: "https://old" }; } });
       await expect(
-        deployer.deploy({ part: "control-plane", stackName: "agentx-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
-      ).rejects.toThrow(/cdk deploy wrote no outputs for agentx-staging-control-plane to .*control-plane\.json \(stacks written: agentx-staging-other-stack\)$/);
+        deployer.deploy({ part: "control-plane", stackName: "rovara-cloud-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
+      ).rejects.toThrow(/cdk deploy wrote no outputs for rovara-cloud-staging-control-plane to .*control-plane\.json \(stacks written: agentx-staging-other-stack\)$/);
       expect(asked).toEqual([]);
     });
 
@@ -295,8 +295,8 @@ describe("cdk engine", () => {
       const runner = recordingRunner(dir, {});
       const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async () => ({ ApiEndpoint: "https://old" }) });
       await expect(
-        deployer.deploy({ part: "control-plane", stackName: "agentx-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
-      ).rejects.toThrow(/cdk deploy wrote no outputs for agentx-staging-control-plane to .*control-plane\.json \(stacks written: none\)$/);
+        deployer.deploy({ part: "control-plane", stackName: "rovara-cloud-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
+      ).rejects.toThrow(/cdk deploy wrote no outputs for rovara-cloud-staging-control-plane to .*control-plane\.json \(stacks written: none\)$/);
     });
 
     it("says the deploy succeeded when reading a no-outputs stack from CloudFormation fails (review M7)", async () => {
@@ -304,8 +304,8 @@ describe("cdk engine", () => {
       const runner = recordingRunner(dir, {});
       const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async () => { throw new Error("Rate exceeded"); } });
       await expect(
-        deployer.deploy({ part: "runtime", stackName: "agentx-staging-runtime", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
-      ).rejects.toThrow("cdk deploy of agentx-staging-runtime succeeded, but its outputs could not be read from CloudFormation: Rate exceeded");
+        deployer.deploy({ part: "runtime", stackName: "rovara-cloud-staging-runtime", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
+      ).rejects.toThrow("cdk deploy of rovara-cloud-staging-runtime succeeded, but its outputs could not be read from CloudFormation: Rate exceeded");
     });
 
     it("throws when the outputs file names no stacks and CloudFormation reports no such stack", async () => {
@@ -313,18 +313,18 @@ describe("cdk engine", () => {
       const runner = recordingRunner(dir, {});
       const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async () => undefined });
       await expect(
-        deployer.deploy({ part: "runtime", stackName: "agentx-staging-runtime", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
-      ).rejects.toThrow(/cdk deploy wrote no outputs for agentx-staging-runtime to .*runtime\.json \(stacks written: none\), and CloudFormation reports no such stack/);
+        deployer.deploy({ part: "runtime", stackName: "rovara-cloud-staging-runtime", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
+      ).rejects.toThrow(/cdk deploy wrote no outputs for rovara-cloud-staging-runtime to .*runtime\.json \(stacks written: none\), and CloudFormation reports no such stack/);
     });
 
     it("deletes a stale outputs file before running, so a run that writes nothing cannot return stale data", async () => {
       const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-"));
       const outputsFile = join(dir, "control-plane.json");
-      await writeFile(outputsFile, JSON.stringify({ "agentx-staging-control-plane": { ApiEndpoint: "https://stale" } }));
+      await writeFile(outputsFile, JSON.stringify({ "rovara-cloud-staging-control-plane": { ApiEndpoint: "https://stale" } }));
       const runner: CommandRunner = { run: async () => ({ stdout: "" }) }; // never rewrites the outputs file
       const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async () => undefined });
       await expect(
-        deployer.deploy({ part: "control-plane", stackName: "agentx-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
+        deployer.deploy({ part: "control-plane", stackName: "rovara-cloud-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false }),
       ).rejects.toThrow(/cdk deploy wrote no outputs file/);
       await expect(readFile(outputsFile, "utf8")).rejects.toThrow();
     });
@@ -334,7 +334,7 @@ describe("cdk engine", () => {
       const runner: CommandRunner = { run: async () => ({ stdout: "" }) };
       const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async () => undefined });
       const error: unknown = await deployer
-        .deploy({ part: "control-plane", stackName: "agentx-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false })
+        .deploy({ part: "control-plane", stackName: "rovara-cloud-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false })
         .then(
           () => undefined,
           (caught: unknown) => caught,
@@ -355,7 +355,7 @@ describe("cdk engine", () => {
       };
       const deployer = cdkDeployer({ runner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", outputsDir: dir, outputs: async () => undefined });
       const error: unknown = await deployer
-        .deploy({ part: "control-plane", stackName: "agentx-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false })
+        .deploy({ part: "control-plane", stackName: "rovara-cloud-staging-control-plane", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false })
         .then(
           () => undefined,
           (caught: unknown) => caught,
@@ -442,7 +442,7 @@ describe("the cdk source (issue 152)", () => {
           const templateFile = `${id}.template.json`;
           await writeFile(join(outDir, templateFile), JSON.stringify({ Parameters: Object.fromEntries((declared[part] ?? []).map((name) => [name, { Type: "String" }])), Resources: {} }));
           artifacts[`${id}.assets`] = { type: "cdk:asset-manifest", properties: { file: `${id}.assets.json` } };
-          artifacts[id] = { type: "aws:cloudformation:stack", environment: "aws://unknown-account/us-east-1", properties: { templateFile, stackName: options.stackNames?.[id] ?? `agentx-staging-${part}` }, displayName: id };
+          artifacts[id] = { type: "aws:cloudformation:stack", environment: "aws://unknown-account/us-east-1", properties: { templateFile, stackName: options.stackNames?.[id] ?? `rovara-cloud-staging-${part}` }, displayName: id };
         }
         await writeFile(join(outDir, "manifest.json"), JSON.stringify({ version: "54.0.0", artifacts, minimumCliVersion: "2.1000.0" }));
         return { stdout: "" };
@@ -469,10 +469,10 @@ describe("the cdk source (issue 152)", () => {
     await expect(readFile(join(call!.outDir, "manifest.json"))).rejects.toThrow();
 
     // The deploy's own context flags, for the same input: the synth must read what the deploy deploys.
-    const deployRunner = recordingRunner(await mkdtemp(join(tmpdir(), "agentx-cdk-")), { "agentx-staging-slack": {} });
+    const deployRunner = recordingRunner(await mkdtemp(join(tmpdir(), "agentx-cdk-")), { "rovara-cloud-staging-slack": {} });
     const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-"));
     await cdkDeployer({ runner: deployRunner, source: "/src", env: "staging", region: "eu-west-1", identityMode: "oidc", outputsDir: dir, outputs: async () => undefined })
-      .deploy({ part: "slack", stackName: "agentx-staging-slack", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false });
+      .deploy({ part: "slack", stackName: "rovara-cloud-staging-slack", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false });
     const deployArgs = deployRunner.calls[0]!.args;
     const context = (args: string[]) => args.slice(args.indexOf("--app"), args.indexOf("--app") + 8);
     expect(context(call!.args)).toEqual(context(deployArgs));
@@ -488,24 +488,24 @@ describe("the cdk source (issue 152)", () => {
     expect(runner.calls[0]!.args).toContain("agentxReservedConcurrency=false");
 
     const dir = await mkdtemp(join(tmpdir(), "agentx-cdk-"));
-    const deployRunner = recordingRunner(dir, { "agentx-staging-slack": {} });
+    const deployRunner = recordingRunner(dir, { "rovara-cloud-staging-slack": {} });
     await cdkDeployer({ runner: deployRunner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", reservedConcurrency: false, outputsDir: dir, outputs: async () => undefined })
-      .deploy({ part: "slack", stackName: "agentx-staging-slack", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false });
+      .deploy({ part: "slack", stackName: "rovara-cloud-staging-slack", parameters: {}, roleArn: "arn:aws:iam::1:role/r", terminationProtection: false });
     expect(deployRunner.calls[0]!.args).toContain("agentxReservedConcurrency=false");
 
     const diffRunner = recordingRunner(dir, {});
-    await cdkDiff({ runner: diffRunner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", reservedConcurrency: false, request: { part: "slack", stackName: "agentx-staging-slack", parameters: {}, terminationProtection: false } });
+    await cdkDiff({ runner: diffRunner, source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito", reservedConcurrency: false, request: { part: "slack", stackName: "rovara-cloud-staging-slack", parameters: {}, terminationProtection: false } });
     expect(diffRunner.calls[0]!.args).toContain("agentxReservedConcurrency=false");
   });
 
   it("refuses when the assembly has no stack for a part, naming it", async () => {
     const declared = await synthDeclaredParameters({ runner: synthRunner({}, { omit: ["AgentXSlackOrchestrator"] }), source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito" });
-    expect(() => declared("slack")).toThrow("cdk synth of /src made no stack AgentXSlackOrchestrator (agentx-staging-slack); check the checkout builds");
+    expect(() => declared("slack")).toThrow("cdk synth of /src made no stack AgentXSlackOrchestrator (rovara-cloud-staging-slack); check the checkout builds");
   });
 
   it("refuses a stack the assembly names differently from the one the deploy targets", async () => {
-    const declared = await synthDeclaredParameters({ runner: synthRunner({}, { stackNames: { AgentXControlPlane: "agentx-other-control-plane" } }), source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito" });
-    expect(() => declared("control-plane")).toThrow("cdk synth of /src made stack AgentXControlPlane as agentx-other-control-plane, not agentx-staging-control-plane");
+    const declared = await synthDeclaredParameters({ runner: synthRunner({}, { stackNames: { AgentXControlPlane: "rovara-cloud-other-control-plane" } }), source: "/src", env: "staging", region: "us-east-1", identityMode: "cognito" });
+    expect(() => declared("control-plane")).toThrow("cdk synth of /src made stack AgentXControlPlane as rovara-cloud-other-control-plane, not rovara-cloud-staging-control-plane");
   });
 
   it("refuses an assembly with no readable manifest, and still removes its directory", async () => {

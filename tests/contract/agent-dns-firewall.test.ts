@@ -123,7 +123,7 @@ describe("agent DNS firewall (cloud installs)", () => {
   });
 
   it("keeps every Resolver name within 64 characters and the allowed characters for the longest environment name", () => {
-    const longest = foundation({ agentxEnv: "staging-0123456789a", agentxCloud: true });
+    const longest = foundation({ agentxEnv: "staging-012345", agentxCloud: true });
     const names = [
       ...resourcesOf(longest, "AWS::Route53Resolver::FirewallDomainList"),
       ...resourcesOf(longest, "AWS::Route53Resolver::FirewallRuleGroup"),
@@ -137,8 +137,8 @@ describe("agent DNS firewall (cloud installs)", () => {
     }
   });
 
-  it("logs every query to /agentx/<env>/dns-firewall, kept 30 days, and attaches the logging to the VPC", () => {
-    const groups = resourcesOf(template, "AWS::Logs::LogGroup").filter(([, resource]) => resource.Properties.LogGroupName === "/agentx/staging/dns-firewall");
+  it("logs every query to /rovara-cloud/<env>/dns-firewall, kept 30 days, and attaches the logging to the VPC", () => {
+    const groups = resourcesOf(template, "AWS::Logs::LogGroup").filter(([, resource]) => resource.Properties.LogGroupName === "/rovara-cloud/staging/dns-firewall");
     expect(groups).toHaveLength(1);
     expect(groups[0]![1].Properties.RetentionInDays).toBe(30);
     const configs = resourcesOf(template, "AWS::Route53Resolver::ResolverQueryLoggingConfig");
@@ -162,7 +162,7 @@ describe("agent DNS firewall (cloud installs)", () => {
     // No Domains property at all: the broker owns the contents (UpdateFirewallDomains), and an update of this template cannot reset them.
     expect(list.Properties).not.toHaveProperty("Domains");
     expect(list.Properties).not.toHaveProperty("DomainFileUrl");
-    expect(list.Properties.Name).toBe("agentx-staging-project-allow");
+    expect(list.Properties.Name).toBe("rovara-cloud-staging-project-allow");
     expect(listId).not.toBe(domainListOf(template, allow)[0]);
     // The BLOCK rule is untouched.
     expect(block.FirewallDomainRedirectionAction).toBeUndefined();
@@ -252,7 +252,7 @@ describe("the project allow list in the control plane (cloud installs)", () => {
     expect(resource).not.toContain("*");
     // A broker grant like the others (ruling M2): it sits in the broker's "integrations" managed policy group, attached to the broker's role only.
     const policy = resourcesOf(template, "AWS::IAM::ManagedPolicy").find(([id]) => id === policyId)![1];
-    expect(policy.Properties.ManagedPolicyName).toBe("agentx-staging-broker-integrations");
+    expect(policy.Properties.ManagedPolicyName).toBe("rovara-cloud-staging-broker-integrations");
     const roles = policy.Properties.Roles as Array<{ Ref: string }>;
     expect(roles).toHaveLength(1);
     const brokerRole = resourcesOf(template, "AWS::Lambda::Function").find(([id]) => id.startsWith("Broker") && !id.includes("ServiceRole"))![1].Properties.Role as { "Fn::GetAtt": [string, string] };

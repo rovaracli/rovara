@@ -19,7 +19,7 @@ import {
   type StackEvent,
 } from "@aws-sdk/client-cloudformation";
 import { HeadObjectCommand, PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
-import { AgentXError, agentXError } from "@agentx/contracts";
+import { AgentXError, agentXError, RESOURCE_PREFIX } from "@agentx/contracts";
 import type { DeployEvent, DeployRequest, StackDeployer, StackOutputs } from "./deployer.js";
 import { sha256Hex } from "./hash.js";
 import { SECRET_PARAMETERS } from "./parameters.js";
@@ -202,7 +202,7 @@ export function templatesDeployer(input: {
     if (status === "ROLLBACK_COMPLETE") {
       throw agentXError(
         "CONFIG_INVALID",
-        `stack ${stackName} failed to create earlier and must be deleted before it can be deployed again (aws cloudformation delete-stack --stack-name ${stackName} --region ${region}), or remove the whole environment with agentx --env ${env} destroy --region ${region}`,
+        `stack ${stackName} failed to create earlier and must be deleted before it can be deployed again (aws cloudformation delete-stack --stack-name ${stackName} --region ${region}), or remove the whole environment with rovara --env ${env} destroy --region ${region}`,
       );
     }
     // A stack in REVIEW_IN_PROGRESS has only ever had a CREATE change set that was never executed.
@@ -216,7 +216,7 @@ export function templatesDeployer(input: {
     const { stackName } = request;
     const emit = (event: DeployEvent) => request.onEvent?.(event);
     const startedAt = now();
-    const changeSetName = `agentx-${version.replaceAll(".", "-")}-${Math.floor(startedAt / 1000)}`;
+    const changeSetName = `${RESOURCE_PREFIX}-${version.replaceAll(".", "-")}-${Math.floor(startedAt / 1000)}`;
     const changeSetId = { StackName: stackName, ChangeSetName: changeSetName };
 
     /** Waits one poll interval while the stack is `status`, or throws once this deploy has waited longer than the timeout. */

@@ -39,7 +39,7 @@ describe("a newer environment, older code: an unknown code is ignored with one l
   });
 
   it("reads the decoders directly the same way: the old code's view of `aq` (now derived, so no longer a code) is one log line", () => {
-    expect(logged(() => brokerNamesFromEnvironment({ [BROKER_NAMES_VARIABLE]: JSON.stringify({ rt: "abcdefghij", aq: "agentx-staging-audit-intake.fifo" }) }))).toHaveLength(1);
+    expect(logged(() => brokerNamesFromEnvironment({ [BROKER_NAMES_VARIABLE]: JSON.stringify({ rt: "abcdefghij", aq: "rovara-cloud-staging-audit-intake.fifo" }) }))).toHaveLength(1);
     expect(logged(() => brokerSettingsFromEnvironment({ [BROKER_SETTINGS_VARIABLE]: JSON.stringify({ zz: "1" }) }))).toHaveLength(1);
   });
 
@@ -74,9 +74,9 @@ describe("an older environment, newer code: a missing name is not invented, a de
 
   it("derives what the shared naming module can derive, whether or not the old environment sent it (the audit queue was `aq` in 0.4.3)", () => {
     const withoutIt: MutableEnvironment = { ...SCOPE, [BROKER_NAMES_VARIABLE]: JSON.stringify({ st: "table" }) };
-    const withIt: MutableEnvironment = { ...SCOPE, [BROKER_NAMES_VARIABLE]: JSON.stringify({ st: "table", aq: "agentx-staging-audit-intake.fifo" }) };
+    const withIt: MutableEnvironment = { ...SCOPE, [BROKER_NAMES_VARIABLE]: JSON.stringify({ st: "table", aq: "rovara-cloud-staging-audit-intake.fifo" }) };
     logged(() => { hydrateBrokerEnvironment(withoutIt); hydrateBrokerEnvironment(withIt); });
-    const url = "https://sqs.us-west-2.amazonaws.com/123456789012/agentx-staging-audit-intake.fifo";
+    const url = "https://sqs.us-west-2.amazonaws.com/123456789012/rovara-cloud-staging-audit-intake.fifo";
     expect(withoutIt.AUDIT_INTAKE_QUEUE_URL).toBe(url);
     expect(withIt.AUDIT_INTAKE_QUEUE_URL).toBe(url);
   });

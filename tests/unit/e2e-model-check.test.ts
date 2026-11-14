@@ -205,7 +205,7 @@ describe("the check the runner makes", () => {
 
 describe("the bounded model check server (test 32)", () => {
   const PREFIX = "e2e-runtime/AROAEXAMPLEROLEID1234:i-0123456789abcdef0/";
-  const args = { bucket: "agentx-test-artifacts", prefix: PREFIX, waitSeconds: 4 * 3600 };
+  const args = { bucket: "rovara-cloud-test-artifacts", prefix: PREFIX, waitSeconds: 4 * 3600 };
   const id = (n: number) => `5b0e8a52-6f3e-4b8f-9f1c-0f5c1f4f2a${String(n).padStart(2, "0")}`;
   const request = (n: number) => Buffer.from(JSON.stringify({ schemaVersion: E2E_MODEL_CHECK_REQUEST_SCHEMA, checkId: id(n), kind: "discover" }));
 
@@ -293,7 +293,7 @@ describe("the bounded model check server (test 32)", () => {
   it("a healthy runner polling for a request that is not there logs nothing: S3's AccessDenied and NoSuchKey are 'not there yet'", async () => {
     for (const absent of [Object.assign(new Error("Access Denied"), { name: "AccessDenied", $metadata: { httpStatusCode: 403 } }), Object.assign(new Error("nope"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } }),
       Object.assign(new Error("Forbidden"), { name: "Forbidden", $metadata: { httpStatusCode: 403 } })]) {
-      const transport = s3CanaryTransport("agentx-test-artifacts", "us-east-1", { send: async () => { throw absent; } });
+      const transport = s3CanaryTransport("rovara-cloud-test-artifacts", "us-east-1", { send: async () => { throw absent; } });
       const s = server({ stopAfterPolls: 6 });
       s.value.transport = transport;
       await serveModelChecks(s.args, s.value);
@@ -304,7 +304,7 @@ describe("the bounded model check server (test 32)", () => {
 
   it("a real S3 fault (throttling, a 5xx) is still thrown by the transport and logged once, by name", async () => {
     const fault = Object.assign(new Error("Please reduce your request rate for secret-bucket"), { name: "SlowDown", $metadata: { httpStatusCode: 503 } });
-    const transport = s3CanaryTransport("agentx-test-artifacts", "us-east-1", { send: async () => { throw fault; } });
+    const transport = s3CanaryTransport("rovara-cloud-test-artifacts", "us-east-1", { send: async () => { throw fault; } });
     await expect(transport.get(`${PREFIX}${CANARY_REQUEST_KEY}`)).rejects.toBe(fault);
     const s = server({ stopAfterPolls: 6 });
     s.value.transport = transport;
@@ -314,7 +314,7 @@ describe("the bounded model check server (test 32)", () => {
   });
 
   it("returns the request's bytes when S3 has it", async () => {
-    const transport = s3CanaryTransport("agentx-test-artifacts", "us-east-1", { send: async () => ({ Body: { transformToByteArray: async () => Buffer.from("{}") } }) });
+    const transport = s3CanaryTransport("rovara-cloud-test-artifacts", "us-east-1", { send: async () => ({ Body: { transformToByteArray: async () => Buffer.from("{}") } }) });
     expect(Buffer.from((await transport.get(`${PREFIX}${CANARY_REQUEST_KEY}`))!).toString()).toBe("{}");
   });
 
@@ -350,9 +350,9 @@ describe("the bounded model check server (test 32)", () => {
   });
 
   it("refuses arguments outside its own prefix shape, and serves for seven days by default", () => {
-    expect(parseCanaryCliArgs(["--bucket", "agentx-test-artifacts", "--prefix", PREFIX])).toEqual({ bucket: "agentx-test-artifacts", prefix: PREFIX, waitSeconds: 604_800 });
-    for (const argv of [["--bucket", "b"], ["--bucket", "agentx-test-artifacts", "--prefix", "e2e-runtime/other/"], ["--bucket", "agentx-test-artifacts", "--prefix", PREFIX, "--x", "1"],
-      ["--bucket", "agentx-test-artifacts", "--prefix", PREFIX, "--wait-seconds", "-1"], ["--bucket", "agentx-test-artifacts", "--prefix", PREFIX, "--wait-seconds", "604801"]]) {
+    expect(parseCanaryCliArgs(["--bucket", "rovara-cloud-test-artifacts", "--prefix", PREFIX])).toEqual({ bucket: "rovara-cloud-test-artifacts", prefix: PREFIX, waitSeconds: 604_800 });
+    for (const argv of [["--bucket", "b"], ["--bucket", "rovara-cloud-test-artifacts", "--prefix", "e2e-runtime/other/"], ["--bucket", "rovara-cloud-test-artifacts", "--prefix", PREFIX, "--x", "1"],
+      ["--bucket", "rovara-cloud-test-artifacts", "--prefix", PREFIX, "--wait-seconds", "-1"], ["--bucket", "rovara-cloud-test-artifacts", "--prefix", PREFIX, "--wait-seconds", "604801"]]) {
       expect(() => parseCanaryCliArgs(argv)).toThrow();
     }
   });

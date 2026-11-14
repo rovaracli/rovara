@@ -1,6 +1,6 @@
 import { RemovalPolicy, aws_logs as logs, aws_route53resolver as resolver } from "aws-cdk-lib";
 import { Construct } from "constructs";
-import { DEFAULT_AGENT_ALLOW_DOMAINS } from "@agentx/contracts";
+import { DEFAULT_AGENT_ALLOW_DOMAINS, RESOURCE_PREFIX } from "@agentx/contracts";
 
 export { DEFAULT_AGENT_ALLOW_DOMAINS };
 
@@ -38,7 +38,7 @@ export function parseExtraAllowDomains(value: unknown, existing: readonly string
 }
 
 export interface AgentDnsFirewallProps {
-  /** The install, for the query log group name /agentx/<env>/dns-firewall. */
+  /** The install, for the query log group name /rovara-cloud/<env>/dns-firewall. */
   env: string;
   vpcId: string;
   /** Allowed in addition to DEFAULT_AGENT_ALLOW_DOMAINS. */
@@ -54,7 +54,7 @@ export interface AgentDnsFirewallProps {
  * A Route 53 Resolver DNS Firewall for the install VPC, so agent machines resolve only an allowlist of
  * websites. Rule group, in order: priority 100 ALLOW the default domain list, priority 150 ALLOW the
  * project list, priority 200 BLOCK `*` with NXDOMAIN. Every query is logged to
- * /agentx/<env>/dns-firewall (30 days).
+ * /rovara-cloud/<env>/dns-firewall (30 days).
  *
  * The project list holds the domains Rovara staff approved for projects (and, in Plan 3, model
  * sources): one cell-wide union, which the broker keeps equal to the approved egress items with
@@ -86,20 +86,20 @@ export class AgentDnsFirewall extends Construct {
     this.allowDomains = [...(props.baseAllowDomains ?? DEFAULT_AGENT_ALLOW_DOMAINS), ...(props.extraAllowDomains ?? [])];
 
     const allowList = new resolver.CfnFirewallDomainList(this, "AllowList", {
-      name: `agentx-${props.env}-allow`,
+      name: `${RESOURCE_PREFIX}-${props.env}-allow`,
       domains: [...this.allowDomains],
     });
     // No `domains`: the broker owns the contents (see above).
     const projectAllowList = new resolver.CfnFirewallDomainList(this, "ProjectAllowList", {
-      name: `agentx-${props.env}-project-allow`,
+      name: `${RESOURCE_PREFIX}-${props.env}-project-allow`,
     });
     this.projectAllowListId = projectAllowList.attrId;
     const blockList = new resolver.CfnFirewallDomainList(this, "BlockAllList", {
-      name: `agentx-${props.env}-block-all`,
+      name: `${RESOURCE_PREFIX}-${props.env}-block-all`,
       domains: ["*"],
     });
     this.ruleGroup = new resolver.CfnFirewallRuleGroup(this, "RuleGroup", {
-      name: `agentx-${props.env}-agents`,
+      name: `${RESOURCE_PREFIX}-${props.env}-agents`,
       firewallRules: [
         // An allowed name may CNAME to a CDN name not on the list (auth.docker.io -> *.cdn.cloudflare.net, found live
         // on staging); trust the chain only for names this rule already allowed. Everything else still meets BLOCK.
@@ -113,16 +113,16 @@ export class AgentDnsFirewall extends Construct {
       firewallRuleGroupId: this.ruleGroup.attrId,
       vpcId: props.vpcId,
       priority: DNS_FIREWALL_ASSOCIATION_PRIORITY,
-      name: `agentx-${props.env}-agents`,
+      name: `${RESOURCE_PREFIX}-${props.env}-agents`,
     });
 
     this.logGroup = new logs.LogGroup(this, "QueryLogs", {
-      logGroupName: `/agentx/${props.env}/dns-firewall`,
+      logGroupName: `/${RESOURCE_PREFIX}/${props.env}/dns-firewall`,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: RemovalPolicy.DESTROY,
     });
     const queryLogging = new resolver.CfnResolverQueryLoggingConfig(this, "QueryLogging", {
-      name: `agentx-${props.env}-dns-firewall`,
+      name: `${RESOURCE_PREFIX}-${props.env}-dns-firewall`,
       // The log group ARN with its trailing ":*" is the form the Resolver CreateResolverQueryLogConfig
       // documentation gives for a CloudWatch Logs destination, so it is passed as it comes.
       destinationArn: this.logGroup.logGroupArn,

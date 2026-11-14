@@ -126,9 +126,9 @@ describe("broker connector metrics", () => {
 
   it("publishes into the configured namespace", () => {
     const lines: string[] = [];
-    emitConnectorMetric("ConnectorNotConnected", "linear", 1, (line) => lines.push(line), "AgentX/staging");
+    emitConnectorMetric("ConnectorNotConnected", "linear", 1, (line) => lines.push(line), "RovaraCloud/staging");
     const parsed = JSON.parse(lines[0]!) as Record<string, unknown>;
-    expect(parsed._aws).toMatchObject({ CloudWatchMetrics: [{ Namespace: "AgentX/staging" }] });
+    expect(parsed._aws).toMatchObject({ CloudWatchMetrics: [{ Namespace: "RovaraCloud/staging" }] });
   });
 
   it("defaults to the AgentX namespace", () => {

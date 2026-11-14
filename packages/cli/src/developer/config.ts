@@ -32,7 +32,7 @@ export async function readDeveloperConfig(home: string): Promise<DeveloperConfig
     document = undefined;
   }
   const parsed = ConfigSchema.safeParse(document);
-  if (!parsed.success) throw agentXError("CONFIG_INVALID", `${developerConfigPath(home)} is invalid; delete it and run agentx login <url> again`);
+  if (!parsed.success) throw agentXError("CONFIG_INVALID", `${developerConfigPath(home)} is invalid; delete it and run rovara login <url> again`);
   return { ...(parsed.data.default === undefined ? {} : { default: parsed.data.default }), environments: parsed.data.environments };
 }
 
@@ -75,7 +75,7 @@ export async function removeDeveloperEnvironment(home: string, env: string): Pro
 
 /**
  * Issue #221: forgets this computer's developer sign-in for an environment that no longer exists
- * (agentx destroy): its token and its entry, moving the default as removeDeveloperEnvironment does.
+ * (rovara destroy): its token and its entry, moving the default as removeDeveloperEnvironment does.
  * Undefined when there was no entry for it; otherwise the default after.
  */
 export async function forgetDeveloperSignIn(home: string, env: string, tokenStore: Pick<TokenStore, "delete">): Promise<{ default: string | undefined } | undefined> {
@@ -85,7 +85,7 @@ export async function forgetDeveloperSignIn(home: string, env: string, tokenStor
   return { default: await removeDeveloperEnvironment(home, env) };
 }
 
-/** The environment named, or the default one agentx login set. */
+/** The environment named, or the default one rovara login set. */
 export async function resolveDeveloperEnvironment(home: string, env: string | undefined): Promise<{ env: string; entry: DeveloperEnvironment }> {
   const config = await readDeveloperConfig(home);
   const name = env ?? config.default;

@@ -76,7 +76,7 @@ describe("runCliChange (E17, Q6)", () => {
     });
     const lines: string[] = [];
     await expect(runCliChange({ controlPlaneUrl: URL, accessToken: "admin-token", change: { kind: "grant_project_access", project: "payments", developer: "U0NEW00001" }, cliVersion: "0.0.7", confirm: async () => true, write: (line) => lines.push(line) }, fetch))
-      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("agentx admin changes") as unknown });
+      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("rovara admin changes") as unknown });
     expect(calls).toHaveLength(2);
     expect(lines.join("\n")).not.toContain("Applied.");
   });
@@ -129,7 +129,7 @@ describe("runCliChange (E17, Q6)", () => {
       throw new TypeError(`fetch failed for ${URL}`);
     }) as unknown as typeof globalThis.fetch;
     await expect(runCliChange({ controlPlaneUrl: URL, accessToken: "t", change: { kind: "grant_project_access", project: "payments", developer: "U0NEW00001" }, cliVersion: "0.0.7", confirm: async () => true, write: () => undefined }, fetch))
-      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("agentx admin changes") as unknown });
+      .rejects.toMatchObject({ code: "RUNTIME_UNAVAILABLE", message: expect.stringContaining("rovara admin changes") as unknown });
   });
 
   it("still ends declined when the decline cannot be recorded: nothing applies without a yes", async () => {

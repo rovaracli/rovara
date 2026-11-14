@@ -16,7 +16,7 @@ describe("the public hook route is throttled at the gateway", () => {
   let template: { Resources: Record<string, { Type: string; Properties: Record<string, unknown>; DependsOn?: string | string[] }> };
   beforeAll(() => {
     const app = buildAgentXApp({ agentxEnv: "staging" });
-    template = Template.fromStack(app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "agentx-staging-control-plane")!).toJSON() as typeof template;
+    template = Template.fromStack(app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "rovara-cloud-staging-control-plane")!).toJSON() as typeof template;
   }, 300_000);
 
   it("gives POST /v1/hooks/{source}/{hookId} its own bucket of 100 burst and 50 a second, and the stage waits for the route", () => {

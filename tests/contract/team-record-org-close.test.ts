@@ -77,7 +77,7 @@ describe("the handler's Slack branch and the durable queue's branch", () => {
 
   it("answers the queue's batch with the partial-batch shape SQS reads, from the runtime's drain; and fails the whole batch while the record is off", async () => {
     vi.stubEnv("AGENTX_ENV", "staging");
-    const batch = { Records: [{ eventSource: "aws:sqs", eventSourceARN: "arn:aws:sqs:us-west-2:123456789012:agentx-staging-team-record-ops", messageId: "m1", body: "{}", attributes: { ApproximateReceiveCount: "2" } }] };
+    const batch = { Records: [{ eventSource: "aws:sqs", eventSourceARN: "arn:aws:sqs:us-west-2:123456789012:rovara-cloud-staging-team-record-ops", messageId: "m1", body: "{}", attributes: { ApproximateReceiveCount: "2" } }] };
     const seen: unknown[] = [];
     const on = await createDeveloperTaskBroker({ register: false, brokerExtra: { teamRecord: { drain: async (records: unknown[]) => { seen.push(records); return { batchItemFailures: [{ itemIdentifier: "m1" }] }; } } } });
     expect(await (on.handler as unknown as (event: unknown) => Promise<unknown>)(batch)).toStrictEqual({ batchItemFailures: [{ itemIdentifier: "m1" }] });

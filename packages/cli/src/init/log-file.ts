@@ -48,7 +48,7 @@ export async function openInitLog(path: string, options: OpenInitLogOptions = {}
     await handle.chmod(0o600);
   } catch (error) {
     await handle?.close().catch(() => undefined);
-    throw agentXError("CONFIG_INVALID", `agentx init could not open its log file ${path} (${messageOf(error)}); check that its folder is yours and can be written, or pass --no-ui`);
+    throw agentXError("CONFIG_INVALID", `rovara init could not open its log file ${path} (${messageOf(error)}); check that its folder is yours and can be written, or pass --no-ui`);
   }
   const stream = handle.createWriteStream();
   let broken = false;

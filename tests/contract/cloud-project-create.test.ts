@@ -26,7 +26,7 @@ const BINDING = {
   volumeSizeGiB: 20, volumeType: "gp3",
 } as const;
 const CLOUD_PROJECTS = { runtimeBinding: BINDING, githubCredentialRef: "github-app" };
-const NOT_CONNECTED = (fullName: string) => `Rovara can't reach ${fullName} through your organization's GitHub connection. Connect it with: agentx github connect`;
+const NOT_CONNECTED = (fullName: string) => `Rovara can't reach ${fullName} through your organization's GitHub connection. Connect it with: rovara github connect`;
 const REQUEST = "11111111-1111-4111-8111-111111111111";
 const requestId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -510,12 +510,12 @@ describe("POST /v1/app/projects on an install that is not cloud", () => {
     return harness;
   }
 
-  it("refuses an owner with 403 and points at agentx project add, writing nothing", async () => {
+  it("refuses an owner with 403 and points at rovara project add, writing nothing", async () => {
     const h = await privateInstall();
     for (const path of ["/v1/app/projects", "/v1/dev/projects"]) {
       const refused = await h.dev(MAYA, "POST", path, { requestId: REQUEST, repository: "acme/web" });
       expect(refused).toMatchObject({ status: 403, body: { error: { code: "FORBIDDEN" } } });
-      expect((refused.body.error as { message: string }).message).toContain("ask an administrator to run agentx project add");
+      expect((refused.body.error as { message: string }).message).toContain("ask an administrator to run rovara project add");
     }
     expect(h.db.find((item) => item.entityType === "PROJECT")).toHaveLength(0);
   });

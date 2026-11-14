@@ -12,7 +12,7 @@ skipLambdaBundling();
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
 const ACCOUNT = "123456789012";
-const ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/agentx/staging/agentx-staging-worker-InstanceRole-ABC123`;
+const ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/rovara-cloud/staging/rovara-cloud-staging-worker-InstanceRole-ABC123`;
 const image = (repository: string, region = "us-west-2") => `${ACCOUNT}.dkr.ecr.${region}.amazonaws.com/${repository}@${DIGEST}`;
 
 type Statement = { Effect: string; Action: string | string[]; Resource?: unknown; NotResource?: unknown };
@@ -22,7 +22,7 @@ describe("the named environment's worker role and its image", () => {
   let template: Record<string, unknown>;
   beforeAll(() => {
     const app = buildAgentXApp({ agentxEnv: "staging" });
-    const stack = app.node.children.filter((child): child is Stack => Stack.isStack(child)).find((entry) => entry.stackName === "agentx-staging-runtime")!;
+    const stack = app.node.children.filter((child): child is Stack => Stack.isStack(child)).find((entry) => entry.stackName === "rovara-cloud-staging-runtime")!;
     template = Template.fromStack(stack).toJSON();
   }, 240_000);
 
@@ -63,43 +63,43 @@ describe("the named environment's worker role and its image", () => {
     const parameters = template.Parameters as Record<string, { AllowedPattern?: string }>;
     expect(parameters.Ec2WorkerInstanceRoleArn).toBeDefined();
     const pattern = new RegExp(parameters.WorkerImageUri!.AllowedPattern!, "u");
-    expect(pattern.test(image("agentx-staging/worker"))).toBe(true);
+    expect(pattern.test(image("rovara-cloud-staging/worker"))).toBe(true);
     for (const bad of [
-      `docker.io/library/node@${DIGEST}`, `${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker:latest`,
+      `docker.io/library/node@${DIGEST}`, `${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com/rovara-cloud-staging/worker:latest`,
       `${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com/@${DIGEST}`, `${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com/UPPER/case@${DIGEST}`,
-      `${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com/a b@${DIGEST}`, `${ACCOUNT}.dkr.ecr.us-west-2.evil.example/agentx-staging/worker@${DIGEST}`,
-      `12345.dkr.ecr.us-west-2.amazonaws.com/agentx-staging/worker@${DIGEST}`,
+      `${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com/a b@${DIGEST}`, `${ACCOUNT}.dkr.ecr.us-west-2.evil.example/rovara-cloud-staging/worker@${DIGEST}`,
+      `12345.dkr.ecr.us-west-2.amazonaws.com/rovara-cloud-staging/worker@${DIGEST}`,
     ]) expect(pattern.test(bad), bad).toBe(false);
   });
 
-  it("lets staging's hand-pushed image be pulled, from exactly its own repository (agentx-staging/worker)", () => {
-    const hand = image("agentx-staging/worker");
-    expect(allowed(hand, "agentx-staging/worker")).toEqual([...PULL, ...CREATE].sort());
-    expect(policies(hand).flatMap((policy) => policy.roles)).toEqual(["agentx-staging-worker-InstanceRole-ABC123"]);
+  it("lets staging's hand-pushed image be pulled, from exactly its own repository (rovara-cloud-staging/worker)", () => {
+    const hand = image("rovara-cloud-staging/worker");
+    expect(allowed(hand, "rovara-cloud-staging/worker")).toEqual([...PULL, ...CREATE].sort());
+    expect(policies(hand).flatMap((policy) => policy.roles)).toEqual(["rovara-cloud-staging-worker-InstanceRole-ABC123"]);
     // Nothing else in the account: not a sibling repository, not the CDK asset repository, not another account's.
-    for (const other of ["agentx-staging/slack", "agentx-staging/worker-2", "cdk-hnb659fds-container-assets-123456789012-us-west-2", "agentx-production/worker"]) {
+    for (const other of ["rovara-cloud-staging/slack", "rovara-cloud-staging/worker-2", "cdk-hnb659fds-container-assets-123456789012-us-west-2", "agentx-production/worker"]) {
       expect(allowed(hand, other), other).toEqual([]);
     }
-    expect(allowed(hand, "agentx-staging/worker", "us-east-1")).toEqual([]);
+    expect(allowed(hand, "rovara-cloud-staging/worker", "us-east-1")).toEqual([]);
   });
 
   it("lets a pull-through release image be pulled and imported: <prefix>/<publisher alias>/agentx-worker", () => {
-    const release = image("agentx-staging/agentx/agentx-worker");
-    expect(allowed(release, "agentx-staging/agentx/agentx-worker")).toEqual([...PULL, ...CREATE].sort());
-    expect(allowed(release, "agentx-staging/agentx/agentx-slack")).toEqual([]);
+    const release = image("rovara-cloud-staging/agentx/agentx-worker");
+    expect(allowed(release, "rovara-cloud-staging/agentx/agentx-worker")).toEqual([...PULL, ...CREATE].sort());
+    expect(allowed(release, "rovara-cloud-staging/agentx/agentx-slack")).toEqual([]);
   });
 
   it("lets an override from a different repository be pulled, but never created or imported", () => {
     const override = image("platform-images/worker", "eu-west-1");
     expect(allowed(override, "platform-images/worker", "eu-west-1")).toEqual(PULL);
-    expect(allowed(override, "agentx-staging/worker", "eu-west-1")).toEqual([]);
+    expect(allowed(override, "rovara-cloud-staging/worker", "eu-west-1")).toEqual([]);
     // A name that merely starts like the prefix is not under it, nor is the prefix itself.
-    expect(allowed(image("agentx-staging-other/worker"), "agentx-staging-other/worker")).toEqual(PULL);
-    expect(allowed(image("agentx-staging"), "agentx-staging")).toEqual(PULL);
+    expect(allowed(image("rovara-cloud-staging-other/worker"), "rovara-cloud-staging-other/worker")).toEqual(PULL);
+    expect(allowed(image("rovara-cloud-staging"), "rovara-cloud-staging")).toEqual(PULL);
   });
 
   it("allows only the image's own repository: no wildcard resource and no repository/* in any Allow, and not the token", () => {
-    for (const workerImage of [image("agentx-staging/worker"), image("agentx-staging/agentx/agentx-worker"), image("platform-images/worker", "eu-west-1")]) {
+    for (const workerImage of [image("rovara-cloud-staging/worker"), image("rovara-cloud-staging/agentx/agentx-worker"), image("platform-images/worker", "eu-west-1")]) {
       const all = policies(workerImage);
       expect(all.length).toBeGreaterThan(0);
       for (const statement of all.flatMap((policy) => policy.statements).filter((entry) => entry.Effect === "Allow")) {
@@ -116,7 +116,7 @@ describe("the named environment's worker role and its image", () => {
   describe("the executor image", () => {
     const executorPolicy = (parameters: Record<string, string>) => {
       const context: CfnContext = {
-        parameters: { WorkerImageUri: image("agentx-staging/worker"), Ec2WorkerInstanceRoleArn: ROLE_ARN, ...parameters },
+        parameters: { WorkerImageUri: image("rovara-cloud-staging/worker"), Ec2WorkerInstanceRoleArn: ROLE_ARN, ...parameters },
         conditions: (template.Conditions ?? {}) as Record<string, unknown>,
       };
       return Object.values(template.Resources as Record<string, PolicyResource>)
@@ -133,20 +133,20 @@ describe("the named environment's worker role and its image", () => {
     });
 
     it("lets the worker role pull exactly the executor image's repository, and import it only under the prefix", () => {
-      const [policy, ...rest] = executorPolicy({ ExecutorImageUri: image("agentx-staging/agentx/agentx-executor") });
+      const [policy, ...rest] = executorPolicy({ ExecutorImageUri: image("rovara-cloud-staging/agentx/agentx-executor") });
       expect(rest).toEqual([]);
-      expect(policy!.roles).toEqual(["agentx-staging-worker-InstanceRole-ABC123"]);
+      expect(policy!.roles).toEqual(["rovara-cloud-staging-worker-InstanceRole-ABC123"]);
       const allows = policy!.statements.filter((entry) => entry.Effect === "Allow");
-      expect(allows.map((entry) => entry.Resource)).toEqual([`arn:aws:ecr:us-west-2:${ACCOUNT}:repository/agentx-staging/agentx/agentx-executor`, `arn:aws:ecr:us-west-2:${ACCOUNT}:repository/agentx-staging/agentx/agentx-executor`]);
+      expect(allows.map((entry) => entry.Resource)).toEqual([`arn:aws:ecr:us-west-2:${ACCOUNT}:repository/rovara-cloud-staging/agentx/agentx-executor`, `arn:aws:ecr:us-west-2:${ACCOUNT}:repository/rovara-cloud-staging/agentx/agentx-executor`]);
       expect(JSON.stringify(allows)).not.toContain("*");
-      expect(policy!.statements.find((entry) => entry.Effect === "Deny")!.NotResource).toBe(`arn:aws:ecr:*:${ACCOUNT}:repository/agentx-staging/*`);
+      expect(policy!.statements.find((entry) => entry.Effect === "Deny")!.NotResource).toBe(`arn:aws:ecr:*:${ACCOUNT}:repository/rovara-cloud-staging/*`);
     });
 
     it("refuses an executor image that is neither none nor a private ECR digest reference", () => {
       const parameters = template.Parameters as Record<string, { AllowedPattern?: string; Default?: string }>;
       expect(parameters.ExecutorImageUri!.Default).toBe("none");
       const pattern = new RegExp(parameters.ExecutorImageUri!.AllowedPattern!, "u");
-      for (const good of ["none", image("agentx-staging/agentx/agentx-executor")]) expect(pattern.test(good), good).toBe(true);
+      for (const good of ["none", image("rovara-cloud-staging/agentx/agentx-executor")]) expect(pattern.test(good), good).toBe(true);
       for (const bad of [`docker.io/library/node@${DIGEST}`, `${ACCOUNT}.dkr.ecr.us-west-2.amazonaws.com/x:latest`, `${ACCOUNT}.dkr.ecr.us-west-2.evil.example/x@${DIGEST}`]) expect(pattern.test(bad), bad).toBe(false);
     });
   });

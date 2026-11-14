@@ -5,7 +5,7 @@ import YAML from "yaml";
 import type { DeploymentSettings } from "../deployment.js";
 import type { EnvironmentSettings } from "./settings.js";
 
-/** Where `agentx env use` caches an environment's connection settings: <home>/.agentx/environments/<env>.yaml. */
+/** Where `rovara env use` caches an environment's connection settings: <home>/.agentx/environments/<env>.yaml. */
 export function environmentCachePath(home: string, env: string): string {
   return join(home, ".agentx", "environments", `${env}.yaml`);
 }
@@ -55,7 +55,7 @@ export async function writeEnvironmentCache(home: string, settings: EnvironmentS
       // open() applies the mode only to a new file; tighten it explicitly too, in case an earlier
       // run left a temp file behind with looser permissions.
       await handle.chmod(0o600);
-      await handle.writeFile(`# AgentX environment ${settings.env}; rebuilt from SSM by agentx env use.\n${YAML.stringify(cacheFromSettings(settings))}`);
+      await handle.writeFile(`# AgentX environment ${settings.env}; rebuilt from SSM by rovara env use.\n${YAML.stringify(cacheFromSettings(settings))}`);
     } finally {
       await handle.close();
     }
@@ -73,7 +73,7 @@ const exists = (path: string) => access(path).then(() => true, () => false);
 /**
  * Explicit --deployment-file wins; then the environment cache; then, for production only, the
  * legacy ~/.agentx/deployment.yaml. Any other environment with neither an explicit file nor a
- * cache must be installed locally first with `agentx env use`.
+ * cache must be installed locally first with `rovara env use`.
  */
 export async function resolveDeploymentFile(input: { home: string; env: string; explicitFile?: string }): Promise<string> {
   if (input.explicitFile !== undefined) return input.explicitFile;
@@ -81,5 +81,5 @@ export async function resolveDeploymentFile(input: { home: string; env: string; 
   if (await exists(cached)) return cached;
   const legacy = join(input.home, ".agentx", "deployment.yaml");
   if (input.env === "production" && (await exists(legacy))) return legacy;
-  throw agentXError("CONFIG_INVALID", `no settings for environment ${input.env} on this machine; run agentx --env ${input.env} env use`);
+  throw agentXError("CONFIG_INVALID", `no settings for environment ${input.env} on this machine; run rovara --env ${input.env} env use`);
 }

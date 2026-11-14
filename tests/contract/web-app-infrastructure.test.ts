@@ -14,20 +14,20 @@ const ofType = (template: TemplateJson, type: string) => Object.entries(template
 const statements = (value: unknown) => record(value).Statement as Statement[];
 function build(mode: "cloudfront" | "cell"): TemplateJson {
  const app = buildAgentXApp({ agentxEnv: "staging", agentxRegion: "us-west-2", agentxCloud: true, agentxWebAssetHosting: mode });
- const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "agentx-staging-control-plane");if (stack === undefined) throw new Error("Missing control-plane fixture");return Template.fromStack(stack).toJSON() as TemplateJson;
+ const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "rovara-cloud-staging-control-plane");if (stack === undefined) throw new Error("Missing control-plane fixture");return Template.fromStack(stack).toJSON() as TemplateJson;
 }
 function stackOf(context: Record<string, unknown>): TemplateJson {
  const app = buildAgentXApp({ agentxEnv: "staging", agentxRegion: "us-west-2", agentxCloud: true, ...context });
- const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "agentx-staging-control-plane");if (stack === undefined) throw new Error("Missing control-plane fixture");return Template.fromStack(stack).toJSON() as TemplateJson;
+ const stack = app.node.children.find((child): child is Stack => Stack.isStack(child) && child.stackName === "rovara-cloud-staging-control-plane");if (stack === undefined) throw new Error("Missing control-plane fixture");return Template.fromStack(stack).toJSON() as TemplateJson;
 }
 let hosted: TemplateJson, cell: TemplateJson, defaulted: TemplateJson, released: TemplateJson;
 beforeAll(() => { hosted = build("cloudfront");cell = build("cell");defaulted = stackOf({});released = stackOf({ agentxSynthesizer: "legacy" }); }, 600_000);
-const webFunction = (template: TemplateJson) => ofType(template, "AWS::Lambda::Function").find(([, resource]) => resource.Properties.FunctionName === "agentx-staging-web")!;
+const webFunction = (template: TemplateJson) => ofType(template, "AWS::Lambda::Function").find(([, resource]) => resource.Properties.FunctionName === "rovara-cloud-staging-web")!;
 const webBucket = () => ofType(hosted, "AWS::S3::Bucket").find(([, resource]) => JSON.stringify(resource.Properties.BucketName ?? "").includes("web-assets"))!;
 describe("named web hosting and isolated throttle budgets", () => {
  it("names and locks the asset bucket and grants object reads only to its OAC distribution", () => {
   const [bucketId, bucket] = webBucket();expect(bucketId).toBeTruthy();
-  expect(evaluate(bucket.Properties.BucketName, { parameters: {}, conditions: {}, pseudo: { "AWS::AccountId": "123456789012", "AWS::Region": "us-west-2" } })).toBe("agentx-staging-web-assets-123456789012-us-west-2");
+  expect(evaluate(bucket.Properties.BucketName, { parameters: {}, conditions: {}, pseudo: { "AWS::AccountId": "123456789012", "AWS::Region": "us-west-2" } })).toBe("rovara-cloud-staging-web-assets-123456789012-us-west-2");
   expect(bucket.Properties.PublicAccessBlockConfiguration).toEqual({ BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true });expect(bucket.Properties.VersioningConfiguration).toBeUndefined();
   const policy = ofType(hosted, "AWS::S3::BucketPolicy").find(([, resource]) => JSON.stringify(resource.Properties.Bucket).includes(bucketId))![1];
   const entries = statements(policy.Properties.PolicyDocument);const allows = entries.filter(statement => statement.Effect === "Allow");
@@ -104,8 +104,8 @@ describe("which hosting each way of synthesizing gets", () => {
  it("keeps the environment name in the CloudFront names, so a rendered template names them for its own environment", () => {
   const [, headers] = ofType(hosted, "AWS::CloudFront::ResponseHeadersPolicy")[0]!, [, control] = ofType(hosted, "AWS::CloudFront::OriginAccessControl")[0]!;
   const named = (value: unknown) => evaluate(value, { parameters: {}, conditions: {}, pseudo: { "AWS::AccountId": "123456789012", "AWS::Region": "us-west-2" } });
-  expect(named(record(headers.Properties.ResponseHeadersPolicyConfig).Name)).toBe("agentx-staging-web-assets-headers-us-west-2");
-  expect(named(record(control.Properties.OriginAccessControlConfig).Name)).toBe("agentx-staging-web-assets-us-west-2");
+  expect(named(record(headers.Properties.ResponseHeadersPolicyConfig).Name)).toBe("rovara-cloud-staging-web-assets-headers-us-west-2");
+  expect(named(record(control.Properties.OriginAccessControlConfig).Name)).toBe("rovara-cloud-staging-web-assets-us-west-2");
  });
 });
 

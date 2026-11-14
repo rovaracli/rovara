@@ -20,8 +20,8 @@ export const REQUALIFY_ENVIRONMENT_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 export const REQUALIFY_TAGS = {
   deploymentModeKey: "DeploymentMode", deploymentModeValue: "e2e-qualification",
   environmentKey: "Environment",
-  managedKey: "agentx:requalify-managed", managedValue: "true",
-  runKey: "agentx:qualification-run",
+  managedKey: "rovara-cloud:requalify-managed", managedValue: "true",
+  runKey: "rovara-cloud:qualification-run",
 } as const;
 
 /** Why a renewal step refused or gave up. The alert and the run record carry only these codes. */

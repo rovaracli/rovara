@@ -51,7 +51,7 @@ async function signedIn(options: { revoke?: () => Promise<Response>; name?: stri
   return { home, tokenStore, out, err, run, fetchImplementation };
 }
 
-describe("agentx whoami and logout (FR-011)", () => {
+describe("rovara whoami and logout (FR-011)", () => {
   it("whoami shows the name, method, Slack link and projects with how each is allowed (US4 scenario 1)", async () => {
     const h = await signedIn();
     expect(await h.run(["whoami"])).toBe(0);
@@ -104,7 +104,7 @@ describe("agentx whoami and logout (FR-011)", () => {
 
   it("whoami gives the server's reason when AgentX refuses the sign-in, made safe, with the login hint", async () => {
     const refused = (message: unknown) => () => Response.json({ error: { code: "AUTH_REQUIRED", message } }, { status: 401 });
-    const h = await signedIn({ projects: refused("your sign-in ended when Slack was turned off\u001b[2J; sign in again with agentx login <url>") });
+    const h = await signedIn({ projects: refused("your sign-in ended when Slack was turned off\u001b[2J; sign in again with rovara login <url>") });
     expect(await h.run(["whoami"])).toBe(3);
     expect(h.err.join("")).toContain(`your AgentX sign-in for staging has ended (your sign-in ended when Slack was turned off[2J); run npx @preplabsai/rovara-code login ${URL_}`);
     // No reason, or one that is not text: the generic line, still with the hint.
@@ -156,7 +156,7 @@ describe("agentx whoami and logout (FR-011)", () => {
   it("logout without a developer sign-in names the admin logout too", async () => {
     const h = await signedIn();
     expect(await h.run(["--env", "other", "logout"])).toBe(3);
-    expect(h.err.join("")).toContain("this computer is not signed in to AgentX environment other; run npx @preplabsai/rovara-code login <your AgentX URL>; for the admin login, run agentx logout --admin");
+    expect(h.err.join("")).toContain("this computer is not signed in to AgentX environment other; run npx @preplabsai/rovara-code login <your AgentX URL>; for the admin login, run rovara logout --admin");
   });
 
   it("logout --json reports whether the server revoked the session", async () => {
@@ -180,6 +180,6 @@ describe("agentx whoami and logout (FR-011)", () => {
   it("login refuses a URL together with --admin", async () => {
     const h = await signedIn();
     expect(await h.run(["login", URL_, "--admin"])).toBe(2);
-    expect(h.err.join("")).toContain("use either agentx login <url> (developer sign-in) or agentx login --admin, not both");
+    expect(h.err.join("")).toContain("use either rovara login <url> (developer sign-in) or rovara login --admin, not both");
   });
 });

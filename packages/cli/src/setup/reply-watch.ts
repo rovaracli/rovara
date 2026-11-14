@@ -16,7 +16,7 @@ export async function waitForThreadedReply(input: {
   /** The environment, named in every command the errors suggest (the default one is production). */
   env: string;
   session: AdminSession; fetch: typeof fetch; teamId: string; channelId: string; channelName: string; botUserId: string;
-  /** The command to run again after fixing a problem, such as "agentx init" (as sign-in's `rerun`). */
+  /** The command to run again after fixing a problem, such as "rovara init" (as sign-in's `rerun`). */
   rerun: string;
   write: (line: string) => void; sleep: (ms: number) => Promise<void>; now: () => number; timeoutMs?: number;
   /** Event ids of turns an earlier watch already reported as failed: skipped here, so a second
@@ -45,10 +45,10 @@ export async function waitForThreadedReply(input: {
     if (other !== undefined) {
       // Every turn seen here ended unanswered, so a second watch skips them all, not just the first.
       for (const entry of mine) input.reported?.add(entry.eventId);
-      throw agentXError("RUNTIME_UNAVAILABLE", `AgentX replied in #${input.channelName}, but the turn ended as ${other.disposition}${other.error === undefined ? "" : ` (${other.error.name})`}; see agentx --env ${input.env} admin turns export --since 15m, fix it, then run ${input.rerun} again`);
+      throw agentXError("RUNTIME_UNAVAILABLE", `AgentX replied in #${input.channelName}, but the turn ended as ${other.disposition}${other.error === undefined ? "" : ` (${other.error.name})`}; see rovara --env ${input.env} admin turns export --since 15m, fix it, then run ${input.rerun} again`);
     }
     if (input.now() - started >= timeout) {
-      throw agentXError("RUNTIME_UNAVAILABLE", `no AgentX reply in #${input.channelName} within ${minutes}; check that the message mentioned the bot, that Slack shows the Request URL as Verified, and agentx --env ${input.env} admin turns export --since 15m, then run ${input.rerun} again`);
+      throw agentXError("RUNTIME_UNAVAILABLE", `no AgentX reply in #${input.channelName} within ${minutes}; check that the message mentioned the bot, that Slack shows the Request URL as Verified, and rovara --env ${input.env} admin turns export --since 15m, then run ${input.rerun} again`);
     }
     await input.sleep(POLL_MS);
   }

@@ -14,7 +14,7 @@ import { World, T0 } from "./deployer-world.js";
 import { MemoryParameterStore } from "./memory-parameter-store.js";
 import type { FakeKitOptions } from "./synth-kit-fixture.js";
 
-export const INSTALL: EnvironmentSettings = { ...SETTINGS, env: "ent", region: "us-east-1", engine: "cdk", version: "1.2.3", identity: { ...SETTINGS.identity, mode: "cognito" }, stacks: { access: "agentx-ent-access", foundation: "agentx-ent-foundation", identity: "agentx-ent-identity", runtime: "agentx-ent-runtime", "control-plane": "agentx-ent-control-plane", slack: "agentx-ent-slack" } };
+export const INSTALL: EnvironmentSettings = { ...SETTINGS, env: "ent", region: "us-east-1", engine: "cdk", version: "1.2.3", identity: { ...SETTINGS.identity, mode: "cognito" }, stacks: { access: "rovara-cloud-ent-access", foundation: "rovara-cloud-ent-foundation", identity: "rovara-cloud-ent-identity", runtime: "rovara-cloud-ent-runtime", "control-plane": "rovara-cloud-ent-control-plane", slack: "rovara-cloud-ent-slack" } };
 
 export const SETTINGS_ENT = (context: Record<string, string> = { rovaraEnterpriseEgressCidrs: "10.20.0.0/16", agentxAuditTsa: "off" }): SynthSettings => ({ schemaVersion: 1, edition: "enterprise", env: "ent", region: "us-east-1", identityMode: "cognito", context });
 

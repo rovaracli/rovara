@@ -15,6 +15,7 @@
 //   - an account is active only with two distinct people's fresh-sign-in approvals, or the sole-owner exception, each approving exactly this record (an approval carries the digest of what it approved,
 //     so widening a record needs fresh approvals), and then only until an expiry at most 90 days after the last such approval (a company may set fewer days, never more).
 // Nothing here imports a Node module.
+import { RESOURCE_PREFIX } from "./resource-prefix.js";
 import { z } from "zod";
 import { OrgIdSchema } from "./browser-ids.js";
 import { canonicalJson } from "./canonical-json.js";
@@ -58,16 +59,16 @@ function assertParts(env: string, orgId: string, accountId: string): void {
   if (!ENV_SEGMENT.test(env) || !OrgIdSchema.safeParse(orgId).success || !TestAccountIdSchema.safeParse(accountId).success) throw new RangeError("a test-account secret name needs a valid environment, org and account id");
 }
 
-/** `agentx/<env>/org-test-accounts/<orgId>/<accountId>`: where one account's secret lives. Throws on any part that is not a plain segment, so a name can never climb out of its org's path. */
+/** `rovara-cloud/<env>/org-test-accounts/<orgId>/<accountId>`: where one account's secret lives. Throws on any part that is not a plain segment, so a name can never climb out of its org's path. */
 export function testAccountSecretName(env: string, orgId: string, accountId: string): string {
   assertParts(env, orgId, accountId);
-  return `agentx/${env}/${TEST_ACCOUNT_SECRET_SEGMENT}/${orgId}/${accountId}`;
+  return `${RESOURCE_PREFIX}/${env}/${TEST_ACCOUNT_SECRET_SEGMENT}/${orgId}/${accountId}`;
 }
 
 /** The path an org-tagged role's policy covers: all of one org's test-account secrets and nothing else (ends with a slash). */
 export function testAccountSecretPrefix(env: string, orgId: string): string {
   assertParts(env, orgId, "placeholder");
-  return `agentx/${env}/${TEST_ACCOUNT_SECRET_SEGMENT}/${orgId}/`;
+  return `${RESOURCE_PREFIX}/${env}/${TEST_ACCOUNT_SECRET_SEGMENT}/${orgId}/`;
 }
 
 /** The tags a test-account secret is created with. */
@@ -86,7 +87,7 @@ export interface TestAccountSecretRefParts { env: string; orgId: string; account
 
 /** The parts of a reference, or undefined when the text is not exactly one test-account reference (another path, another service, extra segments and traversal are all not). */
 export function parseTestAccountSecretRef(ref: string): TestAccountSecretRefParts | undefined {
-  const match = /^\{\{resolve:secretsmanager:agentx\/([^/:{}]+)\/org-test-accounts\/([^/:{}]+)\/([^/:{}]+):SecretString:([^/:{}]+)\}\}$/u.exec(ref);
+  const match = /^\{\{resolve:secretsmanager:rovara-cloud\/([^/:{}]+)\/org-test-accounts\/([^/:{}]+)\/([^/:{}]+):SecretString:([^/:{}]+)\}\}$/u.exec(ref);
   if (match === null) return undefined;
   const [, env, orgId, accountId, key] = match as unknown as [string, string, string, string, string];
   if (!ENV_SEGMENT.test(env) || !OrgIdSchema.safeParse(orgId).success || !TestAccountIdSchema.safeParse(accountId).success || !KEY_SEGMENT.test(key)) return undefined;

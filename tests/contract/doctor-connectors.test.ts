@@ -31,9 +31,9 @@ const jira = { name: "jira", type: "jira", credentialRef: "jira", scopes: [{ ali
 const asana = { name: "asana", type: "asana", credentialRef: "asana", scopes: [{ alias: "pay", projectGid: "1200000000000001" }], tools: [] };
 const connectorSecrets = {
   ...SECRETS,
-  "agentx/staging/connectors/linear": JSON.stringify({ apiKey: LINEAR_KEY }),
-  "agentx/staging/connectors/jira": JSON.stringify({ apiKey: JIRA_TOKEN }),
-  "agentx/staging/connectors/asana": JSON.stringify({ clientId: "c", clientSecret: "SECRETasanaCLIENT", refreshToken: "SECRETrefresh" }),
+  "rovara-cloud/staging/connectors/linear": JSON.stringify({ apiKey: LINEAR_KEY }),
+  "rovara-cloud/staging/connectors/jira": JSON.stringify({ apiKey: JIRA_TOKEN }),
+  "rovara-cloud/staging/connectors/asana": JSON.stringify({ clientId: "c", clientSecret: "SECRETasanaCLIENT", refreshToken: "SECRETrefresh" }),
 };
 
 async function run(input: { connectors: unknown[]; extra?: Record<string, unknown>; secrets?: Record<string, string>; vendors?: ReturnType<typeof fakeVendors>; progress?: typeof PROGRESS }) {
@@ -69,8 +69,8 @@ describe("doctor: connectors (FR-050, the 15d2 decision on saved warnings)", () 
 
   it("fails a connector whose credentials are missing", async () => {
     const secrets: Record<string, string> = { ...connectorSecrets };
-    delete secrets["agentx/staging/connectors/linear"];
-    expect((await run({ connectors: [linear], secrets }))[0]).toMatchObject({ status: "fail", detail: "credentials missing: no secret agentx/staging/connectors/linear", fix: "agentx --env staging connector add linear --project payments" });
+    delete secrets["rovara-cloud/staging/connectors/linear"];
+    expect((await run({ connectors: [linear], secrets }))[0]).toMatchObject({ status: "fail", detail: "credentials missing: no secret rovara-cloud/staging/connectors/linear", fix: "rovara --env staging connector add linear --project payments" });
   });
 
   it("fails an expired or revoked key, and never repeats what the vendor said", async () => {
@@ -92,7 +92,7 @@ describe("doctor: connectors (FR-050, the 15d2 decision on saved warnings)", () 
   });
 
   it("fails an Asana credential with no refresh token: the bot never finished signing in", async () => {
-    const secrets = { ...connectorSecrets, "agentx/staging/connectors/asana": JSON.stringify({ clientId: "c", clientSecret: "s" }) };
+    const secrets = { ...connectorSecrets, "rovara-cloud/staging/connectors/asana": JSON.stringify({ clientId: "c", clientSecret: "s" }) };
     expect((await run({ connectors: [asana], secrets }))[0]).toMatchObject({ status: "fail", detail: "the Asana bot never finished signing in (no refresh token is stored)" });
   });
 
@@ -110,7 +110,7 @@ describe("doctor: connectors (FR-050, the 15d2 decision on saved warnings)", () 
   it("names --env and --project in the fix for a saved Jira warning, as for every other connector (final review M9)", async () => {
     const progress = { ...PROGRESS, connectors: [{ type: "jira" as const, ref: "jira", warning: "the Jira service account can also see issues in HR" }] };
     const checks = await run({ connectors: [], progress });
-    expect(checks.find((entry) => entry.name === "Jira warning")?.fix).toBe("narrow the Jira service account to the connected project (docs/connectors/jira.md, Step 4), then run agentx --env staging connector add jira --project <name> again");
+    expect(checks.find((entry) => entry.name === "Jira warning")?.fix).toBe("narrow the Jira service account to the connected project (docs/connectors/jira.md, Step 4), then run rovara --env staging connector add jira --project <name> again");
   });
 
   it("says so when there are no connectors", async () => {
@@ -123,13 +123,13 @@ describe("doctor: connectors (Task 7 fix round 1)", () => {
     const configDir = await projectDir([{ env: "staging", definition: payments([linear, jira], { githubMcp: { tools: [] } }) }]);
     const secrets = memoryInitSecrets(connectorSecrets);
     const throwing = { get: async (name: string) => {
-      if (name === "agentx/staging/connectors/linear") throw Object.assign(new Error("User is not authorized to perform secretsmanager:GetSecretValue"), { name: "AccessDeniedException" });
+      if (name === "rovara-cloud/staging/connectors/linear") throw Object.assign(new Error("User is not authorized to perform secretsmanager:GetSecretValue"), { name: "AccessDeniedException" });
       return secrets.get(name);
     } };
     const progress = { ...PROGRESS, connectors: [{ type: "jira" as const, ref: "jira", warning: "the Jira service account can also see issues in HR" }] };
     const services = doctorServices({ configDir, secrets: throwing, vendors: fakeVendors({ jiraInside: ["PAY-1"] }) });
     const checks = await connectorChecks(doctorContext({ services, progress }));
-    expect(checks).toContainEqual({ group: "connectors", name: "Linear (project payments)", status: "fail", detail: "could not read secret agentx/staging/connectors/linear (AccessDeniedException)", fix: "check that your AWS role can read it, then run agentx doctor again" });
+    expect(checks).toContainEqual({ group: "connectors", name: "Linear (project payments)", status: "fail", detail: "could not read secret rovara-cloud/staging/connectors/linear (AccessDeniedException)", fix: "check that your AWS role can read it, then run rovara doctor again" });
     expect(checks.find((entry) => entry.name === "Jira (project payments)")?.status).toBe("ok");
     expect(checks.find((entry) => entry.name === "project payments")?.detail).toBe("uses the older integrations.githubMcp setting");
     expect(checks.find((entry) => entry.name === "Jira warning")?.status).toBe("warn");
@@ -145,7 +145,7 @@ describe("doctor: connectors (Task 7 fix round 1)", () => {
     const found = await environmentProjectFiles(configDir, "staging");
     expect(found.map((file) => [file.path.split("/").at(-1), file.error])).toEqual([["broken.yaml", "invalid-yaml"], ["folder.yaml", "unreadable"], ["payments.yaml", undefined]]);
     const checks = await connectorChecks(doctorContext({ services: doctorServices({ configDir, secrets: memoryInitSecrets(connectorSecrets) }) }));
-    expect(checks.find((entry) => entry.name === `project file ${join(configDir, "broken.yaml")}`)).toMatchObject({ status: "warn", detail: "has agentx's register line for environment staging, but is not valid YAML" });
+    expect(checks.find((entry) => entry.name === `project file ${join(configDir, "broken.yaml")}`)).toMatchObject({ status: "warn", detail: "has rovara's register line for environment staging, but is not valid YAML" });
     expect(checks.find((entry) => entry.name === `project file ${join(configDir, "folder.yaml")}`)).toMatchObject({ status: "warn" });
     expect(checks.find((entry) => entry.name === `project file ${join(configDir, "folder.yaml")}`)?.detail).toContain("could not be read (EISDIR)");
     expect(checks.find((entry) => entry.name === "Linear (project payments)")?.status).toBe("ok");
@@ -161,7 +161,7 @@ describe("doctor: connectors (Task 7 fix round 1)", () => {
 
   it("fails a refused and an unreachable Jira token without repeating the token", async () => {
     const refusedChecks = await run({ connectors: [jira], vendors: fakeVendors({ jiraRefuses: true }) });
-    expect(refusedChecks[0]).toMatchObject({ status: "fail", detail: "Atlassian refused the stored API token: it expired or was revoked", fix: "agentx --env staging connector add jira --project payments" });
+    expect(refusedChecks[0]).toMatchObject({ status: "fail", detail: "Atlassian refused the stored API token: it expired or was revoked", fix: "rovara --env staging connector add jira --project payments" });
     const echoing = { ...fakeVendors(), jiraSearch: async () => { throw new Error(`bad token ${JIRA_TOKEN}`); } };
     const unreachable = await run({ connectors: [jira], vendors: echoing });
     expect(unreachable[0]).toMatchObject({ status: "fail", detail: "could not reach Atlassian to test the API token" });
@@ -169,9 +169,9 @@ describe("doctor: connectors (Task 7 fix round 1)", () => {
   });
 
   it("fails a secret with the wrong shape", async () => {
-    const secrets = { ...connectorSecrets, "agentx/staging/connectors/linear": JSON.stringify({ token: "SECRETwrongKEY" }) };
+    const secrets = { ...connectorSecrets, "rovara-cloud/staging/connectors/linear": JSON.stringify({ token: "SECRETwrongKEY" }) };
     const checks = await run({ connectors: [linear], secrets });
-    expect(checks[0]).toMatchObject({ status: "fail", detail: "the secret agentx/staging/connectors/linear has the wrong shape", fix: "agentx --env staging connector add linear --project payments" });
+    expect(checks[0]).toMatchObject({ status: "fail", detail: "the secret rovara-cloud/staging/connectors/linear has the wrong shape", fix: "rovara --env staging connector add linear --project payments" });
     expect(JSON.stringify(checks)).not.toContain("SECRETwrongKEY");
   });
 
@@ -183,7 +183,7 @@ describe("doctor: connectors (Task 7 fix round 1)", () => {
   it("warns when init recorded connectors but no project file of the environment is found", async () => {
     const progress = { ...PROGRESS, connectors: [{ type: "linear" as const, ref: "linear" }] };
     const checks = await connectorChecks(doctorContext({ services: doctorServices({ configDir: "/nonexistent-agentx-projects" }), progress }));
-    expect(checks).toEqual([expect.objectContaining({ name: "project files", status: "warn", detail: "agentx init added Linear, but no project file of environment staging is in /nonexistent-agentx-projects" })]);
+    expect(checks).toEqual([expect.objectContaining({ name: "project files", status: "warn", detail: "rovara init added Linear, but no project file of environment staging is in /nonexistent-agentx-projects" })]);
   });
 });
 
@@ -197,7 +197,7 @@ describe("doctor: connectors (Task 7 re-review)", () => {
     const checks = await connectorChecks(doctorContext({ services: doctorServices({ configDir }), progress }));
     expect(checks.find((entry) => entry.name === `project file ${join(configDir, "payments.yaml")}`)?.status).toBe("warn");
     expect(JSON.stringify(checks)).not.toContain("no project file");
-    expect(checks.find((entry) => entry.name === "project files")).toMatchObject({ status: "warn", detail: "agentx init added Linear, but the only project files found for environment staging could not be used (see the warnings above)" });
+    expect(checks.find((entry) => entry.name === "project files")).toMatchObject({ status: "warn", detail: "rovara init added Linear, but the only project files found for environment staging could not be used (see the warnings above)" });
   });
 });
 
@@ -207,7 +207,7 @@ describe("doctor: generic mcp connectors (spec 055 phase 3)", () => {
     name: "sentry", type: "mcp", endpoint: "https://mcp.sentry.dev/mcp", vendor: "Sentry", label: "Sentry", credentialRef: "mcp-sentry",
     scopes: [{ alias: "sentry", values: {} }], scoping: { mode: "credential" }, tools: [{ name: "get_issue", access: "read" }],
   };
-  const withKey = { ...connectorSecrets, "agentx/staging/connectors/mcp-sentry": JSON.stringify({ apiKey: MCP_KEY }) };
+  const withKey = { ...connectorSecrets, "rovara-cloud/staging/connectors/mcp-sentry": JSON.stringify({ apiKey: MCP_KEY }) };
 
   it("passes when the stored key still reaches every approved tool, never showing the key", async () => {
     const vendors = fakeVendors();
@@ -224,14 +224,14 @@ describe("doctor: generic mcp connectors (spec 055 phase 3)", () => {
     expect(refusedKey).toContainEqual(expect.objectContaining({ status: "fail", detail: "mcp.sentry.dev refused the stored key: it expired or was revoked" }));
     const missing = await run({ connectors: [sentry] });
     expect(missing).toContainEqual(expect.objectContaining({
-      status: "fail", detail: "credentials missing: no secret agentx/staging/connectors/mcp-sentry",
-      fix: "agentx --env staging connector add mcp --project payments --endpoint https://mcp.sentry.dev/mcp --name sentry",
+      status: "fail", detail: "credentials missing: no secret rovara-cloud/staging/connectors/mcp-sentry",
+      fix: "rovara --env staging connector add mcp --project payments --endpoint https://mcp.sentry.dev/mcp --name sentry",
     }));
   });
 
   it("does not refresh a stored OAuth sign-in, and skips a credential registered by hand", async () => {
     const vendors = fakeVendors();
-    const oauth = await run({ connectors: [sentry], vendors, secrets: { ...connectorSecrets, "agentx/staging/connectors/mcp-sentry": JSON.stringify({ clientId: "c", refreshToken: "SECRETrefresh" }) } });
+    const oauth = await run({ connectors: [sentry], vendors, secrets: { ...connectorSecrets, "rovara-cloud/staging/connectors/mcp-sentry": JSON.stringify({ clientId: "c", refreshToken: "SECRETrefresh" }) } });
     expect(oauth).toContainEqual(expect.objectContaining({ name: "Sentry (project payments)", status: "ok" }));
     expect(vendors.calls).toEqual([]);
     const byHand = await run({ connectors: [{ ...sentry, credentialRef: "sentry-prod" }] });

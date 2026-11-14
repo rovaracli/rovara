@@ -72,7 +72,7 @@ describe("the retention of workflow screenshots is a rule on the bucket the brok
   });
 
   it("is not on the access stack's release-artifact bucket, which the broker never writes screenshots to", () => {
-    const access = stacksOf(buildAgentXApp({ agentxEnv: "staging" })).find((stack) => stack.stackName === "agentx-staging-access")!;
+    const access = stacksOf(buildAgentXApp({ agentxEnv: "staging" })).find((stack) => stack.stackName === "rovara-cloud-staging-access")!;
     for (const bucket of Object.values(Template.fromStack(access).findResources("AWS::S3::Bucket") as Record<string, Bucket>)) {
       expect((bucket.Properties.LifecycleConfiguration?.Rules ?? []).filter((rule) => rule.TagFilters !== undefined || rule.ExpirationInDays !== undefined)).toEqual([]);
     }

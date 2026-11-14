@@ -74,7 +74,7 @@ function refusalFor(stackName: string, refused: DataChange[], accepted: DataChan
   const unclear = refused.filter((entry) => entry.verb === "unclear");
   const clauses = [
     ...(known.length === 0 ? [] : [`${stackName} would ${listed(known.map(consequence))}`]),
-    ...(unclear.length === 0 ? [] : [`agentx could not read cdk diff's output for ${stackName}, so it cannot tell whether it replaces or deletes data (${unclear.map((entry) => entry.line ?? "").join("; ")})`]),
+    ...(unclear.length === 0 ? [] : [`rovara could not read cdk diff's output for ${stackName}, so it cannot tell whether it replaces or deletes data (${unclear.map((entry) => entry.line ?? "").join("; ")})`]),
   ];
   // The rerun's --allow-replace list names the changes already accepted too (by the flag, or typed
   // here), so a rerun with --yes accepts every one of them.
@@ -82,8 +82,8 @@ function refusalFor(stackName: string, refused: DataChange[], accepted: DataChan
   const acceptedIds = accepted.map((entry) => entry.logicalId).filter((id) => id !== "" && !ids.includes(id));
   const also = acceptedIds.length === 0 ? "" : ` (${listedAnd(acceptedIds)} ${acceptedIds.length === 1 ? "is a change" : "are changes"} you already accepted; --yes needs ${acceptedIds.length === 1 ? "it" : "them"} named too)`;
   const steps = [
-    ...(unclear.length === 0 ? [] : ["Check the diff above, and run agentx upgrade again without --yes to review it"]),
-    ...(ids.length === 0 ? [] : [`If you accept that, run agentx upgrade again with ${[...ids, ...acceptedIds].map((id) => `--allow-replace ${id}`).join(" ")}${also}`]),
+    ...(unclear.length === 0 ? [] : ["Check the diff above, and run rovara upgrade again without --yes to review it"]),
+    ...(ids.length === 0 ? [] : [`If you accept that, run rovara upgrade again with ${[...ids, ...acceptedIds].map((id) => `--allow-replace ${id}`).join(" ")}${also}`]),
   ];
   return `upgrade stopped: ${clauses.join("; ")}; nothing in ${stackName} changed. ${steps.join(". ")}`;
 }
@@ -99,7 +99,7 @@ export async function guardData(input: { stackName: string; data: DataChange[]; 
   for (const [index, entry] of pending.entries()) {
     const token = entry.logicalId === "" ? "accept" : entry.logicalId;
     const prompt = entry.verb === "unclear"
-      ? `agentx could not read cdk diff's output for ${input.stackName}, so it may replace or delete data (${entry.line ?? ""}). Check the diff above. Type ${token} to accept, or anything else to stop: `
+      ? `rovara could not read cdk diff's output for ${input.stackName}, so it may replace or delete data (${entry.line ?? ""}). Check the diff above. Type ${token} to accept, or anything else to stop: `
       : `${input.stackName} would ${consequence(entry)}. Type ${token} to accept, or anything else to stop: `;
     if ((await input.ask(prompt)).trim() !== token) return refusalFor(input.stackName, pending.slice(index), [...pending.slice(0, index), ...allowed]);
   }
@@ -107,7 +107,7 @@ export async function guardData(input: { stackName: string; data: DataChange[]; 
 }
 
 /** The templates engine's confirmation. A refusal returns false, so the engine deletes its change set,
- * and keeps the reason for agentx upgrade to report instead of the engine's generic words. */
+ * and keeps the reason for rovara upgrade to report instead of the engine's generic words. */
 export function upgradeConfirm(input: { write: (line: string) => void; ask: Ask; yes: boolean; allowReplace: ReadonlySet<string> }): { confirm: ConfirmFn; refusal(): string | undefined } {
   let refusal: string | undefined;
   return {
@@ -119,7 +119,7 @@ export function upgradeConfirm(input: { write: (line: string) => void; ask: Ask;
       if (refusal !== undefined) return false;
       if (input.yes) return true;
       if (/^y(es)?$/i.test((await input.ask(`Apply these changes to ${stackName}? [y/N] `)).trim())) return true;
-      refusal = `upgrade stopped before ${stackName}: nothing in it changed. Stacks upgraded before it keep the new release; run agentx upgrade again to continue`;
+      refusal = `upgrade stopped before ${stackName}: nothing in it changed. Stacks upgraded before it keep the new release; run rovara upgrade again to continue`;
       return false;
     },
   };

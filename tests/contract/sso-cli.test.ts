@@ -17,10 +17,10 @@ const ARGS = ["--env", "staging", "sso", "bootstrap", "--admin-group", "rovara-a
 
 async function world(options: { edition?: string | null; oidc?: boolean; account?: string } = {}) {
   const store = new MemoryParameterStore();
-  await writeEnvironmentSettings(store, { ...stagingSettings, engine: "cdk", stacks: { ...stagingSettings.stacks, "control-plane": "agentx-staging-control-plane" } });
+  await writeEnvironmentSettings(store, { ...stagingSettings, engine: "cdk", stacks: { ...stagingSettings.stacks, "control-plane": "rovara-cloud-staging-control-plane" } });
   if (options.edition !== null) store.values.set(editionRecordName("staging"), options.edition ?? "enterprise");
   if (options.oidc !== false) {
-    await writeSignInSettings(store, { schemaVersion: 1, env: "staging", slack: false, oidc: { issuer: ISSUER, clientId: "0oa1", displayName: "Okta", clientSecretName: "agentx/staging/developer-oidc" }, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER });
+    await writeSignInSettings(store, { schemaVersion: 1, env: "staging", slack: false, oidc: { issuer: ISSUER, clientId: "0oa1", displayName: "Okta", clientSecretName: "rovara-cloud/staging/developer-oidc" }, updatedAt: "2026-09-27T00:00:00.000Z", updatedBy: HOLDER });
   }
   const db = new FakeDynamoDb();
   const capture = capturingAuditDeps({ db });

@@ -185,9 +185,9 @@ describe("verifyBundle", () => {
 // The upgrade itself, with the AWS side faked. The store records every call so "nothing was touched" is a fact, not a hope.
 const ADMIN = "arn:aws:sts::123456789012:assumed-role/Admin/alice";
 const ACCESS_TEMPLATE = JSON.stringify({ Resources: {} });
-const INSTALLED = { ...SETTINGS, version: "1.2.3", access: { artifactBucket: "agentx-staging-access-artifactbucket-abc", cloudFormationRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-cloudformation", operatorRoleArn: "arn:aws:iam::123456789012:role/agentx-staging-operator", pullThroughPrefix: "agentx-staging" } };
+const INSTALLED = { ...SETTINGS, version: "1.2.3", access: { artifactBucket: "rovara-cloud-staging-access-artifactbucket-abc", cloudFormationRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-cloudformation", operatorRoleArn: "arn:aws:iam::123456789012:role/rovara-cloud-staging-operator", pullThroughPrefix: "rovara-cloud-staging" } };
 
-const CONTROL_PLANE = { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/github-app-AbCdEf", BudgetMonthlyUsd: "250", CallbackSigningKey: "****" };
+const CONTROL_PLANE = { GitHubAppId: "123", GitHubAppPrivateKeySecretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/github-app-AbCdEf", BudgetMonthlyUsd: "250", CallbackSigningKey: "****" };
 
 async function harness(bundle: BuiltBundle, overrides: Partial<UpgradeDependencies> = {}, store = new MemoryParameterStore()) {
   await writeEnvironmentSettings(store, INSTALLED);
@@ -199,7 +199,7 @@ async function harness(bundle: BuiltBundle, overrides: Partial<UpgradeDependenci
   const touched: string[] = [];
   const deps: UpgradeDependencies = {
     store,
-    stacks: { describe: async (name) => { touched.push(`describe:${name}`); return { status: "UPDATE_COMPLETE", outputs: allStackOutputs()[name] ?? {}, parameters: name === "agentx-staging-control-plane" ? CONTROL_PLANE : {} }; } },
+    stacks: { describe: async (name) => { touched.push(`describe:${name}`); return { status: "UPDATE_COMPLETE", outputs: allStackOutputs()[name] ?? {}, parameters: name === "rovara-cloud-staging-control-plane" ? CONTROL_PLANE : {} }; } },
     cloudFormation: { async send(command: unknown) { if (command instanceof GetTemplateCommand) return { TemplateBody: ACCESS_TEMPLATE }; throw new Error("unexpected"); } },
     identity: { get: async () => { touched.push("identity"); return { account: "123456789012", arn: ADMIN }; } },
     loadRelease: async () => { throw new Error("test setup: a bundle upgrade loads no other release"); },
@@ -207,7 +207,7 @@ async function harness(bundle: BuiltBundle, overrides: Partial<UpgradeDependenci
     verifyBundle: async (input) => verifyBundle({ ...input, trustedKeys: trust(bundle) }),
     loadBundleImages: async ({ bundle: verified }) => { events.push(`images:${verified.manifest.images.map((image) => image.name).join(",")}`); },
     notes: async () => undefined,
-    prepare: async () => { touched.push("prepare"); return { deployer, store, secrets: memoryInitSecrets({ "agentx/staging/callback-signing-key": "k".repeat(43) }), holder: ADMIN, partition: "aws", cleanup: async () => undefined }; },
+    prepare: async () => { touched.push("prepare"); return { deployer, store, secrets: memoryInitSecrets({ "rovara-cloud/staging/callback-signing-key": "k".repeat(43) }), holder: ADMIN, partition: "aws", cleanup: async () => undefined }; },
     cdkDiff: async () => "",
     ask: async () => "y",
     isInteractive: () => true,
@@ -391,7 +391,7 @@ describe("rovara upgrade --bundle", () => {
       await expect(runUpgrade(options(old), downgrade.deps)).rejects.toThrow(/older than 1\.2\.3/);
       expect(downgrade.calls).toEqual([]);
       const operator = await cdkHarness(bundle);
-      operator.deps.identity = { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/agentx-staging-rovara-operator/ana" }) };
+      operator.deps.identity = { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/rovara-cloud-staging-rovara-operator/ana" }) };
       await expect(runUpgrade(options(bundle), operator.deps)).rejects.toThrow(/Rovara operator role starts approved deployments/);
       expect(operator.calls).toEqual([]);
     });
@@ -423,7 +423,7 @@ describe("rovara upgrade --bundle", () => {
 
 
 describe("the Rovara operator role (N6) runs no upgrade itself", () => {
-  const OPERATOR = "arn:aws:sts::123456789012:assumed-role/agentx-staging-rovara-operator/alice@example.com";
+  const OPERATOR = "arn:aws:sts::123456789012:assumed-role/rovara-cloud-staging-rovara-operator/alice@example.com";
   const asOperator = (bundle: BuiltBundle) => harness(bundle, { identity: { get: async () => ({ account: "123456789012", arn: OPERATOR }) } });
 
   it("is refused every upgrade this command runs, a verified and approved bundle included (it starts the deployer instead), before any lock, restore point, image or stack", async () => {
@@ -442,7 +442,7 @@ describe("the Rovara operator role (N6) runs no upgrade itself", () => {
 
   it("is not mistaken for the customer's own operator role (a different role name)", async () => {
     const bundle = await build();
-    const own = await harness(bundle, { identity: { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/agentx-staging-operator/bob" }) } });
+    const own = await harness(bundle, { identity: { get: async () => ({ account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/rovara-cloud-staging-operator/bob" }) } });
     await runUpgrade(options(bundle), own.deps);
   });
 });

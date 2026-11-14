@@ -1,4 +1,4 @@
-// Plan 2, Task 6: `agentx login --invite <link>`. An invite link comes in three shapes: the rovara.dev link a cloud install hands out
+// Plan 2, Task 6: `rovara login --invite <link>`. An invite link comes in three shapes: the rovara.dev link a cloud install hands out
 // (https://rovara.dev/join#invite=<token>), the link of a cell's own join page (<cell>/v1/auth/join?invite=<token>) and the bare
 // token. This file reads them, finds the cell, and asks that cell, before any browser opens, what the invite is for (ruling R19).
 import { INVITE_WRONG_EMAIL_MESSAGE, agentXError } from "@agentx/contracts";
@@ -60,7 +60,7 @@ export async function resolveInviteCell(parsed: ParsedInviteLink, fetchImplement
     return base;
   }
   if (parsed.directoryOrigin === undefined) {
-    throw agentXError("CONFIG_INVALID", "that invite is only a code, so it does not say where to sign in; add your Rovara address: agentx login <url> --invite <code>");
+    throw agentXError("CONFIG_INVALID", "that invite is only a code, so it does not say where to sign in; add your Rovara address: rovara login <url> --invite <code>");
   }
   const unreachable = agentXError("RUNTIME_UNAVAILABLE", "Rovara is not reachable from this invite link right now; try again later");
   let body: unknown;
@@ -117,9 +117,9 @@ export function inviteOutcomeText(outcome: "joined" | InviteOutcome, org?: { nam
     case "joined":
       return org === undefined ? "You joined the organization." : `You joined ${sanitizeServerText(org.name)} as ${sanitizeServerText(org.role)}.`;
     case "ALREADY_IN_ORG": {
-      if (org === undefined) return "You're already in another Rovara organization. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of that organization to remove you. If it is a team you made by mistake and no one else is in it, run agentx org leave and try the invite again.";
+      if (org === undefined) return "You're already in another Rovara organization. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of that organization to remove you. If it is a team you made by mistake and no one else is in it, run rovara org leave and try the invite again.";
       const name = sanitizeServerText(org.name);
-      return `You're already in ${name}. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of ${name} to remove you. If ${name} is a team you made by mistake and no one else is in it, run agentx org leave and try the invite again.`;
+      return `You're already in ${name}. For now, a person can belong to one Rovara organization: sign in with a different email address, or ask an owner of ${name} to remove you. If ${name} is a team you made by mistake and no one else is in it, run rovara org leave and try the invite again.`;
     }
     case "INVITE_WRONG_EMAIL":
       return INVITE_WRONG_EMAIL_MESSAGE;

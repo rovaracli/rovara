@@ -58,8 +58,8 @@ describe("init with a direct provider", () => {
     const store = new MemoryParameterStore();
     const secrets = memoryInitSecrets();
     const saved = await persistInitAnswers({ store, secrets, collected });
-    expect(secrets.values.get("agentx/staging/anthropic")).toBe(ANTHROPIC_KEY);
-    expect(saved.models.anthropic).toEqual({ secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/anthropic-AbCdEf" });
+    expect(secrets.values.get("rovara-cloud/staging/anthropic")).toBe(ANTHROPIC_KEY);
+    expect(saved.models.anthropic).toEqual({ secretArn: "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/anthropic-AbCdEf" });
     expect(storesOwnProviderKey(saved, "anthropic")).toBe(true);
     expect([...store.values.values()].join("\n")).not.toContain(ANTHROPIC_KEY);
   });
@@ -71,7 +71,7 @@ describe("init with a direct provider", () => {
     expect(collected.answers.models.orchestrator).toBe(DEFAULT_BEDROCK_MODELS.orchestrator);
     expect(collected.directKeys).toEqual({ openai: OPENAI_KEY });
     const saved = await persistInitAnswers({ store: new MemoryParameterStore(), secrets: memoryInitSecrets(), collected });
-    expect(saved.models.openai?.secretArn).toMatch(/:secret:agentx\/staging\/openai-/);
+    expect(saved.models.openai?.secretArn).toMatch(/:secret:rovara-cloud\/staging\/openai-/);
     expect(saved.models.anthropic).toBeUndefined();
   });
 
@@ -142,8 +142,8 @@ describe("the install plan with a direct provider", () => {
     expect(orchestrator).toMatchObject({ usd: 25, basis: "1,000 turns at about $0.025 each, Anthropic list price" });
     expect(estimate.lines.find((line) => line.item === "Coding model (Claude Sonnet 4.6)")).toMatchObject({ usd: 75, basis: "100 coding sessions at about $0.75 each, Anthropic list price" });
     const text = installPlanText(answers, estimate, [], { storesProviderKeys: ["anthropic"] });
-    expect(text).toContain("agentx/staging/slack, agentx/staging/anthropic");
-    expect(text).toContain("- Anthropic: your API key is stored in the new secret agentx/staging/anthropic");
+    expect(text).toContain("rovara-cloud/staging/slack, rovara-cloud/staging/anthropic");
+    expect(text).toContain("- Anthropic: your API key is stored in the new secret rovara-cloud/staging/anthropic");
   });
 
   it("names a model the catalog does not price instead of guessing, and only reads a secret you made yourself", () => {
@@ -151,7 +151,7 @@ describe("the install plan with a direct provider", () => {
     const estimate = estimateMonthlyCost(answers.models);
     expect(estimate.unpriced).toEqual(["claude-unknown"]);
     const text = installPlanText(answers, estimate, []);
-    expect(text).not.toContain("agentx/staging/anthropic");
+    expect(text).not.toContain("rovara-cloud/staging/anthropic");
     expect(text).toContain("- Anthropic: read existing secret arn:aws:secretsmanager:us-east-1:123456789012:secret:mine-AbCdEf");
   });
 });
@@ -221,11 +221,11 @@ describe("doctor: direct provider secrets", () => {
   });
 
   it("reports init's own key ok, the wrong kind of key as a problem, and never shows the value", async () => {
-    const arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/staging/anthropic-AbCdEf";
-    const ok = await secretChecks(withKey("anthropic", arn, { ...SECRETS, "agentx/staging/anthropic": ANTHROPIC_KEY }));
-    expect(ok.find((entry) => entry.name === "agentx/staging/anthropic")).toMatchObject({ status: "ok" });
-    const wrong = await secretChecks(withKey("anthropic", arn, { ...SECRETS, "agentx/staging/anthropic": OPENAI_KEY }));
-    expect(wrong.find((entry) => entry.name === "agentx/staging/anthropic")).toMatchObject({ status: "fail", detail: "an Anthropic API key starts with sk-ant-" });
+    const arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/staging/anthropic-AbCdEf";
+    const ok = await secretChecks(withKey("anthropic", arn, { ...SECRETS, "rovara-cloud/staging/anthropic": ANTHROPIC_KEY }));
+    expect(ok.find((entry) => entry.name === "rovara-cloud/staging/anthropic")).toMatchObject({ status: "ok" });
+    const wrong = await secretChecks(withKey("anthropic", arn, { ...SECRETS, "rovara-cloud/staging/anthropic": OPENAI_KEY }));
+    expect(wrong.find((entry) => entry.name === "rovara-cloud/staging/anthropic")).toMatchObject({ status: "fail", detail: "an Anthropic API key starts with sk-ant-" });
     expect(JSON.stringify([ok, wrong])).not.toContain("KEYSECRET");
   });
 
@@ -233,6 +233,6 @@ describe("doctor: direct provider secrets", () => {
     const arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:team/openai-AbCdEf";
     const checks = await secretChecks(withKey("openai", arn));
     expect(checks.find((entry) => entry.name === "OpenAI key")).toMatchObject({ status: "skip" });
-    expect(checks.find((entry) => entry.name === "agentx/staging/openai")).toBeUndefined();
+    expect(checks.find((entry) => entry.name === "rovara-cloud/staging/openai")).toBeUndefined();
   });
 });

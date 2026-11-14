@@ -35,10 +35,10 @@ export function linkLabel(url: string): string {
 }
 
 /** A step's error as a card shows it where the page offers to try again in place: without the
- * terminal's closing "run agentx init again" (or "run agentx --env <env> init again"), which would
+ * terminal's closing "run rovara init again" (or "run rovara --env <env> init again"), which would
  * send the operator the wrong way. The terminal's error text is unchanged. */
 export function onPageProblem(problem: string): string {
-  return problem.replace(/[;,] (?:then )?run agentx (?:--env \S+ )?init again\.?$/, "");
+  return problem.replace(/[;,] (?:then )?run rovara (?:--env \S+ )?init again\.?$/, "");
 }
 
 /** FR-027: who is signed in, in words. The ARN itself goes to the card's details. */
@@ -194,7 +194,7 @@ export type SlackCardInput =
   | { stage: "credentials"; appName: string }
   | { stage: "bot"; user: string; team: string }
   /** `retry: false` when the page cannot offer a paste again: the problem is shown whole, with its
-   * advice to run agentx init again, kept in the details. */
+   * advice to run rovara init again, kept in the details. */
   | { stage: "refused"; problem: string; retry?: false }
   | { stage: "approval"; appName: string }
   /** Add to Slack (the setup page): the configuration token AgentX makes the app with. */

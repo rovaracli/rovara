@@ -53,7 +53,7 @@ export const TASK_FULL_REASON = "this task already holds all the messages it kee
 export const SESSION_ENDED_REASON = "the session has ended";
 export const MAC_GONE_REASON = "this Mac isn't available";
 /** What a message to a task that waits for answers is told (Rovara Code asked questions and nothing reads a note until they are answered). */
-export const WAITING_FOR_ANSWERS_REASON = (sessionId: string): string => `it is waiting for your answers to its questions; answer them in the app, with agentx session answer ${sessionId}, or with agentx_answer_task_questions`;
+export const WAITING_FOR_ANSWERS_REASON = (sessionId: string): string => `it is waiting for your answers to its questions; answer them in the app, with rovara session answer ${sessionId}, or with agentx_answer_task_questions`;
 
 /**
  * Plan 4's chain run, as far as a message needs it: what the run is doing now. Injected where Plan 4 is merged; until it is, a message to a chain session is refused before anything is written.

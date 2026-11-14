@@ -1,3 +1,4 @@
+import { APPLICATION_TAG_VALUE, ENVIRONMENT_TAG_KEY } from "@agentx/contracts";
 // Amazon States Language (JSONata) for the EC2 session provisioner and deleter (issue #83, design in
 // #76). The provisioner starts from a ProvisioningInput and the deleter from a DeletionInput
 // (packages/broker/src/aws/sessions.ts). Each step that records progress calls the session steps
@@ -17,7 +18,7 @@ export interface SessionStateMachineProps {
   resourcePrefix: string;
   /**
    * AUTOREQUALIFY AR-4: the SSM parameter holding the AMI the test machine was qualified on. Workers
-   * launch from it once it exists (`/agentx/<env>/worker-qualified-ami`, broker/src/aws/worker-ami.ts).
+   * launch from it once it exists (`/rovara-cloud/<env>/worker-qualified-ami`, broker/src/aws/worker-ami.ts).
    */
   workerAmiParameterName: string;
 }
@@ -46,10 +47,10 @@ const ssm = (action: string) => `arn:aws:states:::aws-sdk:ssm:${action}`;
 function tags(props: SessionStateMachineProps, name: string, extra: Array<{ Key: string; Value: string }>) {
   return [
     { Key: "Name", Value: name },
-    { Key: "Application", Value: "AgentX" },
+    { Key: "Application", Value: APPLICATION_TAG_VALUE },
     { Key: "DeploymentMode", Value: "ec2-ebs" },
     { Key: "Environment", Value: props.environmentTag },
-    ...(props.env === undefined ? [] : [{ Key: "agentx:env", Value: props.env }]),
+    ...(props.env === undefined ? [] : [{ Key: ENVIRONMENT_TAG_KEY, Value: props.env }]),
     ...extra,
   ];
 }
@@ -82,7 +83,7 @@ function runInstance(props: SessionStateMachineProps, workspaceTags: Array<{ Key
       ClientToken: "{% $clientToken %}",
       TagSpecifications: [{
         ResourceType: "instance",
-        Tags: tags(props, `${props.resourcePrefix}-worker`, [...workspaceTags, { Key: "agentx:generation", Value: "{% $string($generation) %}" }]),
+        Tags: tags(props, `${props.resourcePrefix}-worker`, [...workspaceTags, { Key: "rovara-cloud:generation", Value: "{% $string($generation) %}" }]),
       }],
     },
     Assign: {
@@ -99,7 +100,7 @@ function runInstance(props: SessionStateMachineProps, workspaceTags: Array<{ Key
 }
 
 export function provisionerDefinition(props: SessionStateMachineProps): State {
-  const workspaceTags = [{ Key: "agentx:workspace", Value: "{% $workspaceId %}" }];
+  const workspaceTags = [{ Key: "rovara-cloud:workspace", Value: "{% $workspaceId %}" }];
   return {
     Comment: "Provisions one generation of an ec2-ebs workspace session",
     QueryLanguage: "JSONata",

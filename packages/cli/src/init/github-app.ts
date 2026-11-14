@@ -5,7 +5,7 @@
 // as the key (webhookSecret) and is never printed either.
 import { createSign, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import { agentXError, environmentStackName } from "@agentx/contracts";
+import { agentXError, environmentStackName, RESOURCE_PREFIX } from "@agentx/contracts";
 import { activeHintLine, ensureGithubWebhook, missingEventsLine, storedWebhookSecret } from "../github/webhook-setup.js";
 import type { InitContext, ManifestHost, OpenManifestHost } from "./context.js";
 import { checkPrivateKeyPem, secretFromSource } from "./prompts.js";
@@ -91,7 +91,7 @@ export function parseManifestCallback(pasted: string, expectedState: string): st
     const url = new URL(text);
     const state = url.searchParams.get("state");
     if (state === null || state === "") throw agentXError("CONFIG_INVALID", "that address has no state; paste the whole address GitHub sent your browser to after creating the app, or just its code");
-    if (state !== expectedState) throw agentXError("CONFIG_INVALID", "that address is from a different agentx init run (its state does not match); create the app from the page this run printed");
+    if (state !== expectedState) throw agentXError("CONFIG_INVALID", "that address is from a different rovara init run (its state does not match); create the app from the page this run printed");
     const code = url.searchParams.get("code");
     if (code === null || code === "") throw agentXError("CONFIG_INVALID", "that address has no code; paste the address GitHub sent your browser to after creating the app");
     return code;
@@ -117,7 +117,7 @@ export async function startManifestListener(input: { state: string; page: (redir
     if (request.headers.host !== `127.0.0.1:${port}`) return send(403, "<p>Forbidden.</p>");
     if (request.method === "GET" && url.pathname === "/github/start") return send(200, input.page(redirectUrl));
     if (request.method === "GET" && url.pathname === "/github/created") {
-      if (url.searchParams.get("state") !== input.state) return send(400, "<p>This page is from a different agentx init run.</p>");
+      if (url.searchParams.get("state") !== input.state) return send(400, "<p>This page is from a different rovara init run.</p>");
       const received = url.searchParams.get("code");
       if (received === null || received === "") return send(400, "<p>GitHub sent no code.</p>");
       resolveCode(received);
@@ -127,7 +127,7 @@ export async function startManifestListener(input: { state: string; page: (redir
   });
   await new Promise<void>((resolvePromise, reject) => {
     const onError = (error: NodeJS.ErrnoException) => {
-      reject(agentXError("CONFIG_INVALID", `could not open a local port on 127.0.0.1 for the GitHub App page (${error.code ?? error.name}); check that no firewall or security tool blocks local ports and run agentx init again, or pass --github-app-id, --github-installation-id and --github-private-key-file for a GitHub App made beforehand`));
+      reject(agentXError("CONFIG_INVALID", `could not open a local port on 127.0.0.1 for the GitHub App page (${error.code ?? error.name}); check that no firewall or security tool blocks local ports and run rovara init again, or pass --github-app-id, --github-installation-id and --github-private-key-file for a GitHub App made beforehand`));
     };
     server.once("error", onError);
     server.listen(input.port ?? 0, "127.0.0.1", () => { server.removeListener("error", onError); resolvePromise(); });
@@ -140,7 +140,7 @@ export async function startManifestListener(input: { state: string; page: (redir
   // On timeout the listener stops too, so it cannot outlive the wait on the --no-browser path.
   const timer = setTimeout(() => {
     stop();
-    rejectCode(agentXError("CONFIG_INVALID", `no GitHub App was created within ${Math.round(input.timeoutMs / 60_000)} minutes; run agentx init again`));
+    rejectCode(agentXError("CONFIG_INVALID", `no GitHub App was created within ${Math.round(input.timeoutMs / 60_000)} minutes; run rovara init again`));
   }, input.timeoutMs);
   return {
     port,
@@ -280,7 +280,7 @@ export function githubRestApi(fetchImplementation: typeof fetch): GitHubApi {
 }
 
 export function githubAppSecretName(env: string): string {
-  return `agentx/${env}/github-app`;
+  return `${RESOURCE_PREFIX}/${env}/github-app`;
 }
 
 export interface AppSecret { appId: string; slug: string; account: string; privateKey: string; clientId?: string; clientSecret?: string }
@@ -297,7 +297,7 @@ export function parseAppSecret(raw: string, name: string): AppSecret {
       };
     }
   } catch { /* the one message below; never echo the value */ }
-  throw agentXError("CONFIG_INVALID", `secret ${name} is not an AgentX GitHub App secret; delete it (aws secretsmanager delete-secret --secret-id ${name} --force-delete-without-recovery) and run agentx init again`);
+  throw agentXError("CONFIG_INVALID", `secret ${name} is not an AgentX GitHub App secret; delete it (aws secretsmanager delete-secret --secret-id ${name} --force-delete-without-recovery) and run rovara init again`);
 }
 
 export const appSettingsUrl = (owner: { login: string; type: string }, slug: string) =>
@@ -313,7 +313,7 @@ async function controlPlaneUrls(context: InitContext): Promise<{ webhookUrl: str
   const stackName = environmentStackName(context.env, "control-plane");
   const outputs = await (await context.deployment()).deployer.outputs(stackName);
   const webhookUrl = outputs?.GithubWebhookUrl ?? (outputs?.ApiEndpoint === undefined ? undefined : githubWebhookUrl(outputs.ApiEndpoint));
-  if (webhookUrl === undefined) throw agentXError("CONFIG_INVALID", `stack ${stackName} reports no GitHub webhook URL; the control-plane step must finish first, so run agentx init again`);
+  if (webhookUrl === undefined) throw agentXError("CONFIG_INVALID", `stack ${stackName} reports no GitHub webhook URL; the control-plane step must finish first, so run rovara init again`);
   const apiEndpoint = outputs?.ApiEndpoint ?? (webhookUrl.endsWith(WEBHOOK_PATH) ? webhookUrl.slice(0, -WEBHOOK_PATH.length) : webhookUrl);
   return { webhookUrl, apiEndpoint };
 }
@@ -399,7 +399,7 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
   const name = githubAppSecretName(context.env);
   const requireArn = async () => {
     const arn = await context.secrets.arn(name);
-    if (arn === undefined) throw agentXError("RUNTIME_UNAVAILABLE", `secret ${name} was just stored but cannot be described; run agentx init again`);
+    if (arn === undefined) throw agentXError("RUNTIME_UNAVAILABLE", `secret ${name} was just stored but cannot be described; run rovara init again`);
     return arn;
   };
   const jwtFor = (appId: string, privateKey: string) => githubAppJwt({ appId, privateKey, nowSeconds: Math.floor(context.now() / 1000) });
@@ -419,7 +419,7 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
     if (leftover !== undefined) {
       const recovered = parseAppSecret(leftover, name);
       if (preMade !== undefined && recovered.appId !== preMade.appId) {
-        throw agentXError("CONFIG_INVALID", `secret ${name} holds GitHub App ${recovered.appId}, not ${preMade.appId} from --github-app-id; pass --github-app-id ${recovered.appId}, or delete the secret (aws secretsmanager delete-secret --secret-id ${name} --force-delete-without-recovery) and run agentx init again`);
+        throw agentXError("CONFIG_INVALID", `secret ${name} holds GitHub App ${recovered.appId}, not ${preMade.appId} from --github-app-id; pass --github-app-id ${recovered.appId}, or delete the secret (aws secretsmanager delete-secret --secret-id ${name} --force-delete-without-recovery) and run rovara init again`);
       }
       privateKey = recovered.privateKey;
       secretValue = leftover;
@@ -451,9 +451,9 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
     if (created.owner.login.toLowerCase() !== account.toLowerCase()) {
       // An app made beforehand is the owner's own: point at the flag, never tell them to delete it.
       if (preMade !== undefined) {
-        throw agentXError("CONFIG_INVALID", `GitHub App ${preMade.appId} belongs to ${created.owner.login}, not ${account}; nothing was saved. Check --github-app-id and run agentx init again`);
+        throw agentXError("CONFIG_INVALID", `GitHub App ${preMade.appId} belongs to ${created.owner.login}, not ${account}; nothing was saved. Check --github-app-id and run rovara init again`);
       }
-      throw agentXError("CONFIG_INVALID", `the GitHub App was created under ${created.owner.login}, not ${account}; nothing was saved. Delete it at ${appSettingsUrl(created.owner, created.slug)}/advanced and run agentx init again`);
+      throw agentXError("CONFIG_INVALID", `the GitHub App was created under ${created.owner.login}, not ${account}; nothing was saved. Delete it at ${appSettingsUrl(created.owner, created.slug)}/advanced and run rovara init again`);
     }
     // FR-032: recorded before the key is stored. GitHub shows the key only once, so a run that stops
     // between here and the store can still find the app and offer to finish with it or replace it.
@@ -472,8 +472,8 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
       // Only the error's name: never its message or cause, which could echo the request.
       const reason = error instanceof Error ? error.name : "unknown error";
       const next = preMade !== undefined
-        ? "fix that and run agentx init again"
-        : `GitHub cannot show the key again, so delete the app at ${appSettingsUrl(created.owner, created.slug)}/advanced and run agentx init again`;
+        ? "fix that and run rovara init again"
+        : `GitHub cannot show the key again, so delete the app at ${appSettingsUrl(created.owner, created.slug)}/advanced and run rovara init again`;
       throw agentXError("RUNTIME_UNAVAILABLE", `could not store the private key of the ${preMade !== undefined ? "" : "new "}GitHub App ${created.slug} in ${name} (${reason}); ${next}`);
     }
     privateKey = created.privateKey;
@@ -482,11 +482,11 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
   }
   if (privateKey === undefined) {
     const stored = await context.secrets.get(name);
-    if (stored === undefined) throw agentXError("CONFIG_INVALID", `secret ${name} is missing; delete the GitHub App ${app.slug} and run agentx init again`);
+    if (stored === undefined) throw agentXError("CONFIG_INVALID", `secret ${name} is missing; delete the GitHub App ${app.slug} and run rovara init again`);
     privateKey = parseAppSecret(stored, name).privateKey;
     secretValue = stored;
   }
-  if (secretValue === undefined) throw agentXError("RUNTIME_UNAVAILABLE", `secret ${name} holds no value this run knows; run agentx init again`);
+  if (secretValue === undefined) throw agentXError("RUNTIME_UNAVAILABLE", `secret ${name} holds no value this run knows; run rovara init again`);
 
   // Every origin of the app (manifest, --github-app-id, an earlier run's) ends here: the webhook secret is stored and GitHub's
   // hook is pointed at the control plane. A secret that is already stored, including the one GitHub made, is kept.
@@ -510,7 +510,7 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
       const match = (await api.listInstallations(jwtFor(app.appId, privateKey))).find((entry) => entry.account.login.toLowerCase() === account.toLowerCase());
       if (match !== undefined) { installationId = String(match.id); break; }
       if (context.now() >= deadline) {
-        throw agentXError("CONFIG_INVALID", `the GitHub App was not installed on ${account} within 15 minutes; install it at ${installUrl}, then run agentx init again`);
+        throw agentXError("CONFIG_INVALID", `the GitHub App was not installed on ${account} within 15 minutes; install it at ${installUrl}, then run rovara init again`);
       }
       await context.sleep(POLL_MS);
     }
@@ -526,7 +526,7 @@ async function runGitHubAppStep(context: InitContext, progress: ProgressHandle, 
       show({ stage: "repositories", appName, slug: app.slug, account, settingsUrl: installationSettingsUrl(accountType, account, installationId) });
       told = true;
     }
-    if (context.now() >= deadline) throw agentXError("CONFIG_INVALID", `the GitHub App can see no repositories; choose at least one at ${installationSettingsUrl(accountType, account, installationId)}, then run agentx init again`);
+    if (context.now() >= deadline) throw agentXError("CONFIG_INVALID", `the GitHub App can see no repositories; choose at least one at ${installationSettingsUrl(accountType, account, installationId)}, then run rovara init again`);
     await context.sleep(POLL_MS);
   }
   await progress.update({ github: { ...app, installationId } });

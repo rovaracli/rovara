@@ -1,7 +1,7 @@
 // A CloudFormation client for parameter-only updates (spec 025 R6): one stack, one change set.
 import { CreateChangeSetCommand, DeleteChangeSetCommand, DescribeChangeSetCommand, DescribeStacksCommand, ExecuteChangeSetCommand } from "@aws-sdk/client-cloudformation";
 
-const STACK = "agentx-staging-control-plane";
+const STACK = "rovara-cloud-staging-control-plane";
 
 /** The control plane's sign-in parameters as a fresh 25a install leaves them. */
 export const SIGN_IN_PARAMETERS: Record<string, string> = {

@@ -136,7 +136,7 @@ describe("the builders get what the install set", () => {
     await secrets.put(ORG, "mcpabc123456", "t");
     await secrets.read(ORG, "mcpabc123456");
     await secrets.remove(ORG, "mcpabc123456");
-    const path = `agentx/staging/org-connectors/${ORG}/mcpabc123456`;
+    const path = `rovara-cloud/staging/org-connectors/${ORG}/mcpabc123456`;
     expect(deps.calls).toEqual([`put ${path}`, `read ${path}`, `delete ${path}`]);
     // the stage runtime and the Sources settings read the same store
     expect(seen.runtime[0]!.serverSecrets).toBeDefined();

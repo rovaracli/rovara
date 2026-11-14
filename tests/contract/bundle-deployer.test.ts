@@ -28,9 +28,9 @@ describe("the deployer: a bundle id is the whole request", () => {
     const { bundle, world } = await ready();
     const result = await world.run({ bundleId: bundle.bundleSha256 });
     expect(result).toEqual({ status: "done", bundleId: bundle.bundleSha256, done: PARTS, remaining: [] });
-    expect(world.changeSets.map((set) => set.stackName)).toEqual(PARTS.map((part) => `agentx-ent-${part}`));
+    expect(world.changeSets.map((set) => set.stackName)).toEqual(PARTS.map((part) => `rovara-cloud-ent-${part}`));
     for (const set of world.changeSets) {
-      expect(set.roleArn).toBe("arn:aws:iam::123456789012:role/agentx-ent-cloudformation");
+      expect(set.roleArn).toBe("arn:aws:iam::123456789012:role/rovara-cloud-ent-cloudformation");
       expect(set.templateUrl).toMatch(new RegExp(`^https://approvals-bucket\\.s3\\.us-east-1\\.amazonaws\\.com/deploying/${bundle.bundleSha256}/`));
     }
     // The bytes CloudFormation reads are the verified, rendered bytes.
@@ -41,14 +41,14 @@ describe("the deployer: a bundle id is the whole request", () => {
     expect(restore).toBeGreaterThanOrEqual(0);
     expect(restore).toBeLessThan(world.log.findIndex((line) => line.startsWith("cfn.create")));
     expect(JSON.parse(world.params.get(installedBundleParameter("ent"))!)).toMatchObject({ bundleId: bundle.bundleSha256, version: "1.4.0" });
-    expect(JSON.parse(world.params.get("/agentx/ent/settings")!)).toMatchObject({ version: "1.4.0" });
+    expect(JSON.parse(world.params.get("/rovara-cloud/ent/settings")!)).toMatchObject({ version: "1.4.0" });
     expect(world.params.has(deployProgressParameter("ent"))).toBe(false);
   });
 
   it("accepts nothing but a bundle id: no extra field, no template, no stack, no parameter", async () => {
     const { bundle, world } = await ready();
     const id = bundle.bundleSha256;
-    for (const request of [undefined, null, "x", {}, { bundleId: "short" }, { bundleId: id.toUpperCase() }, { bundleId: id, stack: "agentx-ent-access" }, { bundleId: id, parameters: { OidcIssuer: "https://evil" } }, { bundleId: id, templateUrl: "https://evil/x.json" }, { bundleId: id, stackName: "x" }, [id]]) {
+    for (const request of [undefined, null, "x", {}, { bundleId: "short" }, { bundleId: id.toUpperCase() }, { bundleId: id, stack: "rovara-cloud-ent-access" }, { bundleId: id, parameters: { OidcIssuer: "https://evil" } }, { bundleId: id, templateUrl: "https://evil/x.json" }, { bundleId: id, stackName: "x" }, [id]]) {
       const result = await world.run(request);
       expect(result.status, JSON.stringify(request)).toBe("refused");
     }
@@ -251,11 +251,11 @@ describe("direction, restore point and the fixed stack set", () => {
 
   it("only updates: a missing stack, or one that is not settled, is refused, and the access stack is never deployed or changed", async () => {
     const { bundle, world } = await ready();
-    world.stacks.delete("agentx-ent-runtime");
+    world.stacks.delete("rovara-cloud-ent-runtime");
     expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/runtime stack does not exist/) });
-    expect(world.changeSets.map((set) => set.stackName)).toEqual(["agentx-ent-foundation", "agentx-ent-identity"]);
+    expect(world.changeSets.map((set) => set.stackName)).toEqual(["rovara-cloud-ent-foundation", "rovara-cloud-ent-identity"]);
     const stuck = await ready();
-    stuck.world.stacks.get("agentx-ent-foundation")!.status = "UPDATE_ROLLBACK_FAILED";
+    stuck.world.stacks.get("rovara-cloud-ent-foundation")!.status = "UPDATE_ROLLBACK_FAILED";
     expect(await stuck.world.run({ bundleId: stuck.bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/not in a state/) });
     for (const set of [...world.changeSets, ...stuck.world.changeSets]) expect(set.stackName).not.toMatch(/-access$/);
   });
@@ -268,7 +268,7 @@ describe("direction, restore point and the fixed stack set", () => {
 
   it("refuses an install in another region than the function's", async () => {
     const { bundle, world } = await ready();
-    world.params.set("/agentx/ent/settings", JSON.stringify({ version: "1.2.3", region: "eu-west-1", identity: { mode: "cognito" } }));
+    world.params.set("/rovara-cloud/ent/settings", JSON.stringify({ version: "1.2.3", region: "eu-west-1", identity: { mode: "cognito" } }));
     expect(await world.run({ bundleId: bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/another region/) });
     expect(changes(world)).toEqual([]);
   });
@@ -286,7 +286,7 @@ describe("parameters: never from the caller", () => {
   it("keeps every existing parameter at its current value (UsePreviousValue) and sets only what the approval pins", async () => {
     const { bundle, world } = await ready({ templates: { "control-plane": TEMPLATE }, seed, approve: { parameters: { "control-plane": { BudgetMonthlyUsd: "300" } } } });
     expect((await world.run({ bundleId: bundle.bundleSha256 })).status).toBe("done");
-    const set = world.changeSets.find((entry) => entry.stackName === "agentx-ent-control-plane")!;
+    const set = world.changeSets.find((entry) => entry.stackName === "rovara-cloud-ent-control-plane")!;
     expect(set.parameters).toEqual([
       { key: "BudgetMonthlyUsd", value: "300" },
       { key: "OidcIssuer", usePrevious: true },
@@ -299,7 +299,7 @@ describe("parameters: never from the caller", () => {
     expect(await undeclared.world.run({ bundleId: undeclared.bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/AdminClaim, which the control-plane template does not declare/) });
     const fresh = await ready({ templates: { "control-plane": { ...TEMPLATE, Parameters: { ...TEMPLATE.Parameters, Brand: { Type: "String" } } } }, seed });
     expect(await fresh.world.run({ bundleId: fresh.bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/new parameter Brand with no value/) });
-    expect(fresh.world.changeSets.map((set) => set.stackName)).not.toContain("agentx-ent-control-plane");
+    expect(fresh.world.changeSets.map((set) => set.stackName)).not.toContain("rovara-cloud-ent-control-plane");
     const pkg = await ready({ templates: { "control-plane": { Parameters: { B: { Type: "String" }, K: { Type: "String" }, H: { Type: "String" } }, Resources: {} } }, seed: { stackParameters: { "control-plane": { B: "x", K: "y", H: "z" } } }, approve: { parameters: { "control-plane": { K: "approved/other.zip" } } } });
     expect(await pkg.world.run({ bundleId: pkg.bundle.bundleSha256 })).toMatchObject({ status: "refused", reason: expect.stringMatching(/which the bundle's own packages set/) });
   });
@@ -307,7 +307,7 @@ describe("parameters: never from the caller", () => {
   it("points a package's code parameters at the bundle's own approved copy, with the hashed asset id", async () => {
     const { bundle, world } = await ready({ templates: { "control-plane": { Parameters: { B: { Type: "String" }, K: { Type: "String" }, H: { Type: "String" } }, Resources: {} } }, seed: { stackParameters: { "control-plane": { B: "old", K: "old", H: "old" } } } });
     expect((await world.run({ bundleId: bundle.bundleSha256 })).status).toBe("done");
-    const set = world.changeSets.find((entry) => entry.stackName === "agentx-ent-control-plane")!;
+    const set = world.changeSets.find((entry) => entry.stackName === "rovara-cloud-ent-control-plane")!;
     expect(set.parameters).toEqual([
       { key: "B", value: "approvals-bucket" },
       { key: "H", value: expect.stringMatching(/^[a-f0-9]{64}$/) },
@@ -325,7 +325,7 @@ describe("what CloudFormation and Lambda read is the verified bytes, by version 
     const original = await readFile(join(bundle.dir, "packages", (await (await import("node:fs/promises")).readdir(join(bundle.dir, "packages")))[0]!));
     for (const [key] of world.versions) if (key.includes("/packages/")) world.putObject(key, Buffer.from("Evil code, uploaded after the approval"));
     expect((await world.run({ bundleId: bundle.bundleSha256 })).status).toBe("done");
-    const set = world.changeSets.find((entry) => entry.stackName === "agentx-ent-control-plane")!;
+    const set = world.changeSets.find((entry) => entry.stackName === "rovara-cloud-ent-control-plane")!;
     const keyParameter = (set.parameters as Array<{ key: string; value?: string }>).find((parameter) => parameter.key === "K")!.value!;
     expect(keyParameter.startsWith(`deploying/${bundle.bundleSha256}/packages/`)).toBe(true);
     expect(world.uploaded.get(keyParameter)!.equals(original)).toBe(true);
@@ -433,7 +433,7 @@ describe("the customer is told first, and can stop a run (review N2, N4, N6)", (
     expect(changes(world)).toEqual([]);
     // A run whose lock was taken over while it worked leaves the new holder's lock alone.
     world.params.delete(deployLockParameter("ent"));
-    world.afterStack = (stackName) => { if (stackName === "agentx-ent-foundation") world.params.set(deployLockParameter("ent"), JSON.stringify({ startedAt: world.now, token: "new holder" })); };
+    world.afterStack = (stackName) => { if (stackName === "rovara-cloud-ent-foundation") world.params.set(deployLockParameter("ent"), JSON.stringify({ startedAt: world.now, token: "new holder" })); };
     expect((await world.run({ bundleId: bundle.bundleSha256 })).status).toBe("done");
     expect(JSON.parse(world.params.get(deployLockParameter("ent"))!).token).toBe("new holder");
   });
@@ -455,10 +455,10 @@ describe("the customer is told first, and can stop a run (review N2, N4, N6)", (
 
   it("stops a run already going when the customer suspends: the stack being updated finishes, no next stack starts, the progress is kept", async () => {
     const { bundle, world } = await ready();
-    world.afterStack = (stackName) => { if (stackName === "agentx-ent-identity") world.params.set(operatorAccessStateParameter("ent"), "suspended"); };
+    world.afterStack = (stackName) => { if (stackName === "rovara-cloud-ent-identity") world.params.set(operatorAccessStateParameter("ent"), "suspended"); };
     const result = await world.run({ bundleId: bundle.bundleSha256 });
     expect(result).toMatchObject({ status: "refused", done: ["foundation", "identity"], remaining: ["runtime", "control-plane", "slack"], reason: expect.stringMatching(/suspended by the customer/) });
-    expect(world.changeSets.map((set) => set.stackName)).toEqual(["agentx-ent-foundation", "agentx-ent-identity"]);
+    expect(world.changeSets.map((set) => set.stackName)).toEqual(["rovara-cloud-ent-foundation", "rovara-cloud-ent-identity"]);
     expect(JSON.parse(world.params.get(deployProgressParameter("ent"))!).done).toEqual(["foundation", "identity"]);
     expect(world.params.has(installedBundleParameter("ent"))).toBe(false);
     // Resumed when the customer turns it back on.
@@ -492,23 +492,23 @@ describe("a long deployment resumes instead of starting what it cannot finish", 
     expect(world.changeSets).toEqual([]);
     world.now = T0 + 5_000;
     // Two stacks fit in this invocation's budget; the third times out in its stack wait.
-    world.stackOutcome["agentx-ent-runtime"] = "timeout";
+    world.stackOutcome["rovara-cloud-ent-runtime"] = "timeout";
     const second = await world.run({ bundleId: bundle.bundleSha256 });
     expect(second).toMatchObject({ status: "in-progress", done: ["foundation", "identity"], remaining: ["runtime", "control-plane", "slack"] });
     world.stackOutcome = {};
-    world.stacks.get("agentx-ent-runtime")!.status = "UPDATE_IN_PROGRESS";
+    world.stacks.get("rovara-cloud-ent-runtime")!.status = "UPDATE_IN_PROGRESS";
     const third = await world.run({ bundleId: bundle.bundleSha256 });
     expect(third.status).toBe("done");
-    expect(world.log.filter((line) => line.startsWith("cfn.create agentx-ent-foundation"))).toHaveLength(1);
+    expect(world.log.filter((line) => line.startsWith("cfn.create rovara-cloud-ent-foundation"))).toHaveLength(1);
   });
 
   it("reports a failed stack update as failed, and does not mark it done or record the install", async () => {
     const { bundle, world } = await ready();
-    world.stackOutcome["agentx-ent-identity"] = "failed";
+    world.stackOutcome["rovara-cloud-ent-identity"] = "failed";
     const result = await world.run({ bundleId: bundle.bundleSha256 });
     expect(result).toMatchObject({ status: "failed", reason: "the identity stack update failed; see its events" });
     expect(JSON.parse(world.params.get(deployProgressParameter("ent"))!).done).toEqual(["foundation"]);
     expect(world.params.has(installedBundleParameter("ent"))).toBe(false);
-    expect(JSON.parse(world.params.get("/agentx/ent/settings")!).version).toBe("1.2.3");
+    expect(JSON.parse(world.params.get("/rovara-cloud/ent/settings")!).version).toBe("1.2.3");
   });
 });

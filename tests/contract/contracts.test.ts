@@ -165,8 +165,8 @@ describe("strict contracts", () => {
     project.repositories[0] = {
       ...project.repositories[0]!,
       codeBuildGates: [
-        { name: "quality", projectName: "agentx-payments-quality", timeoutMinutes: 30 },
-        { name: "browser", projectName: "agentx-payments-browser", timeoutMinutes: 45 },
+        { name: "quality", projectName: "rovara-cloud-payments-quality", timeoutMinutes: 30 },
+        { name: "browser", projectName: "rovara-cloud-payments-browser", timeoutMinutes: 45 },
       ],
     } as typeof project.repositories[number];
     expect(ProjectDefinitionSchema.parse(project).repositories[0]!.codeBuildGates).toHaveLength(2);
@@ -181,7 +181,7 @@ describe("strict contracts", () => {
     const unsafeRepositories = unsafe.repositories as Array<Record<string, unknown>>;
     const unsafeGates = unsafeRepositories[0]!.codeBuildGates as Array<Record<string, unknown>>;
     unsafeGates[0]!.projectName = "unmanaged-project";
-    expect(() => ProjectDefinitionSchema.parse(unsafe)).toThrow(/agentx-/i);
+    expect(() => ProjectDefinitionSchema.parse(unsafe)).toThrow(/rovara-cloud-/i);
   });
 
   it("requires a safe default branch and rejects the retired initialCommit field", () => {
@@ -313,13 +313,13 @@ describe("strict contracts", () => {
       }],
       codeBuildChecks: [{
         gate: "quality",
-        projectName: "agentx-payments-quality",
-        buildId: `agentx-payments-quality:${crypto.randomUUID()}`,
+        projectName: "rovara-cloud-payments-quality",
+        buildId: `rovara-cloud-payments-quality:${crypto.randomUUID()}`,
         status: "SUCCEEDED",
         requestedSourceVersion: "a".repeat(40),
         resolvedSourceVersion: "a".repeat(40),
         currentPhase: "COMPLETED",
-        logsUrl: "https://console.aws.amazon.com/codesuite/codebuild/projects/agentx-payments-quality",
+        logsUrl: "https://console.aws.amazon.com/codesuite/codebuild/projects/rovara-cloud-payments-quality",
       }],
       reconciled: false,
     }).number).toBe(42);

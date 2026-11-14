@@ -1,5 +1,6 @@
 // The two access-stack policy documents as pure functions: no CDK imports, so they can be unit
 // tested with plain strings and printed as JSON (the access stack passes CDK tokens instead).
+import { ENVIRONMENT_TAG_KEY, RESOURCE_PREFIX } from "./resource-prefix.js";
 import { STACK_PARTS, environmentStackName } from "./environments.js";
 import { savedEnvCreateRoleName, savedEnvManageRoleName, savedEnvPullRoleName, savedEnvPushRoleName, savedEnvRolePrefix } from "./saved-env-image.js";
 import { REALTIME_NAMESPACE } from "./realtime.js";
@@ -32,7 +33,7 @@ export interface PolicyStatementJson {
 
 /** Only this environment's uniquely named ECS deployment-failure rule. */
 function ecsFailureRuleArn(scope: Pick<PolicyScope, "env" | "partition" | "region" | "account">): string {
-  return `arn:${scope.partition}:events:${scope.region}:${scope.account}:rule/agentx-${scope.env}-*-service-failures`;
+  return `arn:${scope.partition}:events:${scope.region}:${scope.account}:rule/${RESOURCE_PREFIX}-${scope.env}-*-service-failures`;
 }
 
 /** Services the service role may use with any resource; IAM is handled separately and name-scoped. CloudFront is not here: its actions are named below (`cloudFrontStatements`). */
@@ -161,9 +162,9 @@ const appsyncEvents = (scope: Pick<PolicyScope, "partition" | "region" | "accoun
  * CloudFront (the web app's asset distribution, its origin access control and its response headers policy), by name and by ARN instead of `cloudfront:*` on "*". Checked against AWS's
  * service authorization reference (servicereference.us-east-1.amazonaws.com/v1/cloudfront/cloudfront.json, 2026-10-26); CloudFront ARNs carry no region.
  *  This is the service role's list; the boundary's ceiling (CLOUDFRONT_BOUNDARY_ACTIONS) is coarser, see there.
- *  - Distributions take the environment tag (`agentx:env`, which Tags.of(app) puts on the distribution): CreateDistribution (what CloudFormation's create-with-tags call is authorized as,
+ *  - Distributions take the environment tag (`rovara-cloud:env`, which Tags.of(app) puts on the distribution): CreateDistribution (what CloudFormation's create-with-tags call is authorized as,
  *    together with TagResource) only when the request carries this environment's tag; TagResource on "*" (the resource the create-time tag call is authorized against is not known, so it is not
- *    pinned to distribution ARNs) only with that request tag; and every other action, TagResource included (a later update that changes only other tags sends no agentx:env), only on a distribution
+ *    pinned to distribution ARNs) only with that request tag; and every other action, TagResource included (a later update that changes only other tags sends no rovara-cloud:env), only on a distribution
  *    that carries the tag, so one environment's role cannot create, change or delete another's. Two Denies keep it so: no TagResource on a distribution tagged for another environment, and none
  *    that sets another environment's value. CreateDistribution takes no resource type (the distribution does not exist yet), so it needs "*", held by the request tag.
  *  - Origin access controls and response headers policies support no tags and no condition keys. Their get, update and delete are scoped to this account's ARNs, but not to one environment (the id
@@ -172,7 +173,7 @@ const appsyncEvents = (scope: Pick<PolicyScope, "partition" | "region" | "accoun
  *    environment either way) and the four List calls (ListDistributions, ListOriginAccessControls, ListResponseHeadersPolicies, ListCachePolicies take no resource type). Drop them once a
  *    deploy proves CloudFormation does not call them.
  */
-export const CLOUDFRONT_ENV_TAG = "agentx:env";
+export const CLOUDFRONT_ENV_TAG = ENVIRONMENT_TAG_KEY;
 export const CLOUDFRONT_DISTRIBUTION_CREATE_ACTIONS: readonly string[] = ["cloudfront:CreateDistribution"];
 export const CLOUDFRONT_DISTRIBUTION_TAG_ACTIONS: readonly string[] = ["cloudfront:TagResource"];
 export const CLOUDFRONT_DISTRIBUTION_ACTIONS: readonly string[] = [
@@ -245,10 +246,10 @@ const ROLE_ACTIONS = [
 ];
 
 /**
- * Managed-policy management (Plan 3, ruling M2): the broker's grants live in named customer-managed policies (agentx-<env>-broker-<group>)
+ * Managed-policy management (Plan 3, ruling M2): the broker's grants live in named customer-managed policies (rovara-cloud-<env>-broker-<group>)
  * because IAM caps a role's inline policies at 10,240 characters in total. These are exactly the actions CloudFormation's
  * AWS::IAM::ManagedPolicy handlers use (create, read, update, delete), no SetDefaultPolicyVersion (CreatePolicyVersion sets the default)
- * and no Attach/Detach (ROLE_ACTIONS has them, on roles). Allowed only on this environment's policy/agentx/<env>/agentx-<env>-broker-*, in the service role and the boundary.
+ * and no Attach/Detach (ROLE_ACTIONS has them, on roles). Allowed only on this environment's policy/rovara-cloud/<env>/rovara-cloud-<env>-broker-*, in the service role and the boundary.
  */
 export const MANAGED_POLICY_ACTIONS: readonly string[] = [
   "iam:CreatePolicy",
@@ -268,15 +269,15 @@ export function brokerManagedPolicyPath(env: string): string {
   return environmentRolePath(env);
 }
 
-/** The broker's managed grant policies' name prefix, agentx-<env>-broker (ruling M2). */
+/** The broker's managed grant policies' name prefix, rovara-cloud-<env>-broker (ruling M2). */
 export function brokerManagedPolicyPrefix(env: string): string {
-  return `agentx-${env}-broker`;
+  return `${RESOURCE_PREFIX}-${env}-broker`;
 }
 
 /**
  * The managed policies this environment's deploy may manage (ruling M2, owner-approved 2026-10-21): only its own broker grant
  * policies, under its own path, so one environment's deploy cannot touch another's policies, the default boundary
- * (agentx-<env>-boundary, which this prefix never matches) or any other agentx-named policy in the account.
+ * (rovara-cloud-<env>-boundary, which this prefix never matches) or any other agentx-named policy in the account.
  */
 function agentxManagedPolicies(scope: Pick<PolicyScope, "env" | "partition" | "account">): string {
   return `arn:${scope.partition}:iam::${scope.account}:policy${brokerManagedPolicyPath(scope.env)}${brokerManagedPolicyPrefix(scope.env)}-*`;
@@ -303,7 +304,7 @@ const BUDGET_ACTIONS = ["budgets:ModifyBudget", "budgets:ViewBudget", "budgets:T
 
 /** The IAM path every role of an environment's stacks lives under, except the access stack's two roles. */
 export function environmentRolePath(env: string): string {
-  return `/agentx/${env}/`;
+  return `/${RESOURCE_PREFIX}/${env}/`;
 }
 
 /**
@@ -311,12 +312,12 @@ export function environmentRolePath(env: string): string {
  * org's connection and hook secrets. Fixed so the default boundary can name it as the one role a bounded role may assume.
  */
 export function connectorSecretsRoleName(env: string): string {
-  return `agentx-${env}-connector-secrets`;
+  return `${RESOURCE_PREFIX}-${env}-connector-secrets`;
 }
 
 /**
  * The control plane's TestAccountSecretsRole (test services TS26): the broker assumes it, tagged with an org and a purpose (`store` or `resolve`), to keep and hand out a customer test account's secret
- * (agentx/<env>/org-test-accounts/<org>/...). It starts with the ConnectorSecretsRole's name on purpose: the default boundary names the two with one `connector-secrets*` ARN, because the deployed
+ * (rovara-cloud/<env>/org-test-accounts/<org>/...). It starts with the ConnectorSecretsRole's name on purpose: the default boundary names the two with one `connector-secrets*` ARN, because the deployed
  * boundary has no room for another ARN (its size test keeps 150 characters free). The boundary is only a ceiling; the role's own policies and the broker's exact grant are what allow anything.
  */
 export function testAccountSecretsRoleName(env: string): string {
@@ -329,11 +330,11 @@ export function testAccountSecretsRoleName(env: string): string {
  * environment's path like every other, so a fixed-name role needs its path-less ARN in the deploy role's lookup grant where that list exists.
  */
 export function chainScheduleRoleName(env: string): string {
-  return `agentx-${env}-chain-schedule`;
+  return `${RESOURCE_PREFIX}-${env}-chain-schedule`;
 }
 
 export function chainScheduleQueueName(env: string): string {
-  return `agentx-${env}-chain-schedule-dead-letters`;
+  return `${RESOURCE_PREFIX}-${env}-chain-schedule-dead-letters`;
 }
 
 /**
@@ -341,17 +342,17 @@ export function chainScheduleQueueName(env: string): string {
  * them exactly (CloudFormation's generated names are cut short and carry a hash, which no ArnLike can name). Longest, for a 20-character environment: 46 characters.
  */
 export function brokerRoleName(env: string): string {
-  return `agentx-${env}-broker-role`;
+  return `${RESOURCE_PREFIX}-${env}-broker-role`;
 }
 
 /** The model proxy's ECS task role: its Bedrock sources assume a company's role (Plan 3). */
 export function modelProxyTaskRoleName(env: string): string {
-  return `agentx-${env}-model-proxy-task`;
+  return `${RESOURCE_PREFIX}-${env}-model-proxy-task`;
 }
 
 /** The model access function's role, which runs the Bedrock source probe (Plan 3). */
 export function modelAccessProbeRoleName(env: string): string {
-  return `agentx-${env}-model-access-probe`;
+  return `${RESOURCE_PREFIX}-${env}-model-access-probe`;
 }
 
 /** An AWS Organizations id: `o-` and 10 to 32 lowercase letters or digits. */
@@ -361,7 +362,7 @@ export const ORGANIZATION_ID_PATTERN = /^o-[a-z0-9]{10,32}$/;
  * The one environment where the control plane builds the Task Person proof role (infra/lib/task-person-proof.ts), by a fixed name.
  * Named here so the deploy role can name the role too.
  */
-export const TASK_PERSON_PROOF_ENV = "agentxlivetest123";
+export const TASK_PERSON_PROOF_ENV = "rovaralivetest";
 
 /** The Task Person proof role's fixed name (see TASK_PERSON_PROOF_ENV). */
 export function taskPersonProofRoleName(env: string): string {
@@ -384,7 +385,7 @@ export function fixedNameEnvironmentRoleNames(env: string): string[] {
 /**
  * Reads and deletes that IAM authorizes against a role's path-less ARN while the role does not exist: CloudFormation looks a
  * fixed-name role up by name before creating it (iam:GetRole), and cleans it up by name when a create rolls back, and IAM,
- * which cannot know the path of a missing role, checks role/<name>, not role/agentx/<env>/<name>. No create or change action
+ * which cannot know the path of a missing role, checks role/<name>, not role/rovara-cloud/<env>/<name>. No create or change action
  * is here, so a role at the root path can never be made; the real role is created under the environment path, where the
  * ordinary IamRoles statement applies.
  */
@@ -417,7 +418,7 @@ function fixedNameRoleLookupStatement(scope: Pick<PolicyScope, "env" | "partitio
 
 /** The name of the default permission boundary the access stack creates when the company gives none. */
 export function defaultBoundaryName(env: string): string {
-  return `agentx-${env}-boundary`;
+  return `${RESOURCE_PREFIX}-${env}-boundary`;
 }
 
 /**
@@ -431,7 +432,7 @@ export function defaultBoundaryArn(scope: Pick<PolicyScope, "env" | "partition" 
 /**
  * Role ARNs this environment's stacks may create and manage: every role under the environment's
  * IAM path. A path, not a name prefix, because CloudFormation truncates generated role names (a
- * long environment name loses the agentx-<env>- prefix) and agentx-prod-* would also match the
+ * long environment name loses the rovara-cloud-<env>- prefix) and agentx-prod-* would also match the
  * roles of an environment named prod-eu.
  */
 function environmentRoles(scope: Pick<PolicyScope, "env" | "partition" | "account">): string {
@@ -440,7 +441,7 @@ function environmentRoles(scope: Pick<PolicyScope, "env" | "partition" | "accoun
 
 /**
  * Roles of this environment that must sit at the root path: ECR's CustomRoleArn pattern (^arn:aws[-a-z0-9]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,-.@_]*$)
- * has no room for a path, so the saved environment images' creation role (named in the creation template) cannot live under /agentx/<env>/.
+ * has no room for a path, so the saved environment images' creation role (named in the creation template) cannot live under /rovara-cloud/<env>/.
  * Each is granted the same role actions as the roles under the path, on its one exact ARN, with the boundary required as for the rest.
  */
 function rootPathRoles(scope: Pick<PolicyScope, "env" | "partition" | "account">): string[] {
@@ -507,7 +508,7 @@ export function serviceRoleStatements(scope: PolicyScope): PolicyStatementJson[]
     cognitoEmailServiceLinkedRole(scope.partition, scope.account),
     ecrTemplateServiceLinkedRole(scope.partition, scope.account),
     // FR-047: the control-plane stack's monthly budget, and only that one, never budgets:* on *.
-    { Sid: "Budget", Effect: "Allow", Action: [...BUDGET_ACTIONS], Resource: `arn:${scope.partition}:budgets::${scope.account}:budget/agentx-${scope.env}-monthly` },
+    { Sid: "Budget", Effect: "Allow", Action: [...BUDGET_ACTIONS], Resource: `arn:${scope.partition}:budgets::${scope.account}:budget/${RESOURCE_PREFIX}-${scope.env}-monthly` },
   ];
 }
 
@@ -627,7 +628,7 @@ export function defaultBoundaryStatements(scope: Pick<PolicyScope, "env" | "part
 /** The inline policy of the role an operator assumes to run `agentx` against this environment. */
 export function operatorRoleStatements(scope: PolicyScope): PolicyStatementJson[] {
   const { partition, region, account, env } = scope;
-  // Exact stack names, never a wildcard prefix: agentx-<env>-* would also match another
+  // Exact stack names, never a wildcard prefix: rovara-cloud-<env>-* would also match another
   // environment's stacks (agentx-prod-* matches prod-eu) and the access stack itself.
   const stackArn = (part: (typeof STACK_PARTS)[number]) =>
     `arn:${partition}:cloudformation:${region}:${account}:stack/${environmentStackName(env, part)}/*`;
@@ -683,8 +684,8 @@ export function operatorRoleStatements(scope: PolicyScope): PolicyStatementJson[
       Effect: "Allow",
       Action: ["ssm:GetParameter", "ssm:PutParameter", "ssm:DeleteParameter", "ssm:GetParametersByPath"],
       Resource: [
-        `arn:${partition}:ssm:${region}:${account}:parameter/agentx/${env}`,
-        `arn:${partition}:ssm:${region}:${account}:parameter/agentx/${env}/*`,
+        `arn:${partition}:ssm:${region}:${account}:parameter/${RESOURCE_PREFIX}/${env}`,
+        `arn:${partition}:ssm:${region}:${account}:parameter/${RESOURCE_PREFIX}/${env}/*`,
       ],
     },
     {
@@ -697,7 +698,7 @@ export function operatorRoleStatements(scope: PolicyScope): PolicyStatementJson[
         "secretsmanager:GetSecretValue",
         "secretsmanager:TagResource",
       ],
-      Resource: `arn:${partition}:secretsmanager:${region}:${account}:secret:agentx/${env}/*`,
+      Resource: `arn:${partition}:secretsmanager:${region}:${account}:secret:${RESOURCE_PREFIX}/${env}/*`,
     },
     {
       Sid: "Images",
@@ -716,21 +717,21 @@ export function operatorRoleStatements(scope: PolicyScope): PolicyStatementJson[
       ],
     },
     {
-      // FR-018 step 7: the admin user. The identity stack's user pool carries agentx:env (15a's
+      // FR-018 step 7: the admin user. The identity stack's user pool carries rovara-cloud:env (15a's
       // Tags.of(app)); an exact tag value cannot match another environment. AdminListGroupsForUser
       // tells whether an existing user is already an administrator before init promotes it.
       Sid: "AdminUser",
       Effect: "Allow",
       Action: ["cognito-idp:AdminGetUser", "cognito-idp:AdminCreateUser", "cognito-idp:AdminAddUserToGroup", "cognito-idp:AdminListGroupsForUser"],
       Resource: `arn:${partition}:cognito-idp:${region}:${account}:userpool/*`,
-      Condition: { StringEquals: { "aws:ResourceTag/agentx:env": env } },
+      Condition: { StringEquals: { "aws:ResourceTag/rovara-cloud:env": env } },
     },
     {
       // FR-045: read the alert topic. No Publish: the test alarm goes through CloudWatch.
       Sid: "Alerts",
       Effect: "Allow",
       Action: ["sns:ListSubscriptionsByTopic"],
-      Resource: `arn:${partition}:sns:${region}:${account}:agentx-${env}-alerts`,
+      Resource: `arn:${partition}:sns:${region}:${account}:${RESOURCE_PREFIX}-${env}-alerts`,
     },
     {
       // FR-045: subscribe the alert address, but only email (the operator) or https (the alert
@@ -741,7 +742,7 @@ export function operatorRoleStatements(scope: PolicyScope): PolicyStatementJson[
       Sid: "AlertsSubscribe",
       Effect: "Allow",
       Action: ["sns:Subscribe"],
-      Resource: `arn:${partition}:sns:${region}:${account}:agentx-${env}-alerts`,
+      Resource: `arn:${partition}:sns:${region}:${account}:${RESOURCE_PREFIX}-${env}-alerts`,
       Condition: { StringEquals: { "sns:Protocol": ["email", "https"] } },
     },
     {
@@ -749,10 +750,10 @@ export function operatorRoleStatements(scope: PolicyScope): PolicyStatementJson[
       Sid: "TestAlarm",
       Effect: "Allow",
       Action: ["cloudwatch:SetAlarmState", "cloudwatch:DescribeAlarmHistory"],
-      Resource: `arn:${partition}:cloudwatch:${region}:${account}:alarm:agentx-${env}-TestAlarm`,
+      Resource: `arn:${partition}:cloudwatch:${region}:${account}:alarm:${RESOURCE_PREFIX}-${env}-TestAlarm`,
     },
     // FR-047: the alerts step checks the budget CloudFormation made; it never changes it.
-    { Sid: "Budget", Effect: "Allow", Action: ["budgets:ViewBudget"], Resource: `arn:${partition}:budgets::${account}:budget/agentx-${env}-monthly` },
+    { Sid: "Budget", Effect: "Allow", Action: ["budgets:ViewBudget"], Resource: `arn:${partition}:budgets::${account}:budget/${RESOURCE_PREFIX}-${env}-monthly` },
     // prerequisites.ts checks two EC2 quotas on an operator resume: standard vCPUs (ServiceCode
     // "ec2", QuotaCode "L-1216C47A") and EC2-VPC Elastic IPs ("L-0263D0A3"). The servicequotas
     // "quota" resource type's ARN format is

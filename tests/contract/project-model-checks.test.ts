@@ -56,7 +56,7 @@ function checker(answers: Record<string, ModelCheckResult>) {
 
 function services(check: ProjectModelChecker | undefined) {
   const plane = fakeControlPlane();
-  return { plane, services: { fetch: plane.fetch, configDir, stackOutputs: async (name: string) => (name === "agentx-staging-foundation" ? FOUNDATION : undefined), ...(check === undefined ? {} : { modelCheck: check, now: () => Date.parse(NOW) }) } };
+  return { plane, services: { fetch: plane.fetch, configDir, stackOutputs: async (name: string) => (name === "rovara-cloud-staging-foundation" ? FOUNDATION : undefined), ...(check === undefined ? {} : { modelCheck: check, now: () => Date.parse(NOW) }) } };
 }
 
 describe("project models are checked when a revision is registered", () => {
@@ -270,7 +270,7 @@ describe("@agentx use warns for a pair whose last check failed", () => {
   it("switches, and adds the class sentence when the stored check failed", async () => {
     const [post] = await use({ status: "failed", class: "model-not-found", checkedAt: NOW });
     expect(post).toContain("now uses Opus");
-    expect(post).toContain("The last check of this model failed: Anthropic does not have claude-opus-5 for this account; check the model id, or choose another model. Its next turn may fail; ask a project admin to run agentx doctor.");
+    expect(post).toContain("The last check of this model failed: Anthropic does not have claude-opus-5 for this account; check the model id, or choose another model. Its next turn may fail; ask a project admin to run rovara doctor.");
   });
 
   it("says nothing extra when the check passed or never ran", async () => {

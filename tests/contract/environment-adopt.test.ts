@@ -32,7 +32,7 @@ async function run(stacks = liveStacks, store = new MemoryParameterStore()) {
   return { store, home, result: adoptEnvironment({ env: "production", region: "us-east-1", stacks: reader(stacks), identity, store, home, now }) };
 }
 
-describe("agentx env adopt", () => {
+describe("rovara env adopt", () => {
   it("preserves deployed provider defaults and OpenRouter references in saved settings", async () => {
     const stacks = structuredClone(liveStacks);
     const secretArn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:openrouter-AbCdEf";
@@ -45,8 +45,8 @@ describe("agentx env adopt", () => {
   });
   it("adopts Anthropic and OpenAI secret references, and refuses stacks that disagree on one (spec 054)", async () => {
     const stacks = structuredClone(liveStacks);
-    const anthropic = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/production/anthropic-AbCdEf";
-    const openai = "arn:aws:secretsmanager:us-east-1:123456789012:secret:agentx/production/openai-AbCdEf";
+    const anthropic = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/production/anthropic-AbCdEf";
+    const openai = "arn:aws:secretsmanager:us-east-1:123456789012:secret:rovara-cloud/production/openai-AbCdEf";
     Object.assign(stacks.AgentXSlackOrchestrator!.parameters, { ModelProvider: "anthropic", AnthropicSecretArn: anthropic, OpenAISecretArn: "" });
     Object.assign(stacks.AgentXProductionRuntime!.parameters, { ModelProvider: "openai", AnthropicSecretArn: anthropic, OpenAISecretArn: openai });
     const settings = await (await run(stacks)).result;
@@ -80,22 +80,22 @@ describe("agentx env adopt", () => {
       updatedAt: "2026-09-26T00:00:00.000Z",
     });
     expect(await readEnvironmentSettings(store, "production")).toEqual(settings);
-    expect(store.values.has("/agentx/production/lock")).toBe(false);
-    expect(store.calls.every((call) => call.name.startsWith("/agentx/production/"))).toBe(true);
+    expect(store.values.has("/rovara-cloud/production/lock")).toBe(false);
+    expect(store.calls.every((call) => call.name.startsWith("/rovara-cloud/production/"))).toBe(true);
   });
 
   it("refuses and writes nothing when a stack is missing", async () => {
     const rest: typeof liveStacks = Object.fromEntries(Object.entries(liveStacks).filter(([name]) => name !== "AgentXSlackOrchestrator"));
     const { store, result } = await run(rest);
     await expect(result).rejects.toMatchObject({ code: "CONFIG_INVALID", message: expect.stringContaining("AgentXSlackOrchestrator") as unknown });
-    expect(store.values.has("/agentx/production/settings")).toBe(false);
+    expect(store.values.has("/rovara-cloud/production/settings")).toBe(false);
   });
 
   it("refuses and writes nothing when an output is missing", async () => {
     const stacks = { ...liveStacks, AgentXControlPlane: { ...liveStacks.AgentXControlPlane!, outputs: {} } };
     const { store, result } = await run(stacks);
     await expect(result).rejects.toMatchObject({ message: expect.stringContaining("ApiEndpoint") as unknown });
-    expect(store.values.has("/agentx/production/settings")).toBe(false);
+    expect(store.values.has("/rovara-cloud/production/settings")).toBe(false);
   });
 
   it("refuses a stack in a failed state", async () => {
@@ -132,14 +132,14 @@ describe("agentx env adopt", () => {
   it("refuses an environment that already has settings, changing nothing", async () => {
     const store = new MemoryParameterStore();
     await (await run(liveStacks, store)).result;
-    const before = store.values.get("/agentx/production/settings");
+    const before = store.values.get("/rovara-cloud/production/settings");
     await expect((await run(liveStacks, store)).result).rejects.toMatchObject({ message: expect.stringContaining("already has settings") as unknown });
-    expect(store.values.get("/agentx/production/settings")).toBe(before);
+    expect(store.values.get("/rovara-cloud/production/settings")).toBe(before);
   });
 
   it("closes the check-then-write race: settings written between the check and the createOnly write are not overwritten", async () => {
     const inner = new MemoryParameterStore();
-    const settingsName = "/agentx/production/settings";
+    const settingsName = "/rovara-cloud/production/settings";
     let raced = false;
     // A store whose get() simulates another process writing settings in the instant after we read
     // them as absent, before our own createOnly write lands.
@@ -189,7 +189,7 @@ describe("agentx env adopt", () => {
     expect(error.message).not.toContain("confirm to take it over");
     expect(error.message).toContain(lockParameterName("production"));
     expect(error.message).toMatch(/no AgentX command is running/);
-    expect(store.values.has("/agentx/production/settings")).toBe(false);
+    expect(store.values.has("/rovara-cloud/production/settings")).toBe(false);
   });
 
   it("marks a non-Cognito issuer as oidc and uses --client-id", async () => {
@@ -200,13 +200,13 @@ describe("agentx env adopt", () => {
   });
 });
 
-describe("agentx env adopt and the Slack team ID", () => {
+describe("rovara env adopt and the Slack team ID", () => {
   it("never records a Slack team ID: the adopted deployment keeps the legacy names, which sign-in refuses", async () => {
     const withSecret = { ...liveStacks, AgentXControlPlane: { ...liveStacks.AgentXControlPlane!, outputs: { ...liveStacks.AgentXControlPlane!.outputs, SlackSecretArn: "arn:aws:secretsmanager:us-east-1:944937319445:secret:SlackSecret-AbCdEf" } } };
     const store = new MemoryParameterStore();
     const home = await mkdtemp(join(tmpdir(), "agentx-adopt-"));
     const settings = await adoptEnvironment({ env: "production", region: "us-east-1", stacks: reader(withSecret), identity, store, home, now });
     expect(settings.naming).toBe("legacy");
-    expect(store.values.has("/agentx/production/slack/teamId")).toBe(false);
+    expect(store.values.has("/rovara-cloud/production/slack/teamId")).toBe(false);
   });
 });

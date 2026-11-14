@@ -232,10 +232,10 @@ function toClient(redirectUri: string, params: Record<string, string>): HttpResu
   return redirect(url.toString());
 }
 
-const expired = () => page(400, "This sign-in link has expired", ["Run agentx login again."]);
+const expired = () => page(400, "This sign-in link has expired", ["Run rovara login again."]);
 /** One answer for every code failure (unknown, used, expired, wrong verifier, wrong redirect URI). */
-const INVALID_CODE = ["invalid_grant", "the sign-in code is invalid, used or expired; run agentx login again"] as const;
-const SIGN_IN_ENDED = ["invalid_grant", "your AgentX sign-in has ended; run agentx login again"] as const;
+const INVALID_CODE = ["invalid_grant", "the sign-in code is invalid, used or expired; run rovara login again"] as const;
+const SIGN_IN_ENDED = ["invalid_grant", "your AgentX sign-in has ended; run rovara login again"] as const;
 
 export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependencies) {
   const { config, store } = deps;
@@ -287,10 +287,10 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (requestId !== null) {
       const chosen = query.get("method");
       const method = methods.find((enabled) => enabled === chosen);
-      if (method === undefined) return page(400, "Sign-in method not available", ["Run agentx login again."]);
+      if (method === undefined) return page(400, "Sign-in method not available", ["Run rovara login again."]);
       // A request that adds a removed sign-in method back is for that one method, whatever the link in the browser says.
       const pending = await store.getAuthRequest(requestId);
-      if (pending?.linkMethod !== undefined && pending.linkMethod !== method) return page(400, "Sign-in method not available", ["This link is for a different sign-in method. Run agentx signin link again."]);
+      if (pending?.linkMethod !== undefined && pending.linkMethod !== method) return page(400, "Sign-in method not available", ["This link is for a different sign-in method. Run rovara signin link again."]);
       const request = await store.chooseMethod(requestId, method);
       if (request === undefined) return expired();
       if (request.purpose === "join") return joinToProvider(request.id, request.nonce, method);
@@ -304,19 +304,19 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     const redirectUri = query.get("redirect_uri") ?? "";
     if (query.get("client_id") !== AGENTX_CLI_CLIENT_ID || !isLoopbackRedirectUri(redirectUri)) {
-      return page(400, "This sign-in link is not from the AgentX CLI", ["Start signing in from your terminal with agentx login <url>."]);
+      return page(400, "This sign-in link is not from the AgentX CLI", ["Start signing in from your terminal with rovara login <url>."]);
     }
     const clientState = query.get("state") ?? "";
     const challenge = query.get("code_challenge") ?? "";
     const invalid = (description: string) => toClient(redirectUri, { error: "invalid_request", error_description: description, ...(clientState === "" ? {} : { state: clientState }) });
-    if (query.get("response_type") !== "code") return invalid("response_type must be code; update the AgentX CLI and run agentx login again");
-    if (query.get("code_challenge_method") !== "S256" || !CHALLENGE.test(challenge)) return invalid("PKCE with S256 is required; update the AgentX CLI and run agentx login again");
-    if (clientState.length < 1 || clientState.length > 512) return invalid("state is required; update the AgentX CLI and run agentx login again");
+    if (query.get("response_type") !== "code") return invalid("response_type must be code; update the AgentX CLI and run rovara login again");
+    if (query.get("code_challenge_method") !== "S256" || !CHALLENGE.test(challenge)) return invalid("PKCE with S256 is required; update the AgentX CLI and run rovara login again");
+    if (clientState.length < 1 || clientState.length > 512) return invalid("state is required; update the AgentX CLI and run rovara login again");
     // An invite link's token rides the sign-in to its end; the token is never logged, and a malformed one is refused now.
     const invite = query.get("invite");
     if (invite !== null && !INVITE_TOKEN_PATTERN.test(invite)) return invalid("invite is not a valid invite token; ask for a new invite link");
     if (methods.length === 0) {
-      return toClient(redirectUri, { error: "access_denied", state: clientState, error_description: "developer sign-in is not enabled in this AgentX environment; ask an admin to run agentx signin enable slack" });
+      return toClient(redirectUri, { error: "access_denied", state: clientState, error_description: "developer sign-in is not enabled in this AgentX environment; ask an admin to run rovara signin enable slack" });
     }
     // Plan 2, Task 8b: the CLI's fresh sign-in for removing a method leaves that method out of the choices (the server refuses it as proof anyway).
     const excluded = query.get("exclude_method");
@@ -408,7 +408,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   }
 
   /**
-   * The JSON form of the join page, for `agentx login --invite` (Plan 2, Task 6), which shows the person what they are about to join before
+   * The JSON form of the join page, for `rovara login --invite` (Plan 2, Task 6), which shows the person what they are about to join before
    * a browser opens. It says no more than the HTML page: the organization and role of an open invite, and only the state of any other
    * (no inviter, no address, not even masked, and no token). Reads only, like the page.
    */
@@ -514,7 +514,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
    * waits out its timeout behind a 500 page. Only the error's name and, for an AgentXError, its code are logged: never its message. */
   function serverError(error: unknown, path: string, clientRedirect: string, clientState: string): HttpResult {
     deps.log({ event: "signin.error", path, error: errorName(error), ...errorCode(error) });
-    return toClient(clientRedirect, { error: "server_error", error_description: "sign-in failed on the AgentX server; run agentx login again", state: clientState });
+    return toClient(clientRedirect, { error: "server_error", error_description: "sign-in failed on the AgentX server; run rovara login again", state: clientState });
   }
 
   async function toProvider(requestId: string, nonce: string, method: DeveloperSignInMethod, clientRedirect: string, clientState: string, fresh = false): Promise<HttpResult> {
@@ -528,7 +528,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   function providerFailure(error: unknown, method: DeveloperSignInMethod, clientRedirect: string, clientState: string): HttpResult {
     if (error instanceof ProviderUnavailableError) {
       deps.log({ event: "signin.provider_unavailable", method });
-      return toClient(clientRedirect, { error: "temporarily_unavailable", state: clientState, error_description: `${methodLabel(method)} could not be reached; run agentx login again in a minute` });
+      return toClient(clientRedirect, { error: "temporarily_unavailable", state: clientState, error_description: `${methodLabel(method)} could not be reached; run rovara login again in a minute` });
     }
     if (error instanceof ProviderNotConfiguredError) {
       // These messages are written by the providers and the Lambda entry, never copied from a
@@ -603,7 +603,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (pending === undefined || pending.method !== method) return expired();
     // Single use: the state (and with it the nonce) is consumed before anything else happens.
     const request = await store.consumeAuthRequest(state, method);
-    if (request === undefined) return page(400, "This sign-in link was already used", ["Run agentx login again."]);
+    if (request === undefined) return page(400, "This sign-in link was already used", ["Run rovara login again."]);
     if (request.purpose === "join") return joinCallback(method, request, query.get("code"), headers);
     if (request.purpose === "decide_identify" && decideFlow !== undefined) {
       try {
@@ -683,7 +683,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     if (request.browserReturnTo !== undefined && !BROWSER_RETURN_TO.test(request.browserReturnTo)) return page(400, "Invalid review link", ["Open the review from Slack and sign in again."]);
     if (code === null && join) return page(400, "Sign-in was cancelled", ["Open the invite link again to try again."]);
     if (code === null) return request.browserReturnTo === undefined
-      ? client({ error: "access_denied", error_description: `the sign-in was cancelled at ${methodLabel(method)}; run agentx login again` })
+      ? client({ error: "access_denied", error_description: `the sign-in was cancelled at ${methodLabel(method)}; run rovara login again` })
       : browserReturn(request.browserReturnTo, false, undefined, "cancelled");
     let result: ProviderResult;
     try {
@@ -779,7 +779,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       if (isCode(error, "CONFIG_INVALID") && refusalWords(error) === NO_ORG_ON_INSTALL_MESSAGE) {
         deps.log({ event: "signin.refused", method, reason: "no_org_on_install", developerId });
         if (request.browserReturnTo !== undefined) return browserReturn(request.browserReturnTo, false);
-        return client({ error: "access_denied", error_description: `${NO_ORG_ON_INSTALL_MESSAGE}; run agentx login again and choose Sign in with Rovara` });
+        return client({ error: "access_denied", error_description: `${NO_ORG_ON_INSTALL_MESSAGE}; run rovara login again and choose Sign in with Rovara` });
       }
       // A removed member (single-org ban) is told so, not shown an internal error.
       if ((error as { code?: unknown } | null)?.code !== "REMOVED_FROM_ORG") throw error;
@@ -856,7 +856,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
    */
   async function linkCallback(method: DeveloperSignInMethod, request: AuthRequestRecord, code: string | null): Promise<HttpResult> {
     const developerId = request.linkDeveloperId!;
-    const again = `Run agentx signin link ${method} again.`;
+    const again = `Run rovara signin link ${method} again.`;
     if (request.linkSessionId === undefined || request.linkMethod !== method) return page(400, "This link is not valid", [again]);
     if (code === null) return page(400, "Sign-in was cancelled", ["Nothing was added.", again]);
     let result: ProviderResult;
@@ -952,7 +952,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
   async function authorizationCodeGrant(form: URLSearchParams, methods: DeveloperSignInMethod[]): Promise<HttpResult> {
     const redeemed = await store.redeemCode({ code: form.get("code") ?? "", verifier: form.get("code_verifier") ?? "", redirectUri: form.get("redirect_uri") ?? "" });
     if (redeemed === undefined) return oauthError(400, ...INVALID_CODE);
-    if (!methods.includes(redeemed.amr)) return oauthError(400, "invalid_grant", `${methodLabel(redeemed.amr)} sign-in was turned off in this environment; run agentx login again`);
+    if (!methods.includes(redeemed.amr)) return oauthError(400, "invalid_grant", `${methodLabel(redeemed.amr)} sign-in was turned off in this environment; run rovara login again`);
     const developer = await store.getDeveloper(redeemed.developerId);
     if (developer === undefined || developer.revoked) return oauthError(400, "invalid_grant", "your AgentX sign-in was turned off by an admin; contact an admin");
     // A code issued just before the person unlinked its identity must not start a session afterwards.
@@ -966,7 +966,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
         deps.log({ event: "signin.saml_config_unreadable", error: errorName(error) });
       }
       if (samlSessionEnded({ startedAt: new Date(deps.now()).toISOString(), ...(redeemed.authTime === undefined ? {} : { authTime: redeemed.authTime }) }, validFrom)) {
-        return oauthError(400, "invalid_grant", "your sign-in ended when SAML single sign-on was changed; sign in again with agentx login");
+        return oauthError(400, "invalid_grant", "your sign-in ended when SAML single sign-on was changed; sign in again with rovara login");
       }
     }
     // The edition's sign-in cap (Enterprise foundations I1) rides on the code: the session ends then, and a refresh never moves it.
@@ -977,7 +977,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     const access = await accessToken(session);
     if (access === undefined) {
       await revoke(session.sessionId, "no_org");
-      return oauthError(400, "invalid_grant", "your AgentX sign-in belongs to no organization; run agentx login again");
+      return oauthError(400, "invalid_grant", "your AgentX sign-in belongs to no organization; run rovara login again");
     }
     return tokens(access, refreshToken);
   }
@@ -999,11 +999,11 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     if (!methods.includes(session.amr)) {
       await revoke(session.sessionId, "method_disabled");
-      return oauthError(400, "invalid_grant", `${methodLabel(session.amr)} sign-in was turned off in this environment; sign in another way with agentx login`);
+      return oauthError(400, "invalid_grant", `${methodLabel(session.amr)} sign-in was turned off in this environment; sign in another way with rovara login`);
     }
     if (startedBeforeMethodOn(session.startedAt, session.amr === "slack" ? config.slack.since : session.amr === "oidc" ? config.oidc?.since : undefined)) {
       await revoke(session.sessionId, "method_disabled");
-      return oauthError(400, "invalid_grant", `your sign-in ended when ${methodLabel(session.amr)} was turned off; sign in again with agentx login`);
+      return oauthError(400, "invalid_grant", `your sign-in ended when ${methodLabel(session.amr)} was turned off; sign in again with rovara login`);
     }
     // SAML is switched off, or its certificate rotated, by the saved settings, not by the environment: their cutoff ends the sessions that started before it (review S3).
     if (session.amr === "saml") {
@@ -1015,7 +1015,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       }
       if (samlSessionEnded(session, validFrom)) {
         await revoke(session.sessionId, "method_disabled");
-        return oauthError(400, "invalid_grant", "your sign-in ended when SAML single sign-on was changed; sign in again with agentx login");
+        return oauthError(400, "invalid_grant", "your sign-in ended when SAML single sign-on was changed; sign in again with rovara login");
       }
     }
     const developer = await store.getDeveloper(session.developerId);
@@ -1025,11 +1025,11 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
     }
     if (endedByAdmin(session.startedAt, developer.sessionsEndedAt)) {
       await revoke(session.sessionId, "ended_by_admin");
-      return oauthError(400, "invalid_grant", "an AgentX admin ended your sign-in; sign in again with agentx login");
+      return oauthError(400, "invalid_grant", "an AgentX admin ended your sign-in; sign in again with rovara login");
     }
     if (endedByUnlink(session, developer)) {
       await revoke(session.sessionId, "identity_unlinked");
-      return oauthError(400, "invalid_grant", "this sign-in method was removed from your account; sign in again with agentx login");
+      return oauthError(400, "invalid_grant", "this sign-in method was removed from your account; sign in again with rovara login");
     }
     if (session.amr === "slack" && session.slackUserId !== undefined) {
       const status = await deps.directory.userStatus(session.slackUserId);
@@ -1330,7 +1330,7 @@ export function createDeveloperIdentityHandler(deps: DeveloperIdentityDependenci
       // Only the error's name: a KMS or AWS message can carry a key ARN or other detail.
       deps.log({ event: "signin.error", path: url.pathname, error: errorName(error) });
       const response = isPage(url.pathname)
-        ? page(500, "Sign-in failed", ["Something went wrong on the AgentX server. Run agentx login again."])
+        ? page(500, "Sign-in failed", ["Something went wrong on the AgentX server. Run rovara login again."])
         : oauthError(500, "server_error", "sign-in failed on the server; try again");
       return url.pathname.startsWith("/v1/auth/decide/") ? withDecideIsolation(response) : response;
     }

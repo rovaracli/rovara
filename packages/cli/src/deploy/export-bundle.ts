@@ -6,7 +6,7 @@
 // can be reviewed as plain JSON). Every part's template and parameters are included, in install
 // order, so the bundle also documents the full deploy — even though only the access stack's is
 // meant to be run directly here; every later stack is deployed by the AgentX operator through the
-// service role the access stack creates (`agentx init --resume --from-bundle <this directory>`,
+// service role the access stack creates (`rovara init --resume --from-bundle <this directory>`,
 // which reads the answers the export knew from `init-answers.json`).
 import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
@@ -24,6 +24,8 @@ import {
   serviceRoleStatements,
   type PolicyScope,
   type PolicyStatementJson,
+  RESOURCE_PREFIX,
+  ENVIRONMENT_TAG_KEY,
 } from "@agentx/contracts";
 import type { InitAnswers } from "../init/install-state.js";
 import { ACCOUNT_PATTERN, IdentityAnswersSchema, ModelsAnswersSchema, REGION_PATTERN } from "./answer-schemas.js";
@@ -42,7 +44,7 @@ export interface ExportBundleInput {
 }
 
 /** The answers an export knows, written to `init-answers.json` so the AgentX operator's
- * `agentx init --resume --from-bundle` asks only the rest (alerts, budget, GitHub, Slack). Answers
+ * `rovara init --resume --from-bundle` asks only the rest (alerts, budget, GitHub, Slack). Answers
  * only, never a secret: the same fields `InitAnswers` holds, which never holds one either. */
 export type BundleAnswers = Pick<InitAnswers, "schemaVersion" | "env" | "region" | "account" | "engine" | "releaseVersion" | "identity" | "models" | "permissionsBoundaryArn" | "operatorPrincipalArn">;
 
@@ -94,7 +96,7 @@ export async function readBundleAnswers(dir: string): Promise<BundleAnswers> {
   try {
     json = JSON.parse(await readFile(join(dir, BUNDLE_ANSWERS_FILE), "utf8"));
   } catch {
-    throw agentXError("CONFIG_INVALID", `${dir} has no readable ${BUNDLE_ANSWERS_FILE}; pass the bundle agentx init --export wrote`);
+    throw agentXError("CONFIG_INVALID", `${dir} has no readable ${BUNDLE_ANSWERS_FILE}; pass the bundle rovara init --export wrote`);
   }
   const parsed = BundleAnswersSchema.safeParse(json);
   if (!parsed.success) throw invalidBundleAnswers(`${dir}/${BUNDLE_ANSWERS_FILE}`, parsed.error.issues);
@@ -351,7 +353,7 @@ function accessDeployerStatements(scope: { env: string; partition: string; regio
  * y/N confirmation before executing (skipped with `--yes`) and recovery guidance on failure.
  *
  * The change set name follows the same pinned format the templates deploy engine uses
- * (templates-engine.ts, `agentx-<version with . replaced by ->-<unix seconds>`), baked in from the
+ * (templates-engine.ts, `rovara-cloud-<version with . replaced by ->-<unix seconds>`), baked in from the
  * release version at export time.
  *
  * Never executes unattended: with no `--yes`, a declined prompt or no terminal to prompt on at all
@@ -365,7 +367,7 @@ function accessDeployerStatements(scope: { env: string; partition: string; regio
 /** The command the AgentX operator runs once the access stack exists: it deploys every later part,
  * never access itself (the operator role is denied change sets on the access stack). */
 function operatorResumeCommand(env: string, region: string): string {
-  return `agentx init --resume --env ${env} --region ${region} --from-bundle <this directory>`;
+  return `rovara init --resume --env ${env} --region ${region} --from-bundle <this directory>`;
 }
 
 /** One wording for a failed or refused change set on a new stack, shared by the script and README. */
@@ -384,13 +386,13 @@ set -euo pipefail
 # through the CloudFormationServiceRole this stack creates, by running (see README.md):
 #   ${operatorResumeCommand(scope.env, region)}
 # The access stack takes no secret parameters, so this script never reads or prints one. It does
-# not create the callback signing key either: agentx deploy creates it on its first run.
+# not create the callback signing key either: rovara deploy creates it on its first run.
 #
 # Pass --yes to execute the change set without the interactive prompt. If a step fails, see
 # README.md's "If it fails" section; this script prints the reason and the exact recovery command.
 
 STACK_NAME="${stackName}"
-CHANGE_SET_NAME="agentx-${dashedVersion}-$(date +%s)"
+CHANGE_SET_NAME="${RESOURCE_PREFIX}-${dashedVersion}-$(date +%s)"
 YES=false
 if [ "\${1:-}" = "--yes" ]; then
   YES=true
@@ -527,14 +529,14 @@ pull-through cache rule, and the two IAM roles every later stack needs.
 
 ## What it creates
 
-- \`agentx-${env}-cloudformation\`: the role CloudFormation assumes to deploy every later AgentX
+- \`${RESOURCE_PREFIX}-${env}-cloudformation\`: the role CloudFormation assumes to deploy every later AgentX
   stack for this environment.
-- \`agentx-${env}-operator\`: the role an AgentX operator assumes to run \`agentx\` against this
+- \`${RESOURCE_PREFIX}-${env}-operator\`: the role an AgentX operator assumes to run \`rovara\` against this
   environment.
-- \`agentx-${env}-boundary\` (only when no permissions boundary ARN is given): the default
+- \`${RESOURCE_PREFIX}-${env}-boundary\` (only when no permissions boundary ARN is given): the default
   permission boundary applied to both roles above and every role the later stacks create.
 - An S3 bucket for release artifacts (templates and code packages) and an ECR pull-through cache
-  rule prefixed \`agentx-${env}\`.
+  rule prefixed \`${RESOURCE_PREFIX}-${env}\`.
 
 **Note:** \`ecr:CreatePullThroughCacheRule\` and \`ecr:DeletePullThroughCacheRule\` support no
 resource-level scoping in IAM, so \`policies/access-deployer.json\` grants them on every resource
@@ -567,8 +569,8 @@ executes unattended. It runs, in order:
 7. \`aws cloudformation update-termination-protection --enable-termination-protection\`
 
 The access stack takes no secret parameters; the script never reads or prints one.
-\`deploy-access.sh\` does not create the callback signing key (\`agentx/${env}/callback-signing-key\`)
-either. That is deliberate: \`agentx deploy\` creates it on its first run, in Secrets Manager only.
+\`deploy-access.sh\` does not create the callback signing key (\`${RESOURCE_PREFIX}/${env}/callback-signing-key\`)
+either. That is deliberate: \`rovara deploy\` creates it on its first run, in Secrets Manager only.
 
 ## If it fails
 
@@ -601,7 +603,7 @@ The AgentX operator then runs, with the operator role, from a machine with a bro
 ${operatorResumeCommand(env, region)}
 \`\`\`
 
-It deploys every other stack (${laterParts.join(", ")}) through the \`agentx-${env}-cloudformation\`
+It deploys every other stack (${laterParts.join(", ")}) through the \`${RESOURCE_PREFIX}-${env}-cloudformation\`
 role, creates the GitHub and Slack apps, the admin user, the first project and channel, and the
 alerts, and ends when AgentX answers in Slack.
 
@@ -612,8 +614,8 @@ lasts at least as long as the deploy (plan for about an hour).
 
 ## Tearing down an environment
 
-agentx --env ${env} destroy --region ${region} does all of this, in this order, with admin
-credentials; it asks you to type the environment's name first. If agentx destroy stops partway, run
+rovara --env ${env} destroy --region ${region} does all of this, in this order, with admin
+credentials; it asks you to type the environment's name first. If rovara destroy stops partway, run
 it again: it continues where it stopped. The steps below are the same work by hand.
 
 1. **Record what the stacks retain.** Stack deletion keeps some resources on purpose. Before you
@@ -635,17 +637,17 @@ it again: it continues where it stopped. The steps below are the same work by ha
 4. **Terminate the EC2 workers**, before the foundation stack below deletes. EC2 worker instances and
    volumes are launched by Step Functions, outside CloudFormation (the control plane's own state
    machines), so no stack delete removes them, and a worker instance still running in the worker security
-   group blocks the foundation stack's delete. The agentx:env tag keeps the workers of any other
+   group blocks the foundation stack's delete. The ${ENVIRONMENT_TAG_KEY} tag keeps the workers of any other
    deployment in this account out of the list, including the one that predates named environments,
    whose workers are also tagged Environment=production.
    \`\`\`
    aws ec2 describe-instances --region ${region} \\
-     --filters Name=tag:Environment,Values=${env} Name=tag:DeploymentMode,Values=ec2-ebs Name=tag:agentx:env,Values=${env} \\
+     --filters Name=tag:Environment,Values=${env} Name=tag:DeploymentMode,Values=ec2-ebs Name=tag:${ENVIRONMENT_TAG_KEY},Values=${env} \\
      --query "Reservations[].Instances[].InstanceId" --output text
    aws ec2 terminate-instances --instance-ids <ids> --region ${region}
    aws ec2 wait instance-terminated --instance-ids <ids> --region ${region}
    aws ec2 describe-volumes --region ${region} \\
-     --filters Name=tag:Environment,Values=${env} Name=tag:DeploymentMode,Values=ec2-ebs Name=tag:agentx:env,Values=${env} \\
+     --filters Name=tag:Environment,Values=${env} Name=tag:DeploymentMode,Values=ec2-ebs Name=tag:${ENVIRONMENT_TAG_KEY},Values=${env} \\
      --query "Volumes[].VolumeId" --output text
    aws ec2 delete-volume --volume-id <id> --region ${region}
    \`\`\`
@@ -681,20 +683,20 @@ it again: it continues where it stopped. The steps below are the same work by ha
      \`\`\`
      aws logs delete-log-group --log-group-name <name> --region ${region}
      \`\`\`
-   - **The KMS workspace key** (\`alias/agentx/${env}/workspaces\`): schedule its deletion (7 days is
+   - **The KMS workspace key** (\`alias/${RESOURCE_PREFIX}/${env}/workspaces\`): schedule its deletion (7 days is
      the minimum) and delete the alias.
      \`\`\`
      aws kms schedule-key-deletion --key-id <key id> --pending-window-in-days 7 --region ${region}
-     aws kms delete-alias --alias-name alias/agentx/${env}/workspaces --region ${region}
+     aws kms delete-alias --alias-name alias/${RESOURCE_PREFIX}/${env}/workspaces --region ${region}
      \`\`\`
-   - **Every secret under \`agentx/${env}/\`**: \`callback-signing-key\` (created by \`agentx deploy\`,
-     outside any stack), \`slack\`, and those \`agentx init\` stored (\`github-app\`, \`alert-endpoint\`,
+   - **Every secret under \`${RESOURCE_PREFIX}/${env}/\`**: \`callback-signing-key\` (created by \`rovara deploy\`,
+     outside any stack), \`slack\`, and those \`rovara init\` stored (\`github-app\`, \`alert-endpoint\`,
      \`openrouter\`, \`anthropic\`, \`openai\`, \`developer-oidc\`, \`connectors/...\`). List them, then delete each one without a
      recovery window, so the names can be reused by a new install:
      \`\`\`
-     aws secretsmanager list-secrets --region ${region} --filters Key=name,Values=agentx/${env}/ --query "SecretList[].Name" --output text
-     aws secretsmanager delete-secret --secret-id agentx/${env}/callback-signing-key --force-delete-without-recovery --region ${region}
-     aws secretsmanager delete-secret --secret-id agentx/${env}/slack --force-delete-without-recovery --region ${region}
+     aws secretsmanager list-secrets --region ${region} --filters Key=name,Values=${RESOURCE_PREFIX}/${env}/ --query "SecretList[].Name" --output text
+     aws secretsmanager delete-secret --secret-id ${RESOURCE_PREFIX}/${env}/callback-signing-key --force-delete-without-recovery --region ${region}
+     aws secretsmanager delete-secret --secret-id ${RESOURCE_PREFIX}/${env}/slack --force-delete-without-recovery --region ${region}
      \`\`\`
      (Repeat \`delete-secret\` for every other name the listing shows.)
 
@@ -718,7 +720,7 @@ whose deletion protection keeps it; its name is not unique, so it never blocks a
   region and partition.
 - \`policies/access-deployer.json\`: the policy for whoever runs \`deploy-access.sh\`.
 - \`init-answers.json\`: the answers this export knew, for the operator's
-  \`agentx init --resume --from-bundle\`. It holds no secret.
+  \`rovara init --resume --from-bundle\`. It holds no secret.
 `;
 }
 

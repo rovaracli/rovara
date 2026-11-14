@@ -8,7 +8,7 @@
 //     (an account with Inspector enhanced scanning would lose it), so it is opt-in. Instead the push role may start a basic scan of its one repository (`ecr:StartImageScan`) and the broker does so after each push (SH24);
 //   - three roles the broker assumes, each with a SESSION POLICY naming one repository (contracts `savedEnvPushSessionPolicy` and its two siblings): push, pull, and manage (delete). The roles' own
 //     policies reach `rovara-env/<env>/*`, so a session that carried no policy would still reach only this environment's images; the session narrows it to ONE project of ONE org;
-//   - the role ECR assumes to create a repository from the template (it holds `ecr:CreateRepository` and the grant on the key, nothing else). It has a FIXED name, `agentx-<env>-img-create`, so an Enterprise install
+//   - the role ECR assumes to create a repository from the template (it holds `ecr:CreateRepository` and the grant on the key, nothing else). It has a FIXED name, `rovara-cloud-<env>-img-create`, so an Enterprise install
 //     can name it in its own key policy;
 //   - the broker's right to assume the three roles, and nothing on the repositories itself.
 //
@@ -39,9 +39,10 @@ import {
   SAVED_ENV_MANAGE_ACTIONS,
   SAVED_ENV_PULL_ACTIONS,
   SAVED_ENV_PUSH_ACTIONS,
+  ENVIRONMENT_TAG_KEY,
 } from "@agentx/contracts";
 
-const KEEP_ON_ROLLBACK_METADATA = "agentx:retain-on-create-rollback";
+const KEEP_ON_ROLLBACK_METADATA = "rovara-cloud:retain-on-create-rollback";
 
 /** Called by the control plane for a named environment. Nothing here depends on a switch: with the feature off no repository is ever created. */
 export function attachSavedEnvImages(scope: Construct, props: SavedEnvImagesProps): SavedEnvImages {
@@ -191,7 +192,7 @@ export class SavedEnvImages extends Construct {
       lifecyclePolicy: JSON.stringify(savedEnvLifecyclePolicy(props.keep ?? SAVED_ENV_KEEP_DEFAULT)),
       repositoryPolicy: stack.toJsonString(policy),
       customRoleArn: this.createRole.roleArn,
-      resourceTags: [{ key: "agentx:env", value: env }, { key: "rovara:purpose", value: "saved-environment-image" }],
+      resourceTags: [{ key: ENVIRONMENT_TAG_KEY, value: env }, { key: "rovara:purpose", value: "saved-environment-image" }],
     });
     // The repository policy names the roles by ARN, and the template must not be created before they exist.
     this.template.node.addDependency(this.pushRole, this.pullRole, this.manageRole, this.createRole);

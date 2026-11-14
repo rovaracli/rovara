@@ -1,4 +1,4 @@
-// Spec 041: `agentx workspaces`. It reads the developer's projects and the workspaces in them from
+// Spec 041: `rovara workspaces`. It reads the developer's projects and the workspaces in them from
 // the control plane and shows them, on a page served from 127.0.0.1 or, with --no-ui, as text.
 import type { DeveloperWorkspacesResult } from "../developer/workspaces.js";
 import { workspaceState, workspacesText } from "../developer/workspaces.js";

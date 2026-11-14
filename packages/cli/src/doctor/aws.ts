@@ -1,4 +1,4 @@
-// agentx doctor's real services, built for the environment's own account and region. Every read here
+// rovara doctor's real services, built for the environment's own account and region. Every read here
 // is one the operator role already allows (day-two-actions.ts's DOCTOR_AWS_ACTIONS).
 import { BudgetsClient } from "@aws-sdk/client-budgets";
 import { CloudFormationClient, type DescribeStacksCommand, type DescribeStacksCommandOutput } from "@aws-sdk/client-cloudformation";

@@ -131,7 +131,7 @@ export function createSessionStepsHandler(dependencies: SessionStepsDependencies
         }
         // A named environment's stage 2 comes out of its worker image and is checked against the hash set beside that image.
         if (dependencies.modelProxyRequired && !settings.bootStage2Sha256) {
-          throw agentXError("RUNTIME_UNAVAILABLE", "this control plane has no boot hash for its worker image; run agentx upgrade");
+          throw agentXError("RUNTIME_UNAVAILABLE", "this control plane has no boot hash for its worker image; run rovara upgrade");
         }
         const userData = ec2WorkerUserData({
           workspaceId: step.workspaceId,
