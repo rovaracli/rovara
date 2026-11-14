@@ -2350,6 +2350,7 @@ export function createCliProgram(dependencies: CliDependencies = {}): Command {
     .option("--no-ui", "ask every question in the terminal")
     .option("--setup-table <name>", "the installer job in the cloud: ask every question on the setup page, through this DynamoDB table (needs --setup-url)")
     .option("--setup-url <url>", "the setup page's address, printed for the job's log (with --setup-table)")
+    .option("--setup-page-url <url>", "without --setup-table: the setup page a later rovara init --setup-table run finishes this install on; the identity stack allows its sign-in, and nothing is asked there by this run (the Rovara Cloud release pipeline)")
     .addOption(new Option("--identity <mode>", "identity provider").choices(["cognito", "oidc"]).default("cognito"))
     .option("--oidc-issuer <url>", "your OIDC provider's issuer URL (required with --identity oidc)")
     .option("--oidc-audience <audience>", "your OIDC provider's audience (required with --identity oidc)")
@@ -2686,7 +2687,7 @@ interface InitCommandOptions extends SignInCommandOptions {
   resume: boolean; yes: boolean; browser: boolean; fromBundle?: string; stopAfter?: string;
   /** --ui / --no-ui. Undefined when neither was given (resolveUiMode decides). */
   ui?: boolean;
-  setupTable?: string; setupUrl?: string;
+  setupTable?: string; setupUrl?: string; setupPageUrl?: string;
   identity: "cognito" | "oidc"; oidcIssuer?: string; oidcAudience?: string; oidcClientId?: string; adminClaim?: string; adminValues?: string;
   modelProvider?: string; orchestratorProvider?: string; classifierProvider?: string; workerProvider?: string; openrouterSecretArn?: string; openrouterProviders?: string;
   openrouterKeyFile?: string; openrouterKeyEnv?: string;
@@ -2768,6 +2769,12 @@ function initOptions(globals: GlobalOptions, options: InitCommandOptions, comman
   if (options.setupTable !== undefined && (options.ui === false || options.yes)) {
     throw agentXError("CONFIG_INVALID", "--setup-table asks every question on the setup page; leave out --no-ui and --yes");
   }
+  if (options.setupPageUrl !== undefined && options.setupTable !== undefined) {
+    throw agentXError("CONFIG_INVALID", "--setup-page-url is for a run that does not drive the setup page; with --setup-table, pass the page's address as --setup-url");
+  }
+  if (options.setupPageUrl !== undefined && !/^https:\/\/[^\s/]+/.test(options.setupPageUrl)) {
+    throw agentXError("CONFIG_INVALID", `--setup-page-url ${options.setupPageUrl} is not an https:// address`);
+  }
   const signin = signInFlags(options);
   const secretFlags = definedEntries<SecretFlags>({
     slackBotToken: secretSource(options.slackBotTokenFile, options.slackBotTokenEnv),
@@ -2786,6 +2793,7 @@ function initOptions(globals: GlobalOptions, options: InitCommandOptions, comman
     yes: options.yes, browser: options.browser, resume: options.resume,
     ...(options.ui === undefined ? {} : { ui: options.ui }),
     ...(options.setupTable === undefined || options.setupUrl === undefined ? {} : { cloud: { table: options.setupTable, url: options.setupUrl } }),
+    ...(options.setupPageUrl === undefined ? {} : { identitySetupPageUrl: options.setupPageUrl }),
     flags,
     secretFlags,
     signinFlags: definedEntries<SigninFlags>({ methods: options.signin, ...signin.flags }),

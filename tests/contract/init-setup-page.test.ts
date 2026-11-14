@@ -286,6 +286,58 @@ describe("rovara init --setup-table", () => {
     expect(h.err.join("")).not.toContain("127.0.0.1");
   });
 
+  it("finishes on the setup page an install whose stacks an unattended run deployed with --setup-page-url (the Rovara Cloud pipeline)", async () => {
+    const h = await harness();
+    const cognito = h.setup.cognito as unknown as { created: string[]; createUser: (...args: unknown[]) => Promise<void> };
+    // The person can sign in to the page only once the admin user exists, so it must exist before the GitHub App step.
+    const githubAppsWhenAdminMade: number[] = [];
+    const createUser = cognito.createUser;
+    cognito.createUser = async (...args) => { githubAppsWhenAdminMade.push(h.github.conversions.length); await createUser(...args); };
+    // Phase 1: every stack, nothing asked. The identity stack allows the page's sign-in; no admin is made yet. The channel
+    // is a placeholder --yes insists on and the run stops before using it; it is never stored.
+    expect(await h.run([
+      "--yes", "--no-browser", "--no-ui", "--setup-page-url", SETUP_ORIGIN, "--admin-email", ADMIN_EMAIL, "--github-account", "acme",
+      "--channel", "rovara-setup-placeholder", "--connectors", "none", "--stop-after", "slack-service",
+    ])).toBe(0);
+    const identity = h.deployer.requests.find((request) => request.stackName === "rovara-cloud-staging-identity");
+    expect(identity?.parameters).toMatchObject({ SetupPageUrl: SETUP_ORIGIN });
+    expect(cognito.created).toEqual([]);
+    const stored = [...h.store.values.values()].join("\n");
+    expect(stored).not.toContain("rovara-setup-placeholder");
+    const deployed = h.deployer.requests.length;
+
+    // Phase 2: the setup job resumes on the page. The admin is made first (Cognito emails the page's address), the stacks
+    // are not deployed again, and the page asks only what the remaining steps need.
+    const store = memorySetupStore();
+    const slack = fakeSlackApi();
+    const handle = setupPageHandler({ store, env: "staging", origin: SETUP_ORIGIN, auth: { kind: "token", token: TOKEN }, verdictWaitMs: 200, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 5))) });
+    const operator = setupPageOperator({ script: ["token", CONFIG_TOKEN, ...SIGNIN, ...FINISH], handle, token: TOKEN });
+    await store.putAdminToken(`sealed:${accessToken({ "cognito:groups": ["rovara-cloud-admin"] })}`, Date.now() + 3_600_000);
+    const running = operator.run();
+    const code = await h.run(["--resume", "--setup-table", "agentx-setup", "--setup-url", SETUP_ORIGIN], {
+      setupStore: () => store, setupRelayTiming: FAST, slack,
+      setupSeal: { seal: async (plain) => `sealed:${plain}`, open: async (sealed) => sealed.replace(/^sealed:/, "") },
+    });
+    await running;
+    expect(code).toBe(0);
+    expect(operator.remaining()).toBe(0);
+    expect(cognito.created).toEqual([ADMIN_EMAIL]);
+    expect(githubAppsWhenAdminMade).toEqual([0]);
+    expect(h.github.conversions).toHaveLength(1);
+    expect(h.deployer.requests).toHaveLength(deployed);
+    expect(operator.asked).not.toContain("Your settings");
+    expect(operator.asked).not.toContain("Create all of this?");
+    expect(operator.states.at(-1)?.cards?.some((card) => card.id === "ready")).toBe(true);
+  });
+
+  it("refuses --setup-page-url with --setup-table, and an address that is not https", async () => {
+    const h = await harness();
+    expect(await h.run(["--setup-table", "agentx-setup", "--setup-url", SETUP_ORIGIN, "--setup-page-url", SETUP_ORIGIN])).toBe(2);
+    expect(h.printed()).toContain("with --setup-table, pass the page's address as --setup-url");
+    expect(await h.run(["--yes", "--setup-page-url", "http://setup.example.com"])).toBe(2);
+    expect(h.printed()).toContain("is not an https:// address");
+  });
+
   it("refuses --setup-table without --setup-url, and with --yes or --no-ui", async () => {
     const h = await harness();
     expect(await h.run(["--setup-table", "agentx-setup"])).toBe(2);

@@ -57,7 +57,7 @@ import { checkWithChangeOnPage, problemText, retryOnPage } from "./retry.js";
 import { developerSignInStep } from "./signin-step.js";
 import { botNameOf, slackAppStep, slackWebApi, verifySlackUrls, type SlackApi } from "./slack-app.js";
 import { isOperatorStop, isWordedOperatorStop } from "./stop.js";
-import { runInitSteps, type InitEvent, type InitRunResult, type InitStep } from "./steps.js";
+import { runInitSteps, type InitEvent, type InitRunResult, type InitStep, type ProgressHandle } from "./steps.js";
 import { browserAvailable, NO_BROWSER_LINE, resolveUiMode } from "./ui-mode.js";
 import { accountChecksCard, awsSignInCard, prerequisitesCard, readyCard, releaseCard } from "./ui/cards.js";
 import { childActionWatcher } from "./ui/child-actions.js";
@@ -126,6 +126,10 @@ export interface InitOptions {
   /** --setup-table and --setup-url: the install page is the setup page in the cloud, and its
    * questions and answers go through this table (the installer job, `rovara init --cloud`). */
   cloud?: { table: string; url: string };
+  /** --setup-page-url: the setup page a later --setup-table run finishes this install on (the Rovara Cloud release pipeline's
+   * setup job). Only the identity stack takes it, for its sign-in callback and invitation; this run asks nothing there and
+   * makes no admin user. */
+  identitySetupPageUrl?: string;
   resume: boolean;
   flags: InitFlags;
   secretFlags: SecretFlags;
@@ -1039,6 +1043,7 @@ async function init(options: InitOptions, deps: InitCliDependencies, services: {
     flags: options.finishFlags,
     cliInvocation: session.invocation,
     ...(options.cloud === undefined ? {} : { setupPageUrl: options.cloud.url, githubWaitMs: CLOUD_GITHUB_WAIT_MS }),
+    ...(options.identitySetupPageUrl === undefined ? {} : { identitySetupPageUrl: options.identitySetupPageUrl }),
   };
 
   session.startSteps?.();
@@ -1047,6 +1052,15 @@ async function init(options: InitOptions, deps: InitCliDependencies, services: {
       env, region, store, holder: caller.arn, context, now,
       steps: runSteps,
       beforeSteps: saveAnswers,
+      // The install in the cloud, resumed once its stacks are up (the Rovara Cloud release pipeline's setup job, after an
+      // earlier run deployed them with --setup-page-url): the core step that makes the admin user is already done, so the
+      // admin is made now, before the page asks anything, and Cognito's invitation brings the page's address and password.
+      // On a first run core is not done yet, and the core step makes the admin as before.
+      ...(options.cloud === undefined ? {} : {
+        beforeFirstStep: async (progress: ProgressHandle) => {
+          if (progress.current().steps.core?.status === "done") await adminUserForSetupPage(context, progress);
+        },
+      }),
       onEvent: (event) => {
         const line = eventLine(event);
         if (line !== undefined) write(line);

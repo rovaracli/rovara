@@ -62,6 +62,8 @@ export async function runInitSteps<C>(input: {
   /** Runs under the lock before any step (init saves its answers here, so two first runs of the
    * same environment cannot overwrite each other's). Its error is thrown as it is. */
   beforeSteps?: () => Promise<void>;
+  /** Runs under the lock once the progress is read, before the first step (done or not). Its error is thrown as it is. */
+  beforeFirstStep?: (progress: ProgressHandle) => Promise<void>;
   /** Spec 048 FR-060: asked after a step throws. "retry" runs the step again; "stop" (or no hook)
    * throws the step's error as before. */
   onStepFailure?: (failure: { id: InitStepId; title: string; error: unknown }) => Promise<"retry" | "stop">;
@@ -95,6 +97,7 @@ export async function runInitSteps<C>(input: {
           }
         }
       };
+      await input.beforeFirstStep?.(handle);
       const ran: InitStepId[] = [];
       const skipped: InitStepId[] = [];
       for (const step of input.steps) {

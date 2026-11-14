@@ -98,6 +98,8 @@ export function deployStep(input: { id: DeployStepId; title: string; after?: (co
       const parts = DEPLOY_STEP_PARTS[input.id].filter((part) => order.includes(part));
       await waitForIdleStacks({ reader: context.stackStatus, stackNames: parts.map((part) => environmentStackName(env, part)), sleep: context.sleep, write: context.write, now: context.now });
       const deployment = await context.deployment();
+      // The identity stack allows the setup page's sign-in: this run's page (--setup-table), or a later run's (--setup-page-url).
+      const setupPageUrl = context.setupPageUrl ?? context.identitySetupPageUrl;
       const readParameters = context.stackStatus.parameters?.bind(context.stackStatus);
       // The github-app step stores the app's key in this secret later; the control plane only needs its ARN now.
       const githubSecretArn = parts.includes("control-plane") && progress.current().github === undefined
@@ -108,7 +110,7 @@ export function deployStep(input: { id: DeployStepId; title: string; after?: (co
         engine: answers.engine,
         answers: {
           ...initDeployAnswers(answers, progress.current(), parts, githubSecretArn),
-          ...(context.setupPageUrl === undefined ? {} : { setupPageUrl: context.setupPageUrl }),
+          ...(setupPageUrl === undefined ? {} : { setupPageUrl }),
         },
         release: context.release,
         deployer: deployment.deployer,
