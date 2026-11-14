@@ -223,11 +223,12 @@ export class CloudReleasePipelineStack extends Stack {
           install: { commands: INSTALL_TOOLS },
           pre_build: { commands: [...FIND_RELEASE_TAG, ...BUILD_CHECKOUT] },
           build: {
+            // One command: CodeBuild runs each command in a new shell, which keeps variables but not functions or arrays.
             commands: [
-              'cli() { node packages/cli/dist/bin.js --env "$ROVARA_ENV" "$@"; }',
-              'images=(--worker-image "$WORKER_IMAGE" --boot-stage2-sha256 "$BOOT_STAGE2_SHA256" --slack-image "$SLACK_IMAGE")',
-              SETUP_STATE,
               [
+                'cli() { node packages/cli/dist/bin.js --env "$ROVARA_ENV" "$@"; }',
+                'images=(--worker-image "$WORKER_IMAGE" --boot-stage2-sha256 "$BOOT_STAGE2_SHA256" --slack-image "$SLACK_IMAGE")',
+                SETUP_STATE,
                 'if aws ssm get-parameter --name "$SETTINGS_PARAMETER" --region "$AWS_REGION" >/dev/null 2>&1; then',
                 // An upgrade over an unfinished setup would drop the setup page's sign-in from the identity stack, and the
                 // setup can only be resumed by the release that started it.
@@ -278,9 +279,10 @@ export class CloudReleasePipelineStack extends Stack {
           install: { commands: INSTALL_TOOLS },
           pre_build: { commands: FIND_RELEASE_TAG },
           build: {
+            // One command: CodeBuild runs each command in a new shell, which keeps variables but not functions.
             commands: [
-              SETUP_STATE,
               [
+                SETUP_STATE,
                 'state="$(setup_state)" || exit 1',
                 'if [ "$state" = finished ]; then',
                 '  echo "$ROVARA_ENV is set up: nothing to do"',

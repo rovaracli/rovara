@@ -19,7 +19,7 @@ describe("Rovara Cloud release pipeline", () => {
     const text = typeof source === "string" ? source : source["Fn::Join"][1].map((part) => (typeof part === "string" ? part
       : JSON.stringify(part) === JSON.stringify({ "Fn::GetAtt": [setupApi, "ApiEndpoint"] }) ? "<setup page>" : "<token>")).join("");
     const parsed = JSON.parse(text) as { env: { variables: Record<string, string> }; phases: Record<string, { commands: string[] }> };
-    return { variables: parsed.env.variables, commands: Object.values(parsed.phases).flatMap((phase) => phase.commands).join("\n") };
+    return { variables: parsed.env.variables, build: parsed.phases.build!.commands, commands: Object.values(parsed.phases).flatMap((phase) => phase.commands).join("\n") };
   };
 
   it("runs on vX.Y.Z release tags of Rovara-cloud only, never on a branch push or a prerelease tag", () => {
@@ -109,6 +109,17 @@ describe("Rovara Cloud release pipeline", () => {
 
   it("gives the jobs that build the checkout a Node heap the TypeScript build fits in", () => {
     expect(CLOUD_PIPELINE_NODE_OPTIONS).toBe("--max-old-space-size=8192");
+  });
+
+  it("runs each job's build phase as one command, since CodeBuild starts a new shell (no functions, no arrays) for each", () => {
+    for (const name of ["rovara-cloud-production-deploy", "rovara-cloud-production-setup"]) {
+      const { build } = buildSpec(name);
+      expect(build).toHaveLength(1);
+      expect(build[0]!.indexOf("setup_state() {")).toBeLessThan(build[0]!.indexOf('state="$(setup_state)"'));
+    }
+    const [deploy] = buildSpec("rovara-cloud-production-deploy").build;
+    expect(deploy!.indexOf("cli() {")).toBeLessThan(deploy!.indexOf("cli init"));
+    expect(deploy!.indexOf("images=(")).toBeLessThan(deploy!.indexOf('"${images[@]}"'));
   });
 
   it("refuses an environment name the environment rules refuse", () => {
