@@ -7,3 +7,8 @@ export { approvalUrl, sessionStatus, sessionView, waitingPlan, type CodeTask } f
 export { APPROVAL_PATH, approvalRoute } from "./approve.js";
 export { LocalPresenceBoard, PRESENCE_TTL_MS, PRESENCE_VIEWERS_MAX, currentViewers, type PresenceBoard, type Viewer } from "./presence.js";
 export { CLOUD_TABLE, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, PENDING_LIFETIME_S, SIGN_IN_LIFETIME_S, cloudDocumentClient } from "./dynamo-stores.js";
+export {
+  LocalCompanyRules, LocalPolicyHookRequestLedger, POLICY_HOOK, POLICY_HOOK_ANSWER_CLAIMS, POLICY_HOOK_ANSWER_KINDS, POLICY_HOOK_CONTENT_TYPE, POLICY_HOOK_KINDS, POLICY_HOOK_PATH, POLICY_HOOK_PATTERNS,
+  POLICY_HOOK_QUESTION_CLAIMS, POLICY_HOOK_QUESTION_KINDS, POLICY_HOOK_WORDS, answerFor, createPolicyHookRoute, fitsFields, policyHookQuestionHash, readJws,
+  type CompanyRules, type CompanyRulesReader, type DecisionRule, type PolicyHookAnswerSigner, type PolicyHookInstalls, type PolicyHookKind, type PolicyHookRequestLedger, type PolicyHookRouteOptions, type PublicJwk,
+} from "./policy-hook.js";

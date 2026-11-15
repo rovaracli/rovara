@@ -6,6 +6,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
 import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
+import { POLICY_HOOK_PATH } from "./policy-hook.js";
 import { ROUTES, type OrgView, type Route, type RouteAnswer } from "./routes.js";
 import type { SessionStore } from "./sessions.js";
 import { StoreConflict, type WorkSessionStore } from "./work-sessions.js";
@@ -36,6 +37,8 @@ export interface CloudHandlerOptions {
   /** Who is looking at each session now; this server's memory by default. */
   presence?: PresenceBoard;
   routes?: Route[];
+  /** Lane H: the policy hook's answering route (`createPolicyHookRoute`), served at `POLICY_HOOK_PATH`. Absent: that path is not Cloud's, as before. */
+  policyHook?: (request: CloudRequest) => Promise<CloudResponse>;
   now?: () => Date;
   log?: (event: Record<string, unknown>) => void;
 }
@@ -77,6 +80,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
 
   return async (request) => {
     const { method, path } = request;
+    if (path === POLICY_HOOK_PATH && options.policyHook !== undefined) return options.policyHook(request);
     if (path === "/v1/auth/browser/authorize" && method === "GET") {
       const { url, state, pending } = options.client.startSignIn(returnPath(request.query.get("return_to")), now().getTime());
       await options.store.putPending(state, pending);
