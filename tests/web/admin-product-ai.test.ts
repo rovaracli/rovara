@@ -74,6 +74,33 @@ describe("product AI keys page", () => {
    expect(document.body.innerHTML).not.toContain(secret);
   } finally { f.close(); }
  });
+ it("connects Vertex AI from the same page: picks Vertex, sends the setup with a request id and the revision, no secret field", async () => {
+  const sent: ApiRequest[] = [];
+  let vertex = false;
+  const body = () => ({ ...view(false), vertex: vertex ? { connected: true, projectId: "acme-evals", location: "us-central1", updatedAt: Date.UTC(2026, 10, 15) } : { connected: false } });
+  const f = mount(confirmedPath("/app/admin/product-ai"), (r) => { if (r.method === "PUT") { sent.push(r); vertex = true; } return { status: 200, body: body() }; });
+  try {
+   await open();
+   fireEvent.change(await screen.findByLabelText("AI provider"), { target: { value: "vertex" } });
+   fireEvent.change(await screen.findByLabelText("Google Cloud project ID"), { target: { value: "acme-evals" } });
+   const audience = "//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/rovara-pool/providers/rovara-aws";
+   fireEvent.change(screen.getByLabelText("Workload identity provider"), { target: { value: audience } });
+   expect(screen.queryByLabelText("Paste the AI Studio key")).toBeNull();
+   fireEvent.click(screen.getByRole("button", { name: "Test and save" }));
+   await waitFor(() => { expect(sent).toHaveLength(1); });
+   expect(sent[0]!.path).toBe("/v1/app/projects/web/product-ai/vertex");
+   expect(sent[0]!.body).toMatchObject({ expectedRevision: 3, projectId: "acme-evals", location: "us-central1", audience, serviceAccount: null });
+   expect(await screen.findByText(/Connected to/u)).toBeTruthy();
+  } finally { f.close(); }
+ });
+ it("an approval that no longer counts says to approve it again", async () => {
+  const approval = { selection: "all-questions", inputsDigest: "d".repeat(64), maxCalls: 5, maxCostMicros: 1_000_000, approvedAt: Date.UTC(2026, 10, 15), approvedByYou: true };
+  for (const [state, words] of [["withdrawn", /membership or role changed/u], ["stale", /more than 15 minutes old/u]] as const) {
+   const f = mount("/app/admin/product-ai", () => ({ status: 200, body: { ...view(true), evalApproval: { ...approval, state } } }));
+   try { await open(); expect((await screen.findByTestId("approve-again")).textContent).toMatch(words); } finally { f.close(); }
+  }
+  expect(readProductAi({ ...view(true), evalApproval: approval }).evalApproval?.state).toBe("stale");
+ });
  it("says not connected yet when Cloud has no product AI settings", async () => {
   const f = mount("/app/admin/product-ai", () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } }));
   try { await open(); expect(await screen.findByTestId("not-connected")).toBeTruthy(); } finally { f.close(); }

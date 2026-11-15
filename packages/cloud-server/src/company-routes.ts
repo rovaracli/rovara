@@ -18,6 +18,7 @@ import {
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { freshStepUp } from "./step-up.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
+import { withdrawForMember } from "./product-ai-routes.js";
 
 export interface CompanyBackend {
   store: CompanyStore;
@@ -454,6 +455,9 @@ async function acceptInvite(context: RouteContext): Promise<RouteAnswer> {
   const invite = await store.inviteByToken(tokenHash(body["invite"]));
   const nowMs = context.now().getTime();
   if (invite === undefined || invite.companyId !== who.companyId || invite.state !== "pending" || expired(invite, nowMs)) return WORDS.unusable;
+  // PRODUCT-EVAL-APPROVER-REREAD: accepting an invite sets the person's company role, so any eval approval they made stops counting first.
+  const withdrawal = await withdrawForMember(context, who.developerId, who.companyId);
+  if (withdrawal !== undefined) return withdrawal;
   try {
     await store.updateInvite({ ...invite, state: "accepted", revision: invite.revision + 1, acceptedAt: new Date(nowMs).toISOString(), acceptedBy: who.developerId }, { revision: invite.revision, state: "pending" });
   } catch (error) {

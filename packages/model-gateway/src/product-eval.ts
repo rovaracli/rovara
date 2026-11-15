@@ -44,6 +44,13 @@ export const EVAL_RELEASE_PATH = "/v1/product/eval/release";
 export const EVAL_HOLD_REFUSED = "the eval budget could not be held";
 export const EVAL_STAGE_SPENT = "the eval stage's held budget is used up";
 export const EVAL_ALREADY_RELEASED = "the eval hold was already released";
+/**
+ * PRODUCT-EVAL-APPROVER-REREAD: an approval source answers this when the project HAS an approval that no longer counts (older than
+ * its freshness window, or its approver was withdrawn). The hold answers EVAL_APPROVAL_STALE_CODE so the app asks for it again.
+ */
+export const EVAL_APPROVAL_STALE = "stale" as const;
+export const EVAL_APPROVAL_STALE_CODE = "eval_approval_stale";
+export const EVAL_APPROVAL_STALE_MESSAGE = "the eval spend approval is no longer current; approve it again";
 export const EVAL_CLASSES = ["ok", "rate_limit", "quota", "overloaded", "cap", "key_refused", "provider_error", "refused"] as const;
 export type EvalCallClass = typeof EVAL_CLASSES[number];
 export type EvalRole = "owner" | "admin" | "maintainer";
@@ -62,8 +69,11 @@ export interface EvalApproval {
   approver: { personId: string; provider: string };
 }
 export interface EvalApprovalSource {
-  /** The project's current approved eval spend; undefined when none, rejected or revoked. A failed read throws (503, nothing held). */
-  current(iss: string, cid: string, project: string, signal?: AbortSignal): Promise<EvalApproval | undefined>;
+  /**
+   * The project's current approved eval spend; undefined when none or rejected; EVAL_APPROVAL_STALE when one is recorded but no
+   * longer counts (too old, or its approver withdrawn: approve again). A failed read throws (503, nothing held).
+   */
+  current(iss: string, cid: string, project: string, signal?: AbortSignal): Promise<EvalApproval | typeof EVAL_APPROVAL_STALE | undefined>;
   /** The approver's CURRENT role in that project (membership re-read, never cached); undefined when no longer a member. */
   roleOf(iss: string, cid: string, project: string, approver: EvalApproval["approver"], signal?: AbortSignal): Promise<EvalRole | undefined>;
 }
@@ -183,6 +193,7 @@ export class InMemoryEvalStageStore implements EvalStageStore {
 
 const refusal = (status: number, code: string, message: string): { status: number; body: Record<string, unknown> } => ({ status, body: { error: { type: code, message } } });
 const HOLD_REFUSED = refusal(422, "eval_hold_refused", EVAL_HOLD_REFUSED);
+const APPROVAL_STALE = refusal(422, EVAL_APPROVAL_STALE_CODE, EVAL_APPROVAL_STALE_MESSAGE);
 const UNAVAILABLE = refusal(503, "unavailable", "model access unavailable");
 const NOT_FOUND = refusal(404, "not_found", "not found");
 const BUSY = refusal(429, "busy", "too many eval stages are open; try again later");
@@ -309,16 +320,18 @@ export class ProductEvalStages {
     // The grant must be this token's company and project.
     if (grant === undefined || grant.company !== claims.cid || grant.project !== claims.pid) return HOLD_REFUSED;
     if (calls > grant.maxCalls || costMicros > grant.maxCostMicros) return HOLD_REFUSED;
-    let approval: EvalApproval | undefined; let role: EvalRole | undefined; let budget: { calls: number; costMicros: number }; let connected: boolean;
+    let approval: EvalApproval | typeof EVAL_APPROVAL_STALE | undefined; let role: EvalRole | undefined; let budget: { calls: number; costMicros: number }; let connected: boolean;
     try {
       if (await raced(context.blocked(claims), signal)) return HOLD_REFUSED;
       approval = await raced(this.#options.approvals.current(claims.iss, claims.cid, claims.pid, signal), signal);
       if (approval === undefined) return HOLD_REFUSED;
+      // Recorded, but no longer counted (stale or withdrawn): refused, and the app is told to ask for the approval again.
+      if (approval === EVAL_APPROVAL_STALE) return APPROVAL_STALE;
       if (!validApproval(approval)) return UNAVAILABLE;
       // The grant must be exactly the approved spend: selection, inputs, and the confirmed ceilings.
       if (approval.selection !== grant.selection || approval.inputsDigest !== grant.inputsDigest || approval.maxCalls !== grant.maxCalls || approval.maxCostMicros !== grant.maxCostMicros) return HOLD_REFUSED;
       // The approver's role from the approval source on every hold, not the role in Code's grant (deployed: eval-approvals.ts, the
-      // role Cloud checked with Code when the approval was recorded, valid a day: PRODUCT-EVAL-APPROVER-REREAD).
+      // role Cloud checked with Code when the approval was recorded, counted for 15 minutes unless withdrawn: PRODUCT-EVAL-APPROVER-REREAD).
       role = await raced(this.#options.approvals.roleOf(claims.iss, claims.cid, claims.pid, { personId: approval.approver.personId, provider: approval.approver.provider }, signal), signal);
       if (role === undefined || !ROLES.includes(role)) return HOLD_REFUSED;
       budget = await raced((this.#options.budget ?? (async () => EVAL_DEFAULT_BUDGET))(claims.iss, claims.cid, claims.pid), signal);

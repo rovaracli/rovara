@@ -93,6 +93,11 @@ npx cdk deploy RovaraCloudPipeline --app 'node infra/dist/bin/agentx.js' \
   --parameters GitHubConnectionArn=<connection ARN> --parameters CodeUrl=<Code's API address>
 ```
 
+Each environment's deploy switches come from `CLOUD_PIPELINE_SWITCHES` in `infra/lib/cloud-release-pipeline.ts`, never from
+the run: the `staging` pipeline deploys with `-c rovaraModelGatewayProductAi=on` (the product AI settings: switch the web stack on
+by hand first, with its `ProductKeys*` parameters, which later deploys keep), and `production` is refused. Run the pipeline
+command above again after changing them.
+
 The deploy job has no administrator access. It can assume only the account's CDK bootstrap roles, and read
 the web stack's outputs for the release check. The pipeline never deploys itself: run the command above
 again after a change to `cloud-release-pipeline.ts`.

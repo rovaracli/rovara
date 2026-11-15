@@ -175,14 +175,29 @@ switch the template is byte for byte what it was; `tests/contract/model-gateway-
 Cloud's side (`-c rovaraCloudApp=<env> -c rovaraModelGatewayProductAi=on`, refused for `production`): parameters
 `ProductKeysTableName`, `ProductKeysKeyArn`, `ProductKeysMacKeyArn`; the server role gets `GetItem`/`PutItem`/`UpdateItem`/
 `ConditionCheckItem` on that table by company keys, `kms:GenerateDataKey` (same purpose and install condition) and
-`kms:GenerateMac`; output `ServerRoleArn`. The release pipeline deploys Cloud without the switch, so a pipeline deploy of a
-switched-on environment drops these grants until the pipeline carries it (DEFERRED PRODUCT-AI-PIPELINE-SWITCH).
+`kms:GenerateMac`; output `ServerRoleArn`; optional parameter `ModelGatewayUrl` (default empty: no Vertex connect from Cloud).
+The release pipeline carries each environment's switches from `CLOUD_PIPELINE_SWITCHES` (`infra/lib/cloud-release-pipeline.ts`):
+staging deploys with `-c rovaraModelGatewayProductAi=on`, production never (refused); a contract test pins both.
 
 Settings routes (B7, `packages/cloud-server/src/product-ai-routes.ts`; screen: admin area, AI and connections, Product AI
 keys): `GET /v1/app/projects/:name/product-ai`, `PUT|DELETE .../key`, `PUT .../eval-budget`, `PUT .../eval-approval`. The
 project's admin or a company admin (Code's access check, made on every request), a fresh step-up on every write, the signed
 write path (CSRF, body hash), Cloud audit records (`product_ai.*`). The key is write-only: no answer, log or audit carries it.
-AI Studio keys only; a Vertex connect needs the federation probe, which only the gateway's role can run (Vertex lane).
+`PUT|DELETE .../vertex` (PRODUCT-VERTEX-CLOUD-CONNECT) takes a Vertex AI federation setup (Google Cloud project, location,
+workload identity provider, optional service account): the store's `vertexCheck` asks the gateway to run the connection test
+(`POST /v1/service/vertex-check`, `service-call.ts`: a token for THIS company, and a canary company refused), and seals only on
+`ok`. The call is signed with the product key store's HMAC key: Cloud may only `GenerateMac`, the gateway's serving role may
+only `VerifyMac` (key policy statement `OnlyGatewayVerifiesCalls`, role statement `VerifyCloudCalls`, env
+`GATEWAY_PRODUCT_MAC_KEY`); the MAC covers its own purpose (never a key fingerprint's), the path, the time (60 s either side)
+and the body's SHA-256. The gateway stays read-only on keys; a replay inside the window only re-runs the same test.
+
+Eval approvals (PRODUCT-EVAL-APPROVER-REREAD): an approval counts at the stage hold for 15 minutes (`EVAL_APPROVAL_FRESH_MS`)
+from the moment the settings route began its role check with Code; older, the hold answers `422 eval_approval_stale` ("approve
+it again"). Before Cloud changes a person's membership or role (project member added or removed, invite accepted), it
+withdraws every approval that person made (`ProductKeyStore.withdrawApprovals`: one conditional write on the company's
+withdrawal row, read with the approval at every hold); if that write fails the change is not made (503). Code's own member
+changes reach Cloud through no event today: for those, the 15 minutes bound the window. The settings page shows each approval's
+state (`current`, `stale`, `withdrawn`).
 
 Deploy order: read the Cloud server function's role ARN from the deployed Cloud web stack (its `Server` function's role; the
 stack outputs it as `ServerRoleArn` once switched on), deploy the gateway with the switch and `CloudSettingsRoleArn`, then
@@ -219,7 +234,8 @@ mounts them.
 | `POST /v1/product/eval/release` | `{scope, calls, costMicros, unknown}` | `200 {released}` once; `409` after; `404` for any scope not the caller's |
 
 - **Hold**: the grant must name the token's company and project and equal the project's approved eval spend
-  (`EvalApprovalSource.current`: selection, inputs digest, confirmed call and cost ceilings); the approver's CURRENT role is
+  (`EvalApprovalSource.current`: selection, inputs digest, confirmed call and cost ceilings; a recorded approval that no longer
+  counts, too old or withdrawn, is `422 eval_approval_stale`); the approver's CURRENT role is
   re-read (`roleOf`: owner, admin or maintainer); the product key connection is re-read; `calls`/`costMicros` must fit the
   grant and the approved project eval budget (DEC 203 default 400 calls and $4, `budget` option per project); a task blocked
   by an overrun is refused. Then ONE meter reservation of the whole cost on the product meter: the stage's own task row
@@ -260,5 +276,6 @@ mounts them.
 
 ## Not built here
 
-Code's worker side of the bridge; the company learning-account settings route (the store and the gateway read it; no Cloud
-route writes it yet); Vertex connect from Cloud (needs the gateway's probe).
+Code's worker side of the bridge; a Code event that tells Cloud about member changes made in Code itself (until then the
+approval's 15 minutes bound them). The company's learning accounts have their own settings ("Learning AI key",
+docs/model-gateway-learning.md).

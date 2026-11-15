@@ -52,5 +52,14 @@ describe("Cloud web: product AI settings grants (B7)", () => {
     expect(env[CLOUD_PRODUCT_AI_ENV.keysKey]).toEqual({ Ref: "ProductKeysKeyArn" });
     expect(env[CLOUD_PRODUCT_AI_ENV.macKey]).toEqual({ Ref: "ProductKeysMacKeyArn" });
     expect(Object.keys(t.Outputs)).toContain("ServerRoleArn");
+    // PRODUCT-VERTEX-CLOUD-CONNECT: the gateway's address for its Vertex test (optional, empty by default: a pipeline deploy that
+    // passes no new parameter still works), and no new grant (the call is signed with the GenerateMac above).
+    expect(env[CLOUD_PRODUCT_AI_ENV.gatewayUrl]).toEqual({ Ref: "ModelGatewayUrl" });
+    const gateway = t.Parameters.ModelGatewayUrl as { Default: string; AllowedPattern: string };
+    expect(gateway.Default).toBe("");
+    const pattern = new RegExp(gateway.AllowedPattern, "u");
+    for (const good of ["", "https://gateway.staging.rovara.example"]) expect(pattern.test(good)).toBe(true);
+    for (const bad of ["http://gateway.example", "https://gateway.example/v1", "https://a b"]) expect(pattern.test(bad)).toBe(false);
+    expect(Object.keys(bySid).sort()).toEqual(expect.not.arrayContaining(["VerifyCloudCalls"]));
   });
 });

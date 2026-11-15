@@ -8,7 +8,8 @@
 // settings and rules, invites, profile, the policy hook's install allow-list; absent, the company routes answer 501) and CLOUD_COMPANY_ID
 // (the one company of a single-company Code, used only when Code's access check names none); CLOUD_PRODUCT_KEYS_TABLE,
 // CLOUD_PRODUCT_KEYS_KEY and CLOUD_PRODUCT_KEYS_MAC_KEY (the model gateway's product key table and KMS keys: the project product AI
-// settings, all three or none; absent, those routes answer 501).
+// settings, all three or none; absent, those routes answer 501); CLOUD_MODEL_GATEWAY_URL (the model gateway's https address, for the
+// Vertex AI connection test it runs for Cloud; empty or absent, a Vertex connect answers unavailable).
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
 import {
@@ -21,12 +22,14 @@ import { awsKms, kmsFingerprinter } from "../packages/model-gateway/src/aws-kms.
 import { Dynamo } from "../packages/model-gateway/src/dynamo.js";
 import { DynamoProductKeyTable } from "../packages/model-gateway/src/dynamo-product-keys.js";
 import { ProductKeyStore } from "../packages/model-gateway/src/product-keys.js";
+import { gatewayVertexCheck } from "../packages/model-gateway/src/service-call.js";
 import { kmsProductKeyService, ProductKeySealer } from "../packages/model-gateway/src/product-seal.js";
 
 /**
  * The project product AI settings' store (B7): the gateway's write-only ProductKeyStore over its product key table, sealing with
- * its KMS key and fingerprinting with its HMAC key (this role may GenerateDataKey and GenerateMac, never Decrypt). AI Studio keys
- * only: a Vertex connect needs the gateway's federation probe, which this role can't run. Undefined unless all three are set.
+ * its KMS key and fingerprinting with its HMAC key (this role may GenerateDataKey and GenerateMac, never Decrypt). Product keys
+ * (AI Studio, and Vertex AI when the gateway's address is set: the gateway runs the federation test, service-call.ts, signed with
+ * the same HMAC key) and the company's learning accounts (Anthropic, OpenAI, Gemini). Undefined unless all three are set.
  */
 export function productAiStore(env: Readonly<Record<string, string | undefined>>): ProductKeyStore | undefined {
   const table = env.CLOUD_PRODUCT_KEYS_TABLE; const key = env.CLOUD_PRODUCT_KEYS_KEY; const macKey = env.CLOUD_PRODUCT_KEYS_MAC_KEY;
@@ -34,11 +37,15 @@ export function productAiStore(env: Readonly<Record<string, string | undefined>>
   if (set === 0) return undefined;
   if (set !== 3) throw new Error("product AI settings: CLOUD_PRODUCT_KEYS_TABLE, CLOUD_PRODUCT_KEYS_KEY and CLOUD_PRODUCT_KEYS_MAC_KEY go together");
   const region = env.AWS_REGION ?? env.AWS_DEFAULT_REGION ?? "";
+  const gatewayText = env.CLOUD_MODEL_GATEWAY_URL ?? "";
+  if (gatewayText !== "" && !/^https:\/\/[^/\s]+$/u.test(gatewayText)) throw new Error("product AI settings: CLOUD_MODEL_GATEWAY_URL is https:// and a host, no path");
+  const gateway = gatewayText === "" ? undefined : gatewayText;
   const credentials = credentialsFromEnvironment(env);
   const kms = awsKms({ region, credentials });
   return new ProductKeyStore({
     table: new DynamoProductKeyTable(new Dynamo({ region, credentials }), table!),
-    sealer: new ProductKeySealer(kmsProductKeyService(kms, key!)), fingerprint: kmsFingerprinter(kms, macKey!), providers: ["gemini"],
+    sealer: new ProductKeySealer(kmsProductKeyService(kms, key!)), fingerprint: kmsFingerprinter(kms, macKey!), providers: ["gemini", "vertex", "anthropic", "openai"],
+    ...(gateway === undefined ? {} : { vertexCheck: gatewayVertexCheck({ address: gateway, issuer: `${env.ROVARA_CODE_URL ?? ""}/v1/auth`, kms, macKeyId: macKey! }) }),
   });
 }
 

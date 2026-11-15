@@ -14,6 +14,7 @@ import {
 import type { Construct } from "constructs";
 import { RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
 import { CLOUD_APP_CONTEXT_KEY } from "./cloud-app.js";
+import { MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "./model-gateway.js";
 
 /**
  * The Rovara Cloud release pipeline (owner decisions 2026-11-14): a vX.Y.Z tag pushed to PrepLabsAI/Rovara-cloud waits for a
@@ -34,6 +35,22 @@ export const CLOUD_PIPELINE_BRANCH = "cloud/next";
 export const CLOUD_PIPELINE_NODE_OPTIONS = "--max-old-space-size=8192";
 /** The CDK bootstrap qualifier the account was bootstrapped with (the default). */
 export const CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER = "hnb659fds";
+
+/**
+ * The deploy switches each environment's pipeline carries into `cdk deploy` (PRODUCT-AI-PIPELINE-SWITCH): read from here when the
+ * pipeline is made, never typed per run, so a release deploys an environment exactly as it was switched on by hand. Without the
+ * product AI switch, a pipeline deploy of a switched-on environment would drop the Cloud server's product key grants and settings.
+ * Production is refused (the web stack refuses product AI there too) until a Cloud release carries it.
+ */
+export const CLOUD_PIPELINE_SWITCHES: Readonly<Record<string, Readonly<{ productAi?: true }>>> = Object.freeze({
+  staging: Object.freeze({ productAi: true as const }),
+});
+/** The `-c` arguments the environment's deploy carries (cdk context), from CLOUD_PIPELINE_SWITCHES. */
+export function pipelineDeployContext(env: string, config: Readonly<Record<string, Readonly<{ productAi?: true }>>> = CLOUD_PIPELINE_SWITCHES): string[] {
+  const switches = Object.hasOwn(config, env) ? config[env]! : {};
+  if (switches.productAi === true && env === "production") throw new Error("product AI is for named test environments until a Cloud release carries it");
+  return switches.productAi === true ? [`-c ${MODEL_GATEWAY_PRODUCT_CONTEXT_KEY}=on`] : [];
+}
 
 export interface CloudReleasePipelineProps extends StackProps {
   /** The named cloud environment this pipeline deploys, for example "production". */
@@ -78,7 +95,7 @@ export const RELEASE_CHECK_PATHS = ["/app", "/v1/web/me"] as const;
  * every second, and any 5xx or failed connection fails the release, even when the deploy itself succeeded. The first deploy of the web
  * stack has no address yet, so it isn't checked.
  */
-const RELEASE_CHECKED_DEPLOY = [
+const releaseCheckedDeploy = (context: readonly string[]) => [
   'base="$(aws cloudformation describe-stacks --stack-name "${STACK_PREFIX}-web" --query "Stacks[0].Outputs[?OutputKey==\'CloudUrl\'].OutputValue" --output text 2>/dev/null | sed "s#/app\\$##")"',
   "rm -f /tmp/release-check.log; poller=",
   'if [ -n "$base" ] && [ "$base" != "None" ]; then',
@@ -88,7 +105,7 @@ const RELEASE_CHECKED_DEPLOY = [
   "else",
   '  echo "release check: no live address yet (the first deploy of ${STACK_PREFIX}-web), so nothing to check"',
   "fi",
-  `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`,
+  `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION"${context.map((arg) => ` ${arg}`).join("")} --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`,
   "status=$?",
   'if [ -n "$poller" ]; then kill "$poller" 2>/dev/null; wait "$poller" 2>/dev/null; fi',
   'if [ -s /tmp/release-check.log ]; then echo "the release check saw errors on $base during the deploy:" >&2; cat /tmp/release-check.log >&2; exit 1; fi',
@@ -150,7 +167,7 @@ export class CloudReleasePipelineStack extends Stack {
           pre_build: { commands: [...FIND_RELEASE_TAG, ...RELEASE_TAG_ON_BRANCH, "npm ci", "npx tsc -b infra", "npm run build:web"] },
           build: {
             // One command: the release check's poller and the deploy share one shell.
-            commands: [RELEASE_CHECKED_DEPLOY],
+            commands: [releaseCheckedDeploy(pipelineDeployContext(env))],
           },
         },
       }),

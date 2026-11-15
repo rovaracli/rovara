@@ -6,6 +6,14 @@
 //   DELETE /projects/:name/product-ai/key             {requestId, expectedRevision}: remove (7-day recovery window in the store)
 //   PUT    /projects/:name/product-ai/eval-budget     {requestId, expectedRevision, calls, costMicros}
 //   PUT    /projects/:name/product-ai/eval-approval   {requestId, expectedRevision, approval: {...} | null}
+//   PUT    /projects/:name/product-ai/vertex          {requestId, expectedRevision, projectId, location, audience, serviceAccount | null}:
+//                                                     test and save a Vertex AI federation setup (PRODUCT-VERTEX-CLOUD-CONNECT). The store
+//                                                     asks the model gateway to run the connection test (service-call.ts: a token for this
+//                                                     company, and the canary company refused) before it seals; nothing is saved otherwise.
+//   DELETE /projects/:name/product-ai/vertex          {requestId, expectedRevision}
+//
+// Eval approvals (PRODUCT-EVAL-APPROVER-REREAD): an approval counts at the gateway's stage hold for 15 minutes from the role check
+// made here, and Cloud withdraws a person's approvals when it changes their membership (withdrawForMember, below).
 //
 // Who: the project's admin (Code's access check made now: the project's access is "administrator") or a company admin; anyone
 // else is refused, and a project the person can't see is not found. Every write needs a fresh step-up, and goes through the
@@ -20,24 +28,28 @@ import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 /** The store's error codes (product-keys.ts ProductKeyErrorCode), answered in this module's own fixed words. */
 export type ProductAiErrorCode = "invalid" | "stale" | "not_found" | "in_recovery" | "forbidden" | "unavailable" | "too_open" | "refused";
 export interface ProductAiActor { id: string; role: "company_admin" | "project_maintainer" }
-interface Change { iss: string; cid: string; owner: string; requestId: string; expectedRevision: number; actor: ProductAiActor }
+export interface ProductAiChange { iss: string; cid: string; owner: string; requestId: string; expectedRevision: number; actor: ProductAiActor }
+type Change = ProductAiChange;
 /** The view the store answers (ProductKeysView): never a key. */
 export interface ProductAiView {
   revision: number; owner: string;
-  sources: Array<{ sourceId: string; provider: string; hasKey: boolean; available: boolean; connectedAt: number; updatedAt: number; warning?: { status: number; at: number }; linkedTo?: string }>;
+  sources: Array<{ sourceId: string; provider: string; hasKey: boolean; available: boolean; connectedAt: number; updatedAt: number; warning?: { status: number; at: number }; linkedTo?: string; vertex?: { scheme: string; projectId: string; location: string; serviceAccount?: string } }>;
   removed: Array<{ sourceId: string; provider: string; recoverUntil: number }>;
   caps?: { taskMicros: number; projectMonthMicros: number };
   evalBudget?: { calls: number; costMicros: number };
   evalApproval?: { selection: string; inputsDigest: string; maxCalls: number; maxCostMicros: number; model?: string; approver: { personId: string; provider: string }; role: string; approvedAt: number };
+  evalApprovalState?: "current" | "stale" | "withdrawn";
 }
 /** What the routes need from ProductKeyStore (structural: cloud-server does not depend on the gateway package). */
 export interface ProductAiStore {
   view(iss: string, cid: string, owner: string): Promise<ProductAiView>;
-  connect(change: Change & { sourceId: string; provider: "gemini"; key: string }): Promise<ProductAiView>;
+  connect(change: Change & { sourceId: string; provider: "gemini" | "vertex" | "anthropic" | "openai"; key: string }): Promise<ProductAiView>;
   rotate(change: Change & { sourceId: string; key: string }): Promise<ProductAiView>;
   remove(change: Change & { sourceId: string }): Promise<ProductAiView>;
   setEvalBudget(change: Change & { budget: { calls: number; costMicros: number } }): Promise<ProductAiView>;
-  setEvalApproval(change: Change & { approval: { selection: string; inputsDigest: string; maxCalls: number; maxCostMicros: number; model?: string } | null; provider: string }): Promise<ProductAiView>;
+  setEvalApproval(change: Change & { approval: { selection: string; inputsDigest: string; maxCalls: number; maxCostMicros: number; model?: string } | null; provider: string; roleCheckedAt?: number }): Promise<ProductAiView>;
+  /** Every eval approval this person made up to now stops counting (product-keys.ts withdrawApprovals). Throws when not saved. */
+  withdrawApprovals(iss: string, cid: string, personId: string): Promise<void>;
 }
 export interface ProductAiBackend {
   store: ProductAiStore;
@@ -49,6 +61,8 @@ export interface ProductAiBackend {
 
 /** The project's one AI Studio source (one per provider per project, so the route never has to guess). */
 export const PRODUCT_AI_SOURCE_ID = "src_gemini";
+/** The project's one Vertex AI source. */
+export const PRODUCT_AI_VERTEX_SOURCE_ID = "src_vertex";
 /** Approvals are recorded with this approver provider: the approver is a person of this Code install. */
 export const PRODUCT_AI_APPROVER_PROVIDER = "rovara-code";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
@@ -68,6 +82,10 @@ const WORDS = Object.freeze({
   noKey: refusal(404, "NOT_FOUND", "No product AI key is connected to this project."),
   inRecovery: refusal(409, "CONFLICT", "This key was removed less than 7 days ago. Ask an installation administrator to recover it."),
   keyRefused: refusal(400, "CONFIG_INVALID", "The provider refused this key."),
+  memberId: refusal(400, "CONFIG_INVALID", "Name the person by their member id."),
+  vertexRefused: refusal(400, "CONFIG_INVALID", "Google refused this Vertex AI setup: check the project, the workload identity provider and the service account."),
+  vertexTooOpen: refusal(400, "CONFIG_INVALID", "This Vertex AI setup lets other Rovara companies through. Add the attribute condition for your company, then try again."),
+  vertexUnavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The Vertex AI connection test is unavailable right now. Nothing was saved. Try again."),
   unavailable: refusal(503, "RUNTIME_UNAVAILABLE", "Product AI settings are unavailable right now. Try again."),
 });
 const ANSWER_OF: Record<ProductAiErrorCode, RouteAnswer> = {
@@ -78,7 +96,7 @@ const record = (v: unknown): Record<string, unknown> | undefined => v !== null &
 const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const exactly = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 
-interface Who { backend: ProductAiBackend; companyId: string; developerId: string; name: string; role: ProductAiActor["role"]; project: string }
+interface Who { backend: ProductAiBackend; companyId: string; developerId: string; name: string; role: ProductAiActor["role"]; project: string; /** When Code's access check began (an approval counts from then). */ checkedAt: number }
 
 /** The person, their company and their role in this project, from Code's access check made now. A RouteAnswer when refused. */
 async function who(context: RouteContext, write: boolean): Promise<Who | RouteAnswer> {
@@ -86,6 +104,7 @@ async function who(context: RouteContext, write: boolean): Promise<Who | RouteAn
   if (backend === undefined) return WORDS.off;
   const project = context.params[0] ?? "";
   if (!/^[a-z][a-z0-9-]{0,62}$/u.test(project)) return WORDS.notFound;
+  const checkedAt = context.now().getTime();
   const access = await context.client.access(context.session);
   const named = (access as { companyId?: unknown }).companyId;
   let companyId: string;
@@ -101,20 +120,28 @@ async function who(context: RouteContext, write: boolean): Promise<Who | RouteAn
   if (role === undefined) return WORDS.forbidden;
   if (!/^[a-f0-9]{64}$/u.test(access.developerId)) return WORDS.forbidden;
   if (write && freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return WORDS.stepUp;
-  return { backend, companyId, developerId: access.developerId, name: access.displayName, role, project };
+  return { backend, companyId, developerId: access.developerId, name: access.displayName, role, project, checkedAt };
 }
 
 /** The store's answer, without anything the app has no use for (the approver's person id is shown as "you" or not). */
 function view(v: ProductAiView, w: Who) {
   const gemini = v.sources.find((s) => s.provider === "gemini");
+  const vertex = v.sources.find((s) => s.provider === "vertex");
   return {
     project: w.project, revision: v.revision, canChange: true,
     key: gemini === undefined ? { connected: false } : { connected: gemini.hasKey && gemini.available, connectedAt: gemini.connectedAt, updatedAt: gemini.updatedAt, ...(gemini.warning === undefined ? {} : { refusedAt: gemini.warning.at }) },
     removedUntil: v.removed.find((r) => r.provider === "gemini")?.recoverUntil ?? null,
+    vertex: vertex?.vertex === undefined ? { connected: false } : {
+      connected: vertex.hasKey && vertex.available, connectedAt: vertex.connectedAt, updatedAt: vertex.updatedAt, ...(vertex.warning === undefined ? {} : { refusedAt: vertex.warning.at }),
+      projectId: vertex.vertex.projectId, location: vertex.vertex.location, ...(vertex.vertex.serviceAccount === undefined ? {} : { serviceAccount: vertex.vertex.serviceAccount }),
+    },
+    vertexRemovedUntil: v.removed.find((r) => r.provider === "vertex")?.recoverUntil ?? null,
     evalBudget: v.evalBudget ?? null,
     evalApproval: v.evalApproval === undefined ? null : {
       selection: v.evalApproval.selection, inputsDigest: v.evalApproval.inputsDigest, maxCalls: v.evalApproval.maxCalls, maxCostMicros: v.evalApproval.maxCostMicros,
       ...(v.evalApproval.model === undefined ? {} : { model: v.evalApproval.model }), approvedAt: v.evalApproval.approvedAt, approvedByYou: v.evalApproval.approver.personId === w.developerId,
+      // Not told: not counted (fail closed). "stale" and "withdrawn" both mean: approve again.
+      state: v.evalApprovalState ?? "stale",
     },
   };
 }
@@ -128,11 +155,12 @@ function envelope(context: RouteContext, keys: readonly string[]): { body: Recor
   return { body, requestId: body.requestId, expectedRevision: body.expectedRevision };
 }
 
-async function guarded(w: Who, run: () => Promise<ProductAiView>): Promise<ProductAiView | RouteAnswer> {
+async function guarded(w: Who, run: () => Promise<ProductAiView>, answers: Partial<Record<ProductAiErrorCode, RouteAnswer>> = {}): Promise<ProductAiView | RouteAnswer> {
   try { return await run(); }
   catch (error) {
     // The store's errors carry a fixed code; anything else is an outage. Never the error's text.
     const code = (error as { code?: unknown } | null)?.code;
+    if (typeof code === "string" && Object.hasOwn(answers, code)) return answers[code as ProductAiErrorCode]!;
     return typeof code === "string" && Object.hasOwn(ANSWER_OF, code) ? ANSWER_OF[code as ProductAiErrorCode] : WORDS.unavailable;
   }
 }
@@ -208,10 +236,81 @@ async function putEvalApproval(context: RouteContext): Promise<RouteAnswer> {
     approval = { selection: a.selection, inputsDigest: a.inputsDigest, maxCalls: a.maxCalls, maxCostMicros: a.maxCostMicros, ...(typeof a.model === "string" ? { model: a.model } : {}) };
   }
   // The store checks every field again (lengths, digest, model id) and records the approver as this person.
-  const v = await guarded(w, () => w.backend.store.setEvalApproval({ ...changeOf(w, e), approval, provider: PRODUCT_AI_APPROVER_PROVIDER }));
+  const v = await guarded(w, () => w.backend.store.setEvalApproval({ ...changeOf(w, e), approval, provider: PRODUCT_AI_APPROVER_PROVIDER, ...(approval === null ? {} : { roleCheckedAt: w.checkedAt }) }));
   if ("status" in v) return v;
   await audited(context, w, approval === null ? "product_ai.eval_approval.withdrawn" : "product_ai.eval_approval.recorded");
   return ok(view(v, w));
+}
+
+/** The Vertex AI federation setup the form sends (Google Cloud project, location, workload identity provider, optional service account). */
+const VERTEX_FORM = Object.freeze({
+  projectId: /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/u,
+  location: /^(?:global|[a-z]{2,15}-[a-z]{2,15}[0-9]{1,2})$/u,
+  audience: /^\/\/iam\.googleapis\.com\/projects\/[0-9]{1,20}\/locations\/global\/workloadIdentityPools\/[a-z0-9-]{4,32}\/providers\/[a-z0-9-]{4,32}$/u,
+  serviceAccount: /^(?:[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com|[0-9]{1,20}-compute@developer\.gserviceaccount\.com)$/u,
+});
+const VERTEX_ANSWERS: Partial<Record<ProductAiErrorCode, RouteAnswer>> = { refused: WORDS.vertexRefused, too_open: WORDS.vertexTooOpen, unavailable: WORDS.vertexUnavailable };
+
+async function putVertex(context: RouteContext): Promise<RouteAnswer> {
+  const w = await who(context, true);
+  if ("status" in w) return w;
+  const e = envelope(context, ["projectId", "location", "audience", "serviceAccount"]);
+  if ("status" in e) return e;
+  const { projectId, location, audience, serviceAccount } = e.body;
+  if (typeof projectId !== "string" || !VERTEX_FORM.projectId.test(projectId) || typeof location !== "string" || !VERTEX_FORM.location.test(location)
+    || typeof audience !== "string" || !VERTEX_FORM.audience.test(audience) || (serviceAccount !== null && (typeof serviceAccount !== "string" || !VERTEX_FORM.serviceAccount.test(serviceAccount)))) return WORDS.invalid;
+  // The store parses this again (product-vertex-credential.ts), asks the gateway to test it for this company, and seals it.
+  const key = JSON.stringify({ scheme: "federation", projectId, location, audience, ...(serviceAccount === null ? {} : { serviceAccount }) });
+  const current = await guarded(w, () => w.backend.store.view(w.backend.issuer, w.companyId, w.project));
+  if ("status" in current) return current;
+  const connected = current.sources.some((s) => s.sourceId === PRODUCT_AI_VERTEX_SOURCE_ID && s.hasKey);
+  const v = await guarded(w, () => connected
+    ? w.backend.store.rotate({ ...changeOf(w, e), sourceId: PRODUCT_AI_VERTEX_SOURCE_ID, key })
+    : w.backend.store.connect({ ...changeOf(w, e), sourceId: PRODUCT_AI_VERTEX_SOURCE_ID, provider: "vertex", key }), VERTEX_ANSWERS);
+  if ("status" in v) return v;
+  await audited(context, w, connected ? "product_ai.vertex.rotated" : "product_ai.vertex.connected");
+  return ok(view(v, w));
+}
+
+async function removeVertex(context: RouteContext): Promise<RouteAnswer> {
+  const w = await who(context, true);
+  if ("status" in w) return w;
+  const e = envelope(context, []);
+  if ("status" in e) return e;
+  const v = await guarded(w, () => w.backend.store.remove({ ...changeOf(w, e), sourceId: PRODUCT_AI_VERTEX_SOURCE_ID }));
+  if ("status" in v) return v;
+  await audited(context, w, "product_ai.vertex.removed");
+  return ok(view(v, w));
+}
+
+/**
+ * PRODUCT-EVAL-APPROVER-REREAD: Cloud is about to change this person's membership or role (a project member change, an invite
+ * accepted). Every eval approval they made stops counting first. Undefined when done or when this Cloud has no product AI
+ * settings; a RouteAnswer (503) when it could not be saved: the caller must then NOT make the change (fail closed: a person whose
+ * membership changes never keeps an approval the gateway would honour).
+ */
+export async function withdrawForMember(context: RouteContext, personId: string, knownCompanyId?: string): Promise<RouteAnswer | undefined> {
+  const backend = context.productAi;
+  if (backend === undefined) return undefined;
+  // Approvals name people by their 64-hex member id: a change naming anyone another way can't be matched, so it is not made.
+  if (typeof personId !== "string" || !/^[a-f0-9]{64}$/u.test(personId)) return WORDS.memberId;
+  let companyId = knownCompanyId;
+  if (companyId === undefined) {
+    const named = (await context.client.access(context.session) as { companyId?: unknown }).companyId;
+    if (named !== undefined) { if (typeof named !== "string" || !COMPANY_ID.test(named)) return WORDS.noCompany; companyId = named; }
+    else if (backend.companyId !== undefined && COMPANY_ID.test(backend.companyId)) companyId = backend.companyId;
+    // No company: no approval can be recorded for one (the settings routes refuse), so there is nothing to withdraw.
+    else return undefined;
+  }
+  if (!COMPANY_ID.test(companyId)) return WORDS.unavailable;
+  try { await backend.store.withdrawApprovals(backend.issuer, companyId, personId); }
+  catch { console.log(JSON.stringify({ event: "cloud.eval_approvals_withdraw_failed", companyId })); return WORDS.unavailable; }
+  if (context.audit !== undefined) {
+    try {
+      await recordCloudAction(context.audit, { companyId, actor: { developerId: context.session.access.developerId, name: context.session.access.displayName, type: "person" }, action: "product_ai.eval_approvals.withdrawn_for_member", via: "web", subject: `person:${personId}` }, context.now);
+    } catch { console.log(JSON.stringify({ event: "cloud.audit_failed", action: "product_ai.eval_approvals.withdrawn_for_member", companyId })); }
+  }
+  return undefined;
 }
 
 const PROJECT_PATH = "\\/projects\\/([a-z][a-z0-9-]{0,62})\\/product-ai";
@@ -222,4 +321,6 @@ export const PRODUCT_AI_ROUTES: Route[] = [
   { method: "DELETE", path: new RegExp(`^${PROJECT_PATH}\\/key$`, "u"), answer: removeKey },
   { method: "PUT", path: new RegExp(`^${PROJECT_PATH}\\/eval-budget$`, "u"), answer: putEvalBudget },
   { method: "PUT", path: new RegExp(`^${PROJECT_PATH}\\/eval-approval$`, "u"), answer: putEvalApproval },
+  { method: "PUT", path: new RegExp(`^${PROJECT_PATH}\\/vertex$`, "u"), answer: putVertex },
+  { method: "DELETE", path: new RegExp(`^${PROJECT_PATH}\\/vertex$`, "u"), answer: removeVertex },
 ];

@@ -10,6 +10,7 @@ import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
 import { POLICY_HOOK_PATH } from "./policy-hook.js";
 import { COMPANY_ROUTES, type CompanyBackend } from "./company-routes.js";
 import { PRODUCT_AI_ROUTES, type ProductAiBackend } from "./product-ai-routes.js";
+import { LEARNING_AI_ROUTES } from "./learning-ai-routes.js";
 import { ROUTES, type OrgView, type Route, type RouteAnswer } from "./routes.js";
 import type { SessionStore } from "./sessions.js";
 import { StoreConflict, type WorkSessionStore } from "./work-sessions.js";
@@ -78,7 +79,7 @@ const signInAgain = () => json(401, { error: { code: "AUTH_REQUIRED", message: "
 
 /** The handler; it answers undefined for a path that is not Cloud's (the app's pages and assets). */
 export function createCloudHandler(options: CloudHandlerOptions): (request: CloudRequest) => Promise<CloudResponse | undefined> {
-  const routes = options.routes ?? [...ROUTES, ...(options.company === undefined ? [] : COMPANY_ROUTES), ...(options.productAi === undefined ? [] : PRODUCT_AI_ROUTES)];
+  const routes = options.routes ?? [...ROUTES, ...(options.company === undefined ? [] : COMPANY_ROUTES), ...(options.productAi === undefined ? [] : [...PRODUCT_AI_ROUTES, ...LEARNING_AI_ROUTES])];
   const now = options.now ?? (() => new Date());
   const log = options.log ?? ((event) => { console.log(JSON.stringify(event)); });
   const presence = options.presence ?? new LocalPresenceBoard();

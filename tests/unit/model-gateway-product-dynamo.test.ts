@@ -10,9 +10,9 @@ import type { WireRequest } from "../../packages/model-gateway/src/aws.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { DynamoProductKeyTable, PRODUCT_KEYS_TTL_ATTRIBUTE, productKeyTableKey } from "../../packages/model-gateway/src/dynamo-product-keys.js";
 import { DynamoProductOverrunTasks } from "../../packages/model-gateway/src/dynamo-product-overrun.js";
-import { EVAL_APPROVAL_VALID_MS, storedEvalApprovals, storedEvalBudget } from "../../packages/model-gateway/src/eval-approvals.js";
+import { EVAL_APPROVAL_FRESH_MS, storedEvalApprovals, storedEvalBudget } from "../../packages/model-gateway/src/eval-approvals.js";
 import { storedLearningKeys } from "../../packages/model-gateway/src/learning-keys.js";
-import { CURRENT_STAGE, PRODUCT_COMPANY_OWNER, ProductKeyError, ProductKeyStore, type ProductActor } from "../../packages/model-gateway/src/product-keys.js";
+import { CURRENT_STAGE, LEARNING_OWNER, PRODUCT_COMPANY_OWNER, ProductKeyError, ProductKeyStore, type ProductActor } from "../../packages/model-gateway/src/product-keys.js";
 import { hmacFingerprinter, kmsProductKeyService, localProductKeyService, ProductKeySealer, SealedProductKeyRefused } from "../../packages/model-gateway/src/product-seal.js";
 import { now } from "./model-gateway-fixture.js";
 import { geminiKey } from "./model-gateway-product-fixture.js";
@@ -32,7 +32,7 @@ function kit() {
   const table = new DynamoProductKeyTable(db, "gw-product-keys");
   const keyService = localProductKeyService(randomBytes(32));
   const clock = { at: now };
-  const store = new ProductKeyStore({ table, sealer: new ProductKeySealer(keyService), fingerprint: hmacFingerprinter(randomBytes(32)), now: () => clock.at, providers: ["gemini", "anthropic"] });
+  const store = new ProductKeyStore({ table, sealer: new ProductKeySealer(keyService), fingerprint: hmacFingerprinter(randomBytes(32)), now: () => clock.at, providers: ["gemini", "anthropic", "openai"] });
   return { wire, db, table, store, clock, keyService, rows: () => wire.items("gw-product-keys") };
 }
 const change = (cid: string, owner: string, expectedRevision: number, actor: ProductActor = maintainer) => ({ iss: ISS, cid, owner, requestId: randomUUID(), expectedRevision, actor });
@@ -161,7 +161,7 @@ describe("product key table: conditions are DynamoDB's own", () => {
 
 describe("eval approvals and budgets (the records Cloud's settings routes write)", () => {
   const approval = { selection: "all-questions", inputsDigest: "d".repeat(64), maxCalls: 50, maxCostMicros: 500_000 };
-  it("records the approver as the actor, re-reads on every hold, and stops counting after a day or when withdrawn", async () => {
+  it("records the approver as the actor, re-reads on every hold, and stops counting after 15 minutes (stale) or when withdrawn", async () => {
     const k = kit();
     const source = storedEvalApprovals(k.store, () => k.clock.at);
     expect(await source.current(ISS, A, PROJECT)).toBeUndefined();
@@ -171,8 +171,8 @@ describe("eval approvals and budgets (the records Cloud's settings routes write)
     expect(await source.roleOf(ISS, A, PROJECT, { personId: admin.id, provider: "github" })).toBeUndefined();
     // Another company's project of the same name has no approval.
     expect(await source.current(ISS, B, PROJECT)).toBeUndefined();
-    k.clock.at = now + EVAL_APPROVAL_VALID_MS;
-    expect(await source.current(ISS, A, PROJECT)).toBeUndefined();
+    k.clock.at = now + EVAL_APPROVAL_FRESH_MS;
+    expect(await source.current(ISS, A, PROJECT)).toBe("stale");
     expect(await source.roleOf(ISS, A, PROJECT, { personId: maintainer.id, provider: "github" })).toBeUndefined();
     k.clock.at = now;
     await k.store.setEvalApproval({ ...change(A, PROJECT, 1, admin), approval: null, provider: "github" });
@@ -193,23 +193,54 @@ describe("eval approvals and budgets (the records Cloud's settings routes write)
   });
 });
 
-describe("learning key source (#57): the company's own Anthropic account in the same sealed store", () => {
-  it("is a company source only, never a project's, never linked; connected and read only while current", async () => {
+describe("learning key source (#57, PRODUCT-LEARNING-CONNECT-ROUTE): the company's own learning accounts in the same sealed store", () => {
+  it("is the company's learning document only, never a project's or the product sources', never linked; each provider answers only its own account", async () => {
     const k = kit();
     const keys = storedLearningKeys(k.store);
-    expect(await keys.connected(ISS, A)).toBe(false);
+    expect(await keys.connected(ISS, A, "anthropic")).toBe(false);
     const anthropic = ["sk", "ant", randomBytes(16).toString("hex")].join("-");
-    await expect(k.store.connect({ ...change(A, PROJECT, 0), sourceId: "src_ant", provider: "anthropic", key: anthropic })).rejects.toThrow(new ProductKeyError("invalid"));
-    await expect(k.store.connect({ ...change(A, PRODUCT_COMPANY_OWNER, 0, maintainer), sourceId: "src_ant", provider: "anthropic", key: anthropic })).rejects.toThrow(new ProductKeyError("forbidden"));
-    await k.store.connect({ ...change(A, PRODUCT_COMPANY_OWNER, 0, admin), sourceId: "src_ant", provider: "anthropic", key: anthropic });
-    expect(await keys.connected(ISS, A)).toBe(true);
-    expect(await keys.keyFor(ISS, A)).toBe(anthropic);
-    expect(await keys.connected(ISS, B)).toBe(false);
-    expect(await keys.keyFor(ISS, B)).toBeUndefined();
-    await expect(k.store.link({ ...change(A, PROJECT, 0), sourceId: "src_lnk", companySourceId: "src_ant" })).rejects.toThrow(new ProductKeyError("invalid"));
-    await k.store.remove({ ...change(A, PRODUCT_COMPANY_OWNER, 1, admin), sourceId: "src_ant" });
-    expect(await keys.connected(ISS, A)).toBe(false);
-    expect(await keys.keyFor(ISS, A)).toBeUndefined();
+    const openai = ["sk", "proj", randomBytes(16).toString("hex")].join("-");
+    // Never in a project or in the company's product sources; only a company admin.
+    await expect(k.store.connect({ ...change(A, PROJECT, 0), sourceId: "src_anthropic", provider: "anthropic", key: anthropic })).rejects.toThrow(new ProductKeyError("invalid"));
+    await expect(k.store.connect({ ...change(A, PRODUCT_COMPANY_OWNER, 0, admin), sourceId: "src_anthropic", provider: "anthropic", key: anthropic })).rejects.toThrow(new ProductKeyError("invalid"));
+    await expect(k.store.connect({ ...change(A, PRODUCT_COMPANY_OWNER, 0, admin), sourceId: "src_openai", provider: "openai", key: openai })).rejects.toThrow(new ProductKeyError("invalid"));
+    await expect(k.store.connect({ ...change(A, LEARNING_OWNER, 0, maintainer), sourceId: "src_anthropic", provider: "anthropic", key: anthropic })).rejects.toThrow(new ProductKeyError("forbidden"));
+    await k.store.connect({ ...change(A, LEARNING_OWNER, 0, admin), sourceId: "src_anthropic", provider: "anthropic", key: anthropic });
+    expect(await keys.connected(ISS, A, "anthropic")).toBe(true);
+    expect(await keys.keyFor(ISS, A, "anthropic")).toBe(anthropic);
+    // Another provider's path never gets this key.
+    for (const provider of ["openai", "gemini", "vertex"] as const) {
+      expect(await keys.connected(ISS, A, provider)).toBe(false);
+      expect(await keys.keyFor(ISS, A, provider)).toBeUndefined();
+    }
+    await k.store.connect({ ...change(A, LEARNING_OWNER, 1, admin), sourceId: "src_openai", provider: "openai", key: openai });
+    expect(await keys.keyFor(ISS, A, "openai")).toBe(openai);
+    expect(await keys.keyFor(ISS, A, "anthropic")).toBe(anthropic);
+    // One account per provider; the product-only Vertex is not a learning account.
+    await expect(k.store.connect({ ...change(A, LEARNING_OWNER, 2, admin), sourceId: "src_anthropic2", provider: "anthropic", key: anthropic })).rejects.toThrow(new ProductKeyError("invalid"));
+    await expect(k.store.connect({ ...change(A, LEARNING_OWNER, 2, admin), sourceId: "src_vertex", provider: "vertex", key: "{}" })).rejects.toThrow(new ProductKeyError("invalid"));
+    // Two companies never meet.
+    expect(await keys.connected(ISS, B, "anthropic")).toBe(false);
+    expect(await keys.keyFor(ISS, B, "anthropic")).toBeUndefined();
+    // Never linked into a project (it is not among the company's product sources at all).
+    await expect(k.store.link({ ...change(A, PROJECT, 0), sourceId: "src_lnk", companySourceId: "src_anthropic" })).rejects.toThrow(new ProductKeyError("not_found"));
+    expect(await k.store.choices(ISS, A)).toEqual([]);
+    // A Gemini learning account is not a product source: the product route never resolves it.
+    await k.store.connect({ ...change(A, LEARNING_OWNER, 2, admin), sourceId: "src_gemini", provider: "gemini", key: geminiKey() });
+    expect(await k.store.resolve(ISS, A, PROJECT, "gemini")).toBeUndefined();
+    // A provider refusal is recorded on that account (shown in Settings), never on another one.
+    await keys.refused?.(ISS, A, "openai");
+    const marked = await k.store.view(ISS, A, LEARNING_OWNER);
+    expect(marked.sources.find((s) => s.provider === "openai")?.warning).toEqual({ status: 401, at: now });
+    expect(marked.sources.find((s) => s.provider === "anthropic")?.warning).toBeUndefined();
+    await k.store.remove({ ...change(A, LEARNING_OWNER, marked.revision, admin), sourceId: "src_anthropic" });
+    expect(await keys.connected(ISS, A, "anthropic")).toBe(false);
+    expect(await keys.keyFor(ISS, A, "anthropic")).toBeUndefined();
+    // The learning document holds no caps, ceiling, eval budget or approval.
+    const after = await k.store.view(ISS, A, LEARNING_OWNER);
+    expect(after).not.toHaveProperty("caps");
+    expect(after).not.toHaveProperty("evalBudget");
+    await expect(k.store.setEvalBudget({ ...change(A, LEARNING_OWNER, after.revision, admin), budget: { calls: 1, costMicros: 1 } })).rejects.toThrow(new ProductKeyError("invalid"));
   });
 });
 

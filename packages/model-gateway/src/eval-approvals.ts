@@ -3,31 +3,38 @@
 // project admin, fresh step-up, audited) through ProductKeyStore.setEvalApproval / setEvalBudget. Strongly consistent reads, on
 // every hold: a withdrawn approval or a lowered budget applies to the next hold.
 //
-// roleOf: the gateway has no way to re-read a person's Code membership (Cloud asks Code as that person; the gateway holds no
-// person's session). The settings route checked the approver's role with Code when the approval was recorded, and the record
-// counts for EVAL_APPROVAL_VALID_MS after that (then it must be approved again). This is the known gap of row
-// PRODUCT-EVAL-APPROVER-REREAD: a removed approver's approval keeps working until it ages out or a project admin withdraws it.
-import type { ProductKeyStore, StoredEvalApproval } from "./product-keys.js";
-import type { EvalApproval, EvalApprovalSource, EvalRole } from "./product-eval.js";
+// roleOf (PRODUCT-EVAL-APPROVER-REREAD): the gateway has no way to re-read a person's Code membership (Cloud asks Code as that
+// person; the gateway holds no person's session). So an approval counts only while it is fresh and not withdrawn:
+//   - fresh: the settings route checked the approver's role with Code at most EVAL_APPROVAL_FRESH_MS (15 minutes) before the
+//     hold. Older, the hold answers eval_approval_stale and the approver must approve again (with a new role check);
+//   - not withdrawn: when Cloud learns that the approver's membership or role changed (its member and invite routes), it
+//     withdraws every approval they made up to then (ProductKeyStore.withdrawApprovals), read here with the approval.
+// Anything unreadable fails the hold (the store throws: 503, nothing held). Never a guess.
+import { EVAL_APPROVAL_FRESH_MS, type ProductKeyStore, type StoredEvalApproval } from "./product-keys.js";
+import { EVAL_APPROVAL_STALE, type EvalApproval, type EvalApprovalSource, type EvalRole } from "./product-eval.js";
 
-/** How long a recorded approval counts: one working day. */
-export const EVAL_APPROVAL_VALID_MS = 24 * 60 * 60_000;
+export { EVAL_APPROVAL_FRESH_MS };
 
 type Reader = Pick<ProductKeyStore, "evalFor">;
-const live = (approval: StoredEvalApproval | undefined, now: number): StoredEvalApproval | undefined =>
-  approval !== undefined && approval.approvedAt <= now && now - approval.approvedAt < EVAL_APPROVAL_VALID_MS ? approval : undefined;
+/** The approval when the store says it counts now; "stale" when one is recorded but no longer counts; undefined when none. */
+async function counted(store: Reader, iss: string, cid: string, project: string, now: number): Promise<StoredEvalApproval | typeof EVAL_APPROVAL_STALE | undefined> {
+  const { approval, approvalState } = await store.evalFor(iss, cid, project);
+  if (approval === undefined) return undefined;
+  // The store's state, and this hold's own clock again (fail closed: both must say it counts).
+  return approvalState === "current" && approval.approvedAt <= now && now - approval.approvedAt < EVAL_APPROVAL_FRESH_MS ? approval : EVAL_APPROVAL_STALE;
+}
 
 export function storedEvalApprovals(store: Reader, now: () => number = Date.now): EvalApprovalSource {
   return {
-    async current(iss, cid, project): Promise<EvalApproval | undefined> {
-      const approval = live((await store.evalFor(iss, cid, project)).approval, now());
-      if (approval === undefined) return undefined;
+    async current(iss, cid, project): Promise<EvalApproval | typeof EVAL_APPROVAL_STALE | undefined> {
+      const approval = await counted(store, iss, cid, project, now());
+      if (approval === undefined || approval === EVAL_APPROVAL_STALE) return approval;
       return { selection: approval.selection, inputsDigest: approval.inputsDigest, maxCalls: approval.maxCalls, maxCostMicros: approval.maxCostMicros, ...(approval.model === undefined ? {} : { model: approval.model }), approver: { ...approval.approver } };
     },
     async roleOf(iss, cid, project, approver): Promise<EvalRole | undefined> {
-      // Re-read (never cached): the same record, still live, and still naming this approver.
-      const approval = live((await store.evalFor(iss, cid, project)).approval, now());
-      if (approval === undefined || approval.approver.personId !== approver.personId || approval.approver.provider !== approver.provider) return undefined;
+      // Re-read (never cached): the same record, still counted, and still naming this approver.
+      const approval = await counted(store, iss, cid, project, now());
+      if (approval === undefined || approval === EVAL_APPROVAL_STALE || approval.approver.personId !== approver.personId || approval.approver.provider !== approver.provider) return undefined;
       return approval.role;
     },
   };
