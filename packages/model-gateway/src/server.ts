@@ -19,7 +19,7 @@ export interface GatewayDependencies {
   metrics: { overrunBusy(issuer: string, company: string): void };
   modelLimits: ModelLimitsSource; now?: () => number;
   keys: ProviderKeys; transport: ProviderTransport; cautiousCeiling?: number; timeoutMs?: number;
-  log: (event: { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number } | { event: "overrun_busy"; company: string } | { event: "settle_failed" | "refused" | "provider_error" }) => void;
+  log: (event: { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number } | { event: "overrun_busy"; company: string } | { event: "settle_failed" | "refused" | "provider_error" | "price_operator_review" }) => void;
 }
 export const OVERRUN_BUSY_MESSAGE = "Another call for this company may exceed its reserved cost right now; try again in a moment.";
 export const OVERRUN_BUSY_RETRY_SECONDS = 2;
@@ -88,11 +88,13 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     shortenDeadline(startedAt + callDurationMs(guarded.maxTokens));
     const scope = { iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid, ...(claims.per === undefined ? {} : { per: claims.per }) };
     const price = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, "anthropic", guarded.model, deps.cautiousCeiling, controller.signal, "chat"));
+    if (price.operatorReview) log({ event: "price_operator_review" });
     settlementPrice = price; settlementModel = guarded.model;
     const caps = await wait(deps.caps.capsFor(scope, controller.signal));
     if (!validCaps(caps)) { await respond(503, "unavailable", "model access unavailable"); return; }
     let estimate: number;
     try { estimate = estimateCall(guarded.bytes.length, guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
+    if (estimate === Number.MAX_SAFE_INTEGER && !price.operatorReview) log({ event: "price_operator_review" });
     // Do not race a transaction: its outcome must be known before forwarding or settling. Adapters bound their own transactions.
     const overrunCapable = price.estimated || !guarded.inputBounded;
     const admissionExpiresSeconds = Math.floor(now() / 1000) + TASK_TOKEN_SECONDS;

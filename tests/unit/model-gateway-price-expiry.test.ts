@@ -50,7 +50,7 @@ it("hung transaction is an unknown outcome, retries idempotently and cannot writ
     const run = runCorrections(options); await vi.advanceTimersByTimeAsync(25_000);
     expect(await run).toMatchObject({ unknown: 1, corrected: 0, more: true });
     release(); await Promise.resolve(); expect(meter.ledger(id)?.status).toBe("pending"); expect((await meter.read(scope))[0]?.spentMicros).toBe(10);
-    hang = false; expect(await runCorrections(options)).toMatchObject({ corrected: 1 });
+    hang = false; expect(await runCorrections({ ...options, now: now + 60_000 })).toMatchObject({ corrected: 1 });
     expect(await runCorrections(options)).toMatchObject({ corrected: 0 });
     expect(logs).toContainEqual({ event: "price_correction_unknown" }); expect(JSON.stringify(logs)).not.toMatch(/secret|org_|https/);
     expect(vi.getTimerCount()).toBe(0);

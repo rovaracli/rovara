@@ -27,7 +27,7 @@ it("fallback across kinds, garbage cautious rates and the maximum remain positiv
   const store = new InMemoryPriceSnapshotStore(); await store.save({ version: 1, sources: { litellm: { fetchedAt: 1, count: 1, entries: [{ provider: "anthropic", model: "e", kind: "embedding", inputMicrosPerMTok: 999_999_999, outputMicrosPerMTok: 1_000_000_000 }] } } }, 0);
   const prices = new SnapshotPriceSource(store); await prices.reload();
   expect(await resolvePrice(prices, "anthropic", "new")).toEqual({ cacheWriteMicrosPerMTok: 1_499_999_999, inputMicrosPerMTok: 1_499_999_999, outputMicrosPerMTok: 1_500_000_000, estimated: true });
-  for (const value of [0, -1, NaN, Infinity, 1.5, 1_500_000_001]) expect(await resolvePrice({ priceFor: () => undefined, cautiousFor: () => ({ inputMicrosPerMTok: value, outputMicrosPerMTok: value }) }, "anthropic", "new")).toEqual(await resolvePrice(UnknownPriceSource, "anthropic", "new"));
+  for (const value of [0, -1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) expect(await resolvePrice({ priceFor: () => undefined, cautiousFor: () => ({ inputMicrosPerMTok: value, outputMicrosPerMTok: value }) }, "anthropic", "new")).toEqual(await resolvePrice(UnknownPriceSource, "anthropic", "new"));
   expect((await resolvePrice({ priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, estimated: true }) }, "anthropic", "new")).estimated).toBe(true);
 });
 it("Bedrock aliases fold into the dearest known rates within one source", async () => {

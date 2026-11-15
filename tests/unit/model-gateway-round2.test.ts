@@ -34,7 +34,7 @@ it.each(["key", "token", "key window", "token window", "encoded key", "encoded t
   expect(r.destroyed).toBe(true); expect(r.ended).toBe(false);
   for (const piece of pieces) expect(r.text()).not.toContain(piece);
   expect(JSON.stringify(f.logs)).not.toContain(material);
-  expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: true }));
+  expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: false }));
 });
 
 it("R2 scanner processes the response ceiling with maximum secret lengths in bounded time", () => {
@@ -70,7 +70,7 @@ it.each([10, 6000, 128_000])("R2 deadline scales with applied max %s and never e
   try {
     await vi.advanceTimersByTimeAsync(duration - 1); expect(cancelled).toBe(false);
     await vi.advanceTimersByTimeAsync(1); expect(cancelled).toBe(true); await running;
-    expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: true }));
+    expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: false }));
     expect((await f.deps.meter.read(scope))[0]?.spentMicros).toBe(Buffer.byteLength(JSON.stringify({ ...requestBody, max_tokens: maxTokens })) + maxTokens * 2);
   } finally { await vi.advanceTimersByTimeAsync(24 * 60 * 60_000); await running; vi.useRealTimers(); }
 });
@@ -86,7 +86,7 @@ it("R2 an ended task stops an idle admitted stream and stays company scoped", as
     await vi.advanceTimersByTimeAsync(1000); expect(cancelled).toBe(false);
     f.ended.end(scope.iss, scope.cid, scope.tid);
     await vi.advanceTimersByTimeAsync(1000); expect(cancelled).toBe(true); await running;
-    expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: true }));
+    expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: false }));
   } finally { await vi.runAllTimersAsync(); await running; vi.useRealTimers(); }
 });
 
@@ -150,7 +150,7 @@ it.each([null, "secret-tier", { ephemeral_5m_input_tokens: -1, ephemeral_1h_inpu
     yield sse("message_delta", { usage: { output_tokens: 0 } }); yield sse("message_stop");
   })() }) });
   const r = await call(f.deps); expect(r.destroyed).toBe(true); expect(r.ended).toBe(false);
-  expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: true }));
+  expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: false }));
   expect(JSON.stringify(f.logs)).not.toContain("secret-tier");
 });
 
@@ -175,7 +175,7 @@ it("R2 streamed provider error after accepted head still charges the full hold",
   const f = setup({ transport: async () => ({ status: 200, body: (async function* () { yield sse("error", { error: { type: "overloaded_error", message: "private-error" } }); })() }) });
   const r = await call(f.deps); expect(r.destroyed).toBe(true);
   expect((await f.deps.meter.read(scope))[0]?.spentMicros).toBeGreaterThan(0);
-  expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: true }));
+  expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: false }));
 });
 
 it("R2 ended check refuses the next chunk without waiting for the idle poll", async () => {

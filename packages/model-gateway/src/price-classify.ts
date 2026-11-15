@@ -78,3 +78,18 @@ export function ratesOf(value: unknown, now: number): Price | string {
   }
   return { inputMicrosPerMTok: rateMicros(input), outputMicrosPerMTok: rateMicros(output) };
 }
+
+/** Known token tiers survive classification failure; no arithmetic may discard an expensive model. */
+export function knownRates(value: unknown): (Price & { operatorReview?: true }) | undefined {
+  const row = record(value);
+  if (row === undefined || typeof row.input_cost_per_token !== "number" || !Number.isFinite(row.input_cost_per_token) || row.input_cost_per_token <= 0 || typeof row.output_cost_per_token !== "number" || !Number.isFinite(row.output_cost_per_token) || row.output_cost_per_token <= 0) return undefined;
+  let input = row.input_cost_per_token; let output = row.output_cost_per_token;
+  for (const [field, rate] of Object.entries(row)) {
+    const disposition = priceFieldDisposition(field);
+    if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0) continue;
+    if (disposition === "input") input = Math.max(input, rate);
+    if (disposition === "output") output = Math.max(output, rate);
+  }
+  const overflow = input > Number.MAX_SAFE_INTEGER / RATE_SCALE || output > Number.MAX_SAFE_INTEGER / RATE_SCALE;
+  return { inputMicrosPerMTok: Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.ceil(input * RATE_SCALE))), outputMicrosPerMTok: Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.ceil(output * RATE_SCALE))), ...(overflow ? { operatorReview: true } : {}) };
+}

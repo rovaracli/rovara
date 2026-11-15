@@ -34,11 +34,11 @@ export interface EstimatedSettlement { provider: string; model: string; kind: Pr
 export interface EstimatedCall extends MeterScope {
   callKey: string; month: string; provider: string; model: string; kind: PriceKind; usage: TokenUsage;
   settledMicros: number; status: "pending" | "corrected" | "expired"; settledAt: number;
-  correctedFrom?: number; correctedTo?: number; deltaMicros?: number; correctedAt?: number; expiredAt?: number; runId?: string; priceSource?: PriceOrigin;
+  capExceeded?: true; correctedFrom?: number; correctedTo?: number; deltaMicros?: number; correctedAt?: number; expiredAt?: number; runId?: string; priceSource?: PriceOrigin;
 }
 export interface ExpiryInput { callKey: string; runId: string; now: number; signal?: AbortSignal }
 export interface CorrectionInput extends ExpiryInput { realMicros: number; caps: Caps; priceSource: PriceOrigin }
-export type CorrectionResult = { status: "corrected"; deltaMicros: number } | { status: "already" | "missing" | "expired" | "busy" | "unknown" };
+export type CorrectionResult = { status: "corrected"; deltaMicros: number; capExceeded?: true } | { status: "already" | "missing" | "expired" | "busy" | "unknown" };
 export function costView(rows: readonly MeterRow[]): Array<{ item: MeterItem; spentMicros: number; estimated: boolean }> {
   return rows.map((row) => ({ item: row.item, spentMicros: row.spentMicros, estimated: row.estimatedMicros > 0 }));
 }
@@ -208,6 +208,7 @@ export class InMemoryMeter implements Meter {
     if (this.conflict()) return { status: "busy" };
     const expire = input.now - call.settledAt > PENDING_RETENTION_DAYS * DAY_MS;
     const deltaMicros = input.realMicros - call.settledMicros;
+    let capExceeded = false;
     if (!expire) {
       for (const target of ledger.targets) {
         const row = this.#row(target, call);
@@ -216,12 +217,13 @@ export class InMemoryMeter implements Meter {
       const capFor = { task: input.caps.task, person: input.caps.personMonth, project: input.caps.projectMonth, company: input.caps.companyMonth };
       for (const target of ledger.targets) {
         const row = this.#row(target, call); const spentMicros = row.spentMicros + deltaMicros; const cap = capFor[target.item];
+        if (deltaMicros > 0 && cap !== undefined && row.committed + deltaMicros > cap) capExceeded = true;
         this.#rows.set(target.key, { ...row, spentMicros, committed: row.committed + deltaMicros, estimatedMicros: row.estimatedMicros - call.settledMicros, overrun: cap === undefined ? row.overrun : spentMicros > cap });
       }
     }
-    ledger.call = expire ? { ...call, status: "expired", expiredAt: input.now, runId: input.runId } : { ...call, status: "corrected", correctedFrom: call.settledMicros, correctedTo: input.realMicros, deltaMicros, correctedAt: input.now, runId: input.runId, priceSource: { ...input.priceSource } };
+    ledger.call = expire ? { ...call, status: "expired", expiredAt: input.now, runId: input.runId } : { ...call, status: "corrected", correctedFrom: call.settledMicros, correctedTo: input.realMicros, deltaMicros, correctedAt: input.now, runId: input.runId, priceSource: { ...input.priceSource }, ...(capExceeded ? { capExceeded: true } : {}) };
     this.#removePending(call);
-    return expire ? { status: "expired" } : { status: "corrected", deltaMicros };
+    return expire ? { status: "expired" } : { status: "corrected", deltaMicros, ...(capExceeded ? { capExceeded: true } : {}) };
   }
   async read(scope: MeterScope): Promise<readonly MeterRow[]> {
     if (!validScope(scope)) throw new Error("meter unavailable");

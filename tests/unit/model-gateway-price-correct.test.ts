@@ -28,7 +28,7 @@ it("upward corrections set overrun, lowering clears it; zero is refused, expiry 
   await meter.settle(r.reservation, 80, estimated);
   const input = { callKey: JSON.stringify([scope.iss, scope.cid, r.reservation.id]), realMicros: 101, caps: cap, priceSource: { source: "aws" as const, fetchedAt: now }, runId: "run", now };
   expect(await meter.correct({ ...input, realMicros: 0 })).toEqual({ status: "busy" });
-  expect(await meter.correct(input)).toEqual({ status: "corrected", deltaMicros: 21 });
+  expect(await meter.correct(input)).toEqual({ status: "corrected", deltaMicros: 21, capExceeded: true });
   expect((await meter.read(scope)).find((row) => row.item === "company")?.overrun).toBe(true);
   expect((await meter.reserve({ scope: { ...scope, tid: "task_2" }, caps, estimateMicros: 1 })).ok).toBe(false);
   const expiring = new InMemoryMeter(() => now); const e = await expiring.reserve({ scope, caps, estimateMicros: 80 }); if (!e.ok) throw new Error("fixture");

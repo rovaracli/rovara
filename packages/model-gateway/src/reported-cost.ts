@@ -24,5 +24,5 @@ export function settleAmount(input: { reportedCostMicros?: number; usage?: Token
     const actualMicros = Math.max(1, usageCost(input.usage, input.price));
     return { actualMicros, estimated: input.price.estimated, ...(input.price.estimated ? { usage: { ...input.usage } } : {}) };
   }
-  return { actualMicros: input.reservationMicros, estimated: true };
+  return { actualMicros: input.reservationMicros, estimated: input.price.estimated };
 }

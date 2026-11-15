@@ -18,12 +18,12 @@ it("rejects missing, truncated, oversized, shallow floods and too-small sources 
     const r = await fetchLiteLLM(t, { now }); expect(r.ok).toBe(false); expect(JSON.stringify(r)).not.toContain("private-canary");
   }
 });
-it("raise-only, drift and shrink compare against the last good snapshot", async () => {
+it("ordinary raise-only and shrink compare against the last good snapshot; increases are immediate", async () => {
   const { fetchLiteLLM } = await import("../../packages/model-gateway/src/price-sources.js");
   const previous = [{ provider: "anthropic", model: "m", kind: "chat" as const, inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 }];
   const lower = await fetchLiteLLM(transport({ m: { ...base, input_cost_per_token: 0.5e-6 } }), { now, minModels: 1, previous });
   expect(lower.ok && lower.entries).toEqual(previous); expect(lower.ok && lower.report.ignoredLower).toBe(1);
-  expect((await fetchLiteLLM(transport({ m: { ...base, input_cost_per_token: 200e-6 } }), { now, minModels: 1, previous })).ok).toBe(false);
+  expect((await fetchLiteLLM(transport({ m: { ...base, input_cost_per_token: 200e-6 } }), { now, minModels: 1, previous })).ok).toBe(true);
   expect((await fetchLiteLLM(transport({ m: base }), { now, minModels: 1, previous: [...previous, { ...previous[0]!, model: "other" }] })).ok).toBe(false);
 });
 it("reported-cost and overrides obey precedence, expiry, runtime validity and rounded micros", async () => {

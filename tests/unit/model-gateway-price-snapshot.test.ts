@@ -32,7 +32,7 @@ it("each source rejection preserves stored bytes and fetchedAt, including bounde
   const { PriceRefresher } = await import("../../packages/model-gateway/src/price-refresh.js");
   const base = { litellm_provider: "anthropic", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 };
   let deep: unknown = 1; for (let i = 0; i < 18; i++) deep = { deeper: deep };
-  const bodies = [Buffer.from("private-canary"), Buffer.from('{"m":'), Buffer.alloc(20_000_000), Buffer.from('{}'), Buffer.from(JSON.stringify({ m: { ...base, nested: deep } })), Buffer.from(JSON.stringify({ m: { ...base, input_cost_per_token: 200e-6 } })), Buffer.from(JSON.stringify({ m: { ...base, unknown_cost: 1 } }))];
+  const bodies = [Buffer.from("private-canary"), Buffer.from('{"m":'), Buffer.alloc(20_000_000), Buffer.from('{}'), Buffer.from(JSON.stringify({ m: { ...base, nested: deep } }))];
   for (const body of bodies) {
     const store = new InMemoryPriceSnapshotStore(); const snapshot = { version: 1, sources: { litellm: { fetchedAt: 1, count: 1, entries: [{ ...entry, model: "m" }] } } }; await store.save(snapshot, 0);
     const source = new SnapshotPriceSource(store); await source.reload(); const before = JSON.stringify(await store.load());

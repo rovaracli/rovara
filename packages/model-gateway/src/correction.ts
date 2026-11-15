@@ -1,17 +1,21 @@
 import { record, whole } from "./model-gateway-token.js";
-import { CORRECTION_RUN_MAX, CORRECTION_RUN_MS } from "./price-constants.js";
+import { CORRECTION_RUN_MAX, CORRECTION_RUN_MS, MAX_ENTRIES_PER_SOURCE } from "./price-constants.js";
 import { usageCost } from "./estimate.js";
 import { validCaps, type CapsSource } from "./caps.js";
 import { validPrice, type PriceOrigin, type PriceSource } from "./price.js";
 import type { CorrectionResult, Meter } from "./meter.js";
 import type { PriceKey } from "./price-snapshot.js";
 export interface CorrectionReport { corrected: number; already: number; skipped: number; expired: number; unknown: number; more: boolean }
-export interface CorrectionLog { event: "price_corrected" | "price_expired" | "price_correction_busy" | "price_correction_unknown"; deltaMicros?: number }
+export interface CorrectionLog { event: "price_corrected" | "price_expired" | "price_correction_busy" | "price_correction_unknown" | "price_correction_operator_review" | "price_correction_cap_exceeded"; deltaMicros?: number }
 interface RunOptions { meter: Meter; now: number; runId: string; log?: (line: CorrectionLog) => void; clock?: () => number }
 interface Continuation { keys?: string; active?: { key: PriceKey; nextKey?: string; calls?: string } }
 // Owned by the runner, scoped to the meter instance. A restarted process safely rescans from the start.
 // Concurrent runs may revisit a page; only the meter's pending-status transaction arbitrates writes.
 const continuations = new WeakMap<Meter, Continuation>();
+const retries = new WeakMap<Meter, Map<string, { attempts: number; after: number }>>();
+const MAX_UNKNOWN_ATTEMPTS = 3;
+const UNKNOWN_BACKOFF_MS = 60_000;
+const ATTEMPT_MS = 1000;
 const expiryContinuations = new WeakMap<Meter, string>();
 function runContext(options: RunOptions) {
   const report: CorrectionReport = { corrected: 0, already: 0, skipped: 0, expired: 0, unknown: 0, more: false };
@@ -36,7 +40,7 @@ function runContext(options: RunOptions) {
     try {
       const result = await wait(operation());
       if (result.status === "unknown") { unknown(); return false; }
-      if (result.status === "corrected" && Number.isSafeInteger(result.deltaMicros)) { report.corrected++; log({ event: "price_corrected", deltaMicros: result.deltaMicros }); }
+      if (result.status === "corrected" && Number.isSafeInteger(result.deltaMicros)) { report.corrected++; log({ event: "price_corrected", deltaMicros: result.deltaMicros }); if (result.capExceeded === true && result.deltaMicros > 0) log({ event: "price_correction_cap_exceeded" }); }
       else if (result.status === "already") report.already++;
       else if (result.status === "expired") { report.expired++; log({ event: "price_expired" }); }
       else if (result.status === "busy" || result.status === "missing") { report.skipped++; report.more = true; if (result.status === "busy") log({ event: "price_correction_busy" }); }
@@ -44,11 +48,21 @@ function runContext(options: RunOptions) {
       return true;
     } catch { unknown(); return false; }
   };
-  return { report, room, wait, transaction, signal: controller.signal, visit: () => { visited++; }, remaining: () => CORRECTION_RUN_MAX - visited, close: () => { clearTimeout(timer); controller.abort(); } };
+  const attempt = async (operation: (signal: AbortSignal) => Promise<CorrectionResult>): Promise<boolean> => {
+    const local = new AbortController(); const abort = () => local.abort();
+    controller.signal.addEventListener("abort", abort, { once: true });
+    if (controller.signal.aborted) abort();
+    const timer = setTimeout(abort, ATTEMPT_MS);
+    const unknown = new Promise<CorrectionResult>((resolve) => local.signal.addEventListener("abort", () => resolve({ status: "unknown" }), { once: true }));
+    try { return await transaction(() => Promise.race([Promise.resolve().then(() => operation(local.signal)), unknown])); }
+    finally { clearTimeout(timer); local.abort(); controller.signal.removeEventListener("abort", abort); }
+  };
+  return { report, room, wait, transaction, attempt, log, signal: controller.signal, visit: () => { visited++; }, remaining: () => CORRECTION_RUN_MAX - visited, close: () => { clearTimeout(timer); controller.abort(); } };
 }
 function validRun(options: RunOptions): boolean { return whole(options.now) && typeof options.runId === "string" && options.runId.length > 0 && options.runId.length <= 512; }
 export async function runCorrections(options: RunOptions & { prices: PriceSource; caps: CapsSource }): Promise<CorrectionReport> {
   const ctx = runContext(options); const { report } = ctx;
+  const retry = retries.get(options.meter) ?? new Map<string, { attempts: number; after: number }>(); retries.set(options.meter, retry);
   const state = structuredClone(continuations.get(options.meter) ?? {});
   try {
     if (!validRun(options)) { report.more = true; return report; }
@@ -73,12 +87,23 @@ export async function runCorrections(options: RunOptions & { prices: PriceSource
       for (const call of page.items) {
         if (!ctx.room()) { complete = false; break; }
         ctx.visit();
+        const priorAttempt = retry.get(call.callKey);
+        if (priorAttempt !== undefined && (priorAttempt.attempts >= MAX_UNKNOWN_ATTEMPTS || options.now < priorAttempt.after)) { report.skipped++; report.more = true; continue; }
+        if (priorAttempt === undefined && retry.size >= MAX_ENTRIES_PER_SOURCE) { report.skipped++; report.more = true; ctx.log({ event: "price_correction_operator_review" }); continue; }
         const caps = await ctx.wait(options.caps.capsFor(call, ctx.signal));
         if (!validCaps(caps)) { report.skipped++; report.more = true; continue; }
         // Last item may consume the count budget, but must still finish within the shared time bound.
         await ctx.wait(undefined);
         const realMicros = Math.max(1, usageCost(call.usage, price));
-        if (!await ctx.transaction(() => options.meter.correct({ callKey: call.callKey, realMicros, caps, priceSource, now: options.now, runId: options.runId, signal: ctx.signal }))) { complete = false; break; }
+        // Reserve retry state before awaiting: concurrent runners cannot each start an attempt.
+        if (retry.get(call.callKey) !== priorAttempt) { report.skipped++; report.more = true; continue; }
+        const attempts = (priorAttempt?.attempts ?? 0) + 1;
+        retry.set(call.callKey, { attempts, after: options.now + UNKNOWN_BACKOFF_MS * 2 ** (attempts - 1) });
+        if (!await ctx.attempt((signal) => options.meter.correct({ callKey: call.callKey, realMicros, caps, priceSource, now: options.now, runId: options.runId, signal }))) {
+          if (attempts >= MAX_UNKNOWN_ATTEMPTS) ctx.log({ event: "price_correction_operator_review" });
+          continue; // Keep the pending ledger row, but advance this page for other calls.
+        }
+        retry.delete(call.callKey);
       }
       if (!complete) { report.more = true; break; }
       if (page.cursor !== undefined) { active.calls = page.cursor; report.more = true; break; }
