@@ -1,4 +1,4 @@
-// CI's six test shards are balanced by recorded run time, not by file count (owner decision "CI cost", 2026-11-02). These tests pin the split: every
+// CI's eight test shards are balanced by recorded run time, not by file count (owner decision "CI cost", 2026-11-02). These tests pin the split: every
 // test file lands in exactly one shard, the split is the same on every machine, the checked-in timings keep the shards close to equal, and the
 // vitest config and the workflow use it.
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -28,7 +28,7 @@ function testFiles(): string[] {
   return found.sort();
 }
 
-const SHARDS = 6;
+const SHARDS = 8;
 const files = testFiles();
 const timings = loadTimings(TIMINGS_PATH);
 
@@ -38,7 +38,7 @@ describe("the duration-balanced test shards", () => {
     expect(files).toContain("tests/contract/test-shard-durations.test.ts");
   });
 
-  it("give every test file to exactly one of the six shards", () => {
+  it("give every test file to exactly one of the eight shards", () => {
     const plan = planShards(files, timings, SHARDS);
     expect(plan).toHaveLength(SHARDS);
     expect(plan.flat().sort()).toEqual(files);
@@ -73,7 +73,7 @@ describe("the duration-balanced test shards", () => {
     expect(() => planShards(files, timings, 0)).toThrow(/positive integer/);
   });
 
-  it("are what vitest's --shard takes: the sequencer returns one share per shard, and the six shares are the whole list once", async () => {
+  it("are what vitest's --shard takes: the sequencer returns one share per shard, and the eight shares are the whole list once", async () => {
     const specs = files.map((file) => ({ moduleId: join(process.cwd(), file) }));
     const shares: string[][] = [];
     for (let index = 1; index <= SHARDS; index++) {
@@ -89,7 +89,7 @@ describe("the duration-balanced test shards", () => {
     expect(config.test?.sequence?.sequencer).toBe(DurationSequencer);
   });
 
-  it("matches the six shards of the CI workflow, and `npm test` takes its shard from the same matrix", () => {
+  it("matches the eight shards of the CI workflow, and `npm test` takes its shard from the same matrix", () => {
     const workflow = YAML.parse(readFileSync(".github/workflows/ci.yml", "utf8")) as { jobs: { test: { strategy: { matrix: { shard: number[] } }; steps: { run?: string }[] } } };
     expect(workflow.jobs.test.strategy.matrix.shard).toEqual(Array.from({ length: SHARDS }, (_, index) => index + 1));
     expect(workflow.jobs.test.steps.some((step) => step.run === "npm test -- --shard=${{ matrix.shard }}/${{ strategy.job-total }}")).toBe(true);

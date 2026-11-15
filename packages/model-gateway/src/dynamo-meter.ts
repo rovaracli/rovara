@@ -130,6 +130,8 @@ function parseCallKey(callKey: string): { pk: string; sk: string; iss: string; c
   if (iss.length === 0 || iss.length > 2048 || !COMPANY.test(cid) || !/^[0-9a-f-]{36}$/u.test(id)) return undefined;
   return { pk: companyPartition(iss, cid), sk: `CALL#${id}`, iss, cid };
 }
+/** The ledger item's key: exactly the table's key attributes. DynamoDB refuses a key with any other attribute ("The number of conditions on the keys is invalid"), so the parsed call key (iss, cid too) is never passed as one. */
+const ledgerKey = (where: { pk: string; sk: string }): { pk: string; sk: string } => ({ pk: where.pk, sk: where.sk });
 
 export class DynamoMeter implements Meter {
   readonly #db: Dynamo;
@@ -395,11 +397,11 @@ export class DynamoMeter implements Meter {
     const bound = this.#bounded(input.signal);
     try {
       let item: Item | undefined;
-      try { item = await this.#db.get(this.#t.ledger, where, { signal: bound.signal }); } catch { return { status: "unknown" }; }
+      try { item = await this.#db.get(this.#t.ledger, ledgerKey(where), { signal: bound.signal }); } catch { return { status: "unknown" }; }
       if (item === undefined || item.status === undefined) return { status: "missing" };
       if (item.status !== "pending") return { status: "already" };
       if (!whole(item.settledAt) || input.now - item.settledAt <= PENDING_RETENTION_DAYS * DAY_MS) return { status: "busy" };
-      const applied = await this.#db.update(this.#t.ledger, where,
+      const applied = await this.#db.update(this.#t.ledger, ledgerKey(where),
         (e) => `SET ${e.name("status")} = ${e.value("expired")}, ${e.name("expiredAt")} = ${e.value(input.now)}, ${e.name("runId")} = ${e.value(input.runId)} ${this.#closePending(e)}`,
         (e) => `${e.name("status")} = ${e.value("pending")}`, { signal: bound.signal });
       return applied ? { status: "expired" } : { status: "already" };
@@ -414,7 +416,7 @@ export class DynamoMeter implements Meter {
     let observedRows: MeterRow[] | undefined;
     if (where !== undefined) {
       try {
-        const observed = await this.#db.get(this.#t.ledger, where);
+        const observed = await this.#db.get(this.#t.ledger, ledgerKey(where));
         const targets = observed === undefined ? undefined : readTargets(observed.targets, this.#combined !== undefined);
         if (targets !== undefined) observedRows = (await this.#rows(where.pk, targets)).map((row, i) => rowOf(row, targets[i]!, where.cid));
       } catch { observedRows = undefined; }
@@ -425,7 +427,7 @@ export class DynamoMeter implements Meter {
     try {
       // Re-read after the hook: every decision below is from this read, and the transaction applies only if it still holds.
       let item: Item | undefined;
-      try { item = await this.#db.get(this.#t.ledger, where, { signal: bound.signal }); } catch { return { status: "unknown" }; }
+      try { item = await this.#db.get(this.#t.ledger, ledgerKey(where), { signal: bound.signal }); } catch { return { status: "unknown" }; }
       if (item === undefined || item.status === undefined) return { status: "missing" };
       if (item.status !== "pending") return { status: "already" };
       let call: EstimatedCall; const targets = readTargets(item.targets, this.#combined !== undefined);
@@ -436,7 +438,7 @@ export class DynamoMeter implements Meter {
       const ledgerGuard = (e: Expr) => [`${e.name("status")} = ${e.value("pending")}`, `${e.name("settledMicros")} = ${e.value(call.settledMicros)}`,
         call.priceVersion === undefined ? `attribute_not_exists(${e.name("priceVersion")})` : `${e.name("priceVersion")} = ${e.value(call.priceVersion)}`].join(" AND ");
       if (expire) {
-        const applied = await this.#db.update(this.#t.ledger, where,
+        const applied = await this.#db.update(this.#t.ledger, ledgerKey(where),
           (e) => `SET ${e.name("status")} = ${e.value("expired")}, ${e.name("expiredAt")} = ${e.value(input.now)}, ${e.name("runId")} = ${e.value(input.runId)} ${this.#closePending(e)}`,
           ledgerGuard, { signal: bound.signal });
         return applied ? { status: "expired" } : { status: "busy" };
@@ -469,7 +471,7 @@ export class DynamoMeter implements Meter {
               `${e.name("committed")} >= ${e.value(Math.max(0, -deltaMicros))}`, `${e.name("committed")} < ${e.value(MAX - Math.max(0, deltaMicros))}`].join(" AND ") };
         });
         const stillPending = input.estimated === true;
-        actions.push({ kind: "Update", table: this.#t.ledger, key: where, condition: ledgerGuard,
+        actions.push({ kind: "Update", table: this.#t.ledger, key: ledgerKey(where), condition: ledgerGuard,
           update: (e) => `SET ${[
             `${e.name("status")} = ${e.value(stillPending ? "pending" : "corrected")}`, `${e.name("settledMicros")} = ${e.value(input.realMicros)}`,
             ...(input.priceVersion === undefined ? [] : [`${e.name("priceVersion")} = ${e.value(input.priceVersion)}`]),
