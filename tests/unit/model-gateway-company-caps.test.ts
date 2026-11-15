@@ -58,6 +58,25 @@ describe("budgets from the Cloud company backend's Companies table", () => {
     expect(validCaps(await setup().caps.capsFor({ ...scope, cid: "COMPANY#x" }))).toBe(false);
   });
 
+  it("carries the company's learning cap (DEC 226) beside the caps, and omits it when the row has none (an older row: the default applies)", async () => {
+    const { caps, seed } = setup();
+    await seed({ ...all, learningMonthlyUsdMicros: 7_000_000 });
+    const read = await caps.capsFor(scope);
+    expect(read).toEqual({ task: 2_000_000, projectMonth: 20_000_000, personMonth: 10_000_000, companyMonth: 50_000_000, learningMonth: 7_000_000 });
+    expect(validCaps(read)).toBe(true);
+    const older = setup(); await older.seed(all);
+    expect(Object.keys(await older.caps.capsFor(scope))).not.toContain("learningMonth");
+    const zero = setup(); await zero.seed({ ...all, learningMonthlyUsdMicros: 0 });
+    expect((await zero.caps.capsFor(scope)).learningMonth).toBe(0);
+  });
+
+  it("refuses a learning cap that is null, negative, text or past the backend's ceiling", async () => {
+    for (const bad of [null, -1, "7", 1_000_000_000_001]) {
+      const f = setup(); await f.seed({ ...all, learningMonthlyUsdMicros: bad });
+      expect(validCaps(await f.caps.capsFor(scope)), String(bad)).toBe(false);
+    }
+  });
+
   it("a failed read throws (the call stops before anything is reserved or sent)", async () => {
     const { wire, caps, seed } = setup();
     await seed(all);

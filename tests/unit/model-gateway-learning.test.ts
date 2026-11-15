@@ -289,6 +289,48 @@ describe("learning class: money", () => {
     expect(seen).toMatchObject({ companyMonth: 5_000_000, combinedCompanyMonth: 5_000_000 });
   });
 
+  describe("the company's own learning cap (settings.budgets.learningMonthlyUsdMicros, DEC 226)", () => {
+    const seenCaps = async (g: ReturnType<typeof learningGateway>) => {
+      let seen: Caps | undefined;
+      const reserve = g.learningMeter.reserve.bind(g.learningMeter);
+      g.learningMeter.reserve = async (input) => { seen = input.caps; return reserve(input); };
+      await learn(g.deps);
+      return seen;
+    };
+    const withLearning = (learningMonth: number | undefined, companyMonth = 1_000_000_000) => new FixedCapsSource({ ...agentCaps, companyMonth, ...(learningMonth === undefined ? {} : { learningMonth }) });
+    it("bounds the learning month row, below the $20 default", async () => {
+      const g = learningGateway({ companyCaps: withLearning(3_000_000) });
+      expect(await seenCaps(g)).toEqual({ task: Number.MAX_SAFE_INTEGER, projectMonth: Number.MAX_SAFE_INTEGER, companyMonth: 3_000_000, combinedCompanyMonth: 1_000_000_000 });
+    });
+    it("may be raised above the $20 default, still under the company's monthly cap", async () => {
+      const g = learningGateway({ companyCaps: withLearning(50_000_000) });
+      expect(await seenCaps(g)).toMatchObject({ companyMonth: 50_000_000, combinedCompanyMonth: 1_000_000_000 });
+    });
+    it("never passes the company's monthly cap, whatever a row says", async () => {
+      const g = learningGateway({ companyCaps: withLearning(900_000_000, 40_000_000) });
+      expect(await seenCaps(g)).toMatchObject({ companyMonth: 40_000_000, combinedCompanyMonth: 40_000_000 });
+    });
+    it("an older row (no learning cap) gets the default ceiling the route was built with", async () => {
+      const g = learningGateway({ companyCaps: withLearning(undefined), ceiling: 4_000_000 });
+      expect(await seenCaps(g)).toMatchObject({ companyMonth: 4_000_000 });
+    });
+    it("a company's cap wins over the route's default ceiling in both directions", async () => {
+      const g = learningGateway({ companyCaps: withLearning(30_000_000), ceiling: 4_000_000 });
+      expect(await seenCaps(g)).toMatchObject({ companyMonth: 30_000_000 });
+    });
+    it("a cap of zero pauses learning with no_budget, nothing sent (not a cost_too_high that implies a smaller call would fit)", async () => {
+      const g = learningGateway({ companyCaps: withLearning(0) });
+      const sink = await learn(g.deps);
+      expect(sink.status).toBe(422);
+      expectPaused(sink, "no_budget");
+      await nothingMoved(g);
+    });
+    it("the caps source the corrections use answers the same learning month", async () => {
+      const g = learningGateway({ companyCaps: withLearning(6_000_000, 100_000_000) });
+      expect(await g.learning.caps.capsFor(learningScope())).toEqual({ task: Number.MAX_SAFE_INTEGER, projectMonth: Number.MAX_SAFE_INTEGER, companyMonth: 6_000_000, combinedCompanyMonth: 100_000_000 });
+    });
+  });
+
   it("the learning month full: refused with monthly_limit, nothing sent", async () => {
     // Each call holds 10 input bytes-ish plus 10 output tokens; a ceiling just above one call's hold fits exactly one call.
     const g = learningGateway({ ceiling: 1_000 });

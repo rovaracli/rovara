@@ -59,7 +59,10 @@ function Settings({ settings, reload }: { settings: CompanySettingsRead; reload:
   try {
    const micros = capToMicros(cap);
    if (micros === undefined) { setNotice({ kind: "failed", text: "The monthly cap must be an amount in dollars, like 1500 or 1500.50." }); return; }
-   const budgets = { ...(typeof settings.raw["budgets"] === "object" && settings.raw["budgets"] !== null ? settings.raw["budgets"] : {}), companyMonthlyUsdMicros: micros };
+   const saved = typeof settings.raw["budgets"] === "object" && settings.raw["budgets"] !== null ? settings.raw["budgets"] as Record<string, unknown> : {};
+   // The learning cap is never above the company cap (Cloud refuses it): lowering the company cap lowers it too.
+   const learning = saved["learningMonthlyUsdMicros"];
+   const budgets = { ...saved, companyMonthlyUsdMicros: micros, ...(typeof learning === "number" && micros !== null ? { learningMonthlyUsdMicros: Math.min(learning, micros) } : {}) };
    const settingsBody = { ...settings.raw, budgets, instructions: rules.filter(rule => rule.text.trim() !== "").map(rule => ({ text: rule.text.trim(), priority: rule.priority })), freshSignInSeconds: seconds };
    const answer = await api.sendAnswer("PUT", ORG_SETTINGS_PATH, { expectedVersion: settings.version, settings: settingsBody }, { parse: body => body }, { retry: "never" });
    const proposed = typeof answer === "object" && answer !== null && "pending" in answer && !("settings" in answer);

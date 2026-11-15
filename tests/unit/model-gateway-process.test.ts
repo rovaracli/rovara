@@ -184,7 +184,8 @@ describe("gateway process: product route", () => {
     const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
     const lines: Array<Record<string, unknown>> = [];
     const swept: number[] = [];
-    const productMeter = Object.assign(new InMemoryMeter(() => now, undefined, undefined, { combineCompanyWith: new InMemoryMeter(() => now) }), { sweepOpenHolds: async (at: number) => { swept.push(at); return { swept: 2, already: 0, failed: 0, more: false }; } });
+    // A meter must say which tables it combines with and owns (a DynamoMeter does), so the startup checks can see them.
+    const productMeter = Object.assign(new InMemoryMeter(() => now, undefined, undefined, { combineCompanyWith: new InMemoryMeter(() => now) }), { sweepOpenHolds: async (at: number) => { swept.push(at); return { swept: 2, already: 0, failed: 0, more: false }; }, combinedTables: () => ({ meter: TABLES.meter, markers: TABLES.markers }), ownTables: () => ({ meter: "p-meter", ledger: "p-ledger", markers: "p-markers" }) });
     const routes = { route: () => undefined };
     const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0 };
     const stageSweeps: number[] = [];
@@ -232,6 +233,31 @@ describe("gateway process: the product meter combines with THIS agent meter", ()
     const productMeter = new DynamoMeter({ db, tables: { meter: "p-meter", ledger: "p-ledger", markers: "p-markers" }, combinedCompany: { meter: "someone-elses-meter", markers: config.tables.markers } });
     await expect(startServe(config, { db, fetch: jwksFetch, now: () => now, listen: false, log: () => undefined, keys: { keyFor: async () => "fixture-provider-key" }, caps: new FixedCapsSource(caps), product: { routes: { route: () => undefined }, meter: productMeter, caps: new FixedCapsSource(caps) } }))
       .rejects.toThrow("product meter must combine the company cap with the agent meter");
+  });
+});
+
+describe("gateway process: a wired product meter must show its tables (DEFERRED GATEWAY-LEARNING-FOLLOWUPS-2)", () => {
+  const fixture = () => {
+    const wire = new WireDynamo(Object.values(TABLES));
+    const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
+    const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0 };
+    const start = (meter: unknown) => startServe(config, { db, fetch: jwksFetch, now: () => now, listen: false, log: () => undefined, keys: { keyFor: async () => "fixture-provider-key" }, caps: new FixedCapsSource(caps), product: { routes: { route: () => undefined }, meter: meter as never, caps: new FixedCapsSource(caps) } });
+    return { db, start };
+  };
+  const sweep = { sweepOpenHolds: async () => ({ swept: 0, already: 0, failed: 0, more: false }) };
+  it("refuses a meter that combines but cannot say which tables (an in-memory meter, or a half-given view)", async () => {
+    const { start } = fixture();
+    const combined = () => new InMemoryMeter(() => now, undefined, undefined, { combineCompanyWith: new InMemoryMeter(() => now) });
+    await expect(start(Object.assign(combined(), sweep))).rejects.toThrow("product meter must expose its tables");
+    await expect(start(Object.assign(combined(), sweep, { combinedTables: () => ({ meter: TABLES.meter, markers: TABLES.markers }) }))).rejects.toThrow("product meter must expose its tables");
+    await expect(start(Object.assign(combined(), sweep, { ownTables: () => ({ meter: "p-meter", ledger: "p-ledger", markers: "p-markers" }) }))).rejects.toThrow("product meter must expose its tables");
+  });
+  it("refuses a product meter whose ledger is the agent meter's (DynamoMeter itself already refuses its meter or markers table being the agent's)", async () => {
+    const { db, start } = fixture();
+    const own = (tables: { meter: string; ledger: string; markers: string }) => Object.assign(new DynamoMeter({ db, tables, now: () => now, combinedCompany: { meter: TABLES.meter, markers: TABLES.markers } }), sweep);
+    await expect(start(own({ meter: "p-meter", ledger: TABLES.ledger, markers: "p-markers" }))).rejects.toThrow("product meter must have tables of its own");
+    expect(() => own({ meter: TABLES.meter, ledger: "p-ledger", markers: "p-markers" })).toThrow();
+    running.push(await start(own({ meter: "p-meter", ledger: "p-ledger", markers: "p-markers" })));
   });
 });
 

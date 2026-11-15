@@ -115,6 +115,34 @@ describe("gateway process: learning route", () => {
     running.push(await start({ learning: { keys, meter: meterOf(LEARNING) } }));
   });
 
+  it("refuses to start with a learning meter that cannot show its tables (the checks above would pass it unseen)", async () => {
+    const wire = new WireDynamo([...Object.values(TABLES), ...Object.values(LEARNING)], { namespaceTables: true });
+    const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
+    const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0 };
+    const keys: LearningKeySource = { connected: async () => true, keyFor: async () => "k-123456" };
+    const sweep = { sweepOpenHolds: async () => ({ swept: 0, already: 0, failed: 0, more: false }) };
+    const combined = () => new InMemoryMeter(() => now, undefined, undefined, { combineCompanyWith: new InMemoryMeter(() => now) });
+    const start = (meter: unknown) => startServe(config, { db, fetch: jwksFetch, now: () => now, listen: false, log: () => undefined, keys: { keyFor: async () => "fixture-provider-key" }, learning: { keys, meter: meter as never } });
+    await expect(start(Object.assign(combined(), sweep))).rejects.toThrow("learning meter must expose its tables");
+    await expect(start(Object.assign(combined(), sweep, { ownTables: () => LEARNING }))).rejects.toThrow("learning meter must expose its tables");
+    await expect(start(Object.assign(combined(), sweep, { combinedTables: () => ({ meter: TABLES.meter, markers: TABLES.markers }) }))).rejects.toThrow("learning meter must expose its tables");
+    // A meter that exposes both views passes, whatever class it is.
+    running.push(await start(Object.assign(combined(), sweep, { combinedTables: () => ({ meter: TABLES.meter, markers: TABLES.markers }), ownTables: () => LEARNING })));
+  });
+
+  it("refuses to start when the product and learning meters share a table, or the product meter uses the agent's", async () => {
+    const wire = new WireDynamo([...Object.values(TABLES), ...Object.values(LEARNING)], { namespaceTables: true });
+    const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
+    const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0 };
+    const keys: LearningKeySource = { connected: async () => true, keyFor: async () => "k-123456" };
+    const sweep = { sweepOpenHolds: async () => ({ swept: 0, already: 0, failed: 0, more: false }) };
+    const meterOf = (tables: typeof LEARNING) => Object.assign(new DynamoMeter({ db, tables, now: () => now, combinedCompany: { meter: TABLES.meter, markers: TABLES.markers } }), sweep);
+    const start = (deps: Record<string, unknown>) => startServe(config, { db, fetch: jwksFetch, now: () => now, listen: false, log: () => undefined, keys: { keyFor: async () => "fixture-provider-key" }, ...deps });
+    const product = (tables: typeof LEARNING) => ({ routes: { route: () => undefined }, meter: meterOf(tables), caps: { capsFor: async () => ({}) } });
+    await expect(start({ product: product({ meter: "gwp-meter", ledger: TABLES.ledger, markers: "gwp-markers" }) })).rejects.toThrow("product meter must have tables of its own");
+    await expect(start({ product: product({ meter: "gwp-meter", ledger: LEARNING.ledger, markers: "gwp-markers" }), learning: { keys, meter: meterOf(LEARNING) } })).rejects.toThrow("learning meter must have tables of its own");
+  });
+
   it("refuses to start with a learning meter that does not take the agent meter's company row", async () => {
     await expect(serve({ combined: false })).rejects.toThrow("learning meter must combine the company cap with the agent meter");
     const lone = Object.assign(new InMemoryMeter(() => now), { sweepOpenHolds: async () => ({ swept: 0, already: 0, failed: 0, more: false }) });
