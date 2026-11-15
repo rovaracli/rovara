@@ -1,6 +1,7 @@
 import type { Caps, CapsScope, CapsSource } from "./caps.js";
-import { GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_SETTINGS } from "./deploy.js";
+import { GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_LESSONS_GATE, GATEWAY_COMPANY_SETTINGS } from "./deploy.js";
 import type { Dynamo } from "./dynamo.js";
+import type { LessonsSwitch } from "./learning-route.js";
 import { COMPANY, record, whole } from "./model-gateway-token.js";
 
 /**
@@ -40,5 +41,24 @@ export class CompanyBudgetCaps implements CapsSource {
       ...(member === null || member === undefined ? {} : { personMonth: member }),
       companyMonth: company,
     };
+  }
+}
+
+/**
+ * The company's lessons switch (DEC 226), from the same company backend settings item the budgets come from (#52): on only when
+ * `settings.featureGates.lessons` is exactly true on this company's own row. Fail closed: no row, another company's row, no gate,
+ * or any other value is off. The read is strongly consistent, so an admin's "off" applies to the very next learning call. A failed
+ * read throws (the learning route answers 503 and sends nothing). Turning a gate on is a loosening change in the backend, so it
+ * goes through the company's decision rules there.
+ */
+export class CompanyLessonsSwitch implements LessonsSwitch {
+  constructor(private readonly db: Dynamo, private readonly table: string) {}
+
+  async isOn(cid: string, signal?: AbortSignal): Promise<boolean> {
+    if (typeof cid !== "string" || !COMPANY.test(cid)) return false;
+    const item = await this.db.get(this.table, { pk: `${GATEWAY_COMPANY_SETTINGS.partitionPrefix}${cid}`, sk: GATEWAY_COMPANY_SETTINGS.sortKey }, { consistent: true, ...(signal === undefined ? {} : { signal }) });
+    if (item === undefined || item.companyId !== cid) return false;
+    const gates = record(record(item.settings)?.featureGates);
+    return gates !== undefined && Object.hasOwn(gates, GATEWAY_COMPANY_LESSONS_GATE) && gates[GATEWAY_COMPANY_LESSONS_GATE] === true;
   }
 }

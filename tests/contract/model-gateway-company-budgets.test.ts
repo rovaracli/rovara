@@ -6,9 +6,9 @@ import { denyNetwork } from "../unit/model-gateway-no-network.js";
 beforeAll(denyNetwork);
 import { beforeAll, describe, expect, it } from "vitest";
 import { COMPANY_SETTINGS_LIMITS, DEFAULT_COMPANY_SETTINGS, DynamoCompanyStore, defaultCompanySettings, validateCompanySettings } from "../../packages/cloud-server/src/index.js";
-import { CompanyBudgetCaps, NO_CAP } from "../../packages/model-gateway/src/company-caps.js";
+import { CompanyBudgetCaps, CompanyLessonsSwitch, NO_CAP } from "../../packages/model-gateway/src/company-caps.js";
 import { validCaps } from "../../packages/model-gateway/src/caps.js";
-import { GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_SETTINGS } from "../../packages/model-gateway/src/deploy.js";
+import { GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_LESSONS_GATE, GATEWAY_COMPANY_SETTINGS } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { WireDynamo } from "../unit/model-gateway-wire-dynamo.js";
 
@@ -54,5 +54,23 @@ describe("the gateway's budget reader matches the company backend's store", () =
     expect(validateCompanySettings(settings).ok).toBe(true);
     await store.putSettings(cid, settings, 0, "a".repeat(64), "2026-11-15T12:00:00.000Z");
     expect(await caps.capsFor(scope)).toEqual({ task: NO_CAP, projectMonth: NO_CAP, companyMonth: GATEWAY_COMPANY_BUDGET_MAX });
+  });
+});
+
+describe("the gateway's lessons switch reader matches the company backend's store (DEC 226)", () => {
+  const lessons = (wire: WireDynamo) => new CompanyLessonsSwitch(new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport }), TABLE);
+  it("the gate name is one the backend accepts", () => {
+    expect(validateCompanySettings({ ...defaultCompanySettings(), featureGates: { [GATEWAY_COMPANY_LESSONS_GATE]: true } }).ok).toBe(true);
+  });
+  it("on after an admin saves the lessons gate on; off by default, when saved off, and for another company", async () => {
+    const { wire, store } = both();
+    expect(await lessons(wire).isOn(cid)).toBe(false);
+    await store.putSettings(cid, defaultCompanySettings(), 0, "a".repeat(64), "2026-11-15T12:00:00.000Z");
+    expect(await lessons(wire).isOn(cid)).toBe(false);
+    await store.putSettings(cid, { ...defaultCompanySettings(), featureGates: { [GATEWAY_COMPANY_LESSONS_GATE]: true } }, 1, "a".repeat(64), "2026-11-15T12:01:00.000Z");
+    expect(await lessons(wire).isOn(cid)).toBe(true);
+    expect(await lessons(wire).isOn(`org_${"d".repeat(20)}`)).toBe(false);
+    await store.putSettings(cid, { ...defaultCompanySettings(), featureGates: { [GATEWAY_COMPANY_LESSONS_GATE]: false } }, 2, "a".repeat(64), "2026-11-15T12:02:00.000Z");
+    expect(await lessons(wire).isOn(cid)).toBe(false);
   });
 });

@@ -84,3 +84,8 @@ export const GATEWAY_COMPANY_SETTINGS = { partitionPrefix: "COMPANY#", sortKey: 
 export const GATEWAY_COMPANY_BUDGET_FIELDS = ["companyMonthlyUsdMicros", "memberMonthlyUsdMicros", "projectMonthlyUsdMicros", "taskUsdMicros"] as const;
 /** The backend's own ceiling for one budget: $1,000,000 in micro-dollars. */
 export const GATEWAY_COMPANY_BUDGET_MAX = 1_000_000_000_000;
+/**
+ * The company's lessons switch (DEC 226): the feature gate of this name in the same settings item (`settings.featureGates`), on
+ * only when exactly true. The learning route reads it on every call; off, missing or anything else makes no learning call.
+ */
+export const GATEWAY_COMPANY_LESSONS_GATE = "lessons";

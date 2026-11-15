@@ -5,6 +5,7 @@ import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS, type MediaEstimate } from ".
 import type { MediaRates } from "./media-price.js";
 import { guardRequest, MAX_BODY_BYTES, tooLarge, type GuardFailure, type ModelLimitsSource } from "./guard.js";
 import type { Meter, MeterItem, MeterScope, Reservation } from "./meter.js";
+import { LEARNING_PATH, LEARNING_STEP, type LearningRouteFactory } from "./learning-route.js";
 import { resolvePrice, UnknownPriceSource, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, type TaskClaims, type TaskTokenVerifier } from "./token.js";
@@ -15,7 +16,7 @@ import type { TokenUsage } from "./usage.js";
 import { UsageCollector } from "./usage.js";
 export interface GatewayRequest { method: string; url: string; headers: Readonly<Record<string, string | undefined>>; body: AsyncIterable<Uint8Array>; signal?: AbortSignal }
 export interface GatewaySink { head(status: number, headers: Readonly<Record<string, string>>): void; write(bytes: Uint8Array): Promise<void>; end(): void; destroy(): void }
-export type GatewayLogEvent = { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" } | { event: "overrun_busy"; company: string } | { event: "settle_failed" | "refused" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
+export type GatewayLogEvent = { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number; route?: "product" | "learning" } | { event: "overrun_busy"; company: string } | { event: "settle_failed" | "refused" | "provider_error" | "price_operator_review" | "product_key_refused" | "product_over_reservation" };
 export interface GatewayDependencies {
   verifyToken: TaskTokenVerifier; ended: EndedTasks; meter: Meter; caps: CapsSource; prices?: PriceSource;
   metrics: { overrunBusy(issuer: string, company: string): void };
@@ -24,6 +25,8 @@ export interface GatewayDependencies {
   log: (event: GatewayLogEvent) => void;
   /** The product-AI route (calls made by the customer's tests with the project's own key). Absent: every product path is 404, as before. */
   product?: ProductRouteResolver;
+  /** The learning route (DEC 226, learning-route.ts: lessons' calls on the company's own key). Absent: its path is 404. */
+  learning?: LearningRouteFactory;
 }
 /** One provider call shape after its route's guard. `path` is built by the guard from checked parts, never copied from the request. */
 export interface RouteCall {
@@ -60,6 +63,17 @@ export interface GatewayRoute {
    * settled, calls its finish exactly once with how the call ended.
    */
   readonly events?: { sink(real: GatewaySink): GatewaySink & { finish(outcome: { completed: boolean; code?: string }): Promise<void> } };
+  /**
+   * The token purpose this route serves. "learning": only learning tokens (`stp` = LEARNING_STEP); absent: only task tokens.
+   * Either mismatch gets the fixed 401 before anything is read, held or sent.
+   */
+  readonly purpose?: "learning";
+  /** false: the task-ended record does not stop this route's calls (learning runs after its task ended). Absent: it does. */
+  readonly stopsWithTask?: false;
+  /** A permanent cap refusal from the meter, in the route's own words. Absent: 422 budget_exceeded with `prefix`. */
+  capRefusal?(refused: { reason: "cap" | "overrun"; item: MeterItem }, scope: MeterScope, caps: Caps, estimateMicros: number, signal: AbortSignal): Promise<RouteRefusal>;
+  /** Why a call was not sent after its hold (the key port answered nothing): the route's own refusal. Absent or undefined: 502 provider_error. */
+  notSent?(): RouteRefusal | undefined;
   /** After settlement: the actual cost passed the hold (DEC 165). Never throws to the caller. */
   overReservation?(claims: TaskClaims): Promise<void>;
 }
@@ -92,6 +106,7 @@ export function agentRoute(deps: GatewayDependencies): GatewayRoute {
 function routeFor(deps: GatewayDependencies, request: GatewayRequest): GatewayRoute | ProductControl | undefined {
   if (request.method !== "POST") return undefined;
   if (request.url === "/v1/messages") return agentRoute(deps);
+  if (request.url === LEARNING_PATH) return deps.learning?.route();
   if (deps.product === undefined || !request.url.startsWith(PRODUCT_ROUTE_PREFIX) || request.url.length > 2048) return undefined;
   const at = request.url.indexOf("?");
   try { return deps.product.route(at < 0 ? request.url : request.url.slice(0, at), at < 0 ? "" : request.url.slice(at + 1), request.headers); } catch { return undefined; }
@@ -160,8 +175,11 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const token = rawKey ?? bearer;
     const claims = (rawKey !== undefined && auth !== undefined && rawKey !== bearer) || (auth !== undefined && bearer === undefined) ? undefined : await wait(deps.verifyToken(token));
     if (claims === undefined) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
+    // A learning token only on the learning route, and only a learning token there (DEC 226).
+    if ((claims.stp === LEARNING_STEP) !== (route?.purpose === "learning")) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
     callClaims = claims;
-    const taskEnded = () => wait(deps.ended.isEnded(claims.iss, claims.cid, claims.tid, controller.signal));
+    const stopsWithTask = route?.stopsWithTask !== false;
+    const taskEnded = async () => stopsWithTask && await wait(deps.ended.isEnded(claims.iss, claims.cid, claims.tid, controller.signal));
     if (control?.afterTaskEnd !== true && await taskEnded()) { await respond(403, "task_ended", "task ended"); return; }
     if (control !== undefined) {
       const parts: Uint8Array[] = []; let size = 0;
@@ -211,6 +229,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         await respond(429, "busy", OVERRUN_BUSY_MESSAGE, { "retry-after": String(OVERRUN_BUSY_RETRY_SECONDS) });
       } else if (reserved.reason === "busy") await respond(503, "unavailable", "model access unavailable");
       else if (reserved.held) await respond(429, "budget_held", "budget is held by another call", { "retry-after": "2" });
+      else if (route.capRefusal !== undefined) { const refused = await wait(route.capRefusal({ reason: reserved.reason, item: reserved.item }, scope, caps, estimate, controller.signal)); await respond(refused.status, refused.code, refused.message, refused.headers); }
       else await respond(422, "budget_exceeded", route.prefix[reserved.item]);
       return;
     }
@@ -267,9 +286,10 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (counts === undefined) throw new Error("provider unavailable");
     sink.end(); completed = true;
     settlementUsage = counts;
-  } catch {
+  } catch (error) {
     log({ event: "provider_error" });
-    try { if (head) sink.destroy(); else await respond(502, "provider_error", "provider unavailable"); } catch { sink.destroy(); }
+    const notSent = !head && error instanceof NotSentError ? route?.notSent?.() : undefined;
+    try { if (head) sink.destroy(); else if (notSent !== undefined) await respond(notSent.status, notSent.code, notSent.message, notSent.headers); else await respond(502, "provider_error", "provider unavailable"); } catch { sink.destroy(); }
   } finally {
     controller.abort(); clearTimeout(timer); clearTimeout(endedTimer); request.signal?.removeEventListener("abort", abort);
     controller.signal.removeEventListener("abort", onAbort);
@@ -282,7 +302,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
           cost = amount.actualMicros; estimated = amount.estimated;
           if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: "chat", settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
         }
-        await route.meter.settle(reservation, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : {}) });
+        await route.meter.settle(reservation, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === "learning" ? { route: "learning" as const } : {}) });
         if (route.overReservation !== undefined && callClaims !== undefined && cost > reservedMicros) {
           log({ event: "product_over_reservation" });
           try { await route.overReservation(callClaims); } catch { log({ event: "settle_failed" }); }

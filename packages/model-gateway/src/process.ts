@@ -3,7 +3,8 @@ import http, { type IncomingMessage, type Server, type ServerResponse } from "no
 import type { AddressInfo } from "node:net";
 import { credentialsFromEnvironment, type CredentialSource } from "./aws.js";
 import type { CapsSource } from "./caps.js";
-import { CompanyBudgetCaps } from "./company-caps.js";
+import { CompanyBudgetCaps, CompanyLessonsSwitch } from "./company-caps.js";
+import { createLearningRoutes, type LearningKeySource } from "./learning-route.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
 import { GATEWAY_ENV, GATEWAY_LOG_EVENTS, GATEWAY_MODES } from "./deploy.js";
 import { Dynamo } from "./dynamo.js";
@@ -97,6 +98,12 @@ export interface ServeDependencies {
    * the same maintenance pass as the agent meter's.
    */
   product?: { routes: ProductRouteResolver; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; caps: CapsSource; /** Eval stages (product-eval.ts): expired ones are released in the maintenance pass. */ stages?: Pick<ProductEvalStages, "sweep"> };
+  /**
+   * The learning route (DEC 226, learning-route.ts): the company's OWN provider account (`keys`, never the install key above), its
+   * OWN meter combined with the agent meter's company row (DEC 228c), the company backend's budgets and lessons switch (the
+   * Companies table). Absent: the learning path is 404. Its holds, expiry and corrections run in the same maintenance pass.
+   */
+  learning?: { keys: LearningKeySource; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; monthCeilingMicros?: number };
   now?: () => number; host?: string; port?: number; /** false: no listener (tests drive the server's request event). */ listen?: boolean; drainMs?: number; maintenanceMs?: number;
 }
 export interface RunningGateway { server: Server; port: number; draining(): boolean; drain(): Promise<void>; maintain(): Promise<void> }
@@ -114,20 +121,40 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   // ...and with THIS agent meter's tables, when the product meter can say which.
   const combinedTables = (deps.product?.meter as { combinedTables?: () => { meter: string; markers: string } | undefined } | undefined)?.combinedTables?.();
   if (deps.product !== undefined && combinedTables !== undefined && (combinedTables.meter !== config.tables.meter || combinedTables.markers !== config.tables.markers)) throw new Error("product meter must combine the company cap with the agent meter");
+  // The same for learning spend: it counts inside the one company total, or the gateway does not start.
+  if (deps.learning !== undefined && deps.learning.meter.combinedCompany !== true) throw new Error("learning meter must combine the company cap with the agent meter");
+  // ...with THIS agent meter's tables, and on tables of its own (never the agent's or the product meter's rows, holds or ledger).
+  type TableView = { combinedTables?: () => { meter: string; markers: string } | undefined; ownTables?: () => { meter: string; ledger: string; markers: string } };
+  const learningView = deps.learning?.meter as TableView | undefined;
+  const learningCombined = learningView?.combinedTables?.();
+  if (learningCombined !== undefined && (learningCombined.meter !== config.tables.meter || learningCombined.markers !== config.tables.markers)) throw new Error("learning meter must combine the company cap with the agent meter");
+  const learningOwn = learningView?.ownTables?.();
+  const productOwn = (deps.product?.meter as TableView | undefined)?.ownTables?.();
+  if (learningOwn !== undefined) {
+    const taken = new Set([config.tables.meter, config.tables.ledger, config.tables.markers, ...(productOwn === undefined ? [] : [productOwn.meter, productOwn.ledger, productOwn.markers])]);
+    if ([learningOwn.meter, learningOwn.ledger, learningOwn.markers].some((table) => taken.has(table))) throw new Error("learning meter must have tables of its own");
+  }
   const meter = new DynamoMeter({ db, tables: config.tables, now });
   const prices = new SnapshotPriceSource(new DynamoPriceSnapshotStore(db, config.tables.prices), { now });
   await prices.reload();
   const caps = deps.caps ?? new CompanyBudgetCaps(db, config.tables.companies);
+  const modelLimits = deps.modelLimits ?? modelLimitsFrom(prices);
+  const transport = deps.transport ?? createAnthropicTransport();
+  const learning = deps.learning === undefined ? undefined : createLearningRoutes({
+    keys: deps.learning.keys, meter: deps.learning.meter, companyCaps: caps, lessons: new CompanyLessonsSwitch(db, config.tables.companies), modelLimits, transport,
+    ...(deps.learning.monthCeilingMicros === undefined ? {} : { monthCeilingMicros: deps.learning.monthCeilingMicros }),
+  });
   const handlerDeps: GatewayDependencies = {
     verifyToken: createTaskTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }),
     ended: new DynamoEndedTasks(db, config.tables.markers), meter, caps, prices, now,
     // The busy answer is counted from its log line (overrun_busy); the process needs no metrics permission.
     metrics: { overrunBusy: () => undefined },
-    modelLimits: deps.modelLimits ?? modelLimitsFrom(prices),
+    modelLimits,
     keys: deps.keys ?? createSecretsManagerKeys({ region: config.region, credentials, secretArns: { anthropic: config.anthropicKeySecret }, now }),
-    transport: deps.transport ?? createAnthropicTransport(),
+    transport,
     log: (event) => log({ ...event }),
     ...(deps.product === undefined ? {} : { product: deps.product.routes }),
+    ...(learning === undefined ? {} : { learning }),
   };
   const handler = createGatewayHandler(handlerDeps);
   const inFlight = new Set<Promise<void>>();
@@ -176,6 +203,16 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
             await runExpirySweep({ meter: p.meter, now: now(), runId, log: (line) => log({ ...line, route: "product" }) });
             await runCorrections({ meter: p.meter, prices, caps: p.caps, now: now(), runId, log: (line) => log({ ...line, route: "product" }) });
           } catch { log({ event: "maintenance_failed", route: "product" }); }
+        }
+        if (deps.learning !== undefined && learning !== undefined) {
+          // The learning meter: the same sweep, expiry and corrections, with the learning caps. A failure never stops the passes above.
+          try {
+            const m = deps.learning.meter;
+            const learningHolds = await m.sweepOpenHolds(now(), HOLD_SWEEP_PER_PASS);
+            if (learningHolds.swept + learningHolds.failed > 0) log({ event: "holds_swept", route: "learning", swept: learningHolds.swept, failed: learningHolds.failed, more: learningHolds.more });
+            await runExpirySweep({ meter: m, now: now(), runId, log: (line) => log({ ...line, route: "learning" }) });
+            await runCorrections({ meter: m, prices, caps: learning.caps, now: now(), runId, log: (line) => log({ ...line, route: "learning" }) });
+          } catch { log({ event: "maintenance_failed", route: "learning" }); }
         }
         log({ event: "maintenance", corrected: corrections.corrected, skipped: corrections.skipped + expiry.skipped, expired: expiry.expired, unknown: corrections.unknown + expiry.unknown, more: corrections.more || expiry.more });
       } catch { log({ event: "maintenance_failed" }); }

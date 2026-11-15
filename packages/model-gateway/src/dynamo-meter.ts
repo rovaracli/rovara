@@ -150,6 +150,8 @@ export class DynamoMeter implements Meter {
   get combinedCompany(): boolean { return this.#combined !== undefined; }
   /** The agent meter tables this meter combines with (startServe checks them against its own). */
   combinedTables(): { meter: string; markers: string } | undefined { return this.#combined === undefined ? undefined : { ...this.#combined }; }
+  /** Its own tables (startServe refuses two meters that would share rows, holds or a ledger). */
+  ownTables(): DynamoMeterTables { return { ...this.#t }; }
   /** The overrun-in-flight marker's table: the agent markers table when combined (one per company across both routes). */
   get #markers(): string { return this.#combined?.markers ?? this.#t.markers; }
   #table(target: Target): string {

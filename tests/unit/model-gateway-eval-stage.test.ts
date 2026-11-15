@@ -11,6 +11,7 @@ import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { DynamoMeter, HOLD_SWEEP_AGE_MS } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { EVAL_HOLD_PATH, EVAL_RELEASE_PATH, EVAL_SCOPE_HEADER, EVAL_STAGE_MS, ProductEvalStages, evalClassOf, readGrant, type EvalApproval, type EvalRole } from "../../packages/model-gateway/src/product-eval.js";
 import { PRODUCT_OVER_BY_ONE_CALL } from "../../packages/model-gateway/src/product-route.js";
+import { LEARNING_STEP } from "../../packages/model-gateway/src/learning-route.js";
 import type { ProviderResponse, ProviderTransport } from "../../packages/model-gateway/src/provider.js";
 import { handleGateway, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
 import { call, MemorySink, mint, now, scope as agentScope } from "./model-gateway-fixture.js";
@@ -713,5 +714,25 @@ describe("eval stage: audio and video calls (#55, DEC 228e)", () => {
     const after = (await g.meter.read(agentScope)).find((r) => r.item === "company")!;
     expect(after.reservedMicros).toBe(0); expect(after.spentMicros).toBeGreaterThan(0);
     expect((await call(g.deps)).status).toBe(200);
+  });
+});
+
+describe("eval stage controls refuse a learning token (DEC 226)", () => {
+  it("hold and release answer the fixed 401 to a learning token, before any approval read, stage or hold", async () => {
+    const k = await evalKit();
+    const learningToken = mint({ stp: LEARNING_STEP });
+    const refused = await hold(k.g.deps, undefined, learningToken);
+    expect(refused.sink.status).toBe(401);
+    expect(refused.json).toEqual({ error: { type: "authentication_error", message: "invalid or expired model access" } });
+    expect(k.state.reads).toBe(0);
+    expect((await projectRow(k)).committed).toBe(0);
+    expect((await combinedRow(k)).committed).toBe(0);
+    // A real stage, then a release attempt with a learning token: refused, the stage keeps its hold.
+    const held = await hold(k.g.deps);
+    expect(held.sink.status).toBe(200);
+    const before = (await combinedRow(k)).committed;
+    const r = await release(k.g.deps, scopeOf(held), { calls: 0, costMicros: 0, unknown: false }, learningToken);
+    expect(r.sink.status).toBe(401);
+    expect((await combinedRow(k)).committed).toBe(before);
   });
 });
