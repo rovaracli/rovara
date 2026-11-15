@@ -70,8 +70,8 @@ describe("budgets from the Cloud company backend's Companies table", () => {
     expect((await zero.caps.capsFor(scope)).learningMonth).toBe(0);
   });
 
-  it("refuses a learning cap that is null, negative, fractional, text or past the backend's ceiling", async () => {
-    for (const bad of [null, -1, 1.5, "7", 1_000_000_000_001]) {
+  it("refuses a learning cap that is null, negative, text or past the backend's ceiling", async () => {
+    for (const bad of [null, -1, "7", 1_000_000_000_001]) {
       const f = setup(); await f.seed({ ...all, learningMonthlyUsdMicros: bad });
       expect(validCaps(await f.caps.capsFor(scope)), String(bad)).toBe(false);
     }

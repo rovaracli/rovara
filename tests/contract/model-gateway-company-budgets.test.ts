@@ -37,8 +37,10 @@ describe("the gateway's budget reader matches the company backend's store", () =
   it("reads back the budgets an admin saved through the backend, as the meter's caps", async () => {
     const { wire, store, caps } = both();
     const settings = { ...defaultCompanySettings(), budgets: { companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: 50_000_000, projectMonthlyUsdMicros: 100_000_000, taskUsdMicros: 2_000_000 } };
-    expect(validateCompanySettings(settings).ok).toBe(true);
-    await store.putSettings(cid, settings, 0, "a".repeat(64), "2026-11-15T12:00:00.000Z");
+    // What the backend's route stores is the validated document (the learning cap normalised to the $20 default).
+    const read = validateCompanySettings(settings);
+    if (!read.ok) throw new Error(read.problem);
+    await store.putSettings(cid, read.settings, 0, "a".repeat(64), "2026-11-15T12:00:00.000Z");
     expect(wire.fake.get(`${GATEWAY_COMPANY_SETTINGS.partitionPrefix}${cid}`, GATEWAY_COMPANY_SETTINGS.sortKey)).toBeDefined();
     expect(await caps.capsFor(scope)).toEqual({ task: 2_000_000, projectMonth: 100_000_000, personMonth: 50_000_000, companyMonth: 500_000_000, learningMonth: LEARNING_DEFAULT_MONTH_MICROS });
     // Another company's calls never see this company's budgets.
@@ -54,8 +56,9 @@ describe("the gateway's budget reader matches the company backend's store", () =
   it("under a company cap, the backend's null task/project/member caps read as no cap of that kind", async () => {
     const { store, caps } = both();
     const settings = { ...defaultCompanySettings(), budgets: { companyMonthlyUsdMicros: GATEWAY_COMPANY_BUDGET_MAX, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } };
-    expect(validateCompanySettings(settings).ok).toBe(true);
-    await store.putSettings(cid, settings, 0, "a".repeat(64), "2026-11-15T12:00:00.000Z");
+    const read = validateCompanySettings(settings);
+    if (!read.ok) throw new Error(read.problem);
+    await store.putSettings(cid, read.settings, 0, "a".repeat(64), "2026-11-15T12:00:00.000Z");
     expect(await caps.capsFor(scope)).toEqual({ task: NO_CAP, projectMonth: NO_CAP, companyMonth: GATEWAY_COMPANY_BUDGET_MAX, learningMonth: LEARNING_DEFAULT_MONTH_MICROS });
   });
 
