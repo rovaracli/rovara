@@ -5,8 +5,8 @@ export interface PriceEntry extends Price { provider: string; model: string; kin
 export interface PriceKey { provider: string; model: string }
 export interface ModelFallback extends PriceKey { reason: "per_request_price" }
 export const FLOOR_REASONS = ["unsupported mode", "unsupported deprecation date", "deprecated model", "unsupported price field", "unsupported token rate", "token rate exceeds maximum", "sanity hold"] as const;
-export interface ModelFloor extends PriceEntry { reason: typeof FLOOR_REASONS[number] }
-export interface SourceSnapshot { fetchedAt: number; count: number; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; confirmations?: PriceEntry[] }
+export interface ModelFloor extends Price, PriceKey { kind?: PriceKind; reason: typeof FLOOR_REASONS[number] }
+export interface SourceSnapshot { fetchedAt: number; count: number; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; confirmations?: (PriceEntry | ModelFloor)[] }
 export interface PriceSnapshot { version: number; sources: { litellm?: SourceSnapshot; aws?: SourceSnapshot } }
 export interface PriceSnapshotStore { load(): Promise<PriceSnapshot | undefined>; save(snapshot: PriceSnapshot, expectedVersion: number): Promise<boolean> }
 export const priceKey = (key: PriceKey): string => JSON.stringify([key.provider, key.model]);
@@ -16,7 +16,7 @@ export function validEntry(value: unknown): value is PriceEntry {
 }
 export function validFloor(value: unknown): value is ModelFloor {
   const v = record(value);
-  return v !== undefined && FLOOR_REASONS.includes(v.reason as ModelFloor["reason"]) && validPrice(v, Number.MAX_SAFE_INTEGER) && (v.operatorReview === undefined || v.operatorReview === true) && validEntry({ ...v, inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, cacheWriteMicrosPerMTok: 1 });
+  return v !== undefined && FLOOR_REASONS.includes(v.reason as ModelFloor["reason"]) && validPrice(v, Number.MAX_SAFE_INTEGER) && (v.operatorReview === undefined || v.operatorReview === true) && (v.kind === undefined || v.kind === "chat" || v.kind === "embedding") && validEntry({ ...v, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, cacheWriteMicrosPerMTok: 1 });
 }
 export function validFallback(value: unknown): value is ModelFallback {
   const v = record(value);
@@ -35,7 +35,7 @@ export function validSnapshot(value: unknown): value is PriceSnapshot {
     if (s.confirmations !== undefined && (!Array.isArray(s.confirmations) || s.confirmations.length > MAX_ENTRIES_PER_SOURCE)) return false;
     const confirmations = new Set<string>();
     for (const e of (s.confirmations ?? []) as unknown[]) {
-      if (!validEntry(e) || (name === "aws" && e.provider !== "bedrock") || confirmations.has(priceKey(e))) return false;
+      if ((!validEntry(e) && !validFloor(e)) || (name === "aws" && e.provider !== "bedrock") || confirmations.has(priceKey(e))) return false;
       confirmations.add(priceKey(e));
     }
     const seen = new Set<string>();

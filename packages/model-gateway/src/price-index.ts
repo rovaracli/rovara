@@ -1,7 +1,7 @@
 import { STALE_ALARM_MS } from "./price-constants.js";
 import { cautiousPrice, type Price, type PriceKind, type PriceOrigin, type PriceSource } from "./price.js";
 import { PRICE_OVERRIDES, validOverrides } from "./price-overrides.js";
-import { priceKey, validSnapshot, type PriceEntry, type PriceSnapshot, type PriceSnapshotStore } from "./price-snapshot.js";
+import { priceKey, validSnapshot, type ModelFloor, type PriceEntry, type PriceSnapshot, type PriceSnapshotStore } from "./price-snapshot.js";
 import { normalizeBedrockModel } from "./price-sources.js";
 export interface SourceHealth { fetchedAt?: number; ageMs?: number; count: number; stale: boolean; lastFailure?: string }
 export class SnapshotPriceSource implements PriceSource {
@@ -27,10 +27,11 @@ export class SnapshotPriceSource implements PriceSource {
     const index = new Map<string, PriceEntry & { origin: PriceOrigin }>();
     const fallbacks = new Set<string>();
     for (const source of Object.values(snapshot?.sources ?? {})) for (const f of source.fallbacks ?? []) fallbacks.add(this.#key(f.provider, f.model));
-    const floors = new Map<string, PriceEntry>();
+    const floors = new Map<string, ModelFloor>();
     for (const source of Object.values(snapshot?.sources ?? {})) for (const floor of source.floors ?? []) {
       const key = this.#key(floor.provider, floor.model); const prior = floors.get(key);
-      floors.set(key, { ...floor, inputMicrosPerMTok: Math.max(prior?.inputMicrosPerMTok ?? 0, floor.inputMicrosPerMTok), outputMicrosPerMTok: Math.max(prior?.outputMicrosPerMTok ?? 0, floor.outputMicrosPerMTok), ...((prior?.operatorReview || floor.operatorReview) ? { operatorReview: true } : {}) });
+      const merged = { ...floor }; if (prior !== undefined && prior.kind !== floor.kind) delete merged.kind;
+      floors.set(key, { ...merged, inputMicrosPerMTok: Math.max(prior?.inputMicrosPerMTok ?? 0, floor.inputMicrosPerMTok), outputMicrosPerMTok: Math.max(prior?.outputMicrosPerMTok ?? 0, floor.outputMicrosPerMTok), ...((prior?.operatorReview || floor.operatorReview) ? { operatorReview: true } : {}) });
     }
     let expiresAt = Infinity;
     for (const name of ["litellm", "aws"] as const) {
@@ -49,7 +50,7 @@ export class SnapshotPriceSource implements PriceSource {
       index.set(key, { ...e, origin: { source: "override", fetchedAt: e.verifiedAt } });
     }
     const maxima = new Map<string, Price>();
-    for (const e of [...index.values(), ...floors.values()]) for (const kind of [e.kind, "all"]) {
+    for (const e of [...index.values(), ...floors.values()]) for (const kind of (e.kind === undefined ? ["chat", "embedding", "all"] : [e.kind, "all"])) {
       const key = JSON.stringify([e.provider, kind]); const prior = maxima.get(key);
       maxima.set(key, { inputMicrosPerMTok: Math.max(prior?.inputMicrosPerMTok ?? 0, e.inputMicrosPerMTok), outputMicrosPerMTok: Math.max(prior?.outputMicrosPerMTok ?? 0, e.outputMicrosPerMTok), ...((prior?.operatorReview || e.operatorReview) ? { operatorReview: true } : {}) });
     }

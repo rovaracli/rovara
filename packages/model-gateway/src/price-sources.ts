@@ -101,8 +101,8 @@ export function fetchLiteLLM(transport: PriceTransport, limits: SourceLimits = {
       if (provider === undefined || kind === undefined || typeof rates === "string") {
         skip(typeof rates === "string" ? rates : "unsupported provider", provider);
         const known = knownRates(row);
-        if (provider !== undefined && kind !== undefined && typeof rates === "string" && known !== undefined) {
-          const floor = { provider, model: provider === "gemini" ? key.replace(/^gemini\//u, "") : key, kind, ...known, reason: rates };
+        if (provider !== undefined && typeof rates === "string" && known !== undefined) {
+          const floor = { provider, model: provider === "gemini" ? key.replace(/^gemini\//u, "") : key, ...(kind === undefined ? {} : { kind }), ...known, reason: rates };
           if (!validFloor(floor) || seen.has(priceKey(floor))) return failure();
           seen.add(priceKey(floor)); floors.push(floor);
         }
