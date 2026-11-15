@@ -192,6 +192,16 @@ describe("learning providers: one route, the company's own key per provider", ()
     await nothingMoved(g);
   });
 
+  it("each provider is priced on its own price rows (Vertex on the Gemini rows and its own)", async () => {
+    for (const [path, body, expected] of [[GEMINI_PATH, geminiBody, ["gemini"]], [VERTEX_PATH(), geminiBody, ["gemini", "vertex"]], [OPENAI_PATH, openAiBody, ["openai"]], [LEARNING_PATH, { model: "claude-sonnet-4-5", messages: [{ role: "user", content: "hi" }], max_tokens: 10, stream: true }, ["anthropic"]]] as const) {
+      const g = gateway();
+      const seen = new Set<string>();
+      const prices: GatewayDependencies["prices"] = { priceFor: (provider) => { seen.add(provider); return { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 }; } };
+      await learn({ ...g.deps, prices }, path, body);
+      expect([...seen].sort(), path).toEqual([...expected].sort());
+    }
+  });
+
   it("vertex: sends to the connected project and location, with the minted token, and is priced at the dearer of the Gemini and Vertex rows", async () => {
     const g = gateway();
     const seen: string[] = [];
@@ -267,6 +277,7 @@ describe("guardOpenAi: text only, one answer, an output ceiling", () => {
     ["a priority service tier", { ...base, service_tier: "priority" }],
     ["audio output", { ...base, modalities: ["text", "audio"] }],
     ["an image part", { ...base, messages: [{ role: "user", content: [{ type: "image_url", image_url: { url: "https://x" } }] }] }],
+    ["an image part that also carries text", { ...base, messages: [{ role: "user", content: [{ type: "image_url", text: "a" }] }] }],
     ["an audio part", { ...base, messages: [{ role: "user", content: [{ type: "input_audio", input_audio: { data: "x", format: "wav" } }] }] }],
     ["a file part", { ...base, messages: [{ role: "user", content: [{ type: "file", file: { file_id: "f" } }] }] }],
     ["a text part with an extra key", { ...base, messages: [{ role: "user", content: [{ type: "text", text: "a", cache_control: {} }] }] }],
