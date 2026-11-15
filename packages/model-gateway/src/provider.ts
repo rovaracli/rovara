@@ -10,7 +10,7 @@ export function callDurationMs(maxOutputTokens: number): number {
 export const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 export class NotSentError extends Error { constructor() { super("provider unavailable"); this.name = "NotSentError"; } }
 export interface ProviderKeys { keyFor(claims: TaskClaims, provider: "anthropic", signal?: AbortSignal): Promise<string> }
-export interface ProviderRequest { body: Uint8Array; headers: Readonly<Record<string, string>>; key: string; signal: AbortSignal }
+export interface ProviderRequest { body: Uint8Array; headers: Readonly<Record<string, string>>; key: string; signal: AbortSignal; /** Set by routes whose upstream path depends on the checked request (the product route). */ path?: string }
 export interface ProviderResponse { status: number; body: AsyncIterable<Uint8Array>; cancel?: () => void }
 /** An injected transport must stop on signal or cancel. A generic throw means possibly sent and is charged in full. */
 export type ProviderTransport = (request: ProviderRequest) => Promise<ProviderResponse>;

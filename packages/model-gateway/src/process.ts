@@ -10,13 +10,14 @@ import { Dynamo } from "./dynamo.js";
 import { DynamoEndedTasks, DynamoMeter } from "./dynamo-meter.js";
 import { DynamoPriceSnapshotStore } from "./dynamo-prices.js";
 import type { ModelLimitsSource } from "./guard.js";
+import type { Meter } from "./meter.js";
 import { createJwksReader, StaticInstallRegistry } from "./installs.js";
 import { SnapshotPriceSource } from "./price-index.js";
 import { PriceRefresher } from "./price-refresh.js";
 import { fetchAWS, fetchLiteLLM, fetchTransport } from "./price-sources.js";
 import { CALL_HARD_CEILING_MS, createAnthropicTransport, type ProviderKeys, type ProviderTransport } from "./provider.js";
 import { createSecretsManagerKeys } from "./secrets.js";
-import { createGatewayHandler, type GatewayDependencies } from "./server.js";
+import { createGatewayHandler, type GatewayDependencies, type ProductRouteResolver } from "./server.js";
 import { createTaskTokenVerifier } from "./token.js";
 
 /**
@@ -89,6 +90,12 @@ export const HOLD_SWEEP_PER_PASS = 50;
 export interface ServeDependencies {
   env?: GatewayEnv; log?: GatewayLog; credentials?: CredentialSource; db?: Dynamo;
   fetch?: typeof fetch; transport?: ProviderTransport; keys?: ProviderKeys; caps?: CapsSource; modelLimits?: ModelLimitsSource;
+  /**
+   * The product-AI route (docs/model-gateway-product-ai.md): its resolver, its OWN meter (separate tables: product holds never
+   * share rows with agent holds) and its caps. Absent: every product path is 404. Its open holds, expiry and corrections run in
+   * the same maintenance pass as the agent meter's.
+   */
+  product?: { routes: ProductRouteResolver; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; caps: CapsSource };
   now?: () => number; host?: string; port?: number; /** false: no listener (tests drive the server's request event). */ listen?: boolean; drainMs?: number; maintenanceMs?: number;
 }
 export interface RunningGateway { server: Server; port: number; draining(): boolean; drain(): Promise<void>; maintain(): Promise<void> }
@@ -113,6 +120,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     keys: deps.keys ?? createSecretsManagerKeys({ region: config.region, credentials, secretArns: { anthropic: config.anthropicKeySecret }, now }),
     transport: deps.transport ?? createAnthropicTransport(),
     log: (event) => log({ ...event }),
+    ...(deps.product === undefined ? {} : { product: deps.product.routes }),
   };
   const handler = createGatewayHandler(handlerDeps);
   const inFlight = new Set<Promise<void>>();
@@ -143,6 +151,16 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
         // Holds whose settle never landed are closed at their estimate (never $0); a swept hold is logged, not alarmed.
         const holds = await meter.sweepOpenHolds(now(), HOLD_SWEEP_PER_PASS);
         if (holds.swept + holds.failed > 0) log({ event: "holds_swept", swept: holds.swept, failed: holds.failed, more: holds.more });
+        if (deps.product !== undefined) {
+          // The product meter: the same sweep, expiry and corrections, with the product caps. A failure here never stops the agent pass above.
+          try {
+            const p = deps.product;
+            const productHolds = await p.meter.sweepOpenHolds(now(), HOLD_SWEEP_PER_PASS);
+            if (productHolds.swept + productHolds.failed > 0) log({ event: "holds_swept", route: "product", swept: productHolds.swept, failed: productHolds.failed, more: productHolds.more });
+            await runExpirySweep({ meter: p.meter, now: now(), runId, log: (line) => log({ ...line, route: "product" }) });
+            await runCorrections({ meter: p.meter, prices, caps: p.caps, now: now(), runId, log: (line) => log({ ...line, route: "product" }) });
+          } catch { log({ event: "maintenance_failed", route: "product" }); }
+        }
         log({ event: "maintenance", corrected: corrections.corrected, skipped: corrections.skipped + expiry.skipped, expired: expiry.expired, unknown: corrections.unknown + expiry.unknown, more: corrections.more || expiry.more });
       } catch { log({ event: "maintenance_failed" }); }
       finally { maintaining = undefined; }

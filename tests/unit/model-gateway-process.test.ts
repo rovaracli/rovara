@@ -8,6 +8,7 @@ import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { DynamoMeter, HOLD_SWEEP_AGE_MS } from "../../packages/model-gateway/src/dynamo-meter.js";
+import { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import { LITELLM_URL } from "../../packages/model-gateway/src/price-sources.js";
 import { GatewayConfigError, readGatewayConfig, runGateway, runPriceFetch, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import { caps, claims, jwk, kid, mint, now, requestBody, scope, sse } from "./model-gateway-fixture.js";
@@ -173,6 +174,29 @@ describe("gateway process: serving", () => {
     await gateway.maintain();
     expect(f.lines.filter((line) => line.event === "holds_swept")).toEqual([expect.objectContaining({ swept: 1, failed: 0 })]);
     expect((await new DynamoMeter({ db: f.db, tables: TABLES, now: () => now - HOLD_SWEEP_AGE_MS - 1 }).read(scope))[0]).toMatchObject({ spentMicros: 25, reservedMicros: 0 });
+  });
+});
+
+describe("gateway process: product route", () => {
+  it("mounts the product resolver and runs the product meter's hold sweep, expiry and corrections in the same pass", async () => {
+    const wire = new WireDynamo(Object.values(TABLES));
+    const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
+    const lines: Array<Record<string, unknown>> = [];
+    const swept: number[] = [];
+    const productMeter = Object.assign(new InMemoryMeter(() => now), { sweepOpenHolds: async (at: number) => { swept.push(at); return { swept: 2, already: 0, failed: 0, more: false }; } });
+    const routes = { route: () => undefined };
+    const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0 };
+    const gateway = await startServe(config, { db, fetch: jwksFetch, now: () => now, listen: false, log: (line) => lines.push(line), keys: { keyFor: async () => "fixture-provider-key" }, caps: new FixedCapsSource(caps), product: { routes, meter: productMeter, caps: new FixedCapsSource(caps) } });
+    running.push(gateway);
+    await gateway.maintain();
+    expect(swept).toEqual([now]);
+    expect(lines).toContainEqual(expect.objectContaining({ event: "holds_swept", route: "product", swept: 2 }));
+    expect(lines.some((line) => line.event === "maintenance_failed")).toBe(false);
+    // A failing product sweep is logged and never stops the agent pass.
+    productMeter.sweepOpenHolds = async () => { throw new Error("down"); };
+    await gateway.maintain();
+    expect(lines).toContainEqual({ event: "maintenance_failed", route: "product" });
+    expect(lines.filter((line) => line.event === "maintenance")).toHaveLength(2);
   });
 });
 
