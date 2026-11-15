@@ -401,9 +401,10 @@ export const ROUTES: Route[] = [
       const role = (body as { role?: unknown } | undefined)?.role;
       if (role !== undefined && role !== "contributor") return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Only contributors can be added here for now." } } };
       // PRODUCT-EVAL-APPROVER-REREAD: the person's role in the project changes, so their eval approvals stop counting first.
-      const withdrawal = await withdrawForMember(context, params[1]!);
-      if (withdrawal !== undefined) return withdrawal;
+      const withdrawal = await withdrawForMember(context, params[1]!, { project: params[0]! });
+      if ("status" in withdrawal) return withdrawal;
       const answer = await client.json<{ developerId: string }>(session, `/v1/dev/client/projects/${encodeURIComponent(params[0]!)}/members/${encodeURIComponent(params[1]!)}`, { method: "PUT" });
+      await withdrawal.after();
       return ok({ member: { developerId: answer.developerId, role: "contributor" } });
     },
   },
@@ -412,9 +413,10 @@ export const ROUTES: Route[] = [
     answer: async (context) => {
       const { client, session, params } = context;
       // PRODUCT-EVAL-APPROVER-REREAD: a person leaving a project keeps no eval approval (withdrawn before Code removes them).
-      const withdrawal = await withdrawForMember(context, params[1]!);
-      if (withdrawal !== undefined) return withdrawal;
+      const withdrawal = await withdrawForMember(context, params[1]!, { project: params[0]! });
+      if ("status" in withdrawal) return withdrawal;
       const answer = await client.json<{ developerId: string; outcome: string }>(session, `/v1/dev/client/projects/${encodeURIComponent(params[0]!)}/members/${encodeURIComponent(params[1]!)}`, { method: "DELETE" });
+      await withdrawal.after();
       return ok({ developerId: answer.developerId, removed: answer.outcome === "revoked" });
     },
   },

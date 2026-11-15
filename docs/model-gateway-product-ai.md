@@ -189,13 +189,19 @@ workload identity provider, optional service account): the store's `vertexCheck`
 `ok`. The call is signed with the product key store's HMAC key: Cloud may only `GenerateMac`, the gateway's serving role may
 only `VerifyMac` (key policy statement `OnlyGatewayVerifiesCalls`, role statement `VerifyCloudCalls`, env
 `GATEWAY_PRODUCT_MAC_KEY`); the MAC covers its own purpose (never a key fingerprint's), the path, the time (60 s either side)
-and the body's SHA-256. The gateway stays read-only on keys; a replay inside the window only re-runs the same test.
+and the body's SHA-256. The gateway stays read-only on keys; a replay inside the window only re-runs the same test. The path is
+on the public load balancer, so each serving task takes at most 2 checks at once and 30 a minute before any KMS call (429
+otherwise): anonymous traffic never becomes unbounded KMS or Google calls.
 
 Eval approvals (PRODUCT-EVAL-APPROVER-REREAD): an approval counts at the stage hold for 15 minutes (`EVAL_APPROVAL_FRESH_MS`)
 from the moment the settings route began its role check with Code; older, the hold answers `422 eval_approval_stale` ("approve
 it again"). Before Cloud changes a person's membership or role (project member added or removed, invite accepted), it
 withdraws every approval that person made (`ProductKeyStore.withdrawApprovals`: one conditional write on the company's
-withdrawal row, read with the approval at every hold); if that write fails the change is not made (503). Code's own member
+withdrawal row, read with the approval at every hold); if that write fails the change is not made (503). Only someone who may
+make the change withdraws anything (a project member change needs the project's admin or a company admin, checked with Code
+first; refused otherwise, with nothing withdrawn); after Code made the change Cloud withdraws again (an approval whose role
+check raced the change) and records `product_ai.eval_approvals.withdrawn_for_member`. While product AI settings are on, a
+project member change must name the person by their 64-hex member id (anything else: 400). Code's own member
 changes reach Cloud through no event today: for those, the 15 minutes bound the window. The settings page shows each approval's
 state (`current`, `stale`, `withdrawn`).
 

@@ -456,14 +456,15 @@ async function acceptInvite(context: RouteContext): Promise<RouteAnswer> {
   const nowMs = context.now().getTime();
   if (invite === undefined || invite.companyId !== who.companyId || invite.state !== "pending" || expired(invite, nowMs)) return WORDS.unusable;
   // PRODUCT-EVAL-APPROVER-REREAD: accepting an invite sets the person's company role, so any eval approval they made stops counting first.
-  const withdrawal = await withdrawForMember(context, who.developerId, who.companyId);
-  if (withdrawal !== undefined) return withdrawal;
+  const withdrawal = await withdrawForMember(context, who.developerId, { companyId: who.companyId });
+  if ("status" in withdrawal) return withdrawal;
   try {
     await store.updateInvite({ ...invite, state: "accepted", revision: invite.revision + 1, acceptedAt: new Date(nowMs).toISOString(), acceptedBy: who.developerId }, { revision: invite.revision, state: "pending" });
   } catch (error) {
     if (error instanceof CompanyStoreConflict) return WORDS.unusable;
     throw error;
   }
+  await withdrawal.after();
   log(who, { event: "cloud.invite_accepted", inviteId: invite.inviteId });
   return ok({ accepted: true, inviteId: invite.inviteId, orgId: invite.companyId });
 }

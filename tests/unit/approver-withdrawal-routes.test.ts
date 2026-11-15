@@ -86,6 +86,38 @@ describe("withdrawn before a membership change", () => {
     expect((await w.audit.read(B, { max: 50 })).rows.map((r) => r.action)).toContain("product_ai.eval_approvals.withdrawn_for_member");
   });
 
+  it("only someone who may change the project's members withdraws anything: a contributor's attempt changes nothing", async () => {
+    const w = world();
+    await approved(w);
+    w.advance(1000);
+    const r = await w.call(await w.signIn("cal", 30), "DELETE", `/projects/web/members/${pamId}`);
+    expect(r.status).toBe(403);
+    expect(w.codeCalls).toEqual([]);
+    expect(await storedEvalApprovals(w.store, () => w.clock.at).current(ISS, A, "web")).toMatchObject({ approver: { personId: pamId } });
+    expect((await w.audit.read(A, { max: 50 })).rows.map((each) => each.action)).not.toContain("product_ai.eval_approvals.withdrawn_for_member");
+  });
+
+  it("audits only a change Code made", async () => {
+    const w = world({ memberStatus: 403 });
+    await approved(w);
+    w.advance(1000);
+    expect((await w.call(await w.signIn("ada", 30), "DELETE", `/projects/web/members/${pamId}`)).status).toBeGreaterThanOrEqual(400);
+    expect((await w.audit.read(A, { max: 50 })).rows.map((each) => each.action)).not.toContain("product_ai.eval_approvals.withdrawn_for_member");
+  });
+
+  it("an approval whose role check raced Code's change is withdrawn too (withdrawn again after the change)", async () => {
+    const hook: { raced?: () => Promise<unknown> } = {};
+    const w = world({ duringMemberChange: async () => { await hook.raced?.(); } });
+    hook.raced = async () => {
+      // Pam's role check began after the first withdrawal and before Code removed her.
+      w.advance(10);
+      await w.store.setEvalApproval({ iss: ISS, cid: A, owner: "web", requestId: crypto.randomUUID(), expectedRevision: (await w.store.view(ISS, A, "web")).revision, actor: { id: pamId, role: "project_maintainer" }, approval, provider: "rovara-code", roleCheckedAt: w.clock.at });
+      w.advance(10);
+    };
+    expect((await w.call(await w.signIn("ada", 30), "DELETE", `/projects/web/members/${pamId}`)).status).toBe(200);
+    expect(await storedEvalApprovals(w.store, () => w.clock.at).current(ISS, A, "web")).toBe(EVAL_APPROVAL_STALE);
+  });
+
   it("without product AI settings, member changes work as before (nothing to withdraw)", async () => {
     // product-ai-routes.test.ts covers the handler without productAi; here the route still answers when the store is healthy.
     const w = world();

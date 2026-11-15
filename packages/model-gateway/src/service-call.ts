@@ -26,6 +26,14 @@ export const SERVICE_CALL_SKEW_MS = 60_000;
 export const SERVICE_CALL_BODY_MAX = 4_096;
 /** Cloud's wait for the gateway's answer (the probe makes up to four Google/AWS calls of 5 s each). */
 export const SERVICE_CALL_TIMEOUT_MS = 25_000;
+/**
+ * Per serving task, before any KMS call: this path is on the public load balancer and each check costs a KMS VerifyMac (and,
+ * when signed, a probe at Google), so anonymous traffic must not turn into unbounded paid calls or eat the account's KMS rate.
+ * At most SERVICE_CALL_OPEN checks at once and SERVICE_CALL_PER_MINUTE started per minute; over either: 429, nothing called.
+ * A person connects Vertex rarely (fresh step-up, admin only), so this never limits real use.
+ */
+export const SERVICE_CALL_OPEN = 2;
+export const SERVICE_CALL_PER_MINUTE = 30;
 const RESULTS: readonly ProbeResult[] = ["ok", "too_open", "refused", "unavailable"];
 
 export interface MacSigner { generateMac(input: { KeyId: string; Message: Uint8Array }): Promise<{ Mac?: Uint8Array }> }
@@ -88,6 +96,7 @@ export interface VertexCheckHandlerOptions {
 }
 
 const ANSWERS = {
+  busy: { status: 429, body: { error: { type: "busy", message: "too many service calls; try again later" } } },
   notAllowed: { status: 405, body: { error: { type: "not_found", message: "not found" } } },
   tooLarge: { status: 413, body: { error: { type: "invalid_request", message: "the request is too large" } } },
   refused: { status: 401, body: { error: { type: "unauthorized", message: "the service call is not signed" } } },
@@ -133,14 +142,32 @@ export async function answerVertexCheck(options: VertexCheckHandlerOptions, requ
 
 /** The HTTP handler the serving process mounts at VERTEX_CHECK_PATH (process.ts), only when Vertex and the MAC key are configured. */
 export function createVertexCheckHandler(options: VertexCheckHandlerOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  const limit = serviceCallLimiter(options.now ?? Date.now);
   return async (req, res) => {
     const controller = new AbortController(); const abort = () => controller.abort();
     res.once("close", abort);
+    const release = limit.take();
     try {
-      const answer = await answerVertexCheck(options, { method: req.method ?? "", headers: req.headers, body: req }, controller.signal);
+      const answer = release === undefined ? ANSWERS.busy : await answerVertexCheck(options, { method: req.method ?? "", headers: req.headers, body: req }, controller.signal);
+      if (release === undefined) req.resume();
       if (res.headersSent || res.destroyed) return;
       res.writeHead(answer.status, { "content-type": "application/json", "cache-control": "no-store" });
       res.end(JSON.stringify(answer.body));
-    } finally { res.off("close", abort); }
+    } finally { release?.(); res.off("close", abort); }
+  };
+}
+
+/** SERVICE_CALL_OPEN at once and SERVICE_CALL_PER_MINUTE started per rolling minute. take(): a release function, or undefined when over. */
+export function serviceCallLimiter(now: () => number, open = SERVICE_CALL_OPEN, perMinute = SERVICE_CALL_PER_MINUTE): { take(): (() => void) | undefined } {
+  let running = 0; const started: number[] = [];
+  return {
+    take() {
+      const at = now();
+      while (started.length > 0 && started[0]! <= at - 60_000) started.shift();
+      if (running >= open || started.length >= perMinute) return undefined;
+      running++; started.push(at);
+      let done = false;
+      return () => { if (!done) { done = true; running--; } };
+    },
   };
 }

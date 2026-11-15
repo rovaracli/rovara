@@ -3,12 +3,14 @@
 // runs the connection test (a token for the company, the canary company refused) and answers only its fixed result; Cloud seals
 // the record only on "ok". Fresh step-up, project or company admin, audited, write-only, two companies never meet.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { PRODUCT_AI_VERTEX_SOURCE_ID } from "../../packages/cloud-server/src/index.js";
 import { PRODUCT_KEY_PURPOSE } from "../../packages/model-gateway/src/product-seal.js";
 import type { VertexCredential } from "../../packages/model-gateway/src/product-vertex-credential.js";
 import type { ProbeResult } from "../../packages/model-gateway/src/product-vertex-token.js";
-import { answerVertexCheck, gatewayVertexCheck, SERVICE_CALL_AT_HEADER, SERVICE_CALL_MAC_HEADER, SERVICE_CALL_SKEW_MS, serviceCallMessage, VERTEX_CHECK_PATH, type MacSigner, type MacVerifier } from "../../packages/model-gateway/src/service-call.js";
+import { answerVertexCheck, createVertexCheckHandler, gatewayVertexCheck, serviceCallLimiter, SERVICE_CALL_OPEN, SERVICE_CALL_PER_MINUTE, SERVICE_CALL_AT_HEADER, SERVICE_CALL_MAC_HEADER, SERVICE_CALL_SKEW_MS, serviceCallMessage, VERTEX_CHECK_PATH, type MacSigner, type MacVerifier } from "../../packages/model-gateway/src/service-call.js";
 import { A, B, ISS, START, world, write } from "./product-ai-world.js";
 
 const MAC_KEY = "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-0000000000aa";
@@ -186,6 +188,37 @@ describe("the gateway's signed Vertex check (service-call.ts)", () => {
     expect((await send(g, await signedCall(g, good), "GET")).status).toBe(405);
     expect((await send(g, { bytes: Buffer.alloc(5000, 32), headers: {} })).status).toBe(413);
     expect(g.probes).toHaveLength(0);
+  });
+
+  it("limits checks per serving task before any KMS call: two at once, thirty a minute; over that 429 and nothing called", async () => {
+    const clock = { at: START };
+    const limit = serviceCallLimiter(() => clock.at);
+    const held = [limit.take(), limit.take()];
+    expect(held.every((r) => r !== undefined)).toBe(true);
+    expect(SERVICE_CALL_OPEN).toBe(2);
+    expect(limit.take()).toBeUndefined();
+    held[0]!(); held[0]!();
+    const third = limit.take(); expect(third).toBeDefined(); third!(); held[1]!();
+    for (let i = 3; i < SERVICE_CALL_PER_MINUTE; i++) limit.take()!();
+    expect(limit.take()).toBeUndefined();
+    clock.at += 60_000;
+    expect(limit.take()).toBeDefined();
+    // Through the mounted handler: the third concurrent check is 429 and KMS is never asked for it.
+    const g = gatewayKit();
+    let open = 0; let release!: () => void; const gate = new Promise<void>((resolve) => { release = resolve; });
+    const slow = { ...g.gateway, kms: { verifyMac: async (input: Parameters<MacVerifier["verifyMac"]>[0]) => { open++; await gate; return g.kms.verifier.verifyMac(input); } } };
+    const handler = createVertexCheckHandler(slow);
+    const fire = () => {
+      const req = Object.assign(Readable.from([Buffer.from("{}")]), { method: "POST", url: VERTEX_CHECK_PATH, headers: { [SERVICE_CALL_AT_HEADER]: String(START), [SERVICE_CALL_MAC_HEADER]: Buffer.alloc(32).toString("base64url") } });
+      const res = Object.assign(new EventEmitter(), { statusCode: 0, headersSent: false, destroyed: false, writeHead(status: number) { res.statusCode = status; res.headersSent = true; return res; }, end() { res.emit("close"); return res; } });
+      const done = handler(req as never, res as never).then(() => res.statusCode);
+      return done;
+    };
+    const first = fire(); const second = fire();
+    expect(await fire()).toBe(429);
+    release();
+    expect(await first).toBe(401); expect(await second).toBe(401);
+    expect(open).toBe(2);
   });
 
   it("Cloud's client: only a federation setup is sent; any answer but the four results is unavailable", async () => {

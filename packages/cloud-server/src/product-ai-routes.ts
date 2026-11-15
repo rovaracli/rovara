@@ -83,6 +83,7 @@ const WORDS = Object.freeze({
   inRecovery: refusal(409, "CONFLICT", "This key was removed less than 7 days ago. Ask an installation administrator to recover it."),
   keyRefused: refusal(400, "CONFIG_INVALID", "The provider refused this key."),
   memberId: refusal(400, "CONFIG_INVALID", "Name the person by their member id."),
+  memberForbidden: refusal(403, "FORBIDDEN", "Only the project's admin or a company admin can change its members."),
   vertexRefused: refusal(400, "CONFIG_INVALID", "Google refused this Vertex AI setup: check the project, the workload identity provider and the service account."),
   vertexTooOpen: refusal(400, "CONFIG_INVALID", "This Vertex AI setup lets other Rovara companies through. Add the attribute condition for your company, then try again."),
   vertexUnavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The Vertex AI connection test is unavailable right now. Nothing was saved. Try again."),
@@ -283,34 +284,50 @@ async function removeVertex(context: RouteContext): Promise<RouteAnswer> {
   return ok(view(v, w));
 }
 
+/** What a member change does after Code made it: withdraw again (an approval whose role check raced the change) and audit. */
+export interface MemberWithdrawal { after(): Promise<void> }
+const NOTHING_TO_WITHDRAW: MemberWithdrawal = { after: async () => undefined };
+
 /**
  * PRODUCT-EVAL-APPROVER-REREAD: Cloud is about to change this person's membership or role (a project member change, an invite
- * accepted). Every eval approval they made stops counting first. Undefined when done or when this Cloud has no product AI
- * settings; a RouteAnswer (503) when it could not be saved: the caller must then NOT make the change (fail closed: a person whose
- * membership changes never keeps an approval the gateway would honour).
+ * accepted). Every eval approval they made stops counting first. A RouteAnswer when the change must not be made: the caller
+ * may not make it (`project`: only that project's admin or a company admin may change its members, checked with Code BEFORE
+ * anything is withdrawn), the person is not named by a member id, or the withdrawal could not be saved (503, fail closed: a
+ * person whose membership changes never keeps an approval the gateway would honour). Otherwise `after()`, to run once Code
+ * made the change: it withdraws again (closing the window between this withdrawal and Code's change) and records the audit.
+ * Without product AI settings there is nothing to withdraw.
  */
-export async function withdrawForMember(context: RouteContext, personId: string, knownCompanyId?: string): Promise<RouteAnswer | undefined> {
+export async function withdrawForMember(context: RouteContext, personId: string, scope: { project: string } | { companyId: string }): Promise<RouteAnswer | MemberWithdrawal> {
   const backend = context.productAi;
-  if (backend === undefined) return undefined;
-  // Approvals name people by their 64-hex member id: a change naming anyone another way can't be matched, so it is not made.
-  if (typeof personId !== "string" || !/^[a-f0-9]{64}$/u.test(personId)) return WORDS.memberId;
-  let companyId = knownCompanyId;
-  if (companyId === undefined) {
-    const named = (await context.client.access(context.session) as { companyId?: unknown }).companyId;
+  if (backend === undefined) return NOTHING_TO_WITHDRAW;
+  let companyId: string;
+  if ("companyId" in scope) companyId = scope.companyId;
+  else {
+    const access = await context.client.access(context.session);
+    const named = (access as { companyId?: unknown }).companyId;
     if (named !== undefined) { if (typeof named !== "string" || !COMPANY_ID.test(named)) return WORDS.noCompany; companyId = named; }
     else if (backend.companyId !== undefined && COMPANY_ID.test(backend.companyId)) companyId = backend.companyId;
     // No company: no approval can be recorded for one (the settings routes refuse), so there is nothing to withdraw.
-    else return undefined;
+    else return NOTHING_TO_WITHDRAW;
+    // Only someone who may change the project's members withdraws anyone's approvals (never a side effect of a refused change).
+    const mine = access.projects.find((each) => each.name === scope.project);
+    if (access.administrator !== true && mine?.access !== "administrator") return WORDS.memberForbidden;
   }
+  // Approvals name people by their 64-hex member id: a change naming anyone another way can't be matched, so it is not made.
+  if (typeof personId !== "string" || !/^[a-f0-9]{64}$/u.test(personId)) return WORDS.memberId;
   if (!COMPANY_ID.test(companyId)) return WORDS.unavailable;
-  try { await backend.store.withdrawApprovals(backend.issuer, companyId, personId); }
+  const withdraw = async () => { await backend.store.withdrawApprovals(backend.issuer, companyId, personId); };
+  try { await withdraw(); }
   catch { console.log(JSON.stringify({ event: "cloud.eval_approvals_withdraw_failed", companyId })); return WORDS.unavailable; }
-  if (context.audit !== undefined) {
-    try {
-      await recordCloudAction(context.audit, { companyId, actor: { developerId: context.session.access.developerId, name: context.session.access.displayName, type: "person" }, action: "product_ai.eval_approvals.withdrawn_for_member", via: "web", subject: `person:${personId}` }, context.now);
-    } catch { console.log(JSON.stringify({ event: "cloud.audit_failed", action: "product_ai.eval_approvals.withdrawn_for_member", companyId })); }
-  }
-  return undefined;
+  return {
+    after: async () => {
+      try { await withdraw(); } catch { console.log(JSON.stringify({ event: "cloud.eval_approvals_withdraw_failed", companyId, after: true })); }
+      if (context.audit === undefined) return;
+      try {
+        await recordCloudAction(context.audit, { companyId, actor: { developerId: context.session.access.developerId, name: context.session.access.displayName, type: "person" }, action: "product_ai.eval_approvals.withdrawn_for_member", via: "web", subject: `person:${personId}` }, context.now);
+      } catch { console.log(JSON.stringify({ event: "cloud.audit_failed", action: "product_ai.eval_approvals.withdrawn_for_member", companyId })); }
+    },
+  };
 }
 
 const PROJECT_PATH = "\\/projects\\/([a-z][a-z0-9-]{0,62})\\/product-ai";

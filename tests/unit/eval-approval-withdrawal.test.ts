@@ -53,6 +53,15 @@ describe("eval approval freshness (15 minutes)", () => {
     expect(await storedEvalBudget(k.store)(ISS, A, "web")).toEqual({ calls: 400, costMicros: 4_000_000 });
   });
 
+  it("the hold's own clock decides too: an approval the store still calls current is stale on a gateway clock 15 minutes on", async () => {
+    const k = kit();
+    await approve(k, A, pam, 0);
+    const late = storedEvalApprovals(k.store, () => now + EVAL_APPROVAL_FRESH_MS);
+    expect((await k.store.evalFor(ISS, A, "web")).approvalState).toBe("current");
+    expect(await late.current(ISS, A, "web")).toBe(EVAL_APPROVAL_STALE);
+    expect(await late.roleOf(ISS, A, "web", { personId: pam.id, provider: "rovara-code" })).toBeUndefined();
+  });
+
   it("counts from the role check, not from the save", async () => {
     const k = kit();
     await approve(k, A, pam, 0, now - EVAL_APPROVAL_FRESH_MS + 1000);

@@ -24,7 +24,7 @@ const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url")
 export type Body = Record<string, unknown> & { error?: { code: string; message: string } };
 export const write = (expectedRevision: number, more: Record<string, unknown> = {}) => ({ requestId: randomUUID(), expectedRevision, ...more });
 
-export interface WorldOptions { vertexCheck?: VertexCheck; beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; company?: boolean; /** Code's access check takes this long (the clock moves while it runs). */ accessMs?: number }
+export interface WorldOptions { vertexCheck?: VertexCheck; beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; company?: boolean; /** Code's access check takes this long (the clock moves while it runs). */ accessMs?: number; /** Code's answer to a member change (default 200), and what happens while Code makes it. */ memberStatus?: number; duringMemberChange?: () => Promise<void> }
 
 export function world(options: WorldOptions = {}) {
   const clock = { at: START }; let tokens = 0;
@@ -40,6 +40,8 @@ export function world(options: WorldOptions = {}) {
     const member = /^\/v1\/dev\/client\/projects\/([^/]+)\/members\/([^/]+)$/u.exec(url.pathname);
     if (member !== null) {
       codeCalls.push(`${init?.method ?? "GET"} ${url.pathname}`);
+      await options.duringMemberChange?.();
+      if (options.memberStatus !== undefined && options.memberStatus !== 200) return new Response(JSON.stringify({ error: { code: "FORBIDDEN", message: "no" } }), { status: options.memberStatus, headers: { "content-type": "application/json" } });
       return new Response(JSON.stringify({ developerId: decodeURIComponent(member[2]!), outcome: "revoked" }), { status: 200, headers: { "content-type": "application/json" } });
     }
     return new Response("{}", { status: 404 });
