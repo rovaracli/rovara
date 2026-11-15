@@ -27,8 +27,9 @@ class CompanyKeys implements LearningKeySource {
   reads: string[] = [];
   lose = false;
   fail = false;
-  async connected(_iss: string, cid: string): Promise<boolean> { if (this.fail) throw new Error("store down"); return this.connectedTo.has(cid); }
-  async keyFor(_iss: string, cid: string): Promise<string | undefined> { this.reads.push(cid); if (this.fail) throw new Error("store down"); return this.lose ? undefined : keyOf(cid); }
+  providers: string[] = [];
+  async connected(_iss: string, cid: string, provider: string): Promise<boolean> { this.providers.push(provider); if (this.fail) throw new Error("store down"); return this.connectedTo.has(cid); }
+  async keyFor(_iss: string, cid: string, provider: string): Promise<string | undefined> { this.providers.push(provider); this.reads.push(cid); if (this.fail) throw new Error("store down"); return this.lose ? undefined : keyOf(cid); }
 }
 
 function companyGateway(overrides: Partial<GatewayDependencies> = {}) {
@@ -55,6 +56,8 @@ describe("agent route, company-key mode (DEC 236)", () => {
     expect(g.sent[0]!.key).toBe(keyOf(cidA));
     expect(g.installKeyReads).toEqual([]);
     expect(g.companyKeys.reads).toEqual([cidA]);
+    // The agent route speaks Anthropic Messages: only the company's Anthropic source is asked.
+    expect(g.companyKeys.providers).toEqual(["anthropic", "anthropic"]);
   });
 
   it("each company's call goes out on that company's own key only (two companies)", async () => {
