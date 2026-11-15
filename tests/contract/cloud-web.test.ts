@@ -1,12 +1,12 @@
 import { App } from "aws-cdk-lib";
 import { Code } from "aws-cdk-lib/aws-lambda";
 import { Match, Template } from "aws-cdk-lib/assertions";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CLOUD_TABLE, COMPANY_TABLE } from "../../packages/cloud-server/src/index.js";
-import { CloudWebStack, cloudWebStackName } from "../../infra/lib/cloud-web.js";
+import { CLOUD_WEB_STARTED_BY_INDEX, CLOUD_WEB_TABLE_ACCESS, CloudWebStack, cloudWebStackName } from "../../infra/lib/cloud-web.js";
 import { CLOUD_APP_CLIENT_ID } from "../../infra/lib/cloud-app.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 
@@ -40,6 +40,74 @@ describe("Rovara Cloud on CloudFront, Lambda and DynamoDB (Rovara-cloud#11)", ()
     expect(JSON.stringify(config.Origins)).toContain(idOf("AWS::Lambda::Url"));
     expect(config.Origins.some((origin) => "OriginAccessControlId" in origin)).toBe(true);
     template.hasResourceProperties("AWS::S3::Bucket", { PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true } });
+  });
+
+  it("takes requests only from its own CloudFront distribution: IAM auth on the function URL, signed by origin access control", () => {
+    const urlId = idOf("AWS::Lambda::Url");
+    template.hasResourceProperties("AWS::Lambda::Url", { AuthType: "AWS_IAM" });
+    template.resourcePropertiesCountIs("AWS::Lambda::Url", { AuthType: "NONE" }, 0);
+    // A Lambda origin access control that always signs with SigV4.
+    const controls = template.findResources("AWS::CloudFront::OriginAccessControl");
+    const lambdaControl = Object.entries(controls).find(([, each]) => (each.Properties as { OriginAccessControlConfig: { OriginAccessControlOriginType: string } }).OriginAccessControlConfig.OriginAccessControlOriginType === "lambda");
+    expect(lambdaControl).toBeDefined();
+    expect((lambdaControl![1].Properties as { OriginAccessControlConfig: unknown }).OriginAccessControlConfig).toMatchObject({ SigningBehavior: "always", SigningProtocol: "sigv4" });
+    // The function's origin in the distribution uses it.
+    const config = (Object.values(template.findResources("AWS::CloudFront::Distribution"))[0]!.Properties as { DistributionConfig: { Origins: Array<Record<string, unknown>> } }).DistributionConfig;
+    const functionOrigin = config.Origins.find((origin) => JSON.stringify(origin.DomainName).includes(urlId))!;
+    expect(functionOrigin.OriginAccessControlId).toEqual({ "Fn::GetAtt": [lambdaControl![0], "Id"] });
+    // Invoke rights: only CloudFront, only for this distribution, and nothing public.
+    const distributionId = idOf("AWS::CloudFront::Distribution");
+    const permissions = Object.values(template.findResources("AWS::Lambda::Permission")).map((each) => each.Properties as Record<string, unknown>);
+    expect(permissions.map((each) => each.Action).sort()).toEqual(["lambda:InvokeFunction", "lambda:InvokeFunctionUrl"]);
+    for (const permission of permissions) {
+      expect(permission.Principal).toBe("cloudfront.amazonaws.com");
+      expect(permission.SourceArn).toEqual({ "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":cloudfront::", { Ref: "AWS::AccountId" }, ":distribution/", { Ref: distributionId }]] });
+      expect(permission).not.toHaveProperty("FunctionUrlAuthType", "NONE");
+    }
+    expect(permissions.find((each) => each.Action === "lambda:InvokeFunction")).toMatchObject({ InvokedViaFunctionUrl: true });
+    // The payload hash a signed write needs reaches CloudFront's signer: all viewer headers but Host go to the function.
+    expect((config as unknown as { DefaultCacheBehavior: Record<string, unknown> }).DefaultCacheBehavior.OriginRequestPolicyId).toBe("b689b0a8-53d0-40ab-baf2-68738e2966ac");
+  });
+
+  it("gives the server only the table's item actions its stores use, each on its own key prefix, and no Scan", () => {
+    const role = (server().Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
+    // The State table is the one with the startedBy index (the company table has none).
+    const stateTable = idOf("AWS::DynamoDB::GlobalTable", (properties) => JSON.stringify(properties).includes("GlobalSecondaryIndexes"));
+    const tableArn = { "Fn::GetAtt": [stateTable, "Arn"] };
+    type Statement = { Effect: string; Action: string | string[]; Resource: unknown; Condition?: unknown };
+    const statements = Object.values(template.findResources("AWS::IAM::Policy"))
+      .filter((each) => JSON.stringify((each.Properties as { Roles: unknown }).Roles).includes(role))
+      .flatMap((each) => (each.Properties as { PolicyDocument: { Statement: Statement[] } }).PolicyDocument.Statement);
+    const onTable = statements.filter((statement) => [statement.Action].flat().some((action) => action.startsWith("dynamodb:")) && JSON.stringify(statement.Resource).includes(`"${stateTable}"`));
+    expect(onTable).toEqual([
+      ...[
+        ["SIGNIN#", ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"]],
+        ["PENDING#", ["dynamodb:PutItem", "dynamodb:DeleteItem"]],
+        ["SESSION#", ["dynamodb:PutItem", "dynamodb:Query"]],
+        ["REQUEST#", ["dynamodb:GetItem", "dynamodb:PutItem"]],
+        ["PRESENCE#", ["dynamodb:PutItem", "dynamodb:Query"]],
+        ["AUDIT#", ["dynamodb:PutItem", "dynamodb:Query"]],
+        ["AUDITID#", ["dynamodb:PutItem"]],
+      ].map(([prefix, actions]) => ({
+        // CloudFormation renders a single action as a string.
+        Effect: "Allow", Action: (actions as string[]).length === 1 ? (actions as string[])[0] : actions, Resource: tableArn,
+        Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": `${prefix as string}*` }, Null: { "dynamodb:LeadingKeys": "false" } },
+      })),
+      { Effect: "Allow", Action: "dynamodb:Query", Resource: { "Fn::Join": ["", [tableArn, `/index/${CLOUD_TABLE.startedByIndex}`]] } },
+    ]);
+    const all = onTable.flatMap((statement) => [statement.Action].flat());
+    for (const refused of ["dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:BatchWriteItem", "dynamodb:ConditionCheckItem", "dynamodb:GetRecords", "dynamodb:GetShardIterator", "dynamodb:DescribeTable", "dynamodb:*"]) expect(all).not.toContain(refused);
+    // No other statement names the table at all.
+    expect(statements.filter((statement) => !onTable.includes(statement) && JSON.stringify(statement.Resource).includes(stateTable))).toEqual([]);
+  });
+
+  it("names the same key prefixes the server's stores use (a new prefix in the stores needs its rights here)", () => {
+    const sources = ["packages/cloud-server/src/dynamo-stores.ts", "packages/cloud-server/src/session-table.ts"].map((file) => readFileSync(file, "utf8")).join("\n");
+    const used = new Set([...sources.matchAll(/(?:\bpk:|":pk":)\s*`([A-Z]+#)/gu)].map((match) => match[1]!));
+    // STARTED# is the startedBy index's partition (gsi1pk), read through the index statement only.
+    expect([...used].sort()).toEqual([...CLOUD_WEB_TABLE_ACCESS.map((each) => each.prefix), "STARTED#"].sort());
+    expect(sources).toContain("gsi1pk: `STARTED#");
+    expect(CLOUD_WEB_STARTED_BY_INDEX).toBe(CLOUD_TABLE.startedByIndex);
   });
 
   it("adds each release's files and deletes none, so a page opened before a release still finds its chunks", () => {

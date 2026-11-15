@@ -28,7 +28,7 @@ import { CLOUD_APP_CALLBACK_PATH, CLOUD_APP_CLIENT_ID, CLOUD_APP_SCOPES, signInK
  * from S3; a release only adds files, so a page opened before it still finds its older script chunks.
  *
  *   browser -> CloudFront -> /app/assets/*  -> S3 (the built app, kept across releases)
- *                         -> everything else -> function URL -> Lambda (scripts/cloud-lambda.ts) -> Code's API
+ *                         -> everything else -> function URL (IAM, CloudFront-signed only) -> Lambda (scripts/cloud-lambda.ts) -> Code's API
  *                                                                  |
  *                                                                  DynamoDB: sign-ins, Cloud's sessions and comments, who is viewing
  *
@@ -49,6 +49,48 @@ export interface CloudWebProps extends StackProps {
   readonly appDirectory?: string;
   /** The function's code; by default scripts/cloud-lambda.ts bundled at deploy. Tests pass a stand-in. */
   readonly code?: lambda.Code;
+}
+
+/**
+ * What the server may do in its State table, by partition-key prefix (the layout in packages/cloud-server/src/dynamo-stores.ts):
+ *   SIGNIN#   a sign-in: read, created, its last-seen time updated, deleted on sign-out (session-table.ts)
+ *   PENDING#  a sign-in under way: written, then taken once with a delete
+ *   SESSION#  a Cloud session and its comments: written (in a transaction) and read as one partition (Query)
+ *   REQUEST#  the session a start request made: written and read
+ *   PRESENCE# who is viewing: a heartbeat written, the partition read (Query)
+ *   AUDIT#    the company audit record (#50): written once, a month's partition read (Query); never updated or deleted
+ *   AUDITID#  an audit record's id marker: written once (the same transaction), never read or changed
+ * and Query on the startedBy index (STARTED#<developer id>), which holds only META items the SESSION# rights already read.
+ */
+export const CLOUD_WEB_TABLE_ACCESS: ReadonlyArray<{ readonly prefix: string; readonly actions: readonly string[] }> = [
+  { prefix: "SIGNIN#", actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"] },
+  { prefix: "PENDING#", actions: ["dynamodb:PutItem", "dynamodb:DeleteItem"] },
+  { prefix: "SESSION#", actions: ["dynamodb:PutItem", "dynamodb:Query"] },
+  { prefix: "REQUEST#", actions: ["dynamodb:GetItem", "dynamodb:PutItem"] },
+  { prefix: "PRESENCE#", actions: ["dynamodb:PutItem", "dynamodb:Query"] },
+  // #50: the company audit record, append-only (a record and its id marker written once, in one transaction; months read by Query).
+  { prefix: "AUDIT#", actions: ["dynamodb:PutItem", "dynamodb:Query"] },
+  { prefix: "AUDITID#", actions: ["dynamodb:PutItem"] },
+];
+
+/** The table's index of a person's sessions (CLOUD_TABLE.startedByIndex; tests hold the two equal). */
+export const CLOUD_WEB_STARTED_BY_INDEX = "startedBy";
+
+/** The server role's statements on the State table: one per prefix, bound to it with dynamodb:LeadingKeys, plus the index's Query. */
+export function cloudWebTableStatements(tableArn: string): iam.PolicyStatement[] {
+  return [
+    ...CLOUD_WEB_TABLE_ACCESS.map(({ prefix, actions }) => new iam.PolicyStatement({
+      actions: [...actions],
+      resources: [tableArn],
+      conditions: {
+        // Every key the request names starts with the prefix; the Null check refuses a request that names no key at all
+        // (ForAllValues alone is true on an empty set).
+        "ForAllValues:StringLike": { "dynamodb:LeadingKeys": `${prefix}*` },
+        Null: { "dynamodb:LeadingKeys": "false" },
+      },
+    })),
+    new iam.PolicyStatement({ actions: ["dynamodb:Query"], resources: [`${tableArn}/index/${CLOUD_WEB_STARTED_BY_INDEX}`] }),
+  ];
 }
 
 export class CloudWebStack extends Stack {
@@ -76,7 +118,7 @@ export class CloudWebStack extends Stack {
       sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
       timeToLiveAttribute: "expiresAt",
       globalSecondaryIndexes: [{
-        indexName: "startedBy",
+        indexName: CLOUD_WEB_STARTED_BY_INDEX,
         partitionKey: { name: "gsi1pk", type: dynamodb.AttributeType.STRING },
         sortKey: { name: "gsi1sk", type: dynamodb.AttributeType.STRING },
       }],
@@ -161,14 +203,19 @@ export class CloudWebStack extends Stack {
           },
         },
       });
-    table.grantReadWriteData(server);
+    // Only the item actions the server's stores use (packages/cloud-server/src/dynamo-stores.ts, session-table.ts), each on the key
+    // prefixes it writes or reads: no Scan, no batch actions, no stream reads, and Query only within one SESSION#/PRESENCE# partition or
+    // on the startedBy index (which holds META items only). A TransactWriteItems is allowed item by item by the PutItem rights below.
+    for (const statement of cloudWebTableStatements(table.tableArn)) server.addToRolePolicy(statement);
     // Exactly what DynamoCompanyStore sends (a transaction is authorized by each of its writes): no Scan, no batch, no table changes.
     companies.grant(server, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query");
     clientSecret.grantRead(server);
     // Sign-ins are sealed with this stack's own key, which only the function's role may use (migration plan v3.2, 7.2 change 4).
     const sessionKey = signInKey(this, `Rovara Cloud ${env} (web): seals people's sign-ins (Code tokens) in the State table`, server.role!);
     server.addEnvironment("CLOUD_SESSIONS_KEY_ID", sessionKey.keyArn);
-    const url = server.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
+    // IAM auth on the function URL, signed by CloudFront's origin access control (SigV4, always), and invoke rights only for this
+    // distribution: the function's own address answers 403 to anyone else, so every request goes through CloudFront.
+    const url = server.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.AWS_IAM });
 
     const assetsOrigin = origins.S3BucketOrigin.withOriginAccessControl(assets);
     const distribution = new cloudfront.Distribution(this, "Distribution", {
@@ -176,7 +223,9 @@ export class CloudWebStack extends Stack {
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       defaultBehavior: {
-        origin: new origins.FunctionUrlOrigin(url, { readTimeout: Duration.seconds(30) }),
+        // A signed POST/PUT needs the body's SHA-256 in x-amz-content-sha256 (Lambda takes no unsigned payloads): the browser's
+        // writes send it (packages/web/src/browser-host.ts, approve.ts), and the origin request policy passes it on.
+        origin: origins.FunctionUrlOrigin.withOriginAccessControl(url, { readTimeout: Duration.seconds(30) }),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,

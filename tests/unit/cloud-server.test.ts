@@ -4,6 +4,7 @@
 // phase 2: sessions on Code's tasks, Home's cards and the plan approval page.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { APPROVAL_FORM_SCRIPT } from "../../packages/cloud-server/src/approve.js";
 import { CODE_TASK_PAGE, CodeClient, LocalSessionStore, LocalWorkSessionStore, StoreConflict, createCloudHandler, type SessionStore, type WorkSessionStore, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
 import {
   HomeResponseReaderSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema,
@@ -659,7 +660,15 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     expect(page!.headers["content-security-policy"]).toContain("default-src 'none'");
     expect(page!.headers["x-frame-options"]).toBe("DENY");
     expect(page!.body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;[U+202E]");
-    expect(page!.body).not.toContain("<script>");
+    // One script only: the fixed form script, carrying the nonce the page's policy names (nothing from the task is in it).
+    const nonce = /script-src 'nonce-([A-Za-z0-9+/=]{24})'/u.exec(page!.headers["content-security-policy"]!)?.[1];
+    expect(nonce).toBeDefined();
+    expect([...page!.body.matchAll(/<script\b/gu)]).toHaveLength(1);
+    expect(page!.body).toContain(`<script nonce="${nonce}">${APPROVAL_FORM_SCRIPT}</script></body>`);
+    expect(page!.headers["content-security-policy"]).toContain("connect-src 'self'");
+    expect(page!.headers["content-security-policy"]).toContain("form-action 'self'");
+    const again = await call("GET", `/v1/app/approve/plan-${sessionId}`, { cookie: auth.cookie });
+    expect(again!.headers["content-security-policy"]).not.toContain(`'nonce-${nonce}'`);
     expect(page!.body).toContain(`name="csrf" value="${auth.csrf}"`);
     expect(page!.body).toContain(`name="revision" value="4"`);
     expect(page!.body).toContain(`name="digest" value="${PLAN_DIGEST}"`);

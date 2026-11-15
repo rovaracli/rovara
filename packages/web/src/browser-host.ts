@@ -23,9 +23,27 @@ function returnPath(value: string): string {
  if (path.startsWith("/s/") && SessionIdSchema.safeParse(path.slice(3)).success) return path;
  return /^\/app(?:\/[A-Za-z0-9._~%/-]*)?(?:\?[A-Za-z0-9._~%=&-]*)?$/.test(path) && !path.includes("..") && !path.includes("//") && !/%2e|%2f|%5c/i.test(path) && !path.split("?", 1)[0]!.split("/").includes(".") ? path : "/app";
 }
+/**
+ * Behind CloudFront, Cloud's function URL takes only requests CloudFront signed for it (origin access control), and Lambda takes no
+ * unsigned payload: a write carries its body's SHA-256 (hex) in x-amz-content-sha256, which CloudFront passes on and signs. Elsewhere
+ * the header is unused. Without Web Crypto (a page outside a secure context) it is left out.
+ */
+export const PAYLOAD_HASH_HEADER = "x-amz-content-sha256";
+export async function payloadHash(body: string | undefined): Promise<string | undefined> {
+ const subtle = globalThis.crypto?.subtle;
+ if (subtle === undefined) return undefined;
+ const digest = new Uint8Array(await subtle.digest("SHA-256", new TextEncoder().encode(body ?? "")));
+ return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 export function createBrowserHost(win: BrowserWindow): AppHost {
  let csrf: string | undefined, refreshing: Promise<void> | undefined;
  async function fetchJson(path: string, init: RequestInit): Promise<ApiResponse> {
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+   if (init.body !== undefined && init.body !== null && typeof init.body !== "string") throw new Error("Browser writes send text bodies.");
+   const hash = await payloadHash(init.body ?? undefined);
+   if (hash !== undefined) { const headers = new Headers(init.headers);headers.set(PAYLOAD_HASH_HEADER, hash);init = { ...init, headers }; }
+  }
   const response = await win.fetch(path, { ...init, credentials: "same-origin", redirect: "error" });
   let body: unknown;try { body = response.status === 204 ? undefined : await response.json(); } catch { body = undefined; }
   return { status: response.status, body };

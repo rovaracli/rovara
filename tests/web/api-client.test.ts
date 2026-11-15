@@ -153,3 +153,21 @@ for(const failure of ["network","throttled"])it(`does not automatically retry an
 it("never-retry writes do not automatically replay on stale CSRF and do not send retry metadata",async()=>{const b=browser(async path=>path.endsWith("/me")?json(me()):json({error:{code:"CSRF_STALE",message:"private stale detail"}},403));const host=createBrowserHost(b.win);await expect(createApiClient(host).send("POST","/v1/app/projects/payments/reviewed-archive",{requestId:"retained-id"},HomeResponseReaderSchema,{retry:"never"})).rejects.toMatchObject({code:"CSRF_STALE"});const posts=b.fetch.mock.calls.filter(([,init])=>init?.method==="POST");expect(posts).toHaveLength(1);expect(new Headers(posts[0]![1]?.headers).has("retry")).toBe(false);expect(posts[0]![1]?.body).toBe(JSON.stringify({requestId:"retained-id"}));});
 
 for(const failure of ["network","429","503"])it(`never retries an explicitly bounded GET after ${failure}`,async()=>{vi.useFakeTimers();const f=fakeHost(async()=>{if(failure==="network")throw new Error("private");return{status:Number(failure),body:{error:{code:"RUNTIME_UNAVAILABLE",message:"private"}}};});const pending=createApiClient(f.host).get("/v1/app/projects/payments/working-branches",HomeResponseReaderSchema,undefined,{retry:"never"}).catch((error:unknown)=>error);await vi.advanceTimersByTimeAsync(10000);expect(f.request).toHaveBeenCalledTimes(1);expect(await pending).toBeInstanceOf(ApiError);});
+it("sends each write's body SHA-256 in x-amz-content-sha256, as CloudFront's signed function-URL origin needs, and none on reads", async () => {
+ const { createHash } = await import("node:crypto");
+ const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+ const b = browser(async (path) => path.endsWith("/sign-out") ? new Response(null, { status: 204 }) : json(path.endsWith("/me") ? me() : empty));
+ const host = createBrowserHost(b.win);
+ await host.transport.request({ method: "GET", path: "/v1/app/me" });
+ const body = { requestId: "hash-request", text: "Café ünïcode" };
+ await host.transport.request({ method: "POST", path: "/v1/app/home/cards/fixture/dismiss", body });
+ await host.transport.request({ method: "DELETE", path: "/v1/app/home/cards/fixture" });
+ await host.signOut();
+ const sent = b.fetch.mock.calls.map(([path, init]) => ({ path, method: init?.method, hash: new Headers(init?.headers).get("x-amz-content-sha256"), csrf: new Headers(init?.headers).get("x-rovara-csrf") }));
+ expect(sent).toEqual([
+  { path: "/v1/web/me", method: "GET", hash: null, csrf: null },
+  { path: "/v1/web/home/cards/fixture/dismiss", method: "POST", hash: sha(JSON.stringify(body)), csrf: CSRF },
+  { path: "/v1/web/home/cards/fixture", method: "DELETE", hash: sha(""), csrf: CSRF },
+  { path: "/v1/auth/browser/sign-out", method: "POST", hash: sha(""), csrf: CSRF },
+ ]);
+});

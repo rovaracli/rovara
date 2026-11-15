@@ -3,9 +3,15 @@
 // `workflow/decision`, bound to the workflow revision and the plan's digest the page showed, so a plan that changed in between is
 // refused by Code rather than approved. Code also decides who may approve; this page only shows and sends.
 //
-// Page safety: nothing from the task is rendered unescaped; the page has its own strict policy (no scripts, no frames, its own inline
-// style, form to this origin only); the form carries the session's CSRF token, and the post must come from this origin.
-import { randomUUID, timingSafeEqual } from "node:crypto";
+// Page safety: nothing from the task is rendered unescaped; the page has its own strict policy (no frames, its own inline style, form
+// and fetch to this origin only, and one fixed script carrying a fresh nonce); the form carries the session's CSRF token, and the post
+// must come from this origin.
+//
+// The script: behind CloudFront the function URL takes only signed requests, and a signed POST needs its body's SHA-256 in
+// x-amz-content-sha256 (Lambda takes no unsigned payload), which a plain form post can't send. So the form posts through fetch with
+// that header, the same form fields and the same origin check; without the script (or Web Crypto) the plain form post still works
+// wherever the function is reached directly (locally).
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { CodeError, type CodeClient } from "./code-client.js";
 import { waitingPlan, type CodeTask } from "./session-view.js";
 import type { CodeSession } from "./sessions.js";
@@ -27,13 +33,29 @@ const PAGE_HEADERS = {
   "cross-origin-opener-policy": "same-origin",
 };
 
-export function page(status: number, title: string, body: string): { status: number; headers: Record<string, string>; body: string } {
+/**
+ * Posts the approval form through fetch with the body's SHA-256 (see the top of this file). Fixed text: nothing from the task or the
+ * request is in it. On an answer it shows the page Cloud sent (or follows the redirect to the session).
+ */
+export const APPROVAL_FORM_SCRIPT = "(()=>{const f=document.querySelector('form'),s=globalThis.crypto&&crypto.subtle;if(!f||!s)return;let busy=false;"
+  + "f.addEventListener('submit',async(e)=>{e.preventDefault();if(busy)return;busy=true;try{const d=new FormData(f);const b=e.submitter;if(b&&b.name)d.set(b.name,b.value);"
+  + "const body=new URLSearchParams(d).toString();const h=Array.from(new Uint8Array(await s.digest('SHA-256',new TextEncoder().encode(body))),(x)=>x.toString(16).padStart(2,'0')).join('');"
+  + "const r=await fetch(location.pathname,{method:'POST',credentials:'same-origin',headers:{'content-type':'application/x-www-form-urlencoded','x-amz-content-sha256':h},body});"
+  + "if(r.redirected){location.assign(r.url);return;}const p=new DOMParser().parseFromString(await r.text(),'text/html');document.title=p.title;document.body.replaceWith(p.body);"
+  + "}catch{const m=document.createElement('p');m.textContent=\"Couldn't send your decision. Try again.\";f.after(m);}finally{busy=false;}});})();";
+
+export function page(status: number, title: string, body: string, script?: string): { status: number; headers: Record<string, string>; body: string } {
+  const nonce = script === undefined ? undefined : randomBytes(16).toString("base64");
   return {
-    status, headers: PAGE_HEADERS,
+    status,
+    headers: nonce === undefined ? PAGE_HEADERS : {
+      ...PAGE_HEADERS,
+      "content-security-policy": `default-src 'none'; script-src 'nonce-${nonce}'; connect-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
+    },
     body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(title)}</title>`
       + `<style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1rem;color:#1b2230}h1{font-size:1.4rem}p.muted{color:#5d6778}`
       + `form{display:grid;gap:.75rem;margin-top:1.5rem}textarea{font:inherit;min-height:5rem}button{font:inherit;padding:.5rem 1rem;cursor:pointer}.row{display:flex;gap:.75rem;flex-wrap:wrap}</style>`
-      + `</head><body>${body}</body></html>`,
+      + `</head><body>${body}${nonce === undefined ? "" : `<script nonce="${nonce}">${script}</script>`}</body></html>`,
   };
 }
 
@@ -73,7 +95,8 @@ export async function approvalRoute(
         + `<p class="muted">Plan version ${String(plan.version)}. Read it on the <a href="${sessionLink}">session page</a> before you decide.</p>`
         + `<form method="post"><input type="hidden" name="csrf" value="${escape(context.session.csrf)}"><input type="hidden" name="revision" value="${String(plan.revision)}"><input type="hidden" name="digest" value="${escape(plan.digest)}">`
         + `<label for="reason">What should change (needed only for Request changes)</label><textarea id="reason" name="reason" maxlength="500"></textarea>`
-        + `<div class="row"><button type="submit" name="decision" value="APPROVE">Approve</button><button type="submit" name="decision" value="REQUEST_CHANGES">Request changes</button></div></form>`);
+        + `<div class="row"><button type="submit" name="decision" value="APPROVE">Approve</button><button type="submit" name="decision" value="REQUEST_CHANGES">Request changes</button></div></form>`,
+        APPROVAL_FORM_SCRIPT);
     }
     // POST: from this origin, with this session's CSRF token, for the plan the page showed.
     if (headers.origin !== new URL(context.origin).origin) return page(403, "Refused", "<h1>Refused</h1><p>Open the approval from Rovara Cloud and try again.</p>");
