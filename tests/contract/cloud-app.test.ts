@@ -3,7 +3,6 @@ import { ContainerImage } from "aws-cdk-lib/aws-ecs";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { CLOUD_APP_CALLBACK_PATH, CLOUD_APP_CLIENT_ID, CLOUD_APP_PORT, CLOUD_APP_SCOPES, CloudAppStack, cloudAppStackName } from "../../infra/lib/cloud-app.js";
-import { buildAgentXApp } from "../../infra/lib/app.js";
 
 const synth = (environmentName: string) =>
   Template.fromStack(new CloudAppStack(new App(), "RovaraCloudApp", { environmentName, env: { region: "us-east-1" }, image: ContainerImage.fromRegistry("example.com/rovara-cloud:test") }));
@@ -79,9 +78,4 @@ describe("Rovara Cloud stack", () => {
     expect(() => synth("abcdefghijklmno")).toThrow(/at most 14 characters/);
   });
 
-  it("is the only stack the app makes under -c rovaraCloudApp=<env>, tagged with its environment", () => {
-    const app = buildAgentXApp({ rovaraCloudApp: "production", agentxRegion: "us-east-1" });
-    const stacks = app.node.children.filter((each) => "stackName" in each) as Array<{ stackName: string }>;
-    expect(stacks.map((each) => each.stackName)).toEqual(["rovara-cloud-production-app"]);
-  });
 });

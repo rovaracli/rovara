@@ -109,10 +109,11 @@ export class CloudReleasePipelineStack extends Stack {
         },
         phases: {
           install: { commands: INSTALL_NODE },
-          pre_build: { commands: [...FIND_RELEASE_TAG, "npm ci", "npx tsc -b infra"] },
+          // The web build: cloud-web.ts uploads the app's files to S3 and puts the page shell in the function.
+          pre_build: { commands: [...FIND_RELEASE_TAG, "npm ci", "npx tsc -b infra", "npm run build:web"] },
           build: {
             commands: [
-              `npx cdk deploy RovaraCloudApp --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" ` +
+              `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" ` +
                 '--parameters CodeUrl="$CODE_URL" --require-approval never --progress events',
             ],
           },

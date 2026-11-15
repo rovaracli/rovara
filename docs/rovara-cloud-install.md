@@ -34,9 +34,30 @@ One stack, `rovara-cloud-<env>-app` (`infra/lib/cloud-app.ts`):
 - **The secret `rovara-cloud/<env>/code-client-secret`**, Cloud's secret as Code's sign-in client
   `rovara-cloud`. It starts as a placeholder.
 
-There is only ever one task, and a release stops the old task before it starts the new one, which takes
-under a minute. The reason: Cloud's session stores are files, and who is viewing a session is kept in
-the task's memory. Running more than one task needs shared stores first, which is application work.
+There is only ever one task, and a release stops the old task before it starts the new one. That leaves
+**about 2½ minutes with no server** on every release. The reason: this stack keeps Cloud's session stores
+as files, and who is viewing a session in the task's memory.
+
+### The stack replacing it: no gap on a release (#11)
+
+A second stack, `rovara-cloud-<env>-web` (`infra/lib/cloud-web.ts`), runs the same Cloud with no gap. The
+pipeline deploys it beside the Fargate app until people move to its address. Then the Fargate app is
+removed.
+
+- **CloudFront**, at the new HTTPS address.
+  - `/app/assets/*` comes from **S3**. Every release's files stay, so a page opened before a release
+    still finds its chunks.
+  - Everything else goes to **Lambda** (`scripts/cloud-lambda.ts`), as many copies as needed. A release
+    switches to the new version at once.
+- **DynamoDB**, one table: sign-ins, Cloud's sessions with their comments, and who is viewing
+  (`packages/cloud-server/src/dynamo-stores.ts`). It is kept if the stack is deleted, and can be restored
+  to any point in time.
+- **The same client secret** as the Fargate app. The function reads it, and its own address from the SSM
+  parameter `/rovara-cloud/<env>/web/origin`, every few minutes, so a new secret needs no restart.
+
+Before people move to the new address, a Code administrator adds its callback to Cloud's sign-in client.
+Run the stack's `AddRedirectOnCode` output, filling in the old `CallbackUrl` so the Fargate app keeps
+working. People sign in once at the new address.
 
 ## Setting up the pipeline (once)
 

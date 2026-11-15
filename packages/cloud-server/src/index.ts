@@ -12,3 +12,4 @@ export {
   POLICY_HOOK_QUESTION_CLAIMS, POLICY_HOOK_QUESTION_KINDS, POLICY_HOOK_WORDS, answerFor, createPolicyHookRoute, fitsFields, policyHookQuestionHash, readJws,
   type CompanyRules, type CompanyRulesReader, type DecisionRule, type PolicyHookAnswerSigner, type PolicyHookInstalls, type PolicyHookKind, type PolicyHookRequestLedger, type PolicyHookRouteOptions, type PublicJwk,
 } from "./policy-hook.js";
+export { CONFIG_TTL_MS, cloudConfigReader, type CloudConfigClients, type CloudConfigSource, type CloudRuntimeConfig } from "./aws-config.js";

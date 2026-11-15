@@ -2,11 +2,13 @@ import { App, Tags } from "aws-cdk-lib";
 import { ENVIRONMENT_TAG_KEY, RESOURCE_PREFIX } from "@agentx/contracts";
 import { CLOUD_PIPELINE_CONTEXT_KEY, CloudReleasePipelineStack } from "./cloud-release-pipeline.js";
 import { CLOUD_APP_CONTEXT_KEY, CloudAppStack, cloudAppStackName } from "./cloud-app.js";
+import { CloudWebStack, cloudWebStackName } from "./cloud-web.js";
 
 /**
- * Rovara Cloud's CDK app. It makes one stack per run, chosen by context:
- *  - `-c rovaraCloudApp=<environment>`: Rovara Cloud on an existing Rovara Code install (cloud-app.ts);
- *  - `-c rovaraCloudPipeline=<environment>`: the release pipeline that deploys that stack (cloud-release-pipeline.ts).
+ * Rovara Cloud's CDK app. What it makes is chosen by context:
+ *  - `-c rovaraCloudApp=<environment>`: Rovara Cloud on an existing Rovara Code install: the single Fargate task (cloud-app.ts) and,
+ *    beside it until people move over (#11), the same Cloud on CloudFront, Lambda and DynamoDB (cloud-web.ts);
+ *  - `-c rovaraCloudPipeline=<environment>`: the release pipeline that deploys those (cloud-release-pipeline.ts).
  * `-c agentxRegion=<region>` picks the region (us-east-1 by default).
  */
 export function buildAgentXApp(context: Record<string, unknown> = {}): App {
@@ -24,6 +26,14 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       environmentName: cloudAppEnv,
     });
     Tags.of(cloudApp).add(ENVIRONMENT_TAG_KEY, cloudAppEnv);
+    // The same Cloud with no gap on a release (#11): beside cloud-app.ts until people move to its address.
+    const cloudWeb = new CloudWebStack(app, "RovaraCloudWeb", {
+      description: `Rovara Cloud ${cloudAppEnv}: the web app on CloudFront and S3, Cloud's server on Lambda, its state in DynamoDB`,
+      stackName: cloudWebStackName(cloudAppEnv),
+      env: { region: deploymentRegion ?? "us-east-1" },
+      environmentName: cloudAppEnv,
+    });
+    Tags.of(cloudWeb).add(ENVIRONMENT_TAG_KEY, cloudAppEnv);
     return app;
   }
   // The Rovara Cloud release pipeline: deployed once by hand, then every vX.Y.Z tag deploys that Cloud through it.

@@ -49,8 +49,10 @@ describe("Rovara Cloud release pipeline", () => {
     const { variables, phases, commands } = deploySpec();
     expect(variables).toMatchObject({ ROVARA_ENV: "production", CODE_URL: "<token>", NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS });
     expect(commands).toContain('RELEASE_TAG="$(git tag --points-at HEAD');
+    // The web build comes first: cloud-web.ts uploads the app's files and puts the page shell in the function.
+    expect(phases.pre_build!.commands.slice(-3)).toEqual(["npm ci", "npx tsc -b infra", "npm run build:web"]);
     expect(phases.build!.commands).toEqual([
-      `npx cdk deploy RovaraCloudApp --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`,
+      `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`,
     ]);
     // Nothing of Code's: no rovara init or upgrade.
     expect(commands).not.toMatch(/\binit\b|\bupgrade\b/);
