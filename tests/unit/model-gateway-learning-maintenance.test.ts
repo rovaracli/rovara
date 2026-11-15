@@ -12,6 +12,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
+import type { ReserveInput } from "../../packages/model-gateway/src/meter.js";
 import { DynamoPriceSnapshotStore } from "../../packages/model-gateway/src/dynamo-prices.js";
 import { LEARNING_PATH, LEARNING_PAUSE_HEADER, LEARNING_STEP, type LearningKeySource } from "../../packages/model-gateway/src/learning-route.js";
 import { readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
@@ -161,7 +162,7 @@ describe("learning meter in the deployed process: the pause labels on the Dynamo
       const s = await serve({ priced: true, ...(learningMonth === undefined ? {} : { learningMonth }) });
       let seen: unknown;
       const reserve = s.learning.reserve.bind(s.learning);
-      s.learning.reserve = async (input) => { seen = input.caps; return reserve(input); };
+      s.learning.reserve = async (input: ReserveInput) => { seen = input.caps; return reserve(input); };
       expect((await post(s.gateway.server)).statusCode).toBe(200);
       await settleAll();
       expect(seen).toMatchObject({ companyMonth: expected, combinedCompanyMonth: 500_000_000 });

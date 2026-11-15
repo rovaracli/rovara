@@ -404,17 +404,18 @@ describe("budgets and profile", () => {
     const w = world();
     const ada = await w.signIn("ada", 10);
     const bea = await w.signIn("bea", 10);
-    expect((await w.call(ada, "GET", "/org/settings")).body.settings.budgets.learningMonthlyUsdMicros).toBe(20_000_000);
+    const learningCap = async () => ((await w.store.settings(A)) as unknown as { settings: { budgets: { learningMonthlyUsdMicros: number } } }).settings.budgets.learningMonthlyUsdMicros;
+    expect(((await w.call(ada, "GET", "/org/settings")).body as unknown as { settings: { budgets: { learningMonthlyUsdMicros: number } } }).settings.budgets.learningMonthlyUsdMicros).toBe(20_000_000);
     const capped = { companyMonthlyUsdMicros: 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null };
     // A client that does not know the field (the older app) saves the default.
     expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 0, settings: { ...defaultCompanySettings(), budgets: capped } })).status).toBe(200);
-    expect((await w.store.settings(A))!.settings.budgets.learningMonthlyUsdMicros).toBe(20_000_000);
+    expect(await learningCap()).toBe(20_000_000);
     // Raising it: held for a different admin, then it applies.
     const raise = await w.call(ada, "PUT", "/org/settings", { expectedVersion: 1, settings: { ...defaultCompanySettings(), budgets: { ...capped, learningMonthlyUsdMicros: 20_000_001 } } });
     expect(raise.status).toBe(202);
-    expect((await w.store.settings(A))!.settings.budgets.learningMonthlyUsdMicros).toBe(20_000_000);
+    expect(await learningCap()).toBe(20_000_000);
     expect((await w.call(bea, "POST", `/org/settings/pending/${raise.body.pending.changeId}/approve`, {})).status).toBe(200);
-    expect((await w.store.settings(A))!.settings.budgets.learningMonthlyUsdMicros).toBe(20_000_001);
+    expect(await learningCap()).toBe(20_000_001);
     // Lowering it: straight away. Above the company cap: refused, whoever asks.
     expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 2, settings: { ...defaultCompanySettings(), budgets: { ...capped, learningMonthlyUsdMicros: 1_000 } } })).status).toBe(200);
     expect((await w.call(ada, "PUT", "/org/settings", { expectedVersion: 3, settings: { ...defaultCompanySettings(), budgets: { ...capped, learningMonthlyUsdMicros: 500_000_001 } } })).status).toBe(400);

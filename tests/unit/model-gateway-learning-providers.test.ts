@@ -34,7 +34,7 @@ class Keys implements LearningKeySource {
   readonly refusedBy: string[] = [];
   target: { projectId: string; location: string } | undefined = { projectId: "acme-learn", location: "us-central1" };
   async connected(_iss: string, c: string, provider: LearningProvider) { return this.connectedFor.has(`${c}:${provider}`); }
-  async keyFor(_iss: string, c: string, provider: LearningProvider) { this.used.push([c, provider]); return `${provider}-key-of-${c}`; }
+  async keyFor(_iss: string, c: string, provider: LearningProvider): Promise<string | undefined> { this.used.push([c, provider]); return `${provider}-key-of-${c}`; }
   async vertexTarget() { return this.target; }
   async refused(_iss: string, c: string, provider: LearningProvider) { this.refusedBy.push(`${c}:${provider}`); }
 }
