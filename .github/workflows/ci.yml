@@ -3,7 +3,7 @@ name: CI
 # Rovara Cloud: MANUAL RUNS ONLY (owner decision 2026-10-27, to protect the Actions budget).
 # Cloud is the API layer (packages/cloud-server and the web app over Rovara Code's API) plus its one
 # stack and release pipeline (infra/), so CI checks only those: the type checks, lint, the test shards,
-# a reproducible web build and the CDK synth.
+# a reproducible web build, the browser tests against the pretend Code, and the CDK synth.
 on:
   workflow_dispatch:
 
@@ -180,9 +180,67 @@ jobs:
           npm run build:web
           diff -r "$RUNNER_TEMP/web-first" packages/web/dist
 
+  # Browser tests (Playwright, chromium only for now): the web app in a real browser against the pretend Rovara Code (npm run fake-code, tests/support/fake-code.ts), both started by
+  # tests/web/browser/playwright.config.ts. Smoke specs for sign-in, Home, starting a task, the task page and the "not available yet" state of screens Code does not serve yet.
+  # Locally: `npm run build && npm run test:browser`. Like every job here it runs from a manual dispatch only (migration plan v3.2 row CI; owner decision 2026-11-14 restored browser tests in
+  # Cloud's lane CI as ordinary work). The browser itself is cached by the Playwright version package-lock.json pins.
+  browser:
+    needs: [scope, checks]
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 30 || 15 }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      # The packages and the built web app (packages/web/dist/app) that Cloud's server serves.
+      - run: npm run build
+        env:
+          # tsc -b needs more than the default ~2 GB heap; per step, so test workers keep the default.
+          NODE_OPTIONS: --max-old-space-size=6144
+      - name: Playwright version
+        id: playwright-version
+        # A version that cannot be read stops the job here: a constant key would serve one Playwright's browser to another.
+        run: |
+          version="$(node -p "require('./package-lock.json').packages['node_modules/playwright-core']?.version")"
+          if [ -z "$version" ] || [ "$version" = "undefined" ]; then
+            echo "::error::Could not read the Playwright version from package-lock.json (packages['node_modules/playwright-core'].version); the browser cache key needs it."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Playwright browser cache
+        id: playwright-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-chromium
+      - name: Install Playwright chromium and system packages
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Install Playwright system packages
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+      - run: npm run test:browser
+      # A failed run leaves the Playwright traces (kept on failure) and the HTML report, to open with `npx playwright show-trace` or `show-report`.
+      - name: Upload Playwright traces and report
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-playwright
+          path: |
+            .test-build/browser/results
+            .test-build/browser/report
+          if-no-files-found: ignore
+          retention-days: 7
+
   # The one check a pull request needs. It runs even when a job before it failed or was cancelled.
   local:
-    needs: [scope, checks, lint, test, release]
+    needs: [scope, checks, lint, test, release, browser]
     if: >-
       always() && github.event.pull_request.draft != true && (
       (github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name != 'push')

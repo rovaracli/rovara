@@ -2,12 +2,15 @@
 // as a sign-in client, the session cookie and CSRF, the app's API answered from Code as the signed-in person, a token
 // refreshed once on 401 (one refresh shared by calls made together), every route not on Code yet answering 501; and
 // phase 2: sessions on Code's tasks, Home's cards and the plan approval page.
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { CODE_TASK_PAGE, CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
+import { CODE_TASK_PAGE, CodeClient, LocalSessionStore, LocalWorkSessionStore, StoreConflict, createCloudHandler, type SessionStore, type WorkSessionStore, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
 import {
   HomeResponseReaderSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema,
-  SessionShareDeleteResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionSharesResponseReaderSchema,
+  SessionShareDeleteResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionSharesResponseReaderSchema, SessionEventPageSchema,
 } from "../../packages/contracts/src/web.js";
+import { SessionMessageSchema } from "../../packages/contracts/src/agent-sessions.js";
+import { SessionMessagePageSchema } from "../../packages/contracts/src/session-views.js";
 import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { ProjectOverviewSchema } from "../../packages/contracts/src/session-views.js";
 import { isConfirmUrl } from "../../packages/ui/src/text/links.js";
@@ -26,6 +29,7 @@ function fakeCode() {
   // Code rotates refresh tokens: each one works once.
   let generation = 1;
   let decisionRefusal: string | undefined;
+  let revokeFails = false;
   // Spec 067: the people Code lets read the task besides its owner (Ada). Grace signs in with her own code and token.
   const readers = new Map<string, { developerId: string; name: string; role: string; projectMember: boolean; grantedAt: string }>();
   const members = [{ developerId: ADA, name: "Ada", role: "administrator" }];
@@ -40,6 +44,10 @@ function fakeCode() {
     const url = new URL(input instanceof Request ? input.url : input);
     const call: Call = { method: init?.method ?? "GET", path: url.pathname, ...(init?.headers ? { authorization: (init.headers as Record<string, string>).authorization } : {}), ...(typeof init?.body === "string" ? { body: init.body } : init?.body instanceof URLSearchParams ? { body: init.body.toString() } : {}) };
     calls.push(call);
+    if (url.pathname === "/v1/auth/revoke") {
+      if (call.authorization !== `Basic ${Buffer.from("rovara-cloud:secret").toString("base64")}`) return respond(401, { error: "invalid_client" });
+      return revokeFails ? respond(503, {}) : respond(200, {});
+    }
     if (url.pathname === "/v1/auth/token") {
       const form = new URLSearchParams(call.body);
       if (call.authorization !== `Basic ${Buffer.from("rovara-cloud:secret").toString("base64")}`) return respond(401, { error: "invalid_client" });
@@ -86,6 +94,19 @@ function fakeCode() {
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}` && call.method === "GET") return respond(200, { task });
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/cancel`) { task = { ...task, status: "CANCELLED" }; return respond(200, { task }); }
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/close`) { task = { ...task, status: "CLOSED" }; return respond(200, { task, closed: true }); }
+    if (url.pathname === `/v1/dev/tasks/${TASK_ID}/events` && call.method === "GET") {
+      // Code's task events (DeveloperTaskEventSchema), as Code answers them: not necessarily in time order.
+      return respond(200, { events: [
+        { at: "2026-11-14T10:02:00.000Z", kind: "tool", text: "Edited README.md" },
+        { at: "2026-11-14T10:01:00.000Z", kind: "status", text: "Worker status: RUNNING" },
+        { at: "2026-11-14T10:03:00.000Z", kind: "error", text: "the check \u0007failed" },
+        { at: "2026-11-14T10:03:00.000Z", kind: "message", text: "   " },
+      ], requestId: "r" });
+    }
+    if ((url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/send-back` || url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/review-findings`) && call.method === "POST") {
+      task = { ...task, workflow: { ...(task.workflow as object), stage: url.pathname.endsWith("send-back") ? "IMPLEMENT" : "PULL_REQUEST", state: url.pathname.endsWith("send-back") ? "RUNNING" : "READY", revision: 17 } };
+      return respond(200, { task, requestId: "r" });
+    }
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/review` && call.method === "POST") {
       task = { ...task, workflow: { ...(task.workflow as object), state: "RUNNING", revision: 17 } };
       return respond(200, { task, requestId: "r" });
@@ -109,16 +130,19 @@ function fakeCode() {
     fetchImpl, calls, taskId: TASK_ID,
     setTask: (change: Record<string, unknown>) => { task = { ...task, ...change }; },
     refuseDecisions: (message: string) => { decisionRefusal = message; },
+    failRevoke: () => { revokeFails = true; },
     expireToken: () => { validToken = "access-rotated"; }, endSignIn: () => { refreshable = false; validToken = "nobody"; } };
 }
 
-function setUp() {
-  const code = fakeCode();
-  const store = new LocalSessionStore();
+/** One Cloud server; with `shared`, a second server on the same stores and the same Code (PrepLabsAI/Rovara-cloud#11). */
+function setUp(shared?: { code: ReturnType<typeof fakeCode>; store: SessionStore; work: WorkSessionStore }) {
+  const code = shared?.code ?? fakeCode();
+  const store = shared?.store ?? new LocalSessionStore(undefined, { environment: {} });
+  const logged: Array<Record<string, unknown>> = [];
   const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: "http://127.0.0.1:8787/callback", scopes: "projects:members", fetch: code.fetchImpl });
-  const work = new LocalWorkSessionStore();
+  const work = shared?.work ?? new LocalWorkSessionStore();
   const clock = { ms: Date.parse("2026-11-14T12:00:00.000Z") };
-  const handler = createCloudHandler({ client, store, work, origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(clock.ms) });
+  const handler = createCloudHandler({ client, store, work, origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: (event) => { logged.push(event); }, now: () => new Date(clock.ms) });
   const call = async (method: string, target: string, options: { cookie?: string; csrf?: string; body?: unknown; form?: Record<string, string>; headers?: Record<string, string> } = {}) => {
     const url = new URL(target, "http://127.0.0.1:8787");
     const request: CloudRequest = {
@@ -141,7 +165,7 @@ function setUp() {
     const me = JSON.parse((await call("GET", "/v1/web/me", { cookie }))!.body) as { csrf: string };
     return { cookie, csrf: me.csrf, back };
   };
-  return { code, store, work, call, signIn, clock };
+  return { code, store, work, call, signIn, clock, logged };
 }
 
 describe("signing in through Rovara Code", () => {
@@ -281,6 +305,24 @@ describe("the app's API, answered from Code as the person", () => {
     expect(JSON.parse((await call("GET", "/v1/web/me", { cookie: ada.cookie }))!.body)).toMatchObject({ developer: { nameChosen: true } });
   });
 
+  it("answers what the agent loaded and its lessons as not recorded (404)", async () => {
+    const { call, signIn } = setUp();
+    const { cookie } = await signIn();
+    for (const path of ["/v1/web/tasks/6f9d0c1e-2b3a-4c5d-8e7f-001122334455/loaded-knowledge", "/v1/web/tasks/6f9d0c1e-2b3a-4c5d-8e7f-001122334455/loaded-knowledge/op1/plan/0", "/v1/web/tasks/6f9d0c1e-2b3a-4c5d-8e7f-001122334455/lessons"]) {
+      const answer = await call("GET", path, { cookie });
+      expect(answer!.status).toBe(404);
+      expect(JSON.parse(answer!.body)).toMatchObject({ error: { code: "NOT_FOUND" } });
+    }
+  });
+
+  it("answers live updates as not offered (404), which the app reads as off rather than reconnecting", async () => {
+    const { call, signIn } = setUp();
+    const { cookie, csrf } = await signIn();
+    const token = await call("POST", "/v1/web/realtime/token", { cookie, csrf });
+    expect(token!.status).toBe(404);
+    expect(JSON.parse(token!.body)).toEqual({ error: { code: "NOT_FOUND", message: "Live updates aren't on Rovara Code yet." } });
+  });
+
   it("answers decision cards as switched off (404), which the app shows as no cards rather than an error", async () => {
     const { call, signIn } = setUp();
     const { cookie } = await signIn();
@@ -298,6 +340,39 @@ describe("the app's API, answered from Code as the person", () => {
     const out = await call("POST", "/v1/auth/browser/sign-out", { cookie, csrf });
     expect(out!.headers["set-cookie"]).toContain("Max-Age=0");
     expect(await store.get(id)).toBeUndefined();
+  });
+
+  it("ends the sign-in at Code on sign-out: Code's revoke with the refresh token and Cloud's client", async () => {
+    const { call, signIn, code, logged } = setUp();
+    const { cookie, csrf } = await signIn();
+    await call("POST", "/v1/auth/browser/sign-out", { cookie, csrf });
+    const revoke = code.calls.filter((entry) => entry.path === "/v1/auth/revoke");
+    expect(revoke).toHaveLength(1);
+    expect(Object.fromEntries(new URLSearchParams(revoke[0]!.body))).toEqual({ token: "refresh-1", token_type_hint: "refresh_token" });
+    expect(revoke[0]!.authorization).toBe(`Basic ${Buffer.from("rovara-cloud:secret").toString("base64")}`);
+    expect(logged.at(-1)).toEqual({ event: "cloud.signed_out", developerId: ADA });
+  });
+
+  it("signs out on Cloud even when Code's revoke fails, and says so in the log", async () => {
+    const { call, signIn, code, store, logged } = setUp();
+    const { cookie, csrf } = await signIn();
+    code.failRevoke();
+    const out = await call("POST", "/v1/auth/browser/sign-out", { cookie, csrf });
+    expect(out!.status).toBe(204);
+    expect(await store.get(cookie.split("=")[1]!)).toBeUndefined();
+    expect(logged.at(-1)).toEqual({ event: "cloud.revoke_failed", developerId: ADA });
+  });
+
+  it("logs no cookie, token, CSRF token or client secret through sign-in, refresh, a route and sign-out", async () => {
+    const { call, signIn, code, logged } = setUp();
+    const { cookie, csrf } = await signIn();
+    code.expireToken();
+    await call("GET", "/v1/web/nav", { cookie });
+    await call("GET", "/v1/web/org/budget-settings", { cookie });
+    await call("POST", "/v1/auth/browser/sign-out", { cookie, csrf });
+    const text = JSON.stringify(logged);
+    expect(logged.length).toBeGreaterThan(1);
+    for (const secret of [cookie.split("=")[1]!, csrf, "access-1", "access-2", "refresh-1", "refresh-2", "secret", Buffer.from("rovara-cloud:secret").toString("base64")]) expect(text).not.toContain(secret);
   });
 });
 
@@ -401,6 +476,21 @@ const REVIEW_BLOCKED = (passed = true) => ({
   },
 });
 
+/** REVIEW/BLOCKED by findings, as production's ReactJS task showed it (Rovara-cloud#25): two blocking code-review findings, one advisory note, the security review passed. */
+const FINDINGS = [
+  { advisory: false, origin: "INTRODUCED", severity: "LOW", file: "src/pages/Blog.jsx", text: "Blog.jsx injects blog.css via useEffect after first render." },
+  { advisory: false, origin: "INTRODUCED", severity: "LOW", file: "index.html", line: 3, text: "The meta description tag was dropped." },
+  { advisory: true, origin: "INTRODUCED", severity: "LOW", text: "Consider a README note." },
+];
+const REVIEW_FINDINGS = () => {
+  const blocked = REVIEW_BLOCKED();
+  return { workflow: { ...blocked.workflow, blockReason: "the code review did not pass", reviews: [
+    { ...blocked.workflow.reviews[0]!, status: "FINDINGS", findings: FINDINGS },
+    { ...blocked.workflow.reviews[1]!, status: "PASS", findings: [] },
+  ] } };
+};
+const fingerprint = (text: string, file = "", line = 0) => createHash("sha256").update(JSON.stringify(["CRITIC", text, file, line])).digest("hex");
+
 describe("Home's cards and plan approval (phase 2b)", () => {
   const begin = async () => {
     const context = setUp();
@@ -436,9 +526,12 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     const confirmUrl = `https://cloud.example.test/v1/app/approve/plan-${sessionId}`;
     expect((await overview("payments")).running).toEqual([expect.objectContaining({
       sessionId, kind: "task", title: "Fix the README typo", project: "payments", status: "needs_person", statusWords: "Waiting for you", step: "Plan review",
-      needsYou: true, following: true, approvalUrl: confirmUrl, actions: ["watch", "stop", "close"],
+      needsYou: true, following: true, approvalUrl: confirmUrl, actions: ["watch", "comment", "stop", "close"],
     })]);
+    // Code's task status is its worker's last run: between steps it reads SUCCEEDED while the workflow still waits on the person.
     code.setTask({ status: "SUCCEEDED" });
+    expect((await overview("payments")).running).toEqual([expect.objectContaining({ sessionId, status: "needs_person", needsYou: true })]);
+    code.setTask({ status: "CLOSED" });
     expect((await overview("payments")).running).toEqual([]);
   });
 
@@ -465,6 +558,53 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     expect(await home(call, auth.cookie)).toEqual({ cards: [], total: 0 });
   });
 
+  it("treats a task between steps (Code's status SUCCEEDED) by its workflow: a blocked review still gets its card, a queued step is running, a pull request waiting for merge needs the person", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask({ status: "SUCCEEDED", ...REVIEW_BLOCKED() });
+    expect((await home(call, auth.cookie)).cards.map((card) => card.buttons.map((button) => button.label))).toEqual([["Retry reviews", "Open session"]]);
+    const status = async () => SessionResponseReaderSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: auth.cookie }))!.body)).session.status;
+    code.setTask({ status: "SUCCEEDED", workflow: { ...REVIEW_BLOCKED().workflow, stage: "PULL_REQUEST", state: "READY" } });
+    expect(await status()).toBe("running");
+    code.setTask({ status: "SUCCEEDED", workflow: { ...REVIEW_BLOCKED().workflow, stage: "WAIT_FOR_MERGE", state: "WAITING" } });
+    expect(await status()).toBe("needs_person");
+  });
+
+  it("sends a task stopped by review findings back to coding with the owner's note, or the default note (Rovara-cloud#25)", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask({ status: "SUCCEEDED", ...REVIEW_FINDINGS() });
+    const sent = await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", note: "  Import blog.css directly and restore the meta description.  " } });
+    expect(sent!.status).toBe(200);
+    expect(SessionResponseReaderSchema.parse(JSON.parse(sent!.body)).session.status).toBe("running");
+    expect(JSON.parse(code.calls.find((entry) => entry.path === `/v1/dev/tasks/${code.taskId}/workflow/send-back`)!.body!)).toEqual({ requestId: "88888888-8888-4888-8888-888888888888", expectedRevision: 16, instructions: "Import blog.css directly and restore the meta description." });
+    code.setTask({ status: "SUCCEEDED", ...REVIEW_FINDINGS() });
+    await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "99999999-9999-4999-8999-999999999999" } });
+    expect(JSON.parse(code.calls.filter((entry) => entry.path.endsWith("/workflow/send-back")).at(-1)!.body!)).toMatchObject({ instructions: "Fix the review findings." });
+  });
+
+  it("accepts every blocking finding with the owner's reason, by IDs it computes from Code's task, never from the request (Rovara-cloud#25)", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask({ status: "SUCCEEDED", ...REVIEW_FINDINGS() });
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888" } }))!.status).toBe(400);
+    const accepted = await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", reason: "Cosmetic; fixed in a follow-up.", resolutions: [{ findingId: "e".repeat(64), action: "ACCEPT", note: "x" }] } });
+    expect(accepted!.status).toBe(200);
+    expect(JSON.parse(code.calls.find((entry) => entry.path === `/v1/dev/tasks/${code.taskId}/workflow/review-findings`)!.body!)).toEqual({
+      requestId: "88888888-8888-4888-8888-888888888888", expectedRevision: 16, candidateDigest: CANDIDATE,
+      resolutions: [
+        { findingId: fingerprint(FINDINGS[0]!.text, "src/pages/Blog.jsx"), action: "ACCEPT", note: "Cosmetic; fixed in a follow-up." },
+        { findingId: fingerprint(FINDINGS[1]!.text, "index.html", 3), action: "ACCEPT", note: "Cosmetic; fixed in a follow-up." },
+      ],
+    });
+  });
+
+  it("refuses send-back and accept when nothing is blocked by findings: a review that couldn't finish, or a plan waiting", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask({ status: "SUCCEEDED", ...REVIEW_BLOCKED() });
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888" } }))!.status).toBe(409);
+    code.setTask(PLAN_WAITING);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", reason: "ok" } }))!.status).toBe(409);
+    expect(code.calls.some((entry) => entry.path.endsWith("/workflow/send-back") || entry.path.endsWith("/workflow/review-findings"))).toBe(false);
+  });
+
   it("offers no review retry when the checks didn't pass or the task isn't stopped at review, and needs a request ID", async () => {
     const { call, auth, code, sessionId } = await begin();
     code.setTask({ status: "RUNNING", ...REVIEW_BLOCKED(false) });
@@ -475,6 +615,16 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     expect((await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: { requestId: "77777777-7777-4777-8777-777777777777" } }))!.status).toBe(409);
     expect((await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: {} }))!.status).toBe(400);
     expect(code.calls.some((entry) => entry.path.endsWith("/workflow/review"))).toBe(false);
+  });
+
+  it("shows what the task has cost from Code's spent figure, with its run limit, on the session and its tile; nothing spent reads $0 (Rovara-cloud#31)", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    const session = async () => SessionResponseReaderSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: auth.cookie }))!.body)).session;
+    expect((await session()).cost).toEqual({ spentUsd: 0, payer: { kind: "member", name: "Ada" } });
+    code.setTask({ ...PLAN_WAITING, spent: { usd: 28.4812, inputTokens: 26_257_037, outputTokens: 257_592, runs: 17, unpricedRuns: 0, updatedAt: "2026-11-15T01:43:15.327Z" }, runLimit: { limitUsd: 40, canAskAgain: true } });
+    expect((await session()).cost).toEqual({ spentUsd: 28.48, runLimitUsd: 40, payer: { kind: "member", name: "Ada" } });
+    const [tile] = ProjectOverviewSchema.parse(JSON.parse((await call("GET", "/v1/web/projects/payments/overview", { cookie: auth.cookie }))!.body)).running;
+    expect(tile?.costUsd).toBe(28.48);
   });
 
   it("shows a failed run and an open pull request, until the pull request is merged", async () => {
@@ -599,7 +749,7 @@ describe("following, viewing and sharing a session (phase 2c)", () => {
     expect((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: grace.cookie }))!.status).toBe(404);
     await share();
     code.setTask(PLAN_WAITING);
-    expect(await read(grace)).toMatchObject({ sessionId, you: { level: "view", owner: false, following: false, actions: ["watch"] }, approvals: [] });
+    expect(await read(grace)).toMatchObject({ sessionId, you: { level: "view", owner: false, following: false, actions: ["watch", "comment"] }, approvals: [] });
   });
 
   it("lets anyone who may read the task follow it; the owner always follows", async () => {
@@ -631,5 +781,147 @@ describe("following, viewing and sharing a session (phase 2c)", () => {
     expect((await read(ada)).viewingNow).toEqual([{ developerId: GRACE, name: "Grace" }]);
     clock.ms += 30_000;
     expect((await read(ada)).viewingNow).toEqual([]);
+  });
+});
+
+describe("the Conversation: timeline and comments (Rovara-cloud#24)", () => {
+  const begin = async () => {
+    const context = setUp();
+    const ada = await context.signIn();
+    const grace = await context.signIn("grace-code");
+    const started = await context.call("POST", "/v1/web/projects/payments/code", { ...ada, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the README typo" } } });
+    const { sessionId } = JSON.parse(started!.body) as { sessionId: string };
+    const share = () => context.call("PUT", `/v1/web/sessions/${sessionId}/shares`, { ...ada, body: { requestId: "66666666-6666-4666-8666-666666666666", principal: { kind: "member", developerId: GRACE }, level: "view" } });
+    const post = (who: { cookie: string; csrf: string }, body: Record<string, unknown>) => context.call("POST", `/v1/web/sessions/${sessionId}/messages`, { ...who, body });
+    const list = async (who: { cookie: string }, after?: string) => SessionMessagePageSchema.parse(JSON.parse((await context.call("GET", `/v1/web/sessions/${sessionId}/messages${after === undefined ? "" : `?after=${encodeURIComponent(after)}`}`, { cookie: who.cookie }))!.body));
+    return { ...context, ada, grace, sessionId, share, post, list };
+  };
+
+  it("answers the timeline from Code's task events: oldest first, agent steps and system lines, cleaned, with stable ids and a cursor", async () => {
+    const { call, ada, sessionId } = await begin();
+    const page = SessionEventPageSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}/events`, { cookie: ada.cookie }))!.body));
+    expect(page.events.map((event) => [event.type, event.actor?.kind, event.text])).toEqual([
+      ["status", "system", "Worker status: RUNNING"], ["step", "agent", "Edited README.md"], ["status", "system", "the check failed"],
+    ]);
+    const again = SessionEventPageSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}/events`, { cookie: ada.cookie }))!.body));
+    expect(again.events.map((event) => event.eventId)).toEqual(page.events.map((event) => event.eventId));
+    const after = SessionEventPageSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}/events?after=${encodeURIComponent(page.events[0]!.at + "#" + page.events[0]!.eventId)}`, { cookie: ada.cookie }))!.body));
+    expect(after.events).toHaveLength(2);
+    expect(page.next).toBe(`${page.events[2]!.at}#${page.events[2]!.eventId}`);
+  });
+
+  it("lets anyone who can read the session comment, reply in a thread and read the comments; a retried send is the same comment", async () => {
+    const { ada, grace, share, post, list } = await begin();
+    const first = await post(ada, { requestId: "11111111-1111-4111-8111-111111111111", kind: "comment", text: "Looks good so far." });
+    expect(first!.status).toBe(201);
+    const comment = SessionMessageSchema.parse(JSON.parse(first!.body));
+    expect(comment).toMatchObject({ kind: "comment", source: "app", author: { developerId: ADA, name: "Ada" }, text: "Looks good so far.", rev: 1 });
+    expect(JSON.parse((await post(ada, { requestId: "11111111-1111-4111-8111-111111111111", kind: "comment", text: "Looks good so far." }))!.body)).toMatchObject({ messageId: comment.messageId });
+    expect((await post(grace, { requestId: "22222222-2222-4222-8222-222222222222", kind: "comment", text: "hi" }))!.status).toBe(404);
+    await share();
+    const reply = SessionMessageSchema.parse(JSON.parse((await post(grace, { requestId: "33333333-3333-4333-8333-333333333333", kind: "comment", text: "Agreed.", threadId: comment.messageId }))!.body));
+    const nested = SessionMessageSchema.parse(JSON.parse((await post(ada, { requestId: "44444444-4444-4444-8444-444444444444", kind: "comment", text: "Thanks.", threadId: reply.messageId }))!.body));
+    expect([reply.threadId, nested.threadId]).toEqual([comment.messageId, comment.messageId]);
+    const page = await list(grace);
+    expect(page.messages.map((message) => [message.author.name, message.text])).toEqual([["Ada", "Looks good so far."], ["Grace", "Agreed."], ["Ada", "Thanks."]]);
+    expect(page.next).toBe(`${nested.createdAt}#${nested.messageId}`);
+  });
+
+  it("refuses a message to the agent, a pinned comment and an empty or oversized comment", async () => {
+    const { ada, post } = await begin();
+    const steer = await post(ada, { requestId: "11111111-1111-4111-8111-111111111111", kind: "steer", text: "Use React 19." });
+    expect(steer!.status).toBe(409);
+    expect(JSON.parse(steer!.body)).toMatchObject({ error: { message: expect.stringContaining("Send back to coding") as unknown } });
+    expect((await post(ada, { requestId: "22222222-2222-4222-8222-222222222222", kind: "comment", text: "x", anchor: { target: "step", targetId: "s1", revision: "done" } }))!.status).toBe(400);
+    expect((await post(ada, { requestId: "33333333-3333-4333-8333-333333333333", kind: "comment", text: "   " }))!.status).toBe(400);
+    expect((await post(ada, { requestId: "44444444-4444-4444-8444-444444444444", kind: "comment", text: "x".repeat(2001) }))!.status).toBe(400);
+  });
+
+  it("lets only the author edit or delete a comment, on the revision they saw; a deleted one keeps no text", async () => {
+    const { call, ada, grace, sessionId, share, post, list } = await begin();
+    await share();
+    const comment = SessionMessageSchema.parse(JSON.parse((await post(ada, { requestId: "11111111-1111-4111-8111-111111111111", kind: "comment", text: "Frist draft." }))!.body));
+    const path = `/v1/web/sessions/${sessionId}/messages/${comment.messageId}`;
+    expect((await call("PATCH", path, { ...grace, body: { rev: 1, text: "Hijacked." } }))!.status).toBe(403);
+    expect((await call("PATCH", path, { ...ada, body: { rev: 2, text: "First draft." } }))!.status).toBe(409);
+    const edited = SessionMessageSchema.parse(JSON.parse((await call("PATCH", path, { ...ada, body: { rev: 1, text: "First draft." } }))!.body));
+    expect(edited).toMatchObject({ text: "First draft.", rev: 2 });
+    expect(edited.editedAt).toBeDefined();
+    const deleted = SessionMessageSchema.parse(JSON.parse((await call("DELETE", path, { ...ada, body: { rev: 2 } }))!.body));
+    expect(deleted).toMatchObject({ text: "Comment deleted", rev: 3 });
+    expect((await list(ada)).messages[0]).toMatchObject({ text: "Comment deleted", deletedAt: deleted.deletedAt });
+    expect((await call("PATCH", path, { ...ada, body: { rev: 3, text: "Back." } }))!.status).toBe(404);
+  });
+
+  it("offers comment to anyone who can read the session, so the app shows the send box", async () => {
+    const { call, ada, grace, sessionId, share } = await begin();
+    await share();
+    for (const who of [ada, grace]) {
+      const session = SessionResponseReaderSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: who.cookie }))!.body)).session;
+      expect(session.you.actions).toContain("comment");
+    }
+  });
+});
+
+
+describe("several servers on the same stores (Rovara-cloud#11)", () => {
+  it("keeps a person signed in when another server refreshed their tokens first (Code's refresh tokens work once)", async () => {
+    const a = setUp();
+    const { cookie } = await a.signIn();
+    const id = cookie.split("=")[1]!;
+    const before = structuredClone((await a.store.get(id))!);
+    a.code.expireToken();
+    expect((await a.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
+    const refreshed = (await a.store.get(id))!.refreshToken;
+    expect(refreshed).not.toBe(before.refreshToken);
+    // Server B read the sign-in before A saved its refresh: its own refresh is refused, so it reads the store again and goes on.
+    let stale = true;
+    const shared = Object.create(a.store) as SessionStore;
+    shared.get = async (key) => (stale && key === id ? (stale = false, structuredClone(before)) : a.store.get(key));
+    const b = setUp({ code: a.code, store: shared, work: a.work });
+    expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
+    expect((await a.store.get(id))?.refreshToken).toBe(refreshed);
+  });
+
+  it("still signs the person out when the sign-in really ended", async () => {
+    const a = setUp();
+    const { cookie } = await a.signIn();
+    const b = setUp({ code: a.code, store: a.store, work: a.work });
+    a.code.endSignIn();
+    expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(401);
+    expect(await a.store.get(cookie.split("=")[1]!)).toBeUndefined();
+  });
+
+  it("runs a request again when another server wrote the session in between, so neither change is lost", async () => {
+    const a = setUp();
+    const ada = await a.signIn();
+    const started = await a.call("POST", "/v1/web/projects/payments/code", { ...ada, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the README typo" } } });
+    const { sessionId } = JSON.parse(started!.body) as { sessionId: string };
+    const comment = (server: typeof a, requestId: string, text: string) =>
+      server.call("POST", `/v1/web/sessions/${sessionId}/messages`, { ...ada, body: { requestId, kind: "comment", text } });
+    // Server B's first write finds that server A added a comment after B read the session.
+    let first = true;
+    const racing: WorkSessionStore = {
+      get: (key) => a.work.get(key), byRequest: (key) => a.work.byRequest(key), startedBy: (key) => a.work.startedBy(key),
+      put: async (session, requestId) => {
+        if (first) { first = false; expect((await comment(a, "33333333-3333-4333-8333-333333333333", "From server A"))!.status).toBe(201); }
+        return a.work.put(session, requestId);
+      },
+    };
+    const b = setUp({ code: a.code, store: a.store, work: racing });
+    expect((await comment(b, "44444444-4444-4444-8444-444444444444", "From server B"))!.status).toBe(201);
+    expect((await a.work.get(sessionId))?.messages?.map((message) => message.text)).toEqual(["From server A", "From server B"]);
+  });
+
+  it("gives up after a few tries rather than looping", async () => {
+    const a = setUp();
+    const ada = await a.signIn();
+    const started = await a.call("POST", "/v1/web/projects/payments/code", { ...ada, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the README typo" } } });
+    const { sessionId } = JSON.parse(started!.body) as { sessionId: string };
+    let writes = 0;
+    const busy: WorkSessionStore = { get: (key) => a.work.get(key), byRequest: (key) => a.work.byRequest(key), startedBy: (key) => a.work.startedBy(key), put: async () => { writes += 1; throw new StoreConflict(sessionId); } };
+    const b = setUp({ code: a.code, store: a.store, work: busy });
+    await expect(b.call("POST", `/v1/web/sessions/${sessionId}/messages`, { ...ada, body: { requestId: "55555555-5555-4555-8555-555555555555", kind: "comment", text: "Hi" } })).rejects.toBeInstanceOf(StoreConflict);
+    expect(writes).toBe(3);
   });
 });

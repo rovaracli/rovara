@@ -16,6 +16,9 @@ export function createSessionActions(host: AppHost) {
   close: (id: string, body: { requestId: string; discardUnpublished?: true }) => api.send("POST", path(id) + "/close", body, SessionCloseResponseReaderSchema),
   follow: (id: string) => api.send("POST", path(id) + "/follow", undefined, SessionFollowResponseReaderSchema),
   unfollow: (id: string) => api.send("DELETE", path(id) + "/follow", undefined, SessionFollowResponseReaderSchema),
+  // Rovara-cloud#25: a task stopped by review findings. Send it back to coding with the owner's note, or accept the findings (with a reason) so the pull request opens.
+  sendBack: (id: string, body: { requestId: string; note?: string }) => api.send("POST", path(id) + "/send-back", body, SessionResponseReaderSchema),
+  acceptFindings: (id: string, body: { requestId: string; reason: string }) => api.send("POST", path(id) + "/accept-findings", body, SessionResponseReaderSchema),
   stop: (id: string) => control(id, "stop"), retry: (id: string) => control(id, "retry"), takeOver: (id: string) => control(id, "take-over"),
  };
 }

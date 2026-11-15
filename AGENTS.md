@@ -24,8 +24,7 @@ feature the app needs that Code's API cannot do yet starts as a Rovara Code issu
 | `packages/web`, `packages/ui` | The web app (`/app`): `web` is the shell, build and page handler, `ui` holds the pages and components. |
 | `packages/contracts` | Shared types and schemas (zod). Browser code imports `@agentx/contracts/web` only. |
 | `packages/design-tokens`, `packages/audit-verifier` | The app's design tokens; the audit ledger's verifier (used by contracts). |
-| `infra/` | CDK: `lib/cloud-app.ts` (the stack `rovara-cloud-<env>-app`), `lib/cloud-release-pipeline.ts`, `lib/app.ts` (`-c rovaraCloudApp=<env>` or `-c rovaraCloudPipeline=<env>`). Deploy guide: `docs/rovara-cloud-install.md`. |
-| `environments/cloud/Dockerfile` | Cloud's image: `scripts/cloud-server.ts` bundled with esbuild, plus the built app. |
+| `infra/` | CDK: `lib/cloud-web.ts` (Cloud: CloudFront, Lambda running `scripts/cloud-lambda.ts`, DynamoDB), `lib/cloud-app.ts` (Cloud's first address, a redirect, and the client secret), `lib/cloud-release-pipeline.ts`, `lib/app.ts` (`-c rovaraCloudApp=<env>` makes both stacks, or `-c rovaraCloudPipeline=<env>`). Deploy guide: `docs/rovara-cloud-install.md`. |
 | `scripts/` | `cloud-server.ts` (Cloud's server entry, also `npm run cloud:local`), the web build helpers, lint shards, the typecheck baseline and CI helpers. |
 | `tests/` | `unit` (cloud-server is `tests/unit/cloud-server.test.ts`), `contract` and `web`. |
 
@@ -40,6 +39,9 @@ npx vitest run <test files>                         # focused tests; run the fil
 npx eslint <changed files>                          # lint only what you changed
 npm run infra:synth                                 # synthesize the Cloud stack and its pipeline
 ROVARA_CODE_URL=<code api> ROVARA_CLIENT_SECRET_FILE=<file> npm run cloud:local
+npm run fake-code                                   # a fake Rovara Code with canned data (contract v0), for building screens before Code serves a route
+npm run contract:table                              # contract v0 (packages/contracts/src/code-contract-v0.ts) as markdown tables
+npm run build && npm run test:browser              # browser tests (Playwright, chromium) on the fake Code; first time: npx playwright install chromium; selectors live in tests/web/browser/pages
 ```
 
 - If vitest can't resolve `@agentx/contracts`, its `dist` is stale: run `npx tsc -b packages/contracts`.

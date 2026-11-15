@@ -1,0 +1,77 @@
+// Contract v0 between Rovara Cloud's web app and Rovara Code (packages/contracts/src/code-contract-v0.ts): the tables are consistent, and the
+// file stays free of imports so the same bytes can sit in both repositories.
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+import { APP_ROUTES, CODE_ROUTES, contractCounts, matchCodeRoute, pathParamNames, pathPattern } from "../../packages/contracts/src/code-contract-v0.js";
+
+describe("code contract v0 tables", () => {
+  it("has one entry per Code route id and one per method and path", () => {
+    expect(new Set(CODE_ROUTES.map((route) => route.id)).size).toBe(CODE_ROUTES.length);
+    expect(new Set(CODE_ROUTES.map((route) => `${route.method} ${route.path}`)).size).toBe(CODE_ROUTES.length);
+  });
+
+  it("has one entry per web app method and path, each backed only by known Code routes", () => {
+    expect(new Set(APP_ROUTES.map((route) => `${route.method} ${route.path}`)).size).toBe(APP_ROUTES.length);
+    const ids = new Set(CODE_ROUTES.map((route) => route.id));
+    for (const route of APP_ROUTES) for (const id of route.codeRoutes) expect(ids.has(id)).toBe(true);
+  });
+
+  it("gives every served route evidence and every missing route none", () => {
+    for (const route of CODE_ROUTES) {
+      if (route.awsApi === "no" && !route.mainline) expect(route.evidence).toBe("none");
+      else expect(route.evidence).not.toBe("none");
+    }
+  });
+
+  it("makes each Code-owned must-pass web route name the Code route that backs it, except the ones Code has no route for yet", () => {
+    const unbacked = APP_ROUTES.filter((route) => route.owner === "code" && route.screen !== "later" && route.codeRoutes.length === 0).map((route) => `${route.method} ${route.path}`);
+    // Known gaps, to be given a Code route (or moved to Cloud) at the week-2 checkpoint.
+    expect(unbacked.sort()).toEqual(["GET /v1/app/github/requests", "POST /v1/app/github/connect", "POST /v1/app/me/identities/github", "POST /v1/app/me/identities/slack", "POST /v1/app/projects/{p}/code/suggest"].sort());
+  });
+
+  it("counts what the report says", () => {
+    const counts = contractCounts();
+    expect(counts.neededServed + counts.neededMissing).toBe(counts.codeNeeded);
+    // 25 routes answered from Code, the decision card routes (list, approve, request changes, reject, evidence opened: Cloud passes them to Code and answers
+    // the 404 "cards are off" while Code has none), the realtime token stub that tells the app live updates are off, and the Conversation (#28: the timeline
+    // from Code's task events, comments Cloud keeps itself: events, messages list and send, edit, delete).
+    expect(counts.appCloudServerToday).toBe(36);
+  });
+
+  it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
+    expect(CODE_ROUTES.every((route) => route.awsApi === "yes" || route.awsApi === "no")).toBe(true);
+    const e2 = CODE_ROUTES.filter((route) => route.arrivesWith !== undefined).map((route) => route.id).sort();
+    expect(e2).toEqual(["decisions.act", "decisions.list", "howWeWork.get", "playbook.get", "playbook.put", "scriptTokens.create", "scriptTokens.list", "scriptTokens.revoke", "tasks.answers", "tasks.evidence.get"].sort());
+    for (const route of CODE_ROUTES.filter((entry) => entry.arrivesWith !== undefined)) {
+      expect(route.awsApi).toBe("no");
+      expect(route.mainline).toBe(false);
+      expect(route.evidence).toBe("none");
+      expect(route.arrivesWith).toMatch(/^E2 \(core on AWS\); laptop core: /u);
+    }
+    expect(contractCounts().neededArrivesWithE2).toBe(10);
+  });
+
+  it("keeps Code's routes under /v1/dev (and sign-in under /v1/auth), and Cloud's decision routes on the app side", () => {
+    for (const route of CODE_ROUTES) expect(route.path.startsWith("/v1/dev/") || route.path.startsWith("/v1/auth/"), route.id).toBe(true);
+    const decisions = APP_ROUTES.filter((route) => route.path.startsWith("/v1/app/decisions"));
+    expect(decisions).toHaveLength(5);
+    for (const route of decisions) expect(route.cloudServerToday).toBe(true);
+  });
+
+  it("matches a request to the most specific route and decodes its parameters", () => {
+    expect(matchCodeRoute("GET", "/v1/dev/tasks/abc/plan")?.route.id).toBe("tasks.plan");
+    expect(matchCodeRoute("GET", "/v1/dev/tasks/abc")?.params).toEqual({ taskId: "abc" });
+    expect(matchCodeRoute("PUT", "/v1/dev/client/projects/my%20app/members/dev1")?.params).toEqual({ project: "my app", developerId: "dev1" });
+    expect(matchCodeRoute("GET", "/v1/dev/client/projects/web")?.route.id).toBe("client.projects.get");
+    expect(matchCodeRoute("GET", "/v1/dev/client/repositories")?.route.id).toBe("client.repositories.list");
+    expect(matchCodeRoute("DELETE", "/v1/dev/tasks/abc")).toBeUndefined();
+    expect(pathParamNames("/v1/dev/tasks/{taskId}/readers/{developerId}")).toEqual(["taskId", "developerId"]);
+    expect(pathPattern("/v1/auth/.well-known/jwks.json").test("/v1/auth/xwell-known/jwks.json")).toBe(false);
+  });
+
+  it("has no imports, so it can be copied byte for byte into Rovara Code", () => {
+    const text = readFileSync(new URL("../../packages/contracts/src/code-contract-v0.ts", import.meta.url), "utf8");
+    expect(/^\s*(import\s|export\s.*\sfrom\s)/mu.test(text)).toBe(false);
+    expect(text).not.toMatch(/require\(|process\.|node:/u);
+  });
+});

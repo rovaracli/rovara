@@ -2,13 +2,15 @@
 // Code with PKCE and its own secret, then calls Code's API as the signed-in person with their token. Every call that
 // answers 401 refreshes the token once and tries again.
 import { createHash, randomBytes } from "node:crypto";
-import type { CodeSession } from "./sessions.js";
+import type { SecretReader } from "./client-secret.js";
+import type { CodeSession, RefreshGuard } from "./sessions.js";
 
 export interface CodeClientOptions {
   /** The Code install's API, such as https://abc.execute-api.us-east-1.amazonaws.com. */
   baseUrl: string;
   clientId: string;
-  clientSecret: string;
+  /** The secret itself (this computer), or a reader that fetches it when needed (deployed: Secrets Manager). */
+  clientSecret: string | SecretReader;
   /** Where Code sends the person back after sign-in: exactly a registered redirect URL, or a loopback one. */
   redirectUri: string;
   /** What Cloud asks to do as the person (spec 065); Code keeps only what the registration allows. */
@@ -43,15 +45,47 @@ export class SignInEnded extends Error {
 
 export interface PendingSignIn { verifier: string; returnTo: string; at: number }
 
+/** How long a call to Code's token or revoke endpoint may take: well inside a refresh's hold on the session. */
+const TOKEN_CALL_MS = 10_000;
+
 export class CodeClient {
   private readonly base: string;
   private readonly fetchImpl: typeof fetch;
   /** One refresh at a time per session: calls made together that all get a 401 share it, so a rotated refresh token is used once. */
-  private readonly refreshing = new WeakMap<CodeSession, Promise<boolean>>();
+  private readonly refreshing = new WeakMap<CodeSession, Promise<"ok" | "ended" | "busy">>();
+  private guard: RefreshGuard | undefined;
 
   constructor(private readonly options: CodeClientOptions) {
     this.base = options.baseUrl.replace(/\/+$/u, "");
     this.fetchImpl = options.fetch ?? fetch;
+  }
+
+  /**
+   * Refreshes go through the session store: one server at a time refreshes a session, and the new tokens are saved before
+   * the call is retried (createCloudHandler sets this to its store).
+   */
+  useRefreshGuard(guard: RefreshGuard): void {
+    this.guard = guard;
+  }
+
+  /** Ends the person's sign-in at Code (sign-out): Code's revoke endpoint with the refresh token. False when Code didn't confirm. */
+  async revoke(session: CodeSession): Promise<boolean> {
+    const token = session.refreshToken ?? session.accessToken;
+    try {
+      const response = await this.fetchImpl(`${this.base}/v1/auth/revoke`, {
+        method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", authorization: await this.basic() },
+        body: new URLSearchParams({ token, token_type_hint: session.refreshToken === undefined ? "access_token" : "refresh_token" }),
+        signal: AbortSignal.timeout(TOKEN_CALL_MS),
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  private async basic(): Promise<string> {
+    const secret = typeof this.options.clientSecret === "string" ? this.options.clientSecret : await this.options.clientSecret();
+    return `Basic ${Buffer.from(`${this.options.clientId}:${secret}`).toString("base64")}`;
   }
 
   /** Code's API address, with no trailing slash: where its own pages live, such as a task's page. */
@@ -111,36 +145,84 @@ export class CodeClient {
         pending = this.refresh(session).finally(() => { this.refreshing.delete(session); });
         this.refreshing.set(session, pending);
       }
-      if (!await pending) throw new SignInEnded();
+      const outcome = await pending;
+      if (outcome === "busy") throw new CodeError(503, { error: { code: "RUNTIME_UNAVAILABLE", message: "Your Rovara sign-in is being renewed. Try again in a moment." } });
+      if (outcome !== "ok") throw new SignInEnded();
     }
     const second = await send(session.accessToken);
     if (second.status === 401) throw new SignInEnded();
     return second;
   }
 
-  /** A new access token from the session's refresh token; false when the sign-in has ended. */
-  private async refresh(session: CodeSession): Promise<boolean> {
-    if (session.refreshToken === undefined) return false;
-    const tokens = await this.token({ grant_type: "refresh_token", refresh_token: session.refreshToken });
-    if (tokens === undefined) return false;
-    session.accessToken = tokens.accessToken;
-    if (tokens.refreshToken !== undefined) session.refreshToken = tokens.refreshToken;
+  /**
+   * A new access token from the session's refresh token. With a guard (always, under createCloudHandler): only after the
+   * store let this server refresh, and the new tokens are saved before this answers.
+   */
+  private async refresh(session: CodeSession): Promise<"ok" | "ended" | "busy"> {
+    const guard = this.guard;
+    if (session.refreshToken === undefined && guard === undefined) return "ended";
+    // The secret is read before the hold on the session is taken, so a slow read never runs into the hold's time.
+    const authorization = await this.basic();
+    if (guard !== undefined) {
+      const start = await guard.beginRefresh(session);
+      if (start === "refreshed") return "ok";
+      if (start !== "refresh") return start;
+    }
+    let answer: Awaited<ReturnType<CodeClient["tokenAnswer"]>>;
+    try {
+      answer = session.refreshToken === undefined ? { kind: "refused" } : await this.tokenAnswer({ grant_type: "refresh_token", refresh_token: session.refreshToken }, authorization);
+    } catch (error) {
+      // Code didn't answer: not an ended sign-in. Let the next caller try again.
+      await guard?.abandonRefresh(session);
+      throw error;
+    }
+    if (answer.kind === "failed") {
+      // Code is down, rate-limiting or refused Cloud's secret: the sign-in itself is fine, so keep it.
+      await guard?.abandonRefresh(session);
+      throw new CodeError(503, { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara Code didn't renew your sign-in. Try again in a moment." } });
+    }
+    if (answer.kind === "ok") {
+      session.accessToken = answer.tokens.accessToken;
+      if (answer.tokens.refreshToken !== undefined) session.refreshToken = answer.tokens.refreshToken;
+    }
+    if (guard !== undefined) {
+      let kept: boolean;
+      try {
+        kept = await guard.finishRefresh(session, answer.kind === "ok");
+      } catch (error) {
+        // The new tokens couldn't be saved: end them at Code rather than leave live tokens nobody holds.
+        if (answer.kind === "ok") await this.revoke(session);
+        throw error;
+      }
+      if (!kept && answer.kind === "ok") await this.revoke(session);
+      return kept ? "ok" : "ended";
+    }
+    if (answer.kind !== "ok") return "ended";
     session.changed = true;
-    return true;
+    return "ok";
   }
 
-  private async token(form: Record<string, string>): Promise<{ accessToken: string; refreshToken?: string } | undefined> {
+  private async token(form: Record<string, string>, authorization?: string): Promise<{ accessToken: string; refreshToken?: string } | undefined> {
+    const answer = await this.tokenAnswer(form, authorization);
+    return answer.kind === "ok" ? answer.tokens : undefined;
+  }
+
+  /** Code's token endpoint. "refused" only for invalid_grant (the grant is dead); any other failure is "failed" and ends nothing. */
+  private async tokenAnswer(form: Record<string, string>, authorization?: string): Promise<{ kind: "ok"; tokens: { accessToken: string; refreshToken?: string } } | { kind: "refused" } | { kind: "failed" }> {
     const response = await this.fetchImpl(`${this.base}/v1/auth/token`, {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded",
-        authorization: `Basic ${Buffer.from(`${this.options.clientId}:${this.options.clientSecret}`).toString("base64")}`,
+        authorization: authorization ?? await this.basic(),
       },
       body: new URLSearchParams(form),
+      signal: AbortSignal.timeout(TOKEN_CALL_MS),
     });
-    const body = await response.json().catch(() => ({})) as { access_token?: unknown; refresh_token?: unknown };
-    if (!response.ok || typeof body.access_token !== "string") return undefined;
-    return { accessToken: body.access_token, ...(typeof body.refresh_token === "string" ? { refreshToken: body.refresh_token } : {}) };
+    const body = await response.json().catch(() => ({})) as { access_token?: unknown; refresh_token?: unknown; error?: unknown };
+    if (response.ok && typeof body.access_token === "string") {
+      return { kind: "ok", tokens: { accessToken: body.access_token, ...(typeof body.refresh_token === "string" ? { refreshToken: body.refresh_token } : {}) } };
+    }
+    return response.status === 400 && body.error === "invalid_grant" ? { kind: "refused" } : { kind: "failed" };
   }
 
   private async accessWith(accessToken: string): Promise<CodeAccess | undefined> {

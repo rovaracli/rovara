@@ -6,6 +6,7 @@
   "exports": {
     ".": "./dist/index.js",
     "./web": "./dist/web.js",
+    "./code-contract-v0": "./dist/code-contract-v0.js",
     "./testing": "./dist/testing.js",
     "./dns-helper": "./dist/dns-helper.js"
   },
