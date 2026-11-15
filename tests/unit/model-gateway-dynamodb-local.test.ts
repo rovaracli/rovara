@@ -3,7 +3,6 @@
 // running. Loopback only (http://127.0.0.1:<port>); no AWS call. Not under denyNetwork: it needs the loopback socket.
 import { execFileSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { nodeWireTransport } from "../../packages/model-gateway/src/aws.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { DynamoPriceSnapshotStore } from "../../packages/model-gateway/src/dynamo-prices.js";
@@ -11,8 +10,6 @@ import { GATEWAY_LEDGER_INDEXES } from "../../packages/model-gateway/src/deploy.
 import { runMeterConformance, runMeterDeadlineConformance } from "../../packages/model-gateway/src/meter.js";
 
 const IMAGE = "amazon/dynamodb-local:2.6.1";
-const inner = nodeWireTransport();
-const debugTransport: typeof inner = async (req) => { const t0 = Date.now(); try { const res = await inner(req); if (res.status !== 200) console.log("DDBDEBUG", req.headers["x-amz-target"], res.status, res.body.toString().slice(0, 700), String(Date.now() - t0) + "ms"); return res; } catch (e) { console.log("DDBDEBUG-THROW", req.headers["x-amz-target"], (e as Error).name, String(Date.now() - t0) + "ms"); throw e; } };
 const docker = (() => { try { execFileSync("docker", ["info"], { stdio: "ignore" }); return true; } catch { return false; } })();
 if (!docker) console.warn("model-gateway-dynamodb-local.test.ts: Docker isn't running, so the gateway's DynamoDB adapters are not tested on DynamoDB Local here.");
 
@@ -20,7 +17,7 @@ describe.skipIf(!docker)("gateway DynamoDB adapters on DynamoDB Local", () => {
   let container = "";
   let endpoint = "";
   let made = 0;
-  const db = () => new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "local", secretAccessKey: "local" }), endpoint, transport: debugTransport });
+  const db = () => new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "local", secretAccessKey: "local" }), endpoint });
   async function tables(): Promise<{ meter: string; ledger: string; markers: string; prices: string }> {
     const suffix = String(made++);
     const names = { meter: `meter-${suffix}`, ledger: `ledger-${suffix}`, markers: `markers-${suffix}`, prices: `prices-${suffix}` };
