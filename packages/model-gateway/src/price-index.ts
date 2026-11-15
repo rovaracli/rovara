@@ -6,6 +6,7 @@ import { normalizeBedrockModel } from "./price-sources.js";
 export interface SourceHealth { fetchedAt?: number; ageMs?: number; count: number; stale: boolean; lastFailure?: string }
 export class SnapshotPriceSource implements PriceSource {
   #index = new Map<string, PriceEntry & { origin: PriceOrigin }>();
+  #fallbacks = new Set<string>();
   #maxima = new Map<string, Price>();
   #snapshot: PriceSnapshot | undefined;
   #failures: { litellm?: string; aws?: string } = {};
@@ -23,11 +24,13 @@ export class SnapshotPriceSource implements PriceSource {
   }
   #build(snapshot: PriceSnapshot | undefined): void {
     const index = new Map<string, PriceEntry & { origin: PriceOrigin }>();
+    const fallbacks = new Set<string>();
+    for (const source of Object.values(snapshot?.sources ?? {})) for (const f of source.fallbacks ?? []) fallbacks.add(this.#key(f.provider, f.model));
     let expiresAt = Infinity;
     for (const name of ["litellm", "aws"] as const) {
       const s = snapshot?.sources[name]; if (s === undefined) continue;
       for (const e of s.entries) {
-        const key = this.#key(e.provider, e.model); const prior = index.get(key);
+        const key = this.#key(e.provider, e.model); if (fallbacks.has(key)) continue; const prior = index.get(key);
         const sameSource = prior?.origin.source === name;
         index.set(key, { ...e, inputMicrosPerMTok: sameSource ? Math.max(prior.inputMicrosPerMTok, e.inputMicrosPerMTok) : e.inputMicrosPerMTok, outputMicrosPerMTok: sameSource ? Math.max(prior.outputMicrosPerMTok, e.outputMicrosPerMTok) : e.outputMicrosPerMTok, origin: { source: name, fetchedAt: s.fetchedAt } });
       }
@@ -35,7 +38,7 @@ export class SnapshotPriceSource implements PriceSource {
     let redundant = 0;
     for (const e of validOverrides(this.options.overrides ?? PRICE_OVERRIDES, this.#now())) {
       const key = this.#key(e.provider, e.model);
-      if (index.has(key)) { redundant++; continue; }
+      if (index.has(key) || fallbacks.has(key)) { redundant++; continue; }
       expiresAt = Math.min(expiresAt, e.expiresAt);
       index.set(key, { ...e, origin: { source: "override", fetchedAt: e.verifiedAt } });
     }
@@ -44,18 +47,21 @@ export class SnapshotPriceSource implements PriceSource {
       const key = JSON.stringify([e.provider, kind]); const prior = maxima.get(key);
       maxima.set(key, { inputMicrosPerMTok: Math.max(prior?.inputMicrosPerMTok ?? 0, e.inputMicrosPerMTok), outputMicrosPerMTok: Math.max(prior?.outputMicrosPerMTok ?? 0, e.outputMicrosPerMTok) });
     }
-    this.#index = index; this.#maxima = maxima; this.#snapshot = snapshot; this.#redundant = redundant; this.#expiresAt = expiresAt;
+    this.#fallbacks = fallbacks; this.#index = index; this.#maxima = maxima; this.#snapshot = snapshot; this.#redundant = redundant; this.#expiresAt = expiresAt;
   }
   priceFor(provider: string, model: string): (Price & { origin: PriceOrigin }) | undefined {
     if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
     const p = this.#index.get(this.#key(provider, model));
-    return p === undefined ? undefined : { inputMicrosPerMTok: p.inputMicrosPerMTok, outputMicrosPerMTok: p.outputMicrosPerMTok, origin: { ...p.origin } };
+    return p === undefined ? undefined : { inputMicrosPerMTok: p.inputMicrosPerMTok, outputMicrosPerMTok: p.outputMicrosPerMTok, cacheWriteMicrosPerMTok: p.inputMicrosPerMTok, origin: { ...p.origin } };
+  }
+  fallbackFor(provider: string, model: string): "per_request_price" | undefined {
+    return this.#fallbacks.has(this.#key(provider, model)) ? "per_request_price" : undefined;
   }
   cautiousFor(provider: string, kind: PriceKind): Price | undefined {
     if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
     const p = this.#maxima.get(JSON.stringify([provider, kind])) ?? this.#maxima.get(JSON.stringify([provider, "all"]));
     if (!validPrice(p)) return undefined;
-    return { inputMicrosPerMTok: Math.min(Math.ceil(PRICE_MAX * CAUTION_FACTOR), Math.ceil(p.inputMicrosPerMTok * CAUTION_FACTOR)), outputMicrosPerMTok: Math.min(Math.ceil(PRICE_MAX * CAUTION_FACTOR), Math.ceil(p.outputMicrosPerMTok * CAUTION_FACTOR)) };
+    return { cacheWriteMicrosPerMTok: Math.min(Math.ceil(PRICE_MAX * CAUTION_FACTOR), Math.ceil(p.inputMicrosPerMTok * CAUTION_FACTOR)), inputMicrosPerMTok: Math.min(Math.ceil(PRICE_MAX * CAUTION_FACTOR), Math.ceil(p.inputMicrosPerMTok * CAUTION_FACTOR)), outputMicrosPerMTok: Math.min(Math.ceil(PRICE_MAX * CAUTION_FACTOR), Math.ceil(p.outputMicrosPerMTok * CAUTION_FACTOR)) };
   }
   keys(): Array<{ provider: string; model: string }> { return [...this.#index.values()].map(({ provider, model }) => ({ provider, model })); }
   failure(source: "litellm" | "aws", failed: boolean): void { if (failed) this.#failures[source] = "refresh failed"; else delete this.#failures[source]; }

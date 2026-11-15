@@ -18,7 +18,7 @@ it("atomic estimated settle corrects all four items, frees room, audits once and
   expect((await meter.read(scope)).every((row) => row.spentMicros === 20 && row.estimatedMicros === 0 && row.committed === 20)).toBe(true);
   expect(costView(await meter.read(scope)).every((row) => !row.estimated)).toBe(true);
   expect(await meter.correct(input)).toEqual({ status: "already" });
-  expect(await meter.pendingFor({ provider: estimated.provider, model: estimated.model }, 10)).toEqual([]);
+  expect(await meter.pendingFor({ provider: estimated.provider, model: estimated.model }, 10)).toEqual({ items: [] });
   expect(meter.ledger(key)).toMatchObject({ status: "corrected", correctedFrom: 80, correctedTo: 20, deltaMicros: -60, runId: "run", priceSource: { source: "litellm", fetchedAt: now } });
   expect((await meter.reserve({ scope, caps: cap, estimateMicros: 30 })).ok).toBe(true);
 });
@@ -42,8 +42,8 @@ it("correction runner only uses real rates, limits total work, logs no customer 
   for (let i = 0; i < 201; i++) { const r = await meter.reserve({ scope, caps, estimateMicros: 100 }); if (!r.ok) throw new Error("fixture"); await meter.settle(r.reservation, 100, estimated); }
   const logs: unknown[] = [];
   const args = { meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 1_000_000, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => caps }, now, runId: "private-run", log: (line: unknown) => logs.push(line) };
-  const first = await runCorrections(args); expect(first).toMatchObject({ corrected: 200, more: true });
-  expect(await runCorrections(args)).toMatchObject({ corrected: 1, more: false });
+  const first = await runCorrections(args); expect(first).toMatchObject({ corrected: 199, more: true });
+  expect(await runCorrections(args)).toMatchObject({ corrected: 2, more: false });
   expect(await runCorrections(args)).toMatchObject({ corrected: 0 });
   expect(JSON.stringify(logs)).not.toMatch(/private|org_|https|task_1/);
 });
@@ -91,7 +91,7 @@ it("full gateway outcome: cautious hold, usage settlement, refresh correction an
 });
 it("known or reported-cost settlements never enter the correction ledger", async () => {
   const meter = new InMemoryMeter(() => now); const r = await meter.reserve({ scope, caps, estimateMicros: 100 }); if (!r.ok) throw new Error("fixture"); await meter.settle(r.reservation, 19);
-  expect((await meter.read(scope))[0]?.estimatedMicros).toBe(0); expect(await meter.pendingKeys(10)).toEqual([]);
+  expect((await meter.read(scope))[0]?.estimatedMicros).toBe(0); expect(await meter.pendingKeys(10)).toEqual({ items: [] });
 });
 it("lowering an estimated overrun clears it and admits the next company call", async () => {
   const cap = { ...caps, task: 100, personMonth: 100, projectMonth: 100, companyMonth: 100 };
@@ -109,5 +109,5 @@ it("uses one total item budget even when every caps read is invalid", async () =
   }
   let reads = 0;
   const report = await runCorrections({ meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => { reads++; return { ...caps, task: NaN }; } }, now, runId: "bounded" });
-  expect(report).toMatchObject({ corrected: 0, more: true }); expect(reads).toBe(200);
+  expect(report).toMatchObject({ corrected: 0, more: true }); expect(reads).toBe(197);
 });

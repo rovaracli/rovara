@@ -1,4 +1,5 @@
-import { PENDING_RETENTION_DAYS, DAY_MS, CORRECTION_RUN_MAX } from "./price-constants.js";
+import { comparePosition, pendingPage, type PendingPage, type PendingPosition } from "./pending-page.js";
+import { PENDING_RETENTION_DAYS, DAY_MS, CORRECTION_RUN_MS } from "./price-constants.js";
 import { hasUsage, validUsage } from "./reported-cost.js";
 import type { TokenUsage } from "./usage.js";
 import type { PriceKind, PriceOrigin } from "./price.js";
@@ -20,8 +21,12 @@ export interface ReserveInput {
 export interface Meter {
   reserve(input: ReserveInput): Promise<ReserveResult>;
   settle(reservation: Reservation, actualMicros: number, estimated?: EstimatedSettlement): Promise<void>;
-  pendingKeys(limit: number): Promise<PriceKey[]>;
-  pendingFor(key: PriceKey, limit: number): Promise<EstimatedCall[]>;
+  pendingKeys(limit: number, cursor?: string): Promise<PendingPage<PriceKey>>;
+  pendingFor(key: PriceKey, limit: number, cursor?: string): Promise<PendingPage<EstimatedCall>>;
+  pendingExpired(now: number, limit: number, cursor?: string): Promise<PendingPage<EstimatedCall>>;
+  expire(input: ExpiryInput): Promise<CorrectionResult>;
+  /** Complete or fail within signal's remaining time (and at most CORRECTION_RUN_MS).
+   * Never acknowledge an unconfirmed transaction as success: return unknown; retries use status=pending. */
   correct(input: CorrectionInput): Promise<CorrectionResult>;
   read(scope: MeterScope): Promise<readonly MeterRow[]>;
 }
@@ -31,8 +36,9 @@ export interface EstimatedCall extends MeterScope {
   settledMicros: number; status: "pending" | "corrected" | "expired"; settledAt: number;
   correctedFrom?: number; correctedTo?: number; deltaMicros?: number; correctedAt?: number; expiredAt?: number; runId?: string; priceSource?: PriceOrigin;
 }
-export interface CorrectionInput { callKey: string; realMicros: number; caps: Caps; priceSource: PriceOrigin; runId: string; now: number }
-export type CorrectionResult = { status: "corrected"; deltaMicros: number } | { status: "already" | "missing" | "expired" | "busy" };
+export interface ExpiryInput { callKey: string; runId: string; now: number; signal?: AbortSignal }
+export interface CorrectionInput extends ExpiryInput { realMicros: number; caps: Caps; priceSource: PriceOrigin }
+export type CorrectionResult = { status: "corrected"; deltaMicros: number } | { status: "already" | "missing" | "expired" | "busy" | "unknown" };
 export function costView(rows: readonly MeterRow[]): Array<{ item: MeterItem; spentMicros: number; estimated: boolean }> {
   return rows.map((row) => ({ item: row.item, spentMicros: row.spentMicros, estimated: row.estimatedMicros > 0 }));
 }
@@ -58,8 +64,9 @@ export class InMemoryMeter implements Meter {
   readonly #ledger = new Map<string, { call: EstimatedCall; targets: Target[] }>();
   readonly #pending = new Map<string, string[]>();
   readonly #keyOrder: string[] = [];
+  readonly #expiryOrder: string[] = [];
   readonly #inFlight = new Map<string, { owner: string; expiresSeconds: number }>();
-  constructor(private readonly now: () => number = Date.now, private readonly conflict: () => boolean = () => false, private readonly beforeWrite: (operation: "settle" | "correct", rows?: MeterRow[]) => void | Promise<void> = () => undefined) {}
+  constructor(private readonly now: () => number = Date.now, private readonly conflict: () => boolean = () => false, private readonly beforeWrite: (operation: "settle" | "correct" | "expire", rows?: MeterRow[]) => void | Promise<void> = () => undefined) {}
   #month(): string { return new Date(this.now()).toISOString().slice(0, 7); }
   #row(target: Target, scope: MeterScope): MeterRow { return this.#rows.get(target.key) ?? { item: target.item, company: scope.cid, spentMicros: 0, estimatedMicros: 0, reservedMicros: 0, committed: 0, overrun: false }; }
   async reserve(input: ReserveInput): Promise<ReserveResult> {
@@ -127,7 +134,9 @@ export class InMemoryMeter implements Meter {
       this.#ledger.set(callKey, { call, targets: open.targets.map((t) => ({ ...t })) });
       const key = priceKey(call); const pending = this.#pending.get(key) ?? [];
       // Keep oldest first at write time; reads take bounded prefixes without scanning the ledger.
-      const index = pending.findIndex((id) => this.#ledger.get(id)!.call.settledAt > call.settledAt);
+      const index = pending.findIndex((id) => comparePosition(this.#callPosition(id), [call.settledAt, callKey]) > 0);
+      const expiryIndex = this.#expiryOrder.findIndex((id) => comparePosition(this.#callPosition(id), [call.settledAt, callKey]) > 0);
+      this.#expiryOrder.splice(expiryIndex < 0 ? this.#expiryOrder.length : expiryIndex, 0, callKey);
       pending.splice(index < 0 ? pending.length : index, 0, callKey); this.#pending.set(key, pending); this.#orderKey(key);
     }
     this.#open.delete(reservation.id);
@@ -137,27 +146,62 @@ export class InMemoryMeter implements Meter {
   #orderKey(key: string): void {
     const previous = this.#keyOrder.indexOf(key); if (previous >= 0) this.#keyOrder.splice(previous, 1);
     const first = this.#pending.get(key)?.[0]; if (first === undefined) { this.#pending.delete(key); return; }
-    const time = this.#ledger.get(first)!.call.settledAt;
-    const at = this.#keyOrder.findIndex((k) => this.#ledger.get(this.#pending.get(k)![0]!)!.call.settledAt > time);
+    const at = this.#keyOrder.findIndex((k) => comparePosition(this.#keyPosition(k), this.#keyPosition(key)) > 0);
     this.#keyOrder.splice(at < 0 ? this.#keyOrder.length : at, 0, key);
   }
-  async pendingKeys(limit: number): Promise<PriceKey[]> {
-    if (!whole(limit) || limit < 1) return [];
-    return this.#keyOrder.slice(0, Math.min(limit, CORRECTION_RUN_MAX + 1)).map((key) => {
+  #callPosition = (id: string): PendingPosition => [this.#ledger.get(id)!.call.settledAt, id];
+  #keyPosition = (key: string): PendingPosition => [this.#ledger.get(this.#pending.get(key)![0]!)!.call.settledAt, key];
+  async pendingKeys(limit: number, cursor?: string): Promise<PendingPage<PriceKey>> {
+    return pendingPage(this.#keyOrder, this.#keyPosition, (key) => {
       const call = this.#ledger.get(this.#pending.get(key)![0]!)!.call; return { provider: call.provider, model: call.model };
-    });
+    }, "keys", limit, cursor);
   }
-  async pendingFor(key: PriceKey, limit: number): Promise<EstimatedCall[]> {
-    if (record(key) === undefined || typeof key.provider !== "string" || typeof key.model !== "string" || !whole(limit) || limit < 1) return [];
-    return (this.#pending.get(priceKey(key)) ?? []).slice(0, Math.min(limit, CORRECTION_RUN_MAX + 1)).map((id) => structuredClone(this.#ledger.get(id)!.call));
+  async pendingFor(key: PriceKey, limit: number, cursor?: string): Promise<PendingPage<EstimatedCall>> {
+    if (!validEntry({ ...key, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 })) throw new Error("pending unavailable");
+    const id = priceKey(key);
+    return pendingPage(this.#pending.get(id) ?? [], this.#callPosition, (callKey) => structuredClone(this.#ledger.get(callKey)!.call), id, limit, cursor);
+  }
+  async pendingExpired(now: number, limit: number, cursor?: string): Promise<PendingPage<EstimatedCall>> {
+    if (!whole(now)) throw new Error("pending unavailable");
+    return pendingPage(this.#expiryOrder, this.#callPosition, (id) => structuredClone(this.#ledger.get(id)!.call), "expiry", limit, cursor, now - PENDING_RETENTION_DAYS * DAY_MS);
+  }
+  #removePending(call: EstimatedCall): void {
+    const key = priceKey(call); const pending = this.#pending.get(key)!;
+    pending.splice(pending.indexOf(call.callKey), 1); this.#orderKey(key);
+    this.#expiryOrder.splice(this.#expiryOrder.indexOf(call.callKey), 1);
+  }
+  #validTransaction(input: unknown): input is ExpiryInput {
+    const v = record(input);
+    return v !== undefined && typeof v.callKey === "string" && v.callKey.length > 0 && v.callKey.length <= 4096 && whole(v.now) && typeof v.runId === "string" && v.runId.length > 0 && v.runId.length <= 512 && (v.signal === undefined || v.signal instanceof AbortSignal);
+  }
+  async #beforeTransaction(operation: "correct" | "expire", input: ExpiryInput, rows?: MeterRow[]): Promise<boolean> {
+    if (input.signal?.aborted) return false;
+    let abort!: () => void;
+    const stopped = new Promise<false>((resolve) => { abort = () => resolve(false); });
+    input.signal?.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(abort, CORRECTION_RUN_MS);
+    try {
+      const ready = await Promise.race([Promise.resolve(this.beforeWrite(operation, rows)).then(() => true), stopped]);
+      return ready && !input.signal?.aborted;
+    } catch { return false; }
+    finally { clearTimeout(timer); input.signal?.removeEventListener("abort", abort); }
+  }
+  async expire(input: ExpiryInput): Promise<CorrectionResult> {
+    if (!this.#validTransaction(input)) return { status: "busy" };
+    if (!await this.#beforeTransaction("expire", input) || input.signal?.aborted) return { status: "unknown" };
+    const ledger = this.#ledger.get(input.callKey); if (ledger === undefined) return { status: "missing" };
+    const { call } = ledger; if (call.status !== "pending") return { status: "already" };
+    if (this.conflict() || input.now - call.settledAt <= PENDING_RETENTION_DAYS * DAY_MS) return { status: "busy" };
+    ledger.call = { ...call, status: "expired", expiredAt: input.now, runId: input.runId };
+    this.#removePending(call); return { status: "expired" };
   }
   ledger(callKey: string): EstimatedCall | undefined { const row = this.#ledger.get(callKey); return row === undefined ? undefined : structuredClone(row.call); }
   async correct(input: CorrectionInput): Promise<CorrectionResult> {
     const origin = record(record(input)?.priceSource);
-    if (record(input) === undefined || typeof input.callKey !== "string" || !whole(input.realMicros) || input.realMicros < 1 || !validCaps(input.caps) || !whole(input.now) || typeof input.runId !== "string" || input.runId.length === 0 || input.runId.length > 512 || origin === undefined || !["litellm", "aws", "override"].includes(String(origin.source)) || !whole(origin.fetchedAt)) return { status: "busy" };
+    if (!this.#validTransaction(input) || !whole(input.realMicros) || input.realMicros < 1 || !validCaps(input.caps) || !whole(input.now) || typeof input.runId !== "string" || input.runId.length === 0 || input.runId.length > 512 || origin === undefined || typeof origin.source !== "string" || !["litellm", "aws", "override"].includes(origin.source) || !whole(origin.fetchedAt)) return { status: "busy" };
     const observed = this.#ledger.get(input.callKey);
     // Fake-adapter fault injection: the trusted hook can corrupt an item to prove underflow refusal.
-    await this.beforeWrite("correct", observed?.targets.map((target) => this.#row(target, observed.call)));
+    if (!await this.#beforeTransaction("correct", input, observed?.targets.map((target) => this.#row(target, observed.call))) || input.signal?.aborted) return { status: "unknown" };
     // Re-read after the race hook. No await until every row and the ledger have committed.
     const ledger = this.#ledger.get(input.callKey); if (ledger === undefined) return { status: "missing" };
     const { call } = ledger; if (call.status !== "pending") return { status: "already" };
@@ -176,7 +220,7 @@ export class InMemoryMeter implements Meter {
       }
     }
     ledger.call = expire ? { ...call, status: "expired", expiredAt: input.now, runId: input.runId } : { ...call, status: "corrected", correctedFrom: call.settledMicros, correctedTo: input.realMicros, deltaMicros, correctedAt: input.now, runId: input.runId, priceSource: { ...input.priceSource } };
-    const key = priceKey(call); const pending = this.#pending.get(key)!; pending.splice(pending.indexOf(input.callKey), 1); this.#orderKey(key);
+    this.#removePending(call);
     return expire ? { status: "expired" } : { status: "corrected", deltaMicros };
   }
   async read(scope: MeterScope): Promise<readonly MeterRow[]> {
@@ -218,11 +262,40 @@ export async function runMeterConformance(factory: (clock: () => number) => Mete
   const e = await corrections.reserve({ scope, caps, estimateMicros: 90 }); assert(e.ok);
   await corrections.settle(e.reservation, 80, { provider: "anthropic", model: "model", kind: "chat", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, settledAt: clock });
   assert((await corrections.read(scope)).every((r) => r.estimatedMicros === 80));
-  const pending = await corrections.pendingFor({ provider: "anthropic", model: "model" }, 10); assert.equal(pending.length, 1);
-  const correction = { callKey: pending[0]!.callKey, realMicros: 20, caps, priceSource: { source: "litellm" as const, fetchedAt: clock }, runId: "conformance", now: clock };
+  const pending = await corrections.pendingFor({ provider: "anthropic", model: "model" }, 10); assert.equal(pending.items.length, 1);
+  const correction = { callKey: pending.items[0]!.callKey, realMicros: 20, caps, priceSource: { source: "litellm" as const, fetchedAt: clock }, runId: "conformance", now: clock };
   assert.deepEqual(await corrections.correct(correction), { status: "corrected", deltaMicros: -60 });
   assert.deepEqual(await corrections.correct(correction), { status: "already" });
   assert((await corrections.read(scope)).every((r) => r.spentMicros === 20 && r.estimatedMicros === 0 && r.committed === 20));
   assert((await corrections.reserve({ scope, caps, estimateMicros: 80 })).ok);
   return ["atomic estimated ledger", "idempotent correction", "correction frees budget", "one overrun in flight", "marker expiry keeps hold", "atomic hold", "cap subtraction", "no partial write", "overrun settle", "closed settle", "company ceiling", "isolation", "optional person"];
+}
+/** Adapter conformance with a pause BEFORE commit. Implementations inject their transaction seam,
+ * cancel it on signal, and enforce pending-status CAS when the same call is retried. */
+export async function runMeterDeadlineConformance(factory: (clock: () => number, beforeWrite: (operation: "settle" | "correct" | "expire") => Promise<void>) => Meter): Promise<string[]> {
+  const now = Date.UTC(2026, 3, 1);
+  const scope = { iss: "https://install.example/v1/auth", cid: `org_${"a".repeat(20)}`, pid: "web", tid: "task_1" };
+  const caps = { task: 100, projectMonth: 100, companyMonth: 100 };
+  for (const operation of ["correct", "expire"] as const) {
+    let release!: () => void; let enter!: () => void; let hang = true;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const meter = factory(() => now, async (op) => { if (op === operation && hang) { enter(); await new Promise<void>((resolve) => { release = resolve; }); } });
+    const reserved = await meter.reserve({ scope, caps, estimateMicros: 80 }); assert(reserved.ok);
+    await meter.settle(reserved.reservation, 80, { provider: "anthropic", model: "model", kind: "chat", usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 }, settledAt: operation === "expire" ? now - 63 * DAY_MS : now });
+    const page = await meter.pendingFor({ provider: "anthropic", model: "model" }, 1); assert.equal(page.items.length, 1);
+    const controller = new AbortController();
+    const input = { callKey: page.items[0]!.callKey, now, runId: "conformance", signal: controller.signal };
+    const correction = { ...input, realMicros: 20, caps, priceSource: { source: "litellm" as const, fetchedAt: now } };
+    const pending = operation === "correct" ? meter.correct(correction) : meter.expire(input);
+    await entered; controller.abort();
+    assert.deepEqual(await pending, { status: "unknown" });
+    release(); await Promise.resolve();
+    assert((await meter.read(scope)).every((row) => row.spentMicros === 80 && row.estimatedMicros === 80));
+    assert.equal((await meter.pendingFor({ provider: "anthropic", model: "model" }, 1)).items.length, 1);
+    hang = false; const signal = new AbortController().signal;
+    const retried = operation === "correct" ? await meter.correct({ ...correction, signal }) : await meter.expire({ ...input, signal });
+    assert.equal(retried.status, operation === "correct" ? "corrected" : "expired");
+    assert.equal((await meter.pendingFor({ provider: "anthropic", model: "model" }, 1)).items.length, 0);
+  }
+  return ["bounded correction transaction", "no late correction write", "bounded expiry transaction", "no late expiry write"];
 }

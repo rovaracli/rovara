@@ -37,7 +37,7 @@ it("fixed auth failures, ended refusal, oversize refusal and no secrets in heade
   expect(bad.status).toBe(401); expect(bad.text()).toBe('{"error":{"type":"authentication_error","message":"invalid or expired model access"}}');
   const ok = await call(f.deps, requestBody, mint(), new MemorySink(), { authorization: `Bearer ${mint()}` });
   expect(ok.status).toBe(200); expect(f.calls[0]?.headers.authorization).toBeUndefined(); expect(f.calls[0]?.headers["x-api-key"]).toBeUndefined();
-  f.ended.end(scope.iss, scope.tid); expect((await call(f.deps)).text()).toContain("task_ended"); expect(f.calls).toHaveLength(1);
+  f.ended.end(scope.iss, scope.cid, scope.tid); expect((await call(f.deps)).text()).toContain("task_ended"); expect(f.calls).toHaveLength(1);
   const other = setup(); expect((await call(other.deps, Buffer.alloc(4 * 1024 * 1024 + 1))).status).toBe(413); expect(other.calls).toHaveLength(0);
   expect(JSON.stringify([f.logs, ok.text(), ok.headers, bad.text()])).not.toContain(f.providerKey);
 });
@@ -45,7 +45,7 @@ it("never refuses unknown, throwing or malformed prices and settles at cautious 
   for (const priceFor of [() => undefined, () => { throw new Error("secret"); }, () => ({ inputMicrosPerMTok: 0, outputMicrosPerMTok: NaN })]) {
     const f = setup({ prices: { priceFor } });
     let held = 0; f.deps.transport = async () => { held = (await f.meter.read(scope))[0]!.reservedMicros; return { status: 200, body: answer() }; };
-    expect((await call(f.deps)).status).toBe(200); expect(held).toBeGreaterThan(0); expect((await f.meter.read(scope))[0]!.spentMicros).toBe(1_400);
+    expect((await call(f.deps)).status).toBe(200); expect(held).toBeGreaterThan(0); expect((await f.meter.read(scope))[0]!.spentMicros).toBe(1_800);
   }
 });
 it("reports other holds as 429 with retry-after, keeps fixed scope prefixes", async () => {
@@ -70,14 +70,15 @@ it("uses one total deadline over a slow stream, cancels it and settles once", as
 });
 it("keeps a failed settle reserved, handles key-port failures and strips all provider error text", async () => {
   const f = setup(); let settles = 0;
-  f.deps.meter = { pendingKeys: (n) => f.meter.pendingKeys(n), pendingFor: (k, n) => f.meter.pendingFor(k, n), correct: (c) => f.meter.correct(c), reserve: (r) => f.meter.reserve(r), read: (s) => f.meter.read(s), settle: async () => { settles++; throw new Error(f.providerKey); } };
+  f.deps.meter = { pendingExpired: (now, n, c) => f.meter.pendingExpired(now, n, c), expire: (c) => f.meter.expire(c), pendingKeys: (n) => f.meter.pendingKeys(n), pendingFor: (k, n) => f.meter.pendingFor(k, n), correct: (c) => f.meter.correct(c), reserve: (r) => f.meter.reserve(r), read: (s) => f.meter.read(s), settle: async () => { settles++; throw new Error(f.providerKey); } };
   await call(f.deps); expect(settles).toBe(1); expect((await f.meter.read(scope))[0]!.reservedMicros).toBeGreaterThan(0); expect(JSON.stringify(f.logs)).not.toContain(f.providerKey);
   const k = setup({ keys: { keyFor: async () => { throw new Error("private cause"); } } });
   expect((await call(k.deps)).text()).not.toContain("private"); expect((await k.meter.read(scope))[0]!.spentMicros).toBe(0);
   for (const status of [302, 401, 403, 429, 500]) {
     const e = setup(); e.deps.transport = async () => ({ status, body: (async function* () { yield Buffer.from(e.providerKey); })() });
     const response = await call(e.deps); expect(response.status).toBe(502); expect(response.text()).toBe('{"error":{"type":"provider_error","message":"provider unavailable"}}');
-    expect((await e.meter.read(scope))[0]!.spentMicros).toBeGreaterThan(0);
+    const spent = (await e.meter.read(scope))[0]!.spentMicros;
+    if (status === 429) expect(spent).toBe(0); else expect(spent).toBeGreaterThan(0);
   }
 });
 it("uses person caps only when the claim exists, refuses ambiguous auth, and isolates companies through the full handler", async () => {
@@ -88,7 +89,7 @@ it("uses person caps only when the claim exists, refuses ambiguous auth, and iso
   const g = setup(); const other = `org_${"b".repeat(20)}`;
   await call(g.deps, requestBody, mint({ cid: other }));
   expect((await g.meter.read(scope))[0]?.spentMicros).toBe(0);
-  expect((await g.meter.read({ ...scope, cid: other }))[0]?.spentMicros).toBe(19);
+  expect((await g.meter.read({ ...scope, cid: other }))[0]?.spentMicros).toBe(23);
 });
 it("rejects response byte overflow and malformed usage, and never follows a redirect or retries", async () => {
   for (const body of [(async function* () { yield Buffer.alloc(10 * 1024 * 1024 + 1); })(), (async function* () { yield sse("message_start", { message: { usage: { input_tokens: 2 } } }); yield Buffer.from("data: broken\n\n"); })()]) {
@@ -109,7 +110,7 @@ it("runs the node:http adapter without a socket and preserves health and route b
 });
 it("invokes the meter settle port exactly once, including an exception after the response head", async () => {
   const f = setup(); let settlements = 0;
-  f.deps.meter = { pendingKeys: (n) => f.meter.pendingKeys(n), pendingFor: (k, n) => f.meter.pendingFor(k, n), correct: (c) => f.meter.correct(c), reserve: (r) => f.meter.reserve(r), read: (s) => f.meter.read(s), settle: async (r, c) => { settlements++; await f.meter.settle(r, c); } };
+  f.deps.meter = { pendingExpired: (now, n, c) => f.meter.pendingExpired(now, n, c), expire: (c) => f.meter.expire(c), pendingKeys: (n) => f.meter.pendingKeys(n), pendingFor: (k, n) => f.meter.pendingFor(k, n), correct: (c) => f.meter.correct(c), reserve: (r) => f.meter.reserve(r), read: (s) => f.meter.read(s), settle: async (r, c) => { settlements++; await f.meter.settle(r, c); } };
   const sink = new MemorySink(); sink.write = async () => { throw new Error("private cause"); };
   await call(f.deps, requestBody, mint(), sink); expect(settlements).toBe(1);
 });
@@ -126,5 +127,5 @@ it("ADDENDUM-2 src is reporting-only: present and absent reserve and settle iden
     expect((await call(f.deps, requestBody, mint({ src }))).status).toBe(200);
     expect(capInput).not.toHaveProperty("src"); spends.push((await f.meter.read(scope))[0]!.spentMicros);
   }
-  expect(spends).toEqual([19, 19]);
+  expect(spends).toEqual([23, 23]);
 });

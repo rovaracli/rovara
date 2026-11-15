@@ -14,6 +14,6 @@ it("empty snapshot and UnknownPriceSource preserve flat R3a holds byte for byte"
     for (const [bytes, max, golden] of [[106, 10, 11600], [1024, 128000, 12902400], [4194304, 128000, 432230400]]) expect(estimateCall(bytes!, max!, price)).toBe(golden);
     const f = setup({ prices: source }); let hold = 0;
     f.deps.transport = async () => { hold = (await f.meter.read(scope))[0]!.reservedMicros; return { status: 200, body: answer() }; };
-    expect((await call(f.deps)).status).toBe(200); expect(hold).toBe(11600); expect((await f.meter.read(scope))[0]?.spentMicros).toBe(1400);
+    expect((await call(f.deps)).status).toBe(200); expect(hold).toBe(11600); expect((await f.meter.read(scope))[0]?.spentMicros).toBe(1800);
   }
 });

@@ -1,3 +1,6 @@
+import { beforeAll as beforeNetworkTests } from "vitest";
+import { denyNetwork } from "./model-gateway-no-network.js";
+beforeNetworkTests(denyNetwork);
 import { describe, expect, it, vi } from "vitest";
 import { StaticInstallRegistry, createJwksReader } from "../../packages/model-gateway/src/installs.js";
 import { createTaskTokenVerifier } from "../../packages/model-gateway/src/token.js";

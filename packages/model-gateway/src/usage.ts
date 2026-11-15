@@ -1,5 +1,5 @@
 import { record, whole } from "./model-gateway-token.js";
-export interface TokenUsage { input: number; output: number; cacheRead: number; cacheWrite: number }
+export interface TokenUsage { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite5m?: number; cacheWrite1h?: number }
 const MAX_EVENT = 4 * 1024 * 1024;
 const MAX_STREAM = 10 * 1024 * 1024;
 /** Only counts persist between SSE frames. Invalid/incomplete usage makes the ENTIRE call estimated. */
@@ -41,6 +41,15 @@ export class UsageCollector {
       const n = u[wire]; if (n === undefined) continue;
       if (!whole(n) || n > 1_000_000_000 || (name === "output" && n < this.#usage.output)) { this.#failed = true; return; }
       this.#usage[name] = n;
+    }
+    if (u.cache_creation !== undefined) {
+      const tiers = record(u.cache_creation);
+      const five = tiers?.ephemeral_5m_input_tokens;
+      const hour = tiers?.ephemeral_1h_input_tokens;
+      if (tiers === undefined || Object.keys(tiers).some((k) => !["ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"].includes(k)) || !whole(five) || !whole(hour) || five + hour !== this.#usage.cacheWrite) { this.#failed = true; return; }
+      this.#usage.cacheWrite5m = five; this.#usage.cacheWrite1h = hour;
+    } else if (u.cache_creation_input_tokens !== undefined) {
+      delete this.#usage.cacheWrite5m; delete this.#usage.cacheWrite1h;
     }
   }
   #frame(): void {

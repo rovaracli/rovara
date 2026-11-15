@@ -17,3 +17,4 @@ export * from "./price-refresh.js";
 export * from "./price-overrides.js";
 export * from "./reported-cost.js";
 export * from "./correction.js";
+export type { PendingPage } from "./pending-page.js";

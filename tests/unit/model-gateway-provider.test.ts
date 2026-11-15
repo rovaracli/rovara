@@ -1,3 +1,6 @@
+import { beforeAll as beforeNetworkTests } from "vitest";
+import { denyNetwork } from "./model-gateway-no-network.js";
+beforeNetworkTests(denyNetwork);
 import { expect, it } from "vitest";
 import type https from "node:https";
 import type { EventEmitter as Emitter } from "node:events";

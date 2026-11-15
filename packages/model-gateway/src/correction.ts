@@ -3,45 +3,106 @@ import { CORRECTION_RUN_MAX, CORRECTION_RUN_MS } from "./price-constants.js";
 import { usageCost } from "./estimate.js";
 import { validCaps, type CapsSource } from "./caps.js";
 import { validPrice, type PriceOrigin, type PriceSource } from "./price.js";
-import type { Meter } from "./meter.js";
-export interface CorrectionReport { corrected: number; already: number; skipped: number; expired: number; more: boolean }
-export interface CorrectionLog { event: "price_corrected" | "price_expired" | "price_correction_busy"; deltaMicros?: number }
-export async function runCorrections(options: { meter: Meter; prices: PriceSource; caps: CapsSource; now: number; runId: string; log?: (line: CorrectionLog) => void; clock?: () => number }): Promise<CorrectionReport> {
-  const report: CorrectionReport = { corrected: 0, already: 0, skipped: 0, expired: 0, more: false };
+import type { CorrectionResult, Meter } from "./meter.js";
+import type { PriceKey } from "./price-snapshot.js";
+export interface CorrectionReport { corrected: number; already: number; skipped: number; expired: number; unknown: number; more: boolean }
+export interface CorrectionLog { event: "price_corrected" | "price_expired" | "price_correction_busy" | "price_correction_unknown"; deltaMicros?: number }
+interface RunOptions { meter: Meter; now: number; runId: string; log?: (line: CorrectionLog) => void; clock?: () => number }
+interface Continuation { keys?: string; active?: { key: PriceKey; nextKey?: string; calls?: string } }
+// Owned by the runner, scoped to the meter instance. A restarted process safely rescans from the start.
+// Concurrent runs may revisit a page; only the meter's pending-status transaction arbitrates writes.
+const continuations = new WeakMap<Meter, Continuation>();
+const expiryContinuations = new WeakMap<Meter, string>();
+function runContext(options: RunOptions) {
+  const report: CorrectionReport = { corrected: 0, already: 0, skipped: 0, expired: 0, unknown: 0, more: false };
   const clock = options.clock ?? performance.now.bind(performance); const deadline = clock() + CORRECTION_RUN_MS;
-  let visited = 0;
-  let rejectDeadline!: (reason: Error) => void;
-  const expired = new Promise<never>((_, reject) => { rejectDeadline = reject; });
+  const controller = new AbortController(); let visited = 0;
+  const timer = setTimeout(() => controller.abort(), CORRECTION_RUN_MS);
+  const expired = new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(new Error("correction deadline")), { once: true }));
   void expired.catch(() => undefined);
-  const timer = setTimeout(() => rejectDeadline(new Error("correction deadline")), CORRECTION_RUN_MS);
-  const wait = async <T>(operation: T | Promise<T>): Promise<T> => Promise.race([Promise.resolve(operation), expired]);
-  const log = (line: CorrectionLog) => { try { options.log?.(line); } catch { /* No effect on the transaction. */ } };
+  const room = () => {
+    if (clock() >= deadline) controller.abort();
+    return !controller.signal.aborted && visited < CORRECTION_RUN_MAX;
+  };
+  const wait = async <T>(operation: T | Promise<T>): Promise<T> => {
+    if (clock() >= deadline) controller.abort();
+    const promise = Promise.resolve(operation); void promise.catch(() => undefined);
+    if (controller.signal.aborted) throw new Error("correction deadline");
+    return Promise.race([promise, expired]);
+  };
+  const log = (line: CorrectionLog) => { try { options.log?.(line); } catch { /* Observability never changes a transaction. */ } };
+  const unknown = () => { report.unknown++; report.more = true; log({ event: "price_correction_unknown" }); };
+  const transaction = async (operation: () => Promise<CorrectionResult>): Promise<boolean> => {
+    try {
+      const result = await wait(operation());
+      if (result.status === "unknown") { unknown(); return false; }
+      if (result.status === "corrected" && Number.isSafeInteger(result.deltaMicros)) { report.corrected++; log({ event: "price_corrected", deltaMicros: result.deltaMicros }); }
+      else if (result.status === "already") report.already++;
+      else if (result.status === "expired") { report.expired++; log({ event: "price_expired" }); }
+      else if (result.status === "busy" || result.status === "missing") { report.skipped++; report.more = true; if (result.status === "busy") log({ event: "price_correction_busy" }); }
+      else { unknown(); return false; }
+      return true;
+    } catch { unknown(); return false; }
+  };
+  return { report, room, wait, transaction, signal: controller.signal, visit: () => { visited++; }, remaining: () => CORRECTION_RUN_MAX - visited, close: () => { clearTimeout(timer); controller.abort(); } };
+}
+function validRun(options: RunOptions): boolean { return whole(options.now) && typeof options.runId === "string" && options.runId.length > 0 && options.runId.length <= 512; }
+export async function runCorrections(options: RunOptions & { prices: PriceSource; caps: CapsSource }): Promise<CorrectionReport> {
+  const ctx = runContext(options); const { report } = ctx;
+  const state = structuredClone(continuations.get(options.meter) ?? {});
   try {
-    const keys = await wait(options.meter.pendingKeys(CORRECTION_RUN_MAX + 1));
-    for (const key of keys) {
-      if (clock() >= deadline || visited >= CORRECTION_RUN_MAX) { report.more = true; break; }
-      const price = await wait(options.prices.priceFor(key.provider, key.model));
-      if (!validPrice(price)) { report.skipped++; continue; }
-      const rawOrigin = record(record(price)?.origin);
-      if (rawOrigin === undefined || !["litellm", "aws", "override"].includes(String(rawOrigin.source)) || !whole(rawOrigin.fetchedAt)) { report.skipped++; continue; }
-      const priceSource: PriceOrigin = { source: rawOrigin.source as PriceOrigin["source"], fetchedAt: rawOrigin.fetchedAt };
-      const pending = await wait(options.meter.pendingFor(key, CORRECTION_RUN_MAX - visited + 1));
-      for (const call of pending) {
-        if (clock() >= deadline || visited >= CORRECTION_RUN_MAX) { report.more = true; break; }
-        visited++;
-        const caps = await wait(options.caps.capsFor(call));
-        if (!validCaps(caps)) { report.skipped++; report.more = true; continue; }
-        if (clock() >= deadline) { report.more = true; break; }
-        const realMicros = Math.max(1, usageCost(call.usage, price));
-        const result = await options.meter.correct({ callKey: call.callKey, realMicros, caps, priceSource, now: options.now, runId: options.runId });
-        if (result.status === "corrected") { report.corrected++; log({ event: "price_corrected", deltaMicros: result.deltaMicros }); }
-        else if (result.status === "already") report.already++;
-        else if (result.status === "expired") { report.expired++; log({ event: "price_expired" }); }
-        else { report.skipped++; report.more = true; if (result.status === "busy") log({ event: "price_correction_busy" }); }
+    if (!validRun(options)) { report.more = true; return report; }
+    while (ctx.room()) {
+      if (state.active === undefined) {
+        const page = await ctx.wait(options.meter.pendingKeys(1, state.keys));
+        if (page.items.length === 0) { delete state.keys; break; }
+        ctx.visit();
+        state.active = { key: page.items[0]!, ...(page.cursor === undefined ? {} : { nextKey: page.cursor }) };
       }
+      const active = state.active;
+      const finishKey = () => { delete state.active; if (active.nextKey === undefined) delete state.keys; else state.keys = active.nextKey; };
+      const price = await ctx.wait(options.prices.priceFor(active.key.provider, active.key.model, ctx.signal));
+      const rawOrigin = record(record(price)?.origin);
+      if (!validPrice(price) || rawOrigin === undefined || typeof rawOrigin.source !== "string" || !["litellm", "aws", "override"].includes(rawOrigin.source) || !whole(rawOrigin.fetchedAt)) {
+        report.skipped++; finishKey(); if (active.nextKey === undefined) break; continue;
+      }
+      if (!ctx.room()) { report.more = true; break; }
+      const priceSource: PriceOrigin = { source: rawOrigin.source as PriceOrigin["source"], fetchedAt: rawOrigin.fetchedAt };
+      const page = await ctx.wait(options.meter.pendingFor(active.key, ctx.remaining(), active.calls));
+      let complete = true;
+      for (const call of page.items) {
+        if (!ctx.room()) { complete = false; break; }
+        ctx.visit();
+        const caps = await ctx.wait(options.caps.capsFor(call, ctx.signal));
+        if (!validCaps(caps)) { report.skipped++; report.more = true; continue; }
+        // Last item may consume the count budget, but must still finish within the shared time bound.
+        await ctx.wait(undefined);
+        const realMicros = Math.max(1, usageCost(call.usage, price));
+        if (!await ctx.transaction(() => options.meter.correct({ callKey: call.callKey, realMicros, caps, priceSource, now: options.now, runId: options.runId, signal: ctx.signal }))) { complete = false; break; }
+      }
+      if (!complete) { report.more = true; break; }
+      if (page.cursor !== undefined) { active.calls = page.cursor; report.more = true; break; }
+      finishKey(); if (active.nextKey === undefined) break;
     }
-    if (keys.length > CORRECTION_RUN_MAX) report.more = true;
+    if (state.active !== undefined || state.keys !== undefined) report.more = true;
   } catch { report.more = true; }
-  finally { clearTimeout(timer); }
+  finally { continuations.set(options.meter, state); ctx.close(); }
+  return report;
+}
+/** Independent maintenance run: no price or caps read and no fabricated correction provenance. */
+export async function runExpirySweep(options: RunOptions): Promise<CorrectionReport> {
+  const ctx = runContext(options); const { report } = ctx;
+  try {
+    if (!validRun(options)) { report.more = true; return report; }
+    const page = await ctx.wait(options.meter.pendingExpired(options.now, ctx.remaining(), expiryContinuations.get(options.meter)));
+    for (const call of page.items) {
+      if (!ctx.room()) { report.more = true; return report; }
+      ctx.visit();
+      if (!await ctx.transaction(() => options.meter.expire({ callKey: call.callKey, now: options.now, runId: options.runId, signal: ctx.signal }))) return report;
+    }
+    if (page.cursor === undefined) expiryContinuations.delete(options.meter);
+    else { expiryContinuations.set(options.meter, page.cursor); report.more = true; }
+  } catch { report.more = true; }
+  finally { ctx.close(); }
   return report;
 }

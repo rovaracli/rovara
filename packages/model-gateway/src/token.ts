@@ -3,7 +3,8 @@ import type { InstallRegistry, JwksReader } from "./installs.js";
 import { parseTaskClaims, record, TASK_KEY_PURPOSE, TASK_KEY_PURPOSE_MEMBER, TASK_TOKEN_ALGORITHM, TASK_TOKEN_SECONDS, TASK_TOKEN_TYPE, type TaskClaims } from "./model-gateway-token.js";
 export * from "./model-gateway-token.js";
 export const AUTH_ERROR = { error: { type: "authentication_error", message: "invalid or expired model access" } } as const;
-interface Cache { keys: Map<string, KeyObject> | undefined; fetchedAt: number; failedAt: number; pending?: Promise<Map<string, KeyObject>> }
+export const JWKS_CACHE_SECONDS = 900;
+interface Cache { expiresAt: number; keys: Map<string, KeyObject> | undefined; fetchedAt: number; failedAt: number; pending?: Promise<Map<string, KeyObject>> }
 export interface TokenVerifierOptions { registry: InstallRegistry; readJwks: JwksReader; now?: () => number }
 export type TaskTokenVerifier = (token: unknown) => Promise<TaskClaims | undefined>;
 function importKeys(entries: unknown[]): Map<string, KeyObject> {
@@ -38,14 +39,15 @@ export function createTaskTokenVerifier(options: TokenVerifierOptions): TaskToke
       if (install === undefined || !install.taskKids.includes(header.kid)) return undefined;
       const cacheKey = JSON.stringify([install.issuer, install.jwksUrl]);
       let cache = caches.get(cacheKey);
-      if (cache === undefined) { cache = { keys: undefined, fetchedAt: -Infinity, failedAt: -Infinity }; caches.set(cacheKey, cache); }
-      if (now() - cache.failedAt < 10_000) return undefined;
-      if (cache.keys === undefined || (!cache.keys.has(header.kid) && (now() - cache.fetchedAt >= 60_000 || cache.failedAt > cache.fetchedAt))) {
+      if (cache === undefined) { cache = { expiresAt: -Infinity, keys: undefined, fetchedAt: -Infinity, failedAt: -Infinity }; caches.set(cacheKey, cache); }
+      const cachedKeyValid = cache.keys?.has(header.kid) === true && now() < cache.expiresAt;
+      if (!cachedKeyValid && now() - cache.failedAt < 10_000) return undefined;
+      if (!cachedKeyValid && (cache.keys === undefined || now() >= cache.expiresAt || now() - cache.fetchedAt >= 60_000 || cache.failedAt >= cache.fetchedAt)) {
         const current = cache;
         current.pending ??= Promise.resolve().then(async () => {
           current.fetchedAt = now();
-          try { const keys = importKeys(await options.readJwks(install.jwksUrl)); current.keys = keys; current.failedAt = -Infinity; return keys; }
-          catch { current.failedAt = now(); current.keys = undefined; throw new Error(); }
+          try { const keys = importKeys(await options.readJwks(install.jwksUrl)); current.keys = keys; current.expiresAt = now() + JWKS_CACHE_SECONDS * 1000; current.failedAt = -Infinity; return keys; }
+          catch { current.failedAt = now(); throw new Error(); }
           finally { delete current.pending; }
         });
         await current.pending;

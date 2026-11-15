@@ -22,11 +22,11 @@ export class PriceRefresher {
     let ok = true; let changed = false;
     for (const [i, name] of names.entries()) {
       const r = results[i]!;
-      const candidate = r.ok ? { version: 1, sources: { [name]: { fetchedAt: now, count: r.entries.length, entries: r.entries } } } : undefined;
+      const candidate = r.ok ? { version: 1, sources: { [name]: { fetchedAt: now, count: r.entries.length, entries: r.entries, ...(r.fallbacks === undefined ? {} : { fallbacks: r.fallbacks }) } } } : undefined;
       const success = candidate !== undefined && validSnapshot(candidate) && r.ok && r.entries.length > 0 && now >= (prior?.sources[name]?.fetchedAt ?? 0);
       prices.failure(name, !success);
       if (!success || !r.ok) { ok = false; continue; }
-      sources[name] = { fetchedAt: now, count: r.entries.length, entries: r.entries }; changed = true;
+      sources[name] = { fetchedAt: now, count: r.entries.length, entries: r.entries, ...(r.fallbacks === undefined ? {} : { fallbacks: r.fallbacks }) }; changed = true;
     }
     if (changed && !await store.save({ version: (prior?.version ?? 0) + 1, sources }, prior?.version ?? 0)) return { ok: false, gained: 0 };
     await prices.reload();

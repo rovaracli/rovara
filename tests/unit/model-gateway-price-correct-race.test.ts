@@ -41,8 +41,8 @@ it("a failing pre-write hook leaves ledger and rows atomic; missing usage stays 
   const r = await meter.reserve({ scope, caps, estimateMicros: 100 }); if (!r.ok) throw new Error("fixture");
   await expect(meter.settle(r.reservation, 80, estimated)).rejects.toThrow();
   expect((await meter.read(scope)).every((row) => row.spentMicros === 0 && row.reservedMicros === 100)).toBe(true);
-  expect(await meter.pendingKeys(10)).toEqual([]);
+  expect(await meter.pendingKeys(10)).toEqual({ items: [] });
   const clean = new InMemoryMeter(() => now); const other = await clean.reserve({ scope, caps, estimateMicros: 100 }); if (!other.ok) throw new Error("fixture");
   await clean.settle(other.reservation, 100, { provider: "anthropic", model: "m", kind: "chat", settledAt: now });
-  expect((await clean.read(scope))[0]).toMatchObject({ spentMicros: 100, estimatedMicros: 100 }); expect(await clean.pendingKeys(10)).toEqual([]);
+  expect((await clean.read(scope))[0]).toMatchObject({ spentMicros: 100, estimatedMicros: 100 }); expect(await clean.pendingKeys(10)).toEqual({ items: [] });
 });

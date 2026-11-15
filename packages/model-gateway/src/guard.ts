@@ -7,7 +7,7 @@ const CHOICES = new Set(["auto", "any", "none", "required", "tool", "function"])
 const ARGUMENTS = new Set(["tool_use", "server_tool_use", "mcp_tool_use"]);
 export interface GuardFailure { ok: false; status: number; code: string; message: string }
 export interface ModelLimitsSource { maxOutputTokens(provider: string, model: string): unknown }
-export interface GuardedRequest { ok: true; inputBounded: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>> }
+export interface GuardedRequest { ok: true; hasTools: boolean; inputBounded: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>> }
 const bad = (): GuardFailure => ({ ok: false, status: 400, code: "invalid_request", message: "request not allowed" });
 export const tooLarge = (): GuardFailure => ({ ok: false, status: 413, code: "request_too_large", message: "the request is too large" });
 const tool = (v: unknown): boolean => { const t = record(v); return t !== undefined && (t.type === undefined || t.type === null || t.type === "custom"); };
@@ -35,7 +35,8 @@ export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, str
   // Single iterative traversal, one total item limit (including nested argument data). Never skip an unparsed suffix.
   const stack: unknown[] = [b.messages, b.system];
   let count = 0;
-  let inputBounded = true;
+  // Cached tool definitions also incur write rates above plain input pricing.
+  let inputBounded = !(Array.isArray(b.tools) && b.tools.some((value: unknown) => record(value)?.cache_control !== undefined));
   while (stack.length > 0) {
     if (++count > MAX_BODY_ITEMS) return bad();
     const v = stack.pop();
@@ -63,5 +64,5 @@ export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, str
   const forwarded = Buffer.from(JSON.stringify({ ...b, max_tokens: maxTokens }));
   const outbound: Record<string, string> = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
   if (beta !== undefined) outbound["anthropic-beta"] = beta;
-  return { ok: true, inputBounded, model: b.model, maxTokens, streaming, bytes: forwarded, headers: outbound };
+  return { ok: true, hasTools: Array.isArray(b.tools), inputBounded, model: b.model, maxTokens, streaming, bytes: forwarded, headers: outbound };
 }
