@@ -122,6 +122,10 @@ export class WireDynamo {
   async #apply(operation: string, input: Json, call: WireCall): Promise<WireResponse> {
     const command = COMMANDS[operation];
     if (command === undefined) return this.#error(400, "UnknownOperationException");
+    // The real engine takes a Key of exactly the table's key attributes (DynamoDB Local: "The number of conditions on the keys is invalid"):
+    // an extra attribute on a GetItem, UpdateItem, DeleteItem or a transaction's Update is refused. The fake used to ignore extras.
+    const keyed = operation === "TransactWriteItems" ? (input.TransactItems as Json[]).map((entry) => Object.values(entry)[0] as Json) : [input];
+    if (keyed.some((entry) => entry.Key !== undefined && Object.keys(entry.Key as Json).sort().join(",") !== "pk,sk")) return this.#error(400, "ValidationException");
     if (call.table.split(",").some((table) => !this.tables.includes(table))) return this.#error(400, "ResourceNotFoundException");
     const token = input.ClientRequestToken as string | undefined;
     const fingerprint = JSON.stringify(input.TransactItems ?? null);
