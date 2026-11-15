@@ -1,5 +1,9 @@
 import { record, whole, type TaskClaims } from "./model-gateway-token.js";
-export interface Caps { task: number; personMonth?: number; projectMonth: number; companyMonth?: number }
+/**
+ * `combinedCompanyMonth` (DEC 228c): the company's ONE monthly cap over agent and product spend together, held on the agent
+ * meter's company row. Only a meter that combines with the agent meter (the product meter) reads it; it must then be present.
+ */
+export interface Caps { task: number; personMonth?: number; projectMonth: number; companyMonth?: number; combinedCompanyMonth?: number }
 export type CapsScope = Pick<TaskClaims, "iss" | "cid" | "pid" | "tid" | "per">;
 export interface CapsSource { capsFor(scope: CapsScope, signal?: AbortSignal): Promise<Caps> }
 export class FixedCapsSource implements CapsSource {
@@ -8,5 +12,5 @@ export class FixedCapsSource implements CapsSource {
 }
 export function validCaps(value: unknown): value is Caps {
   const c = record(value);
-  return c !== undefined && whole(c.task) && whole(c.projectMonth) && (c.personMonth === undefined || whole(c.personMonth)) && (c.companyMonth === undefined || whole(c.companyMonth)) && Object.keys(c).every((k) => ["task", "personMonth", "projectMonth", "companyMonth"].includes(k));
+  return c !== undefined && whole(c.task) && whole(c.projectMonth) && (c.personMonth === undefined || whole(c.personMonth)) && (c.companyMonth === undefined || whole(c.companyMonth)) && (c.combinedCompanyMonth === undefined || whole(c.combinedCompanyMonth)) && Object.keys(c).every((k) => ["task", "personMonth", "projectMonth", "companyMonth", "combinedCompanyMonth"].includes(k));
 }

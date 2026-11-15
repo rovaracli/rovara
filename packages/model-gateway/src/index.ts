@@ -22,6 +22,7 @@ export * from "./product-seal.js";
 export * from "./product-keys.js";
 export * from "./product-gemini.js";
 export * from "./product-route.js";
+export * from "./product-eval.js";
 export * from "./product-bridge.js";
 export * from "./product-policy.js";
 export * from "./deploy.js";

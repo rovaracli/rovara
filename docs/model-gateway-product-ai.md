@@ -10,7 +10,7 @@ company with no monthly cap or an unreadable row gets no product calls; the mont
 company row, with the product ceiling), takes each Gemini model's own output ceiling from the price rows
 (`productModelLimitsFrom(prices)`; no row: 65,536), and its open holds, expiry and corrections run in the same
 maintenance pass as the agent meter's (`sweepOpenHolds` on the product meter). The company backend's monthly cap is
-applied to product spend and agent spend on separate meters, so each may use up to that cap.
+applied ONCE to agent and product spend together (DEC 228c, below).
 
 ## What it is
 
@@ -102,14 +102,63 @@ The file lists paths, headers, and every refusal (status, type, fixed words). Co
   routes that seal keys must be the gateway's runtime role, or be exempted explicitly.
 - The sandbox never holds the task token (Code's worker; plan 7.4 gap c).
 
-## Against Code's eval wiring (#683, `EvalModelAccess.hold`)
+## One combined company monthly cap (DEC 228c)
 
-Met: the TC-1 task token (#670); the product key injected server-side and never shown; one attempt per call; whole
-micro-dollars, `estimated` when the price is unknown; a 10 MiB answer cap; a cut-off or malformed answer is never a clean
-success; isolation by install and company. Not yet: a stage-level hold (one atomic hold of the whole stage estimate with
-`release({calls, costMicros, unknown})`), the project eval budget and grant (company, project, selection) checks, a
-count-of-calls limit, an `overrun` field on the settle, the outcome words `rate_limit`/`quota`/`overloaded` as separate
-answers, and Vertex. Today each call holds its own worst case against the product caps.
+The company backend's monthly cap bounds agent and product spend TOGETHER. The product meter is combined with the agent
+meter (`DynamoMeterOptions.combinedCompany: { meter, markers }` naming the agent meter's tables; `InMemoryMeter` option
+`combineCompanyWith`): every product hold, settle, sweep and correction also moves the agent meter's company row
+(`CO#[iss,cid] / ROW#["company",<month>]` in the agent meter table) in the same conditional transaction as its own rows,
+judged against `Caps.combinedCompanyMonth` (the company backend's monthly cap; the product meter's own company row keeps
+the product ceiling). Agent admission reads that row as it always did, so it sees agent plus product spend, settled plus
+held. The company's one overrun-capable call in flight is the agent markers table's INFLIGHT item for both routes, so the
+two routes together pass the cap by at most one call (DEC 165); a product settle past the cap marks the shared row, which
+stops the agent route too. Fail closed: a combined meter given no combined cap holds nothing (503); a product route whose
+meter is not combined answers 503 and sends nothing; `startServe` refuses to start with such a meter, or with a product
+DynamoMeter combined with tables other than its own agent meter's.
+
+## Whole-stage eval holds (Code #683, `EvalModelAccess.hold`; `product-eval.ts`)
+
+All three requests carry the TC-1 task token; `createProductRoutes({ ..., evalStages: new ProductEvalStages({ approvals }) })`
+mounts them.
+
+| Request | Body | Answer |
+|---|---|---|
+| `POST /v1/product/eval/hold` | `{grant, calls, costMicros}` (`grant` is Code's `EvalSpendGrant`, every field checked at runtime) | `200 {scope, calls, costMicros, expiresAt}`; a refusal holds nothing (`422 eval_hold_refused` / `budget_exceeded`, `429 budget_held` / `busy`, `503 unavailable`, `404 not_set_up`) |
+| `POST /v1/product/gemini/...` with `x-rovara-eval-scope: <scope>` | the ordinary Gemini call | `200 application/x-ndjson`: exactly one `{"kind":"head",status,headers}`, any `{"kind":"chunk","b64"}`, exactly one `{"kind":"settle",status,class,refusal?,costMicros,estimated,overrun?}` |
+| `POST /v1/product/eval/release` | `{scope, calls, costMicros, unknown}` | `200 {released}` once; `409` after; `404` for any scope not the caller's |
+
+- **Hold**: the grant must name the token's company and project and equal the project's approved eval spend
+  (`EvalApprovalSource.current`: selection, inputs digest, confirmed call and cost ceilings); the approver's CURRENT role is
+  re-read (`roleOf`: owner, admin or maintainer); the product key connection is re-read; `calls`/`costMicros` must fit the
+  grant and the approved project eval budget (DEC 203 default 400 calls and $4, `budget` option per project); a task blocked
+  by an overrun is refused. Then ONE meter reservation of the whole cost on the product meter: the stage's own task row
+  (`tid` `eval.<scope>`, cap = the held cost; the per-task product cap governs ordinary product calls only), the project month
+  row, the product-ceiling row and the combined company row. The scope is random, bound to install, company, project and
+  task; any other caller gets the same `not found` as a missing scope.
+- **Calls**: reserve nothing new on the meter. Refused (`cap`) once the stage is released, stopped or expired, at its held call
+  count, or once its spend reached the held cost. A call whose hold fits (spend + open calls' holds + its own, and bounded by
+  its price) runs in parallel; one that may pass the held cost (does not fit, or is overrun-capable) waits (at most 2
+  minutes) and runs ALONE, so a stage passes its hold by at most one call; that call's settle carries `overrun: true`, and
+  the stage and the task's product calls stop (DEC 165).
+- **Classes**: `ok` only for a complete answer; `rate_limit` (429 per minute or unmarked), `quota` (429 whose words say a daily
+  or billing quota), `overloaded` (429 saying overloaded, 503, 529), `cap` (any budget refusal), `key_refused` (401/403),
+  `provider_error` (other provider failures, a cut-off or malformed answer), `refused` (our other refusals). The ordinary
+  product route answers the same split with codes `provider_limited`, `provider_quota`, `provider_overloaded`.
+- **Release** (once): the parent hold is settled exactly once, and only when no call of the stage is open, at the gateway's
+  own stage spend (a caller's higher report is charged only up to the hold). `unknown: true`, or a call still open at the
+  release, keeps at least the whole hold spent; a call still open settles the parent when it ends, so its real cost (past
+  the hold too) is counted. The call that passes the hold keeps the company's in-flight marker until the parent (its
+  overshoot) is on the meter; the stage then settles at once, without waiting for a release. A release is taken after the
+  task ended (it only gives budget back). A failed settle answers 503 and can be retried; the maintenance pass retries too.
+- **Expiry and sweep**: a stage lives 4 hours (`EVAL_STAGE_MS`); the maintenance pass (`startServe` `product.stages`) stops
+  expired stages and settles them at their counted spend (whole hold if a call is still open, settled when it ends). The
+  parent hold asks the meter's open-hold sweep to wait until the stage's end (`ReserveInput.sweepAfter`, stored as
+  `openFrom`), after which a hold whose process died is closed at its whole estimate as usual. The open-stage limits (8 per
+  company, 2,000 overall) count a slot before any await.
+- **Process-local**: stages live in the process that held them; a call or release reaching another process is `not found`
+  and the hold falls to expiry and the sweep (DEFERRED PRODUCT-EVAL-STAGE-STORE-20261115).
+- Stage calls with an unknown price settle at the cautious hold; the parent settle is flagged estimated but carries no
+  per-call usage, so R3c corrections do not lower them (conservative).
 
 ## Not built here
 

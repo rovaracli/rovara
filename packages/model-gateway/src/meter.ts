@@ -8,6 +8,8 @@ import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { validCaps, type Caps } from "./caps.js";
 import { COMPANY, PERSON, PROJECT, TASK, TASK_TOKEN_SECONDS, record, whole } from "./model-gateway-token.js";
+/** The furthest ahead a hold may ask the sweep to wait (ReserveInput.sweepAfter). */
+export const SWEEP_AFTER_MAX_MS = 24 * 60 * 60_000;
 export interface MeterScope { iss: string; cid: string; pid: string; tid: string; per?: string }
 export type MeterItem = "task" | "person" | "project" | "company";
 export interface MeterRow { item: MeterItem; company: string; spentMicros: number; estimatedMicros: number; reservedMicros: number; committed: number; overrun: boolean }
@@ -17,8 +19,19 @@ export interface ReserveInput {
   scope: MeterScope; caps: Caps; estimateMicros: number; appliedMaxOutputTokens?: number;
   /** Omit only when usage is bounded by the priced hold. All times are integer seconds. */
   overrun?: { deadlineSeconds: number; tokenExpiresSeconds: number };
+  /**
+   * A long hold (an eval stage, product-eval.ts): epoch milliseconds before which the open-hold sweep must not close it. At most
+   * a day ahead. Omitted: the sweep's usual age applies.
+   */
+  sweepAfter?: number;
 }
 export interface Meter {
+  /**
+   * DEC 228c: true when this meter's holds ALSO count against the agent meter's company row (one combined company monthly cap,
+   * `Caps.combinedCompanyMonth`) and share its one-overrun-call-in-flight marker. The product meter must; the agent meter is the
+   * partner and leaves it unset.
+   */
+  readonly combinedCompany?: boolean;
   reserve(input: ReserveInput): Promise<ReserveResult>;
   settle(reservation: Reservation, actualMicros: number, estimated?: EstimatedSettlement): Promise<void>;
   pendingKeys(limit: number, cursor?: string): Promise<PendingPage<PriceKey>>;
@@ -42,20 +55,27 @@ export type CorrectionResult = { status: "corrected"; deltaMicros: number; capEx
 export function costView(rows: readonly MeterRow[]): Array<{ item: MeterItem; spentMicros: number; estimated: boolean }> {
   return rows.map((row) => ({ item: row.item, spentMicros: row.spentMicros, estimated: row.estimatedMicros > 0 }));
 }
-interface Target { key: string; item: MeterItem; cap: number | undefined }
+/** `combined`: the partner (agent) meter's company row, the one combined company monthly cap (DEC 228c). */
+interface Target { key: string; item: MeterItem; cap: number | undefined; combined?: true }
 interface Open { month: string; appliedMaxOutputTokens?: number; scope: MeterScope; estimate: number; targets: Target[] }
 function validScope(value: unknown): value is MeterScope {
   const s = record(value);
   return s !== undefined && typeof s.iss === "string" && s.iss.length > 0 && s.iss.length <= 2048 && typeof s.cid === "string" && COMPANY.test(s.cid) && typeof s.pid === "string" && PROJECT.test(s.pid) && typeof s.tid === "string" && TASK.test(s.tid) && (s.per === undefined || (typeof s.per === "string" && PERSON.test(s.per)));
 }
-function targets(scope: MeterScope, caps: Caps, month: string): Target[] {
+function targets(scope: MeterScope, caps: Caps, month: string, combined = false): Target[] {
   const key = (kind: MeterItem, ...parts: string[]) => JSON.stringify([scope.iss, scope.cid, kind, ...parts]);
   return [
     { key: key("task", scope.tid), item: "task", cap: caps.task },
     ...(scope.per === undefined ? [] : [{ key: key("person", scope.per, month), item: "person" as const, cap: caps.personMonth }]),
     { key: key("project", scope.pid, month), item: "project", cap: caps.projectMonth },
     { key: key("company", month), item: "company", cap: caps.companyMonth },
+    // The same key as the partner's own company row: the partner's map holds it.
+    ...(combined ? [{ key: key("company", month), item: "company" as const, cap: caps.combinedCompanyMonth, combined: true as const }] : []),
   ];
+}
+export interface InMemoryMeterOptions {
+  /** DEC 228c: the agent meter whose company row and overrun marker this (product) meter's holds also take. */
+  combineCompanyWith?: InMemoryMeter;
 }
 /** Conditional transaction fake: no await between checking all rows and writing all rows. Conflict hook writes nothing. */
 export class InMemoryMeter implements Meter {
@@ -65,14 +85,25 @@ export class InMemoryMeter implements Meter {
   readonly #pending = new Map<string, string[]>();
   readonly #keyOrder: string[] = [];
   readonly #expiryOrder: string[] = [];
-  readonly #inFlight = new Map<string, { owner: string; expiresSeconds: number }>();
-  constructor(private readonly now: () => number = Date.now, private readonly conflict: () => boolean = () => false, private readonly beforeWrite: (operation: "settle" | "correct" | "expire", rows?: MeterRow[]) => void | Promise<void> = () => undefined) {}
+  readonly #ownInFlight = new Map<string, { owner: string; expiresSeconds: number }>();
+  readonly #partner: InMemoryMeter | undefined;
+  constructor(private readonly now: () => number = Date.now, private readonly conflict: () => boolean = () => false, private readonly beforeWrite: (operation: "settle" | "correct" | "expire", rows?: MeterRow[]) => void | Promise<void> = () => undefined, options: InMemoryMeterOptions = {}) {
+    if (options.combineCompanyWith !== undefined && (options.combineCompanyWith === this || options.combineCompanyWith.#partner !== undefined)) throw new Error("meter unavailable");
+    this.#partner = options.combineCompanyWith;
+  }
+  get combinedCompany(): boolean { return this.#partner !== undefined; }
+  /** One overrun-capable call in flight per company across BOTH meters when combined. */
+  get #inFlight(): Map<string, { owner: string; expiresSeconds: number }> { return this.#partner === undefined ? this.#ownInFlight : this.#partner.#ownInFlight; }
   #month(): string { return new Date(this.now()).toISOString().slice(0, 7); }
-  #row(target: Target, scope: MeterScope): MeterRow { return this.#rows.get(target.key) ?? { item: target.item, company: scope.cid, spentMicros: 0, estimatedMicros: 0, reservedMicros: 0, committed: 0, overrun: false }; }
+  #store(target: Target): Map<string, MeterRow> { return target.combined === true && this.#partner !== undefined ? this.#partner.#rows : this.#rows; }
+  #row(target: Target, scope: MeterScope): MeterRow { return this.#store(target).get(target.key) ?? { item: target.item, company: scope.cid, spentMicros: 0, estimatedMicros: 0, reservedMicros: 0, committed: 0, overrun: false }; }
   async reserve(input: ReserveInput): Promise<ReserveResult> {
     if (record(input) === undefined || !validScope(input.scope) || !validCaps(input.caps) || !whole(input.estimateMicros)) return { ok: false, reason: "busy" };
     const { scope, caps, estimateMicros } = input;
     if (input.appliedMaxOutputTokens !== undefined && (!whole(input.appliedMaxOutputTokens) || input.appliedMaxOutputTokens < 1)) return { ok: false, reason: "busy" };
+    if (input.sweepAfter !== undefined && (!whole(input.sweepAfter) || input.sweepAfter > this.now() + SWEEP_AFTER_MAX_MS)) return { ok: false, reason: "busy" };
+    // Fail closed: a combined meter without the combined company cap holds nothing.
+    if (this.#partner !== undefined && caps.combinedCompanyMonth === undefined) return { ok: false, reason: "busy" };
     const clock = Math.floor(this.now() / 1000);
     let expiresSeconds: number | undefined;
     if (input.overrun !== undefined) {
@@ -83,7 +114,7 @@ export class InMemoryMeter implements Meter {
     }
     const companyKey = JSON.stringify([scope.iss, scope.cid]);
     const month = this.#month();
-    const items = targets(scope, caps, month);
+    const items = targets(scope, caps, month, this.#partner !== undefined);
     for (let attempt = 0; attempt < 3; attempt++) {
       if (this.conflict()) continue;
       let blocked: Extract<ReserveResult, { reason: "cap" | "overrun" }> | undefined;
@@ -104,7 +135,7 @@ export class InMemoryMeter implements Meter {
       if (marker !== undefined && marker.expiresSeconds <= clock) this.#inFlight.delete(companyKey);
       if (expiresSeconds !== undefined && this.#inFlight.has(companyKey)) return { ok: false, reason: "busy", overrunInFlight: true };
       const reservation = Object.freeze({ id: randomUUID(), ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }) });
-      for (const target of items) { const row = this.#row(target, scope); this.#rows.set(target.key, { ...row, reservedMicros: row.reservedMicros + estimateMicros, committed: row.committed + estimateMicros }); }
+      for (const target of items) { const row = this.#row(target, scope); this.#store(target).set(target.key, { ...row, reservedMicros: row.reservedMicros + estimateMicros, committed: row.committed + estimateMicros }); }
       if (expiresSeconds !== undefined) this.#inFlight.set(companyKey, { owner: reservation.id, expiresSeconds });
       this.#open.set(reservation.id, { month, ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }), scope: { ...scope }, estimate: estimateMicros, targets: items });
       return { ok: true, reservation };
@@ -126,7 +157,7 @@ export class InMemoryMeter implements Meter {
     }
     for (const target of open.targets) {
       const row = this.#row(target, open.scope); const spentMicros = row.spentMicros + actualMicros;
-      this.#rows.set(target.key, { ...row, spentMicros, estimatedMicros: row.estimatedMicros + extraEstimated, reservedMicros: row.reservedMicros - open.estimate, committed: row.committed - open.estimate + actualMicros, overrun: row.overrun || (target.cap !== undefined && spentMicros > target.cap) });
+      this.#store(target).set(target.key, { ...row, spentMicros, estimatedMicros: row.estimatedMicros + extraEstimated, reservedMicros: row.reservedMicros - open.estimate, committed: row.committed - open.estimate + actualMicros, overrun: row.overrun || (target.cap !== undefined && spentMicros > target.cap) });
     }
     if (estimated?.usage !== undefined && hasUsage(estimated.usage)) {
       const callKey = JSON.stringify([open.scope.iss, open.scope.cid, reservation.id]);
@@ -218,9 +249,9 @@ export class InMemoryMeter implements Meter {
       }
       const capFor = { task: input.caps.task, person: input.caps.personMonth, project: input.caps.projectMonth, company: input.caps.companyMonth };
       for (const target of ledger.targets) {
-        const row = this.#row(target, call); const spentMicros = row.spentMicros + deltaMicros; const cap = capFor[target.item];
+        const row = this.#row(target, call); const spentMicros = row.spentMicros + deltaMicros; const cap = target.combined === true ? input.caps.combinedCompanyMonth : capFor[target.item];
         if (deltaMicros > 0 && cap !== undefined && row.committed + deltaMicros > cap) capExceeded = true;
-        this.#rows.set(target.key, { ...row, spentMicros, committed: row.committed + deltaMicros, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: cap === undefined ? row.overrun : spentMicros > cap });
+        this.#store(target).set(target.key, { ...row, spentMicros, committed: row.committed + deltaMicros, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: cap === undefined ? row.overrun : spentMicros > cap });
       }
     }
     ledger.call = expire ? { ...call, status: "expired", expiredAt: input.now, runId: input.runId } : { ...call, status: input.estimated === true ? "pending" : "corrected", settledMicros: input.realMicros, ...(input.priceVersion === undefined ? {} : { priceVersion: input.priceVersion }), correctedFrom: call.settledMicros, correctedTo: input.realMicros, deltaMicros, correctedAt: input.now, runId: input.runId, priceSource: { ...input.priceSource }, ...(capExceeded ? { capExceeded: true } : {}) };

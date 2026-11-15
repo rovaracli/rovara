@@ -48,13 +48,37 @@ export class WireDynamo {
   readonly #tableOf = new Map<string, string>();
   readonly #tokens = new Map<string, string>();
   #faults: Array<{ match: (call: WireCall) => boolean; fault: WireFault; times: number }> = [];
-  constructor(readonly tables: readonly string[]) {}
+  /**
+   * `namespaceTables`: FakeDynamoDb has one key space, so the same pk/sk in two tables would be one item. With this on, each
+   * key's pk is stored as `<table>\u0001<pk>` and handed back without the prefix, so two tables really are two (the combined
+   * company cap writes the agent meter's company row and the product meter's own company row, same key, in one transaction).
+   */
+  readonly #namespace: boolean;
+  constructor(readonly tables: readonly string[], options: { namespaceTables?: boolean } = {}) { this.#namespace = options.namespaceTables === true; }
+  #routed(input: Json): Json {
+    if (!this.#namespace) return input;
+    const copy = structuredClone(input);
+    const prefix = (action: Json): void => {
+      for (const field of ["Key", "Item"]) {
+        const key = action[field] as Json | undefined; const pk = key?.pk as Json | undefined;
+        if (pk !== undefined && typeof pk.S === "string") pk.S = `${String(action.TableName)}\u0001${pk.S}`;
+      }
+    };
+    if (Array.isArray(copy.TransactItems)) for (const entry of copy.TransactItems as Json[]) prefix(Object.values(entry)[0] as Json);
+    else prefix(copy);
+    return copy;
+  }
+  #unrouted(item: Json): Json {
+    if (!this.#namespace || typeof item.pk !== "string") return item;
+    const at = item.pk.indexOf("\u0001");
+    return at < 0 ? item : { ...item, pk: item.pk.slice(at + 1) };
+  }
 
   fault(match: (call: WireCall) => boolean, fault: WireFault, times = 1): void { this.#faults.push({ match, fault, times }); }
   /** All items of a table, as plain values. */
   items(table: string): Json[] {
     const binary = (value: unknown): unknown => Array.isArray(value) ? value.map(binary) : value !== null && typeof value === "object" ? (typeof (value as Json).$b64 === "string" ? new Uint8Array(Buffer.from((value as Json).$b64 as string, "base64")) : Object.fromEntries(Object.entries(value).map(([k, v]) => [k, binary(v)]))) : value;
-    return [...this.fake.items.values()].filter((item) => this.#tableOf.get(JSON.stringify([item.pk, item.sk])) === table).map((item) => binary(structuredClone(item)) as Json);
+    return [...this.fake.items.values()].filter((item) => this.#tableOf.get(JSON.stringify([item.pk, item.sk])) === table).map((item) => this.#unrouted(binary(structuredClone(item)) as Json));
   }
 
   readonly transport: WireTransport = async (request) => {
@@ -79,10 +103,10 @@ export class WireDynamo {
           if (request.signal?.aborted) fail(); else request.signal?.addEventListener("abort", fail, { once: true });
         });
       }
-      await this.#apply(operation, input, call);
+      await this.#apply(operation, this.#routed(input), call);
       return { status: 500, body: Buffer.from("{}") };
     }
-    return this.#apply(operation, input, call);
+    return this.#apply(operation, this.#routed(input), call);
   };
 
   #describe(operation: string, input: Json): WireCall {
@@ -129,10 +153,10 @@ export class WireDynamo {
       } else if (["PutItem", "UpdateItem"].includes(operation)) {
         const key = (translated.Key ?? translated.Item) as Json; this.#tableOf.set(JSON.stringify([key.pk, key.sk]), call.table);
       }
-      if (operation === "GetItem") return this.#ok(answer.Item === undefined ? {} : { Item: wire(answer.Item as Json) });
+      if (operation === "GetItem") return this.#ok(answer.Item === undefined ? {} : { Item: wire(this.#unrouted(answer.Item as Json)) });
       if (operation === "Query") {
         const items = (answer.Items as Json[]).filter((item) => this.#tableOf.get(JSON.stringify([item.pk, item.sk])) === call.table);
-        return this.#ok({ Items: items.map(wire), Count: items.length });
+        return this.#ok({ Items: items.map((item) => wire(this.#unrouted(item))), Count: items.length });
       }
       return this.#ok({});
     } catch (error) {

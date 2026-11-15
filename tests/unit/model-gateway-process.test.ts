@@ -10,6 +10,7 @@ import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { DynamoMeter, HOLD_SWEEP_AGE_MS } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import { LITELLM_URL } from "../../packages/model-gateway/src/price-sources.js";
+import type { ProductRouteResolver } from "../../packages/model-gateway/src/server.js";
 import { GatewayConfigError, readGatewayConfig, runGateway, runPriceFetch, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import { caps, claims, jwk, kid, mint, now, requestBody, scope, sse } from "./model-gateway-fixture.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
@@ -183,13 +184,24 @@ describe("gateway process: product route", () => {
     const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
     const lines: Array<Record<string, unknown>> = [];
     const swept: number[] = [];
-    const productMeter = Object.assign(new InMemoryMeter(() => now), { sweepOpenHolds: async (at: number) => { swept.push(at); return { swept: 2, already: 0, failed: 0, more: false }; } });
+    const productMeter = Object.assign(new InMemoryMeter(() => now, undefined, undefined, { combineCompanyWith: new InMemoryMeter(() => now) }), { sweepOpenHolds: async (at: number) => { swept.push(at); return { swept: 2, already: 0, failed: 0, more: false }; } });
     const routes = { route: () => undefined };
     const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0 };
-    const gateway = await startServe(config, { db, fetch: jwksFetch, now: () => now, listen: false, log: (line) => lines.push(line), keys: { keyFor: async () => "fixture-provider-key" }, caps: new FixedCapsSource(caps), product: { routes, meter: productMeter, caps: new FixedCapsSource(caps) } });
+    const stageSweeps: number[] = [];
+    const stages = { sweep: async (at?: number) => { stageSweeps.push(at ?? -1); return { released: 1, failed: 0 }; } };
+    const gateway = await startServe(config, { db, fetch: jwksFetch, now: () => now, listen: false, log: (line) => lines.push(line), keys: { keyFor: async () => "fixture-provider-key" }, caps: new FixedCapsSource(caps), product: { routes, meter: productMeter, caps: new FixedCapsSource(caps), stages } });
     running.push(gateway);
     await gateway.maintain();
     expect(swept).toEqual([now]);
+    // Expired eval stages are released in the same pass, before the meter's open-hold sweep.
+    expect(stageSweeps).toEqual([now]);
+    // Given only to the route (createProductRoutes evalStages), the pass still releases them.
+    const routeSweeps: number[] = [];
+    const routed = await startServe(config, { db, fetch: jwksFetch, now: () => now, listen: false, log: () => undefined, keys: { keyFor: async () => "fixture-provider-key" }, caps: new FixedCapsSource(caps), product: { routes: { route: () => undefined, evalStages: { sweep: async (at?: number) => { routeSweeps.push(at ?? -1); return { released: 0, failed: 0 }; } } } as unknown as ProductRouteResolver, meter: productMeter, caps: new FixedCapsSource(caps) } });
+    running.push(routed);
+    await routed.maintain();
+    expect(routeSweeps).toEqual([now]);
+    expect(lines).toContainEqual({ event: "eval_stages_released", route: "product", released: 1, failed: 0 });
     expect(lines).toContainEqual(expect.objectContaining({ event: "holds_swept", route: "product", swept: 2 }));
     expect(lines.some((line) => line.event === "maintenance_failed")).toBe(false);
     // A failing product sweep is logged and never stops the agent pass.
@@ -197,6 +209,29 @@ describe("gateway process: product route", () => {
     await gateway.maintain();
     expect(lines).toContainEqual({ event: "maintenance_failed", route: "product" });
     expect(lines.filter((line) => line.event === "maintenance")).toHaveLength(2);
+  });
+});
+
+describe("gateway process: one combined company cap (DEC 228c)", () => {
+  it("refuses to start a product route whose meter does not take the agent meter's company row", async () => {
+    const wire = new WireDynamo(Object.values(TABLES));
+    const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
+    const productMeter = Object.assign(new InMemoryMeter(() => now), { sweepOpenHolds: async () => ({ swept: 0, already: 0, failed: 0, more: false }) });
+    const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0 };
+    await expect(startServe(config, { db, fetch: jwksFetch, now: () => now, listen: false, log: () => undefined, keys: { keyFor: async () => "fixture-provider-key" }, caps: new FixedCapsSource(caps), product: { routes: { route: () => undefined }, meter: productMeter, caps: new FixedCapsSource(caps) } }))
+      .rejects.toThrow("product meter must combine the company cap with the agent meter");
+    expect(wire.calls).toHaveLength(0);
+  });
+});
+
+describe("gateway process: the product meter combines with THIS agent meter", () => {
+  it("refuses a product DynamoMeter combined with other tables", async () => {
+    const wire = new WireDynamo(Object.values(TABLES));
+    const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
+    const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0 };
+    const productMeter = new DynamoMeter({ db, tables: { meter: "p-meter", ledger: "p-ledger", markers: "p-markers" }, combinedCompany: { meter: "someone-elses-meter", markers: config.tables.markers } });
+    await expect(startServe(config, { db, fetch: jwksFetch, now: () => now, listen: false, log: () => undefined, keys: { keyFor: async () => "fixture-provider-key" }, caps: new FixedCapsSource(caps), product: { routes: { route: () => undefined }, meter: productMeter, caps: new FixedCapsSource(caps) } }))
+      .rejects.toThrow("product meter must combine the company cap with the agent meter");
   });
 });
 

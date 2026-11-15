@@ -5,6 +5,7 @@ import { GATEWAY_COMPANY_KEY_PREFIX, GATEWAY_LEDGER_INDEXES, GATEWAY_METER_INDEX
 import { CALL_HARD_CEILING_MS } from "./provider.js";
 import { TransactionRefused, type Dynamo, type Expr, type Item, type Plain, type TransactAction } from "./dynamo.js";
 import type { EndedTasks } from "./ended.js";
+import { SWEEP_AFTER_MAX_MS } from "./meter.js";
 import type { CorrectionInput, CorrectionResult, EstimatedCall, EstimatedSettlement, ExpiryInput, Meter, MeterItem, MeterRow, MeterScope, Reservation, ReserveInput, ReserveResult } from "./meter.js";
 import { COMPANY, PERSON, PROJECT, TASK, TASK_TOKEN_SECONDS, record, whole } from "./model-gateway-token.js";
 import type { PendingPage } from "./pending-page.js";
@@ -31,6 +32,12 @@ import { MEDIA_USAGE_KEYS, type TokenUsage } from "./usage.js";
 export interface DynamoMeterTables { meter: string; ledger: string; markers: string }
 export interface DynamoMeterOptions {
   db: Dynamo; tables: DynamoMeterTables; now?: () => number;
+  /**
+   * DEC 228c, the product meter only: the AGENT meter's meter and markers tables. Every hold of this meter also takes the agent
+   * meter's company row (`Caps.combinedCompanyMonth`, one combined company monthly cap) in the same conditional transaction, and
+   * the company's one overrun-capable call in flight is the agent markers table's INFLIGHT item, shared by both routes.
+   */
+  combinedCompany?: { meter: string; markers: string };
   /** Test seam (the conformance's pause before commit). */
   beforeWrite?: (operation: "settle" | "correct" | "expire", rows?: MeterRow[]) => void | Promise<void>;
 }
@@ -50,14 +57,15 @@ const openAt = (createdAt: number, pk: string, id: string): string => `${pad(cre
 export const HOLD_SWEEP_AGE_MS = CALL_HARD_CEILING_MS + 15 * 60_000;
 export const HOLD_SWEEP_MAX = 100;
 
-interface Target { sk: string; item: MeterItem; cap?: number }
+/** `combined`: the agent meter's company row (DynamoMeterOptions.combinedCompany), in the agent meter table. */
+interface Target { sk: string; item: MeterItem; cap?: number; combined?: true }
 interface Hold { scope: MeterScope; month: string; estimate: number; targets: Target[]; status: string }
 
 function validScope(value: unknown): value is MeterScope {
   const s = record(value);
   return s !== undefined && typeof s.iss === "string" && s.iss.length > 0 && s.iss.length <= 2048 && typeof s.cid === "string" && COMPANY.test(s.cid) && typeof s.pid === "string" && PROJECT.test(s.pid) && typeof s.tid === "string" && TASK.test(s.tid) && (s.per === undefined || (typeof s.per === "string" && PERSON.test(s.per)));
 }
-function targetsFor(scope: MeterScope, caps: Caps, month: string): Target[] {
+function targetsFor(scope: MeterScope, caps: Caps, month: string, combined = false): Target[] {
   const sk = (...parts: string[]) => `ROW#${JSON.stringify(parts)}`;
   const withCap = (target: Target, cap: number | undefined): Target => cap === undefined ? target : { ...target, cap };
   return [
@@ -65,24 +73,28 @@ function targetsFor(scope: MeterScope, caps: Caps, month: string): Target[] {
     ...(scope.per === undefined ? [] : [withCap({ sk: sk("person", scope.per, month), item: "person" }, caps.personMonth)]),
     withCap({ sk: sk("project", scope.pid, month), item: "project" }, caps.projectMonth),
     withCap({ sk: sk("company", month), item: "company" }, caps.companyMonth),
+    // The agent meter's own company row key, in the agent meter table.
+    ...(combined ? [withCap({ sk: sk("company", month), item: "company", combined: true }, caps.combinedCompanyMonth)] : []),
   ];
 }
 const scopeFields = (scope: MeterScope): Item => ({ iss: scope.iss, cid: scope.cid, pid: scope.pid, tid: scope.tid, ...(scope.per === undefined ? {} : { per: scope.per }) });
-const targetsPlain = (targets: readonly Target[]): Plain => targets.map((t) => ({ sk: t.sk, item: t.item, ...(t.cap === undefined ? {} : { cap: t.cap }) }));
-function readTargets(value: unknown): Target[] | undefined {
-  if (!Array.isArray(value) || value.length < 3 || value.length > 4) return undefined;
+const targetsPlain = (targets: readonly Target[]): Plain => targets.map((t) => ({ sk: t.sk, item: t.item, ...(t.cap === undefined ? {} : { cap: t.cap }), ...(t.combined === true ? { combined: true } : {}) }));
+/** `combined`: whether this meter combines; a stored combined target on a meter that does not is unreadable (fail closed). */
+function readTargets(value: unknown, combined = false): Target[] | undefined {
+  if (!Array.isArray(value) || value.length < 3 || value.length > (combined ? 5 : 4)) return undefined;
   const targets: Target[] = [];
   for (const entry of value) {
     const t = record(entry);
     if (t === undefined || typeof t.sk !== "string" || !t.sk.startsWith("ROW#") || !["task", "person", "project", "company"].includes(t.item as string) || (t.cap !== undefined && !whole(t.cap))) return undefined;
-    targets.push({ sk: t.sk, item: t.item as MeterItem, ...(t.cap === undefined ? {} : { cap: t.cap }) });
+    if (t.combined !== undefined && (t.combined !== true || !combined || t.item !== "company")) return undefined;
+    targets.push({ sk: t.sk, item: t.item as MeterItem, ...(t.cap === undefined ? {} : { cap: t.cap }), ...(t.combined === true ? { combined: true as const } : {}) });
   }
   return targets;
 }
-function readHold(item: Item | undefined): Hold | undefined {
+function readHold(item: Item | undefined, combined: boolean): Hold | undefined {
   if (item === undefined) return undefined;
   const scope = { iss: item.iss, cid: item.cid, pid: item.pid, tid: item.tid, ...(item.per === undefined ? {} : { per: item.per }) };
-  const targets = readTargets(item.targets);
+  const targets = readTargets(item.targets, combined);
   if (!validScope(scope) || targets === undefined || typeof item.month !== "string" || !whole(item.estimateMicros) || typeof item.status !== "string") throw new Error("settlement unavailable");
   return { scope, month: item.month, estimate: item.estimateMicros, targets, status: item.status };
 }
@@ -128,19 +140,38 @@ export class DynamoMeter implements Meter {
   readonly #holds = new WeakMap<object, { pk: string; id: string }>();
   /** Where the next hold sweep resumes (an open-holds index position); undefined: from the oldest. */
   #sweepAfter: string | undefined;
+  readonly #combined: { meter: string; markers: string } | undefined;
   constructor(options: DynamoMeterOptions) {
     this.#db = options.db; this.#t = options.tables; this.#now = options.now ?? Date.now; this.#beforeWrite = options.beforeWrite ?? (() => undefined);
+    const combined = options.combinedCompany;
+    if (combined !== undefined && (typeof combined.meter !== "string" || typeof combined.markers !== "string" || combined.meter.length === 0 || combined.markers.length === 0 || combined.meter === options.tables.meter)) throw new Error("meter unavailable");
+    this.#combined = combined === undefined ? undefined : { meter: combined.meter, markers: combined.markers };
+  }
+  get combinedCompany(): boolean { return this.#combined !== undefined; }
+  /** The agent meter tables this meter combines with (startServe checks them against its own). */
+  combinedTables(): { meter: string; markers: string } | undefined { return this.#combined === undefined ? undefined : { ...this.#combined }; }
+  /** The overrun-in-flight marker's table: the agent markers table when combined (one per company across both routes). */
+  get #markers(): string { return this.#combined?.markers ?? this.#t.markers; }
+  #table(target: Target): string {
+    if (target.combined !== true) return this.#t.meter;
+    if (this.#combined === undefined) throw new Error("meter unavailable");
+    return this.#combined.meter;
   }
   #month(): string { return new Date(this.#now()).toISOString().slice(0, 7); }
   async #rows(pk: string, targets: readonly Target[]): Promise<Array<Item | undefined>> {
-    return Promise.all(targets.map((target) => this.#db.get(this.#t.meter, { pk, sk: target.sk })));
+    return Promise.all(targets.map((target) => this.#db.get(this.#table(target), { pk, sk: target.sk })));
   }
 
   async reserve(input: ReserveInput): Promise<ReserveResult> {
     if (record(input) === undefined || !validScope(input.scope) || !validCaps(input.caps) || !whole(input.estimateMicros)) return { ok: false, reason: "busy" };
     const { scope, caps, estimateMicros } = input;
     if (input.appliedMaxOutputTokens !== undefined && (!whole(input.appliedMaxOutputTokens) || input.appliedMaxOutputTokens < 1)) return { ok: false, reason: "busy" };
-    const now = this.#now(); const clock = Math.floor(now / 1000);
+    // Fail closed: a combined meter without the combined company cap holds nothing.
+    if (this.#combined !== undefined && caps.combinedCompanyMonth === undefined) return { ok: false, reason: "busy" };
+    const now = this.#now();
+    if (input.sweepAfter !== undefined && (!whole(input.sweepAfter) || input.sweepAfter > now + SWEEP_AFTER_MAX_MS)) return { ok: false, reason: "busy" };
+    // The sweep reads a hold's age from openFrom: a long hold (an eval stage) is not swept before its own end.
+    const openFrom = Math.max(now, input.sweepAfter ?? now); const clock = Math.floor(now / 1000);
     let expiresSeconds: number | undefined;
     if (input.overrun !== undefined) {
       const marker = record(input.overrun);
@@ -150,7 +181,7 @@ export class DynamoMeter implements Meter {
     }
     const pk = companyPartition(scope.iss, scope.cid);
     const month = this.#month();
-    const items = targetsFor(scope, caps, month);
+    const items = targetsFor(scope, caps, month, this.#combined !== undefined);
     const id = randomUUID();
     for (let attempt = 0; attempt < 3; attempt++) {
       let stored: Array<Item | undefined>;
@@ -170,30 +201,30 @@ export class DynamoMeter implements Meter {
       if (blocked !== undefined) return blocked;
       if (expiresSeconds !== undefined) {
         let marker: Item | undefined;
-        try { marker = await this.#db.get(this.#t.markers, { pk, sk: INFLIGHT }); } catch { return { ok: false, reason: "busy" }; }
+        try { marker = await this.#db.get(this.#markers, { pk, sk: INFLIGHT }); } catch { return { ok: false, reason: "busy" }; }
         // Expiry frees only the marker; an unreadable marker counts as live.
         if (marker !== undefined && !(whole(marker.expiresSeconds) && marker.expiresSeconds <= clock)) return { ok: false, reason: "busy", overrunInFlight: true };
       }
       const actions: TransactAction[] = items.map((target, i): TransactAction => {
         const limit = Math.min(target.cap === undefined ? MAX : target.cap - estimateMicros, MAX - estimateMicros);
         if (stored[i] === undefined) {
-          return { kind: "Update", table: this.#t.meter, key: { pk, sk: target.sk },
+          return { kind: "Update", table: this.#table(target), key: { pk, sk: target.sk },
             update: (e) => `SET ${e.name("item")} = ${e.value(target.item)}, ${e.name("company")} = ${e.value(scope.cid)}, ${e.name("spentMicros")} = ${e.value(0)}, ${e.name("estimatedMicros")} = ${e.value(0)}, ${e.name("reservedMicros")} = ${e.value(estimateMicros)}, ${e.name("committed")} = ${e.value(estimateMicros)}, ${e.name("overrun")} = ${e.value(false)}`,
             condition: (e) => `attribute_not_exists(${e.name("pk")})` };
         }
-        return { kind: "Update", table: this.#t.meter, key: { pk, sk: target.sk },
+        return { kind: "Update", table: this.#table(target), key: { pk, sk: target.sk },
           update: (e) => `SET ${e.name("reservedMicros")} = ${e.name("reservedMicros")} + ${e.value(estimateMicros)}, ${e.name("committed")} = ${e.name("committed")} + ${e.value(estimateMicros)}`,
           condition: (e) => `${e.name("company")} = ${e.value(scope.cid)} AND ${e.name("overrun")} = ${e.value(false)} AND ${e.name("committed")} <= ${e.value(limit)}` };
       });
       actions.push({ kind: "Put", table: this.#t.meter, condition: (e) => `attribute_not_exists(${e.name("pk")})`, item: {
         pk, sk: `HOLD#${id}`, status: "open", ...scopeFields(scope), month, estimateMicros, targets: targetsPlain(items), createdAt: now,
         // In the open-holds index until settled, so the sweep can close a hold whose settle failed.
-        openAll: GATEWAY_OPEN_PARTITION, openAt: openAt(now, pk, id),
+        openAll: GATEWAY_OPEN_PARTITION, openAt: openAt(openFrom, pk, id), ...(openFrom === now ? {} : { openFrom }),
         ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }),
       } });
       if (expiresSeconds !== undefined) {
         const expires = expiresSeconds;
-        actions.push({ kind: "Put", table: this.#t.markers, item: { pk, sk: INFLIGHT, owner: id, expiresSeconds: expires, expiresAt: expires },
+        actions.push({ kind: "Put", table: this.#markers, item: { pk, sk: INFLIGHT, owner: id, expiresSeconds: expires, expiresAt: expires },
           condition: (e) => `attribute_not_exists(${e.name("pk")}) OR ${e.name("expiresSeconds")} <= ${e.value(clock)}` });
       }
       try { await this.#db.transact(actions, randomUUID()); }
@@ -218,7 +249,7 @@ export class DynamoMeter implements Meter {
     const where = this.#holds.get(reservation);
     if (where === undefined || where.id !== reservation.id) return; // Not a reservation of this meter: nothing to close.
     const { pk, id } = where;
-    const hold = readHold(await this.#db.get(this.#t.meter, { pk, sk: `HOLD#${id}` }));
+    const hold = readHold(await this.#db.get(this.#t.meter, { pk, sk: `HOLD#${id}` }), this.#combined !== undefined);
     if (hold === undefined || hold.status !== "open") return; // Already closed; ledger and rows stay untouched.
     if (!whole(actualMicros)) throw new Error("settlement unavailable");
     if (estimated !== undefined && (!validEntry({ ...estimated, inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 }) || !whole(estimated.settledAt) || (estimated.priceVersion !== undefined && !whole(estimated.priceVersion)) || (estimated.usage !== undefined && !validUsage(estimated.usage)) || actualMicros < 1)) throw new Error("settlement unavailable");
@@ -253,7 +284,7 @@ export class DynamoMeter implements Meter {
         if (stored[i] === undefined || row.company !== hold.scope.cid || ![row.committed - hold.estimate + actualMicros, row.spentMicros + actualMicros, row.estimatedMicros + extraEstimated].every(whole) || row.reservedMicros < hold.estimate) throw new Error("settlement unavailable");
         const overrun = target.cap !== undefined && row.spentMicros + actualMicros > target.cap;
         const delta = actualMicros - hold.estimate;
-        return { kind: "Update", table: this.#t.meter, key: { pk, sk: target.sk },
+        return { kind: "Update", table: this.#table(target), key: { pk, sk: target.sk },
           update: (e) => `SET ${e.name("spentMicros")} = ${e.name("spentMicros")} + ${e.value(actualMicros)}, ${e.name("estimatedMicros")} = ${e.name("estimatedMicros")} + ${e.value(extraEstimated)}, ${e.name("reservedMicros")} = ${e.name("reservedMicros")} - ${e.value(hold.estimate)}, ${e.name("committed")} = ${e.name("committed")} + ${e.value(delta)}${overrun ? `, ${e.name("overrun")} = ${e.value(true)}` : ""}`,
           // Bounds that keep every value a whole safe integer; and, when this settle does not set the overrun flag, that a
           // concurrent settle has not pushed the row past its cap meanwhile (then this one re-reads and sets it).
@@ -275,7 +306,7 @@ export class DynamoMeter implements Meter {
         continue;
       }
       // The marker goes only if this reservation still owns it; a crash here leaves it to expire (at most the token's lifetime).
-      try { await this.#db.delete(this.#t.markers, { pk, sk: INFLIGHT }, (e) => `${e.name("owner")} = ${e.value(id)}`); } catch { /* It expires. */ }
+      try { await this.#db.delete(this.#markers, { pk, sk: INFLIGHT }, (e) => `${e.name("owner")} = ${e.value(id)}`); } catch { /* It expires. */ }
       return "closed";
     }
     throw new Error("settlement unavailable");
@@ -305,10 +336,10 @@ export class DynamoMeter implements Meter {
     this.#sweepAfter = report.more && typeof last === "string" ? last : undefined;
     for (const item of page) {
       try {
-        if (typeof item.pk !== "string" || !item.pk.startsWith(GATEWAY_COMPANY_KEY_PREFIX) || typeof item.sk !== "string" || !/^HOLD#[0-9a-f-]{36}$/u.test(item.sk) || !whole(item.createdAt) || item.createdAt >= before) { report.failed++; continue; }
+        if (typeof item.pk !== "string" || !item.pk.startsWith(GATEWAY_COMPANY_KEY_PREFIX) || typeof item.sk !== "string" || !/^HOLD#[0-9a-f-]{36}$/u.test(item.sk) || !whole(item.createdAt) || item.createdAt >= before || (item.openFrom !== undefined && (!whole(item.openFrom) || item.openFrom >= before))) { report.failed++; continue; }
         const id = item.sk.slice("HOLD#".length);
         // Re-read consistently: the index is eventually consistent, the decision is made from the table.
-        const hold = readHold(await this.#db.get(this.#t.meter, { pk: item.pk, sk: item.sk }));
+        const hold = readHold(await this.#db.get(this.#t.meter, { pk: item.pk, sk: item.sk }), this.#combined !== undefined);
         if (hold === undefined || hold.status !== "open" || companyPartition(hold.scope.iss, hold.scope.cid) !== item.pk) { report.already++; continue; }
         const result = await this.#close(item.pk, id, hold, Math.max(1, hold.estimate), undefined, true);
         if (result === "closed") report.swept++; else report.already++;
@@ -370,7 +401,7 @@ export class DynamoMeter implements Meter {
     if (where !== undefined) {
       try {
         const observed = await this.#db.get(this.#t.ledger, where);
-        const targets = observed === undefined ? undefined : readTargets(observed.targets);
+        const targets = observed === undefined ? undefined : readTargets(observed.targets, this.#combined !== undefined);
         if (targets !== undefined) observedRows = (await this.#rows(where.pk, targets)).map((row, i) => rowOf(row, targets[i]!, where.cid));
       } catch { observedRows = undefined; }
     }
@@ -383,7 +414,7 @@ export class DynamoMeter implements Meter {
       try { item = await this.#db.get(this.#t.ledger, where, { signal: bound.signal }); } catch { return { status: "unknown" }; }
       if (item === undefined || item.status === undefined) return { status: "missing" };
       if (item.status !== "pending") return { status: "already" };
-      let call: EstimatedCall; const targets = readTargets(item.targets);
+      let call: EstimatedCall; const targets = readTargets(item.targets, this.#combined !== undefined);
       try { call = toCall(item); } catch { return { status: "busy" }; }
       if (targets === undefined || call.cid !== where.cid || call.iss !== where.iss) return { status: "busy" };
       const expire = input.now - call.settledAt > PENDING_RETENTION_DAYS * DAY_MS;
@@ -414,9 +445,9 @@ export class DynamoMeter implements Meter {
         const capFor = { task: input.caps.task, person: input.caps.personMonth, project: input.caps.projectMonth, company: input.caps.companyMonth };
         capExceeded = false;
         const actions: TransactAction[] = targets.map((target, i): TransactAction => {
-          const row = rows[i]!; const spentMicros = row.spentMicros + deltaMicros; const cap = capFor[target.item];
+          const row = rows[i]!; const spentMicros = row.spentMicros + deltaMicros; const cap = target.combined === true ? input.caps.combinedCompanyMonth : capFor[target.item];
           if (deltaMicros > 0 && cap !== undefined && row.committed + deltaMicros > cap) capExceeded = true;
-          return { kind: "Update", table: this.#t.meter, key: { pk: where.pk, sk: target.sk },
+          return { kind: "Update", table: this.#table(target), key: { pk: where.pk, sk: target.sk },
             update: (e) => `SET ${e.name("spentMicros")} = ${e.name("spentMicros")} + ${e.value(deltaMicros)}, ${e.name("committed")} = ${e.name("committed")} + ${e.value(deltaMicros)}, ${e.name("estimatedMicros")} = ${e.name("estimatedMicros")} + ${e.value(estimatedDelta)}${cap === undefined ? "" : `, ${e.name("overrun")} = ${e.value(spentMicros > cap)}`}`,
             // The spend and estimated parts as read (so the overrun flag and the estimated <= spent rule hold); committed may
             // have moved with other calls' holds, but stays a whole safe integer.

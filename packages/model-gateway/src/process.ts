@@ -11,6 +11,7 @@ import { DynamoEndedTasks, DynamoMeter } from "./dynamo-meter.js";
 import { DynamoPriceSnapshotStore } from "./dynamo-prices.js";
 import type { ModelLimitsSource } from "./guard.js";
 import type { Meter } from "./meter.js";
+import type { ProductEvalStages } from "./product-eval.js";
 import { createJwksReader, StaticInstallRegistry } from "./installs.js";
 import { SnapshotPriceSource } from "./price-index.js";
 import { PriceRefresher } from "./price-refresh.js";
@@ -91,11 +92,11 @@ export interface ServeDependencies {
   env?: GatewayEnv; log?: GatewayLog; credentials?: CredentialSource; db?: Dynamo;
   fetch?: typeof fetch; transport?: ProviderTransport; keys?: ProviderKeys; caps?: CapsSource; modelLimits?: ModelLimitsSource;
   /**
-   * The product-AI route (docs/model-gateway-product-ai.md): its resolver, its OWN meter (separate tables: product holds never
-   * share rows with agent holds) and its caps. Absent: every product path is 404. Its open holds, expiry and corrections run in
+   * The product-AI route (docs/model-gateway-product-ai.md): its resolver, its OWN meter (separate tables, combined with the agent
+   * meter's company row and in-flight marker: DynamoMeterOptions.combinedCompany, DEC 228c) and its caps. Absent: every product path is 404. Its open holds, expiry and corrections run in
    * the same maintenance pass as the agent meter's.
    */
-  product?: { routes: ProductRouteResolver; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; caps: CapsSource };
+  product?: { routes: ProductRouteResolver; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; caps: CapsSource; /** Eval stages (product-eval.ts): expired ones are released in the maintenance pass. */ stages?: Pick<ProductEvalStages, "sweep"> };
   now?: () => number; host?: string; port?: number; /** false: no listener (tests drive the server's request event). */ listen?: boolean; drainMs?: number; maintenanceMs?: number;
 }
 export interface RunningGateway { server: Server; port: number; draining(): boolean; drain(): Promise<void>; maintain(): Promise<void> }
@@ -107,6 +108,12 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const now = deps.now ?? Date.now;
   const credentials = deps.credentials ?? credentialsFromEnvironment(deps.env ?? process.env);
   const db = deps.db ?? new Dynamo({ region: config.region, credentials });
+  // DEC 228c: one company monthly cap over both routes. A product meter that does not take the agent meter's company row
+  // would let product and agent spend each reach the cap: refuse to start rather than run it.
+  if (deps.product !== undefined && deps.product.meter.combinedCompany !== true) throw new Error("product meter must combine the company cap with the agent meter");
+  // ...and with THIS agent meter's tables, when the product meter can say which.
+  const combinedTables = (deps.product?.meter as { combinedTables?: () => { meter: string; markers: string } | undefined } | undefined)?.combinedTables?.();
+  if (deps.product !== undefined && combinedTables !== undefined && (combinedTables.meter !== config.tables.meter || combinedTables.markers !== config.tables.markers)) throw new Error("product meter must combine the company cap with the agent meter");
   const meter = new DynamoMeter({ db, tables: config.tables, now });
   const prices = new SnapshotPriceSource(new DynamoPriceSnapshotStore(db, config.tables.prices), { now });
   await prices.reload();
@@ -155,6 +162,15 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
           // The product meter: the same sweep, expiry and corrections, with the product caps. A failure here never stops the agent pass above.
           try {
             const p = deps.product;
+            // Expired eval stages first (released at their own spend; a call still open keeps the whole hold), then the meter's
+            // open holds: a stage hold is swept there only after its own end (ReserveInput.sweepAfter).
+            // The stages the product route holds, also when only the route was given them (createProductRoutes evalStages).
+            const routeStages = (p.routes as { evalStages?: Pick<ProductEvalStages, "sweep"> }).evalStages;
+            for (const productStages of new Set([p.stages, routeStages])) {
+              if (productStages === undefined) continue;
+              const stages = await productStages.sweep(now());
+              if (stages.released + stages.failed > 0) log({ event: "eval_stages_released", route: "product", released: stages.released, failed: stages.failed });
+            }
             const productHolds = await p.meter.sweepOpenHolds(now(), HOLD_SWEEP_PER_PASS);
             if (productHolds.swept + productHolds.failed > 0) log({ event: "holds_swept", route: "product", swept: productHolds.swept, failed: productHolds.failed, more: productHolds.more });
             await runExpirySweep({ meter: p.meter, now: now(), runId, log: (line) => log({ ...line, route: "product" }) });

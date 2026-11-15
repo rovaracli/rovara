@@ -51,13 +51,24 @@ export interface GatewayRoute {
   key(claims: TaskClaims, signal: AbortSignal): Promise<string>;
   transport: ProviderTransport;
   usage(): UsageReader;
-  /** A provider answer that is not 2xx. `charged: false` only for an explicit rejection before any generation. */
-  providerFailure(status: number): { charged: boolean; refusal: RouteRefusal };
+  /** A provider answer that is not 2xx. `charged: false` only for an explicit rejection before any generation. `body`: its first bytes, when `failureBody`. */
+  providerFailure(status: number, body?: Uint8Array): { charged: boolean; refusal: RouteRefusal };
+  /** Read (at most FAILURE_BODY_BYTES of) a failed provider answer for providerFailure's classification. Never echoed. */
+  readonly failureBody?: boolean;
+  /**
+   * The answer as events (an eval stage call, product-eval.ts): the core writes through the returned sink and, after the call
+   * settled, calls its finish exactly once with how the call ended.
+   */
+  readonly events?: { sink(real: GatewaySink): GatewaySink & { finish(outcome: { completed: boolean; code?: string }): Promise<void> } };
   /** After settlement: the actual cost passed the hold (DEC 165). Never throws to the caller. */
   overReservation?(claims: TaskClaims): Promise<void>;
 }
+/** A product request that is not a provider call (the eval stage hold and release): JSON in, JSON out, after the token check. */
+export interface ProductControl { readonly control: true; /** Also answered after the task ended (a release only gives budget back). */ readonly afterTaskEnd?: true; handle(claims: TaskClaims, body: unknown, signal: AbortSignal): Promise<{ status: number; body: Readonly<Record<string, unknown>> }> }
 /** Builds a product route for a request path, or undefined (404). Pure path parsing only; nothing is read before the token is checked. */
-export interface ProductRouteResolver { route(path: string, query: string): GatewayRoute | undefined }
+export interface ProductRouteResolver { route(path: string, query: string, headers: Readonly<Record<string, string | undefined>>): GatewayRoute | ProductControl | undefined }
+export const CONTROL_BODY_BYTES = 16 * 1024;
+export const FAILURE_BODY_BYTES = 64 * 1024;
 export const OVERRUN_BUSY_MESSAGE = "Another call for this company may exceed its reserved cost right now; try again in a moment.";
 export const OVERRUN_BUSY_RETRY_SECONDS = 2;
 export const ENDED_TASK_POLL_MS = 1000;
@@ -78,12 +89,12 @@ export function agentRoute(deps: GatewayDependencies): GatewayRoute {
     providerFailure: (status) => ({ charged: !(status === 429 || status === 529), refusal: { ok: false, status: 502, code: "provider_error", message: "provider unavailable" } }),
   };
 }
-function routeFor(deps: GatewayDependencies, request: GatewayRequest): GatewayRoute | undefined {
+function routeFor(deps: GatewayDependencies, request: GatewayRequest): GatewayRoute | ProductControl | undefined {
   if (request.method !== "POST") return undefined;
   if (request.url === "/v1/messages") return agentRoute(deps);
   if (deps.product === undefined || !request.url.startsWith(PRODUCT_ROUTE_PREFIX) || request.url.length > 2048) return undefined;
   const at = request.url.indexOf("?");
-  try { return deps.product.route(at < 0 ? request.url : request.url.slice(0, at), at < 0 ? "" : request.url.slice(at + 1)); } catch { return undefined; }
+  try { return deps.product.route(at < 0 ? request.url : request.url.slice(0, at), at < 0 ? "" : request.url.slice(at + 1), request.headers); } catch { return undefined; }
 }
 /** Core also used directly by the in-process harness. One deadline covers request, dependencies, transport, streaming and backpressure. */
 export async function handleGateway(deps: GatewayDependencies, request: GatewayRequest, sink: GatewaySink): Promise<void> {
@@ -123,15 +134,25 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let settlementPrice: ResolvedPrice | undefined;
   let settlementUsage: TokenUsage | undefined;
   let settlementModel: string | undefined;
+  // How the call ended, for an events route's settle: the refusal word last answered, or a complete answer.
+  let refusedCode: string | undefined; let completed = false;
+  let events: (GatewaySink & { finish(outcome: { completed: boolean; code?: string }): Promise<void> }) | undefined;
   const respond = async (status: number, type: string, message: string, extra: Readonly<Record<string, string>> = {}) => {
+    refusedCode = type;
     if (head) { sink.destroy(); return; }
     head = true; sink.head(status, { ...JSON_HEADERS, ...extra });
     await wait(sink.write(Buffer.from(JSON.stringify({ error: { type, message } })))); sink.end(); log({ event: "refused" });
   };
   try {
     if (request.method === "GET" && request.url === "/healthz") { head = true; sink.head(200, JSON_HEADERS); await wait(sink.write(Buffer.from('{"ok":true}'))); sink.end(); return; }
-    route = routeFor(deps, request);
-    if (route === undefined) { await respond(404, "not_found", "not found"); return; }
+    const routed = routeFor(deps, request);
+    if (routed === undefined) { await respond(404, "not_found", "not found"); return; }
+    let control: ProductControl | undefined;
+    if ("control" in routed) control = routed;
+    else {
+      route = routed;
+      if (route.events !== undefined) { events = route.events.sink(sink); sink = events; }
+    }
     const rawKey = request.headers["x-api-key"];
     const auth = request.headers.authorization;
     const bearer = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
@@ -141,7 +162,20 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (claims === undefined) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
     callClaims = claims;
     const taskEnded = () => wait(deps.ended.isEnded(claims.iss, claims.cid, claims.tid, controller.signal));
-    if (await taskEnded()) { await respond(403, "task_ended", "task ended"); return; }
+    if (control?.afterTaskEnd !== true && await taskEnded()) { await respond(403, "task_ended", "task ended"); return; }
+    if (control !== undefined) {
+      const parts: Uint8Array[] = []; let size = 0;
+      const body = request.body[Symbol.asyncIterator]();
+      for (;;) { const part = await wait(body.next()); if (part.done) break; size += part.value.byteLength; if (size > CONTROL_BODY_BYTES) { const e = tooLarge(); await respond(e.status, e.code, e.message); return; } parts.push(part.value); }
+      let value: unknown;
+      try { if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/iu.test(request.headers["content-type"] ?? "")) throw new Error(); value = JSON.parse(Buffer.concat(parts).toString("utf8")); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
+      // Not raced against the deadline: a hold's transaction outcome must be known before answering (adapters bound their own).
+      const answer = await control.handle(claims, value, controller.signal);
+      head = true; sink.head(answer.status, JSON_HEADERS);
+      await wait(sink.write(Buffer.from(JSON.stringify(answer.body)))); sink.end();
+      return;
+    }
+    if (route === undefined) { await respond(404, "not_found", "not found"); return; }
     if (route.admit !== undefined) { const refused = await wait(route.admit(claims, controller.signal)); if (refused !== undefined) { await respond(refused.status, refused.code, refused.message, refused.headers); return; } }
     const declared = request.headers["content-length"];
     if (declared !== undefined && /^\d+$/u.test(declared) && Number(declared) > MAX_BODY_BYTES) { const e = tooLarge(); await respond(e.status, e.code, e.message); return; }
@@ -197,7 +231,14 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     try { provider = await wait(route.transport({ body: guarded.bytes, headers: guarded.headers, key, signal: controller.signal, ...(guarded.path === undefined ? {} : { path: guarded.path }) })); }
     catch (error) { if (error instanceof NotSentError) { cost = 0; estimated = false; } throw error; }
     if (provider.status < 200 || provider.status >= 300) {
-      const failure = route.providerFailure(provider.status);
+      let failureBytes: Uint8Array | undefined;
+      if (route.failureBody === true) {
+        // Its first bytes only, for the class (quota, rate limit, overloaded); never echoed, never logged.
+        const read: Uint8Array[] = []; let got = 0; const it = provider.body[Symbol.asyncIterator]();
+        try { while (got < FAILURE_BODY_BYTES) { const next = await wait(it.next()); if (next.done) break; read.push(next.value); got += next.value.byteLength; } } catch { /* Classified from the status alone. */ }
+        failureBytes = Buffer.concat(read).subarray(0, FAILURE_BODY_BYTES);
+      }
+      const failure = route.providerFailure(provider.status, failureBytes);
       if (!failure.charged) { cost = 0; estimated = false; }
       if (route.product && (provider.status === 401 || provider.status === 403)) log({ event: "product_key_refused" });
       await respond(failure.refusal.status, failure.refusal.code, failure.refusal.message, failure.refusal.headers); return; }
@@ -224,7 +265,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const counts = usage.finish();
     // Incomplete/malformed SSE is a failed stream, never a silent partial success.
     if (counts === undefined) throw new Error("provider unavailable");
-    sink.end();
+    sink.end(); completed = true;
     settlementUsage = counts;
   } catch {
     log({ event: "provider_error" });
@@ -249,6 +290,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       }
       catch { log({ event: "settle_failed" }); } // Adapter keeps the hold if its atomic settle fails.
     }
+    // Exactly one settle event, after the call settled.
+    if (events !== undefined) { try { await events.finish({ completed, ...(refusedCode === undefined ? {} : { code: refusedCode }) }); } catch { /* The sink ends or destroys itself. */ } }
   }
 }
 /** node:http adapter, including backpressure and disconnect cancellation. It never opens a listener itself. */

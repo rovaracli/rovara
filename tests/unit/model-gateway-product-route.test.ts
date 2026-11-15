@@ -8,7 +8,7 @@ import { call, mint, scope as agentScope } from "./model-gateway-fixture.js";
 import { cid, iss, change, geminiAnswer, geminiBody, geminiSse, maintainer, pid, productCall, productGateway, productScope, streamPath, wholePath } from "./model-gateway-product-fixture.js";
 
 describe("product route: the Gemini journey", () => {
-  it("streams while held, settles usage x the resolver's price to the project, and never touches the agent meter", async () => {
+  it("streams while held, settles usage x the resolver's price to the project, and touches only the agent meter's company row (DEC 228c)", async () => {
     let release!: () => void; let opened!: () => void;
     const pause = new Promise<void>((r) => { release = r; }); const started = new Promise<void>((r) => { opened = r; });
     const g = await productGateway({ transport: async () => ({ status: 200, body: (async function* () {
@@ -24,7 +24,10 @@ describe("product route: the Gemini journey", () => {
     const rows = await g.productMeter.read(productScope);
     expect(rows.map((r) => r.item)).toEqual(["task", "project", "company"]);
     expect(rows.every((r) => r.spentMicros === 20 && r.reservedMicros === 0)).toBe(true);
-    expect((await g.meter.read(agentScope)).every((r) => r.spentMicros === 0 && r.reservedMicros === 0)).toBe(true);
+    const agentRows = await g.meter.read(agentScope);
+    expect(agentRows.filter((r) => r.item !== "company").every((r) => r.spentMicros === 0 && r.reservedMicros === 0)).toBe(true);
+    // One combined company monthly cap: the product call's spend is on the agent meter's company row too.
+    expect(agentRows.find((r) => r.item === "company")).toMatchObject({ spentMicros: 20, reservedMicros: 0 });
     expect(g.logs).toContainEqual({ event: "settled", costMicros: 20, estimated: false, appliedMaxOutputTokens: 100, route: "product" });
   });
   it("forwards to the checked upstream path with the project key, sets maxOutputTokens, and strips every worker credential", async () => {

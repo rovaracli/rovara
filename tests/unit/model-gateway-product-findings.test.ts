@@ -219,7 +219,7 @@ describe("F1e meter L1-L9 on the product route", () => {
   });
   it("a settle after close adds nothing", async () => {
     const g = await productGateway();
-    const reserved = await g.productMeter.reserve({ scope: productScope, caps: { task: 1000, projectMonth: 1000 }, estimateMicros: 10 });
+    const reserved = await g.productMeter.reserve({ scope: productScope, caps: { task: 1000, projectMonth: 1000, combinedCompanyMonth: 1000 }, estimateMicros: 10 });
     if (!reserved.ok) throw new Error("reserve");
     await g.productMeter.settle(reserved.reservation, 7); await g.productMeter.settle(reserved.reservation, 500);
     expect((await g.productMeter.read(productScope))[0]!.spentMicros).toBe(7);
