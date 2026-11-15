@@ -7,6 +7,13 @@
 //   Switch   the company's lessons switch (`featureGates.lessons` in the company backend's settings, CompanyLessonsSwitch) is read
 //            at admission, before the key, the hold or the provider: off, missing or not exactly true refuses every call.
 //   Key      LearningKeySource only. This route is never handed the gateway's ProviderKeys.
+//   Provider One route per provider the company may have connected, all under /v1/learning/ and all through the SAME money core,
+//            meter, combined cap and pause codes: Anthropic Messages (/v1/learning/messages), Gemini on AI Studio
+//            (/v1/learning/gemini/...), Gemini on Vertex (/v1/learning/vertex/...) and OpenAI Chat Completions
+//            (/v1/learning/openai/chat/completions). Only the body guard, the usage reader, the transport and the price rows
+//            differ. The caller picks the path and the model; the gateway admits the call only when the company has THAT
+//            provider connected and the token's `mdl` names the model (Code decides which model each learning call uses).
+//            Gemini and Vertex bodies go through the product route's guard (no audio or video here: no media prices are given).
 //   Money    its OWN meter (separate tables), combined with the agent meter's company row (DEC 228c): one hold takes the learning
 //            month row (the meter's company row: min($20 default, the company's monthly cap)) AND the combined company row (the
 //            company's one monthly cap over every route). Task and project rows are accounting only (no cap of their own); no
@@ -15,17 +22,27 @@
 //            LEARNING_PAUSE_HEADER header (one of LEARNING_PAUSE_REASONS). Faults (an unreadable switch or budget) are 503/502,
 //            never a pause.
 import { validCaps, type Caps, type CapsScope, type CapsSource } from "./caps.js";
-import { guardRequest, type ModelLimitsSource } from "./guard.js";
+import { guardRequest, type GuardFailure, type ModelLimitsSource } from "./guard.js";
+import { guardOpenAi, OpenAiUsageCollector } from "./learning-openai.js";
 import type { Meter, MeterItem } from "./meter.js";
 import type { ProviderTransport } from "./provider.js";
 import type { TaskClaims } from "./model-gateway-token.js";
-import type { GatewayRoute, RouteRefusal } from "./server.js";
+import { GeminiUsageCollector, guardGemini, parseGeminiPath } from "./product-gemini.js";
+import { guardVertex, parseVertexPath, type VertexTarget } from "./product-vertex.js";
+import type { GatewayRoute, RouteCall, RouteRefusal } from "./server.js";
 import { UsageCollector } from "./usage.js";
 
 /** The `stp` claim of a learning token. Code mints learning tokens with this step; no other step is a learning token. */
 export const LEARNING_STEP = "rovara-lessons-learning-call";
 /** Anthropic Messages, on the company's own account. */
 export const LEARNING_PATH = "/v1/learning/messages";
+export const LEARNING_PATH_PREFIX = "/v1/learning/";
+/** The provider accounts a company may connect for learning calls; each has its own path under LEARNING_PATH_PREFIX. */
+export const LEARNING_PROVIDERS = ["anthropic", "gemini", "vertex", "openai"] as const;
+export type LearningProvider = typeof LEARNING_PROVIDERS[number];
+export const LEARNING_OPENAI_PATH = "/v1/learning/openai/chat/completions";
+/** The product route's Gemini and Vertex paths, which parseGeminiPath and parseVertexPath read: a learning path is the same with this prefix. */
+const PRODUCT_PREFIX_OF: Readonly<Record<"gemini" | "vertex", string>> = { gemini: "/v1/product/gemini/", vertex: "/v1/product/vertex/" };
 /** DEC 226: $20 a month per company, in micro-dollars: the learning month when the company's settings carry no learning cap of their own. */
 export const LEARNING_DEFAULT_MONTH_MICROS = 20_000_000;
 export const LEARNING_PAUSE_HEADER = "x-rovara-lessons-pause";
@@ -54,8 +71,14 @@ export interface LessonsSwitch { isOn(cid: string, signal?: AbortSignal): Promis
  * `connected` is read at admission (before any hold); `keyFor` just before sending; undefined there means "not sent" ($0).
  */
 export interface LearningKeySource {
-  connected(iss: string, cid: string, signal?: AbortSignal): Promise<boolean>;
-  keyFor(iss: string, cid: string, signal?: AbortSignal): Promise<string | undefined>;
+  /** Whether the company has this provider connected. `provider` is the route's: a company with only Gemini connected is not connected for OpenAI. */
+  connected(iss: string, cid: string, provider: LearningProvider, signal?: AbortSignal): Promise<boolean>;
+  /** The secret to send: the API key, or for Vertex the short-lived Google bearer token the adapter minted for this company. */
+  keyFor(iss: string, cid: string, provider: LearningProvider, signal?: AbortSignal): Promise<string | undefined>;
+  /** Vertex only: the company's connected Google Cloud project and location (a call naming another one is refused). Absent or undefined: Vertex is not usable. */
+  vertexTarget?(iss: string, cid: string, signal?: AbortSignal): Promise<VertexTarget | undefined>;
+  /** The provider refused the company's credential (401/403): the adapter may mark it or drop a cached token. Never changes the call. */
+  refused?(iss: string, cid: string, provider: LearningProvider): Promise<void> | void;
 }
 export interface LearningRouteOptions {
   keys: LearningKeySource;
@@ -67,11 +90,26 @@ export interface LearningRouteOptions {
   modelLimits: ModelLimitsSource;
   /** The Anthropic transport; the key it sends is always the company's own (`ProviderRequest.key`). */
   transport: ProviderTransport;
+  /** The other providers' transports. A provider with no transport here has no path (404). */
+  transports?: { gemini?: ProviderTransport; vertex?: ProviderTransport; openai?: ProviderTransport };
   /** The learning month for a company whose settings have no learning cap (an older row), micro-dollars. Default LEARNING_DEFAULT_MONTH_MICROS. */
   monthCeilingMicros?: number;
 }
 /** Builds one learning route per request (it keeps that request's admission state). */
-export interface LearningRouteFactory { route(): GatewayRoute }
+export interface LearningRouteFactory { route(path: string, query: string): GatewayRoute | undefined }
+
+/** Which provider a learning path belongs to, and (Gemini, Vertex) the product-shaped path its parser reads. Pure path parsing. */
+export function parseLearningPath(path: string, query: string): { provider: "anthropic" | "openai" } | { provider: "gemini" | "vertex"; productPath: string } | undefined {
+  if (path === LEARNING_PATH) return query === "" ? { provider: "anthropic" } : undefined;
+  if (path === LEARNING_OPENAI_PATH) return query === "" ? { provider: "openai" } : undefined;
+  for (const provider of ["gemini", "vertex"] as const) {
+    const own = `${LEARNING_PATH_PREFIX}${provider}/`;
+    if (path.startsWith(own)) return { provider, productPath: `${PRODUCT_PREFIX_OF[provider]}${path.slice(own.length)}` };
+  }
+  return undefined;
+}
+const unavailableGuard = { ok: false as const, status: 503, code: "unavailable", message: "model access unavailable" };
+const notAllowed = { ok: false as const, status: 400, code: "invalid_request", message: "request not allowed" };
 
 /**
  * Learning caps for a scope (also the caps the learning meter's corrections use). The learning month is the company's own learning cap
@@ -94,21 +132,49 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
   const learningCaps = createLearningCaps(options.companyCaps, ceiling);
   return {
     caps: learningCaps,
-    route() {
+    route(path, query) {
+      const parsed = parseLearningPath(path, query);
+      if (parsed === undefined) return undefined;
+      const provider = parsed.provider;
+      const transport = provider === "anthropic" ? options.transport : options.transports?.[provider];
+      if (transport === undefined) return undefined;
+      // Gemini and Vertex: the product route's own path parsers, on the same path under the product prefix.
+      const geminiPath = parsed.provider === "gemini" ? parseGeminiPath(parsed.productPath, query) : undefined;
+      const vertexPath = parsed.provider === "vertex" ? parseVertexPath(parsed.productPath, query) : undefined;
+      if ((provider === "gemini" && geminiPath === undefined) || (provider === "vertex" && vertexPath === undefined)) return undefined;
       let admitted = false;
+      let who: { iss: string; cid: string } | undefined;
       let notSent: RouteRefusal | undefined;
+      let target: VertexTarget | undefined;
       const route: GatewayRoute = {
-        provider: "anthropic", product: false, purpose: "learning", stopsWithTask: false, meter: options.meter, prefix: PREFIX,
+        // The price rows' provider: Vertex is priced on the Gemini rows and the Vertex rows, at the dearer (alsoPricedAs).
+        provider: provider === "vertex" ? "gemini" : provider, product: false, purpose: "learning", stopsWithTask: false, meter: options.meter, prefix: PREFIX,
         async admit(claims, signal) {
           try {
             // The switch first: while it is off nothing else is read, held or sent.
             if ((await options.lessons.isOn(claims.cid, signal)) !== true) return learningPaused("lessons_off");
-            if ((await options.keys.connected(claims.iss, claims.cid, signal)) !== true) return learningPaused("no_provider");
+            // Connected FOR THIS provider: one account's key is never used on another provider's path.
+            if ((await options.keys.connected(claims.iss, claims.cid, provider, signal)) !== true) return learningPaused("no_provider");
+            if (provider === "vertex") {
+              target = await options.keys.vertexTarget?.(claims.iss, claims.cid, signal);
+              if (target === undefined) return learningPaused("no_provider");
+              // The path must name the CONNECTED project and location, whatever the token could reach.
+              if (vertexPath!.project !== target.projectId || vertexPath!.location !== target.location) return { ok: false, status: 400, code: "not_allowed", message: "request not allowed" };
+            }
           } catch { return unavailable; }
+          who = { iss: claims.iss, cid: claims.cid };
           admitted = true;
           return undefined;
         },
-        guard: (bytes, headers, claims) => guardRequest(bytes, headers, claims.mdl, options.modelLimits),
+        guard(bytes, headers, claims): RouteCall | GuardFailure {
+          const checked = provider === "anthropic" ? guardRequest(bytes, headers, claims.mdl, options.modelLimits)
+            : provider === "openai" ? guardOpenAi(bytes, headers, options.modelLimits)
+            : provider === "gemini" ? guardGemini(bytes, headers, geminiPath!, options.modelLimits)
+            : target === undefined ? unavailableGuard : guardVertex(bytes, headers, vertexPath!, target, options.modelLimits);
+          // Every provider: the model is one of the token's (Code decides which model a learning call uses).
+          if (checked.ok && !claims.mdl.includes(checked.model)) return notAllowed;
+          return checked;
+        },
         // The company pays: no person row, whoever started the task.
         scope: (claims) => ({ iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid }),
         async caps(scope, _claims, signal) {
@@ -137,19 +203,23 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
           if (!admitted) return "";
           try { if ((await options.lessons.isOn(claims.cid, signal)) !== true) { notSent = learningPaused("lessons_off"); return ""; } }
           catch { notSent = unavailable; return ""; }
-          const key = await options.keys.keyFor(claims.iss, claims.cid, signal);
+          const key = await options.keys.keyFor(claims.iss, claims.cid, provider, signal);
           if (key === undefined) { notSent = learningPaused("no_provider"); return ""; }
           return key;
         },
         notSent: () => notSent,
-        transport: options.transport,
-        usage: () => new UsageCollector(),
+        transport,
+        usage: () => provider === "anthropic" ? new UsageCollector() : provider === "openai" ? new OpenAiUsageCollector() : new GeminiUsageCollector(),
         providerFailure(status) {
           // The provider refused the company's key: an explicit rejection before generation, free; Code pauses for a provider.
-          if (status === 401 || status === 403) return { charged: false, refusal: learningPaused("no_provider") };
+          if (status === 401 || status === 403) {
+            if (options.keys.refused !== undefined && who !== undefined) { try { void Promise.resolve(options.keys.refused(who.iss, who.cid, provider)).catch(() => undefined); } catch { /* Never changes the call. */ } }
+            return { charged: false, refusal: learningPaused("no_provider") };
+          }
           // Otherwise the agent route's rule: 429/529 explicit rejections are free, the rest keep the hold.
           return { charged: !(status === 429 || status === 529), refusal: { ok: false, status: 502, code: "provider_error", message: "provider unavailable" } };
         },
+        ...(provider === "vertex" ? { alsoPricedAs: (model: string) => [{ provider: "vertex", model }, { provider: "vertex", model: `vertex_ai/${model}` }] } : {}),
       };
       return route;
     },
