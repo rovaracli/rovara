@@ -25,11 +25,11 @@ export function HomeScreen() {
  for (const card of previous.current ?? []) if (!cards.some(next => next.cardId === card.cardId)) announce(card.title + " no longer needs you");
  previous.current = cards;
  }, [cards, announce]);
- return <section className="rv-home"><PageHeader title="Home" {...(cards !== undefined && total > 0 ? { description: `${total} ${total === 1 ? "thing needs" : "things need"} you` } : {})} />
+ return <section className="rv-home" data-testid="home"><PageHeader title="Home" {...(cards !== undefined && total > 0 ? { description: `${total} ${total === 1 ? "thing needs" : "things need"} you` } : {})} />
  <Suspense fallback={null}><NeedsYou /></Suspense>
  {home.isPending && <Skeleton label="Loading what needs you" />}
- {home.isError && <div className="rv-home-error" role="alert"><p><VisibleText text={home.error instanceof ApiError ? home.error.message : "Couldn't load what needs you. Try again."} /></p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
- {cards !== undefined && cards.length === 0 && total === 0 && <EmptyState title="Nothing needs you right now" description="Your team's work can keep moving. Find ongoing sessions in Live." action={<Link to="/app/live">See work in progress</Link>} />}
+ {home.isError && <div className="rv-home-error" role="alert" data-testid="load-error"><p><VisibleText text={home.error instanceof ApiError ? home.error.message : "Couldn't load what needs you. Try again."} /></p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
+ {cards !== undefined && cards.length === 0 && total === 0 && <EmptyState testId="home-empty" title="Nothing needs you right now" description="Your team's work can keep moving. Find ongoing sessions in Live." action={<Link to="/app/live">See work in progress</Link>} />}
  {cards !== undefined && cards.length === 0 && total > 0 && <div><p>Items are temporarily unavailable.</p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
  {cards !== undefined && total > cards.length && <p className="rv-muted">Showing {cards.length} of {total}</p>}
  {cards !== undefined && cards.length > 0 && <ol className="rv-attention-list" aria-label="What needs you">{cards.map(card => <HomeCard key={card.cardId} card={card} />)}</ol>}

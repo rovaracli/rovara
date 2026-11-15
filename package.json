@@ -16,6 +16,7 @@
     "lint": "node scripts/lint-shards.ts",
     "lint:single": "node --max-old-space-size=14336 node_modules/eslint/bin/eslint.js .",
     "test": "vitest run",
+    "test:browser": "playwright test -c tests/web/browser/playwright.config.ts",
     "typecheck": "tsc -b --pretty false",
     "typecheck:all": "tsc -b --pretty false && node scripts/typecheck-baseline.ts check",
     "typecheck:changed": "tsc -b --pretty false && node scripts/typecheck-baseline.ts check --changed",
@@ -28,6 +29,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@playwright/test": "1.64.0",
     "@testing-library/dom": "10.4.2",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.7",
