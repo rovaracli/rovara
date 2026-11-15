@@ -1,5 +1,5 @@
 import { record, whole } from "./model-gateway-token.js";
-import { RATE_KEYS, CONTEXT_THRESHOLDS, copyRates, type RateKey } from "./price-tiers.js";
+import { RATE_KEYS, CONTEXT_THRESHOLDS, copyRates, maxEffectivePrice, type RateKey } from "./price-tiers.js";
 import { PRICE_MAX } from "./price-constants.js";
 import type { MediaRates } from "./media-price.js";
 export interface TokenRates { inputMicrosPerMTok: number; outputMicrosPerMTok: number; cacheReadMicrosPerMTok?: number; cacheWrite5mMicrosPerMTok?: number; cacheWrite1hMicrosPerMTok?: number; cacheWriteMicrosPerMTok?: number }
@@ -40,6 +40,19 @@ function validDerived(value: unknown): boolean {
   });
 }
 export { resolvePrice } from "./price-sanity.js";
+
+/**
+ * Two rows for one call (Vertex: the AI Studio row and the Vertex row of the same model): the dearer rate per component, each
+ * price completed first (a missing band or cache rate means the rate that applies instead), so the call is never priced below
+ * either row. A row that is only an estimate (no row for that identity) adds nothing; if the first is the estimate and the
+ * second is known, the known row is used.
+ */
+export function dearerPrice(a: ResolvedPrice, b: ResolvedPrice): ResolvedPrice {
+  if (b.estimated) return a;
+  const version = a.priceVersion ?? b.priceVersion;
+  if (a.estimated) return { ...b, ...(version === undefined ? {} : { priceVersion: version }) };
+  return { ...maxEffectivePrice(a, b), estimated: false, ...(version === undefined ? {} : { priceVersion: version }), ...(a.knownTokenPrice === true || b.knownTokenPrice === true ? { knownTokenPrice: true as const } : {}) };
+}
 
 /** Exact integer ×1.5 without BigInt, saturation before unsafe arithmetic. */
 export function cautiousPrice(price: Price): Price {

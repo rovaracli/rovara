@@ -11,6 +11,7 @@
 import { randomUUID } from "node:crypto";
 import { COMPANY, PERSON, PROJECT, record, whole } from "./model-gateway-token.js";
 import type { ProductKeyFingerprinter, ProductKeySealer } from "./product-seal.js";
+import { parseVertexConnect, serializeVertexCredential, validVertexSummary, vertexSummary, type VertexCredential, type VertexSummary } from "./product-vertex-credential.js";
 
 export const PRODUCT_COMPANY_OWNER = "_company";
 export const PRODUCT_PROVIDERS = ["gemini", "vertex"] as const;
@@ -31,7 +32,7 @@ export type ProductRole = "company_admin" | "project_maintainer";
 /** The caller (Cloud's settings route) has checked the person's role with Code; the store re-checks what the role may change. */
 export interface ProductActor { id: string; role: ProductRole }
 
-export type ProductKeyErrorCode = "invalid" | "stale" | "not_found" | "in_recovery" | "forbidden" | "unavailable";
+export type ProductKeyErrorCode = "invalid" | "stale" | "not_found" | "in_recovery" | "forbidden" | "unavailable" | "too_open" | "refused";
 const MESSAGES: Record<ProductKeyErrorCode, string> = {
   invalid: "These product AI settings are not valid.",
   stale: "Product AI settings changed. Refresh and try again.",
@@ -39,6 +40,8 @@ const MESSAGES: Record<ProductKeyErrorCode, string> = {
   in_recovery: "This source was removed less than 7 days ago. Recover it, or connect it under a new source id.",
   forbidden: "You can't change these product AI settings.",
   unavailable: "Product AI settings are unavailable right now. Try again.",
+  too_open: "This Google setup would trust any Rovara company. Add the attribute condition from the setup steps, then test again.",
+  refused: "Google refused these credentials. Check the setup steps, then test again.",
 };
 /** Fixed words per code. Never echoes input, a key or a cause. */
 export class ProductKeyError extends Error { constructor(readonly code: ProductKeyErrorCode) { super(MESSAGES[code]); this.name = "ProductKeyError"; } }
@@ -104,12 +107,14 @@ interface SourceRecord {
   /** The linked company source's connectedAt: a source id re-used after its window is a different source (REVIEW-1 L2). */
   linkedAt?: number;
   warning?: { status: 401 | 403; at: number };
+  /** Vertex own key: the non-secret summary (scheme, Google Cloud project, location, service account). */
+  vertex?: VertexSummary;
 }
 interface RemovedRecord { source: SourceRecord; removedAt: number; recoverUntil: number }
 interface OwnerDoc { sources: SourceRecord[]; removed: RemovedRecord[]; caps?: ProductCaps; ceiling?: ProductCeiling; lastRequestId?: string }
 export interface ProductSourceView {
   sourceId: string; provider: ProductProvider; hasKey: boolean; linkedTo?: string; available: boolean;
-  connectedBy: string; connectedAt: number; updatedAt: number; warning?: { status: 401 | 403; at: number };
+  connectedBy: string; connectedAt: number; updatedAt: number; warning?: { status: 401 | 403; at: number }; vertex?: VertexSummary;
 }
 export interface ProductKeysView {
   revision: number; owner: string; sources: ProductSourceView[]; removed: Array<{ sourceId: string; provider: ProductProvider; recoverUntil: number }>;
@@ -143,26 +148,31 @@ function parseDoc(value: unknown): OwnerDoc {
   const source = (s: unknown): s is SourceRecord => {
     const r = record(s);
     return r !== undefined && typeof r.sourceId === "string" && PRODUCT_SOURCE_ID.test(r.sourceId) && PRODUCT_PROVIDERS.some((p) => p === r.provider) && typeof r.connectedBy === "string" && PERSON.test(r.connectedBy)
-      && whole(r.connectedAt) && whole(r.updatedAt) && ((r.currentVersion === undefined) !== (r.link === undefined)) && (r.currentVersion === undefined || (typeof r.currentVersion === "string" && UUID.test(r.currentVersion))) && (r.link === undefined || (typeof r.link === "string" && PRODUCT_SOURCE_ID.test(r.link) && whole(r.linkedAt))) && (r.link !== undefined || r.linkedAt === undefined);
+      && whole(r.connectedAt) && whole(r.updatedAt) && ((r.currentVersion === undefined) !== (r.link === undefined)) && (r.currentVersion === undefined || (typeof r.currentVersion === "string" && UUID.test(r.currentVersion))) && (r.link === undefined || (typeof r.link === "string" && PRODUCT_SOURCE_ID.test(r.link) && whole(r.linkedAt))) && (r.link !== undefined || r.linkedAt === undefined)
+      // A Vertex own key carries its summary; nothing else does.
+      && (r.provider === "vertex" && r.currentVersion !== undefined ? validVertexSummary(r.vertex) : r.vertex === undefined);
   };
   if (d === undefined || !Array.isArray(d.sources) || d.sources.length > PRODUCT_MAX_SOURCES || !d.sources.every(source) || !Array.isArray(d.removed) || d.removed.length > 4 * PRODUCT_MAX_SOURCES
     || !d.removed.every((r: unknown) => { const x = record(r); return x !== undefined && source(x.source) && whole(x.removedAt) && whole(x.recoverUntil); })
     || (d.caps !== undefined && !validCapsValue(d.caps)) || (d.ceiling !== undefined && !validCeiling(d.ceiling))) throw new ProductKeyError("unavailable");
   return structuredClone(d) as unknown as OwnerDoc;
 }
-function validKey(provider: ProductProvider, key: unknown): key is string {
-  if (typeof key !== "string") return false;
-  // Gemini (AI Studio) keys are one printable token. A Vertex key file is JSON (the follow-up federation lane parses it).
-  return provider === "gemini" ? /^[\x21-\x7e]{8,512}$/u.test(key) : key.length >= 8 && key.length <= 16_384 && !/[\0]/u.test(key);
-}
+/** Gemini (AI Studio) keys are one printable token. Vertex credentials are JSON (product-vertex-credential.ts). */
+const validGeminiKey = (key: unknown): key is string => typeof key === "string" && /^[\x21-\x7e]{8,512}$/u.test(key);
 
-export interface ProductKeyStoreOptions { table: ProductKeyTable; sealer: ProductKeySealer; fingerprint: ProductKeyFingerprinter; now?: () => number; providers?: readonly ProductProvider[] }
+/**
+ * The Vertex connection test (VertexTokens.probe, bound to the deployment), run for the change's company before a Vertex
+ * credential is sealed: "ok" saves; "too_open" (the pool would trust another Rovara company), "refused" or "unavailable" saves
+ * nothing. Without it, Vertex can't be connected (fail closed).
+ */
+export type VertexCheck = (cid: string, credential: VertexCredential) => Promise<"ok" | "too_open" | "refused" | "unavailable">;
+export interface ProductKeyStoreOptions { table: ProductKeyTable; sealer: ProductKeySealer; fingerprint: ProductKeyFingerprinter; now?: () => number; providers?: readonly ProductProvider[]; vertexCheck?: VertexCheck }
 interface Change { iss: string; cid: string; owner: string; requestId: string; expectedRevision: number; actor: ProductActor }
 
 export class ProductKeyStore {
   readonly #now: () => number;
   readonly #providers: ReadonlySet<ProductProvider>;
-  constructor(private readonly options: ProductKeyStoreOptions) { this.#now = options.now ?? Date.now; this.#providers = new Set(options.providers ?? ["gemini"]); }
+  constructor(private readonly options: ProductKeyStoreOptions) { this.#now = options.now ?? Date.now; this.#providers = new Set(options.providers ?? PRODUCT_PROVIDERS); }
 
   // ---- reads ----
   async view(iss: string, cid: string, owner: string): Promise<ProductKeysView> {
@@ -208,13 +218,16 @@ export class ProductKeyStore {
   // ---- changes ----
   async connect(change: Change & { sourceId: string; provider: ProductProvider; key: string }): Promise<ProductKeysView> {
     this.#check(change);
-    if (!PRODUCT_SOURCE_ID.test(change.sourceId) || !this.#providers.has(change.provider) || !validKey(change.provider, change.key)) throw new ProductKeyError("invalid");
+    if (!PRODUCT_SOURCE_ID.test(change.sourceId) || !this.#providers.has(change.provider)) throw new ProductKeyError("invalid");
+    const secret = this.#secretOf(change.provider, change.key);
     const versionId = randomUUID();
-    const keyPrint = await this.options.fingerprint({ cid: change.cid, owner: change.owner, sourceId: change.sourceId, key: change.key });
+    const keyPrint = await this.options.fingerprint({ cid: change.cid, owner: change.owner, sourceId: change.sourceId, key: secret.text });
     return this.#mutate(change, "connect", { sourceId: change.sourceId, provider: change.provider, keyPrint }, async (doc, now) => {
       this.#ensureNew(doc, change.sourceId, change.provider, change.owner, now);
-      const sealed = await this.options.sealer.seal(change.key, { iss: change.iss, cid: change.cid, owner: change.owner, sourceId: change.sourceId, versionId });
-      doc.sources.push({ sourceId: change.sourceId, provider: change.provider, connectedBy: change.actor.id, connectedAt: now, updatedAt: now, currentVersion: versionId });
+      // The connection test runs only for a change that would apply (a replay or a stale revision never reaches Google).
+      if (secret.vertex !== undefined) await this.#vertexCheck(change.cid, secret.vertex);
+      const sealed = await this.options.sealer.seal(secret.text, { iss: change.iss, cid: change.cid, owner: change.owner, sourceId: change.sourceId, versionId });
+      doc.sources.push({ sourceId: change.sourceId, provider: change.provider, connectedBy: change.actor.id, connectedAt: now, updatedAt: now, currentVersion: versionId, ...(secret.vertex === undefined ? {} : { vertex: vertexSummary(secret.vertex) }) });
       return [{ key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, versionId), put: { stage: CURRENT_STAGE, sealed, fingerprint: keyPrint, createdAt: now }, condition: { absent: true } }];
     });
   }
@@ -236,14 +249,18 @@ export class ProductKeyStore {
     this.#check(change);
     if (!PRODUCT_SOURCE_ID.test(change.sourceId) || typeof change.key !== "string") throw new ProductKeyError("invalid");
     const versionId = randomUUID();
+    // The provider is known only inside the transaction, so the change's own text is fingerprinted (as before Vertex).
     const keyPrint = await this.options.fingerprint({ cid: change.cid, owner: change.owner, sourceId: change.sourceId, key: change.key });
     return this.#mutate(change, "rotate", { sourceId: change.sourceId, keyPrint }, async (doc, now) => {
       const source = doc.sources.find((s) => s.sourceId === change.sourceId);
       if (source === undefined) throw new ProductKeyError("not_found");
-      if (source.currentVersion === undefined || !validKey(source.provider, change.key)) throw new ProductKeyError("invalid");
+      if (source.currentVersion === undefined) throw new ProductKeyError("invalid");
+      const secret = this.#secretOf(source.provider, change.key);
+      if (secret.vertex !== undefined) await this.#vertexCheck(change.cid, secret.vertex);
       const old = source.currentVersion;
-      const sealed = await this.options.sealer.seal(change.key, { iss: change.iss, cid: change.cid, owner: change.owner, sourceId: change.sourceId, versionId });
+      const sealed = await this.options.sealer.seal(secret.text, { iss: change.iss, cid: change.cid, owner: change.owner, sourceId: change.sourceId, versionId });
       source.currentVersion = versionId; source.updatedAt = now; delete source.warning;
+      if (secret.vertex !== undefined) source.vertex = vertexSummary(secret.vertex);
       return [
         { key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, versionId), put: { stage: CURRENT_STAGE, sealed, fingerprint: keyPrint, createdAt: now }, condition: { absent: true } },
         { key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, old), merge: { stage: "AWSPREVIOUS", purgeAfter: Math.floor((now + PRODUCT_RECOVERY_DAYS * DAY_MS) / 1000) }, condition: { exists: true } },
@@ -300,6 +317,20 @@ export class ProductKeyStore {
   }
 
   // ---- internals ----
+  /** The text to seal: a Gemini key as given, a Vertex credential in its canonical form (only the fields the token flow needs). */
+  #secretOf(provider: ProductProvider, key: unknown): { text: string; vertex?: VertexCredential } {
+    if (provider === "gemini") { if (!validGeminiKey(key)) throw new ProductKeyError("invalid"); return { text: key }; }
+    const vertex = typeof key === "string" ? parseVertexConnect(key) : undefined;
+    if (vertex === undefined) throw new ProductKeyError("invalid");
+    return { text: serializeVertexCredential(vertex), vertex };
+  }
+  async #vertexCheck(cid: string, credential: VertexCredential): Promise<void> {
+    if (this.options.vertexCheck === undefined) throw new ProductKeyError("unavailable");
+    let result: Awaited<ReturnType<VertexCheck>>;
+    try { result = await this.options.vertexCheck(cid, credential); } catch { throw new ProductKeyError("unavailable"); }
+    if (result === "ok") return;
+    throw new ProductKeyError(result === "too_open" || result === "refused" ? result : "unavailable");
+  }
   #identity(iss: string, cid: string, owner: string): void {
     if (typeof iss !== "string" || iss.length === 0 || iss.length > 2048 || typeof cid !== "string" || !COMPANY.test(cid) || typeof owner !== "string" || (owner !== PRODUCT_COMPANY_OWNER && !PROJECT.test(owner))) throw new ProductKeyError("invalid");
   }
@@ -333,7 +364,7 @@ export class ProductKeyStore {
       revision, owner, pending: false, ...(doc.lastRequestId === undefined ? {} : { lastRequestId: doc.lastRequestId }),
       sources: doc.sources.map((s) => ({
         sourceId: s.sourceId, provider: s.provider, hasKey: s.currentVersion !== undefined, available: s.link === undefined || company?.sources.some((c) => c.sourceId === s.link && c.connectedAt === s.linkedAt) === true,
-        connectedBy: s.connectedBy, connectedAt: s.connectedAt, updatedAt: s.updatedAt, ...(s.link === undefined ? {} : { linkedTo: s.link }), ...(s.warning === undefined ? {} : { warning: { ...s.warning } }),
+        connectedBy: s.connectedBy, connectedAt: s.connectedAt, updatedAt: s.updatedAt, ...(s.link === undefined ? {} : { linkedTo: s.link }), ...(s.warning === undefined ? {} : { warning: { ...s.warning } }), ...(s.vertex === undefined ? {} : { vertex: { ...s.vertex } }),
       })),
       removed: doc.removed.filter((r) => r.recoverUntil > now).map((r) => ({ sourceId: r.source.sourceId, provider: r.source.provider, recoverUntil: r.recoverUntil })),
       ...(owner === PRODUCT_COMPANY_OWNER ? (doc.ceiling === undefined ? {} : { ceiling: { ...doc.ceiling } }) : { caps: { ...(doc.caps ?? PRODUCT_DEFAULT_CAPS) } }),

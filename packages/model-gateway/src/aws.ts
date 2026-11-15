@@ -38,8 +38,12 @@ const ECS_CREDENTIALS_HOST = "169.254.170.2";
 const sha256 = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
 const hmac = (key: string | Buffer, data: string): Buffer => createHmac("sha256", key).update(data).digest();
 
-/** AWS Signature Version 4 for a POST to "/" with no query string (every JSON-protocol call). Returns the headers to send. */
-export function signRequest(input: { method: "POST"; host: string; region: string; service: string; headers: Readonly<Record<string, string>>; body: Buffer; credentials: AwsCredentials; now: Date }): Record<string, string> {
+/**
+ * AWS Signature Version 4 for a POST to "/" (every JSON-protocol call has no query string). `query`, when given, must already
+ * be canonical (sorted, encoded): the Vertex subject token signs `Action=GetCallerIdentity&Version=2011-06-15`. Returns the
+ * headers to send.
+ */
+export function signRequest(input: { method: "POST"; host: string; region: string; service: string; headers: Readonly<Record<string, string>>; body: Buffer; credentials: AwsCredentials; now: Date; query?: string }): Record<string, string> {
   const amzDate = input.now.toISOString().replace(/[-:]/gu, "").replace(/\.\d{3}/u, "");
   const date = amzDate.slice(0, 8);
   const headers: Record<string, string> = { ...Object.fromEntries(Object.entries(input.headers).map(([k, v]) => [k.toLowerCase(), v])), host: input.host, "x-amz-date": amzDate };
@@ -47,7 +51,7 @@ export function signRequest(input: { method: "POST"; host: string; region: strin
   const names = Object.keys(headers).sort();
   const canonicalHeaders = names.map((name) => `${name}:${headers[name]!.trim().replace(/\s+/gu, " ")}\n`).join("");
   const signedHeaders = names.join(";");
-  const canonical = [input.method, "/", "", canonicalHeaders, signedHeaders, sha256(input.body)].join("\n");
+  const canonical = [input.method, "/", input.query ?? "", canonicalHeaders, signedHeaders, sha256(input.body)].join("\n");
   const scope = `${date}/${input.region}/${input.service}/aws4_request`;
   const toSign = ["AWS4-HMAC-SHA256", amzDate, scope, sha256(canonical)].join("\n");
   const key = hmac(hmac(hmac(hmac(`AWS4${input.credentials.secretAccessKey}`, date), input.region), input.service), "aws4_request");
