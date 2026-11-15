@@ -30,7 +30,7 @@ it("renders an ordered readable sidebar with waiting counts and status words", a
  const f = shell();await screen.findByRole("heading", { name: "Home", level: 1 });
  expect(screen.getByRole("link", { name: "Home, 3 waiting" })).toBeTruthy();expect(screen.getByText("1 running")).toBeTruthy();expect(screen.getByText("1 needs you")).toBeTruthy();
  const links = [...screen.getByRole("navigation", { name: "Workspace" }).querySelectorAll("a")].map(link => link.textContent);
- expect(links.indexOf("Live")).toBeGreaterThan(links.findIndex(text => text?.startsWith("Home")));expect(screen.queryByRole("link", { name: "Usage" })).toBeNull();expect(screen.queryByRole("link", { name: "Admin" })).toBeNull();f.close();
+ expect(links.indexOf("Work")).toBeGreaterThan(links.findIndex(text => text?.startsWith("Home")));expect(screen.queryByRole("link", { name: "Usage" })).toBeNull();expect(screen.queryByRole("link", { name: "Admin" })).toBeNull();f.close();
 });
 it("omits disabled routes and shows the exact not-found copy", async () => {
  const f = shell("/app/usage");expect(await screen.findByText("We couldn't find that. It may not exist, or it hasn't been shared with you.")).toBeTruthy();f.close();
@@ -39,7 +39,7 @@ it("does not call an API for signup or signed out routes", async () => {
  for (const path of ["/app/signup", "/app/signed-out"]) { const f = shell(path);await screen.findByRole("heading", { level: 1 });expect(f.request).not.toHaveBeenCalled();expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();f.close(); }
 });
 it("focuses the new heading on a route change", async () => {
- const f = shell();await screen.findByRole("heading", { name: "Home" });fireEvent.click(screen.getByRole("link", { name: "Live" }));await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Live" })));f.close();
+ const f = shell();await screen.findByRole("heading", { name: "Home" });fireEvent.click(screen.getByRole("link", { name: "Work" }));await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Work" })));f.close();
 });
 it("follows a project link in the sidebar from an agent page whose profile tray is open", async () => {
  // Opened from the directory, an agent's profile is a tray over the page. It must not take the click meant for the sidebar (it used to close itself and go back instead).

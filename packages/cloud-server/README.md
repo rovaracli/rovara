@@ -19,6 +19,7 @@ Rovara Cloud's server for its web app, on a Rovara Code install's API ([Rovara-c
 | `src/client-secret.ts` | The client secret from Secrets Manager at run time |
 | `src/routes.ts` | The route table: one entry per `/v1/app` route answered from Code |
 | `src/handler.ts` | Sign-in, sign-out, the session cookie, CSRF and route dispatch, framework-neutral |
+| `src/work-reads.ts` | The Work page's reads (the split inbox): the task list, and for one task its plan, proof index, events and plan comments, each one call to Code as the person, kept to the fields the page draws |
 | `src/work-sessions.ts` | Cloud's sessions: the store interface; `LocalWorkSessionStore` |
 | `src/session-view.ts` | A session as the app reads it, from the session and Code's task; the waiting plan |
 | `src/approve.ts` | The plan approval page and the decision it sends to Code |

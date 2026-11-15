@@ -8,6 +8,7 @@ import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timel
 import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError } from "./code-client.js";
+import { WORK_READS } from "./work-reads.js";
 
 /** The company this Cloud shows, until companies are Cloud's own (phase 4). */
 export interface OrgView { orgId: string; name: string; plan: string }
@@ -701,4 +702,6 @@ export const ROUTES: Route[] = [
       return ok({ removed: answer.removed });
     },
   },
+  // The Work page's reads (the split inbox): the task list and, for one task, its plan, proof index, events and plan comments.
+  ...WORK_READS,
 ];

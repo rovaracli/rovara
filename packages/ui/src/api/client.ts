@@ -25,7 +25,8 @@ export function createApiClient(host: AppHost) {
     throw new ApiError(0, "NETWORK_ERROR", "Couldn't reach Rovara. Check your connection and try again.");
    }
    if (response.status === 429 && retry && attempt < RETRY_DELAYS_MS.length) { await sleep(retryDelay(attempt));continue; }
-   if (response.status >= 500 && response.status <= 599 && readRequest && retry && attempt < 2) { await sleep(retryDelay(attempt));continue; }
+   // A 501 (NOT_ON_CODE_YET) is Cloud saying the route is not on Rovara Code yet: that does not change in a few seconds, so it is not retried and the screen says so at once.
+   if (response.status >= 500 && response.status <= 599 && response.status !== 501 && readRequest && retry && attempt < 2) { await sleep(retryDelay(attempt));continue; }
    if (response.status < 200 || response.status >= 300) {
     const error = apiError(response.status, response.body, host.origin);
     if ((error.code === "AUTH_REQUIRED" || response.status === 401) && !redirectedHosts.has(host)) { redirectedHosts.add(host);host.signIn(host.currentPath(), { automatic: true }); }

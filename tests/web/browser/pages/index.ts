@@ -5,3 +5,4 @@ export { PERSON, PROJECT, ROUTES, UNSERVED_SCREENS } from "./routes.js";
 export { SessionPage } from "./session.js";
 export { ShellPage, UnavailablePage } from "./shell.js";
 export { SignedOutPage } from "./sign-in.js";
+export { WorkPage } from "./work.js";

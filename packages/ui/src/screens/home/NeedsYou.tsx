@@ -5,7 +5,9 @@ import { createDecisionsApi, useDecisions, type ReadDecision } from "../../api/d
 import { DecisionCard, type DecisionCardActions } from "../../design/DecisionCard.js";
 import { createDesignReviewApi } from "../../api/design-review.js";
 import { ApiError } from "../../api/errors.js";
+import { Link } from "react-router";
 import { Button } from "../../design/Button.js";
+import { EmptyState } from "../../design/EmptyState.js";
 import { VisibleText } from "../../design/VisibleText.js";
 
 /** The decisions could not be read: said plainly, with a way to try again. The older Home cards below still show. */
@@ -49,4 +51,11 @@ export function TaskDecisions({ taskId, design }: { taskId: string; /** The Desi
  const mine = (decisions.data ?? []).filter(decision => decision.card.status === "pending" && decision.card.taskId === taskId);
  if (mine.length === 0) return null;
  return <section aria-label="Decision for this task"><DecisionList decisions={mine} label="Decisions for this task" extras={design === undefined ? undefined : () => ({ design })} /></section>;
+}
+
+/** Home's "nothing needs you" empty state, shown only once the decision cards have been read and none is pending: Home's own cards are empty, but a decision card is something that needs the person. */
+export function NothingNeedsYou() {
+ const decisions = useDecisions();
+ if (decisions.isPending || (decisions.data ?? []).some(decision => decision.card.status === "pending")) return null;
+ return <EmptyState testId="home-empty" title="Nothing needs you right now" description="Your team's work can keep moving." action={<Link to="/app/live">See work in progress</Link>} />;
 }

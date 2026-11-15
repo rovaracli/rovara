@@ -80,3 +80,37 @@ button:disabled{cursor:default;opacity:.65}
 
 /* Design review (DR11): the one-line reason an approve_design card with an open blocker asks for, and the Design first row on a plan card. */
 .rv-decision-reason{display:grid;gap:var(--rv-space-2);min-width:0;flex:1 1 100%}.rv-decision-reason input{width:100%}.rv-decision-design{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3)}.rv-decision-design .rv-design-hint{margin:0;padding:var(--rv-space-1) var(--rv-space-3);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);font-size:var(--rv-font-sm)}
+
+/* Hybrid 1 components (DEC 223): step rail, tone dot and pill, eval box, the decision card as "Your decision". Colours are the app's own --rv-* tokens. */
+.rv-step-rail{display:flex;list-style:none;margin:0;padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);overflow:hidden;font-size:var(--rv-font-sm);background:var(--rv-bg-raised)}
+.rv-step-rail li{flex:1;min-width:0;border-right:1px solid var(--rv-border);color:var(--rv-text-subtle)}.rv-step-rail li:last-child{border-right:0}
+.rv-step-rail li>button,.rv-step-rail li>span{display:block;width:100%;border:0;background:none;padding:6px var(--rv-space-2);color:inherit;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:32px}
+.rv-step-rail li>button:focus-visible{outline-offset:-2px}.rv-step-rail li>button:hover{background:var(--rv-bg-sunken)}
+.rv-step-rail li[data-selected=true]>button,.rv-step-rail li[data-selected=true]>span{box-shadow:inset 0 -2px 0 var(--rv-accent)}
+.rv-step-rail .d,.rv-step-rail .ok{color:var(--rv-status-done);background:var(--rv-status-done-bg)}.rv-step-rail .wait{color:var(--rv-status-needs-you);background:var(--rv-status-needs-you-bg);font-weight:600}
+.rv-step-rail .run{color:var(--rv-status-running);background:var(--rv-status-running-bg);font-weight:600}.rv-step-rail .bad{color:var(--rv-status-failed);background:var(--rv-status-failed-bg);font-weight:600}.rv-step-rail .idle{color:var(--rv-text-muted);background:var(--rv-bg-sunken);font-weight:600}
+.rv-step-mini{display:inline-flex;gap:2px;vertical-align:middle}.rv-step-mini i{width:16px;height:5px;border-radius:2px;background:var(--rv-border-medium)}
+.rv-step-mini i.d,.rv-step-mini i.ok{background:var(--rv-status-done)}.rv-step-mini i.wait{background:var(--rv-status-needs-you)}.rv-step-mini i.run{background:var(--rv-status-running)}.rv-step-mini i.bad{background:var(--rv-status-failed)}.rv-step-mini i.idle{background:var(--rv-text-subtle)}
+.rv-tone-dot{width:8px;height:8px;border-radius:50%;background:var(--rv-border-medium);display:inline-block;flex:none}
+.rv-tone-dot[data-tone=wait]{background:var(--rv-status-needs-you)}.rv-tone-dot[data-tone=run]{background:var(--rv-status-running)}.rv-tone-dot[data-tone=ok]{background:var(--rv-status-done)}.rv-tone-dot[data-tone=bad]{background:var(--rv-status-failed)}
+.rv-status-pill{display:inline-flex;align-items:center;gap:5px;font:600 var(--rv-font-xs)/1 var(--rv-font-ui);padding:4px 7px;border-radius:4px;white-space:nowrap;background:var(--rv-bg-sunken);color:var(--rv-text-muted)}
+.rv-status-pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.rv-status-pill[data-tone=wait]{background:var(--rv-status-needs-you-bg);color:var(--rv-status-needs-you)}.rv-status-pill[data-tone=run]{background:var(--rv-status-running-bg);color:var(--rv-status-running)}.rv-status-pill[data-tone=ok]{background:var(--rv-status-done-bg);color:var(--rv-status-done)}.rv-status-pill[data-tone=bad]{background:var(--rv-status-failed-bg);color:var(--rv-status-failed)}
+.rv-id-chip{font:500 var(--rv-font-xs)/1 var(--rv-font-mono);padding:3px 5px;border:1px solid var(--rv-border);border-radius:4px;color:var(--rv-text-muted);background:var(--rv-bg-raised);white-space:nowrap}
+.rv-id-chip.link{color:var(--rv-accent-text);border-color:var(--rv-accent-soft);background:var(--rv-accent-soft)}
+.rv-eval{border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);background:var(--rv-bg-sunken);padding:var(--rv-space-2) var(--rv-space-3);font-size:var(--rv-font-sm);margin-top:var(--rv-space-1)}
+.rv-eval-head{display:flex;justify-content:space-between;gap:var(--rv-space-3);flex-wrap:wrap}
+.rv-eval-bar{position:relative;height:8px;border-radius:4px;background:var(--rv-border);margin:6px 0}.rv-eval-bar i{position:absolute;inset:0 auto 0 0;border-radius:4px;background:var(--rv-status-done)}.rv-eval-bar i.bad{background:var(--rv-status-failed)}.rv-eval-bar u{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--rv-text)}
+.rv-eval-slices{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:var(--rv-space-4);color:var(--rv-text-muted)}.rv-eval-slices b{color:var(--rv-text)}
+.rv-meter{height:5px;border-radius:3px;background:var(--rv-border);overflow:hidden;min-width:60px}.rv-meter i{display:block;height:100%;background:var(--rv-accent)}.rv-meter i.bad{background:var(--rv-status-failed)}
+.rv-decision-pane{border:1px solid var(--rv-accent);box-shadow:0 0 0 3px var(--rv-accent-soft);border-radius:var(--rv-radius-sm);background:var(--rv-bg-raised);padding:var(--rv-space-4)}
+.rv-decision-pane[data-tone=bad]{border-color:var(--rv-status-failed);box-shadow:0 0 0 3px var(--rv-status-failed-bg)}
+.rv-decision-pane.none{border-color:var(--rv-border);box-shadow:none;background:var(--rv-bg-sunken)}
+.rv-decision-pane h3{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui);margin:0 0 var(--rv-space-1)}
+.rv-decision-pane .rv-decision-summary{font-size:var(--rv-font-sm)}
+.rv-kv-list{margin:var(--rv-space-2) 0 0}.rv-kv-list .rv-kv{display:flex;justify-content:space-between;gap:var(--rv-space-3);font-size:var(--rv-font-sm);padding:4px 0;border-bottom:1px dashed var(--rv-border)}.rv-kv-list .rv-kv:last-child{border:0}
+.rv-kv-list dt{color:var(--rv-text-muted);white-space:nowrap}.rv-kv-list dd{margin:0;text-align:right;overflow-wrap:anywhere}
+.rv-merge-when-ready{display:flex;gap:6px;align-items:flex-start;font-size:var(--rv-font-sm);margin-top:var(--rv-space-2);color:var(--rv-text-muted)}
+.rv-decision-pane kbd,.rv-criterion kbd,.rv-work kbd{font:500 10.5px/1 var(--rv-font-mono);border:1px solid var(--rv-border-medium);border-radius:3px;padding:2px 4px;color:var(--rv-text-muted);background:var(--rv-bg-raised);margin-left:6px}
+.rv-decision-pane .rv-button-primary kbd{background:none;color:inherit;border-color:currentColor}
+.rv-decision-pane .rv-button{min-height:var(--rv-control-size,36px)}
