@@ -1,12 +1,16 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { validCaps, type CapsSource } from "./caps.js";
 import type { EndedTasks } from "./ended.js";
-import { estimateCall, usageCost, TOOL_INPUT_ALLOWANCE_TOKENS } from "./estimate.js";
+import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS } from "./estimate.js";
 import { guardRequest, MAX_BODY_BYTES, tooLarge, type ModelLimitsSource } from "./guard.js";
 import type { Meter, MeterItem, Reservation } from "./meter.js";
 import { resolvePrice, UnknownPriceSource, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, type TaskTokenVerifier } from "./token.js";
+import { settleAmount } from "./reported-cost.js";
+import type { ResolvedPrice } from "./price.js";
+import type { EstimatedSettlement } from "./meter.js";
+import type { TokenUsage } from "./usage.js";
 import { UsageCollector } from "./usage.js";
 export interface GatewayRequest { method: string; url: string; headers: Readonly<Record<string, string | undefined>>; body: AsyncIterable<Uint8Array>; signal?: AbortSignal }
 export interface GatewaySink { head(status: number, headers: Readonly<Record<string, string>>): void; write(bytes: Uint8Array): Promise<void>; end(): void; destroy(): void }
@@ -15,7 +19,7 @@ export interface GatewayDependencies {
   metrics: { overrunBusy(issuer: string, company: string): void };
   modelLimits: ModelLimitsSource; now?: () => number;
   keys: ProviderKeys; transport: ProviderTransport; cautiousCeiling?: number; timeoutMs?: number;
-  log: (event: { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number } | { event: "overrun_busy"; company: string } | { event: "settle_failed" | "refused" | "provider_error" }) => void;
+  log: (event: { event: "settled"; estimated: boolean; costMicros: number; appliedMaxOutputTokens: number } | { event: "overrun_busy"; company: string } | { event: "settle_failed" | "refused" | "provider_error" | "price_operator_review" }) => void;
 }
 export const OVERRUN_BUSY_MESSAGE = "Another call for this company may exceed its reserved cost right now; try again in a moment.";
 export const OVERRUN_BUSY_RETRY_SECONDS = 2;
@@ -54,6 +58,9 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let estimated = true;
   let appliedMaxOutputTokens = 0;
   let provider: ProviderResponse | undefined;
+  let settlementPrice: ResolvedPrice | undefined;
+  let settlementUsage: TokenUsage | undefined;
+  let settlementModel: string | undefined;
   const respond = async (status: number, type: string, message: string, extra: Record<string, string> = {}) => {
     if (head) { sink.destroy(); return; }
     head = true; sink.head(status, { ...JSON_HEADERS, ...extra });
@@ -80,11 +87,14 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (!guarded.ok) { await respond(guarded.status, guarded.code, guarded.message); return; }
     shortenDeadline(startedAt + callDurationMs(guarded.maxTokens));
     const scope = { iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid, ...(claims.per === undefined ? {} : { per: claims.per }) };
-    const price = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, "anthropic", guarded.model, deps.cautiousCeiling, controller.signal));
+    const price = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, "anthropic", guarded.model, deps.cautiousCeiling, controller.signal, "chat"));
+    if (price.operatorReview) log({ event: "price_operator_review" });
+    settlementPrice = price; settlementModel = guarded.model;
     const caps = await wait(deps.caps.capsFor(scope, controller.signal));
     if (!validCaps(caps)) { await respond(503, "unavailable", "model access unavailable"); return; }
     let estimate: number;
-    try { estimate = estimateCall(guarded.bytes.length, guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
+    try { estimate = estimateCall(guarded.bytes.length, guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, guarded.inputBounded); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
+    if (estimate === Number.MAX_SAFE_INTEGER && !price.operatorReview) log({ event: "price_operator_review" });
     // Do not race a transaction: its outcome must be known before forwarding or settling. Adapters bound their own transactions.
     const overrunCapable = price.estimated || !guarded.inputBounded;
     const admissionExpiresSeconds = Math.floor(now() / 1000) + TASK_TOKEN_SECONDS;
@@ -146,9 +156,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const counts = usage.finish();
     // Incomplete/malformed SSE is a failed stream, never a silent partial success.
     if (counts === undefined) throw new Error("provider unavailable");
-    if (!price.estimated) { cost = usageCost(counts, price); estimated = false; }
-    // TODO(R3c): a later known price reconciles an estimated reservation against its recorded usage.
     sink.end();
+    settlementUsage = counts;
   } catch {
     log({ event: "provider_error" });
     try { if (head) sink.destroy(); else await respond(502, "provider_error", "provider unavailable"); } catch { sink.destroy(); }
@@ -157,7 +166,14 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     controller.signal.removeEventListener("abort", onAbort);
     try { provider?.cancel?.(); } catch { /* Fixed log fields only; no provider text. */ }
     if (reservation !== undefined) {
-      try { await deps.meter.settle(reservation, cost); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens }); }
+      try {
+        let estimateRecord: EstimatedSettlement | undefined;
+        if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
+          const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), price: settlementPrice, reservationMicros: cost });
+          cost = amount.actualMicros; estimated = amount.estimated;
+          if (estimated) estimateRecord = { provider: "anthropic", model: settlementModel, kind: "chat", settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
+        }
+        await deps.meter.settle(reservation, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens }); }
       catch { log({ event: "settle_failed" }); } // Adapter keeps the hold if its atomic settle fails.
     }
   }

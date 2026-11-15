@@ -1,3 +1,6 @@
+import { beforeAll as beforeNetworkTests } from "vitest";
+import { denyNetwork } from "./model-gateway-no-network.js";
+beforeNetworkTests(denyNetwork);
 import { describe, expect, it } from "vitest";
 import { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import { caps, scope, now } from "./model-gateway-fixture.js";

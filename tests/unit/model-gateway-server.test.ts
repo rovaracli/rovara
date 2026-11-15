@@ -1,4 +1,6 @@
-import { expect, it } from "vitest";
+import { denyNetwork } from "./model-gateway-no-network.js";
+beforeAll(denyNetwork);
+import { beforeAll, expect, it } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import { NotSentError } from "../../packages/model-gateway/src/provider.js";
@@ -39,11 +41,11 @@ it("fixed auth failures, ended refusal, oversize refusal and no secrets in heade
   const other = setup(); expect((await call(other.deps, Buffer.alloc(4 * 1024 * 1024 + 1))).status).toBe(413); expect(other.calls).toHaveLength(0);
   expect(JSON.stringify([f.logs, ok.text(), ok.headers, bad.text()])).not.toContain(f.providerKey);
 });
-it("never refuses unknown, throwing or malformed prices and settles at the full hold", async () => {
+it("never refuses unknown, throwing or malformed prices and settles at cautious usage", async () => {
   for (const priceFor of [() => undefined, () => { throw new Error("secret"); }, () => ({ inputMicrosPerMTok: 0, outputMicrosPerMTok: NaN })]) {
     const f = setup({ prices: { priceFor } });
     let held = 0; f.deps.transport = async () => { held = (await f.meter.read(scope))[0]!.reservedMicros; return { status: 200, body: answer() }; };
-    expect((await call(f.deps)).status).toBe(200); expect(held).toBeGreaterThan(0); expect((await f.meter.read(scope))[0]!.spentMicros).toBe(held);
+    expect((await call(f.deps)).status).toBe(200); expect(held).toBeGreaterThan(0); expect((await f.meter.read(scope))[0]!.spentMicros).toBe(1_800);
   }
 });
 it("reports other holds as 429 with retry-after, keeps fixed scope prefixes", async () => {
@@ -68,7 +70,7 @@ it("uses one total deadline over a slow stream, cancels it and settles once", as
 });
 it("keeps a failed settle reserved, handles key-port failures and strips all provider error text", async () => {
   const f = setup(); let settles = 0;
-  f.deps.meter = { reserve: (r) => f.meter.reserve(r), read: (s) => f.meter.read(s), settle: async () => { settles++; throw new Error(f.providerKey); } };
+  f.deps.meter = { pendingExpired: (now, n, c) => f.meter.pendingExpired(now, n, c), expire: (c) => f.meter.expire(c), pendingKeys: (n) => f.meter.pendingKeys(n), pendingFor: (k, n) => f.meter.pendingFor(k, n), correct: (c) => f.meter.correct(c), reserve: (r) => f.meter.reserve(r), read: (s) => f.meter.read(s), settle: async () => { settles++; throw new Error(f.providerKey); } };
   await call(f.deps); expect(settles).toBe(1); expect((await f.meter.read(scope))[0]!.reservedMicros).toBeGreaterThan(0); expect(JSON.stringify(f.logs)).not.toContain(f.providerKey);
   const k = setup({ keys: { keyFor: async () => { throw new Error("private cause"); } } });
   expect((await call(k.deps)).text()).not.toContain("private"); expect((await k.meter.read(scope))[0]!.spentMicros).toBe(0);
@@ -108,7 +110,7 @@ it("runs the node:http adapter without a socket and preserves health and route b
 });
 it("invokes the meter settle port exactly once, including an exception after the response head", async () => {
   const f = setup(); let settlements = 0;
-  f.deps.meter = { reserve: (r) => f.meter.reserve(r), read: (s) => f.meter.read(s), settle: async (r, c) => { settlements++; await f.meter.settle(r, c); } };
+  f.deps.meter = { pendingExpired: (now, n, c) => f.meter.pendingExpired(now, n, c), expire: (c) => f.meter.expire(c), pendingKeys: (n) => f.meter.pendingKeys(n), pendingFor: (k, n) => f.meter.pendingFor(k, n), correct: (c) => f.meter.correct(c), reserve: (r) => f.meter.reserve(r), read: (s) => f.meter.read(s), settle: async (r, c) => { settlements++; await f.meter.settle(r, c); } };
   const sink = new MemorySink(); sink.write = async () => { throw new Error("private cause"); };
   await call(f.deps, requestBody, mint(), sink); expect(settlements).toBe(1);
 });

@@ -1,0 +1,30 @@
+import { usageEstimated } from "./price-tiers.js";
+import { record, whole } from "./model-gateway-token.js";
+import { MICROS_PER_USD } from "./price-constants.js";
+import { usageCost } from "./estimate.js";
+import type { ResolvedPrice } from "./price.js";
+import type { TokenUsage } from "./usage.js";
+/** Assumed OpenRouter final usage.cost USD shape; verify on staging before routing OpenRouter. */
+export function parseReportedCost(provider: string, value: unknown): number | undefined {
+  if (provider !== "openrouter") return undefined;
+  const cost = record(value)?.cost;
+  if (typeof cost !== "number" || !Number.isFinite(cost) || cost <= 0) return undefined;
+  const micros = Math.ceil(cost * MICROS_PER_USD);
+  return whole(micros) && micros > 0 ? micros : undefined;
+}
+export function validUsage(value: unknown): value is TokenUsage {
+  const u = record(value);
+  if (u === undefined || ![u.input, u.output, u.cacheRead, u.cacheWrite].every((n) => whole(n) && n <= 1_000_000_000)) return false;
+  if (u.cacheWrite5m === undefined && u.cacheWrite1h === undefined) return true;
+  return whole(u.cacheWrite5m) && whole(u.cacheWrite1h) && u.cacheWrite5m + u.cacheWrite1h === u.cacheWrite;
+}
+export function hasUsage(usage: TokenUsage): boolean { return usage.input + usage.output + usage.cacheRead + usage.cacheWrite > 0; }
+export function settleAmount(input: { reportedCostMicros?: number; usage?: TokenUsage; price: ResolvedPrice; reservationMicros: number }): { actualMicros: number; estimated: boolean; usage?: TokenUsage } {
+  if (!validUsage(input.usage) || !hasUsage(input.usage)) return { actualMicros: input.reservationMicros, estimated: input.price.estimated };
+  const tokenCost = Math.max(1, usageCost(input.usage, input.price));
+  if (whole(input.reportedCostMicros) && input.reportedCostMicros > 0) {
+    if ((!input.price.knownTokenPrice && input.price.estimated && !input.price.operatorReview) || input.reportedCostMicros >= tokenCost) return { actualMicros: input.reportedCostMicros, estimated: false };
+  }
+  const estimated = usageEstimated(input.price, input.usage);
+  return { actualMicros: tokenCost, estimated, ...(estimated ? { usage: { ...input.usage } } : {}) };
+}

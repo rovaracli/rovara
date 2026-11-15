@@ -1,3 +1,6 @@
+import { beforeAll as beforeNetworkTests } from "vitest";
+import { denyNetwork } from "./model-gateway-no-network.js";
+beforeNetworkTests(denyNetwork);
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";

@@ -1,3 +1,6 @@
+import { beforeAll as beforeNetworkTests } from "vitest";
+import { denyNetwork } from "./model-gateway-no-network.js";
+beforeNetworkTests(denyNetwork);
 import { expect, it, vi } from "vitest";
 import { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
@@ -40,7 +43,7 @@ it("ADDENDUM-3 N parallel priced calls at the cap use full input ceilings and ne
   f.deps.caps = new FixedCapsSource({ ...caps, companyMonth: perCall * 2 });
   let release!: () => void; const paused = new Promise<void>((r) => { release = r; });
   let sent = 0;
-  f.deps.transport = async () => { sent++; return { status: 200, body: (async function* () { await paused; yield sse("message_start", { message: { usage: { input_tokens: bytes } } }); yield sse("message_delta", { usage: { output_tokens: 10 } }); yield sse("message_stop"); })() }; };
+  f.deps.transport = async () => { sent++; return { status: 200, body: (async function* () { await paused; yield sse("message_start", { message: { usage: { input_tokens: bytes, cache_creation_input_tokens: 0 } } }); yield sse("message_delta", { usage: { output_tokens: 10 } }); yield sse("message_stop"); })() }; };
   const running = Array.from({ length: 8 }, (_, i) => call(f.deps, body, mint({ tid: `priced_${i}` })));
   // A microtask barrier at the provider ensures all admissions have reached reserve without timers.
   for (let i = 0; i < 100; i++) await Promise.resolve();
