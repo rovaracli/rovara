@@ -562,6 +562,7 @@ export class ModelGatewayStack extends Stack {
    * and keys, pinned statement by statement in tests/contract/model-gateway-product-infra.test.ts.
    */
   private productAi(env: string, issuer: string, serveRole: iam.Role, moneyActions: string[], companyKeysOnly: Record<string, unknown>) {
+    if (env === "production") throw new Error("product AI is for named test environments until a Cloud release carries it");
     const settingsRoleArn = new CfnParameter(this, "CloudSettingsRoleArn", {
       type: "String",
       allowedPattern: "^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$",

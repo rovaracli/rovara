@@ -130,6 +130,35 @@ describe("product key table: keys and isolation", () => {
   });
 });
 
+describe("product key table: conditions are DynamoDB's own", () => {
+  it("a put or check at another version, or a put of an existing row as new, writes nothing", async () => {
+    const k = kit();
+    const doc = `CO#${JSON.stringify([ISS, A])}#doc#web`;
+    expect(await k.table.transact([{ key: doc, put: { sources: [] }, condition: { absent: true } }])).toBe(true);
+    expect(await k.table.transact([{ key: doc, put: { sources: [] }, condition: { absent: true } }])).toBe(false);
+    expect(await k.table.transact([{ key: doc, put: { sources: [1] }, condition: { version: 5 } }])).toBe(false);
+    expect((await k.table.get(doc))!).toEqual({ version: 1, item: { sources: [] } });
+    // A check at the wrong version fails the whole transaction, including a write to another row.
+    const other = `CO#${JSON.stringify([ISS, A])}#doc#api`;
+    expect(await k.table.transact([{ key: doc, check: { version: 2 } }, { key: other, put: { sources: [] }, condition: { absent: true } }])).toBe(false);
+    expect(await k.table.get(other)).toBeUndefined();
+    expect(await k.table.transact([{ key: doc, put: { sources: [2] }, condition: { version: 1 } }])).toBe(true);
+    expect((await k.table.get(doc))!.version).toBe(2);
+  });
+  it("the sealed text is bound to the row on its own (GCM additional data), even under a key service that ignored the context", async () => {
+    const local = localProductKeyService(randomBytes(32));
+    // A key service that binds nothing: only the seal's own binding is left.
+    const lenient = { generateDataKey: () => local.generateDataKey({}), unwrapDataKey: (wrapped: Uint8Array) => local.unwrapDataKey(wrapped, {}) };
+    const sealer = new ProductKeySealer(lenient);
+    const row = { iss: ISS, cid: A, owner: PROJECT, sourceId: "src_gem", versionId: "v1" };
+    const sealed = await sealer.seal("secret-key-value", row);
+    expect(await sealer.open(sealed, row)).toBe("secret-key-value");
+    for (const moved of [{ ...row, cid: B }, { ...row, owner: "api" }, { ...row, versionId: "v2" }, { ...row, sourceId: "src_x" }, { ...row, iss: "https://other.example/v1/auth" }]) {
+      await expect(sealer.open(sealed, moved)).rejects.toBeInstanceOf(SealedProductKeyRefused);
+    }
+  });
+});
+
 describe("eval approvals and budgets (the records Cloud's settings routes write)", () => {
   const approval = { selection: "all-questions", inputsDigest: "d".repeat(64), maxCalls: 50, maxCostMicros: 500_000 };
   it("records the approver as the actor, re-reads on every hold, and stops counting after a day or when withdrawn", async () => {

@@ -143,16 +143,22 @@ describe("eval stages shared by two gateway tasks (B8)", () => {
   it("the sweep on either task settles an expired stage; a call whose task died counts at its whole estimate", async () => {
     const t = await twoTasks();
     const scope = scopeOf(await hold(t.a.g.deps, 10, 100_000));
-    // Task A admitted a call (10,000 estimate) and died before its settle.
+    // Task A admitted an overrun-capable call (150,000 estimate, so it may pass the 100,000 hold: it runs alone) and died before its settle.
     const row = (await t.a.store.get({ iss: productScope.iss, cid, id: scope }))!;
-    row.stage.subs["00000000-0000-4000-8000-00000000dead"] = { estimate: 10_000, exclusive: false, startedAt: now };
-    row.stage.dispatched++; row.stage.inFlight++; row.stage.inFlightCost += 10_000;
+    row.stage.subs["00000000-0000-4000-8000-00000000dead"] = { estimate: 150_000, exclusive: true, startedAt: now };
+    row.stage.dispatched++; row.stage.inFlight++; row.stage.inFlightCost += 150_000; row.stage.exclusive = true;
     expect(await t.a.store.put(row.stage, row.version)).toBe(true);
-    // Before the deadline nothing is settled; after it, task B's sweep keeps the whole hold (a call was open when its task died).
+    // Before the call ceiling nothing changes, and the stage takes no other call (the dead call still runs alone).
     expect(await t.b.stages.sweep(now + 1)).toEqual({ released: 0, failed: 0 });
-    t.clock.at = now + EVAL_STAGE_MS + EVAL_DEAD_CALL_MS;
+    // After the call ceiling, the sweep (well before the stage's deadline) counts the dead call at its whole estimate and frees the turn.
+    t.clock.at = now + EVAL_DEAD_CALL_MS;
+    expect(await t.b.stages.sweep(t.clock.at)).toEqual({ released: 0, failed: 0 });
+    const after = (await t.a.store.get({ iss: productScope.iss, cid, id: scope }))!.stage;
+    expect(after).toMatchObject({ inFlight: 0, exclusive: false, spent: 150_000, keepWhole: true, subs: {} });
+    // At the deadline the parent settles at the counted spend, past the hold: never below what the dead call may have spent.
+    t.clock.at = now + EVAL_STAGE_MS;
     expect(await t.b.stages.sweep(t.clock.at)).toEqual({ released: 1, failed: 0 });
-    expect(await projectRow(t.b.productMeter)).toMatchObject({ reservedMicros: 0, spentMicros: 100_000 });
+    expect(await projectRow(t.b.productMeter)).toMatchObject({ reservedMicros: 0, spentMicros: 150_000 });
     // Settled once: another pass on the other task changes nothing.
     expect(await t.a.stages.sweep(t.clock.at)).toEqual({ released: 0, failed: 0 });
   });

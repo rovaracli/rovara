@@ -146,8 +146,15 @@ export interface EvalStageStore {
    */
   due(before: number, limit: number): Promise<StageRef[]>;
 }
-/** When the sweep should look at a stage: at once once stopped (its parent may need a settle retry), else at its deadline. */
-export function evalStageSweepAt(stage: Pick<EvalStage, "status" | "deadline">): number { return stage.status === "stopped" ? 0 : stage.deadline; }
+/**
+ * When the sweep should look at a stage: at once once stopped (its parent may need a settle retry); else at its deadline, or
+ * sooner when a call admitted under it may belong to a task that died (its start plus EVAL_DEAD_CALL_MS), so a dead call never
+ * holds an open stage's turn until the deadline.
+ */
+export function evalStageSweepAt(stage: Pick<EvalStage, "status" | "deadline" | "subs">): number {
+  if (stage.status === "stopped") return 0;
+  return Math.min(stage.deadline, ...Object.values(stage.subs).map((sub) => sub.startedAt + EVAL_DEAD_CALL_MS));
+}
 /** One process's stages (tests, a laptop, and the default when no shared store is given). */
 export class InMemoryEvalStageStore implements EvalStageStore {
   readonly #stages = new Map<string, { version: number; stage: EvalStage }>();
@@ -310,7 +317,8 @@ export class ProductEvalStages {
       if (!validApproval(approval)) return UNAVAILABLE;
       // The grant must be exactly the approved spend: selection, inputs, and the confirmed ceilings.
       if (approval.selection !== grant.selection || approval.inputsDigest !== grant.inputsDigest || approval.maxCalls !== grant.maxCalls || approval.maxCostMicros !== grant.maxCostMicros) return HOLD_REFUSED;
-      // The approver's role NOW, not the role recorded with the grant.
+      // The approver's role from the approval source on every hold, not the role in Code's grant (deployed: eval-approvals.ts, the
+      // role Cloud checked with Code when the approval was recorded, valid a day: PRODUCT-EVAL-APPROVER-REREAD).
       role = await raced(this.#options.approvals.roleOf(claims.iss, claims.cid, claims.pid, { personId: approval.approver.personId, provider: approval.approver.provider }, signal), signal);
       if (role === undefined || !ROLES.includes(role)) return HOLD_REFUSED;
       budget = await raced((this.#options.budget ?? (async () => EVAL_DEFAULT_BUDGET))(claims.iss, claims.cid, claims.pid), signal);
