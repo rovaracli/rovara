@@ -37,6 +37,12 @@ export class SnapshotPriceSource implements PriceSource {
     const rates = resolved(p);
     return { ...copyRates(rates) as Price, ...(rates.longContext === undefined ? {} : { longContext: rates.longContext }), ...(rates.operatorReview ? { operatorReview: true } : {}), origin: { ...p.origin } };
   }
+  correctionFor(provider: string, model: string): (ResolvedPrice & { origin: PriceOrigin; priceVersion: number }) | undefined {
+    if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
+    const p = this.#book.index.get(identityKey(provider, model));
+    if (p === undefined) return undefined;
+    return { ...resolved(p), origin: { ...p.origin }, priceVersion: this.#snapshot?.version ?? 0 };
+  }
   keys(): Array<{ provider: string; model: string }> { return [...this.#book.index.values()].filter((e) => !e.estimated).map(({ provider, model }) => ({ provider, model })); }
   failure(source: "litellm" | "aws", failed: boolean): void { if (failed) this.#failures[source] = "refresh failed"; else delete this.#failures[source]; }
   health(): { litellm: SourceHealth; aws: SourceHealth; redundantOverrides: number } {

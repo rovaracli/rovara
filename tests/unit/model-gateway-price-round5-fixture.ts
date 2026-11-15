@@ -39,7 +39,8 @@ export async function money(f: ReturnType<typeof fixture>, input: number, output
   const p = await f.price();
   expect(p.inputMicrosPerMTok).toBe(input * 1e6); expect(p.outputMicrosPerMTok).toBe(output * 1e6);
   if (estimated !== undefined) expect(p.estimated).toBe(estimated);
-  expect(estimateCall(1_000_000, 1_000_000, p)).toBe((input * 2 + output) * 1e6);
-  expect(settleAmount({ price: p, usage, reservationMicros: 1 }).actualMicros).toBe((input + output) * 1e6);
+  const longFactor = p.knownTokenPrice ? 2 : 1; // Own missing long tiers use 2x base; wholly unknown provider fallback is unchanged.
+  expect(estimateCall(1_000_000, 1_000_000, p)).toBe((input * 2 + output) * longFactor * 1e6);
+  expect(settleAmount({ price: p, usage, reservationMicros: 1 }).actualMicros).toBe((input + output) * longFactor * 1e6);
   return p;
 }

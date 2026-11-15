@@ -16,3 +16,6 @@ it("conformance bounds an async pre-write hook and proves no late writes after a
   const { runMeterDeadlineConformance } = await import("../../packages/model-gateway/src/meter.js");
   expect(await runMeterDeadlineConformance((clock, hook) => new InMemoryMeter(clock, () => false, hook))).toEqual(["bounded correction transaction", "no late correction write", "bounded expiry transaction", "no late expiry write"]);
 });
+it("conformance includes repeated partial corrections and monotonic versions", async () => {
+  expect(await runMeterConformance((clock) => new InMemoryMeter(clock))).toContain("partial versioned correction");
+});

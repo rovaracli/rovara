@@ -34,10 +34,10 @@ export interface EstimatedSettlement { provider: string; model: string; kind: Pr
 export interface EstimatedCall extends MeterScope {
   callKey: string; month: string; provider: string; model: string; kind: PriceKind; usage: TokenUsage;
   settledMicros: number; status: "pending" | "corrected" | "expired"; settledAt: number;
-  capExceeded?: true; correctedFrom?: number; correctedTo?: number; deltaMicros?: number; correctedAt?: number; expiredAt?: number; runId?: string; priceSource?: PriceOrigin;
+  priceVersion?: number; capExceeded?: true; correctedFrom?: number; correctedTo?: number; deltaMicros?: number; correctedAt?: number; expiredAt?: number; runId?: string; priceSource?: PriceOrigin;
 }
 export interface ExpiryInput { callKey: string; runId: string; now: number; signal?: AbortSignal }
-export interface CorrectionInput extends ExpiryInput { realMicros: number; caps: Caps; priceSource: PriceOrigin }
+export interface CorrectionInput extends ExpiryInput { realMicros: number; caps: Caps; priceSource: PriceOrigin; priceVersion?: number; estimated?: boolean }
 export type CorrectionResult = { status: "corrected"; deltaMicros: number; capExceeded?: true } | { status: "already" | "missing" | "expired" | "busy" | "unknown" };
 export function costView(rows: readonly MeterRow[]): Array<{ item: MeterItem; spentMicros: number; estimated: boolean }> {
   return rows.map((row) => ({ item: row.item, spentMicros: row.spentMicros, estimated: row.estimatedMicros > 0 }));
@@ -198,7 +198,7 @@ export class InMemoryMeter implements Meter {
   ledger(callKey: string): EstimatedCall | undefined { const row = this.#ledger.get(callKey); return row === undefined ? undefined : structuredClone(row.call); }
   async correct(input: CorrectionInput): Promise<CorrectionResult> {
     const origin = record(record(input)?.priceSource);
-    if (!this.#validTransaction(input) || !whole(input.realMicros) || input.realMicros < 1 || !validCaps(input.caps) || !whole(input.now) || typeof input.runId !== "string" || input.runId.length === 0 || input.runId.length > 512 || origin === undefined || typeof origin.source !== "string" || !["litellm", "aws", "override"].includes(origin.source) || !whole(origin.fetchedAt)) return { status: "busy" };
+    if (!this.#validTransaction(input) || (input.priceVersion !== undefined && (!whole(input.priceVersion) || typeof input.estimated !== "boolean")) || (input.estimated !== undefined && (!whole(input.priceVersion) || typeof input.estimated !== "boolean")) || !whole(input.realMicros) || input.realMicros < 1 || !validCaps(input.caps) || !whole(input.now) || typeof input.runId !== "string" || input.runId.length === 0 || input.runId.length > 512 || origin === undefined || typeof origin.source !== "string" || !["litellm", "aws", "override"].includes(origin.source) || !whole(origin.fetchedAt)) return { status: "busy" };
     const observed = this.#ledger.get(input.callKey);
     // Fake-adapter fault injection: the trusted hook can corrupt an item to prove underflow refusal.
     if (!await this.#beforeTransaction("correct", input, observed?.targets.map((target) => this.#row(target, observed.call))) || input.signal?.aborted) return { status: "unknown" };
@@ -207,22 +207,24 @@ export class InMemoryMeter implements Meter {
     const { call } = ledger; if (call.status !== "pending") return { status: "already" };
     if (this.conflict()) return { status: "busy" };
     const expire = input.now - call.settledAt > PENDING_RETENTION_DAYS * DAY_MS;
+    if (!expire && input.priceVersion !== undefined && call.priceVersion !== undefined && input.priceVersion <= call.priceVersion) return { status: "already" };
     const deltaMicros = input.realMicros - call.settledMicros;
+    const estimatedDelta = input.estimated === true ? deltaMicros : -call.settledMicros;
     let capExceeded = false;
     if (!expire) {
       for (const target of ledger.targets) {
         const row = this.#row(target, call);
-        if (row.company !== call.cid || ![row.spentMicros + deltaMicros, row.committed + deltaMicros, row.estimatedMicros - call.settledMicros].every(whole) || row.estimatedMicros - call.settledMicros > row.spentMicros + deltaMicros) return { status: "busy" };
+        if (row.company !== call.cid || ![row.spentMicros + deltaMicros, row.committed + deltaMicros, row.estimatedMicros + estimatedDelta].every(whole) || row.estimatedMicros + estimatedDelta > row.spentMicros + deltaMicros) return { status: "busy" };
       }
       const capFor = { task: input.caps.task, person: input.caps.personMonth, project: input.caps.projectMonth, company: input.caps.companyMonth };
       for (const target of ledger.targets) {
         const row = this.#row(target, call); const spentMicros = row.spentMicros + deltaMicros; const cap = capFor[target.item];
         if (deltaMicros > 0 && cap !== undefined && row.committed + deltaMicros > cap) capExceeded = true;
-        this.#rows.set(target.key, { ...row, spentMicros, committed: row.committed + deltaMicros, estimatedMicros: row.estimatedMicros - call.settledMicros, overrun: cap === undefined ? row.overrun : spentMicros > cap });
+        this.#rows.set(target.key, { ...row, spentMicros, committed: row.committed + deltaMicros, estimatedMicros: row.estimatedMicros + estimatedDelta, overrun: cap === undefined ? row.overrun : spentMicros > cap });
       }
     }
-    ledger.call = expire ? { ...call, status: "expired", expiredAt: input.now, runId: input.runId } : { ...call, status: "corrected", correctedFrom: call.settledMicros, correctedTo: input.realMicros, deltaMicros, correctedAt: input.now, runId: input.runId, priceSource: { ...input.priceSource }, ...(capExceeded ? { capExceeded: true } : {}) };
-    this.#removePending(call);
+    ledger.call = expire ? { ...call, status: "expired", expiredAt: input.now, runId: input.runId } : { ...call, status: input.estimated === true ? "pending" : "corrected", settledMicros: input.realMicros, ...(input.priceVersion === undefined ? {} : { priceVersion: input.priceVersion }), correctedFrom: call.settledMicros, correctedTo: input.realMicros, deltaMicros, correctedAt: input.now, runId: input.runId, priceSource: { ...input.priceSource }, ...(capExceeded ? { capExceeded: true } : {}) };
+    if (expire || input.estimated !== true) this.#removePending(call);
     return expire ? { status: "expired" } : { status: "corrected", deltaMicros, ...(capExceeded ? { capExceeded: true } : {}) };
   }
   async read(scope: MeterScope): Promise<readonly MeterRow[]> {
@@ -270,7 +272,21 @@ export async function runMeterConformance(factory: (clock: () => number) => Mete
   assert.deepEqual(await corrections.correct(correction), { status: "already" });
   assert((await corrections.read(scope)).every((r) => r.spentMicros === 20 && r.estimatedMicros === 0 && r.committed === 20));
   assert((await corrections.reserve({ scope, caps, estimateMicros: 80 })).ok);
-  return ["atomic estimated ledger", "idempotent correction", "correction frees budget", "one overrun in flight", "marker expiry keeps hold", "atomic hold", "cap subtraction", "no partial write", "overrun settle", "closed settle", "company ceiling", "isolation", "optional person"];
+  const partials = factory(() => clock);
+  const held = await partials.reserve({ scope, caps, estimateMicros: 90 }); assert(held.ok);
+  await partials.settle(held.reservation, 80, { provider: "anthropic", model: "model", kind: "chat", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, settledAt: clock });
+  const partialCall = (await partials.pendingFor({ provider: "anthropic", model: "model" }, 1)).items[0]!;
+  const partial = { ...correction, callKey: partialCall.callKey, realMicros: 60, priceVersion: 1, estimated: true };
+  assert.deepEqual(await partials.correct(partial), { status: "corrected", deltaMicros: -20 });
+  assert.deepEqual(await partials.correct(partial), { status: "already" });
+  assert((await partials.read(scope)).every((r) => r.spentMicros === 60 && r.estimatedMicros === 60));
+  assert.equal((await partials.pendingFor({ provider: "anthropic", model: "model" }, 1)).items[0]!.settledMicros, 60);
+  assert.deepEqual(await partials.correct({ ...partial, realMicros: 70, priceVersion: 2 }), { status: "corrected", deltaMicros: 10 });
+  assert.deepEqual(await partials.correct(partial), { status: "already" });
+  assert.deepEqual(await partials.correct({ ...partial, realMicros: 50, priceVersion: 3, estimated: false }), { status: "corrected", deltaMicros: -20 });
+  assert((await partials.read(scope)).every((r) => r.spentMicros === 50 && r.estimatedMicros === 0));
+  assert.equal((await partials.pendingKeys(1)).items.length, 0);
+  return ["partial versioned correction", "atomic estimated ledger", "idempotent correction", "correction frees budget", "one overrun in flight", "marker expiry keeps hold", "atomic hold", "cap subtraction", "no partial write", "overrun settle", "closed settle", "company ceiling", "isolation", "optional person"];
 }
 /** Adapter conformance with a pause BEFORE commit. Implementations inject their transaction seam,
  * cancel it on signal, and enforce pending-status CAS when the same call is retried. */

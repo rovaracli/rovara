@@ -1,12 +1,13 @@
 import { record, whole } from "./model-gateway-token.js";
-import { RATE_KEYS, CONTEXT_THRESHOLDS, copyRates } from "./price-tiers.js";
+import { RATE_KEYS, CONTEXT_THRESHOLDS, copyRates, type RateKey } from "./price-tiers.js";
 import { PRICE_MAX } from "./price-constants.js";
 export interface TokenRates { inputMicrosPerMTok: number; outputMicrosPerMTok: number; cacheReadMicrosPerMTok?: number; cacheWrite5mMicrosPerMTok?: number; cacheWrite1hMicrosPerMTok?: number; cacheWriteMicrosPerMTok?: number }
-export interface Price extends TokenRates { longContext?: Array<Partial<TokenRates> & { aboveTokens: number }>; operatorReview?: true }
+export interface Price extends TokenRates { longContext?: Array<Partial<TokenRates> & { aboveTokens: number }>; operatorReview?: true; derived?: Array<{ aboveTokens: number; keys: RateKey[] }>; uncertain?: Array<{ aboveTokens: number; keys: RateKey[] }> }
 export type PriceKind = "chat" | "embedding";
 export interface PriceOrigin { source: "litellm" | "aws" | "override"; fetchedAt: number }
 export interface ResolvedPrice extends Price { estimated: boolean; knownTokenPrice?: true }
 export interface PriceSource {
+  correctionFor?(provider: string, model: string): (ResolvedPrice & { origin: PriceOrigin; priceVersion: number }) | undefined;
   effectiveFor?(provider: string, model: string, kind: PriceKind): ResolvedPrice | Promise<ResolvedPrice>;
   priceFor(provider: string, model: string, signal?: AbortSignal): Price | undefined | Promise<Price | undefined>;
   floorFor?(provider: string, model: string): Price | undefined | Promise<Price | undefined>;
@@ -19,10 +20,18 @@ export const UnknownPriceSource: PriceSource = { priceFor: () => undefined };
 export const validRate = (v: unknown, max = PRICE_MAX): v is number => whole(v) && v > 0 && v <= max;
 export function validPrice(v: unknown, max = PRICE_MAX): v is Price {
   const p = record(v);
-  return p !== undefined && p.estimated !== true && (p.operatorReview === undefined || p.operatorReview === true) && validRate(p.inputMicrosPerMTok, max) && validRate(p.outputMicrosPerMTok, max) && RATE_KEYS.slice(2).every((k) => p[k] === undefined || (whole(p[k]) && p[k] <= max && (k !== "cacheWriteMicrosPerMTok" || p[k] > 0))) && (p.longContext === undefined || (Array.isArray(p.longContext) && p.longContext.length <= CONTEXT_THRESHOLDS.length && p.longContext.every((t: unknown, i: number, all: unknown[]) => {
+  return p !== undefined && validDerived(p.derived) && validDerived(p.uncertain) && p.estimated !== true && (p.operatorReview === undefined || p.operatorReview === true) && validRate(p.inputMicrosPerMTok, max) && validRate(p.outputMicrosPerMTok, max) && RATE_KEYS.slice(2).every((k) => p[k] === undefined || (whole(p[k]) && p[k] <= max && (k !== "cacheWriteMicrosPerMTok" || p[k] > 0))) && (p.longContext === undefined || (Array.isArray(p.longContext) && p.longContext.length <= CONTEXT_THRESHOLDS.length && p.longContext.every((t: unknown, i: number, all: unknown[]) => {
     const tier = record(t); const previous = record(all[i - 1]);
     return tier !== undefined && CONTEXT_THRESHOLDS.some((n) => n === tier.aboveTokens) && (i === 0 || Number(previous?.aboveTokens) < Number(tier.aboveTokens)) && Object.keys(tier).every((k) => k === "aboveTokens" || RATE_KEYS.some((r) => r === k)) && RATE_KEYS.every((k) => tier[k] === undefined || (whole(tier[k]) && tier[k] <= max));
   })));
+}
+/** Completion provenance is bounded independently of customer input. Old prices may omit it. */
+function validDerived(value: unknown): boolean {
+  if (value === undefined) return true;
+  return Array.isArray(value) && value.length <= CONTEXT_THRESHOLDS.length + 1 && value.every((band: unknown, i: number, all: unknown[]) => {
+    const b = record(band);
+    return b !== undefined && (b.aboveTokens === 0 || CONTEXT_THRESHOLDS.some((n) => n === b.aboveTokens)) && (i === 0 || Number(record(all[i - 1])?.aboveTokens) < Number(b.aboveTokens)) && Array.isArray(b.keys) && b.keys.length <= RATE_KEYS.length && new Set(b.keys).size === b.keys.length && b.keys.every((key: unknown) => RATE_KEYS.some((k) => k === key));
+  });
 }
 export { resolvePrice } from "./price-sanity.js";
 

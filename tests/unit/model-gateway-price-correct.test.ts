@@ -82,7 +82,7 @@ it("full gateway outcome: cautious hold, usage settlement, refresh correction an
   expect((await call(f.deps)).status).toBe(200); expect(held).toBe(348);
   expect(costView(await f.meter.read(scope)).every((row) => row.spentMicros === 35 && row.estimated)).toBe(true);
   expect((await f.meter.reserve({ scope, caps: cap, estimateMicros: 370 })).ok).toBe(false);
-  const ll = { old: { litellm_provider: "anthropic", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 }, "claude-sonnet-4-5": { litellm_provider: "anthropic", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 } };
+  const ll = { old: { litellm_provider: "anthropic", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 }, "claude-sonnet-4-5": { litellm_provider: "anthropic", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6, cache_read_input_token_cost: 1e-6, cache_creation_input_token_cost: 2e-6, cache_creation_input_token_cost_above_1hr: 2e-6 } };
   const refresher = new PriceRefresher({ store, prices, litellm: (previous) => fetchLiteLLM({ get: async () => ({ status: 200, body: Buffer.from(JSON.stringify(ll)) }) }, { previous, now, minModels: 1 }), aws: async () => ({ ok: false, reason: "invalid source" }), correctedKeys: async () => { await runCorrections({ meter: f.meter, prices, caps: new FixedCapsSource(cap), now, runId: "outcome" }); } });
   await refresher.run(now);
   expect(costView(await f.meter.read(scope)).every((row) => row.spentMicros === 23 && !row.estimated)).toBe(true);

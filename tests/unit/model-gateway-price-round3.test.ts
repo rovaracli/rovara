@@ -34,8 +34,8 @@ it.each([
   const p = await resolvePrice(prices, "anthropic", "claude-sonnet-4-5");
   expect(p).toMatchObject({ estimated: true, inputMicrosPerMTok: Math.ceil(input * 1e12 * 1.5), outputMicrosPerMTok: Math.ceil(output * 1e12 * 1.5) });
   expect(prices.priceFor("anthropic", "claude-sonnet-4-5")).toBeUndefined();
-  expect(estimateCall(1_000_000, 1_000_000, p)).toBe(2 * p.inputMicrosPerMTok + p.outputMicrosPerMTok);
-  expect(settleAmount({ price: p, usage, reservationMicros: 1 })).toMatchObject({ actualMicros: p.inputMicrosPerMTok + p.outputMicrosPerMTok, estimated: true });
+  expect(estimateCall(1_000_000, 1_000_000, p)).toBe(4 * p.inputMicrosPerMTok + 2 * p.outputMicrosPerMTok);
+  expect(settleAmount({ price: p, usage, reservationMicros: 1 })).toMatchObject({ actualMicros: 2 * (p.inputMicrosPerMTok + p.outputMicrosPerMTok), estimated: true });
   expect((await resolvePrice(prices, "anthropic", "unlisted")).inputMicrosPerMTok).toBe(p.inputMicrosPerMTok * 1.5);
   // A different requested kind must still respect this model's own floor.
   expect((await resolvePrice(prices, "anthropic", "claude-sonnet-4-5", undefined, undefined, "embedding")).outputMicrosPerMTok).toBeGreaterThanOrEqual(p.outputMicrosPerMTok);
@@ -43,7 +43,7 @@ it.each([
   expect((await call(f.deps)).status).toBe(200); expect(held).toBeGreaterThan(0);
   expect(costView(await f.meter.read(scope)).every((r) => r.estimated)).toBe(true);
   const previous = await store.load();
-  await store.save({ version: previous!.version + 1, sources: { litellm: { fetchedAt: now + 1, count: 1, entries: [{ ...entry, model: "claude-sonnet-4-5" }] } } }, previous!.version);
+  await store.save({ version: previous!.version + 1, sources: { litellm: { fetchedAt: now + 1, count: 1, entries: [{ ...entry, model: "claude-sonnet-4-5", cacheReadMicrosPerMTok: 3_000_000, cacheWrite5mMicrosPerMTok: 6_000_000, cacheWrite1hMicrosPerMTok: 6_000_000 }] } } }, previous!.version);
   await prices.reload(); expect((await runCorrections({ meter: f.meter, prices, caps: new FixedCapsSource(caps), now: now + 1, runId: "run" })).corrected).toBe(1);
   expect(costView(await f.meter.read(scope)).every((r) => !r.estimated)).toBe(true);
 });

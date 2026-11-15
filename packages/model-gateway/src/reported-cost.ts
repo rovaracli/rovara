@@ -1,3 +1,4 @@
+import { usageEstimated } from "./price-tiers.js";
 import { record, whole } from "./model-gateway-token.js";
 import { MICROS_PER_USD } from "./price-constants.js";
 import { usageCost } from "./estimate.js";
@@ -24,5 +25,6 @@ export function settleAmount(input: { reportedCostMicros?: number; usage?: Token
   if (whole(input.reportedCostMicros) && input.reportedCostMicros > 0) {
     if ((!input.price.knownTokenPrice && input.price.estimated && !input.price.operatorReview) || input.reportedCostMicros >= tokenCost) return { actualMicros: input.reportedCostMicros, estimated: false };
   }
-  return { actualMicros: tokenCost, estimated: input.price.estimated, ...(input.price.estimated ? { usage: { ...input.usage } } : {}) };
+  const estimated = usageEstimated(input.price, input.usage);
+  return { actualMicros: tokenCost, estimated, ...(estimated ? { usage: { ...input.usage } } : {}) };
 }

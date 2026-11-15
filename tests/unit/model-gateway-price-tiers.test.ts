@@ -31,13 +31,13 @@ it.each([
   const price = await f.price();
   expect(settleAmount({ price, usage: { input, output, cacheRead: read, cacheWrite: write, cacheWrite5m: five, cacheWrite1h: hour }, reportedCostMicros: 1, reservationMicros: held }).actualMicros).toBe(expected);
 });
-it("unknown tiers fall back independently using same-kind provider cached/long rates and 2x input writes", async () => {
+it("unknown tiers fall back independently using own input/read, 2x write and 2x long rates", async () => {
   const f = fixture(); await f.fetch({ [model]: row(10, 50), sibling: row(20, 60, { ...tiers, cache_read_input_token_cost: 25e-6 }), embedding: row(100, 200, { mode: "embedding", cache_read_input_token_cost: 500e-6 }) });
   const p = await f.price();
-  expect(usageCost({ input: 10, output: 0, cacheRead: 90, cacheWrite: 0 }, p)).toBe(2350);
+  expect(usageCost({ input: 10, output: 0, cacheRead: 90, cacheWrite: 0 }, p)).toBe(1000);
   expect(usageCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 100, cacheWrite5m: 100, cacheWrite1h: 0 }, p)).toBe(2000);
-  expect(usageCost({ input: 200001, output: 1, cacheRead: 0, cacheWrite: 0 }, p)).toBe(6000120);
-  expect(estimateCall(200001, 1, p)).toBeGreaterThanOrEqual(6000120);
+  expect(usageCost({ input: 200001, output: 1, cacheRead: 0, cacheWrite: 0 }, p)).toBe(4000120);
+  expect(estimateCall(200001, 1, p)).toBeGreaterThanOrEqual(4000120);
 });
 it("tier rates pool independently, scale uncertainty once, and drops wait through restart for confirmation", async () => {
   const f = fixture(); const clean = { [model]: row(10, 50, tiers) };
@@ -95,6 +95,10 @@ it("property tier extension: seeded aliases and sources preserve each candidate,
       const values = step % 3 === 2 ? last : Array.from({ length: 3 }, () => Array.from({ length: 10 }, () => (1 + random() % 20) * 2e6)); last = values;
       const make = (v: number[], model: string) => ({ provider: "bedrock", model, kind: "chat" as const, ...Object.fromEntries(keys.map((k, i) => [k, v[i]])), longContext: [{ aboveTokens: 200000, ...Object.fromEntries(keys.map((k, i) => [k, v[i + 5]])) }] }) as PriceEntry;
       const sources = { litellm: { fetchedAt: step, count: 1, entries: [make(values[0]!, "us.anthropic.example-v1:0")], floors: [{ ...make(values[1]!, "global.anthropic.example-v1:0"), reason: "unsupported mode" as const }] }, aws: { fetchedAt: step, count: 1, entries: [make(values[2]!, "example")] } };
+      // Unrelated identities, including uncertain/extreme tiers, cannot affect this identity.
+      const sibling = make(Array.from({ length: 10 }, () => (1 + random() % 1000) * 2e6), "unrelated");
+      const withSibling = { ...sources, aws: { ...sources.aws, count: 2, entries: [...sources.aws.entries, sibling] } };
+      expect(effectivePrices(withSibling, effective).find((e) => e.model === "example")).toEqual(effectivePrices(sources, effective)[0]);
       const candidate = values[0]!.map((v, i) => Math.max(v, values[1]![i]! * 1.5, values[2]![i]!));
       const prior = effective[0]; effective = effectivePrices(sources, effective);
       const store = new InMemoryPriceSnapshotStore(); await store.save({ version: 1, sources, effective }, 0);
@@ -116,7 +120,7 @@ it("property tier extension: seeded aliases and sources preserve each candidate,
 it("a newly explicit long tier cannot lower the previously billed base before confirmation", async () => {
   const f = fixture(); await f.fetch({ [model]: row(100, 100) });
   await f.fetch({ [model]: row(10, 50, tiers) });
-  expect(usageCost({ input: 200001, output: 1, cacheRead: 0, cacheWrite: 0 }, await f.price())).toBe(20000200);
+  expect(usageCost({ input: 200001, output: 1, cacheRead: 0, cacheWrite: 0 }, await f.price())).toBe(40000400);
   await f.fetch({ [model]: row(10, 50, tiers) });
   expect(usageCost({ input: 200001, output: 1, cacheRead: 0, cacheWrite: 0 }, await f.price())).toBe(6000120);
 });
@@ -131,7 +135,7 @@ it("unknown-tier fallbacks settle through the gateway and correction keeps known
     yield sse("message_delta", { usage: { output_tokens: 0 } }); yield sse("message_stop");
   })() }) });
   expect((await call(gateway.deps, { ...requestBody, messages: [{ role: "user", content: "x".repeat(200) }] })).status).toBe(200);
-  expect((await gateway.meter.read(scope))[0]!.spentMicros).toBe(5400); // 10*15 + 90*25 + 100*30.
+  expect((await gateway.meter.read(scope))[0]!.spentMicros).toBe(4500); // 10*15 + 90*15 + 100*30.
   const clean = { ...rows, [model]: row(10, 50, tiers) };
   await f.fetch(clean); await f.fetch(clean); await f.restart();
   expect(await runCorrections({ meter: gateway.meter, prices: f.prices, caps: new FixedCapsSource(caps), now, runId: "tier-correction" })).toMatchObject({ corrected: 1 });
@@ -144,11 +148,11 @@ it("known zero cached reads remain zero and distinct long thresholds retain thei
   expect(usageCost({ input: 128001, output: 0, cacheRead: 0, cacheWrite: 0 }, p)).toBe(2560020);
   expect(usageCost({ input: 200001, output: 0, cacheRead: 0, cacheWrite: 0 }, p)).toBe(6000030);
 });
-it("unknown long-context components use the dearer sibling long tier or matching base tier", async () => {
+it("unknown long-context components use own doubled input and derive writes from it", async () => {
   const f = fixture(); await f.fetch({ [model]: row(10, 50, { cache_creation_input_token_cost: 12.5e-6 }), sibling: row(20, 60, { input_cost_per_token_above_200k_tokens: 30e-6, cache_creation_input_token_cost_above_200k_tokens: 25e-6 }) });
   const p = await f.price();
-  expect(usageCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 200001, cacheWrite5m: 200001, cacheWrite1h: 0 }, p)).toBe(5000025);
-  expect(usageCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 200001, cacheWrite5m: 0, cacheWrite1h: 200001 }, p)).toBe(4000020);
+  expect(usageCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 200001, cacheWrite5m: 200001, cacheWrite1h: 0 }, p)).toBe(8000040);
+  expect(usageCost({ input: 0, output: 0, cacheRead: 0, cacheWrite: 200001, cacheWrite5m: 0, cacheWrite1h: 200001 }, p)).toBe(8000040);
 });
 it("a derived 2x write fallback that overflows keeps the operator-review maximum", async () => {
   const { completePrice } = await import("../../packages/model-gateway/src/price-tiers.js");

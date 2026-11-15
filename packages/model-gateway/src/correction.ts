@@ -1,3 +1,4 @@
+import { usageEstimated } from "./price-tiers.js";
 import { record, whole } from "./model-gateway-token.js";
 import { CORRECTION_RUN_MAX, CORRECTION_RUN_MS, MAX_ENTRIES_PER_SOURCE } from "./price-constants.js";
 import { usageCost } from "./estimate.js";
@@ -75,9 +76,12 @@ export async function runCorrections(options: RunOptions & { prices: PriceSource
       }
       const active = state.active;
       const finishKey = () => { delete state.active; if (active.nextKey === undefined) delete state.keys; else state.keys = active.nextKey; };
-      const price = await ctx.wait(options.prices.priceFor(active.key.provider, active.key.model, ctx.signal));
+      const partial = options.prices.correctionFor !== undefined;
+      const price = await ctx.wait(partial ? options.prices.correctionFor!(active.key.provider, active.key.model) : options.prices.priceFor(active.key.provider, active.key.model, ctx.signal));
+      const priceVersion = record(price)?.priceVersion;
+      const valid = partial ? typeof record(price)?.estimated === "boolean" && whole(priceVersion) && validPrice({ ...price, estimated: false }, Number.MAX_SAFE_INTEGER) : validPrice(price);
       const rawOrigin = record(record(price)?.origin);
-      if (!validPrice(price) || rawOrigin === undefined || typeof rawOrigin.source !== "string" || !["litellm", "aws", "override"].includes(rawOrigin.source) || !whole(rawOrigin.fetchedAt)) {
+      if (!valid || price === undefined || rawOrigin === undefined || typeof rawOrigin.source !== "string" || !["litellm", "aws", "override"].includes(rawOrigin.source) || !whole(rawOrigin.fetchedAt)) {
         report.skipped++; finishKey(); if (active.nextKey === undefined) break; continue;
       }
       if (!ctx.room()) { report.more = true; break; }
@@ -99,7 +103,7 @@ export async function runCorrections(options: RunOptions & { prices: PriceSource
         if (retry.get(call.callKey) !== priorAttempt) { report.skipped++; report.more = true; continue; }
         const attempts = (priorAttempt?.attempts ?? 0) + 1;
         retry.set(call.callKey, { attempts, after: options.now + UNKNOWN_BACKOFF_MS * 2 ** (attempts - 1) });
-        if (!await ctx.attempt((signal) => options.meter.correct({ callKey: call.callKey, realMicros, caps, priceSource, now: options.now, runId: options.runId, signal }))) {
+        if (!await ctx.attempt((signal) => options.meter.correct({ callKey: call.callKey, realMicros, caps, priceSource, ...(partial ? { priceVersion: priceVersion as number, estimated: usageEstimated(price, call.usage) } : {}), now: options.now, runId: options.runId, signal }))) {
           if (attempts >= MAX_UNKNOWN_ATTEMPTS) ctx.log({ event: "price_correction_operator_review" });
           continue; // Keep the pending ledger row, but advance this page for other calls.
         }

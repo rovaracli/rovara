@@ -1,4 +1,4 @@
-import { maxPrice, maxEffectivePrice, samePrice as equal, lowerPrice as lower, completePrice, copyRates } from "./price-tiers.js";
+import { maxPrice, maxEffectivePrice, samePrice as equal, lowerPrice as lower, completePrice, copyRates, uncertainComponents } from "./price-tiers.js";
 export { maxPrice } from "./price-tiers.js";
 import { CAUTION_FACTOR, FETCH_DEADLINE_MS, FLAT_CEILING_MICROS_PER_MTOK, MAX_ENTRIES_PER_SOURCE } from "./price-constants.js";
 import { cautiousPrice, validPrice, validRate, type PriceSource, type Price, type PriceKind, type PriceOrigin, type ResolvedPrice } from "./price.js";
@@ -70,10 +70,9 @@ export function effectivePrices(sources: PriceSnapshot["sources"], previous: rea
     const price = p.perRequest || provider === undefined ? flat : { ...cautiousPrice(provider), estimated: true };
     candidates.set(key, { provider: p.provider, model: p.model, ...(p.kind === undefined ? {} : { kind: p.kind }), aliases: [...p.aliases], sources: [...p.sources], origin: p.origin, ...price });
   }
-  // Complete unknown tiers only after all provider/kind observations are available, before confirmation.
+  // Complete only from this identity; provider maxima are exclusively for wholly unknown identities.
   for (const [key, next] of candidates) {
-    check(); const peer = maxima.get(JSON.stringify([next.provider, next.kind ?? "all"])) ?? maxima.get(JSON.stringify([next.provider, "all"]));
-    candidates.set(key, { ...next, ...completePrice(next, peer) });
+    check(); candidates.set(key, { ...next, ...completePrice(next) });
   }
   const result: EffectiveIdentity[] = []; let aliasCount = 0;
   for (const [key, next] of candidates) {
@@ -90,7 +89,7 @@ export function effectivePrices(sources: PriceSnapshot["sources"], previous: rea
     }
     result.push(next);
   }
-  for (const e of result) { check(); aliasCount += e.aliases.length; }
+  for (const e of result) { check(); aliasCount += e.aliases.length; e.uncertain = uncertainComponents(e, pools.get(identityKey(e.provider, e.model))?.clean); }
   if (result.length > 2 * MAX_ENTRIES_PER_SOURCE || aliasCount > 2 * MAX_ENTRIES_PER_SOURCE) throw new Error("refresh failed");
   return result;
 }
@@ -100,7 +99,7 @@ function addMaximum(maxima: Map<string, Price>, provider: string, kind: PriceKin
   }
 }
 export function resolved(p: ResolvedPrice): ResolvedPrice {
-  return { ...copyRates(p) as Price, ...(p.longContext === undefined ? {} : { longContext: p.longContext.map((t) => ({ aboveTokens: t.aboveTokens, ...copyRates(t) })) }), ...(p.operatorReview ? { operatorReview: true } : {}), estimated: p.estimated, ...(p.knownTokenPrice ? { knownTokenPrice: true } : {}) };
+  return { ...copyRates(p) as Price, ...(p.derived === undefined ? {} : { derived: structuredClone(p.derived) }), ...(p.uncertain === undefined ? {} : { uncertain: structuredClone(p.uncertain) }), ...(p.longContext === undefined ? {} : { longContext: p.longContext.map((t) => ({ aboveTokens: t.aboveTokens, ...copyRates(t) })) }), ...(p.operatorReview ? { operatorReview: true } : {}), estimated: p.estimated, ...(p.knownTokenPrice ? { knownTokenPrice: true } : {}) };
 }
 /** Build once; requests use maps only. The same candidate policy reads legacy snapshots without rewriting them. */
 export function priceBook(snapshot: PriceSnapshot | undefined, overrides: Array<PriceEntry & { origin: PriceOrigin; expiresAt: number }> = []): { identities: EffectiveIdentity[]; index: Map<string, EffectiveIdentity>; maxima: Map<string, Price>; unknown: Set<string>; redundantOverrides: number; expiresAt: number } {
@@ -115,8 +114,8 @@ export function priceBook(snapshot: PriceSnapshot | undefined, overrides: Array<
   for (const e of overrides) {
     const key = identityKey(e.provider, e.model); if (index.has(key) || unknown.has(e.model.trim().toLowerCase())) { redundantOverrides++; continue; }
     expiresAt = Math.min(expiresAt, e.expiresAt);
-    const price = completePrice(e);
-    index.set(key, { ...e, ...price, aliases: [e.model], sources: [], estimated: false, knownTokenPrice: true, tokenPrice: price });
+    const price = completePrice({ ...e, estimated: false, knownTokenPrice: true } as ResolvedPrice);
+    index.set(key, { ...e, ...price, uncertain: uncertainComponents(price, e), aliases: [e.model], sources: [], estimated: false, knownTokenPrice: true, tokenPrice: price });
     addMaximum(maxima, e.provider, e.kind, price);
   }
   return { identities, index, maxima, unknown, redundantOverrides, expiresAt };

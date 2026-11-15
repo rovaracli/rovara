@@ -123,7 +123,7 @@ it("confirms over-max and overflow floors without clipping or losing operator re
   const f = fixture(); await f.fetch({ peer: row(3), [model]: row(1e16) });
   for (let attempt = 0; attempt < 2; attempt++) {
     await f.fetch({ peer: row(3), [model]: row(2000) }); const p = await f.price();
-    expect(estimateCall(1, 1, p)).toBe(attempt === 0 ? Number.MAX_SAFE_INTEGER : 21_000);
+    expect(estimateCall(1, 1, p)).toBe(attempt === 0 ? Number.MAX_SAFE_INTEGER : 42_000);
     expect(settleAmount({ price: p, usage: { ...usage, input: 1, output: 1 }, reservationMicros: 1 }).actualMicros).toBe(attempt === 0 ? Number.MAX_SAFE_INTEGER : 18_000);
   }
 });

@@ -43,3 +43,12 @@ export const RATE_SCALE = 1_000_000_000_000;
 export const ALLOW_LOWER: readonly string[] = [];
 /** Run up to 5% early to spread replicas without exceeding the daily interval. */
 export const REFRESH_JITTER = 0.05;
+
+/** Unknown cached reads cannot cost more than this identity's input rate. */
+export const UNKNOWN_READ_FACTOR = 1;
+/** R3a M3: the highest current provider cache-write multiplier, applied only to own input. */
+export const UNKNOWN_WRITE_FACTOR = 2;
+/** Conservative unknown long-context component, applied to its own base component. */
+export const UNKNOWN_LONG_FACTOR = 2;
+/** The default long-context band when an identity has no published threshold. */
+export const UNKNOWN_LONG_THRESHOLD = 200_000;

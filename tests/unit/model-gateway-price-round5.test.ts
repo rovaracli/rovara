@@ -76,8 +76,8 @@ it("L1 reported cost cannot undercut known token usage; absent usage still retai
   const f = fixture("openrouter", "route"); await f.fetch({ route: row(150, 750, { litellm_provider: "openrouter", mode: "future-chat" }) });
   const price = await f.price(); const reportedCostMicros = parseReportedCost("openrouter", { cost: 0.000001 });
   if (reportedCostMicros === undefined) throw new Error("fixture");
-  expect(settleAmount({ price, usage, reservationMicros: 1, reportedCostMicros })).toMatchObject({ actualMicros: 1350e6, estimated: true });
-  expect(settleAmount({ price, usage, reservationMicros: 1, reportedCostMicros: 2000e6 })).toMatchObject({ actualMicros: 2000e6, estimated: false });
+  expect(settleAmount({ price, usage, reservationMicros: 1, reportedCostMicros })).toMatchObject({ actualMicros: 2700e6, estimated: true });
+  expect(settleAmount({ price, usage, reservationMicros: 1, reportedCostMicros: 3000e6 })).toMatchObject({ actualMicros: 3000e6, estimated: false });
   expect(settleAmount({ price, reservationMicros: 999, reportedCostMicros: 1 })).toMatchObject({ actualMicros: 999 });
   const unknown = await resolvePrice({ priceFor: () => undefined }, "openrouter", "unseen");
   expect(settleAmount({ price: unknown, usage, reservationMicros: 999, reportedCostMicros: 1 })).toMatchObject({ actualMicros: 1, estimated: false });
@@ -101,7 +101,7 @@ it("clean and uncertain tier maxima survive alias pooling and reported-cost sett
   await f.fetch({ [alias]: bedrock(15, 75, { cache_creation_input_token_cost: 40e-6 }), "global.anthropic.example-v1:0": bedrock(10, 20, { input_cost_per_token_above_200k_tokens: 60e-6, mode: "future-chat" }) }, offer(30, 100));
   const price = await f.price();
   expect(price).toMatchObject({ inputMicrosPerMTok: 30e6, outputMicrosPerMTok: 100e6, cacheWrite5mMicrosPerMTok: 40e6, longContext: [{ aboveTokens: 200000, inputMicrosPerMTok: 90e6 }] });
-  expect(settleAmount({ price, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 1_000_000, cacheWrite5m: 0, cacheWrite1h: 1_000_000 }, reservationMicros: 1, reportedCostMicros: 1 }).actualMicros).toBe(60e6);
+  expect(settleAmount({ price, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 1_000_000, cacheWrite5m: 0, cacheWrite1h: 1_000_000 }, reservationMicros: 1, reportedCostMicros: 1 }).actualMicros).toBe(180e6);
 });
 it("compatibility sources preserve per-request token minima and overflow settlement", async () => {
   const price = await resolvePrice({ priceFor: () => ({ inputMicrosPerMTok: 150e6, outputMicrosPerMTok: 750e6 }), fallbackFor: () => "per_request_price" }, "bedrock", "example");
