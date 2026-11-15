@@ -6,8 +6,8 @@ Read this first. It is short on purpose. `CLAUDE.md` imports this file, so Claud
 
 Rovara Cloud is an API layer: its own server (`packages/cloud-server`) and web app (`packages/web`, `packages/ui`)
 in front of a separate Rovara Code install. People sign in through Code, and every route the app calls is answered
-from Code's HTTP API as that person. Cloud runs no engine: no broker, worker, CLI or user pool of its own. Its only infrastructure is one stack and its
-release pipeline (`infra/`). A
+from Code's HTTP API as that person. Cloud runs no engine: no broker, worker, CLI or user pool of its own. Its infrastructure (`infra/`) is its stacks, their
+release pipeline and the model gateway's stacks. A
 feature the app needs that Code's API cannot do yet starts as a Rovara Code issue, not as engine code here.
 
 ## Names
@@ -19,12 +19,12 @@ feature the app needs that Code's API cannot do yet starts as a Rovara Code issu
 
 | Path | What it is |
 |---|---|
-| `packages/model-gateway` | Cloud model gateway core: signed task tokens, budget reservations and streaming provider transport (not wired into the app yet). |
+| `packages/model-gateway` | Cloud model gateway core: signed task tokens, budget reservations and streaming provider transport (no process entry yet; `src/deploy.ts` names what the deployed process reads). |
 | `packages/cloud-server` | Sign-in through Code, sessions, CSRF, and the route table `src/routes.ts`. See its README. |
 | `packages/web`, `packages/ui` | The web app (`/app`): `web` is the shell, build and page handler, `ui` holds the pages and components. |
 | `packages/contracts` | Shared types and schemas (zod). Browser code imports `@agentx/contracts/web` only. |
 | `packages/design-tokens`, `packages/audit-verifier` | The app's design tokens; the audit ledger's verifier (used by contracts). |
-| `infra/` | CDK: `lib/cloud-web.ts` (Cloud: CloudFront, Lambda running `scripts/cloud-lambda.ts`, DynamoDB), `lib/cloud-app.ts` (Cloud's first address, a redirect, and the client secret), `lib/cloud-release-pipeline.ts`, `lib/app.ts` (`-c rovaraCloudApp=<env>` makes both stacks, or `-c rovaraCloudPipeline=<env>`). Deploy guide: `docs/rovara-cloud-install.md`. |
+| `infra/` | CDK: `lib/cloud-web.ts` (Cloud: CloudFront, Lambda running `scripts/cloud-lambda.ts`, DynamoDB), `lib/cloud-app.ts` (Cloud's first address, a redirect, and the client secret), `lib/cloud-release-pipeline.ts`, `lib/model-gateway.ts` (the model gateway: Fargate behind HTTPS, its tables, keys and alarms; never deployed by the pipeline), `lib/app.ts` (`-c rovaraCloudApp=<env>` makes both stacks, `-c rovaraCloudPipeline=<env>`, or `-c rovaraModelGateway=<env>`). Deploy guide: `docs/rovara-cloud-install.md`. |
 | `scripts/` | `cloud-server.ts` (Cloud's server entry, also `npm run cloud:local`), the web build helpers, lint shards, the typecheck baseline and CI helpers. |
 | `tests/` | `unit` (cloud-server is `tests/unit/cloud-server.test.ts`), `contract` and `web`. |
 

@@ -21,7 +21,7 @@
     "typecheck:all": "tsc -b --pretty false && node scripts/typecheck-baseline.ts check",
     "typecheck:changed": "tsc -b --pretty false && node scripts/typecheck-baseline.ts check --changed",
     "typecheck:baseline": "tsc -b --pretty false && node scripts/typecheck-baseline.ts update",
-    "infra:synth": "npm run build --workspace @agentx/infra && cdk synth --app \"node infra/dist/bin/agentx.js\" -c rovaraCloudApp=production -q && cdk synth --app \"node infra/dist/bin/agentx.js\" -c rovaraCloudPipeline=production -q",
+    "infra:synth": "npm run build --workspace @agentx/infra && cdk synth --app \"node infra/dist/bin/agentx.js\" -c rovaraCloudApp=production -q && cdk synth --app \"node infra/dist/bin/agentx.js\" -c rovaraCloudPipeline=production -q && cdk synth --app \"node infra/dist/bin/agentx.js\" -c rovaraModelGateway=staging -q",
     "cloud:local": "tsx scripts/cloud-server.ts",
     "fake-code": "tsx scripts/fake-code.ts",
     "contract:table": "tsx scripts/code-contract-table.ts",

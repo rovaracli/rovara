@@ -3,12 +3,15 @@ import { ENVIRONMENT_TAG_KEY, RESOURCE_PREFIX } from "@agentx/contracts";
 import { CLOUD_PIPELINE_CONTEXT_KEY, CloudReleasePipelineStack } from "./cloud-release-pipeline.js";
 import { CLOUD_APP_CONTEXT_KEY, CloudAppStack, cloudAppStackName } from "./cloud-app.js";
 import { CloudWebStack, cloudWebStackName } from "./cloud-web.js";
+import { MODEL_GATEWAY_CONTEXT_KEY, ModelGatewayImagesStack, ModelGatewayStack, modelGatewayImagesStackName, modelGatewayStackName } from "./model-gateway.js";
 
 /**
  * Rovara Cloud's CDK app. What it makes is chosen by context:
  *  - `-c rovaraCloudApp=<environment>`: Rovara Cloud on an existing Rovara Code install: Cloud on CloudFront, Lambda and DynamoDB
  *    (cloud-web.ts), and its first address, which redirects there (cloud-app.ts, #11);
- *  - `-c rovaraCloudPipeline=<environment>`: the release pipeline that deploys those (cloud-release-pipeline.ts).
+ *  - `-c rovaraCloudPipeline=<environment>`: the release pipeline that deploys those (cloud-release-pipeline.ts);
+ *  - `-c rovaraModelGateway=<environment>`: the model gateway and its image repository (model-gateway.ts). The release pipeline
+ *    never makes or deploys these.
  * `-c agentxRegion=<region>` picks the region (us-east-1 by default).
  */
 export function buildAgentXApp(context: Record<string, unknown> = {}): App {
@@ -53,5 +56,27 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     });
     return app;
   }
-  throw new Error(`Name the stack to make: -c ${CLOUD_APP_CONTEXT_KEY}=<environment> (Rovara Cloud) or -c ${CLOUD_PIPELINE_CONTEXT_KEY}=<environment> (its release pipeline)`);
+  // The model gateway (migration plan v3.2, 7.4): its image repository first, then the service that runs an image from it.
+  const gatewayEnv = app.node.tryGetContext(MODEL_GATEWAY_CONTEXT_KEY) as unknown;
+  if (gatewayEnv !== undefined) {
+    if (typeof gatewayEnv !== "string" || gatewayEnv === "") throw new Error(`${MODEL_GATEWAY_CONTEXT_KEY} must name the Rovara Cloud environment, for example staging`);
+    const env = { region: deploymentRegion ?? "us-east-1" };
+    const images = new ModelGatewayImagesStack(app, "RovaraModelGatewayImages", {
+      description: `Rovara Cloud ${gatewayEnv}: the model gateway's image repository`,
+      stackName: modelGatewayImagesStackName(gatewayEnv),
+      env,
+      environmentName: gatewayEnv,
+    });
+    Tags.of(images).add(ENVIRONMENT_TAG_KEY, gatewayEnv);
+    const gateway = new ModelGatewayStack(app, "RovaraModelGateway", {
+      description: `Rovara Cloud ${gatewayEnv}: the model gateway (two Fargate tasks behind HTTPS), its meter, ledger and price tables, and alarms`,
+      stackName: modelGatewayStackName(gatewayEnv),
+      env,
+      environmentName: gatewayEnv,
+      repository: images.repository,
+    });
+    Tags.of(gateway).add(ENVIRONMENT_TAG_KEY, gatewayEnv);
+    return app;
+  }
+  throw new Error(`Name the stack to make: -c ${CLOUD_APP_CONTEXT_KEY}=<environment> (Rovara Cloud), -c ${CLOUD_PIPELINE_CONTEXT_KEY}=<environment> (its release pipeline) or -c ${MODEL_GATEWAY_CONTEXT_KEY}=<environment> (the model gateway)`);
 }
