@@ -39,6 +39,8 @@ npx vitest run <test files>                         # focused tests; run the fil
 npx eslint <changed files>                          # lint only what you changed
 npm run infra:synth                                 # synthesize the Cloud stack and its pipeline
 ROVARA_CODE_URL=<code api> ROVARA_CLIENT_SECRET_FILE=<file> npm run cloud:local
+npm run fake-code                                   # a fake Rovara Code with canned data (contract v0), for building screens before Code serves a route
+npm run contract:table                              # contract v0 (packages/contracts/src/code-contract-v0.ts) as markdown tables
 ```
 
 - If vitest can't resolve `@agentx/contracts`, its `dist` is stale: run `npx tsc -b packages/contracts`.

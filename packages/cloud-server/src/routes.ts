@@ -39,6 +39,7 @@ export interface Route {
 }
 
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
+const decisionsOff: RouteAnswer = { status: 404, body: { error: { code: "NOT_FOUND", message: "Decision cards aren't on Rovara Code yet." } } };
 const projectNotFound: RouteAnswer = { status: 404, body: { error: { code: "PROJECT_NOT_FOUND", message: "That project doesn't exist, or you can't use it." } } };
 
 /** A project's role for the person: an administrator maintains it, anyone else contributes. */
@@ -310,10 +311,36 @@ export const ROUTES: Route[] = [
     answer: () => Promise.resolve({ status: 404, body: { error: { code: "NOT_FOUND", message: "Live updates aren't on Rovara Code yet." } } }),
   },
   {
-    // GET /v1/app/decisions: decision cards are not on Code yet. The app reads a 404 here as "cards are switched off" and shows
-    // none (Home's plan, failure and pull-request cards still show), where any other answer would show as an error.
+    // GET /v1/app/decisions (DecisionCardsViewReaderSchema): Code's decision cards (contract v0 `decisions.list`, `/v1/dev/client/decisions`), passed through
+    // as Code built them: each card carries the digest Code checks when the person acts. Code does not serve the route yet (the decision cards arrive with
+    // the core on AWS, lane E2), so its 404 or 501 becomes the 404 the app reads as "cards are switched off": it shows none, and Home's plan, failure and
+    // pull-request cards still show, where any other answer would show as an error.
     method: "GET", path: /^\/decisions$/u,
-    answer: () => Promise.resolve({ status: 404, body: { error: { code: "NOT_FOUND", message: "Decision cards aren't on Rovara Code yet." } } }),
+    answer: async ({ client, session }) => {
+      try {
+        return ok(await client.json<unknown>(session, "/v1/dev/client/decisions"));
+      } catch (error) {
+        if (error instanceof CodeError && (error.status === 404 || error.status === 501)) return decisionsOff;
+        throw error;
+      }
+    },
+  },
+  {
+    // POST /v1/app/decisions/{kind}/{subject}/{approve|request-changes|reject|evidence-opened}: one card, one request (contract v0 `decisions.act`). Code checks
+    // the digest the person was shown (409 CHANGE_STALE when the card changed), the card's risk and who may decide; its answer, refusals included, reaches the
+    // app unchanged. Only `?merging=1` and `?tab=` of the query go on.
+    method: "POST", path: /^\/decisions\/([A-Za-z0-9_]+)\/([A-Za-z0-9_-]{1,150})\/(approve|request-changes|reject|evidence-opened)$/u,
+    answer: async ({ client, session, params, query, body }) => {
+      const [kind, subject, action] = params as [string, string, string];
+      const requestId = typeof body === "object" && body !== null && !Array.isArray(body) ? (body as { requestId?: unknown }).requestId : undefined;
+      if (typeof requestId !== "string" || !UUID.test(requestId)) return badRequest("requestId must be a UUID.");
+      const forwarded = new URLSearchParams();
+      if (query.get("merging") === "1") forwarded.set("merging", "1");
+      const tab = query.get("tab");
+      if (tab === "requirements" || tab === "design") forwarded.set("tab", tab);
+      const suffix = forwarded.size === 0 ? "" : `?${forwarded.toString()}`;
+      return ok(await client.json<unknown>(session, `/v1/dev/client/decisions/${encodeURIComponent(kind)}/${encodeURIComponent(subject)}/${action}${suffix}`, { method: "POST", body }));
+    },
   },
   {
     // GET /v1/app/projects/{p}/overview (ProjectOverviewSchema).

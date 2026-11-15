@@ -22,6 +22,8 @@
     "typecheck:baseline": "tsc -b --pretty false && node scripts/typecheck-baseline.ts update",
     "infra:synth": "npm run build --workspace @agentx/infra && cdk synth --app \"node infra/dist/bin/agentx.js\" -c rovaraCloudApp=production -q && cdk synth --app \"node infra/dist/bin/agentx.js\" -c rovaraCloudPipeline=production -q",
     "cloud:local": "tsx scripts/cloud-server.ts",
+    "fake-code": "tsx scripts/fake-code.ts",
+    "contract:table": "tsx scripts/code-contract-table.ts",
     "build:web": "npm run build --workspace @agentx/web && npx tsx scripts/web-precompress.ts"
   },
   "devDependencies": {
