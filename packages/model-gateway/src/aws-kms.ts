@@ -15,7 +15,11 @@ export class KmsRefused extends Error { constructor(code: string) { super("kms r
 const blob = (value: unknown): Uint8Array | undefined => typeof value === "string" && value.length <= 16_384 && /^[A-Za-z0-9+/]*={0,2}$/u.test(value) ? new Uint8Array(Buffer.from(value, "base64")) : undefined;
 
 /** KmsLike plus GenerateMac (the fingerprint key, an HMAC_256 KMS key: the secret never leaves KMS). */
-export interface KmsWithMac extends KmsLike { generateMac(input: { KeyId: string; Message: Uint8Array }): Promise<{ Mac?: Uint8Array }> }
+export interface KmsWithMac extends KmsLike {
+  generateMac(input: { KeyId: string; Message: Uint8Array }): Promise<{ Mac?: Uint8Array }>;
+  /** KMS VerifyMac: true only when KMS answers MacValid true. A wrong MAC is KMS's KMSInvalidMacException (thrown as KmsRefused). */
+  verifyMac(input: { KeyId: string; Message: Uint8Array; Mac: Uint8Array }): Promise<boolean>;
+}
 
 export function awsKms(options: KmsClientOptions): KmsWithMac {
   const client = new AwsJsonClient({ region: options.region, service: "kms", targetPrefix: "TrentService", contentType: "application/x-amz-json-1.1", credentials: options.credentials, ...(options.transport === undefined ? {} : { transport: options.transport }), ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }), ...(options.now === undefined ? {} : { now: options.now }) });
@@ -33,6 +37,10 @@ export function awsKms(options: KmsClientOptions): KmsWithMac {
       const answer = await call("GenerateMac", { KeyId: input.KeyId, MacAlgorithm: "HMAC_SHA_256", Message: Buffer.from(input.Message).toString("base64") });
       const mac = blob(answer.Mac);
       return mac === undefined ? {} : { Mac: mac };
+    },
+    async verifyMac(input) {
+      const answer = await call("VerifyMac", { KeyId: input.KeyId, MacAlgorithm: "HMAC_SHA_256", Message: Buffer.from(input.Message).toString("base64"), Mac: Buffer.from(input.Mac).toString("base64") });
+      return answer.MacValid === true;
     },
     async decrypt(input) {
       const answer = await call("Decrypt", { KeyId: input.KeyId, CiphertextBlob: Buffer.from(input.CiphertextBlob).toString("base64"), EncryptionContext: { ...input.EncryptionContext } });

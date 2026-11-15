@@ -58,7 +58,7 @@ export interface CloudWebProps extends StackProps {
 }
 
 /** The server's environment for the product AI settings (scripts/cloud-lambda.ts reads them; all three or none). */
-export const CLOUD_PRODUCT_AI_ENV = { keysTable: "CLOUD_PRODUCT_KEYS_TABLE", keysKey: "CLOUD_PRODUCT_KEYS_KEY", macKey: "CLOUD_PRODUCT_KEYS_MAC_KEY" } as const;
+export const CLOUD_PRODUCT_AI_ENV = { keysTable: "CLOUD_PRODUCT_KEYS_TABLE", keysKey: "CLOUD_PRODUCT_KEYS_KEY", macKey: "CLOUD_PRODUCT_KEYS_MAC_KEY", gatewayUrl: "CLOUD_MODEL_GATEWAY_URL" } as const;
 
 /**
  * What the server may do in its State table, by partition-key prefix (the layout in packages/cloud-server/src/dynamo-stores.ts):
@@ -313,5 +313,9 @@ export class CloudWebStack extends Stack {
     server.addEnvironment(CLOUD_PRODUCT_AI_ENV.keysTable, tableName);
     server.addEnvironment(CLOUD_PRODUCT_AI_ENV.keysKey, keyArn);
     server.addEnvironment(CLOUD_PRODUCT_AI_ENV.macKey, macKeyArn);
+    // The gateway runs the Vertex AI connection test for the settings routes (signed with the HMAC key above, no new grant).
+    // Empty (the default): a Vertex connect answers unavailable; AI Studio and learning keys are unaffected.
+    const gatewayUrl = new CfnParameter(this, "ModelGatewayUrl", { type: "String", default: "", allowedPattern: "^(|https://[^/\\s]+)$", description: "The model gateway's https address (its certificate's name, gateway output GatewayAddress); empty: no Vertex AI connect from Cloud" }).valueAsString;
+    server.addEnvironment(CLOUD_PRODUCT_AI_ENV.gatewayUrl, gatewayUrl);
   }
 }

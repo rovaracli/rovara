@@ -40,6 +40,12 @@ export const GATEWAY_ENV = {
    * may assume it, with a company id as session name). Optional, only with the product route; absent: Vertex paths are 404.
    */
   vertexFederationRole: "GATEWAY_VERTEX_FEDERATION_ROLE",
+  /**
+   * The Vertex connection test Cloud asks for (PRODUCT-VERTEX-CLOUD-CONNECT, service-call.ts): the ARN of the product key store's
+   * KMS HMAC key, whose MACs sign Cloud's calls (this gateway may only VerifyMac). Optional, only with the Vertex federation role;
+   * absent: the test path is not served and a Vertex connect from Cloud answers unavailable.
+   */
+  productMacKey: "GATEWAY_PRODUCT_MAC_KEY",
   /** The learning route (docs/model-gateway-learning.md): its meter's three tables, set together and only with the product route (its key store). */
   learningMeterTable: "GATEWAY_LEARNING_METER_TABLE",
   learningLedgerTable: "GATEWAY_LEARNING_LEDGER_TABLE",

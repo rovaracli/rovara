@@ -20,6 +20,7 @@ import { createTokenHttp, VertexTokens, type TokenHttp } from "./product-vertex-
 import { ProductKeyStore } from "./product-keys.js";
 import { createProductRoutes, productModelLimitsFrom } from "./product-route.js";
 import { kmsProductKeyService, ProductKeySealer, type KmsLike, type ProductKeyFingerprinter } from "./product-seal.js";
+import { createVertexCheckHandler, VERTEX_CHECK_PATH, type MacVerifier } from "./service-call.js";
 import { Dynamo } from "./dynamo.js";
 import { DynamoEndedTasks, DynamoMeter } from "./dynamo-meter.js";
 import { DynamoPriceSnapshotStore } from "./dynamo-prices.js";
@@ -44,7 +45,7 @@ import { createTaskTokenVerifier } from "./token.js";
 export type GatewayEnv = Readonly<Record<string, string | undefined>>;
 export interface InstallConfig { issuer: string; jwksUrl: string; taskKids: string[] }
 /** The product route's deployed settings (deploy.ts GATEWAY_PRODUCT_ENV): all set, or the route is off. */
-export interface ProductConfig { keysTable: string; keysKeyArn: string; meter: string; ledger: string; markers: string; stages: string; vertexFederationRoleArn?: string }
+export interface ProductConfig { keysTable: string; keysKeyArn: string; meter: string; ledger: string; markers: string; stages: string; vertexFederationRoleArn?: string; /** Cloud's Vertex connection test (service-call.ts), only with the Vertex role. */ macKeyArn?: string }
 /** The learning route's meter tables (GATEWAY_LEARNING_ENV): only with the product route, whose key store holds the company's account. */
 export interface LearningConfig { meter: string; ledger: string; markers: string }
 export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig }
@@ -90,8 +91,9 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
       keysKeyArn: need(GATEWAY_ENV.productKeysKey, (value) => /^arn:aws[a-z-]*:kms:[a-z0-9-]+:\d{12}:key\/[0-9a-f-]{36}$/u.test(value)),
       meter: table(GATEWAY_ENV.productMeterTable), ledger: table(GATEWAY_ENV.productLedgerTable), markers: table(GATEWAY_ENV.productMarkersTable), stages: table(GATEWAY_ENV.evalStagesTable),
       ...(env[GATEWAY_ENV.vertexFederationRole] === undefined ? {} : { vertexFederationRoleArn: need(GATEWAY_ENV.vertexFederationRole, (value) => /^arn:aws[a-z-]*:iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,128}$/u.test(value)) }),
+      ...(env[GATEWAY_ENV.productMacKey] === undefined ? {} : { macKeyArn: need(GATEWAY_ENV.productMacKey, (value) => env[GATEWAY_ENV.vertexFederationRole] !== undefined && /^arn:aws[a-z-]*:kms:[a-z0-9-]+:\d{12}:key\/[0-9a-f-]{36}$/u.test(value)) }),
     };
-  } else if (env[GATEWAY_ENV.vertexFederationRole] !== undefined) {
+  } else if (env[GATEWAY_ENV.vertexFederationRole] !== undefined || env[GATEWAY_ENV.productMacKey] !== undefined) {
     // Vertex is part of the product route: never on its own.
     throw new GatewayConfigError(GATEWAY_ENV.productKeysTable);
   }
@@ -137,7 +139,7 @@ export const HOLD_SWEEP_PER_PASS = 50;
 
 export interface ServeDependencies {
   /** The KMS client the deployed product key store opens keys with (default: aws-kms.ts with the task's credentials). */
-  kms?: KmsLike;
+  kms?: KmsLike & Partial<MacVerifier>;
   /** The HTTP the Vertex token minting uses (default: product-vertex-token.ts createTokenHttp, Google's and AWS's token hosts). */
   vertexHttp?: TokenHttp;
   /** The deployed product route's Gemini transport (default: product-gemini.ts createGeminiTransport over HTTPS). */
@@ -228,13 +230,17 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(learning === undefined ? {} : { learning }),
   };
   const handler = createGatewayHandler(handlerDeps);
+  // Cloud's Vertex connection test (PRODUCT-VERTEX-CLOUD-CONNECT): only with Vertex, the MAC key and a KMS that can verify.
+  const vertexCheck = built.vertex === undefined || built.verifier === undefined || config.product?.macKeyArn === undefined ? undefined
+    : createVertexCheckHandler({ issuer: config.install.issuer, kms: built.verifier, macKeyId: config.product.macKeyArn, vertex: built.vertex, now });
   const inFlight = new Set<Promise<void>>();
   let draining = false;
   const refuse = (res: ServerResponse) => { res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store", connection: "close" }); res.end(UNAVAILABLE); };
   const server = http.createServer((req: IncomingMessage, res: ServerResponse) => {
     // Once draining, the health check fails and a new request (on a kept-alive connection) is refused; open calls finish.
     if (draining) { refuse(res); return; }
-    const running = handler(req, res).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
+    const path = (req.url ?? "").split("?", 1)[0];
+    const running = (vertexCheck !== undefined && path === VERTEX_CHECK_PATH ? vertexCheck(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
     inFlight.add(running); void running.finally(() => inFlight.delete(running));
   });
   // The load balancer keeps idle connections for up to an hour; the target must keep them at least as long, or it would cut
@@ -326,14 +332,16 @@ const READ_ONLY_FINGERPRINT: ProductKeyFingerprinter = async () => { throw new E
  * Gemini over HTTPS with media prices) and the learning route (the company's own account from the same key store, its own meter
  * combined the same way). Nothing is built for settings that are absent.
  */
-function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { db: Dynamo; credentials: CredentialSource; now: () => number; prices: SnapshotPriceSource; caps: CapsSource }): { product?: NonNullable<ServeDependencies["product"]>; learning?: NonNullable<ServeDependencies["learning"]> } {
+function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { db: Dynamo; credentials: CredentialSource; now: () => number; prices: SnapshotPriceSource; caps: CapsSource }): { product?: NonNullable<ServeDependencies["product"]>; learning?: NonNullable<ServeDependencies["learning"]>; vertex?: VertexTokens; verifier?: MacVerifier } {
   const p = config.product;
   if (p === undefined || (deps.product !== undefined && (config.learning === undefined || deps.learning !== undefined))) return {};
   const { db, now, prices, caps } = shared;
-  const kms = deps.kms ?? awsKms({ region: config.region, credentials: shared.credentials, now });
+  const kms: KmsLike & Partial<MacVerifier> = deps.kms ?? awsKms({ region: config.region, credentials: shared.credentials, now });
+  const verifier: MacVerifier | undefined = typeof kms.verifyMac === "function" ? { verifyMac: (input) => kms.verifyMac!(input) } : undefined;
   const store = new ProductKeyStore({ table: new DynamoProductKeyTable(db, p.keysTable), sealer: new ProductKeySealer(kmsProductKeyService(kms, p.keysKeyArn)), fingerprint: READ_ONLY_FINGERPRINT, now });
   const combinedCompany = { meter: config.tables.meter, markers: config.tables.markers };
   let product: NonNullable<ServeDependencies["product"]> | undefined;
+  let vertexTokens: VertexTokens | undefined;
   if (deps.product === undefined) {
     const productMeter = new DynamoMeter({ db, tables: { meter: p.meter, ledger: p.ledger, markers: p.markers }, now, combinedCompany });
     const evalStages = new ProductEvalStages({ approvals: storedEvalApprovals(store, now), budget: storedEvalBudget(store), now, store: new DynamoEvalStageStore(db, p.stages) });
@@ -345,13 +353,14 @@ function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { 
       overrun: new DynamoProductOverrunTasks(db, p.markers, now), companyCaps: caps, evalStages,
     });
     product = { routes, meter: productMeter, caps: routes.caps };
+    vertexTokens = vertex;
   }
   let learning: NonNullable<ServeDependencies["learning"]> | undefined;
   if (config.learning !== undefined && deps.learning === undefined) {
     const l = config.learning;
     learning = { keys: storedLearningKeys(store), meter: new DynamoMeter({ db, tables: { meter: l.meter, ledger: l.ledger, markers: l.markers }, now, combinedCompany }) };
   }
-  return { ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }) };
+  return { ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(vertexTokens === undefined ? {} : { vertex: vertexTokens }), ...(verifier === undefined ? {} : { verifier }) };
 }
 
 export interface PriceFetchDependencies { env?: GatewayEnv; log?: GatewayLog; credentials?: CredentialSource; db?: Dynamo; fetch?: typeof fetch; now?: () => number }

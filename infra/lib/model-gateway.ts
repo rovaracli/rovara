@@ -90,6 +90,7 @@ export const MODEL_GATEWAY_ENV = {
   productMarkersTable: "GATEWAY_PRODUCT_MARKERS_TABLE",
   evalStagesTable: "GATEWAY_EVAL_STAGES_TABLE",
   vertexFederationRole: "GATEWAY_VERTEX_FEDERATION_ROLE",
+  productMacKey: "GATEWAY_PRODUCT_MAC_KEY",
   learningMeterTable: "GATEWAY_LEARNING_METER_TABLE",
   learningLedgerTable: "GATEWAY_LEARNING_LEDGER_TABLE",
   learningMarkersTable: "GATEWAY_LEARNING_MARKERS_TABLE",
@@ -615,9 +616,10 @@ export class ModelGatewayStack extends Stack {
         ],
       }),
     });
-    // Keyed fingerprints (F1-d L4): an HMAC key that never leaves KMS; only the settings role makes MACs, nobody verifies here.
+    // Keyed fingerprints (F1-d L4) and Cloud's signed calls to this gateway (the Vertex connection test, service-call.ts, its own
+    // purpose in every message): an HMAC key that never leaves KMS. Only the settings role makes MACs; only the serving role verifies.
     const macKey = new kms.Key(this, "ProductKeysMacKey", {
-      description: `Rovara Cloud ${env}: keyed fingerprints of product AI keys and change intents; only Cloud's settings role uses it`,
+      description: `Rovara Cloud ${env}: keyed fingerprints of product AI keys and change intents, and Cloud's signed calls to the gateway`,
       keySpec: kms.KeySpec.HMAC_256,
       keyUsage: kms.KeyUsage.GENERATE_VERIFY_MAC,
       removalPolicy: RemovalPolicy.RETAIN,
@@ -625,6 +627,7 @@ export class ModelGatewayStack extends Stack {
         statements: [
           manage,
           new iam.PolicyStatement({ sid: "OnlySettingsFingerprints", principals: [new iam.AccountRootPrincipal()], actions: ["kms:GenerateMac"], resources: ["*"], conditions: { ArnEquals: { "aws:PrincipalArn": settingsRoleArn.valueAsString } } }),
+          new iam.PolicyStatement({ sid: "OnlyGatewayVerifiesCalls", principals: [new iam.AccountRootPrincipal()], actions: ["kms:VerifyMac"], resources: ["*"], conditions: { ArnEquals: { "aws:PrincipalArn": serveRole.roleArn } } }),
         ],
       }),
     });
@@ -643,6 +646,7 @@ export class ModelGatewayStack extends Stack {
         ...Object.values(MODEL_GATEWAY_EVAL_STAGE_INDEXES).map((index) => `${stages.tableArn}/index/${index.name}`),
       ],
     }));
+    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "VerifyCloudCalls", actions: ["kms:VerifyMac"], resources: [macKey.keyArn] }));
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "OpenProductKeys", actions: ["kms:Decrypt"], resources: [key.keyArn], conditions: { StringEquals: { "kms:EncryptionContext:purpose": PRODUCT_KEY_PURPOSE, "kms:EncryptionContext:install": issuer } } }));
 
     // Vertex federation (#58, DEC 229b): a role with NO permissions. Only this gateway's serving role may assume it, and only with
@@ -664,6 +668,7 @@ export class ModelGatewayStack extends Stack {
         [MODEL_GATEWAY_ENV.productMarkersTable]: productMarkers.tableName,
         [MODEL_GATEWAY_ENV.evalStagesTable]: stages.tableName,
         [MODEL_GATEWAY_ENV.vertexFederationRole]: vertexRole.roleArn,
+        [MODEL_GATEWAY_ENV.productMacKey]: macKey.keyArn,
         [MODEL_GATEWAY_ENV.learningMeterTable]: learningMeter.tableName,
         [MODEL_GATEWAY_ENV.learningLedgerTable]: learningLedger.tableName,
         [MODEL_GATEWAY_ENV.learningMarkersTable]: learningMarkers.tableName,
