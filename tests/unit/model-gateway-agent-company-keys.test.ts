@@ -108,6 +108,25 @@ describe("agent route, company-key mode (DEC 236)", () => {
     for (const row of await g.meter.read(scope)) expect([row.committed, row.reservedMicros, row.spentMicros]).toEqual([0, 0, 0]);
   });
 
+  it("a key read that fails after admission is not sent: the fixed 503 at $0", async () => {
+    const g = companyGateway();
+    let reads = 0;
+    g.companyKeys.keyFor = async () => { reads++; throw new Error("store down"); };
+    const sink = await call(g.deps);
+    expect(reads).toBe(1);
+    expect(sink.status).toBe(503);
+    expect(sink.text()).not.toContain("store down");
+    expect(g.sent).toEqual([]);
+    expect(await committed(g.meter)).toBe(0);
+  });
+
+  it("a provider answer echoing the company's key is cut, never streamed back", async () => {
+    const echoed = keyOf(cidA);
+    const g = companyGateway({ transport: async () => ({ status: 200, body: (async function* () { yield Buffer.from(`event: message_start\ndata: {"type":"message_start","text":"${echoed}"}\n\n`); })() }) });
+    const sink = await call(g.deps);
+    expect(sink.text()).not.toContain(echoed);
+  });
+
   it("the provider refusing the company's key is free and says to connect a working key", async () => {
     for (const status of [401, 403]) {
       const g = companyGateway({ transport: async () => ({ status, body: (async function* () { yield Buffer.from("{}"); })() }) });
