@@ -1,12 +1,22 @@
 // Ported field patterns and rounding from parked cee95f6c0; DEC 216 changes refusal to unknown.
 import { record } from "./model-gateway-token.js";
 import { PRICE_MAX, RATE_SCALE, RATE_ROUNDING_TOLERANCE } from "./price-constants.js";
-import type { Price, PriceKind } from "./price.js";
-const INPUT_RATE = /^(?:input_cost_per_(?:token|audio_token|image_token)|cache_creation_input_token_cost)(?:_above_[a-z0-9_]+)?(?:_priority)?$/u;
-const OUTPUT_RATE = /^output_cost_per_(?:token|audio_token|reasoning_token|image_token)(?:_above_[a-z0-9_]+)?(?:_priority)?$/u;
-// These are usually discounts, but upstream may make them dearer. Always include them in the same maximum.
-const DISCOUNT_INPUT_RATE = /^(?:cache_read_input_token_cost(?:_above_[a-z0-9_]+)?(?:_priority)?|input_cost_per_token_(?:batches|flex|cache_hit))$/u;
-const DISCOUNT_OUTPUT_RATE = /^output_cost_per_token_(?:batches|flex)$/u;
+import { CONTEXT_THRESHOLDS, type RateKey } from "./price-tiers.js";
+import type { Price, PriceKind, TokenRates } from "./price.js";
+/** Known billing dimensions stay separate; unsupported dimensions make the row uncertain. */
+function rateField(field: string): { key: RateKey; aboveTokens?: number } | undefined {
+  const long = /_above_(128|200)k_tokens/u.exec(field);
+  const aboveTokens = long === null ? undefined : Number(long[1]) * 1000;
+  const base = field.replace(/_above_(128|200)k_tokens/u, "").replace(/_priority$/u, "");
+  let key: RateKey;
+  if (/^input_cost_per_(?:token|audio_token|image_token)(?:_batches|_flex)?$/u.test(base)) key = "inputMicrosPerMTok";
+  else if (/^output_cost_per_(?:token|audio_token|reasoning_token|image_token)(?:_batches|_flex)?$/u.test(base)) key = "outputMicrosPerMTok";
+  else if (base === "cache_read_input_token_cost" || base === "input_cost_per_token_cache_hit") key = "cacheReadMicrosPerMTok";
+  else if (base === "cache_creation_input_token_cost") key = "cacheWrite5mMicrosPerMTok";
+  else if (base === "cache_creation_input_token_cost_above_1hr") key = "cacheWrite1hMicrosPerMTok";
+  else return undefined;
+  return { key, ...(aboveTokens === undefined ? {} : { aboveTokens }) };
+}
 const PER_CALL = /^(?:input_|output_)?cost_per_request$/u;
 // Reviewed exceptions: each rule names WHY it does not add to the two token totals. No catch-all price/metadata rule.
 export const PRICE_IGNORABLE_FIELDS: Readonly<Record<string, string>> = {
@@ -27,8 +37,8 @@ export const PRICE_IGNORABLE_FIELDS: Readonly<Record<string, string>> = {
 
 /** Same classification drives pricing and source completeness: unknown fields are NEVER silently dropped. */
 export function priceFieldDisposition(field: string): "input" | "output" | { readonly ignore: string } | undefined {
-  if (INPUT_RATE.test(field) || DISCOUNT_INPUT_RATE.test(field)) return "input";
-  if (OUTPUT_RATE.test(field) || DISCOUNT_OUTPUT_RATE.test(field)) return "output";
+  const rate = rateField(field);
+  if (rate !== undefined) return rate.key === "outputMicrosPerMTok" ? "output" : "input";
   if (Object.hasOwn(PRICE_IGNORABLE_FIELDS, field)) return { ignore: PRICE_IGNORABLE_FIELDS[field]! };
   return undefined;
 }
@@ -65,7 +75,7 @@ export function ratesOf(value: unknown, now: number): Price | string {
   const baseInput = entry.input_cost_per_token; const baseOutput = entry.output_cost_per_token;
   const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
   if (!finite(baseInput) || baseInput <= 0 || !finite(baseOutput) || baseOutput <= 0) return "missing or invalid base rate";
-  let input = baseInput; let output = baseOutput;
+
   for (const [field, rate] of Object.entries(entry)) {
     if (PER_CALL.test(field)) return "unsupported per-request price";
     const disposition = priceFieldDisposition(field);
@@ -73,23 +83,28 @@ export function ratesOf(value: unknown, now: number): Price | string {
     if (disposition !== "input" && disposition !== "output") continue;
     if (!finite(rate) || rate < 0) return "unsupported token rate";
     if (rate > PRICE_MAX / RATE_SCALE) return "token rate exceeds maximum";
-    if (disposition === "input") input = Math.max(input, rate);
-    if (disposition === "output") output = Math.max(output, rate);
+
   }
-  return { inputMicrosPerMTok: rateMicros(input), outputMicrosPerMTok: rateMicros(output) };
+  return collectRates(entry, false);
 }
 
 /** Known token tiers survive classification failure; no arithmetic may discard an expensive model. */
 export function knownRates(value: unknown): (Price & { operatorReview?: true }) | undefined {
   const row = record(value);
   if (row === undefined || typeof row.input_cost_per_token !== "number" || !Number.isFinite(row.input_cost_per_token) || row.input_cost_per_token <= 0 || typeof row.output_cost_per_token !== "number" || !Number.isFinite(row.output_cost_per_token) || row.output_cost_per_token <= 0) return undefined;
-  let input = row.input_cost_per_token; let output = row.output_cost_per_token;
-  for (const [field, rate] of Object.entries(row)) {
-    const disposition = priceFieldDisposition(field);
-    if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0) continue;
-    if (disposition === "input") input = Math.max(input, rate);
-    if (disposition === "output") output = Math.max(output, rate);
+  return collectRates(row, true);
+}
+function collectRates(row: Record<string, unknown>, uncertain: boolean): Price {
+  const base: Partial<TokenRates> = {}; const bands = new Map<number, Partial<TokenRates>>(); let overflow = false;
+  for (const [field, value] of Object.entries(row)) {
+    const target = rateField(field);
+    if (target === undefined || typeof value !== "number" || !Number.isFinite(value) || value < 0) continue;
+    const rates = target.aboveTokens === undefined ? base : bands.get(target.aboveTokens) ?? {};
+    overflow ||= value > Number.MAX_SAFE_INTEGER / RATE_SCALE;
+    const converted = uncertain ? Math.ceil(value * RATE_SCALE) : rateMicros(value);
+    rates[target.key] = Math.max(rates[target.key] ?? 0, Math.min(Number.MAX_SAFE_INTEGER, converted));
+    if (target.aboveTokens !== undefined) bands.set(target.aboveTokens, rates);
   }
-  const overflow = input > Number.MAX_SAFE_INTEGER / RATE_SCALE || output > Number.MAX_SAFE_INTEGER / RATE_SCALE;
-  return { inputMicrosPerMTok: Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.ceil(input * RATE_SCALE))), outputMicrosPerMTok: Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.ceil(output * RATE_SCALE))), ...(overflow ? { operatorReview: true } : {}) };
+  const longContext = CONTEXT_THRESHOLDS.filter((t) => bands.has(t)).map((aboveTokens) => ({ aboveTokens, ...bands.get(aboveTokens)! }));
+  return { ...base as TokenRates, ...(longContext.length ? { longContext } : {}), ...(overflow ? { operatorReview: true } : {}) };
 }

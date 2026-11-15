@@ -89,7 +89,7 @@ it.each(["ordinary", "per-request", "unknown-provider"])("real gateway uses effe
   const gateway = setup({ prices: f.prices }); let held = 0;
   gateway.deps.transport = async () => { held = (await gateway.meter.read(scope))[0]!.reservedMicros; return { status: 200, body: answer() }; };
   expect((await call(gateway.deps)).status).toBe(200);
-  const expected = rate * (kind === "ordinary" ? 34 : 51);
+  const expected = rate * (kind === "ordinary" ? 38 : 57);
   expect((await gateway.meter.read(scope))[0]!.spentMicros).toBe(expected); expect(held).toBeGreaterThanOrEqual(expected);
 });
 it("AWS positive over-max base/tier rates retain an uncertain candidate and overflow review", async () => {
@@ -99,8 +99,9 @@ it("AWS positive over-max base/tier rates retain an uncertain candidate and over
 it("clean and uncertain tier maxima survive alias pooling and reported-cost settlement", async () => {
   const f = fixture("bedrock", alias);
   await f.fetch({ [alias]: bedrock(15, 75, { cache_creation_input_token_cost: 40e-6 }), "global.anthropic.example-v1:0": bedrock(10, 20, { input_cost_per_token_above_200k_tokens: 60e-6, mode: "future-chat" }) }, offer(30, 100));
-  const price = await money(f, 90, 100, true);
-  expect(settleAmount({ price, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 1_000_000, cacheWrite5m: 0, cacheWrite1h: 1_000_000 }, reservationMicros: 1, reportedCostMicros: 1 }).actualMicros).toBe(90e6);
+  const price = await f.price();
+  expect(price).toMatchObject({ inputMicrosPerMTok: 30e6, outputMicrosPerMTok: 100e6, cacheWrite5mMicrosPerMTok: 40e6, longContext: [{ aboveTokens: 200000, inputMicrosPerMTok: 90e6 }] });
+  expect(settleAmount({ price, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 1_000_000, cacheWrite5m: 0, cacheWrite1h: 1_000_000 }, reservationMicros: 1, reportedCostMicros: 1 }).actualMicros).toBe(60e6);
 });
 it("compatibility sources preserve per-request token minima and overflow settlement", async () => {
   const price = await resolvePrice({ priceFor: () => ({ inputMicrosPerMTok: 150e6, outputMicrosPerMTok: 750e6 }), fallbackFor: () => "per_request_price" }, "bedrock", "example");
@@ -123,7 +124,7 @@ it("persisted effective identities and unidentified rows validate before any rea
 it("the complete pooled identity/alias bound resolves in bounded time and overflow rejects the entire snapshot", async () => {
   const { effectivePrices } = await import("../../packages/model-gateway/src/price-sanity.js");
   const { validSnapshot } = await import("../../packages/model-gateway/src/price-snapshot.js");
-  const entry = { provider: "bedrock", model: "m", kind: "chat" as const, inputMicrosPerMTok: 1, outputMicrosPerMTok: 2 };
+  const entry = { provider: "bedrock", model: "m", kind: "chat" as const, inputMicrosPerMTok: 1, outputMicrosPerMTok: 2, cacheReadMicrosPerMTok: 0, cacheWrite5mMicrosPerMTok: 2, cacheWrite1hMicrosPerMTok: 3, longContext: [{ aboveTokens: 128000, inputMicrosPerMTok: 3 }, { aboveTokens: 200000, inputMicrosPerMTok: 4 }] };
   const entries = Array.from({ length: 20_000 }, (_, i) => ({ ...entry, model: `us.anthropic.model-${i}-v1:0` }));
   const sources = { litellm: { fetchedAt: 1, count: entries.length, entries }, aws: { fetchedAt: 1, count: entries.length, entries: entries.map((e, i) => ({ ...e, model: `model-${i}` })) } };
   const start = performance.now(); const effective = effectivePrices(sources); expect(effective).toHaveLength(20_000);

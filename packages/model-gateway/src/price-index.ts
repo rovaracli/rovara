@@ -1,9 +1,10 @@
+import { copyRates } from "./price-tiers.js";
 import { STALE_ALARM_MS } from "./price-constants.js";
 import { type Price, type PriceKind, type PriceOrigin, type PriceSource, type ResolvedPrice } from "./price.js";
 import { PRICE_OVERRIDES, validOverrides } from "./price-overrides.js";
 import { validSnapshot, type PriceSnapshot, type PriceSnapshotStore } from "./price-snapshot.js";
 import { identityKey } from "./price-identity.js";
-import { priceBook, lookupPrice } from "./price-sanity.js";
+import { priceBook, lookupPrice, resolved } from "./price-sanity.js";
 export interface SourceHealth { fetchedAt?: number; ageMs?: number; count: number; stale: boolean; lastFailure?: string }
 export class SnapshotPriceSource implements PriceSource {
   #book = priceBook(undefined);
@@ -33,7 +34,8 @@ export class SnapshotPriceSource implements PriceSource {
     if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
     const p = this.#book.index.get(identityKey(provider, model));
     if (p === undefined || p.estimated) return undefined;
-    return { inputMicrosPerMTok: p.inputMicrosPerMTok, outputMicrosPerMTok: p.outputMicrosPerMTok, ...(p.cacheWriteMicrosPerMTok === undefined ? {} : { cacheWriteMicrosPerMTok: p.cacheWriteMicrosPerMTok }), origin: { ...p.origin } };
+    const rates = resolved(p);
+    return { ...copyRates(rates) as Price, ...(rates.longContext === undefined ? {} : { longContext: rates.longContext }), ...(rates.operatorReview ? { operatorReview: true } : {}), origin: { ...p.origin } };
   }
   keys(): Array<{ provider: string; model: string }> { return [...this.#book.index.values()].filter((e) => !e.estimated).map(({ provider, model }) => ({ provider, model })); }
   failure(source: "litellm" | "aws", failed: boolean): void { if (failed) this.#failures[source] = "refresh failed"; else delete this.#failures[source]; }

@@ -24,7 +24,7 @@ export function validEntry(value: unknown): value is PriceEntry {
 }
 export function validFloor(value: unknown): value is ModelFloor {
   const v = record(value);
-  return v !== undefined && FLOOR_REASONS.includes(v.reason as ModelFloor["reason"]) && (v.perRequest === undefined || v.perRequest === true) && validPrice(v, Number.MAX_SAFE_INTEGER) && (v.operatorReview === undefined || v.operatorReview === true) && (v.kind === undefined || v.kind === "chat" || v.kind === "embedding") && validEntry({ ...v, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, cacheWriteMicrosPerMTok: 1 });
+  return v !== undefined && FLOOR_REASONS.includes(v.reason as ModelFloor["reason"]) && (v.perRequest === undefined || v.perRequest === true) && validPrice(v, Number.MAX_SAFE_INTEGER) && (v.operatorReview === undefined || v.operatorReview === true) && (v.kind === undefined || v.kind === "chat" || v.kind === "embedding") && validEntry({ provider: v.provider, model: v.model, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 });
 }
 export function validFallback(value: unknown): value is ModelFallback {
   const v = record(value);
@@ -79,7 +79,7 @@ export function validSnapshot(value: unknown): value is PriceSnapshot {
     const seen = new Set<string>(); let aliases = 0;
     for (const value of v.effective as unknown[]) {
       const e = record(value);
-      if (e === undefined || (e.tokenPrice !== undefined && !validPrice(e.tokenPrice, Number.MAX_SAFE_INTEGER)) || !validEffectivePrice(e) || !validEntry({ ...e, estimated: false, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, cacheWriteMicrosPerMTok: 1 }) || (e.kind !== undefined && e.kind !== "chat" && e.kind !== "embedding")) return false;
+      if (e === undefined || (e.tokenPrice !== undefined && !validPrice(e.tokenPrice, Number.MAX_SAFE_INTEGER)) || !validEffectivePrice(e) || !validEntry({ provider: e.provider, model: e.model, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 }) || (e.kind !== undefined && e.kind !== "chat" && e.kind !== "embedding")) return false;
       if (!Array.isArray(e.aliases) || e.aliases.length === 0 || (aliases += e.aliases.length) > 2 * MAX_ENTRIES_PER_SOURCE || !e.aliases.every(validModel) || new Set(e.aliases).size !== e.aliases.length) return false;
       if (!Array.isArray(e.sources) || e.sources.length < 1 || e.sources.length > 2 || e.sources.some((s) => s !== "litellm" && s !== "aws") || new Set(e.sources).size !== e.sources.length) return false;
       const origin = record(e.origin);

@@ -1,3 +1,5 @@
+import { maxPrice, maxEffectivePrice, samePrice as equal, lowerPrice as lower, completePrice, copyRates } from "./price-tiers.js";
+export { maxPrice } from "./price-tiers.js";
 import { CAUTION_FACTOR, FETCH_DEADLINE_MS, FLAT_CEILING_MICROS_PER_MTOK, MAX_ENTRIES_PER_SOURCE } from "./price-constants.js";
 import { cautiousPrice, validPrice, validRate, type PriceSource, type Price, type PriceKind, type PriceOrigin, type ResolvedPrice } from "./price.js";
 import { identityKey, normalizedModel } from "./price-identity.js";
@@ -5,17 +7,12 @@ import type { EffectiveIdentity, ModelFallback, ModelFloor, PriceEntry, PriceSna
 type Source = "litellm" | "aws";
 const names = ["litellm", "aws"] as const;
 const flat: ResolvedPrice = { inputMicrosPerMTok: FLAT_CEILING_MICROS_PER_MTOK, outputMicrosPerMTok: FLAT_CEILING_MICROS_PER_MTOK, estimated: true };
-const cache = (p: Price) => p.cacheWriteMicrosPerMTok ?? p.inputMicrosPerMTok;
-export const maxPrice = (a: Price, b: Price): Price => ({ inputMicrosPerMTok: Math.max(a.inputMicrosPerMTok, b.inputMicrosPerMTok), outputMicrosPerMTok: Math.max(a.outputMicrosPerMTok, b.outputMicrosPerMTok), cacheWriteMicrosPerMTok: Math.max(cache(a), cache(b)), ...((a.operatorReview || b.operatorReview) ? { operatorReview: true } : {}) });
-const equal = (a: Price, b: Price) => a.inputMicrosPerMTok === b.inputMicrosPerMTok && a.outputMicrosPerMTok === b.outputMicrosPerMTok && cache(a) === cache(b) && !!a.operatorReview === !!b.operatorReview;
-const lower = (a: Price, b: Price) => a.inputMicrosPerMTok < b.inputMicrosPerMTok || a.outputMicrosPerMTok < b.outputMicrosPerMTok || cache(a) < cache(b) || (!a.operatorReview && !!b.operatorReview);
 /** Inputs here are already scaled observations; policy never applies caution twice to an identity. */
 function candidatePrice(clean: Price | undefined, uncertain: Price | undefined, perRequest: boolean): ResolvedPrice | undefined {
   const token = clean === undefined ? uncertain : uncertain === undefined ? clean : maxPrice(clean, uncertain);
   if (token === undefined) return perRequest ? { ...flat } : undefined;
   const price = perRequest ? maxPrice(token, flat) : token;
   const result = resolved({ ...price, estimated: clean === undefined || !equal(price, clean) });
-  if (clean?.cacheWriteMicrosPerMTok === undefined && uncertain?.cacheWriteMicrosPerMTok === undefined) delete result.cacheWriteMicrosPerMTok;
   return result;
 }
 interface Pool {
@@ -65,13 +62,18 @@ export function effectivePrices(sources: PriceSnapshot["sources"], previous: rea
     const token = p.clean === undefined ? uncertain : uncertain === undefined ? p.clean : maxPrice(p.clean, uncertain);
     if (token === undefined) continue;
     const price = candidatePrice(p.clean, uncertain, p.perRequest)!;
-    candidates.set(key, { provider: p.provider, model: p.model, ...(p.kind === undefined ? {} : { kind: p.kind }), aliases: [...p.aliases], sources: [...p.sources], origin: p.origin, ...price, cacheWriteMicrosPerMTok: cache(price), knownTokenPrice: true, tokenPrice: maxPrice(token, token) });
+    candidates.set(key, { provider: p.provider, model: p.model, ...(p.kind === undefined ? {} : { kind: p.kind }), aliases: [...p.aliases], sources: [...p.sources], origin: p.origin, ...price, knownTokenPrice: true, tokenPrice: maxPrice(token, token) });
     addMaximum(maxima, p.provider, p.kind, token);
   }
   for (const [key, p] of pools) if (!candidates.has(key)) {
     check(); const provider = maxima.get(JSON.stringify([p.provider, p.kind ?? "all"])) ?? maxima.get(JSON.stringify([p.provider, "all"]));
     const price = p.perRequest || provider === undefined ? flat : { ...cautiousPrice(provider), estimated: true };
     candidates.set(key, { provider: p.provider, model: p.model, ...(p.kind === undefined ? {} : { kind: p.kind }), aliases: [...p.aliases], sources: [...p.sources], origin: p.origin, ...price });
+  }
+  // Complete unknown tiers only after all provider/kind observations are available, before confirmation.
+  for (const [key, next] of candidates) {
+    check(); const peer = maxima.get(JSON.stringify([next.provider, next.kind ?? "all"])) ?? maxima.get(JSON.stringify([next.provider, "all"]));
+    candidates.set(key, { ...next, ...completePrice(next, peer) });
   }
   const result: EffectiveIdentity[] = []; let aliasCount = 0;
   for (const [key, next] of candidates) {
@@ -81,7 +83,7 @@ export function effectivePrices(sources: PriceSnapshot["sources"], previous: rea
       const required = new Set([...old.sources, ...next.sources]);
       const success = [...required].every((source) => successful.has(source));
       if (!success || old.pendingLower === undefined || !equal(next, old.pendingLower)) {
-        const amount = maxPrice(old, next);
+        const amount = maxEffectivePrice(old, next);
         result.push({ ...next, ...amount, sources: [...required], estimated: true, ...((old.knownTokenPrice || next.knownTokenPrice) ? { knownTokenPrice: true } : {}), ...(success ? { pendingLower: resolved(next) } : {}) });
         held(); continue;
       }
@@ -98,7 +100,7 @@ function addMaximum(maxima: Map<string, Price>, provider: string, kind: PriceKin
   }
 }
 export function resolved(p: ResolvedPrice): ResolvedPrice {
-  return { inputMicrosPerMTok: p.inputMicrosPerMTok, outputMicrosPerMTok: p.outputMicrosPerMTok, ...(p.cacheWriteMicrosPerMTok === undefined ? {} : { cacheWriteMicrosPerMTok: p.cacheWriteMicrosPerMTok }), ...(p.operatorReview ? { operatorReview: true } : {}), estimated: p.estimated, ...(p.knownTokenPrice ? { knownTokenPrice: true } : {}) };
+  return { ...copyRates(p) as Price, ...(p.longContext === undefined ? {} : { longContext: p.longContext.map((t) => ({ aboveTokens: t.aboveTokens, ...copyRates(t) })) }), ...(p.operatorReview ? { operatorReview: true } : {}), estimated: p.estimated, ...(p.knownTokenPrice ? { knownTokenPrice: true } : {}) };
 }
 /** Build once; requests use maps only. The same candidate policy reads legacy snapshots without rewriting them. */
 export function priceBook(snapshot: PriceSnapshot | undefined, overrides: Array<PriceEntry & { origin: PriceOrigin; expiresAt: number }> = []): { identities: EffectiveIdentity[]; index: Map<string, EffectiveIdentity>; maxima: Map<string, Price>; unknown: Set<string>; redundantOverrides: number; expiresAt: number } {
@@ -113,7 +115,7 @@ export function priceBook(snapshot: PriceSnapshot | undefined, overrides: Array<
   for (const e of overrides) {
     const key = identityKey(e.provider, e.model); if (index.has(key) || unknown.has(e.model.trim().toLowerCase())) { redundantOverrides++; continue; }
     expiresAt = Math.min(expiresAt, e.expiresAt);
-    const price = { inputMicrosPerMTok: e.inputMicrosPerMTok, outputMicrosPerMTok: e.outputMicrosPerMTok, cacheWriteMicrosPerMTok: cache(e) };
+    const price = completePrice(e);
     index.set(key, { ...e, ...price, aliases: [e.model], sources: [], estimated: false, knownTokenPrice: true, tokenPrice: price });
     addMaximum(maxima, e.provider, e.kind, price);
   }
@@ -123,7 +125,7 @@ export function lookupPrice(book: ReturnType<typeof priceBook>, provider: string
   const identity = book.index.get(identityKey(provider, model)); if (identity !== undefined) return resolved(identity);
   if (book.unknown.has(model.trim().toLowerCase())) return { ...flat };
   const maximum = book.maxima.get(JSON.stringify([provider, kind])) ?? book.maxima.get(JSON.stringify([provider, "all"]));
-  return maximum === undefined ? { ...flat } : { ...cautiousPrice(maximum), estimated: true };
+  return maximum === undefined ? { ...flat } : { ...completePrice(cautiousPrice(maximum)), estimated: true };
 }
 
 /** R3a injected sources adapt to the same candidate policy; production snapshots expose the published effective result. */

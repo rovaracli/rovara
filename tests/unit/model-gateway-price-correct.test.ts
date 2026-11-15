@@ -77,16 +77,16 @@ it("full gateway outcome: cautious hold, usage settlement, refresh correction an
   const { FixedCapsSource } = await import("../../packages/model-gateway/src/caps.js");
   const store = new InMemoryPriceSnapshotStore();
   await store.save({ version: 1, sources: { litellm: { fetchedAt: now, count: 1, entries: [{ provider: "anthropic", model: "old", kind: "chat", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 }] } } }, 0);
-  const prices = new SnapshotPriceSource(store, { now: () => now }); await prices.reload(); const cap = { ...caps, task: 200 }; const f = setup({ prices, caps: new FixedCapsSource(cap) });
+  const prices = new SnapshotPriceSource(store, { now: () => now }); await prices.reload(); const cap = { ...caps, task: 400 }; const f = setup({ prices, caps: new FixedCapsSource(cap) });
   let held = 0; f.deps.transport = async () => { held = (await f.meter.read(scope))[0]!.reservedMicros; return { status: 200, body: answer() }; };
-  expect((await call(f.deps)).status).toBe(200); expect(held).toBe(189);
-  expect(costView(await f.meter.read(scope)).every((row) => row.spentMicros === 29 && row.estimated)).toBe(true);
-  expect((await f.meter.reserve({ scope, caps: cap, estimateMicros: 180 })).ok).toBe(false);
+  expect((await call(f.deps)).status).toBe(200); expect(held).toBe(348);
+  expect(costView(await f.meter.read(scope)).every((row) => row.spentMicros === 35 && row.estimated)).toBe(true);
+  expect((await f.meter.reserve({ scope, caps: cap, estimateMicros: 370 })).ok).toBe(false);
   const ll = { old: { litellm_provider: "anthropic", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 }, "claude-sonnet-4-5": { litellm_provider: "anthropic", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 } };
   const refresher = new PriceRefresher({ store, prices, litellm: (previous) => fetchLiteLLM({ get: async () => ({ status: 200, body: Buffer.from(JSON.stringify(ll)) }) }, { previous, now, minModels: 1 }), aws: async () => ({ ok: false, reason: "invalid source" }), correctedKeys: async () => { await runCorrections({ meter: f.meter, prices, caps: new FixedCapsSource(cap), now, runId: "outcome" }); } });
   await refresher.run(now);
-  expect(costView(await f.meter.read(scope)).every((row) => row.spentMicros === 19 && !row.estimated)).toBe(true);
-  expect((await f.meter.reserve({ scope, caps: cap, estimateMicros: 180 })).ok).toBe(true);
+  expect(costView(await f.meter.read(scope)).every((row) => row.spentMicros === 23 && !row.estimated)).toBe(true);
+  expect((await f.meter.reserve({ scope, caps: cap, estimateMicros: 370 })).ok).toBe(true);
   expect((await runCorrections({ meter: f.meter, prices, caps: new FixedCapsSource(cap), now, runId: "repeat" })).corrected).toBe(0);
 });
 it("known or reported-cost settlements never enter the correction ledger", async () => {

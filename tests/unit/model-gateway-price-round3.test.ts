@@ -34,7 +34,7 @@ it.each([
   const p = await resolvePrice(prices, "anthropic", "claude-sonnet-4-5");
   expect(p).toMatchObject({ estimated: true, inputMicrosPerMTok: Math.ceil(input * 1e12 * 1.5), outputMicrosPerMTok: Math.ceil(output * 1e12 * 1.5) });
   expect(prices.priceFor("anthropic", "claude-sonnet-4-5")).toBeUndefined();
-  expect(estimateCall(1_000_000, 1_000_000, p)).toBe(p.inputMicrosPerMTok + p.outputMicrosPerMTok);
+  expect(estimateCall(1_000_000, 1_000_000, p)).toBe(2 * p.inputMicrosPerMTok + p.outputMicrosPerMTok);
   expect(settleAmount({ price: p, usage, reservationMicros: 1 })).toMatchObject({ actualMicros: p.inputMicrosPerMTok + p.outputMicrosPerMTok, estimated: true });
   expect((await resolvePrice(prices, "anthropic", "unlisted")).inputMicrosPerMTok).toBe(p.inputMicrosPerMTok * 1.5);
   // A different requested kind must still respect this model's own floor.
@@ -133,14 +133,14 @@ it("snapshot floor metadata validates unknown types/reasons and shares the sourc
 });
 it("preserves a floors-only source and prices known identities independently of dearer siblings", async () => {
   const { prices } = await fromRows({ "claude-sonnet-4-5": { ...base, search_context_cost_per_query: 1, cache_creation_input_token_cost: 20e-6 } });
-  expect(await resolvePrice(prices, "anthropic", "claude-sonnet-4-5")).toMatchObject({ estimated: true, inputMicrosPerMTok: 30_000_000, outputMicrosPerMTok: 22_500_000 });
+  expect(await resolvePrice(prices, "anthropic", "claude-sonnet-4-5")).toMatchObject({ estimated: true, inputMicrosPerMTok: 4_500_000, outputMicrosPerMTok: 22_500_000, cacheWrite5mMicrosPerMTok: 30_000_000 });
   const other = await fromRows({ old: { ...base, input_cost_per_token: 30e-6, output_cost_per_token: 60e-6 }, new: { ...base, unknown_cost: 1 }, foreign: { ...base, litellm_provider: "openai", input_cost_per_token: 500e-6 } });
   expect(await resolvePrice(other.prices, "anthropic", "new")).toMatchObject({ inputMicrosPerMTok: 4_500_000, outputMicrosPerMTok: 22_500_000, estimated: true });
 });
 it("integer factor overflow is detected independently of upstream conversion overflow", async () => {
   const { cautiousPrice } = await import("../../packages/model-gateway/src/price.js");
   const safe = Math.floor(Number.MAX_SAFE_INTEGER / 3) * 2;
-  expect(cautiousPrice({ inputMicrosPerMTok: safe, outputMicrosPerMTok: 1 })).toEqual({ inputMicrosPerMTok: safe + Math.ceil(safe / 2), outputMicrosPerMTok: 2, cacheWriteMicrosPerMTok: safe + Math.ceil(safe / 2) });
+  expect(cautiousPrice({ inputMicrosPerMTok: safe, outputMicrosPerMTok: 1 })).toEqual({ inputMicrosPerMTok: safe + Math.ceil(safe / 2), outputMicrosPerMTok: 2 });
   expect(cautiousPrice({ inputMicrosPerMTok: safe + 2, outputMicrosPerMTok: 1 })).toMatchObject({ operatorReview: true, inputMicrosPerMTok: Number.MAX_SAFE_INTEGER });
 });
 it("confirms every LiteLLM drop through the real fetcher", async () => {

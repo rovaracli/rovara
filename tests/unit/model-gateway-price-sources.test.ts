@@ -49,8 +49,8 @@ it("AWS fixture folds geo, global, long context and cache write maxima, with cro
   const result = await fetchAWS(transport(offer), { now, minModels: 2, regions: ["us-west-2"] });
   expect(result.ok).toBe(true); if (!result.ok) return;
   expect(result.entries).toEqual(expect.arrayContaining([
-    { provider: "bedrock", model: "claude-haiku-5-5", kind: "chat", inputMicrosPerMTok: 687500, outputMicrosPerMTok: 2750000 },
-    { provider: "bedrock", model: "claude-fable-5-2", kind: "chat", inputMicrosPerMTok: 17600000, outputMicrosPerMTok: 44000000 },
+    { provider: "bedrock", model: "claude-haiku-5-5", kind: "chat", inputMicrosPerMTok: 110000, outputMicrosPerMTok: 550000, longContext: [{ aboveTokens: 200000, cacheWrite5mMicrosPerMTok: 687500, outputMicrosPerMTok: 2750000 }] },
+    { provider: "bedrock", model: "claude-fable-5-2", kind: "chat", inputMicrosPerMTok: 8800000, outputMicrosPerMTok: 44000000, cacheWrite1hMicrosPerMTok: 17600000 },
   ]));
   const { InMemoryPriceSnapshotStore } = await import("../../packages/model-gateway/src/price-snapshot.js");
   const { SnapshotPriceSource } = await import("../../packages/model-gateway/src/price-index.js");
@@ -87,7 +87,7 @@ it("reads the hand-made LiteLLM fixture and the explicitly assumed OpenRouter fi
   const { parseReportedCost } = await import("../../packages/model-gateway/src/reported-cost.js");
   const body = await readFile(new URL("../fixtures/model-gateway-prices/litellm.json", import.meta.url));
   const result = await fetchLiteLLM({ get: async () => ({ status: 200, body }) }, { minModels: 1 });
-  expect(result.ok && result.entries).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "anthropic", model: "tiered", inputMicrosPerMTok: 8_000_000, outputMicrosPerMTok: 11_000_000 })]));
+  expect(result.ok && result.entries).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "anthropic", model: "tiered", inputMicrosPerMTok: 8_000_000, outputMicrosPerMTok: 2_000_000, cacheWrite1hMicrosPerMTok: 7_000_000, longContext: [{ aboveTokens: 200000, outputMicrosPerMTok: 11_000_000 }] })]));
   const router = JSON.parse(await readFile(new URL("../fixtures/model-gateway-prices/openrouter.json", import.meta.url), "utf8")) as { provenance: string; finalChunk: { usage: unknown } };
   expect(router.provenance).toBe("assumed, verify on staging"); expect(parseReportedCost("openrouter", router.finalChunk.usage)).toBe(13);
 });

@@ -1,3 +1,5 @@
+import { RATE_KEYS, type RateKey } from "./price-tiers.js";
+import type { TokenRates } from "./price.js";
 import { record, whole } from "./model-gateway-token.js";
 import { priceKey, validEntry, validFallback, validFloor, validUnidentified, type UnidentifiedRow, type ModelFloor, type ModelFallback, type PriceEntry } from "./price-snapshot.js";
 import { knownRates, priceKind, priceProvider, ratesOf, tokenRateField } from "./price-classify.js";
@@ -127,7 +129,7 @@ export function fetchAWS(transport: PriceTransport, limits: SourceLimits = {}): 
   return withBudget(limits, AWS_MAX_BYTES, async (budget) => {
     const regions = limits.regions ?? AWS_REGIONS; const min = limits.minModels ?? MIN_AWS_MODELS;
     if (!whole(min) || min < 1 || !Array.isArray(regions) || regions.length < 1 || regions.length > MAX_AWS_REGIONS || new Set(regions).size !== regions.length || regions.some((r: unknown) => typeof r !== "string" || !/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u.test(r))) return failure();
-    const models = new Map<string, { input: number; output: number; baseInput: boolean; baseOutput: boolean; operatorReview: boolean }>(); const report: PriceReport = { skipped: [], ignoredLower: 0 };
+    const models = new Map<string, { base: Partial<TokenRates>; long: Partial<TokenRates>; operatorReview: boolean }>(); const report: PriceReport = { skipped: [], ignoredLower: 0 };
     for (const region of regions as readonly string[]) {
       const offer = await read(transport, awsUrl(region), budget); const products = record(offer.products); const terms = record(record(offer.terms)?.OnDemand);
       if (products === undefined || terms === undefined || Object.keys(products).length === 0) return failure();
@@ -135,7 +137,7 @@ export function fetchAWS(transport: PriceTransport, limits: SourceLimits = {}): 
       for (const [sku, product] of Object.entries(products)) {
         if (performance.now() > budget.deadline || budget.signal.aborted) return failure();
         const attrs = record(record(product)?.attributes); const usage = typeof attrs?.usagetype === "string" ? AWS_USAGE.exec(attrs.usagetype) : null;
-        if (typeof attrs?.model !== "string" || usage === null || (usage[2] !== undefined && (usage[1] !== "cache_write" || usage[3] !== undefined))) { report.skipped.push("unsupported usage"); continue; }
+        if (typeof attrs?.model !== "string" || usage === null || (usage[2] !== undefined && usage[1] !== "cache_write")) { report.skipped.push("unsupported usage"); continue; }
         const name = attrs.model.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "");
         let price = 0; let invalid = false; let operatorReview = false;
         const skuTerms = record(terms[sku]); if (skuTerms === undefined) return failure();
@@ -150,18 +152,19 @@ export function fetchAWS(transport: PriceTransport, limits: SourceLimits = {}): 
           }
         }
         if (invalid || price === 0) return failure(); // Never publish a cheaper partial model after losing a priced tier.
-        const row = models.get(name) ?? { input: 0, output: 0, baseInput: false, baseOutput: false, operatorReview: false };
+        const row = models.get(name) ?? { base: {}, long: {}, operatorReview: false };
         row.operatorReview ||= operatorReview;
-        if (usage[1] === "output") { row.output = Math.max(row.output, price); row.baseOutput ||= usage[3] === undefined; }
-        else { row.input = Math.max(row.input, price); row.baseInput ||= usage[1] === "input" && usage[3] === undefined; }
+        const key: RateKey = usage[1] === "input" ? "inputMicrosPerMTok" : usage[1] === "output" ? "outputMicrosPerMTok" : usage[1] === "cache_read" ? "cacheReadMicrosPerMTok" : usage[2] === undefined ? "cacheWrite5mMicrosPerMTok" : "cacheWrite1hMicrosPerMTok";
+        const rates = usage[3] === undefined ? row.base : row.long;
+        rates[key] = Math.max(rates[key] ?? 0, price);
         models.set(name, row);
       }
     }
     const entries: PriceEntry[] = []; const floors: ModelFloor[] = [];
     for (const [model, rate] of models) {
-      if (!rate.baseInput || !rate.baseOutput) { report.skipped.push("missing base rate"); continue; }
-      const e: PriceEntry = { provider: "bedrock", model, kind: "chat", inputMicrosPerMTok: rate.input, outputMicrosPerMTok: rate.output };
-      if (rate.input > PRICE_MAX || rate.output > PRICE_MAX || rate.operatorReview) {
+      if (!rate.base.inputMicrosPerMTok || !rate.base.outputMicrosPerMTok) { report.skipped.push("missing base rate"); continue; }
+      const e: PriceEntry = { provider: "bedrock", model, kind: "chat", ...rate.base as TokenRates, ...(Object.keys(rate.long).length ? { longContext: [{ aboveTokens: 200_000, ...rate.long }] } : {}) };
+      if ([rate.base, rate.long].some((r) => RATE_KEYS.some((k) => (r[k] ?? 0) > PRICE_MAX)) || rate.operatorReview) {
         const floor: ModelFloor = { ...e, reason: "token rate exceeds maximum", ...(rate.operatorReview ? { operatorReview: true } : {}) };
         if (!validFloor(floor)) return failure(); floors.push(floor); report.skipped.push("token rate exceeds maximum");
       } else { if (!validEntry(e)) return failure(); entries.push(e); }

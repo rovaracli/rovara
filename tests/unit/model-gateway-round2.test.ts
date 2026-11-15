@@ -71,7 +71,7 @@ it.each([10, 6000, 128_000])("R2 deadline scales with applied max %s and never e
     await vi.advanceTimersByTimeAsync(duration - 1); expect(cancelled).toBe(false);
     await vi.advanceTimersByTimeAsync(1); expect(cancelled).toBe(true); await running;
     expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: false }));
-    expect((await f.deps.meter.read(scope))[0]?.spentMicros).toBe(Buffer.byteLength(JSON.stringify({ ...requestBody, max_tokens: maxTokens })) + maxTokens * 2);
+    expect((await f.deps.meter.read(scope))[0]?.spentMicros).toBe(Buffer.byteLength(JSON.stringify({ ...requestBody, max_tokens: maxTokens })) * 2 + maxTokens * 2);
   } finally { await vi.advanceTimersByTimeAsync(24 * 60 * 60_000); await running; vi.useRealTimers(); }
 });
 
@@ -98,7 +98,7 @@ it("R2 ended admission is isolated by company and issuer", async () => {
   expect(await f.ended.isEnded("https://other.invalid", scope.cid, scope.tid)).toBe(false);
 });
 
-it.each([["5m", 125], ["1h", 200], ["unknown", 200], ["mixed", 170], ["explicit", 175]])("R2 cache-write %s rate settles through provider usage", async (tier, expected) => {
+it.each([["5m", 200], ["1h", 200], ["unknown", 200], ["mixed", 200], ["explicit", 175]])("R2 cache-write %s rate settles through provider usage", async (tier, expected) => {
   const detail = tier === "5m" ? { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 0 } : tier === "1h" ? { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 100 } : tier === "mixed" ? { ephemeral_5m_input_tokens: 40, ephemeral_1h_input_tokens: 60 } : undefined;
   const row = { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, ...(tier === "explicit" ? { cacheWriteMicrosPerMTok: 1_750_000 } : {}) };
   const f = setup({ prices: { priceFor: () => row }, transport: async () => ({ status: 200, body: (async function* () {
