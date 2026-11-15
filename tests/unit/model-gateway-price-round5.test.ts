@@ -125,17 +125,35 @@ it("the complete pooled identity/alias bound resolves in bounded time and oldest
   const { effectivePrices } = await import("../../packages/model-gateway/src/price-sanity.js");
   const { validSnapshot } = await import("../../packages/model-gateway/src/price-snapshot.js");
   const entry = { provider: "bedrock", model: "m", kind: "chat" as const, inputMicrosPerMTok: 1, outputMicrosPerMTok: 2, cacheReadMicrosPerMTok: 0, cacheWrite5mMicrosPerMTok: 2, cacheWrite1hMicrosPerMTok: 3, longContext: [{ aboveTokens: 128000, inputMicrosPerMTok: 3 }, { aboveTokens: 200000, inputMicrosPerMTok: 4 }] };
-  const entries = Array.from({ length: 20_000 }, (_, i) => ({ ...entry, model: `us.anthropic.model-${i}-v1:0` }));
-  const sources = { litellm: { fetchedAt: 1, count: entries.length, entries }, aws: { fetchedAt: 1, count: entries.length, entries: entries.map((e, i) => ({ ...e, model: `model-${i}` })) } };
-  const start = performance.now(); const effective = effectivePrices(sources); expect(effective).toHaveLength(20_000);
-  expect(effective.every((e) => e.aliases.length === 2)).toBe(true); expect(validSnapshot({ version: 1, sources, effective })).toBe(true);
-  expect(effectivePrices(sources, effective)).toHaveLength(20_000); expect(performance.now() - start).toBeLessThan(5000);
+  const sourcesOf = (n: number) => {
+    const entries = Array.from({ length: n }, (_, i) => ({ ...entry, model: `us.anthropic.model-${i}-v1:0` }));
+    return { litellm: { fetchedAt: 1, count: entries.length, entries }, aws: { fetchedAt: 1, count: entries.length, entries: entries.map((e, i) => ({ ...e, model: `model-${i}` })) } };
+  };
+  // One full refresh at n entries per source: resolve, validate, and resolve again against the previous identities.
+  const timed = (sources: ReturnType<typeof sourcesOf>) => {
+    const start = performance.now();
+    const first = effectivePrices(sources); const valid = validSnapshot({ version: 1, sources, effective: first }); const again = effectivePrices(sources, first);
+    return { ms: performance.now() - start, first, valid, again };
+  };
+  // Bounded time as a SCALING check, not a wall-clock bound (a fixed 5 s flaked on loaded CI runners in 2 of 4 runs): 8x the
+  // entries must take roughly 8x the time (measured 7.8-8.5x with the fastest-of-runs below). A resolver that scans what it has resolved per entry (quadratic)
+  // measured 24-26x and fails the 16x ratio; a hang still fails the generous 30 s limit. Both runs share the runner's load.
+  const small = sourcesOf(2_500); const sources = sourcesOf(20_000);
+  timed(sourcesOf(500)); // warm-up: JIT and allocation, so the small run is not timed cold
+  // The fastest of a few runs at each size: the runner's load only ever adds time, so the minimum is the steadiest estimate.
+  const smallMs = Math.min(timed(small).ms, timed(small).ms, timed(small).ms);
+  const big = timed(sources); const bigMs = Math.min(big.ms, timed(sources).ms); const effective = big.first;
+  expect(effective).toHaveLength(20_000);
+  expect(effective.every((e) => e.aliases.length === 2)).toBe(true); expect(big.valid).toBe(true);
+  expect(big.again).toHaveLength(20_000);
+  expect(big.ms).toBeLessThan(30_000);
+  expect(bigMs / Math.max(smallMs, 1)).toBeLessThan(16);
   const next = structuredClone(sources); next.litellm.entries[0]!.model = "eu.anthropic.model-0-v1:0";
   const pruned = effectivePrices(next, effective);
   expect(pruned.flatMap((e) => e.aliases)).toHaveLength(40_000);
   expect(validSnapshot({ version: 2, sources: next, effective: pruned })).toBe(true);
   expect(validSnapshot({ version: 1, sources, effective: [...effective, ...effective] })).toBe(false);
-});
+}, 120_000);
 it("successful complete disappearance confirms the provider fallback, while source failure never does", async () => {
   const f = fixture(); const peers = Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`peer-${i}`, row(3)]));
   await f.fetch({ ...peers, [model]: row(15) }); await f.fetch(peers); await money(f, 15, 75, true);
