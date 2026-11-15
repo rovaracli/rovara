@@ -23,6 +23,9 @@
       "path": "packages/cloud-server"
     },
     {
+      "path": "packages/model-gateway"
+    },
+    {
       "path": "tests/web"
     },
     {
