@@ -1,11 +1,18 @@
 name: CI
 
-# Rovara Cloud: MANUAL RUNS ONLY (owner decision 2026-10-27, to protect the Actions budget).
+# Rovara Cloud. On the private PrepLabsAI/Rovara-cloud this is MANUAL RUNS ONLY (owner decision 2026-10-27, to protect the Actions budget; the workflow is
+# disabled there). The gate for Cloud pull requests and cloud/next is the PUBLIC CI-only copy rovaracli/rovara (free runners; DEC 33/33a, DEC 235a): there every push
+# to cloud/next or to a `cloud-pr/<n>` branch runs the whole suite in 8 test shards plus typecheck:all, lint and build:web (scripts: ~/.local/share/rovara-tools/cloud-ci.sh <pr>).
 # Cloud is the API layer (packages/cloud-server and the web app over Rovara Code's API) plus its one
 # stack and release pipeline (infra/), so CI checks only those: the type checks, lint, the test shards,
 # a reproducible web build, the browser tests against the pretend Code, and the CDK synth.
 on:
   workflow_dispatch:
+  # Only rovaracli/rovara acts on a push: the `if` of `scope` and `local` below skips every other repository, so a push to Rovara-cloud starts no job.
+  push:
+    branches:
+      - cloud/next
+      - cloud-pr/**
 
 # Read-only.
 permissions:
@@ -13,10 +20,10 @@ permissions:
 
 # A newer run on the same ref supersedes the one in progress (owner decision "CI cost", 2026-11-02): a second manual run of a branch, or a new push to a pull
 # request, cancels the first one's remaining jobs, so no runner minutes are spent on a commit nobody is waiting for. This includes a manual run: dispatch a
-# branch again only when you mean to replace the run in progress.
+# branch again only when you mean to replace the run in progress. A run of cloud/next itself is never cancelled by a later push: each merge keeps its own verdict.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/cloud/next' }}
 
 # Cheap checks first, expensive jobs second. `scope` decides whether anything needs to run. `checks` (the type check, which also builds the packages, and the stricter type check; a few minutes
 # on its own) must pass before the test shards and the release check start, so a type error stops the run
@@ -30,7 +37,7 @@ jobs:
   scope:
     if: >-
       github.event.pull_request.draft != true && (
-      (github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name != 'push')
+      (github.repository != 'PrepLabsAI/Rovara-cloud' && (github.event_name != 'push' || github.repository == 'rovaracli/rovara'))
       || (github.repository == 'PrepLabsAI/Rovara-cloud' && (github.event_name != 'pull_request' || github.base_ref == 'cloud/integration' || startsWith(github.base_ref, 'release/'))))
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -60,7 +67,7 @@ jobs:
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
     # Cloud runs on private 2 vCPU / 8 GB runners, about 1.6x slower than the public 4 vCPU ones. Without the lint (its own job below) this took about 11 minutes there.
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 30 || 15 }}
+    timeout-minutes: ${{ (github.repository == 'PrepLabsAI/Rovara-cloud' || github.repository_owner == 'rovaracli') && 30 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -99,7 +106,7 @@ jobs:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 45 || 15 }}
+    timeout-minutes: ${{ (github.repository == 'PrepLabsAI/Rovara-cloud' || github.repository_owner == 'rovaracli') && 45 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -119,17 +126,17 @@ jobs:
   # files made some shards take twice as long as others). tests/support/duration-sequencer.ts, set in vitest.config.ts, splits the files by the recorded seconds in
   # tests/.timings/vitest-durations.json; a file with no recorded time gets the median. Regenerate the timings (scripts/test-shard-timings.ts) after many files are added. To change
   # the count, change the list: the shard total below comes from it. Four shards took 49 to 61 minutes each on the private repo's 2 vCPU runners (run 41332313193: one hit
-  # the 60-minute limit), so there are six: about 35 to 40 minutes each, for about the same total runner minutes. They wait for `checks`, so a type error stops them before they start.
+  # the 60-minute limit), so there were six; on the public copy's free runners there are eight (DEC 235a), the gate for Cloud pull requests: the same total runner minutes, less waiting. They wait for `checks`, so a type error stops them before they start.
   test:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     name: test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 80 || 25 }}
+    timeout-minutes: ${{ (github.repository == 'PrepLabsAI/Rovara-cloud' || github.repository_owner == 'rovaracli') && 60 || 25 }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -158,7 +165,7 @@ jobs:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 25 || 15 }}
+    timeout-minutes: ${{ (github.repository == 'PrepLabsAI/Rovara-cloud' || github.repository_owner == 'rovaracli') && 25 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -188,7 +195,7 @@ jobs:
     needs: [scope, checks]
     if: needs.scope.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.repository == 'PrepLabsAI/Rovara-cloud' && 30 || 15 }}
+    timeout-minutes: ${{ (github.repository == 'PrepLabsAI/Rovara-cloud' || github.repository_owner == 'rovaracli') && 30 || 15 }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -243,7 +250,7 @@ jobs:
     needs: [scope, checks, lint, test, release, browser]
     if: >-
       always() && github.event.pull_request.draft != true && (
-      (github.repository != 'PrepLabsAI/Rovara-cloud' && github.event_name != 'push')
+      (github.repository != 'PrepLabsAI/Rovara-cloud' && (github.event_name != 'push' || github.repository == 'rovaracli/rovara'))
       || (github.repository == 'PrepLabsAI/Rovara-cloud' && (github.event_name != 'pull_request' || github.base_ref == 'cloud/integration' || startsWith(github.base_ref, 'release/'))))
     runs-on: ubuntu-latest
     timeout-minutes: 5
