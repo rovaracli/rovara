@@ -52,6 +52,11 @@ export interface CloudWebProps extends StackProps {
 }
 
 export class CloudWebStack extends Stack {
+  /** Its state: where the Fargate app copies Cloud's sessions when it moves here (#11). */
+  readonly table: dynamodb.ITableV2;
+  /** Its https address (CloudFront's), where the Fargate app sends people once it has moved. */
+  readonly origin: string;
+
   constructor(scope: Construct, id: string, props: CloudWebProps) {
     super(scope, id, props);
     const env = props.environmentName;
@@ -177,6 +182,9 @@ export class CloudWebStack extends Stack {
     });
 
     const origin = `https://${distribution.distributionDomainName}`;
+    // aws-cdk-lib types TableV2.tableId as `string | undefined`, which exactOptionalPropertyTypes rejects for ITableV2.
+    this.table = table as dynamodb.ITableV2;
+    this.origin = origin;
     new ssm.StringParameter(this, "Origin", {
       parameterName: originParameter,
       stringValue: origin,

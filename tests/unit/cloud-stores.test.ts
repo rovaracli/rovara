@@ -183,6 +183,30 @@ describe.skipIf(!docker)("the DynamoDB stores (several servers, DynamoDB Local)"
   };
   contract("the shared cases", stores);
 
+  it("takes in the Fargate app's sessions (#11): comments, followers and start requests, and leaves alone what is already here", async () => {
+    const local = new LocalWorkSessionStore();
+    const plain = session(), busy = session(GRACE);
+    await local.put(plain, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    await local.put({ ...busy, followers: [ADA], messages: Array.from({ length: 150 }, (_, index) => comment(index)), messageRequests: { r1: comment(0).messageId } }, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    const everything = local.everything();
+    expect(everything.sessions.every((each) => each.storeVersion === undefined)).toBe(true);
+    // A second start request for the same session (a retried start that found it).
+    everything.requests["cccccccc-cccc-4ccc-8ccc-cccccccccccc"] = busy.sessionId;
+    const { work } = stores();
+    expect(await (work as DynamoWorkSessionStore).copyIn(everything)).toEqual({ copied: 2, skipped: 0 });
+    const moved = (await work.get(busy.sessionId))!;
+    expect(moved.followers).toEqual([ADA]);
+    expect(moved.messages).toHaveLength(150);
+    expect(moved.messageRequests).toEqual({ r1: comment(0).messageId });
+    expect((await work.byRequest("cccccccc-cccc-4ccc-8ccc-cccccccccccc"))?.sessionId).toBe(busy.sessionId);
+    expect((await work.byRequest("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"))?.sessionId).toBe(plain.sessionId);
+    expect((await work.startedBy(GRACE.developerId)).map((each) => each.sessionId)).toContain(busy.sessionId);
+    // Copying again changes nothing: a session written here since is kept as it is.
+    await work.put({ ...moved, followers: [] });
+    expect(await (work as DynamoWorkSessionStore).copyIn(everything)).toEqual({ copied: 0, skipped: 2 });
+    expect((await work.get(busy.sessionId))!.followers).toEqual([]);
+  }, 60_000);
+
   it("forgets a sign-in after the idle limit, and a sign-in under way after ten minutes", async () => {
     const { sessions } = stores();
     await sessions.create("cookie-old", signIn("old"));

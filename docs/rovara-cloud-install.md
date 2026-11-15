@@ -68,6 +68,22 @@ Before people move to the new address, a Code administrator adds its callback to
 Run the stack's `AddRedirectOnCode` output, filling in the old `CallbackUrl` so the Fargate app keeps
 working. People sign in once at the new address.
 
+**Moving people over.** The release that moves people over runs through the pipeline like any other.
+1. **The new stack deploys first.**
+2. **The Fargate task copies.** On its next start, before it answers anything, it copies Cloud's sessions
+   from its EFS file into the new stack's table: followers, comments and start requests. It skips any
+   session already there, so a later start copies nothing new. A failed copy stops the task from
+   starting, and the release rolls back.
+3. **The Fargate task redirects.** From then on it answers every request with a 308 to the same path at
+   the new address, so nothing is written to EFS any more.
+
+Sign-ins aren't copied: browsers keep cookies per address, so people sign in once at the new address.
+Don't release the move until the new callback is registered on Code. Otherwise nobody can sign in.
+
+**The release check.** While `cdk deploy` runs, the pipeline asks the new address for `/app` and
+`/v1/web/me` every second. Any 5xx or failed connection fails the release, even if the deploy succeeded,
+and the errors are listed in the deploy job's log.
+
 ## Setting up the pipeline (once)
 
 The pipeline is the stack `rovara-cloud-<env>-pipeline` (`infra/lib/cloud-release-pipeline.ts`), in the

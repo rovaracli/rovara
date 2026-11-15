@@ -133,4 +133,14 @@ export class LocalWorkSessionStore implements WorkSessionStore {
     return Object.values(this.data.sessions).filter((session) => session.startedBy.developerId === developerId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((session) => withoutComments(this.read(session)!));
   }
+
+  /** Everything this store holds, for moving it to another (#11): each session as new (no `storeVersion`), and the start requests. */
+  everything(): { sessions: WorkSession[]; requests: Record<string, string> } {
+    const sessions = Object.values(this.data.sessions).map((session) => {
+      const copy = structuredClone(session);
+      delete copy.storeVersion;
+      return copy;
+    });
+    return { sessions, requests: { ...this.data.requests } };
+  }
 }

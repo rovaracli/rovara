@@ -157,6 +157,32 @@ export class DynamoWorkSessionStore implements WorkSessionStore {
     for (const comment of session.messages ?? []) this.unchanged.add(comment);
   }
 
+  /**
+   * Takes in sessions from another store (#11: the Fargate app's file), each with its comments and the start requests that made it.
+   * A session already here is left as it is, so copying again changes nothing. Answers how many were copied and skipped.
+   */
+  async copyIn(from: { sessions: WorkSession[]; requests: Record<string, string> }): Promise<{ copied: number; skipped: number }> {
+    const requestsOf = new Map<string, string[]>();
+    for (const [requestId, sessionId] of Object.entries(from.requests)) requestsOf.set(sessionId, [...(requestsOf.get(sessionId) ?? []), requestId]);
+    let copied = 0, skipped = 0;
+    for (const session of from.sessions) {
+      const fresh: WorkSession = { ...session };
+      delete fresh.storeVersion;
+      const [first, ...more] = requestsOf.get(session.sessionId) ?? [];
+      try {
+        await this.put(fresh, first);
+        copied += 1;
+      } catch (error) {
+        if (!(error instanceof StoreConflict)) throw error;
+        skipped += 1;
+      }
+      for (const requestId of more) {
+        await this.db.send(new PutCommand({ TableName: this.table, Item: { pk: `REQUEST#${requestId}`, sk: "REQUEST", sessionId: session.sessionId } }));
+      }
+    }
+    return { copied, skipped };
+  }
+
   async startedBy(developerId: string): Promise<WorkSession[]> {
     const sessions: WorkSession[] = [];
     let start: Record<string, unknown> | undefined;

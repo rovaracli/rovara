@@ -19,14 +19,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   const cloudAppEnv = app.node.tryGetContext(CLOUD_APP_CONTEXT_KEY) as unknown;
   if (cloudAppEnv !== undefined) {
     if (typeof cloudAppEnv !== "string" || cloudAppEnv === "") throw new Error(`${CLOUD_APP_CONTEXT_KEY} must name the Rovara Cloud environment, for example production`);
-    const cloudApp = new CloudAppStack(app, "RovaraCloudApp", {
-      description: `Rovara Cloud ${cloudAppEnv}: the web app and Cloud's server, signing people in through Rovara Code`,
-      stackName: cloudAppStackName(cloudAppEnv),
-      env: { region: deploymentRegion ?? "us-east-1" },
-      environmentName: cloudAppEnv,
-    });
-    Tags.of(cloudApp).add(ENVIRONMENT_TAG_KEY, cloudAppEnv);
-    // The same Cloud with no gap on a release (#11): beside cloud-app.ts until people move to its address.
+    // The same Cloud with no gap on a release (#11). People have moved here; cloud-app.ts only redirects to it.
     const cloudWeb = new CloudWebStack(app, "RovaraCloudWeb", {
       description: `Rovara Cloud ${cloudAppEnv}: the web app on CloudFront and S3, Cloud's server on Lambda, its state in DynamoDB`,
       stackName: cloudWebStackName(cloudAppEnv),
@@ -34,6 +27,18 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       environmentName: cloudAppEnv,
     });
     Tags.of(cloudWeb).add(ENVIRONMENT_TAG_KEY, cloudAppEnv);
+    const cloudApp = new CloudAppStack(app, "RovaraCloudApp", {
+      description: `Rovara Cloud ${cloudAppEnv}: the web app and Cloud's server, signing people in through Rovara Code`,
+      stackName: cloudAppStackName(cloudAppEnv),
+      env: { region: deploymentRegion ?? "us-east-1" },
+      environmentName: cloudAppEnv,
+      // Moved (#11): its sessions are copied to the new stack's table, and its address sends people to the new one.
+      moveTo: { origin: cloudWeb.origin, table: cloudWeb.table },
+    });
+    Tags.of(cloudApp).add(ENVIRONMENT_TAG_KEY, cloudAppEnv);
+    // Said outright, not only through the references: the new address and its table exist before the Fargate app copies to them and
+    // sends people there.
+    cloudApp.addStackDependency(cloudWeb, "it copies to the new stack's table and sends people to its address");
     return app;
   }
   // The Rovara Cloud release pipeline: deployed once by hand, then every vX.Y.Z tag deploys that Cloud through it.

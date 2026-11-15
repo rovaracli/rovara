@@ -93,6 +93,9 @@ describe("Rovara Cloud on CloudFront, Lambda and DynamoDB (Rovara-cloud#11)", ()
     expect(() => synth("abcdefghijklmno")).toThrow(/at most 14 characters/);
     const app = buildAgentXApp({ rovaraCloudApp: "production", agentxRegion: "us-east-1" });
     const stacks = app.node.children.filter((each) => "stackName" in each) as Array<{ stackName: string }>;
-    expect(stacks.map((each) => each.stackName)).toEqual(["rovara-cloud-production-app", "rovara-cloud-production-web"]);
+    expect(stacks.map((each) => each.stackName).sort()).toEqual(["rovara-cloud-production-app", "rovara-cloud-production-web"]);
+    // People have moved here (#11): the Fargate app copies to this stack's table and redirects here, so this one deploys first.
+    const fargate = stacks.find((each) => each.stackName === "rovara-cloud-production-app") as unknown as { dependencies: Array<{ stackName: string }> };
+    expect(fargate.dependencies.map((each) => each.stackName)).toEqual(["rovara-cloud-production-web"]);
   });
 });

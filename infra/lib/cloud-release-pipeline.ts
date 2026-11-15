@@ -59,6 +59,32 @@ const FIND_RELEASE_TAG = [
   'echo "release $RELEASE_TAG at $(git rev-parse HEAD)"',
 ];
 
+/** How often the release check asks the live address during a deploy, and what it asks for (the page shell, and the API without a sign-in). */
+export const RELEASE_CHECK_PATHS = ["/app", "/v1/web/me"] as const;
+
+/**
+ * The deploy, with the release check around it (#11): while `cdk deploy` runs, Cloud's live address (the web stack's CloudUrl) is asked
+ * every second, and any 5xx or failed connection fails the release, even when the deploy itself succeeded. The first deploy of the web
+ * stack has no address yet, so it isn't checked.
+ */
+const RELEASE_CHECKED_DEPLOY = [
+  'base="$(aws cloudformation describe-stacks --stack-name "${STACK_PREFIX}-web" --query "Stacks[0].Outputs[?OutputKey==\'CloudUrl\'].OutputValue" --output text 2>/dev/null | sed "s#/app\\$##")"',
+  "rm -f /tmp/release-check.log; poller=",
+  'if [ -n "$base" ] && [ "$base" != "None" ]; then',
+  `  ( while :; do for path in ${RELEASE_CHECK_PATHS.join(" ")}; do code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$base$path")"; case "$code" in 5*|000) echo "$(date -u +%H:%M:%S) $path $code" >> /tmp/release-check.log;; esac; done; sleep 1; done ) &`,
+  "  poller=$!",
+  '  echo "release check: asking $base every second during the deploy"',
+  "else",
+  '  echo "release check: no live address yet (the first deploy of ${STACK_PREFIX}-web), so nothing to check"',
+  "fi",
+  `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`,
+  "status=$?",
+  'if [ -n "$poller" ]; then kill "$poller" 2>/dev/null; wait "$poller" 2>/dev/null; fi',
+  'if [ -s /tmp/release-check.log ]; then echo "the release check saw errors on $base during the deploy:" >&2; cat /tmp/release-check.log >&2; exit 1; fi',
+  'if [ -n "$poller" ]; then echo "release check: no errors on $base during the deploy"; fi',
+  "exit $status",
+].join("\n");
+
 export class CloudReleasePipelineStack extends Stack {
   constructor(scope: Construct, id: string, props: CloudReleasePipelineProps) {
     super(scope, id, props);
@@ -105,22 +131,25 @@ export class CloudReleasePipelineStack extends Stack {
         env: {
           shell: "bash",
           "git-credential-helper": "yes",
-          variables: { ROVARA_ENV: env, CODE_URL: codeUrl.valueAsString, NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS },
+          variables: { ROVARA_ENV: env, STACK_PREFIX: `${RESOURCE_PREFIX}-${env}`, CODE_URL: codeUrl.valueAsString, NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS },
         },
         phases: {
           install: { commands: INSTALL_NODE },
           // The web build: cloud-web.ts uploads the app's files to S3 and puts the page shell in the function.
           pre_build: { commands: [...FIND_RELEASE_TAG, "npm ci", "npx tsc -b infra", "npm run build:web"] },
           build: {
-            commands: [
-              `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" ` +
-                '--parameters CodeUrl="$CODE_URL" --require-approval never --progress events',
-            ],
+            // One command: the release check's poller and the deploy share one shell.
+            commands: [RELEASE_CHECKED_DEPLOY],
           },
         },
       }),
     });
     deploy.addToRolePolicy(useConnection);
+    // The release check reads the live address from the web stack's outputs, and nothing else.
+    deploy.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["cloudformation:DescribeStacks"],
+      resources: [`arn:${this.partition}:cloudformation:${this.region}:${this.account}:stack/${RESOURCE_PREFIX}-${env}-web/*`],
+    }));
     // cdk deploy works through the account's bootstrap roles (deploy, publishing, lookup) and nothing else.
     deploy.addToRolePolicy(new iam.PolicyStatement({
       actions: ["sts:AssumeRole"],

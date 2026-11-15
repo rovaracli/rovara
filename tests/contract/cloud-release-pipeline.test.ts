@@ -47,13 +47,15 @@ describe("Rovara Cloud release pipeline", () => {
 
   it("deploys the Cloud stack alone with cdk, from the release tag, given Code's address", () => {
     const { variables, phases, commands } = deploySpec();
-    expect(variables).toMatchObject({ ROVARA_ENV: "production", CODE_URL: "<token>", NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS });
+    expect(variables).toMatchObject({ ROVARA_ENV: "production", STACK_PREFIX: "rovara-cloud-production", CODE_URL: "<token>", NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS });
     expect(commands).toContain('RELEASE_TAG="$(git tag --points-at HEAD');
     // The web build comes first: cloud-web.ts uploads the app's files and puts the page shell in the function.
     expect(phases.pre_build!.commands.slice(-3)).toEqual(["npm ci", "npx tsc -b infra", "npm run build:web"]);
-    expect(phases.build!.commands).toEqual([
+    // One command: the release check's poller runs around the deploy in the same shell (tests/contract/cloud-release-check.test.ts runs it).
+    expect(phases.build!.commands).toHaveLength(1);
+    expect(phases.build!.commands[0]).toContain(
       `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`,
-    ]);
+    );
     // Nothing of Code's: no rovara init or upgrade.
     expect(commands).not.toMatch(/\binit\b|\bupgrade\b/);
   });
@@ -66,6 +68,10 @@ describe("Rovara Cloud release pipeline", () => {
     const assume = statements.filter((statement) => [statement.Action].flat().some((action) => action.startsWith("sts:")));
     expect(assume).toHaveLength(1);
     expect(JSON.stringify(assume[0]!.Resource)).toContain(`:role/cdk-${CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER}-*-`);
+    // The release check reads the web stack's outputs, and no other stack's.
+    const describe = statements.filter((statement) => [statement.Action].flat().includes("cloudformation:DescribeStacks"));
+    expect(describe).toHaveLength(1);
+    expect(JSON.stringify(describe[0]!.Resource)).toContain(":stack/rovara-cloud-production-web/*");
     // Nothing else beyond its logs, the artifacts, reports and the connection: no wildcard actions.
     expect(statements.flatMap((statement) => [statement.Action].flat()).filter((action) => action === "*" || action.endsWith(":*"))).toEqual([]);
   });

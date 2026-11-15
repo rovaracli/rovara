@@ -97,6 +97,11 @@ export interface CloudAppProps extends StackProps {
   readonly environmentName: string;
   /** The container image; by default built from environments/cloud/Dockerfile at deploy. Tests pass a stand-in. */
   readonly image?: ecs.ContainerImage;
+  /**
+   * Moving to Cloud's next address (#11, cloud-web.ts): on its next start the task copies Cloud's sessions from its file into
+   * `table` (skipping any already there), then answers every request with a redirect to `origin`.
+   */
+  readonly moveTo?: { origin: string; table: dynamodb.ITableV2 };
 }
 
 export class CloudAppStack extends Stack {
@@ -234,8 +239,11 @@ export class CloudAppStack extends Stack {
         CLOUD_WORK_SESSIONS_FILE: `${CLOUD_APP_DATA_PATH}/work-sessions.json`,
         // The file an older Cloud kept sign-ins in, under raw cookies: its sign-ins are revoked at Code and it is removed.
         CLOUD_LEGACY_SESSIONS_FILE: `${CLOUD_APP_DATA_PATH}/sessions.json`,
+        ...(props.moveTo === undefined ? {} : { CLOUD_MOVE_TABLE: props.moveTo.table.tableName, CLOUD_MOVED_TO: props.moveTo.origin }),
       },
     });
+    // The copy writes Cloud's sessions, with their comments and start requests, into the next address's table.
+    props.moveTo?.table.grantReadWriteData(task.taskRole);
     container.addMountPoints({ containerPath: CLOUD_APP_DATA_PATH, sourceVolume: "data", readOnly: false });
 
     const service = new ecs.FargateService(this, "Service", {

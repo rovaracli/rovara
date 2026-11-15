@@ -19,7 +19,7 @@ function start(env: Record<string, string>): { child: ChildProcess; ready: Promi
   children.push(child);
   let output = "";
   const ready = new Promise<string>((resolve) => {
-    child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); if (output.includes("Rovara Cloud on")) resolve(output); });
+    child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); if (/Rovara Cloud (on|has moved)/u.test(output)) resolve(output); });
   });
   child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
   const exited = new Promise<{ code: number | null; output: string }>((resolve) => child.on("exit", (code) => resolve({ code, output })));
@@ -58,5 +58,27 @@ describe("the Rovara Cloud server entry", () => {
     const { code, output } = await exited;
     expect(code).not.toBe(0);
     expect(output).toContain("CLOUD_ORIGIN must be an https address or http://127.0.0.1:0");
+  }, 30_000);
+});
+
+describe("the Rovara Cloud server entry once Cloud has moved (#11)", () => {
+  it("answers every request, any method, with a 308 to the same path and query at the new address", async () => {
+    const port = String(40000 + Math.floor(Math.random() * 10000));
+    const { ready } = start({ CLOUD_ORIGIN: "https://old.example.test", HOST: "127.0.0.1", PORT: port, CLOUD_MOVED_TO: "https://new.example.test/" });
+    expect(await ready).toContain("Rovara Cloud has moved: https://old.example.test answers every request with a redirect to https://new.example.test");
+    for (const [method, path] of [["GET", "/app/projects/demo?tab=work"], ["POST", "/v1/web/sessions/ses_aaaaaaaaaaaaaaaaaaaa/messages"], ["GET", "/"], ["GET", "/callback?code=x&state=y"]] as const) {
+      const answer = await fetch(`http://127.0.0.1:${port}${path}`, { method, redirect: "manual", ...(method === "POST" ? { body: "{}" } : {}) });
+      expect(answer.status).toBe(308);
+      expect(answer.headers.get("location")).toBe(`https://new.example.test${path}`);
+    }
+  }, 30_000);
+
+  it("refuses a new address that isn't https, or has a path", async () => {
+    for (const movedTo of ["http://new.example.test", "https://new.example.test/app"]) {
+      const { exited } = start({ CLOUD_MOVED_TO: movedTo });
+      const { code, output } = await exited;
+      expect(code).not.toBe(0);
+      expect(output).toContain("CLOUD_MOVED_TO must be an https address with no path");
+    }
   }, 30_000);
 });

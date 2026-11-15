@@ -1,4 +1,5 @@
-import { App } from "aws-cdk-lib";
+import { App, Stack } from "aws-cdk-lib";
+import { AttributeType, TableV2, type ITableV2 } from "aws-cdk-lib/aws-dynamodb";
 import { ContainerImage } from "aws-cdk-lib/aws-ecs";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
@@ -111,4 +112,37 @@ describe("Rovara Cloud stack", () => {
     expect(() => synth("abcdefghijklmno")).toThrow(/at most 14 characters/);
   });
 
+});
+
+describe("Rovara Cloud stack, once moved to its next address (#11)", () => {
+  const app = new App();
+  const next = new Stack(app, "Next", { env: { region: "us-east-1" } });
+  const table = new TableV2(next, "State", { partitionKey: { name: "pk", type: AttributeType.STRING }, sortKey: { name: "sk", type: AttributeType.STRING } });
+  const moved = new CloudAppStack(app, "RovaraCloudApp", {
+    environmentName: "production", env: { region: "us-east-1" }, image: ContainerImage.fromRegistry("example.com/rovara-cloud:test"),
+    moveTo: { origin: "https://d5hwoqksa23xv.cloudfront.net", table: table as unknown as ITableV2 },
+  });
+  const template = Template.fromStack(moved);
+  const container = (Object.values(template.findResources("AWS::ECS::TaskDefinition"))[0]!.Properties as { ContainerDefinitions: Array<{ Environment: Array<{ Name: string; Value: unknown }> }> }).ContainerDefinitions[0]!;
+  const environment = Object.fromEntries(container.Environment.map((each) => [each.Name, each.Value]));
+
+  it("copies Cloud's sessions into the next address's table on its next start, then sends everyone there", () => {
+    expect(environment.CLOUD_MOVED_TO).toBe("https://d5hwoqksa23xv.cloudfront.net");
+    expect(JSON.stringify(environment.CLOUD_MOVE_TABLE)).toContain("Fn::ImportValue");
+    // It still reads the file it copies from.
+    expect(environment.CLOUD_WORK_SESSIONS_FILE).toBe("/data/work-sessions.json");
+  });
+
+  it("lets the task write the next address's table, and waits for that stack", () => {
+    const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
+    for (const action of ["dynamodb:PutItem", "dynamodb:BatchWriteItem"]) expect(policies).toContain(action);
+    expect(moved.dependencies.map((each) => each.stackName)).toEqual(["Next"]);
+  });
+
+  it("is unchanged without a move", () => {
+    const plain = Template.fromStack(new CloudAppStack(new App(), "RovaraCloudApp", { environmentName: "production", env: { region: "us-east-1" }, image: ContainerImage.fromRegistry("example.com/rovara-cloud:test") }));
+    const names = ((Object.values(plain.findResources("AWS::ECS::TaskDefinition"))[0]!.Properties as { ContainerDefinitions: Array<{ Environment: Array<{ Name: string }> }> }).ContainerDefinitions[0]!.Environment).map((each) => each.Name);
+    expect(names).not.toContain("CLOUD_MOVED_TO");
+    expect(names).not.toContain("CLOUD_MOVE_TABLE");
+  });
 });
