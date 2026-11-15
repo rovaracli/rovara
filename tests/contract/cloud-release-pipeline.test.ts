@@ -2,7 +2,12 @@ import { App } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER, CLOUD_PIPELINE_NODE_OPTIONS, CloudReleasePipelineStack } from "../../infra/lib/cloud-release-pipeline.js";
-import { CLOUD_APP_CONTEXT_KEY } from "../../infra/lib/cloud-app.js";
+import { CLOUD_APP_CONTEXT_KEY, CloudAppStack } from "../../infra/lib/cloud-app.js";
+import { CloudWebStack } from "../../infra/lib/cloud-web.js";
+import { Code } from "aws-cdk-lib/aws-lambda";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const synth = (environmentName: string) => Template.fromStack(new CloudReleasePipelineStack(new App(), "RovaraCloudPipeline", { environmentName, env: { region: "us-east-1" } }));
 
@@ -78,5 +83,28 @@ describe("Rovara Cloud release pipeline", () => {
 
   it("refuses an environment name the environment rules refuse", () => {
     expect(() => synth("abcdefghijklmno")).toThrow(/at most 14 characters/);
+  });
+});
+
+describe("the parameters the deploy passes (v0.10.1)", () => {
+  it("are declared by every stack it deploys: CloudFormation refuses one a template doesn't declare", () => {
+    const template = synth("production");
+    const source = (Object.values(template.findResources("AWS::CodeBuild::Project"))[0]!.Properties as { Source: { BuildSpec: string | { "Fn::Join": [string, unknown[]] } } }).Source.BuildSpec;
+    const text = typeof source === "string" ? source : source["Fn::Join"][1].map((part) => (typeof part === "string" ? part : "<token>")).join("");
+    const deploy = (JSON.parse(text) as { phases: { build: { commands: string[] } } }).phases.build.commands[0]!;
+    const passed = [...deploy.matchAll(/--parameters ([A-Za-z0-9]+)=/gu)].map((match) => match[1]!);
+    expect(passed).toEqual(["CodeUrl"]);
+    const shell = mkdtempSync(join(tmpdir(), "cloud-web-app-"));
+    mkdirSync(join(shell, "assets"));
+    writeFileSync(join(shell, "index.html"), "<!doctype html>");
+    const stacks = {
+      RovaraCloudApp: new CloudAppStack(new App(), "RovaraCloudApp", { environmentName: "production", env: { region: "us-east-1" }, movedTo: "https://d5hwoqksa23xv.cloudfront.net" }),
+      RovaraCloudWeb: new CloudWebStack(new App(), "RovaraCloudWeb", { environmentName: "production", env: { region: "us-east-1" }, appDirectory: shell, code: Code.fromInline("export const handler = async () => ({});") }),
+    };
+    expect(deploy).toContain(`npx cdk deploy ${Object.keys(stacks).join(" ")} `);
+    for (const [name, stack] of Object.entries(stacks)) {
+      const declared = Object.keys((Template.fromStack(stack).toJSON() as { Parameters?: Record<string, unknown> }).Parameters ?? {});
+      for (const parameter of passed) expect(declared, `${name} declares ${parameter}`).toContain(parameter);
+    }
   });
 });

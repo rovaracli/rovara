@@ -21,12 +21,13 @@ describe("Rovara Cloud's first address, now only a redirect", () => {
   const template = synth("production");
   const resources = template.toJSON().Resources as Record<string, { Type: string; Properties: Record<string, unknown> }>;
 
-  it("has no servers: no VPC, load balancer, Fargate, EFS, sign-ins table or key", () => {
+  it("has no servers: no VPC, load balancer, Fargate, EFS, sign-ins table or key, and takes the pipeline's one parameter", () => {
     for (const type of ["AWS::EC2::VPC", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ECS::Service", "AWS::ECS::Cluster", "AWS::EFS::FileSystem", "AWS::DynamoDB::Table", "AWS::KMS::Key", "AWS::ApiGatewayV2::VpcLink"]) {
       template.resourceCountIs(type, 0);
     }
+    // Only CodeUrl, unused: the pipeline passes it to every stack it deploys, and CloudFormation refuses one a template doesn't declare.
     const parameters = (template.toJSON() as { Parameters?: Record<string, unknown> }).Parameters ?? {};
-    expect(Object.keys(parameters).filter((name) => !name.startsWith("BootstrapVersion"))).toEqual([]);
+    expect(Object.keys(parameters).filter((name) => !name.startsWith("BootstrapVersion"))).toEqual(["CodeUrl"]);
   });
 
   it("still makes Cloud's client secret, unchanged, so production keeps it and a new environment gets one", () => {

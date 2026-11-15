@@ -1,5 +1,6 @@
 import {
   CfnOutput,
+  CfnParameter,
   RemovalPolicy,
   Stack,
   type StackProps,
@@ -104,6 +105,15 @@ export class CloudAppStack extends Stack {
     environmentSettingsPrefix(env);
     // Known at synth only in tests; deployed it is CloudFront's domain, which the web stack makes.
     if (!Token.isUnresolved(props.movedTo) && !/^https:\/\/[^/\s]+$/u.test(props.movedTo)) throw new Error("movedTo must be an https address with no path");
+
+    // Not used here: the pipeline passes CodeUrl to both stacks (--parameters CodeUrl=…), and CloudFormation refuses a parameter a
+    // template doesn't declare ("Parameters: [CodeUrl] do not exist in the template", v0.10.1).
+    new CfnParameter(this, "CodeUrl", {
+      type: "String",
+      allowedPattern: "^https://[^/\\s]+$",
+      constraintDescription: "the Rovara Code install's API address: https:// and a host, no path",
+      description: "Not used by this stack: the pipeline passes it to every stack it deploys (cloud-web.ts uses it)",
+    });
 
     // Unchanged from the Fargate app (the same id and settings), so production keeps its secret and a new environment gets one.
     new secretsmanager.Secret(this, "CodeClientSecret", {
