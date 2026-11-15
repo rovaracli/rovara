@@ -7,7 +7,9 @@ import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } f
 import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
 import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 import type { PresenceBoard } from "./presence.js";
-import { CodeError } from "./code-client.js";
+import { CodeError, SignInEnded } from "./code-client.js";
+import type { CloudAuditStore } from "./audit-log.js";
+import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, parseCompanyAuditQuery } from "./company-audit.js";
 import { WORK_READS } from "./work-reads.js";
 
 /** The company this Cloud shows, until companies are Cloud's own (phase 4). */
@@ -28,6 +30,8 @@ export interface RouteContext {
   origin: string;
   /** Who is looking at each session now (phase 2c). */
   presence: PresenceBoard;
+  /** Cloud's own audit records. Absent: the company audit answers 503, and a route that records a Cloud action has nowhere to record it. */
+  audit?: CloudAuditStore;
 }
 
 export interface RouteAnswer { status: number; body: unknown }
@@ -40,6 +44,7 @@ export interface Route {
 }
 
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
+const auditUnavailable: RouteAnswer = { status: 503, body: { error: { code: "AUDIT_UNAVAILABLE", message: "The company audit isn't available right now." } } };
 const decisionsOff: RouteAnswer = { status: 404, body: { error: { code: "NOT_FOUND", message: "Decision cards aren't on Rovara Code yet." } } };
 const projectNotFound: RouteAnswer = { status: 404, body: { error: { code: "PROJECT_NOT_FOUND", message: "That project doesn't exist, or you can't use it." } } };
 
@@ -700,6 +705,25 @@ export const ROUTES: Route[] = [
       const followers = record.followers ?? [];
       if (followers.some((person) => person.developerId === key[1])) await context.work.put({ ...record, followers: followers.filter((person) => person.developerId !== key[1]) });
       return ok({ removed: answer.removed });
+    },
+  },
+  {
+    // GET /v1/app/company/audit (plan v3.2 7.5): Cloud's own audit records and Code's engine records as one list, newest first, for a company administrator of this company.
+    // Who: Code's access check now (not the sign-in's copy of it), and Code checks again on its own route. Which company: this Cloud's, never a parameter.
+    method: "GET", path: /^\/company\/audit$/u,
+    answer: async (context) => {
+      const access = await context.client.access(context.session);
+      if (access.administrator !== true) return { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a company administrator can read the audit." } } };
+      if (context.audit === undefined) return auditUnavailable;
+      try {
+        const query = parseCompanyAuditQuery(context.query);
+        return ok(await listCompanyAudit({ store: context.audit, engine: codeEngineAuditSource(context.client, context.session), now: context.now }, context.org.orgId, query));
+      } catch (error) {
+        if (error instanceof CompanyAuditQueryRefused) return badRequest(error.message);
+        // Code's own refusal and an ended sign-in are the handler's; anything else (the store) is "unavailable", with no cause.
+        if (error instanceof CodeError || error instanceof SignInEnded) throw error;
+        return auditUnavailable;
+      }
     },
   },
   // The Work page's reads (the split inbox): the task list and, for one task, its plan, proof index, events and plan comments.

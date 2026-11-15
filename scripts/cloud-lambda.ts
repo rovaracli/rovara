@@ -8,7 +8,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
 import {
-  CodeClient, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, EnvelopeSealer, KmsKeyService, cloudConfigReader, cloudDocumentClient, createCloudHandler,
+  CodeClient, DynamoCloudAuditStore, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, EnvelopeSealer, KmsKeyService, cloudConfigReader, cloudDocumentClient, createCloudHandler,
   type CloudRequest, type CloudResponse,
 } from "../packages/cloud-server/src/index.js";
 import { createAppHandler } from "../packages/web/src/server/handler.js";
@@ -68,7 +68,7 @@ function build() {
   const config = cloudConfigReader({ originParameter: required("CLOUD_ORIGIN_PARAMETER"), clientSecretId: required("CLOUD_CLIENT_SECRET_ID") });
   // Short timeouts and few attempts, so a refresh's KMS calls stay well inside its hold on the session.
   const kms = new KMSClient({ maxAttempts: 2, requestHandler: { connectionTimeout: 2_000, requestTimeout: 4_000 } });
-  const store = new DynamoSessionStore(db, table, new EnvelopeSealer(new KmsKeyService(kms, required("CLOUD_SESSIONS_KEY_ID")))), work = new DynamoWorkSessionStore(db, table), presence = new DynamoPresenceBoard(db, table);
+  const store = new DynamoSessionStore(db, table, new EnvelopeSealer(new KmsKeyService(kms, required("CLOUD_SESSIONS_KEY_ID")))), work = new DynamoWorkSessionStore(db, table), presence = new DynamoPresenceBoard(db, table), audit = new DynamoCloudAuditStore(db, table);
   const app = createAppHandler({ appDirectory: required("CLOUD_APP_DIRECTORY"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
   // One Cloud handler per address and secret: a new pair (a rotated secret) gets a new client.
   let current: { key: string; handle: ReturnType<typeof createCloudHandler> } | undefined;
@@ -83,7 +83,7 @@ function build() {
       current = {
         key,
         handle: createCloudHandler({
-          client, store, work, presence, origin, callbackPath: "/callback", secureCookies: true,
+          client, store, work, presence, audit, origin, callbackPath: "/callback", secureCookies: true,
           org: { orgId: "rovara", name: process.env.CLOUD_ORG_NAME ?? "Rovara", plan: "cloud" },
         }),
       };

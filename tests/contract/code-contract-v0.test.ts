@@ -32,10 +32,10 @@ describe("code contract v0 tables", () => {
   it("counts what the report says", () => {
     const counts = contractCounts();
     expect(counts.neededServed + counts.neededMissing).toBe(counts.codeNeeded);
-    // 25 routes answered from Code, the decision card routes (list, approve, request changes, reject, evidence opened: Cloud passes them to Code and answers
+    // 26 routes answered from Code (including the company audit, which merges Cloud's own audit records with Code's engine records), the decision card routes (list, approve, request changes, reject, evidence opened: Cloud passes them to Code and answers
     // the 404 "cards are off" while Code has none), the realtime token stub that tells the app live updates are off, and the Conversation (#28: the timeline
     // from Code's task events, comments Cloud keeps itself: events, messages list and send, edit, delete).
-    expect(counts.appCloudServerToday).toBe(36);
+    expect(counts.appCloudServerToday).toBe(37);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

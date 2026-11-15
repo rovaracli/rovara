@@ -356,8 +356,46 @@ export interface RemoveCompanyMemberRequest { requestId: string; successorId?: D
 /** The invite workflow is Cloud's (plan 2.2); Code only learns "this email is pre-approved for company C" (decision 17). */
 export interface PreApprovedEmailsRequest { requestId: string; emails: string[] }
 export interface PreApprovedEmailsResponse { emails: string[]; revision: number }
-export interface AuditRecord { at: Iso; actor: { developerId: DeveloperId; name: string }; action: string; subject: string; outcome: string /* known: ok, refused */ }
-export interface AuditRecordsResponse { records: AuditRecord[]; next?: string }
+/**
+ * One engine action (Code's `GET /v1/dev/client/company/audit/records`, lane AU, Rovara PR #649). The optional fields are what Code adds: the record's id, the actor's kind and the caller the
+ * action came through ("person via caller": `web`, `slack`, `cli`, `client:<id>`). An older Code leaves them out.
+ */
+export interface AuditRecord { at: Iso; actor: { developerId: DeveloperId; name: string; type?: string /* known: person, agent, system */ }; action: string; subject: string; outcome: string /* known: ok, refused */; eventId?: string; via?: string }
+/** `next` says where to go on (a page may be short while it is present); `skipped` counts rows not shown (not this company's, or unreadable), never their content. Rows are newest first within a page only. */
+export interface AuditRecordsResponse { records: AuditRecord[]; next?: string; skipped?: number }
+
+/** Where a line of the company audit list was recorded: `cloud` is Cloud's own record of a Cloud action or a hook answer; `engine` is one of Code's. */
+export type CompanyAuditSource = "cloud" | "engine";
+/**
+ * One line of the company audit list (Cloud's `GET /v1/app/company/audit`, plan v3.2 7.5): a Cloud record and an engine record read alike. `id` is `cloud:<id>` or `engine:<eventId>`, unique in the list.
+ * Newest first by `at`, ties by `id` (higher first), the same in every page.
+ */
+export interface CompanyAuditEntry {
+  id: string;
+  source: CompanyAuditSource;
+  at: Iso;
+  actor: { developerId: DeveloperId; name: string; type?: string /* known: person, agent, system */ };
+  /** The caller the action came through: `web`, `slack`, `cli`, `client:<id>`, `policy-hook`. */
+  via?: string;
+  /** Cloud actions: `company.rules.changed`, `company.invite.created`, `company.invite.revoked`, `company.budget.changed`, `company.signin_client.changed`, `hook.<kind>.answered`, `hook.<kind>.unanswered`. Engine actions: Code's (`task.approved`). */
+  action: string;
+  /** `<type>:<id>` of what the action was about, or empty. */
+  subject: string;
+  /** The project, when the action was about one (always set for Cloud records that have one; engine lines carry it in `subject`). */
+  project?: string;
+  outcome: string /* known: ok, refused */;
+  /** A short fixed-word note (Cloud records only): the answer's code, or what was asked. Never free text from a person. */
+  detail?: string;
+}
+/**
+ * Whether the engine's records are in the list: `connected` (all of the filtered range was read), `not_connected` (Code does not serve the audit read yet: the list is Cloud's own records),
+ * `unavailable` (Code did not answer: Cloud's own records only), `incomplete` (Code has more records than one call reads: the engine lines shown are not all of them, and an older page may miss some).
+ * `message` is plain words for the page to show whenever the state is not `connected`.
+ */
+export interface CompanyAuditEngineStatus { state: "connected" | "not_connected" | "unavailable" | "incomplete"; message?: string }
+export interface CompanyAuditQuery { from?: Iso; to?: Iso; person?: DeveloperId; project?: string; /** Exact (`task.approved`) or a family (`task.*`). */ action?: string; limit?: number; cursor?: string }
+/** The reply to `GET /v1/app/company/audit` (admin only): the merged list, `next` (pass back as `cursor` with the same filters) while there may be more, and the engine's status. A page may be short while `next` is present. */
+export interface CompanyAuditPage { records: CompanyAuditEntry[]; next?: string; engine: CompanyAuditEngineStatus }
 
 export interface ScriptToken { tokenId: string; label: string; createdAt: Iso; lastUsedAt?: Iso; expiresAt?: Iso }
 export interface ScriptTokensResponse { tokens: ScriptToken[] }
@@ -821,6 +859,7 @@ GET /v1/app/companies | c | shell | | companies |
 POST /v1/app/companies | c | shell | | companies |
 GET /v1/app/org/audit/status | c | admin | | admin/audit/AuditScreen |
 GET /v1/app/org/audit/records | k | admin | company.audit.records | admin/audit/AuditScreen |
+GET /v1/app/company/audit | c | admin | company.audit.records | admin/audit/CompanyAudit | T
 GET /v1/app/audit/view | c | later | | admin/audit/metadata |
 GET /v1/app/budget | g | budgets | | spending |
 GET /v1/app/org/spend | g | budgets | | spending |

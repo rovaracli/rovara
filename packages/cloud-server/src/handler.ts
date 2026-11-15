@@ -3,6 +3,7 @@
 // Framework-neutral: a local HTTP server
 // and a Lambda both pass a CloudRequest and send back the CloudResponse.
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import type { CloudAuditStore } from "./audit-log.js";
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
 import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
@@ -37,6 +38,8 @@ export interface CloudHandlerOptions {
   /** Who is looking at each session now; this server's memory by default. */
   presence?: PresenceBoard;
   routes?: Route[];
+  /** Cloud's own audit records (plan v3.2 7.5): read by `GET /v1/app/company/audit`, written by routes that change something at company level and by the policy hook. */
+  audit?: CloudAuditStore;
   /** Lane H: the policy hook's answering route (`createPolicyHookRoute`), served at `POLICY_HOOK_PATH`. Absent: that path is not Cloud's, as before. */
   policyHook?: (request: CloudRequest) => Promise<CloudResponse>;
   now?: () => Date;
@@ -173,7 +176,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
           try {
             answer = await route.answer({
               client: options.client, session: using, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
-              work: options.work, origin: options.origin, presence,
+              work: options.work, origin: options.origin, presence, ...(options.audit === undefined ? {} : { audit: options.audit }),
             });
           } catch (error) {
             if (attempt >= REQUEST_ATTEMPTS) throw error;

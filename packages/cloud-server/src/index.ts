@@ -12,10 +12,18 @@ export { LocalWorkSessionStore, StoreConflict, newSessionId, withoutComments, ty
 export { approvalUrl, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 export { APPROVAL_PATH, approvalRoute } from "./approve.js";
 export { LocalPresenceBoard, PRESENCE_TTL_MS, PRESENCE_VIEWERS_MAX, currentViewers, type PresenceBoard, type Viewer } from "./presence.js";
-export { CLOUD_TABLE, DynamoPendingSignIns, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, PENDING_LIFETIME_S, cloudDocumentClient } from "./dynamo-stores.js";
+export { CLOUD_TABLE, DynamoCloudAuditStore, DynamoPendingSignIns, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, PENDING_LIFETIME_S, cloudDocumentClient } from "./dynamo-stores.js";
 export {
   LocalCompanyRules, LocalPolicyHookRequestLedger, POLICY_HOOK, POLICY_HOOK_ANSWER_CLAIMS, POLICY_HOOK_ANSWER_KINDS, POLICY_HOOK_CONTENT_TYPE, POLICY_HOOK_KINDS, POLICY_HOOK_PATH, POLICY_HOOK_PATTERNS,
   POLICY_HOOK_QUESTION_CLAIMS, POLICY_HOOK_QUESTION_KINDS, POLICY_HOOK_WORDS, answerFor, createPolicyHookRoute, fitsFields, policyHookQuestionHash, readJws,
   type CompanyRules, type CompanyRulesReader, type DecisionRule, type PolicyHookAnswerSigner, type PolicyHookInstalls, type PolicyHookKind, type PolicyHookRequestLedger, type PolicyHookRouteOptions, type PublicJwk,
 } from "./policy-hook.js";
 export { CONFIG_TTL_MS, cloudConfigReader, type CloudConfigClients, type CloudConfigSource, type CloudRuntimeConfig } from "./aws-config.js";
+export {
+  AUDIT_EARLIEST_MS, AuditRecordRefused, CLOUD_AUDIT_ACTIONS, LocalCloudAuditStore, auditIdFrom, buildAuditRecord, newAuditId, recordCloudAction,
+  type AuditActorType, type AuditStorePosition, type CloudActionInput, type CloudAuditAction, type CloudAuditRange, type CloudAuditRecord, type CloudAuditStore,
+} from "./audit-log.js";
+export {
+  COMPANY_AUDIT, COMPANY_AUDIT_WORDS, CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, parseCompanyAuditQuery,
+  type CompanyAuditDeps, type CompanyAuditEngineStatus, type CompanyAuditEntry, type CompanyAuditPage, type EngineAuditPageQuery, type EngineAuditSource, type EnginePageResult, type EngineRecord, type ParsedAuditQuery,
+} from "./company-audit.js";

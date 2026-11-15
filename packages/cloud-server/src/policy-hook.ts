@@ -7,6 +7,7 @@
 // 300 s. A repeated question (same request id, same text) gets the same answer, so it counts once; the same request id with another text is refused.
 // Code treats any failure as no answer, which is a refusal, and can only be made stricter by an answer.
 import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
+import { auditIdFrom, buildAuditRecord, type CloudActionInput, type CloudAuditStore } from "./audit-log.js";
 import type { CloudRequest, CloudResponse } from "./handler.js";
 
 export const POLICY_HOOK_PATH = "/v1/policy-hook";
@@ -175,6 +176,11 @@ export interface PolicyHookRouteOptions {
   signer: PolicyHookAnswerSigner;
   installs: PolicyHookInstalls;
   rules: CompanyRulesReader;
+  /**
+   * Where each answer is recorded (migration plan v3.2, 7.5): one record for the company the question was about, with the answer's outcome, written after the answer is signed and
+   * before it is handed back. An answer that cannot be recorded is not given (Code treats no answer as a refusal), so no decision goes unrecorded.
+   */
+  audit: Pick<CloudAuditStore, "append">;
   ledger?: PolicyHookRequestLedger;
   /** Milliseconds since the epoch. */
   now?: () => number;
@@ -251,6 +257,29 @@ export function answerFor(kind: PolicyHookKind, q: Record<string, unknown>, rule
   return { locks: { ...(rules.locks ?? {}) } };
 }
 
+/** The audit record of an answer (or of a question that got none) about one company: who it was about, what, and the outcome. No key, signature or question text is in it. */
+function hookAuditInput(kind: PolicyHookKind, q: Record<string, unknown>, a: Record<string, unknown> | undefined, iss: string, rid: string): CloudActionInput {
+  const person = kind === "start" ? q["per"] : kind === "decide" ? (q["by"] ?? q["per"]) : undefined;
+  const answered = a !== undefined;
+  const subject = kind === "start" ? `task:${String(q["tid"])}` : kind === "decide" ? `${String(q["styp"])}:${String(q["sid"])}` : typeof q["pid"] === "string" ? `project:${q["pid"]}` : "";
+  const detail = !answered ? "no_rules"
+    : kind === "start" ? (typeof a["code"] === "string" ? a["code"] : undefined)
+      : kind === "decide" ? `${String(q["stage"])} ${String(q["what"])}`
+        : `${String(Object.keys(a["locks"] ?? {}).length)} locks`;
+  return {
+    companyId: q["cid"] as string,
+    actor: typeof person === "string" ? { developerId: person, name: person, type: "person" } : { developerId: "policy-hook", name: "Policy hook", type: "system" },
+    via: "policy-hook",
+    action: `hook.${kind}.${answered ? "answered" : "unanswered"}`,
+    subject,
+    ...(typeof q["pid"] === "string" ? { project: q["pid"] } : {}),
+    outcome: answered && (kind === "values" || a["allow"] === true) ? "ok" : "refused",
+    ...(detail === undefined ? {} : { detail }),
+    // One record for one question, however often it is asked.
+    id: auditIdFrom(`${iss}\u0000${rid}\u0000${kind}`),
+  };
+}
+
 const REFUSED: CloudResponse = Object.freeze({ status: 401, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify({ error: { type: "policy_hook_error", message: "the question could not be answered" } }) });
 
 export function createPolicyHookRoute(options: PolicyHookRouteOptions): (request: CloudRequest) => Promise<CloudResponse> {
@@ -293,12 +322,19 @@ export function createPolicyHookRoute(options: PolicyHookRouteOptions): (request
       if (reserved.state === "seen") return reserved.questionHash === questionHash && reserved.answer !== undefined ? answerResponse(reserved.answer) : refuse("repeat", { requestId: rid });
       const a = answerFor(kind, q, await options.rules.read(q["cid"] as string));
       if (a === undefined || !fitsFields(a, POLICY_HOOK_ANSWER_KINDS[kind])) {
+        // Recorded as unanswered; the question is refused whether or not the record could be written.
+        await options.audit.append(buildAuditRecord(hookAuditInput(kind, q, undefined, iss, rid), new Date(now()))).catch(() => undefined);
         return refuse("no_rules", { requestId: rid });
       }
       const answerIat = Math.floor(now() / 1000);
       const answerClaims = { v: POLICY_HOOK.version, rid, qh: questionHash, iat: answerIat, exp: answerIat + lifetime, kind, a };
       const signingInput = `${b64({ alg: POLICY_HOOK.alg, typ: POLICY_HOOK.answerTyp, kid: await options.signer.kid() })}.${b64(answerClaims)}`;
       const answer = `${signingInput}.${(await options.signer.sign(Buffer.from(signingInput, "utf8"))).toString("base64url")}`;
+      try {
+        await options.audit.append(buildAuditRecord(hookAuditInput(kind, q, a, iss, rid), new Date(now())));
+      } catch {
+        return refuse("audit_unavailable", { requestId: rid });
+      }
       await ledger.complete(ledgerKey, answer);
       held = undefined;
       log({ event: "policy_hook.answered", kind, requestId: rid, companyId: q["cid"], ...(typeof a["allow"] === "boolean" ? { allow: a["allow"] } : {}) });

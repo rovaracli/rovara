@@ -4,7 +4,7 @@
 import { createHash, createPublicKey, generateKeyPairSync, sign, verify, type KeyObject } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  LocalCompanyRules, LocalPolicyHookRequestLedger, LocalSessionStore, LocalWorkSessionStore, POLICY_HOOK_PATH, createCloudHandler, createPolicyHookRoute, type CloudRequest, type CompanyRules, type PublicJwk,
+  LocalCloudAuditStore, LocalCompanyRules, LocalPolicyHookRequestLedger, LocalSessionStore, LocalWorkSessionStore, POLICY_HOOK_PATH, createCloudHandler, createPolicyHookRoute, type CloudRequest, type CompanyRules, type PublicJwk,
 } from "../../packages/cloud-server/src/index.js";
 
 interface Key { privateKey: KeyObject; jwk: PublicJwk }
@@ -68,6 +68,7 @@ function world(extra: { now?: () => number; log?: Array<Record<string, unknown>>
   const route = createPolicyHookRoute({
     signer: { async kid() { return "hook-key-1"; }, async sign(input) { signed.push(input); return sign("RSA-SHA256", input, hookKey.privateKey); } },
     installs: { async keysFor(issuer) { return issuer === ISSUER ? { keys: [install.jwk], companyIds: [COMPANY, OTHER, BAD, "org_eeeeeeeeeeeeeeeeeeee"] } : undefined; } },
+    audit: new LocalCloudAuditStore(),
     rules: new LocalCompanyRules(new Map([[COMPANY, rules], [BAD, badRules], [FOREIGN, rules], ["org_eeeeeeeeeeeeeeeeeeee", overlapping]])),
     ...(extra.ledgerMax === undefined ? {} : { ledger: new LocalPolicyHookRequestLedger(extra.now ?? (() => T0), extra.ledgerMax) }),
     now: extra.now ?? (() => T0),

@@ -11,7 +11,7 @@
 //
 // Optional: ROVARA_CLIENT_ID (rovara-cloud), PORT (8787), HOST (127.0.0.1), CLOUD_ORIGIN (http://127.0.0.1:<port>),
 // ROVARA_CLIENT_SECRET (instead of the file), ROVARA_SCOPES, CLOUD_SESSIONS_FILE (keeps people signed in across restarts,
-// mode 600; this computer only), CLOUD_WORK_SESSIONS_FILE (keeps Cloud's sessions, mode 600), CLOUD_ORG_NAME,
+// mode 600; this computer only), CLOUD_WORK_SESSIONS_FILE (keeps Cloud's sessions, mode 600), CLOUD_AUDIT_FILE (keeps Cloud's audit records, mode 600; this computer only), CLOUD_ORG_NAME,
 // CLOUD_APP_DIRECTORY (the built app, packages/web/dist/app), CLOUD_LEGACY_SESSIONS_FILE (deployed: an older raw-cookie
 // sessions file; its sign-ins are revoked at Code and the file removed).
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
@@ -21,8 +21,8 @@ import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
 import {
-  CodeClient, DynamoSessionStore, EnvelopeSealer, KmsKeyService, LocalSessionStore, LocalWorkSessionStore, cloudDocumentClient, createCloudHandler,
-  isDeployedEnvironment, secretsManagerSecret, type CodeSession, type SecretReader, type SessionStore,
+  CodeClient, DynamoCloudAuditStore, DynamoSessionStore, EnvelopeSealer, KmsKeyService, LocalCloudAuditStore, LocalSessionStore, LocalWorkSessionStore, cloudDocumentClient, createCloudHandler,
+  isDeployedEnvironment, secretsManagerSecret, type CloudAuditStore, type CodeSession, type SecretReader, type SessionStore,
 } from "../packages/cloud-server/src/index.js";
 import { createAppHandler } from "../packages/web/src/server/handler.js";
 
@@ -45,6 +45,7 @@ const redirectUri = `${origin}/callback`;
 const deployed = isDeployedEnvironment(process.env);
 let clientSecret: string | SecretReader;
 let store: SessionStore;
+let audit: CloudAuditStore;
 if (deployed) {
   // Deployed: sign-ins in the table, sealed with Cloud's key; the secret from Secrets Manager when a token call needs it.
   if (process.env.ROVARA_CLIENT_SECRET !== undefined || process.env.ROVARA_CLIENT_SECRET_FILE !== undefined) {
@@ -53,13 +54,13 @@ if (deployed) {
   // Short timeouts and few attempts, so a refresh's AWS calls stay well inside its 60-second hold on the session.
   const aws = { region: required("AWS_REGION"), maxAttempts: 2, requestHandler: { connectionTimeout: 2_000, requestTimeout: 4_000 } };
   clientSecret = secretsManagerSecret(new SecretsManagerClient(aws), required("ROVARA_CLIENT_SECRET_ID"));
-  store = new DynamoSessionStore(
-    cloudDocumentClient(new DynamoDBClient(aws)), required("CLOUD_SESSIONS_TABLE"),
-    new EnvelopeSealer(new KmsKeyService(new KMSClient(aws), required("CLOUD_SESSIONS_KEY_ID"))),
-  );
+  const db = cloudDocumentClient(new DynamoDBClient(aws));
+  store = new DynamoSessionStore(db, required("CLOUD_SESSIONS_TABLE"), new EnvelopeSealer(new KmsKeyService(new KMSClient(aws), required("CLOUD_SESSIONS_KEY_ID"))));
+  audit = new DynamoCloudAuditStore(db, required("CLOUD_SESSIONS_TABLE"));
 } else {
   clientSecret = (process.env.ROVARA_CLIENT_SECRET ?? readFileSync(required("ROVARA_CLIENT_SECRET_FILE"), "utf8")).trim();
   store = new LocalSessionStore(process.env.CLOUD_SESSIONS_FILE ?? process.env.PROTOTYPE_SESSIONS_FILE);
+  audit = new LocalCloudAuditStore(process.env.CLOUD_AUDIT_FILE);
 }
 const client = new CodeClient({
   baseUrl: codeUrl, clientId, clientSecret, redirectUri,
@@ -83,7 +84,7 @@ if (deployed && process.env.CLOUD_LEGACY_SESSIONS_FILE) {
 }
 
 const cloud = createCloudHandler({
-  client, store,
+  client, store, audit,
   org: { orgId: "rovara", name: process.env.CLOUD_ORG_NAME ?? "Rovara", plan: "local" },
   callbackPath: "/callback", secureCookies: secure,
   work: new LocalWorkSessionStore(process.env.CLOUD_WORK_SESSIONS_FILE), origin,

@@ -9,10 +9,13 @@
 //   SESSION#<ses_…>         COMMENT#<createdAt>#<msg_…>     one comment, so a session's comments can outgrow an item
 //   REQUEST#<request id>    REQUEST                         the session a start request made
 //   PRESENCE#<ses_…>        VIEWER#<developer id>           a person's last heartbeat on a session (expires)
+//   AUDIT#<company>#<YYYY-MM>  <at>#<aud_…>                 one audit record of a company's month (no expiry; written once, never replaced: `DynamoCloudAuditStore`)
+//   AUDITID#<company>#<aud_…>  AUDITID                      the marker that keeps one record id to one record, written in the same transaction
 //
 // The `startedBy` index (STARTED#<developer id>, `<createdAt>#<ses_…>`) holds only META items: a person's sessions, newest first.
 import { ConditionalCheckFailedException, type DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
+import { AUDIT_EARLIEST_MS, checkedCompany, readableRecord, type CloudAuditRange, type CloudAuditRecord, type CloudAuditStore } from "./audit-log.js";
 import type { PendingSignIn } from "./code-client.js";
 import { PRESENCE_TTL_MS, currentViewers, type PresenceBoard, type Viewer } from "./presence.js";
 import { SealedRecordRefused, type TokenSealer } from "./session-crypto.js";
@@ -218,5 +221,73 @@ export class DynamoPresenceBoard implements PresenceBoard {
       TableName: this.table, KeyConditionExpression: "pk = :pk", ExpressionAttributeValues: { ":pk": `PRESENCE#${sessionId}` }, ConsistentRead: true,
     }));
     return currentViewers((Items ?? []).map((item) => ({ developerId: item.developerId as string, name: item.name as string, at: item.at as number })), nowMs);
+  }
+}
+
+const DAY_MS = 86_400_000;
+/** The most months one read goes back over: far more than the 2026 start and now. */
+const AUDIT_MONTHS_MAX = 600;
+const auditKey = (record: Pick<CloudAuditRecord, "at" | "id">) => `${record.at}#${record.id}`;
+
+/**
+ * Audit records in the table: one item per record in the partition of its company and month, sorted by time, so a read goes newest first without an index.
+ * A write is conditional on the item not existing, so no server can replace a record; the store has no update or delete. An item has no `expiresAt`.
+ * (The role that runs Cloud can still delete items in the table: the ledger that shows tampering is P1.)
+ */
+export class DynamoCloudAuditStore implements CloudAuditStore {
+  constructor(private readonly db: Pick<DynamoDBDocumentClient, "send">, private readonly table: string, private readonly now: Clock = Date.now) {}
+
+  async append(record: CloudAuditRecord): Promise<"added" | "exists"> {
+    const companyId = checkedCompany(record.companyId);
+    try {
+      // Two items in one transaction: the record, and a marker for its id (whatever its time), so one id is one record even if it is written again later.
+      await this.db.send(new TransactWriteCommand({
+        TransactItems: [
+          { Put: { TableName: this.table, Item: { pk: `AUDIT#${companyId}#${record.at.slice(0, 7)}`, sk: auditKey(record), record }, ConditionExpression: "attribute_not_exists(pk)" } },
+          { Put: { TableName: this.table, Item: { pk: `AUDITID#${companyId}#${record.id}`, sk: "AUDITID" }, ConditionExpression: "attribute_not_exists(pk)" } },
+        ],
+      }));
+      return "added";
+    } catch (error) {
+      const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
+      if (error instanceof ConditionalCheckFailedException || reasons?.some((reason) => reason.Code === "ConditionalCheckFailed") === true) return "exists";
+      throw error;
+    }
+  }
+
+  async read(companyId: string, range: CloudAuditRange): Promise<{ rows: CloudAuditRecord[]; more: boolean }> {
+    checkedCompany(companyId);
+    const low = Math.max(range.fromMs ?? AUDIT_EARLIEST_MS, AUDIT_EARLIEST_MS);
+    // Never past the present (plus a day or two of clock skew): a later `to` only asks for months that hold nothing.
+    const top = Math.min(range.toMs ?? Infinity, this.now() + 2 * DAY_MS);
+    const high = range.olderThan === undefined ? top : Math.min(top, range.olderThan.atMs);
+    // Exclusive at the position: the key itself is read and dropped.
+    const highKey = range.olderThan !== undefined && range.olderThan.atMs <= top ? `${new Date(range.olderThan.atMs).toISOString()}#${range.olderThan.id}` : `${new Date(top).toISOString()}#~`;
+    const lowKey = new Date(low).toISOString();
+    const rows: CloudAuditRecord[] = [];
+    if (high < low) return { rows, more: false };
+    const first = new Date(high), last = new Date(low);
+    let year = first.getUTCFullYear(), month = first.getUTCMonth();
+    for (let months = 0; months < AUDIT_MONTHS_MAX && (year > last.getUTCFullYear() || (year === last.getUTCFullYear() && month >= last.getUTCMonth())); months += 1) {
+      const pk = `AUDIT#${companyId}#${String(year)}-${String(month + 1).padStart(2, "0")}`;
+      let start: Record<string, unknown> | undefined;
+      do {
+        const page = await this.db.send(new QueryCommand({
+          TableName: this.table, KeyConditionExpression: "pk = :pk AND sk BETWEEN :lo AND :hi",
+          ExpressionAttributeValues: { ":pk": pk, ":lo": lowKey, ":hi": highKey }, ScanIndexForward: false, ConsistentRead: true,
+          Limit: range.max + 1 - rows.length + 1, ...(start === undefined ? {} : { ExclusiveStartKey: start }),
+        }));
+        for (const item of page.Items ?? []) {
+          if (item.sk === highKey && range.olderThan !== undefined) continue;
+          const record = readableRecord(item.record, companyId);
+          if (record !== undefined) rows.push(record);
+        }
+        start = page.LastEvaluatedKey;
+      } while (start !== undefined && rows.length <= range.max);
+      if (rows.length > range.max) break;
+      month -= 1;
+      if (month < 0) { month = 11; year -= 1; }
+    }
+    return { rows: rows.slice(0, range.max), more: rows.length > range.max };
   }
 }
