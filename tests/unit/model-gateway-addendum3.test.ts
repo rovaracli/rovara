@@ -133,13 +133,14 @@ it("ADDENDUM-3 known-price media with no byte ceiling still takes the company ma
   finally { release(); await running; }
 });
 
-it("ADDENDUM-3 stops the provider when the token-bounded marker expires", async () => {
+it("ADDENDUM-3 stops the provider when the admission-bounded marker expires", async () => {
   vi.useFakeTimers(); vi.setSystemTime(now);
   let cancelled = false;
   const f = setup({ now: Date.now, meter: new InMemoryMeter(Date.now), prices: { priceFor: () => undefined }, transport: async () => ({ status: 200, body: { [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<Uint8Array>>(() => undefined) }) }, cancel: () => { cancelled = true; } }) });
-  const running = call(f.deps, requestBody, mint({ iat: now / 1000 - 899, nbf: now / 1000 - 929, exp: now / 1000 + 1 }));
+  const running = call(f.deps, { ...requestBody, max_tokens: 128_000 }, mint({ iat: now / 1000 - 899, nbf: now / 1000 - 929, exp: now / 1000 + 1 }));
   try {
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(899_999); expect(cancelled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
     expect(cancelled).toBe(true);
     expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: true }));
   } finally { await vi.runAllTimersAsync(); await running; vi.useRealTimers(); }

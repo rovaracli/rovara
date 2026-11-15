@@ -1,11 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { validCaps, type CapsSource } from "./caps.js";
 import type { EndedTasks } from "./ended.js";
-import { estimateCall, usageCost } from "./estimate.js";
+import { estimateCall, usageCost, TOOL_INPUT_ALLOWANCE_TOKENS } from "./estimate.js";
 import { guardRequest, MAX_BODY_BYTES, tooLarge, type ModelLimitsSource } from "./guard.js";
 import type { Meter, MeterItem, Reservation } from "./meter.js";
 import { resolvePrice, UnknownPriceSource, type PriceSource } from "./price.js";
-import { CALL_TIMEOUT_MS, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
+import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, type TaskTokenVerifier } from "./token.js";
 import { UsageCollector } from "./usage.js";
 export interface GatewayRequest { method: string; url: string; headers: Readonly<Record<string, string | undefined>>; body: AsyncIterable<Uint8Array>; signal?: AbortSignal }
@@ -19,6 +19,7 @@ export interface GatewayDependencies {
 }
 export const OVERRUN_BUSY_MESSAGE = "Another call for this company may exceed its reserved cost right now; try again in a moment.";
 export const OVERRUN_BUSY_RETRY_SECONDS = 2;
+export const ENDED_TASK_POLL_MS = 1000;
 const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" };
 const PREFIX: Record<MeterItem, string> = { task: "Budget has been exceeded! Key=task", person: "ExceededBudget: User=person", project: "Budget has been exceeded! Project=project", company: "Budget has been exceeded! Team=company" };
 /** Core also used directly by the in-process harness. One deadline covers request, dependencies, transport, streaming and backpressure. */
@@ -26,8 +27,10 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   const controller = new AbortController();
   const abort = () => controller.abort(); request.signal?.addEventListener("abort", abort, { once: true });
   const now = deps.now ?? Date.now;
-  const duration = deps.timeoutMs ?? CALL_TIMEOUT_MS;
-  let deadline = now() + duration;
+  const duration = Math.min(deps.timeoutMs ?? CALL_HARD_CEILING_MS, CALL_HARD_CEILING_MS);
+  const startedAt = now();
+  let deadline = startedAt + duration;
+  let endedTimer: ReturnType<typeof setTimeout> | undefined;
   let timer = setTimeout(abort, duration);
   const shortenDeadline = (end: number) => {
     deadline = Math.min(deadline, end);
@@ -66,9 +69,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const token = rawKey ?? bearer;
     const claims = (rawKey !== undefined && auth !== undefined && rawKey !== bearer) || (auth !== undefined && bearer === undefined) ? undefined : await wait(deps.verifyToken(token));
     if (claims === undefined) { await respond(401, AUTH_ERROR.error.type, AUTH_ERROR.error.message); return; }
-    // A concurrency marker must never expire while this handler can keep a provider alive.
-    shortenDeadline(claims.exp * 1000);
-    if (await wait(deps.ended.isEnded(claims.iss, claims.tid, controller.signal))) { await respond(403, "task_ended", "task ended"); return; }
+    const taskEnded = () => wait(deps.ended.isEnded(claims.iss, claims.cid, claims.tid, controller.signal));
+    if (await taskEnded()) { await respond(403, "task_ended", "task ended"); return; }
     const declared = request.headers["content-length"];
     if (declared !== undefined && /^\d+$/u.test(declared) && Number(declared) > MAX_BODY_BYTES) { const e = tooLarge(); await respond(e.status, e.code, e.message); return; }
     const parts: Uint8Array[] = []; let size = 0;
@@ -76,18 +78,20 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     for (;;) { const part = await wait(body.next()); if (part.done) break; size += part.value.byteLength; if (size > MAX_BODY_BYTES) { const e = tooLarge(); await respond(e.status, e.code, e.message); return; } parts.push(part.value); }
     const guarded = guardRequest(Buffer.concat(parts), request.headers, claims.mdl, deps.modelLimits);
     if (!guarded.ok) { await respond(guarded.status, guarded.code, guarded.message); return; }
+    shortenDeadline(startedAt + callDurationMs(guarded.maxTokens));
     const scope = { iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid, ...(claims.per === undefined ? {} : { per: claims.per }) };
     const price = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, "anthropic", guarded.model, deps.cautiousCeiling, controller.signal));
     const caps = await wait(deps.caps.capsFor(scope, controller.signal));
     if (!validCaps(caps)) { await respond(503, "unavailable", "model access unavailable"); return; }
     let estimate: number;
-    try { estimate = estimateCall(guarded.bytes.length, guarded.maxTokens, price); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
+    try { estimate = estimateCall(guarded.bytes.length, guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
     // Do not race a transaction: its outcome must be known before forwarding or settling. Adapters bound their own transactions.
     const overrunCapable = price.estimated || !guarded.inputBounded;
-    if (overrunCapable) shortenDeadline(Math.floor(Math.min(deadline, now() + TASK_TOKEN_SECONDS * 1000) / 1000) * 1000);
+    const admissionExpiresSeconds = Math.floor(now() / 1000) + TASK_TOKEN_SECONDS;
+    if (overrunCapable) shortenDeadline(Math.floor(Math.min(deadline, admissionExpiresSeconds * 1000) / 1000) * 1000);
     appliedMaxOutputTokens = guarded.maxTokens;
     const reserved = await deps.meter.reserve({ scope, caps, estimateMicros: estimate, appliedMaxOutputTokens,
-      ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: claims.exp } }),
+      ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });
     if (!reserved.ok) {
       if (reserved.reason === "busy" && reserved.overrunInFlight) {
@@ -100,6 +104,12 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       return;
     }
     reservation = reserved.reservation;
+    // One non-overlapping, deadline-bounded poll also stops streams stalled between chunks.
+    const pollEnded = async (): Promise<void> => {
+      try { if (await taskEnded()) abort(); } catch { abort(); }
+      if (!controller.signal.aborted) endedTimer = setTimeout(() => { void pollEnded(); }, ENDED_TASK_POLL_MS);
+    };
+    endedTimer = setTimeout(() => { void pollEnded(); }, ENDED_TASK_POLL_MS);
     // No call has left the process yet, including while the key port is read.
     cost = 0; estimated = false;
     if (controller.signal.aborted) throw new NotSentError();
@@ -109,7 +119,10 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     cost = estimate; estimated = true;
     try { provider = await wait(deps.transport({ body: guarded.bytes, headers: guarded.headers, key, signal: controller.signal })); }
     catch (error) { if (error instanceof NotSentError) { cost = 0; estimated = false; } throw error; }
-    if (provider.status < 200 || provider.status >= 300) { await respond(502, "provider_error", "provider unavailable"); return; }
+    if (provider.status < 200 || provider.status >= 300) {
+      // An explicit rejection before any output uses the not-sent accounting rule for BOTH input and output.
+      if (provider.status === 429 || provider.status === 529) { cost = 0; estimated = false; }
+      await respond(502, "provider_error", "provider unavailable"); return; }
     const scanner = new SecretScanner([key, ...(typeof token === "string" ? [token] : [])]);
     const usage = new UsageCollector();
     const output: Uint8Array[] = []; let total = 0;
@@ -117,6 +130,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (guarded.streaming) { head = true; sink.head(200, { ...JSON_HEADERS, "content-type": "text/event-stream; charset=utf-8" }); }
     for (;;) {
       const next = await wait(stream.next()); if (next.done) break;
+      if (await taskEnded()) throw new Error("provider unavailable");
       total += next.value.byteLength; if (total > MAX_RESPONSE_BYTES) throw new Error("provider unavailable");
       const safe = scanner.push(next.value); if (safe.hit) throw new Error("provider unavailable");
       if (guarded.streaming) { usage.push(next.value); if (safe.bytes.length) await wait(sink.write(safe.bytes)); }
@@ -139,7 +153,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     log({ event: "provider_error" });
     try { if (head) sink.destroy(); else await respond(502, "provider_error", "provider unavailable"); } catch { sink.destroy(); }
   } finally {
-    controller.abort(); clearTimeout(timer); request.signal?.removeEventListener("abort", abort);
+    controller.abort(); clearTimeout(timer); clearTimeout(endedTimer); request.signal?.removeEventListener("abort", abort);
     controller.signal.removeEventListener("abort", onAbort);
     try { provider?.cancel?.(); } catch { /* Fixed log fields only; no provider text. */ }
     if (reservation !== undefined) {

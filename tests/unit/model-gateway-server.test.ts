@@ -35,7 +35,7 @@ it("fixed auth failures, ended refusal, oversize refusal and no secrets in heade
   expect(bad.status).toBe(401); expect(bad.text()).toBe('{"error":{"type":"authentication_error","message":"invalid or expired model access"}}');
   const ok = await call(f.deps, requestBody, mint(), new MemorySink(), { authorization: `Bearer ${mint()}` });
   expect(ok.status).toBe(200); expect(f.calls[0]?.headers.authorization).toBeUndefined(); expect(f.calls[0]?.headers["x-api-key"]).toBeUndefined();
-  f.ended.end(scope.iss, scope.tid); expect((await call(f.deps)).text()).toContain("task_ended"); expect(f.calls).toHaveLength(1);
+  f.ended.end(scope.iss, scope.cid, scope.tid); expect((await call(f.deps)).text()).toContain("task_ended"); expect(f.calls).toHaveLength(1);
   const other = setup(); expect((await call(other.deps, Buffer.alloc(4 * 1024 * 1024 + 1))).status).toBe(413); expect(other.calls).toHaveLength(0);
   expect(JSON.stringify([f.logs, ok.text(), ok.headers, bad.text()])).not.toContain(f.providerKey);
 });
@@ -75,7 +75,8 @@ it("keeps a failed settle reserved, handles key-port failures and strips all pro
   for (const status of [302, 401, 403, 429, 500]) {
     const e = setup(); e.deps.transport = async () => ({ status, body: (async function* () { yield Buffer.from(e.providerKey); })() });
     const response = await call(e.deps); expect(response.status).toBe(502); expect(response.text()).toBe('{"error":{"type":"provider_error","message":"provider unavailable"}}');
-    expect((await e.meter.read(scope))[0]!.spentMicros).toBeGreaterThan(0);
+    const spent = (await e.meter.read(scope))[0]!.spentMicros;
+    if (status === 429) expect(spent).toBe(0); else expect(spent).toBeGreaterThan(0);
   }
 });
 it("uses person caps only when the claim exists, refuses ambiguous auth, and isolates companies through the full handler", async () => {
@@ -86,7 +87,7 @@ it("uses person caps only when the claim exists, refuses ambiguous auth, and iso
   const g = setup(); const other = `org_${"b".repeat(20)}`;
   await call(g.deps, requestBody, mint({ cid: other }));
   expect((await g.meter.read(scope))[0]?.spentMicros).toBe(0);
-  expect((await g.meter.read({ ...scope, cid: other }))[0]?.spentMicros).toBe(19);
+  expect((await g.meter.read({ ...scope, cid: other }))[0]?.spentMicros).toBe(23);
 });
 it("rejects response byte overflow and malformed usage, and never follows a redirect or retries", async () => {
   for (const body of [(async function* () { yield Buffer.alloc(10 * 1024 * 1024 + 1); })(), (async function* () { yield sse("message_start", { message: { usage: { input_tokens: 2 } } }); yield Buffer.from("data: broken\n\n"); })()]) {
@@ -124,5 +125,5 @@ it("ADDENDUM-2 src is reporting-only: present and absent reserve and settle iden
     expect((await call(f.deps, requestBody, mint({ src }))).status).toBe(200);
     expect(capInput).not.toHaveProperty("src"); spends.push((await f.meter.read(scope))[0]!.spentMicros);
   }
-  expect(spends).toEqual([19, 19]);
+  expect(spends).toEqual([23, 23]);
 });
