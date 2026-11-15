@@ -13,7 +13,8 @@ import { COMPANY, PERSON, PROJECT, record, whole } from "./model-gateway-token.j
 import type { ProductKeyFingerprinter, ProductKeySealer } from "./product-seal.js";
 
 export const PRODUCT_COMPANY_OWNER = "_company";
-export const PRODUCT_PROVIDERS = ["gemini", "vertex"] as const;
+/** "anthropic" is the company's own account for lessons' learning calls (DEC 226, learning-keys.ts): a company source only, never a project's, never linked. */
+export const PRODUCT_PROVIDERS = ["gemini", "vertex", "anthropic"] as const;
 export type ProductProvider = typeof PRODUCT_PROVIDERS[number];
 export const PRODUCT_MAX_SOURCES = 20;
 export const PRODUCT_RECOVERY_DAYS = 7;
@@ -21,6 +22,8 @@ export const PRODUCT_RECEIPT_SECONDS = 86_400;
 const DAY_MS = 86_400_000;
 /** DEC 157: Rovara suggests $2 per task at connect time; the company ceiling, when set, caps every project. */
 export const PRODUCT_DEFAULT_CAPS: Readonly<ProductCaps> = Object.freeze({ taskMicros: 2_000_000, projectMonthMicros: 50_000_000 });
+/** DEC 203: about 400 calls and $4 per eval stage run (product-eval.ts EVAL_DEFAULT_BUDGET repeats it). */
+export const PRODUCT_DEFAULT_EVAL_BUDGET: Readonly<EvalBudget> = Object.freeze({ calls: 400, costMicros: 4_000_000 });
 export const PRODUCT_SOURCE_ID = /^src_[a-z0-9]{1,32}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 export const CURRENT_STAGE = "AWSCURRENT";
@@ -106,14 +109,25 @@ interface SourceRecord {
   warning?: { status: 401 | 403; at: number };
 }
 interface RemovedRecord { source: SourceRecord; removedAt: number; recoverUntil: number }
-interface OwnerDoc { sources: SourceRecord[]; removed: RemovedRecord[]; caps?: ProductCaps; ceiling?: ProductCeiling; lastRequestId?: string }
+/**
+ * A project's approved eval spend (Code's EVAL_SPEND_APPROVAL, product-eval.ts EvalApproval), as the settings route records it after
+ * checking the approver's role with Code. `role` is that role at approval time; `approvedAt` bounds how long the record counts
+ * (EVAL_APPROVAL_VALID_MS: the gateway cannot re-read Code membership, see eval-approvals.ts).
+ */
+export interface StoredEvalApproval {
+  selection: string; inputsDigest: string; maxCalls: number; maxCostMicros: number; model?: string;
+  approver: { personId: string; provider: string }; role: "owner" | "admin" | "maintainer"; approvedAt: number;
+}
+/** A project's approved eval budget per stage run (DEC 203; default 400 calls and $4). */
+export interface EvalBudget { calls: number; costMicros: number }
+interface OwnerDoc { sources: SourceRecord[]; removed: RemovedRecord[]; caps?: ProductCaps; ceiling?: ProductCeiling; evalBudget?: EvalBudget; evalApproval?: StoredEvalApproval; lastRequestId?: string }
 export interface ProductSourceView {
   sourceId: string; provider: ProductProvider; hasKey: boolean; linkedTo?: string; available: boolean;
   connectedBy: string; connectedAt: number; updatedAt: number; warning?: { status: 401 | 403; at: number };
 }
 export interface ProductKeysView {
   revision: number; owner: string; sources: ProductSourceView[]; removed: Array<{ sourceId: string; provider: ProductProvider; recoverUntil: number }>;
-  caps?: ProductCaps; ceiling?: ProductCeiling;
+  caps?: ProductCaps; ceiling?: ProductCeiling; evalBudget?: EvalBudget; evalApproval?: StoredEvalApproval;
   /** There is never pending work (one transaction per change); the last applied request id is shown for support. */
   pending: false; lastRequestId?: string;
 }
@@ -129,6 +143,19 @@ const auditKey = (iss: string, cid: string, owner: string, revision: number) => 
 const micros = (v: unknown): v is number => whole(v) && v <= 1_000_000_000_000;
 function validCapsValue(v: unknown): v is ProductCaps {
   const c = record(v); return c !== undefined && Object.keys(c).every((k) => k === "taskMicros" || k === "projectMonthMicros") && micros(c.taskMicros) && micros(c.projectMonthMicros);
+}
+const EVAL_TEXT = /^[\x21-\x7e][\x20-\x7e]{0,511}$/u;
+export function validEvalBudget(v: unknown): v is EvalBudget {
+  const b = record(v); return b !== undefined && Object.keys(b).every((k) => k === "calls" || k === "costMicros") && whole(b.calls) && b.calls >= 1 && b.calls <= 100_000 && micros(b.costMicros) && b.costMicros >= 1;
+}
+export function validStoredEvalApproval(v: unknown): v is StoredEvalApproval {
+  const a = record(v); const approver = record(a?.approver);
+  return a !== undefined && approver !== undefined && Object.keys(a).every((k) => ["selection", "inputsDigest", "maxCalls", "maxCostMicros", "model", "approver", "role", "approvedAt"].includes(k))
+    && typeof a.selection === "string" && EVAL_TEXT.test(a.selection) && typeof a.inputsDigest === "string" && /^[a-f0-9]{64}$/u.test(a.inputsDigest)
+    && whole(a.maxCalls) && a.maxCalls >= 1 && a.maxCalls <= 100_000 && micros(a.maxCostMicros) && a.maxCostMicros >= 1
+    && (a.model === undefined || (typeof a.model === "string" && /^[A-Za-z0-9._-]{1,128}$/u.test(a.model)))
+    && Object.keys(approver).length === 2 && typeof approver.personId === "string" && PERSON.test(approver.personId) && typeof approver.provider === "string" && /^[a-z0-9-]{1,32}$/u.test(approver.provider)
+    && (a.role === "owner" || a.role === "admin" || a.role === "maintainer") && whole(a.approvedAt);
 }
 function validCeiling(v: unknown): v is ProductCeiling {
   const c = record(v); return c !== undefined && Object.keys(c).every((k) => ["taskMicros", "projectMonthMicros", "companyMonthMicros"].includes(k)) && Object.values(c).every(micros);
@@ -147,13 +174,14 @@ function parseDoc(value: unknown): OwnerDoc {
   };
   if (d === undefined || !Array.isArray(d.sources) || d.sources.length > PRODUCT_MAX_SOURCES || !d.sources.every(source) || !Array.isArray(d.removed) || d.removed.length > 4 * PRODUCT_MAX_SOURCES
     || !d.removed.every((r: unknown) => { const x = record(r); return x !== undefined && source(x.source) && whole(x.removedAt) && whole(x.recoverUntil); })
-    || (d.caps !== undefined && !validCapsValue(d.caps)) || (d.ceiling !== undefined && !validCeiling(d.ceiling))) throw new ProductKeyError("unavailable");
+    || (d.caps !== undefined && !validCapsValue(d.caps)) || (d.ceiling !== undefined && !validCeiling(d.ceiling))
+    || (d.evalBudget !== undefined && !validEvalBudget(d.evalBudget)) || (d.evalApproval !== undefined && !validStoredEvalApproval(d.evalApproval))) throw new ProductKeyError("unavailable");
   return structuredClone(d) as unknown as OwnerDoc;
 }
 function validKey(provider: ProductProvider, key: unknown): key is string {
   if (typeof key !== "string") return false;
   // Gemini (AI Studio) keys are one printable token. A Vertex key file is JSON (the follow-up federation lane parses it).
-  return provider === "gemini" ? /^[\x21-\x7e]{8,512}$/u.test(key) : key.length >= 8 && key.length <= 16_384 && !/[\0]/u.test(key);
+  return provider === "gemini" || provider === "anthropic" ? /^[\x21-\x7e]{8,512}$/u.test(key) : key.length >= 8 && key.length <= 16_384 && !/[\0]/u.test(key);
 }
 
 export interface ProductKeyStoreOptions { table: ProductKeyTable; sealer: ProductKeySealer; fingerprint: ProductKeyFingerprinter; now?: () => number; providers?: readonly ProductProvider[] }
@@ -197,6 +225,21 @@ export class ProductKeyStore {
     if (target.record?.currentVersion === undefined) return undefined;
     return { sourceId: target.record.sourceId, owner: target.owner, provider, caps, versionId: target.record.currentVersion, ...(company.ceiling?.companyMonthMicros === undefined ? {} : { companyMonthMicros: company.ceiling.companyMonthMicros }) };
   }
+  /** A project's eval budget (its own or the default) and its current approval record, for the eval hold (eval-approvals.ts). Never a key. */
+  async evalFor(iss: string, cid: string, project: string): Promise<{ budget?: EvalBudget; approval?: StoredEvalApproval }> {
+    if (!PROJECT.test(project)) throw new ProductKeyError("invalid");
+    this.#identity(iss, cid, project);
+    const doc = (await this.#read(iss, cid, project)).doc;
+    return { ...(doc.evalBudget === undefined ? {} : { budget: { ...doc.evalBudget } }), ...(doc.evalApproval === undefined ? {} : { approval: structuredClone(doc.evalApproval) }) };
+  }
+  /** The company's OWN source for a provider (learning calls: "anthropic"), or undefined. Never the key. */
+  async companySource(iss: string, cid: string, provider: ProductProvider): Promise<ProductSourceResolution | undefined> {
+    this.#identity(iss, cid, PRODUCT_COMPANY_OWNER);
+    const company = (await this.#read(iss, cid, PRODUCT_COMPANY_OWNER)).doc;
+    const source = company.sources.find((s) => s.provider === provider && s.currentVersion !== undefined);
+    if (source?.currentVersion === undefined) return undefined;
+    return { sourceId: source.sourceId, owner: PRODUCT_COMPANY_OWNER, provider, caps: { ...PRODUCT_DEFAULT_CAPS }, versionId: source.currentVersion };
+  }
   /** The ONLY way out for a key: the gateway's product route, after the hold. Undefined when the row is gone or not current. */
   async useKey(iss: string, cid: string, resolution: ProductSourceResolution): Promise<string | undefined> {
     const row = { iss, cid, owner: resolution.owner, sourceId: resolution.sourceId, versionId: resolution.versionId };
@@ -209,6 +252,8 @@ export class ProductKeyStore {
   async connect(change: Change & { sourceId: string; provider: ProductProvider; key: string }): Promise<ProductKeysView> {
     this.#check(change);
     if (!PRODUCT_SOURCE_ID.test(change.sourceId) || !this.#providers.has(change.provider) || !validKey(change.provider, change.key)) throw new ProductKeyError("invalid");
+    // The learning account is the company's only (DEC 226): a project never holds one.
+    if (change.provider === "anthropic" && change.owner !== PRODUCT_COMPANY_OWNER) throw new ProductKeyError("invalid");
     const versionId = randomUUID();
     const keyPrint = await this.options.fingerprint({ cid: change.cid, owner: change.owner, sourceId: change.sourceId, key: change.key });
     return this.#mutate(change, "connect", { sourceId: change.sourceId, provider: change.provider, keyPrint }, async (doc, now) => {
@@ -225,6 +270,8 @@ export class ProductKeyStore {
     const company = await this.#read(change.iss, change.cid, PRODUCT_COMPANY_OWNER);
     const target = company.doc.sources.find((s) => s.sourceId === change.companySourceId);
     if (target === undefined) throw new ProductKeyError("not_found");
+    // Product test calls only: the company's learning account is never linked into a project.
+    if (target.provider === "anthropic") throw new ProductKeyError("invalid");
     return this.#mutate(change, "link", { sourceId: change.sourceId, companySourceId: change.companySourceId }, (doc, now) => {
       this.#ensureNew(doc, change.sourceId, target.provider, change.owner, now);
       doc.sources.push({ sourceId: change.sourceId, provider: target.provider, connectedBy: change.actor.id, connectedAt: now, updatedAt: now, link: target.sourceId, linkedAt: target.connectedAt });
@@ -287,6 +334,28 @@ export class ProductKeyStore {
     if (change.owner !== PRODUCT_COMPANY_OWNER || !validCeiling(change.ceiling)) throw new ProductKeyError("invalid");
     return this.#mutate(change, "ceiling", { ceiling: change.ceiling }, (doc) => { doc.ceiling = { ...change.ceiling }; return []; });
   }
+  /** The project's eval budget per stage run (DEC 203). Same roles as the project's caps. */
+  async setEvalBudget(change: Change & { budget: EvalBudget }): Promise<ProductKeysView> {
+    this.#check(change);
+    if (change.owner === PRODUCT_COMPANY_OWNER || !validEvalBudget(change.budget)) throw new ProductKeyError("invalid");
+    return this.#mutate(change, "eval_budget", { budget: change.budget }, (doc) => { doc.evalBudget = { calls: change.budget.calls, costMicros: change.budget.costMicros }; return []; });
+  }
+  /**
+   * Records (or with null, withdraws) the project's approved eval spend. The approver is the actor: the settings route checked
+   * that person's role with Code just before. A company admin approves as "admin", a project maintainer as "maintainer".
+   */
+  async setEvalApproval(change: Change & { approval: Omit<StoredEvalApproval, "approver" | "role" | "approvedAt"> | null; provider: string }): Promise<ProductKeysView> {
+    this.#check(change);
+    if (change.owner === PRODUCT_COMPANY_OWNER) throw new ProductKeyError("invalid");
+    const now = this.#now();
+    const stored: StoredEvalApproval | null = change.approval === null ? null : {
+      selection: change.approval.selection, inputsDigest: change.approval.inputsDigest, maxCalls: change.approval.maxCalls, maxCostMicros: change.approval.maxCostMicros,
+      ...(change.approval.model === undefined ? {} : { model: change.approval.model }),
+      approver: { personId: change.actor.id, provider: change.provider }, role: change.actor.role === "company_admin" ? "admin" : "maintainer", approvedAt: now,
+    };
+    if (stored !== null && (record(change.approval) === undefined || !validStoredEvalApproval(stored))) throw new ProductKeyError("invalid");
+    return this.#mutate(change, "eval_approval", { approval: stored === null ? null : { ...stored, approvedAt: 0 } }, (doc) => { if (stored === null) delete doc.evalApproval; else doc.evalApproval = stored; return []; });
+  }
   /** After a provider 401/403 on a product call, for the settings page. Never throws; a lost race is dropped. */
   async recordWarning(iss: string, cid: string, resolution: ProductSourceResolution, status: 401 | 403): Promise<void> {
     try {
@@ -337,6 +406,7 @@ export class ProductKeyStore {
       })),
       removed: doc.removed.filter((r) => r.recoverUntil > now).map((r) => ({ sourceId: r.source.sourceId, provider: r.source.provider, recoverUntil: r.recoverUntil })),
       ...(owner === PRODUCT_COMPANY_OWNER ? (doc.ceiling === undefined ? {} : { ceiling: { ...doc.ceiling } }) : { caps: { ...(doc.caps ?? PRODUCT_DEFAULT_CAPS) } }),
+      ...(owner === PRODUCT_COMPANY_OWNER ? {} : { evalBudget: { ...(doc.evalBudget ?? PRODUCT_DEFAULT_EVAL_BUDGET) }, ...(doc.evalApproval === undefined ? {} : { evalApproval: structuredClone(doc.evalApproval) }) }),
     };
   }
   async #mutate(change: Change, kind: string, intent: Record<string, unknown>, apply: (doc: OwnerDoc, now: number) => TableWrite[] | Promise<TableWrite[]>): Promise<ProductKeysView> {

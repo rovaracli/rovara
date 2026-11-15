@@ -4,9 +4,9 @@
 // same evaluator cloud/next's other stores are tested on. Marshalling is this file's own, not the code under test's.
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { AwsUnknownError, type WireRequest, type WireResponse, type WireTransport } from "../../packages/model-gateway/src/aws.js";
-import { GATEWAY_LEDGER_INDEXES, GATEWAY_METER_INDEXES } from "../../packages/model-gateway/src/deploy.js";
+import { GATEWAY_EVAL_STAGE_INDEXES, GATEWAY_LEDGER_INDEXES, GATEWAY_METER_INDEXES } from "../../packages/model-gateway/src/deploy.js";
 
-const INDEXES = [...Object.values(GATEWAY_LEDGER_INDEXES), ...Object.values(GATEWAY_METER_INDEXES)];
+const INDEXES = [...Object.values(GATEWAY_LEDGER_INDEXES), ...Object.values(GATEWAY_METER_INDEXES), ...Object.values(GATEWAY_EVAL_STAGE_INDEXES)];
 
 type Json = Record<string, unknown>;
 export interface WireCall { operation: string; table: string; keys: Array<{ pk: string; sk: string }>; input: Json }
