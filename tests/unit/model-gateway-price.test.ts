@@ -1,4 +1,6 @@
-import { expect, it } from "vitest";
+import { denyNetwork } from "./model-gateway-no-network.js";
+beforeAll(denyNetwork);
+import { beforeAll, expect, it } from "vitest";
 import { resolvePrice } from "../../packages/model-gateway/src/price.js";
 it.each([undefined, NaN, 0, -1, 1.5, 1_000_000_001])("uses the cautious estimate for unknown or invalid price %s", async (v) => {
   const price = await resolvePrice({ priceFor: () => v === undefined ? undefined : { inputMicrosPerMTok: v, outputMicrosPerMTok: v } }, "anthropic", "model");
