@@ -4,7 +4,10 @@ import type { AddressInfo } from "node:net";
 import { credentialsFromEnvironment, type CredentialSource } from "./aws.js";
 import type { CapsSource } from "./caps.js";
 import { CompanyBudgetCaps, CompanyLessonsSwitch } from "./company-caps.js";
-import { createLearningRoutes, type LearningKeySource } from "./learning-route.js";
+import { createLearningRoutes, type LearningKeySource, type LearningRouteOptions } from "./learning-route.js";
+import { createOpenAiTransport } from "./learning-openai.js";
+import { createGeminiTransport } from "./product-gemini.js";
+import { createVertexTransport } from "./product-vertex.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
 import { awsKms } from "./aws-kms.js";
 import { GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_LOG_EVENTS, GATEWAY_MODES, GATEWAY_PRODUCT_ENV } from "./deploy.js";
@@ -13,8 +16,6 @@ import { DynamoProductKeyTable } from "./dynamo-product-keys.js";
 import { DynamoProductOverrunTasks } from "./dynamo-product-overrun.js";
 import { storedEvalApprovals, storedEvalBudget } from "./eval-approvals.js";
 import { storedLearningKeys } from "./learning-keys.js";
-import { createGeminiTransport } from "./product-gemini.js";
-import { createVertexTransport } from "./product-vertex.js";
 import { createTokenHttp, VertexTokens, type TokenHttp } from "./product-vertex-token.js";
 import { ProductKeyStore } from "./product-keys.js";
 import { createProductRoutes, productModelLimitsFrom } from "./product-route.js";
@@ -154,7 +155,7 @@ export interface ServeDependencies {
    * OWN meter combined with the agent meter's company row (DEC 228c), the company backend's budgets and lessons switch (the
    * Companies table). Absent: the learning path is 404. Its holds, expiry and corrections run in the same maintenance pass.
    */
-  learning?: { keys: LearningKeySource; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; monthCeilingMicros?: number };
+  learning?: { keys: LearningKeySource; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; monthCeilingMicros?: number /** Only for a company whose settings carry no learning cap (an older row); a company's own cap replaces it. */; /** The other providers' transports (default: the fixed Gemini, Vertex and OpenAI ones). */ transports?: NonNullable<LearningRouteOptions["transports"]> };
   now?: () => number; host?: string; port?: number; /** false: no listener (tests drive the server's request event). */ listen?: boolean; drainMs?: number; maintenanceMs?: number;
 }
 export interface RunningGateway { server: Server; port: number; draining(): boolean; drain(): Promise<void>; maintain(): Promise<void> }
@@ -163,23 +164,29 @@ const UNAVAILABLE = JSON.stringify({ error: { type: "unavailable", message: "mod
 
 /** DEC 228c: refuse to start with a product or learning meter that does not combine with THIS agent meter, or shares its tables. */
 function checkMeters(config: ServeConfig, deps: ServeDependencies): void {
-  // DEC 228c: one company monthly cap over both routes. A product meter that does not take the agent meter's company row
-  // would let product and agent spend each reach the cap: refuse to start rather than run it.
-  if (deps.product !== undefined && deps.product.meter.combinedCompany !== true) throw new Error("product meter must combine the company cap with the agent meter");
-  // ...and with THIS agent meter's tables, when the product meter can say which.
-  const combinedTables = (deps.product?.meter as { combinedTables?: () => { meter: string; markers: string } | undefined } | undefined)?.combinedTables?.();
-  if (deps.product !== undefined && combinedTables !== undefined && (combinedTables.meter !== config.tables.meter || combinedTables.markers !== config.tables.markers)) throw new Error("product meter must combine the company cap with the agent meter");
-  // The same for learning spend: it counts inside the one company total, or the gateway does not start.
-  if (deps.learning !== undefined && deps.learning.meter.combinedCompany !== true) throw new Error("learning meter must combine the company cap with the agent meter");
-  // ...with THIS agent meter's tables, and on tables of its own (never the agent's or the product meter's rows, holds or ledger).
+  // DEC 228c: one company monthly cap over every route. A product or learning meter that does not take the agent meter's company
+  // row would let each route's spend reach the cap on its own: refuse to start rather than run it.
   type TableView = { combinedTables?: () => { meter: string; markers: string } | undefined; ownTables?: () => { meter: string; ledger: string; markers: string } };
-  const learningView = deps.learning?.meter as TableView | undefined;
-  const learningCombined = learningView?.combinedTables?.();
-  if (learningCombined !== undefined && (learningCombined.meter !== config.tables.meter || learningCombined.markers !== config.tables.markers)) throw new Error("learning meter must combine the company cap with the agent meter");
-  const learningOwn = learningView?.ownTables?.();
-  const productOwn = (deps.product?.meter as TableView | undefined)?.ownTables?.();
+  if (deps.product !== undefined && deps.product.meter.combinedCompany !== true) throw new Error("product meter must combine the company cap with the agent meter");
+  if (deps.learning !== undefined && deps.learning.meter.combinedCompany !== true) throw new Error("learning meter must combine the company cap with the agent meter");
+  // ...and the checks below need to SEE a meter's tables: a meter that cannot say which tables it combines with and owns (anything
+  // but a DynamoMeter) would pass them unchecked, so a wired route's meter must expose both views (DEFERRED GATEWAY-LEARNING-FOLLOWUPS-2).
+  const views = (name: "product" | "learning", meter: unknown) => {
+    const view = meter as TableView;
+    const combined = typeof view.combinedTables === "function" ? view.combinedTables() : undefined;
+    const own = typeof view.ownTables === "function" ? view.ownTables() : undefined;
+    if (combined === undefined || own === undefined) throw new Error(`${name} meter must expose its tables`);
+    // Combined with THIS agent meter's tables...
+    if (combined.meter !== config.tables.meter || combined.markers !== config.tables.markers) throw new Error(`${name} meter must combine the company cap with the agent meter`);
+    return own;
+  };
+  const productOwn = deps.product === undefined ? undefined : views("product", deps.product.meter);
+  const learningOwn = deps.learning === undefined ? undefined : views("learning", deps.learning.meter);
+  // ...and on tables of its own: never the agent's, and never another route's rows, holds or ledger.
+  const agentTables = new Set([config.tables.meter, config.tables.ledger, config.tables.markers]);
+  if (productOwn !== undefined && [productOwn.meter, productOwn.ledger, productOwn.markers].some((table) => agentTables.has(table))) throw new Error("product meter must have tables of its own");
   if (learningOwn !== undefined) {
-    const taken = new Set([config.tables.meter, config.tables.ledger, config.tables.markers, ...(productOwn === undefined ? [] : [productOwn.meter, productOwn.ledger, productOwn.markers])]);
+    const taken = new Set([...agentTables, ...(productOwn === undefined ? [] : [productOwn.meter, productOwn.ledger, productOwn.markers])]);
     if ([learningOwn.meter, learningOwn.ledger, learningOwn.markers].some((table) => taken.has(table))) throw new Error("learning meter must have tables of its own");
   }
 }
@@ -202,7 +209,10 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const modelLimits = deps.modelLimits ?? modelLimitsFrom(prices);
   const transport = deps.transport ?? createAnthropicTransport();
   const learning = deps.learning === undefined ? undefined : createLearningRoutes({
-    keys: deps.learning.keys, meter: deps.learning.meter, companyCaps: caps, lessons: new CompanyLessonsSwitch(db, config.tables.companies), modelLimits, transport,
+    keys: deps.learning.keys, meter: deps.learning.meter, companyCaps: caps, lessons: new CompanyLessonsSwitch(db, config.tables.companies), transport,
+    // Anthropic keeps the agent route's ceilings; the other providers' guards read their own price rows (and fall back to their own defaults).
+    modelLimits: { maxOutputTokens: (provider, model) => provider === "anthropic" ? modelLimits.maxOutputTokens(provider, model) : prices.maxOutputTokens(provider, model) },
+    transports: deps.learning.transports ?? { gemini: createGeminiTransport(), vertex: createVertexTransport(), openai: createOpenAiTransport() },
     ...(deps.learning.monthCeilingMicros === undefined ? {} : { monthCeilingMicros: deps.learning.monthCeilingMicros }),
   });
   const handlerDeps: GatewayDependencies = {

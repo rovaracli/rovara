@@ -28,7 +28,7 @@ export {
   type CompanyAuditDeps, type CompanyAuditEngineStatus, type CompanyAuditEntry, type CompanyAuditPage, type EngineAuditPageQuery, type EngineAuditSource, type EnginePageResult, type EngineRecord, type ParsedAuditQuery,
 } from "./company-audit.js";
 export {
-  CODE_LOCK_FIELDS, COMPANY_SETTINGS_LIMITS, DEFAULT_COMPANY_SETTINGS, canonical, defaultCompanySettings, foldInstruction, governsSettings, hookRulesOf, loosens, settingsDecision, validateCompanySettings,
+  CODE_LOCK_FIELDS, COMPANY_SETTINGS_LIMITS, DEFAULT_COMPANY_SETTINGS, LEARNING_DEFAULT_MONTHLY_USD_MICROS, canonical, defaultCompanySettings, foldInstruction, governsSettings, hookRulesOf, loosens, settingsDecision, validateCompanySettings,
   type CompanyBudgets, type CompanyInstruction, type CompanySettings, type LockValue, type SettingsCheck, type SettingsDecision, type WebsiteCeiling,
 } from "./company-settings.js";
 export {

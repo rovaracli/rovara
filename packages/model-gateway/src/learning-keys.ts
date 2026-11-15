@@ -7,8 +7,10 @@ import type { ProductKeyStore } from "./product-keys.js";
 
 export function storedLearningKeys(store: Pick<ProductKeyStore, "companySource" | "useKey">): LearningKeySource {
   return {
-    async connected(iss, cid) { return (await store.companySource(iss, cid, "anthropic")) !== undefined; },
-    async keyFor(iss, cid) {
+    // Only the Anthropic path is answered here: a company's Anthropic key is never sent to another provider's path.
+    async connected(iss, cid, provider) { return provider === "anthropic" && (await store.companySource(iss, cid, "anthropic")) !== undefined; },
+    async keyFor(iss, cid, provider) {
+      if (provider !== "anthropic") return undefined;
       const source = await store.companySource(iss, cid, "anthropic");
       return source === undefined ? undefined : store.useKey(iss, cid, source);
     },
