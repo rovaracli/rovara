@@ -4,7 +4,7 @@
 import type { CodeAccess, CodeClient } from "./code-client.js";
 import type { CodeSession } from "./sessions.js";
 import { newSessionId, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
-import { approvalUrl, blockedReview, followState, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
+import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError } from "./code-client.js";
 
@@ -419,6 +419,47 @@ export const ROUTES: Route[] = [
       const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review`, {
         method: "POST", headers: TASK_VIEW,
         body: { requestId, ...retry, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
+      });
+      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, peopleOf(context, found.record)) });
+    },
+  },
+  {
+    // POST /v1/app/sessions/{id}/send-back (Rovara-cloud#25): a task stopped by review findings goes back to coding with the owner's note. Code adds
+    // the findings to the coding agent's prompt itself (workflow/send-back); the note is the owner's own instruction. Only the owner.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/send-back$/u,
+    answer: async (context) => {
+      const found = await sessionAndTask(context);
+      if (found === undefined) return sessionNotFound;
+      const input = (context.body ?? {}) as { requestId?: unknown; note?: unknown };
+      if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
+      if (input.note !== undefined && (typeof input.note !== "string" || input.note.trim().length > 1000)) return badRequest("The note is at most 1,000 characters.");
+      if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can send this back to coding.` } } };
+      const choices = reviewChoices(found.task);
+      if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to send back right now." } } };
+      const note = typeof input.note === "string" && input.note.trim() !== "" ? input.note.trim() : "Fix the review findings.";
+      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/send-back`, {
+        method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, instructions: note },
+      });
+      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, peopleOf(context, found.record)) });
+    },
+  },
+  {
+    // POST /v1/app/sessions/{id}/accept-findings (Rovara-cloud#25): the owner accepts every blocking finding of the current code with their reason, so
+    // the reviews clear and Code opens the pull request (workflow/review-findings). The IDs are computed here from Code's task, never taken from the request.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/accept-findings$/u,
+    answer: async (context) => {
+      const found = await sessionAndTask(context);
+      if (found === undefined) return sessionNotFound;
+      const input = (context.body ?? {}) as { requestId?: unknown; reason?: unknown };
+      if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
+      const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+      if (reason === "" || reason.length > 500) return badRequest("Give a reason of up to 500 characters for accepting the findings.");
+      if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can accept these findings.` } } };
+      const choices = reviewChoices(found.task);
+      if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to accept right now." } } };
+      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review-findings`, {
+        method: "POST", headers: TASK_VIEW,
+        body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, candidateDigest: choices.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) },
       });
       return ok({ session: sessionView(found.record, task, viewer(context), context.origin, peopleOf(context, found.record)) });
     },

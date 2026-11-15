@@ -9,6 +9,7 @@ import { NoChangeSection } from "./NoChangeSection.js";
 import { AnsweredSection } from "./AnsweredSection.js";
 import { ModelFallbackNotes } from "./ModelFallbackNotes.js";
 import { LoadedKnowledgePanel } from "./LoadedKnowledgePanel.js";
+import { ReviewChoices } from "./ReviewChoices.js";
 import { visibleAnchor, workflowStateWords, type ReadTask, type CommentOnPart } from "./workspace-types.js";
 // Fix with agent is its own chunk: it is fetched only where the session view offers it.
 const FixWithAgentPanel = lazy(async () => ({ default: (await import("./FixWithAgentPanel.js")).FixWithAgentPanel }));
@@ -23,6 +24,7 @@ export function PipelineTab({ session, task, onComment }: { session: ReadSession
  const settingUp = session.status === "starting";
  const blockReason = task?.workflow?.state === "BLOCKED" && typeof task.workflow.blockReason === "string" && task.workflow.blockReason !== "" ? task.workflow.blockReason : undefined;
  return <section aria-label="Work progress">{task?.workflow && <><ol className="rv-pipeline" aria-label="Task stages">{STAGES.map(stage => <li key={stage} {...(!settingUp && STAGE_WORDS[task.workflow!.stage] === stage ? { "aria-current": "step" as const } : {})}>{stage}</li>)}</ol><p className="rv-muted" role="status">{settingUp ? SETTING_UP : blockReason === undefined ? workflowStateWords(task.workflow.state) : <VisibleText text={"Stopped: " + blockReason} />}</p></>}
+ {task && <ReviewChoices session={session} task={task} />}
  {task && <ModelFallbackNotes task={task} />}
  {task && <NoChangeSection task={task} />}
  {task?.workflow && <LoadedKnowledgePanel taskId={task.taskId} />}

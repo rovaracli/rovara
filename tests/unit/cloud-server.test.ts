@@ -2,6 +2,7 @@
 // as a sign-in client, the session cookie and CSRF, the app's API answered from Code as the signed-in person, a token
 // refreshed once on 401 (one refresh shared by calls made together), every route not on Code yet answering 501; and
 // phase 2: sessions on Code's tasks, Home's cards and the plan approval page.
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { CODE_TASK_PAGE, CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
 import {
@@ -86,6 +87,10 @@ function fakeCode() {
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}` && call.method === "GET") return respond(200, { task });
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/cancel`) { task = { ...task, status: "CANCELLED" }; return respond(200, { task }); }
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/close`) { task = { ...task, status: "CLOSED" }; return respond(200, { task, closed: true }); }
+    if ((url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/send-back` || url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/review-findings`) && call.method === "POST") {
+      task = { ...task, workflow: { ...(task.workflow as object), stage: url.pathname.endsWith("send-back") ? "IMPLEMENT" : "PULL_REQUEST", state: url.pathname.endsWith("send-back") ? "RUNNING" : "READY", revision: 17 } };
+      return respond(200, { task, requestId: "r" });
+    }
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/review` && call.method === "POST") {
       task = { ...task, workflow: { ...(task.workflow as object), state: "RUNNING", revision: 17 } };
       return respond(200, { task, requestId: "r" });
@@ -419,6 +424,21 @@ const REVIEW_BLOCKED = (passed = true) => ({
   },
 });
 
+/** REVIEW/BLOCKED by findings, as production's ReactJS task showed it (Rovara-cloud#25): two blocking code-review findings, one advisory note, the security review passed. */
+const FINDINGS = [
+  { advisory: false, origin: "INTRODUCED", severity: "LOW", file: "src/pages/Blog.jsx", text: "Blog.jsx injects blog.css via useEffect after first render." },
+  { advisory: false, origin: "INTRODUCED", severity: "LOW", file: "index.html", line: 3, text: "The meta description tag was dropped." },
+  { advisory: true, origin: "INTRODUCED", severity: "LOW", text: "Consider a README note." },
+];
+const REVIEW_FINDINGS = () => {
+  const blocked = REVIEW_BLOCKED();
+  return { workflow: { ...blocked.workflow, blockReason: "the code review did not pass", reviews: [
+    { ...blocked.workflow.reviews[0]!, status: "FINDINGS", findings: FINDINGS },
+    { ...blocked.workflow.reviews[1]!, status: "PASS", findings: [] },
+  ] } };
+};
+const fingerprint = (text: string, file = "", line = 0) => createHash("sha256").update(JSON.stringify(["CRITIC", text, file, line])).digest("hex");
+
 describe("Home's cards and plan approval (phase 2b)", () => {
   const begin = async () => {
     const context = setUp();
@@ -495,6 +515,42 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     expect(await status()).toBe("running");
     code.setTask({ status: "SUCCEEDED", workflow: { ...REVIEW_BLOCKED().workflow, stage: "WAIT_FOR_MERGE", state: "WAITING" } });
     expect(await status()).toBe("needs_person");
+  });
+
+  it("sends a task stopped by review findings back to coding with the owner's note, or the default note (Rovara-cloud#25)", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask({ status: "SUCCEEDED", ...REVIEW_FINDINGS() });
+    const sent = await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", note: "  Import blog.css directly and restore the meta description.  " } });
+    expect(sent!.status).toBe(200);
+    expect(SessionResponseReaderSchema.parse(JSON.parse(sent!.body)).session.status).toBe("running");
+    expect(JSON.parse(code.calls.find((entry) => entry.path === `/v1/dev/tasks/${code.taskId}/workflow/send-back`)!.body!)).toEqual({ requestId: "88888888-8888-4888-8888-888888888888", expectedRevision: 16, instructions: "Import blog.css directly and restore the meta description." });
+    code.setTask({ status: "SUCCEEDED", ...REVIEW_FINDINGS() });
+    await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "99999999-9999-4999-8999-999999999999" } });
+    expect(JSON.parse(code.calls.filter((entry) => entry.path.endsWith("/workflow/send-back")).at(-1)!.body!)).toMatchObject({ instructions: "Fix the review findings." });
+  });
+
+  it("accepts every blocking finding with the owner's reason, by IDs it computes from Code's task, never from the request (Rovara-cloud#25)", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask({ status: "SUCCEEDED", ...REVIEW_FINDINGS() });
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888" } }))!.status).toBe(400);
+    const accepted = await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", reason: "Cosmetic; fixed in a follow-up.", resolutions: [{ findingId: "e".repeat(64), action: "ACCEPT", note: "x" }] } });
+    expect(accepted!.status).toBe(200);
+    expect(JSON.parse(code.calls.find((entry) => entry.path === `/v1/dev/tasks/${code.taskId}/workflow/review-findings`)!.body!)).toEqual({
+      requestId: "88888888-8888-4888-8888-888888888888", expectedRevision: 16, candidateDigest: CANDIDATE,
+      resolutions: [
+        { findingId: fingerprint(FINDINGS[0]!.text, "src/pages/Blog.jsx"), action: "ACCEPT", note: "Cosmetic; fixed in a follow-up." },
+        { findingId: fingerprint(FINDINGS[1]!.text, "index.html", 3), action: "ACCEPT", note: "Cosmetic; fixed in a follow-up." },
+      ],
+    });
+  });
+
+  it("refuses send-back and accept when nothing is blocked by findings: a review that couldn't finish, or a plan waiting", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask({ status: "SUCCEEDED", ...REVIEW_BLOCKED() });
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/send-back`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888" } }))!.status).toBe(409);
+    code.setTask(PLAN_WAITING);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/accept-findings`, { ...auth, body: { requestId: "88888888-8888-4888-8888-888888888888", reason: "ok" } }))!.status).toBe(409);
+    expect(code.calls.some((entry) => entry.path.endsWith("/workflow/send-back") || entry.path.endsWith("/workflow/review-findings"))).toBe(false);
   });
 
   it("offers no review retry when the checks didn't pass or the task isn't stopped at review, and needs a request ID", async () => {

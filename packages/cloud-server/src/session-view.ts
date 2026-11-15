@@ -2,6 +2,7 @@
 // record and the Rovara Code task it points at. The task goes in as Code answered it: Cloud's task view is a subset of
 // Code's, and the app reads it tolerantly. A plan waiting for the owner's review is the owner's approval. Someone the
 // task is shared with (a reader in Code, spec 067) reads it at `view` and may only watch. Cost starts empty.
+import { createHash } from "node:crypto";
 import type { WorkSession } from "./work-sessions.js";
 
 /** The parts of Code's task view (DeveloperTaskView) the session reads; the whole task is passed through as the body. */
@@ -15,7 +16,9 @@ export interface CodeTask {
     /** The code the reviews look at, and the checks that ran on it (Code's workflow snapshot). */
     candidate?: { digest?: string };
     verification?: { candidateDigest?: string; reviewOnly?: boolean; results?: Array<{ status?: string }> };
-    reviews?: Array<{ role?: string; status?: string; failureReason?: string; candidateDigest?: string; findings?: Array<{ advisory?: boolean; origin?: string } | string> }>;
+    reviews?: Array<{ role?: string; status?: string; failureReason?: string; candidateDigest?: string; findings?: Array<{ advisory?: boolean; origin?: string; text?: string; file?: string; line?: number; severity?: string } | string> }>;
+    /** Findings the owner accepted, per candidate (Code's acceptedFindings): they no longer block that code. */
+    acceptedFindings?: Array<{ candidateDigest?: string; role?: string; fingerprint?: string }>;
   };
   pullRequests?: Array<{ repository?: string; number?: number; url?: string; state?: string }>;
   createdAt: string;
@@ -178,5 +181,46 @@ export function blockedReview(task: CodeTask): { reason: string; unfinished: boo
     unfinished: unfinished.length > 0,
     ...(checked ? { retry: { expectedRevision: workflow.revision!, candidateDigest: digest } } : {}),
   };
+}
+
+/** One blocking review finding of the current code, with Code's own ID for it (workflowFindingFingerprint). */
+export interface OpenFinding { findingId: string; role: "CRITIC" | "SECURITY"; text: string; file?: string; line?: number; severity?: string }
+/** Code's limit on findings answered in one go (WORKFLOW_RESOLVE_FINDINGS_MAX). */
+export const RESOLVE_FINDINGS_MAX = 20;
+
+/**
+ * The current code's blocking review findings, by Code's rules (openReviewFindings): from the reviews of the current candidate, a finding the change
+ * introduced that is not advisory (a security finding always blocks), not already accepted for this code, each once, with the ID Code matches it by.
+ */
+export function openFindings(task: CodeTask): OpenFinding[] {
+  const workflow = task.workflow;
+  const digest = workflow?.candidate?.digest;
+  if (digest === undefined) return [];
+  const accepted = workflow?.acceptedFindings ?? [];
+  const open = new Map<string, OpenFinding>();
+  for (const role of ["CRITIC", "SECURITY"] as const) {
+    for (const review of (workflow?.reviews ?? []).filter((entry) => entry.role === role && entry.candidateDigest === digest)) {
+      for (const raw of review.findings ?? []) {
+        const finding = typeof raw === "string" ? { text: raw } : raw;
+        if (typeof raw !== "string" && !(raw.origin === "INTRODUCED" && (raw.advisory !== true || role === "SECURITY"))) continue;
+        const text = finding.text ?? "";
+        const findingId = createHash("sha256").update(JSON.stringify([role, text, finding.file ?? "", finding.line ?? 0])).digest("hex");
+        if (accepted.some((entry) => entry.candidateDigest === digest && entry.role === role && entry.fingerprint === findingId) || open.has(findingId)) continue;
+        open.set(findingId, { findingId, role, text, ...(finding.file === undefined ? {} : { file: finding.file }), ...(finding.line === undefined ? {} : { line: finding.line }), ...("severity" in finding && finding.severity !== undefined ? { severity: finding.severity } : {}) });
+      }
+    }
+  }
+  return [...open.values()];
+}
+
+/**
+ * What the owner of a task stopped by review findings can do besides retrying (Rovara-cloud#25): send it back to coding with a note, or accept the
+ * findings and let the pull request open. Present only for a task stopped at review with 1 to RESOLVE_FINDINGS_MAX blocking findings.
+ */
+export function reviewChoices(task: CodeTask): { findings: OpenFinding[]; expectedRevision: number; candidateDigest: string } | undefined {
+  if (blockedReview(task) === undefined || typeof task.workflow?.revision !== "number" || task.workflow.candidate?.digest === undefined) return undefined;
+  const findings = openFindings(task);
+  if (findings.length === 0 || findings.length > RESOLVE_FINDINGS_MAX) return undefined;
+  return { findings, expectedRevision: task.workflow.revision, candidateDigest: task.workflow.candidate.digest };
 }
 
