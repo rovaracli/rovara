@@ -35,7 +35,8 @@ describe("code contract v0 tables", () => {
     // 26 routes answered from Code (including the company audit, which merges Cloud's own audit records with Code's engine records), the decision card routes (list, approve, request changes, reject, evidence opened: Cloud passes them to Code and answers
     // the 404 "cards are off" while Code has none), the realtime token stub that tells the app live updates are off, and the Conversation (#28: the timeline
     // from Code's task events, comments Cloud keeps itself: events, messages list and send, edit, delete).
-    expect(counts.appCloudServerToday).toBe(37);
+    // Plus the twelve lessons routes (DEC 231): the inbox batch, the lists, Keep, Drop and the batch, retire and retire requests, the mode, Lessons used and not helpful.
+    expect(counts.appCloudServerToday).toBe(49);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

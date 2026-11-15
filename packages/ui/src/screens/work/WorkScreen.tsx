@@ -12,9 +12,11 @@ import { Button } from "../../design/Button.js";
 import { EmptyState } from "../../design/EmptyState.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { lessonsOff, notServed, useLessonInbox } from "../../api/learned.js";
 import { AgentsRow } from "./AgentsRow.js";
+import { LessonBatchCard } from "./LessonBatchCard.js";
 import { TaskPane } from "./TaskPane.js";
-import { WorkList } from "./WorkList.js";
+import { WorkList, batchId } from "./WorkList.js";
 import "./work.css";
 
 /**
@@ -23,10 +25,15 @@ import "./work.css";
  * said in the list; a route Code does not serve yet says "isn't connected to Rovara Code yet" there, never a spinner.
  */
 export function WorkScreen() {
- const host = useAppHost(), navigate = useNavigate(), [params, setParams] = useSearchParams(), tasks = useWorkTasks(), decisions = useDecisions(), spend = useOrgSpend(), announce = useAnnounce(), query = useQueryClient();
+ const host = useAppHost(), navigate = useNavigate(), [params, setParams] = useSearchParams(), tasks = useWorkTasks(), decisions = useDecisions(), inbox = useLessonInbox(), spend = useOrgSpend(), announce = useAnnounce(), query = useQueryClient();
  // The ages and the "waiting over a day" rule are worked out against the clock each time the list or the cards are read again.
  const rows = useMemo(() => (tasks.data === undefined || decisions.isPending ? [] : workRows(tasks.data, decisions.data ?? [], new Date())), [tasks.data, decisions.data, decisions.isPending]);
- const wanted = params.get("task"), selected = rows.find(row => row.id === wanted) ?? rows[0];
+ // The lesson batches (DEC 231b): one row per project under "Needs you". Lessons that are off, or a Code without the lessons API, add no row; any other failure says so quietly.
+ const batches = useMemo(() => (inbox.data?.state === "on" ? inbox.data.batches : []), [inbox.data]);
+ const wanted = params.get("task"), selectedBatch = batches.find(batch => batchId(batch.project) === wanted);
+ const selected = selectedBatch !== undefined ? undefined : rows.find(row => row.id === wanted) ?? rows[0];
+ const shownBatch = selectedBatch ?? (selected === undefined && !tasks.isPending ? batches[0] : undefined);
+ const inboxFailed = inbox.isError && !lessonsOff(inbox.error) && !notServed(inbox.error);
  const rowsRef = useRef(rows), heading = useRef<HTMLHeadingElement>(null);
  // The page is a lazy chunk: its heading takes focus when it arrives, so a keyboard or screen-reader user starts at the top of the page.
  useEffect(() => { heading.current?.focus(); }, []);
@@ -42,18 +49,21 @@ export function WorkScreen() {
  const error = tasks.isError ? tasks.error : undefined, isAdmin = host.kind === "web" && host.features.admin;
  const listBody = tasks.isPending || (decisions.isPending && !tasks.isError) ? <Skeleton label="Loading your work" />
   : error !== undefined ? <div className="rv-work-error" role="alert" data-testid="load-error"><div className="rv-banner rv-banner-danger"><span><b>{error instanceof ApiError && error.status === 501 ? "Work isn't available yet." : "Couldn't load your work."}</b> <VisibleText text={error instanceof ApiError ? error.message : "Nothing is lost. Running tasks keep going, and chat messages still arrive."} /></span><Button onClick={() => { void tasks.refetch(); }}>Try again</Button></div></div>
-  : rows.length === 0 ? <EmptyState testId="work-empty" title="No work yet" description="Start a task from a project. It appears here, and a card appears when it needs a decision." />
-  : <WorkList rows={rows} selectedId={selected?.id} onSelect={select} onOpen={id => { const row = rows.find(entry => entry.id === id);if (row !== undefined) void navigate(fullPage(row)); }} decisionsFailed={decisions.isError} />;
+  : rows.length === 0 && batches.length === 0 ? <EmptyState testId="work-empty" title="No work yet" description="Start a task from a project. It appears here, and a card appears when it needs a decision." />
+  : <WorkList rows={rows} selectedId={shownBatch !== undefined ? batchId(shownBatch.project) : selected?.id} onSelect={select} onOpen={id => { const row = rows.find(entry => entry.id === id);if (row !== undefined) void navigate(fullPage(row)); }} decisionsFailed={decisions.isError} lessonBatches={batches} />;
  return <section className="rv-work" data-testid="work">
   <section className="rv-work-list" aria-label="Work list">
    <div className="rv-work-head"><h1 ref={heading} tabIndex={-1} data-testid="work-title">Work</h1><span className="rv-muted rv-work-hint">With the list focused: <kbd>J</kbd> <kbd>K</kbd> move, <kbd>O</kbd> opens</span></div>
    {spend.data !== undefined && <div className="rv-work-banner"><BudgetBanner remainingUsd={spend.data} canRaise={isAdmin} /></div>}
    <AgentsRow />
    {decisions.isError && !tasks.isPending && <p className="rv-muted rv-work-note" role="status" data-testid="decisions-unavailable"><VisibleText text={decisions.error instanceof ApiError ? decisions.error.message : "Decisions couldn't be loaded."} /></p>}
+   {inboxFailed && !tasks.isPending && <p className="rv-muted rv-work-note" role="status" data-testid="lessons-unavailable">Lessons to review couldn't be loaded.</p>}
+   {!inboxFailed && inbox.data !== undefined && inbox.data.unavailable.length > 0 && <p className="rv-muted rv-work-note" role="status" data-testid="lessons-unavailable">Lessons to review couldn't be loaded for <VisibleText text={inbox.data.unavailable.join(", ")} />.</p>}
    {listBody}
   </section>
   <section className="rv-work-pane" aria-label="Selected task">
-   {selected !== undefined ? <TaskPane key={selected.id} row={selected} fullPage={fullPage(selected)} decisionsError={decisions.isError ? decisions.error : undefined} onDecided={onDecided} />
+   {shownBatch !== undefined ? <LessonBatchCard key={"lessons:" + shownBatch.project} batch={shownBatch} onDone={() => { const next = new URLSearchParams(params);next.delete("task");setParams(next, { replace: true });void query.invalidateQueries({ queryKey: ["learned", "inbox"] }); }} />
+    : selected !== undefined ? <TaskPane key={selected.id} row={selected} fullPage={fullPage(selected)} decisionsError={decisions.isError ? decisions.error : undefined} onDecided={onDecided} />
     : <div className="rv-empty">{tasks.isPending || decisions.isPending ? "Loading…" : "Select a task once your work has loaded."}</div>}
   </section>
  </section>;

@@ -408,6 +408,94 @@ export interface ArchiveProjectRequest { requestId: string }
 export interface ArchiveProjectResponse { name: string; status: "archived" | "active" }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Types: lessons (Code's lessons API, PrepLabsAI/Rovara#713, LM8 part 1; DEC 225, 226, 231). One project of the caller's own company: the
+// company comes from Code's live membership, never from the path. Every refusal is fixed words. While Code's lessons switch does not cover
+// the company (or the lessons are not wired), every route answers 404 `LESSONS_SWITCHED_OFF` "Lessons are off.", which the app shows as a
+// calm off state, never as an error.
+
+export type LessonList = "proposed" | "approved" | "retired";
+export type LessonMode = "off" | "suggest" | "auto";
+/** Why a person drops a proposed lesson: fixed words, so no person's text is kept with a lesson. */
+export type LessonRejectReason = "wrong" | "too_narrow" | "duplicate" | "not_useful" | "other";
+/** Why a person retires a lesson: fixed words. */
+export type LessonRetireReason = "outdated" | "wrong" | "harmful" | "not_useful" | "other";
+/** A person as Code names them: a display name, or "a former member" for someone erased. `you` marks the signed-in person. */
+export interface LessonPerson { name: string; you?: true }
+export type LessonCitation =
+  | { kind: "code"; repo: string; path: string; startLine: number; endLine: number; check: string /* known: valid, moved, stale, unchecked */; checkedAt?: number }
+  | { kind: "pr"; url: string }
+  | { kind: "task"; taskId: string }
+  | { kind: "record" };
+/** What a lesson waiting for people still needs: people in all (1, or 2 for reviewer, check and security lessons) and how many approved. */
+export interface LessonNeeds { required: 1 | 2; have: number; first?: LessonPerson; firstAt?: number; groups: string[] }
+/** One lesson as Code's list sends it (contracts `LessonViewSchema`; Cloud keeps the fields its screens draw). Times are milliseconds. */
+export interface LessonItem {
+  id: string; version: number; type: string; stages: string[];
+  title: string; description: string; body: string;
+  scope: { repos: string[]; paths: string[]; languages: string[] };
+  tier: 0 | 1 | 2;
+  status: string /* known: candidate, pending, active, stale, retired, rejected, expired, withdrawn */;
+  /** How often tasks loaded it, and how many helpful and not helpful (thumbs-down or "wrong here") marks it has. Not a count of distinct tasks. */
+  counters: { loaded: number; helpful: number; harmful: number };
+  createdAt: number; updatedAt: number;
+  /** When an undecided lesson lapses (the expiry warning). */
+  expiresAt: number;
+  lastUsedAt?: number;
+  citations: LessonCitation[];
+  /** The people whose corrections or edits it came from. */
+  from: LessonPerson[];
+  measured: boolean;
+  /** How many tasks back it. */
+  supportTasks: number;
+  needs?: LessonNeeds;
+  /** Older paths may have kept a free-text reason here; the app shows only the fixed words it knows. */
+  rejectedReason?: string;
+  /** Live with no approval, on trial for 14 days or stable after it. */
+  trial?: string /* known: trial, stable */;
+  /** The lesson this one may duplicate (kept apart, never merged): Keep keeps both. */
+  possibleDuplicate?: string;
+  /** The lesson this one contradicts. */
+  contradicts?: string;
+  /** A possible duplicate that cannot be merged into the other (it came only from the repository's own reviews). */
+  mergeBlocked?: true;
+  /** How many distinct tasks were given it. Not sent by Code yet (being added); shown only when present. */
+  usedInTasks?: number;
+  canApprove: boolean; canReject: boolean; canRetire: boolean;
+}
+export interface LessonsPageResponse { project: string; list: LessonList; canDecide: boolean; lessons: LessonItem[]; next?: string; partial?: true }
+export interface LessonEdit { title: string; description: string; body: string }
+export interface ApproveLessonRequest { version: number; edit?: LessonEdit }
+export interface ApproveLessonResponse { project: string; lessonId: string; status: string /* known: active, pending */; version: number; needs?: LessonNeeds }
+export interface RejectLessonRequest { version: number; reason: LessonRejectReason }
+export interface RejectLessonResponse { project: string; lessonId: string; status: "rejected" }
+export type LessonDecision = { lessonId: string; version: number; decision: "keep"; edit?: LessonEdit } | { lessonId: string; version: number; decision: "drop"; reason: LessonRejectReason };
+/** Keep or Drop for 1 to 20 distinct proposed lessons at once (the inbox's batch). */
+export interface LessonDecisionsRequest { decisions: LessonDecision[] }
+/** One answer per decision, in the order sent; a refusal of one never undoes or blocks another. */
+export type LessonDecisionResult = { lessonId: string; ok: true; status: string /* known: active, pending, rejected */ } | { lessonId: string; ok: false; code: string; message: string };
+export interface LessonDecisionsResponse { project: string; results: LessonDecisionResult[] }
+export interface RetireLessonRequest { reason: LessonRetireReason }
+export interface RetireLessonResponse { project: string; lessonId: string; status: "retired" }
+export interface RetireRequestResponse { project: string; lessonId: string; requested: true }
+export interface LessonRetireRequest { lessonId: string; title: string; status: string; by: string; at: number }
+export interface RetireRequestsResponse { project: string; requests: LessonRetireRequest[]; more: boolean }
+/** One lesson a task was given ("Lessons used"). `visible` false: the viewer cannot see its source, and the row has no words. */
+export interface TaskLesson {
+  stage: string; round: number; lessonId: string; version: number;
+  why: string /* known: scope, similar, path */;
+  citation: string /* known: unchecked, valid, moved, stale_dropped, unchecked_dropped, none */;
+  visible: boolean; title?: string; type?: string; helpful?: number; harmful?: number; canMark: boolean; trial?: string;
+}
+export interface TaskLessonsResponse { project: string; taskId: string; lessons: TaskLesson[] }
+export interface NotHelpfulResponse { project: string; taskId: string; lessonId: string; marked: "not_helpful" }
+/** The project's own mode, the mode in force (the stricter of it and the company's), whether the company is the reason, and whether this person may change it. */
+export interface LessonModeResponse { project: string; mode: LessonMode; effective: LessonMode; lockedByCompany: boolean; canChange: boolean }
+export interface PutLessonModeRequest { mode: LessonMode }
+/** Cloud's inbox read (`GET /v1/app/lessons/inbox`): one batch per project with proposed lessons the person can decide, theirs first. */
+export interface LessonInboxBatch { project: string; lessons: LessonItem[]; fromYou: number; partial?: true }
+export interface LessonInboxResponse { state: "on" | "off"; batches: LessonInboxBatch[]; unavailable: string[] }
+
+// ---------------------------------------------------------------------------------------------------------------
 // The typed map: one entry per Code route id (request is the JSON body or `void`, response the 2xx JSON body).
 
 export interface CodeRouteTypes {
@@ -481,6 +569,17 @@ export interface CodeRouteTypes {
   "scriptTokens.list": { request: void; response: ScriptTokensResponse };
   "scriptTokens.create": { request: CreateScriptTokenRequest; response: CreateScriptTokenResponse };
   "scriptTokens.revoke": { request: void; response: RevokeScriptTokenResponse };
+  "lessons.list": { request: void; response: LessonsPageResponse };
+  "lessons.approve": { request: ApproveLessonRequest; response: ApproveLessonResponse };
+  "lessons.reject": { request: RejectLessonRequest; response: RejectLessonResponse };
+  "lessons.decisions": { request: LessonDecisionsRequest; response: LessonDecisionsResponse };
+  "lessons.retire": { request: RetireLessonRequest; response: RetireLessonResponse };
+  "lessons.retireRequest": { request: JsonObject; response: RetireRequestResponse };
+  "lessons.retireRequests": { request: void; response: RetireRequestsResponse };
+  "lessons.task": { request: void; response: TaskLessonsResponse };
+  "lessons.notHelpful": { request: JsonObject; response: NotHelpfulResponse };
+  "lessons.mode.get": { request: void; response: LessonModeResponse };
+  "lessons.mode.put": { request: PutLessonModeRequest; response: LessonModeResponse };
 }
 
 export type CodeRouteId = keyof CodeRouteTypes;
@@ -527,6 +626,7 @@ const E2 = (laptopCore: string) => `E2 (core on AWS); laptop core: ${laptopCore}
 
 const T = "/v1/dev/tasks/{taskId}";
 const CP = "/v1/dev/client/projects/{project}";
+const DP = "/v1/dev/projects/{project}";
 
 export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   // Sign-in (Code's sign-in server; Cloud is the client `rovara-cloud`, PKCE)
@@ -607,6 +707,18 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("scriptTokens.list", "GET", "/v1/dev/script-tokens", "The person's script tokens", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:94")),
   spec("scriptTokens.create", "POST", "/v1/dev/script-tokens", "Make a script token; the secret is shown once", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:97")),
   spec("scriptTokens.revoke", "DELETE", "/v1/dev/script-tokens/{tokenId}", "Revoke one", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:99")),
+  // Lessons (PrepLabsAI/Rovara#713, LM8 part 1): served by code/next once merged and wired (its Step 6); until then every route answers 404 LESSONS_SWITCHED_OFF "Lessons are off."
+  spec("lessons.list", "GET", `${DP}/lessons`, "One page of a project's lessons (query: list=proposed|approved|retired, since, limit 1..100, cursor)", "full", ["home", "how-we-work"], "no", false, "none", true),
+  spec("lessons.approve", "POST", `${DP}/lessons/{lessonId}/approve`, "Keep a proposed lesson: the version read, or an edit of it", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.reject", "POST", `${DP}/lessons/{lessonId}/reject`, "Drop a proposed lesson, with a fixed reason", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.decisions", "POST", `${DP}/lessons/decisions`, "Keep or Drop up to 20 proposed lessons at once (the inbox batch); one result each", "full", ["home"], "no", false, "none", true),
+  spec("lessons.retire", "POST", `${DP}/lessons/{lessonId}/retire`, "Retire a lesson, with a fixed reason", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.retireRequest", "POST", `${DP}/lessons/{lessonId}/retire-request`, "Anyone on the project asks the people who decide to retire a lesson", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.retireRequests", "GET", `${DP}/lessons/retire-requests`, "The open retire requests (people who decide)", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.task", "GET", `${DP}/tasks/{taskId}/lessons`, "The lessons a task was given (Lessons used)", "full", ["session"], "no", false, "none", true),
+  spec("lessons.notHelpful", "POST", `${DP}/tasks/{taskId}/lessons/{lessonId}/not-helpful`, "Mark a lesson the task was given as not helpful", "full", ["session"], "no", false, "none", true),
+  spec("lessons.mode.get", "GET", `${DP}/lessons/mode`, "The project's learning mode, the mode in force and whether the company locks it", "full", ["how-we-work"], "no", false, "none", true),
+  spec("lessons.mode.put", "PUT", `${DP}/lessons/mode`, "Set the learning mode (a project admin, or a company owner or admin)", "full", ["how-we-work"], "no", false, "none", true),
 ];
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -797,14 +909,22 @@ GET /v1/app/projects/{p}/collaborator-approvals | k | later | | product-decision
 PUT /v1/app/projects/{p}/collaborator-approvals | k | later | | product-decisions |
 GET /v1/app/projects/{p}/known-failing | k | later | | known-failing |
 POST /v1/app/projects/{p}/known-failing | k | later | | known-failing |
-GET /v1/app/projects/{p}/lessons | k | later | | lessons | L
+GET /v1/app/projects/{p}/lessons | k | how-we-work | lessons.list | learned | T
 GET /v1/app/projects/{p}/lessons/digest | k | later | | lessons | L
 GET /v1/app/projects/{p}/lessons/sources | k | later | | lessons | L
 GET /v1/app/projects/{p}/lessons/{lessonId}/history | k | later | | lessons | L
-POST /v1/app/projects/{p}/lessons/{lessonId}/approve | k | later | | lessons | L
-POST /v1/app/projects/{p}/lessons/{lessonId}/reject | k | later | | lessons | L
+POST /v1/app/projects/{p}/lessons/{lessonId}/approve | k | how-we-work | lessons.approve | learned | T
+POST /v1/app/projects/{p}/lessons/{lessonId}/reject | k | how-we-work | lessons.reject | learned | T
 POST /v1/app/projects/{p}/lessons/{lessonId}/merge | k | later | | lessons | L
-POST /v1/app/projects/{p}/lessons/{lessonId}/retire | k | later | | lessons | L
+POST /v1/app/projects/{p}/lessons/{lessonId}/retire | k | how-we-work | lessons.retire | learned | T
+POST /v1/app/projects/{p}/lessons/{lessonId}/retire-request | k | how-we-work | lessons.retireRequest | learned | T
+GET /v1/app/projects/{p}/lessons/retire-requests | k | how-we-work | lessons.retireRequests | learned | T
+POST /v1/app/projects/{p}/lessons/decisions | k | home | lessons.decisions | learned | T
+GET /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.get | learned | T
+PUT /v1/app/projects/{p}/lessons/mode | k | how-we-work | lessons.mode.put | learned | T
+GET /v1/app/projects/{p}/tasks/{t}/lessons | k | session | lessons.task | learned | T
+POST /v1/app/projects/{p}/tasks/{t}/lessons/{lessonId}/not-helpful | k | session | lessons.notHelpful | learned | T
+GET /v1/app/lessons/inbox | k | home | lessons.list | learned | T
 POST /v1/app/projects/{p}/lessons/rollback | k | later | | lessons |
 POST /v1/app/projects/{p}/lessons/sources/resume | k | later | | lessons |
 POST /v1/app/projects/{p}/lessons/preset | k | later | | lessons |

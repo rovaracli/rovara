@@ -12,7 +12,7 @@ import {
   matchCodeRoute,
   type AccessResponse, type CodeRequest, type CodeResponse, type CodeRouteId, type CompanyMember, type DecisionCard, type ErrorBody, type HowWeWorkView,
   type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
-  type DecisionsResponse, type DecisionOutcome,
+  type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 
 export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean }
@@ -75,6 +75,8 @@ export interface FakeCode {
   /** Who the next sign-in is (the fake has no login page). */
   setPerson(person: Person): void;
   close(): Promise<void>;
+  /** Lessons on or off (off: every lessons route answers 404 LESSONS_SWITCHED_OFF "Lessons are off.", as Code does while its switch is off). */
+  setLessons(on: boolean): void;
   /** Every request received, newest last (method, path, status). */
   log: Array<{ method: string; path: string; status: number }>;
 }
@@ -168,6 +170,68 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       { sha256: "f".repeat(64), title: "Webhook retry eval", kind: "eval", verdict: "unknown", criterionIds: [], passed: 18, total: 20, bar: 0.95 },
     ],
   });
+
+  // --- lessons (contract v0 `lessons.*`, Code's lessons API #713): project "web" has three proposed lessons (one from Priya's own correction, one that lapses within a
+  // day), two approved and one retired; the pull-request task was given two. Priya (the project's administrator) decides; Sam reads and may ask to retire.
+  let lessonsOn = true;
+  const DAY = 864e5;
+  const at = (days: number) => now().getTime() + days * DAY;
+  const lessonOf = (id: string, patch: Partial<LessonItem> & { title: string }): LessonItem => ({
+    id, version: 1, type: "convention", stages: ["IMPLEMENT"], description: "", body: "", scope: { repos: ["example/web"], paths: [], languages: [] }, tier: 1, status: "pending",
+    counters: { loaded: 0, helpful: 0, harmful: 0 }, createdAt: at(-2), updatedAt: at(-2), expiresAt: at(5), citations: [], from: [], measured: true, supportTasks: 1,
+    canApprove: true, canReject: true, canRetire: true, ...patch,
+  });
+  const lessonPeople = new Map<string, string[]>();
+  const lessonStore = new Map<string, LessonItem>([
+    ["les_retry0001", lessonOf("les_retry0001", { title: "Wrap webhook calls in withRetry", description: "Network calls to payment providers go through withRetry.", body: "Every outbound call in src/billing/ goes through withRetry(fn, { attempts: 3 }). A bare fetch was sent back twice this week.", citations: [{ kind: "code", repo: "example/web", path: "src/billing/retry.ts", startLine: 12, endLine: 30, check: "valid" }], supportTasks: 2, createdAt: at(-1) })],
+    ["les_tests0001", lessonOf("les_tests0001", { title: "Put new tests next to the module", description: "Tests live beside the file they test, as name.test.ts.", body: "Add tests as src/<area>/<name>.test.ts beside the module, not under a top-level tests folder.", citations: [{ kind: "pr", url: "https://github.com/example/web/pull/40" }], expiresAt: at(0.6), createdAt: at(-6), contradicts: "les_readme001" })],
+    ["les_dates0001", lessonOf("les_dates0001", { title: "Use the shared date formatter", description: "Dates on screens go through formatDate, never toLocaleString.", body: "Use formatDate from src/text/dates.ts for every date a person reads.", type: "preference", tier: 0, createdAt: at(-3), needs: { required: 2, have: 0, groups: [] }, possibleDuplicate: "les_retry0001" })],
+    ["les_logs00001", lessonOf("les_logs00001", { title: "Log request ids with every error", description: "Error logs carry the request id.", body: "Pass the request id to logger.error so a failed request can be traced.", status: "active", counters: { loaded: 14, helpful: 3, harmful: 1 }, supportTasks: 3, createdAt: at(-20), updatedAt: at(-18), lastUsedAt: at(-1) })],
+    ["les_readme001", lessonOf("les_readme001", { title: "Keep the README's setup steps current", description: "A change to a setup command updates the README in the same pull request.", body: "When package.json scripts or the setup commands change, update README.md's Setup section in the same pull request.", status: "active", counters: { loaded: 6, helpful: 0, harmful: 0 }, createdAt: at(-12), updatedAt: at(-11) })],
+    ["les_semis0001", lessonOf("les_semis0001", { title: "No semicolons in the old scripts folder", description: "An old style rule.", body: "Files in scripts/legacy have no semicolons.", status: "retired", createdAt: at(-60), updatedAt: at(-30) })],
+  ]);
+  lessonPeople.set("les_retry0001", [PRIYA.developerId]);
+  lessonPeople.set("les_tests0001", [SAM.developerId]);
+  lessonPeople.set("les_dates0001", [SAM.developerId, PRIYA.developerId]);
+  lessonPeople.set("les_logs00001", [SAM.developerId]);
+  let lessonMode: LessonMode = "suggest";
+  const retireAsks = new Map<string, { by: string; at: number }>();
+  const taskLessons = new Map<string, TaskLesson[]>([
+    [TASK_IDS.pullRequest, [
+      { stage: "IMPLEMENT", round: 1, lessonId: "les_logs00001", version: 1, why: "scope", citation: "valid", visible: true, title: "Log request ids with every error", type: "convention", helpful: 3, harmful: 1, canMark: true },
+      { stage: "PLAN", round: 1, lessonId: "les_readme001", version: 1, why: "path", citation: "none", visible: true, title: "Keep the README's setup steps current", type: "convention", helpful: 0, harmful: 0, canMark: true, trial: "trial" },
+      { stage: "REVIEW", round: 1, lessonId: "les_hidden001", version: 2, why: "similar", citation: "unchecked", visible: false, canMark: false },
+    ]],
+  ]);
+  const notHelpful = new Set<string>();
+  const lessonsOff = () => failure(404, "LESSONS_SWITCHED_OFF", "Lessons are off.");
+  const LIST_STATUSES: Record<string, string[]> = { proposed: ["pending"], approved: ["active", "stale"], retired: ["retired", "expired", "rejected"] };
+  /** The project, if lessons are on and the person is on its roster (Code answers the same "No such project." for both). */
+  const lessonsProject = (context: { params: Record<string, string>; person: Person }) => {
+    if (!lessonsOn) return { refused: lessonsOff() };
+    const name = context.params["project"] ?? "";
+    if (roleIn(context.person, name) === undefined) return { refused: failure(404, "NOT_FOUND", "No such project.") };
+    return { name, decides: roleIn(context.person, name) === "administrator" };
+  };
+  const viewOf = (lesson: LessonItem, person: Person, decides: boolean): LessonItem => ({
+    ...lesson,
+    from: (lessonPeople.get(lesson.id) ?? []).map((id) => { const who = PEOPLE.find((one) => one.developerId === id); return who === undefined ? { name: "a former member" } : { name: who.name, ...(who.developerId === person.developerId ? { you: true as const } : {}) }; }),
+    canApprove: decides && lesson.status === "pending", canReject: decides && lesson.status === "pending", canRetire: decides && (lesson.status === "active" || lesson.status === "stale"),
+  });
+  const decide = (lessonId: string, version: number, keep: boolean, edit?: { title: string; description: string; body: string }): { ok: true; status: string } | { ok: false; code: string; message: string } => {
+    const lesson = lessonStore.get(lessonId);
+    if (lesson === undefined) return { ok: false, code: "NOT_FOUND", message: "That lesson is no longer there." };
+    if (lesson.status !== "pending") return { ok: false, code: "IDEMPOTENCY_CONFLICT", message: "That lesson is not waiting for a decision." };
+    if (lesson.version !== version) return { ok: false, code: "IDEMPOTENCY_CONFLICT", message: "This lesson changed since you read it. Read it again and decide again." };
+    if (!keep) { lessonStore.set(lessonId, { ...lesson, status: "rejected", updatedAt: now().getTime() }); return { ok: true, status: "rejected" }; }
+    const changed = { ...lesson, ...(edit ?? {}), version: lesson.version + (edit === undefined ? 0 : 1), updatedAt: now().getTime() };
+    // A lesson that needs two people waits for the second one after the first keeps it.
+    if (lesson.needs?.required === 2) { lessonStore.set(lessonId, { ...changed, needs: { ...lesson.needs, have: lesson.needs.have + 1 } }); return { ok: true, status: "pending" }; }
+    const kept: LessonItem = { ...changed, status: "active" };
+    delete kept.needs;
+    lessonStore.set(lessonId, kept);
+    return { ok: true, status: "active" };
+  };
 
   const NO = { expandEvidenceFirst: false, freshSignIn: false, secondPerson: false };
   const REJECT_REASONS = ["wrong_problem", "wrong_approach", "too_big", "missing_test", "not_now", "other"];
@@ -429,6 +493,99 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       scriptTokens.set(person.developerId, [...(scriptTokens.get(person.developerId) ?? []), token]);
       return { status: 201, body: { token, secret: `fake-script-${randomBytes(8).toString("hex")}` } };
     },
+    "lessons.list": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      const list = context.query.get("list") ?? "approved";
+      if (!(list in LIST_STATUSES)) return failure(400, "CONFIG_INVALID", "list takes list (proposed, approved or retired), since, limit (1 to 100) and cursor, once each");
+      if (list !== "approved" && !found.decides) return { body: { project: found.name, list: list as "proposed", canDecide: false, lessons: [] } };
+      const since = Number(context.query.get("since") ?? "0");
+      const lessons = found.name === "web" ? [...lessonStore.values()].filter((lesson) => LIST_STATUSES[list]!.includes(lesson.status) && lesson.createdAt >= since).sort((a, b) => b.updatedAt - a.updatedAt) : [];
+      return { body: { project: found.name, list: list as "proposed", canDecide: found.decides, lessons: lessons.map((lesson) => viewOf(lesson, context.person, found.decides)) } };
+    },
+    "lessons.approve": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      if (!found.decides) return failure(403, "FORBIDDEN", "Only a maintainer of this project, or an admin, can decide lessons.");
+      const result = decide(context.params["lessonId"] ?? "", Number(context.body.version), true, context.body.edit);
+      if (!result.ok) return failure(result.code === "NOT_FOUND" ? 404 : 409, result.code, result.message);
+      const lesson = lessonStore.get(context.params["lessonId"] ?? "")!;
+      return { body: { project: found.name, lessonId: lesson.id, status: result.status, version: lesson.version, ...(lesson.needs === undefined ? {} : { needs: lesson.needs }) } };
+    },
+    "lessons.reject": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      if (!found.decides) return failure(403, "FORBIDDEN", "Only a maintainer of this project, or an admin, can decide lessons.");
+      const result = decide(context.params["lessonId"] ?? "", Number(context.body.version), false);
+      if (!result.ok) return failure(result.code === "NOT_FOUND" ? 404 : 409, result.code, result.message);
+      return { body: { project: found.name, lessonId: context.params["lessonId"] ?? "", status: "rejected" } };
+    },
+    "lessons.decisions": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      const decisions = Array.isArray(context.body.decisions) ? context.body.decisions : [];
+      if (decisions.length === 0 || decisions.length > 20) return failure(400, "CONFIG_INVALID", "decisions takes 1 to 20 distinct lessons");
+      return { body: { project: found.name, results: decisions.map((one) => {
+        if (!found.decides) return { lessonId: one.lessonId, ok: false as const, code: "FORBIDDEN", message: "Only a maintainer of this project, or an admin, can decide lessons." };
+        return { lessonId: one.lessonId, ...decide(one.lessonId, one.version, one.decision === "keep", one.decision === "keep" ? one.edit : undefined) };
+      }) } };
+    },
+    "lessons.retire": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      if (!found.decides) return failure(403, "FORBIDDEN", "Only a maintainer of this project, or an admin, can decide lessons.");
+      const lesson = lessonStore.get(context.params["lessonId"] ?? "");
+      if (lesson === undefined || (lesson.status !== "active" && lesson.status !== "stale")) return failure(404, "NOT_FOUND", "That lesson is no longer there.");
+      lessonStore.set(lesson.id, { ...lesson, status: "retired", updatedAt: now().getTime() });
+      retireAsks.delete(lesson.id);
+      return { body: { project: found.name, lessonId: lesson.id, status: "retired" } };
+    },
+    "lessons.retireRequest": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      const lesson = lessonStore.get(context.params["lessonId"] ?? "");
+      if (lesson === undefined || !["active", "stale", "pending"].includes(lesson.status)) return failure(404, "NOT_FOUND", "That lesson is no longer there.");
+      if (!retireAsks.has(lesson.id)) retireAsks.set(lesson.id, { by: context.person.name, at: now().getTime() });
+      return { body: { project: found.name, lessonId: lesson.id, requested: true } };
+    },
+    "lessons.retireRequests": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      if (!found.decides) return failure(403, "FORBIDDEN", "Only a maintainer of this project, or an admin, can see retire requests.");
+      const requests = [...retireAsks.entries()].flatMap(([lessonId, ask]) => { const lesson = lessonStore.get(lessonId); return lesson === undefined || lesson.status === "retired" ? [] : [{ lessonId, title: lesson.title, status: lesson.status, by: ask.by, at: ask.at }]; });
+      return { body: { project: found.name, requests, more: false } };
+    },
+    "lessons.task": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      const entry = mayRead(context.person, context.params["taskId"] ?? "");
+      if (entry === undefined || entry.task.project !== found.name) return failure(404, "TASK_NOT_FOUND", "No such task.");
+      const rows = (taskLessons.get(entry.task.taskId) ?? []).map((row) => ({ ...row, harmful: row.harmful === undefined ? undefined : row.harmful + (notHelpful.has(`${entry.task.taskId}:${row.lessonId}`) ? 1 : 0), canMark: row.canMark && !notHelpful.has(`${entry.task.taskId}:${row.lessonId}`) }));
+      return { body: { project: found.name, taskId: entry.task.taskId, lessons: rows.map((row) => JSON.parse(JSON.stringify(row)) as TaskLesson) } };
+    },
+    "lessons.notHelpful": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      const taskId = context.params["taskId"] ?? "", lessonId = context.params["lessonId"] ?? "";
+      const entry = mayRead(context.person, taskId);
+      if (entry === undefined || !(taskLessons.get(taskId) ?? []).some((row) => row.lessonId === lessonId && row.visible)) return failure(404, "NOT_FOUND", "That lesson is no longer there.");
+      if (notHelpful.has(`${taskId}:${lessonId}`)) return failure(409, "IDEMPOTENCY_CONFLICT", "You already marked this lesson.");
+      notHelpful.add(`${taskId}:${lessonId}`);
+      return { body: { project: found.name, taskId, lessonId, marked: "not_helpful" } };
+    },
+    "lessons.mode.get": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      return { body: { project: found.name, mode: lessonMode, effective: lessonMode, lockedByCompany: false, canChange: found.decides } };
+    },
+    "lessons.mode.put": (context) => {
+      const found = lessonsProject(context);
+      if ("refused" in found) return found.refused;
+      if (!found.decides) return failure(403, "FORBIDDEN", "Only an admin of this project, or an owner or admin of the company, can change its learning mode.");
+      if (!["off", "suggest", "auto"].includes(context.body.mode)) return failure(400, "CONFIG_INVALID", "the mode is off, suggest or auto");
+      lessonMode = context.body.mode;
+      return { body: { project: found.name, mode: lessonMode, effective: lessonMode, lockedByCompany: false, canChange: true } };
+    },
     "scriptTokens.revoke": ({ params, person }) => {
       const list = scriptTokens.get(person.developerId) ?? [];
       const next = list.filter((entry) => entry.tokenId !== params["tokenId"]);
@@ -492,6 +649,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           current = who;
           return send(200, { person: who.key });
         }
+        if (method === "POST" && url.pathname === "/__fake/lessons") {
+          const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
+          if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
+          lessonsOn = on;
+          return send(200, { on });
+        }
         const raw = await readBody(request);
         if (method === "POST" && url.pathname === "/v1/auth/token") {
           const answer = tokenEndpoint(new URLSearchParams(raw), request.headers.authorization);
@@ -527,6 +690,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     server,
     log,
     setPerson: (person) => { current = person; },
+    setLessons: (on) => { lessonsOn = on; },
     close: () => new Promise<void>((resolve) => { server.close(() => { resolve(); }); server.closeAllConnections(); }),
   };
 }
