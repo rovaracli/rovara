@@ -87,6 +87,57 @@ one-overrun-call-per-company marker, deadlines, the secret scanner) is shared co
 - DEC 165: when a product call settles above its hold, every later product call in that task gets
   "budget exceeded by one call".
 
+## Vertex AI (DEC 229b; `product-vertex*.ts`)
+
+The pilot may call Gemini through AI Studio or through Vertex AI, so both are served. Vertex runs under the same money core as
+Gemini: the same body guard, media rules, output ceilings, usage reading, combined company cap, eval stage holds and outcome
+classes (`product-vertex.ts` wraps `guardGemini`).
+
+- Paths: `/v1/product/vertex/{v1|v1beta1}/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`
+  and `:streamGenerateContent?alt=sse`. Google's own models only. The project and location must be the CONNECTED ones: another
+  is `400 not_allowed` ("this Google Cloud project or location is not the one connected for product AI") before any hold,
+  token or send, even if the token could reach it. The upstream path is built from the key store, never from the request;
+  the host is `{location}-aiplatform.googleapis.com` (`aiplatform.googleapis.com` for `global`). Multi-region locations
+  (`us`, `eu`, `*.rep.googleapis.com`) are not offered.
+- Refused from the caller: `x-goog-api-key`, `x-goog-user-project`, `x-goog-iam-*`, `x-goog-authenticated-*`; a Google bearer
+  next to the task token is ambiguous (401). A cached context must be `projects/<connected>/locations/<connected>/cachedContents/...`.
+- Prices (coordinator decision on review L1): a Vertex call is priced at the DEARER of the AI Studio row and the Vertex row
+  of the same model, per component and per long-context band (`GatewayRoute.alsoPricedAs`, `dearerPrice`; LiteLLM keys
+  Vertex rows bare or as `vertex_ai/<model>`, both are read). A row that is only an estimate adds nothing; a model with only
+  a Vertex row is priced on it; with neither, the cautious estimate (DEC 172), never $0. Checked 2026-11-15: the text models'
+  rows are equal; some image models list dearer Vertex-only rates, which this now charges. Audio and video rates still come
+  from the Gemini media rows (equal today); logs and corrections name provider `gemini`.
+- Credentials (`product-vertex-credential.ts`), connected as provider `vertex` in the key store (JSON `key`):
+  - `{"scheme":"federation","projectId","location","audience","serviceAccount"?}` (preferred, nothing secret stored): the
+    gateway assumes Rovara's federation role with **RoleSessionName = the company id** (`org_` + 20 characters, within AWS's
+    2-64 character rule), signs (never sends) an AWS `GetCallerIdentity` request with that session as the subject token,
+    exchanges it at `sts.googleapis.com/v1/token`, and, when a service account is named, at
+    `iamcredentials.googleapis.com ...:generateAccessToken`. The customer's pool condition names the company's exact session
+    ARN, so company A pasting company B's pool is refused by B's condition.
+  - `{"scheme":"service_account_key","location","projectId"?,"keyFile"}` (fallback): the key file is checked (RSA, 2048 bits or
+    more, `token_uri` only `https://oauth2.googleapis.com/token`), reduced to the fields the token flow needs and sealed like
+    an AI Studio key; the gateway signs an RS256 JWT and exchanges it at `oauth2.googleapis.com/token`.
+  - The settings view shows a summary (`vertex: {scheme, projectId, location, serviceAccount?}`), never the key.
+- Connection test (`VertexTokens.probe`, the store's `vertexCheck`): before a Vertex credential is sealed (connect or rotate),
+  a real token must be minted; for federation, a token exchange as a random canary company must be REFUSED by the pool. A pool
+  that lets it through is `too_open` ("This Google setup would trust any Rovara company...") and nothing is saved. A store
+  built without `vertexCheck` can't connect Vertex (fail closed).
+- Tokens (`product-vertex-token.ts`): minted at admission (before the hold: a refused credential answers the key-refused words,
+  free, and marks the source; an outage is 503), cached per key row (install, company, owner, source, version) until 5 minutes
+  before expiry; AWS sessions per company the same way; a Vertex 401/403 drops the cached token. Token hosts are fixed
+  (`sts.googleapis.com`, `iamcredentials.googleapis.com`, `oauth2.googleapis.com`, `sts.<region>.amazonaws.com`), TLS on 443,
+  one attempt, no redirects, 5 s, 64 KiB. DEC 174: token hosts are not model hosts; model hosts are reached only through this
+  metered route.
+- Setup steps for the customer: `vertexSetupSteps({ awsAccountId, roleName, cid })` (structured steps and the condition string
+  with the company's own ARN).
+- Bridge: `contracts/shared/model-gateway-product-vertex.v1.json` (`PRODUCT_VERTEX_BRIDGE`), a file of its own so the Gemini
+  contract and Code's pinned copy are unchanged.
+
+Deployment (not built here): the federation role (`VertexTokensOptions.federationRoleArn`) needs no permissions; its trust
+policy lets only the gateway's runtime role assume it, with `sts:RoleSessionName` like `org_*`; the runtime role needs
+`sts:AssumeRole` on it; egress to the four token hosts and the Vertex hosts. Simulate against the permissions boundary before
+any deploy.
+
 ## Engine bridge (`contracts/shared/model-gateway-product-ai.v1.json`)
 
 The worker's trusted part sits between the sandbox and the gateway. The sandbox's test calls the worker's local port
@@ -162,5 +213,5 @@ mounts them.
 
 ## Not built here
 
-Vertex (federation and key file: follow-up PR), the DynamoDB adapters, the settings HTTP routes and screens, infra (the
+The Vertex federation role and its trust policy (infra), the DynamoDB adapters, the settings HTTP routes and screens, infra (the
 runtime role, the deny statement attached to non-gateway roles, the KMS key), Code's worker side of the bridge.

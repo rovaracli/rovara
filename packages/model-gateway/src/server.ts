@@ -6,7 +6,7 @@ import type { MediaRates } from "./media-price.js";
 import { guardRequest, MAX_BODY_BYTES, tooLarge, type GuardFailure, type ModelLimitsSource } from "./guard.js";
 import type { Meter, MeterItem, MeterScope, Reservation } from "./meter.js";
 import { LEARNING_PATH, LEARNING_STEP, type LearningRouteFactory } from "./learning-route.js";
-import { resolvePrice, UnknownPriceSource, type PriceSource } from "./price.js";
+import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, type TaskClaims, type TaskTokenVerifier } from "./token.js";
 import { settleAmount } from "./reported-cost.js";
@@ -76,6 +76,11 @@ export interface GatewayRoute {
   notSent?(): RouteRefusal | undefined;
   /** After settlement: the actual cost passed the hold (DEC 165). Never throws to the caller. */
   overReservation?(claims: TaskClaims): Promise<void>;
+  /**
+   * More price rows for the same call (Vertex: its own vertex rows besides the Gemini rows `provider` names). Each one that is
+   * known is merged in at the dearer rate per component (dearerPrice): a call is never priced below any of its rows.
+   */
+  alsoPricedAs?(model: string): ReadonlyArray<{ provider: string; model: string }>;
 }
 /** A product request that is not a provider call (the eval stage hold and release): JSON in, JSON out, after the token check. */
 export interface ProductControl { readonly control: true; /** Also answered after the task ended (a release only gives budget back). */ readonly afterTaskEnd?: true; handle(claims: TaskClaims, body: unknown, signal: AbortSignal): Promise<{ status: number; body: Readonly<Record<string, unknown>> }> }
@@ -204,7 +209,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (!guarded.ok) { await respond(guarded.status, guarded.code, guarded.message); return; }
     shortenDeadline(startedAt + callDurationMs(guarded.maxTokens));
     const scope = route.scope(claims);
-    const resolved = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, route.provider, guarded.model, deps.cautiousCeiling, controller.signal, "chat"));
+    let resolved = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, route.provider, guarded.model, deps.cautiousCeiling, controller.signal, "chat"));
+    for (const also of route.alsoPricedAs?.(guarded.model) ?? []) resolved = dearerPrice(resolved, await wait(resolvePrice(deps.prices ?? UnknownPriceSource, also.provider, also.model, deps.cautiousCeiling, controller.signal, "chat")));
     const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
     if (price.operatorReview) log({ event: "price_operator_review" });
     settlementPrice = price; settlementModel = guarded.model;

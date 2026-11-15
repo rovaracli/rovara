@@ -14,6 +14,8 @@ import { DynamoProductOverrunTasks } from "./dynamo-product-overrun.js";
 import { storedEvalApprovals, storedEvalBudget } from "./eval-approvals.js";
 import { storedLearningKeys } from "./learning-keys.js";
 import { createGeminiTransport } from "./product-gemini.js";
+import { createVertexTransport } from "./product-vertex.js";
+import { createTokenHttp, VertexTokens, type TokenHttp } from "./product-vertex-token.js";
 import { ProductKeyStore } from "./product-keys.js";
 import { createProductRoutes, productModelLimitsFrom } from "./product-route.js";
 import { kmsProductKeyService, ProductKeySealer, type KmsLike, type ProductKeyFingerprinter } from "./product-seal.js";
@@ -41,7 +43,7 @@ import { createTaskTokenVerifier } from "./token.js";
 export type GatewayEnv = Readonly<Record<string, string | undefined>>;
 export interface InstallConfig { issuer: string; jwksUrl: string; taskKids: string[] }
 /** The product route's deployed settings (deploy.ts GATEWAY_PRODUCT_ENV): all set, or the route is off. */
-export interface ProductConfig { keysTable: string; keysKeyArn: string; meter: string; ledger: string; markers: string; stages: string }
+export interface ProductConfig { keysTable: string; keysKeyArn: string; meter: string; ledger: string; markers: string; stages: string; vertexFederationRoleArn?: string }
 /** The learning route's meter tables (GATEWAY_LEARNING_ENV): only with the product route, whose key store holds the company's account. */
 export interface LearningConfig { meter: string; ledger: string; markers: string }
 export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig }
@@ -86,7 +88,11 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
       keysTable: table(GATEWAY_ENV.productKeysTable),
       keysKeyArn: need(GATEWAY_ENV.productKeysKey, (value) => /^arn:aws[a-z-]*:kms:[a-z0-9-]+:\d{12}:key\/[0-9a-f-]{36}$/u.test(value)),
       meter: table(GATEWAY_ENV.productMeterTable), ledger: table(GATEWAY_ENV.productLedgerTable), markers: table(GATEWAY_ENV.productMarkersTable), stages: table(GATEWAY_ENV.evalStagesTable),
+      ...(env[GATEWAY_ENV.vertexFederationRole] === undefined ? {} : { vertexFederationRoleArn: need(GATEWAY_ENV.vertexFederationRole, (value) => /^arn:aws[a-z-]*:iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]{1,128}$/u.test(value)) }),
     };
+  } else if (env[GATEWAY_ENV.vertexFederationRole] !== undefined) {
+    // Vertex is part of the product route: never on its own.
+    throw new GatewayConfigError(GATEWAY_ENV.productKeysTable);
   }
   const learningSet = GATEWAY_LEARNING_ENV.filter((name) => env[name] !== undefined);
   let learning: LearningConfig | undefined;
@@ -131,6 +137,8 @@ export const HOLD_SWEEP_PER_PASS = 50;
 export interface ServeDependencies {
   /** The KMS client the deployed product key store opens keys with (default: aws-kms.ts with the task's credentials). */
   kms?: KmsLike;
+  /** The HTTP the Vertex token minting uses (default: product-vertex-token.ts createTokenHttp, Google's and AWS's token hosts). */
+  vertexHttp?: TokenHttp;
   env?: GatewayEnv; log?: GatewayLog; credentials?: CredentialSource; db?: Dynamo;
   fetch?: typeof fetch; transport?: ProviderTransport; keys?: ProviderKeys; caps?: CapsSource; modelLimits?: ModelLimitsSource;
   /**
@@ -310,8 +318,11 @@ function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { 
   if (deps.product === undefined) {
     const productMeter = new DynamoMeter({ db, tables: { meter: p.meter, ledger: p.ledger, markers: p.markers }, now, combinedCompany });
     const evalStages = new ProductEvalStages({ approvals: storedEvalApprovals(store, now), budget: storedEvalBudget(store), now, store: new DynamoEvalStageStore(db, p.stages) });
+    // Vertex (DEC 229b), only when the federation role is configured: tokens minted with this task's own credentials.
+    const vertex = p.vertexFederationRoleArn === undefined ? undefined : new VertexTokens({ http: deps.vertexHttp ?? createTokenHttp(), aws: shared.credentials, federationRoleArn: p.vertexFederationRoleArn, awsRegion: config.region, now });
     const routes = createProductRoutes({
-      keys: store, meter: productMeter, modelLimits: productModelLimitsFrom(prices), transports: { gemini: createGeminiTransport() }, media: prices,
+      keys: store, meter: productMeter, modelLimits: productModelLimitsFrom(prices), transports: { gemini: createGeminiTransport(), ...(vertex === undefined ? {} : { vertex: createVertexTransport() }) }, media: prices,
+      ...(vertex === undefined ? {} : { vertex: { tokens: vertex } }),
       overrun: new DynamoProductOverrunTasks(db, p.markers, now), companyCaps: caps, evalStages,
     });
     product = { routes, meter: productMeter, caps: routes.caps };

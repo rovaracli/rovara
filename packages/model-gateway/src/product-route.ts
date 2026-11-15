@@ -12,6 +12,10 @@ import type { ProductProvider, ProductSourceResolution } from "./product-keys.js
 import { EVAL_HOLD_PATH, EVAL_RELEASE_PATH, EVAL_SCOPE_HEADER, EVAL_STAGE_SPENT, EvalEventSink, type EvalStage, type ProductEvalStages, type StageSettle } from "./product-eval.js";
 import type { GatewayRoute, GatewaySink, ProductControl, ProductRouteResolver, RouteCall, RouteRefusal } from "./server.js";
 import type { MediaPriceSource } from "./media-price.js";
+import { guardVertex, parseVertexPath, type VertexPath, type VertexTarget } from "./product-vertex.js";
+import { parseStoredVertexCredential } from "./product-vertex-credential.js";
+import type { VertexTokenSource } from "./product-vertex-token.js";
+import type { ProductKeyRow } from "./product-seal.js";
 
 /** What the route needs from the product key store (ProductKeyStore implements it). */
 export interface ProductKeySource {
@@ -36,7 +40,12 @@ export interface ProductRouteOptions {
   meter: Meter;
   /** Per-model output ceilings: the price snapshot's rows (#53 SnapshotPriceSource); see productModelLimitsFrom. */
   modelLimits: ModelLimitsSource;
-  transports: { gemini: ProviderTransport };
+  transports: { gemini: ProviderTransport; vertex?: ProviderTransport };
+  /**
+   * Vertex AI (DEC 229b): short-lived Google tokens for the project's Vertex credential (VertexTokens). With `transports.vertex`
+   * it mounts `/v1/product/vertex/...`; without either, those paths are 404.
+   */
+  vertex?: { tokens: VertexTokenSource };
   /** Audio and video prices per model (the price snapshot's media rows, SnapshotPriceSource). Absent: audio and video are refused. */
   media?: MediaPriceSource;
   overrun: ProductOverrunTasks;
@@ -83,6 +92,7 @@ export const PRODUCT_PROVIDER_REFUSED = "the provider refused this request";
 export const PRODUCT_PROVIDER_LIMITED = "the provider is limiting this product key; try again later";
 export const PRODUCT_PROVIDER_QUOTA = "the provider quota for this product key is used up";
 export const PRODUCT_PROVIDER_OVERLOADED = "the provider is overloaded; try again later";
+export const PRODUCT_VERTEX_NOT_CONNECTED = "this Google Cloud project or location is not the one connected for product AI";
 const QUOTA_WORDS = /insufficient_quota|per ?day|daily|billing|spending cap|prepayment|out of credits|quota exceeded for quota metric .*per day/iu;
 const PER_MINUTE = /per ?minute/iu;
 const OVERLOADED_WORDS = /overloaded/iu;
@@ -103,16 +113,39 @@ export const PRODUCT_PREFIX: Readonly<Record<MeterItem, string>> = {
   project: "Product AI budget has been exceeded! Project=project", company: "Product AI budget has been exceeded! Team=company",
 };
 const unavailable: RouteRefusal = { ok: false, status: 503, code: "unavailable", message: "model access unavailable" };
+const unavailableGuard = { ok: false as const, status: 503, code: "unavailable", message: "model access unavailable" };
 
 export function createProductRoutes(options: ProductRouteOptions): ProductRouteResolver & { caps: CapsSource; evalStages?: ProductEvalStages } {
   const productCaps = createProductCaps(options.keys, options.companyCaps);
+  const vertexOn = options.vertex !== undefined && options.transports.vertex !== undefined;
   options.evalStages?.bind({
     meter: options.meter,
     caps: { capsFor: async (scope, signal) => (options.meter.combinedCompany === true ? productCaps.capsFor(scope, signal) : UNAVAILABLE_CAPS) },
-    connected: async (claims) => (await options.keys.resolve(claims.iss, claims.cid, claims.pid, "gemini")) !== undefined,
+    connected: async (claims) => (await options.keys.resolve(claims.iss, claims.cid, claims.pid, "gemini")) !== undefined || (vertexOn && (await options.keys.resolve(claims.iss, claims.cid, claims.pid, "vertex")) !== undefined),
     blocked: (claims) => options.overrun.isBlocked(claims.iss, claims.cid, claims.tid),
     block: (claims) => options.overrun.block(claims.iss, claims.cid, claims.tid),
   });
+  /**
+   * Vertex admission, before any hold: unseal the project's Vertex credential, check the request names the CONNECTED project and
+   * location (another one is refused even if the token could reach it), and mint the company's token. A refused credential is
+   * the key-refused answer (free, marked for Settings); an outage is 503. Nothing is held or sent in either case.
+   */
+  async function admitVertex(claims: TaskClaims, resolution: ProductSourceResolution, path: VertexPath, signal: AbortSignal): Promise<RouteRefusal | { row: ProductKeyRow; target: VertexTarget; token: string }> {
+    let text: string | undefined;
+    try { text = await options.keys.useKey(claims.iss, claims.cid, resolution); } catch { return unavailable; }
+    const credential = text === undefined ? undefined : parseStoredVertexCredential(text);
+    if (credential === undefined || options.vertex === undefined) return unavailable;
+    if (path.project !== credential.projectId || path.location !== credential.location) return { ok: false, status: 400, code: "not_allowed", message: PRODUCT_VERTEX_NOT_CONNECTED };
+    const row: ProductKeyRow = { iss: claims.iss, cid: claims.cid, owner: resolution.owner, sourceId: resolution.sourceId, versionId: resolution.versionId };
+    let minted: Awaited<ReturnType<VertexTokenSource["token"]>>;
+    try { minted = await options.vertex.tokens.token(row, credential, signal); } catch { return unavailable; }
+    if (!minted.ok) {
+      if (minted.reason !== "refused") return unavailable;
+      void options.keys.recordWarning(claims.iss, claims.cid, resolution, 401).catch(() => undefined);
+      return { ok: false, status: 502, code: "product_key_refused", message: PRODUCT_KEY_REFUSED };
+    }
+    return { row, target: { projectId: credential.projectId, location: credential.location }, token: minted.token };
+  }
   return {
     caps: productCaps,
     // The maintenance pass releases expired stages from here when startServe is not given them separately.
@@ -120,7 +153,9 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
     route(path, query, headers): GatewayRoute | ProductControl | undefined {
       if (path === EVAL_HOLD_PATH || path === EVAL_RELEASE_PATH) return query === "" ? options.evalStages?.control(path) : undefined;
       const parsed = parseGeminiPath(path, query);
-      if (parsed === undefined) return undefined;
+      const vertexPath: VertexPath | undefined = parsed === undefined && vertexOn ? parseVertexPath(path, query) : undefined;
+      if (parsed === undefined && vertexPath === undefined) return undefined;
+      const provider: ProductProvider = parsed === undefined ? "vertex" : "gemini";
       const scopeId = headers?.[EVAL_SCOPE_HEADER];
       if (scopeId !== undefined && options.evalStages === undefined) return undefined;
       const stages = options.evalStages;
@@ -130,13 +165,16 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
       let resolution: ProductSourceResolution | undefined;
       let admitted: TaskClaims | undefined;
       let guarded: RouteCall | undefined;
+      // Vertex: the connected project and location, and the token minted for this company's source (at admission).
+      let vertex: { row: ProductKeyRow; target: VertexTarget; token: string } | undefined;
       const route: GatewayRoute = {
+        // Vertex calls are logged and corrected on the Gemini rows, priced at the dearer of those and the Vertex rows (alsoPricedAs).
         provider: "gemini", product: true, meter: options.meter, prefix: PRODUCT_PREFIX,
-        async admit(claims) {
+        async admit(claims, signal) {
           admitted = claims;
           try {
             if (await options.overrun.isBlocked(claims.iss, claims.cid, claims.tid)) return { ok: false, status: 422, code: "budget_exceeded", message: PRODUCT_OVER_BY_ONE_CALL };
-            resolution = await options.keys.resolve(claims.iss, claims.cid, claims.pid, "gemini");
+            resolution = await options.keys.resolve(claims.iss, claims.cid, claims.pid, provider);
           } catch { return unavailable; }
           if (resolution === undefined) return { ok: false, status: 404, code: "not_set_up", message: PRODUCT_NOT_SET_UP };
           if (scopeId !== undefined && stages !== undefined) {
@@ -145,10 +183,16 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
             if (stage === undefined) return { ok: false, status: 404, code: "not_found", message: "not found" };
             callMeter = stages.callMeter(stage);
           }
+          if (vertexPath !== undefined) {
+            const refused = await admitVertex(claims, resolution, vertexPath, signal);
+            if (refused !== undefined && "ok" in refused) return refused;
+            vertex = refused;
+          }
           return undefined;
         },
         guard: (bytes, headers) => {
-          const checked = guardGemini(bytes, headers, parsed, options.modelLimits, options.media);
+          const checked = parsed !== undefined ? guardGemini(bytes, headers, parsed, options.modelLimits, options.media)
+            : vertex === undefined ? unavailableGuard : guardVertex(bytes, headers, vertexPath!, vertex.target, options.modelLimits, options.media);
           // The approved model selection: every call of the stage names the approved model.
           if (checked.ok && stage?.model !== undefined && checked.model !== stage.model) return { ok: false, status: 400, code: "invalid_request", message: "request not allowed" };
           if (checked.ok) guarded = checked;
@@ -163,9 +207,10 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
         },
         async key(claims: TaskClaims) {
           // An empty answer is "not sent" in the core (the call cost nothing).
+          if (provider === "vertex") return vertex?.token ?? "";
           return resolution === undefined ? "" : (await options.keys.useKey(claims.iss, claims.cid, resolution)) ?? "";
         },
-        transport: options.transports.gemini,
+        transport: provider === "gemini" ? options.transports.gemini : options.transports.vertex!,
         usage: () => new GeminiUsageCollector(missingDetailsKind(guarded)),
         failureBody: true,
         providerFailure(status, body) {
@@ -173,6 +218,8 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
           if (status === 401 || status === 403) {
             // The settings page learns about a refused key. A failed write never changes the call.
             if (resolution !== undefined && admitted !== undefined) void options.keys.recordWarning(admitted.iss, admitted.cid, resolution, status).catch(() => undefined);
+            // Vertex: the token may have been revoked or lost its role: the next call mints a new one.
+            if (vertex !== undefined) { try { options.vertex?.tokens.forget(vertex.row); } catch { /* Never changes the call. */ } }
             return { charged: false, refusal: { ok: false, status: 502, code: "product_key_refused", message: PRODUCT_KEY_REFUSED } };
           }
           if (status === 400 || status === 404) return { charged: false, refusal: { ok: false, status: 400, code: "provider_refused", message: PRODUCT_PROVIDER_REFUSED } };
@@ -187,6 +234,8 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
           return { charged: true, refusal: { ok: false, status: 502, code: "provider_error", message: "provider unavailable" } };
         },
         async overReservation(claims) { await options.overrun.block(claims.iss, claims.cid, claims.tid); },
+        // Vertex: never below its own rows either (LiteLLM keys them bare or as vertex_ai/<model>).
+        ...(provider === "vertex" ? { alsoPricedAs: (model: string) => [{ provider: "vertex", model }, { provider: "vertex", model: `vertex_ai/${model}` }] } : {}),
       };
       if (scopeId === undefined) return route;
       // An eval stage call: admitted and settled under the stage, answered as events, and its overrun is the stage's (DEC 165).

@@ -108,7 +108,7 @@ describe("product key store: write-only, sealed, revisioned", () => {
     for (const bad of [
       { ...change(pid, 0), sourceId: "SRC", provider: "gemini", key: secret },
       { ...change(pid, 0), sourceId: "src_a", provider: "openai", key: secret },
-      { ...change(pid, 0), sourceId: "src_a", provider: "vertex", key: secret }, // Vertex is behind its own flag.
+      { ...change(pid, 0), sourceId: "src_a", provider: "vertex", key: secret }, // A Gemini key is not a Vertex credential (and this store has no Vertex check).
       { ...change(pid, 0), sourceId: "src_a", provider: "gemini", key: "has space in it" },
       { ...change(pid, 0), requestId: "nope", sourceId: "src_a", provider: "gemini", key: secret },
       { ...change(pid, 0), actor: { id: "x", role: "company_admin" }, sourceId: "src_a", provider: "gemini", key: secret },

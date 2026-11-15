@@ -35,6 +35,11 @@ export const GATEWAY_ENV = {
   productLedgerTable: "GATEWAY_PRODUCT_LEDGER_TABLE",
   productMarkersTable: "GATEWAY_PRODUCT_MARKERS_TABLE",
   evalStagesTable: "GATEWAY_EVAL_STAGES_TABLE",
+  /**
+   * Vertex AI on the product route (DEC 229b): the ARN of Rovara's federation role (no permissions; only this gateway's role
+   * may assume it, with a company id as session name). Optional, only with the product route; absent: Vertex paths are 404.
+   */
+  vertexFederationRole: "GATEWAY_VERTEX_FEDERATION_ROLE",
   /** The learning route (docs/model-gateway-learning.md): its meter's three tables, set together and only with the product route (its key store). */
   learningMeterTable: "GATEWAY_LEARNING_METER_TABLE",
   learningLedgerTable: "GATEWAY_LEARNING_LEDGER_TABLE",
