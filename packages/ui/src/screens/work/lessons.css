@@ -1,0 +1,58 @@
+/* Lessons (DEC 231): the inbox batch card, "Learned" in How we work and "Lessons used" on the task page. Tokens only. */
+.rv-lesson-intro{margin:0;font-size:var(--rv-font-sm);max-width:70ch}
+.rv-lesson-intro kbd,.rv-choice kbd{font-size:var(--rv-font-xs)}
+.rv-lesson-list{list-style:none;margin:0;padding:0;display:grid;gap:var(--rv-space-3)}
+.rv-lesson{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3) var(--rv-space-4);display:grid;gap:var(--rv-space-2);min-width:0}
+.rv-lesson:focus-within{border-color:var(--rv-border-medium)}
+.rv-lesson[data-choice=keep],.rv-lesson[data-choice=edit]{box-shadow:inset 3px 0 0 var(--rv-status-done)}.rv-lesson[data-choice=drop]{box-shadow:inset 3px 0 0 var(--rv-border-medium)}
+.rv-lesson-head{display:flex;justify-content:space-between;align-items:baseline;gap:var(--rv-space-2);flex-wrap:wrap}
+.rv-lesson-head h3,.rv-lesson-head h4{font:600 var(--rv-font-md)/1.35 var(--rv-font-ui);margin:0;overflow-wrap:anywhere}
+.rv-lesson-from{font-size:var(--rv-font-xs);color:var(--rv-text-muted);border:1px solid var(--rv-border);border-radius:999px;padding:1px 8px;white-space:nowrap}
+.rv-lesson-from.you{color:var(--rv-accent-text);background:var(--rv-accent-soft);border-color:var(--rv-accent-soft)}
+.rv-lesson-description{margin:0;overflow-wrap:anywhere}
+.rv-lesson-body{margin:0;font-size:var(--rv-font-sm);color:var(--rv-text-muted);overflow-wrap:anywhere}
+.rv-lesson-facts{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:var(--rv-space-1) var(--rv-space-3);font-size:var(--rv-font-xs);color:var(--rv-text-muted)}
+.rv-lesson-facts .mono{font-family:var(--rv-font-mono);overflow-wrap:anywhere}
+.rv-lesson-expiry{margin:0;font-size:var(--rv-font-xs);color:var(--rv-text-muted);display:flex;align-items:center;gap:6px}
+.rv-lesson-expiry.soon{color:var(--rv-text);font-weight:600;background:var(--rv-status-needs-you-bg);border-radius:var(--rv-radius-sm);padding:2px 8px;justify-self:start}
+.rv-lesson-choice{border:0;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:var(--rv-space-2);align-items:center}
+.rv-choice{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--rv-border-medium);border-radius:var(--rv-radius-sm);padding:4px 10px;cursor:pointer;font-size:var(--rv-font-sm);background:var(--rv-bg)}
+.rv-choice:has(input:checked){border-color:var(--rv-accent);background:var(--rv-accent-soft);color:var(--rv-text)}
+.rv-choice:has(input:focus-visible){outline:2px solid var(--rv-accent);outline-offset:1px}
+.rv-choice input{margin:0;accent-color:var(--rv-accent)}
+.rv-lesson-edit{display:grid;gap:var(--rv-space-2)}.rv-lesson-edit textarea{width:100%;resize:vertical}
+.rv-lesson-relation{margin:0;font-size:var(--rv-font-sm);border-left:3px solid var(--rv-status-needs-you);padding:2px 0 2px 8px;overflow-wrap:anywhere}
+.rv-lesson-failed{margin:0;color:var(--rv-status-failed);font-size:var(--rv-font-sm)}
+.rv-lesson-send{display:grid;gap:var(--rv-space-2);position:sticky;bottom:0;background:var(--rv-bg);padding:var(--rv-space-2) 0;border-top:1px solid var(--rv-border)}
+.rv-lesson-send p{margin:0;font-size:var(--rv-font-sm)}
+.rv-lesson-send-row,.rv-lesson-actions{display:flex;gap:var(--rv-space-2);flex-wrap:wrap;align-items:center}
+.rv-lesson-results{background:var(--rv-bg-raised);border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3) var(--rv-space-4)}
+.rv-lesson-results h3,.rv-lesson-all-done h3{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui);margin:0 0 var(--rv-space-1)}
+.rv-lesson-results ul{margin:0;padding-left:var(--rv-space-4);display:grid;gap:4px;font-size:var(--rv-font-sm)}
+.rv-lesson-results li.bad{color:var(--rv-status-failed)}.rv-lesson-results li b{font-weight:600}
+.rv-lesson-all-done{display:grid;gap:var(--rv-space-2);justify-items:start}.rv-lesson-all-done p{margin:0}
+.rv-inbox-lessons .rv-inbox-main b{font-weight:500}
+
+/* Learned, in How we work */
+.rv-learned{display:grid;gap:var(--rv-space-3);margin-top:var(--rv-space-5);min-width:0}
+.rv-learned>header h2{font:600 var(--rv-font-lg)/1.3 var(--rv-font-ui);margin:0}.rv-learned>header p{margin:4px 0 0;font-size:var(--rv-font-sm)}
+.rv-learned-off{border:1px dashed var(--rv-border-medium);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3) var(--rv-space-4);color:var(--rv-text-muted);margin:0}
+.rv-learned-mode{border:1px solid var(--rv-border);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3) var(--rv-space-4);margin:0;display:grid;gap:var(--rv-space-2);background:var(--rv-bg-raised)}
+.rv-learned-mode legend{font-weight:600;padding:0 4px}
+.rv-learned-mode .rv-choices{display:flex;flex-wrap:wrap;gap:var(--rv-space-2)}
+.rv-learned-mode p{margin:0;font-size:var(--rv-font-sm)}
+.rv-locked{display:inline-flex;align-items:center;gap:4px;font:600 var(--rv-font-xs)/1 var(--rv-font-ui);border:1px solid var(--rv-border-medium);border-radius:999px;padding:3px 8px;color:var(--rv-text)}
+.rv-learned-list{list-style:none;margin:0;padding:0;display:grid;gap:var(--rv-space-2)}
+.rv-learned-list details summary{cursor:pointer;font-size:var(--rv-font-sm);color:var(--rv-text-muted)}
+.rv-learned-requests{border:1px solid var(--rv-status-needs-you);border-radius:var(--rv-radius-sm);padding:var(--rv-space-3) var(--rv-space-4);background:var(--rv-bg-raised)}
+.rv-learned-requests h3{font:600 var(--rv-font-md)/1.3 var(--rv-font-ui);margin:0 0 var(--rv-space-2)}
+.rv-learned-note{margin:0;font-size:var(--rv-font-sm)}
+.rv-retire-form{display:flex;flex-wrap:wrap;gap:var(--rv-space-2);align-items:end}
+
+/* Lessons used, on the task page */
+.rv-lessons-used ul{list-style:none;margin:0;padding:0;display:grid;gap:var(--rv-space-2)}
+.rv-lessons-used li{display:grid;gap:2px;font-size:var(--rv-font-sm);border-top:1px solid var(--rv-border);padding-top:var(--rv-space-2)}.rv-lessons-used li:first-child{border-top:0;padding-top:0}
+.rv-lessons-used li b{font-weight:600;overflow-wrap:anywhere}.rv-lessons-used li small{color:var(--rv-text-muted);font-size:var(--rv-font-xs)}
+.rv-lessons-used .rv-button{justify-self:start;min-height:26px;padding:2px 8px;font-size:var(--rv-font-xs)}
+.rv-lessons-used p{margin:0;font-size:var(--rv-font-sm)}
+@media(max-width:520px){.rv-lesson{padding:var(--rv-space-3)}.rv-lesson-send-row .rv-button{flex:1}}

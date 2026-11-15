@@ -11,6 +11,7 @@ import { CodeError, SignInEnded } from "./code-client.js";
 import type { CloudAuditStore } from "./audit-log.js";
 import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, parseCompanyAuditQuery } from "./company-audit.js";
 import { WORK_READS } from "./work-reads.js";
+import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 
 /** The company this Cloud shows, until companies are Cloud's own (phase 4). */
@@ -731,4 +732,5 @@ export const ROUTES: Route[] = [
   },
   // The Work page's reads (the split inbox): the task list and, for one task, its plan, proof index, events and plan comments.
   ...WORK_READS,
+  ...LESSONS_ROUTES,
 ];

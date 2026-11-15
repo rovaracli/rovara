@@ -1,0 +1,299 @@
+// The lessons screens' routes (DEC 231: the inbox batch row, "Learned" in How we work, "Lessons used" on the task page), each answered from Code's
+// lessons API (PrepLabsAI/Rovara#713, contract v0 `lessons.*`) as the signed-in person. Code decides everything: the company (from live membership),
+// who may decide, the mode and the audit. Cloud checks the shape of what it forwards (only the fields Code takes, fixed words for every reason), keeps
+// Code's answers to the fields the screens draw, and passes Code's refusals through as Code worded them: while Code's lessons are off, every route
+// answers 404 LESSONS_SWITCHED_OFF "Lessons are off.", which the app shows as a calm off state.
+//
+// The inbox read is Cloud's own: it reads the proposed list of each project the person may use and answers one batch per project with the lessons
+// this person may decide, the ones from their own corrections first.
+import { CodeError } from "./code-client.js";
+import type { Route, RouteAnswer, RouteContext } from "./routes.js";
+
+const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
+const badRequest = (message: string): RouteAnswer => ({ status: 400, body: { error: { code: "CONFIG_INVALID", message } } });
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const text = (value: unknown, max: number): string | undefined => (typeof value === "string" ? value.slice(0, max) : undefined);
+const num = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+const count = (value: unknown): number => { const n = num(value); return n === undefined || n < 0 ? 0 : Math.floor(n); };
+const some = (entries: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== undefined));
+const list = (value: unknown, max: number): unknown[] => (Array.isArray(value) ? value.slice(0, max) : []);
+const strings = (value: unknown, max: number, each: number): string[] => list(value, max).flatMap((item) => (typeof item === "string" ? [item.slice(0, each)] : []));
+
+/** A project name as Code takes it, a lesson id and a task id: anything else never reaches Code. */
+const PROJECT = "([A-Za-z0-9][A-Za-z0-9._-]{0,99})";
+const LESSON_ID = "([A-Za-z0-9_-]{4,64})";
+const TASK_ID = "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})";
+export const REJECT_REASONS = ["wrong", "too_narrow", "duplicate", "not_useful", "other"] as const;
+export const RETIRE_REASONS = ["outdated", "wrong", "harmful", "not_useful", "other"] as const;
+export const LESSON_MODES = ["off", "suggest", "auto"] as const;
+const LISTS = ["proposed", "approved", "retired"] as const;
+export const DECISIONS_MAX = 20;
+/** How many of the person's projects the inbox reads, and how many proposed lessons per project. */
+export const INBOX_PROJECTS_MAX = 20;
+const INBOX_LESSONS_MAX = 20;
+const LESSONS_MAX = 100;
+
+const dev = (project: string) => `/v1/dev/projects/${encodeURIComponent(project)}`;
+const person = (raw: unknown) => (isRecord(raw) && typeof raw["name"] === "string" ? some({ name: raw["name"].slice(0, 80), you: raw["you"] === true ? true : undefined }) : undefined);
+const people = (raw: unknown, max: number) => list(raw, max).flatMap((one) => { const view = person(one); return view === undefined ? [] : [view]; });
+
+function citation(raw: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(raw)) return undefined;
+  switch (raw["kind"]) {
+    case "code": {
+      const repo = text(raw["repo"], 200), path = text(raw["path"], 500), startLine = num(raw["startLine"]), endLine = num(raw["endLine"]);
+      if (repo === undefined || path === undefined || startLine === undefined || endLine === undefined) return undefined;
+      return some({ kind: "code", repo, path, startLine, endLine, check: text(raw["check"], 20) ?? "unchecked", checkedAt: num(raw["checkedAt"]) });
+    }
+    case "pr": { const url = text(raw["url"], 300); return url !== undefined && url.startsWith("https://") ? { kind: "pr", url } : undefined; }
+    case "task": { const taskId = text(raw["taskId"], 100); return taskId === undefined ? undefined : { kind: "task", taskId }; }
+    case "record": return { kind: "record" };
+    default: return undefined;
+  }
+}
+
+function needs(raw: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const required = raw["required"] === 2 ? 2 : 1;
+  return some({ required, have: count(raw["have"]), first: person(raw["first"]), firstAt: num(raw["firstAt"]), groups: strings(raw["groups"], 10, 100) });
+}
+
+/** Another lesson's id, as Code names it (a duplicate or a contradiction), or undefined. */
+const lessonRef = (value: unknown): string | undefined => (typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/u.test(value) ? value : undefined);
+
+/** One lesson as the screens draw it (contract v0 `LessonItem`), or undefined for one Code sent without an id, a version or a title. */
+export function lessonItem(raw: unknown): Record<string, unknown> | undefined {
+  // A lesson without its version or its lapse time cannot be decided or warned about honestly: it is left out, never shown as "lapses now".
+  if (!isRecord(raw) || typeof raw["id"] !== "string" || typeof raw["title"] !== "string" || num(raw["version"]) === undefined || num(raw["expiresAt"]) === undefined) return undefined;
+  const scope = isRecord(raw["scope"]) ? raw["scope"] : {}, counters = isRecord(raw["counters"]) ? raw["counters"] : {};
+  const tier = raw["tier"] === 0 || raw["tier"] === 1 || raw["tier"] === 2 ? raw["tier"] : 1;
+  return some({
+    id: raw["id"].slice(0, 64), version: num(raw["version"]), type: text(raw["type"], 40) ?? "", stages: strings(raw["stages"], 5, 40),
+    title: raw["title"].slice(0, 80), description: text(raw["description"], 160) ?? "", body: text(raw["body"], 600) ?? "",
+    scope: { repos: strings(scope["repos"], 10, 200), paths: strings(scope["paths"], 20, 200), languages: strings(scope["languages"], 10, 40) },
+    tier, status: text(raw["status"], 20) ?? "unknown",
+    counters: { loaded: count(counters["loaded"]), helpful: count(counters["helpful"]), harmful: count(counters["harmful"]) },
+    createdAt: num(raw["createdAt"]) ?? 0, updatedAt: num(raw["updatedAt"]) ?? 0, expiresAt: num(raw["expiresAt"]), lastUsedAt: num(raw["lastUsedAt"]),
+    citations: list(raw["citations"], 8).flatMap((one) => { const view = citation(one); return view === undefined ? [] : [view]; }),
+    from: people(raw["from"], 20), measured: raw["measured"] === true, supportTasks: count(raw["supportTasks"]),
+    needs: needs(raw["needs"]), rejectedReason: text(raw["rejectedReason"], 40), trial: text(raw["trial"], 20),
+    possibleDuplicate: lessonRef(raw["possibleDuplicate"]), contradicts: lessonRef(raw["contradicts"]), mergeBlocked: raw["mergeBlocked"] === true ? true : undefined,
+    usedInTasks: num(raw["usedInTasks"]) === undefined ? undefined : count(raw["usedInTasks"]),
+    canApprove: raw["canApprove"] === true, canReject: raw["canReject"] === true, canRetire: raw["canRetire"] === true,
+  });
+}
+
+function page(raw: unknown, project: string): Record<string, unknown> {
+  const body = isRecord(raw) ? raw : {};
+  const listed = LISTS.find((one) => one === body["list"]) ?? "approved";
+  return some({
+    project, list: listed, canDecide: body["canDecide"] === true,
+    lessons: list(body["lessons"], LESSONS_MAX).flatMap((one) => { const view = lessonItem(one); return view === undefined ? [] : [view]; }),
+    next: text(body["next"], 400), partial: body["partial"] === true ? true : undefined,
+  });
+}
+
+const fixed = <T extends string>(value: unknown, words: readonly T[]): T | undefined => words.find((word) => word === value);
+const version = (value: unknown): number | undefined => (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 1_000_000 ? value : undefined);
+
+/** An edit of a lesson's text, trimmed to what Code takes; undefined when absent, `false` when malformed. */
+function editOf(raw: unknown): { title: string; description: string; body: string } | undefined | false {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) return false;
+  const title = typeof raw["title"] === "string" ? raw["title"].trim() : "", description = typeof raw["description"] === "string" ? raw["description"].trim() : "", body = typeof raw["body"] === "string" ? raw["body"].trim() : "";
+  if (title === "" || title.length > 80 || description.length > 160 || body === "" || body.length > 600) return false;
+  return { title, description, body };
+}
+
+function decisionOf(raw: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const lessonId = typeof raw["lessonId"] === "string" && new RegExp(`^${LESSON_ID}$`, "u").test(raw["lessonId"]) ? raw["lessonId"] : undefined, at = version(raw["version"]);
+  if (lessonId === undefined || at === undefined) return undefined;
+  if (raw["decision"] === "keep") { const edit = editOf(raw["edit"]); return edit === false ? undefined : { lessonId, version: at, decision: "keep", ...(edit === undefined ? {} : { edit }) }; }
+  if (raw["decision"] === "drop") { const reason = fixed(raw["reason"], REJECT_REASONS); return reason === undefined ? undefined : { lessonId, version: at, decision: "drop", reason }; }
+  return undefined;
+}
+
+/** Whether Code answered that its lessons are off (the switch, or no lessons wired for the company). */
+export function lessonsOff(error: unknown): boolean {
+  return error instanceof CodeError && error.status === 404 && isRecord(error.body) && isRecord(error.body["error"]) && error.body["error"]["code"] === "LESSONS_SWITCHED_OFF";
+}
+
+type Inbox = { kind: "off" } | { kind: "skip" } | { kind: "unavailable" } | { kind: "page"; body: Record<string, unknown> };
+
+/** The inbox (`GET /v1/app/lessons/inbox`): each of the person's projects' proposed lessons that they may decide, one batch per project. */
+async function inbox(context: RouteContext): Promise<RouteAnswer> {
+  const projects = [...new Set(context.session.access.projects.map((one) => one.name))].sort().slice(0, INBOX_PROJECTS_MAX);
+  const read = await Promise.all(projects.map(async (project): Promise<Inbox> => {
+    try {
+      return { kind: "page", body: page(await context.client.json<unknown>(context.session, `${dev(project)}/lessons?list=proposed&limit=${String(INBOX_LESSONS_MAX)}`), project) };
+    } catch (error) {
+      if (lessonsOff(error)) return { kind: "off" };
+      // A project Code no longer lets the person read (removed, archived) is left out; any other failure is named, never hidden as "nothing to review".
+      if (error instanceof CodeError && (error.status === 403 || error.status === 404)) return { kind: "skip" };
+      if (error instanceof CodeError) return { kind: "unavailable" };
+      throw error;
+    }
+  }));
+  const off = read.filter((one) => one.kind === "off").length;
+  if (projects.length > 0 && off === projects.length) return ok({ state: "off", batches: [], unavailable: [] });
+  const fromYou = (lesson: Record<string, unknown>) => (lesson["from"] as Array<{ you?: true }>).some((one) => one.you === true);
+  const soonest = (lessons: Array<Record<string, unknown>>) => Math.min(...lessons.map((lesson) => lesson["expiresAt"] as number));
+  const batches = read.flatMap((one, index) => {
+    if (one.kind !== "page") return [];
+    const lessons = (one.body["lessons"] as Array<Record<string, unknown>>).filter((lesson) => lesson["canApprove"] === true || lesson["canReject"] === true)
+      .sort((a, b) => Number(fromYou(b)) - Number(fromYou(a)) || (a["expiresAt"] as number) - (b["expiresAt"] as number));
+    if (lessons.length === 0) return [];
+    return [some({ project: projects[index]!, lessons, fromYou: lessons.filter(fromYou).length, partial: one.body["partial"] === true || one.body["next"] !== undefined ? true : undefined })];
+  }).sort((a, b) => Number((b["fromYou"] as number) > 0) - Number((a["fromYou"] as number) > 0) || soonest(a["lessons"] as Array<Record<string, unknown>>) - soonest(b["lessons"] as Array<Record<string, unknown>>));
+  return ok({ state: "on", batches, unavailable: projects.filter((_, index) => read[index]!.kind === "unavailable") });
+}
+
+const body = (context: RouteContext): Record<string, unknown> => (isRecord(context.body) ? context.body : {});
+const postTo = async (context: RouteContext, path: string, payload: unknown) => context.client.json<unknown>(context.session, path, { method: "POST", body: payload });
+
+export const LESSONS_ROUTES: Route[] = [
+  { method: "GET", path: /^\/lessons\/inbox$/u, answer: inbox },
+  {
+    // GET /v1/app/projects/{p}/lessons (contract v0 `lessons.list`): one page of one list. Only list, since, limit and cursor go on.
+    method: "GET", path: new RegExp(`^/projects/${PROJECT}/lessons$`, "u"),
+    answer: async (context) => {
+      const forward = new URLSearchParams();
+      const listed = fixed(context.query.get("list") ?? "approved", LISTS);
+      if (listed === undefined) return badRequest("list is proposed, approved or retired.");
+      forward.set("list", listed);
+      const limit = context.query.get("limit"), since = context.query.get("since"), cursor = context.query.get("cursor");
+      if (limit !== null) { if (!/^[1-9][0-9]{0,2}$/u.test(limit) || Number(limit) > LESSONS_MAX) return badRequest("limit is 1 to 100."); forward.set("limit", limit); }
+      if (since !== null) { if (!/^[0-9]{1,16}$/u.test(since)) return badRequest("since is a time in milliseconds."); forward.set("since", since); }
+      if (cursor !== null) { if (!/^[A-Za-z0-9_-]{1,400}$/u.test(cursor)) return badRequest("That cursor isn't one this list gave."); forward.set("cursor", cursor); }
+      const project = context.params[0]!;
+      return ok(page(await context.client.json<unknown>(context.session, `${dev(project)}/lessons?${forward.toString()}`), project));
+    },
+  },
+  {
+    // POST …/lessons/decisions (`lessons.decisions`): Keep or Drop for 1 to 20 distinct proposed lessons; one result each, in the order sent.
+    method: "POST", path: new RegExp(`^/projects/${PROJECT}/lessons/decisions$`, "u"),
+    answer: async (context) => {
+      const raw = body(context)["decisions"];
+      if (!Array.isArray(raw) || raw.length === 0 || raw.length > DECISIONS_MAX) return badRequest(`Send 1 to ${String(DECISIONS_MAX)} decisions.`);
+      const decisions = raw.map(decisionOf);
+      if (decisions.some((one) => one === undefined)) return badRequest("Each decision is Keep (with an optional edit) or Drop with a reason, for the version you read.");
+      if (new Set(decisions.map((one) => one!["lessonId"])).size !== decisions.length) return badRequest("Decide each lesson once.");
+      const project = context.params[0]!;
+      const answer = await postTo(context, `${dev(project)}/lessons/decisions`, { decisions });
+      const results = list(isRecord(answer) ? answer["results"] : undefined, DECISIONS_MAX).filter(isRecord).map((one) => (one["ok"] === true
+        ? { lessonId: text(one["lessonId"], 64) ?? "", ok: true, status: text(one["status"], 20) ?? "unknown" }
+        : { lessonId: text(one["lessonId"], 64) ?? "", ok: false, code: text(one["code"], 60) ?? "FORBIDDEN", message: text(one["message"], 300) ?? "That was not accepted." }));
+      return ok({ project, results });
+    },
+  },
+  {
+    // GET …/lessons/retire-requests (`lessons.retireRequests`): the open retire requests, for the people who decide.
+    method: "GET", path: new RegExp(`^/projects/${PROJECT}/lessons/retire-requests$`, "u"),
+    answer: async (context) => {
+      const project = context.params[0]!, answer = await context.client.json<unknown>(context.session, `${dev(project)}/lessons/retire-requests`);
+      const raw = isRecord(answer) ? answer : {};
+      return ok({
+        project, more: raw["more"] === true,
+        requests: list(raw["requests"], 100).filter(isRecord).flatMap((one) => {
+          const lessonId = text(one["lessonId"], 64), title = text(one["title"], 80);
+          return lessonId === undefined || title === undefined ? [] : [{ lessonId, title, status: text(one["status"], 20) ?? "unknown", by: text(one["by"], 80) ?? "a former member", at: num(one["at"]) ?? 0 }];
+        }),
+      });
+    },
+  },
+  {
+    // GET and PUT …/lessons/mode (`lessons.mode.get`, `lessons.mode.put`): off, suggest or auto; Code says who may change it.
+    method: "GET", path: new RegExp(`^/projects/${PROJECT}/lessons/mode$`, "u"),
+    answer: async (context) => ok(modeOf(await context.client.json<unknown>(context.session, `${dev(context.params[0]!)}/lessons/mode`), context.params[0]!)),
+  },
+  {
+    method: "PUT", path: new RegExp(`^/projects/${PROJECT}/lessons/mode$`, "u"),
+    answer: async (context) => {
+      const mode = fixed(body(context)["mode"], LESSON_MODES);
+      if (mode === undefined) return badRequest("The mode is off, suggest or auto.");
+      return ok(modeOf(await context.client.json<unknown>(context.session, `${dev(context.params[0]!)}/lessons/mode`, { method: "PUT", body: { mode } }), context.params[0]!));
+    },
+  },
+  {
+    // POST …/lessons/{id}/approve (`lessons.approve`): Keep the version read, or an edit of it.
+    method: "POST", path: new RegExp(`^/projects/${PROJECT}/lessons/${LESSON_ID}/approve$`, "u"),
+    answer: async (context) => {
+      const at = version(body(context)["version"]), edit = editOf(body(context)["edit"]);
+      if (at === undefined || edit === false) return badRequest("Keep takes the version you read, and an edit with a title and the lesson's text.");
+      const [project, lessonId] = [context.params[0]!, context.params[1]!];
+      const answer = await postTo(context, `${dev(project)}/lessons/${lessonId}/approve`, { version: at, ...(edit === undefined ? {} : { edit }) });
+      const raw = isRecord(answer) ? answer : {};
+      return ok(some({ project, lessonId, status: text(raw["status"], 20) ?? "unknown", version: num(raw["version"]) ?? at, needs: needs(raw["needs"]) }));
+    },
+  },
+  {
+    // POST …/lessons/{id}/reject (`lessons.reject`): Drop, with a fixed reason.
+    method: "POST", path: new RegExp(`^/projects/${PROJECT}/lessons/${LESSON_ID}/reject$`, "u"),
+    answer: async (context) => {
+      const at = version(body(context)["version"]), reason = fixed(body(context)["reason"], REJECT_REASONS);
+      if (at === undefined || reason === undefined) return badRequest("Drop takes the version you read and a reason.");
+      const [project, lessonId] = [context.params[0]!, context.params[1]!];
+      await postTo(context, `${dev(project)}/lessons/${lessonId}/reject`, { version: at, reason });
+      return ok({ project, lessonId, status: "rejected" });
+    },
+  },
+  {
+    // POST …/lessons/{id}/retire (`lessons.retire`): with a fixed reason.
+    method: "POST", path: new RegExp(`^/projects/${PROJECT}/lessons/${LESSON_ID}/retire$`, "u"),
+    answer: async (context) => {
+      const reason = fixed(body(context)["reason"], RETIRE_REASONS);
+      if (reason === undefined) return badRequest("Retire takes a reason.");
+      const [project, lessonId] = [context.params[0]!, context.params[1]!];
+      await postTo(context, `${dev(project)}/lessons/${lessonId}/retire`, { reason });
+      return ok({ project, lessonId, status: "retired" });
+    },
+  },
+  {
+    // POST …/lessons/{id}/retire-request (`lessons.retireRequest`): anyone on the project asks the people who decide.
+    method: "POST", path: new RegExp(`^/projects/${PROJECT}/lessons/${LESSON_ID}/retire-request$`, "u"),
+    answer: async (context) => {
+      const [project, lessonId] = [context.params[0]!, context.params[1]!];
+      await postTo(context, `${dev(project)}/lessons/${lessonId}/retire-request`, {});
+      return ok({ project, lessonId, requested: true });
+    },
+  },
+  {
+    // GET …/projects/{p}/tasks/{t}/lessons (`lessons.task`): the lessons the task was given, with why and the citation's state.
+    method: "GET", path: new RegExp(`^/projects/${PROJECT}/tasks/${TASK_ID}/lessons$`, "u"),
+    answer: async (context) => {
+      const [project, taskId] = [context.params[0]!, context.params[1]!];
+      const answer = await context.client.json<unknown>(context.session, `${dev(project)}/tasks/${taskId}/lessons`);
+      return ok({
+        project, taskId,
+        lessons: list(isRecord(answer) ? answer["lessons"] : undefined, 100).filter(isRecord).flatMap((one) => {
+          const lessonId = text(one["lessonId"], 64), at = num(one["version"]);
+          if (lessonId === undefined || at === undefined) return [];
+          const visible = one["visible"] === true;
+          return [some({
+            stage: text(one["stage"], 40) ?? "", round: count(one["round"]), lessonId, version: at, why: text(one["why"], 20) ?? "", citation: text(one["citation"], 30) ?? "none", visible,
+            // A lesson whose source the person cannot see has no words, whatever Code sent.
+            title: visible ? text(one["title"], 80) : undefined, type: visible ? text(one["type"], 40) : undefined,
+            helpful: num(one["helpful"]) === undefined ? undefined : count(one["helpful"]), harmful: num(one["harmful"]) === undefined ? undefined : count(one["harmful"]),
+            canMark: one["canMark"] === true, trial: text(one["trial"], 20),
+          })];
+        }),
+      });
+    },
+  },
+  {
+    // POST …/projects/{p}/tasks/{t}/lessons/{id}/not-helpful (`lessons.notHelpful`): one mark per person per lesson.
+    method: "POST", path: new RegExp(`^/projects/${PROJECT}/tasks/${TASK_ID}/lessons/${LESSON_ID}/not-helpful$`, "u"),
+    answer: async (context) => {
+      const [project, taskId, lessonId] = [context.params[0]!, context.params[1]!, context.params[2]!];
+      await postTo(context, `${dev(project)}/tasks/${taskId}/lessons/${lessonId}/not-helpful`, {});
+      return ok({ project, taskId, lessonId, marked: "not_helpful" });
+    },
+  },
+];
+
+function modeOf(raw: unknown, project: string): Record<string, unknown> {
+  const body = isRecord(raw) ? raw : {};
+  const mode = fixed(body["mode"], LESSON_MODES) ?? "off";
+  return { project, mode, effective: fixed(body["effective"], LESSON_MODES) ?? mode, lockedByCompany: body["lockedByCompany"] === true, canChange: body["canChange"] === true };
+}

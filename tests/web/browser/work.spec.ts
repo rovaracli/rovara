@@ -97,6 +97,8 @@ test("loading, could not load and empty are each said in the list", async ({ pag
   let release: (() => void) | undefined;
   const held = new Promise<void>((resolve) => { release = resolve; });
   await page.route("**/v1/web/sessions", async (route) => { await held; await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ tasks: [] }) }); });
+  // No lessons waiting either (a lesson batch is work that needs the person, so the list would not be empty).
+  await page.route("**/v1/web/lessons/inbox", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ state: "on", batches: [], unavailable: [] }) }));
   await work.open();
   await expect(work.list.getByRole("progressbar", { name: "Loading your work" })).toBeVisible();
   release?.();
