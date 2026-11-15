@@ -9,6 +9,12 @@ export class SessionPage {
   readonly status: Locator;
   readonly notFound: Locator;
   readonly loadError: Locator;
+  /** The task page's pane (the same pane as Work's, at full width). */
+  readonly pane: Locator;
+  readonly stepRail: Locator;
+  readonly backToWork: Locator;
+  readonly steerBox: Locator;
+  readonly more: Locator;
   constructor(page: Page) {
     this.page = page;
     this.header = page.getByTestId("session-header");
@@ -16,6 +22,23 @@ export class SessionPage {
     this.status = page.getByTestId("session-status");
     this.notFound = page.getByTestId("not-found");
     this.loadError = page.getByTestId("load-error");
+    this.pane = page.getByRole("article", { name: /^Task: / });
+    this.stepRail = page.getByRole("list", { name: "Steps of this task" });
+    this.backToWork = page.getByRole("link", { name: "Back to Work" });
+    this.steerBox = page.getByRole("form", { name: /^Steer / });
+    this.more = page.getByTestId("task-page").locator("details.rv-task-more");
+  }
+  /** A step of the rail (Request, Spec, Build, Proof, Pull request). */
+  step(label: string): Locator {
+    return this.stepRail.getByRole("button", { name: new RegExp(`^${label}`, "u") });
+  }
+  /** The decision card: "Your decision" and the other kinds' headings. */
+  decision(name = "Your decision"): Locator {
+    return this.pane.getByRole("region", { name, exact: true });
+  }
+  /** A task's page by its own id (any task the person can read, whether or not Cloud started it). */
+  async openTask(taskId: string): Promise<void> {
+    await this.page.goto(ROUTES.session(taskId));
   }
   /** The address people share for a task (what Start opens). */
   static readonly SHARE_ADDRESS = /\/s\/(ses_[0-9a-z]{20})$/u;

@@ -129,7 +129,7 @@ it("asks a question in place on its criterion, says what is used if nobody answe
   wrap(h(CriterionRow, { criterion, question: plan.questions[0]!, onAnswer: failing }));fireEvent.click(screen.getByRole("button", { name: /Yes/u }));expect((await screen.findByTestId("answer-error")).textContent).toContain("isn't connected to Rovara Code yet");
 });
 it("draws the spec with ids, a comment on its criterion, and falls back to the summary when the plan has no structure", async () => {
-  const plan = readPlan(PLAN), f = wrap(h(SpecStep, { plan, comments: [{ commentId: "c", author: "Owen", text: "Count retries", at: "x", resolved: true, anchor: "R1.1" }] }));
+  const plan = readPlan(PLAN), f = wrap(h(SpecStep, { plan, comments: [{ commentId: "c", author: "Owen", text: "Count retries", at: "x", resolved: true, anchor: "R1.1", replyTo: undefined }] }));
   expect(f.container.textContent).toContain("v1 · 1 requirement, 2 criteria");expect(f.container.textContent).toContain('Owen: "Count retries" · resolved');expect(f.container.querySelectorAll(".rv-criterion")).toHaveLength(2);
   f.unmount();
   const g = wrap(h(SpecStep, { plan: readPlan({ summary: { headline: "Do it", checks: ["Unit tests"] } }), comments: [] }));expect(g.container.textContent).toContain("0 requirements, 0 criteria");expect(g.container.textContent).toContain("Unit tests");
@@ -295,7 +295,7 @@ it("does not claim nothing needs you when the decisions could not be read", asyn
 });
 it("keeps the proof when only the plan could not be read", async () => {
   const f = screenSetup({ path: `/app/live?task=${ID.merge}`, plan: { status: 403, body: { error: { code: "FORBIDDEN", message: "You can no longer read this task." } } } });
-  await screen.findByTestId("section-error");fireEvent.click(within(screen.getByRole("list", { name: "Steps of this task" })).getByRole("button", { name: /^Proof/u }));
+  await screen.findByTestId("section-error");fireEvent.click(within(screen.getByRole("list", { name: "Steps of this task" })).getByRole("button", { name: /^Pull request/u }));
   expect(await screen.findByRole("region", { name: "Pull request" })).toBeTruthy();expect(screen.getByRole("region", { name: "Proof" })).toBeTruthy();expect(screen.getByTestId("section-error").textContent).toContain("You can no longer read this task.");
   f.close();
 });

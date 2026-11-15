@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef } from "react";
-import { useSearchParams } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useDecisions } from "../../api/decisions.js";
 import { ApiError } from "../../api/errors.js";
 import { nextNeedsYou, useOrgSpend, useWorkTasks, workRows } from "../../api/work.js";
 import { useAppHost } from "../../host.js";
+import { paths } from "../../paths.js";
 import { useAnnounce } from "../../design/Announcer.js";
 import { BudgetBanner } from "../../design/BudgetBanner.js";
 import { Button } from "../../design/Button.js";
@@ -22,7 +23,7 @@ import "./work.css";
  * said in the list; a route Code does not serve yet says "isn't connected to Rovara Code yet" there, never a spinner.
  */
 export function WorkScreen() {
- const host = useAppHost(), [params, setParams] = useSearchParams(), tasks = useWorkTasks(), decisions = useDecisions(), spend = useOrgSpend(), announce = useAnnounce(), query = useQueryClient();
+ const host = useAppHost(), navigate = useNavigate(), [params, setParams] = useSearchParams(), tasks = useWorkTasks(), decisions = useDecisions(), spend = useOrgSpend(), announce = useAnnounce(), query = useQueryClient();
  // The ages and the "waiting over a day" rule are worked out against the clock each time the list or the cards are read again.
  const rows = useMemo(() => (tasks.data === undefined || decisions.isPending ? [] : workRows(tasks.data, decisions.data ?? [], new Date())), [tasks.data, decisions.data, decisions.isPending]);
  const wanted = params.get("task"), selected = rows.find(row => row.id === wanted) ?? rows[0];
@@ -30,6 +31,8 @@ export function WorkScreen() {
  // The page is a lazy chunk: its heading takes focus when it arrives, so a keyboard or screen-reader user starts at the top of the page.
  useEffect(() => { heading.current?.focus(); }, []);
  useEffect(() => { rowsRef.current = rows; }, [rows]);
+ // A task started in Cloud opens by its session's address (the one people share); any other by its task id.
+ const fullPage = (row: { id: string; task: { sessionId: string | undefined } }) => paths.session(row.task.sessionId ?? row.id);
  const select = (id: string) => { const next = new URLSearchParams(params);next.set("task", id);setParams(next, { replace: true }); };
  function onDecided(taskId: string) {
   const next = nextNeedsYou(rowsRef.current, taskId), row = rowsRef.current.find(entry => entry.id === next);
@@ -40,17 +43,17 @@ export function WorkScreen() {
  const listBody = tasks.isPending || (decisions.isPending && !tasks.isError) ? <Skeleton label="Loading your work" />
   : error !== undefined ? <div className="rv-work-error" role="alert" data-testid="load-error"><div className="rv-banner rv-banner-danger"><span><b>{error instanceof ApiError && error.status === 501 ? "Work isn't available yet." : "Couldn't load your work."}</b> <VisibleText text={error instanceof ApiError ? error.message : "Nothing is lost. Running tasks keep going, and chat messages still arrive."} /></span><Button onClick={() => { void tasks.refetch(); }}>Try again</Button></div></div>
   : rows.length === 0 ? <EmptyState testId="work-empty" title="No work yet" description="Start a task from a project. It appears here, and a card appears when it needs a decision." />
-  : <WorkList rows={rows} selectedId={selected?.id} onSelect={select} decisionsFailed={decisions.isError} />;
+  : <WorkList rows={rows} selectedId={selected?.id} onSelect={select} onOpen={id => { const row = rows.find(entry => entry.id === id);if (row !== undefined) void navigate(fullPage(row)); }} decisionsFailed={decisions.isError} />;
  return <section className="rv-work" data-testid="work">
   <section className="rv-work-list" aria-label="Work list">
-   <div className="rv-work-head"><h1 ref={heading} tabIndex={-1} data-testid="work-title">Work</h1><span className="rv-muted rv-work-hint">With the list focused: <kbd>J</kbd> <kbd>K</kbd> move</span></div>
+   <div className="rv-work-head"><h1 ref={heading} tabIndex={-1} data-testid="work-title">Work</h1><span className="rv-muted rv-work-hint">With the list focused: <kbd>J</kbd> <kbd>K</kbd> move, <kbd>O</kbd> opens</span></div>
    {spend.data !== undefined && <div className="rv-work-banner"><BudgetBanner remainingUsd={spend.data} canRaise={isAdmin} /></div>}
    <AgentsRow />
    {decisions.isError && !tasks.isPending && <p className="rv-muted rv-work-note" role="status" data-testid="decisions-unavailable"><VisibleText text={decisions.error instanceof ApiError ? decisions.error.message : "Decisions couldn't be loaded."} /></p>}
    {listBody}
   </section>
   <section className="rv-work-pane" aria-label="Selected task">
-   {selected !== undefined ? <TaskPane key={selected.id} row={selected} decisionsError={decisions.isError ? decisions.error : undefined} onDecided={onDecided} />
+   {selected !== undefined ? <TaskPane key={selected.id} row={selected} fullPage={fullPage(selected)} decisionsError={decisions.isError ? decisions.error : undefined} onDecided={onDecided} />
     : <div className="rv-empty">{tasks.isPending || decisions.isPending ? "Loading…" : "Select a task once your work has loaded."}</div>}
   </section>
  </section>;

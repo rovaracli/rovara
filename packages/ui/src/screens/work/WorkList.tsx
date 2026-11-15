@@ -17,15 +17,16 @@ export function InboxRow({ row, selected, onSelect, buttonRef }: { row: WorkRow;
 }
 
 /**
- * The dense work list, grouped by who owns the next move. `j` and `k` (or the arrow keys) move the selection while focus is in the list, so the shortcuts never
+ * The dense work list, grouped by who owns the next move. `j` and `k` (or the arrow keys) move the selection and `o` opens the task on its own page, while focus is in the list, so the shortcuts never
  * take a key from a text field or from the rest of the page (the list holds only buttons).
  */
-export function WorkList({ rows, selectedId, onSelect, decisionsFailed = false }: { rows: readonly WorkRow[]; selectedId: string | undefined; onSelect: (id: string) => void; /** The decision cards could not be read: "Needs you" cannot claim that nothing needs the person. */ decisionsFailed?: boolean }) {
+export function WorkList({ rows, selectedId, onSelect, onOpen, decisionsFailed = false }: { rows: readonly WorkRow[]; selectedId: string | undefined; onSelect: (id: string) => void; /** `o` opens the selected task on its own page. */ onOpen?: ((id: string) => void) | undefined; /** The decision cards could not be read: "Needs you" cannot claim that nothing needs the person. */ decisionsFailed?: boolean }) {
  const buttons = useRef(new Map<string, HTMLButtonElement>());
  const order = GROUPS.flatMap(entry => rows.filter(row => row.group === entry.group)).map(row => row.id);
  function onKeyDown(event: KeyboardEvent<HTMLElement>) {
   if (event.metaKey || event.ctrlKey || event.altKey) return;
   const key = event.key.toLowerCase(), down = key === "j" || key === "arrowdown", up = key === "k" || key === "arrowup";
+  if (key === "o" && onOpen !== undefined && selectedId !== undefined) { event.preventDefault();onOpen(selectedId);return; }
   if (!down && !up) return;
   event.preventDefault();
   const at = selectedId === undefined ? -1 : order.indexOf(selectedId), next = order[Math.max(0, Math.min(order.length - 1, at + (down ? 1 : -1)))];

@@ -11,6 +11,8 @@ export const WORK_TASKS_MAX = 100;
 const EVENTS_MAX = 100;
 const COMMENTS_MAX = 100;
 const TEXT_MAX = 2000;
+/** How many of the person's newest sessions the list matches to tasks (a bound on the store read, like Home's). */
+const SESSIONS_LOOKED_AT = 200;
 const TASK_ID = "([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})";
 
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
@@ -57,9 +59,13 @@ const WORK_READS: Route[] = [
   {
     // GET /v1/app/sessions (contract v0 `tasks.list`): the person's tasks, newest first, for the Work page's list.
     method: "GET", path: /^\/sessions$/u,
-    answer: async ({ client, session }) => {
+    answer: async ({ client, session, work }) => {
       const answer = await client.json<{ tasks?: unknown[] }>(session, "/v1/dev/tasks", { headers: TASK_VIEW });
-      return ok({ tasks: list(answer.tasks, WORK_TASKS_MAX).flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [view]; }) });
+      // The tasks the person started in Cloud carry Cloud's session id: the task page's steer, stop and comment routes are the session's. A task started elsewhere has none.
+      // A session store that cannot be read costs the page those links, never the list.
+      const sessions = new Map<string, string>();
+      try { for (const record of (await work.startedBy(session.access.developerId)).slice(0, SESSIONS_LOOKED_AT)) if (!sessions.has(record.taskId)) sessions.set(record.taskId, record.sessionId); } catch { /* the list still answers */ }
+      return ok({ tasks: list(answer.tasks, WORK_TASKS_MAX).flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [{ ...view, ...(sessions.has(view["taskId"] as string) ? { sessionId: sessions.get(view["taskId"] as string) } : {}) }]; }) });
     },
   },
   {

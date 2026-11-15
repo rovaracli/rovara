@@ -52,14 +52,20 @@ export function DesignActions({ task, sessionKey }: { task: ReadTask; sessionKey
  </section>;
 }
 
-/** The task's decision cards, with the design review's line and buttons above them. A task view without `designActions` or a design review is exactly the cards, as before. */
-export function TaskDesignPanel({ session, taskId }: { session: ReadSession; taskId: string }) {
- const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createDesignReviewApi(host), [host]), task = useMemo(() => workspaceTask(session), [session]);
- const key = ["session", session.sessionId] as const, actions = readDesignActions(task?.designActions), offered = actions?.designFirst === true;
+/** The task's design-review state: its workspace task, the session key to refresh, and the Design first action for the plan card when the task view offers it (`designActions.designFirst`). */
+export function useTaskDesign(session: ReadSession | undefined, taskId: string | undefined) {
+ const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createDesignReviewApi(host), [host]), task = useMemo(() => (session === undefined ? undefined : workspaceTask(session)), [session]);
+ const key = ["session", session?.sessionId ?? ""] as const, actions = readDesignActions(task?.designActions), offered = taskId !== undefined && actions?.designFirst === true;
  const design = offered ? { hint: actions?.hint === true, onDesignFirst: async () => {
   const result = await api.designFirst(taskId, crypto.randomUUID());
   if (result.kind !== "done") throw new ApiError(409, "PENDING", "This is waiting for confirmation. Open the task to continue.");
   await query.invalidateQueries({ queryKey: [...key] });
  } } : undefined;
+ return { task, key, design };
+}
+
+/** The task's decision cards, with the design review's line and buttons above them (the older task page; the task page now draws the cards in its pane). */
+export function TaskDesignPanel({ session, taskId }: { session: ReadSession; taskId: string }) {
+ const { task, key, design } = useTaskDesign(session, taskId);
  return <>{task !== undefined && <DesignActions task={task} sessionKey={key} />}<TaskDecisions taskId={taskId} design={design} /></>;
 }

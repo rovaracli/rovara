@@ -32,9 +32,9 @@ export function createSessionApi(host: AppHost) {
  unshare(id: string, principalKey: string) { return api.send("DELETE", sessionPath(id) + "/shares/" + encodeURIComponent(principalKey), undefined, SessionShareDeleteResponseReaderSchema); },
  };
 }
-export function useSession(id: string) {
+export function useSession(id: string, enabled = true) {
  const host = useAppHost(), api = useMemo(() => createSessionApi(host), [host]), query = useQueryClient();
- return useQuery({ queryKey: ["session", id], queryFn: async () => acceptSessionRead(query.getQueryData<ReadSession>(["session", id]), await api.read(id)) });
+ return useQuery({ queryKey: ["session", id], enabled, queryFn: async () => acceptSessionRead(query.getQueryData<ReadSession>(["session", id]), await api.read(id)) });
 }
 export function useSessionTimeline(id: string, enabled: boolean, anchor?: string) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);

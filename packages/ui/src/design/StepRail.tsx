@@ -3,7 +3,8 @@ import { STEPS } from "../api/work.js";
 
 /** Where a step stands: done (a tick), current (a dot in the task's tone) or not started (plain). */
 function stateOf(index: number, step: Step, tone: Tone): "done" | "current" | "todo" {
- const at = step === "merged" ? STEPS.length : STEPS.findIndex(entry => entry.step === step);
+ // A closed task marks no step: nothing says how far it got.
+ const at = step === "merged" ? STEPS.length : step === "closed" ? -1 : STEPS.findIndex(entry => entry.step === step);
  return index < at ? "done" : index === at ? (tone === "ok" && step === "merged" ? "done" : "current") : "todo";
 }
 const WORDS: Record<Tone, string> = { wait: "needs you", run: "running", ok: "done", bad: "failed", idle: "waiting" };
@@ -25,7 +26,7 @@ export function StepRail({ step, tone, selected, onSelect }: { step: Step; tone:
 
 /** The same five steps as five small bars, for a list row. The title and label say where the task is, for a screen reader. */
 export function StepMini({ step, tone }: { step: Step; tone: Tone }) {
- const at = step === "merged" ? STEPS.length : STEPS.findIndex(entry => entry.step === step), name = step === "merged" ? "Merged" : STEPS[at]!.label;
- const label = `${name}${step === "merged" ? "" : ", " + WORDS[tone]}`;
+ const at = step === "merged" ? STEPS.length : step === "closed" ? -1 : STEPS.findIndex(entry => entry.step === step), name = step === "merged" ? "Merged" : step === "closed" ? "Closed" : STEPS[at]!.label;
+ const label = `${name}${step === "merged" || step === "closed" ? "" : ", " + WORDS[tone]}`;
  return <span className="rv-step-mini" role="img" aria-label={label} title={label}>{STEPS.map((entry, index) => <i key={entry.step} className={index < at ? "d" : index === at ? tone : ""} />)}</span>;
 }

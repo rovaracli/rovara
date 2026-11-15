@@ -13,6 +13,8 @@ export class WorkPage {
   readonly loadError: Locator;
   readonly empty: Locator;
   readonly notConnected: Locator;
+  /** The link in the pane's head to the task's own page. */
+  readonly fullPage: Locator;
   constructor(page: Page) {
     this.page = page;
     this.root = page.getByTestId("work");
@@ -24,6 +26,7 @@ export class WorkPage {
     this.loadError = page.getByTestId("load-error");
     this.empty = page.getByTestId("work-empty");
     this.notConnected = page.getByTestId("not-connected");
+    this.fullPage = page.getByRole("link", { name: /^Open the full page/u });
   }
   async open(task?: string): Promise<void> {
     await this.page.goto(task === undefined ? ROUTES.work : `${ROUTES.work}?task=${task}`);

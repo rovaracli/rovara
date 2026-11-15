@@ -7,7 +7,7 @@ import { CriterionRow } from "./CriterionRow.js";
  * The spec: requirements with their criteria (each with its own id, so proof and comments can point at it), then the one-line summary and estimate. A plan
  * from a Code that does not send the structured spec yet shows its summary and checks, which every plan has.
  */
-export function SpecStep({ plan, comments, onAnswer }: { plan: ReadPlan; comments: readonly ReadComment[]; onAnswer?: ((questionId: string, optionId: string) => Promise<void>) | undefined }) {
+export function SpecStep({ plan, comments, onAnswer, onComment }: { plan: ReadPlan; comments: readonly ReadComment[]; onAnswer?: ((questionId: string, optionId: string) => Promise<void>) | undefined; onComment?: ((anchor: string, text: string, replyTo?: string) => Promise<void>) | undefined }) {
  const [answered, setAnswered] = useState<Record<string, string>>({});
  const criteria = plan.requirements.reduce((count, requirement) => count + requirement.criteria.length, 0);
  async function answer(questionId: string, optionId: string) {
@@ -23,8 +23,8 @@ export function SpecStep({ plan, comments, onAnswer }: { plan: ReadPlan; comment
   {plan.requirements.map(requirement => <div key={requirement.id}>
    <div className="rv-requirement"><span className="rv-id-chip">{requirement.id}</span><VisibleText text={requirement.title} /></div>
    {requirement.criteria.map(criterion => {
-    const question = plan.questions.find(candidate => candidate.criterionId === criterion.id), comment = comments.find(entry => entry.anchor === criterion.id);
-    return <CriterionRow key={criterion.id} criterion={criterion} question={question} answeredLabel={question === undefined ? undefined : answered[question.questionId]} comment={comment} onAnswer={answer} />;
+    const question = plan.questions.find(candidate => candidate.criterionId === criterion.id), pinned = comments.filter(entry => entry.anchor === criterion.id);
+    return <CriterionRow key={criterion.id} criterion={criterion} question={question} answeredLabel={question === undefined ? undefined : answered[question.questionId]} comments={pinned} onAnswer={answer} onComment={onComment} />;
    })}
   </div>)}
   {plan.requirements.length === 0 && plan.checks.length > 0 && <><p className="rv-muted">Checks planned</p><ul className="rv-spec-checks">{plan.checks.map((check, index) => <li key={index}><VisibleText text={check} /></li>)}</ul></>}

@@ -26,6 +26,8 @@ function setup(initial: ReturnType<typeof answeredSession>, reply?: (request: Ap
     if (path.endsWith("/messages")) return { status: 200, body: { messages: [] } };
     if (path.endsWith("/events")) return { status: 200, body: { events: [] } };
     if (path.endsWith("/presence")) return { status: 200, body: { viewingNow: initial.viewingNow } };
+    // The task page's own reads (plan, proof, decisions) are not what this file tests: Code serves none of them here.
+    if (request.method === "GET" && (path.startsWith("/v1/app/tasks/") || path === "/v1/app/decisions")) return { status: 404, body: { error: { code: "NOT_FOUND", message: "Not served here." } } };
     if (request.method === "POST" && path.endsWith("/change-anyway")) return reply === undefined ? { status: 202, body: started } : reply(request);
     return { status: 200, body: { session: initial } };
   });
