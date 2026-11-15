@@ -215,6 +215,46 @@ describe("learning providers: one route, the company's own key per provider", ()
     expect((await row(g.learningMeter, "company"))!.spentMicros).toBe(40);
   });
 
+  describe("provider answers rejected before any generation are free (400, 404, 422), as on the product route", () => {
+    const failing = (status: number, text = "") => async () => ({ status, body: (async function* () { yield Buffer.from(text); })() });
+    for (const [provider, path, body] of CASES) {
+      for (const status of [400, 404, 422]) {
+        it(`${provider} ${String(status)}: nothing charged, no pause, a fixed 502`, async () => {
+          const g = gateway({ transports: { [provider]: failing(status, '{"error":{"message":"model not found"}}') } });
+          const sink = await learn(g.deps, path, body);
+          expect(sink.status).toBe(502);
+          expect(error(sink)).toEqual({ type: "provider_error", message: "provider unavailable" });
+          expect(await row(g.learningMeter, "company")).toMatchObject({ committed: 0, spentMicros: 0, reservedMicros: 0 });
+          expect(g.keys.refusedBy).toEqual([]);
+        });
+      }
+    }
+    it("an AI Studio 400 API_KEY_INVALID is the no_provider pause at $0 and tells the adapter; the same words on other providers are not", async () => {
+      const g = gateway({ transports: { gemini: failing(400, '{"error":{"code":400,"message":"API key not valid.","status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}') } });
+      expectPaused(await learn(g.deps, GEMINI_PATH, geminiBody), "no_provider");
+      expect(await row(g.learningMeter, "company")).toMatchObject({ committed: 0, spentMicros: 0 });
+      expect(g.keys.refusedBy).toEqual([`${cid}:gemini`]);
+      const v = gateway({ transports: { vertex: failing(400, "API_KEY_INVALID") } });
+      expect((await learn(v.deps, VERTEX_PATH(), geminiBody)).status).toBe(502);
+      expect(v.keys.refusedBy).toEqual([]);
+    });
+    it("a 400 with a huge body is read only in part and still free", async () => {
+      const g = gateway({ transports: { gemini: failing(400, "x".repeat(200_000)) } });
+      expect((await learn(g.deps, GEMINI_PATH, geminiBody)).status).toBe(502);
+      expect((await row(g.learningMeter, "company"))!.spentMicros).toBe(0);
+    });
+    it("golden: Anthropic keeps its rule (a 400 is charged); a 5xx on every provider is charged", async () => {
+      const a = gateway({ transports: { anthropic: failing(400) } });
+      await learn(a.deps, LEARNING_PATH, { model: "claude-sonnet-4-5", messages: [{ role: "user", content: "hi" }], max_tokens: 10, stream: true });
+      expect((await row(a.learningMeter, "company"))!.spentMicros).toBeGreaterThan(0);
+      for (const [provider, path, body] of CASES) {
+        const g = gateway({ transports: { [provider]: failing(500) } });
+        await learn(g.deps, path, body);
+        expect((await row(g.learningMeter, "company"))!.spentMicros, provider).toBeGreaterThan(0);
+      }
+    });
+  });
+
   it("a key gone between admission and send is no_provider at $0 on every provider; the install key is never a fallback", async () => {
     for (const [provider, path, body] of CASES) {
       const g = gateway();

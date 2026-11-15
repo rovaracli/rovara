@@ -92,7 +92,7 @@ export interface LearningRouteOptions {
   transport: ProviderTransport;
   /** The other providers' transports. A provider with no transport here has no path (404). */
   transports?: { gemini?: ProviderTransport; vertex?: ProviderTransport; openai?: ProviderTransport };
-  /** The learning month for a company whose settings have no learning cap (an older row), micro-dollars. Default LEARNING_DEFAULT_MONTH_MICROS. */
+  /** The learning month for a company whose settings have no learning cap (an older row), micro-dollars. Default LEARNING_DEFAULT_MONTH_MICROS. NOT an operator ceiling: a company's own learning cap (up to its monthly cap) replaces it. */
   monthCeilingMicros?: number;
 }
 /** Builds one learning route per request (it keeps that request's admission state). */
@@ -108,6 +108,8 @@ export function parseLearningPath(path: string, query: string): { provider: "ant
   }
   return undefined;
 }
+/** Google's words for an invalid API key (AI Studio answers 400, not 401). Read only to classify, never echoed. */
+const GOOGLE_KEY_INVALID = /API_KEY_INVALID|API key not valid|API key expired/iu;
 const unavailableGuard = { ok: false as const, status: 503, code: "unavailable", message: "model access unavailable" };
 const notAllowed = { ok: false as const, status: 400, code: "invalid_request", message: "request not allowed" };
 
@@ -210,11 +212,20 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
         notSent: () => notSent,
         transport,
         usage: () => provider === "anthropic" ? new UsageCollector() : provider === "openai" ? new OpenAiUsageCollector() : new GeminiUsageCollector(),
-        providerFailure(status) {
-          // The provider refused the company's key: an explicit rejection before generation, free; Code pauses for a provider.
-          if (status === 401 || status === 403) {
+        // Gemini, Vertex and OpenAI: the first bytes of a failed answer are read to tell a refused key from a refused request.
+        ...(provider === "anthropic" ? {} : { failureBody: true }),
+        providerFailure(status, body) {
+          const refusedKey = () => {
             if (options.keys.refused !== undefined && who !== undefined) { try { void Promise.resolve(options.keys.refused(who.iss, who.cid, provider)).catch(() => undefined); } catch { /* Never changes the call. */ } }
             return { charged: false, refusal: learningPaused("no_provider") };
+          };
+          // The provider refused the company's key: an explicit rejection before generation, free; Code pauses for a provider.
+          if (status === 401 || status === 403) return refusedKey();
+          if (provider !== "anthropic") {
+            // Google answers an invalid or revoked AI Studio key with a 400 (API_KEY_INVALID): the same pause as a 401.
+            if (status === 400 && provider === "gemini" && body !== undefined && GOOGLE_KEY_INVALID.test(Buffer.from(body).subarray(0, 64 * 1024).toString("utf8"))) return refusedKey();
+            // Any other 400, 404 (unknown model) or 422 is rejected before any generation (as on the product route): nothing was spent.
+            if (status === 400 || status === 404 || status === 422) return { charged: false, refusal: { ok: false, status: 502, code: "provider_error", message: "provider unavailable" } };
           }
           // Otherwise the agent route's rule: 429/529 explicit rejections are free, the rest keep the hold.
           return { charged: !(status === 429 || status === 529), refusal: { ok: false, status: 502, code: "provider_error", message: "provider unavailable" } };

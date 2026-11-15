@@ -56,9 +56,14 @@ that would turn one wire format into another (a translator is where costs go wro
 A call is admitted only when the company has THAT provider connected (`LearningKeySource.connected(iss, cid, provider)`; another
 provider's key is never used on this path) and the token's `mdl` names the model (Code decides which model each learning call
 uses; every provider, not only Anthropic). A provider with no transport has no path (404). A provider's 401/403 is free and a
-`no_provider` pause (and `LearningKeySource.refused` lets the adapter drop a cached Vertex token); 429 and 529 are free; other
-failures keep the hold. An OpenAI or Gemini stream without usage (or without `[DONE]` / a finish) is charged at its hold, never
-at $0. Audio, video, images by reference, built-in tools and several answers are refused (hold bounds).
+`no_provider` pause (and `LearningKeySource.refused` lets the adapter drop a cached Vertex token); 429 and 529 are free; on
+Gemini, Vertex and OpenAI a 400, 404 or 422 is free too (rejected before any generation, as on the product route), and Google's
+400 `API_KEY_INVALID` for AI Studio is the same `no_provider` pause as a 401; other failures keep the hold (Anthropic's rule is
+unchanged: only 401, 403, 429 and 529 are free). An OpenAI or Gemini stream without usage (or without `[DONE]` / a finish) is charged at its hold, never
+at $0. Audio and video, built-in tools and several answers are refused. On Gemini and Vertex, image, PDF and text files by reference
+and a cached context are accepted as on the product route: such a call is overrun-capable, runs alone under the company marker
+and settles at its actual cost, so one call can pass a cap by up to one context window of input (DEC 165); unlike the product
+route the learning route has no per-task block after an overrun.
 
 ## Token purpose
 

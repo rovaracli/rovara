@@ -73,7 +73,9 @@ export function guardOpenAi(bytes: Buffer, headers: Readonly<Record<string, stri
   if (typeof asked[0] === "number" && asked[0] > limit) return bad();
   const maxTokens = typeof asked[0] === "number" ? asked[0] : limit;
   const { max_tokens: _legacy, ...rest } = b; void _legacy;
-  const forwarded = Buffer.from(JSON.stringify({ ...rest, max_completion_tokens: maxTokens, ...(streaming ? { stream_options: { include_usage: true } } : {}) }));
+  // Deeply nested tools or schemas can overflow the serializer: refuse as a whole, before any hold.
+  let forwarded: Buffer;
+  try { forwarded = Buffer.from(JSON.stringify({ ...rest, max_completion_tokens: maxTokens, ...(streaming ? { stream_options: { include_usage: true } } : {}) })); } catch { return bad(); }
   return { ok: true, hasTools: Array.isArray(b.tools), inputBounded: true, model: b.model, maxTokens, streaming, bytes: forwarded, headers: { "content-type": "application/json" }, path: OPENAI_UPSTREAM_PATH };
 }
 

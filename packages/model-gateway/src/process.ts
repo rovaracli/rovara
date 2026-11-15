@@ -106,7 +106,7 @@ export interface ServeDependencies {
    * OWN meter combined with the agent meter's company row (DEC 228c), the company backend's budgets and lessons switch (the
    * Companies table). Absent: the learning path is 404. Its holds, expiry and corrections run in the same maintenance pass.
    */
-  learning?: { keys: LearningKeySource; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; monthCeilingMicros?: number; /** The other providers' transports (default: the fixed Gemini, Vertex and OpenAI ones). */ transports?: NonNullable<LearningRouteOptions["transports"]> };
+  learning?: { keys: LearningKeySource; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; monthCeilingMicros?: number /** Only for a company whose settings carry no learning cap (an older row); a company's own cap replaces it. */; /** The other providers' transports (default: the fixed Gemini, Vertex and OpenAI ones). */ transports?: NonNullable<LearningRouteOptions["transports"]> };
   now?: () => number; host?: string; port?: number; /** false: no listener (tests drive the server's request event). */ listen?: boolean; drainMs?: number; maintenanceMs?: number;
 }
 export interface RunningGateway { server: Server; port: number; draining(): boolean; drain(): Promise<void>; maintain(): Promise<void> }
