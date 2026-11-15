@@ -249,8 +249,8 @@ describe("guardOpenAi: text only, one answer, an output ceiling", () => {
     expect(JSON.parse(a.bytes.toString())).toEqual({ ...base, max_completion_tokens: 50 });
     expect(a.maxTokens).toBe(50);
     expect(ok(base).maxTokens).toBe(1000);
-    expect(JSON.parse(ok({ ...base, stream: true }).bytes.toString()).stream_options).toEqual({ include_usage: true });
-    expect(JSON.parse(ok({ ...base, stream: true, stream_options: { include_usage: true } }).bytes.toString()).stream_options).toEqual({ include_usage: true });
+    expect((JSON.parse(ok({ ...base, stream: true }).bytes.toString()) as { stream_options: unknown }).stream_options).toEqual({ include_usage: true });
+    expect((JSON.parse(ok({ ...base, stream: true, stream_options: { include_usage: true } }).bytes.toString()) as { stream_options: unknown }).stream_options).toEqual({ include_usage: true });
     expect(ok({ ...base, stream: true }).streaming).toBe(true);
     expect(ok(base).path).toBe("/v1/chat/completions");
     // No row for the model: the fixed default, which is also the most a request may ask.

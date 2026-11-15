@@ -44,7 +44,7 @@ export class CompanyBudgetCaps implements CapsSource {
       projectMonth: project ?? NO_CAP,
       ...(member === null || member === undefined ? {} : { personMonth: member }),
       companyMonth: company,
-      ...(learning === undefined ? {} : { learningMonth: learning as number }),
+      ...(learning === undefined ? {} : { learningMonth: learning }),
     };
   }
 }

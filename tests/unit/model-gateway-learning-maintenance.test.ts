@@ -56,13 +56,13 @@ async function serve(options: { companyMonth?: number; learningMonth?: number; p
   const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
   const clock = options.clock ?? { at: now };
   const budgets = (learningMonth: number | undefined) => ({ companyMonthlyUsdMicros: options.companyMonth ?? 500_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null, ...(learningMonth === undefined ? {} : { learningMonthlyUsdMicros: learningMonth }) });
-  await db.put(TABLES.companies, { pk: `COMPANY#${claims.cid}`, sk: "SETTINGS", companyId: claims.cid, version: 1, settings: { featureGates: { lessons: true }, budgets: budgets(options.learningMonth) } as never });
+  await db.put(TABLES.companies, { pk: `COMPANY#${claims.cid}`, sk: "SETTINGS", companyId: claims.cid, version: 1, settings: { featureGates: { lessons: true }, budgets: budgets(options.learningMonth) } });
   const prices = new DynamoPriceSnapshotStore(db, TABLES.prices);
   if (options.priced === true) expect(await prices.save(snapshot(1), 0)).toBe(true);
   const lines: Array<Record<string, unknown>> = [];
   const sent: ProviderRequest[] = [];
   const keys: LearningKeySource = { connected: async () => true, keyFor: async (_iss, cid) => `customer-${cid}` };
-  const meter = Object.assign(new DynamoMeter({ db, tables: LEARNING, now: () => clock.at, combinedCompany: { meter: TABLES.meter, markers: TABLES.markers } }));
+  const meter = new DynamoMeter({ db, tables: LEARNING, now: () => clock.at, combinedCompany: { meter: TABLES.meter, markers: TABLES.markers } });
   const config: ServeConfig = { ...(readGatewayConfig(ENV) as ServeConfig), port: 0 };
   const gateway = await startServe(config, {
     db, fetch: jwksFetch, now: () => clock.at, listen: false, log: (line) => lines.push(line),
