@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createRealtimeClient } from "../../packages/ui/src/realtime/client.js";
+import { REALTIME_OFF_REFRESH_MS, createRealtimeClient } from "../../packages/ui/src/realtime/client.js";
+import { ApiError } from "../../packages/ui/src/api/errors.js";
 import { createNoticeInvalidator, queryKeysFor } from "../../packages/ui/src/realtime/invalidate.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { fakeHost, USER_CHANNEL, PROJECT_CHANNEL, REALTIME_ENDPOINT } from "./support/fake-host.js";
@@ -57,4 +58,15 @@ it("throttles nav across fifty updates, never on session events, and invalidates
 it("ignores an invalid session unsubscribe without disrupting a live connection", async () => {
  clock();const f = fakeHost(), client = createRealtimeClient(f.host, { onNotice: vi.fn(), onStatus: vi.fn() });client.start();await settle();
  expect(() => client.unsubscribeSession("invalid")).not.toThrow();client.stop();
+});
+
+it("stops asking and says off, not reconnecting, when the server offers no live updates (404), and reads the screen again every 30 seconds", async () => {
+ clock();const f = fakeHost();f.realtimeToken.mockRejectedValue(new ApiError(404, "NOT_FOUND", "Live updates aren't on Rovara Code yet."));
+ const onStatus = vi.fn(), onReset = vi.fn();const client = createRealtimeClient(f.host, { onNotice: vi.fn(), onStatus, onReset });client.start();await settle();
+ expect(onStatus.mock.calls.map(([status]) => status as string)).toEqual(["connecting", "off"]);
+ await vi.advanceTimersByTimeAsync(REALTIME_OFF_REFRESH_MS - 1);expect(onReset).not.toHaveBeenCalled();
+ await vi.advanceTimersByTimeAsync(1);expect(onReset).toHaveBeenCalledTimes(1);
+ await vi.advanceTimersByTimeAsync(REALTIME_OFF_REFRESH_MS * 3);expect(onReset).toHaveBeenCalledTimes(4);
+ expect(f.realtimeToken).toHaveBeenCalledTimes(1);expect(onStatus).not.toHaveBeenCalledWith("reconnecting");
+ client.stop();await vi.advanceTimersByTimeAsync(REALTIME_OFF_REFRESH_MS * 3);expect(onReset).toHaveBeenCalledTimes(4);
 });

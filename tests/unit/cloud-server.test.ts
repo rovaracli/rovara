@@ -281,6 +281,14 @@ describe("the app's API, answered from Code as the person", () => {
     expect(JSON.parse((await call("GET", "/v1/web/me", { cookie: ada.cookie }))!.body)).toMatchObject({ developer: { nameChosen: true } });
   });
 
+  it("answers live updates as not offered (404), which the app reads as off rather than reconnecting", async () => {
+    const { call, signIn } = setUp();
+    const { cookie, csrf } = await signIn();
+    const token = await call("POST", "/v1/web/realtime/token", { cookie, csrf });
+    expect(token!.status).toBe(404);
+    expect(JSON.parse(token!.body)).toEqual({ error: { code: "NOT_FOUND", message: "Live updates aren't on Rovara Code yet." } });
+  });
+
   it("answers decision cards as switched off (404), which the app shows as no cards rather than an error", async () => {
     const { call, signIn } = setUp();
     const { cookie } = await signIn();

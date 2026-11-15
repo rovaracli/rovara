@@ -274,6 +274,12 @@ export const ROUTES: Route[] = [
     },
   },
   {
+    // POST /v1/app/realtime/token: live updates are not on Code yet. The app reads a 404 here as "live updates are off" and reads its screens again
+    // every 30 seconds, where any other answer would keep it reconnecting.
+    method: "POST", path: /^\/realtime\/token$/u,
+    answer: () => Promise.resolve({ status: 404, body: { error: { code: "NOT_FOUND", message: "Live updates aren't on Rovara Code yet." } } }),
+  },
+  {
     // GET /v1/app/decisions: decision cards are not on Code yet. The app reads a 404 here as "cards are switched off" and shows
     // none (Home's plan, failure and pull-request cards still show), where any other answer would show as an error.
     method: "GET", path: /^\/decisions$/u,

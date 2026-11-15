@@ -1,14 +1,19 @@
 import { ChangesFeedPageReaderSchema, RealtimeNoticeReaderSchema, RealtimeTokenResponseReaderSchema, parseRealtimeChannel, sessionChannel, SessionIdSchema, type RealtimeNotice, type OrgId } from "@agentx/contracts/web";
 import { REALTIME_BACKOFF_MS, REALTIME_REFRESH_BEFORE_SECONDS } from "../constants.js";
 import type { AppHost, RealtimeSocket } from "../host.js";
+import { ApiError } from "../api/errors.js";
+/** While a server offers no live updates (its token route answers 404), how often the screen reads itself again instead. */
+export const REALTIME_OFF_REFRESH_MS = 30_000;
 export function createRealtimeClient(host: AppHost, options: { onNotice: (notice: RealtimeNotice) => void; onStatus: (status: string) => void; onReset?: () => void }) {
  let running = false, generation = 0, attempt = 0, socket: RealtimeSocket | undefined, token = "", org: OrgId | undefined, ready = false, cursor: string | undefined;
- let retryTimer: ReturnType<typeof setTimeout> | undefined, refreshTimer: ReturnType<typeof setTimeout> | undefined, aliveTimer: ReturnType<typeof setTimeout> | undefined;
+ let retryTimer: ReturnType<typeof setTimeout> | undefined, refreshTimer: ReturnType<typeof setTimeout> | undefined, aliveTimer: ReturnType<typeof setTimeout> | undefined, offTimer: ReturnType<typeof setInterval> | undefined;
  let timeout = 300_000, serial = 0;
  const sessions = new Set<string>(), subscriptions = new Map<string, string>(), revisions = new Map<string, number>(), seen = new Set<string>();
  let cleanup: Array<() => void> = [];
  function disconnect() { for (const remove of cleanup) remove();cleanup = [];clearTimeout(refreshTimer);clearTimeout(aliveTimer);socket?.close();socket = undefined;ready = false;subscriptions.clear(); }
  function retry() { if (!running) return;generation++;disconnect();options.onStatus("reconnecting");clearTimeout(retryTimer);retryTimer = setTimeout(() => { void connect(); }, REALTIME_BACKOFF_MS[Math.min(attempt++, REALTIME_BACKOFF_MS.length - 1)]); }
+ // No live updates here (the token route is not found): stop asking, say "off" rather than "reconnecting", and keep the screen fresh by reading it again now and then.
+ function off() { if (!running) return;generation++;disconnect();clearTimeout(retryTimer);options.onStatus("off");clearInterval(offTimer);offTimer = setInterval(() => { if (running) options.onReset?.(); }, REALTIME_OFF_REFRESH_MS); }
  function alive() { clearTimeout(aliveTimer);aliveTimer = setTimeout(retry, timeout); }
  function emit(value: unknown) {
  const parsed = RealtimeNoticeReaderSchema.safeParse(value);if (!parsed.success || parsed.data.type === "unknown") return;
@@ -46,11 +51,11 @@ export function createRealtimeClient(host: AppHost, options: { onNotice: (notice
  } catch { /* malformed frame */ }
  }));
  refreshTimer = setTimeout(() => { void connect(); }, remaining);
- } catch { if (running && generation === version) retry(); }
+ } catch (error) { if (running && generation === version) { if (error instanceof ApiError && error.status === 404) off();else retry(); } }
  }
  return {
  start() { if (running) return;running = true;options.onStatus("connecting");void connect(); },
- stop() { running = false;generation++;clearTimeout(retryTimer);disconnect();sessions.clear();seen.clear();revisions.clear();token = "";org = undefined; },
+ stop() { running = false;generation++;clearTimeout(retryTimer);clearInterval(offTimer);offTimer = undefined;disconnect();sessions.clear();seen.clear();revisions.clear();token = "";org = undefined; },
  subscribeSession(id: string) { if (!SessionIdSchema.safeParse(id).success) return;sessions.add(id);if (org !== undefined) subscribe(sessionChannel(org, id)); },
  unsubscribeSession(id: string) { if (!SessionIdSchema.safeParse(id).success) return;sessions.delete(id);if (org === undefined) return;const channel = sessionChannel(org, id), subscription = subscriptions.get(channel);if (subscription !== undefined) { socket?.send(JSON.stringify({ type: "unsubscribe", id: subscription }));subscriptions.delete(channel); } },
  };
