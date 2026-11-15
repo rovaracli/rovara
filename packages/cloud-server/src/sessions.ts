@@ -58,7 +58,10 @@ export class LocalSessionStore implements SessionStore {
   }
 
   async put(id: string, session: CodeSession): Promise<void> {
-    this.sessions.set(id, session);
+    // The request's `changed` mark is not part of the sign-in (as in DynamoSessionStore).
+    const stored = { ...session };
+    delete stored.changed;
+    this.sessions.set(id, stored);
     this.save();
   }
 

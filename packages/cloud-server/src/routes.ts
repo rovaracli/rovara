@@ -100,7 +100,7 @@ const viewer = (context: RouteContext) => ({ developerId: context.session.access
 const me = (context: RouteContext) => ({ developerId: context.session.access.developerId, name: context.session.access.displayName });
 
 /** The session's followers and viewers for this person. */
-const peopleOf = (context: RouteContext, record: WorkSession) => ({ ...followState(record, context.session.access.developerId), viewingNow: context.presence.viewing(record.sessionId, context.now().getTime()) });
+const peopleOf = async (context: RouteContext, record: WorkSession) => ({ ...followState(record, context.session.access.developerId), viewingNow: await context.presence.viewing(record.sessionId, context.now().getTime()) });
 
 /**
  * The session, once Code has let the person read its task: its owner, or someone it is shared with who is still a member of the
@@ -177,9 +177,8 @@ async function runningInProject(context: RouteContext, project: string) {
       throw error;
     }
   }));
-  return read
-    .filter((entry): entry is { record: WorkSession; task: CodeTask } => entry !== undefined && sessionRunning(entry.task))
-    .map(({ record, task }) => liveTile(record, task, viewer(context), context.origin, peopleOf(context, record)))
+  const running = read.filter((entry): entry is { record: WorkSession; task: CodeTask } => entry !== undefined && sessionRunning(entry.task));
+  return (await Promise.all(running.map(async ({ record, task }) => liveTile(record, task, viewer(context), context.origin, await peopleOf(context, record)))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -452,7 +451,7 @@ export const ROUTES: Route[] = [
     method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})$/u,
     answer: async (context) => {
       const found = await sessionAndTask(context);
-      return found === undefined ? sessionNotFound : ok({ session: sessionView(found.record, found.task, viewer(context), context.origin, peopleOf(context, found.record)) });
+      return found === undefined ? sessionNotFound : ok({ session: sessionView(found.record, found.task, viewer(context), context.origin, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -471,7 +470,7 @@ export const ROUTES: Route[] = [
         method: "POST", headers: TASK_VIEW,
         body: { requestId, ...retry, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
       });
-      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, peopleOf(context, found.record)) });
+      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -491,7 +490,7 @@ export const ROUTES: Route[] = [
       const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/send-back`, {
         method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, instructions: note },
       });
-      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, peopleOf(context, found.record)) });
+      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -512,7 +511,7 @@ export const ROUTES: Route[] = [
         method: "POST", headers: TASK_VIEW,
         body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, candidateDigest: choices.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) },
       });
-      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, peopleOf(context, found.record)) });
+      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -657,7 +656,7 @@ export const ROUTES: Route[] = [
     answer: async (context) => {
       const record = await readableSession(context);
       if (record === undefined) return sessionNotFound;
-      return ok({ viewingNow: context.presence.heartbeat(record.sessionId, me(context), context.now().getTime()) });
+      return ok({ viewingNow: await context.presence.heartbeat(record.sessionId, me(context), context.now().getTime()) });
     },
   },
   {

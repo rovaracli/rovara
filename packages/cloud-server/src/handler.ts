@@ -6,9 +6,9 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
 import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
-import { ROUTES, type OrgView, type Route } from "./routes.js";
+import { ROUTES, type OrgView, type Route, type RouteAnswer } from "./routes.js";
 import type { SessionStore } from "./sessions.js";
-import type { WorkSessionStore } from "./work-sessions.js";
+import { StoreConflict, type WorkSessionStore } from "./work-sessions.js";
 
 export interface CloudRequest {
   method: string;
@@ -53,6 +53,9 @@ const sameText = (a: string, b: string) => a.length === b.length && timingSafeEq
 function json(status: number, body: unknown, headers: Record<string, string> = {}): CloudResponse {
   return { status, headers: { "content-type": "application/json", "cache-control": "no-store", ...headers }, body: JSON.stringify(body) };
 }
+/** How many times a request runs when another server changed what it read meanwhile (StoreConflict, a refresh done elsewhere). */
+const REQUEST_ATTEMPTS = 3;
+
 /** Code's task page path, as the app's links name it (packages/ui/src/screens/project/learning-text.ts taskPageHref). */
 export const CODE_TASK_PAGE = /^\/review\/[A-Za-z0-9_-]{1,100}\/task$/u;
 
@@ -133,7 +136,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     if (!path.startsWith("/v1/web/")) return undefined;
 
     const id = sessionId(request);
-    const session = id === undefined ? undefined : await options.store.get(id);
+    let session = id === undefined ? undefined : await options.store.get(id);
     if (id === undefined || session === undefined) return json(401, { error: { code: "AUTH_REQUIRED", message: "Sign in to continue." } });
     if (method !== "GET" && method !== "HEAD" && !sameText(request.headers["x-rovara-csrf"] ?? "", session.csrf)) {
       return json(403, { error: { code: "CSRF_INVALID", message: "Refresh the page and try again." } });
@@ -150,10 +153,26 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         return json(400, { error: { code: "CONFIG_INVALID", message: "The request body isn't valid JSON." } });
       }
       try {
-        const answer = await route.answer({
-          client: options.client, session, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
-          work: options.work, origin: options.origin, presence,
-        });
+        let answer: RouteAnswer | undefined;
+        // Another server may change a session between a route's read and its write (StoreConflict), or refresh this sign-in's
+        // tokens first: Code's refresh tokens work once, so this server's refresh then fails. Either way the request runs
+        // again on what the store holds now, a few times at most.
+        for (let attempt = 1; answer === undefined; attempt += 1) {
+          const using = session;
+          try {
+            answer = await route.answer({
+              client: options.client, session: using, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
+              work: options.work, origin: options.origin, presence,
+            });
+          } catch (error) {
+            if (attempt >= REQUEST_ATTEMPTS) throw error;
+            if (error instanceof StoreConflict) continue;
+            if (!(error instanceof SignInEnded)) throw error;
+            const stored = await options.store.get(id);
+            if (stored === undefined || stored.refreshToken === using.refreshToken) throw error;
+            session = stored;
+          }
+        }
         const retried = /^\/sessions\/(ses_[0-9a-z]{20})\/retry$/u.exec(apiPath);
         if (method === "POST" && retried !== null && answer.status === 200) log({ event: "cloud.reviews_retried", sessionId: retried[1] });
         if (session.changed === true) {

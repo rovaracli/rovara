@@ -4,7 +4,7 @@
 // phase 2: sessions on Code's tasks, Home's cards and the plan approval page.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { CODE_TASK_PAGE, CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
+import { CODE_TASK_PAGE, CodeClient, LocalSessionStore, LocalWorkSessionStore, StoreConflict, createCloudHandler, type SessionStore, type WorkSessionStore, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
 import {
   HomeResponseReaderSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema,
   SessionShareDeleteResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionSharesResponseReaderSchema, SessionEventPageSchema,
@@ -128,11 +128,12 @@ function fakeCode() {
     expireToken: () => { validToken = "access-rotated"; }, endSignIn: () => { refreshable = false; validToken = "nobody"; } };
 }
 
-function setUp() {
-  const code = fakeCode();
-  const store = new LocalSessionStore();
+/** One Cloud server; with `shared`, a second server on the same stores and the same Code (PrepLabsAI/Rovara-cloud#11). */
+function setUp(shared?: { code: ReturnType<typeof fakeCode>; store: SessionStore; work: WorkSessionStore }) {
+  const code = shared?.code ?? fakeCode();
+  const store = shared?.store ?? new LocalSessionStore();
   const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: "http://127.0.0.1:8787/callback", scopes: "projects:members", fetch: code.fetchImpl });
-  const work = new LocalWorkSessionStore();
+  const work = shared?.work ?? new LocalWorkSessionStore();
   const clock = { ms: Date.parse("2026-11-14T12:00:00.000Z") };
   const handler = createCloudHandler({ client, store, work, origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(clock.ms) });
   const call = async (method: string, target: string, options: { cookie?: string; csrf?: string; body?: unknown; form?: Record<string, string>; headers?: Record<string, string> } = {}) => {
@@ -812,3 +813,68 @@ describe("the Conversation: timeline and comments (Rovara-cloud#24)", () => {
   });
 });
 
+
+describe("several servers on the same stores (Rovara-cloud#11)", () => {
+  it("keeps a person signed in when another server refreshed their tokens first (Code's refresh tokens work once)", async () => {
+    const a = setUp();
+    const { cookie } = await a.signIn();
+    const id = cookie.split("=")[1]!;
+    const before = structuredClone((await a.store.get(id))!);
+    a.code.expireToken();
+    expect((await a.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
+    const refreshed = (await a.store.get(id))!.refreshToken;
+    expect(refreshed).not.toBe(before.refreshToken);
+    // Server B read the sign-in before A saved its refresh: its own refresh is refused, so it reads the store again and goes on.
+    let stale = true;
+    const shared: SessionStore = {
+      get: async (key) => (stale && key === id ? (stale = false, structuredClone(before)) : a.store.get(key)),
+      put: (key, value) => a.store.put(key, value), delete: (key) => a.store.delete(key),
+      putPending: (key, value) => a.store.putPending(key, value), takePending: (key) => a.store.takePending(key),
+    };
+    const b = setUp({ code: a.code, store: shared, work: a.work });
+    expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
+    expect((await a.store.get(id))?.refreshToken).toBe(refreshed);
+  });
+
+  it("still signs the person out when the sign-in really ended", async () => {
+    const a = setUp();
+    const { cookie } = await a.signIn();
+    const b = setUp({ code: a.code, store: a.store, work: a.work });
+    a.code.endSignIn();
+    expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(401);
+    expect(await a.store.get(cookie.split("=")[1]!)).toBeUndefined();
+  });
+
+  it("runs a request again when another server wrote the session in between, so neither change is lost", async () => {
+    const a = setUp();
+    const ada = await a.signIn();
+    const started = await a.call("POST", "/v1/web/projects/payments/code", { ...ada, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the README typo" } } });
+    const { sessionId } = JSON.parse(started!.body) as { sessionId: string };
+    const comment = (server: typeof a, requestId: string, text: string) =>
+      server.call("POST", `/v1/web/sessions/${sessionId}/messages`, { ...ada, body: { requestId, kind: "comment", text } });
+    // Server B's first write finds that server A added a comment after B read the session.
+    let first = true;
+    const racing: WorkSessionStore = {
+      get: (key) => a.work.get(key), byRequest: (key) => a.work.byRequest(key), startedBy: (key) => a.work.startedBy(key),
+      put: async (session, requestId) => {
+        if (first) { first = false; expect((await comment(a, "33333333-3333-4333-8333-333333333333", "From server A"))!.status).toBe(201); }
+        return a.work.put(session, requestId);
+      },
+    };
+    const b = setUp({ code: a.code, store: a.store, work: racing });
+    expect((await comment(b, "44444444-4444-4444-8444-444444444444", "From server B"))!.status).toBe(201);
+    expect((await a.work.get(sessionId))?.messages?.map((message) => message.text)).toEqual(["From server A", "From server B"]);
+  });
+
+  it("gives up after a few tries rather than looping", async () => {
+    const a = setUp();
+    const ada = await a.signIn();
+    const started = await a.call("POST", "/v1/web/projects/payments/code", { ...ada, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the README typo" } } });
+    const { sessionId } = JSON.parse(started!.body) as { sessionId: string };
+    let writes = 0;
+    const busy: WorkSessionStore = { get: (key) => a.work.get(key), byRequest: (key) => a.work.byRequest(key), startedBy: (key) => a.work.startedBy(key), put: async () => { writes += 1; throw new StoreConflict(sessionId); } };
+    const b = setUp({ code: a.code, store: a.store, work: busy });
+    await expect(b.call("POST", `/v1/web/sessions/${sessionId}/messages`, { ...ada, body: { requestId: "55555555-5555-4555-8555-555555555555", kind: "comment", text: "Hi" } })).rejects.toBeInstanceOf(StoreConflict);
+    expect(writes).toBe(3);
+  });
+});
