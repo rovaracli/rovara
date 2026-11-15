@@ -9,6 +9,7 @@ import {
   SessionShareDeleteResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionSharesResponseReaderSchema,
 } from "../../packages/contracts/src/web.js";
 import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
+import { ProjectOverviewSchema } from "../../packages/contracts/src/session-views.js";
 import { isConfirmUrl } from "../../packages/ui/src/text/links.js";
 
 const CODE = "https://code.example.test";
@@ -407,6 +408,19 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     const session = SessionResponseReaderSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: auth.cookie }))!.body)).session;
     expect(session.approvals).toEqual([{ approvalId: `plan-${sessionId}`, title: "Review the plan", confirmUrl }]);
     expect(isConfirmUrl(confirmUrl, "https://cloud.example.test")).toBe(true);
+  });
+
+  it("lists the person's running sessions on the project page as Live tiles, until they end", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    const overview = async (project: string) => ProjectOverviewSchema.parse(JSON.parse((await call("GET", `/v1/web/projects/${project}/overview`, { cookie: auth.cookie }))!.body));
+    code.setTask(PLAN_WAITING);
+    const confirmUrl = `https://cloud.example.test/v1/app/approve/plan-${sessionId}`;
+    expect((await overview("payments")).running).toEqual([expect.objectContaining({
+      sessionId, kind: "task", title: "Fix the README typo", project: "payments", status: "needs_person", statusWords: "Waiting for you", step: "Plan review",
+      needsYou: true, following: true, approvalUrl: confirmUrl, actions: ["watch", "stop", "close"],
+    })]);
+    code.setTask({ status: "SUCCEEDED" });
+    expect((await overview("payments")).running).toEqual([]);
   });
 
   it("shows a failed run and an open pull request, until the pull request is merged", async () => {

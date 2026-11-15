@@ -4,7 +4,7 @@
 import type { CodeAccess, CodeClient } from "./code-client.js";
 import type { CodeSession } from "./sessions.js";
 import { newSessionId, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
-import { approvalUrl, followState, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
+import { approvalUrl, followState, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError } from "./code-client.js";
 
@@ -137,6 +137,27 @@ interface HomeCard {
  * failed run, an open pull request. A card goes away when its task moves on; none is dismissible yet. A task Code no longer lets the
  * person see is left out.
  */
+/**
+ * The project page's running sessions: the person's own sessions in `project` (their newest few) that are still going, read from Code
+ * now, newest first. Sessions shared with them are not listed yet: Cloud indexes sessions by who started them.
+ */
+async function runningInProject(context: RouteContext, project: string) {
+  const me = context.session.access.developerId;
+  const records = (await context.work.startedBy(me)).filter((record) => record.project === project).slice(0, HOME_SESSIONS_READ);
+  const read = await Promise.all(records.map(async (record) => {
+    try {
+      return { record, task: await readTask(context, record.taskId) };
+    } catch (error) {
+      if (error instanceof CodeError && (error.status === 403 || error.status === 404)) return undefined;
+      throw error;
+    }
+  }));
+  return read
+    .filter((entry): entry is { record: WorkSession; task: CodeTask } => entry !== undefined && sessionRunning(entry.task))
+    .map(({ record, task }) => liveTile(record, task, viewer(context), context.origin, peopleOf(context, record)))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
 async function homeCards(context: RouteContext): Promise<{ cards: HomeCard[]; total: number }> {
   const me = context.session.access.developerId;
   const sessions = (await context.work.startedBy(me)).slice(0, HOME_SESSIONS_READ);
@@ -271,7 +292,7 @@ export const ROUTES: Route[] = [
         },
         you: { role, canStartWork: true, canEditSettings: role === "maintainer", canViewSpend: false },
         agents: [],
-        running: [],
+        running: await runningInProject(context, name),
       });
     },
   },

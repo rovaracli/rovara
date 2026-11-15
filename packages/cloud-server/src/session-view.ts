@@ -91,3 +91,45 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
     body: { kind: "task", task },
   };
 }
+
+const STATUS_WORDS: Record<SessionStatus, string> = {
+  starting: "Starting", running: "Running", needs_person: "Waiting for you", stopped: "Stopped", succeeded: "Done", failed: "Failed", cancelled: "Cancelled",
+};
+const STEP_WORDS: Record<string, string> = {
+  PLAN: "Planning", PLAN_REVIEW: "Plan review", IMPLEMENT: "Coding", VERIFY: "Checking", REVIEW: "Reviewing", PULL_REQUEST: "Pull request",
+};
+
+/** Whether the session is still going: not stopped, done, failed or cancelled. */
+export const sessionRunning = (task: CodeTask): boolean => !ENDED.has(sessionStatus(task));
+
+/**
+ * One session as a Live tile (LiveTileSchema), for the person reading it, from the same parts as the session page: Code's task,
+ * Cloud's followers and who is viewing. Only the owner is told a plan waits on them, with the link to Cloud's approval page.
+ */
+export function liveTile(session: WorkSession, task: CodeTask, viewer: { developerId: string }, origin: string, people?: SessionPeople) {
+  const view = sessionView(session, task, viewer, origin, people);
+  const plan = view.you.owner && waitingPlan(task) !== undefined;
+  const step = task.workflow?.stage === undefined ? undefined : STEP_WORDS[task.workflow.stage];
+  return {
+    contractVersion: view.contractVersion,
+    sessionId: view.sessionId,
+    kind: view.kind,
+    title: view.title,
+    project: view.project,
+    owner: view.owner,
+    where: view.where,
+    status: view.status,
+    statusWords: STATUS_WORDS[view.status],
+    ...(step === undefined ? {} : { step }),
+    ...(view.status === "failed" ? { lastRunFailed: true as const } : {}),
+    costUsd: 0,
+    viewingNow: view.viewingNow.slice(0, 5),
+    viewingNowCount: view.viewingNow.length,
+    needsYou: view.you.owner && view.status === "needs_person",
+    following: view.you.following,
+    actions: view.you.actions,
+    ...(plan ? { approvalUrl: approvalUrl(origin, session.sessionId) } : {}),
+    updatedAt: view.updatedAt,
+  };
+}
+
