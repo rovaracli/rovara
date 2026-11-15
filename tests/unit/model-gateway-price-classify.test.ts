@@ -22,3 +22,19 @@ it("unknown price fields stay unknown, metadata is harmless, invalid and unit pr
     const result = ratesOf({ ...base, ...extra }, 0); expect(typeof result).toBe("string"); expect(JSON.stringify(result)).not.toContain("private-canary");
   }
 });
+it("unserved cost fields name known gateway features", async () => {
+  const { UNSERVED_FEATURE_COST_FIELDS } = await import("../../packages/model-gateway/src/price-classify.js");
+  const { GATEWAY_FEATURE_NAMES } = await import("../../packages/model-gateway/src/guard.js");
+  for (const [field, entry] of Object.entries(UNSERVED_FEATURE_COST_FIELDS)) {
+    expect(GATEWAY_FEATURE_NAMES, `${field} must name a known gateway feature`).toContain(entry.feature);
+    expect(entry.reason).toEqual(expect.any(String));
+  }
+});
+it("unserved cost fields cannot exclude exposed gateway features", async () => {
+  const { UNSERVED_FEATURE_COST_FIELDS } = await import("../../packages/model-gateway/src/price-classify.js");
+  const { GATEWAY_EXPOSED_FEATURES } = await import("../../packages/model-gateway/src/guard.js");
+  expect(GATEWAY_EXPOSED_FEATURES).toBeDefined();
+  for (const [field, { feature }] of Object.entries(UNSERVED_FEATURE_COST_FIELDS)) {
+    expect(GATEWAY_EXPOSED_FEATURES.has(feature), `${field} is listed as unserved but ${feature} is now exposed; remove the entry so the row is priced or marked uncertain`).toBe(false);
+  }
+});

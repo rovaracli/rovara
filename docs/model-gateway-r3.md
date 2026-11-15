@@ -109,15 +109,15 @@ Round 7 adds real-path sibling isolation and own-tier fallback/correction tests,
 
 `UNSERVED_FEATURE_COST_FIELDS` in `price-classify.ts` is the explicit per-feature exclusion list for plain token calls. The listed token fields also cover their recognized `above_128k_tokens` / `above_200k_tokens` variants; there is no general cost/price-field exemption.
 
-| Field | Feature and reason it does not apply |
-|---|---|
-| `search_context_cost_per_query` | Web search: provider server tools are rejected by the request guard. |
-| `input_cost_per_token_priority` | Priority service: no service-tier selector is exposed. |
-| `output_cost_per_token_priority` | Priority service: no service-tier selector is exposed. |
-| `input_cost_per_audio_token` | Audio token billing: no audio-token provider route is exposed. |
-| `output_cost_per_audio_token` | Audio token billing: no audio-token provider route is exposed. |
-| `input_cost_per_image_token` | Image token billing: no separate image-token provider route is exposed. |
-| `output_cost_per_image_token` | Image token billing: no separate image-token provider route is exposed. |
+| Field | Feature key | Reason it does not apply |
+|---|---|---|
+| `search_context_cost_per_query` | `web_search` | Web search: provider server tools are rejected by the request guard. |
+| `input_cost_per_token_priority` | `priority_service` | Priority service: no service-tier selector is exposed. |
+| `output_cost_per_token_priority` | `priority_service` | Priority service: no service-tier selector is exposed. |
+| `input_cost_per_audio_token` | `audio_tokens` | Audio token billing: no audio-token provider route is exposed. |
+| `output_cost_per_audio_token` | `audio_tokens` | Audio token billing: no audio-token provider route is exposed. |
+| `input_cost_per_image_token` | `image_tokens` | Image token billing: no separate image-token provider route is exposed. |
+| `output_cost_per_image_token` | `image_tokens` | Image token billing: no separate image-token provider route is exposed. |
 
 Anthropic inline media is still unbounded input, billed through its ordinary input-token usage and guarded by the company marker; these exclusions do not invent a separate media pricing route. **Before exposing any listed feature, remove its exclusion and implement its billing.** A row with only listed extra cost fields stays clean at ×1.0 and permits parallel bounded calls. Any other unrecognized cost/price field still makes the row uncertain at ×1.5.
 
@@ -130,3 +130,10 @@ PR risk list, both charge directions:
 - Retained alias history is bounded and may eventually be evicted. A later malformed row for an evicted alias cannot recover its former identity and uses existing unknown-price behavior, which can over- or under-estimate. Current rows remain represented. No refresh freezes permanently merely because history crossed 40,000.
 
 The accepted DEC 172 residual still includes clean priced calls whose consumed tiers were derived: later non-saturated upward corrections can cumulatively exceed caps. Persistent versioned adapters, production scheduling, live source validation, Linux/CI proof and the security-list/independent-review gate remain external to this lane.
+
+
+## Round 9: exclusions follow the request guard
+
+`guard.ts` owns the feature policy: each known feature declares its exposure, tool types and optional request fields. The guard derives its tool and field allowlists from that policy, and exports the same enabled keys as `GATEWAY_EXPOSED_FEATURES`. Currently only `custom_tools` is exposed. `web_search`, `priority_service`, `audio_tokens` and `image_tokens` are known but unexposed. The media keys describe separate token-billing routes; inline Anthropic media retains its existing unbounded-input treatment.
+
+Each `UNSERVED_FEATURE_COST_FIELDS` entry stores `{ feature, reason }`. Tests require a known feature key and reject any exclusion whose feature is exposed, with: `<field> is listed as unserved but <feature> is now exposed; remove the entry so the row is priced or marked uncertain`. Enabling web search in the policy changes actual guard acceptance and fails this test. A misspelled feature key also fails. New tools, modalities or service tiers must use this guard policy; remove their exclusions and price their tariffs or leave their rows uncertain before enabling them. Current request acceptance, fixed refusal text and price classification are unchanged.

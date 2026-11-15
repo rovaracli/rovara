@@ -2,7 +2,20 @@ import { record, whole } from "./model-gateway-token.js";
 export const MAX_BODY_BYTES = 4 * 1024 * 1024;
 export const MAX_BODY_ITEMS = 1_000_000;
 export const ALLOWED_BETAS = new Set(["fine-grained-tool-streaming-2025-05-14", "interleaved-thinking-2025-05-14"]);
-const FIELDS = new Set(["model", "messages", "max_tokens", "stream", "system", "temperature", "thinking", "output_config", "tool_choice", "tools", "metadata"]);
+/** Request selectors and exposure live together: the guard reads this policy directly.
+ * Media here means separate token-billing routes, not inline Anthropic content. */
+const FEATURE_POLICY = {
+  custom_tools: { exposed: true, toolTypes: ["custom"], requestFields: [] },
+  web_search: { exposed: false, toolTypes: ["web_search"], requestFields: [] },
+  priority_service: { exposed: false, toolTypes: [], requestFields: ["service_tier"] },
+  audio_tokens: { exposed: false, toolTypes: [], requestFields: [] },
+  image_tokens: { exposed: false, toolTypes: [], requestFields: [] },
+} satisfies Record<string, { exposed: boolean; toolTypes: string[]; requestFields: string[] }>;
+export const GATEWAY_FEATURE_NAMES = Object.keys(FEATURE_POLICY);
+export const GATEWAY_EXPOSED_FEATURES: ReadonlySet<string> = new Set(Object.entries(FEATURE_POLICY).filter(([, policy]) => policy.exposed).map(([feature]) => feature));
+const exposedPolicies = Object.entries(FEATURE_POLICY).filter(([feature]) => GATEWAY_EXPOSED_FEATURES.has(feature)).map(([, policy]) => policy);
+const TOOL_TYPES: ReadonlySet<string> = new Set(exposedPolicies.flatMap((policy) => policy.toolTypes));
+const FIELDS = new Set(["model", "messages", "max_tokens", "stream", "system", "temperature", "thinking", "output_config", "tool_choice", "tools", "metadata", ...exposedPolicies.flatMap((policy) => policy.requestFields)]);
 const CHOICES = new Set(["auto", "any", "none", "required", "tool", "function"]);
 const ARGUMENTS = new Set(["tool_use", "server_tool_use", "mcp_tool_use"]);
 export interface GuardFailure { ok: false; status: number; code: string; message: string }
@@ -10,7 +23,7 @@ export interface ModelLimitsSource { maxOutputTokens(provider: string, model: st
 export interface GuardedRequest { ok: true; hasTools: boolean; inputBounded: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>> }
 const bad = (): GuardFailure => ({ ok: false, status: 400, code: "invalid_request", message: "request not allowed" });
 export const tooLarge = (): GuardFailure => ({ ok: false, status: 413, code: "request_too_large", message: "the request is too large" });
-const tool = (v: unknown): boolean => { const t = record(v); return t !== undefined && (t.type === undefined || t.type === null || t.type === "custom"); };
+const tool = (v: unknown): boolean => { const t = record(v); return t !== undefined && (t.type === undefined || t.type === null || (typeof t.type === "string" && TOOL_TYPES.has(t.type))); };
 const tools = (v: unknown): boolean => v === undefined || v === null || (Array.isArray(v) && v.every(tool));
 /** Anthropic-only port of Code local/model-proxy/providers.ts. Fixed refusal words replace echoed field names. */
 export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, string | undefined>>, models: readonly string[], modelLimits: ModelLimitsSource): GuardedRequest | GuardFailure {

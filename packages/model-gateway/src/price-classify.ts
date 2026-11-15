@@ -18,14 +18,14 @@ function rateField(field: string): { key: RateKey; aboveTokens?: number } | unde
   return { key, ...(aboveTokens === undefined ? {} : { aboveTokens }) };
 }
 /** Exact reviewed feature prices, not exposed by the plain-token gateway. Remove an entry before serving its feature. */
-export const UNSERVED_FEATURE_COST_FIELDS: Readonly<Record<string, string>> = {
-  search_context_cost_per_query: "Web search: provider server tools are rejected by guardRequest.",
-  input_cost_per_token_priority: "Priority service: the gateway does not expose a service-tier selector.",
-  output_cost_per_token_priority: "Priority service: the gateway does not expose a service-tier selector.",
-  input_cost_per_audio_token: "Audio token billing: no audio-token provider route is exposed.",
-  output_cost_per_audio_token: "Audio token billing: no audio-token provider route is exposed.",
-  input_cost_per_image_token: "Image token billing: no separate image-token provider route is exposed.",
-  output_cost_per_image_token: "Image token billing: no separate image-token provider route is exposed.",
+export const UNSERVED_FEATURE_COST_FIELDS: Readonly<Record<string, { readonly feature: string; readonly reason: string }>> = {
+  search_context_cost_per_query: { feature: "web_search", reason: "Web search: provider server tools are rejected by guardRequest." },
+  input_cost_per_token_priority: { feature: "priority_service", reason: "Priority service: the gateway does not expose a service-tier selector." },
+  output_cost_per_token_priority: { feature: "priority_service", reason: "Priority service: the gateway does not expose a service-tier selector." },
+  input_cost_per_audio_token: { feature: "audio_tokens", reason: "Audio token billing: no audio-token provider route is exposed." },
+  output_cost_per_audio_token: { feature: "audio_tokens", reason: "Audio token billing: no audio-token provider route is exposed." },
+  input_cost_per_image_token: { feature: "image_tokens", reason: "Image token billing: no separate image-token provider route is exposed." },
+  output_cost_per_image_token: { feature: "image_tokens", reason: "Image token billing: no separate image-token provider route is exposed." },
 };
 const PER_CALL = /^(?:input_|output_)?cost_per_request$/u;
 // Reviewed exceptions: each rule names WHY it does not add to the two token totals. No catch-all price/metadata rule.
@@ -48,7 +48,7 @@ export const PRICE_IGNORABLE_FIELDS: Readonly<Record<string, string>> = {
 /** Same classification drives pricing and source completeness: unknown fields are NEVER silently dropped. */
 export function priceFieldDisposition(field: string): "input" | "output" | { readonly ignore: string } | undefined {
   const feature = /^(?:input|output)_cost_per_(?:token_priority|audio_token|image_token)_above_(?:128|200)k_tokens$/u.test(field) ? field.replace(/_above_(128|200)k_tokens$/u, "") : field;
-  if (Object.hasOwn(UNSERVED_FEATURE_COST_FIELDS, feature)) return { ignore: UNSERVED_FEATURE_COST_FIELDS[feature]! };
+  if (Object.hasOwn(UNSERVED_FEATURE_COST_FIELDS, feature)) return { ignore: UNSERVED_FEATURE_COST_FIELDS[feature]!.reason };
   const rate = rateField(field);
   if (rate !== undefined) return rate.key === "outputMicrosPerMTok" ? "output" : "input";
   if (Object.hasOwn(PRICE_IGNORABLE_FIELDS, field)) return { ignore: PRICE_IGNORABLE_FIELDS[field]! };
