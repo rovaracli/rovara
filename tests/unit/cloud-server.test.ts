@@ -456,7 +456,10 @@ describe("Home's cards and plan approval (phase 2b)", () => {
       sessionId, kind: "task", title: "Fix the README typo", project: "payments", status: "needs_person", statusWords: "Waiting for you", step: "Plan review",
       needsYou: true, following: true, approvalUrl: confirmUrl, actions: ["watch", "stop", "close"],
     })]);
+    // Code's task status is its worker's last run: between steps it reads SUCCEEDED while the workflow still waits on the person.
     code.setTask({ status: "SUCCEEDED" });
+    expect((await overview("payments")).running).toEqual([expect.objectContaining({ sessionId, status: "needs_person", needsYou: true })]);
+    code.setTask({ status: "CLOSED" });
     expect((await overview("payments")).running).toEqual([]);
   });
 
@@ -481,6 +484,17 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     expect(instructions).toMatch(/^Retry the independent read-only code and security reviews/u);
     expect(fence).toEqual({ expectedRevision: 16, candidateDigest: CANDIDATE });
     expect(await home(call, auth.cookie)).toEqual({ cards: [], total: 0 });
+  });
+
+  it("treats a task between steps (Code's status SUCCEEDED) by its workflow: a blocked review still gets its card, a queued step is running, a pull request waiting for merge needs the person", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask({ status: "SUCCEEDED", ...REVIEW_BLOCKED() });
+    expect((await home(call, auth.cookie)).cards.map((card) => card.buttons.map((button) => button.label))).toEqual([["Retry reviews", "Open session"]]);
+    const status = async () => SessionResponseReaderSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: auth.cookie }))!.body)).session.status;
+    code.setTask({ status: "SUCCEEDED", workflow: { ...REVIEW_BLOCKED().workflow, stage: "PULL_REQUEST", state: "READY" } });
+    expect(await status()).toBe("running");
+    code.setTask({ status: "SUCCEEDED", workflow: { ...REVIEW_BLOCKED().workflow, stage: "WAIT_FOR_MERGE", state: "WAITING" } });
+    expect(await status()).toBe("needs_person");
   });
 
   it("offers no review retry when the checks didn't pass or the task isn't stopped at review, and needs a request ID", async () => {

@@ -25,9 +25,17 @@ export interface CodeTask {
 
 type SessionStatus = "starting" | "running" | "needs_person" | "stopped" | "succeeded" | "failed" | "cancelled";
 
-/** Code's task status in Cloud's words: a workflow waiting on a person, or blocked, needs a person. */
+/**
+ * Whether the task's workflow is still going. Code's task `status` is its worker's LAST RUN (deriveTaskStatus), so between steps (a plan
+ * waiting for review, a blocked review, a pull request waiting for merge, the next step queued) it reads SUCCEEDED although the task is not
+ * done. While the workflow is not COMPLETE and the task is neither closed nor cancelled, the workflow decides.
+ */
+const workflowOpen = (task: CodeTask): boolean =>
+  task.workflow !== undefined && task.workflow.state !== "COMPLETE" && (task.status === "RUNNING" || task.status === "SUCCEEDED");
+
+/** Code's task status in Cloud's words: a workflow waiting on a person, or blocked, needs a person; one between its own steps is still running. */
 export function sessionStatus(task: CodeTask): SessionStatus {
-  if (task.status === "RUNNING" && (task.workflow?.state === "WAITING" || task.workflow?.state === "BLOCKED")) return "needs_person";
+  if (workflowOpen(task)) return task.workflow!.state === "WAITING" || task.workflow!.state === "BLOCKED" ? "needs_person" : "running";
   const statuses: Record<CodeTask["status"], SessionStatus> = {
     STARTING: "starting", RUNNING: "running", SUCCEEDED: "succeeded", FAILED: "failed", INTERRUPTED: "failed", CANCELLED: "cancelled", CLOSED: "stopped",
   };
@@ -37,7 +45,7 @@ export function sessionStatus(task: CodeTask): SessionStatus {
 /** The plan waiting for review on this task: the workflow's revision and the newest plan's digest. Undefined when no plan waits. */
 export function waitingPlan(task: CodeTask): { revision: number; digest: string; version: number } | undefined {
   const workflow = task.workflow;
-  if (task.status !== "RUNNING" || workflow?.stage !== "PLAN_REVIEW" || workflow.state !== "WAITING" || typeof workflow.revision !== "number") return undefined;
+  if (!workflowOpen(task) || workflow?.stage !== "PLAN_REVIEW" || workflow.state !== "WAITING" || typeof workflow.revision !== "number") return undefined;
   let newest: { version: number; sha256: string } | undefined;
   for (const artifact of workflow.artifacts ?? []) {
     if (artifact.type === "plan" && typeof artifact.sha256 === "string" && typeof artifact.version === "number" && (newest === undefined || artifact.version > newest.version)) {
@@ -154,7 +162,7 @@ const REVIEW_REASON_MAX = 200;
  */
 export function blockedReview(task: CodeTask): { reason: string; unfinished: boolean; retry?: { expectedRevision: number; candidateDigest: string } } | undefined {
   const workflow = task.workflow;
-  if (task.status !== "RUNNING" || workflow?.stage !== "REVIEW" || workflow.state !== "BLOCKED") return undefined;
+  if (!workflowOpen(task) || workflow?.stage !== "REVIEW" || workflow.state !== "BLOCKED") return undefined;
   const digest = workflow.candidate?.digest;
   const reviews = (workflow.reviews ?? []).filter((review) => digest !== undefined && review.candidateDigest === digest);
   const unfinished = reviews.filter((review) => review.status === "UNKNOWN" || review.status === "FAILED" || review.status === "INTERRUPTED");
