@@ -7,6 +7,8 @@
 // Optional: PORT (8790), HOST (127.0.0.1), FAKE_CODE_PERSON (priya, an administrator, or sam, a developer), ROVARA_CLIENT_ID (rovara-cloud),
 // ROVARA_CLIENT_SECRET (fake-secret). To sign in as someone else without a restart:
 //   curl -X POST http://127.0.0.1:8790/__fake/person -d '{"person":"sam"}'
+// Lessons on or off (off answers "Lessons are off.", as Code does while its switch is off):
+//   curl -X POST http://127.0.0.1:8790/__fake/lessons -d '{"on":false}'
 import { PRIYA, SAM, startFakeCode } from "../tests/support/fake-code.js";
 
 const person = process.env.FAKE_CODE_PERSON === "sam" ? SAM : PRIYA;

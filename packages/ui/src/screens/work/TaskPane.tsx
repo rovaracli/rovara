@@ -16,6 +16,7 @@ import { ProofStep } from "../session/ProofStep.js";
 import { PullRequestCard } from "../session/PullRequestCard.js";
 import { SpecStep } from "../session/SpecStep.js";
 import { TaskSideCards } from "../session/TaskSideCards.js";
+import { LessonsUsedCard } from "../session/LessonsUsedCard.js";
 import { useDecisionActions } from "../home/NeedsYou.js";
 import "./work.css";
 
@@ -101,7 +102,7 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
   return <>{proofPart}<div className="rv-pane-gap">{pulls.length === 0 ? <p className="rv-muted" data-testid="no-pull-request">No pull request yet. Rovara opens it once the proof passes.</p> : pulls.map((pull, index) => <PullRequestCard key={index} pullRequest={pull} />)}</div></>;
  };
  const decisionPart = <div className="rv-pane-decision">{decision !== undefined && actions !== undefined ? <DecisionCard key={decision.card.id} decision={decision} actions={actions} pane={pane} /> : <QuietCard row={row} decisionsError={decisionsError} wide={wide} />}</div>;
- const side = <aside className="rv-pane-side" aria-label="Cost and history"><TaskSideCards task={row.task} plan={plan.data} events={events.data ?? []} /></aside>;
+ const side = <aside className="rv-pane-side" aria-label="Cost, history and lessons"><TaskSideCards task={row.task} plan={plan.data} events={events.data ?? []} /><LessonsUsedCard project={row.project} taskId={row.id} /></aside>;
  const rail = <StepRail step={row.step} tone={row.tone} selected={stage} onSelect={step => setShown(stageOf(step))} />;
  if (wide) return <article className="rv-task-pane wide" aria-label={"Task: " + row.title} data-task-id={row.id}>
   <h2 className="rv-visually-hidden">This task</h2>
