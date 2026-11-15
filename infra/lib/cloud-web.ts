@@ -184,6 +184,10 @@ export class CloudWebStack extends Stack {
     const origin = `https://${distribution.distributionDomainName}`;
     // aws-cdk-lib types TableV2.tableId as `string | undefined`, which exactOptionalPropertyTypes rejects for ITableV2.
     this.table = table as dynamodb.ITableV2;
+    // The Fargate app imported these to copy Cloud's sessions here (#37). Kept for one release after it stopped (#11, PR 4), because
+    // CloudFormation won't remove an export while another stack still imports it. Remove these two lines in the release after that.
+    this.exportValue(table.tableName);
+    this.exportValue(table.tableArn);
     this.origin = origin;
     new ssm.StringParameter(this, "Origin", {
       parameterName: originParameter,
@@ -198,11 +202,12 @@ export class CloudWebStack extends Stack {
 
     const callbackUrl = `${origin}${CLOUD_APP_CALLBACK_PATH}`;
     new CfnOutput(this, "CloudUrl", { value: `${origin}/app`, description: "Rovara Cloud's web app" });
-    new CfnOutput(this, "CallbackUrl", { value: callbackUrl, description: "Add this redirect to Code's sign-in client rovara-cloud before people move here" });
-    new CfnOutput(this, "AddRedirectOnCode", {
-      description: "Run once, as a Rovara Code administrator: keeps the old redirect and adds this one",
-      value: `npx @preplabsai/rovara-code admin sign-in-client update ${CLOUD_APP_CLIENT_ID} --redirect <the old CallbackUrl> --redirect ${callbackUrl}`,
+    new CfnOutput(this, "CallbackUrl", { value: callbackUrl, description: "The redirect Code's sign-in client rovara-cloud must allow" });
+    new CfnOutput(this, "RegisterWithCode", {
+      description: "A new environment: run once, as a Rovara Code administrator, then put the secret file's contents into ClientSecretName",
+      value: `npx @preplabsai/rovara-code admin sign-in-client add ${CLOUD_APP_CLIENT_ID} --name "Rovara Cloud" --audience ${CLOUD_APP_CLIENT_ID} --redirect ${callbackUrl} --confidential --full-access --scope ${CLOUD_APP_SCOPES.join(",")} --secret-file rovara-cloud-secret.txt`,
     });
+    new CfnOutput(this, "ClientSecretName", { value: clientSecret.secretName, description: "Where Cloud reads its client secret (made by the first-address stack); read again within five minutes of a change" });
     new CfnOutput(this, "TableName", { value: table.tableName });
   }
 }

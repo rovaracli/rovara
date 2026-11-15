@@ -23,8 +23,7 @@ feature the app needs that Code's API cannot do yet starts as a Rovara Code issu
 | `packages/web`, `packages/ui` | The web app (`/app`): `web` is the shell, build and page handler, `ui` holds the pages and components. |
 | `packages/contracts` | Shared types and schemas (zod). Browser code imports `@agentx/contracts/web` only. |
 | `packages/design-tokens`, `packages/audit-verifier` | The app's design tokens; the audit ledger's verifier (used by contracts). |
-| `infra/` | CDK: `lib/cloud-app.ts` (the stack `rovara-cloud-<env>-app`), `lib/cloud-release-pipeline.ts`, `lib/app.ts` (`-c rovaraCloudApp=<env>` or `-c rovaraCloudPipeline=<env>`). Deploy guide: `docs/rovara-cloud-install.md`. |
-| `environments/cloud/Dockerfile` | Cloud's image: `scripts/cloud-server.ts` bundled with esbuild, plus the built app. |
+| `infra/` | CDK: `lib/cloud-web.ts` (Cloud: CloudFront, Lambda running `scripts/cloud-lambda.ts`, DynamoDB), `lib/cloud-app.ts` (Cloud's first address, a redirect, and the client secret), `lib/cloud-release-pipeline.ts`, `lib/app.ts` (`-c rovaraCloudApp=<env>` makes both stacks, or `-c rovaraCloudPipeline=<env>`). Deploy guide: `docs/rovara-cloud-install.md`. |
 | `scripts/` | `cloud-server.ts` (Cloud's server entry, also `npm run cloud:local`), the web build helpers, lint shards, the typecheck baseline and CI helpers. |
 | `tests/` | `unit` (cloud-server is `tests/unit/cloud-server.test.ts`), `contract` and `web`. |
 

@@ -3,20 +3,17 @@
 //
 //   ROVARA_CODE_URL=https://<code api> ROVARA_CLIENT_SECRET_FILE=<file> npm run cloud:local
 //
-// Deployed (infra/lib/cloud-app.ts), the same server runs in a container behind an HTTPS address, configured by
-// CLOUD_ORIGIN (that address), HOST, CLOUD_APP_DIRECTORY and CLOUD_ENVIRONMENT, and keeps sign-ins in a DynamoDB table
-// (CLOUD_SESSIONS_TABLE) sealed with Cloud's KMS key (CLOUD_SESSIONS_KEY_ID), reading its client secret from Secrets
-// Manager at run time (ROVARA_CLIENT_SECRET_ID). Deployed, the file store and a secret in the environment are refused.
+// Deployed, Cloud runs scripts/cloud-lambda.ts on Lambda (infra/lib/cloud-web.ts, #11). This entry's deployed mode was the
+// Fargate app's, retired with it: configured by CLOUD_ORIGIN (its address), HOST, CLOUD_APP_DIRECTORY and CLOUD_ENVIRONMENT, it
+// keeps sign-ins in a DynamoDB table (CLOUD_SESSIONS_TABLE) sealed with Cloud's KMS key (CLOUD_SESSIONS_KEY_ID), reading its
+// client secret from Secrets Manager at run time (ROVARA_CLIENT_SECRET_ID); the file store and a secret in the environment are
+// refused.
 //
 // Optional: ROVARA_CLIENT_ID (rovara-cloud), PORT (8787), HOST (127.0.0.1), CLOUD_ORIGIN (http://127.0.0.1:<port>),
 // ROVARA_CLIENT_SECRET (instead of the file), ROVARA_SCOPES, CLOUD_SESSIONS_FILE (keeps people signed in across restarts,
 // mode 600; this computer only), CLOUD_WORK_SESSIONS_FILE (keeps Cloud's sessions, mode 600), CLOUD_ORG_NAME,
 // CLOUD_APP_DIRECTORY (the built app, packages/web/dist/app), CLOUD_LEGACY_SESSIONS_FILE (deployed: an older raw-cookie
 // sessions file; its sign-ins are revoked at Code and the file removed).
-//
-// Moving to Cloud's next address (#11): with CLOUD_MOVE_TABLE, before it listens the server copies Cloud's sessions (followers,
-// comments, start requests) from CLOUD_WORK_SESSIONS_FILE into that DynamoDB table, skipping any already there; with CLOUD_MOVED_TO
-// (an https address) it then answers every request with a 308 to the same path there, so nothing is written here any more.
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
@@ -24,7 +21,7 @@ import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
 import {
-  CodeClient, DynamoSessionStore, DynamoWorkSessionStore, EnvelopeSealer, KmsKeyService, LocalSessionStore, LocalWorkSessionStore, cloudDocumentClient, createCloudHandler,
+  CodeClient, DynamoSessionStore, EnvelopeSealer, KmsKeyService, LocalSessionStore, LocalWorkSessionStore, cloudDocumentClient, createCloudHandler,
   isDeployedEnvironment, secretsManagerSecret, type CodeSession, type SecretReader, type SessionStore,
 } from "../packages/cloud-server/src/index.js";
 import { createAppHandler } from "../packages/web/src/server/handler.js";
@@ -45,8 +42,6 @@ const origin = (process.env.CLOUD_ORIGIN ?? `http://127.0.0.1:${String(port)}`).
 const secure = origin.startsWith("https://");
 if (!secure && origin !== `http://127.0.0.1:${String(port)}`) throw new Error(`CLOUD_ORIGIN must be an https address or http://127.0.0.1:${String(port)}`);
 const redirectUri = `${origin}/callback`;
-const movedTo = process.env.CLOUD_MOVED_TO?.replace(/\/+$/u, "");
-if (movedTo !== undefined && !/^https:\/\/[^/\s]+$/u.test(movedTo)) throw new Error("CLOUD_MOVED_TO must be an https address with no path");
 const deployed = isDeployedEnvironment(process.env);
 let clientSecret: string | SecretReader;
 let store: SessionStore;
@@ -87,14 +82,6 @@ if (deployed && process.env.CLOUD_LEGACY_SESSIONS_FILE) {
   retireLegacySessions(process.env.CLOUD_LEGACY_SESSIONS_FILE).catch(() => { console.log(JSON.stringify({ event: "cloud.legacy_sessions_retire_failed" })); });
 }
 
-// Cloud's sessions go to the next address's table before this server answers anything; a failure stops the start (and the release).
-if (process.env.CLOUD_MOVE_TABLE) {
-  const from = new LocalWorkSessionStore(required("CLOUD_WORK_SESSIONS_FILE")).everything();
-  const to = new DynamoWorkSessionStore(cloudDocumentClient(new DynamoDBClient({ region: required("AWS_REGION") })), process.env.CLOUD_MOVE_TABLE);
-  const moved = await to.copyIn(from);
-  console.log(JSON.stringify({ event: "cloud.sessions_moved", ...moved, requests: Object.keys(from.requests).length }));
-}
-
 const cloud = createCloudHandler({
   client, store,
   org: { orgId: "rovara", name: process.env.CLOUD_ORG_NAME ?? "Rovara", plan: "local" },
@@ -113,11 +100,6 @@ async function readBody(req: IncomingMessage): Promise<string> {
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", origin);
   const method = req.method ?? "GET";
-  // Moved: every request goes to the same path at the next address (308 keeps the method and body).
-  if (movedTo !== undefined) {
-    res.writeHead(308, { location: `${movedTo}${url.pathname}${url.search}`, "cache-control": "no-store" }).end();
-    return;
-  }
   if (url.pathname === "/") {
     res.writeHead(302, { location: "/app" }).end();
     return;
@@ -139,8 +121,4 @@ createServer((req, res) => {
     console.error(error);
     if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain" }).end("Rovara Cloud failed; see its log.");
   });
-}).listen(port, host, () => {
-  console.log(movedTo !== undefined
-    ? `Rovara Cloud has moved: ${origin} answers every request with a redirect to ${movedTo} (listening on ${host}:${String(port)})`
-    : `Rovara Cloud on ${origin}/app (listening on ${host}:${String(port)}), signing in through ${codeUrl} as ${clientId}`);
-});
+}).listen(port, host, () => { console.log(`Rovara Cloud on ${origin}/app (listening on ${host}:${String(port)}), signing in through ${codeUrl} as ${clientId}`); });

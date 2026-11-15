@@ -35,8 +35,8 @@ We fix security problems in the latest release.
 ## Scope
 
 In scope: this repository's code: Rovara Cloud's server (`packages/cloud-server`), its web app
-(`packages/web`, `packages/ui`), the packages they use, and Cloud's CDK stack, release pipeline and
-container image (`infra/`, `environments/cloud`). Rovara Code, the engine Cloud calls, is
+(`packages/web`, `packages/ui`), the packages they use, its Lambda entry (`scripts/cloud-lambda.ts`), and
+Cloud's CDK stacks and release pipeline (`infra/`). Rovara Code, the engine Cloud calls, is
 reported to the Rovara Code repository.
 
 Out of scope:

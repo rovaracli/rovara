@@ -14,75 +14,51 @@ For a new company the order is always:
 
 ```mermaid
 flowchart LR
-  B[Browser] -->|HTTPS| A[HTTP API]
-  A -->|VPC link| L[Internal load balancer]
-  L --> T[Cloud task<br/>one Fargate task]
-  T --> D[(DynamoDB<br/>sign-ins, KMS-sealed)]
-  T --> E[(EFS<br/>Cloud sessions)]
-  T -->|sign-in and API calls<br/>as the person| C[Rovara Code install]
+  B[Browser] --> CF[CloudFront]
+  CF -->|/app/assets/*| S3[(S3: the built app,<br/>every release's files)]
+  CF -->|everything else| L[Lambda: Cloud's server]
+  L --> D[(DynamoDB: sign-ins KMS-sealed,<br/>Cloud's sessions, comments, viewers)]
+  L -->|sign-in and API calls<br/>as the person| C[Rovara Code install]
   C --> P[Code's sign-in:<br/>its user pool, Slack or OIDC]
+  F[Cloud's first address<br/>HTTP API] -->|308, same path| CF
 ```
 
 ## What gets deployed
 
-One stack, `rovara-cloud-<env>-app` (`infra/lib/cloud-app.ts`):
+**`rovara-cloud-<env>-web`** (`infra/lib/cloud-web.ts`) is Cloud. A release causes no gap: any number of
+copies of the server run at once, and a release switches them to the new version together (#11).
 
-- **An HTTP API**, the HTTPS address people open. It reaches an internal load balancer through a VPC
-  link, so nothing travels as plain HTTP over the internet.
-- **One Fargate task (arm64)** running `scripts/cloud-server.ts`: the web app's pages and Cloud's
-  server in one Node process. The image is built from `environments/cloud/Dockerfile` during the deploy.
-- **A DynamoDB table of sign-ins**: one item per login under a hash of its cookie (never the cookie), each
-  sealed with a data key from a **KMS key** only the task's role may use. A login ends after 12 hours unused or
-  7 days after sign-in, and DynamoDB deletes it after that time. Signing out also ends the sign-in at Code.
-- **EFS**, encrypted, holding Cloud's sessions, so a restart or a release keeps them. On the first start after
-  this change, the task ends at Code every sign-in in the old `sessions.json` file and removes the file (it keeps
-  the file and tries again at the next start if Code didn't confirm every one). EFS automatic backups still
-  hold copies of that file until their retention ends: delete those recovery points once it is gone.
-- **The secret `rovara-cloud/<env>/code-client-secret`**, Cloud's secret as Code's sign-in client
-  `rovara-cloud`. It starts as a placeholder. The server reads it from Secrets Manager when it needs it (it is
-  not in the task's environment) and reads it again after five minutes.
-
-There is only ever one task, and a release stops the old task before it starts the new one. That leaves
-**about 2½ minutes with no server** on every release. The reason: this stack keeps Cloud's own sessions
-as a file, and who is viewing a session in the task's memory.
-
-### The stack replacing it: no gap on a release (#11)
-
-A second stack, `rovara-cloud-<env>-web` (`infra/lib/cloud-web.ts`), runs the same Cloud with no gap. The
-pipeline deploys it beside the Fargate app until people move to its address. Then the Fargate app is
-removed.
-
-- **CloudFront**, at the new HTTPS address.
+- **CloudFront**, at Cloud's HTTPS address (`CloudUrl`).
   - `/app/assets/*` comes from **S3**. Every release's files stay, so a page opened before a release
     still finds its chunks.
-  - Everything else goes to **Lambda** (`scripts/cloud-lambda.ts`), as many copies as needed. A release
-    switches to the new version at once.
-- **DynamoDB**, one table: sign-ins (under a hash of the cookie, tokens and sign-ins under way sealed with
-  the stack's own **KMS key**, which only the function's role may use), Cloud's sessions with their comments,
-  and who is viewing (`packages/cloud-server/src/dynamo-stores.ts`). It is kept if the stack is deleted, and can be restored
-  to any point in time.
-- **The same client secret** as the Fargate app. The function reads it, and its own address from the SSM
-  parameter `/rovara-cloud/<env>/web/origin`, every few minutes, so a new secret needs no restart.
+  - Everything else goes to **Lambda** (`scripts/cloud-lambda.ts`): the page shell, with a fresh nonce
+    on each request, and Cloud's API.
+- **DynamoDB**, one table (`packages/cloud-server/src/dynamo-stores.ts`). It is kept if the stack is
+  deleted, and can be restored to any point in time. It holds:
+  - **Sign-ins,** under a hash of the cookie, never the cookie. Their tokens are sealed with the stack's
+    own **KMS key**, which only the function's role may use. A sign-in ends after 12 hours unused or 7
+    days after it started, and signing out also ends it at Code.
+  - **Cloud's sessions,** with their followers and comments.
+  - **Who is viewing** a session.
+- **Settings read at run time:** the function reads its own address from the SSM parameter
+  `/rovara-cloud/<env>/web/origin`, and its client secret from Secrets Manager. It reads both again every
+  five minutes, so a new secret needs no restart.
 
-Before people move to the new address, a Code administrator adds its callback to Cloud's sign-in client.
-Run the stack's `AddRedirectOnCode` output, filling in the old `CallbackUrl` so the Fargate app keeps
-working. People sign in once at the new address.
+**`rovara-cloud-<env>-app`** (`infra/lib/cloud-app.ts`) is Cloud's first address, `FirstUrl`. It used to run
+Cloud on one Fargate task. Now its HTTP API answers every request with a **308** to the same path and query
+at `CloudUrl`, from a small function, so old links and bookmarks still work.
 
-**Moving people over.** The release that moves people over runs through the pipeline like any other.
-1. **The new stack deploys first.**
-2. **The Fargate task copies.** On its next start, before it answers anything, it copies Cloud's sessions
-   from its EFS file into the new stack's table: followers, comments and start requests. It skips any
-   session already there, so a later start copies nothing new. A failed copy stops the task from
-   starting, and the release rolls back.
-3. **The Fargate task redirects.** From then on it answers every request with a 308 to the same path at
-   the new address, so nothing is written to EFS any more.
+It also makes **Cloud's client secret**, `rovara-cloud/<env>/code-client-secret`, which the web stack reads by
+name. The secret starts as a placeholder and is kept if the stack is deleted.
 
-Sign-ins aren't copied: browsers keep cookies per address, so people sign in once at the new address.
-Don't release the move until the new callback is registered on Code. Otherwise nobody can sign in.
+**Left behind when the Fargate app went** (kept on delete), to remove by hand once you're sure:
+- the EFS file system that held Cloud's sessions, already copied to the table, and its backups;
+- the Fargate sign-ins' KMS key;
+- the old log group.
 
-**The release check.** While `cdk deploy` runs, the pipeline asks the new address for `/app` and
-`/v1/web/me` every second. Any 5xx or failed connection fails the release, even if the deploy succeeded,
-and the errors are listed in the deploy job's log.
+**The release check.** While `cdk deploy` runs, the pipeline asks `CloudUrl` for `/app` and `/v1/web/me`
+every second. Any 5xx or failed connection fails the release, even if the deploy succeeded, and the errors
+are listed in the deploy job's log.
 
 ## Setting up the pipeline (once)
 
@@ -112,7 +88,9 @@ npx cdk deploy RovaraCloudPipeline --app 'node infra/dist/bin/agentx.js' \
   --parameters GitHubConnectionArn=<connection ARN> --parameters CodeUrl=<Code's API address>
 ```
 
-The deploy job has no administrator access. It can only assume the account's CDK bootstrap roles.
+The deploy job has no administrator access. It can assume only the account's CDK bootstrap roles, and read
+the web stack's outputs for the release check. The pipeline never deploys itself: run the command above
+again after a change to `cloud-release-pipeline.ts`.
 
 ## Releasing
 
@@ -121,24 +99,23 @@ git tag v<x.y.z> origin/cloud/next && git push origin v<x.y.z>
 ```
 
 A `vX.Y.Z` tag starts `rovara-cloud-<env>-release`. Prerelease tags (`v1.2.3-rc1`) and branch pushes don't.
-Approve the run in the CodePipeline console. The Deploy stage runs `npm ci`, builds `infra`, and runs
-`cdk deploy RovaraCloudApp`, which builds the image and deploys the one stack: a few minutes, mostly the
-image build.
+Approve the run in the CodePipeline console. The Deploy stage runs `npm ci`, builds `infra` and the web
+app, then deploys the web stack and the first address with the release check around them. It takes a few
+minutes.
 
 ## Registering Cloud with Code (once)
 
-After the first deploy, the stack's outputs give you everything:
+After the first deploy, the web stack's outputs give you everything:
 
 | Output | What it is |
 |---|---|
 | `CloudUrl` | Cloud's web app |
-| `CallbackUrl` | The redirect URL Code must allow for Cloud |
-| `RegisterWithCode` | The registration command, with that URL filled in |
+| `CallbackUrl` | The redirect Code must allow for Cloud |
+| `RegisterWithCode` | The registration command, with that redirect filled in |
 | `ClientSecretName` | Where Cloud reads its secret |
-| `RestartCommand` | Restarts Cloud, so it reads a changed secret |
 
 1. As a Rovara Code administrator (`npx @preplabsai/rovara-code login --admin` against Code), run
-   `RegisterWithCode`. It registers the confidential sign-in client `rovara-cloud` with full access and
+   `RegisterWithCode`. It registers the confidential sign-in client `rovara-cloud` with full access, and
    writes its secret, shown only once, to `rovara-cloud-secret.txt`.
 2. Put the secret into Cloud, then delete the file:
 
@@ -147,7 +124,7 @@ After the first deploy, the stack's outputs give you everything:
      --secret-string "$(cat rovara-cloud-secret.txt)" && rm rovara-cloud-secret.txt
    ```
 
-3. Run `RestartCommand` (or wait five minutes). Open `CloudUrl` and sign in: you go through Code's sign-in and come back to Cloud.
+3. Within five minutes, open `CloudUrl` and sign in. You go through Code's sign-in and come back to Cloud.
 
 A later release keeps the secret. To rotate it, run `admin sign-in-client update rovara-cloud --rotate-secret
 --secret-file <file>` on Code, then repeat steps 2 and 3.
@@ -156,10 +133,9 @@ A later release keeps the secret. To rotate it, run `admin sign-in-client update
 
 - **Who can sign in:** whoever Code's sign-in admits. Change that on Code (its user pool groups, Slack or
   OIDC settings), not on Cloud.
-- **Logs:** the stack's log group, stream prefix `cloud`.
-- **Restart:** `RestartCommand`. Sign-ins and Cloud's sessions survive it.
-- **Sign everyone out:** delete the items in the sign-ins table (their tokens stay valid at Code until they
-  expire there; ending them at Code is Code's "end all sessions").
+- **Logs:** the web stack's log group (the function's).
+- **Sign everyone out:** delete the `SIGNIN#` items in the table. Their tokens stay valid at Code until they
+  expire there; ending them at Code is Code's "end all sessions".
 
 ## Running it on your computer
 
@@ -172,6 +148,12 @@ This needs the client registered with `--loopback`. See `packages/cloud-server/R
 
 ## Removing it
 
-Delete `rovara-cloud-<env>-app`, and `rovara-cloud-<env>-pipeline` if it's no longer needed. The EFS file
-system, the sign-in KMS key, the client secret and the log groups are kept: delete them by hand once you're sure. On Code, remove
-the client with `admin sign-in-client remove rovara-cloud`.
+Delete `rovara-cloud-<env>-app`, `rovara-cloud-<env>-web`, and `rovara-cloud-<env>-pipeline` if it's no longer
+needed. Some resources are kept on delete; remove them by hand once you're sure:
+- the table and its KMS key;
+- the assets bucket;
+- the client secret;
+- the log groups;
+- anything the Fargate app left behind (above).
+
+On Code, remove the client with `admin sign-in-client remove rovara-cloud`.
