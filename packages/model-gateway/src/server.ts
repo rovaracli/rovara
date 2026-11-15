@@ -5,7 +5,7 @@ import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS, type MediaEstimate } from ".
 import type { MediaRates } from "./media-price.js";
 import { guardRequest, MAX_BODY_BYTES, tooLarge, type GuardFailure, type ModelLimitsSource } from "./guard.js";
 import type { Meter, MeterItem, MeterScope, Reservation } from "./meter.js";
-import { LEARNING_PATH, LEARNING_STEP, type LearningRouteFactory } from "./learning-route.js";
+import { LEARNING_PATH, LEARNING_STEP, type LearningKeySource, type LearningRouteFactory } from "./learning-route.js";
 import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, type TaskClaims, type TaskTokenVerifier } from "./token.js";
@@ -27,6 +27,12 @@ export interface GatewayDependencies {
   product?: ProductRouteResolver;
   /** The learning route (DEC 226, learning-route.ts: lessons' calls on the company's own key). Absent: its path is 404. */
   learning?: LearningRouteFactory;
+  /**
+   * DEC 236: the agent route on each company's OWN connected AI key (company-key mode), from the same sealed company-level store
+   * the learning route reads. Set: `keys` (Rovara's install key) is never read for an agent call, a company with no usable key is
+   * refused before anything is held (AGENT_KEY_MISSING), and the combined company cap applies as before. Absent: the install key.
+   */
+  agentKeys?: LearningKeySource;
 }
 /** One provider call shape after its route's guard. `path` is built by the guard from checked parts, never copied from the request. */
 export interface RouteCall {
@@ -94,8 +100,16 @@ export const ENDED_TASK_POLL_MS = 1000;
 const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" };
 const PREFIX: Record<MeterItem, string> = { task: "Budget has been exceeded! Key=task", person: "ExceededBudget: User=person", project: "Budget has been exceeded! Project=project", company: "Budget has been exceeded! Team=company" };
 export const PRODUCT_ROUTE_PREFIX = "/v1/product/";
-/** The agent route: Anthropic Messages, the R3a behaviour exactly. */
+/** The agent route's refusal in company-key mode when the company has no usable AI key connected (DEC 236). Fixed words. */
+export const AGENT_KEY_MISSING: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect an AI key: this company has no AI provider key connected, so its agents cannot call AI." });
+/** Company-key mode: the provider refused the company's own key (401/403 before any output). Free; fixed words. */
+export const AGENT_KEY_REFUSED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect an AI key: the AI provider refused this company's connected key." });
+const AGENT_UNAVAILABLE: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "unavailable", message: "model access unavailable" });
+/** The agent route: Anthropic Messages, the R3a behaviour exactly; on the company's own key when `agentKeys` is set (DEC 236). */
 export function agentRoute(deps: GatewayDependencies): GatewayRoute {
+  return deps.agentKeys !== undefined ? companyKeyAgentRoute(deps, deps.agentKeys) : installKeyAgentRoute(deps);
+}
+function installKeyAgentRoute(deps: GatewayDependencies): GatewayRoute {
   return {
     provider: "anthropic", product: false, meter: deps.meter, prefix: PREFIX,
     guard: (bytes, headers, claims) => guardRequest(bytes, headers, claims.mdl, deps.modelLimits),
@@ -106,6 +120,36 @@ export function agentRoute(deps: GatewayDependencies): GatewayRoute {
     usage: () => new UsageCollector(),
     // An explicit rejection before any output uses the not-sent accounting rule for BOTH input and output.
     providerFailure: (status) => ({ charged: !(status === 429 || status === 529), refusal: { ok: false, status: 502, code: "provider_error", message: "provider unavailable" } }),
+  };
+}
+/**
+ * The agent route in company-key mode (DEC 236): the same guard, scope, caps (the combined company cap), meter, transport and usage
+ * as the install-key route, but the key is ONLY the company's own connected key. Admission reads whether one is connected before
+ * any hold; the key itself is read just before sending, and a key that went missing meanwhile is "not sent" ($0). The install key
+ * (`deps.keys`) is never called, so there is no fallback to Rovara's account.
+ */
+function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource): GatewayRoute {
+  const base = installKeyAgentRoute(deps);
+  let admitted = false;
+  let notSent: RouteRefusal | undefined;
+  return {
+    ...base,
+    async admit(claims, signal) {
+      try { if ((await keys.connected(claims.iss, claims.cid, signal)) !== true) return AGENT_KEY_MISSING; }
+      catch { return AGENT_UNAVAILABLE; }
+      admitted = true;
+      return undefined;
+    },
+    async key(claims, signal) {
+      if (!admitted) return "";
+      let key: string | undefined;
+      try { key = await keys.keyFor(claims.iss, claims.cid, signal); } catch { notSent = AGENT_UNAVAILABLE; return ""; }
+      if (key === undefined) { notSent = AGENT_KEY_MISSING; return ""; }
+      return key;
+    },
+    notSent: () => notSent,
+    // The provider refused the company's key: an explicit rejection before any generation, free; the company must connect a working key.
+    providerFailure: (status, body) => status === 401 || status === 403 ? { charged: false, refusal: AGENT_KEY_REFUSED } : base.providerFailure(status, body),
   };
 }
 function routeFor(deps: GatewayDependencies, request: GatewayRequest): GatewayRoute | ProductControl | undefined {

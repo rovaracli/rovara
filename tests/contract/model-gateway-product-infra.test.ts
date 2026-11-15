@@ -129,6 +129,8 @@ describe("on: the serving role's grants (exact)", () => {
     for (const name of [...GATEWAY_PRODUCT_ENV, ...GATEWAY_LEARNING_ENV, GATEWAY_ENV.vertexFederationRole]) expect(serve[name]).toBeDefined();
     expect(serve[GATEWAY_ENV.productKeysKey]).toEqual(arnOf(idStarting("AWS::KMS::Key", "ProductKeysKey")));
     expect(serve[GATEWAY_ENV.vertexFederationRole]).toEqual(arnOf(idStarting("AWS::IAM::Role", "VertexFederationRole")));
+    // DEC 236: with the company key store deployed, the agent route sends only each company's own key.
+    expect(serve[GATEWAY_ENV.agentKeys]).toBe("company");
     expect(Object.keys(env("PriceFetchTask")).sort()).toEqual([GATEWAY_ENV.mode, GATEWAY_ENV.pricesTable, "NODE_OPTIONS"].sort());
     expect(Object.keys(on.Outputs)).toEqual(expect.arrayContaining(["ProductKeysTableName", "ProductKeysKeyArn", "ProductKeysMacKeyArn", "VertexFederationRoleArn"]));
   });

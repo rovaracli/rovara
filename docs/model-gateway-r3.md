@@ -137,3 +137,20 @@ The accepted DEC 172 residual still includes clean priced calls whose consumed t
 `guard.ts` owns the feature policy: each known feature declares its exposure, tool types and optional request fields. The guard derives its tool and field allowlists from that policy, and exports the same enabled keys as `GATEWAY_EXPOSED_FEATURES`. Currently only `custom_tools` is exposed. `web_search`, `priority_service`, `audio_tokens` and `image_tokens` are known but unexposed. The media keys describe separate token-billing routes; inline Anthropic media retains its existing unbounded-input treatment.
 
 Each `UNSERVED_FEATURE_COST_FIELDS` entry stores `{ feature, reason }`. Tests require a known feature key and reject any exclusion whose feature is exposed, with: `<field> is listed as unserved but <feature> is now exposed; remove the entry so the row is priced or marked uncertain`. Enabling web search in the policy changes actual guard acceptance and fails this test. A misspelled feature key also fails. New tools, modalities or service tiers must use this guard policy; remove their exclusions and price their tariffs or leave their rows uncertain before enabling them. Current request acceptance, fixed refusal text and price classification are unchanged.
+
+## Company-key mode for the agent route (DEC 236)
+
+The core engine's agents call AI through `POST /v1/messages` with their task token, and the gateway holds each company's own
+key. With `GATEWAY_AGENT_KEYS=company` (only with the product route, whose sealed store holds the company-level Anthropic
+source that learning also reads; the deployed template sets it whenever `rovaraModelGatewayProductAi=on`):
+
+- Admission asks whether the token's company has a key connected (`LearningKeySource.connected`), before any hold. None:
+  403 `no_ai_key` "Connect an AI key: ..." (`AGENT_KEY_MISSING`), nothing held or sent. An unreadable store: 503.
+- The key is read just before sending. Gone meanwhile: not sent, $0, the same refusal.
+- The provider refusing the company's key (401/403): free, 403 `no_ai_key` (`AGENT_KEY_REFUSED`). Other failures keep the
+  install-key route's accounting.
+- Caps, meter and the combined company cap are unchanged.
+- Rovara's install key (`GATEWAY_ANTHROPIC_KEY_SECRET`) is never read: the process gives the handler a refusing key port, and
+  a company-key process without its company key source refuses to start.
+
+Absent (or `install`): the install-key route exactly as before.

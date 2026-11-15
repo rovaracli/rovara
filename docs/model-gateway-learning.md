@@ -13,7 +13,7 @@ A third route on the same gateway for lessons' learning calls: the reflector, th
 | | Agent route (`POST /v1/messages`) | Learning route (`POST /v1/learning/messages`) |
 |---|---|---|
 | Token | TC-1 task token, any step except the learning step | the same TC-1 token with `stp` = `rovara-lessons-learning-call` (`LEARNING_STEP`) |
-| Key | the gateway's install key | the company's OWN connected provider account (`LearningKeySource`), never the install key |
+| Key | the gateway's install key; in company-key mode (`GATEWAY_AGENT_KEYS=company`, DEC 236) the same company account as learning, never the install key | the company's OWN connected provider account (`LearningKeySource`), never the install key |
 | Stop | the task-ended record | the company's lessons switch, read on every call before anything else |
 | Meter | agent meter | its own meter (separate tables), combined with the agent meter's company row |
 | Caps | task, person, project, company | the learning month row: min($20, company monthly cap); plus the combined company cap |

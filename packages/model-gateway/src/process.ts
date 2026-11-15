@@ -7,7 +7,7 @@ import { CompanyBudgetCaps, CompanyLessonsSwitch } from "./company-caps.js";
 import { createLearningRoutes, type LearningKeySource } from "./learning-route.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
 import { awsKms } from "./aws-kms.js";
-import { GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_LOG_EVENTS, GATEWAY_MODES, GATEWAY_PRODUCT_ENV } from "./deploy.js";
+import { GATEWAY_AGENT_KEY_MODES, GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_LOG_EVENTS, GATEWAY_MODES, GATEWAY_PRODUCT_ENV, type GatewayAgentKeyMode } from "./deploy.js";
 import { DynamoEvalStageStore } from "./dynamo-eval-stages.js";
 import { DynamoProductKeyTable } from "./dynamo-product-keys.js";
 import { DynamoProductOverrunTasks } from "./dynamo-product-overrun.js";
@@ -30,7 +30,7 @@ import { SnapshotPriceSource } from "./price-index.js";
 import { PriceRefresher } from "./price-refresh.js";
 import { fetchAWS, fetchLiteLLM, fetchTransport } from "./price-sources.js";
 import { CALL_HARD_CEILING_MS, createAnthropicTransport, type ProviderKeys, type ProviderTransport } from "./provider.js";
-import { createSecretsManagerKeys } from "./secrets.js";
+import { createSecretsManagerKeys, ProviderKeyUnavailable } from "./secrets.js";
 import { createGatewayHandler, type GatewayDependencies, type ProductRouteResolver } from "./server.js";
 import { createTaskTokenVerifier } from "./token.js";
 
@@ -46,7 +46,7 @@ export interface InstallConfig { issuer: string; jwksUrl: string; taskKids: stri
 export interface ProductConfig { keysTable: string; keysKeyArn: string; meter: string; ledger: string; markers: string; stages: string; vertexFederationRoleArn?: string }
 /** The learning route's meter tables (GATEWAY_LEARNING_ENV): only with the product route, whose key store holds the company's account. */
 export interface LearningConfig { meter: string; ledger: string; markers: string }
-export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig }
+export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode }
 export interface PriceFetchConfig { mode: "price-fetch"; region: string; tables: { prices: string } }
 export type GatewayConfig = ServeConfig | PriceFetchConfig;
 
@@ -103,10 +103,16 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
     if (product === undefined) throw new GatewayConfigError(GATEWAY_ENV.productKeysTable);
     learning = { meter: table(GATEWAY_ENV.learningMeterTable), ledger: table(GATEWAY_ENV.learningLedgerTable), markers: table(GATEWAY_ENV.learningMarkersTable) };
   }
+  // DEC 236: whose key the agent route sends. "company" needs the product key store (the company's connected key lives there).
+  let agentKeys: GatewayAgentKeyMode | undefined;
+  if (env[GATEWAY_ENV.agentKeys] !== undefined) {
+    agentKeys = need(GATEWAY_ENV.agentKeys, (value) => (GATEWAY_AGENT_KEY_MODES as readonly string[]).includes(value)) as GatewayAgentKeyMode;
+    if (agentKeys === "company" && product === undefined) throw new GatewayConfigError(GATEWAY_ENV.productKeysTable);
+  }
   // Every table distinct: no two meters, stores or the stage table may share rows.
   const all = [tables.meter, tables.ledger, tables.markers, tables.prices, tables.companies, ...(product === undefined ? [] : [product.keysTable, product.meter, product.ledger, product.markers, product.stages]), ...(learning === undefined ? [] : [learning.meter, learning.ledger, learning.markers])];
   if (new Set(all).size !== all.length) throw new GatewayConfigError(product === undefined ? GATEWAY_ENV.meterTable : learning === undefined ? GATEWAY_ENV.productMeterTable : GATEWAY_ENV.learningMeterTable);
-  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }) };
+  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(agentKeys === undefined ? {} : { agentKeys }) };
 }
 
 /** One JSON object per line on stdout, with an `event` field the alarms' metric filters count (deploy.ts GATEWAY_LOG_EVENTS). */
@@ -155,6 +161,11 @@ export interface ServeDependencies {
    * Companies table). Absent: the learning path is 404. Its holds, expiry and corrections run in the same maintenance pass.
    */
   learning?: { keys: LearningKeySource; meter: Meter & Pick<DynamoMeter, "sweepOpenHolds">; monthCeilingMicros?: number };
+  /**
+   * DEC 236, with config.agentKeys "company": the company's OWN connected key for the agent route (default: the company source of the
+   * product key store, the one the learning route reads). Never the install key (`keys`), which is then not read at all.
+   */
+  agentKeys?: LearningKeySource;
   now?: () => number; host?: string; port?: number; /** false: no listener (tests drive the server's request event). */ listen?: boolean; drainMs?: number; maintenanceMs?: number;
 }
 export interface RunningGateway { server: Server; port: number; draining(): boolean; drain(): Promise<void>; maintain(): Promise<void> }
@@ -196,7 +207,10 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const caps = deps.caps ?? new CompanyBudgetCaps(db, config.tables.companies);
   // The deployed product and learning routes, from the configured tables (deps.product / deps.learning still win: tests).
   const built = deployedRoutes(config, deps, { db, credentials, now, prices, caps });
-  deps = { ...deps, ...(built.product === undefined ? {} : { product: built.product }), ...(built.learning === undefined ? {} : { learning: built.learning }) };
+  deps = { ...deps, ...(built.product === undefined ? {} : { product: built.product }), ...(built.learning === undefined ? {} : { learning: built.learning }), ...(built.agentKeys === undefined ? {} : { agentKeys: built.agentKeys }) };
+  // Company-key mode never starts without the company key source (no silent fallback to the install key).
+  const companyKeys = config.agentKeys === "company" ? deps.agentKeys : undefined;
+  if (config.agentKeys === "company" && companyKeys === undefined) throw new Error("company-key mode needs the company key store");
   checkMeters(config, deps);
   const meter = new DynamoMeter({ db, tables: config.tables, now });
   const modelLimits = deps.modelLimits ?? modelLimitsFrom(prices);
@@ -211,7 +225,9 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     // The busy answer is counted from its log line (overrun_busy); the process needs no metrics permission.
     metrics: { overrunBusy: () => undefined },
     modelLimits,
-    keys: deps.keys ?? createSecretsManagerKeys({ region: config.region, credentials, secretArns: { anthropic: config.anthropicKeySecret }, now }),
+    // Company-key mode: the install key is never read (a call can only go out on the company's own key, `agentKeys`).
+    keys: companyKeys !== undefined ? NO_INSTALL_KEY : deps.keys ?? createSecretsManagerKeys({ region: config.region, credentials, secretArns: { anthropic: config.anthropicKeySecret }, now }),
+    ...(companyKeys === undefined ? {} : { agentKeys: companyKeys }),
     transport,
     log: (event) => log({ ...event }),
     ...(deps.product === undefined ? {} : { product: deps.product.routes }),
@@ -307,6 +323,9 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   return { server, port, draining: () => draining, drain, maintain };
 }
 
+/** Company-key mode's install key: refuses every read (the agent route never asks it there; this is the second lock). */
+const NO_INSTALL_KEY: ProviderKeys = { keyFor: async () => { throw new ProviderKeyUnavailable(); } };
+
 /** The product key store's writes run in Cloud's settings routes; the gateway only reads keys and records warnings (no fingerprint). */
 const READ_ONLY_FINGERPRINT: ProductKeyFingerprinter = async () => { throw new Error("the gateway does not change product keys"); };
 
@@ -316,9 +335,10 @@ const READ_ONLY_FINGERPRINT: ProductKeyFingerprinter = async () => { throw new E
  * Gemini over HTTPS with media prices) and the learning route (the company's own account from the same key store, its own meter
  * combined the same way). Nothing is built for settings that are absent.
  */
-function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { db: Dynamo; credentials: CredentialSource; now: () => number; prices: SnapshotPriceSource; caps: CapsSource }): { product?: NonNullable<ServeDependencies["product"]>; learning?: NonNullable<ServeDependencies["learning"]> } {
+function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { db: Dynamo; credentials: CredentialSource; now: () => number; prices: SnapshotPriceSource; caps: CapsSource }): { product?: NonNullable<ServeDependencies["product"]>; learning?: NonNullable<ServeDependencies["learning"]>; agentKeys?: LearningKeySource } {
   const p = config.product;
-  if (p === undefined || (deps.product !== undefined && (config.learning === undefined || deps.learning !== undefined))) return {};
+  const wantsAgentKeys = config.agentKeys === "company" && deps.agentKeys === undefined;
+  if (p === undefined || (deps.product !== undefined && (config.learning === undefined || deps.learning !== undefined) && !wantsAgentKeys)) return {};
   const { db, now, prices, caps } = shared;
   const kms = deps.kms ?? awsKms({ region: config.region, credentials: shared.credentials, now });
   const store = new ProductKeyStore({ table: new DynamoProductKeyTable(db, p.keysTable), sealer: new ProductKeySealer(kmsProductKeyService(kms, p.keysKeyArn)), fingerprint: READ_ONLY_FINGERPRINT, now });
@@ -341,7 +361,9 @@ function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { 
     const l = config.learning;
     learning = { keys: storedLearningKeys(store), meter: new DynamoMeter({ db, tables: { meter: l.meter, ledger: l.ledger, markers: l.markers }, now, combinedCompany }) };
   }
-  return { ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }) };
+  // DEC 236: the agent route's company key is the same company-level source the learning route reads (provider "anthropic").
+  const agentKeys = wantsAgentKeys ? storedLearningKeys(store) : undefined;
+  return { ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(agentKeys === undefined ? {} : { agentKeys }) };
 }
 
 export interface PriceFetchDependencies { env?: GatewayEnv; log?: GatewayLog; credentials?: CredentialSource; db?: Dynamo; fetch?: typeof fetch; now?: () => number }

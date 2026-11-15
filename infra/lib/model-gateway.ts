@@ -93,6 +93,7 @@ export const MODEL_GATEWAY_ENV = {
   learningMeterTable: "GATEWAY_LEARNING_METER_TABLE",
   learningLedgerTable: "GATEWAY_LEARNING_LEDGER_TABLE",
   learningMarkersTable: "GATEWAY_LEARNING_MARKERS_TABLE",
+  agentKeys: "GATEWAY_AGENT_KEYS",
 } as const;
 /** The eval stage table's due-stages index (deploy.ts GATEWAY_EVAL_STAGE_INDEXES). */
 export const MODEL_GATEWAY_EVAL_STAGE_INDEXES = {
@@ -667,6 +668,8 @@ export class ModelGatewayStack extends Stack {
         [MODEL_GATEWAY_ENV.learningMeterTable]: learningMeter.tableName,
         [MODEL_GATEWAY_ENV.learningLedgerTable]: learningLedger.tableName,
         [MODEL_GATEWAY_ENV.learningMarkersTable]: learningMarkers.tableName,
+        // DEC 236: with the company key store deployed, agents call AI only on each company's own connected key.
+        [MODEL_GATEWAY_ENV.agentKeys]: "company",
       },
     };
   }
