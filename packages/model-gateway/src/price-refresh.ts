@@ -1,4 +1,4 @@
-import { sanitySnapshot } from "./price-sanity.js";
+import { effectivePrices, priceBook } from "./price-sanity.js";
 import { whole } from "./model-gateway-token.js";
 import { FETCH_DEADLINE_MS, REFRESH_INTERVAL_MS, REFRESH_JITTER, RETRY_MS } from "./price-constants.js";
 import type { SnapshotPriceSource } from "./price-index.js";
@@ -21,7 +21,7 @@ export class PriceRefresher {
     const sources = structuredClone(prior?.sources ?? {}); const known = new Set(prices.keys().map(priceKey));
     const names = ["litellm", "aws"] as const;
     const results = await Promise.all(names.map(async (name) => { try { return await this.options[name](prior?.sources[name]?.entries ?? []); } catch { return { ok: false as const, reason: "refresh failed" }; } }));
-    let ok = true; let changed = false;
+    let ok = true; let changed = false; const successful = new Set<"litellm" | "aws">();
     const failure = (name: "litellm" | "aws") => {
       ok = false; prices.failure(name, true);
       // Preserve prices and fetchedAt; only confirmation evidence is invalidated by a failed fetch.
@@ -29,8 +29,8 @@ export class PriceRefresher {
     };
     for (const [i, name] of names.entries()) {
       const r = results[i]!;
-      const candidate = r.ok ? { version: 1, sources: { [name]: { fetchedAt: now, count: r.entries.length, entries: r.entries, ...(r.fallbacks === undefined ? {} : { fallbacks: r.fallbacks }), ...(r.floors === undefined ? {} : { floors: r.floors }) } } } : undefined;
-      const success = candidate !== undefined && validSnapshot(candidate) && r.ok && (r.entries.length + (r.floors?.length ?? 0)) > 0 && now >= (prior?.sources[name]?.fetchedAt ?? 0);
+      const candidate = r.ok ? { version: 1, sources: { [name]: { fetchedAt: now, count: r.entries.length, entries: r.entries, ...(r.fallbacks === undefined ? {} : { fallbacks: r.fallbacks }), ...(r.floors === undefined ? {} : { floors: r.floors }), ...(r.unidentified === undefined ? {} : { unidentified: r.unidentified }) } } } : undefined;
+      const success = candidate !== undefined && validSnapshot(candidate) && r.ok && (r.entries.length + (r.floors?.length ?? 0) + (r.fallbacks?.length ?? 0) + (r.unidentified?.length ?? 0)) > 0 && now >= (prior?.sources[name]?.fetchedAt ?? 0);
       prices.failure(name, !success);
       if (!success || !r.ok) { failure(name); continue; }
       const source = candidate.sources[name] as SourceSnapshot;
@@ -41,13 +41,17 @@ export class PriceRefresher {
         if (drops.size !== r.drops.length || r.drops.some((e) => !keys.has(priceKey(e)))) { failure(name); continue; }
         source.entries = source.entries.map((e) => drops.get(priceKey(e)) ?? e);
       }
-      const previous = prior?.sources[name];
-      sources[name] = sanitySnapshot(source, previous, deadline, () => { try { this.options.log?.({ event: "price_sanity_held" }); } catch { /* Observability cannot change prices. */ } });
-      changed = true;
+      sources[name] = source; successful.add(name); changed = true;
     }
     if (performance.now() >= deadline) return { ok: false, gained: 0 };
-    if (changed && !validSnapshot({ version: (prior?.version ?? 0) + 1, sources })) return { ok: false, gained: 0 };
-    if (changed && !await store.save({ version: (prior?.version ?? 0) + 1, sources }, prior?.version ?? 0)) return { ok: false, gained: 0 };
+    const previous = prior?.effective ?? priceBook(prior).identities;
+    // A failure invalidates pending evidence even if it was the only source this time.
+    changed ||= previous.some((e) => e.pendingLower !== undefined && e.sources.some((name) => !successful.has(name)));
+    if (changed) {
+      const effective = effectivePrices(sources, previous, successful, deadline, () => { try { this.options.log?.({ event: "price_sanity_held" }); } catch { /* Observability cannot change prices. */ } });
+      const snapshot = { version: (prior?.version ?? 0) + 1, sources, effective };
+      if (performance.now() >= deadline || !validSnapshot(snapshot) || !await store.save(snapshot, prior?.version ?? 0)) return { ok: false, gained: 0 };
+    }
     await prices.reload();
     const gained = prices.keys().filter((key) => !known.has(priceKey(key)));
     // Also call on a no-gain run so a prior bounded correction run can continue.

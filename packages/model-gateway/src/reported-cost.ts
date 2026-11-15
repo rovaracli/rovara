@@ -19,10 +19,10 @@ export function validUsage(value: unknown): value is TokenUsage {
 }
 export function hasUsage(usage: TokenUsage): boolean { return usage.input + usage.output + usage.cacheRead + usage.cacheWrite > 0; }
 export function settleAmount(input: { reportedCostMicros?: number; usage?: TokenUsage; price: ResolvedPrice; reservationMicros: number }): { actualMicros: number; estimated: boolean; usage?: TokenUsage } {
-  if (whole(input.reportedCostMicros) && input.reportedCostMicros > 0) return { actualMicros: input.reportedCostMicros, estimated: false };
-  if (validUsage(input.usage) && hasUsage(input.usage)) {
-    const actualMicros = Math.max(1, usageCost(input.usage, input.price));
-    return { actualMicros, estimated: input.price.estimated, ...(input.price.estimated ? { usage: { ...input.usage } } : {}) };
+  if (!validUsage(input.usage) || !hasUsage(input.usage)) return { actualMicros: input.reservationMicros, estimated: input.price.estimated };
+  const tokenCost = Math.max(1, usageCost(input.usage, input.price));
+  if (whole(input.reportedCostMicros) && input.reportedCostMicros > 0) {
+    if ((!input.price.knownTokenPrice && input.price.estimated && !input.price.operatorReview) || input.reportedCostMicros >= tokenCost) return { actualMicros: input.reportedCostMicros, estimated: false };
   }
-  return { actualMicros: input.reservationMicros, estimated: input.price.estimated };
+  return { actualMicros: tokenCost, estimated: input.price.estimated, ...(input.price.estimated ? { usage: { ...input.usage } } : {}) };
 }

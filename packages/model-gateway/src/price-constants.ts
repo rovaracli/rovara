@@ -39,7 +39,7 @@ export const USD_PER_TOKEN_SANITY_MAX = 0.01;
 export const RATE_ROUNDING_TOLERANCE = 1e-9;
 export const MICROS_PER_USD = 1_000_000;
 export const RATE_SCALE = 1_000_000_000_000;
-/** Empty by policy: lower upstream LiteLLM prices require an explicit reviewed exception. */
+/** Legacy export; pooled effective-price confirmation now governs every decrease. */
 export const ALLOW_LOWER: readonly string[] = [];
 /** Run up to 5% early to spread replicas without exceeding the daily interval. */
 export const REFRESH_JITTER = 0.05;

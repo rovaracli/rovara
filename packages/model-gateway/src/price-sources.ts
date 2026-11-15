@@ -1,13 +1,13 @@
 import { record, whole } from "./model-gateway-token.js";
-import { priceKey, validEntry, validFallback, validFloor, type ModelFloor, type ModelFallback, type PriceEntry } from "./price-snapshot.js";
+import { priceKey, validEntry, validFallback, validFloor, validUnidentified, type UnidentifiedRow, type ModelFloor, type ModelFallback, type PriceEntry } from "./price-snapshot.js";
 import { knownRates, priceKind, priceProvider, ratesOf, tokenRateField } from "./price-classify.js";
-import { ALLOW_LOWER, AWS_MAX_BYTES, FETCH_DEADLINE_MS, FETCH_TIMEOUT_MS, LITELLM_MAX_BYTES, MAX_AWS_REGIONS, MAX_BAD_PRICE_FRACTION, MAX_ENTRIES_PER_SOURCE, MAX_NODES, MAX_PRICE_DEPTH, MICROS_PER_USD, MIN_AWS_MODELS, MIN_LITELLM_MODELS, PRICE_MAX, SHRINK_FLOOR } from "./price-constants.js";
+import { AWS_MAX_BYTES, FETCH_DEADLINE_MS, FETCH_TIMEOUT_MS, LITELLM_MAX_BYTES, MAX_AWS_REGIONS, MAX_BAD_PRICE_FRACTION, MAX_ENTRIES_PER_SOURCE, MAX_NODES, MAX_PRICE_DEPTH, MICROS_PER_USD, MIN_AWS_MODELS, MIN_LITELLM_MODELS, PRICE_MAX, SHRINK_FLOOR } from "./price-constants.js";
 export const LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 export const AWS_HOST = "pricing.us-east-1.amazonaws.com";
 export const AWS_REGIONS = ["us-east-1", "us-west-2"] as const;
 export interface PriceTransport { get(url: string, options: { maxBytes: number; timeoutMs: number; signal: AbortSignal }): Promise<{ status: number; body: Uint8Array }> }
 export interface PriceReport { skipped: string[]; ignoredLower: number; anthropicSkipped?: Readonly<Record<string, number>> }
-export type PriceFetchResult = { ok: true; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; drops?: PriceEntry[]; report: PriceReport } | { ok: false; reason: string };
+export type PriceFetchResult = { ok: true; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; unidentified?: UnidentifiedRow[]; drops?: PriceEntry[]; report: PriceReport } | { ok: false; reason: string };
 export interface SourceLimits { now?: number; minModels?: number; maxBytes?: number; deadlineMs?: number; timeoutMs?: number; previous?: readonly PriceEntry[]; regions?: readonly string[] }
 const failure = (): PriceFetchResult => ({ ok: false, reason: "invalid source" });
 const awsUrl = (region: string): string => `https://${AWS_HOST}/offers/v1.0/aws/AmazonBedrockFoundationModels/current/${region}/index.json`;
@@ -81,8 +81,8 @@ export function fetchLiteLLM(transport: PriceTransport, limits: SourceLimits = {
     const map = await read(transport, LITELLM_URL, budget); const keys = Object.keys(map).filter((k) => k !== "sample_spec");
     const min = limits.minModels ?? MIN_LITELLM_MODELS;
     if (!whole(min) || min < 1 || keys.length < min || keys.length > MAX_ENTRIES_PER_SOURCE) return failure();
-    const prior = new Map((limits.previous ?? []).map((e) => [priceKey(e), e])); const allowed = new Set(ALLOW_LOWER);
-    const entries: PriceEntry[] = []; const fallbacks: ModelFallback[] = []; const floors: ModelFloor[] = []; const drops: PriceEntry[] = []; const seen = new Set<string>(); const report: PriceReport = { skipped: [], ignoredLower: 0 };
+    const previousCount = limits.previous?.length ?? 0;
+    const entries: PriceEntry[] = []; const fallbacks: ModelFallback[] = []; const floors: ModelFloor[] = []; const unidentified: UnidentifiedRow[] = []; const seen = new Set<string>(); const report: PriceReport = { skipped: [], ignoredLower: 0 };
     const anthropicSkipped = new Map<string, number>();
     const skip = (reason: string, provider?: string) => { report.skipped.push(reason); if (provider === "anthropic") anthropicSkipped.set(reason, (anthropicSkipped.get(reason) ?? 0) + 1); };
     let bad = 0;
@@ -92,51 +92,42 @@ export function fetchLiteLLM(transport: PriceTransport, limits: SourceLimits = {
       if (row === undefined) { report.skipped.push("unsupported entry"); continue; }
       if (Object.entries(row).some(([field, value]) => tokenRateField(field) && (typeof value !== "number" || !Number.isFinite(value) || value < 0))) bad++;
       const provider = priceProvider(row.litellm_provider); const kind = priceKind(row.mode); const rates = ratesOf(row, now);
-      // Presence is enough: per-request charges cannot be represented even without token base rates.
-      if (provider !== undefined && kind !== undefined && ["cost_per_request", "input_cost_per_request", "output_cost_per_request"].some((field) => Object.hasOwn(row, field))) {
-        const f: ModelFallback = { provider, model: provider === "gemini" ? key.replace(/^gemini\//u, "") : key, reason: "per_request_price" };
-        if (!validFallback(f) || seen.has(priceKey(f))) return failure();
-        seen.add(priceKey(f)); fallbacks.push(f); skip("unsupported per-request price", provider); continue;
+      const perRequest = ["cost_per_request", "input_cost_per_request", "output_cost_per_request"].some((field) => Object.hasOwn(row, field));
+      const known = knownRates(row);
+      if (provider === undefined) {
+        const u: UnidentifiedRow = { model: key, ...(kind === undefined ? {} : { kind }), ...(known === undefined ? {} : { rates: known }), ...(perRequest ? { perRequest: true } : {}) };
+        if (!validUnidentified(u)) return failure(); unidentified.push(u); skip("unsupported provider"); continue;
       }
-      if (provider === undefined || kind === undefined || typeof rates === "string") {
-        skip(typeof rates === "string" ? rates : "unsupported provider", provider);
-        const known = knownRates(row);
-        if (provider !== undefined && typeof rates === "string" && known !== undefined) {
-          const floor = { provider, model: provider === "gemini" ? key.replace(/^gemini\//u, "") : key, ...(kind === undefined ? {} : { kind }), ...known, reason: rates };
+      const model = key; // Preserve exact upstream IDs for previously established identity recovery.
+      if (typeof rates === "string" || kind === undefined) {
+        const reason = typeof rates === "string" ? rates : "unsupported mode"; skip(reason, provider);
+        if (known !== undefined) {
+          const floor = { provider, model, ...(kind === undefined ? {} : { kind }), ...known, reason, ...(perRequest ? { perRequest: true as const } : {}) };
           if (!validFloor(floor) || seen.has(priceKey(floor))) return failure();
           seen.add(priceKey(floor)); floors.push(floor);
+        } else {
+          const fallback: ModelFallback = { provider, model, ...(kind === undefined ? {} : { kind }), reason: perRequest ? "per_request_price" : "unpriced" };
+          if (!validFallback(fallback) || seen.has(priceKey(fallback))) return failure();
+          seen.add(priceKey(fallback)); fallbacks.push(fallback);
         }
         continue;
       }
-      const model = provider === "gemini" ? key.replace(/^gemini\//u, "") : key;
       const e: PriceEntry = { provider, model, kind, ...rates };
       if (!validEntry(e)) { skip("unsupported entry", provider); continue; }
       const id = priceKey(e); if (seen.has(id)) return failure(); seen.add(id);
-      const old = prior.get(id);
-      if (old !== undefined) {
-        if (!allowed.has(model) && (e.inputMicrosPerMTok < old.inputMicrosPerMTok || e.outputMicrosPerMTok < old.outputMicrosPerMTok)) {
-          if (e.inputMicrosPerMTok < old.inputMicrosPerMTok / 2 || e.outputMicrosPerMTok < old.outputMicrosPerMTok / 2) drops.push({ ...e });
-          report.ignoredLower++; e.inputMicrosPerMTok = Math.max(e.inputMicrosPerMTok, old.inputMicrosPerMTok); e.outputMicrosPerMTok = Math.max(e.outputMicrosPerMTok, old.outputMicrosPerMTok);
-        }
-      }
       entries.push(e);
     }
-    if (bad > keys.length * MAX_BAD_PRICE_FRACTION || entries.length + floors.length === 0 || entries.length + floors.length < prior.size * SHRINK_FLOOR) return failure();
-    return { ok: true, entries, ...(fallbacks.length === 0 ? {} : { fallbacks }), ...(floors.length === 0 ? {} : { floors }), ...(drops.length === 0 ? {} : { drops }), report: { ...report, anthropicSkipped: Object.fromEntries(anthropicSkipped) } };
+    if (bad > keys.length * MAX_BAD_PRICE_FRACTION || entries.length + floors.length + fallbacks.length + unidentified.length === 0 || entries.length + floors.length + fallbacks.length + unidentified.length < previousCount * SHRINK_FLOOR) return failure();
+    return { ok: true, entries, ...(fallbacks.length === 0 ? {} : { fallbacks }), ...(floors.length === 0 ? {} : { floors }), ...(unidentified.length === 0 ? {} : { unidentified }), report: { ...report, anthropicSkipped: Object.fromEntries(anthropicSkipped) } };
   });
 }
-/** Ported _stripped and _norm_model_id. Normalized names match AWS model labels. */
-export function normalizeBedrockModel(model: string): string {
-  let text = model.slice(model.indexOf("/") + 1).toLowerCase();
-  if (text.includes(".")) text = text.replace(/^(?:(?:us-gov|us|eu|apac|global|jp|au|in|ca)\.)?[a-z0-9-]+\./u, "");
-  return text.replace(/(?:-\d{8})?(?:-v\d+(?::\d+)?)?$|@\d+$/u, "");
-}
+export { normalizeBedrockModel } from "./price-identity.js";
 const AWS_USAGE = /_(input|output|cache_read|cache_write)_tokens(_1h)?(_long_ctx)?(_global)?_standard-Units$/u;
 export function fetchAWS(transport: PriceTransport, limits: SourceLimits = {}): Promise<PriceFetchResult> {
   return withBudget(limits, AWS_MAX_BYTES, async (budget) => {
     const regions = limits.regions ?? AWS_REGIONS; const min = limits.minModels ?? MIN_AWS_MODELS;
     if (!whole(min) || min < 1 || !Array.isArray(regions) || regions.length < 1 || regions.length > MAX_AWS_REGIONS || new Set(regions).size !== regions.length || regions.some((r: unknown) => typeof r !== "string" || !/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u.test(r))) return failure();
-    const models = new Map<string, { input: number; output: number; baseInput: boolean; baseOutput: boolean }>(); const report: PriceReport = { skipped: [], ignoredLower: 0 };
+    const models = new Map<string, { input: number; output: number; baseInput: boolean; baseOutput: boolean; operatorReview: boolean }>(); const report: PriceReport = { skipped: [], ignoredLower: 0 };
     for (const region of regions as readonly string[]) {
       const offer = await read(transport, awsUrl(region), budget); const products = record(offer.products); const terms = record(record(offer.terms)?.OnDemand);
       if (products === undefined || terms === undefined || Object.keys(products).length === 0) return failure();
@@ -146,7 +137,7 @@ export function fetchAWS(transport: PriceTransport, limits: SourceLimits = {}): 
         const attrs = record(record(product)?.attributes); const usage = typeof attrs?.usagetype === "string" ? AWS_USAGE.exec(attrs.usagetype) : null;
         if (typeof attrs?.model !== "string" || usage === null || (usage[2] !== undefined && (usage[1] !== "cache_write" || usage[3] !== undefined))) { report.skipped.push("unsupported usage"); continue; }
         const name = attrs.model.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "");
-        let price = 0; let invalid = false;
+        let price = 0; let invalid = false; let operatorReview = false;
         const skuTerms = record(terms[sku]); if (skuTerms === undefined) return failure();
         for (const term of Object.values(skuTerms)) {
           const dims = record(record(term)?.priceDimensions); if (dims === undefined) return failure();
@@ -154,24 +145,28 @@ export function fetchAWS(transport: PriceTransport, limits: SourceLimits = {}): 
             const d = record(dimension); if (d?.unit !== "1M tokens") continue;
             const raw = record(d.pricePerUnit)?.USD;
             const n = typeof raw === "string" && /^(?:\d+)(?:\.\d+)?$/u.test(raw) ? Number(raw) : NaN;
-            if (!Number.isFinite(n) || n <= 0 || n > PRICE_MAX / MICROS_PER_USD) invalid = true;
-            else price = Math.max(price, Math.ceil(n * MICROS_PER_USD));
+            if (!Number.isFinite(n) || n <= 0) invalid = true;
+            else { operatorReview ||= n > Number.MAX_SAFE_INTEGER / MICROS_PER_USD; price = Math.max(price, Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(n * MICROS_PER_USD))); }
           }
         }
         if (invalid || price === 0) return failure(); // Never publish a cheaper partial model after losing a priced tier.
-        const row = models.get(name) ?? { input: 0, output: 0, baseInput: false, baseOutput: false };
+        const row = models.get(name) ?? { input: 0, output: 0, baseInput: false, baseOutput: false, operatorReview: false };
+        row.operatorReview ||= operatorReview;
         if (usage[1] === "output") { row.output = Math.max(row.output, price); row.baseOutput ||= usage[3] === undefined; }
         else { row.input = Math.max(row.input, price); row.baseInput ||= usage[1] === "input" && usage[3] === undefined; }
         models.set(name, row);
       }
     }
-    const entries: PriceEntry[] = [];
+    const entries: PriceEntry[] = []; const floors: ModelFloor[] = [];
     for (const [model, rate] of models) {
       if (!rate.baseInput || !rate.baseOutput) { report.skipped.push("missing base rate"); continue; }
       const e: PriceEntry = { provider: "bedrock", model, kind: "chat", inputMicrosPerMTok: rate.input, outputMicrosPerMTok: rate.output };
-      if (!validEntry(e)) { report.skipped.push("unsupported entry"); continue; } entries.push(e);
+      if (rate.input > PRICE_MAX || rate.output > PRICE_MAX || rate.operatorReview) {
+        const floor: ModelFloor = { ...e, reason: "token rate exceeds maximum", ...(rate.operatorReview ? { operatorReview: true } : {}) };
+        if (!validFloor(floor)) return failure(); floors.push(floor); report.skipped.push("token rate exceeds maximum");
+      } else { if (!validEntry(e)) return failure(); entries.push(e); }
     }
-    if (entries.length < min || entries.length < (limits.previous?.length ?? 0) * SHRINK_FLOOR) return failure();
-    return { ok: true, entries, report };
+    if (entries.length + floors.length < min || entries.length + floors.length < (limits.previous?.length ?? 0) * SHRINK_FLOOR) return failure();
+    return { ok: true, entries, ...(floors.length ? { floors } : {}), report };
   });
 }

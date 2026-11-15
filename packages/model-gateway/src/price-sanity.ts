@@ -1,73 +1,156 @@
-import { FLAT_CEILING_MICROS_PER_MTOK } from "./price-constants.js";
-import { cautiousPrice, type Price, type PriceKind } from "./price.js";
-import { priceKey, type ModelFloor, type PriceEntry, type SourceSnapshot } from "./price-snapshot.js";
-type Row = PriceEntry | ModelFloor;
-const isFloor = (row: Row): row is ModelFloor => "reason" in row;
-const groupKey = (e: Row, kind: PriceKind | "all" | undefined = e.kind) => JSON.stringify([e.provider, kind]);
-const maxPrice = (a: Price, b: Price): Price => ({ inputMicrosPerMTok: Math.max(a.inputMicrosPerMTok, b.inputMicrosPerMTok), outputMicrosPerMTok: Math.max(a.outputMicrosPerMTok, b.outputMicrosPerMTok), ...((a.operatorReview || b.operatorReview) ? { operatorReview: true } : {}) });
-/** Materialize effective floor amounts once, including provider maxima; never scan peers per model. */
-function effectiveRows(source: SourceSnapshot | undefined, checkTime: () => void): Map<string, Row> {
-  const rows: Row[] = [...(source?.entries ?? []), ...(source?.floors ?? [])];
-  const maxima = new Map<string, Price>();
-  for (const row of rows) {
-    checkTime();
-    for (const kind of (row.kind === undefined ? ["chat", "embedding", "all"] as const : [row.kind, "all"] as const)) {
-      const key = groupKey(row, kind); maxima.set(key, maxPrice(maxima.get(key) ?? row, row));
-    }
-  }
-  return new Map<string, Row>(rows.map((row): [string, Row] => {
-    checkTime();
-    if (!isFloor(row)) return [priceKey(row), row];
-    const maximum = maxima.get(groupKey(row, row.kind ?? "all"))!;
-    return [priceKey(row), { ...row, ...cautiousPrice(maxPrice(row, maximum)) }];
-  }));
+import { CAUTION_FACTOR, FETCH_DEADLINE_MS, FLAT_CEILING_MICROS_PER_MTOK, MAX_ENTRIES_PER_SOURCE } from "./price-constants.js";
+import { cautiousPrice, validPrice, validRate, type PriceSource, type Price, type PriceKind, type PriceOrigin, type ResolvedPrice } from "./price.js";
+import { identityKey, normalizedModel } from "./price-identity.js";
+import type { EffectiveIdentity, ModelFallback, ModelFloor, PriceEntry, PriceSnapshot } from "./price-snapshot.js";
+type Source = "litellm" | "aws";
+const names = ["litellm", "aws"] as const;
+const flat: ResolvedPrice = { inputMicrosPerMTok: FLAT_CEILING_MICROS_PER_MTOK, outputMicrosPerMTok: FLAT_CEILING_MICROS_PER_MTOK, estimated: true };
+const cache = (p: Price) => p.cacheWriteMicrosPerMTok ?? p.inputMicrosPerMTok;
+export const maxPrice = (a: Price, b: Price): Price => ({ inputMicrosPerMTok: Math.max(a.inputMicrosPerMTok, b.inputMicrosPerMTok), outputMicrosPerMTok: Math.max(a.outputMicrosPerMTok, b.outputMicrosPerMTok), cacheWriteMicrosPerMTok: Math.max(cache(a), cache(b)), ...((a.operatorReview || b.operatorReview) ? { operatorReview: true } : {}) });
+const equal = (a: Price, b: Price) => a.inputMicrosPerMTok === b.inputMicrosPerMTok && a.outputMicrosPerMTok === b.outputMicrosPerMTok && cache(a) === cache(b) && !!a.operatorReview === !!b.operatorReview;
+const lower = (a: Price, b: Price) => a.inputMicrosPerMTok < b.inputMicrosPerMTok || a.outputMicrosPerMTok < b.outputMicrosPerMTok || cache(a) < cache(b) || (!a.operatorReview && !!b.operatorReview);
+/** Inputs here are already scaled observations; policy never applies caution twice to an identity. */
+function candidatePrice(clean: Price | undefined, uncertain: Price | undefined, perRequest: boolean): ResolvedPrice | undefined {
+  const token = clean === undefined ? uncertain : uncertain === undefined ? clean : maxPrice(clean, uncertain);
+  if (token === undefined) return perRequest ? { ...flat } : undefined;
+  const price = perRequest ? maxPrice(token, flat) : token;
+  const result = resolved({ ...price, estimated: clean === undefined || !equal(price, clean) });
+  if (clean?.cacheWriteMicrosPerMTok === undefined && uncertain?.cacheWriteMicrosPerMTok === undefined) delete result.cacheWriteMicrosPerMTok;
+  return result;
 }
-/** Group once, sort once per provider/kind: O(n log n), bounded by the source item limit. */
-export function sanitySnapshot(candidate: SourceSnapshot, previous: SourceSnapshot | undefined, deadline: number, held: () => void): SourceSnapshot {
-  const checkTime = () => { if (performance.now() >= deadline) throw new Error("refresh failed"); };
-  const old = effectiveRows(previous, checkTime); const effective = effectiveRows(candidate, checkTime);
-  const pending = new Map(previous?.confirmations?.map((e) => [priceKey(e), e]));
-  const groups = new Map<string, { input: number[]; output: number[] }>();
-  // Last good peers cannot be poisoned by a batch of cheap new models. Bootstrap uses the fetched peers.
-  const priorGroups = new Set(previous?.entries.map((e) => groupKey(e)));
-  const peers = new Map(candidate.entries.filter((e) => !priorGroups.has(groupKey(e))).map((e) => [priceKey(e), e]));
-  for (const e of previous?.entries ?? []) peers.set(priceKey(e), e);
-  for (const e of peers.values()) {
-    checkTime(); const key = groupKey(e); const group = groups.get(key) ?? { input: [], output: [] };
-    group.input.push(e.inputMicrosPerMTok); group.output.push(e.outputMicrosPerMTok); groups.set(key, group);
-  }
-  const median = (values: number[]) => { values.sort((a, b) => a - b); const mid = Math.floor(values.length / 2); return values.length % 2 ? values[mid]! : values[mid - 1]! / 2 + values[mid]! / 2; };
-  const medians = new Map([...groups].map(([key, g]) => [key, { input: median(g.input), output: median(g.output) }]));
-  const entries: PriceEntry[] = []; const floors: ModelFloor[] = []; const confirmations: Row[] = [];
-  // Convert an effective amount to a raw floor whose integer ×1.5 is at least that amount.
-  // Division before addition stays safe at MAX_SAFE_INTEGER; at most one micro of upward rounding.
-  const retain = (e: Row, amount: Price) => {
-    const unscale = (n: number) => Math.ceil(n / 3) + Math.floor(n / 3);
-    floors.push({ provider: e.provider, model: e.model, ...(e.kind === undefined ? {} : { kind: e.kind }), reason: "sanity hold", inputMicrosPerMTok: unscale(amount.inputMicrosPerMTok), outputMicrosPerMTok: unscale(amount.outputMicrosPerMTok), ...(amount.operatorReview ? { operatorReview: true } : {}) });
+interface Pool {
+  provider: string; model: string; kind?: PriceKind; aliases: Set<string>; sources: Set<Source>; origin: PriceOrigin;
+  clean?: Price; uncertain?: Price; perRequest: boolean;
+}
+/** One pricing model: normalize, pool every observation, apply policy once, then confirm the effective price. */
+export function effectivePrices(sources: PriceSnapshot["sources"], previous: readonly EffectiveIdentity[] = [], successful: ReadonlySet<Source> = new Set(names), deadline = performance.now() + FETCH_DEADLINE_MS, held: () => void = () => undefined): EffectiveIdentity[] {
+  let work = 0; const check = () => { if (++work > 20 * MAX_ENTRIES_PER_SOURCE || performance.now() >= deadline) throw new Error("refresh failed"); };
+  const prior = new Map(previous.map((e) => [identityKey(e.provider, e.model), e]));
+  const pools = new Map<string, Pool>(); const exact = new Map<string, string | null>();
+  const remember = (alias: string, key: string) => { const old = exact.get(alias); exact.set(alias, old === undefined || old === key ? key : null); };
+  for (const e of previous) { check(); for (const alias of e.aliases) { check(); remember(alias, identityKey(e.provider, e.model)); } }
+  const add = (row: PriceEntry | ModelFloor | ModelFallback, source: Source, fetchedAt: number): Pool => {
+    check(); const key = identityKey(row.provider, row.model); remember(row.model, key);
+    let p = pools.get(key);
+    if (p === undefined) { p = { provider: row.provider, model: normalizedModel(row.provider, row.model), ...(row.kind === undefined ? {} : { kind: row.kind }), aliases: new Set(), sources: new Set(), origin: { source, fetchedAt }, perRequest: false }; pools.set(key, p); }
+    else if (p.kind !== row.kind) delete p.kind;
+    p.aliases.add(row.model); p.sources.add(source);
+    if ("inputMicrosPerMTok" in row) {
+      const target = "reason" in row ? "uncertain" : "clean";
+      p[target] = p[target] === undefined ? row : maxPrice(p[target], row);
+      if (target === "clean" || p.clean === undefined) p.origin = { source, fetchedAt };
+    }
+    p.perRequest ||= ("reason" in row && row.reason === "per_request_price") || ("perRequest" in row && row.perRequest === true);
+    return p;
   };
-  for (const e of [...candidate.entries, ...(candidate.floors ?? [])]) {
-    checkTime(); const key = priceKey(e); const prior = old.get(key); const next = effective.get(key)!; const confirmed = pending.get(key); const peers = medians.get(groupKey(e));
-    const floorTransition = isFloor(e) || (prior !== undefined && isFloor(prior));
-    const divisor = floorTransition ? 1 : 2;
-    const suspect = prior === undefined
-      ? !isFloor(e) && peers !== undefined && (e.inputMicrosPerMTok < peers.input / 10 || e.outputMicrosPerMTok < peers.output / 10)
-      : next.inputMicrosPerMTok < prior.inputMicrosPerMTok / divisor || next.outputMicrosPerMTok < prior.outputMicrosPerMTok / divisor || (!!prior.operatorReview && !next.operatorReview);
-    const matches = confirmed !== undefined && confirmed.kind === next.kind && confirmed.inputMicrosPerMTok === next.inputMicrosPerMTok && confirmed.outputMicrosPerMTok === next.outputMicrosPerMTok && !!confirmed.operatorReview === !!next.operatorReview;
-    if (suspect && !matches) {
-      confirmations.push(next); held();
-      if (prior !== undefined) {
-        const amount = maxPrice(prior, next);
-        if (floorTransition) retain(e, amount);
-        else entries.push({ ...e, ...amount });
-      } else floors.push({ ...e, reason: "sanity hold", inputMicrosPerMTok: Math.max(e.inputMicrosPerMTok, Math.ceil(peers!.input)), outputMicrosPerMTok: Math.max(e.outputMicrosPerMTok, Math.ceil(peers!.output)) });
-    } else if (isFloor(e)) floors.push(e);
-    else entries.push(e);
+  for (const name of names) {
+    const s = sources[name]; if (s === undefined) continue;
+    for (const row of [...s.entries, ...(s.floors ?? []), ...(s.fallbacks ?? [])]) add(row, name, s.fetchedAt);
   }
-  // Omission or loss of readable rates is not evidence of a lower price.
-  const fallbackKeys = new Set(candidate.fallbacks?.map(priceKey));
-  const flat = { inputMicrosPerMTok: FLAT_CEILING_MICROS_PER_MTOK, outputMicrosPerMTok: FLAT_CEILING_MICROS_PER_MTOK };
-  for (const [key, prior] of old) if (!effective.has(key)) { checkTime(); retain(prior, fallbackKeys.has(key) ? maxPrice(prior, flat) : prior); }
-  const retained = new Set(floors.map(priceKey));
-  const fallbacks = candidate.fallbacks?.filter((e) => !retained.has(priceKey(e)));
-  return { fetchedAt: candidate.fetchedAt, entries, count: entries.length, ...(fallbacks?.length ? { fallbacks } : {}), ...(floors.length ? { floors } : {}), ...(confirmations.length ? { confirmations } : {}) };
+  // Resolve malformed provider metadata only via an unambiguous, exact ID established by a recognized row.
+  for (const row of sources.litellm?.unidentified ?? []) {
+    check(); const key = exact.get(row.model); if (key === undefined || key === null) continue;
+    const identity = pools.get(key) ?? prior.get(key); if (identity === undefined) continue;
+    const p = add({ provider: identity.provider, model: row.model, ...(row.kind === undefined ? {} : { kind: row.kind }), reason: "unpriced" }, "litellm", sources.litellm!.fetchedAt);
+    if (row.rates !== undefined) p.uncertain = p.uncertain === undefined ? row.rates : maxPrice(p.uncertain, row.rates);
+    p.perRequest ||= row.perRequest === true;
+  }
+  // A successful disappearance is a no-contribution candidate, subject to the same confirmation rule.
+  for (const [key, old] of prior) if (!pools.has(key)) {
+    check(); pools.set(key, { provider: old.provider, model: old.model, ...(old.kind === undefined ? {} : { kind: old.kind }), aliases: new Set(old.aliases), sources: new Set(old.sources), origin: old.origin, perRequest: false });
+  }
+  const candidates = new Map<string, EffectiveIdentity>(); const maxima = new Map<string, Price>();
+  for (const [key, p] of pools) {
+    check(); const uncertain = p.uncertain === undefined ? undefined : cautiousPrice(p.uncertain);
+    const token = p.clean === undefined ? uncertain : uncertain === undefined ? p.clean : maxPrice(p.clean, uncertain);
+    if (token === undefined) continue;
+    const price = candidatePrice(p.clean, uncertain, p.perRequest)!;
+    candidates.set(key, { provider: p.provider, model: p.model, ...(p.kind === undefined ? {} : { kind: p.kind }), aliases: [...p.aliases], sources: [...p.sources], origin: p.origin, ...price, cacheWriteMicrosPerMTok: cache(price), knownTokenPrice: true, tokenPrice: maxPrice(token, token) });
+    addMaximum(maxima, p.provider, p.kind, token);
+  }
+  for (const [key, p] of pools) if (!candidates.has(key)) {
+    check(); const provider = maxima.get(JSON.stringify([p.provider, p.kind ?? "all"])) ?? maxima.get(JSON.stringify([p.provider, "all"]));
+    const price = p.perRequest || provider === undefined ? flat : { ...cautiousPrice(provider), estimated: true };
+    candidates.set(key, { provider: p.provider, model: p.model, ...(p.kind === undefined ? {} : { kind: p.kind }), aliases: [...p.aliases], sources: [...p.sources], origin: p.origin, ...price });
+  }
+  const result: EffectiveIdentity[] = []; let aliasCount = 0;
+  for (const [key, next] of candidates) {
+    check(); const old = prior.get(key); const aliases = new Set([...(old?.aliases ?? []), ...next.aliases]);
+    next.aliases = [...aliases];
+    if (old !== undefined && lower(next, old)) {
+      const required = new Set([...old.sources, ...next.sources]);
+      const success = [...required].every((source) => successful.has(source));
+      if (!success || old.pendingLower === undefined || !equal(next, old.pendingLower)) {
+        const amount = maxPrice(old, next);
+        result.push({ ...next, ...amount, sources: [...required], estimated: true, ...((old.knownTokenPrice || next.knownTokenPrice) ? { knownTokenPrice: true } : {}), ...(success ? { pendingLower: resolved(next) } : {}) });
+        held(); continue;
+      }
+    }
+    result.push(next);
+  }
+  for (const e of result) { check(); aliasCount += e.aliases.length; }
+  if (result.length > 2 * MAX_ENTRIES_PER_SOURCE || aliasCount > 2 * MAX_ENTRIES_PER_SOURCE) throw new Error("refresh failed");
+  return result;
+}
+function addMaximum(maxima: Map<string, Price>, provider: string, kind: PriceKind | undefined, price: Price): void {
+  for (const k of kind === undefined ? ["chat", "embedding", "all"] : [kind, "all"]) {
+    const key = JSON.stringify([provider, k]); const old = maxima.get(key); maxima.set(key, old === undefined ? price : maxPrice(old, price));
+  }
+}
+export function resolved(p: ResolvedPrice): ResolvedPrice {
+  return { inputMicrosPerMTok: p.inputMicrosPerMTok, outputMicrosPerMTok: p.outputMicrosPerMTok, ...(p.cacheWriteMicrosPerMTok === undefined ? {} : { cacheWriteMicrosPerMTok: p.cacheWriteMicrosPerMTok }), ...(p.operatorReview ? { operatorReview: true } : {}), estimated: p.estimated, ...(p.knownTokenPrice ? { knownTokenPrice: true } : {}) };
+}
+/** Build once; requests use maps only. The same candidate policy reads legacy snapshots without rewriting them. */
+export function priceBook(snapshot: PriceSnapshot | undefined, overrides: Array<PriceEntry & { origin: PriceOrigin; expiresAt: number }> = []): { identities: EffectiveIdentity[]; index: Map<string, EffectiveIdentity>; maxima: Map<string, Price>; unknown: Set<string>; redundantOverrides: number; expiresAt: number } {
+  const identities = snapshot?.effective ?? effectivePrices(snapshot?.sources ?? {});
+  const index = new Map<string, EffectiveIdentity>(); const maxima = new Map<string, Price>(); const knownAliases = new Set<string>();
+  for (const e of identities) {
+    index.set(identityKey(e.provider, e.model), e); for (const alias of e.aliases) knownAliases.add(alias);
+    if (e.tokenPrice !== undefined) addMaximum(maxima, e.provider, e.kind, e.tokenPrice);
+  }
+  const unknown = new Set((snapshot?.sources.litellm?.unidentified ?? []).filter((e) => !knownAliases.has(e.model)).map((e) => e.model.trim().toLowerCase()));
+  let redundantOverrides = 0; let expiresAt = Infinity;
+  for (const e of overrides) {
+    const key = identityKey(e.provider, e.model); if (index.has(key) || unknown.has(e.model.trim().toLowerCase())) { redundantOverrides++; continue; }
+    expiresAt = Math.min(expiresAt, e.expiresAt);
+    const price = { inputMicrosPerMTok: e.inputMicrosPerMTok, outputMicrosPerMTok: e.outputMicrosPerMTok, cacheWriteMicrosPerMTok: cache(e) };
+    index.set(key, { ...e, ...price, aliases: [e.model], sources: [], estimated: false, knownTokenPrice: true, tokenPrice: price });
+    addMaximum(maxima, e.provider, e.kind, price);
+  }
+  return { identities, index, maxima, unknown, redundantOverrides, expiresAt };
+}
+export function lookupPrice(book: ReturnType<typeof priceBook>, provider: string, model: string, kind: PriceKind): ResolvedPrice {
+  const identity = book.index.get(identityKey(provider, model)); if (identity !== undefined) return resolved(identity);
+  if (book.unknown.has(model.trim().toLowerCase())) return { ...flat };
+  const maximum = book.maxima.get(JSON.stringify([provider, kind])) ?? book.maxima.get(JSON.stringify([provider, "all"]));
+  return maximum === undefined ? { ...flat } : { ...cautiousPrice(maximum), estimated: true };
+}
+
+/** R3a injected sources adapt to the same candidate policy; production snapshots expose the published effective result. */
+export async function resolvePrice(source: PriceSource, provider: string, model: string, ceiling = FLAT_CEILING_MICROS_PER_MTOK, signal?: AbortSignal, kind: PriceKind = "chat"): Promise<ResolvedPrice> {
+  const review: ResolvedPrice = { inputMicrosPerMTok: Number.MAX_SAFE_INTEGER, outputMicrosPerMTok: Number.MAX_SAFE_INTEGER, estimated: true, operatorReview: true };
+  if (source.effectiveFor !== undefined) {
+    try {
+      const price = await source.effectiveFor(provider, model, kind);
+      if (typeof price?.estimated === "boolean" && (price.knownTokenPrice === undefined || price.knownTokenPrice === true) && validPrice({ ...price, estimated: false }, Number.MAX_SAFE_INTEGER)) return price;
+    } catch { /* Unreadable effective money is never replaced by a cheaper guess. */ }
+    return review;
+  }
+  let floor: Price | undefined; let clean: Price | undefined; let perRequest: boolean;
+  try { perRequest = await source.fallbackFor?.(provider, model) !== undefined; } catch { perRequest = true; }
+  try {
+    const value = await source.floorFor?.(provider, model);
+    if (value !== undefined) { if (!validPrice(value, Number.MAX_SAFE_INTEGER)) return review; floor = value; }
+  } catch { return review; }
+  try { const value = await source.priceFor(provider, model, signal); if (validPrice(value)) clean = value; } catch { /* R3a: a missing price uses the cautious fallback. */ }
+  const own = candidatePrice(clean, floor, perRequest);
+  if (own !== undefined) return { ...resolved(own), ...(floor === undefined ? {} : { knownTokenPrice: true }) };
+  try {
+    const price = await source.cautiousFor?.(provider, kind);
+    if (validPrice(price, Number.MAX_SAFE_INTEGER)) return { ...price, estimated: true };
+    const legacy = await source.dearestKnown?.(provider);
+    if (validRate(legacy)) { const rate = Math.ceil(legacy * CAUTION_FACTOR); return { inputMicrosPerMTok: rate, outputMicrosPerMTok: rate, estimated: true }; }
+  } catch { /* Keep the configured R3a fallback. */ }
+  const fallback = validRate(ceiling) ? ceiling : FLAT_CEILING_MICROS_PER_MTOK;
+  return { inputMicrosPerMTok: fallback, outputMicrosPerMTok: fallback, estimated: true };
 }

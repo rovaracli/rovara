@@ -1,26 +1,42 @@
+import { normalizedModel } from "./price-identity.js";
 import { record, whole } from "./model-gateway-token.js";
 import { MAX_ENTRIES_PER_SOURCE, MAX_MODEL_LENGTH } from "./price-constants.js";
-import { validPrice, type Price, type PriceKind } from "./price.js";
+import { validPrice, type Price, type PriceKind, type PriceOrigin, type ResolvedPrice } from "./price.js";
 export interface PriceEntry extends Price { provider: string; model: string; kind: PriceKind }
 export interface PriceKey { provider: string; model: string }
-export interface ModelFallback extends PriceKey { reason: "per_request_price" }
-export const FLOOR_REASONS = ["unsupported mode", "unsupported deprecation date", "deprecated model", "unsupported price field", "unsupported token rate", "token rate exceeds maximum", "sanity hold"] as const;
-export interface ModelFloor extends Price, PriceKey { kind?: PriceKind; reason: typeof FLOOR_REASONS[number] }
-export interface SourceSnapshot { fetchedAt: number; count: number; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; confirmations?: (PriceEntry | ModelFloor)[] }
-export interface PriceSnapshot { version: number; sources: { litellm?: SourceSnapshot; aws?: SourceSnapshot } }
+export interface ModelFallback extends PriceKey { kind?: PriceKind; reason: "per_request_price" | "unpriced" }
+export interface UnidentifiedRow { model: string; kind?: PriceKind; rates?: Price; perRequest?: true }
+export interface EffectiveIdentity extends PriceKey, ResolvedPrice {
+  tokenPrice?: Price; kind?: PriceKind; aliases: string[]; sources: Array<"litellm" | "aws">; origin: PriceOrigin; pendingLower?: ResolvedPrice;
+}
+export const FLOOR_REASONS = ["unsupported mode", "unsupported deprecation date", "deprecated model", "unsupported price field", "unsupported token rate", "token rate exceeds maximum", "sanity hold", "unsupported provider", "unsupported per-request price"] as const;
+export interface ModelFloor extends Price, PriceKey { kind?: PriceKind; perRequest?: true; reason: typeof FLOOR_REASONS[number] }
+export interface SourceSnapshot { fetchedAt: number; count: number; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; unidentified?: UnidentifiedRow[]; confirmations?: (PriceEntry | ModelFloor)[] }
+export interface PriceSnapshot { version: number; sources: { litellm?: SourceSnapshot; aws?: SourceSnapshot }; effective?: EffectiveIdentity[] }
 export interface PriceSnapshotStore { load(): Promise<PriceSnapshot | undefined>; save(snapshot: PriceSnapshot, expectedVersion: number): Promise<boolean> }
 export const priceKey = (key: PriceKey): string => JSON.stringify([key.provider, key.model]);
+export function validModel(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= MAX_MODEL_LENGTH && ![...value].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
+}
 export function validEntry(value: unknown): value is PriceEntry {
   const v = record(value);
-  return v !== undefined && validPrice(v) && typeof v.provider === "string" && ["anthropic", "openai", "gemini", "vertex", "bedrock", "openrouter"].includes(v.provider) && typeof v.model === "string" && v.model.length > 0 && v.model.length <= MAX_MODEL_LENGTH && ![...v.model].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) && (v.kind === "chat" || v.kind === "embedding");
+  return v !== undefined && validPrice(v) && typeof v.provider === "string" && ["anthropic", "openai", "gemini", "vertex", "bedrock", "openrouter"].includes(v.provider) && validModel(v.model) && (v.kind === "chat" || v.kind === "embedding");
 }
 export function validFloor(value: unknown): value is ModelFloor {
   const v = record(value);
-  return v !== undefined && FLOOR_REASONS.includes(v.reason as ModelFloor["reason"]) && validPrice(v, Number.MAX_SAFE_INTEGER) && (v.operatorReview === undefined || v.operatorReview === true) && (v.kind === undefined || v.kind === "chat" || v.kind === "embedding") && validEntry({ ...v, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, cacheWriteMicrosPerMTok: 1 });
+  return v !== undefined && FLOOR_REASONS.includes(v.reason as ModelFloor["reason"]) && (v.perRequest === undefined || v.perRequest === true) && validPrice(v, Number.MAX_SAFE_INTEGER) && (v.operatorReview === undefined || v.operatorReview === true) && (v.kind === undefined || v.kind === "chat" || v.kind === "embedding") && validEntry({ ...v, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, cacheWriteMicrosPerMTok: 1 });
 }
 export function validFallback(value: unknown): value is ModelFallback {
   const v = record(value);
-  return v !== undefined && v.reason === "per_request_price" && validEntry({ ...v, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 });
+  return v !== undefined && (v.reason === "per_request_price" || v.reason === "unpriced") && (v.kind === undefined || v.kind === "chat" || v.kind === "embedding") && validEntry({ ...v, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 });
+}
+export function validUnidentified(value: unknown): value is UnidentifiedRow {
+  const v = record(value);
+  return v !== undefined && validModel(v.model) && (v.kind === undefined || v.kind === "chat" || v.kind === "embedding") && (v.perRequest === undefined || v.perRequest === true) && (v.rates === undefined || validPrice(v.rates, Number.MAX_SAFE_INTEGER));
+}
+function validEffectivePrice(value: unknown): value is ResolvedPrice {
+  const v = record(value);
+  return v !== undefined && typeof v.estimated === "boolean" && (v.knownTokenPrice === undefined || v.knownTokenPrice === true) && validPrice({ ...v, estimated: false }, Number.MAX_SAFE_INTEGER);
 }
 export function validSnapshot(value: unknown): value is PriceSnapshot {
   const v = record(value); const sources = record(v?.sources);
@@ -31,7 +47,8 @@ export function validSnapshot(value: unknown): value is PriceSnapshot {
     if (s === undefined || !whole(s.fetchedAt) || !Array.isArray(s.entries) || s.entries.length > MAX_ENTRIES_PER_SOURCE || s.count !== s.entries.length) return false;
     if (s.fallbacks !== undefined && (!Array.isArray(s.fallbacks) || s.entries.length + s.fallbacks.length > MAX_ENTRIES_PER_SOURCE)) return false;
     if (s.floors !== undefined && !Array.isArray(s.floors)) return false;
-    if (s.entries.length + ((s.fallbacks ?? []) as unknown[]).length + ((s.floors ?? []) as unknown[]).length > MAX_ENTRIES_PER_SOURCE) return false;
+    if (s.unidentified !== undefined && (!Array.isArray(s.unidentified) || name !== "litellm")) return false;
+    if (s.entries.length + ((s.fallbacks ?? []) as unknown[]).length + ((s.floors ?? []) as unknown[]).length + ((s.unidentified ?? []) as unknown[]).length > MAX_ENTRIES_PER_SOURCE) return false;
     if (s.confirmations !== undefined && (!Array.isArray(s.confirmations) || s.confirmations.length > MAX_ENTRIES_PER_SOURCE)) return false;
     const confirmations = new Set<string>();
     for (const e of (s.confirmations ?? []) as unknown[]) {
@@ -50,6 +67,25 @@ export function validSnapshot(value: unknown): value is PriceSnapshot {
     for (const f of (s.fallbacks ?? []) as unknown[]) {
       if (!validFallback(f) || (name === "aws" && f.provider !== "bedrock") || seen.has(priceKey(f))) return false;
       seen.add(priceKey(f));
+    }
+    const unidentified = new Set<string>();
+    for (const u of (s.unidentified ?? []) as unknown[]) {
+      if (!validUnidentified(u) || unidentified.has(u.model)) return false;
+      unidentified.add(u.model);
+    }
+  }
+  if (v.effective !== undefined) {
+    if (!Array.isArray(v.effective) || v.effective.length > 2 * MAX_ENTRIES_PER_SOURCE) return false;
+    const seen = new Set<string>(); let aliases = 0;
+    for (const value of v.effective as unknown[]) {
+      const e = record(value);
+      if (e === undefined || (e.tokenPrice !== undefined && !validPrice(e.tokenPrice, Number.MAX_SAFE_INTEGER)) || !validEffectivePrice(e) || !validEntry({ ...e, estimated: false, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, cacheWriteMicrosPerMTok: 1 }) || (e.kind !== undefined && e.kind !== "chat" && e.kind !== "embedding")) return false;
+      if (!Array.isArray(e.aliases) || e.aliases.length === 0 || (aliases += e.aliases.length) > 2 * MAX_ENTRIES_PER_SOURCE || !e.aliases.every(validModel) || new Set(e.aliases).size !== e.aliases.length) return false;
+      if (!Array.isArray(e.sources) || e.sources.length < 1 || e.sources.length > 2 || e.sources.some((s) => s !== "litellm" && s !== "aws") || new Set(e.sources).size !== e.sources.length) return false;
+      const origin = record(e.origin);
+      if (origin === undefined || !e.sources.includes(origin.source) || !whole(origin.fetchedAt) || (e.pendingLower !== undefined && !validEffectivePrice(e.pendingLower))) return false;
+      if (e.model !== normalizedModel(e.provider as string, e.model as string)) return false;
+      const key = priceKey(e as unknown as PriceKey); if (seen.has(key)) return false; seen.add(key);
     }
   }
   return true;

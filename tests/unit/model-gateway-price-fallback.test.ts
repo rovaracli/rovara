@@ -14,7 +14,8 @@ it("persists per-request fallback separately from fixed reports, survives reload
   const store = new InMemoryPriceSnapshotStore(); const prices = new SnapshotPriceSource(store);
   const result = await fetchLiteLLM(transport({ ordinary: row, "private-request": { ...row, cost_per_request: 0.01 }, "private-no-base": { mode: "chat", litellm_provider: "anthropic", cost_per_request: 0.01 } }), { minModels: 1 });
   expect(result.ok).toBe(true); if (!result.ok) return;
-  expect(result.fallbacks).toEqual([{ provider: "anthropic", model: "private-request", reason: "per_request_price" }, { provider: "anthropic", model: "private-no-base", reason: "per_request_price" }]);
+  expect(result.floors).toEqual([expect.objectContaining({ provider: "anthropic", model: "private-request", perRequest: true, inputMicrosPerMTok: 1e6 })]);
+  expect(result.fallbacks).toEqual([{ provider: "anthropic", model: "private-no-base", kind: "chat", reason: "per_request_price" }]);
   expect(JSON.stringify(result.report)).not.toMatch(/private|ordinary/);
   const refresher = new PriceRefresher({ store, prices, litellm: async () => result, aws: async () => ({ ok: false, reason: "invalid source" }) });
   await refresher.run(1);
@@ -25,7 +26,7 @@ it("persists per-request fallback separately from fixed reports, survives reload
     expect(price).toMatchObject({ estimated: true, inputMicrosPerMTok: 100_000_000, outputMicrosPerMTok: 100_000_000 });
     expect(settleAmount({ price, usage: { input: 10, output: 1, cacheRead: 0, cacheWrite: 0 }, reservationMicros: 2000 })).toMatchObject({ actualMicros: 1100, estimated: true });
   }
-  expect(await resolvePrice(reloaded, "anthropic", "ordinary-unknown")).toMatchObject({ inputMicrosPerMTok: 1_500_000, outputMicrosPerMTok: 3_000_000 });
+  expect(await resolvePrice(reloaded, "anthropic", "ordinary-unknown")).toMatchObject({ inputMicrosPerMTok: 2_250_000, outputMicrosPerMTok: 4_500_000 });
   expect((await store.load())?.sources.litellm?.fallbacks).toEqual(result.fallbacks);
   const saved = JSON.stringify(await store.load());
   await new PriceRefresher({ store, prices, litellm: async () => ({ ...result, fallbacks: [{ provider: "anthropic", model: "secret", reason: "unknown" }] } as unknown as typeof result), aws: async () => ({ ok: false, reason: "invalid source" }) }).run(2);

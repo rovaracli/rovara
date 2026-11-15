@@ -8,7 +8,7 @@ it("fetches LiteLLM using provider identity, kinds, maxima and fixed reports", a
   const { fetchLiteLLM } = await import("../../packages/model-gateway/src/price-sources.js");
   const result = await fetchLiteLLM(transport({ "openai/not-openai": base, "gemini/m": { ...base, litellm_provider: "gemini", mode: "embedding" }, skipped: { ...base, private_price: "private-canary" }, image: { ...base, mode: "image" } }), { now, minModels: 1 });
   expect(result.ok).toBe(true); if (!result.ok) return;
-  expect(result.entries).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "anthropic", model: "openai/not-openai", kind: "chat" }), expect.objectContaining({ provider: "gemini", model: "m", kind: "embedding" })]));
+  expect(result.entries).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "anthropic", model: "openai/not-openai", kind: "chat" }), expect.objectContaining({ provider: "gemini", model: "gemini/m", kind: "embedding" })]));
   expect(result.entries).toHaveLength(2); expect(result.report.skipped.length).toBe(2);
   expect(JSON.stringify(result.report)).not.toMatch(/private|not-openai|gemini/);
 });
@@ -18,11 +18,11 @@ it("rejects missing, truncated, oversized, shallow floods and too-small sources 
     const r = await fetchLiteLLM(t, { now }); expect(r.ok).toBe(false); expect(JSON.stringify(r)).not.toContain("private-canary");
   }
 });
-it("ordinary raise-only and shrink compare against the last good snapshot; increases are immediate", async () => {
+it("parsers retain ordinary decreases for identity confirmation and keep shrink validation", async () => {
   const { fetchLiteLLM } = await import("../../packages/model-gateway/src/price-sources.js");
   const previous = [{ provider: "anthropic", model: "m", kind: "chat" as const, inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 }];
   const lower = await fetchLiteLLM(transport({ m: { ...base, input_cost_per_token: 0.5e-6 } }), { now, minModels: 1, previous });
-  expect(lower.ok && lower.entries).toEqual(previous); expect(lower.ok && lower.report.ignoredLower).toBe(1);
+  expect(lower.ok && lower.entries).toEqual([{ ...previous[0], inputMicrosPerMTok: 500_000 }]); expect(lower.ok && lower.report.ignoredLower).toBe(0);
   expect((await fetchLiteLLM(transport({ m: { ...base, input_cost_per_token: 200e-6 } }), { now, minModels: 1, previous })).ok).toBe(true);
   expect((await fetchLiteLLM(transport({ m: base }), { now, minModels: 1, previous: [...previous, { ...previous[0]!, model: "other" }] })).ok).toBe(false);
 });
@@ -42,7 +42,7 @@ it("reported-cost and overrides obey precedence, expiry, runtime validity and ro
   expect(validOverrides([good], now)).toHaveLength(1);
   for (const extra of [{ expiresOn: "2026-11-02" }, { expiresOn: "2027-12-01" }, { kind: "image" }, { rates: { inputMicrosPerMTok: 0 } }]) expect(validOverrides([{ ...good, ...extra }], now)).toEqual([]);
 });
-it("AWS fixture folds geo, global, long context and cache write maxima, with Bedrock precedence", async () => {
+it("AWS fixture folds geo, global, long context and cache write maxima, with cross-source component maxima", async () => {
   const { readFile } = await import("node:fs/promises");
   const offer: unknown = JSON.parse(await readFile(new URL("../fixtures/model-gateway-prices/aws.json", import.meta.url), "utf8"));
   const { fetchAWS } = await import("../../packages/model-gateway/src/price-sources.js");
@@ -56,7 +56,7 @@ it("AWS fixture folds geo, global, long context and cache write maxima, with Bed
   const { SnapshotPriceSource } = await import("../../packages/model-gateway/src/price-index.js");
   const store = new InMemoryPriceSnapshotStore(); await store.save({ version: 1, sources: { aws: { fetchedAt: now, count: 2, entries: result.entries }, litellm: { fetchedAt: now, count: 1, entries: [{ ...result.entries[0]!, model: "us.anthropic.claude-haiku-5-5-20261101-v1:0", inputMicrosPerMTok: 1000000 }] } } }, 0);
   const source = new SnapshotPriceSource(store); await source.reload();
-  expect(source.priceFor("bedrock", "us.anthropic.claude-haiku-5-5-20261101-v1:0")?.inputMicrosPerMTok).toBe(687500);
+  expect(source.priceFor("bedrock", "us.anthropic.claude-haiku-5-5-20261101-v1:0")?.inputMicrosPerMTok).toBe(1000000);
 });
 it("malformed AWS priced tiers cannot silently retain a cheaper base", async () => {
   const { readFile } = await import("node:fs/promises");
