@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   GATEWAY_COMPANY_KEY_PREFIX,
   GATEWAY_ENV,
+  GATEWAY_LEDGER_INDEXES,
   GATEWAY_LOG_EVENTS,
   GATEWAY_MARKERS_TTL_ATTRIBUTE,
   GATEWAY_PORT,
@@ -17,6 +18,7 @@ import {
   MODEL_GATEWAY_COMPANY_KEY_PREFIX,
   MODEL_GATEWAY_CONTEXT_KEY,
   MODEL_GATEWAY_ENV,
+  MODEL_GATEWAY_LEDGER_INDEXES,
   MODEL_GATEWAY_LOG_EVENTS,
   MODEL_GATEWAY_MARKERS_TTL_ATTRIBUTE,
   MODEL_GATEWAY_PORT,
@@ -65,6 +67,7 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
     expect(MODEL_GATEWAY_COMPANY_KEY_PREFIX).toBe(GATEWAY_COMPANY_KEY_PREFIX);
     expect(MODEL_GATEWAY_MARKERS_TTL_ATTRIBUTE).toBe(GATEWAY_MARKERS_TTL_ATTRIBUTE);
     expect(MODEL_GATEWAY_LOG_EVENTS).toEqual(GATEWAY_LOG_EVENTS);
+    expect(MODEL_GATEWAY_LEDGER_INDEXES).toEqual(GATEWAY_LEDGER_INDEXES);
     // server.ts's own log events: a rename there fails to compile here.
     const serverEvents: Array<Parameters<GatewayDependencies["log"]>[0]["event"]> = [GATEWAY_LOG_EVENTS.refused, GATEWAY_LOG_EVENTS.overrunBusy, GATEWAY_LOG_EVENTS.settleFailed, GATEWAY_LOG_EVENTS.providerError];
     expect(serverEvents).toHaveLength(4);
@@ -119,6 +122,13 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
       expect(each.Properties.Replicas).toEqual([expect.objectContaining({ DeletionProtectionEnabled: true, PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true } })]);
       if (id.startsWith("Markers")) expect(each.Properties.TimeToLiveSpecification).toEqual({ AttributeName: GATEWAY_MARKERS_TTL_ATTRIBUTE, Enabled: true });
       else expect(each.Properties.TimeToLiveSpecification).toBeUndefined();
+      // Only the ledger has indexes: the two pending-correction indexes, keyed exactly as dynamo-meter.ts queries them.
+      if (id.startsWith("Ledger")) {
+        expect(each.Properties.GlobalSecondaryIndexes).toEqual(Object.values(GATEWAY_LEDGER_INDEXES).map((index) => ({
+          IndexName: index.name, Projection: { ProjectionType: "ALL" },
+          KeySchema: [{ AttributeName: index.partitionKey, KeyType: "HASH" }, { AttributeName: index.sortKey, KeyType: "RANGE" }],
+        })));
+      } else expect(each.Properties.GlobalSecondaryIndexes).toBeUndefined();
     }
   });
 
@@ -130,8 +140,11 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
     expect(actions(bySid.MeterAndLedgerCompanyKeys!).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
     expect(bySid.MarkersCompanyKeys).toMatchObject({ Condition: companyKeys, Resource: { "Fn::GetAtt": [tableId("Markers"), "Arn"] } });
     expect(bySid.ReadPrices).toMatchObject({ Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: { "Fn::GetAtt": [tableId("Prices"), "Arn"] } });
-    expect(Object.keys(bySid).sort()).toEqual(["DecryptProviderKeys", "MarkersCompanyKeys", "MeterAndLedgerCompanyKeys", "ReadPrices", "ReadProviderKeys"]);
-    // Every table grant in the stack, for every role: named tables only, never a wildcard, an index or a destructive action on money tables.
+    expect(Object.keys(bySid).sort()).toEqual(["DecryptProviderKeys", "MarkersCompanyKeys", "MeterAndLedgerCompanyKeys", "QueryPendingCorrections", "ReadPrices", "ReadProviderKeys"]);
+    // The pending-correction indexes: Query only, the two indexes by name (no table, no wildcard, no write).
+    expect(bySid.QueryPendingCorrections).toMatchObject({ Action: "dynamodb:Query", Resource: Object.values(GATEWAY_LEDGER_INDEXES).map((index) => ({ "Fn::Join": ["", [{ "Fn::GetAtt": [tableId("Ledger"), "Arn"] }, `/index/${index.name}`]] })) });
+    expect(bySid.QueryPendingCorrections!.Condition).toBeUndefined();
+    // Every table grant in the stack, for every role: named tables (and the two named ledger indexes) only, never a wildcard or a destructive action on money tables.
     for (const statement of allStatements.filter((each) => actions(each).some((action) => action.startsWith("dynamodb:")))) {
       expect(JSON.stringify(statement.Resource)).not.toContain("*");
       expect(actions(statement).every((action) => !action.includes("*") && !["dynamodb:Scan", "dynamodb:BatchWriteItem", "dynamodb:DeleteTable"].includes(action))).toBe(true);
@@ -200,8 +213,8 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
     }
   });
 
-  it("runs the daily price fetch on a schedule that is off until R3c is wired", () => {
-    template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: MODEL_GATEWAY_PRICE_FETCH_SCHEDULE, State: "DISABLED" });
+  it("runs the daily price fetch on its schedule (the process's price-fetch mode is wired)", () => {
+    template.hasResourceProperties("AWS::Events::Rule", { ScheduleExpression: MODEL_GATEWAY_PRICE_FETCH_SCHEDULE, State: "ENABLED" });
     const rule = ofType("AWS::Events::Rule")[0]![1].Properties as { Targets: Array<{ EcsParameters: { TaskDefinitionArn: unknown; TaskCount: number } }> };
     expect(rule.Targets).toHaveLength(1);
     expect(rule.Targets[0]!.EcsParameters).toMatchObject({ TaskCount: 1, TaskDefinitionArn: { Ref: taskId("PriceFetchTask") } });

@@ -30,11 +30,11 @@ import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix } fr
  *
  *   worker (Code) --TLS--> load balancer (HTTPS only) --> 2+ Fargate tasks (GATEWAY_MODE=serve) --> api.anthropic.com
  *                                                              |  task token checked against Code's pinned JWKS
- *                                                              |  DynamoDB: meter (spend, holds), ledger (per-call records),
+ *                                                              |  DynamoDB: meter (spend, holds), ledger (per-call records, pending-correction indexes),
  *                                                              |            markers (in-flight marker, ended tasks; expire),
  *                                                              |            prices (last good snapshot)
  *                                                              |  Secrets Manager: provider keys, read at run time
- *   EventBridge rule (daily, DISABLED until R3c is wired) --> one Fargate task (GATEWAY_MODE=price-fetch) --> prices table
+ *   EventBridge rule (daily) --> one Fargate task (GATEWAY_MODE=price-fetch) --> prices table
  *
  * Fargate, not Lambda: the gateway's entry is a node:http handler (server.ts createGatewayHandler) that streams one call for up
  * to an hour (provider.ts CALL_HARD_CEILING_MS), past Lambda's 15 minutes.
@@ -79,6 +79,11 @@ export const MODEL_GATEWAY_ENV = {
 export const MODEL_GATEWAY_PORT = 8080;
 export const MODEL_GATEWAY_COMPANY_KEY_PREFIX = "CO#";
 export const MODEL_GATEWAY_MARKERS_TTL_ATTRIBUTE = "expiresAt";
+/** The ledger's pending-correction indexes (deploy.ts GATEWAY_LEDGER_INDEXES): sparse, string keys, every attribute projected. */
+export const MODEL_GATEWAY_LEDGER_INDEXES = {
+  pendingByKey: { name: "pending-by-key", partitionKey: "pendingAll", sortKey: "pendingKeyAt" },
+  pendingByAge: { name: "pending-by-age", partitionKey: "pendingAll", sortKey: "pendingAt" },
+} as const;
 export const MODEL_GATEWAY_LOG_EVENTS = {
   refused: "refused",
   overrunBusy: "overrun_busy",
@@ -145,11 +150,12 @@ export interface ModelGatewayProps extends StackProps {
 }
 
 /** Table defaults: on-demand, point-in-time recovery, deletion protection, kept if the stack goes. */
-function table(scope: Construct, id: string, ttl: boolean): dynamodb.TableV2 {
+function table(scope: Construct, id: string, ttl: boolean, indexes: readonly dynamodb.GlobalSecondaryIndexPropsV2[] = []): dynamodb.TableV2 {
   return new dynamodb.TableV2(scope, id, {
     partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
     sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
     ...(ttl ? { timeToLiveAttribute: MODEL_GATEWAY_MARKERS_TTL_ATTRIBUTE } : {}),
+    ...(indexes.length === 0 ? {} : { globalSecondaryIndexes: [...indexes] }),
     billing: dynamodb.Billing.onDemand(),
     pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
     deletionProtection: true,
@@ -191,7 +197,13 @@ export class ModelGatewayStack extends Stack {
 
     // Tables. Only markers expire (DEC 222: spend, holds and per-call records are kept).
     const meter = table(this, "Meter", false);
-    const ledger = table(this, "Ledger", false);
+    // The ledger's estimated calls waiting for a real price (R3c's pending-correction index), as two sparse indexes.
+    const ledger = table(this, "Ledger", false, Object.values(MODEL_GATEWAY_LEDGER_INDEXES).map((index) => ({
+      indexName: index.name,
+      partitionKey: { name: index.partitionKey, type: dynamodb.AttributeType.STRING },
+      sortKey: { name: index.sortKey, type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    })));
     const markers = table(this, "Markers", true);
     const prices = table(this, "Prices", false);
 
@@ -294,6 +306,13 @@ export class ModelGatewayStack extends Stack {
     const moneyActions = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"];
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "MeterAndLedgerCompanyKeys", actions: moneyActions, resources: [meter.tableArn, ledger.tableArn], conditions: companyKeysOnly }));
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "MarkersCompanyKeys", actions: [...moneyActions, "dynamodb:DeleteItem"], resources: [markers.tableArn], conditions: companyKeysOnly }));
+    // The correction run (in the serving tasks) finds pending calls across companies through the ledger's two indexes:
+    // Query only, those two indexes by name. Their partition is one constant, not a company key, so no LeadingKeys
+    // condition; the rows they return are the ones the company-keys grant above already lets this role read.
+    serveRole.addToPolicy(new iam.PolicyStatement({
+      sid: "QueryPendingCorrections", actions: ["dynamodb:Query"],
+      resources: Object.values(MODEL_GATEWAY_LEDGER_INDEXES).map((index) => `${ledger.tableArn}/index/${index.name}`),
+    }));
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadPrices", actions: ["dynamodb:GetItem", "dynamodb:Query"], resources: [prices.tableArn] }));
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadProviderKeys", actions: ["secretsmanager:GetSecretValue"], resources: secrets.map((secret) => secret.secretArn) }));
     serveRole.addToPolicy(new iam.PolicyStatement({
@@ -396,7 +415,7 @@ export class ModelGatewayStack extends Stack {
       healthCheck: { path: "/healthz", healthyHttpCodes: "200", interval: Duration.seconds(15), healthyThresholdCount: 2, unhealthyThresholdCount: 3 },
     });
 
-    // The daily price fetch: the same image in price-fetch mode, its own role. DISABLED until R3c's fetchers are wired.
+    // The daily price fetch: the same image in price-fetch mode (packages/model-gateway/src/process.ts runPriceFetch), its own role.
     const fetchLogs = new logs.LogGroup(this, "PriceFetchLogs", { retention: logs.RetentionDays.THREE_MONTHS, removalPolicy: RemovalPolicy.RETAIN });
     const fetchTask = new ecs.FargateTaskDefinition(this, "PriceFetchTask", {
       cpu: 512,
@@ -415,9 +434,9 @@ export class ModelGatewayStack extends Stack {
     });
     props.repository.grantPull(fetchTask.obtainExecutionRole());
     new events.Rule(this, "PriceFetchSchedule", {
-      description: `Rovara Cloud ${env}: the model gateway's daily price fetch (off until R3c is wired)`,
+      description: `Rovara Cloud ${env}: the model gateway's daily price fetch`,
       schedule: events.Schedule.expression(MODEL_GATEWAY_PRICE_FETCH_SCHEDULE),
-      enabled: false,
+      enabled: true,
       targets: [new targets.EcsTask({
         cluster,
         taskDefinition: fetchTask as ecs.ITaskDefinition,

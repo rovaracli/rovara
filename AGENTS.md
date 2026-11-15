@@ -19,7 +19,7 @@ feature the app needs that Code's API cannot do yet starts as a Rovara Code issu
 
 | Path | What it is |
 |---|---|
-| `packages/model-gateway` | Cloud model gateway core: signed task tokens, budget reservations and streaming provider transport (no process entry yet; `src/deploy.ts` names what the deployed process reads). |
+| `packages/model-gateway` | Cloud model gateway: signed task tokens, budget reservations, streaming provider transport, and its process (`src/main.ts` -> `src/process.ts`: `GATEWAY_MODE=serve` or `price-fetch`) with DynamoDB and Secrets Manager adapters on node built-ins only (`src/aws.ts`, `src/dynamo*.ts`, `src/secrets.ts`; the image holds no node_modules). `src/deploy.ts` names what the process reads. |
 | `packages/cloud-server` | Sign-in through Code, sessions, CSRF, and the route table `src/routes.ts`. See its README. |
 | `packages/web`, `packages/ui` | The web app (`/app`): `web` is the shell, build and page handler, `ui` holds the pages and components. |
 | `packages/contracts` | Shared types and schemas (zod). Browser code imports `@agentx/contracts/web` only. |

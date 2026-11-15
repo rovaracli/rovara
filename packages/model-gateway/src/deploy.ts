@@ -1,7 +1,7 @@
 /**
  * What the deployed gateway reads from its environment and writes to its log, shared with infra/lib/model-gateway.ts (which
- * repeats these literals; tests/contract/model-gateway-infra.test.ts holds the two to one truth). Constants only: the process
- * entry that reads them, and the DynamoDB and Secrets Manager adapters, are a later lane.
+ * repeats these literals; tests/contract/model-gateway-infra.test.ts holds the two to one truth). Constants only: process.ts
+ * (the entry, main.ts) reads them; dynamo-meter.ts, dynamo-prices.ts and secrets.ts are the DynamoDB and Secrets Manager adapters.
  *
  * Settings come from plain environment variables. A provider key never does: the environment names the secret's ARN, and the
  * process reads the value from Secrets Manager at run time with its own role (migration plan v3.2, 7.4 item 4).
@@ -48,3 +48,15 @@ export const GATEWAY_LOG_EVENTS = {
   providerError: "provider_error",
   priceFetchFailed: "price_fetch_failed",
 } as const;
+
+/**
+ * The ledger's two sparse indexes over estimated calls still waiting for a real price (R3c's pending-correction index). Only a
+ * pending call carries `pendingAll` (one constant value), so the indexes hold nothing else and a corrected or expired call
+ * leaves both. by-key orders by price key, then age (one price key's calls, and the distinct keys); by-age orders by age
+ * across keys (the expiry sweep). The serving role may Query these two indexes by name, nothing else on them.
+ */
+export const GATEWAY_LEDGER_INDEXES = {
+  pendingByKey: { name: "pending-by-key", partitionKey: "pendingAll", sortKey: "pendingKeyAt" },
+  pendingByAge: { name: "pending-by-age", partitionKey: "pendingAll", sortKey: "pendingAt" },
+} as const;
+export const GATEWAY_PENDING_PARTITION = "PENDING";
