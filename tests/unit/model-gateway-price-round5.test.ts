@@ -121,7 +121,7 @@ it("persisted effective identities and unidentified rows validate before any rea
   }
   expect(JSON.stringify(f.logs)).not.toMatch(/private|claude/);
 });
-it("the complete pooled identity/alias bound resolves in bounded time and overflow rejects the entire snapshot", async () => {
+it("the complete pooled identity/alias bound resolves in bounded time and oldest alias history is evicted", async () => {
   const { effectivePrices } = await import("../../packages/model-gateway/src/price-sanity.js");
   const { validSnapshot } = await import("../../packages/model-gateway/src/price-snapshot.js");
   const entry = { provider: "bedrock", model: "m", kind: "chat" as const, inputMicrosPerMTok: 1, outputMicrosPerMTok: 2, cacheReadMicrosPerMTok: 0, cacheWrite5mMicrosPerMTok: 2, cacheWrite1hMicrosPerMTok: 3, longContext: [{ aboveTokens: 128000, inputMicrosPerMTok: 3 }, { aboveTokens: 200000, inputMicrosPerMTok: 4 }] };
@@ -131,7 +131,9 @@ it("the complete pooled identity/alias bound resolves in bounded time and overfl
   expect(effective.every((e) => e.aliases.length === 2)).toBe(true); expect(validSnapshot({ version: 1, sources, effective })).toBe(true);
   expect(effectivePrices(sources, effective)).toHaveLength(20_000); expect(performance.now() - start).toBeLessThan(5000);
   const next = structuredClone(sources); next.litellm.entries[0]!.model = "eu.anthropic.model-0-v1:0";
-  expect(() => effectivePrices(next, effective)).toThrow(/^refresh failed$/);
+  const pruned = effectivePrices(next, effective);
+  expect(pruned.flatMap((e) => e.aliases)).toHaveLength(40_000);
+  expect(validSnapshot({ version: 2, sources: next, effective: pruned })).toBe(true);
   expect(validSnapshot({ version: 1, sources, effective: [...effective, ...effective] })).toBe(false);
 });
 it("successful complete disappearance confirms the provider fallback, while source failure never does", async () => {

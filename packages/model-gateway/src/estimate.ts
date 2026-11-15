@@ -7,11 +7,11 @@ function roundedCost(numerator: bigint, denominator = 1_000_000n, saturate = fal
   if (micros > BigInt(Number.MAX_SAFE_INTEGER)) { if (saturate) return Number.MAX_SAFE_INTEGER; throw new Error("request not allowed"); }
   return Number(micros);
 }
-export function estimateCall(bytes: number, maxTokens: number, price: Price, inputAllowance = 0): number {
+export function estimateCall(bytes: number, maxTokens: number, price: Price, inputAllowance = 0, plainInput = false): number {
   const complete = completePrice(price);
   if (complete.operatorReview) return Number.MAX_SAFE_INTEGER;
-  const rates = [complete, ...(complete.longContext ?? []).map((t) => ({ ...complete, ...t }))];
-  const input = Math.max(...rates.flatMap((r) => [r.inputMicrosPerMTok, r.cacheReadMicrosPerMTok!, r.cacheWrite5mMicrosPerMTok!, r.cacheWrite1hMicrosPerMTok!]));
+  const rates = [complete, ...(complete.longContext ?? []).filter((t) => t.aboveTokens < bytes + inputAllowance).map((t) => ({ ...complete, ...t }))];
+  const input = Math.max(...rates.flatMap((r) => plainInput ? [r.inputMicrosPerMTok] : [r.inputMicrosPerMTok, r.cacheReadMicrosPerMTok!, r.cacheWrite5mMicrosPerMTok!, r.cacheWrite1hMicrosPerMTok!]));
   const output = Math.max(...rates.map((r) => r.outputMicrosPerMTok));
   return roundedCost(BigInt(bytes + inputAllowance) * BigInt(input) + BigInt(maxTokens) * BigInt(output), 1_000_000n, "estimated" in price && price.estimated === true);
 }

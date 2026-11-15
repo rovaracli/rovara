@@ -28,7 +28,7 @@ export class SnapshotPriceSource implements PriceSource {
   }
   effectiveFor(provider: string, model: string, kind: PriceKind): ResolvedPrice {
     if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
-    return lookupPrice(this.#book, provider, model, kind);
+    return { ...lookupPrice(this.#book, provider, model, kind), priceVersion: this.#snapshot?.version ?? 0 };
   }
   priceFor(provider: string, model: string): (Price & { origin: PriceOrigin }) | undefined {
     if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);

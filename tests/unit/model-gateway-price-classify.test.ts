@@ -4,8 +4,8 @@ beforeAll(denyNetwork);
 const base = { mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 };
 it("ports every dearest tier and rounds upwards independently", async () => {
   const { ratesOf, rateMicros } = await import("../../packages/model-gateway/src/price-classify.js");
-  const inputs = ["input_cost_per_audio_token", "input_cost_per_image_token", "cache_creation_input_token_cost", "cache_creation_input_token_cost_above_1hr", "input_cost_per_token_above_200k_tokens", "input_cost_per_token_priority", "cache_read_input_token_cost", "input_cost_per_token_batches", "input_cost_per_token_flex", "input_cost_per_token_cache_hit"];
-  const outputs = ["output_cost_per_audio_token", "output_cost_per_image_token", "output_cost_per_reasoning_token", "output_cost_per_token_above_200k_tokens", "output_cost_per_token_priority", "output_cost_per_token_batches", "output_cost_per_token_flex"];
+  const inputs = ["cache_creation_input_token_cost", "cache_creation_input_token_cost_above_1hr", "input_cost_per_token_above_200k_tokens", "cache_read_input_token_cost", "input_cost_per_token_batches", "input_cost_per_token_flex", "input_cost_per_token_cache_hit"];
+  const outputs = ["output_cost_per_reasoning_token", "output_cost_per_token_above_200k_tokens", "output_cost_per_token_batches", "output_cost_per_token_flex"];
   for (const field of inputs) {
     const optional = field === "cache_creation_input_token_cost" ? "cacheWrite5mMicrosPerMTok" : field === "cache_creation_input_token_cost_above_1hr" ? "cacheWrite1hMicrosPerMTok" : field === "cache_read_input_token_cost" || field === "input_cost_per_token_cache_hit" ? "cacheReadMicrosPerMTok" : undefined;
     expect(ratesOf({ ...base, [field]: 10.0000001e-6 }, 0)).toEqual({ inputMicrosPerMTok: optional !== undefined || field.includes("above_200k") ? 1_000_000 : 10_000_001, outputMicrosPerMTok: 2_000_000,

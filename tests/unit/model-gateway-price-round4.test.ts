@@ -12,7 +12,7 @@ import { fixture as pooledFixture, row as pooledRow, bedrock as bedrockRow, offe
 beforeAll(denyNetwork);
 const model = "claude-sonnet-4-5";
 const row = (input = 15, extra: Record<string, unknown> = {}) => ({ litellm_provider: "anthropic", mode: "chat", input_cost_per_token: input / 1e6, output_cost_per_token: input * 5 / 1e6, ...extra });
-const skipped = { search_context_cost_per_query: { private: 1 } };
+const skipped = { future_feature_cost_per_query: { private: 1 } };
 const usage = { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 };
 function fixture() {
   const store = new InMemoryPriceSnapshotStore(); const prices = new SnapshotPriceSource(store, { now: () => now });
@@ -123,7 +123,7 @@ it("confirms over-max and overflow floors without clipping or losing operator re
   const f = fixture(); await f.fetch({ peer: row(3), [model]: row(1e16) });
   for (let attempt = 0; attempt < 2; attempt++) {
     await f.fetch({ peer: row(3), [model]: row(2000) }); const p = await f.price();
-    expect(estimateCall(1, 1, p)).toBe(attempt === 0 ? Number.MAX_SAFE_INTEGER : 42_000);
+    expect(estimateCall(1, 1, p)).toBe(attempt === 0 ? Number.MAX_SAFE_INTEGER : 21_000);
     expect(settleAmount({ price: p, usage: { ...usage, input: 1, output: 1 }, reservationMicros: 1 }).actualMicros).toBe(attempt === 0 ? Number.MAX_SAFE_INTEGER : 18_000);
   }
 });

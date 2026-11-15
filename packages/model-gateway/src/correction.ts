@@ -1,4 +1,4 @@
-import { usageEstimated } from "./price-tiers.js";
+import { completePrice, ratesForUsage, usageEstimated } from "./price-tiers.js";
 import { record, whole } from "./model-gateway-token.js";
 import { CORRECTION_RUN_MAX, CORRECTION_RUN_MS, MAX_ENTRIES_PER_SOURCE } from "./price-constants.js";
 import { usageCost } from "./estimate.js";
@@ -9,7 +9,7 @@ import type { PriceKey } from "./price-snapshot.js";
 export interface CorrectionReport { corrected: number; already: number; skipped: number; expired: number; unknown: number; more: boolean }
 export interface CorrectionLog { event: "price_corrected" | "price_expired" | "price_correction_busy" | "price_correction_unknown" | "price_correction_operator_review" | "price_correction_cap_exceeded"; deltaMicros?: number }
 interface RunOptions { meter: Meter; now: number; runId: string; log?: (line: CorrectionLog) => void; clock?: () => number }
-interface Continuation { keys?: string; active?: { key: PriceKey; nextKey?: string; calls?: string } }
+interface Continuation { resumes?: Map<string, string>; keys?: string; active?: { key: PriceKey; nextKey?: string; calls?: string } }
 // Owned by the runner, scoped to the meter instance. A restarted process safely rescans from the start.
 // Concurrent runs may revisit a page; only the meter's pending-status transaction arbitrates writes.
 const continuations = new WeakMap<Meter, Continuation>();
@@ -65,6 +65,7 @@ export async function runCorrections(options: RunOptions & { prices: PriceSource
   const ctx = runContext(options); const { report } = ctx;
   const retry = retries.get(options.meter) ?? new Map<string, { attempts: number; after: number }>(); retries.set(options.meter, retry);
   const state = structuredClone(continuations.get(options.meter) ?? {});
+  const resumes = state.resumes ?? new Map<string, string>(); state.resumes = resumes;
   try {
     if (!validRun(options)) { report.more = true; return report; }
     while (ctx.room()) {
@@ -75,11 +76,14 @@ export async function runCorrections(options: RunOptions & { prices: PriceSource
         state.active = { key: page.items[0]!, ...(page.cursor === undefined ? {} : { nextKey: page.cursor }) };
       }
       const active = state.active;
+      const keyId = JSON.stringify(active.key); const resume = resumes.get(keyId);
+      if (active.calls === undefined && resume !== undefined) active.calls = resume;
+      resumes.delete(keyId);
       const finishKey = () => { delete state.active; if (active.nextKey === undefined) delete state.keys; else state.keys = active.nextKey; };
       const partial = options.prices.correctionFor !== undefined;
       const price = await ctx.wait(partial ? options.prices.correctionFor!(active.key.provider, active.key.model) : options.prices.priceFor(active.key.provider, active.key.model, ctx.signal));
       const priceVersion = record(price)?.priceVersion;
-      const valid = partial ? typeof record(price)?.estimated === "boolean" && whole(priceVersion) && validPrice({ ...price, estimated: false }, Number.MAX_SAFE_INTEGER) : validPrice(price);
+      const valid = partial ? typeof record(price)?.estimated === "boolean" && whole(priceVersion) && validPrice({ ...price, estimated: false }, Number.MAX_SAFE_INTEGER) : validPrice(price) && whole(priceVersion);
       const rawOrigin = record(record(price)?.origin);
       if (!valid || price === undefined || rawOrigin === undefined || typeof rawOrigin.source !== "string" || !["litellm", "aws", "override"].includes(rawOrigin.source) || !whole(rawOrigin.fetchedAt)) {
         report.skipped++; finishKey(); if (active.nextKey === undefined) break; continue;
@@ -98,22 +102,36 @@ export async function runCorrections(options: RunOptions & { prices: PriceSource
         if (!validCaps(caps)) { report.skipped++; report.more = true; continue; }
         // Last item may consume the count budget, but must still finish within the shared time bound.
         await ctx.wait(undefined);
-        const realMicros = Math.max(1, usageCost(call.usage, price));
+        const rates = ratesForUsage(price, call.usage.input + call.usage.cacheRead + call.usage.cacheWrite);
+        const usedRates = [[call.usage.input, rates.inputMicrosPerMTok], [call.usage.output, rates.outputMicrosPerMTok],
+          [call.usage.cacheRead, rates.cacheReadMicrosPerMTok!], [call.usage.cacheWrite5m ?? call.usage.cacheWrite, rates.cacheWrite5mMicrosPerMTok!],
+          [call.usage.cacheWrite1h ?? call.usage.cacheWrite, rates.cacheWrite1hMicrosPerMTok!]];
+        const saturatingPrice = { ...price, estimated: true };
+        const realMicros = Math.max(1, usageCost(call.usage, saturatingPrice));
+        if (completePrice(price).operatorReview || usedRates.some(([count, rate]) => count! > 0 && rate! >= Number.MAX_SAFE_INTEGER) || realMicros >= Number.MAX_SAFE_INTEGER) {
+          report.skipped++; report.more = true; ctx.log({ event: "price_correction_operator_review" }); continue;
+        }
         // Reserve retry state before awaiting: concurrent runners cannot each start an attempt.
         if (retry.get(call.callKey) !== priorAttempt) { report.skipped++; report.more = true; continue; }
         const attempts = (priorAttempt?.attempts ?? 0) + 1;
         retry.set(call.callKey, { attempts, after: options.now + UNKNOWN_BACKOFF_MS * 2 ** (attempts - 1) });
-        if (!await ctx.attempt((signal) => options.meter.correct({ callKey: call.callKey, realMicros, caps, priceSource, ...(partial ? { priceVersion: priceVersion as number, estimated: usageEstimated(price, call.usage) } : {}), now: options.now, runId: options.runId, signal }))) {
+        if (!await ctx.attempt((signal) => options.meter.correct({ callKey: call.callKey, realMicros, caps, priceSource, priceVersion: priceVersion as number, estimated: partial && usageEstimated(price, call.usage), now: options.now, runId: options.runId, signal }))) {
           if (attempts >= MAX_UNKNOWN_ATTEMPTS) ctx.log({ event: "price_correction_operator_review" });
           continue; // Keep the pending ledger row, but advance this page for other calls.
         }
         retry.delete(call.callKey);
       }
       if (!complete) { report.more = true; break; }
-      if (page.cursor !== undefined) { active.calls = page.cursor; report.more = true; break; }
+      if (page.cursor !== undefined) {
+        active.calls = page.cursor; report.more = true;
+        // Yield after one page even for the last key; resume its calls on the next traversal.
+        if (resumes.size >= MAX_ENTRIES_PER_SOURCE) resumes.delete(resumes.keys().next().value!);
+        resumes.set(keyId, page.cursor); finishKey();
+        break;
+      }
       finishKey(); if (active.nextKey === undefined) break;
     }
-    if (state.active !== undefined || state.keys !== undefined) report.more = true;
+    if (state.active !== undefined || state.keys !== undefined || resumes.size > 0) report.more = true;
   } catch { report.more = true; }
   finally { continuations.set(options.meter, state); ctx.close(); }
   return report;

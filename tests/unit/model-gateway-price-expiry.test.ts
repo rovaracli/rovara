@@ -33,18 +33,18 @@ it("expiry and correction race on pending status so only one wins, with no forge
   const started = new Promise<void>((resolve) => { entered = resolve; });
   const meter = new InMemoryMeter(() => now, () => false, async (op) => { if (op === "expire") { entered(); await new Promise<void>((resolve) => { release = resolve; }); } });
   const id = await add(meter); const expiry = meter.expire({ callKey: id, now, runId: "expiry" }); await started;
-  expect(await meter.correct({ callKey: id, realMicros: 1, caps, now: now - 2, runId: "correction", priceSource: { source: "litellm", fetchedAt: now } })).toMatchObject({ status: "corrected" });
+  expect(await meter.correct({ callKey: id, realMicros: 1, caps, now: now - 2, runId: "correction", priceVersion: 1, estimated: false, priceSource: { source: "litellm", fetchedAt: now } })).toMatchObject({ status: "corrected" });
   release(); expect(await expiry).toEqual({ status: "already" }); expect((await meter.read(scope))[0]).toMatchObject({ spentMicros: 1, estimatedMicros: 0 });
   const other = new InMemoryMeter(() => now); const id2 = await add(other);
   expect(await other.expire({ callKey: id2, now, runId: "expiry" })).toEqual({ status: "expired" });
-  expect(await other.correct({ callKey: id2, realMicros: 1, caps, now: now - 2, runId: "correction", priceSource: { source: "litellm", fetchedAt: now } })).toEqual({ status: "already" });
+  expect(await other.correct({ callKey: id2, realMicros: 1, caps, now: now - 2, runId: "correction", priceVersion: 1, estimated: false, priceSource: { source: "litellm", fetchedAt: now } })).toEqual({ status: "already" });
   expect(other.ledger(id2)).not.toHaveProperty("priceSource");
 });
 it("hung transaction is an unknown outcome, retries idempotently and cannot write after abort", async () => {
   let release!: () => void; let hang = true;
   const meter = new InMemoryMeter(() => now, () => false, async (op) => { if (op === "correct" && hang) await new Promise<void>((resolve) => { release = resolve; }); });
   const id = await add(meter, now); const logs: unknown[] = [];
-  const options = { meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => caps }, now, runId: "secret-run", log: (line: unknown) => logs.push(line) };
+  const options = { meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => caps }, now, runId: "secret-run", log: (line: unknown) => logs.push(line) };
   vi.useFakeTimers();
   try {
     const run = runCorrections(options); await vi.advanceTimersByTimeAsync(25_000);
@@ -70,7 +70,7 @@ it("unconfirmed adapter writes are reported as unknown and replay cannot double-
   const correct = meter.correct.bind(meter); let loseAcknowledgement = true;
   meter.correct = async (input) => { const result = await correct(input); if (loseAcknowledgement) throw new Error("secret acknowledgement"); return result; };
   const logs: unknown[] = [];
-  const args = { meter, now, runId: "secret", prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => caps }, log: (line: unknown) => logs.push(line) };
+  const args = { meter, now, runId: "secret", prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => caps }, log: (line: unknown) => logs.push(line) };
   expect(await runCorrections(args)).toMatchObject({ unknown: 1, corrected: 0, more: true });
   loseAcknowledgement = false; expect(await runCorrections(args)).toMatchObject({ corrected: 0 });
   expect(meter.ledger(id)?.deltaMicros).toBe(-9); expect((await meter.read(scope))[0]?.spentMicros).toBe(1);
@@ -80,7 +80,7 @@ it("malformed transaction results and sync throws have fixed unknown-outcome rep
   for (const reply of [() => { throw new Error("secret"); }, () => Promise.resolve({ status: "secret" })]) {
     const meter = new InMemoryMeter(() => now); await add(meter, now); meter.correct = reply as typeof meter.correct;
     const logs: unknown[] = [];
-    const result = await runCorrections({ meter, now, runId: "secret", prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => caps }, log: (line: unknown) => logs.push(line) });
+    const result = await runCorrections({ meter, now, runId: "secret", prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => caps }, log: (line: unknown) => logs.push(line) });
     expect(result).toMatchObject({ unknown: 1, corrected: 0, more: true }); expect(logs).toEqual([{ event: "price_correction_unknown" }]); expect(JSON.stringify(result)).not.toContain("secret");
   }
 });
@@ -94,7 +94,7 @@ it("expiry cursor advances past busy records and completes their retry on a late
 });
 it("transaction input guards return fixed results and the standalone adapter bounds its own hook", async () => {
   let release!: () => void; const meter = new InMemoryMeter(() => now, () => false, async (op) => { if (op === "correct") await new Promise<void>((resolve) => { release = resolve; }); });
-  const id = await add(meter, now); const input = { callKey: id, realMicros: 1, caps, now, runId: "run", priceSource: { source: "litellm" as const, fetchedAt: now } };
+  const id = await add(meter, now); const input = { callKey: id, realMicros: 1, caps, now, runId: "run", priceVersion: 1, estimated: false, priceSource: { source: "litellm" as const, fetchedAt: now } };
   for (const invalid of [null, { ...input, signal: {} }, { ...input, callKey: "" }, { ...input, runId: "x".repeat(513) }, { ...input, priceSource: { source: "secret", fetchedAt: now } }, { ...input, priceSource: { source: Object.create(null) as unknown, fetchedAt: now } }]) expect(await meter.correct(invalid as never)).toEqual({ status: "busy" });
   const controller = new AbortController(); controller.abort(); expect(await meter.correct({ ...input, signal: controller.signal })).toEqual({ status: "unknown" });
   vi.useFakeTimers();
@@ -105,7 +105,7 @@ it("total deadline bounds even a nonconforming adapter that never acknowledges i
   const meter = new InMemoryMeter(() => now); await add(meter, now); meter.correct = () => new Promise(() => undefined);
   vi.useFakeTimers();
   try {
-    const run = runCorrections({ meter, now, runId: "run", prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => caps } });
+    const run = runCorrections({ meter, now, runId: "run", prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => caps } });
     await vi.advanceTimersByTimeAsync(25_000); expect(await run).toMatchObject({ unknown: 1, more: true }); expect(vi.getTimerCount()).toBe(0);
   } finally { vi.useRealTimers(); }
 }, 1000);
@@ -115,7 +115,7 @@ it("transaction receives only the time remaining after caps and cannot write aft
   const id = await add(meter, now);
   vi.useFakeTimers();
   try {
-    const run = runCorrections({ meter, now, runId: "run", prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => { await new Promise((resolve) => setTimeout(resolve, 24_000)); return caps; } } });
+    const run = runCorrections({ meter, now, runId: "run", prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => { await new Promise((resolve) => setTimeout(resolve, 24_000)); return caps; } } });
     await vi.advanceTimersByTimeAsync(25_000); expect(await run).toMatchObject({ unknown: 1, more: true });
     release(); await vi.advanceTimersByTimeAsync(0); expect(meter.ledger(id)?.status).toBe("pending"); expect(vi.getTimerCount()).toBe(0);
   } finally { vi.useRealTimers(); }
@@ -140,6 +140,6 @@ it("invalid run metadata refuses all reads and writes with a fixed report", asyn
 it("elapsed time after a caps read prevents starting a transaction even before the timer callback", async () => {
   const meter = new InMemoryMeter(() => now); const id = await add(meter, now); let time = 0; let writes = 0;
   const correct = meter.correct.bind(meter); meter.correct = async (input) => { writes++; return correct(input); };
-  const result = await runCorrections({ meter, now, runId: "run", clock: () => time, prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => { time = 25_000; return caps; } } });
+  const result = await runCorrections({ meter, now, runId: "run", clock: () => time, prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => { time = 25_000; return caps; } } });
   expect(result).toMatchObject({ corrected: 0, more: true }); expect(writes).toBe(0); expect(meter.ledger(id)?.status).toBe("pending");
 });

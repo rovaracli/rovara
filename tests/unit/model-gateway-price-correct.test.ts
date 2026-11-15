@@ -13,7 +13,7 @@ it("atomic estimated settle corrects all four items, frees room, audits once and
   const key = JSON.stringify([scope.iss, scope.cid, r.reservation.id]);
   expect(costView(await meter.read(scope)).every((row) => row.estimated && row.spentMicros === 80)).toBe(true);
   expect((await meter.reserve({ scope, caps: cap, estimateMicros: 30 })).ok).toBe(false);
-  const input = { callKey: key, realMicros: 20, caps: cap, priceSource: { source: "litellm" as const, fetchedAt: now }, runId: "run", now };
+  const input = { callKey: key, realMicros: 20, caps: cap, priceVersion: 1, estimated: false, priceSource: { source: "litellm" as const, fetchedAt: now }, runId: "run", now };
   expect(await meter.correct(input)).toEqual({ status: "corrected", deltaMicros: -60 });
   expect((await meter.read(scope)).every((row) => row.spentMicros === 20 && row.estimatedMicros === 0 && row.committed === 20)).toBe(true);
   expect(costView(await meter.read(scope)).every((row) => !row.estimated)).toBe(true);
@@ -26,7 +26,7 @@ it("upward corrections set overrun, lowering clears it; zero is refused, expiry 
   const meter = new InMemoryMeter(() => now); const cap = { ...caps, companyMonth: 100 };
   const r = await meter.reserve({ scope, caps: cap, estimateMicros: 80 }); if (!r.ok) throw new Error("fixture");
   await meter.settle(r.reservation, 80, estimated);
-  const input = { callKey: JSON.stringify([scope.iss, scope.cid, r.reservation.id]), realMicros: 101, caps: cap, priceSource: { source: "aws" as const, fetchedAt: now }, runId: "run", now };
+  const input = { callKey: JSON.stringify([scope.iss, scope.cid, r.reservation.id]), realMicros: 101, caps: cap, priceVersion: 1, estimated: false, priceSource: { source: "aws" as const, fetchedAt: now }, runId: "run", now };
   expect(await meter.correct({ ...input, realMicros: 0 })).toEqual({ status: "busy" });
   expect(await meter.correct(input)).toEqual({ status: "corrected", deltaMicros: 21, capExceeded: true });
   expect((await meter.read(scope)).find((row) => row.item === "company")?.overrun).toBe(true);
@@ -41,7 +41,7 @@ it("correction runner only uses real rates, limits total work, logs no customer 
   const meter = new InMemoryMeter(() => now);
   for (let i = 0; i < 201; i++) { const r = await meter.reserve({ scope, caps, estimateMicros: 100 }); if (!r.ok) throw new Error("fixture"); await meter.settle(r.reservation, 100, estimated); }
   const logs: unknown[] = [];
-  const args = { meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 1_000_000, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => caps }, now, runId: "private-run", log: (line: unknown) => logs.push(line) };
+  const args = { meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 1_000_000, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => caps }, now, runId: "private-run", log: (line: unknown) => logs.push(line) };
   const first = await runCorrections(args); expect(first).toMatchObject({ corrected: 199, more: true });
   expect(await runCorrections(args)).toMatchObject({ corrected: 2, more: false });
   expect(await runCorrections(args)).toMatchObject({ corrected: 0 });
@@ -61,7 +61,7 @@ it("bounds a hung caps source and does not commit after the run deadline", async
   vi.useFakeTimers();
   try {
     let release!: (value: typeof caps) => void;
-    const pending = runCorrections({ meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: () => new Promise((resolve) => { release = resolve; }) }, now, runId: "run", clock: Date.now });
+    const pending = runCorrections({ meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: () => new Promise((resolve) => { release = resolve; }) }, now, runId: "run", clock: Date.now });
     await vi.advanceTimersByTimeAsync(25_000); expect(await pending).toMatchObject({ corrected: 0, more: true });
     release(caps); await Promise.resolve(); expect((await meter.read(scope))[0]?.spentMicros).toBe(100);
   } finally { vi.useRealTimers(); }
@@ -79,7 +79,7 @@ it("full gateway outcome: cautious hold, usage settlement, refresh correction an
   await store.save({ version: 1, sources: { litellm: { fetchedAt: now, count: 1, entries: [{ provider: "anthropic", model: "old", kind: "chat", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 }] } } }, 0);
   const prices = new SnapshotPriceSource(store, { now: () => now }); await prices.reload(); const cap = { ...caps, task: 400 }; const f = setup({ prices, caps: new FixedCapsSource(cap) });
   let held = 0; f.deps.transport = async () => { held = (await f.meter.read(scope))[0]!.reservedMicros; return { status: 200, body: answer() }; };
-  expect((await call(f.deps)).status).toBe(200); expect(held).toBe(348);
+  expect((await call(f.deps)).status).toBe(200); expect(held).toBe(189);
   expect(costView(await f.meter.read(scope)).every((row) => row.spentMicros === 35 && row.estimated)).toBe(true);
   expect((await f.meter.reserve({ scope, caps: cap, estimateMicros: 370 })).ok).toBe(false);
   const ll = { old: { litellm_provider: "anthropic", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 }, "claude-sonnet-4-5": { litellm_provider: "anthropic", mode: "chat", input_cost_per_token: 1e-6, output_cost_per_token: 2e-6, cache_read_input_token_cost: 1e-6, cache_creation_input_token_cost: 2e-6, cache_creation_input_token_cost_above_1hr: 2e-6 } };
@@ -97,7 +97,7 @@ it("lowering an estimated overrun clears it and admits the next company call", a
   const cap = { ...caps, task: 100, personMonth: 100, projectMonth: 100, companyMonth: 100 };
   const meter = new InMemoryMeter(() => now); const r = await meter.reserve({ scope, caps: cap, estimateMicros: 80 }); if (!r.ok) throw new Error("fixture"); await meter.settle(r.reservation, 101, estimated);
   expect((await meter.read(scope)).every((row) => row.overrun)).toBe(true);
-  const result = await meter.correct({ callKey: JSON.stringify([scope.iss, scope.cid, r.reservation.id]), realMicros: 20, caps: cap, priceSource: { source: "litellm", fetchedAt: now }, runId: "lower", now });
+  const result = await meter.correct({ callKey: JSON.stringify([scope.iss, scope.cid, r.reservation.id]), realMicros: 20, caps: cap, priceVersion: 1, estimated: false, priceSource: { source: "litellm", fetchedAt: now }, runId: "lower", now });
   expect(result.status).toBe("corrected"); expect((await meter.read(scope)).every((row) => !row.overrun)).toBe(true);
   expect((await meter.reserve({ scope, caps: cap, estimateMicros: 80 })).ok).toBe(true);
 });
@@ -108,6 +108,6 @@ it("uses one total item budget even when every caps read is invalid", async () =
     const r = await meter.reserve({ scope, caps, estimateMicros: 1 }); if (!r.ok) throw new Error("fixture"); await meter.settle(r.reservation, 1, { ...estimated, model: `model-${key}` });
   }
   let reads = 0;
-  const report = await runCorrections({ meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => { reads++; return { ...caps, task: NaN }; } }, now, runId: "bounded" });
+  const report = await runCorrections({ meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: { capsFor: async () => { reads++; return { ...caps, task: NaN }; } }, now, runId: "bounded" });
   expect(report).toMatchObject({ corrected: 0, more: true }); expect(reads).toBe(197);
 });

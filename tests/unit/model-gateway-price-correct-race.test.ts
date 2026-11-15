@@ -10,7 +10,7 @@ it("two corrections apply once and a concurrent settle survives the delta", asyn
   const r = await meter.reserve({ scope, caps, estimateMicros: 100 }); const s = await meter.reserve({ scope, caps, estimateMicros: 100 }); if (!r.ok || !s.ok) throw new Error("fixture");
   await meter.settle(r.reservation, 80, estimated);
   interleave = () => meter.settle(s.reservation, 30);
-  const input = { callKey: JSON.stringify([scope.iss, scope.cid, r.reservation.id]), realMicros: 20, caps, priceSource: { source: "litellm" as const, fetchedAt: now }, runId: "run", now };
+  const input = { callKey: JSON.stringify([scope.iss, scope.cid, r.reservation.id]), realMicros: 20, caps, priceVersion: 1, estimated: false, priceSource: { source: "litellm" as const, fetchedAt: now }, runId: "run", now };
   const result = await Promise.all([meter.correct(input), meter.correct(input)]);
   expect(result.map((x) => x.status).sort()).toEqual(["already", "corrected"]);
   expect((await meter.read(scope)).every((row) => row.spentMicros === 50 && row.estimatedMicros === 0)).toBe(true);
@@ -18,7 +18,7 @@ it("two corrections apply once and a concurrent settle survives the delta", asyn
 it("own settle race is missing then correctable; original month and company stay isolated", async () => {
   let clock = Date.UTC(2026, 0, 31); const meter = new InMemoryMeter(() => clock);
   const r = await meter.reserve({ scope, caps, estimateMicros: 100 }); if (!r.ok) throw new Error("fixture");
-  const input = { callKey: JSON.stringify([scope.iss, scope.cid, r.reservation.id]), realMicros: 20, caps, priceSource: { source: "litellm" as const, fetchedAt: clock }, runId: "run", now: clock };
+  const input = { callKey: JSON.stringify([scope.iss, scope.cid, r.reservation.id]), realMicros: 20, caps, priceVersion: 1, estimated: false, priceSource: { source: "litellm" as const, fetchedAt: clock }, runId: "run", now: clock };
   expect(await meter.correct(input)).toEqual({ status: "missing" });
   await meter.settle(r.reservation, 80, { ...estimated, settledAt: clock });
   clock = Date.UTC(2026, 1, 1); expect(await meter.correct({ ...input, now: clock })).toMatchObject({ status: "corrected" });
@@ -31,7 +31,7 @@ it("below-zero guard writes nothing when a corrupted item is injected before the
   let corrupt = false;
   const meter = new InMemoryMeter(() => now, () => false, (operation, rows) => { if (operation === "correct" && corrupt) { for (const row of rows ?? []) row.spentMicros = 0; } });
   const r = await meter.reserve({ scope, caps, estimateMicros: 100 }); if (!r.ok) throw new Error("fixture"); await meter.settle(r.reservation, 80, estimated);
-  const input = { callKey: JSON.stringify([scope.iss, scope.cid, r.reservation.id]), realMicros: 20, caps, priceSource: { source: "litellm" as const, fetchedAt: now }, runId: "run", now };
+  const input = { callKey: JSON.stringify([scope.iss, scope.cid, r.reservation.id]), realMicros: 20, caps, priceVersion: 1, estimated: false, priceSource: { source: "litellm" as const, fetchedAt: now }, runId: "run", now };
   corrupt = true; expect(await meter.correct(input)).toEqual({ status: "busy" });
   expect((await meter.read(scope)).every((row) => row.spentMicros === 0 && row.estimatedMicros === 80 && row.committed === 80)).toBe(true);
   expect(meter.ledger(input.callKey)?.status).toBe("pending");

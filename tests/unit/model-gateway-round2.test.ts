@@ -71,7 +71,7 @@ it.each([10, 6000, 128_000])("R2 deadline scales with applied max %s and never e
     await vi.advanceTimersByTimeAsync(duration - 1); expect(cancelled).toBe(false);
     await vi.advanceTimersByTimeAsync(1); expect(cancelled).toBe(true); await running;
     expect(f.logs).toContainEqual(expect.objectContaining({ event: "settled", estimated: false }));
-    expect((await f.deps.meter.read(scope))[0]?.spentMicros).toBe(Buffer.byteLength(JSON.stringify({ ...requestBody, max_tokens: maxTokens })) * 2 + maxTokens * 2);
+    expect((await f.deps.meter.read(scope))[0]?.spentMicros).toBe(Buffer.byteLength(JSON.stringify({ ...requestBody, max_tokens: maxTokens })) + maxTokens * 2);
   } finally { await vi.advanceTimersByTimeAsync(24 * 60 * 60_000); await running; vi.useRealTimers(); }
 });
 

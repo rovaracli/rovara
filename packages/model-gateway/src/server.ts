@@ -93,7 +93,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const caps = await wait(deps.caps.capsFor(scope, controller.signal));
     if (!validCaps(caps)) { await respond(503, "unavailable", "model access unavailable"); return; }
     let estimate: number;
-    try { estimate = estimateCall(guarded.bytes.length, guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
+    try { estimate = estimateCall(guarded.bytes.length, guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, guarded.inputBounded); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
     if (estimate === Number.MAX_SAFE_INTEGER && !price.operatorReview) log({ event: "price_operator_review" });
     // Do not race a transaction: its outcome must be known before forwarding or settling. Adapters bound their own transactions.
     const overrunCapable = price.estimated || !guarded.inputBounded;
@@ -171,7 +171,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
           const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), price: settlementPrice, reservationMicros: cost });
           cost = amount.actualMicros; estimated = amount.estimated;
-          if (estimated) estimateRecord = { provider: "anthropic", model: settlementModel, kind: "chat", settledAt: now(), ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
+          if (estimated) estimateRecord = { provider: "anthropic", model: settlementModel, kind: "chat", settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
         }
         await deps.meter.settle(reservation, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens }); }
       catch { log({ event: "settle_failed" }); } // Adapter keeps the hold if its atomic settle fails.

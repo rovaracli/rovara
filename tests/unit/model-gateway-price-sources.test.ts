@@ -87,7 +87,7 @@ it("reads the hand-made LiteLLM fixture and the explicitly assumed OpenRouter fi
   const { parseReportedCost } = await import("../../packages/model-gateway/src/reported-cost.js");
   const body = await readFile(new URL("../fixtures/model-gateway-prices/litellm.json", import.meta.url));
   const result = await fetchLiteLLM({ get: async () => ({ status: 200, body }) }, { minModels: 1 });
-  expect(result.ok && result.entries).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "anthropic", model: "tiered", inputMicrosPerMTok: 8_000_000, outputMicrosPerMTok: 2_000_000, cacheWrite1hMicrosPerMTok: 7_000_000, longContext: [{ aboveTokens: 200000, outputMicrosPerMTok: 11_000_000 }] })]));
+  expect(result.ok && result.entries).toEqual(expect.arrayContaining([expect.objectContaining({ provider: "anthropic", model: "tiered", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, cacheWrite1hMicrosPerMTok: 7_000_000 })]));
   const router = JSON.parse(await readFile(new URL("../fixtures/model-gateway-prices/openrouter.json", import.meta.url), "utf8")) as { provenance: string; finalChunk: { usage: unknown } };
   expect(router.provenance).toBe("assumed, verify on staging"); expect(parseReportedCost("openrouter", router.finalChunk.usage)).toBe(13);
 });

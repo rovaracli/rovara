@@ -5,7 +5,7 @@ import { runCorrections } from "../../packages/model-gateway/src/correction.js";
 import { caps, scope, now } from "./model-gateway-fixture.js";
 beforeAll(denyNetwork);
 const usage = { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 };
-const real = { inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } };
+const real = { inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } };
 async function add(meter: InMemoryMeter, model: string, settledAt = now) {
   const r = await meter.reserve({ scope, caps, estimateMicros: 10 }); if (!r.ok) throw new Error("fixture");
   await meter.settle(r.reservation, 10, { provider: "anthropic", model, kind: "chat", usage, settledAt });
@@ -33,7 +33,7 @@ it("keyset pages remain stable when earlier calls are corrected and reject malfo
   for (let i = 0; i < 4; i++) ids.push(await add(meter, "same", now + i));
   const key = { provider: "anthropic", model: "same" };
   const first = await meter.pendingFor(key, 2); expect(first.items.map((c) => c.callKey)).toEqual(ids.slice(0, 2)); expect(first.cursor).toBeTypeOf("string");
-  await meter.correct({ callKey: ids[0]!, realMicros: 1, caps, now, runId: "run", priceSource: { source: "litellm", fetchedAt: now } });
+  await meter.correct({ callKey: ids[0]!, realMicros: 1, caps, now, runId: "run", priceVersion: 1, estimated: false, priceSource: { source: "litellm", fetchedAt: now } });
   const second = await meter.pendingFor(key, 2, first.cursor); expect(second.items.map((c) => c.callKey)).toEqual(ids.slice(2)); expect(second.cursor).toBeUndefined();
   first.items[0]!.usage.input = 999; expect(meter.ledger(ids[0]!)?.usage.input).toBe(1);
   for (const cursor of ["secret", "null", '["secret",1]', JSON.stringify(["keys", 1, "x".repeat(5000)]), JSON.stringify(["keys", 1, ""])]) {
@@ -50,7 +50,7 @@ it("large unpriced input uses one total bounded key budget and never walks the f
 it("page limits and cursor scope fail closed, and oldest keys advance after deletion", async () => {
   const meter = new InMemoryMeter(() => now); const a = await add(meter, "a", now); await add(meter, "b", now + 1); await add(meter, "c", now + 2);
   const first = await meter.pendingKeys(1); expect(first.items).toEqual([{ provider: "anthropic", model: "a" }]);
-  await meter.correct({ callKey: a, realMicros: 1, caps, now, runId: "run", priceSource: { source: "litellm", fetchedAt: now } });
+  await meter.correct({ callKey: a, realMicros: 1, caps, now, runId: "run", priceVersion: 1, estimated: false, priceSource: { source: "litellm", fetchedAt: now } });
   expect((await meter.pendingKeys(2, first.cursor)).items.map((key) => key.model)).toEqual(["b", "c"]);
   for (const limit of [0, -1, 201, 1.5, NaN, "secret"]) await expect(meter.pendingKeys(limit as number)).rejects.toThrow(/^pending unavailable$/);
   await expect(meter.pendingFor({ provider: "anthropic", model: "b" }, 1, first.cursor)).rejects.toThrow(/^pending unavailable$/);

@@ -1,3 +1,4 @@
+import { whole } from "./model-gateway-token.js";
 import { maxPrice, maxEffectivePrice, samePrice as equal, lowerPrice as lower, completePrice, copyRates, uncertainComponents } from "./price-tiers.js";
 export { maxPrice } from "./price-tiers.js";
 import { CAUTION_FACTOR, FETCH_DEADLINE_MS, FLAT_CEILING_MICROS_PER_MTOK, MAX_ENTRIES_PER_SOURCE } from "./price-constants.js";
@@ -52,6 +53,16 @@ export function effectivePrices(sources: PriceSnapshot["sources"], previous: rea
     if (row.rates !== undefined) p.uncertain = p.uncertain === undefined ? row.rates : maxPrice(p.uncertain, row.rates);
     p.perRequest ||= row.perRequest === true;
   }
+  const currentAliases = [...pools.values()].flatMap((p) => [...p.aliases].map((alias) => [identityKey(p.provider, p.model), alias] as const));
+  const retained = new Map<string, readonly [string, string]>();
+  const retain = (key: string, alias: string) => { const id = JSON.stringify([key, alias]); retained.delete(id); retained.set(id, [key, alias]); };
+  for (const e of previous) for (const alias of e.aliases) { check(); retain(identityKey(e.provider, e.model), alias); }
+  for (const [key, alias] of currentAliases) { check(); retain(key, alias); }
+  while (retained.size > 2 * MAX_ENTRIES_PER_SOURCE) retained.delete(retained.keys().next().value!);
+  const aliases = new Map<string, string[]>();
+  for (const [key, alias] of retained.values()) { const list = aliases.get(key) ?? []; list.push(alias); aliases.set(key, list); }
+  // Evict history before building candidates, so a full replacement stays within the total work budget.
+  for (const key of prior.keys()) if (!aliases.has(key)) prior.delete(key);
   // A successful disappearance is a no-contribution candidate, subject to the same confirmation rule.
   for (const [key, old] of prior) if (!pools.has(key)) {
     check(); pools.set(key, { provider: old.provider, model: old.model, ...(old.kind === undefined ? {} : { kind: old.kind }), aliases: new Set(old.aliases), sources: new Set(old.sources), origin: old.origin, perRequest: false });
@@ -74,7 +85,7 @@ export function effectivePrices(sources: PriceSnapshot["sources"], previous: rea
   for (const [key, next] of candidates) {
     check(); candidates.set(key, { ...next, ...completePrice(next) });
   }
-  const result: EffectiveIdentity[] = []; let aliasCount = 0;
+  const result: EffectiveIdentity[] = [];
   for (const [key, next] of candidates) {
     check(); const old = prior.get(key); const aliases = new Set([...(old?.aliases ?? []), ...next.aliases]);
     next.aliases = [...aliases];
@@ -83,15 +94,18 @@ export function effectivePrices(sources: PriceSnapshot["sources"], previous: rea
       const success = [...required].every((source) => successful.has(source));
       if (!success || old.pendingLower === undefined || !equal(next, old.pendingLower)) {
         const amount = maxEffectivePrice(old, next);
-        result.push({ ...next, ...amount, sources: [...required], estimated: true, ...((old.knownTokenPrice || next.knownTokenPrice) ? { knownTokenPrice: true } : {}), ...(success ? { pendingLower: resolved(next) } : {}) });
+        result.push({ ...next, ...amount, ...((old.tokenPrice ?? next.tokenPrice) === undefined ? {} : { tokenPrice: maxPrice(old.tokenPrice ?? next.tokenPrice!, next.tokenPrice ?? old.tokenPrice!) }), sources: [...required], estimated: true, ...((old.knownTokenPrice || next.knownTokenPrice) ? { knownTokenPrice: true } : {}), ...(success ? { pendingLower: resolved(next) } : {}) });
         held(); continue;
       }
     }
     result.push(next);
   }
-  for (const e of result) { check(); aliasCount += e.aliases.length; e.uncertain = uncertainComponents(e, pools.get(identityKey(e.provider, e.model))?.clean); }
-  if (result.length > 2 * MAX_ENTRIES_PER_SOURCE || aliasCount > 2 * MAX_ENTRIES_PER_SOURCE) throw new Error("refresh failed");
-  return result;
+  const byKey = new Map(result.map((e) => [identityKey(e.provider, e.model), e]));
+  return [...aliases].map(([key, retainedAliases]) => {
+    check(); const e = byKey.get(key)!; e.aliases = retainedAliases;
+    e.uncertain = uncertainComponents(e, pools.get(identityKey(e.provider, e.model))?.clean);
+    return e;
+  });
 }
 function addMaximum(maxima: Map<string, Price>, provider: string, kind: PriceKind | undefined, price: Price): void {
   for (const k of kind === undefined ? ["chat", "embedding", "all"] : [kind, "all"]) {
@@ -133,7 +147,7 @@ export async function resolvePrice(source: PriceSource, provider: string, model:
   if (source.effectiveFor !== undefined) {
     try {
       const price = await source.effectiveFor(provider, model, kind);
-      if (typeof price?.estimated === "boolean" && (price.knownTokenPrice === undefined || price.knownTokenPrice === true) && validPrice({ ...price, estimated: false }, Number.MAX_SAFE_INTEGER)) return price;
+      if (typeof price?.estimated === "boolean" && (price.priceVersion === undefined || whole(price.priceVersion)) && (price.knownTokenPrice === undefined || price.knownTokenPrice === true) && validPrice({ ...price, estimated: false }, Number.MAX_SAFE_INTEGER)) return price;
     } catch { /* Unreadable effective money is never replaced by a cheaper guess. */ }
     return review;
   }

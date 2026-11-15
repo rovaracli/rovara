@@ -7,16 +7,26 @@ import type { Price, PriceKind, TokenRates } from "./price.js";
 function rateField(field: string): { key: RateKey; aboveTokens?: number } | undefined {
   const long = /_above_(128|200)k_tokens/u.exec(field);
   const aboveTokens = long === null ? undefined : Number(long[1]) * 1000;
-  const base = field.replace(/_above_(128|200)k_tokens/u, "").replace(/_priority$/u, "");
+  const base = field.replace(/_above_(128|200)k_tokens/u, "");
   let key: RateKey;
-  if (/^input_cost_per_(?:token|audio_token|image_token)(?:_batches|_flex)?$/u.test(base)) key = "inputMicrosPerMTok";
-  else if (/^output_cost_per_(?:token|audio_token|reasoning_token|image_token)(?:_batches|_flex)?$/u.test(base)) key = "outputMicrosPerMTok";
+  if (/^input_cost_per_(?:token)(?:_batches|_flex)?$/u.test(base)) key = "inputMicrosPerMTok";
+  else if (/^output_cost_per_(?:token|reasoning_token)(?:_batches|_flex)?$/u.test(base)) key = "outputMicrosPerMTok";
   else if (base === "cache_read_input_token_cost" || base === "input_cost_per_token_cache_hit") key = "cacheReadMicrosPerMTok";
   else if (base === "cache_creation_input_token_cost") key = "cacheWrite5mMicrosPerMTok";
   else if (base === "cache_creation_input_token_cost_above_1hr") key = "cacheWrite1hMicrosPerMTok";
   else return undefined;
   return { key, ...(aboveTokens === undefined ? {} : { aboveTokens }) };
 }
+/** Exact reviewed feature prices, not exposed by the plain-token gateway. Remove an entry before serving its feature. */
+export const UNSERVED_FEATURE_COST_FIELDS: Readonly<Record<string, string>> = {
+  search_context_cost_per_query: "Web search: provider server tools are rejected by guardRequest.",
+  input_cost_per_token_priority: "Priority service: the gateway does not expose a service-tier selector.",
+  output_cost_per_token_priority: "Priority service: the gateway does not expose a service-tier selector.",
+  input_cost_per_audio_token: "Audio token billing: no audio-token provider route is exposed.",
+  output_cost_per_audio_token: "Audio token billing: no audio-token provider route is exposed.",
+  input_cost_per_image_token: "Image token billing: no separate image-token provider route is exposed.",
+  output_cost_per_image_token: "Image token billing: no separate image-token provider route is exposed.",
+};
 const PER_CALL = /^(?:input_|output_)?cost_per_request$/u;
 // Reviewed exceptions: each rule names WHY it does not add to the two token totals. No catch-all price/metadata rule.
 export const PRICE_IGNORABLE_FIELDS: Readonly<Record<string, string>> = {
@@ -37,6 +47,8 @@ export const PRICE_IGNORABLE_FIELDS: Readonly<Record<string, string>> = {
 
 /** Same classification drives pricing and source completeness: unknown fields are NEVER silently dropped. */
 export function priceFieldDisposition(field: string): "input" | "output" | { readonly ignore: string } | undefined {
+  const feature = /^(?:input|output)_cost_per_(?:token_priority|audio_token|image_token)_above_(?:128|200)k_tokens$/u.test(field) ? field.replace(/_above_(128|200)k_tokens$/u, "") : field;
+  if (Object.hasOwn(UNSERVED_FEATURE_COST_FIELDS, feature)) return { ignore: UNSERVED_FEATURE_COST_FIELDS[feature]! };
   const rate = rateField(field);
   if (rate !== undefined) return rate.key === "outputMicrosPerMTok" ? "output" : "input";
   if (Object.hasOwn(PRICE_IGNORABLE_FIELDS, field)) return { ignore: PRICE_IGNORABLE_FIELDS[field]! };

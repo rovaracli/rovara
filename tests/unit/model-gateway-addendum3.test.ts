@@ -39,11 +39,11 @@ it("ADDENDUM-3 N parallel priced calls at the cap use full input ceilings and ne
   const f = setup({ prices: { priceFor: () => ({ inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 1_000_000 }) } });
   const body = { ...requestBody, messages: [{ role: "user", content: "x".repeat(2_100_000) }] };
   const bytes = Buffer.byteLength(JSON.stringify(body));
-  const perCall = bytes * 2 + 10;
+  const perCall = bytes + 10;
   f.deps.caps = new FixedCapsSource({ ...caps, companyMonth: perCall * 2 });
   let release!: () => void; const paused = new Promise<void>((r) => { release = r; });
   let sent = 0;
-  f.deps.transport = async () => { sent++; return { status: 200, body: (async function* () { await paused; yield sse("message_start", { message: { usage: { input_tokens: 0, cache_creation_input_tokens: bytes } } }); yield sse("message_delta", { usage: { output_tokens: 10 } }); yield sse("message_stop"); })() }; };
+  f.deps.transport = async () => { sent++; return { status: 200, body: (async function* () { await paused; yield sse("message_start", { message: { usage: { input_tokens: bytes, cache_creation_input_tokens: 0 } } }); yield sse("message_delta", { usage: { output_tokens: 10 } }); yield sse("message_stop"); })() }; };
   const running = Array.from({ length: 8 }, (_, i) => call(f.deps, body, mint({ tid: `priced_${i}` })));
   // A microtask barrier at the provider ensures all admissions have reached reserve without timers.
   for (let i = 0; i < 100; i++) await Promise.resolve();

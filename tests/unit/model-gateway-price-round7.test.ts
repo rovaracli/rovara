@@ -65,7 +65,7 @@ it("M4 sibling source failures are irrelevant; own contributing failures reset l
   const f = fixture("bedrock", alias); const ll = { [alias]: bedrock(10, 50) };
   await f.fetch(ll, offer(100, 100, "Sibling")); const initial = await f.price();
   await f.fetch(ll, offer(10, 50, "Sibling")); await f.fetch(ll, "{");
-  expect(await f.price()).toEqual(initial);
+  expect(await f.price()).toEqual({ ...initial, priceVersion: 3 });
   const own = fixture("bedrock", alias); await own.fetch(ll, offer(20, 60));
   await own.fetch(ll, offer(10, 50)); await own.fetch(ll, "{");
   expect((await own.price()).inputMicrosPerMTok).toBe(20e6);

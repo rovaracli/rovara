@@ -30,7 +30,7 @@ export interface Meter {
   correct(input: CorrectionInput): Promise<CorrectionResult>;
   read(scope: MeterScope): Promise<readonly MeterRow[]>;
 }
-export interface EstimatedSettlement { provider: string; model: string; kind: PriceKind; usage?: TokenUsage; settledAt: number }
+export interface EstimatedSettlement { provider: string; model: string; kind: PriceKind; usage?: TokenUsage; settledAt: number; priceVersion?: number }
 export interface EstimatedCall extends MeterScope {
   callKey: string; month: string; provider: string; model: string; kind: PriceKind; usage: TokenUsage;
   settledMicros: number; status: "pending" | "corrected" | "expired"; settledAt: number;
@@ -117,7 +117,7 @@ export class InMemoryMeter implements Meter {
     const open = this.#open.get(reservation.id);
     if (open === undefined) return; // Already closed; ledger and rows stay untouched.
     if (!whole(actualMicros)) throw new Error("settlement unavailable");
-    if (estimated !== undefined && (!validEntry({ ...estimated, inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 }) || !whole(estimated.settledAt) || (estimated.usage !== undefined && !validUsage(estimated.usage)) || actualMicros < 1)) throw new Error("settlement unavailable");
+    if (estimated !== undefined && (!validEntry({ ...estimated, inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 }) || !whole(estimated.settledAt) || (estimated.priceVersion !== undefined && !whole(estimated.priceVersion)) || (estimated.usage !== undefined && !validUsage(estimated.usage)) || actualMicros < 1)) throw new Error("settlement unavailable");
     const extraEstimated = estimated === undefined ? 0 : actualMicros;
     // All validation, ledger insertion and row writes below are one synchronous transaction.
     for (const t of open.targets) {
@@ -130,7 +130,7 @@ export class InMemoryMeter implements Meter {
     }
     if (estimated?.usage !== undefined && hasUsage(estimated.usage)) {
       const callKey = JSON.stringify([open.scope.iss, open.scope.cid, reservation.id]);
-      const call: EstimatedCall = { ...open.scope, callKey, month: open.month, provider: estimated.provider, model: estimated.model, kind: estimated.kind, usage: { ...estimated.usage }, settledAt: estimated.settledAt, settledMicros: actualMicros, status: "pending" };
+      const call: EstimatedCall = { ...open.scope, callKey, month: open.month, provider: estimated.provider, model: estimated.model, kind: estimated.kind, usage: { ...estimated.usage }, settledAt: estimated.settledAt, settledMicros: actualMicros, ...(estimated.priceVersion === undefined ? {} : { priceVersion: estimated.priceVersion }), status: "pending" };
       this.#ledger.set(callKey, { call, targets: open.targets.map((t) => ({ ...t })) });
       const key = priceKey(call); const pending = this.#pending.get(key) ?? [];
       // Keep oldest first at write time; reads take bounded prefixes without scanning the ledger.
@@ -207,14 +207,14 @@ export class InMemoryMeter implements Meter {
     const { call } = ledger; if (call.status !== "pending") return { status: "already" };
     if (this.conflict()) return { status: "busy" };
     const expire = input.now - call.settledAt > PENDING_RETENTION_DAYS * DAY_MS;
-    if (!expire && input.priceVersion !== undefined && call.priceVersion !== undefined && input.priceVersion <= call.priceVersion) return { status: "already" };
+    if (!expire && (input.priceVersion ?? 0) <= (call.priceVersion ?? 0)) return { status: "already" };
     const deltaMicros = input.realMicros - call.settledMicros;
     const estimatedDelta = input.estimated === true ? deltaMicros : -call.settledMicros;
     let capExceeded = false;
     if (!expire) {
       for (const target of ledger.targets) {
         const row = this.#row(target, call);
-        if (row.company !== call.cid || ![row.spentMicros + deltaMicros, row.committed + deltaMicros, row.estimatedMicros + estimatedDelta].every(whole) || row.estimatedMicros + estimatedDelta > row.spentMicros + deltaMicros) return { status: "busy" };
+        if (row.company !== call.cid || ![row.spentMicros + deltaMicros, row.committed + deltaMicros, row.estimatedMicros + estimatedDelta].every((value) => whole(value) && value < Number.MAX_SAFE_INTEGER) || row.estimatedMicros + estimatedDelta > row.spentMicros + deltaMicros) return { status: "busy" };
       }
       const capFor = { task: input.caps.task, person: input.caps.personMonth, project: input.caps.projectMonth, company: input.caps.companyMonth };
       for (const target of ledger.targets) {
@@ -267,7 +267,7 @@ export async function runMeterConformance(factory: (clock: () => number) => Mete
   await corrections.settle(e.reservation, 80, { provider: "anthropic", model: "model", kind: "chat", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, settledAt: clock });
   assert((await corrections.read(scope)).every((r) => r.estimatedMicros === 80));
   const pending = await corrections.pendingFor({ provider: "anthropic", model: "model" }, 10); assert.equal(pending.items.length, 1);
-  const correction = { callKey: pending.items[0]!.callKey, realMicros: 20, caps, priceSource: { source: "litellm" as const, fetchedAt: clock }, runId: "conformance", now: clock };
+  const correction = { callKey: pending.items[0]!.callKey, realMicros: 20, caps, priceVersion: 1, estimated: false, priceSource: { source: "litellm" as const, fetchedAt: clock }, runId: "conformance", now: clock };
   assert.deepEqual(await corrections.correct(correction), { status: "corrected", deltaMicros: -60 });
   assert.deepEqual(await corrections.correct(correction), { status: "already" });
   assert((await corrections.read(scope)).every((r) => r.spentMicros === 20 && r.estimatedMicros === 0 && r.committed === 20));
@@ -303,7 +303,7 @@ export async function runMeterDeadlineConformance(factory: (clock: () => number,
     const page = await meter.pendingFor({ provider: "anthropic", model: "model" }, 1); assert.equal(page.items.length, 1);
     const controller = new AbortController();
     const input = { callKey: page.items[0]!.callKey, now, runId: "conformance", signal: controller.signal };
-    const correction = { ...input, realMicros: 20, caps, priceSource: { source: "litellm" as const, fetchedAt: now } };
+    const correction = { ...input, realMicros: 20, caps, priceVersion: 1, estimated: false, priceSource: { source: "litellm" as const, fetchedAt: now } };
     const pending = operation === "correct" ? meter.correct(correction) : meter.expire(input);
     await entered; controller.abort();
     assert.deepEqual(await pending, { status: "unknown" });

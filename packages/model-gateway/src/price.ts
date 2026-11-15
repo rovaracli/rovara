@@ -5,7 +5,7 @@ export interface TokenRates { inputMicrosPerMTok: number; outputMicrosPerMTok: n
 export interface Price extends TokenRates { longContext?: Array<Partial<TokenRates> & { aboveTokens: number }>; operatorReview?: true; derived?: Array<{ aboveTokens: number; keys: RateKey[] }>; uncertain?: Array<{ aboveTokens: number; keys: RateKey[] }> }
 export type PriceKind = "chat" | "embedding";
 export interface PriceOrigin { source: "litellm" | "aws" | "override"; fetchedAt: number }
-export interface ResolvedPrice extends Price { estimated: boolean; knownTokenPrice?: true }
+export interface ResolvedPrice extends Price { estimated: boolean; priceVersion?: number; knownTokenPrice?: true }
 export interface PriceSource {
   correctionFor?(provider: string, model: string): (ResolvedPrice & { origin: PriceOrigin; priceVersion: number }) | undefined;
   effectiveFor?(provider: string, model: string, kind: PriceKind): ResolvedPrice | Promise<ResolvedPrice>;

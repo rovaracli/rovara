@@ -25,7 +25,7 @@ async function fromRows(rows: unknown) {
   return { result, store, prices };
 }
 it.each([
-  ["unsupported price field", { search_context_cost_per_query: { secret: 1 } }, 15e-6, 75e-6],
+  ["unsupported price field", { future_feature_cost_per_query: { secret: 1 } }, 15e-6, 75e-6],
   ["deprecated model", { deprecation_date: "2020-01-01" }, 15e-6, 75e-6],
   ["token rate exceeds maximum", {}, 0.002, 0.003],
 ] as const)("retains own known floor for %s through hold, settlement and correction", async (reason, extra, input, output) => {
@@ -71,7 +71,7 @@ async function add(meter: InMemoryMeter, settledAt: number, limit = caps) {
   await meter.settle(reserved.reservation, 10, { provider: "anthropic", model: "secret-model", kind: "chat", usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 }, settledAt });
   return JSON.stringify([scope.iss, scope.cid, reserved.reservation.id]);
 }
-const real = { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) };
+const real = { priceFor: () => ({ inputMicrosPerMTok: 1, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) };
 it("unknown corrections advance past a stuck call, back off individually, and stop after bounded attempts", async () => {
   const meter = new InMemoryMeter(() => now); const ids: string[] = []; for (let i = 0; i < 4; i++) ids.push(await add(meter, now + i));
   const correct = meter.correct.bind(meter); let attempts = 0;
@@ -102,7 +102,7 @@ it("logs each upward correction crossing a cap, including later calls after the 
   const meter = new InMemoryMeter(() => now); const limit = { ...caps, companyMonth: 30 };
   await add(meter, now, limit); await add(meter, now + 1, limit);
   const logs: unknown[] = [];
-  const options = { meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 30_000_000, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: new FixedCapsSource(limit), now, runId: "secret-run", log: (line: unknown) => logs.push(line) };
+  const options = { meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 30_000_000, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: new FixedCapsSource(limit), now, runId: "secret-run", log: (line: unknown) => logs.push(line) };
   expect((await runCorrections(options)).corrected).toBe(2);
   expect(logs.filter((line) => (line as { event: string }).event === "price_correction_cap_exceeded")).toHaveLength(2);
   expect((await meter.read(scope)).find((r) => r.item === "company")?.spentMicros).toBe(60);
@@ -132,7 +132,7 @@ it("snapshot floor metadata validates unknown types/reasons and shares the sourc
   for (const invalid of [null, {}, [{ ...floor, reason: "secret" }], [{ ...floor, inputMicrosPerMTok: Infinity }], [{ ...floor, operatorReview: "secret" }], [floor, floor], Array.from({ length: 20_001 }, (_, i) => ({ ...floor, model: String(i) }))]) expect(validSnapshot(snapshot(invalid))).toBe(false);
 });
 it("preserves a floors-only source and prices known identities independently of dearer siblings", async () => {
-  const { prices } = await fromRows({ "claude-sonnet-4-5": { ...base, search_context_cost_per_query: 1, cache_creation_input_token_cost: 20e-6 } });
+  const { prices } = await fromRows({ "claude-sonnet-4-5": { ...base, future_feature_cost_per_query: 1, cache_creation_input_token_cost: 20e-6 } });
   expect(await resolvePrice(prices, "anthropic", "claude-sonnet-4-5")).toMatchObject({ estimated: true, inputMicrosPerMTok: 4_500_000, outputMicrosPerMTok: 22_500_000, cacheWrite5mMicrosPerMTok: 30_000_000 });
   const other = await fromRows({ old: { ...base, input_cost_per_token: 30e-6, output_cost_per_token: 60e-6 }, new: { ...base, unknown_cost: 1 }, foreign: { ...base, litellm_provider: "openai", input_cost_per_token: 500e-6 } });
   expect(await resolvePrice(other.prices, "anthropic", "new")).toMatchObject({ inputMicrosPerMTok: 4_500_000, outputMicrosPerMTok: 22_500_000, estimated: true });
@@ -178,10 +178,10 @@ it("new confirmation metadata fails closed for malformed fields and duplicate ke
 it("upward correction reports a cap crossed by outstanding holds too", async () => {
   const meter = new InMemoryMeter(() => now); const limit = { ...caps, companyMonth: 30 }; const id = await add(meter, now, limit);
   expect((await meter.reserve({ scope, caps: limit, estimateMicros: 20 })).ok).toBe(true);
-  expect(await meter.correct({ callKey: id, caps: limit, realMicros: 20, now, runId: "run", priceSource: { source: "litellm", fetchedAt: now } })).toMatchObject({ status: "corrected", capExceeded: true });
+  expect(await meter.correct({ callKey: id, caps: limit, realMicros: 20, now, runId: "run", priceVersion: 1, estimated: false, priceSource: { source: "litellm", fetchedAt: now } })).toMatchObject({ status: "corrected", capExceeded: true });
 });
 it("a source report counts Anthropic skip reasons without exposing model names", async () => {
-  const result = await fetchRows({ old: base, "secret-model": { ...base, search_context_cost_per_query: 1 } });
+  const result = await fetchRows({ old: base, "secret-model": { ...base, future_feature_cost_per_query: 1 } });
   expect(result.ok && result.report).toMatchObject({ anthropicSkipped: { "unsupported price field": 1 } });
   expect(JSON.stringify(result.ok && result.report)).not.toContain("secret-model");
 });
@@ -195,7 +195,7 @@ it("large LiteLLM rises are immediate and even hundredfold drops can confirm on 
 it("records cap crossing atomically even if the correction acknowledgement is lost", async () => {
   const meter = new InMemoryMeter(() => now); const limit = { ...caps, companyMonth: 15 }; const id = await add(meter, now, limit);
   const correct = meter.correct.bind(meter); meter.correct = async (input) => { await correct(input); throw new Error("secret acknowledgement"); };
-  expect((await runCorrections({ meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 30_000_000, outputMicrosPerMTok: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: new FixedCapsSource(limit), now, runId: "run" })).unknown).toBe(1);
+  expect((await runCorrections({ meter, prices: { priceFor: () => ({ inputMicrosPerMTok: 30_000_000, outputMicrosPerMTok: 1, priceVersion: 1, origin: { source: "litellm", fetchedAt: now } }) }, caps: new FixedCapsSource(limit), now, runId: "run" })).unknown).toBe(1);
   expect(meter.ledger(id)).toMatchObject({ status: "corrected", capExceeded: true });
 });
 it("an unrepresentable estimated total saturates without a price refusal even when individual rates fit", async () => {
