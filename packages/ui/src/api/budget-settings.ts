@@ -13,7 +13,7 @@ export function createBudgetSettingsApi(host: AppHost, orgId: string) {
    if (!OrgIdSchema.safeParse(orgId).success) throw new ApiError(400, "CONFIG_INVALID", unavailable);
    let response: ApiResponse, timer: ReturnType<typeof setTimeout> | undefined;
    try { response = await Promise.race([host.transport.request({ method: "GET", path: "/v1/app/org/budget-settings" }), new Promise<ApiResponse>((_, reject) => { timer = setTimeout(() => { reject(new Error(unavailable)); }, 30_000); })]); }
-   catch { throw new ApiError(0, "RUNTIME_UNAVAILABLE", unavailable); }
+   catch (error) { if (error instanceof ApiError && error.status === 501) throw new ApiError(501, "NOT_ON_CODE_YET", unavailable);throw new ApiError(0, "RUNTIME_UNAVAILABLE", unavailable); }
    finally { clearTimeout(timer); }
    if (!valid(version)) throw new ApiError(0, "SCOPE_ENDED", unavailable);
    if (response.status !== 200) {

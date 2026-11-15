@@ -79,7 +79,7 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   signIn(path, options) {
    const destination = returnPath(path), key = "rovara.sign-in." + destination;
    try { const stored = win.sessionStorage.getItem(key);if (options?.automatic === true && stored !== null && Number.isFinite(Number(stored)) && Date.now() - Number(stored) < SIGN_IN_REPEAT_GUARD_MS) { win.location.assign("/app/signed-out?reason=failed");return; }win.sessionStorage.setItem(key, String(Date.now())); } catch { /* Blocked preference storage does not prevent a deliberate sign-in. */ }
-   win.location.assign("/v1/auth/browser/authorize?return_to=" + encodeURIComponent(destination));
+   win.location.assign("/v1/auth/browser/authorize?return_to=" + encodeURIComponent(destination) + (options?.stepUp === true ? "&step_up=1" : ""));
   },
   async signOut() {
    if (csrf === undefined) {

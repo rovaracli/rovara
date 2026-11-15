@@ -67,7 +67,7 @@ it("distinguishes a failed chunk import from another page error", () => {
 });
 for (const theme of ["light", "dark"] as const) it("has no automated accessibility violations in " + theme, async () => { const f = shell("/app", theme);await screen.findByRole("heading", { name: "Home" });await expectNoAxeViolations(f.container);f.close(); });
 it("marks admin routes web-only and does not add them when the server disables admin", () => {
- const routes = appRoutes({ ...features, admin: true, usage: true });const children = routes.flatMap(route => route.children ?? []);expect(children.find(route => route.path === "admin/*")?.handle).toEqual({ webOnly: true });expect(appRoutes(features).flatMap(route => route.children ?? []).some(route => route.path === "admin/*")).toBe(false);
+ const routes = appRoutes({ ...features, admin: true, usage: true });const children = routes.flatMap(route => route.children ?? []);expect(children.find(route => route.path === "admin/*")?.handle).toEqual({ webOnly: true, bleed: true });expect(appRoutes(features).flatMap(route => route.children ?? []).some(route => route.path === "admin/*")).toBe(false);
 });
 
 it("starts signup without navigation reads and welcome with only a me read", async () => {

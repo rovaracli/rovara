@@ -4,6 +4,13 @@ export const ROUTES = {
   /** Work, the split inbox (the route is still /app/live). */
   work: "/app/live",
   signedOut: "/app/signed-out",
+  /** Your account: name, appearance, confirmation email and passkeys. */
+  account: "/app/account",
+  /** The admin area (Hybrid 1, DEC 223): five groups in a sidebar. */
+  admin: {
+    home: "/app/admin", people: "/app/admin/people", invites: "/app/admin/invites", signInClients: "/app/admin/sign-in-clients", signInFactors: "/app/admin/sign-in-factors",
+    spending: "/app/admin/money/budgets", settings: "/app/admin/settings", howWeWork: "/app/admin/how-we-work", projects: "/app/admin/projects", audit: "/app/admin/audit",
+  },
   project: (name: string) => `/app/projects/${name}`,
   session: (id: string) => `/app/sessions/${id}`,
   /** A well-formed session address that no one ever started. */

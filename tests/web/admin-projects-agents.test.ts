@@ -137,7 +137,7 @@ for (const status of ["active", "archived"] as const) it(`B34 opens recorded Sla
 it("B35 Health overview links to read-only web and API service status details", async () => {
  const orgId = meFixture().org.orgId, checkedAt = "2026-10-30T14:30:00.000Z";
  const f = mount("/app/admin", { shipped: true, respond: async () => ({ status: 200, body: { orgId, checkedAt, configured: true, source: "stored_runtime_qualification", checks: [{ kind: "web", state: "ready", observation: "qualified", reason: "qualified", expiresAt: "2026-11-02T14:30:00.000Z" }, { kind: "api", state: "unknown", observation: "unknown", reason: "not_observed" }] } }) });
- fireEvent.click(await screen.findByRole("link", { name: "Review Rovara service status" }));await screen.findByRole("heading", { name: "Rovara service status" });
+ fireEvent.click(await screen.findByRole("link", { name: "Open Health" }));await screen.findByRole("heading", { name: "Rovara service status" });
  fireEvent.click(await screen.findByRole("link", { name: "browser runtime" }));await screen.findByRole("table", { name: "Stored browser runtime qualification" });
  expect(f.request.mock.calls.filter(([input]) => input.path.includes("service-status")).every(([input]) => input.method === "GET")).toBe(true);f.close();
 });
