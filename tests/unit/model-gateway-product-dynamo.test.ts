@@ -123,7 +123,7 @@ describe("product key table: keys and isolation", () => {
     expect(await k.store.useKey(ISS, B, ra)).toBeUndefined();
     // Copy A's sealed row into B's partition under B's version id: the seal is bound to the company and version, so it fails.
     const aRow = k.rows().find((row) => row.pk === `CO#${JSON.stringify([ISS, A])}` && String(row.sk).startsWith("key#"))!;
-    await k.db.put("gw-product-keys", { ...aRow, pk: `CO#${JSON.stringify([ISS, B])}`, sk: `key#${PROJECT}#src_gem#${rb.versionId}` } as never);
+    await k.db.put("gw-product-keys", { ...aRow, pk: `CO#${JSON.stringify([ISS, B])}`, sk: `key#${PROJECT}#src_gem#${rb.versionId}` });
     await expect(k.store.useKey(ISS, B, rb)).rejects.toBeInstanceOf(SealedProductKeyRefused);
     // Views never carry a key.
     expect(JSON.stringify(await k.store.view(ISS, A, PROJECT))).not.toContain(keyA);
@@ -186,7 +186,7 @@ describe("eval approvals and budgets (the records Cloud's settings routes write)
     expect(await budget(ISS, A, PROJECT)).toEqual({ calls: 20, costMicros: 200_000 });
     expect(await budget(ISS, B, PROJECT)).toEqual({ calls: 400, costMicros: 4_000_000 });
     for (const bad of [{ calls: 0, costMicros: 1 }, { calls: 1, costMicros: 0 }, { calls: 1.5, costMicros: 1 }, { calls: 1, costMicros: 1, extra: 1 }]) {
-      await expect(k.store.setEvalBudget({ ...change(A, PROJECT, 1), budget: bad as never })).rejects.toThrow(new ProductKeyError("invalid"));
+      await expect(k.store.setEvalBudget({ ...change(A, PROJECT, 1), budget: bad })).rejects.toThrow(new ProductKeyError("invalid"));
     }
     await expect(k.store.setEvalApproval({ ...change(A, PROJECT, 1), approval: { ...approval, inputsDigest: "not-a-digest" }, provider: "github" })).rejects.toThrow(new ProductKeyError("invalid"));
     await expect(k.store.setEvalBudget({ ...change(A, PRODUCT_COMPANY_OWNER, 0, admin), budget: { calls: 1, costMicros: 1 } })).rejects.toThrow(new ProductKeyError("invalid"));

@@ -361,7 +361,7 @@ export class ProductEvalStages {
       status: "open", callerReleased: false, parent: "held", settledMicros: 0, keepWhole: false, reportedFloor: 0, heldMarkers: [],
       dispatched: 0, spent: 0, inFlight: 0, inFlightCost: 0, exclusive: false, estimatedAny: false, claiming: 0, waiting: {}, subs: {},
     };
-    let stored = false;
+    let stored: boolean;
     try { stored = await this.#store.put(stage, 0); } catch { stored = false; }
     if (!stored) {
       // The stage was never stored (or its outcome is unknown): give the whole hold back at once if nothing could have used it.

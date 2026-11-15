@@ -4,7 +4,7 @@
 // meters' tables, the shared eval stage table, the Vertex federation role, and the serving role's exact grants. The deploy role's
 // actions for the new resources are simulated against the agentx deploy role and its default permission boundary.
 import { createHash } from "node:crypto";
-import { Stack } from "aws-cdk-lib";
+import type { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { defaultBoundaryStatements, serviceRoleStatements, type PolicyStatementJson } from "../../packages/contracts/src/access-policies.js";

@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import { EVAL_HOLD_PATH, EVAL_SCOPE_HEADER, InMemoryEvalStageStore, ProductEvalStages, type EvalApproval } from "../../packages/model-gateway/src/product-eval.js";
-import { handleGateway, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
+import { handleGateway } from "../../packages/model-gateway/src/server.js";
 import { MemorySink, mint, now } from "./model-gateway-fixture.js";
 import { change, cid, geminiAnswer, geminiKey, maintainer, pid, productCall, productGateway, storeKit, streamPath } from "./model-gateway-product-fixture.js";
 
@@ -31,7 +31,7 @@ describe("an overrun-capable stage call runs alone, across tasks", () => {
     };
     const a = await task(); const b = await task();
     const sink = new MemorySink();
-    await handleGateway(a.deps as GatewayDependencies, { method: "POST", url: EVAL_HOLD_PATH, headers: { "content-type": "application/json", "x-api-key": mint() }, body: (async function* () { yield Buffer.from(JSON.stringify({ grant, calls: 10, costMicros: 4_000_000 })); })() }, sink);
+    await handleGateway(a.deps, { method: "POST", url: EVAL_HOLD_PATH, headers: { "content-type": "application/json", "x-api-key": mint() }, body: (async function* () { yield Buffer.from(JSON.stringify({ grant, calls: 10, costMicros: 4_000_000 })); })() }, sink);
     const scope = (JSON.parse(sink.text()) as { scope: string }).scope;
     const first = productCall(a.deps, streamPath, media, mint(), { [EVAL_SCOPE_HEADER]: scope });
     while (sent === 0) await new Promise((resolve) => setTimeout(resolve, 2));
