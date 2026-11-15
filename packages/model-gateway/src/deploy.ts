@@ -24,7 +24,31 @@ export const GATEWAY_ENV = {
   anthropicKeySecret: "GATEWAY_ANTHROPIC_KEY_SECRET",
   /** The Cloud company backend's Companies table, read for each company's budgets (GATEWAY_COMPANY_SETTINGS). */
   companyTable: "GATEWAY_COMPANY_TABLE",
+  /**
+   * The product-AI route (docs/model-gateway-product-ai.md, "Deployed"): all eight set, or none (the route stays off, every
+   * product path 404). The product key table (write-only key store, eval approvals and budgets), the ARN of its own KMS key, the
+   * product meter's three tables and the shared eval stage table.
+   */
+  productKeysTable: "GATEWAY_PRODUCT_KEYS_TABLE",
+  productKeysKey: "GATEWAY_PRODUCT_KEYS_KEY",
+  productMeterTable: "GATEWAY_PRODUCT_METER_TABLE",
+  productLedgerTable: "GATEWAY_PRODUCT_LEDGER_TABLE",
+  productMarkersTable: "GATEWAY_PRODUCT_MARKERS_TABLE",
+  evalStagesTable: "GATEWAY_EVAL_STAGES_TABLE",
+  /**
+   * Vertex AI on the product route (DEC 229b): the ARN of Rovara's federation role (no permissions; only this gateway's role
+   * may assume it, with a company id as session name). Optional, only with the product route; absent: Vertex paths are 404.
+   */
+  vertexFederationRole: "GATEWAY_VERTEX_FEDERATION_ROLE",
+  /** The learning route (docs/model-gateway-learning.md): its meter's three tables, set together and only with the product route (its key store). */
+  learningMeterTable: "GATEWAY_LEARNING_METER_TABLE",
+  learningLedgerTable: "GATEWAY_LEARNING_LEDGER_TABLE",
+  learningMarkersTable: "GATEWAY_LEARNING_MARKERS_TABLE",
 } as const;
+/** The product route's settings: all or none. */
+export const GATEWAY_PRODUCT_ENV = [GATEWAY_ENV.productKeysTable, GATEWAY_ENV.productKeysKey, GATEWAY_ENV.productMeterTable, GATEWAY_ENV.productLedgerTable, GATEWAY_ENV.productMarkersTable, GATEWAY_ENV.evalStagesTable] as const;
+/** The learning route's settings: all or none. */
+export const GATEWAY_LEARNING_ENV = [GATEWAY_ENV.learningMeterTable, GATEWAY_ENV.learningLedgerTable, GATEWAY_ENV.learningMarkersTable] as const;
 
 export const GATEWAY_MODES = ["serve", "price-fetch"] as const;
 export const GATEWAY_PORT = 8080;
@@ -73,6 +97,17 @@ export const GATEWAY_METER_INDEXES = {
   openHolds: { name: "open-holds", partitionKey: "openAll", sortKey: "openAt" },
 } as const;
 export const GATEWAY_OPEN_PARTITION = "OPEN";
+
+/**
+ * The eval stage table's sparse index over stages whose parent hold is not settled yet, ordered by when the sweep should look at
+ * them (dynamo-eval-stages.ts). The serving role may Query it by name.
+ */
+export const GATEWAY_EVAL_STAGE_INDEXES = {
+  dueStages: { name: "due-stages", partitionKey: "dueAll", sortKey: "dueAt" },
+} as const;
+export const GATEWAY_EVAL_STAGE_PARTITION = "DUE";
+/** The product key and eval stage tables' TTL attribute (key rows' purge time, receipts, stage rows). */
+export const GATEWAY_PRODUCT_TTL_ATTRIBUTE = "expiresAt";
 
 /**
  * Budgets come from the Cloud company backend's Companies table (packages/cloud-server company-dynamo.ts, #52): the item COMPANY#<org_…> / SETTINGS holds `companyId` and `settings.budgets`, four caps in

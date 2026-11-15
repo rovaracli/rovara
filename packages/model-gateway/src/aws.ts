@@ -144,7 +144,7 @@ export function nodeWireTransport(): WireTransport {
 }
 
 export interface AwsJsonClientOptions {
-  region: string; service: "dynamodb" | "secretsmanager"; targetPrefix: string; contentType: string;
+  region: string; service: "dynamodb" | "secretsmanager" | "kms"; targetPrefix: string; contentType: string;
   credentials: CredentialSource; transport?: WireTransport; endpoint?: string; now?: () => number;
 }
 export interface AwsCallOptions { signal?: AbortSignal; timeoutMs?: number; maxBytes?: number }

@@ -38,4 +38,5 @@ export {
 } from "./company-store.js";
 export { CLOSED_INVITE_DAYS, COMPANY_TABLE, DynamoCompanyStore } from "./company-dynamo.js";
 export { COMPANY_ROUTES, PRE_APPROVED_EMAILS_PATH, modelGatewayReadiness, type CompanyBackend } from "./company-routes.js";
+export { PRODUCT_AI_APPROVER_PROVIDER, PRODUCT_AI_ROUTES, PRODUCT_AI_SOURCE_ID, type ProductAiBackend, type ProductAiStore, type ProductAiView } from "./product-ai-routes.js";
 export { STEP_UP_ACR, STEP_UP_METHODS, STEP_UP_SKEW_SECONDS, STEP_UP_WINDOW_SECONDS, freshStepUp, stepUpClaim, type StepUp, type StepUpMethod } from "./step-up.js";

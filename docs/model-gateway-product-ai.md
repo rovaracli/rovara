@@ -2,8 +2,8 @@
 
 Plan v3.2 row 20.2 (the Gemini journey), section 7.4 item 7; DEC 157, 165, 172, 214 #18, 216, 217.
 Code: `packages/model-gateway/src/product-*.ts`. `startServe` mounts it when given `product` (resolver, its own meter on
-separate tables, its caps); the deployed process does not pass it yet (the product key table adapter and the product
-meter tables are infra/adapter rows).
+separate tables, its caps); the deployed process builds it from its settings (`GATEWAY_PRODUCT_*`, see "Deployed"), off
+when they are absent.
 
 With the runtime from #53: the product route reads the company backend's budgets (`CompanyBudgetCaps`, fail closed: a
 company with no monthly cap or an unreadable row gets no product calls; the monthly cap also bounds the product meter's
@@ -146,11 +146,51 @@ already holds (`GET /v1/internal/model-access`, Code #670) as `x-api-key`, and f
 The file lists paths, headers, and every refusal (status, type, fixed words). Code's worker copies it byte for byte
 (SHA-256 pinned in a test).
 
-## Deployment conditions (not enforced in code)
+## Deployed (B5, B6, B8, B7, #57, #58)
 
-- The product meter is a separate Meter instance (table or key prefix) from the agent meter.
-- The deny statement (`productKeyDenyStatement`) also blocks `kms:GenerateDataKey*`: whatever process runs the settings
-  routes that seal keys must be the gateway's runtime role, or be exempted explicitly.
+Off unless configured. `-c rovaraModelGateway=<env> -c rovaraModelGatewayProductAi=on` adds to the gateway stack (without the
+switch the template is byte for byte what it was; `tests/contract/model-gateway-product-infra.test.ts`):
+
+- Tables (on-demand, point-in-time recovery, deletion protection, retained, company keys `CO#[iss,cid]`): `ProductKeys` (the key
+  store, eval approvals and budgets; TTL `expiresAt` purges key rows and receipts), `ProductMeter`/`ProductLedger`/`ProductMarkers`
+  and `LearningMeter`/`LearningLedger`/`LearningMarkers` (each meter its own tables, combined with the agent meter's company row
+  and in-flight marker in code, DEC 228c), `EvalStages` (B8, below).
+- KMS `ProductKeysKey`: `kms:Decrypt` only for the serving role, `kms:GenerateDataKey` only for Cloud's server role (parameter
+  `CloudSettingsRoleArn`), both only for a sealed row of this install (`purpose` = `rovara-product-ai-key`, `install` = the
+  issuer, exactly the six context keys). Nobody may `Encrypt`; the account manages but does not use it (as the provider-keys
+  key). KMS `ProductKeysMacKey` (HMAC_256): `kms:GenerateMac` only for Cloud's server role (keyed fingerprints, F1-d L4).
+  Because the key policy names each principal, `productKeyDenyStatement` is not needed on other roles for this key.
+- The serving role: `GetItem`/`PutItem` on `ProductKeys` (read keys, record a refused-key warning), the agent meter's
+  actions on the product and learning meter tables (`DeleteItem` on their markers only), `GetItem`/`PutItem` on
+  `EvalStages`, `Query` on the seven named indexes, `kms:Decrypt` on the product key key, `sts:AssumeRole` on the Vertex
+  federation role with an `org_*` session name.
+- `VertexFederationRole`: no permissions; its trust names only the serving role, session name `org_*`, one hour.
+- Environment: `GATEWAY_PRODUCT_KEYS_TABLE`, `GATEWAY_PRODUCT_KEYS_KEY`, `GATEWAY_PRODUCT_METER_TABLE`,
+  `GATEWAY_PRODUCT_LEDGER_TABLE`, `GATEWAY_PRODUCT_MARKERS_TABLE`, `GATEWAY_EVAL_STAGES_TABLE` (all six or none),
+  `GATEWAY_VERTEX_FEDERATION_ROLE` (optional), `GATEWAY_LEARNING_*_TABLE` (all three or none, only with the product route).
+  `process.ts` builds the store (`DynamoProductKeyTable`, `awsKms`), the product meter, the eval stages on the shared table with
+  the production approvals and budget (`eval-approvals.ts`), DynamoDB overrun marks, Gemini, Vertex (`VertexTokens`) and media
+  prices (`media: prices`), and the learning route (`learning-keys.ts`).
+
+Cloud's side (`-c rovaraCloudApp=<env> -c rovaraModelGatewayProductAi=on`, refused for `production`): parameters
+`ProductKeysTableName`, `ProductKeysKeyArn`, `ProductKeysMacKeyArn`; the server role gets `GetItem`/`PutItem`/`UpdateItem`/
+`ConditionCheckItem` on that table by company keys, `kms:GenerateDataKey` (same purpose and install condition) and
+`kms:GenerateMac`; output `ServerRoleArn`. The release pipeline deploys Cloud without the switch, so a pipeline deploy of a
+switched-on environment drops these grants until the pipeline carries it (DEFERRED PRODUCT-AI-PIPELINE-SWITCH).
+
+Settings routes (B7, `packages/cloud-server/src/product-ai-routes.ts`; screen: admin area, AI and connections, Product AI
+keys): `GET /v1/app/projects/:name/product-ai`, `PUT|DELETE .../key`, `PUT .../eval-budget`, `PUT .../eval-approval`. The
+project's admin or a company admin (Code's access check, made on every request), a fresh step-up on every write, the signed
+write path (CSRF, body hash), Cloud audit records (`product_ai.*`). The key is write-only: no answer, log or audit carries it.
+AI Studio keys only; a Vertex connect needs the federation probe, which only the gateway's role can run (Vertex lane).
+
+Deploy order: read the Cloud server function's role ARN from the deployed Cloud web stack (its `Server` function's role; the
+stack outputs it as `ServerRoleArn` once switched on), deploy the gateway with the switch and `CloudSettingsRoleArn`, then
+Cloud web with the switch and the gateway's three outputs as parameters. The gateway stack's roles are
+root-path roles without a permission boundary, which the agentx deploy role may not create: the gateway deploys with the CDK
+bootstrap execution role (as before this change; the offline simulation in the infra test records it).
+
+Other conditions (not enforced in code):
 - The sandbox never holds the task token (Code's worker; plan 7.4 gap c).
 
 ## One combined company monthly cap (DEC 228c)
@@ -206,12 +246,19 @@ mounts them.
   parent hold asks the meter's open-hold sweep to wait until the stage's end (`ReserveInput.sweepAfter`, stored as
   `openFrom`), after which a hold whose process died is closed at its whole estimate as usual. The open-stage limits (8 per
   company, 2,000 overall) count a slot before any await.
-- **Process-local**: stages live in the process that held them; a call or release reaching another process is `not found`
-  and the hold falls to expiry and the sweep (DEFERRED PRODUCT-EVAL-STAGE-STORE-20261115).
+- **Shared by every gateway task** (B8): stages live in the `EvalStages` table (`dynamo-eval-stages.ts`), so a hold, its calls
+  and its release may each reach a different task. Every change is a conditional write on the stage's version, retried from a
+  fresh read on a lost race; money moves on the meter outside those writes, ordered so a task dying between steps leaves the
+  hold to the sweep at its whole estimate. The parent settle takes a one-minute lease; any task's meter settles the parent by
+  id (`DynamoMeter.adopt`). A call admitted by a task that died is counted at its whole estimate after the call ceiling plus 15
+  minutes (`EVAL_DEAD_CALL_MS`), and the stage keeps its whole hold. The 8-per-company limit is one slots item per company (a
+  conditional write before any money moves); the 2,000 limit now bounds holds being made at once per task. Waiting for a turn
+  polls the table at most once a second. Rows expire (TTL) at the deadline plus `EVAL_DEAD_CALL_MS`; the sweep reads the
+  sparse `due-stages` index (stopped stages at once, open ones at their deadline).
 - Stage calls with an unknown price settle at the cautious hold; the parent settle is flagged estimated but carries no
   per-call usage, so R3c corrections do not lower them (conservative).
 
 ## Not built here
 
-The Vertex federation role and its trust policy (infra), the DynamoDB adapters, the settings HTTP routes and screens, infra (the
-runtime role, the deny statement attached to non-gateway roles, the KMS key), Code's worker side of the bridge.
+Code's worker side of the bridge; the company learning-account settings route (the store and the gateway read it; no Cloud
+route writes it yet); Vertex connect from Cloud (needs the gateway's probe).

@@ -2,7 +2,8 @@
 
 DEC 226 (learning calls on the customer's own account, $20 a month per company, none while lessons are off), DEC 228c (one
 combined company cap). Code: `packages/model-gateway/src/learning-route.ts`; `startServe` mounts it when given `learning`
-(the company's key source and the learning meter). The deployed process does not pass it yet (see "Not built here").
+(the company's key source and the learning meter). The deployed process builds it when `GATEWAY_LEARNING_*_TABLE` are set
+(with the product route, whose key store holds the company's account; docs/model-gateway-product-ai.md "Deployed").
 
 ## What it is
 
@@ -66,8 +67,8 @@ is separate from Code's own `ROVARA_CORE_LESSONS`: a company needs both on.
 
 ## Not built here
 
-- The adapter behind `LearningKeySource`: a company-level store for the company's connected Anthropic account (the product
-  key store holds Gemini/Vertex only). Until it exists, the process cannot mount the route.
-- The learning meter's tables in infra (`lib/model-gateway.ts`) and their grants.
+- Built: `learning-keys.ts` reads the company's own Anthropic account from the product key store (a company source of provider
+  `anthropic`, sealed like the product keys; never a project's, never linked), and the learning meter's tables and grants are in
+  `lib/model-gateway.ts` behind the product switch. Not built: a Cloud settings route for a company admin to connect it.
 - A per-company learning ceiling setting (the ceiling is one install-wide value, default $20).
 - Providers other than Anthropic Messages for learning calls.

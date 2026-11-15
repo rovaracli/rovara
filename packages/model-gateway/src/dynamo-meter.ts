@@ -247,6 +247,18 @@ export class DynamoMeter implements Meter {
     return { ok: false, reason: "busy" };
   }
 
+  /**
+   * A handle for a hold this meter took in ANOTHER gateway task (an eval stage's parent or company marker, product-eval.ts): the
+   * shared stage table keeps only the hold's id. Settle then closes it only while it is open, in this company's partition, as
+   * for any hold; an id that names no hold of this company closes nothing.
+   */
+  adopt(iss: string, cid: string, reservation: Reservation): Reservation {
+    if (record(reservation) === undefined || typeof reservation.id !== "string" || !/^[0-9a-f-]{36}$/u.test(reservation.id) || typeof iss !== "string" || typeof cid !== "string" || !COMPANY.test(cid)) throw new Error("settlement unavailable");
+    const handle = Object.freeze({ id: reservation.id, ...(reservation.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: reservation.appliedMaxOutputTokens }) });
+    this.#holds.set(handle, { pk: companyPartition(iss, cid), id: reservation.id });
+    return handle;
+  }
+
   async settle(reservation: Reservation, actualMicros: number, estimated?: EstimatedSettlement): Promise<void> {
     if (record(reservation) === undefined || typeof reservation.id !== "string") throw new Error("settlement unavailable");
     await this.#beforeWrite("settle");
