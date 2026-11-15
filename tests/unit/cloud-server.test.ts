@@ -86,6 +86,10 @@ function fakeCode() {
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}` && call.method === "GET") return respond(200, { task });
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/cancel`) { task = { ...task, status: "CANCELLED" }; return respond(200, { task }); }
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/close`) { task = { ...task, status: "CLOSED" }; return respond(200, { task, closed: true }); }
+    if (url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/review` && call.method === "POST") {
+      task = { ...task, workflow: { ...(task.workflow as object), state: "RUNNING", revision: 17 } };
+      return respond(200, { task, requestId: "r" });
+    }
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/decision`) {
       if (decisionRefusal !== undefined) return respond(409, { error: { code: "IDEMPOTENCY_CONFLICT", message: decisionRefusal } });
       task = { ...task, workflow: { ...(task.workflow as object), stage: "IMPLEMENTATION", state: "RUNNING" } };
@@ -382,6 +386,21 @@ const PLAN_WAITING = {
   },
 };
 
+const CANDIDATE = "f".repeat(64);
+/** Code's REVIEW/BLOCKED as production showed it (Rovara-cloud#15): checks passed, the critic passed, the security review gave no answer in shape. */
+const REVIEW_BLOCKED = (passed = true) => ({
+  workflow: {
+    ...createWorkflowSnapshot({ taskId: "6f9d0c1e-2b3a-4c5d-8e7f-001122334455", ownerId: ADA, now: "2026-11-14T10:00:00.000Z", path: "QUICK" }),
+    revision: 16, stage: "REVIEW", state: "BLOCKED", blockReason: "the security review did not pass",
+    candidate: { schemaVersion: 1, digest: CANDIDATE, repositories: [{ repositoryId: "payments", baseCommitSha: "1".repeat(40), commitSha: "2".repeat(40), treeSha: "3".repeat(40) }] },
+    verification: { candidateDigest: CANDIDATE, environmentId: "fa8460e0-eedb-4103-9e34-016a6845ed54", producer: "agentx-worker-checks", recordedAt: "2026-11-14T10:02:52.913Z", results: [{ checkId: "required-1", status: passed ? "PASS" : "FAIL" }] },
+    reviews: [
+      { candidateDigest: CANDIDATE, operationId: "6a756d44-f9d4-43f2-bc1c-8298e1296d5b", provider: "amazon-bedrock", readOnly: true, recordedAt: "2026-11-14T10:02:59.001Z", role: "CRITIC", status: "PASS", version: "amazon.nova-pro-v1:0", findings: [{ advisory: true, origin: "INTRODUCED", severity: "LOW", text: "Looks right." }] },
+      { candidateDigest: CANDIDATE, operationId: "6a756d44-f9d4-43f2-bc1c-8298e1296d5b", provider: "amazon-bedrock", readOnly: true, recordedAt: "2026-11-14T10:03:02.011Z", role: "SECURITY", status: "UNKNOWN", failureReason: "INVALID_SHAPE", version: "amazon.nova-pro-v1:0", findings: [] },
+    ],
+  },
+});
+
 describe("Home's cards and plan approval (phase 2b)", () => {
   const begin = async () => {
     const context = setUp();
@@ -421,6 +440,41 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     })]);
     code.setTask({ status: "SUCCEEDED" });
     expect((await overview("payments")).running).toEqual([]);
+  });
+
+  it("shows a review that couldn't finish to its owner with Code's reason, and retries the reviews from Home or the session (Rovara-cloud#15)", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask({ status: "RUNNING", ...REVIEW_BLOCKED() });
+    const reason = "A review couldn't finish (security review: its answer wasn't in the expected format). Nothing was sent to GitHub.";
+    const retryHref = `https://cloud.example.test/v1/app/sessions/${sessionId}/retry`;
+    expect(await home(call, auth.cookie)).toMatchObject({ total: 1, cards: [{ cardId: `failure:${sessionId}`, kind: "failure", reason, buttons: [{ label: "Retry reviews", action: "retry", href: retryHref, method: "POST" }, { action: "open" }] }] });
+    const before = SessionResponseReaderSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: auth.cookie }))!.body)).session;
+    expect(before.you.actions).toContain("retry");
+    expect(before.status).toBe("needs_person");
+    const [tile] = ProjectOverviewSchema.parse(JSON.parse((await call("GET", "/v1/web/projects/payments/overview", { cookie: auth.cookie }))!.body)).running;
+    expect(tile?.statusWords).toBe("Review couldn't finish");
+    expect(tile?.actions).toContain("retry");
+
+    const retried = await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: { requestId: "77777777-7777-4777-8777-777777777777" } });
+    expect(retried!.status).toBe(200);
+    expect(SessionResponseReaderSchema.parse(JSON.parse(retried!.body)).session.status).toBe("running");
+    const { requestId, instructions, ...fence } = JSON.parse(code.calls.find((entry) => entry.path === `/v1/dev/tasks/${code.taskId}/workflow/review`)!.body!) as Record<string, unknown>;
+    expect(requestId).toBe("77777777-7777-4777-8777-777777777777");
+    expect(instructions).toMatch(/^Retry the independent read-only code and security reviews/u);
+    expect(fence).toEqual({ expectedRevision: 16, candidateDigest: CANDIDATE });
+    expect(await home(call, auth.cookie)).toEqual({ cards: [], total: 0 });
+  });
+
+  it("offers no review retry when the checks didn't pass or the task isn't stopped at review, and needs a request ID", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    code.setTask({ status: "RUNNING", ...REVIEW_BLOCKED(false) });
+    const [card] = (await home(call, auth.cookie)).cards;
+    expect(card?.buttons.map((button) => button.label)).toEqual(["Open session"]);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: { requestId: "77777777-7777-4777-8777-777777777777" } }))!.status).toBe(409);
+    code.setTask(PLAN_WAITING);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: { requestId: "77777777-7777-4777-8777-777777777777" } }))!.status).toBe(409);
+    expect((await call("POST", `/v1/web/sessions/${sessionId}/retry`, { ...auth, body: {} }))!.status).toBe(400);
+    expect(code.calls.some((entry) => entry.path.endsWith("/workflow/review"))).toBe(false);
   });
 
   it("shows a failed run and an open pull request, until the pull request is merged", async () => {

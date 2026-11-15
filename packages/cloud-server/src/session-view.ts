@@ -10,7 +10,13 @@ export interface CodeTask {
   title: string;
   project: string;
   status: "STARTING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED" | "CLOSED";
-  workflow?: { stage?: string; state?: string; revision?: number; artifacts?: Array<{ type?: string; version?: number; sha256?: string }> };
+  workflow?: {
+    stage?: string; state?: string; revision?: number; artifacts?: Array<{ type?: string; version?: number; sha256?: string }>;
+    /** The code the reviews look at, and the checks that ran on it (Code's workflow snapshot). */
+    candidate?: { digest?: string };
+    verification?: { candidateDigest?: string; reviewOnly?: boolean; results?: Array<{ status?: string }> };
+    reviews?: Array<{ role?: string; status?: string; failureReason?: string; candidateDigest?: string; findings?: Array<{ advisory?: boolean; origin?: string } | string> }>;
+  };
   pullRequests?: Array<{ repository?: string; number?: number; url?: string; state?: string }>;
   createdAt: string;
   updatedAt: string;
@@ -61,7 +67,7 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
   const ended = ENDED.has(status);
   // What the viewer may do from the page; Code checks each again when it is pressed. Someone it is shared with only watches:
   // Code lets a task's readers read it and nothing else (take-over works only for tasks shared in Slack).
-  const actions = ["watch", ...(owner && !ended ? ["stop"] : []), ...(owner && status !== "stopped" ? ["close"] : [])];
+  const actions = ["watch", ...(owner && blockedReview(task)?.retry !== undefined ? ["retry"] : []), ...(owner && !ended ? ["stop"] : []), ...(owner && status !== "stopped" ? ["close"] : [])];
   const follow = people ?? { ...followState(session, viewer.developerId), viewingNow: [] };
   return {
     contractVersion: 1,
@@ -119,7 +125,7 @@ export function liveTile(session: WorkSession, task: CodeTask, viewer: { develop
     owner: view.owner,
     where: view.where,
     status: view.status,
-    statusWords: STATUS_WORDS[view.status],
+    statusWords: blockedReview(task)?.unfinished === true ? "Review couldn't finish" : STATUS_WORDS[view.status],
     ...(step === undefined ? {} : { step }),
     ...(view.status === "failed" ? { lastRunFailed: true as const } : {}),
     costUsd: 0,
@@ -130,6 +136,39 @@ export function liveTile(session: WorkSession, task: CodeTask, viewer: { develop
     actions: view.you.actions,
     ...(plan ? { approvalUrl: approvalUrl(origin, session.sessionId) } : {}),
     updatedAt: view.updatedAt,
+  };
+}
+
+/** Why one review didn't finish, in Code's words (workflow-messages.ts REVIEW_FAILURES), never the reviewer's own output. */
+const REVIEW_FAILURES: Record<string, string> = {
+  RESPONSE_MISSING: "the reviewer gave no answer", RESPONSE_TOO_LARGE: "its answer was too long", INVALID_JSON: "its answer wasn't in the expected format",
+  INVALID_SHAPE: "its answer wasn't in the expected format", TIMEOUT: "it ran out of time", INTERRUPTED: "it was stopped",
+  CANDIDATE_CHANGED: "the code changed during the review", SESSION_FAILED: "the reviewer couldn't start", USAGE_UNAVAILABLE: "its usage couldn't be recorded",
+  BASE_UNAVAILABLE: "the task's starting point wasn't recorded", DIFF_UNAVAILABLE: "the change couldn't be compared with the task's starting point",
+};
+const REVIEW_REASON_MAX = 200;
+
+/**
+ * A task stopped at review (Code's REVIEW/BLOCKED): why, said as Code says it in Slack, and the fence for retrying the reviews on the same checked
+ * code, present only when Code would take it (the checks on exactly that code passed). Undefined for any other task. PrepLabsAI/Rovara-cloud#15.
+ */
+export function blockedReview(task: CodeTask): { reason: string; unfinished: boolean; retry?: { expectedRevision: number; candidateDigest: string } } | undefined {
+  const workflow = task.workflow;
+  if (task.status !== "RUNNING" || workflow?.stage !== "REVIEW" || workflow.state !== "BLOCKED") return undefined;
+  const digest = workflow.candidate?.digest;
+  const reviews = (workflow.reviews ?? []).filter((review) => digest !== undefined && review.candidateDigest === digest);
+  const unfinished = reviews.filter((review) => review.status === "UNKNOWN" || review.status === "FAILED" || review.status === "INTERRUPTED");
+  const issues = reviews.reduce((total, review) => total + (review.findings ?? []).filter((finding) => typeof finding !== "string" && finding.advisory !== true && finding.origin === "INTRODUCED").length, 0);
+  const reason = unfinished.length > 0
+    ? `A review couldn't finish (${unfinished.map((review) => `${review.role === "SECURITY" ? "security" : "code"} review: ${(review.failureReason === undefined ? undefined : REVIEW_FAILURES[review.failureReason]) ?? "it gave no usable answer"}`).join("; ")}). Nothing was sent to GitHub.`
+    : issues > 0 ? `Reviews found ${String(issues)} ${issues === 1 ? "issue" : "issues"} in this change. Nothing was sent to GitHub.` : "The reviews couldn't finish. Nothing was sent to GitHub.";
+  const results = workflow.verification?.results ?? [];
+  const checked = digest !== undefined && workflow.verification?.candidateDigest === digest && typeof workflow.revision === "number"
+    && (results.length > 0 || workflow.verification.reviewOnly === true) && results.every((result) => result.status === "PASS");
+  return {
+    reason: reason.length > REVIEW_REASON_MAX ? `${reason.slice(0, REVIEW_REASON_MAX - 3).trimEnd()}...` : reason,
+    unfinished: unfinished.length > 0,
+    ...(checked ? { retry: { expectedRevision: workflow.revision!, candidateDigest: digest } } : {}),
   };
 }
 

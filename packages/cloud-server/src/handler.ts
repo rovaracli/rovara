@@ -154,6 +154,8 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
           client: options.client, session, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
           work: options.work, origin: options.origin, presence,
         });
+        const retried = /^\/sessions\/(ses_[0-9a-z]{20})\/retry$/u.exec(apiPath);
+        if (method === "POST" && retried !== null && answer.status === 200) log({ event: "cloud.reviews_retried", sessionId: retried[1] });
         if (session.changed === true) {
           delete session.changed;
           await options.store.put(id, session);

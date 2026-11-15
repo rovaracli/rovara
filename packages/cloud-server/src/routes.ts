@@ -4,7 +4,7 @@
 import type { CodeAccess, CodeClient } from "./code-client.js";
 import type { CodeSession } from "./sessions.js";
 import { newSessionId, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
-import { approvalUrl, followState, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
+import { approvalUrl, blockedReview, followState, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError } from "./code-client.js";
 
@@ -129,7 +129,7 @@ const HOME_RANK = { plan: 0, failure: 1, pull_request: 2 } as const;
 
 interface HomeCard {
   cardId: string; kind: keyof typeof HOME_RANK; title: string; reason: string; sessionId: string; at: string;
-  buttons: Array<{ label: string; action: "open" | "confirm"; href: string; method: "GET" }>;
+  buttons: Array<{ label: string; action: "open" | "confirm"; href: string; method: "GET" } | { label: string; action: "retry"; href: string; method: "POST" }>;
 }
 
 /**
@@ -181,6 +181,10 @@ async function homeCards(context: RouteContext): Promise<{ cards: HomeCard[]; to
     const status = sessionStatus(task);
     if (record.owner.developerId === me && waitingPlan(task) !== undefined) {
       card("plan", `The plan for ${task.project} is waiting for your review.`, [{ label: "Review plan", action: "confirm", href: approvalUrl(origin, record.sessionId), method: "GET" }, open]);
+    } else if (record.owner.developerId === me && blockedReview(task) !== undefined) {
+      // Rovara-cloud#15: stopped at review, which only its owner can move on. Shown as a stop, with Code's reason and, when Code would take it, Retry reviews.
+      const blocked = blockedReview(task)!;
+      card("failure", blocked.reason, [...(blocked.retry === undefined ? [] : [{ label: "Retry reviews", action: "retry" as const, href: `${origin}/v1/app/sessions/${record.sessionId}/retry`, method: "POST" as const }]), open]);
     } else if (status === "failed") {
       card("failure", `The work in ${task.project} stopped before it finished.`, [open]);
     } else {
@@ -386,6 +390,25 @@ export const ROUTES: Route[] = [
     answer: async (context) => {
       const found = await sessionAndTask(context);
       return found === undefined ? sessionNotFound : ok({ session: sessionView(found.record, found.task, viewer(context), context.origin, peopleOf(context, found.record)) });
+    },
+  },
+  {
+    // POST /v1/app/sessions/{id}/retry (Rovara-cloud#15): for a task stopped at review, Code reviews the same checked code again (its
+    // workflow/review route, as Slack's Retry reviews). Only the owner; Code checks the owner, the revision and the candidate again.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/retry$/u,
+    answer: async (context) => {
+      const found = await sessionAndTask(context);
+      if (found === undefined) return sessionNotFound;
+      const requestId = (context.body as { requestId?: unknown } | undefined)?.requestId;
+      if (typeof requestId !== "string" || !UUID.test(requestId)) return badRequest("requestId must be a UUID.");
+      if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can retry this session.` } } };
+      const retry = blockedReview(found.task)?.retry;
+      if (retry === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There's nothing to retry on this session right now." } } };
+      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review`, {
+        method: "POST", headers: TASK_VIEW,
+        body: { requestId, ...retry, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
+      });
+      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, peopleOf(context, found.record)) });
     },
   },
   {
