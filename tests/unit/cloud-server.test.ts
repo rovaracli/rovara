@@ -7,8 +7,10 @@ import { describe, expect, it } from "vitest";
 import { CODE_TASK_PAGE, CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, returnPath, sessionStatus, type CloudRequest, type CodeTask } from "../../packages/cloud-server/src/index.js";
 import {
   HomeResponseReaderSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, SessionPresenceResponseReaderSchema,
-  SessionShareDeleteResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionSharesResponseReaderSchema,
+  SessionShareDeleteResponseReaderSchema, SessionSharePutResponseReaderSchema, SessionSharesResponseReaderSchema, SessionEventPageSchema,
 } from "../../packages/contracts/src/web.js";
+import { SessionMessageSchema } from "../../packages/contracts/src/agent-sessions.js";
+import { SessionMessagePageSchema } from "../../packages/contracts/src/session-views.js";
 import { createWorkflowSnapshot } from "../../packages/contracts/src/task-workflow-node.js";
 import { ProjectOverviewSchema } from "../../packages/contracts/src/session-views.js";
 import { isConfirmUrl } from "../../packages/ui/src/text/links.js";
@@ -87,6 +89,15 @@ function fakeCode() {
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}` && call.method === "GET") return respond(200, { task });
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/cancel`) { task = { ...task, status: "CANCELLED" }; return respond(200, { task }); }
     if (url.pathname === `/v1/dev/tasks/${TASK_ID}/close`) { task = { ...task, status: "CLOSED" }; return respond(200, { task, closed: true }); }
+    if (url.pathname === `/v1/dev/tasks/${TASK_ID}/events` && call.method === "GET") {
+      // Code's task events (DeveloperTaskEventSchema), as Code answers them: not necessarily in time order.
+      return respond(200, { events: [
+        { at: "2026-11-14T10:02:00.000Z", kind: "tool", text: "Edited README.md" },
+        { at: "2026-11-14T10:01:00.000Z", kind: "status", text: "Worker status: RUNNING" },
+        { at: "2026-11-14T10:03:00.000Z", kind: "error", text: "the check \u0007failed" },
+        { at: "2026-11-14T10:03:00.000Z", kind: "message", text: "   " },
+      ], requestId: "r" });
+    }
     if ((url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/send-back` || url.pathname === `/v1/dev/tasks/${TASK_ID}/workflow/review-findings`) && call.method === "POST") {
       task = { ...task, workflow: { ...(task.workflow as object), stage: url.pathname.endsWith("send-back") ? "IMPLEMENT" : "PULL_REQUEST", state: url.pathname.endsWith("send-back") ? "RUNNING" : "READY", revision: 17 } };
       return respond(200, { task, requestId: "r" });
@@ -474,7 +485,7 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     const confirmUrl = `https://cloud.example.test/v1/app/approve/plan-${sessionId}`;
     expect((await overview("payments")).running).toEqual([expect.objectContaining({
       sessionId, kind: "task", title: "Fix the README typo", project: "payments", status: "needs_person", statusWords: "Waiting for you", step: "Plan review",
-      needsYou: true, following: true, approvalUrl: confirmUrl, actions: ["watch", "stop", "close"],
+      needsYou: true, following: true, approvalUrl: confirmUrl, actions: ["watch", "comment", "stop", "close"],
     })]);
     // Code's task status is its worker's last run: between steps it reads SUCCEEDED while the workflow still waits on the person.
     code.setTask({ status: "SUCCEEDED" });
@@ -687,7 +698,7 @@ describe("following, viewing and sharing a session (phase 2c)", () => {
     expect((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: grace.cookie }))!.status).toBe(404);
     await share();
     code.setTask(PLAN_WAITING);
-    expect(await read(grace)).toMatchObject({ sessionId, you: { level: "view", owner: false, following: false, actions: ["watch"] }, approvals: [] });
+    expect(await read(grace)).toMatchObject({ sessionId, you: { level: "view", owner: false, following: false, actions: ["watch", "comment"] }, approvals: [] });
   });
 
   it("lets anyone who may read the task follow it; the owner always follows", async () => {
@@ -721,3 +732,83 @@ describe("following, viewing and sharing a session (phase 2c)", () => {
     expect((await read(ada)).viewingNow).toEqual([]);
   });
 });
+
+describe("the Conversation: timeline and comments (Rovara-cloud#24)", () => {
+  const begin = async () => {
+    const context = setUp();
+    const ada = await context.signIn();
+    const grace = await context.signIn("grace-code");
+    const started = await context.call("POST", "/v1/web/projects/payments/code", { ...ada, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the README typo" } } });
+    const { sessionId } = JSON.parse(started!.body) as { sessionId: string };
+    const share = () => context.call("PUT", `/v1/web/sessions/${sessionId}/shares`, { ...ada, body: { requestId: "66666666-6666-4666-8666-666666666666", principal: { kind: "member", developerId: GRACE }, level: "view" } });
+    const post = (who: { cookie: string; csrf: string }, body: Record<string, unknown>) => context.call("POST", `/v1/web/sessions/${sessionId}/messages`, { ...who, body });
+    const list = async (who: { cookie: string }, after?: string) => SessionMessagePageSchema.parse(JSON.parse((await context.call("GET", `/v1/web/sessions/${sessionId}/messages${after === undefined ? "" : `?after=${encodeURIComponent(after)}`}`, { cookie: who.cookie }))!.body));
+    return { ...context, ada, grace, sessionId, share, post, list };
+  };
+
+  it("answers the timeline from Code's task events: oldest first, agent steps and system lines, cleaned, with stable ids and a cursor", async () => {
+    const { call, ada, sessionId } = await begin();
+    const page = SessionEventPageSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}/events`, { cookie: ada.cookie }))!.body));
+    expect(page.events.map((event) => [event.type, event.actor?.kind, event.text])).toEqual([
+      ["status", "system", "Worker status: RUNNING"], ["step", "agent", "Edited README.md"], ["status", "system", "the check failed"],
+    ]);
+    const again = SessionEventPageSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}/events`, { cookie: ada.cookie }))!.body));
+    expect(again.events.map((event) => event.eventId)).toEqual(page.events.map((event) => event.eventId));
+    const after = SessionEventPageSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}/events?after=${encodeURIComponent(page.events[0]!.at + "#" + page.events[0]!.eventId)}`, { cookie: ada.cookie }))!.body));
+    expect(after.events).toHaveLength(2);
+    expect(page.next).toBe(`${page.events[2]!.at}#${page.events[2]!.eventId}`);
+  });
+
+  it("lets anyone who can read the session comment, reply in a thread and read the comments; a retried send is the same comment", async () => {
+    const { ada, grace, share, post, list } = await begin();
+    const first = await post(ada, { requestId: "11111111-1111-4111-8111-111111111111", kind: "comment", text: "Looks good so far." });
+    expect(first!.status).toBe(201);
+    const comment = SessionMessageSchema.parse(JSON.parse(first!.body));
+    expect(comment).toMatchObject({ kind: "comment", source: "app", author: { developerId: ADA, name: "Ada" }, text: "Looks good so far.", rev: 1 });
+    expect(JSON.parse((await post(ada, { requestId: "11111111-1111-4111-8111-111111111111", kind: "comment", text: "Looks good so far." }))!.body)).toMatchObject({ messageId: comment.messageId });
+    expect((await post(grace, { requestId: "22222222-2222-4222-8222-222222222222", kind: "comment", text: "hi" }))!.status).toBe(404);
+    await share();
+    const reply = SessionMessageSchema.parse(JSON.parse((await post(grace, { requestId: "33333333-3333-4333-8333-333333333333", kind: "comment", text: "Agreed.", threadId: comment.messageId }))!.body));
+    const nested = SessionMessageSchema.parse(JSON.parse((await post(ada, { requestId: "44444444-4444-4444-8444-444444444444", kind: "comment", text: "Thanks.", threadId: reply.messageId }))!.body));
+    expect([reply.threadId, nested.threadId]).toEqual([comment.messageId, comment.messageId]);
+    const page = await list(grace);
+    expect(page.messages.map((message) => [message.author.name, message.text])).toEqual([["Ada", "Looks good so far."], ["Grace", "Agreed."], ["Ada", "Thanks."]]);
+    expect(page.next).toBe(`${nested.createdAt}#${nested.messageId}`);
+  });
+
+  it("refuses a message to the agent, a pinned comment and an empty or oversized comment", async () => {
+    const { ada, post } = await begin();
+    const steer = await post(ada, { requestId: "11111111-1111-4111-8111-111111111111", kind: "steer", text: "Use React 19." });
+    expect(steer!.status).toBe(409);
+    expect(JSON.parse(steer!.body)).toMatchObject({ error: { message: expect.stringContaining("Send back to coding") as unknown } });
+    expect((await post(ada, { requestId: "22222222-2222-4222-8222-222222222222", kind: "comment", text: "x", anchor: { target: "step", targetId: "s1", revision: "done" } }))!.status).toBe(400);
+    expect((await post(ada, { requestId: "33333333-3333-4333-8333-333333333333", kind: "comment", text: "   " }))!.status).toBe(400);
+    expect((await post(ada, { requestId: "44444444-4444-4444-8444-444444444444", kind: "comment", text: "x".repeat(2001) }))!.status).toBe(400);
+  });
+
+  it("lets only the author edit or delete a comment, on the revision they saw; a deleted one keeps no text", async () => {
+    const { call, ada, grace, sessionId, share, post, list } = await begin();
+    await share();
+    const comment = SessionMessageSchema.parse(JSON.parse((await post(ada, { requestId: "11111111-1111-4111-8111-111111111111", kind: "comment", text: "Frist draft." }))!.body));
+    const path = `/v1/web/sessions/${sessionId}/messages/${comment.messageId}`;
+    expect((await call("PATCH", path, { ...grace, body: { rev: 1, text: "Hijacked." } }))!.status).toBe(403);
+    expect((await call("PATCH", path, { ...ada, body: { rev: 2, text: "First draft." } }))!.status).toBe(409);
+    const edited = SessionMessageSchema.parse(JSON.parse((await call("PATCH", path, { ...ada, body: { rev: 1, text: "First draft." } }))!.body));
+    expect(edited).toMatchObject({ text: "First draft.", rev: 2 });
+    expect(edited.editedAt).toBeDefined();
+    const deleted = SessionMessageSchema.parse(JSON.parse((await call("DELETE", path, { ...ada, body: { rev: 2 } }))!.body));
+    expect(deleted).toMatchObject({ text: "Comment deleted", rev: 3 });
+    expect((await list(ada)).messages[0]).toMatchObject({ text: "Comment deleted", deletedAt: deleted.deletedAt });
+    expect((await call("PATCH", path, { ...ada, body: { rev: 3, text: "Back." } }))!.status).toBe(404);
+  });
+
+  it("offers comment to anyone who can read the session, so the app shows the send box", async () => {
+    const { call, ada, grace, sessionId, share } = await begin();
+    await share();
+    for (const who of [ada, grace]) {
+      const session = SessionResponseReaderSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: who.cookie }))!.body)).session;
+      expect(session.you.actions).toContain("comment");
+    }
+  });
+});
+

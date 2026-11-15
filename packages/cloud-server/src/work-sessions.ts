@@ -18,6 +18,31 @@ export interface WorkSession {
   revision: number;
   /** People who follow the session (phase 2c); the owner always follows and is never listed. */
   followers?: Array<{ developerId: string; name: string }>;
+  /** The session's comments between people (Rovara-cloud#24): Cloud's own, oldest first. */
+  messages?: SessionComment[];
+  /** Each comment's request ID, so a retried send answers the same comment. */
+  messageRequests?: Record<string, string>;
+}
+
+/** A comment as Cloud stores it (SessionMessageSchema, kind `comment`, source `app`). */
+export interface SessionComment {
+  messageId: string;
+  kind: "comment";
+  source: "app";
+  author: { developerId: string; name: string };
+  text: string;
+  createdAt: string;
+  editedAt?: string;
+  deletedAt?: string;
+  rev: number;
+  /** A reply holds the id of the first message of its thread. */
+  threadId?: string;
+}
+
+/** A new message id in the app's format (`msg_` and 20 lower-case letters and digits). */
+export function newMessageId(): string {
+  const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz";
+  return `msg_${[...randomBytes(20)].map((byte) => alphabet[byte % alphabet.length]).join("")}`;
 }
 
 export interface WorkSessionStore {

@@ -3,7 +3,8 @@
 // lists every route and where it is answered from (PrepLabsAI/Rovara-cloud#1).
 import type { CodeAccess, CodeClient } from "./code-client.js";
 import type { CodeSession } from "./sessions.js";
-import { newSessionId, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
+import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } from "./work-sessions.js";
+import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
 import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError } from "./code-client.js";
@@ -31,7 +32,7 @@ export interface RouteContext {
 export interface RouteAnswer { status: number; body: unknown }
 
 export interface Route {
-  method: "GET" | "POST" | "PUT" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   /** Matched against the path after /v1/web; capture groups become `params`. */
   path: RegExp;
   answer(context: RouteContext): Promise<RouteAnswer>;
@@ -109,6 +110,29 @@ async function readableSession(context: RouteContext): Promise<WorkSession | und
   if (record === undefined) return undefined;
   await context.client.json(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}?events=0`, { headers: TASK_VIEW });
   return record;
+}
+
+/** A comment's edit or deletion, by its author, on the revision they saw. */
+async function changeComment(context: RouteContext, change: "edit" | "delete"): Promise<RouteAnswer> {
+  const record = await readableSession(context);
+  if (record === undefined) return sessionNotFound;
+  const messages = record.messages ?? [];
+  const comment = messages.find((message) => message.messageId === context.params[1]);
+  if (comment === undefined || comment.deletedAt !== undefined) return { status: 404, body: { error: { code: "NOT_FOUND", message: "That comment isn't here any more." } } };
+  if (comment.author.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: "You can change only your own comments." } } };
+  const input = (context.body ?? {}) as { rev?: unknown; text?: unknown };
+  if (input.rev !== comment.rev) return { status: 409, body: { error: { code: "CONFLICT", message: "This comment changed since you opened it. Refresh and try again." } } };
+  const at = context.now().toISOString();
+  let next = { ...comment, rev: comment.rev + 1 };
+  if (change === "edit") {
+    const text = commentText(input.text);
+    if ("problem" in text) return badRequest(text.problem);
+    next = { ...next, text: text.text, editedAt: at };
+  } else {
+    next = { ...next, deletedAt: at };
+  }
+  await context.work.put({ ...record, messages: messages.map((message) => (message.messageId === comment.messageId ? next : message)) });
+  return ok(commentView(record.sessionId, next));
 }
 
 const FOLLOWERS_MAX = 200;
@@ -463,6 +487,67 @@ export const ROUTES: Route[] = [
       });
       return ok({ session: sessionView(found.record, task, viewer(context), context.origin, peopleOf(context, found.record)) });
     },
+  },
+  {
+    // GET /v1/app/sessions/{id}/events (Rovara-cloud#24): the Conversation's timeline, from the Code task's own events (the newest Code keeps), for
+    // anyone Code lets read the task. Paged after `<at>#<eventId>`.
+    method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})\/events$/u,
+    answer: async (context) => {
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const { events } = await context.client.json<{ events: CodeTaskEvent[] }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/events?limit=50`);
+      return ok(timelinePage(timelineOf(events ?? []), context.query.get("after")));
+    },
+  },
+  {
+    // GET /v1/app/sessions/{id}/messages (Rovara-cloud#24): the session's comments, Cloud's own, for anyone Code lets read the task. Pinned
+    // comments are not offered (Cloud's session view lists no parts to pin), so a read for one part has none.
+    method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})\/messages$/u,
+    answer: async (context) => {
+      const record = await readableSession(context);
+      if (record === undefined) return sessionNotFound;
+      if (context.query.get("anchor") !== null) return ok({ messages: [] });
+      return ok(commentsPage(record.sessionId, record.messages ?? [], context.query.get("after")));
+    },
+  },
+  {
+    // POST /v1/app/sessions/{id}/messages {requestId, kind, text, threadId?}: a comment from anyone who can read the session. A message to the
+    // agent ("steer") and a pinned comment are refused: neither is available in Cloud yet.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/messages$/u,
+    answer: async (context) => {
+      const record = await readableSession(context);
+      if (record === undefined) return sessionNotFound;
+      const input = (context.body ?? {}) as { requestId?: unknown; kind?: unknown; text?: unknown; threadId?: unknown; anchor?: unknown };
+      if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
+      const repeated = record.messageRequests?.[input.requestId];
+      const earlier = repeated === undefined ? undefined : (record.messages ?? []).find((message) => message.messageId === repeated);
+      if (earlier !== undefined) return ok(commentView(record.sessionId, earlier));
+      if (input.kind === "steer") return { status: 409, body: { error: { code: "CONFLICT", message: "Messages to the agent aren't available in Rovara Cloud yet. To change the work, use Send back to coding with a note." } } };
+      if (input.kind !== "comment") return badRequest("kind must be comment.");
+      if (input.anchor !== undefined) return badRequest("Pinning a comment to part of the session isn't available in Rovara Cloud yet.");
+      const text = commentText(input.text);
+      if ("problem" in text) return badRequest(text.problem);
+      const messages = record.messages ?? [];
+      if (messages.length >= COMMENTS_PER_SESSION_MAX) return { status: 409, body: { error: { code: "CONFLICT", message: `This session already has ${String(COMMENTS_PER_SESSION_MAX)} comments.` } } };
+      let threadId: string | undefined;
+      if (input.threadId !== undefined) {
+        const parent = typeof input.threadId === "string" ? messages.find((message) => message.messageId === input.threadId) : undefined;
+        if (parent === undefined) return badRequest("That comment isn't in this session.");
+        threadId = parent.threadId ?? parent.messageId;
+      }
+      const comment = { messageId: newMessageId(), kind: "comment" as const, source: "app" as const, author: me(context), text: text.text, createdAt: context.now().toISOString(), rev: 1, ...(threadId === undefined ? {} : { threadId }) };
+      await context.work.put({ ...record, messages: [...messages, comment], messageRequests: { ...record.messageRequests, [input.requestId]: comment.messageId } });
+      return { status: 201, body: commentView(record.sessionId, comment) };
+    },
+  },
+  {
+    // PATCH /v1/app/sessions/{id}/messages/{messageId} {rev, text} and DELETE {rev}: only the comment's author, on the revision they saw.
+    method: "PATCH", path: /^\/sessions\/(ses_[0-9a-z]{20})\/messages\/(msg_[0-9a-z]{20})$/u,
+    answer: (context) => changeComment(context, "edit"),
+  },
+  {
+    method: "DELETE", path: /^\/sessions\/(ses_[0-9a-z]{20})\/messages\/(msg_[0-9a-z]{20})$/u,
+    answer: (context) => changeComment(context, "delete"),
   },
   {
     // POST /v1/app/sessions/{id}/stop: Code cancels the task's running step.

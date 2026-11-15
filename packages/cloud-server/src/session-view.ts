@@ -78,7 +78,8 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
   const ended = ENDED.has(status);
   // What the viewer may do from the page; Code checks each again when it is pressed. Someone it is shared with only watches:
   // Code lets a task's readers read it and nothing else (take-over works only for tasks shared in Slack).
-  const actions = ["watch", ...(owner && blockedReview(task)?.retry !== undefined ? ["retry"] : []), ...(owner && !ended ? ["stop"] : []), ...(owner && status !== "stopped" ? ["close"] : [])];
+  // Anyone who can read the session can comment on it (Cloud keeps the comments, Rovara-cloud#24).
+  const actions = ["watch", "comment", ...(owner && blockedReview(task)?.retry !== undefined ? ["retry"] : []), ...(owner && !ended ? ["stop"] : []), ...(owner && status !== "stopped" ? ["close"] : [])];
   const follow = people ?? { ...followState(session, viewer.developerId), viewingNow: [] };
   return {
     contractVersion: 1,
