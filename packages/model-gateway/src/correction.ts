@@ -1,7 +1,7 @@
 import { completePrice, ratesForUsage, usageEstimated } from "./price-tiers.js";
 import { record, whole } from "./model-gateway-token.js";
 import { CORRECTION_RUN_MAX, CORRECTION_RUN_MS, MAX_ENTRIES_PER_SOURCE } from "./price-constants.js";
-import { usageCost } from "./estimate.js";
+import { mediaEstimated, usageCost } from "./estimate.js";
 import { validCaps, type CapsSource } from "./caps.js";
 import { validPrice, type PriceOrigin, type PriceSource } from "./price.js";
 import type { CorrectionResult, Meter } from "./meter.js";
@@ -106,7 +106,9 @@ export async function runCorrections(options: RunOptions & { prices: PriceSource
         const usedRates = [[call.usage.input, rates.inputMicrosPerMTok], [call.usage.output, rates.outputMicrosPerMTok],
           [call.usage.cacheRead, rates.cacheReadMicrosPerMTok!], [call.usage.cacheWrite5m ?? call.usage.cacheWrite, rates.cacheWrite5mMicrosPerMTok!],
           [call.usage.cacheWrite1h ?? call.usage.cacheWrite, rates.cacheWrite1hMicrosPerMTok!]];
-        const saturatingPrice = { ...price, estimated: true };
+        // A media call is re-priced with the model's current audio/video rates; none: saturates to operator review below.
+        let media; try { media = options.prices.mediaFor?.(active.key.provider, active.key.model); } catch { media = undefined; }
+        const saturatingPrice = { ...price, estimated: true, ...(media === undefined ? {} : { media }) };
         const realMicros = Math.max(1, usageCost(call.usage, saturatingPrice));
         if (completePrice(price).operatorReview || usedRates.some(([count, rate]) => count! > 0 && rate! >= Number.MAX_SAFE_INTEGER) || realMicros >= Number.MAX_SAFE_INTEGER) {
           report.skipped++; report.more = true; ctx.log({ event: "price_correction_operator_review" }); continue;
@@ -115,7 +117,7 @@ export async function runCorrections(options: RunOptions & { prices: PriceSource
         if (retry.get(call.callKey) !== priorAttempt) { report.skipped++; report.more = true; continue; }
         const attempts = (priorAttempt?.attempts ?? 0) + 1;
         retry.set(call.callKey, { attempts, after: options.now + UNKNOWN_BACKOFF_MS * 2 ** (attempts - 1) });
-        if (!await ctx.attempt((signal) => options.meter.correct({ callKey: call.callKey, realMicros, caps, priceSource, priceVersion: priceVersion as number, estimated: partial && usageEstimated(price, call.usage), now: options.now, runId: options.runId, signal }))) {
+        if (!await ctx.attempt((signal) => options.meter.correct({ callKey: call.callKey, realMicros, caps, priceSource, priceVersion: priceVersion as number, estimated: (partial && usageEstimated(price, call.usage)) || mediaEstimated(call.usage, saturatingPrice), now: options.now, runId: options.runId, signal }))) {
           if (attempts >= MAX_UNKNOWN_ATTEMPTS) ctx.log({ event: "price_correction_operator_review" });
           continue; // Keep the pending ledger row, but advance this page for other calls.
         }

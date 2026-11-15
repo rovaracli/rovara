@@ -29,7 +29,7 @@ export class PriceRefresher {
     };
     for (const [i, name] of names.entries()) {
       const r = results[i]!;
-      const candidate = r.ok ? { version: 1, sources: { [name]: { fetchedAt: now, count: r.entries.length, entries: r.entries, ...(r.fallbacks === undefined ? {} : { fallbacks: r.fallbacks }), ...(r.floors === undefined ? {} : { floors: r.floors }), ...(r.unidentified === undefined ? {} : { unidentified: r.unidentified }), ...(r.limits === undefined ? {} : { limits: r.limits }) } } } : undefined;
+      const candidate = r.ok ? { version: 1, sources: { [name]: { fetchedAt: now, count: r.entries.length, entries: r.entries, ...(r.fallbacks === undefined ? {} : { fallbacks: r.fallbacks }), ...(r.floors === undefined ? {} : { floors: r.floors }), ...(r.unidentified === undefined ? {} : { unidentified: r.unidentified }), ...(r.limits === undefined ? {} : { limits: r.limits }), ...(r.media === undefined ? {} : { media: r.media }) } } } : undefined;
       const success = candidate !== undefined && validSnapshot(candidate) && r.ok && (r.entries.length + (r.floors?.length ?? 0) + (r.fallbacks?.length ?? 0) + (r.unidentified?.length ?? 0)) > 0 && now >= (prior?.sources[name]?.fetchedAt ?? 0);
       prices.failure(name, !success);
       if (!success || !r.ok) { failure(name); continue; }

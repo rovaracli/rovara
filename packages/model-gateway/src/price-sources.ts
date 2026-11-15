@@ -2,6 +2,7 @@ import { RATE_KEYS, type RateKey } from "./price-tiers.js";
 import type { TokenRates } from "./price.js";
 import { record, whole } from "./model-gateway-token.js";
 import { priceKey, validEntry, validFallback, validFloor, validLimit, validUnidentified, type UnidentifiedRow, type ModelFloor, type ModelFallback, type ModelLimit, type PriceEntry } from "./price-snapshot.js";
+import { mediaRatesOf, type ModelMediaRates } from "./media-price.js";
 import { knownRates, priceKind, priceProvider, ratesOf, tokenRateField } from "./price-classify.js";
 import { AWS_MAX_BYTES, FETCH_DEADLINE_MS, FETCH_TIMEOUT_MS, LITELLM_MAX_BYTES, MAX_AWS_REGIONS, MAX_BAD_PRICE_FRACTION, MAX_ENTRIES_PER_SOURCE, MAX_NODES, MAX_PRICE_DEPTH, MICROS_PER_USD, MIN_AWS_MODELS, MIN_LITELLM_MODELS, PRICE_MAX, SHRINK_FLOOR } from "./price-constants.js";
 export const LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -9,7 +10,7 @@ export const AWS_HOST = "pricing.us-east-1.amazonaws.com";
 export const AWS_REGIONS = ["us-east-1", "us-west-2"] as const;
 export interface PriceTransport { get(url: string, options: { maxBytes: number; timeoutMs: number; signal: AbortSignal }): Promise<{ status: number; body: Uint8Array }> }
 export interface PriceReport { skipped: string[]; ignoredLower: number; anthropicSkipped?: Readonly<Record<string, number>> }
-export type PriceFetchResult = { ok: true; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; unidentified?: UnidentifiedRow[]; limits?: ModelLimit[]; drops?: PriceEntry[]; report: PriceReport } | { ok: false; reason: string };
+export type PriceFetchResult = { ok: true; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; unidentified?: UnidentifiedRow[]; limits?: ModelLimit[]; media?: ModelMediaRates[]; drops?: PriceEntry[]; report: PriceReport } | { ok: false; reason: string };
 export interface SourceLimits { now?: number; minModels?: number; maxBytes?: number; deadlineMs?: number; timeoutMs?: number; previous?: readonly PriceEntry[]; regions?: readonly string[] }
 const failure = (): PriceFetchResult => ({ ok: false, reason: "invalid source" });
 const awsUrl = (region: string): string => `https://${AWS_HOST}/offers/v1.0/aws/AmazonBedrockFoundationModels/current/${region}/index.json`;
@@ -87,6 +88,7 @@ export function fetchLiteLLM(transport: PriceTransport, limits: SourceLimits = {
     const entries: PriceEntry[] = []; const fallbacks: ModelFallback[] = []; const floors: ModelFloor[] = []; const unidentified: UnidentifiedRow[] = []; const seen = new Set<string>(); const report: PriceReport = { skipped: [], ignoredLower: 0 };
     const anthropicSkipped = new Map<string, number>();
     const modelLimits: ModelLimit[] = []; const limitKeys = new Set<string>();
+    const mediaRows: ModelMediaRates[] = []; const mediaKeys = new Set<string>();
     const skip = (reason: string, provider?: string) => { report.skipped.push(reason); if (provider === "anthropic") anthropicSkipped.set(reason, (anthropicSkipped.get(reason) ?? 0) + 1); };
     let bad = 0;
     for (const key of keys) {
@@ -100,6 +102,9 @@ export function fetchLiteLLM(transport: PriceTransport, limits: SourceLimits = {
         const limit = { provider, model: key, maxOutputTokens: row.max_output_tokens };
         if (validLimit(limit) && !limitKeys.has(priceKey(limit))) { limitKeys.add(priceKey(limit)); modelLimits.push(limit); }
       }
+      // Gemini audio and video prices (DEC 228e), read from the same row whatever its token price classification.
+      const media = mediaRatesOf(row, provider, key, now);
+      if (media !== undefined && !mediaKeys.has(priceKey(media))) { mediaKeys.add(priceKey(media)); mediaRows.push(media); }
       const perRequest = ["cost_per_request", "input_cost_per_request", "output_cost_per_request"].some((field) => Object.hasOwn(row, field));
       const known = knownRates(row);
       if (provider === undefined) {
@@ -126,7 +131,7 @@ export function fetchLiteLLM(transport: PriceTransport, limits: SourceLimits = {
       entries.push(e);
     }
     if (bad > keys.length * MAX_BAD_PRICE_FRACTION || entries.length + floors.length + fallbacks.length + unidentified.length === 0 || entries.length + floors.length + fallbacks.length + unidentified.length < previousCount * SHRINK_FLOOR) return failure();
-    return { ok: true, entries, ...(fallbacks.length === 0 ? {} : { fallbacks }), ...(floors.length === 0 ? {} : { floors }), ...(unidentified.length === 0 ? {} : { unidentified }), ...(modelLimits.length === 0 ? {} : { limits: modelLimits }), report: { ...report, anthropicSkipped: Object.fromEntries(anthropicSkipped) } };
+    return { ok: true, entries, ...(fallbacks.length === 0 ? {} : { fallbacks }), ...(floors.length === 0 ? {} : { floors }), ...(unidentified.length === 0 ? {} : { unidentified }), ...(modelLimits.length === 0 ? {} : { limits: modelLimits }), ...(mediaRows.length === 0 ? {} : { media: mediaRows }), report: { ...report, anthropicSkipped: Object.fromEntries(anthropicSkipped) } };
   });
 }
 export { normalizeBedrockModel } from "./price-identity.js";

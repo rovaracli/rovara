@@ -1,8 +1,12 @@
 import { record, whole } from "./model-gateway-token.js";
 import { RATE_KEYS, CONTEXT_THRESHOLDS, copyRates, type RateKey } from "./price-tiers.js";
 import { PRICE_MAX } from "./price-constants.js";
+import type { MediaRates } from "./media-price.js";
 export interface TokenRates { inputMicrosPerMTok: number; outputMicrosPerMTok: number; cacheReadMicrosPerMTok?: number; cacheWrite5mMicrosPerMTok?: number; cacheWrite1hMicrosPerMTok?: number; cacheWriteMicrosPerMTok?: number }
-export interface Price extends TokenRates { longContext?: Array<Partial<TokenRates> & { aboveTokens: number }>; operatorReview?: true; derived?: Array<{ aboveTokens: number; keys: RateKey[] }>; uncertain?: Array<{ aboveTokens: number; keys: RateKey[] }> }
+export interface Price extends TokenRates {
+  /** The model's audio/video rates, attached per call by a route (never stored in a snapshot price). */
+  media?: MediaRates;
+  longContext?: Array<Partial<TokenRates> & { aboveTokens: number }>; operatorReview?: true; derived?: Array<{ aboveTokens: number; keys: RateKey[] }>; uncertain?: Array<{ aboveTokens: number; keys: RateKey[] }> }
 export type PriceKind = "chat" | "embedding";
 export interface PriceOrigin { source: "litellm" | "aws" | "override"; fetchedAt: number }
 export interface ResolvedPrice extends Price { estimated: boolean; priceVersion?: number; knownTokenPrice?: true }
@@ -13,6 +17,8 @@ export interface PriceSource {
   floorFor?(provider: string, model: string): Price | undefined | Promise<Price | undefined>;
   fallbackFor?(provider: string, model: string): "per_request_price" | undefined | Promise<"per_request_price" | undefined>;
   cautiousFor?(provider: string, kind: PriceKind): Price | undefined | Promise<Price | undefined>;
+  /** The model's audio and video prices (product route, corrections of media calls). Absent: no media is priced. */
+  mediaFor?(provider: string, model: string): MediaRates | undefined;
   /** Compatibility with R3a sources; snapshot sources use separate rates and kinds. */
   dearestKnown?(provider: string): number | undefined | Promise<number | undefined>;
 }

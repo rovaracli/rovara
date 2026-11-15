@@ -9,7 +9,8 @@ import type { ProviderTransport } from "./provider.js";
 import type { TaskClaims } from "./model-gateway-token.js";
 import { GeminiUsageCollector, guardGemini, parseGeminiPath } from "./product-gemini.js";
 import type { ProductProvider, ProductSourceResolution } from "./product-keys.js";
-import type { GatewayRoute, ProductRouteResolver, RouteRefusal } from "./server.js";
+import type { GatewayRoute, ProductRouteResolver, RouteCall, RouteRefusal } from "./server.js";
+import type { MediaPriceSource } from "./media-price.js";
 
 /** What the route needs from the product key store (ProductKeyStore implements it). */
 export interface ProductKeySource {
@@ -32,6 +33,8 @@ export interface ProductRouteOptions {
   /** Per-model output ceilings: the price snapshot's rows (#53 SnapshotPriceSource); see productModelLimitsFrom. */
   modelLimits: ModelLimitsSource;
   transports: { gemini: ProviderTransport };
+  /** Audio and video prices per model (the price snapshot's media rows, SnapshotPriceSource). Absent: audio and video are refused. */
+  media?: MediaPriceSource;
   overrun: ProductOverrunTasks;
   /**
    * The company's budgets from the Cloud company backend (#53 CompanyBudgetCaps): fail closed. A company with no monthly cap,
@@ -58,6 +61,13 @@ export function createProductCaps(keys: ProductKeySource, companyCaps: CapsSourc
     },
   };
 }
+/** A media call's dearest media kind (REVIEW-1 M2): video carries an audio track, so a video call bills as whichever of the two is dearer. */
+function missingDetailsKind(call: RouteCall | undefined): { missingDetails?: "audio" | "video" } {
+  if (call?.media === undefined) return {};
+  const value = (r: unknown) => typeof r === "number" ? r : 0;
+  if (!call.media.video) return { missingDetails: "audio" };
+  return { missingDetails: value(call.mediaRates?.videoInput) > value(call.mediaRates?.audioInput) ? "video" : "audio" };
+}
 const UNAVAILABLE_CAPS = Object.freeze({}) as unknown as Caps;
 export const PRODUCT_OVER_BY_ONE_CALL = "budget exceeded by one call";
 export const PRODUCT_NOT_SET_UP = "product AI is not set up for this project";
@@ -80,6 +90,7 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
       // Per request: the resolution read at admission is the one the hold, caps and key use.
       let resolution: ProductSourceResolution | undefined;
       let admitted: TaskClaims | undefined;
+      let guarded: RouteCall | undefined;
       const route: GatewayRoute = {
         provider: "gemini", product: true, meter: options.meter, prefix: PRODUCT_PREFIX,
         async admit(claims) {
@@ -90,7 +101,7 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
           } catch { return unavailable; }
           return resolution === undefined ? { ok: false, status: 404, code: "not_set_up", message: PRODUCT_NOT_SET_UP } : undefined;
         },
-        guard: (bytes, headers) => guardGemini(bytes, headers, parsed, options.modelLimits),
+        guard: (bytes, headers) => { const r = guardGemini(bytes, headers, parsed, options.modelLimits, options.media); if (r.ok) guarded = r; return r; },
         // Settled to the project: no person item, whoever started the task.
         scope: (claims) => ({ iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid }),
         async caps(scope, _claims, signal): Promise<Caps | RouteRefusal> {
@@ -102,7 +113,7 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
           return resolution === undefined ? "" : (await options.keys.useKey(claims.iss, claims.cid, resolution)) ?? "";
         },
         transport: options.transports.gemini,
-        usage: () => new GeminiUsageCollector(),
+        usage: () => new GeminiUsageCollector(missingDetailsKind(guarded)),
         providerFailure(status) {
           // Explicit rejections before any generation (bad key, bad request, unknown model, quota) cost nothing.
           if (status === 401 || status === 403) {

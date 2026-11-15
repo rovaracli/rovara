@@ -1,9 +1,9 @@
 import { usageEstimated } from "./price-tiers.js";
 import { record, whole } from "./model-gateway-token.js";
 import { MICROS_PER_USD } from "./price-constants.js";
-import { usageCost } from "./estimate.js";
+import { mediaEstimated, mediaPriced, usageCost } from "./estimate.js";
 import type { ResolvedPrice } from "./price.js";
-import type { TokenUsage } from "./usage.js";
+import { MEDIA_USAGE_KEYS, type TokenUsage } from "./usage.js";
 /** Assumed OpenRouter final usage.cost USD shape; verify on staging before routing OpenRouter. */
 export function parseReportedCost(provider: string, value: unknown): number | undefined {
   if (provider !== "openrouter") return undefined;
@@ -15,16 +15,22 @@ export function parseReportedCost(provider: string, value: unknown): number | un
 export function validUsage(value: unknown): value is TokenUsage {
   const u = record(value);
   if (u === undefined || ![u.input, u.output, u.cacheRead, u.cacheWrite].every((n) => whole(n) && n <= 1_000_000_000)) return false;
+  // Media counts are parts of input and cacheRead: each whole, and never more than the total they belong to.
+  if (!MEDIA_USAGE_KEYS.every((k) => u[k] === undefined || (whole(u[k]) && u[k] <= 1_000_000_000))) return false;
+  if (Number(u.audioInput ?? 0) + Number(u.videoInput ?? 0) > Number(u.input) || Number(u.audioCacheRead ?? 0) + Number(u.videoCacheRead ?? 0) > Number(u.cacheRead)) return false;
   if (u.cacheWrite5m === undefined && u.cacheWrite1h === undefined) return true;
   return whole(u.cacheWrite5m) && whole(u.cacheWrite1h) && u.cacheWrite5m + u.cacheWrite1h === u.cacheWrite;
 }
 export function hasUsage(usage: TokenUsage): boolean { return usage.input + usage.output + usage.cacheRead + usage.cacheWrite > 0; }
 export function settleAmount(input: { reportedCostMicros?: number; usage?: TokenUsage; price: ResolvedPrice; reservationMicros: number }): { actualMicros: number; estimated: boolean; usage?: TokenUsage } {
   if (!validUsage(input.usage) || !hasUsage(input.usage)) return { actualMicros: input.reservationMicros, estimated: input.price.estimated };
+  // Reported audio or video tokens with no price for them (REVIEW-1 M1): the cautious media rate, never below the hold, flagged
+  // estimated with the usage so a correction row is written; above the hold it is an over-reservation (DEC 165).
+  if (!mediaPriced(input.usage, input.price)) return { actualMicros: Math.max(input.reservationMicros, 1, usageCost(input.usage, input.price, "cautious")), estimated: true, usage: { ...input.usage } };
   const tokenCost = Math.max(1, usageCost(input.usage, input.price));
   if (whole(input.reportedCostMicros) && input.reportedCostMicros > 0) {
     if ((!input.price.knownTokenPrice && input.price.estimated && !input.price.operatorReview) || input.reportedCostMicros >= tokenCost) return { actualMicros: input.reportedCostMicros, estimated: false };
   }
-  const estimated = usageEstimated(input.price, input.usage);
+  const estimated = usageEstimated(input.price, input.usage) || mediaEstimated(input.usage, input.price);
   return { actualMicros: tokenCost, estimated, ...(estimated ? { usage: { ...input.usage } } : {}) };
 }

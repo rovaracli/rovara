@@ -51,15 +51,37 @@ one-overrun-call-per-company marker, deadlines, the secret scanner) is shared co
 - Paths: `/v1/product/gemini/{v1|v1beta}/models/{model}:generateContent` and `:streamGenerateContent?alt=sse`.
   No other query (a `key=` is refused); a leftover `x-goog-api-key` is refused (the worker must have replaced it).
 - The gateway always sets `generationConfig.maxOutputTokens` (the row's max when absent; 65,536 for an unknown model).
-- Refused until priced: server tools (search grounding, code execution, URL context), audio and video input (video
-  carries an audio track), media with no declared type, non-text output, `candidateCount` above 1. Images, PDFs and
+- Refused: server tools (search grounding, code execution, URL context), media with no declared type, non-text output
+  (audio output too: its price is in the snapshot, but `maxOutputTokens` bounding for speech answers is unverified),
+  `candidateCount` above 1, and audio or video sent by file reference (`fileData`: the request names no size or length,
+  so nothing can be held before the call; Google's `files.get` reports both, a possible follow-up). Images, PDFs and
   text files are allowed; any media part, `cachedContent` or `fileData` makes the call overrun-capable (media is billed
-  per item, not per body byte; DEC 165, ADDENDUM-3). Media is found at any depth of the contents (for example
+  per item, not per body byte; DEC 165, ADDENDUM-3).
+- Audio and video input (DEC 228e), inline only. Prices come from the same LiteLLM rows (`media-price.ts`, snapshot
+  `sources.litellm.media`, `SnapshotPriceSource.mediaFor`, passed to the route as `media`): a listed
+  `input_cost_per_audio_token` / `input_cost_per_video_token` (dearest of standard, batch, flex). A row that lists the
+  modality as supported but gives no media price is held and settled at 3x the text input rate (3x the cache-read rate
+  when cached; Google's highest media multiple today), never below the text rate, and flagged estimated with a
+  correction row of the media counts, so a correction re-prices it once the row lists a price (controller decision,
+  logged for owner review). A per-second price, an explicit `supports_<m>_input: false`, a zero or
+  malformed price, or no row leaves it unpriced and the call is refused (never $0, DEC 172). Video needs the audio price
+  too (its audio track). The hold replaces the media's base64 bytes with an estimate: audio 32 tokens a second at a
+  6 kbit/s floor; video (fps x 300 + 32) tokens a second over the declared clip (`videoMetadata` offsets) or a 16 kbit/s
+  floor; capped at 2,097,152 tokens; every input token held at the dearest usable rate. Very compressible media can cost
+  more than that, so media calls stay overrun-capable (one per company at a time; the cap is passed by at most one call).
+- Usage: `cachedContentTokenCount` at the cache-read rate, the rest of the prompt plus `toolUsePromptTokenCount` at
+  input, `candidatesTokenCount + thoughtsTokenCount` at output. AUDIO and VIDEO tokens from `promptTokensDetails` and
+  `cacheTokensDetails` are charged at their own rates (a listed rate never below the tier's text rate; cached audio at
+  its listed cache rate). A media call whose answer has no details bills the whole prompt as its dearest media kind;
+  reported audio/video with no price (a cached context holding audio, a model with no media row) is charged at 4x the
+  text input rate, never below the hold, flagged estimated (a correction row) and over the hold an over-reservation
+  (DEC 165). A long-context media tier in a row leaves that modality unpriced. The deployed process must build the route with
+  `media: prices` (the `SnapshotPriceSource`); without it audio and video are refused. An estimated price writes the
+  correction row with the media counts, and corrections re-price them with the current media rates (none: left for an
+  operator, never re-priced as text). A finish (`finishReason` or `blockReason`) is required;
+  otherwise the call settles at its full hold. Media is found at any depth of the contents (for example
   `functionResponse.parts`) and in both spellings Google accepts (`inlineData`/`inline_data`, `mimeType`/`mime_type`);
   a top-level part may carry only known part fields.
-- Usage: `cachedContentTokenCount` at the cache-read rate, the rest of the prompt plus `toolUsePromptTokenCount` at
-  input, `candidatesTokenCount + thoughtsTokenCount` at output. A finish (`finishReason` or `blockReason`) is required;
-  otherwise the call settles at its full hold.
 - Provider 400/401/403/404/429 are explicit rejections before any generation and cost nothing; 401/403 answer
   "not run: the product key was refused (check it in Settings)" and mark the source for the settings page.
 - DEC 165: when a product call settles above its hold, every later product call in that task gets

@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import type https from "node:https";
-import { createGeminiTransport, GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, GeminiUsageCollector, geminiUsage, guardGemini, parseGeminiPath, PRODUCT_AUDIO_REFUSED, PRODUCT_TOOL_REFUSED } from "../../packages/model-gateway/src/product-gemini.js";
+import { createGeminiTransport, GEMINI_DEFAULT_MAX_OUTPUT_TOKENS, GeminiUsageCollector, geminiUsage, guardGemini, parseGeminiPath, PRODUCT_AUDIO_REFUSED, PRODUCT_MEDIA_FILE_REFUSED, PRODUCT_TOOL_REFUSED } from "../../packages/model-gateway/src/product-gemini.js";
 import { NotSentError } from "../../packages/model-gateway/src/provider.js";
 import type { ModelLimitsSource } from "../../packages/model-gateway/src/guard.js";
 import { PRODUCT_BRIDGE } from "../../packages/model-gateway/src/product-bridge.js";
@@ -76,10 +76,13 @@ describe("Gemini guard", () => {
       expect(guard({ contents: [{ parts: [part] }] }).ok).toBe(false);
     }
   });
-  it("refuses audio, video and media with no declared type, inline or as a file (REVIEW-1 M1)", () => {
+  it("with no media prices, refuses audio, video and media with no declared type, inline or as a file (REVIEW-1 M1; DEC 228e file words)", () => {
     for (const part of [{ inlineData: { mimeType: "audio/wav", data: "AAAA" } }, { inlineData: { mimeType: "video/mp4", data: "AAAA" } }, { inlineData: { data: "AAAA" } },
-      { fileData: { fileUri: "https://generativelanguage.googleapis.com/v1beta/files/x" } }, { fileData: { mimeType: "video/mp4", fileUri: "x" } }, { fileData: { mimeType: "AUDIO/mpeg", fileUri: "x" } }]) {
+      { fileData: { fileUri: "https://generativelanguage.googleapis.com/v1beta/files/x" } }]) {
       const r = guard({ contents: [{ parts: [part] }] }); expect(r.ok).toBe(false); expect(!r.ok && r.message).toBe(PRODUCT_AUDIO_REFUSED);
+    }
+    for (const part of [{ fileData: { mimeType: "video/mp4", fileUri: "x" } }, { fileData: { mimeType: "AUDIO/mpeg", fileUri: "x" } }]) {
+      const r = guard({ contents: [{ parts: [part] }] }); expect(r.ok).toBe(false); expect(!r.ok && r.message).toBe(PRODUCT_MEDIA_FILE_REFUSED);
     }
   });
   it("refuses server tools, audio input, non-text output and several candidates with fixed words", () => {

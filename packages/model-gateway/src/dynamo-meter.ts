@@ -11,7 +11,7 @@ import type { PendingPage } from "./pending-page.js";
 import { CORRECTION_RUN_MAX, CORRECTION_RUN_MS, DAY_MS, PENDING_RETENTION_DAYS } from "./price-constants.js";
 import { priceKey, validEntry, type PriceKey } from "./price-snapshot.js";
 import { hasUsage, validUsage } from "./reported-cost.js";
-import type { TokenUsage } from "./usage.js";
+import { MEDIA_USAGE_KEYS, type TokenUsage } from "./usage.js";
 
 /**
  * The DynamoDB Meter (meter.ts's contract; runMeterConformance and runMeterDeadlineConformance hold it to InMemoryMeter).
@@ -93,7 +93,9 @@ function rowOf(item: Item | undefined, target: Target, company: string): MeterRo
   return row as MeterRow;
 }
 function usagePlain(usage: EstimatedSettlement["usage"] & object): Item {
-  return { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, ...(usage.cacheWrite5m === undefined ? {} : { cacheWrite5m: usage.cacheWrite5m }), ...(usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: usage.cacheWrite1h }) };
+  return { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, ...(usage.cacheWrite5m === undefined ? {} : { cacheWrite5m: usage.cacheWrite5m }), ...(usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: usage.cacheWrite1h }),
+    // Audio and video parts (DEC 228e): a correction re-prices them at their own rates, so they are kept.
+    ...Object.fromEntries(MEDIA_USAGE_KEYS.filter((k) => usage[k] !== undefined).map((k) => [k, usage[k]!])) };
 }
 /** A pending ledger row back to the EstimatedCall shape (the meter's fields only; keys, targets and index attributes dropped). */
 function toCall(item: Item): EstimatedCall {

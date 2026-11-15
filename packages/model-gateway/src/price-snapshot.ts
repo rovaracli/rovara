@@ -2,6 +2,7 @@ import { normalizedModel } from "./price-identity.js";
 import { record, whole } from "./model-gateway-token.js";
 import { MAX_ENTRIES_PER_SOURCE, MAX_MODEL_LENGTH } from "./price-constants.js";
 import { validPrice, type Price, type PriceKind, type PriceOrigin, type ResolvedPrice } from "./price.js";
+import { validModelMediaRates, type ModelMediaRates } from "./media-price.js";
 export interface PriceEntry extends Price { provider: string; model: string; kind: PriceKind }
 export interface PriceKey { provider: string; model: string }
 export interface ModelFallback extends PriceKey { kind?: PriceKind; reason: "per_request_price" | "unpriced" }
@@ -14,7 +15,9 @@ export interface ModelFloor extends Price, PriceKey { kind?: PriceKind; perReque
 /** A model's own most output tokens per call, from the source row (LiteLLM max_output_tokens). */
 export interface ModelLimit extends PriceKey { maxOutputTokens: number }
 export const MAX_OUTPUT_TOKENS_LIMIT = 10_000_000;
-export interface SourceSnapshot { fetchedAt: number; count: number; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; unidentified?: UnidentifiedRow[]; limits?: ModelLimit[]; confirmations?: (PriceEntry | ModelFloor)[] }
+export interface SourceSnapshot { fetchedAt: number; count: number; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; unidentified?: UnidentifiedRow[]; limits?: ModelLimit[]; confirmations?: (PriceEntry | ModelFloor)[];
+  /** Gemini audio and video prices per model row (LiteLLM only; DEC 228e). Absent: no media is priced. */
+  media?: ModelMediaRates[] }
 export interface PriceSnapshot { version: number; sources: { litellm?: SourceSnapshot; aws?: SourceSnapshot }; effective?: EffectiveIdentity[] }
 export interface PriceSnapshotStore { load(): Promise<PriceSnapshot | undefined>; save(snapshot: PriceSnapshot, expectedVersion: number): Promise<boolean> }
 export const priceKey = (key: PriceKey): string => JSON.stringify([key.provider, key.model]);
@@ -79,6 +82,11 @@ export function validSnapshot(value: unknown): value is PriceSnapshot {
       if (!Array.isArray(s.limits) || s.limits.length > MAX_ENTRIES_PER_SOURCE || name !== "litellm") return false;
       const limits = new Set<string>();
       for (const l of s.limits as unknown[]) { if (!validLimit(l) || limits.has(priceKey(l))) return false; limits.add(priceKey(l)); }
+    }
+    if (s.media !== undefined) {
+      if (!Array.isArray(s.media) || s.media.length > MAX_ENTRIES_PER_SOURCE || name !== "litellm") return false;
+      const media = new Set<string>();
+      for (const m of s.media as unknown[]) { if (!validModelMediaRates(m) || media.has(priceKey(m))) return false; media.add(priceKey(m)); }
     }
     const unidentified = new Set<string>();
     for (const u of (s.unidentified ?? []) as unknown[]) {

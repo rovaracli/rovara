@@ -1,5 +1,11 @@
 import { record, whole } from "./model-gateway-token.js";
-export interface TokenUsage { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite5m?: number; cacheWrite1h?: number }
+/**
+ * Provider-reported counts. The media fields (Gemini, product route) are PARTS of `input` and `cacheRead`: audio and video
+ * prompt tokens priced at their own rates (media-price.ts). Absent = 0; text-only usage never carries them.
+ */
+export interface TokenUsage { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite5m?: number; cacheWrite1h?: number; audioInput?: number; videoInput?: number; audioCacheRead?: number; videoCacheRead?: number }
+export const MEDIA_USAGE_KEYS = ["audioInput", "videoInput", "audioCacheRead", "videoCacheRead"] as const;
+export const hasMediaUsage = (u: TokenUsage): boolean => MEDIA_USAGE_KEYS.some((k) => (u[k] ?? 0) > 0);
 const MAX_EVENT = 4 * 1024 * 1024;
 const MAX_STREAM = 10 * 1024 * 1024;
 /** Only counts persist between SSE frames. Invalid/incomplete usage makes the ENTIRE call estimated. */

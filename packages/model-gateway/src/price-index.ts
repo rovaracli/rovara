@@ -4,6 +4,7 @@ import { type Price, type PriceKind, type PriceOrigin, type PriceSource, type Re
 import { PRICE_OVERRIDES, validOverrides } from "./price-overrides.js";
 import { validSnapshot, type PriceSnapshot, type PriceSnapshotStore } from "./price-snapshot.js";
 import { identityKey } from "./price-identity.js";
+import { dearestMediaRates, type MediaRates } from "./media-price.js";
 import { priceBook, lookupPrice, resolved } from "./price-sanity.js";
 export interface SourceHealth { fetchedAt?: number; ageMs?: number; count: number; stale: boolean; lastFailure?: string }
 export class SnapshotPriceSource implements PriceSource {
@@ -13,6 +14,7 @@ export class SnapshotPriceSource implements PriceSource {
   #redundant = 0;
   #expiresAt = Infinity;
   #limits = new Map<string, number>();
+  #media = new Map<string, MediaRates[]>();
   constructor(private readonly store: PriceSnapshotStore, private readonly options: { now?: () => number; overrides?: readonly unknown[] } = {}) {}
   #now(): number { return (this.options.now ?? Date.now)(); }
   async reload(): Promise<void> {
@@ -29,6 +31,9 @@ export class SnapshotPriceSource implements PriceSource {
     const limits = new Map<string, number>();
     for (const l of snapshot?.sources.litellm?.limits ?? []) { const key = identityKey(l.provider, l.model); limits.set(key, Math.min(limits.get(key) ?? Number.MAX_SAFE_INTEGER, l.maxOutputTokens)); }
     this.#limits = limits;
+    const media = new Map<string, MediaRates[]>();
+    for (const { provider, model, ...rates } of snapshot?.sources.litellm?.media ?? []) { const key = identityKey(provider, model); media.set(key, [...(media.get(key) ?? []), rates]); }
+    this.#media = media;
     this.#redundant = this.#book.redundantOverrides; this.#expiresAt = this.#book.expiresAt;
   }
   effectiveFor(provider: string, model: string, kind: PriceKind): ResolvedPrice {
@@ -60,6 +65,19 @@ export class SnapshotPriceSource implements PriceSource {
     let found: number | undefined;
     for (const alias of [identity.model, ...identity.aliases]) { const limit = this.#limits.get(identityKey(provider, alias)); if (limit !== undefined) found = Math.min(found ?? limit, limit); }
     return found;
+  }
+  /**
+   * The model's audio and video prices (MediaPriceSource), by the same identity a price is found by: the model's own rows and
+   * every alias of its price identity, each field at its dearest (REVIEW-1 L2). Undefined: no row prices any media.
+   */
+  mediaFor(provider: string, model: string): MediaRates | undefined {
+    if (typeof provider !== "string" || typeof model !== "string") return undefined;
+    if (this.#now() >= this.#expiresAt) this.#build(this.#snapshot);
+    const own = this.#media.get(identityKey(provider, model)) ?? [];
+    const identity = this.#book.index.get(identityKey(provider, model));
+    const keys = new Set([identityKey(provider, model), ...(identity === undefined ? [] : [identity.model, ...identity.aliases].map((alias) => identityKey(provider, alias)))]);
+    keys.delete(identityKey(provider, model));
+    return dearestMediaRates([...own, ...[...keys].flatMap((key) => this.#media.get(key) ?? [])]);
   }
   keys(): Array<{ provider: string; model: string }> { return [...this.#book.index.values()].filter((e) => !e.estimated).map(({ provider, model }) => ({ provider, model })); }
   failure(source: "litellm" | "aws", failed: boolean): void { if (failed) this.#failures[source] = "refresh failed"; else delete this.#failures[source]; }

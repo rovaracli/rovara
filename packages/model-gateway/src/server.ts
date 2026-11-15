@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { validCaps, type Caps, type CapsSource } from "./caps.js";
 import type { EndedTasks } from "./ended.js";
-import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS } from "./estimate.js";
+import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS, type MediaEstimate } from "./estimate.js";
+import type { MediaRates } from "./media-price.js";
 import { guardRequest, MAX_BODY_BYTES, tooLarge, type GuardFailure, type ModelLimitsSource } from "./guard.js";
 import type { Meter, MeterItem, MeterScope, Reservation } from "./meter.js";
 import { resolvePrice, UnknownPriceSource, type PriceSource } from "./price.js";
@@ -25,7 +26,13 @@ export interface GatewayDependencies {
   product?: ProductRouteResolver;
 }
 /** One provider call shape after its route's guard. `path` is built by the guard from checked parts, never copied from the request. */
-export interface RouteCall { ok: true; hasTools: boolean; inputBounded: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>>; path?: string }
+export interface RouteCall {
+  ok: true; hasTools: boolean; inputBounded: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>>; path?: string;
+  /** The model's audio/video prices (product route): attached to the call's price for the estimate and the settle. */
+  mediaRates?: MediaRates;
+  /** Inline audio/video: estimated prompt tokens, replacing their `dataBytes` encoded bytes in the hold (DEC 228e). */
+  media?: MediaEstimate & { dataBytes: number };
+}
 export interface UsageReader { push(bytes: Uint8Array): void; whole(value: unknown): void; finish(): TokenUsage | undefined }
 /** A fixed refusal a route answers before any money moves. */
 export interface RouteRefusal { ok: false; status: number; code: string; message: string; headers?: Readonly<Record<string, string>> }
@@ -145,14 +152,15 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (!guarded.ok) { await respond(guarded.status, guarded.code, guarded.message); return; }
     shortenDeadline(startedAt + callDurationMs(guarded.maxTokens));
     const scope = route.scope(claims);
-    const price = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, route.provider, guarded.model, deps.cautiousCeiling, controller.signal, "chat"));
+    const resolved = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, route.provider, guarded.model, deps.cautiousCeiling, controller.signal, "chat"));
+    const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
     if (price.operatorReview) log({ event: "price_operator_review" });
     settlementPrice = price; settlementModel = guarded.model;
     const caps = await wait(route.caps(scope, claims, controller.signal));
     if ((caps as RouteRefusal).ok === false) { const refused = caps as RouteRefusal; await respond(refused.status, refused.code, refused.message, refused.headers); return; }
     if (!validCaps(caps)) { await respond(503, "unavailable", "model access unavailable"); return; }
     let estimate: number;
-    try { estimate = estimateCall(guarded.bytes.length, guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, guarded.inputBounded); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
+    try { estimate = estimateCall(guarded.bytes.length - (guarded.media?.dataBytes ?? 0), guarded.maxTokens, price, guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, guarded.inputBounded, guarded.media); } catch { await respond(400, "invalid_request", "request not allowed"); return; }
     if (estimate === Number.MAX_SAFE_INTEGER && !price.operatorReview) log({ event: "price_operator_review" });
     // Do not race a transaction: its outcome must be known before forwarding or settling. Adapters bound their own transactions.
     const overrunCapable = price.estimated || !guarded.inputBounded;
