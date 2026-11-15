@@ -9,6 +9,7 @@ import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
 import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
 import { POLICY_HOOK_PATH } from "./policy-hook.js";
 import { COMPANY_ROUTES, type CompanyBackend } from "./company-routes.js";
+import { PRODUCT_AI_ROUTES, type ProductAiBackend } from "./product-ai-routes.js";
 import { ROUTES, type OrgView, type Route, type RouteAnswer } from "./routes.js";
 import type { SessionStore } from "./sessions.js";
 import { StoreConflict, type WorkSessionStore } from "./work-sessions.js";
@@ -43,6 +44,8 @@ export interface CloudHandlerOptions {
   company?: CompanyBackend;
   /** Cloud's own audit records (plan v3.2 7.5): read by `GET /v1/app/company/audit`, written by routes that change something at company level and by the policy hook. */
   audit?: CloudAuditStore;
+  /** The project's product AI settings over the gateway's write-only key store: adds those routes (product-ai-routes.ts). Absent: 501, as before. */
+  productAi?: ProductAiBackend;
   /** Lane H: the policy hook's answering route (`createPolicyHookRoute`), served at `POLICY_HOOK_PATH`. Absent: that path is not Cloud's, as before. */
   policyHook?: (request: CloudRequest) => Promise<CloudResponse>;
   now?: () => Date;
@@ -75,7 +78,7 @@ const signInAgain = () => json(401, { error: { code: "AUTH_REQUIRED", message: "
 
 /** The handler; it answers undefined for a path that is not Cloud's (the app's pages and assets). */
 export function createCloudHandler(options: CloudHandlerOptions): (request: CloudRequest) => Promise<CloudResponse | undefined> {
-  const routes = options.routes ?? (options.company === undefined ? ROUTES : [...ROUTES, ...COMPANY_ROUTES]);
+  const routes = options.routes ?? [...ROUTES, ...(options.company === undefined ? [] : COMPANY_ROUTES), ...(options.productAi === undefined ? [] : PRODUCT_AI_ROUTES)];
   const now = options.now ?? (() => new Date());
   const log = options.log ?? ((event) => { console.log(JSON.stringify(event)); });
   const presence = options.presence ?? new LocalPresenceBoard();
@@ -181,6 +184,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
             answer = await route.answer({
               client: options.client, session: using, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
               work: options.work, origin: options.origin, presence, ...(options.audit === undefined ? {} : { audit: options.audit }), ...(options.company === undefined ? {} : { company: options.company }),
+              ...(options.productAi === undefined ? {} : { productAi: options.productAi }),
             });
           } catch (error) {
             if (attempt >= REQUEST_ATTEMPTS) throw error;

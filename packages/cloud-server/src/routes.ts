@@ -12,6 +12,7 @@ import type { CloudAuditStore } from "./audit-log.js";
 import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, parseCompanyAuditQuery } from "./company-audit.js";
 import { WORK_READS } from "./work-reads.js";
 import type { CompanyBackend } from "./company-routes.js";
+import type { ProductAiBackend } from "./product-ai-routes.js";
 
 /** The company this Cloud shows, until companies are Cloud's own (phase 4). */
 export interface OrgView { orgId: string; name: string; plan: string }
@@ -35,6 +36,8 @@ export interface RouteContext {
   company?: CompanyBackend;
   /** Cloud's own audit records. Absent: the company audit answers 503, and a route that records a Cloud action has nowhere to record it. */
   audit?: CloudAuditStore;
+  /** The project's product AI settings (product-ai-routes.ts); absent when this Cloud has none. */
+  productAi?: ProductAiBackend;
 }
 
 export interface RouteAnswer { status: number; body: unknown }

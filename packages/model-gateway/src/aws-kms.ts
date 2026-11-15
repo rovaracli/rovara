@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { AwsError, AwsJsonClient, type CredentialSource, type WireTransport } from "./aws.js";
-import type { KmsLike } from "./product-seal.js";
+import { PRODUCT_KEY_PURPOSE, type KmsLike, type ProductKeyFingerprinter } from "./product-seal.js";
 
 /**
  * KMS's JSON protocol for the two calls product-key sealing makes (product-seal.ts kmsProductKeyService): GenerateDataKey and
@@ -13,7 +14,10 @@ export class KmsRefused extends Error { constructor(code: string) { super("kms r
 
 const blob = (value: unknown): Uint8Array | undefined => typeof value === "string" && value.length <= 16_384 && /^[A-Za-z0-9+/]*={0,2}$/u.test(value) ? new Uint8Array(Buffer.from(value, "base64")) : undefined;
 
-export function awsKms(options: KmsClientOptions): KmsLike {
+/** KmsLike plus GenerateMac (the fingerprint key, an HMAC_256 KMS key: the secret never leaves KMS). */
+export interface KmsWithMac extends KmsLike { generateMac(input: { KeyId: string; Message: Uint8Array }): Promise<{ Mac?: Uint8Array }> }
+
+export function awsKms(options: KmsClientOptions): KmsWithMac {
   const client = new AwsJsonClient({ region: options.region, service: "kms", targetPrefix: "TrentService", contentType: "application/x-amz-json-1.1", credentials: options.credentials, ...(options.transport === undefined ? {} : { transport: options.transport }), ...(options.endpoint === undefined ? {} : { endpoint: options.endpoint }), ...(options.now === undefined ? {} : { now: options.now }) });
   const call = async (operation: string, input: Record<string, unknown>): Promise<Record<string, unknown>> => {
     try { return await client.call(operation, input); }
@@ -25,10 +29,28 @@ export function awsKms(options: KmsClientOptions): KmsLike {
       const plaintext = blob(answer.Plaintext); const wrapped = blob(answer.CiphertextBlob);
       return { ...(plaintext === undefined ? {} : { Plaintext: plaintext }), ...(wrapped === undefined ? {} : { CiphertextBlob: wrapped }) };
     },
+    async generateMac(input) {
+      const answer = await call("GenerateMac", { KeyId: input.KeyId, MacAlgorithm: "HMAC_SHA_256", Message: Buffer.from(input.Message).toString("base64") });
+      const mac = blob(answer.Mac);
+      return mac === undefined ? {} : { Mac: mac };
+    },
     async decrypt(input) {
       const answer = await call("Decrypt", { KeyId: input.KeyId, CiphertextBlob: Buffer.from(input.CiphertextBlob).toString("base64"), EncryptionContext: { ...input.EncryptionContext } });
       const plaintext = blob(answer.Plaintext);
       return plaintext === undefined ? {} : { Plaintext: plaintext };
     },
+  };
+}
+
+/**
+ * Keyed fingerprints (F1-d L4) from a KMS HMAC key: the same input as product-seal.ts hmacFingerprinter, hashed first so the
+ * message stays under KMS's 4,096-byte limit. Used where keys are written (Cloud's settings routes); the gateway never needs it.
+ */
+export function kmsFingerprinter(kms: Pick<KmsWithMac, "generateMac">, keyId: string): ProductKeyFingerprinter {
+  return async (input) => {
+    const message = createHash("sha256").update(JSON.stringify([PRODUCT_KEY_PURPOSE, input.cid, input.owner, input.sourceId, input.key])).digest();
+    const answer = await kms.generateMac({ KeyId: keyId, Message: message });
+    if (answer.Mac === undefined || answer.Mac.length !== 32) throw new Error("product keys unavailable");
+    return Buffer.from(answer.Mac).toString("hex");
   };
 }

@@ -53,6 +53,12 @@ import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix } fr
  */
 
 export const MODEL_GATEWAY_CONTEXT_KEY = "rovaraModelGateway";
+/**
+ * `-c rovaraModelGatewayProductAi=on`, with `-c rovaraModelGateway=<env>`: the product-AI route (B5), the combined company cap
+ * (B6), the shared eval stage table (B8), the learning route (#57) and Vertex federation (#58). Absent, the gateway template is
+ * byte for byte what it was before (tests/contract/model-gateway-product-infra.test.ts pins it).
+ */
+export const MODEL_GATEWAY_PRODUCT_CONTEXT_KEY = "rovaraModelGatewayProductAi";
 
 /** Both validate the name first (the environment rules), so a bad name fails with that message, not CloudFormation's. */
 export function modelGatewayStackName(env: string): string {
@@ -77,7 +83,24 @@ export const MODEL_GATEWAY_ENV = {
   pricesTable: "GATEWAY_PRICES_TABLE",
   anthropicKeySecret: "GATEWAY_ANTHROPIC_KEY_SECRET",
   companyTable: "GATEWAY_COMPANY_TABLE",
+  productKeysTable: "GATEWAY_PRODUCT_KEYS_TABLE",
+  productKeysKey: "GATEWAY_PRODUCT_KEYS_KEY",
+  productMeterTable: "GATEWAY_PRODUCT_METER_TABLE",
+  productLedgerTable: "GATEWAY_PRODUCT_LEDGER_TABLE",
+  productMarkersTable: "GATEWAY_PRODUCT_MARKERS_TABLE",
+  evalStagesTable: "GATEWAY_EVAL_STAGES_TABLE",
+  vertexFederationRole: "GATEWAY_VERTEX_FEDERATION_ROLE",
+  learningMeterTable: "GATEWAY_LEARNING_METER_TABLE",
+  learningLedgerTable: "GATEWAY_LEARNING_LEDGER_TABLE",
+  learningMarkersTable: "GATEWAY_LEARNING_MARKERS_TABLE",
 } as const;
+/** The eval stage table's due-stages index (deploy.ts GATEWAY_EVAL_STAGE_INDEXES). */
+export const MODEL_GATEWAY_EVAL_STAGE_INDEXES = {
+  dueStages: { name: "due-stages", partitionKey: "dueAll", sortKey: "dueAt" },
+} as const;
+/** The KMS encryption context a sealed product key is bound to (product-seal.ts productKeyContext), and its purpose. */
+export const PRODUCT_KEY_PURPOSE = "rovara-product-ai-key";
+export const PRODUCT_KEY_CONTEXT_KEYS = ["purpose", "install", "company", "owner", "source", "version"] as const;
 export const MODEL_GATEWAY_PORT = 8080;
 export const MODEL_GATEWAY_COMPANY_KEY_PREFIX = "CO#";
 export const MODEL_GATEWAY_MARKERS_TTL_ATTRIBUTE = "expiresAt";
@@ -158,6 +181,8 @@ export interface ModelGatewayProps extends StackProps {
   /** The named cloud environment, for example "staging" (at most 14 characters, the environment rules). */
   readonly environmentName: string;
   readonly repository: ecr.IRepository;
+  /** The product-AI, learning and Vertex additions (MODEL_GATEWAY_PRODUCT_CONTEXT_KEY). Default off. */
+  readonly productAi?: boolean;
 }
 
 /** Table defaults: on-demand, point-in-time recovery, deletion protection, kept if the stack goes. */
@@ -356,6 +381,8 @@ export class ModelGatewayStack extends Stack {
     // The price job: the prices table only (no meter, no ledger, no keys). Corrections run in the serving tasks.
     fetchRole.addToPolicy(new iam.PolicyStatement({ sid: "WritePrices", actions: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [prices.tableArn] }));
 
+    const product = props.productAi === true ? this.productAi(env, issuer, serveRole, moneyActions, companyKeysOnly) : undefined;
+
     // Network: two zones, public subnets and no NAT gateway. Tasks take only the load balancer's traffic; DynamoDB through a
     // gateway endpoint.
     const vpc = new ec2.Vpc(this, "Vpc", {
@@ -408,6 +435,7 @@ export class ModelGatewayStack extends Stack {
         [MODEL_GATEWAY_ENV.markersTable]: markers.tableName,
         [MODEL_GATEWAY_ENV.anthropicKeySecret]: anthropic.secretArn,
         [MODEL_GATEWAY_ENV.companyTable]: companyTableName.valueAsString,
+        ...(product === undefined ? {} : product.environment),
       },
     });
     props.repository.grantPull(serveTask.obtainExecutionRole());
@@ -520,5 +548,125 @@ export class ModelGatewayStack extends Stack {
     new CfnOutput(this, "Issuer", { value: issuer, description: "The one Code install trusted" });
     new CfnOutput(this, "ProviderKeySecrets", { value: Fn.join(",", secrets.map((secret) => secret.secretName)), description: "Put each provider's key here (write only; only the gateway reads)" });
     new CfnOutput(this, "AlarmTopic", { value: topic.topicArn });
+    if (product !== undefined) {
+      new CfnOutput(this, "ProductKeysTableName", { value: product.keysTable.tableName, description: "Cloud's settings routes write product keys, eval approvals and budgets here (RovaraCloudWeb parameter ProductKeysTableName)" });
+      new CfnOutput(this, "ProductKeysKeyArn", { value: product.key.keyArn, description: "Seals product keys (RovaraCloudWeb parameter ProductKeysKeyArn): Cloud's settings role may only GenerateDataKey, only this gateway's role Decrypt" });
+      new CfnOutput(this, "ProductKeysMacKeyArn", { value: product.macKey.keyArn, description: "Keyed fingerprints of product keys and change intents (RovaraCloudWeb parameter ProductKeysMacKeyArn)" });
+      new CfnOutput(this, "VertexFederationRoleArn", { value: product.vertexRole.roleArn, description: "Customers name this role in their Google workload identity pool (attribute condition on the assumed-role ARN with their company id)" });
+    }
+  }
+
+  /**
+   * The product-AI route's resources (B5, B6, B8, #57, #58), made only when asked. Every table keeps the gateway's defaults
+   * (on-demand, point-in-time recovery, deletion protection, retained) and company keys; every grant names exact tables, indexes
+   * and keys, pinned statement by statement in tests/contract/model-gateway-product-infra.test.ts.
+   */
+  private productAi(env: string, issuer: string, serveRole: iam.Role, moneyActions: string[], companyKeysOnly: Record<string, unknown>) {
+    const settingsRoleArn = new CfnParameter(this, "CloudSettingsRoleArn", {
+      type: "String",
+      allowedPattern: "^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$",
+      constraintDescription: "an IAM role ARN, without wildcards",
+      description: "The Rovara Cloud server's role (RovaraCloudWeb output ServerRoleArn): it seals product keys (GenerateDataKey and GenerateMac only, never Decrypt)",
+    });
+    const sparse = (indexes: Record<string, { name: string; partitionKey: string; sortKey: string }>) => Object.values(indexes).map((index) => ({
+      indexName: index.name,
+      partitionKey: { name: index.partitionKey, type: dynamodb.AttributeType.STRING },
+      sortKey: { name: index.sortKey, type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    }));
+    // The product key store: keys (sealed), eval approvals and budgets, receipts and audit rows. Key rows purge by TTL.
+    const keysTable = table(this, "ProductKeys", true);
+    // The product meter and the learning meter: each its own three tables (combined with the agent meter's company row in code).
+    const productMeter = table(this, "ProductMeter", false, sparse(MODEL_GATEWAY_METER_INDEXES));
+    const productLedger = table(this, "ProductLedger", false, sparse(MODEL_GATEWAY_LEDGER_INDEXES));
+    const productMarkers = table(this, "ProductMarkers", true);
+    const learningMeter = table(this, "LearningMeter", false, sparse(MODEL_GATEWAY_METER_INDEXES));
+    const learningLedger = table(this, "LearningLedger", false, sparse(MODEL_GATEWAY_LEDGER_INDEXES));
+    const learningMarkers = table(this, "LearningMarkers", true);
+    // Eval stages shared by every serving task (B8): conditional writes, rows expire after the stage plus the call ceiling.
+    const stages = table(this, "EvalStages", true, sparse(MODEL_GATEWAY_EVAL_STAGE_INDEXES));
+
+    const manage = new iam.PolicyStatement({
+      sid: "AccountManagesNotUses",
+      principals: [new iam.AccountRootPrincipal()],
+      actions: [
+        "kms:CreateAlias", "kms:Describe*", "kms:Enable*", "kms:List*", "kms:Put*", "kms:Update*", "kms:Revoke*", "kms:Disable*", "kms:Get*", "kms:Delete*",
+        "kms:TagResource", "kms:UntagResource", "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion", "kms:RotateKeyOnDemand",
+      ],
+      resources: ["*"],
+    });
+    // Bound to one install (this gateway's issuer), the product purpose, and exactly the six context keys a sealed row carries.
+    const sealedRow = {
+      StringEquals: { "kms:EncryptionContext:purpose": PRODUCT_KEY_PURPOSE, "kms:EncryptionContext:install": issuer },
+      "ForAllValues:StringEquals": { "kms:EncryptionContextKeys": [...PRODUCT_KEY_CONTEXT_KEYS] },
+      Null: { "kms:EncryptionContext:company": "false", "kms:EncryptionContext:owner": "false", "kms:EncryptionContext:source": "false", "kms:EncryptionContext:version": "false" },
+    };
+    const key = new kms.Key(this, "ProductKeysKey", {
+      description: `Rovara Cloud ${env}: seals customers' product AI keys; Cloud's settings role seals, only the gateway's serving role opens`,
+      enableKeyRotation: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+      policy: new iam.PolicyDocument({
+        statements: [
+          manage,
+          // By the role's ARN as a condition (as the provider-keys key): a replaced role keeps access, no wait on a new one.
+          new iam.PolicyStatement({ sid: "OnlyGatewayOpens", principals: [new iam.AccountRootPrincipal()], actions: ["kms:Decrypt"], resources: ["*"], conditions: { ...sealedRow, ArnEquals: { "aws:PrincipalArn": serveRole.roleArn } } }),
+          new iam.PolicyStatement({ sid: "OnlySettingsSeals", principals: [new iam.AccountRootPrincipal()], actions: ["kms:GenerateDataKey"], resources: ["*"], conditions: { ...sealedRow, ArnEquals: { "aws:PrincipalArn": settingsRoleArn.valueAsString } } }),
+        ],
+      }),
+    });
+    // Keyed fingerprints (F1-d L4): an HMAC key that never leaves KMS; only the settings role makes MACs, nobody verifies here.
+    const macKey = new kms.Key(this, "ProductKeysMacKey", {
+      description: `Rovara Cloud ${env}: keyed fingerprints of product AI keys and change intents; only Cloud's settings role uses it`,
+      keySpec: kms.KeySpec.HMAC_256,
+      keyUsage: kms.KeyUsage.GENERATE_VERIFY_MAC,
+      removalPolicy: RemovalPolicy.RETAIN,
+      policy: new iam.PolicyDocument({
+        statements: [
+          manage,
+          new iam.PolicyStatement({ sid: "OnlySettingsFingerprints", principals: [new iam.AccountRootPrincipal()], actions: ["kms:GenerateMac"], resources: ["*"], conditions: { ArnEquals: { "aws:PrincipalArn": settingsRoleArn.valueAsString } } }),
+        ],
+      }),
+    });
+
+    // The serving role: read keys (and record a refused-key warning on the document), the two product meters as the agent's,
+    // the stage table's items and its one index, Decrypt of a sealed row of this install.
+    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ProductKeysCompanyKeys", actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [keysTable.tableArn], conditions: companyKeysOnly }));
+    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ProductAndLearningMeterCompanyKeys", actions: moneyActions, resources: [productMeter.tableArn, productLedger.tableArn, learningMeter.tableArn, learningLedger.tableArn], conditions: companyKeysOnly }));
+    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ProductAndLearningMarkersCompanyKeys", actions: [...moneyActions, "dynamodb:DeleteItem"], resources: [productMarkers.tableArn, learningMarkers.tableArn], conditions: companyKeysOnly }));
+    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "EvalStagesCompanyKeys", actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [stages.tableArn], conditions: companyKeysOnly }));
+    serveRole.addToPolicy(new iam.PolicyStatement({
+      sid: "QueryProductIndexes", actions: ["dynamodb:Query"],
+      resources: [
+        ...[productLedger, learningLedger].flatMap((ledger) => Object.values(MODEL_GATEWAY_LEDGER_INDEXES).map((index) => `${ledger.tableArn}/index/${index.name}`)),
+        ...[productMeter, learningMeter].flatMap((meter) => Object.values(MODEL_GATEWAY_METER_INDEXES).map((index) => `${meter.tableArn}/index/${index.name}`)),
+        ...Object.values(MODEL_GATEWAY_EVAL_STAGE_INDEXES).map((index) => `${stages.tableArn}/index/${index.name}`),
+      ],
+    }));
+    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "OpenProductKeys", actions: ["kms:Decrypt"], resources: [key.keyArn], conditions: { StringEquals: { "kms:EncryptionContext:purpose": PRODUCT_KEY_PURPOSE, "kms:EncryptionContext:install": issuer } } }));
+
+    // Vertex federation (#58, DEC 229b): a role with NO permissions. Only this gateway's serving role may assume it, and only with
+    // a company id as the session name; the customer's Google pool trusts the assumed-role ARN carrying their own company id.
+    const vertexRole = new iam.Role(this, "VertexFederationRole", {
+      assumedBy: new iam.ArnPrincipal(serveRole.roleArn).withConditions({ StringLike: { "sts:RoleSessionName": "org_*" } }),
+      description: `Rovara Cloud ${env}: the model gateway's identity at Google for Vertex AI (no AWS permissions)`,
+      maxSessionDuration: Duration.hours(1),
+    });
+    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "AssumeVertexFederation", actions: ["sts:AssumeRole"], resources: [vertexRole.roleArn], conditions: { StringLike: { "sts:RoleSessionName": "org_*" } } }));
+
+    return {
+      keysTable, key, macKey, vertexRole,
+      environment: {
+        [MODEL_GATEWAY_ENV.productKeysTable]: keysTable.tableName,
+        [MODEL_GATEWAY_ENV.productKeysKey]: key.keyArn,
+        [MODEL_GATEWAY_ENV.productMeterTable]: productMeter.tableName,
+        [MODEL_GATEWAY_ENV.productLedgerTable]: productLedger.tableName,
+        [MODEL_GATEWAY_ENV.productMarkersTable]: productMarkers.tableName,
+        [MODEL_GATEWAY_ENV.evalStagesTable]: stages.tableName,
+        [MODEL_GATEWAY_ENV.vertexFederationRole]: vertexRole.roleArn,
+        [MODEL_GATEWAY_ENV.learningMeterTable]: learningMeter.tableName,
+        [MODEL_GATEWAY_ENV.learningLedgerTable]: learningLedger.tableName,
+        [MODEL_GATEWAY_ENV.learningMarkersTable]: learningMarkers.tableName,
+      },
+    };
   }
 }

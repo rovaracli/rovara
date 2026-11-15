@@ -139,6 +139,8 @@ export interface ServeDependencies {
   kms?: KmsLike;
   /** The HTTP the Vertex token minting uses (default: product-vertex-token.ts createTokenHttp, Google's and AWS's token hosts). */
   vertexHttp?: TokenHttp;
+  /** The deployed product route's Gemini transport (default: product-gemini.ts createGeminiTransport over HTTPS). */
+  geminiTransport?: ProviderTransport;
   env?: GatewayEnv; log?: GatewayLog; credentials?: CredentialSource; db?: Dynamo;
   fetch?: typeof fetch; transport?: ProviderTransport; keys?: ProviderKeys; caps?: CapsSource; modelLimits?: ModelLimitsSource;
   /**
@@ -159,17 +161,8 @@ export interface RunningGateway { server: Server; port: number; draining(): bool
 
 const UNAVAILABLE = JSON.stringify({ error: { type: "unavailable", message: "model access unavailable" } });
 
-export async function startServe(config: ServeConfig, deps: ServeDependencies = {}): Promise<RunningGateway> {
-  const log = deps.log ?? jsonLog();
-  const now = deps.now ?? Date.now;
-  const credentials = deps.credentials ?? credentialsFromEnvironment(deps.env ?? process.env);
-  const db = deps.db ?? new Dynamo({ region: config.region, credentials });
-  const prices = new SnapshotPriceSource(new DynamoPriceSnapshotStore(db, config.tables.prices), { now });
-  await prices.reload();
-  const caps = deps.caps ?? new CompanyBudgetCaps(db, config.tables.companies);
-  // The deployed product and learning routes, from the configured tables (deps.product / deps.learning still win: tests).
-  const built = deployedRoutes(config, deps, { db, credentials, now, prices, caps });
-  deps = { ...deps, ...(built.product === undefined ? {} : { product: built.product }), ...(built.learning === undefined ? {} : { learning: built.learning }) };
+/** DEC 228c: refuse to start with a product or learning meter that does not combine with THIS agent meter, or shares its tables. */
+function checkMeters(config: ServeConfig, deps: ServeDependencies): void {
   // DEC 228c: one company monthly cap over both routes. A product meter that does not take the agent meter's company row
   // would let product and agent spend each reach the cap: refuse to start rather than run it.
   if (deps.product !== undefined && deps.product.meter.combinedCompany !== true) throw new Error("product meter must combine the company cap with the agent meter");
@@ -189,6 +182,22 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     const taken = new Set([config.tables.meter, config.tables.ledger, config.tables.markers, ...(productOwn === undefined ? [] : [productOwn.meter, productOwn.ledger, productOwn.markers])]);
     if ([learningOwn.meter, learningOwn.ledger, learningOwn.markers].some((table) => taken.has(table))) throw new Error("learning meter must have tables of its own");
   }
+}
+
+export async function startServe(config: ServeConfig, deps: ServeDependencies = {}): Promise<RunningGateway> {
+  const log = deps.log ?? jsonLog();
+  const now = deps.now ?? Date.now;
+  const credentials = deps.credentials ?? credentialsFromEnvironment(deps.env ?? process.env);
+  const db = deps.db ?? new Dynamo({ region: config.region, credentials });
+  // Given meters are checked before anything is read; the deployed ones, built from the configured tables, again after.
+  checkMeters(config, deps);
+  const prices = new SnapshotPriceSource(new DynamoPriceSnapshotStore(db, config.tables.prices), { now });
+  await prices.reload();
+  const caps = deps.caps ?? new CompanyBudgetCaps(db, config.tables.companies);
+  // The deployed product and learning routes, from the configured tables (deps.product / deps.learning still win: tests).
+  const built = deployedRoutes(config, deps, { db, credentials, now, prices, caps });
+  deps = { ...deps, ...(built.product === undefined ? {} : { product: built.product }), ...(built.learning === undefined ? {} : { learning: built.learning }) };
+  checkMeters(config, deps);
   const meter = new DynamoMeter({ db, tables: config.tables, now });
   const modelLimits = deps.modelLimits ?? modelLimitsFrom(prices);
   const transport = deps.transport ?? createAnthropicTransport();
@@ -321,7 +330,7 @@ function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { 
     // Vertex (DEC 229b), only when the federation role is configured: tokens minted with this task's own credentials.
     const vertex = p.vertexFederationRoleArn === undefined ? undefined : new VertexTokens({ http: deps.vertexHttp ?? createTokenHttp(), aws: shared.credentials, federationRoleArn: p.vertexFederationRoleArn, awsRegion: config.region, now });
     const routes = createProductRoutes({
-      keys: store, meter: productMeter, modelLimits: productModelLimitsFrom(prices), transports: { gemini: createGeminiTransport(), ...(vertex === undefined ? {} : { vertex: createVertexTransport() }) }, media: prices,
+      keys: store, meter: productMeter, modelLimits: productModelLimitsFrom(prices), transports: { gemini: deps.geminiTransport ?? createGeminiTransport(), ...(vertex === undefined ? {} : { vertex: createVertexTransport() }) }, media: prices,
       ...(vertex === undefined ? {} : { vertex: { tokens: vertex } }),
       overrun: new DynamoProductOverrunTasks(db, p.markers, now), companyCaps: caps, evalStages,
     });

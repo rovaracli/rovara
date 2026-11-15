@@ -9,6 +9,7 @@ import { isDeployedEnvironment } from "./sessions.js";
 /** The Cloud actions that are recorded. Each is a name the audit list's `action` filter can match, exactly or by family (`hook.*`). */
 export const CLOUD_AUDIT_ACTIONS = Object.freeze([
   "company.rules.changed", "company.invite.created", "company.invite.revoked", "company.budget.changed", "company.signin_client.changed",
+  "product_ai.key.connected", "product_ai.key.rotated", "product_ai.key.removed", "product_ai.eval_budget.changed", "product_ai.eval_approval.recorded", "product_ai.eval_approval.withdrawn",
   "hook.start.answered", "hook.decide.answered", "hook.values.answered", "hook.start.unanswered", "hook.decide.unanswered", "hook.values.unanswered",
 ] as const);
 export type CloudAuditAction = (typeof CLOUD_AUDIT_ACTIONS)[number];
