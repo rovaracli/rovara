@@ -12,7 +12,8 @@ function start(env: Record<string, string>): { child: ChildProcess; ready: Promi
   const appDirectory = mkdtempSync(join(tmpdir(), "cloud-app-"));
   writeFileSync(join(appDirectory, "index.html"), "<!doctype html><title>Rovara</title>");
   const child = spawn(process.execPath, ["--import", "tsx", "scripts/cloud-server.ts"], {
-    env: { PATH: process.env.PATH ?? "", ROVARA_CODE_URL: "https://code.example.test", ROVARA_CLIENT_SECRET: "test-only", CLOUD_APP_DIRECTORY: appDirectory, PORT: "0", ...env },
+    env: Object.fromEntries(Object.entries({ PATH: process.env.PATH ?? "", ROVARA_CODE_URL: "https://code.example.test", ROVARA_CLIENT_SECRET: "test-only", CLOUD_APP_DIRECTORY: appDirectory, PORT: "0", ...env })
+      .filter(([name]) => name !== "unset" && name !== env.unset)),
     stdio: ["ignore", "pipe", "pipe"],
   });
   children.push(child);
@@ -40,6 +41,16 @@ describe("the Rovara Cloud server entry", () => {
     expect(page.status).toBe(200);
     // On https the app keeps its HSTS header.
     expect(page.headers.get("strict-transport-security")).not.toBeNull();
+  }, 30_000);
+
+  it("refuses the file store and a secret in its environment when deployed", async () => {
+    const fileStore = await start({ CLOUD_ENVIRONMENT: "production", ROVARA_CLIENT_SECRET: "", CLOUD_ORIGIN: "https://cloud.example.test" }).exited;
+    expect(fileStore.code).not.toBe(0);
+    expect(fileStore.output).toContain("A deployed Cloud reads its client secret from Secrets Manager");
+    const noTable = await start({ CLOUD_ENVIRONMENT: "production", ROVARA_CLIENT_SECRET: "", CLOUD_ORIGIN: "https://cloud.example.test", AWS_REGION: "us-east-1", ROVARA_CLIENT_SECRET_ID: "x", unset: "ROVARA_CLIENT_SECRET" }).exited;
+    expect(noTable.code).not.toBe(0);
+    expect(noTable.output).toContain("CLOUD_SESSIONS_TABLE is required");
+    expect(noTable.output).not.toContain("test-only");
   }, 30_000);
 
   it("refuses a plain-http address other than its own loopback one", async () => {

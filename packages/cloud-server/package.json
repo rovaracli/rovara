@@ -13,5 +13,12 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc -b"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1134.0",
+    "@aws-sdk/client-kms": "3.1134.0",
+    "@aws-sdk/client-secrets-manager": "3.1134.0",
+    "@aws-sdk/client-ssm": "3.1134.0",
+    "@aws-sdk/lib-dynamodb": "3.1134.0"
   }
 }

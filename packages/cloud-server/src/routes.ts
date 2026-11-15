@@ -3,8 +3,9 @@
 // lists every route and where it is answered from (PrepLabsAI/Rovara-cloud#1).
 import type { CodeAccess, CodeClient } from "./code-client.js";
 import type { CodeSession } from "./sessions.js";
-import { newSessionId, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
-import { approvalUrl, blockedReview, followState, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
+import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } from "./work-sessions.js";
+import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
+import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 import type { PresenceBoard } from "./presence.js";
 import { CodeError } from "./code-client.js";
 
@@ -31,13 +32,14 @@ export interface RouteContext {
 export interface RouteAnswer { status: number; body: unknown }
 
 export interface Route {
-  method: "GET" | "POST" | "PUT" | "DELETE";
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   /** Matched against the path after /v1/web; capture groups become `params`. */
   path: RegExp;
   answer(context: RouteContext): Promise<RouteAnswer>;
 }
 
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
+const decisionsOff: RouteAnswer = { status: 404, body: { error: { code: "NOT_FOUND", message: "Decision cards aren't on Rovara Code yet." } } };
 const projectNotFound: RouteAnswer = { status: 404, body: { error: { code: "PROJECT_NOT_FOUND", message: "That project doesn't exist, or you can't use it." } } };
 
 /** A project's role for the person: an administrator maintains it, anyone else contributes. */
@@ -98,7 +100,7 @@ const viewer = (context: RouteContext) => ({ developerId: context.session.access
 const me = (context: RouteContext) => ({ developerId: context.session.access.developerId, name: context.session.access.displayName });
 
 /** The session's followers and viewers for this person. */
-const peopleOf = (context: RouteContext, record: WorkSession) => ({ ...followState(record, context.session.access.developerId), viewingNow: context.presence.viewing(record.sessionId, context.now().getTime()) });
+const peopleOf = async (context: RouteContext, record: WorkSession) => ({ ...followState(record, context.session.access.developerId), viewingNow: await context.presence.viewing(record.sessionId, context.now().getTime()) });
 
 /**
  * The session, once Code has let the person read its task: its owner, or someone it is shared with who is still a member of the
@@ -109,6 +111,29 @@ async function readableSession(context: RouteContext): Promise<WorkSession | und
   if (record === undefined) return undefined;
   await context.client.json(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}?events=0`, { headers: TASK_VIEW });
   return record;
+}
+
+/** A comment's edit or deletion, by its author, on the revision they saw. */
+async function changeComment(context: RouteContext, change: "edit" | "delete"): Promise<RouteAnswer> {
+  const record = await readableSession(context);
+  if (record === undefined) return sessionNotFound;
+  const messages = record.messages ?? [];
+  const comment = messages.find((message) => message.messageId === context.params[1]);
+  if (comment === undefined || comment.deletedAt !== undefined) return { status: 404, body: { error: { code: "NOT_FOUND", message: "That comment isn't here any more." } } };
+  if (comment.author.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: "You can change only your own comments." } } };
+  const input = (context.body ?? {}) as { rev?: unknown; text?: unknown };
+  if (input.rev !== comment.rev) return { status: 409, body: { error: { code: "CONFLICT", message: "This comment changed since you opened it. Refresh and try again." } } };
+  const at = context.now().toISOString();
+  let next = { ...comment, rev: comment.rev + 1 };
+  if (change === "edit") {
+    const text = commentText(input.text);
+    if ("problem" in text) return badRequest(text.problem);
+    next = { ...next, text: text.text, editedAt: at };
+  } else {
+    next = { ...next, deletedAt: at };
+  }
+  await context.work.put({ ...record, messages: messages.map((message) => (message.messageId === comment.messageId ? next : message)) });
+  return ok(commentView(record.sessionId, next));
 }
 
 const FOLLOWERS_MAX = 200;
@@ -152,9 +177,8 @@ async function runningInProject(context: RouteContext, project: string) {
       throw error;
     }
   }));
-  return read
-    .filter((entry): entry is { record: WorkSession; task: CodeTask } => entry !== undefined && sessionRunning(entry.task))
-    .map(({ record, task }) => liveTile(record, task, viewer(context), context.origin, peopleOf(context, record)))
+  const running = read.filter((entry): entry is { record: WorkSession; task: CodeTask } => entry !== undefined && sessionRunning(entry.task));
+  return (await Promise.all(running.map(async ({ record, task }) => liveTile(record, task, viewer(context), context.origin, await peopleOf(context, record)))))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
@@ -274,10 +298,48 @@ export const ROUTES: Route[] = [
     },
   },
   {
-    // GET /v1/app/decisions: decision cards are not on Code yet. The app reads a 404 here as "cards are switched off" and shows
-    // none (Home's plan, failure and pull-request cards still show), where any other answer would show as an error.
+    // GET /v1/app/tasks/{task}/loaded-knowledge[/…] and /lessons: what the agent loaded and the lessons it used are not on Code yet. The app reads a
+    // 404 as "nothing recorded" (and hides the lessons), where any other answer shows "could not be loaded".
+    method: "GET", path: /^\/tasks\/[^/]+\/(?:loaded-knowledge(?:\/.*)?|lessons)$/u,
+    answer: () => Promise.resolve({ status: 404, body: { error: { code: "NOT_FOUND", message: "This isn't recorded on Rovara Code yet." } } }),
+  },
+  {
+    // POST /v1/app/realtime/token: live updates are not on Code yet. The app reads a 404 here as "live updates are off" and reads its screens again
+    // every 30 seconds, where any other answer would keep it reconnecting.
+    method: "POST", path: /^\/realtime\/token$/u,
+    answer: () => Promise.resolve({ status: 404, body: { error: { code: "NOT_FOUND", message: "Live updates aren't on Rovara Code yet." } } }),
+  },
+  {
+    // GET /v1/app/decisions (DecisionCardsViewReaderSchema): Code's decision cards (contract v0 `decisions.list`, `/v1/dev/client/decisions`), passed through
+    // as Code built them: each card carries the digest Code checks when the person acts. Code does not serve the route yet (the decision cards arrive with
+    // the core on AWS, lane E2), so its 404 or 501 becomes the 404 the app reads as "cards are switched off": it shows none, and Home's plan, failure and
+    // pull-request cards still show, where any other answer would show as an error.
     method: "GET", path: /^\/decisions$/u,
-    answer: () => Promise.resolve({ status: 404, body: { error: { code: "NOT_FOUND", message: "Decision cards aren't on Rovara Code yet." } } }),
+    answer: async ({ client, session }) => {
+      try {
+        return ok(await client.json<unknown>(session, "/v1/dev/client/decisions"));
+      } catch (error) {
+        if (error instanceof CodeError && (error.status === 404 || error.status === 501)) return decisionsOff;
+        throw error;
+      }
+    },
+  },
+  {
+    // POST /v1/app/decisions/{kind}/{subject}/{approve|request-changes|reject|evidence-opened}: one card, one request (contract v0 `decisions.act`). Code checks
+    // the digest the person was shown (409 CHANGE_STALE when the card changed), the card's risk and who may decide; its answer, refusals included, reaches the
+    // app unchanged. Only `?merging=1` and `?tab=` of the query go on.
+    method: "POST", path: /^\/decisions\/([A-Za-z0-9_]+)\/([A-Za-z0-9_-]{1,150})\/(approve|request-changes|reject|evidence-opened)$/u,
+    answer: async ({ client, session, params, query, body }) => {
+      const [kind, subject, action] = params as [string, string, string];
+      const requestId = typeof body === "object" && body !== null && !Array.isArray(body) ? (body as { requestId?: unknown }).requestId : undefined;
+      if (typeof requestId !== "string" || !UUID.test(requestId)) return badRequest("requestId must be a UUID.");
+      const forwarded = new URLSearchParams();
+      if (query.get("merging") === "1") forwarded.set("merging", "1");
+      const tab = query.get("tab");
+      if (tab === "requirements" || tab === "design") forwarded.set("tab", tab);
+      const suffix = forwarded.size === 0 ? "" : `?${forwarded.toString()}`;
+      return ok(await client.json<unknown>(session, `/v1/dev/client/decisions/${encodeURIComponent(kind)}/${encodeURIComponent(subject)}/${action}${suffix}`, { method: "POST", body }));
+    },
   },
   {
     // GET /v1/app/projects/{p}/overview (ProjectOverviewSchema).
@@ -389,7 +451,7 @@ export const ROUTES: Route[] = [
     method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})$/u,
     answer: async (context) => {
       const found = await sessionAndTask(context);
-      return found === undefined ? sessionNotFound : ok({ session: sessionView(found.record, found.task, viewer(context), context.origin, peopleOf(context, found.record)) });
+      return found === undefined ? sessionNotFound : ok({ session: sessionView(found.record, found.task, viewer(context), context.origin, await peopleOf(context, found.record)) });
     },
   },
   {
@@ -408,8 +470,110 @@ export const ROUTES: Route[] = [
         method: "POST", headers: TASK_VIEW,
         body: { requestId, ...retry, instructions: "Retry the independent read-only code and security reviews on the same verified candidate. Do not edit files." },
       });
-      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, peopleOf(context, found.record)) });
+      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
     },
+  },
+  {
+    // POST /v1/app/sessions/{id}/send-back (Rovara-cloud#25): a task stopped by review findings goes back to coding with the owner's note. Code adds
+    // the findings to the coding agent's prompt itself (workflow/send-back); the note is the owner's own instruction. Only the owner.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/send-back$/u,
+    answer: async (context) => {
+      const found = await sessionAndTask(context);
+      if (found === undefined) return sessionNotFound;
+      const input = (context.body ?? {}) as { requestId?: unknown; note?: unknown };
+      if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
+      if (input.note !== undefined && (typeof input.note !== "string" || input.note.trim().length > 1000)) return badRequest("The note is at most 1,000 characters.");
+      if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can send this back to coding.` } } };
+      const choices = reviewChoices(found.task);
+      if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to send back right now." } } };
+      const note = typeof input.note === "string" && input.note.trim() !== "" ? input.note.trim() : "Fix the review findings.";
+      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/send-back`, {
+        method: "POST", headers: TASK_VIEW, body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, instructions: note },
+      });
+      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
+    },
+  },
+  {
+    // POST /v1/app/sessions/{id}/accept-findings (Rovara-cloud#25): the owner accepts every blocking finding of the current code with their reason, so
+    // the reviews clear and Code opens the pull request (workflow/review-findings). The IDs are computed here from Code's task, never taken from the request.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/accept-findings$/u,
+    answer: async (context) => {
+      const found = await sessionAndTask(context);
+      if (found === undefined) return sessionNotFound;
+      const input = (context.body ?? {}) as { requestId?: unknown; reason?: unknown };
+      if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
+      const reason = typeof input.reason === "string" ? input.reason.trim() : "";
+      if (reason === "" || reason.length > 500) return badRequest("Give a reason of up to 500 characters for accepting the findings.");
+      if (found.record.owner.developerId !== context.session.access.developerId) return { status: 403, body: { error: { code: "FORBIDDEN", message: `Only ${found.record.owner.name} can accept these findings.` } } };
+      const choices = reviewChoices(found.task);
+      if (choices === undefined) return { status: 409, body: { error: { code: "CONFLICT", message: "There are no review findings to accept right now." } } };
+      const { task } = await context.client.json<{ task: CodeTask }>(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/workflow/review-findings`, {
+        method: "POST", headers: TASK_VIEW,
+        body: { requestId: input.requestId, expectedRevision: choices.expectedRevision, candidateDigest: choices.candidateDigest, resolutions: choices.findings.map((finding) => ({ findingId: finding.findingId, action: "ACCEPT", note: reason })) },
+      });
+      return ok({ session: sessionView(found.record, task, viewer(context), context.origin, await peopleOf(context, found.record)) });
+    },
+  },
+  {
+    // GET /v1/app/sessions/{id}/events (Rovara-cloud#24): the Conversation's timeline, from the Code task's own events (the newest Code keeps), for
+    // anyone Code lets read the task. Paged after `<at>#<eventId>`.
+    method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})\/events$/u,
+    answer: async (context) => {
+      const record = await context.work.get(context.params[0]!);
+      if (record === undefined) return sessionNotFound;
+      const { events } = await context.client.json<{ events: CodeTaskEvent[] }>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/events?limit=50`);
+      return ok(timelinePage(timelineOf(events ?? []), context.query.get("after")));
+    },
+  },
+  {
+    // GET /v1/app/sessions/{id}/messages (Rovara-cloud#24): the session's comments, Cloud's own, for anyone Code lets read the task. Pinned
+    // comments are not offered (Cloud's session view lists no parts to pin), so a read for one part has none.
+    method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})\/messages$/u,
+    answer: async (context) => {
+      const record = await readableSession(context);
+      if (record === undefined) return sessionNotFound;
+      if (context.query.get("anchor") !== null) return ok({ messages: [] });
+      return ok(commentsPage(record.sessionId, record.messages ?? [], context.query.get("after")));
+    },
+  },
+  {
+    // POST /v1/app/sessions/{id}/messages {requestId, kind, text, threadId?}: a comment from anyone who can read the session. A message to the
+    // agent ("steer") and a pinned comment are refused: neither is available in Cloud yet.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/messages$/u,
+    answer: async (context) => {
+      const record = await readableSession(context);
+      if (record === undefined) return sessionNotFound;
+      const input = (context.body ?? {}) as { requestId?: unknown; kind?: unknown; text?: unknown; threadId?: unknown; anchor?: unknown };
+      if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
+      const repeated = record.messageRequests?.[input.requestId];
+      const earlier = repeated === undefined ? undefined : (record.messages ?? []).find((message) => message.messageId === repeated);
+      if (earlier !== undefined) return ok(commentView(record.sessionId, earlier));
+      if (input.kind === "steer") return { status: 409, body: { error: { code: "CONFLICT", message: "Messages to the agent aren't available in Rovara Cloud yet. To change the work, use Send back to coding with a note." } } };
+      if (input.kind !== "comment") return badRequest("kind must be comment.");
+      if (input.anchor !== undefined) return badRequest("Pinning a comment to part of the session isn't available in Rovara Cloud yet.");
+      const text = commentText(input.text);
+      if ("problem" in text) return badRequest(text.problem);
+      const messages = record.messages ?? [];
+      if (messages.length >= COMMENTS_PER_SESSION_MAX) return { status: 409, body: { error: { code: "CONFLICT", message: `This session already has ${String(COMMENTS_PER_SESSION_MAX)} comments.` } } };
+      let threadId: string | undefined;
+      if (input.threadId !== undefined) {
+        const parent = typeof input.threadId === "string" ? messages.find((message) => message.messageId === input.threadId) : undefined;
+        if (parent === undefined) return badRequest("That comment isn't in this session.");
+        threadId = parent.threadId ?? parent.messageId;
+      }
+      const comment = { messageId: newMessageId(), kind: "comment" as const, source: "app" as const, author: me(context), text: text.text, createdAt: context.now().toISOString(), rev: 1, ...(threadId === undefined ? {} : { threadId }) };
+      await context.work.put({ ...record, messages: [...messages, comment], messageRequests: { ...record.messageRequests, [input.requestId]: comment.messageId } });
+      return { status: 201, body: commentView(record.sessionId, comment) };
+    },
+  },
+  {
+    // PATCH /v1/app/sessions/{id}/messages/{messageId} {rev, text} and DELETE {rev}: only the comment's author, on the revision they saw.
+    method: "PATCH", path: /^\/sessions\/(ses_[0-9a-z]{20})\/messages\/(msg_[0-9a-z]{20})$/u,
+    answer: (context) => changeComment(context, "edit"),
+  },
+  {
+    method: "DELETE", path: /^\/sessions\/(ses_[0-9a-z]{20})\/messages\/(msg_[0-9a-z]{20})$/u,
+    answer: (context) => changeComment(context, "delete"),
   },
   {
     // POST /v1/app/sessions/{id}/stop: Code cancels the task's running step.
@@ -492,7 +656,7 @@ export const ROUTES: Route[] = [
     answer: async (context) => {
       const record = await readableSession(context);
       if (record === undefined) return sessionNotFound;
-      return ok({ viewingNow: context.presence.heartbeat(record.sessionId, me(context), context.now().getTime()) });
+      return ok({ viewingNow: await context.presence.heartbeat(record.sessionId, me(context), context.now().getTime()) });
     },
   },
   {

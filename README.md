@@ -25,8 +25,7 @@ browser ──► Cloud (packages/cloud-server + the web app) ──► Rovara C
 | `packages/design-tokens` | The web app's design tokens. |
 | `packages/audit-verifier` | The audit ledger's offline verifier, which `contracts` uses. |
 | `scripts/cloud-server.ts` | Runs Cloud against a Code install: on this computer (`npm run cloud:local`) and in its container. |
-| `infra/` | Cloud's CDK app: the stack `rovara-cloud-<env>-app` (`infra/lib/cloud-app.ts`) and its release pipeline (`infra/lib/cloud-release-pipeline.ts`). |
-| `environments/cloud/Dockerfile` | Cloud's container image (Fargate, linux/arm64). |
+| `infra/` | Cloud's CDK app: Cloud on CloudFront, Lambda and DynamoDB (`rovara-cloud-<env>-web`, `infra/lib/cloud-web.ts`), its first address, which redirects there (`rovara-cloud-<env>-app`, `infra/lib/cloud-app.ts`), and its release pipeline (`infra/lib/cloud-release-pipeline.ts`). |
 | `tests/` | `unit` (cloud-server), `contract` (contracts, audit verifier, repository checks) and `web` (the app). |
 
 ## Run it on this computer

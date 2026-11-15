@@ -19,7 +19,7 @@ import { CLOUD_APP_CONTEXT_KEY } from "./cloud-app.js";
  * The Rovara Cloud release pipeline (owner decisions 2026-11-14): a vX.Y.Z tag pushed to PrepLabsAI/Rovara-cloud waits for a
  * person to approve, then deploys Rovara Cloud (cloud-app.ts) on an existing Rovara Code install.
  *
- *   Source (tag) -> Approve (manual) -> Deploy (cdk deploy of the Cloud stack, which builds its image)
+ *   Source (tag) -> Check (a vX.Y.Z tag on cloud/next) -> Approve (manual) -> Deploy (cdk deploy, with the release check)
  *
  * Rovara Code is installed first and on its own (its own pipeline or `rovara init`); this pipeline never deploys any of
  * Code's stacks, and Cloud has no user pool: people sign in through Code. The Code install's address is the CodeUrl
@@ -52,12 +52,49 @@ const INSTALL_NODE = [
 ];
 
 /** Fetches the tags and finds the one release tag on this commit: the pipeline deploys release tags only. */
-const FIND_RELEASE_TAG = [
+export const FIND_RELEASE_TAG = [
   'git fetch --force --quiet origin "refs/tags/*:refs/tags/*"',
   'RELEASE_TAG="$(git tag --points-at HEAD | grep -E "^v[0-9]+\\.[0-9]+\\.[0-9]+$" | head -n 1)"',
   'if [ -z "$RELEASE_TAG" ]; then echo "this commit has no vX.Y.Z release tag; the pipeline deploys release tags only" >&2; exit 1; fi',
   'echo "release $RELEASE_TAG at $(git rev-parse HEAD)"',
 ];
+
+/**
+ * The release tag's commit must be on cloud/next. A tag trigger can't name a branch, so a vX.Y.Z tag cut anywhere else in the repository
+ * (for example a staging release on an integration branch) would otherwise start this pipeline and reach Approve. Runs after
+ * FIND_RELEASE_TAG, in the Check stage (before Approve, so such a run fails on its own) and again in the deploy job.
+ */
+export const RELEASE_TAG_ON_BRANCH = [
+  `git fetch --quiet origin "+refs/heads/${CLOUD_PIPELINE_BRANCH}:refs/remotes/origin/${CLOUD_PIPELINE_BRANCH}"`,
+  `if ! git merge-base --is-ancestor HEAD "origin/${CLOUD_PIPELINE_BRANCH}"; then echo "$RELEASE_TAG ($(git rev-parse --short HEAD)) is not on ${CLOUD_PIPELINE_BRANCH}: this pipeline deploys only release tags cut from ${CLOUD_PIPELINE_BRANCH}" >&2; exit 1; fi`,
+  `echo "$RELEASE_TAG is on ${CLOUD_PIPELINE_BRANCH}"`,
+];
+
+/** How often the release check asks the live address during a deploy, and what it asks for (the page shell, and the API without a sign-in). */
+export const RELEASE_CHECK_PATHS = ["/app", "/v1/web/me"] as const;
+
+/**
+ * The deploy, with the release check around it (#11): while `cdk deploy` runs, Cloud's live address (the web stack's CloudUrl) is asked
+ * every second, and any 5xx or failed connection fails the release, even when the deploy itself succeeded. The first deploy of the web
+ * stack has no address yet, so it isn't checked.
+ */
+const RELEASE_CHECKED_DEPLOY = [
+  'base="$(aws cloudformation describe-stacks --stack-name "${STACK_PREFIX}-web" --query "Stacks[0].Outputs[?OutputKey==\'CloudUrl\'].OutputValue" --output text 2>/dev/null | sed "s#/app\\$##")"',
+  "rm -f /tmp/release-check.log; poller=",
+  'if [ -n "$base" ] && [ "$base" != "None" ]; then',
+  `  ( while :; do for path in ${RELEASE_CHECK_PATHS.join(" ")}; do code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$base$path")"; case "$code" in 5*|000) echo "$(date -u +%H:%M:%S) $path $code" >> /tmp/release-check.log;; esac; done; sleep 1; done ) &`,
+  "  poller=$!",
+  '  echo "release check: asking $base every second during the deploy"',
+  "else",
+  '  echo "release check: no live address yet (the first deploy of ${STACK_PREFIX}-web), so nothing to check"',
+  "fi",
+  `npx cdk deploy RovaraCloudApp RovaraCloudWeb --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" --parameters CodeUrl="$CODE_URL" --require-approval never --progress events`,
+  "status=$?",
+  'if [ -n "$poller" ]; then kill "$poller" 2>/dev/null; wait "$poller" 2>/dev/null; fi',
+  'if [ -s /tmp/release-check.log ]; then echo "the release check saw errors on $base during the deploy:" >&2; cat /tmp/release-check.log >&2; exit 1; fi',
+  'if [ -n "$poller" ]; then echo "release check: no errors on $base during the deploy"; fi',
+  "exit $status",
+].join("\n");
 
 export class CloudReleasePipelineStack extends Stack {
   constructor(scope: Construct, id: string, props: CloudReleasePipelineProps) {
@@ -105,21 +142,25 @@ export class CloudReleasePipelineStack extends Stack {
         env: {
           shell: "bash",
           "git-credential-helper": "yes",
-          variables: { ROVARA_ENV: env, CODE_URL: codeUrl.valueAsString, NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS },
+          variables: { ROVARA_ENV: env, STACK_PREFIX: `${RESOURCE_PREFIX}-${env}`, CODE_URL: codeUrl.valueAsString, NODE_OPTIONS: CLOUD_PIPELINE_NODE_OPTIONS },
         },
         phases: {
           install: { commands: INSTALL_NODE },
-          pre_build: { commands: [...FIND_RELEASE_TAG, "npm ci", "npx tsc -b infra"] },
+          // The web build: cloud-web.ts uploads the app's files to S3 and puts the page shell in the function.
+          pre_build: { commands: [...FIND_RELEASE_TAG, ...RELEASE_TAG_ON_BRANCH, "npm ci", "npx tsc -b infra", "npm run build:web"] },
           build: {
-            commands: [
-              `npx cdk deploy RovaraCloudApp --app "node infra/dist/bin/agentx.js" -c ${CLOUD_APP_CONTEXT_KEY}="$ROVARA_ENV" -c agentxRegion="$AWS_REGION" ` +
-                '--parameters CodeUrl="$CODE_URL" --require-approval never --progress events',
-            ],
+            // One command: the release check's poller and the deploy share one shell.
+            commands: [RELEASE_CHECKED_DEPLOY],
           },
         },
       }),
     });
     deploy.addToRolePolicy(useConnection);
+    // The release check reads the live address from the web stack's outputs, and nothing else.
+    deploy.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["cloudformation:DescribeStacks"],
+      resources: [`arn:${this.partition}:cloudformation:${this.region}:${this.account}:stack/${RESOURCE_PREFIX}-${env}-web/*`],
+    }));
     // cdk deploy works through the account's bootstrap roles (deploy, publishing, lookup) and nothing else.
     deploy.addToRolePolicy(new iam.PolicyStatement({
       actions: ["sts:AssumeRole"],
@@ -131,6 +172,21 @@ export class CloudReleasePipelineStack extends Stack {
       description: `Reads ${CLOUD_PIPELINE_REPOSITORY_OWNER}/${CLOUD_PIPELINE_REPOSITORY_NAME} through the GitHub connection`,
     });
     sourceRole.addToPolicy(useConnection);
+
+    // The Check stage: the tag is a vX.Y.Z release tag on cloud/next, before anyone is asked to approve.
+    const check = new codebuild.PipelineProject(this, "Check", {
+      projectName: `${RESOURCE_PREFIX}-${env}-check`,
+      description: `Checks a release tag for Rovara Cloud ${env} is a vX.Y.Z tag on ${CLOUD_PIPELINE_BRANCH}, before approval`,
+      environment: { buildImage: codebuild.LinuxArmBuildImage.AMAZON_LINUX_2023_STANDARD_3_0, computeType: codebuild.ComputeType.SMALL },
+      timeout: Duration.minutes(10),
+      logging: { cloudWatch: { logGroup, prefix: "check" } },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: "0.2",
+        env: { shell: "bash", "git-credential-helper": "yes" },
+        phases: { build: { commands: [...FIND_RELEASE_TAG, ...RELEASE_TAG_ON_BRANCH] } },
+      }),
+    });
+    check.addToRolePolicy(useConnection);
 
     const sourceOutput = new codepipeline.Artifact("Source");
     const source = new actions.CodeStarConnectionsSourceAction({
@@ -157,6 +213,7 @@ export class CloudReleasePipelineStack extends Stack {
       restartExecutionOnUpdate: false,
       stages: [
         { stageName: "Source", actions: [source] },
+        { stageName: "Check", actions: [new actions.CodeBuildAction({ actionName: "CheckReleaseTag", project: check, input: sourceOutput })] },
         {
           stageName: "Approve",
           actions: [new actions.ManualApprovalAction({

@@ -10,7 +10,7 @@ function Page({ title }: { title: string }) { return <section><h1 tabIndex={-1}>
 function SignedOut() {
  const host = useAppHost(), [params] = useSearchParams();
  const reason = params.get("reason"), message = reason === "removed" ? "Your access to this organization ended." : reason === "failed" ? "We couldn't finish signing you in. Try again." : reason === "cancelled" ? "Sign-in was cancelled." : "You've signed out.";
- return <main className="rv-entry"><h1 tabIndex={-1}>Sign in to Rovara</h1><p>{message}</p><Button variant="primary" onClick={() => host.signIn("/app")}>Sign in</Button></main>;
+ return <main className="rv-entry" data-testid="signed-out"><h1 tabIndex={-1}>Sign in to Rovara</h1><p data-testid="signed-out-message">{message}</p><Button variant="primary" data-testid="signed-out-sign-in" onClick={() => host.signIn("/app")}>Sign in</Button></main>;
 }
 export function appRoutes(features: AppNav["features"]): RouteObject[] {
  const children: RouteObject[] = [

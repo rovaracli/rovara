@@ -1,0 +1,532 @@
+// A fake Rovara Code: a small local HTTP server that answers contract v0 (packages/contracts/src/code-contract-v0.ts) with canned,
+// in-memory data, so Cloud's screens can be built before the real Code serves the routes. Run it with `npm run fake-code`.
+//
+// It is a fake, not a copy of Code: it keeps just enough state for a screen to work (a task you start appears in the list, a plan you
+// approve moves on, a share shows up), it checks the sign-in the way Code does (client secret, PKCE, a refresh token that works once,
+// a bearer token on every /v1/dev call), and it answers a task the person may not read with 404. Everything resets when it stops.
+// Its handler table is typed against the contract, so a route added to CODE_ROUTES that the fake does not answer fails to compile.
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createServer, type IncomingMessage, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import {
+  matchCodeRoute,
+  type AccessResponse, type CodeRequest, type CodeResponse, type CodeRouteId, type CompanyMember, type DecisionCard, type ErrorBody, type HowWeWorkView,
+  type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
+  type DecisionsResponse, type DecisionOutcome,
+} from "../../packages/contracts/src/code-contract-v0.js";
+
+export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean }
+
+const id64 = (name: string) => createHash("sha256").update(`fake-code:${name}`).digest("hex");
+export const PRIYA: Person = { key: "priya", developerId: id64("priya"), name: "Priya", email: "priya@example.test", administrator: true };
+export const SAM: Person = { key: "sam", developerId: id64("sam"), name: "Sam", email: "sam@example.test", administrator: false };
+const PEOPLE: readonly Person[] = [PRIYA, SAM];
+
+/** Fixed task ids, so a screen under construction can open them by address. */
+export const TASK_IDS = {
+  planReview: "11111111-1111-4111-8111-111111111111",
+  running: "22222222-2222-4222-8222-222222222222",
+  failed: "33333333-3333-4333-8333-333333333333",
+  pullRequest: "44444444-4444-4444-8444-444444444444",
+  blockedReview: "55555555-5555-4555-8555-555555555555",
+} as const;
+const PLAN_DIGEST = "a".repeat(64);
+const CREATED = "2026-11-14T10:00:00.000Z";
+const UPDATED = "2026-11-14T10:05:00.000Z";
+
+/**
+ * A workflow snapshot as Code's task view sends it: every field the app's reader requires (schemaVersion, definitionId, definitionVersion, taskId, ownerId,
+ * dates, artifacts, decisions) is there, with Code's own stage and state words. The first version of this fake sent only stage, state, revision and
+ * artifacts, with stages Code does not have (CODE, DONE), so the app could not read any task ("Rovara returned an unreadable response").
+ */
+const workflowOf = (taskId: string, owner: Person, patch: Pick<TaskWorkflow, "stage" | "state" | "revision"> & Partial<TaskWorkflow>, at: { createdAt?: string; updatedAt?: string } = {}): TaskWorkflow => ({
+  schemaVersion: 1, definitionId: "agentx-task-to-pr", definitionVersion: "1.1.0", taskId, ownerId: owner.developerId, createdAt: at.createdAt ?? CREATED, updatedAt: at.updatedAt ?? UPDATED,
+  artifacts: [], decisions: [], ...patch,
+});
+const planArtifact = (taskId: string): WorkflowArtifact => ({ id: "plan-1", type: "plan", version: 1, sha256: PLAN_DIGEST, producer: "fake-planner", objectKey: `tasks/${taskId}/plan/1.json`, createdAt: CREATED, format: "structured" });
+
+/** The workflow fields a task waiting to merge carries (Code refuses to show that stage without them): the checked candidate, passing checks, both reviews, and the open pull request. */
+const readyToMerge = (candidate: ReturnType<typeof candidateOf>): Partial<TaskWorkflow> => ({
+  candidate,
+  verification: { candidateDigest: candidate.digest, producer: "fake-worker", environmentId: "fake-env", recordedAt: UPDATED, results: [{ checkId: "unit", status: "PASS" }] },
+  reviews: (["CRITIC", "SECURITY"] as const).map((role, index) => ({ operationId: `7777777${String(index)}-7777-4777-8777-777777777777`, candidateDigest: candidate.digest, role, provider: "fake-model", version: "1", status: "PASS", findings: [], readOnly: true, recordedAt: UPDATED })),
+  pullRequests: [{ repositoryId: "example/web", number: 42, url: "https://github.com/example/web/pull/42", headSha: "c".repeat(40), candidateDigest: candidate.digest, required: true, state: "OPEN" }],
+});
+
+/** One repository's candidate, with the digest Code computes (sha256 of the canonical manifest). */
+const candidateOf = (): { schemaVersion: 1; repositories: Array<{ repositoryId: string; commitSha: string; treeSha: string }>; digest: string } => {
+  const repositories = [{ repositoryId: "example/web", commitSha: "c".repeat(40), treeSha: "d".repeat(40) }];
+  return { schemaVersion: 1, repositories, digest: createHash("sha256").update(JSON.stringify({ schemaVersion: 1, repositories })).digest("hex") };
+};
+
+export interface FakeCodeOptions {
+  clientId?: string;
+  clientSecret?: string;
+  /** Who signs in when nobody has said otherwise. */
+  person?: Person;
+  port?: number;
+  host?: string;
+  now?: () => Date;
+}
+
+export interface FakeCode {
+  url: string;
+  server: Server;
+  /** Who the next sign-in is (the fake has no login page). */
+  setPerson(person: Person): void;
+  close(): Promise<void>;
+  /** Every request received, newest last (method, path, status). */
+  log: Array<{ method: string; path: string; status: number }>;
+}
+
+interface Answer<K extends CodeRouteId> { status?: number; body?: CodeResponse<K> | ErrorBody; headers?: Record<string, string> }
+interface Context<K extends CodeRouteId> { body: CodeRequest<K>; params: Record<string, string>; query: URLSearchParams; person: Person }
+type Handler<K extends CodeRouteId> = (context: Context<K>) => Answer<K> | Promise<Answer<K>>;
+type Handlers = { [K in CodeRouteId]: Handler<K> };
+
+const failure = (status: number, code: string, message: string): { status: number; body: ErrorBody } => ({ status, body: { error: { code, message } } });
+const notFound = (what = "route") => failure(404, "NOT_FOUND", `${what} not found`);
+
+export async function startFakeCode(options: FakeCodeOptions = {}): Promise<FakeCode> {
+  const clientId = options.clientId ?? "rovara-cloud";
+  const clientSecret = options.clientSecret ?? "fake-secret";
+  const now = options.now ?? (() => new Date());
+  let current = options.person ?? PRIYA;
+  const log: FakeCode["log"] = [];
+  const iso = () => now().toISOString();
+
+  // --- sign-in state
+  const codes = new Map<string, { person: Person; challenge: string; redirectUri: string }>();
+  const access = new Map<string, Person>();
+  const refresh = new Map<string, Person>();
+
+  // --- data
+  const projects: Array<{ name: string; repositories: Array<{ name: string; url: string; defaultBranch: string; fullName: string }>; members: Map<string, "administrator" | "developer"> }> = [
+    { name: "web", repositories: [{ name: "web", url: "https://github.com/example/web", defaultBranch: "main", fullName: "example/web" }], members: new Map([[PRIYA.developerId, "administrator"], [SAM.developerId, "developer"]]) },
+    { name: "api", repositories: [{ name: "api", url: "https://github.com/example/api", defaultBranch: "main", fullName: "example/api" }], members: new Map([[PRIYA.developerId, "administrator"]]) },
+  ];
+  const project = (name: string) => projects.find((entry) => entry.name === name);
+  const roleIn = (person: Person, name: string) => project(name)?.members.get(person.developerId);
+
+  const base = (taskId: string, owner: Person, patch: Partial<TaskView> & { title: string; project: string }): { owner: Person; task: TaskView } => ({
+    owner,
+    task: { taskId, status: "RUNNING", startingRevision: 1, client: "Rovara Cloud", shared: false, events: [], changedFiles: [], artifacts: [], pullRequests: [], createdAt: "2026-11-14T10:00:00.000Z", updatedAt: "2026-11-14T10:05:00.000Z", ...patch },
+  });
+  const blockedCandidate = candidateOf();
+  const tasks = new Map<string, { owner: Person; task: TaskView }>([
+    [TASK_IDS.planReview, base(TASK_IDS.planReview, PRIYA, { title: "Add a retry to the billing webhook", project: "web", workflow: workflowOf(TASK_IDS.planReview, PRIYA, { stage: "PLAN_REVIEW", state: "WAITING", revision: 4, artifacts: [planArtifact(TASK_IDS.planReview)] }) })],
+    [TASK_IDS.running, base(TASK_IDS.running, PRIYA, { title: "Speed up the search index", project: "api", workflow: workflowOf(TASK_IDS.running, PRIYA, { stage: "IMPLEMENT", state: "RUNNING", revision: 7, artifacts: [planArtifact(TASK_IDS.running)] }) })],
+    [TASK_IDS.failed, base(TASK_IDS.failed, PRIYA, { title: "Upgrade the date library", project: "web", status: "FAILED", workflow: workflowOf(TASK_IDS.failed, PRIYA, { stage: "IMPLEMENT", state: "BLOCKED", revision: 9, blockReason: "The coding step could not finish." }) })],
+    [TASK_IDS.pullRequest, base(TASK_IDS.pullRequest, PRIYA, { title: "Fix the README typo", project: "web", status: "SUCCEEDED", pullRequests: [{ repository: "example/web", number: 42, url: "https://github.com/example/web/pull/42", state: "open" }], workflow: workflowOf(TASK_IDS.pullRequest, PRIYA, { stage: "WAIT_FOR_MERGE", state: "WAITING", revision: 12, ...readyToMerge(candidateOf()) }) })],
+    [TASK_IDS.blockedReview, base(TASK_IDS.blockedReview, PRIYA, { title: "Rename the settings page", project: "web", workflow: workflowOf(TASK_IDS.blockedReview, PRIYA, {
+      stage: "REVIEW", state: "BLOCKED", revision: 10, candidate: blockedCandidate,
+      reviews: [{ operationId: "66666666-6666-4666-8666-666666666666", candidateDigest: blockedCandidate.digest, role: "CRITIC", provider: "fake-model", version: "1", status: "FAILED", failureReason: "TIMEOUT", findings: [], readOnly: true, recordedAt: UPDATED }],
+    }) })],
+  ]);
+  const readers = new Map<string, Map<string, TaskReader>>();
+  const startedByRequest = new Map<string, string>();
+  const messages = new Map<string, TaskMessage[]>();
+  const comments = new Map<string, PlanComment[]>();
+  const playbooks = new Map<string, PlaybookView>();
+  const scriptTokens = new Map<string, ScriptToken[]>();
+  const decided = new Set<string>();
+  const companyMembers: CompanyMember[] = PEOPLE.map((person, index) => ({ developerId: person.developerId, name: person.name, email: person.email, role: person.administrator ? "owner" : "member", joinedAt: `2026-10-0${String(index + 1)}T09:00:00.000Z` }));
+  let preApproved: string[] = ["new.hire@example.test"];
+  let preApprovedRevision = 1;
+
+  const mayRead = (person: Person, taskId: string): { owner: Person; task: TaskView } | undefined => {
+    const entry = tasks.get(taskId);
+    if (entry === undefined) return undefined;
+    return entry.owner.developerId === person.developerId || readers.get(taskId)?.has(person.developerId) === true ? entry : undefined;
+  };
+  const touch = (task: TaskView, patch: Partial<TaskView>) => { Object.assign(task, patch, { updatedAt: iso() }); };
+  const taskOr404 = <K extends CodeRouteId>(context: Context<K>, then: (entry: { owner: Person; task: TaskView }) => Answer<K>): Answer<K> => {
+    const entry = mayRead(context.person, context.params["taskId"] ?? "");
+    return entry === undefined ? notFound("task") : then(entry);
+  };
+  const ownerTask = <K extends CodeRouteId>(context: Context<K>, then: (entry: { owner: Person; task: TaskView }) => Answer<K>): Answer<K> => {
+    const entry = mayRead(context.person, context.params["taskId"] ?? "");
+    if (entry === undefined) return notFound("task");
+    return entry.owner.developerId === context.person.developerId ? then(entry) : failure(403, "FORBIDDEN", `Only ${entry.owner.name} can do that.`);
+  };
+  const planOf = (task: TaskView): PlanView => ({
+    taskId: task.taskId, document: "plan", version: 1, sha256: PLAN_DIGEST, approved: task.workflow?.stage !== "PLAN_REVIEW", current: true, versions: [1],
+    content: { problem: `The task: ${task.title}`, approach: ["Read the code around the change", "Make the change", "Add a test that fails without it"], files: ["src/index.ts"], risks: ["Touches one shared module"] },
+    summary: { headline: "One small change, one new test", checks: ["Unit tests", "Type check"] },
+    estimate: "about $1.20 to $3.10, 12 to 25 minutes", runLimitUsd: 5,
+    // The structured spec (UX audit 2026-11-15): stable ids that a task, a comment, a question and a proof item can point at.
+    requirements: [{ id: "R1", title: "The change works and is tested", criteria: [{ id: "R1.1", when: "the change is made", then: "the new test passes", taskIds: ["T2", "T3"] }, { id: "R1.2", when: "the type check runs", then: "it reports no errors", taskIds: ["T2"] }] }],
+    tasks: [{ id: "T1", title: "Read the code around the change", status: "done" }, { id: "T2", title: "Make the change", status: "running", criterionIds: ["R1.1", "R1.2"] }, { id: "T3", title: "Add a test that fails without it", status: "todo", criterionIds: ["R1.1"] }],
+    questions: [{ questionId: "Q1", text: "Keep the old behaviour behind a flag?", options: [{ optionId: "yes", label: "Yes, behind a flag" }, { optionId: "no", label: "No, replace it" }], criterionId: "R1.1", defaultOptionId: "no" }],
+  });
+
+  const proofOf = (task: TaskView): ProofIndexResponse => ({
+    taskId: task.taskId,
+    items: [
+      { sha256: "d".repeat(64), title: "Unit tests", kind: "test_report", verdict: "pass", criterionIds: ["R1.1"], commit: "c".repeat(40), stale: false },
+      { sha256: "e".repeat(64), title: "Type check", kind: "check_result", verdict: "pass", criterionIds: ["R1.2"], commit: "c".repeat(40), stale: false },
+      { sha256: "f".repeat(64), title: "Webhook retry eval", kind: "eval", verdict: "unknown", criterionIds: [], passed: 18, total: 20, bar: 0.95 },
+    ],
+  });
+
+  const NO = { expandEvidenceFirst: false, freshSignIn: false, secondPerson: false };
+  const REJECT_REASONS = ["wrong_problem", "wrong_approach", "too_big", "missing_test", "not_now", "other"];
+  const opened = new Set<string>();
+  const decisionHref = (id: string, action: "approve" | "reject") => `/v1/app/decisions/${id.replace(":", "/")}/${action}`;
+  /** The decision cards in the app's own shape (`DecisionCardSchema`): the plan waiting for review (low risk) and an open pull request to merge (medium: open the evidence first). */
+  const cards = (person: Person): DecisionCard[] => {
+    const out: DecisionCard[] = [];
+    for (const { owner, task } of tasks.values()) {
+      if (owner.developerId !== person.developerId) continue;
+      if (task.workflow?.stage === "PLAN_REVIEW" && task.workflow.state === "WAITING") {
+        const id = `approve_plan:${task.taskId}`;
+        out.push({
+          id, kind: "approve_plan", taskId: task.taskId, project: task.project, title: task.title.slice(0, 80), question: "Approve this plan?",
+          recommended: { action: "approve", why: "A small change with one new test" }, next: { text: "Builds in about 25 minutes, about $3.10, opens a pull request", costUsd: 3.1, minutes: 25 },
+          evidence: [{ kind: "cost", label: "Cost", value: "about $1.20 to $3.10", state: "good" }], risk: "low", riskReasons: [], friction: NO,
+          actions: [{ kind: "approve", label: "Approve plan", href: decisionHref(id, "approve"), method: "POST" }, { kind: "reject", label: "Reject", href: decisionHref(id, "reject"), method: "POST" }, { kind: "open", label: "Open the plan", href: `/app/sessions/${task.taskId}`, method: "GET" }],
+          rejectReasons: REJECT_REASONS, status: "pending", createdAt: task.updatedAt,
+        });
+      }
+      const open = (task.pullRequests ?? []).find((entry) => entry.state === "open");
+      if (open !== undefined && !decided.has(`merge:${task.taskId}`)) {
+        const id = `merge:${task.taskId}`;
+        out.push({
+          id, kind: "merge", taskId: task.taskId, project: task.project, title: task.title.slice(0, 80), question: `Merge pull request ${String(open.number)}?`,
+          recommended: { action: "approve", why: "Checks passed and the reviews are done" }, next: { text: "Merges the pull request into main" },
+          evidence: [{ kind: "checks", label: "Checks", value: "all passed", state: "good" }], risk: "medium", riskReasons: ["Changes the main branch"], friction: { expandEvidenceFirst: true, freshSignIn: false, secondPerson: false },
+          actions: [{ kind: "approve", label: "Merge", href: decisionHref(id, "approve"), method: "POST" }, { kind: "reject", label: "Reject", href: decisionHref(id, "reject"), method: "POST" }, { kind: "open", label: "Open the task", href: `/app/sessions/${task.taskId}`, method: "GET" }],
+          rejectReasons: REJECT_REASONS, status: "pending", createdAt: task.updatedAt,
+        });
+      }
+    }
+    return out;
+  };
+  /** What Code shows now for a card: the digest the person sends back when they act. */
+  const digestOf = (card: DecisionCard) => (card.kind === "approve_plan" ? PLAN_DIGEST : "b".repeat(64));
+
+  const handlers: Handlers = {
+    "auth.authorize": ({ query }) => {
+      const redirectUri = query.get("redirect_uri") ?? "";
+      if (query.get("client_id") !== clientId || redirectUri === "" || query.get("code_challenge_method") !== "S256") return failure(400, "invalid_request", "bad authorize request");
+      const code = randomBytes(12).toString("hex");
+      codes.set(code, { person: current, challenge: query.get("code_challenge") ?? "", redirectUri });
+      const back = new URL(redirectUri);
+      back.searchParams.set("code", code);
+      back.searchParams.set("state", query.get("state") ?? "");
+      return { status: 302, headers: { location: back.toString() } };
+    },
+    "auth.token": () => failure(500, "UNREACHABLE", "handled before the route table"),
+    "auth.revoke": ({ body }) => {
+      const token = (body as { token?: string }).token ?? "";
+      access.delete(token);
+      refresh.delete(token);
+      return { body: {} };
+    },
+    "auth.jwks": () => ({ body: { keys: [] } }),
+    "access.check": ({ person }) => {
+      const body: AccessResponse = {
+        developerId: person.developerId, displayName: person.name, nameChosen: true, administrator: person.administrator,
+        projects: projects.filter((entry) => entry.members.has(person.developerId)).map((entry) => ({ name: entry.name, access: entry.members.get(person.developerId) ?? "developer" })), notices: [],
+      };
+      return { body };
+    },
+    "me.setName": ({ body, person }) => {
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      if (name === "" || name.length > 80) return failure(400, "CONFIG_INVALID", "name: give a name of 1 to 80 characters.");
+      const known = PEOPLE.find((entry) => entry.developerId === person.developerId);
+      if (known !== undefined) known.name = name;
+      return { body: { name, nameChosen: true } };
+    },
+    "channelLinks.list": () => ({ body: { links: [{ channel: "slack", workspace: "T0FAKE", account: "U0FAKE", displayName: "priya", linkedAt: "2026-10-05T09:00:00.000Z" }] } }),
+    "channelLinks.remove": () => ({ body: { removed: true } }),
+    "projects.list": ({ person }) => ({ body: { projects: projects.filter((entry) => entry.members.has(person.developerId)).map((entry) => ({ name: entry.name, access: entry.members.get(person.developerId) ?? "developer" })) } }),
+    "client.projects.create": ({ body, person }) => {
+      if (typeof body.repository !== "string" || body.repository === "") return failure(400, "CONFIG_INVALID", "repository: name a repository.");
+      const name = body.name ?? body.repository.split("/").pop() ?? "project";
+      if (project(name) !== undefined) return failure(409, "CONFLICT", "A project with that name exists.");
+      projects.push({ name, repositories: [{ name, url: `https://github.com/${body.repository}`, defaultBranch: "main", fullName: body.repository }], members: new Map([[person.developerId, "administrator"]]) });
+      return { status: 201, body: { name } };
+    },
+    "client.projects.get": ({ params, person }) => {
+      const entry = project(params["project"] ?? "");
+      if (entry === undefined || !entry.members.has(person.developerId)) return notFound("project");
+      return { body: { name: entry.name, latestRevision: 3, access: entry.members.get(person.developerId) ?? "developer", repositories: entry.repositories } };
+    },
+    "client.projects.archive": ({ params }) => ({ body: { name: params["project"] ?? "", status: "archived" } }),
+    "client.projects.restore": ({ params }) => ({ body: { name: params["project"] ?? "", status: "active" } }),
+    "client.projects.codeSettings.get": () => ({ body: { settings: { requireSecondReviewer: true, mergeRule: "maintainer", protectedPaths: ["infra/"], revision: 2 } } }),
+    "client.projects.codeSettings.put": ({ body }) => ({ body: { settings: { ...body.settings, revision: body.expectedRevision + 1 } } }),
+    "client.repositories.list": () => ({
+      body: { installations: [{ installationId: 1001, accountLogin: "example", accountType: "Organization", repositorySelection: "selected", status: "active", repositories: [{ fullName: "example/web", githubRepositoryId: 1, private: true, defaultBranch: "main" }, { fullName: "example/api", githubRepositoryId: 2, private: true, defaultBranch: "main" }, { fullName: "example/docs", githubRepositoryId: 3, private: false, defaultBranch: "main" }] }] },
+    }),
+    "client.members.list": ({ params, person }) => {
+      const entry = project(params["project"] ?? "");
+      if (entry === undefined || !entry.members.has(person.developerId)) return notFound("project");
+      return { body: { members: [...entry.members].map(([developerId, role]) => ({ developerId, name: PEOPLE.find((one) => one.developerId === developerId)?.name ?? "Someone", role })) } };
+    },
+    "client.members.put": ({ params, person }) => {
+      const entry = project(params["project"] ?? "");
+      if (entry === undefined || entry.members.get(person.developerId) !== "administrator") return failure(403, "FORBIDDEN", "Only a project administrator can do that.");
+      const who = params["developerId"] ?? "";
+      if (!entry.members.has(who)) entry.members.set(who, "developer");
+      return { body: { developerId: who } };
+    },
+    "client.members.remove": ({ params, person }) => {
+      const entry = project(params["project"] ?? "");
+      if (entry === undefined || entry.members.get(person.developerId) !== "administrator") return failure(403, "FORBIDDEN", "Only a project administrator can do that.");
+      const who = params["developerId"] ?? "";
+      return { body: { developerId: who, outcome: entry.members.delete(who) ? "revoked" : "not_a_member" } };
+    },
+    "tasks.start": ({ body, person }) => {
+      if (typeof body.requestId !== "string" || typeof body.project !== "string" || typeof body.instructions !== "string" || body.instructions.trim() === "") return failure(400, "CONFIG_INVALID", "requestId, project and instructions are required.");
+      if (roleIn(person, body.project) === undefined) return notFound("project");
+      const earlier = startedByRequest.get(body.requestId);
+      if (earlier !== undefined) return { status: 200, body: { task: tasks.get(earlier)?.task as TaskView } };
+      const taskId = randomUUID();
+      const entry = base(taskId, person, { title: body.instructions.trim().slice(0, 80), project: body.project, status: "RUNNING", createdAt: iso(), updatedAt: iso(), workflow: workflowOf(taskId, person, { stage: "UNDERSTAND", state: "RUNNING", revision: 1 }, { createdAt: iso(), updatedAt: iso() }) });
+      tasks.set(taskId, entry);
+      startedByRequest.set(body.requestId, taskId);
+      return { status: 201, body: { task: entry.task } };
+    },
+    "tasks.list": ({ person }) => ({ body: { tasks: [...tasks.values()].filter((entry) => mayRead(person, entry.task.taskId) !== undefined).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } }),
+    "tasks.get": (context) => taskOr404(context, ({ task }) => ({ body: { task } })),
+    "tasks.events": (context) => taskOr404(context, ({ task }) => ({ body: { events: [{ seq: 1, at: task.createdAt, kind: "status", text: "Task started" }, { seq: 2, at: task.updatedAt, kind: "progress", text: `Now at ${task.workflow?.stage ?? "start"}`, taskItemId: "T2", attempt: 1 }] } })),
+    "tasks.plan": (context) => taskOr404(context, ({ task }) => ({ body: planOf(task) })),
+    "tasks.cancel": (context) => ownerTask(context, ({ task }) => { touch(task, { status: "CANCELLED" }); return { body: { task } }; }),
+    "tasks.close": (context) => ownerTask(context, ({ task }) => { touch(task, { status: "CLOSED" }); return { body: { task, closed: true } }; }),
+    "tasks.continue": (context) => ownerTask(context, ({ task }) => ({ body: { task } })),
+    "tasks.pullRequests.open": (context) => ownerTask(context, ({ task }) => { touch(task, { pullRequests: [{ repository: "example/web", number: 43, url: "https://github.com/example/web/pull/43", state: "open" }] }); return { body: { task } }; }),
+    "tasks.share": (context) => ownerTask(context, ({ task }) => ({ body: { task } })),
+    "tasks.people.get": (context) => taskOr404(context, ({ owner }) => ({ body: { view: { revision: 3, owner: { developerId: owner.developerId, name: owner.name }, people: PEOPLE.map((one) => ({ developerId: one.developerId, name: one.name, role: one.developerId === owner.developerId ? "owner" : "viewer" })) } } })),
+    "tasks.people.role": (context) => ownerTask(context, () => ({ body: { change: { requestId: context.body.requestId, status: "COMMITTED" } } })),
+    "tasks.people.takeOwnership": (context) => taskOr404(context, (entry) => {
+      if (entry.owner.developerId === context.person.developerId) return failure(409, "CONFLICT", "You already own this task.");
+      entry.owner = context.person;
+      return { body: { change: { requestId: context.body.requestId, status: "COMMITTED" } } };
+    }),
+    "tasks.people.request": (context) => taskOr404(context, () => ({ body: { change: { requestId: context.params["requestId"] ?? "", status: "COMMITTED" } } })),
+    "tasks.readers.list": (context) => ownerTask(context, ({ task }) => ({ body: { readers: [...(readers.get(task.taskId)?.values() ?? [])] } })),
+    "tasks.readers.put": (context) => ownerTask(context, ({ task }) => {
+      const who = PEOPLE.find((one) => one.developerId === context.params["developerId"]);
+      if (who === undefined || roleIn(who, task.project) === undefined) return failure(400, "CONFIG_INVALID", "Only a member of the project can be added.");
+      const reader: TaskReader = { developerId: who.developerId, name: who.name, role: "viewer", projectMember: true, grantedAt: iso() };
+      const map = readers.get(task.taskId) ?? new Map<string, TaskReader>();
+      map.set(who.developerId, reader);
+      readers.set(task.taskId, map);
+      return { body: { reader } };
+    }),
+    "tasks.readers.remove": (context) => ownerTask(context, ({ task }) => ({ body: { removed: readers.get(task.taskId)?.delete(context.params["developerId"] ?? "") === true } })),
+    "tasks.workflow.decision": (context) => ownerTask(context, ({ task }) => {
+      const workflow = task.workflow;
+      if (workflow?.stage !== "PLAN_REVIEW" || workflow.state !== "WAITING") return failure(409, "CONFLICT", "No plan is waiting.");
+      if (context.body.expectedRevision !== workflow.revision || context.body.artifactDigest !== PLAN_DIGEST) return failure(409, "CHANGE_STALE", "The plan changed.");
+      touch(task, { workflow: { ...workflow, stage: context.body.decision === "APPROVE" ? "IMPLEMENT" : "PLAN", state: "RUNNING", revision: workflow.revision + 1, updatedAt: iso() } });
+      return { body: { task } };
+    }),
+    "tasks.workflow.review": (context) => ownerTask(context, ({ task }) => { touch(task, { workflow: { ...task.workflow!, stage: "REVIEW", state: "RUNNING", reviews: [], updatedAt: iso() } }); return { body: { task } }; }),
+    "tasks.workflow.retry": (context) => ownerTask(context, ({ task }) => ({ body: { task } })),
+    "tasks.workflow.sendBack": (context) => ownerTask(context, ({ task }) => { touch(task, { workflow: { ...task.workflow!, stage: "IMPLEMENT", state: "RUNNING", updatedAt: iso() } }); return { body: { task } }; }),
+    "tasks.workflow.reviewFindings": (context) => ownerTask(context, ({ task }) => ({ body: { task } })),
+    "tasks.workflow.publishRetry": (context) => ownerTask(context, ({ task }) => ({ body: { task, started: true } })),
+    "tasks.workflow.keepPullRequests": (context) => ownerTask(context, ({ task }) => ({ body: { task } })),
+    "tasks.workflow.feedback": (context) => taskOr404(context, () => ({ body: { review: null } })),
+    "tasks.workflow.feedbackDecision": (context) => ownerTask(context, ({ task }) => ({ body: { task } })),
+    "tasks.workflow.feedbackRetry": (context) => ownerTask(context, ({ task }) => ({ body: { task, started: true } })),
+    "tasks.messages.list": (context) => taskOr404(context, ({ task }) => ({ body: { messages: messages.get(task.taskId) ?? [] } })),
+    "tasks.messages.send": (context) => taskOr404(context, ({ task }) => {
+      if (context.body.text.trim() === "") return failure(400, "CONFIG_INVALID", "Say something.");
+      const message: TaskMessage = { messageId: randomUUID(), kind: context.body.kind, author: { developerId: context.person.developerId, name: context.person.name }, text: context.body.text, at: iso(), rev: 1 };
+      messages.set(task.taskId, [...(messages.get(task.taskId) ?? []), message]);
+      return { status: 201, body: { message } };
+    }),
+    "tasks.diff": (context) => taskOr404(context, () => ({ body: { repository: context.query.get("repository") ?? "example/web", number: Number(context.query.get("number") ?? "42"), page: Number(context.query.get("page") ?? "1"), files: [{ path: "README.md", additions: 1, deletions: 1, patch: "@@ -1 +1 @@\n-Welcom\n+Welcome" }], more: false } })),
+    "tasks.answers": (context) => ownerTask(context, ({ task }) => ({ body: { task } })),
+    "tasks.merge": (context) => ownerTask(context, ({ task }) => {
+      decided.add(`merge:${task.taskId}`);
+      touch(task, { pullRequests: (task.pullRequests ?? []).map((entry) => ({ ...entry, state: "merged" })) });
+      return { body: { task, merged: true } };
+    }),
+    "tasks.evidence.list": (context) => taskOr404(context, ({ task }) => ({ body: proofOf(task) })),
+    "tasks.evidence.get": (context) => taskOr404(context, () => ({ body: { sha256: context.params["sha256"] ?? "", kind: "test_report", title: "Unit tests", contentType: "text/plain", sizeBytes: 42, body: "12 passed, 0 failed", checkedAt: iso(), verdict: "pass" } })),
+    "tasks.comments.list": (context) => taskOr404(context, ({ task }) => ({ body: { comments: comments.get(task.taskId) ?? [] } })),
+    "tasks.comments.create": (context) => taskOr404(context, ({ task }) => {
+      const comment: PlanComment = { commentId: randomUUID(), document: context.body.document, author: { developerId: context.person.developerId, name: context.person.name }, text: context.body.text, at: iso(), rev: 1, resolved: false, ...(context.body.anchor === undefined ? {} : { anchor: context.body.anchor }), ...(context.body.replyTo === undefined ? {} : { replyTo: context.body.replyTo }) };
+      comments.set(task.taskId, [...(comments.get(task.taskId) ?? []), comment]);
+      return { status: 201, body: { comment } };
+    }),
+    "decisions.list": ({ person }) => {
+      const list = cards(person);
+      const body: DecisionsResponse = { cards: list, total: list.length, tabs: {}, details: {}, digests: Object.fromEntries(list.map((card) => [card.id, digestOf(card)])), dropped: 0 };
+      return { body };
+    },
+    "decisions.act": ({ body, params, person }) => {
+      const card = cards(person).find((entry) => entry.id === `${params["kind"] ?? ""}:${params["subject"] ?? ""}`);
+      if (card === undefined) return notFound("card");
+      const action = params["action"];
+      if (action === "evidence-opened") {
+        if (body.shownDigest !== digestOf(card)) return failure(409, "CHANGE_STALE", "The card changed since you saw it.");
+        opened.add(card.id);
+        const answer: DecisionOutcome = { cardId: card.id, opened: true, recorded: card.risk !== "low" };
+        return { body: answer };
+      }
+      if (action === "approve") {
+        if (body.shownDigest !== digestOf(card)) return failure(409, "CHANGE_STALE", "The card changed since you saw it.");
+        if (card.friction.expandEvidenceFirst && !opened.has(card.id)) return failure(409, "EVIDENCE_NOT_OPENED", "Open the evidence before you approve.");
+      } else if (action !== "reject" && action !== "request-changes") return notFound("action");
+      const approved = action === "approve";
+      const task = card.taskId === undefined ? undefined : tasks.get(card.taskId)?.task;
+      if (card.kind === "approve_plan" && task?.workflow !== undefined) touch(task, { workflow: { ...task.workflow, stage: approved ? "IMPLEMENT" : "PLAN", state: "RUNNING", revision: task.workflow.revision + 1, updatedAt: iso() } });
+      else if (card.kind === "merge" && task !== undefined) {
+        decided.add(card.id);
+        if (approved) touch(task, { pullRequests: (task.pullRequests ?? []).map((entry) => ({ ...entry, state: "merged" })) });
+      }
+      const answer: DecisionOutcome = { cardId: card.id, outcome: approved ? "approved" : "rejected", remainingTabs: [] };
+      return { body: answer };
+    },
+    "playbook.get": ({ params }) => ({ body: playbooks.get(params["project"] ?? "") ?? { revision: 1, defaultProcess: { kind: "default", name: "Rovara's standard process" }, designReview: "ask" } }),
+    "playbook.put": ({ body, params }) => {
+      const earlier = playbooks.get(params["project"] ?? "") ?? { revision: 1, defaultProcess: { kind: "default" }, designReview: "ask" };
+      if (body.expectedRevision !== earlier.revision) return failure(409, "CONFLICT", "The playbook changed.");
+      const next: PlaybookView = { revision: earlier.revision + 1, defaultProcess: body.defaultProcess ?? earlier.defaultProcess, designReview: body.designReview ?? earlier.designReview };
+      playbooks.set(params["project"] ?? "", next);
+      return { body: next };
+    },
+    "playbook.process": () => ({ status: 201, body: { layer: { kind: "project_process", agentId: "agt_fake0000000000000001", name: "Our process" } } }),
+    "howWeWork.get": ({ params }) => {
+      const view: HowWeWorkView = { project: params["project"] ?? "", revision: 1, layers: [{ title: "Rovara's standard process", summary: "Plan, code, check, review, draft pull request.", editable: false }, { title: "Our rules", summary: "Always add a test.", editable: true }] };
+      return { body: view };
+    },
+    "company.members.list": () => ({ body: { members: companyMembers } }),
+    "company.members.setRole": ({ body, params, person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only an administrator can do that.");
+      const member = companyMembers.find((entry) => entry.developerId === params["developerId"]);
+      if (member === undefined) return notFound("member");
+      member.role = body.role;
+      return { body: { member } };
+    },
+    "company.members.removalPreview": ({ params }) => ({ body: { developerId: params["developerId"] ?? "", ownedTasks: 2, ownedProjects: [], successorRequired: true } }),
+    "company.members.remove": ({ params, person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only an administrator can do that.");
+      const index = companyMembers.findIndex((entry) => entry.developerId === params["developerId"]);
+      if (index < 0) return notFound("member");
+      companyMembers.splice(index, 1);
+      return { body: { removed: true } };
+    },
+    "company.preApproved.put": ({ body, person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only an administrator can do that.");
+      preApproved = [...new Set(body.emails.map((email) => email.trim().toLowerCase()).filter((email) => email !== ""))];
+      preApprovedRevision += 1;
+      return { body: { emails: preApproved, revision: preApprovedRevision } };
+    },
+    "company.audit.records": ({ person }) => person.administrator
+      ? { body: { records: [{ at: "2026-11-14T10:00:00.000Z", actor: { developerId: PRIYA.developerId, name: "Priya" }, action: "task.start", subject: TASK_IDS.running, outcome: "ok" }] } }
+      : failure(403, "FORBIDDEN", "Only an administrator can read the audit."),
+    "scriptTokens.list": ({ person }) => ({ body: { tokens: scriptTokens.get(person.developerId) ?? [] } }),
+    "scriptTokens.create": ({ body, person }) => {
+      if (body.label.trim() === "") return failure(400, "CONFIG_INVALID", "Name the token.");
+      const token: ScriptToken = { tokenId: randomUUID(), label: body.label.trim(), createdAt: iso() };
+      scriptTokens.set(person.developerId, [...(scriptTokens.get(person.developerId) ?? []), token]);
+      return { status: 201, body: { token, secret: `fake-script-${randomBytes(8).toString("hex")}` } };
+    },
+    "scriptTokens.revoke": ({ params, person }) => {
+      const list = scriptTokens.get(person.developerId) ?? [];
+      const next = list.filter((entry) => entry.tokenId !== params["tokenId"]);
+      scriptTokens.set(person.developerId, next);
+      return { body: { revoked: next.length !== list.length } };
+    },
+  };
+
+  // --- the HTTP layer
+  async function readBody(request: IncomingMessage): Promise<string> {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of request) {
+      size += (chunk as Buffer).length;
+      if (size > 1_000_000) throw new Error("body too large");
+      chunks.push(chunk as Buffer);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  }
+
+  function issue(person: Person): { access_token: string; refresh_token: string; token_type: "Bearer" } {
+    const accessToken = `fake-access-${randomBytes(12).toString("hex")}`;
+    const refreshToken = `fake-refresh-${randomBytes(12).toString("hex")}`;
+    access.set(accessToken, person);
+    refresh.set(refreshToken, person);
+    return { access_token: accessToken, refresh_token: refreshToken, token_type: "Bearer" };
+  }
+
+  function tokenEndpoint(form: URLSearchParams, authorization: string | undefined): { status: number; body: unknown } {
+    if (authorization !== `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`) return { status: 401, body: { error: "invalid_client" } };
+    if (form.get("grant_type") === "authorization_code") {
+      const code = codes.get(form.get("code") ?? "");
+      codes.delete(form.get("code") ?? "");
+      const verifier = form.get("code_verifier") ?? "";
+      if (code === undefined || form.get("redirect_uri") !== code.redirectUri || createHash("sha256").update(verifier).digest("base64url") !== code.challenge) return { status: 400, body: { error: "invalid_grant" } };
+      return { status: 200, body: issue(code.person) };
+    }
+    if (form.get("grant_type") === "refresh_token") {
+      const token = form.get("refresh_token") ?? "";
+      const person = refresh.get(token);
+      refresh.delete(token);
+      return person === undefined ? { status: 400, body: { error: "invalid_grant" } } : { status: 200, body: issue(person) };
+    }
+    return { status: 400, body: { error: "unsupported_grant_type" } };
+  }
+
+  const server = createServer((request, response) => {
+    void (async () => {
+      const url = new URL(request.url ?? "/", "http://fake-code.invalid");
+      const method = request.method ?? "GET";
+      const send = (status: number, body: unknown, headers: Record<string, string> = {}) => {
+        log.push({ method, path: url.pathname, status });
+        response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", ...headers });
+        response.end(body === undefined ? "" : JSON.stringify(body));
+      };
+      try {
+        if (method === "POST" && url.pathname === "/__fake/person") {
+          const wanted = (JSON.parse(await readBody(request)) as { person?: string }).person;
+          const who = PEOPLE.find((one) => one.key === wanted);
+          if (who === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "person is priya or sam" } });
+          current = who;
+          return send(200, { person: who.key });
+        }
+        const raw = await readBody(request);
+        if (method === "POST" && url.pathname === "/v1/auth/token") {
+          const answer = tokenEndpoint(new URLSearchParams(raw), request.headers.authorization);
+          return send(answer.status, answer.body);
+        }
+        const matched = matchCodeRoute(method, url.pathname);
+        if (matched === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
+        const id = matched.route.id;
+        let person: Person | undefined = current;
+        if (matched.route.scope !== "none" || id === "access.check" || id === "auth.revoke") {
+          const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
+          person = bearer === undefined ? undefined : access.get(bearer);
+          if (person === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+        }
+        let body: unknown = {};
+        if (raw !== "") {
+          try { body = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); }
+        }
+        const handler = handlers[id] as Handler<CodeRouteId>;
+        const answer = await handler({ body: body as never, params: matched.params, query: url.searchParams, person });
+        const status = answer.status ?? 200;
+        return send(status, status === 302 ? undefined : answer.body ?? {}, answer.headers);
+      } catch (error) {
+        return send(500, { error: { code: "FAKE_CODE_ERROR", message: error instanceof Error ? error.message : "failed" } });
+      }
+    })();
+  });
+
+  await new Promise<void>((resolve) => { server.listen(options.port ?? 0, options.host ?? "127.0.0.1", resolve); });
+  const address = server.address() as AddressInfo;
+  return {
+    url: `http://${options.host ?? "127.0.0.1"}:${String(address.port)}`,
+    server,
+    log,
+    setPerson: (person) => { current = person; },
+    close: () => new Promise<void>((resolve) => { server.close(() => { resolve(); }); server.closeAllConnections(); }),
+  };
+}

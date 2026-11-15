@@ -1,87 +1,67 @@
-import { App } from "aws-cdk-lib";
-import { ContainerImage } from "aws-cdk-lib/aws-ecs";
-import { Match, Template } from "aws-cdk-lib/assertions";
+// Rovara Cloud's first address (#11, PR 4): the Fargate app is gone; the same HTTP API answers every request with a 308 to the same
+// path and query at Cloud's address (cloud-web.ts), from a small function.
+import { runInNewContext } from "node:vm";
+import { App, Lazy } from "aws-cdk-lib";
+import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
-import { CLOUD_APP_CALLBACK_PATH, CLOUD_APP_CLIENT_ID, CLOUD_APP_PORT, CLOUD_APP_SCOPES, CloudAppStack, cloudAppStackName } from "../../infra/lib/cloud-app.js";
-import { buildAgentXApp } from "../../infra/lib/app.js";
+import { CloudAppStack, REDIRECT_SOURCE, cloudAppStackName } from "../../infra/lib/cloud-app.js";
 
-const synth = (environmentName: string) =>
-  Template.fromStack(new CloudAppStack(new App(), "RovaraCloudApp", { environmentName, env: { region: "us-east-1" }, image: ContainerImage.fromRegistry("example.com/rovara-cloud:test") }));
+const MOVED_TO = "https://d5hwoqksa23xv.cloudfront.net";
+const synth = (environmentName: string, movedTo = MOVED_TO) =>
+  Template.fromStack(new CloudAppStack(new App(), "RovaraCloudApp", { environmentName, env: { region: "us-east-1" }, movedTo }));
 
-describe("Rovara Cloud stack", () => {
+/** The inline redirect, run as Lambda would run it. */
+async function redirect(rawPath: string, rawQueryString = ""): Promise<{ statusCode: number; headers: Record<string, string> }> {
+  const sandbox = { exports: {} as { handler?: (event: unknown) => Promise<{ statusCode: number; headers: Record<string, string> }> }, process: { env: { MOVED_TO } } };
+  runInNewContext(REDIRECT_SOURCE, sandbox);
+  return sandbox.exports.handler!({ rawPath, rawQueryString, requestContext: { http: { method: "POST" } } });
+}
+
+describe("Rovara Cloud's first address, now only a redirect", () => {
   const template = synth("production");
-  const resources = template.toJSON().Resources as Record<string, { Type: string; Properties?: Record<string, unknown> }>;
-  const idOf = (type: string) => Object.entries(resources).find(([, each]) => each.Type === type)![0];
-  const container = () => (Object.values(template.findResources("AWS::ECS::TaskDefinition"))[0]!.Properties as { ContainerDefinitions: Array<Record<string, unknown>> }).ContainerDefinitions[0]!;
+  const resources = template.toJSON().Resources as Record<string, { Type: string; Properties: Record<string, unknown> }>;
 
-  it("has nothing of Rovara Code's: no user pool, no workers, no Slack service", () => {
-    for (const type of ["AWS::Cognito::UserPool", "AWS::EC2::LaunchTemplate", "AWS::AutoScaling::AutoScalingGroup", "AWS::SQS::Queue", "AWS::Lambda::Function"]) {
-      expect(Object.values(resources).filter((each) => each.Type === type && !JSON.stringify(each).includes("CustomVpcRestrictDefaultSG")).map(() => type)).toEqual([]);
+  it("has no servers: no VPC, load balancer, Fargate, EFS, sign-ins table or key, and takes the pipeline's one parameter", () => {
+    for (const type of ["AWS::EC2::VPC", "AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ECS::Service", "AWS::ECS::Cluster", "AWS::EFS::FileSystem", "AWS::DynamoDB::Table", "AWS::KMS::Key", "AWS::ApiGatewayV2::VpcLink"]) {
+      template.resourceCountIs(type, 0);
     }
-    template.resourceCountIs("AWS::ECS::Service", 1);
-  });
-
-  it("signs people in through the Rovara Code install given as CodeUrl, as its sign-in client rovara-cloud", () => {
-    const parameters = template.toJSON().Parameters as Record<string, { AllowedPattern?: string }>;
+    // Only CodeUrl, unused: the pipeline passes it to every stack it deploys, and CloudFormation refuses one a template doesn't declare.
+    const parameters = (template.toJSON() as { Parameters?: Record<string, unknown> }).Parameters ?? {};
     expect(Object.keys(parameters).filter((name) => !name.startsWith("BootstrapVersion"))).toEqual(["CodeUrl"]);
-    const environment = Object.fromEntries((container().Environment as Array<{ Name: string; Value: unknown }>).map((each) => [each.Name, each.Value]));
-    expect(environment).toMatchObject({
-      ROVARA_CODE_URL: { Ref: "CodeUrl" },
-      ROVARA_CLIENT_ID: CLOUD_APP_CLIENT_ID,
-      ROVARA_SCOPES: CLOUD_APP_SCOPES.join(" "),
-      HOST: "0.0.0.0",
-      PORT: String(CLOUD_APP_PORT),
-      CLOUD_SESSIONS_FILE: "/data/sessions.json",
-      CLOUD_WORK_SESSIONS_FILE: "/data/work-sessions.json",
-    });
-    // Cloud's own address is the HTTP API's, so Code's redirect is that address's /callback.
-    expect(environment.CLOUD_ORIGIN).toEqual({ "Fn::GetAtt": [idOf("AWS::ApiGatewayV2::Api"), "ApiEndpoint"] });
-    expect(CLOUD_APP_CALLBACK_PATH).toBe("/callback");
-    // The client secret comes from Secrets Manager, never the template.
-    expect(container().Secrets).toEqual([{ Name: "ROVARA_CLIENT_SECRET", ValueFrom: { Ref: idOf("AWS::SecretsManager::Secret") } }]);
-    template.hasResourceProperties("AWS::SecretsManager::Secret", { Name: "rovara-cloud/production/code-client-secret" });
-    template.hasResource("AWS::SecretsManager::Secret", { DeletionPolicy: "Retain" });
   });
 
-  it("runs one task at a time, so two never write the session files, and keeps those files on encrypted EFS", () => {
-    template.hasResourceProperties("AWS::ECS::Service", {
-      DesiredCount: 1,
-      DeploymentConfiguration: Match.objectLike({ MinimumHealthyPercent: 0, MaximumPercent: 100, DeploymentCircuitBreaker: { Enable: true, Rollback: true } }),
-      LaunchType: "FARGATE",
-    });
-    template.hasResource("AWS::EFS::FileSystem", { Properties: Match.objectLike({ Encrypted: true }), DeletionPolicy: "Retain" });
-    template.hasResourceProperties("AWS::EFS::AccessPoint", { PosixUser: { Uid: "1000", Gid: "1000" }, RootDirectory: { Path: "/cloud", CreationInfo: { OwnerUid: "1000", OwnerGid: "1000", Permissions: "700" } } });
-    expect(container().MountPoints).toEqual([{ ContainerPath: "/data", SourceVolume: "data", ReadOnly: false }]);
-    expect(container().ReadonlyRootFilesystem).toBe(true);
-    template.hasResourceProperties("AWS::ECS::TaskDefinition", { RuntimePlatform: { CpuArchitecture: "ARM64", OperatingSystemFamily: "LINUX" } });
+  it("still makes Cloud's client secret, unchanged, so production keeps it and a new environment gets one", () => {
+    // The same logical id and settings as the Fargate app had: CloudFormation leaves the secret (and its value) alone.
+    expect(Object.entries(resources).filter(([, each]) => each.Type === "AWS::SecretsManager::Secret").map(([id]) => id)).toEqual([expect.stringMatching(/^CodeClientSecret[0-9A-F]{8}$/u)]);
+    template.hasResource("AWS::SecretsManager::Secret", { DeletionPolicy: "Retain", Properties: { Name: "rovara-cloud/production/code-client-secret", GenerateSecretString: { PasswordLength: 32, ExcludePunctuation: true } } });
   });
 
-  it("is reached only over HTTPS: the HTTP API, a VPC link and an internal load balancer that only the link may call", () => {
+  it("keeps the same HTTP API, so the first address stays the same, in front of the redirect function", () => {
+    // The logical id is the one the Fargate app's API had: CloudFormation keeps the API (and its address) instead of replacing it.
+    expect(Object.entries(resources).filter(([, each]) => each.Type === "AWS::ApiGatewayV2::Api").map(([id]) => id)).toEqual(["ApiF70053CD"]);
     template.hasResourceProperties("AWS::ApiGatewayV2::Api", { Name: "rovara-cloud-production-app", ProtocolType: "HTTP" });
-    template.hasResourceProperties("AWS::ApiGatewayV2::Integration", { ConnectionType: "VPC_LINK", IntegrationType: "HTTP_PROXY" });
-    template.hasResourceProperties("AWS::ElasticLoadBalancingV2::LoadBalancer", { Scheme: "internal" });
-    const groups = Object.values(template.findResources("AWS::EC2::SecurityGroup")).map((each) => JSON.stringify(each.Properties));
-    // No security group lets the internet in.
-    for (const group of groups) expect(group).not.toContain("0.0.0.0/0\",\"Description\":\"Allow from");
-    expect(JSON.stringify(template.findResources("AWS::EC2::SecurityGroupIngress"))).not.toContain("0.0.0.0/0");
+    template.hasResourceProperties("AWS::ApiGatewayV2::Integration", { IntegrationType: "AWS_PROXY", PayloadFormatVersion: "2.0" });
+    template.hasResourceProperties("AWS::Lambda::Function", { Runtime: "nodejs22.x", Architectures: ["arm64"], MemorySize: 128, Environment: { Variables: { MOVED_TO } } });
   });
 
-  it("prints the one-time registration with Code and the restart that picks up its secret", () => {
+  it("sends every request, any method, to the same path and query at Cloud's address", async () => {
+    expect(await redirect("/app/projects/demo", "tab=work")).toEqual({ statusCode: 308, headers: { location: `${MOVED_TO}/app/projects/demo?tab=work`, "cache-control": "no-store" }, body: "" });
+    expect((await redirect("/")).headers.location).toBe(`${MOVED_TO}/`);
+    expect((await redirect("/v1/web/sessions/ses_aaaaaaaaaaaaaaaaaaaa/messages")).headers.location).toBe(`${MOVED_TO}/v1/web/sessions/ses_aaaaaaaaaaaaaaaaaaaa/messages`);
+  });
+
+  it("prints both addresses", () => {
     const outputs = template.toJSON().Outputs as Record<string, { Value: unknown }>;
-    expect(Object.keys(outputs).sort()).toEqual(["CallbackUrl", "ClientSecretName", "CloudUrl", "RegisterWithCode", "RestartCommand"]);
-    const register = JSON.stringify(outputs.RegisterWithCode!.Value);
-    expect(register).toContain(`admin sign-in-client add ${CLOUD_APP_CLIENT_ID} --name \\"Rovara Cloud\\" --audience ${CLOUD_APP_CLIENT_ID} --redirect `);
-    expect(register).toContain(`--confidential --full-access --scope ${CLOUD_APP_SCOPES.join(",")} --secret-file rovara-cloud-secret.txt`);
+    expect(Object.keys(outputs).sort()).toEqual(["CloudUrl", "FirstUrl"]);
+    expect(outputs.CloudUrl!.Value).toBe(`${MOVED_TO}/app`);
   });
 
-  it("is named under rovara-cloud and refuses an environment name the environment rules refuse", () => {
+  it("is named under rovara-cloud, refuses a name the environment rules refuse, and an address that isn't https or has a path", () => {
     expect(cloudAppStackName("production")).toBe("rovara-cloud-production-app");
     expect(() => synth("abcdefghijklmno")).toThrow(/at most 14 characters/);
-  });
-
-  it("is the only stack the app makes under -c rovaraCloudApp=<env>, tagged with its environment", () => {
-    const app = buildAgentXApp({ rovaraCloudApp: "production", agentxRegion: "us-east-1" });
-    const stacks = app.node.children.filter((each) => "stackName" in each) as Array<{ stackName: string }>;
-    expect(stacks.map((each) => each.stackName)).toEqual(["rovara-cloud-production-app"]);
+    for (const bad of ["http://d5hwoqksa23xv.cloudfront.net", "https://d5hwoqksa23xv.cloudfront.net/app"]) expect(() => synth("production", bad)).toThrow(/https address with no path/);
+    // Deployed, the address is CloudFront's, known only then.
+    const later = `https://${Lazy.string({ produce: () => "d5hwoqksa23xv.cloudfront.net" })}`;
+    expect(() => new CloudAppStack(new App(), "RovaraCloudApp", { environmentName: "production", env: { region: "us-east-1" }, movedTo: later })).not.toThrow();
   });
 });
