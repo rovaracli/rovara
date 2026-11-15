@@ -129,6 +129,11 @@ export const GATEWAY_COMPANY_BUDGET_FIELDS = ["companyMonthlyUsdMicros", "member
 /** The backend's own ceiling for one budget: $1,000,000 in micro-dollars. */
 export const GATEWAY_COMPANY_BUDGET_MAX = 1_000_000_000_000;
 /**
+ * The company's learning cap (DEC 226), a fifth budget in the same item: whole micro-dollars (never null), never above the company's
+ * monthly cap in the backend. Absent in an older row: the learning default ($20) applies. Only the learning route reads it.
+ */
+export const GATEWAY_COMPANY_LEARNING_BUDGET_FIELD = "learningMonthlyUsdMicros";
+/**
  * The company's lessons switch (DEC 226): the feature gate of this name in the same settings item (`settings.featureGates`), on
  * only when exactly true. The learning route reads it on every call; off, missing or anything else makes no learning call.
  */

@@ -197,19 +197,21 @@ describe("learning key source (#57): the company's own Anthropic account in the 
   it("is a company source only, never a project's, never linked; connected and read only while current", async () => {
     const k = kit();
     const keys = storedLearningKeys(k.store);
-    expect(await keys.connected(ISS, A)).toBe(false);
+    expect(await keys.connected(ISS, A, "anthropic")).toBe(false);
     const anthropic = ["sk", "ant", randomBytes(16).toString("hex")].join("-");
     await expect(k.store.connect({ ...change(A, PROJECT, 0), sourceId: "src_ant", provider: "anthropic", key: anthropic })).rejects.toThrow(new ProductKeyError("invalid"));
     await expect(k.store.connect({ ...change(A, PRODUCT_COMPANY_OWNER, 0, maintainer), sourceId: "src_ant", provider: "anthropic", key: anthropic })).rejects.toThrow(new ProductKeyError("forbidden"));
     await k.store.connect({ ...change(A, PRODUCT_COMPANY_OWNER, 0, admin), sourceId: "src_ant", provider: "anthropic", key: anthropic });
-    expect(await keys.connected(ISS, A)).toBe(true);
-    expect(await keys.keyFor(ISS, A)).toBe(anthropic);
-    expect(await keys.connected(ISS, B)).toBe(false);
-    expect(await keys.keyFor(ISS, B)).toBeUndefined();
+    expect(await keys.connected(ISS, A, "anthropic")).toBe(true);
+    expect(await keys.keyFor(ISS, A, "anthropic")).toBe(anthropic);
+    // Never sent to another provider's path.
+    for (const provider of ["openai", "gemini", "vertex"] as const) { expect(await keys.connected(ISS, A, provider)).toBe(false); expect(await keys.keyFor(ISS, A, provider)).toBeUndefined(); }
+    expect(await keys.connected(ISS, B, "anthropic")).toBe(false);
+    expect(await keys.keyFor(ISS, B, "anthropic")).toBeUndefined();
     await expect(k.store.link({ ...change(A, PROJECT, 0), sourceId: "src_lnk", companySourceId: "src_ant" })).rejects.toThrow(new ProductKeyError("invalid"));
     await k.store.remove({ ...change(A, PRODUCT_COMPANY_OWNER, 1, admin), sourceId: "src_ant" });
-    expect(await keys.connected(ISS, A)).toBe(false);
-    expect(await keys.keyFor(ISS, A)).toBeUndefined();
+    expect(await keys.connected(ISS, A, "anthropic")).toBe(false);
+    expect(await keys.keyFor(ISS, A, "anthropic")).toBeUndefined();
   });
 });
 

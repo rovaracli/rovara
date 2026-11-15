@@ -5,7 +5,7 @@ import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS, type MediaEstimate } from ".
 import type { MediaRates } from "./media-price.js";
 import { guardRequest, MAX_BODY_BYTES, tooLarge, type GuardFailure, type ModelLimitsSource } from "./guard.js";
 import type { Meter, MeterItem, MeterScope, Reservation } from "./meter.js";
-import { LEARNING_PATH, LEARNING_STEP, type LearningKeySource, type LearningRouteFactory } from "./learning-route.js";
+import { LEARNING_PATH_PREFIX, LEARNING_STEP, type LearningKeySource, type LearningRouteFactory } from "./learning-route.js";
 import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, type TaskClaims, type TaskTokenVerifier } from "./token.js";
@@ -135,7 +135,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
   return {
     ...base,
     async admit(claims, signal) {
-      try { if ((await keys.connected(claims.iss, claims.cid, signal)) !== true) return AGENT_KEY_MISSING; }
+      try { if ((await keys.connected(claims.iss, claims.cid, "anthropic", signal)) !== true) return AGENT_KEY_MISSING; }
       catch { return AGENT_UNAVAILABLE; }
       admitted = true;
       return undefined;
@@ -143,7 +143,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     async key(claims, signal) {
       if (!admitted) return "";
       let key: string | undefined;
-      try { key = await keys.keyFor(claims.iss, claims.cid, signal); } catch { notSent = AGENT_UNAVAILABLE; return ""; }
+      try { key = await keys.keyFor(claims.iss, claims.cid, "anthropic", signal); } catch { notSent = AGENT_UNAVAILABLE; return ""; }
       if (key === undefined) { notSent = AGENT_KEY_MISSING; return ""; }
       return key;
     },
@@ -155,7 +155,11 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
 function routeFor(deps: GatewayDependencies, request: GatewayRequest): GatewayRoute | ProductControl | undefined {
   if (request.method !== "POST") return undefined;
   if (request.url === "/v1/messages") return agentRoute(deps);
-  if (request.url === LEARNING_PATH) return deps.learning?.route();
+  if (request.url.startsWith(LEARNING_PATH_PREFIX)) {
+    if (request.url.length > 2048) return undefined;
+    const at = request.url.indexOf("?");
+    try { return deps.learning?.route(at < 0 ? request.url : request.url.slice(0, at), at < 0 ? "" : request.url.slice(at + 1)); } catch { return undefined; }
+  }
   if (deps.product === undefined || !request.url.startsWith(PRODUCT_ROUTE_PREFIX) || request.url.length > 2048) return undefined;
   const at = request.url.indexOf("?");
   try { return deps.product.route(at < 0 ? request.url : request.url.slice(0, at), at < 0 ? "" : request.url.slice(at + 1), request.headers); } catch { return undefined; }

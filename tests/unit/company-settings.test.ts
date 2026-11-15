@@ -3,7 +3,7 @@
 // and Code's step-up claims (step-up.ts).
 import { describe, expect, it } from "vitest";
 import {
-  COMPANY_SETTINGS_LIMITS, DEFAULT_COMPANY_SETTINGS, STEP_UP_WINDOW_SECONDS, answerFor, defaultCompanySettings, freshStepUp, hookRulesOf, loosens, settingsDecision, stepUpClaim,
+  COMPANY_SETTINGS_LIMITS, DEFAULT_COMPANY_SETTINGS, LEARNING_DEFAULT_MONTHLY_USD_MICROS, STEP_UP_WINDOW_SECONDS, answerFor, defaultCompanySettings, freshStepUp, hookRulesOf, loosens, settingsDecision, stepUpClaim,
   validateCompanySettings, type CompanySettings,
 } from "../../packages/cloud-server/src/index.js";
 
@@ -27,7 +27,7 @@ describe("validateCompanySettings", () => {
       ...base(), featureGates: { slack: true, auto_merge: false }, websiteCeiling: { mode: "listed", hosts: ["github.com", "*.npmjs.org"] },
       instructions: [{ text: "  Use​  British\tEnglish  ", priority: "preferred" }], evalBudgetUsdMicros: 5_000_000, freshSignInSeconds: 120,
       start: { allow: true, maxEstimateUsdMicros: 3_000_000 }, decisions: [{ what: "setting.*", deciders: ["dev_1", "dev_2"], signInMaxAgeSeconds: 300 }, { what: "merge", minApprovers: 2 }],
-      locks: { real_check: "their_ci_fix", ci_fix_rounds: 2, extra_review: true, model_budget_usd: null }, budgets: { companyMonthlyUsdMicros: 100_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: 10, taskUsdMicros: 0 },
+      locks: { real_check: "their_ci_fix", ci_fix_rounds: 2, extra_review: true, model_budget_usd: null }, budgets: { companyMonthlyUsdMicros: 100_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: 10, taskUsdMicros: 0, learningMonthlyUsdMicros: 20_000_000 },
     };
     const read = validateCompanySettings(settings);
     expect(read.ok).toBe(true);
@@ -73,6 +73,13 @@ describe("validateCompanySettings", () => {
     ["a lock value out of range", (s) => ({ ...s, locks: { ci_fix_rounds: 4 } })],
     ["a lock value of the wrong kind", (s) => ({ ...s, locks: { real_check: SECRET } })],
     ["a budget field missing", (s) => ({ ...s, budgets: { companyMonthlyUsdMicros: null } })],
+    ["a learning cap that is null", (s) => ({ ...s, budgets: { ...(s["budgets"] as object), learningMonthlyUsdMicros: null } })],
+    ["a learning cap that is a string", (s) => ({ ...s, budgets: { ...(s["budgets"] as object), learningMonthlyUsdMicros: SECRET } })],
+    ["a negative learning cap", (s) => ({ ...s, budgets: { ...(s["budgets"] as object), learningMonthlyUsdMicros: -1 } })],
+    ["a fractional learning cap", (s) => ({ ...s, budgets: { ...(s["budgets"] as object), learningMonthlyUsdMicros: 1.5 } })],
+    ["a learning cap over the most", (s) => ({ ...s, budgets: { ...(s["budgets"] as object), learningMonthlyUsdMicros: 1_000_000_000_001 } })],
+    ["a learning cap above the company monthly cap", (s) => ({ ...s, budgets: { ...(s["budgets"] as object), companyMonthlyUsdMicros: 5_000_000, learningMonthlyUsdMicros: 5_000_001 } })],
+    ["an unknown budget field next to the learning cap", (s) => ({ ...s, budgets: { ...(s["budgets"] as object), learningMonthlyUsdMicros: 1, [SECRET.toLowerCase()]: 1 } })],
     ["a budget over the most", (s) => ({ ...s, budgets: { ...(s["budgets"] as object), taskUsdMicros: 1_000_000_000_001 } })],
   ];
   for (const [name, make] of refusals) {
@@ -85,6 +92,31 @@ describe("validateCompanySettings", () => {
       }
     });
   }
+
+  describe("the learning cap (DEC 226: $20 a month by default, never above the company's monthly cap)", () => {
+    const budgets = (over: Record<string, unknown>) => ({ ...base().budgets, ...over });
+    const read = (b: Record<string, unknown>) => { const answer = validateCompanySettings({ ...base(), budgets: b }); if (!answer.ok) throw new Error(answer.problem); return answer.settings.budgets; };
+    it("defaults to $20 a month", () => {
+      expect(DEFAULT_COMPANY_SETTINGS.budgets.learningMonthlyUsdMicros).toBe(20_000_000);
+      expect(LEARNING_DEFAULT_MONTHLY_USD_MICROS).toBe(20_000_000);
+    });
+    it("a document without it (an older stored row, an older client) reads as the default, held under the company monthly cap", () => {
+      const four = (over: Record<string, unknown> = {}) => ({ companyMonthlyUsdMicros: null, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null, ...over });
+      expect(read(four()).learningMonthlyUsdMicros).toBe(20_000_000);
+      expect(read(four({ companyMonthlyUsdMicros: 100_000_000 })).learningMonthlyUsdMicros).toBe(20_000_000);
+      expect(read(four({ companyMonthlyUsdMicros: 5_000_000 })).learningMonthlyUsdMicros).toBe(5_000_000);
+      expect(read(four({ companyMonthlyUsdMicros: 0 })).learningMonthlyUsdMicros).toBe(0);
+    });
+    it("keeps a value up to the company monthly cap (equal is allowed), or up to the most when the company has no cap yet", () => {
+      expect(read(budgets({ companyMonthlyUsdMicros: 50_000_000, learningMonthlyUsdMicros: 50_000_000 })).learningMonthlyUsdMicros).toBe(50_000_000);
+      expect(read(budgets({ companyMonthlyUsdMicros: 50_000_000, learningMonthlyUsdMicros: 0 })).learningMonthlyUsdMicros).toBe(0);
+      expect(read(budgets({ companyMonthlyUsdMicros: null, learningMonthlyUsdMicros: COMPANY_SETTINGS_LIMITS.usdMicrosMax })).learningMonthlyUsdMicros).toBe(COMPANY_SETTINGS_LIMITS.usdMicrosMax);
+    });
+    it("names the problem in fixed words that echo nothing", () => {
+      const answer = validateCompanySettings({ ...base(), budgets: budgets({ companyMonthlyUsdMicros: 5, learningMonthlyUsdMicros: 6 }) });
+      expect(answer).toEqual({ ok: false, problem: "budgets: the learning cap is a whole number of micro-dollars, never above the company monthly cap" });
+    });
+  });
 
   it("lets a company forbid loosening its settings (a ratchet), which never freezes them", () => {
     for (const rule of [{ what: "setting.loosen", allow: false }, { what: "setting.loosen", minApprovers: 3 }, { what: "setting.loosen", deciders: ["dev_1"] }, { what: "setting.change", signInMaxAgeSeconds: 60 }]) {
@@ -103,21 +135,24 @@ describe("loosens", () => {
   it("counts no change, and every stricter change, as not loosening", () => {
     const current = withPart({
       featureGates: { slack: true }, websiteCeiling: { mode: "listed", hosts: ["a.com", "b.com"] }, evalBudgetUsdMicros: 10, freshSignInSeconds: 300,
-      start: { allow: true, maxEstimateUsdMicros: 100 }, budgets: { companyMonthlyUsdMicros: 100, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: 50, taskUsdMicros: 5 },
+      start: { allow: true, maxEstimateUsdMicros: 100 }, budgets: { companyMonthlyUsdMicros: 100, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: 50, taskUsdMicros: 5, learningMonthlyUsdMicros: 100 },
     });
     expect(loosens(current, structuredClone(current))).toBe(false);
     expect(loosens(current, { ...current, featureGates: { slack: false, newgate: false } })).toBe(false);
     expect(loosens(current, { ...current, websiteCeiling: { mode: "listed", hosts: ["a.com"] } })).toBe(false);
     expect(loosens(current, { ...current, evalBudgetUsdMicros: 5, freshSignInSeconds: 120, start: { allow: false, maxEstimateUsdMicros: 50 } })).toBe(false);
     expect(loosens(current, { ...current, decisions: [...current.decisions, { what: "merge", minApprovers: 2 }] })).toBe(false);
-    expect(loosens(current, { ...current, budgets: { companyMonthlyUsdMicros: 10, memberMonthlyUsdMicros: 1, projectMonthlyUsdMicros: 50, taskUsdMicros: 0 } })).toBe(false);
+    expect(loosens(current, { ...current, budgets: { companyMonthlyUsdMicros: 10, memberMonthlyUsdMicros: 1, projectMonthlyUsdMicros: 50, taskUsdMicros: 0, learningMonthlyUsdMicros: 10 } })).toBe(false);
     expect(loosens(base(), withPart({ websiteCeiling: { mode: "listed", hosts: [] } }))).toBe(false);
+    // The learning cap may fall (or stay) without a second admin.
+    expect(loosens(current, { ...current, budgets: { ...current.budgets, learningMonthlyUsdMicros: 99 } })).toBe(false);
+    expect(loosens(current, { ...current, budgets: { ...current.budgets, learningMonthlyUsdMicros: 0 } })).toBe(false);
   });
 
   const current = withPart({
     featureGates: { slack: false, beta: true }, websiteCeiling: { mode: "listed", hosts: ["a.com"] }, instructions: [{ text: "Be careful", priority: "required" }],
     evalBudgetUsdMicros: 10, freshSignInSeconds: 120, start: { allow: false, maxEstimateUsdMicros: 100 }, locks: { extra_review: true },
-    budgets: { companyMonthlyUsdMicros: 100, memberMonthlyUsdMicros: 100, projectMonthlyUsdMicros: 100, taskUsdMicros: 100 },
+    budgets: { companyMonthlyUsdMicros: 100, memberMonthlyUsdMicros: 100, projectMonthlyUsdMicros: 100, taskUsdMicros: 100, learningMonthlyUsdMicros: 100 },
   });
   const looser: Array<[string, Partial<CompanySettings>]> = [
     ["a gate turned on", { featureGates: { slack: true, beta: true } }],
@@ -143,6 +178,7 @@ describe("loosens", () => {
     ["a member cap removed", { budgets: { ...current.budgets, memberMonthlyUsdMicros: null } }],
     ["a project cap raised", { budgets: { ...current.budgets, projectMonthlyUsdMicros: 101 } }],
     ["a task cap raised", { budgets: { ...current.budgets, taskUsdMicros: 101 } }],
+    ["the learning cap raised", { budgets: { ...current.budgets, learningMonthlyUsdMicros: 101 } }],
   ];
   for (const [name, part] of looser) it(`counts ${name} as loosening`, () => { expect(loosens(current, { ...current, ...part })).toBe(true); });
 });
