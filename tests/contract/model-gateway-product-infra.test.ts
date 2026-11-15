@@ -84,12 +84,14 @@ describe("on: keys", () => {
     expect(on.Resources[idStarting("AWS::KMS::Key", "ProductKeysKey")]!.Properties.EnableKeyRotation).toBe(true);
     expect(on.Parameters.CloudSettingsRoleArn).toMatchObject({ Type: "String", AllowedPattern: "^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$" });
   });
-  it("the fingerprint key: HMAC, only Cloud's settings role makes MACs", () => {
+  it("the fingerprint key: HMAC, only Cloud's settings role makes MACs, only the serving role verifies them (Cloud's signed calls)", () => {
     const r = on.Resources[idStarting("AWS::KMS::Key", "ProductKeysMacKey")]!;
     expect(r.Properties).toMatchObject({ KeySpec: "HMAC_256", KeyUsage: "GENERATE_VERIFY_MAC" });
     const statements = keyPolicy("ProductKeysMacKey");
-    expect(statements.map((s) => s.Sid)).toEqual(["AccountManagesNotUses", "OnlySettingsFingerprints"]);
+    expect(statements.map((s) => s.Sid)).toEqual(["AccountManagesNotUses", "OnlySettingsFingerprints", "OnlyGatewayVerifiesCalls"]);
     expect(statements[1]).toMatchObject({ Action: "kms:GenerateMac", Resource: "*", Condition: { ArnEquals: { "aws:PrincipalArn": { Ref: "CloudSettingsRoleArn" } } } });
+    // PRODUCT-VERTEX-CLOUD-CONNECT: VerifyMac only, only the serving role (never GenerateMac: the gateway can't sign a call).
+    expect(statements[2]).toEqual({ Sid: "OnlyGatewayVerifiesCalls", Effect: "Allow", Principal: statements[1]!.Principal, Action: "kms:VerifyMac", Resource: "*", Condition: { ArnEquals: { "aws:PrincipalArn": arnOf(serveRole) } } });
   });
 });
 
@@ -106,9 +108,10 @@ describe("on: the serving role's grants (exact)", () => {
       index("ProductMeter", "open-holds"), index("LearningMeter", "open-holds"), index("EvalStages", "due-stages"),
     ] });
     expect(s.OpenProductKeys).toEqual({ Sid: "OpenProductKeys", Effect: "Allow", Action: "kms:Decrypt", Resource: arnOf(idStarting("AWS::KMS::Key", "ProductKeysKey")), Condition: { StringEquals: { "kms:EncryptionContext:purpose": "rovara-product-ai-key", "kms:EncryptionContext:install": issuer } } });
+    expect(s.VerifyCloudCalls).toEqual({ Sid: "VerifyCloudCalls", Effect: "Allow", Action: "kms:VerifyMac", Resource: arnOf(idStarting("AWS::KMS::Key", "ProductKeysMacKey")) });
     expect(s.AssumeVertexFederation).toEqual({ Sid: "AssumeVertexFederation", Effect: "Allow", Action: "sts:AssumeRole", Resource: arnOf(idStarting("AWS::IAM::Role", "VertexFederationRole")), Condition: { StringLike: { "sts:RoleSessionName": "org_*" } } });
     // Nothing else was added, and the agent grants are unchanged.
-    expect(Object.keys(s).sort()).toEqual(["AssumeVertexFederation", "DecryptProviderKeys", "EvalStagesCompanyKeys", "MarkersCompanyKeys", "MeterAndLedgerCompanyKeys", "OpenProductKeys", "ProductAndLearningMarkersCompanyKeys", "ProductAndLearningMeterCompanyKeys", "ProductKeysCompanyKeys", "QueryOpenHolds", "QueryPendingCorrections", "QueryProductIndexes", "ReadCompanyBudgets", "ReadPrices", "ReadProviderKeys"]);
+    expect(Object.keys(s).sort()).toEqual(["AssumeVertexFederation", "DecryptProviderKeys", "EvalStagesCompanyKeys", "MarkersCompanyKeys", "MeterAndLedgerCompanyKeys", "OpenProductKeys", "ProductAndLearningMarkersCompanyKeys", "ProductAndLearningMeterCompanyKeys", "ProductKeysCompanyKeys", "QueryOpenHolds", "QueryPendingCorrections", "QueryProductIndexes", "ReadCompanyBudgets", "ReadPrices", "ReadProviderKeys", "VerifyCloudCalls"]);
     // No DeleteItem on any money table, the key table or the stage table; no GenerateDataKey or Encrypt for the gateway.
     const all = serveStatements();
     for (const st of all.filter((x) => [x.Action].flat().includes("dynamodb:DeleteItem"))) expect(JSON.stringify(st.Resource)).not.toMatch(/ProductKeys|EvalStages|Meter|Ledger/u);
@@ -129,6 +132,7 @@ describe("on: the serving role's grants (exact)", () => {
     for (const name of [...GATEWAY_PRODUCT_ENV, ...GATEWAY_LEARNING_ENV, GATEWAY_ENV.vertexFederationRole]) expect(serve[name]).toBeDefined();
     expect(serve[GATEWAY_ENV.productKeysKey]).toEqual(arnOf(idStarting("AWS::KMS::Key", "ProductKeysKey")));
     expect(serve[GATEWAY_ENV.vertexFederationRole]).toEqual(arnOf(idStarting("AWS::IAM::Role", "VertexFederationRole")));
+    expect(serve[GATEWAY_ENV.productMacKey]).toEqual(arnOf(idStarting("AWS::KMS::Key", "ProductKeysMacKey")));
     // DEC 236: with the company key store deployed, the agent route sends only each company's own key.
     expect(serve[GATEWAY_ENV.agentKeys]).toBe("company");
     expect(Object.keys(env("PriceFetchTask")).sort()).toEqual([GATEWAY_ENV.mode, GATEWAY_ENV.pricesTable, "NODE_OPTIONS"].sort());

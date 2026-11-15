@@ -13,7 +13,7 @@ import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, pars
 import { WORK_READS } from "./work-reads.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
-import type { ProductAiBackend } from "./product-ai-routes.js";
+import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
 
 /** The company this Cloud shows, until companies are Cloud's own (phase 4). */
 export interface OrgView { orgId: string; name: string; plan: string }
@@ -396,17 +396,27 @@ export const ROUTES: Route[] = [
   {
     // PUT /v1/app/projects/{p}/members/{who}: Code grants contributors; maintainers are a project's administrators, made in Code.
     method: "PUT", path: /^\/projects\/([^/]+)\/members\/([^/]+)$/u,
-    answer: async ({ client, session, params, body }) => {
+    answer: async (context) => {
+      const { client, session, params, body } = context;
       const role = (body as { role?: unknown } | undefined)?.role;
       if (role !== undefined && role !== "contributor") return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Only contributors can be added here for now." } } };
+      // PRODUCT-EVAL-APPROVER-REREAD: the person's role in the project changes, so their eval approvals stop counting first.
+      const withdrawal = await withdrawForMember(context, params[1]!, { project: params[0]! });
+      if ("status" in withdrawal) return withdrawal;
       const answer = await client.json<{ developerId: string }>(session, `/v1/dev/client/projects/${encodeURIComponent(params[0]!)}/members/${encodeURIComponent(params[1]!)}`, { method: "PUT" });
+      await withdrawal.after();
       return ok({ member: { developerId: answer.developerId, role: "contributor" } });
     },
   },
   {
     method: "DELETE", path: /^\/projects\/([^/]+)\/members\/([^/]+)$/u,
-    answer: async ({ client, session, params }) => {
+    answer: async (context) => {
+      const { client, session, params } = context;
+      // PRODUCT-EVAL-APPROVER-REREAD: a person leaving a project keeps no eval approval (withdrawn before Code removes them).
+      const withdrawal = await withdrawForMember(context, params[1]!, { project: params[0]! });
+      if ("status" in withdrawal) return withdrawal;
       const answer = await client.json<{ developerId: string; outcome: string }>(session, `/v1/dev/client/projects/${encodeURIComponent(params[0]!)}/members/${encodeURIComponent(params[1]!)}`, { method: "DELETE" });
+      await withdrawal.after();
       return ok({ developerId: answer.developerId, removed: answer.outcome === "revoked" });
     },
   },

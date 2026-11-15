@@ -253,7 +253,9 @@ describe("recording a Cloud action", () => {
     expect([...CLOUD_AUDIT_ACTIONS].sort()).toEqual([
       "company.budget.changed", "company.invite.created", "company.invite.revoked", "company.rules.changed", "company.signin_client.changed",
       "hook.decide.answered", "hook.decide.unanswered", "hook.start.answered", "hook.start.unanswered", "hook.values.answered", "hook.values.unanswered",
-      "product_ai.eval_approval.recorded", "product_ai.eval_approval.withdrawn", "product_ai.eval_budget.changed", "product_ai.key.connected", "product_ai.key.removed", "product_ai.key.rotated",
+      "learning_ai.key.connected", "learning_ai.key.removed", "learning_ai.key.rotated",
+      "product_ai.eval_approval.recorded", "product_ai.eval_approval.withdrawn", "product_ai.eval_approvals.withdrawn_for_member", "product_ai.eval_budget.changed", "product_ai.key.connected", "product_ai.key.removed", "product_ai.key.rotated",
+      "product_ai.vertex.connected", "product_ai.vertex.removed", "product_ai.vertex.rotated",
     ]);
     const store = new LocalCloudAuditStore();
     for (const action of CLOUD_AUDIT_ACTIONS) await recordCloudAction(store, { ...input, action }, clockAt(BASE));

@@ -7,9 +7,22 @@ export interface ProductAiRead {
   project: string; revision: number;
   key: { connected: boolean; connectedAt?: number; updatedAt?: number; refusedAt?: number };
   removedUntil?: number;
+  /** The project's Vertex AI federation setup: never a secret (there is none: Google trusts Rovara's AWS role for this company). */
+  vertex: { connected: boolean; connectedAt?: number; updatedAt?: number; refusedAt?: number; projectId?: string; location?: string; serviceAccount?: string };
+  vertexRemovedUntil?: number;
   evalBudget: { calls: number; costMicros: number };
-  evalApproval?: { selection: string; inputsDigest: string; maxCalls: number; maxCostMicros: number; model?: string; approvedAt: number; approvedByYou: boolean };
+  /** state: "current" counts at the stage hold now; "stale" (over 15 minutes) and "withdrawn" (the approver's membership changed) must be approved again. */
+  evalApproval?: { selection: string; inputsDigest: string; maxCalls: number; maxCostMicros: number; model?: string; approvedAt: number; approvedByYou: boolean; state: "current" | "stale" | "withdrawn" };
 }
+/** How long an approval counts at the stage hold (the gateway's EVAL_APPROVAL_FRESH_MS). */
+export const EVAL_APPROVAL_COUNTS_MINUTES = 15;
+/** The Vertex AI form's fields, as Cloud checks them. */
+export const VERTEX_FORM = Object.freeze({
+  projectId: /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/u,
+  location: /^(?:global|[a-z]{2,15}-[a-z]{2,15}[0-9]{1,2})$/u,
+  audience: /^\/\/iam\.googleapis\.com\/projects\/[0-9]{1,20}\/locations\/global\/workloadIdentityPools\/[a-z0-9-]{4,32}\/providers\/[a-z0-9-]{4,32}$/u,
+  serviceAccount: /^(?:[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com|[0-9]{1,20}-compute@developer\.gserviceaccount\.com)$/u,
+});
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const opt = <K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } => (value === undefined ? {} : ({ [key]: value } as { [P in K]?: V }));
@@ -17,12 +30,21 @@ export function readProductAi(body: unknown): ProductAiRead {
   if (!isRecord(body) || typeof body["project"] !== "string" || !whole(body["revision"]) || !isRecord(body["key"])) throw new Error("not product AI settings");
   const key = body["key"], budget = isRecord(body["evalBudget"]) ? body["evalBudget"] : {}, a = isRecord(body["evalApproval"]) ? body["evalApproval"] : undefined;
   const approval = a !== undefined && typeof a["selection"] === "string" && typeof a["inputsDigest"] === "string" && whole(a["maxCalls"]) && whole(a["maxCostMicros"]) && whole(a["approvedAt"])
-    ? { selection: a["selection"], inputsDigest: a["inputsDigest"], maxCalls: a["maxCalls"], maxCostMicros: a["maxCostMicros"], ...opt("model", typeof a["model"] === "string" ? a["model"] : undefined), approvedAt: a["approvedAt"], approvedByYou: a["approvedByYou"] === true }
+    ? { selection: a["selection"], inputsDigest: a["inputsDigest"], maxCalls: a["maxCalls"], maxCostMicros: a["maxCostMicros"], ...opt("model", typeof a["model"] === "string" ? a["model"] : undefined), approvedAt: a["approvedAt"], approvedByYou: a["approvedByYou"] === true,
+      // Only "current" is taken as counting; anything else (or nothing) reads as needing approval again.
+      state: a["state"] === "current" ? "current" as const : a["state"] === "withdrawn" ? "withdrawn" as const : "stale" as const }
     : undefined;
+  const v = isRecord(body["vertex"]) ? body["vertex"] : {};
+  const text = (value: unknown, pattern: RegExp) => (typeof value === "string" && pattern.test(value) ? value : undefined);
   return {
     project: body["project"], revision: body["revision"],
     key: { connected: key["connected"] === true, ...opt("connectedAt", whole(key["connectedAt"]) ? key["connectedAt"] : undefined), ...opt("updatedAt", whole(key["updatedAt"]) ? key["updatedAt"] : undefined), ...opt("refusedAt", whole(key["refusedAt"]) ? key["refusedAt"] : undefined) },
     ...opt("removedUntil", whole(body["removedUntil"]) ? body["removedUntil"] : undefined),
+    vertex: {
+      connected: v["connected"] === true, ...opt("connectedAt", whole(v["connectedAt"]) ? v["connectedAt"] : undefined), ...opt("updatedAt", whole(v["updatedAt"]) ? v["updatedAt"] : undefined), ...opt("refusedAt", whole(v["refusedAt"]) ? v["refusedAt"] : undefined),
+      ...opt("projectId", text(v["projectId"], VERTEX_FORM.projectId)), ...opt("location", text(v["location"], VERTEX_FORM.location)), ...opt("serviceAccount", text(v["serviceAccount"], VERTEX_FORM.serviceAccount)),
+    },
+    ...opt("vertexRemovedUntil", whole(body["vertexRemovedUntil"]) ? body["vertexRemovedUntil"] : undefined),
     evalBudget: { calls: whole(budget["calls"]) ? budget["calls"] : 400, costMicros: whole(budget["costMicros"]) ? budget["costMicros"] : 4_000_000 },
     ...opt("evalApproval", approval),
   };

@@ -1,18 +1,29 @@
-// The LearningKeySource adapter (DEC 226, learning-route.ts): the company's OWN connected Anthropic account, held in the product
-// key store as a company source of provider "anthropic" (sealed like the product keys: KMS envelope bound to install, company,
-// owner, source and version; read only at the AWSCURRENT stage). A company admin connects, rotates and removes it through Cloud's
-// settings routes; a project never holds one and can never link to it (product-keys.ts).
-import type { LearningKeySource } from "./learning-route.js";
-import type { ProductKeyStore } from "./product-keys.js";
+// The LearningKeySource adapter (DEC 226, learning-route.ts): the company's OWN connected learning accounts (Anthropic, OpenAI,
+// Gemini on AI Studio), held in the product key store's learning document (LEARNING_OWNER; sealed like the product keys: KMS
+// envelope bound to install, company, owner, source and version; read only at the AWSCURRENT stage). A company admin connects,
+// rotates and removes them through Cloud's "Learning AI key" settings (cloud-server learning-ai-routes.ts); a project never holds
+// one and can never link to one (product-keys.ts). Each provider is answered only by ITS account: a company with only Anthropic
+// connected is not connected for OpenAI or Gemini, and Vertex learning is not connectable here (never connected).
+import type { LearningKeySource, LearningProvider } from "./learning-route.js";
+import { LEARNING_KEY_PROVIDERS, type LearningKeyProvider, type ProductKeyStore } from "./product-keys.js";
 
-export function storedLearningKeys(store: Pick<ProductKeyStore, "companySource" | "useKey">): LearningKeySource {
+const connectable = (provider: LearningProvider): provider is LearningKeyProvider => LEARNING_KEY_PROVIDERS.some((p) => p === provider);
+
+export function storedLearningKeys(store: Pick<ProductKeyStore, "learningSource" | "useKey" | "recordWarning">): LearningKeySource {
   return {
-    // Only the Anthropic path is answered here: a company's Anthropic key is never sent to another provider's path.
-    async connected(iss, cid, provider) { return provider === "anthropic" && (await store.companySource(iss, cid, "anthropic")) !== undefined; },
+    async connected(iss, cid, provider) { return connectable(provider) && (await store.learningSource(iss, cid, provider)) !== undefined; },
     async keyFor(iss, cid, provider) {
-      if (provider !== "anthropic") return undefined;
-      const source = await store.companySource(iss, cid, "anthropic");
+      if (!connectable(provider)) return undefined;
+      const source = await store.learningSource(iss, cid, provider);
       return source === undefined ? undefined : store.useKey(iss, cid, source);
+    },
+    // The provider refused the account: shown on the settings page ("Learning AI key"). Never changes the call; never throws.
+    async refused(iss, cid, provider) {
+      if (!connectable(provider)) return;
+      try {
+        const source = await store.learningSource(iss, cid, provider);
+        if (source !== undefined) await store.recordWarning(iss, cid, source, 401);
+      } catch { /* A warning never changes a call. */ }
     },
   };
 }

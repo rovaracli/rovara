@@ -14,9 +14,26 @@ import type { ProductKeyFingerprinter, ProductKeySealer } from "./product-seal.j
 import { parseVertexConnect, serializeVertexCredential, validVertexSummary, vertexSummary, type VertexCredential, type VertexSummary } from "./product-vertex-credential.js";
 
 export const PRODUCT_COMPANY_OWNER = "_company";
-/** "anthropic" is the company's own account for lessons' learning calls (DEC 226, learning-keys.ts): a company source only, never a project's, never linked. */
-export const PRODUCT_PROVIDERS = ["gemini", "vertex", "anthropic"] as const;
+/**
+ * The company's own learning accounts (DEC 226, learning-keys.ts; PRODUCT-LEARNING-CONNECT-ROUTE): their own document, apart from
+ * the company's product sources, so a learning key is never offered to a project, never linked and never resolved for a product
+ * call. Company admins only; one source per provider.
+ */
+export const LEARNING_OWNER = "_learning";
+/** The providers a learning account may be (learning-route.ts paths; Vertex learning is not connectable here). */
+export const LEARNING_KEY_PROVIDERS = ["anthropic", "openai", "gemini"] as const;
+export type LearningKeyProvider = typeof LEARNING_KEY_PROVIDERS[number];
+/** "anthropic" and "openai" are learning accounts only (LEARNING_OWNER); "gemini" is both a product key and a learning account. */
+export const PRODUCT_PROVIDERS = ["gemini", "vertex", "anthropic", "openai"] as const;
 export type ProductProvider = typeof PRODUCT_PROVIDERS[number];
+const LEARNING_ONLY: ReadonlySet<ProductProvider> = new Set(["anthropic", "openai"]);
+/**
+ * How long a recorded eval approval counts at the stage hold (PRODUCT-EVAL-APPROVER-REREAD): 15 minutes from the role check
+ * Cloud made with Code. Older, it is stale and must be approved again.
+ */
+export const EVAL_APPROVAL_FRESH_MS = 15 * 60_000;
+/** People with withdrawn approvals kept by name; past this, every approval made up to now is withdrawn at once (fail closed). */
+export const APPROVAL_WITHDRAWALS_MAX = 200;
 export const PRODUCT_MAX_SOURCES = 20;
 export const PRODUCT_RECOVERY_DAYS = 7;
 export const PRODUCT_RECEIPT_SECONDS = 86_400;
@@ -116,8 +133,8 @@ interface SourceRecord {
 interface RemovedRecord { source: SourceRecord; removedAt: number; recoverUntil: number }
 /**
  * A project's approved eval spend (Code's EVAL_SPEND_APPROVAL, product-eval.ts EvalApproval), as the settings route records it after
- * checking the approver's role with Code. `role` is that role at approval time; `approvedAt` bounds how long the record counts
- * (EVAL_APPROVAL_VALID_MS: the gateway cannot re-read Code membership, see eval-approvals.ts).
+ * checking the approver's role with Code. `role` is that role at approval time; `approvedAt` (when that check began) bounds how
+ * long the record counts (EVAL_APPROVAL_FRESH_MS), and a withdrawal of the approver after it ends it (withdrawApprovals).
  */
 export interface StoredEvalApproval {
   selection: string; inputsDigest: string; maxCalls: number; maxCostMicros: number; model?: string;
@@ -133,9 +150,12 @@ export interface ProductSourceView {
 export interface ProductKeysView {
   revision: number; owner: string; sources: ProductSourceView[]; removed: Array<{ sourceId: string; provider: ProductProvider; recoverUntil: number }>;
   caps?: ProductCaps; ceiling?: ProductCeiling; evalBudget?: EvalBudget; evalApproval?: StoredEvalApproval;
+  /** With evalApproval: whether the stage hold would take it now ("current"), or it must be approved again. */
+  evalApprovalState?: EvalApprovalState;
   /** There is never pending work (one transaction per change); the last applied request id is shown for support. */
   pending: false; lastRequestId?: string;
 }
+export type EvalApprovalState = "current" | "stale" | "withdrawn";
 /** What the product route needs: the effective caps and which row to unseal. Never the key. */
 export interface ProductSourceResolution { sourceId: string; owner: string; provider: ProductProvider; caps: ProductCaps; companyMonthMicros?: number; versionId: string }
 
@@ -144,6 +164,20 @@ const docKey = (iss: string, cid: string, owner: string) => `${prefix(iss, cid)}
 const keyRowKey = (iss: string, cid: string, owner: string, sourceId: string, versionId: string) => `${prefix(iss, cid)}#key#${owner}#${sourceId}#${versionId}`;
 const receiptKey = (iss: string, cid: string, owner: string, requestId: string) => `${prefix(iss, cid)}#req#${owner}#${requestId}`;
 const auditKey = (iss: string, cid: string, owner: string, revision: number) => `${prefix(iss, cid)}#audit#${owner}#${revision}`;
+/** The company's withdrawn eval approvals: whose, and up to when (one row per company; see withdrawApprovals). */
+const withdrawalsKey = (iss: string, cid: string) => `${prefix(iss, cid)}#withdrawn#eval-approvals`;
+interface Withdrawals { people: Record<string, number>; allBefore?: number }
+function parseWithdrawals(value: unknown): Withdrawals {
+  const w = record(value); const people = record(w?.people);
+  if (w === undefined || people === undefined || !Object.keys(w).every((k) => k === "people" || k === "allBefore") || (w.allBefore !== undefined && !whole(w.allBefore))
+    || Object.keys(people).length > APPROVAL_WITHDRAWALS_MAX || !Object.entries(people).every(([person, at]) => PERSON.test(person) && whole(at))) throw new ProductKeyError("unavailable");
+  return { people: { ...(people as Record<string, number>) }, ...(w.allBefore === undefined ? {} : { allBefore: w.allBefore }) };
+}
+/** An approval made at or before its approver's withdrawal (or a company-wide one) no longer counts. */
+const withdrawn = (approval: StoredEvalApproval, w: Withdrawals): boolean =>
+  approval.approvedAt <= (w.allBefore ?? -1) || (Object.hasOwn(w.people, approval.approver.personId) && approval.approvedAt <= w.people[approval.approver.personId]!);
+/** Fresh: made within EVAL_APPROVAL_FRESH_MS before `now`, and not in the future. */
+export const freshApproval = (approval: Pick<StoredEvalApproval, "approvedAt">, now: number): boolean => approval.approvedAt <= now && now - approval.approvedAt < EVAL_APPROVAL_FRESH_MS;
 
 const micros = (v: unknown): v is number => whole(v) && v <= 1_000_000_000_000;
 function validCapsValue(v: unknown): v is ProductCaps {
@@ -207,7 +241,9 @@ export class ProductKeyStore {
     this.#identity(iss, cid, owner);
     const { revision, doc } = await this.#read(iss, cid, owner);
     const company = owner === PRODUCT_COMPANY_OWNER ? undefined : doc.sources.some((s) => s.link !== undefined) ? (await this.#read(iss, cid, PRODUCT_COMPANY_OWNER)).doc : undefined;
-    return this.#view(owner, revision, doc, company);
+    const view = this.#view(owner, revision, doc, company);
+    if (view.evalApproval !== undefined) view.evalApprovalState = this.#approvalState(view.evalApproval, await this.#withdrawals(iss, cid), this.#now());
+    return view;
   }
   /** Company sources a project may link to. A removed source is never offered (F1-d M1). */
   async choices(iss: string, cid: string): Promise<Array<{ sourceId: string; provider: ProductProvider }>> {
@@ -235,20 +271,50 @@ export class ProductKeyStore {
     if (target.record?.currentVersion === undefined) return undefined;
     return { sourceId: target.record.sourceId, owner: target.owner, provider, caps, versionId: target.record.currentVersion, ...(company.ceiling?.companyMonthMicros === undefined ? {} : { companyMonthMicros: company.ceiling.companyMonthMicros }) };
   }
-  /** A project's eval budget (its own or the default) and its current approval record, for the eval hold (eval-approvals.ts). Never a key. */
-  async evalFor(iss: string, cid: string, project: string): Promise<{ budget?: EvalBudget; approval?: StoredEvalApproval }> {
+  /**
+   * A project's eval budget (its own or the default) and its current approval record with its state now, for the eval hold
+   * (eval-approvals.ts). Never a key. A withdrawal row that can't be read or parsed fails the read (unavailable): never a guess.
+   */
+  async evalFor(iss: string, cid: string, project: string): Promise<{ budget?: EvalBudget; approval?: StoredEvalApproval; approvalState?: EvalApprovalState }> {
     if (!PROJECT.test(project)) throw new ProductKeyError("invalid");
     this.#identity(iss, cid, project);
     const doc = (await this.#read(iss, cid, project)).doc;
-    return { ...(doc.evalBudget === undefined ? {} : { budget: { ...doc.evalBudget } }), ...(doc.evalApproval === undefined ? {} : { approval: structuredClone(doc.evalApproval) }) };
+    const budget = doc.evalBudget === undefined ? {} : { budget: { ...doc.evalBudget } };
+    if (doc.evalApproval === undefined) return budget;
+    return { ...budget, approval: structuredClone(doc.evalApproval), approvalState: this.#approvalState(doc.evalApproval, await this.#withdrawals(iss, cid), this.#now()) };
   }
-  /** The company's OWN source for a provider (learning calls: "anthropic"), or undefined. Never the key. */
-  async companySource(iss: string, cid: string, provider: ProductProvider): Promise<ProductSourceResolution | undefined> {
-    this.#identity(iss, cid, PRODUCT_COMPANY_OWNER);
-    const company = (await this.#read(iss, cid, PRODUCT_COMPANY_OWNER)).doc;
-    const source = company.sources.find((s) => s.provider === provider && s.currentVersion !== undefined);
+  /** The company's learning account for a provider (LEARNING_OWNER), or undefined. Never the key. */
+  async learningSource(iss: string, cid: string, provider: LearningKeyProvider): Promise<ProductSourceResolution | undefined> {
+    this.#identity(iss, cid, LEARNING_OWNER);
+    if (!LEARNING_KEY_PROVIDERS.includes(provider)) return undefined;
+    const doc = (await this.#read(iss, cid, LEARNING_OWNER)).doc;
+    const source = doc.sources.find((s) => s.provider === provider && s.currentVersion !== undefined);
     if (source?.currentVersion === undefined) return undefined;
-    return { sourceId: source.sourceId, owner: PRODUCT_COMPANY_OWNER, provider, caps: { ...PRODUCT_DEFAULT_CAPS }, versionId: source.currentVersion };
+    return { sourceId: source.sourceId, owner: LEARNING_OWNER, provider, caps: { ...PRODUCT_DEFAULT_CAPS }, versionId: source.currentVersion };
+  }
+  /**
+   * PRODUCT-EVAL-APPROVER-REREAD: Cloud learned that this person's membership or role changed, so every eval approval they made up
+   * to now stops counting at once, in every project of the company (the stage hold reads this row with the approval). One
+   * conditional write on the company's withdrawal row; entries older than twice the approval's freshness are dropped (their
+   * approvals are stale anyway), and past APPROVAL_WITHDRAWALS_MAX people every approval made up to now is withdrawn. Throws
+   * (unavailable) when it could not be saved: the caller must not report the change as done.
+   */
+  async withdrawApprovals(iss: string, cid: string, personId: string): Promise<void> {
+    this.#identity(iss, cid, PRODUCT_COMPANY_OWNER);
+    if (typeof personId !== "string" || !PERSON.test(personId)) throw new ProductKeyError("invalid");
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let row: StoredRow | undefined;
+      try { row = await this.options.table.get(withdrawalsKey(iss, cid)); } catch { throw new ProductKeyError("unavailable"); }
+      const current = row === undefined ? { people: {} } : parseWithdrawals(row.item);
+      const now = this.#now();
+      const people = Object.fromEntries(Object.entries(current.people).filter(([, at]) => at > now - 2 * EVAL_APPROVAL_FRESH_MS));
+      people[personId] = Math.max(now, people[personId] ?? 0);
+      const next: Withdrawals = Object.keys(people).length > APPROVAL_WITHDRAWALS_MAX ? { people: {}, allBefore: Math.max(now, current.allBefore ?? 0) } : { people, ...(current.allBefore === undefined ? {} : { allBefore: current.allBefore }) };
+      let ok: boolean;
+      try { ok = await this.options.table.transact([{ key: withdrawalsKey(iss, cid), put: { ...next }, condition: row === undefined ? { absent: true } : { version: row.version } }]); } catch { throw new ProductKeyError("unavailable"); }
+      if (ok) return;
+    }
+    throw new ProductKeyError("unavailable");
   }
   /** The ONLY way out for a key: the gateway's product route, after the hold. Undefined when the row is gone or not current. */
   async useKey(iss: string, cid: string, resolution: ProductSourceResolution): Promise<string | undefined> {
@@ -263,8 +329,11 @@ export class ProductKeyStore {
     this.#check(change);
     if (!PRODUCT_SOURCE_ID.test(change.sourceId) || !this.#providers.has(change.provider)) throw new ProductKeyError("invalid");
     const secret = this.#secretOf(change.provider, change.key);
-    // The learning account is the company's only (DEC 226): a project never holds one.
-    if (change.provider === "anthropic" && change.owner !== PRODUCT_COMPANY_OWNER) throw new ProductKeyError("invalid");
+    // No connection test configured: a Vertex connect is refused before anything else runs (no fingerprint, no KMS call).
+    if (secret.vertex !== undefined && this.options.vertexCheck === undefined) throw new ProductKeyError("unavailable");
+    // Learning accounts live only in the company's learning document (DEC 226), and nothing else does: a project or the company's
+    // product sources never hold an Anthropic or OpenAI account, and the learning document never holds a product-only provider.
+    if (change.owner === LEARNING_OWNER ? !LEARNING_KEY_PROVIDERS.some((p) => p === change.provider) : LEARNING_ONLY.has(change.provider)) throw new ProductKeyError("invalid");
     const versionId = randomUUID();
     const keyPrint = await this.options.fingerprint({ cid: change.cid, owner: change.owner, sourceId: change.sourceId, key: secret.text });
     return this.#mutate(change, "connect", { sourceId: change.sourceId, provider: change.provider, keyPrint }, async (doc, now) => {
@@ -279,12 +348,12 @@ export class ProductKeyStore {
   /** A project uses a company source for its test calls: a link, never a copy. */
   async link(change: Change & { sourceId: string; companySourceId: string }): Promise<ProductKeysView> {
     this.#check(change);
-    if (change.owner === PRODUCT_COMPANY_OWNER || !PRODUCT_SOURCE_ID.test(change.sourceId) || !PRODUCT_SOURCE_ID.test(change.companySourceId)) throw new ProductKeyError("invalid");
+    if (change.owner === PRODUCT_COMPANY_OWNER || change.owner === LEARNING_OWNER || !PRODUCT_SOURCE_ID.test(change.sourceId) || !PRODUCT_SOURCE_ID.test(change.companySourceId)) throw new ProductKeyError("invalid");
     const company = await this.#read(change.iss, change.cid, PRODUCT_COMPANY_OWNER);
     const target = company.doc.sources.find((s) => s.sourceId === change.companySourceId);
     if (target === undefined) throw new ProductKeyError("not_found");
     // Product test calls only: the company's learning account is never linked into a project.
-    if (target.provider === "anthropic") throw new ProductKeyError("invalid");
+    if (LEARNING_ONLY.has(target.provider)) throw new ProductKeyError("invalid");
     return this.#mutate(change, "link", { sourceId: change.sourceId, companySourceId: change.companySourceId }, (doc, now) => {
       this.#ensureNew(doc, change.sourceId, target.provider, change.owner, now);
       doc.sources.push({ sourceId: change.sourceId, provider: target.provider, connectedBy: change.actor.id, connectedAt: now, updatedAt: now, link: target.sourceId, linkedAt: target.connectedAt });
@@ -343,7 +412,7 @@ export class ProductKeyStore {
   }
   async setCaps(change: Change & { caps: ProductCaps }): Promise<ProductKeysView> {
     this.#check(change);
-    if (change.owner === PRODUCT_COMPANY_OWNER || !validCapsValue(change.caps)) throw new ProductKeyError("invalid");
+    if (!PROJECT.test(change.owner) || !validCapsValue(change.caps)) throw new ProductKeyError("invalid");
     return this.#mutate(change, "caps", { caps: change.caps }, (doc) => { doc.caps = { taskMicros: change.caps.taskMicros, projectMonthMicros: change.caps.projectMonthMicros }; return []; });
   }
   async setCeiling(change: Change & { ceiling: ProductCeiling }): Promise<ProductKeysView> {
@@ -354,17 +423,20 @@ export class ProductKeyStore {
   /** The project's eval budget per stage run (DEC 203). Same roles as the project's caps. */
   async setEvalBudget(change: Change & { budget: EvalBudget }): Promise<ProductKeysView> {
     this.#check(change);
-    if (change.owner === PRODUCT_COMPANY_OWNER || !validEvalBudget(change.budget)) throw new ProductKeyError("invalid");
+    if (!PROJECT.test(change.owner) || !validEvalBudget(change.budget)) throw new ProductKeyError("invalid");
     return this.#mutate(change, "eval_budget", { budget: change.budget }, (doc) => { doc.evalBudget = { calls: change.budget.calls, costMicros: change.budget.costMicros }; return []; });
   }
   /**
    * Records (or with null, withdraws) the project's approved eval spend. The approver is the actor: the settings route checked
    * that person's role with Code just before. A company admin approves as "admin", a project maintainer as "maintainer".
+   * `roleCheckedAt`: when that role check began. The approval counts from then, not from the save, so a withdrawal made while
+   * the check was in flight (withdrawApprovals) still catches it, and its freshness runs from what Code said.
    */
-  async setEvalApproval(change: Change & { approval: Omit<StoredEvalApproval, "approver" | "role" | "approvedAt"> | null; provider: string }): Promise<ProductKeysView> {
+  async setEvalApproval(change: Change & { approval: Omit<StoredEvalApproval, "approver" | "role" | "approvedAt"> | null; provider: string; roleCheckedAt?: number }): Promise<ProductKeysView> {
     this.#check(change);
-    if (change.owner === PRODUCT_COMPANY_OWNER) throw new ProductKeyError("invalid");
-    const now = this.#now();
+    if (!PROJECT.test(change.owner)) throw new ProductKeyError("invalid");
+    if (change.roleCheckedAt !== undefined && !whole(change.roleCheckedAt)) throw new ProductKeyError("invalid");
+    const now = Math.min(this.#now(), change.roleCheckedAt ?? Number.MAX_SAFE_INTEGER);
     const stored: StoredEvalApproval | null = change.approval === null ? null : {
       selection: change.approval.selection, inputsDigest: change.approval.inputsDigest, maxCalls: change.approval.maxCalls, maxCostMicros: change.approval.maxCostMicros,
       ...(change.approval.model === undefined ? {} : { model: change.approval.model }),
@@ -388,8 +460,8 @@ export class ProductKeyStore {
   // ---- internals ----
   /** The text to seal: a Gemini key as given, a Vertex credential in its canonical form (only the fields the token flow needs). */
   #secretOf(provider: ProductProvider, key: unknown): { text: string; vertex?: VertexCredential } {
-    // Gemini (AI Studio) and Anthropic (the company's learning account) keys are one printable token.
-    if (provider === "gemini" || provider === "anthropic") { if (!validGeminiKey(key)) throw new ProductKeyError("invalid"); return { text: key }; }
+    // Gemini (AI Studio), Anthropic and OpenAI (learning accounts) keys are one printable token.
+    if (provider === "gemini" || provider === "anthropic" || provider === "openai") { if (!validGeminiKey(key)) throw new ProductKeyError("invalid"); return { text: key }; }
     const vertex = typeof key === "string" ? parseVertexConnect(key) : undefined;
     if (vertex === undefined) throw new ProductKeyError("invalid");
     return { text: serializeVertexCredential(vertex), vertex };
@@ -402,15 +474,16 @@ export class ProductKeyStore {
     throw new ProductKeyError(result === "too_open" || result === "refused" ? result : "unavailable");
   }
   #identity(iss: string, cid: string, owner: string): void {
-    if (typeof iss !== "string" || iss.length === 0 || iss.length > 2048 || typeof cid !== "string" || !COMPANY.test(cid) || typeof owner !== "string" || (owner !== PRODUCT_COMPANY_OWNER && !PROJECT.test(owner))) throw new ProductKeyError("invalid");
+    if (typeof iss !== "string" || iss.length === 0 || iss.length > 2048 || typeof cid !== "string" || !COMPANY.test(cid) || typeof owner !== "string" || (owner !== PRODUCT_COMPANY_OWNER && owner !== LEARNING_OWNER && !PROJECT.test(owner))) throw new ProductKeyError("invalid");
   }
   #check(change: Change): void {
     if (record(change) === undefined) throw new ProductKeyError("invalid");
     this.#identity(change.iss, change.cid, change.owner);
     const actor = record(change.actor);
     if (typeof change.requestId !== "string" || !UUID.test(change.requestId) || !whole(change.expectedRevision) || actor === undefined || typeof actor.id !== "string" || !PERSON.test(actor.id) || (actor.role !== "company_admin" && actor.role !== "project_maintainer")) throw new ProductKeyError("invalid");
-    // DEC 157: a company admin OR a project maintainer may change a project's product key; company sources and the ceiling are admin-only.
-    if (change.owner === PRODUCT_COMPANY_OWNER && actor.role !== "company_admin") throw new ProductKeyError("forbidden");
+    // DEC 157: a company admin OR a project maintainer may change a project's product key; company sources, the ceiling and the
+    // learning accounts are admin-only.
+    if ((change.owner === PRODUCT_COMPANY_OWNER || change.owner === LEARNING_OWNER) && actor.role !== "company_admin") throw new ProductKeyError("forbidden");
   }
   #ensureNew(doc: OwnerDoc, sourceId: string, provider: ProductProvider, owner: string, now: number): void {
     // Expired removals are dropped from the document here (the key rows expire by their own purge time).
@@ -420,6 +493,15 @@ export class ProductKeyStore {
     if (doc.sources.some((s) => s.sourceId === sourceId) || doc.sources.length >= PRODUCT_MAX_SOURCES) throw new ProductKeyError("invalid");
     // One source per provider per project, so the product route never has to guess.
     if (owner !== PRODUCT_COMPANY_OWNER && doc.sources.some((s) => s.provider === provider)) throw new ProductKeyError("invalid");
+  }
+  async #withdrawals(iss: string, cid: string): Promise<Withdrawals> {
+    let row: StoredRow | undefined;
+    try { row = await this.options.table.get(withdrawalsKey(iss, cid)); } catch { throw new ProductKeyError("unavailable"); }
+    return row === undefined ? { people: {} } : parseWithdrawals(row.item);
+  }
+  #approvalState(approval: StoredEvalApproval, w: Withdrawals, now: number): EvalApprovalState {
+    if (withdrawn(approval, w)) return "withdrawn";
+    return freshApproval(approval, now) ? "current" : "stale";
   }
   async #read(iss: string, cid: string, owner: string): Promise<{ revision: number; doc: OwnerDoc }> {
     let row: StoredRow | undefined;
@@ -437,8 +519,8 @@ export class ProductKeyStore {
         connectedBy: s.connectedBy, connectedAt: s.connectedAt, updatedAt: s.updatedAt, ...(s.link === undefined ? {} : { linkedTo: s.link }), ...(s.warning === undefined ? {} : { warning: { ...s.warning } }), ...(s.vertex === undefined ? {} : { vertex: { ...s.vertex } }),
       })),
       removed: doc.removed.filter((r) => r.recoverUntil > now).map((r) => ({ sourceId: r.source.sourceId, provider: r.source.provider, recoverUntil: r.recoverUntil })),
-      ...(owner === PRODUCT_COMPANY_OWNER ? (doc.ceiling === undefined ? {} : { ceiling: { ...doc.ceiling } }) : { caps: { ...(doc.caps ?? PRODUCT_DEFAULT_CAPS) } }),
-      ...(owner === PRODUCT_COMPANY_OWNER ? {} : { evalBudget: { ...(doc.evalBudget ?? PRODUCT_DEFAULT_EVAL_BUDGET) }, ...(doc.evalApproval === undefined ? {} : { evalApproval: structuredClone(doc.evalApproval) }) }),
+      ...(owner === LEARNING_OWNER ? {} : owner === PRODUCT_COMPANY_OWNER ? (doc.ceiling === undefined ? {} : { ceiling: { ...doc.ceiling } }) : { caps: { ...(doc.caps ?? PRODUCT_DEFAULT_CAPS) } }),
+      ...(!PROJECT.test(owner) ? {} : { evalBudget: { ...(doc.evalBudget ?? PRODUCT_DEFAULT_EVAL_BUDGET) }, ...(doc.evalApproval === undefined ? {} : { evalApproval: structuredClone(doc.evalApproval) }) }),
     };
   }
   async #mutate(change: Change, kind: string, intent: Record<string, unknown>, apply: (doc: OwnerDoc, now: number) => TableWrite[] | Promise<TableWrite[]>): Promise<ProductKeysView> {

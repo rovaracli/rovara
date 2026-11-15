@@ -36,6 +36,7 @@ const PRODUCT_ENV = {
   [GATEWAY_ENV.productKeysTable]: PRODUCT.keys, [GATEWAY_ENV.productKeysKey]: KEY_ARN, [GATEWAY_ENV.productMeterTable]: PRODUCT.meter,
   [GATEWAY_ENV.productLedgerTable]: PRODUCT.ledger, [GATEWAY_ENV.productMarkersTable]: PRODUCT.markers, [GATEWAY_ENV.evalStagesTable]: PRODUCT.stages,
 };
+const MAC_KEY_ARN = "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-0000000000aa";
 const LEARNING_ENV = { [GATEWAY_ENV.learningMeterTable]: LEARNING.meter, [GATEWAY_ENV.learningLedgerTable]: LEARNING.ledger, [GATEWAY_ENV.learningMarkersTable]: LEARNING.markers };
 
 /** A KMS that wraps data keys with an in-memory key, bound to the encryption context, and names the key it was given. */
@@ -78,6 +79,11 @@ describe("deployed product settings: off unless configured, all or none", () => 
     expect(refusedBy({ ...BASE, [GATEWAY_ENV.vertexFederationRole]: VERTEX_ROLE })).toBe(GATEWAY_ENV.productKeysTable);
     expect(refusedBy({ ...BASE, ...PRODUCT_ENV, [GATEWAY_ENV.productKeysKey]: "alias/product" })).toBe(GATEWAY_ENV.productKeysKey);
     expect(refusedBy({ ...BASE, ...PRODUCT_ENV, [GATEWAY_ENV.vertexFederationRole]: "arn:aws:iam::944937319445:role/*" })).toBe(GATEWAY_ENV.vertexFederationRole);
+    // PRODUCT-VERTEX-CLOUD-CONNECT: the MAC key that verifies Cloud's calls, only with the product route AND Vertex.
+    expect((readGatewayConfig({ ...BASE, ...PRODUCT_ENV, [GATEWAY_ENV.vertexFederationRole]: VERTEX_ROLE, [GATEWAY_ENV.productMacKey]: MAC_KEY_ARN }) as ServeConfig).product?.macKeyArn).toBe(MAC_KEY_ARN);
+    expect(refusedBy({ ...BASE, ...PRODUCT_ENV, [GATEWAY_ENV.productMacKey]: MAC_KEY_ARN })).toBe(GATEWAY_ENV.productMacKey);
+    expect(refusedBy({ ...BASE, [GATEWAY_ENV.productMacKey]: MAC_KEY_ARN })).toBe(GATEWAY_ENV.productKeysTable);
+    expect(refusedBy({ ...BASE, ...PRODUCT_ENV, [GATEWAY_ENV.vertexFederationRole]: VERTEX_ROLE, [GATEWAY_ENV.productMacKey]: "alias/mac" })).toBe(GATEWAY_ENV.productMacKey);
     // No two settings may name the same table (two meters on one table would share rows).
     expect(refusedBy({ ...BASE, ...PRODUCT_ENV, [GATEWAY_ENV.productMeterTable]: TABLES.meter })).toBe(GATEWAY_ENV.productMeterTable);
     expect(refusedBy({ ...BASE, ...PRODUCT_ENV, ...LEARNING_ENV, [GATEWAY_ENV.learningMeterTable]: PRODUCT.meter })).toBe(GATEWAY_ENV.learningMeterTable);
@@ -85,16 +91,16 @@ describe("deployed product settings: off unless configured, all or none", () => 
 });
 
 describe("deployed product route (started process)", () => {
-  async function started(options: { product: boolean }) {
+  async function started(options: { product: boolean; env?: Record<string, string>; verifyMac?: () => Promise<boolean> }) {
     const wire = new WireDynamo([...Object.values(TABLES), ...Object.values(PRODUCT), ...Object.values(LEARNING)], { namespaceTables: true });
     const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
-    const kms = fakeKms();
+    const kms = Object.assign(fakeKms(), options.verifyMac === undefined ? {} : { verifyMac: options.verifyMac });
     const key = geminiKey();
     // Cloud's settings route connected the project's key (same table, same KMS key).
     const writer = new ProductKeyStore({ table: new DynamoProductKeyTable(db, PRODUCT.keys), sealer: new ProductKeySealer(kmsProductKeyService(kms, KEY_ARN)), fingerprint: hmacFingerprinter(randomBytes(32)), now: () => now });
     await writer.connect({ iss: claims.iss, cid: claims.cid, owner: pid, requestId: randomUUID(), expectedRevision: 0, actor: maintainer, sourceId: "src_gem", provider: "gemini", key });
     const sent: ProviderRequest[] = [];
-    const config = { ...(readGatewayConfig({ ...BASE, ...(options.product ? { ...PRODUCT_ENV, ...LEARNING_ENV } : {}) }) as ServeConfig), port: 0 };
+    const config = { ...(readGatewayConfig({ ...BASE, ...(options.product ? { ...PRODUCT_ENV, ...LEARNING_ENV } : {}), ...options.env }) as ServeConfig), port: 0 };
     const gateway = await startServe(config, {
       db, kms, now: () => now, listen: false, log: () => undefined, caps: new FixedCapsSource(caps),
       fetch: async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }), keys: { keyFor: async () => "fixture-provider-key" },
@@ -131,6 +137,19 @@ describe("deployed product route (started process)", () => {
     expect((await request(t.gateway.server, "/v1/learning/messages", {})).statusCode).toBe(404);
     expect(t.wire.calls.filter((c) => c.table === PRODUCT.keys).length).toBe(before);
     expect(t.sent).toHaveLength(0);
+  });
+
+  it("serves Cloud's Vertex check only with Vertex, the MAC key and a KMS that verifies; an unsigned call is refused before any probe", async () => {
+    const refused = Object.assign(new Error("kms request refused"), { name: "KMSInvalidMacException" });
+    const verifyMac = async () => { throw refused; };
+    const on = await started({ product: true, env: { [GATEWAY_ENV.vertexFederationRole]: VERTEX_ROLE, [GATEWAY_ENV.productMacKey]: MAC_KEY_ARN }, verifyMac });
+    const signed = { "x-rovara-call-at": String(now), "x-rovara-call-mac": Buffer.alloc(32).toString("base64url") };
+    const r = await request(on.gateway.server, "/v1/service/vertex-check", { iss: claims.iss, cid: claims.cid, credential: {} }, signed);
+    expect(r.statusCode).toBe(401);
+    expect(r.text()).toBe(JSON.stringify({ error: { type: "unauthorized", message: "the service call is not signed" } }));
+    // Without the MAC key the path is not served: it is just another unknown gateway path.
+    const off = await started({ product: true, env: { [GATEWAY_ENV.vertexFederationRole]: VERTEX_ROLE }, verifyMac });
+    expect((await request(off.gateway.server, "/v1/service/vertex-check", {}, signed)).statusCode).toBe(404);
   });
 
   it("mounts the eval stage controls on the shared stage table: a hold without an approval holds nothing", async () => {
