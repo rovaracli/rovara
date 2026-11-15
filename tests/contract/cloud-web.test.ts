@@ -82,10 +82,9 @@ describe("Rovara Cloud on CloudFront, Lambda and DynamoDB (Rovara-cloud#11)", ()
     expect(policies).not.toContain(idOf("AWS::SSM::Parameter"));
   });
 
-  it("keeps exporting its table's name and ARN for one release after the Fargate app stopped importing them (#11, PR 4)", () => {
-    // CloudFormation won't remove an export another stack still imports: these are the names production's exports have.
+  it("exports nothing of its own: the table's two exports kept for the move are gone (CloudFront's domain is exported only for the first address that imports it)", () => {
     const exports = Object.values(template.toJSON().Outputs as Record<string, { Export?: { Name: string } }>).flatMap((each) => (each.Export === undefined ? [] : [each.Export.Name]));
-    expect(exports).toEqual(expect.arrayContaining([expect.stringMatching(/:ExportsOutputRefState1C20CC9AB4E57B9B$/u), expect.stringMatching(/:ExportsOutputFnGetAttState1C20CC9AArnF70626CA$/u)]));
+    expect(exports).toEqual([]);
   });
 
   it("prints how to register a new environment with Code, and where its secret is", () => {

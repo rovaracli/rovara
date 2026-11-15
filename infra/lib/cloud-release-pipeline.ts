@@ -19,7 +19,7 @@ import { CLOUD_APP_CONTEXT_KEY } from "./cloud-app.js";
  * The Rovara Cloud release pipeline (owner decisions 2026-11-14): a vX.Y.Z tag pushed to PrepLabsAI/Rovara-cloud waits for a
  * person to approve, then deploys Rovara Cloud (cloud-app.ts) on an existing Rovara Code install.
  *
- *   Source (tag) -> Approve (manual) -> Deploy (cdk deploy of the Cloud stack, which builds its image)
+ *   Source (tag) -> Check (a vX.Y.Z tag on cloud/next) -> Approve (manual) -> Deploy (cdk deploy, with the release check)
  *
  * Rovara Code is installed first and on its own (its own pipeline or `rovara init`); this pipeline never deploys any of
  * Code's stacks, and Cloud has no user pool: people sign in through Code. The Code install's address is the CodeUrl
@@ -52,11 +52,22 @@ const INSTALL_NODE = [
 ];
 
 /** Fetches the tags and finds the one release tag on this commit: the pipeline deploys release tags only. */
-const FIND_RELEASE_TAG = [
+export const FIND_RELEASE_TAG = [
   'git fetch --force --quiet origin "refs/tags/*:refs/tags/*"',
   'RELEASE_TAG="$(git tag --points-at HEAD | grep -E "^v[0-9]+\\.[0-9]+\\.[0-9]+$" | head -n 1)"',
   'if [ -z "$RELEASE_TAG" ]; then echo "this commit has no vX.Y.Z release tag; the pipeline deploys release tags only" >&2; exit 1; fi',
   'echo "release $RELEASE_TAG at $(git rev-parse HEAD)"',
+];
+
+/**
+ * The release tag's commit must be on cloud/next. A tag trigger can't name a branch, so a vX.Y.Z tag cut anywhere else in the repository
+ * (for example a staging release on an integration branch) would otherwise start this pipeline and reach Approve. Runs after
+ * FIND_RELEASE_TAG, in the Check stage (before Approve, so such a run fails on its own) and again in the deploy job.
+ */
+export const RELEASE_TAG_ON_BRANCH = [
+  `git fetch --quiet origin "+refs/heads/${CLOUD_PIPELINE_BRANCH}:refs/remotes/origin/${CLOUD_PIPELINE_BRANCH}"`,
+  `if ! git merge-base --is-ancestor HEAD "origin/${CLOUD_PIPELINE_BRANCH}"; then echo "$RELEASE_TAG ($(git rev-parse --short HEAD)) is not on ${CLOUD_PIPELINE_BRANCH}: this pipeline deploys only release tags cut from ${CLOUD_PIPELINE_BRANCH}" >&2; exit 1; fi`,
+  `echo "$RELEASE_TAG is on ${CLOUD_PIPELINE_BRANCH}"`,
 ];
 
 /** How often the release check asks the live address during a deploy, and what it asks for (the page shell, and the API without a sign-in). */
@@ -136,7 +147,7 @@ export class CloudReleasePipelineStack extends Stack {
         phases: {
           install: { commands: INSTALL_NODE },
           // The web build: cloud-web.ts uploads the app's files to S3 and puts the page shell in the function.
-          pre_build: { commands: [...FIND_RELEASE_TAG, "npm ci", "npx tsc -b infra", "npm run build:web"] },
+          pre_build: { commands: [...FIND_RELEASE_TAG, ...RELEASE_TAG_ON_BRANCH, "npm ci", "npx tsc -b infra", "npm run build:web"] },
           build: {
             // One command: the release check's poller and the deploy share one shell.
             commands: [RELEASE_CHECKED_DEPLOY],
@@ -161,6 +172,21 @@ export class CloudReleasePipelineStack extends Stack {
       description: `Reads ${CLOUD_PIPELINE_REPOSITORY_OWNER}/${CLOUD_PIPELINE_REPOSITORY_NAME} through the GitHub connection`,
     });
     sourceRole.addToPolicy(useConnection);
+
+    // The Check stage: the tag is a vX.Y.Z release tag on cloud/next, before anyone is asked to approve.
+    const check = new codebuild.PipelineProject(this, "Check", {
+      projectName: `${RESOURCE_PREFIX}-${env}-check`,
+      description: `Checks a release tag for Rovara Cloud ${env} is a vX.Y.Z tag on ${CLOUD_PIPELINE_BRANCH}, before approval`,
+      environment: { buildImage: codebuild.LinuxArmBuildImage.AMAZON_LINUX_2023_STANDARD_3_0, computeType: codebuild.ComputeType.SMALL },
+      timeout: Duration.minutes(10),
+      logging: { cloudWatch: { logGroup, prefix: "check" } },
+      buildSpec: codebuild.BuildSpec.fromObject({
+        version: "0.2",
+        env: { shell: "bash", "git-credential-helper": "yes" },
+        phases: { build: { commands: [...FIND_RELEASE_TAG, ...RELEASE_TAG_ON_BRANCH] } },
+      }),
+    });
+    check.addToRolePolicy(useConnection);
 
     const sourceOutput = new codepipeline.Artifact("Source");
     const source = new actions.CodeStarConnectionsSourceAction({
@@ -187,6 +213,7 @@ export class CloudReleasePipelineStack extends Stack {
       restartExecutionOnUpdate: false,
       stages: [
         { stageName: "Source", actions: [source] },
+        { stageName: "Check", actions: [new actions.CodeBuildAction({ actionName: "CheckReleaseTag", project: check, input: sourceOutput })] },
         {
           stageName: "Approve",
           actions: [new actions.ManualApprovalAction({

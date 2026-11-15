@@ -184,10 +184,6 @@ export class CloudWebStack extends Stack {
     const origin = `https://${distribution.distributionDomainName}`;
     // aws-cdk-lib types TableV2.tableId as `string | undefined`, which exactOptionalPropertyTypes rejects for ITableV2.
     this.table = table as dynamodb.ITableV2;
-    // The Fargate app imported these to copy Cloud's sessions here (#37). Kept for one release after it stopped (#11, PR 4), because
-    // CloudFormation won't remove an export while another stack still imports it. Remove these two lines in the release after that.
-    this.exportValue(table.tableName);
-    this.exportValue(table.tableArn);
     this.origin = origin;
     new ssm.StringParameter(this, "Origin", {
       parameterName: originParameter,
