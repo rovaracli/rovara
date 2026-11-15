@@ -59,7 +59,9 @@ export class Expr {
 export interface Key { pk: string; sk: string }
 export interface TransactPut { kind: "Put"; table: string; item: Item; condition?: (e: Expr) => string }
 export interface TransactUpdate { kind: "Update"; table: string; key: Key; update: (e: Expr) => string; condition?: (e: Expr) => string }
-export type TransactAction = TransactPut | TransactUpdate;
+/** Writes nothing: fences the transaction on another item (DynamoDB ConditionCheck; IAM dynamodb:ConditionCheckItem). */
+export interface TransactCheck { kind: "Check"; table: string; key: Key; condition: (e: Expr) => string }
+export type TransactAction = TransactPut | TransactUpdate | TransactCheck;
 
 /** Why a transaction did not apply. "condition": item i's condition failed (reasons by index); "retry": a conflict or throttle. */
 export class TransactionRefused extends Error {
@@ -123,6 +125,10 @@ export class Dynamo {
       if (action.kind === "Put") {
         const condition = action.condition?.(e);
         return { Put: { TableName: action.table, Item: marshalItem(action.item), ...(condition === undefined ? {} : { ConditionExpression: condition }), ...e.wire() } };
+      }
+      if (action.kind === "Check") {
+        const condition = action.condition(e);
+        return { ConditionCheck: { TableName: action.table, Key: marshalItem({ ...action.key }), ConditionExpression: condition, ...e.wire() } };
       }
       const update = action.update(e); const condition = action.condition?.(e);
       return { Update: { TableName: action.table, Key: marshalItem({ ...action.key }), UpdateExpression: update, ...(condition === undefined ? {} : { ConditionExpression: condition }), ...e.wire() } };

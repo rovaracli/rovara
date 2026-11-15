@@ -6,7 +6,9 @@
 // holding Cloud's https address), CLOUD_CLIENT_SECRET_ID (the secret holding Cloud's client secret), CLOUD_SESSIONS_KEY_ID (the KMS key
 // that seals sign-ins), CLOUD_ORG_NAME, CLOUD_APP_DIRECTORY (the page shell, index.html); COMPANY_TABLE (Cloud's company data:
 // settings and rules, invites, profile, the policy hook's install allow-list; absent, the company routes answer 501) and CLOUD_COMPANY_ID
-// (the one company of a single-company Code, used only when Code's access check names none).
+// (the one company of a single-company Code, used only when Code's access check names none); CLOUD_PRODUCT_KEYS_TABLE,
+// CLOUD_PRODUCT_KEYS_KEY and CLOUD_PRODUCT_KEYS_MAC_KEY (the model gateway's product key table and KMS keys: the project product AI
+// settings, all three or none; absent, those routes answer 501).
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
 import {
@@ -14,6 +16,31 @@ import {
   type CloudRequest, type CloudResponse,
 } from "../packages/cloud-server/src/index.js";
 import { createAppHandler } from "../packages/web/src/server/handler.js";
+import { credentialsFromEnvironment } from "../packages/model-gateway/src/aws.js";
+import { awsKms, kmsFingerprinter } from "../packages/model-gateway/src/aws-kms.js";
+import { Dynamo } from "../packages/model-gateway/src/dynamo.js";
+import { DynamoProductKeyTable } from "../packages/model-gateway/src/dynamo-product-keys.js";
+import { ProductKeyStore } from "../packages/model-gateway/src/product-keys.js";
+import { kmsProductKeyService, ProductKeySealer } from "../packages/model-gateway/src/product-seal.js";
+
+/**
+ * The project product AI settings' store (B7): the gateway's write-only ProductKeyStore over its product key table, sealing with
+ * its KMS key and fingerprinting with its HMAC key (this role may GenerateDataKey and GenerateMac, never Decrypt). AI Studio keys
+ * only: a Vertex connect needs the gateway's federation probe, which this role can't run. Undefined unless all three are set.
+ */
+export function productAiStore(env: Readonly<Record<string, string | undefined>>): ProductKeyStore | undefined {
+  const table = env.CLOUD_PRODUCT_KEYS_TABLE; const key = env.CLOUD_PRODUCT_KEYS_KEY; const macKey = env.CLOUD_PRODUCT_KEYS_MAC_KEY;
+  const set = [table, key, macKey].filter((v) => v !== undefined && v !== "").length;
+  if (set === 0) return undefined;
+  if (set !== 3) throw new Error("product AI settings: CLOUD_PRODUCT_KEYS_TABLE, CLOUD_PRODUCT_KEYS_KEY and CLOUD_PRODUCT_KEYS_MAC_KEY go together");
+  const region = env.AWS_REGION ?? env.AWS_DEFAULT_REGION ?? "";
+  const credentials = credentialsFromEnvironment(env);
+  const kms = awsKms({ region, credentials });
+  return new ProductKeyStore({
+    table: new DynamoProductKeyTable(new Dynamo({ region, credentials }), table!),
+    sealer: new ProductKeySealer(kmsProductKeyService(kms, key!)), fingerprint: kmsFingerprinter(kms, macKey!), providers: ["gemini"],
+  });
+}
 
 /** A function URL's (and an HTTP API's) request, payload version 2.0: the fields Cloud reads. */
 export interface FunctionUrlEvent {
@@ -74,6 +101,8 @@ function build() {
   const companyTable = process.env.COMPANY_TABLE;
   const companyId = process.env.CLOUD_COMPANY_ID;
   const company = companyTable ? { store: new DynamoCompanyStore(db, companyTable), ...(companyId ? { companyId } : {}) } : undefined;
+  const productStore = productAiStore(process.env);
+  const productAi = productStore === undefined ? undefined : { store: productStore, issuer: `${required("ROVARA_CODE_URL")}/v1/auth`, ...(companyId ? { companyId } : {}) };
   const app = createAppHandler({ appDirectory: required("CLOUD_APP_DIRECTORY"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
   // One Cloud handler per address and secret: a new pair (a rotated secret) gets a new client.
   let current: { key: string; handle: ReturnType<typeof createCloudHandler> } | undefined;
@@ -88,7 +117,7 @@ function build() {
       current = {
         key,
         handle: createCloudHandler({
-          client, store, work, presence, audit, origin, callbackPath: "/callback", secureCookies: true, ...(company === undefined ? {} : { company }),
+          client, store, work, presence, audit, origin, callbackPath: "/callback", secureCookies: true, ...(company === undefined ? {} : { company }), ...(productAi === undefined ? {} : { productAi }),
           org: { orgId: "rovara", name: process.env.CLOUD_ORG_NAME ?? "Rovara", plan: "cloud" },
         }),
       };

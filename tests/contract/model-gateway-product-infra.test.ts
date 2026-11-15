@@ -1,0 +1,179 @@
+// B5, B6, B8, #57 and #58 in the gateway stack: made only with -c rovaraModelGatewayProductAi=on. Off, the template is byte for byte
+// the one before this change. On: the product key table with its own KMS key (only Cloud's settings role seals, only the gateway's
+// serving role opens, bound to this install and the six context keys), an HMAC key for fingerprints, the product and learning
+// meters' tables, the shared eval stage table, the Vertex federation role, and the serving role's exact grants. The deploy role's
+// actions for the new resources are simulated against the agentx deploy role and its default permission boundary.
+import { createHash } from "node:crypto";
+import type { Stack } from "aws-cdk-lib";
+import { Template } from "aws-cdk-lib/assertions";
+import { describe, expect, it } from "vitest";
+import { defaultBoundaryStatements, serviceRoleStatements, type PolicyStatementJson } from "../../packages/contracts/src/access-policies.js";
+import { GATEWAY_ENV, GATEWAY_EVAL_STAGE_INDEXES, GATEWAY_LEARNING_ENV, GATEWAY_PRODUCT_ENV, GATEWAY_PRODUCT_TTL_ATTRIBUTE, PRODUCT_KEY_PURPOSE as GATEWAY_PURPOSE, PRODUCT_KEYS_TTL_ATTRIBUTE, productKeyContext } from "../../packages/model-gateway/src/index.js";
+import { iamWildcardMatches } from "../../packages/model-gateway/src/product-policy.js";
+import { buildAgentXApp, productAiOn } from "../../infra/lib/app.js";
+import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_EVAL_STAGE_INDEXES, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, PRODUCT_KEY_CONTEXT_KEYS, PRODUCT_KEY_PURPOSE } from "../../infra/lib/model-gateway.js";
+
+type Resource = { Type: string; Properties: Record<string, unknown>; DeletionPolicy?: string };
+type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>>; Principal?: unknown };
+
+const synth = (context: Record<string, string>) => Template.fromStack(buildAgentXApp({ [MODEL_GATEWAY_CONTEXT_KEY]: "staging", agentxRegion: "us-west-2", ...context }).node.findChild("RovaraModelGateway") as Stack).toJSON() as { Resources: Record<string, Resource>; Parameters: Record<string, unknown>; Outputs: Record<string, unknown> };
+/** The gateway template (staging) at cloud/next d7d1edbb8, before this change: SHA-256 of its JSON. */
+const BEFORE_SHA256 = "cbf3fdf02b1dad813c00058925d1d0ae77ec2934c79ee0be157107265cc7bd0b";
+const off = synth({});
+const on = synth({ [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" });
+const ofType = (t: { Resources: Record<string, Resource> }, type: string) => Object.entries(t.Resources).filter(([, r]) => r.Type === type);
+const idStarting = (type: string, prefix: string) => ofType(on, type).find(([id]) => id.startsWith(prefix))![0];
+const arnOf = (id: string) => ({ "Fn::GetAtt": [id, "Arn"] });
+const serveRole = idStarting("AWS::IAM::Role", "ServeTaskRole");
+const serveStatements = (): Statement[] => ofType(on, "AWS::IAM::Policy").filter(([, p]) => JSON.stringify(p.Properties.Roles).includes(`"${serveRole}"`)).flatMap(([, p]) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
+const bySid = () => Object.fromEntries(serveStatements().map((s) => [s.Sid ?? "", s]));
+const table = (prefix: string) => idStarting("AWS::DynamoDB::GlobalTable", prefix);
+const companyKeysOnly = { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["CO#*"] }, Null: { "dynamodb:LeadingKeys": "false" } };
+const issuer = { "Fn::Join": ["", [{ Ref: "CodeUrl" }, "/v1/auth"]] };
+
+describe("off unless configured", () => {
+  it("leaves the gateway template byte for byte as it was, and refuses any switch value but on", () => {
+    expect(createHash("sha256").update(JSON.stringify(off)).digest("hex")).toBe(BEFORE_SHA256);
+    expect(productAiOn(undefined, "x")).toBe(false);
+    expect(productAiOn("on", "x")).toBe(true);
+    for (const bad of ["true", "1", "off", "", true]) expect(() => productAiOn(bad, "x")).toThrow(/must be "on" or absent/u);
+    expect(() => synth({ [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "yes" })).toThrow(/must be "on" or absent/u);
+    expect(() => buildAgentXApp({ [MODEL_GATEWAY_CONTEXT_KEY]: "production", [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" })).toThrow(/named test environments/u);
+  });
+  it("repeats the process's literals (deploy.ts, product-seal.ts)", () => {
+    expect(MODEL_GATEWAY_EVAL_STAGE_INDEXES).toEqual(GATEWAY_EVAL_STAGE_INDEXES);
+    expect(PRODUCT_KEY_PURPOSE).toBe(GATEWAY_PURPOSE);
+    expect(PRODUCT_KEYS_TTL_ATTRIBUTE).toBe(GATEWAY_PRODUCT_TTL_ATTRIBUTE);
+    expect([...PRODUCT_KEY_CONTEXT_KEYS].sort()).toEqual(Object.keys(productKeyContext({ iss: "i", cid: "c", owner: "o", sourceId: "s", versionId: "v" })).sort());
+  });
+});
+
+describe("on: tables", () => {
+  it("adds eight tables, all retained, deletion-protected and recoverable, with company keys; TTL only where rows expire", () => {
+    const added = ofType(on, "AWS::DynamoDB::GlobalTable").map(([id]) => id.replace(/[0-9A-F]{8}$/u, "")).filter((id) => !["Ledger", "Markers", "Meter", "Prices"].includes(id)).sort();
+    expect(added).toEqual(["EvalStages", "LearningLedger", "LearningMarkers", "LearningMeter", "ProductKeys", "ProductLedger", "ProductMarkers", "ProductMeter"]);
+    for (const name of added) {
+      const r = on.Resources[table(name)]!;
+      expect(r.DeletionPolicy).toBe("Retain");
+      expect(r.Properties.Replicas).toEqual([expect.objectContaining({ DeletionProtectionEnabled: true, PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true } })]);
+      const ttl = ["EvalStages", "LearningMarkers", "ProductKeys", "ProductMarkers"].includes(name);
+      expect(r.Properties.TimeToLiveSpecification).toEqual(ttl ? { AttributeName: GATEWAY_PRODUCT_TTL_ATTRIBUTE, Enabled: true } : undefined);
+    }
+    const indexes = (name: string) => ((on.Resources[table(name)]!.Properties.GlobalSecondaryIndexes ?? []) as Array<{ IndexName: string }>).map((i) => i.IndexName).sort();
+    expect(indexes("EvalStages")).toEqual(["due-stages"]);
+    expect(indexes("ProductLedger")).toEqual(["pending-by-age", "pending-by-key"]);
+    expect(indexes("ProductMeter")).toEqual(["open-holds"]);
+    expect(indexes("ProductKeys")).toEqual([]);
+  });
+});
+
+describe("on: keys", () => {
+  const keyPolicy = (prefix: string) => ((on.Resources[idStarting("AWS::KMS::Key", prefix)]!.Properties.KeyPolicy as { Statement: Statement[] }).Statement);
+  const sealedRow = {
+    StringEquals: { "kms:EncryptionContext:purpose": "rovara-product-ai-key", "kms:EncryptionContext:install": issuer },
+    "ForAllValues:StringEquals": { "kms:EncryptionContextKeys": ["purpose", "install", "company", "owner", "source", "version"] },
+    Null: { "kms:EncryptionContext:company": "false", "kms:EncryptionContext:owner": "false", "kms:EncryptionContext:source": "false", "kms:EncryptionContext:version": "false" },
+  };
+  it("the product key key: only the serving role opens, only Cloud's settings role seals, never Encrypt or a grant", () => {
+    const statements = keyPolicy("ProductKeysKey");
+    expect(statements.map((s) => s.Sid)).toEqual(["AccountManagesNotUses", "OnlyGatewayOpens", "OnlySettingsSeals"]);
+    expect(statements[1]).toEqual({ Sid: "OnlyGatewayOpens", Effect: "Allow", Principal: { AWS: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":iam::", { Ref: "AWS::AccountId" }, ":root"]] } }, Action: "kms:Decrypt", Resource: "*", Condition: { ...sealedRow, ArnEquals: { "aws:PrincipalArn": arnOf(serveRole) } } });
+    expect(statements[2]).toEqual({ Sid: "OnlySettingsSeals", Effect: "Allow", Principal: statements[1]!.Principal, Action: "kms:GenerateDataKey", Resource: "*", Condition: { ...sealedRow, ArnEquals: { "aws:PrincipalArn": { Ref: "CloudSettingsRoleArn" } } } });
+    const managed = [statements[0]!.Action].flat();
+    for (const use of ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey", "kms:ReEncrypt*", "kms:CreateGrant", "kms:*"]) expect(managed).not.toContain(use);
+    expect(on.Resources[idStarting("AWS::KMS::Key", "ProductKeysKey")]!.Properties.EnableKeyRotation).toBe(true);
+    expect(on.Parameters.CloudSettingsRoleArn).toMatchObject({ Type: "String", AllowedPattern: "^arn:aws[a-z-]*:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]{1,512}$" });
+  });
+  it("the fingerprint key: HMAC, only Cloud's settings role makes MACs", () => {
+    const r = on.Resources[idStarting("AWS::KMS::Key", "ProductKeysMacKey")]!;
+    expect(r.Properties).toMatchObject({ KeySpec: "HMAC_256", KeyUsage: "GENERATE_VERIFY_MAC" });
+    const statements = keyPolicy("ProductKeysMacKey");
+    expect(statements.map((s) => s.Sid)).toEqual(["AccountManagesNotUses", "OnlySettingsFingerprints"]);
+    expect(statements[1]).toMatchObject({ Action: "kms:GenerateMac", Resource: "*", Condition: { ArnEquals: { "aws:PrincipalArn": { Ref: "CloudSettingsRoleArn" } } } });
+  });
+});
+
+describe("on: the serving role's grants (exact)", () => {
+  it("pins every new statement: tables, indexes, key and federation role, company keys on every item grant", () => {
+    const s = bySid();
+    expect(s.ProductKeysCompanyKeys).toEqual({ Sid: "ProductKeysCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Resource: arnOf(table("ProductKeys")), Condition: companyKeysOnly });
+    expect(s.ProductAndLearningMeterCompanyKeys).toEqual({ Sid: "ProductAndLearningMeterCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"], Resource: ["ProductMeter", "ProductLedger", "LearningMeter", "LearningLedger"].map((n) => arnOf(table(n))), Condition: companyKeysOnly });
+    expect(s.ProductAndLearningMarkersCompanyKeys).toEqual({ Sid: "ProductAndLearningMarkersCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem", "dynamodb:DeleteItem"], Resource: ["ProductMarkers", "LearningMarkers"].map((n) => arnOf(table(n))), Condition: companyKeysOnly });
+    expect(s.EvalStagesCompanyKeys).toEqual({ Sid: "EvalStagesCompanyKeys", Effect: "Allow", Action: ["dynamodb:GetItem", "dynamodb:PutItem"], Resource: arnOf(table("EvalStages")), Condition: companyKeysOnly });
+    const index = (name: string, idx: string) => ({ "Fn::Join": ["", [arnOf(table(name)), `/index/${idx}`]] });
+    expect(s.QueryProductIndexes).toEqual({ Sid: "QueryProductIndexes", Effect: "Allow", Action: "dynamodb:Query", Resource: [
+      index("ProductLedger", "pending-by-key"), index("ProductLedger", "pending-by-age"), index("LearningLedger", "pending-by-key"), index("LearningLedger", "pending-by-age"),
+      index("ProductMeter", "open-holds"), index("LearningMeter", "open-holds"), index("EvalStages", "due-stages"),
+    ] });
+    expect(s.OpenProductKeys).toEqual({ Sid: "OpenProductKeys", Effect: "Allow", Action: "kms:Decrypt", Resource: arnOf(idStarting("AWS::KMS::Key", "ProductKeysKey")), Condition: { StringEquals: { "kms:EncryptionContext:purpose": "rovara-product-ai-key", "kms:EncryptionContext:install": issuer } } });
+    expect(s.AssumeVertexFederation).toEqual({ Sid: "AssumeVertexFederation", Effect: "Allow", Action: "sts:AssumeRole", Resource: arnOf(idStarting("AWS::IAM::Role", "VertexFederationRole")), Condition: { StringLike: { "sts:RoleSessionName": "org_*" } } });
+    // Nothing else was added, and the agent grants are unchanged.
+    expect(Object.keys(s).sort()).toEqual(["AssumeVertexFederation", "DecryptProviderKeys", "EvalStagesCompanyKeys", "MarkersCompanyKeys", "MeterAndLedgerCompanyKeys", "OpenProductKeys", "ProductAndLearningMarkersCompanyKeys", "ProductAndLearningMeterCompanyKeys", "ProductKeysCompanyKeys", "QueryOpenHolds", "QueryPendingCorrections", "QueryProductIndexes", "ReadCompanyBudgets", "ReadPrices", "ReadProviderKeys"]);
+    // No DeleteItem on any money table, the key table or the stage table; no GenerateDataKey or Encrypt for the gateway.
+    const all = serveStatements();
+    for (const st of all.filter((x) => [x.Action].flat().includes("dynamodb:DeleteItem"))) expect(JSON.stringify(st.Resource)).not.toMatch(/ProductKeys|EvalStages|Meter|Ledger/u);
+    expect(JSON.stringify(all)).not.toMatch(/"kms:GenerateDataKey|"kms:Encrypt"|"kms:GenerateMac"|"sts:\*"|"\*:\*"/u);
+  });
+  it("the Vertex federation role: no permissions at all; its trust names only the serving role, with a company session name", () => {
+    const role = idStarting("AWS::IAM::Role", "VertexFederationRole");
+    const r = on.Resources[role]!;
+    expect(r.Properties.AssumeRolePolicyDocument).toEqual({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "sts:AssumeRole", Principal: { AWS: arnOf(serveRole) }, Condition: { StringLike: { "sts:RoleSessionName": "org_*" } } }] });
+    expect(r.Properties.ManagedPolicyArns).toBeUndefined();
+    expect(r.Properties.Policies).toBeUndefined();
+    expect(r.Properties.MaxSessionDuration).toBe(3600);
+    expect(ofType(on, "AWS::IAM::Policy").filter(([, p]) => JSON.stringify(p.Properties.Roles).includes(`"${role}"`))).toEqual([]);
+  });
+  it("gives the serving task every product and learning setting, and the price job none", () => {
+    const env = (task: string) => Object.fromEntries(((on.Resources[idStarting("AWS::ECS::TaskDefinition", task)]!.Properties.ContainerDefinitions as Array<{ Environment: Array<{ Name: string; Value: unknown }> }>)[0]!.Environment).map((e) => [e.Name, e.Value]));
+    const serve = env("ServeTask");
+    for (const name of [...GATEWAY_PRODUCT_ENV, ...GATEWAY_LEARNING_ENV, GATEWAY_ENV.vertexFederationRole]) expect(serve[name]).toBeDefined();
+    expect(serve[GATEWAY_ENV.productKeysKey]).toEqual(arnOf(idStarting("AWS::KMS::Key", "ProductKeysKey")));
+    expect(serve[GATEWAY_ENV.vertexFederationRole]).toEqual(arnOf(idStarting("AWS::IAM::Role", "VertexFederationRole")));
+    expect(Object.keys(env("PriceFetchTask")).sort()).toEqual([GATEWAY_ENV.mode, GATEWAY_ENV.pricesTable, "NODE_OPTIONS"].sort());
+    expect(Object.keys(on.Outputs)).toEqual(expect.arrayContaining(["ProductKeysTableName", "ProductKeysKeyArn", "ProductKeysMacKeyArn", "VertexFederationRoleArn"]));
+  });
+});
+
+// ---- the deploy role and its permission boundary -------------------------------------------------------------------------
+/** A small IAM evaluator: explicit Deny wins; an Allow needs a matching action and resource. Conditions on an Allow are taken as met
+ * (a ceiling check); a Deny's condition is evaluated for the one key the deploy role's Deny statements use (iam:PermissionsBoundary). */
+function decide(statements: readonly PolicyStatementJson[], action: string, resource: string, context: Record<string, string | undefined>): "allowed" | "denied" | "implicit" {
+  const hit = (s: PolicyStatementJson) => s.Action.some((a) => iamWildcardMatches(a.toLowerCase(), action.toLowerCase()))
+    && (s.Resource === undefined ? s.NotResource !== undefined && ![s.NotResource].flat().some((r) => iamWildcardMatches(r, resource)) : [s.Resource].flat().some((r) => iamWildcardMatches(r, resource)));
+  const denyApplies = (s: PolicyStatementJson) => {
+    const ne = s.Condition?.StringNotEquals?.["iam:PermissionsBoundary"];
+    return ne === undefined || context["iam:PermissionsBoundary"] !== ne;
+  };
+  if (statements.some((s) => s.Effect === "Deny" && hit(s) && denyApplies(s))) return "denied";
+  return statements.some((s) => s.Effect === "Allow" && hit(s)) ? "allowed" : "implicit";
+}
+const scope = { env: "staging", partition: "aws", region: "us-west-2", account: "944937319445", artifactBucketArn: "arn:aws:s3:::agentx-staging-artifacts", pullThroughPrefix: "agentx-staging", cloudFormationRoleName: "agentx-staging-cloudformation" };
+const role = serviceRoleStatements(scope); const boundary = defaultBoundaryStatements(scope);
+const effective = (action: string, resource: string, context: Record<string, string | undefined> = {}) => {
+  const a = decide(role, action, resource, context); const b = decide(boundary, action, resource, context);
+  return a === "allowed" && b === "allowed" ? "allowed" : a === "denied" || b === "denied" ? "denied" : "implicit";
+};
+/** What CloudFormation calls for the resources this change adds (DynamoDB global tables, KMS keys, an IAM role and policy). */
+const PRODUCT_DEPLOY_ACTIONS = {
+  tables: ["dynamodb:CreateTable", "dynamodb:DescribeTable", "dynamodb:UpdateTable", "dynamodb:UpdateTimeToLive", "dynamodb:DescribeTimeToLive", "dynamodb:UpdateContinuousBackups", "dynamodb:DescribeContinuousBackups", "dynamodb:TagResource", "dynamodb:ListTagsOfResource"],
+  keys: ["kms:CreateKey", "kms:PutKeyPolicy", "kms:GetKeyPolicy", "kms:EnableKeyRotation", "kms:GetKeyRotationStatus", "kms:DescribeKey", "kms:TagResource", "kms:ListResourceTags"],
+  roles: ["iam:CreateRole", "iam:GetRole", "iam:TagRole", "iam:UpdateAssumeRolePolicy", "iam:PutRolePolicy", "iam:GetRolePolicy"],
+  service: ["ecs:RegisterTaskDefinition", "ecs:DeregisterTaskDefinition", "ecs:UpdateService", "ecs:DescribeServices", "iam:PassRole"],
+} as const;
+
+describe("deploy role and permission boundary (offline simulation; the live one is a staging row)", () => {
+  it("allows every new DynamoDB, KMS and ECS action through both the agentx deploy role and its default boundary", () => {
+    const tableArn = "arn:aws:dynamodb:us-west-2:944937319445:table/rovara-cloud-staging-gateway-ProductKeys-ABC";
+    for (const action of PRODUCT_DEPLOY_ACTIONS.tables) expect([action, effective(action, tableArn)]).toEqual([action, "allowed"]);
+    for (const action of PRODUCT_DEPLOY_ACTIONS.keys) expect([action, effective(action, action === "kms:CreateKey" ? "*" : "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-000000000000")]).toEqual([action, "allowed"]);
+    for (const action of PRODUCT_DEPLOY_ACTIONS.service.filter((a) => a.startsWith("ecs:"))) expect([action, effective(action, "*")]).toEqual([action, "allowed"]);
+  });
+  it("records the known gap: the gateway's roles (root path, no permission boundary) are refused to the agentx deploy role", () => {
+    // Every role in the gateway stack (the serving and price roles before this change, the Vertex role now) is CDK-named at the
+    // root path with no boundary: the agentx deploy role may only manage this environment's path-scoped, boundary-carrying
+    // roles. So the gateway stack deploys with the CDK bootstrap execution role (docs/model-gateway-product-ai.md "Deployed").
+    const vertexRole = "arn:aws:iam::944937319445:role/rovara-cloud-staging-gateway-VertexFederationRole-ABC";
+    expect(effective("iam:CreateRole", vertexRole)).not.toBe("allowed");
+    expect(effective("iam:PutRolePolicy", "arn:aws:iam::944937319445:role/rovara-cloud-staging-gateway-ServeTaskRole-ABC")).not.toBe("allowed");
+  });
+});

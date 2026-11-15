@@ -49,7 +49,16 @@ export interface CloudWebProps extends StackProps {
   readonly appDirectory?: string;
   /** The function's code; by default scripts/cloud-lambda.ts bundled at deploy. Tests pass a stand-in. */
   readonly code?: lambda.Code;
+  /**
+   * The project product AI settings (B7, `-c rovaraModelGatewayProductAi=on`): the server writes the gateway's product key table
+   * and seals keys with its KMS key (GenerateDataKey and GenerateMac only, never Decrypt). Never for "production" until a Cloud
+   * release carries it; absent, the template is what it was (tests/contract/cloud-web-product-ai.test.ts).
+   */
+  readonly productAi?: boolean;
 }
+
+/** The server's environment for the product AI settings (scripts/cloud-lambda.ts reads them; all three or none). */
+export const CLOUD_PRODUCT_AI_ENV = { keysTable: "CLOUD_PRODUCT_KEYS_TABLE", keysKey: "CLOUD_PRODUCT_KEYS_KEY", macKey: "CLOUD_PRODUCT_KEYS_MAC_KEY" } as const;
 
 /**
  * What the server may do in its State table, by partition-key prefix (the layout in packages/cloud-server/src/dynamo-stores.ts):
@@ -213,6 +222,7 @@ export class CloudWebStack extends Stack {
     // Sign-ins are sealed with this stack's own key, which only the function's role may use (migration plan v3.2, 7.2 change 4).
     const sessionKey = signInKey(this, `Rovara Cloud ${env} (web): seals people's sign-ins (Code tokens) in the State table`, server.role!);
     server.addEnvironment("CLOUD_SESSIONS_KEY_ID", sessionKey.keyArn);
+    if (props.productAi === true) this.productAi(env, server, codeUrl.valueAsString);
     // IAM auth on the function URL, signed by CloudFront's origin access control (SigV4, always), and invoke rights only for this
     // distribution: the function's own address answers 403 to anyone else, so every request goes through CloudFront.
     const url = server.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.AWS_IAM });
@@ -279,5 +289,29 @@ export class CloudWebStack extends Stack {
     new CfnOutput(this, "ClientSecretName", { value: clientSecret.secretName, description: "Where Cloud reads its client secret (made by the first-address stack); read again within five minutes of a change" });
     new CfnOutput(this, "TableName", { value: table.tableName });
     new CfnOutput(this, "CompanyTableName", { value: companies.tableName });
+    if (props.productAi === true) new CfnOutput(this, "ServerRoleArn", { value: server.role!.roleArn, description: "The model gateway stack's CloudSettingsRoleArn: this role seals product keys" });
+  }
+
+  /** The product AI settings' grants (B7): the gateway's product key table by company keys, and the two KMS keys' sealing calls only. */
+  private productAi(env: string, server: lambda.Function, codeUrl: string): void {
+    if (env === "production") throw new Error("product AI settings are for named test environments until a Cloud release carries them");
+    const param = (id: string, pattern: string, description: string) => new CfnParameter(this, id, { type: "String", allowedPattern: pattern, description }).valueAsString;
+    const tableName = param("ProductKeysTableName", "^[A-Za-z0-9_.-]{3,255}$", "The model gateway's product key table (gateway output ProductKeysTableName)");
+    const keyArn = param("ProductKeysKeyArn", "^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-f-]{36}$", "The gateway's product key KMS key (gateway output ProductKeysKeyArn)");
+    const macKeyArn = param("ProductKeysMacKeyArn", "^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[0-9a-f-]{36}$", "The gateway's fingerprint HMAC key (gateway output ProductKeysMacKeyArn)");
+    server.addToRolePolicy(new iam.PolicyStatement({
+      sid: "ProductKeysCompanyKeys",
+      actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
+      resources: [`arn:${this.partition}:dynamodb:${this.region}:${this.account}:table/${tableName}`],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["CO#*"] }, Null: { "dynamodb:LeadingKeys": "false" } },
+    }));
+    server.addToRolePolicy(new iam.PolicyStatement({
+      sid: "SealProductKeys", actions: ["kms:GenerateDataKey"], resources: [keyArn],
+      conditions: { StringEquals: { "kms:EncryptionContext:purpose": "rovara-product-ai-key", "kms:EncryptionContext:install": `${codeUrl}/v1/auth` } },
+    }));
+    server.addToRolePolicy(new iam.PolicyStatement({ sid: "FingerprintProductKeys", actions: ["kms:GenerateMac"], resources: [macKeyArn] }));
+    server.addEnvironment(CLOUD_PRODUCT_AI_ENV.keysTable, tableName);
+    server.addEnvironment(CLOUD_PRODUCT_AI_ENV.keysKey, keyArn);
+    server.addEnvironment(CLOUD_PRODUCT_AI_ENV.macKey, macKeyArn);
   }
 }

@@ -179,7 +179,7 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
           if (resolution === undefined) return { ok: false, status: 404, code: "not_set_up", message: PRODUCT_NOT_SET_UP };
           if (scopeId !== undefined && stages !== undefined) {
             // Missing, another company's, another project's or another task's stage: one answer.
-            stage = stages.find(claims, scopeId);
+            try { stage = await stages.find(claims, scopeId); } catch { return unavailable; }
             if (stage === undefined) return { ok: false, status: 404, code: "not_found", message: "not found" };
             callMeter = stages.callMeter(stage);
           }

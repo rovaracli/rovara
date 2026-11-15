@@ -2,7 +2,8 @@
 
 DEC 226 (learning calls on the customer's own account, $20 a month per company by default and set per company in the company settings, none while lessons are off), DEC 228c (one
 combined company cap). Code: `packages/model-gateway/src/learning-route.ts`; `startServe` mounts it when given `learning`
-(the company's key source and the learning meter). The deployed process does not pass it yet (see "Not built here").
+(the company's key source and the learning meter). The deployed process builds it when `GATEWAY_LEARNING_*_TABLE` are set
+(with the product route, whose key store holds the company's account; docs/model-gateway-product-ai.md "Deployed").
 
 ## What it is
 
@@ -105,10 +106,11 @@ is separate from Code's own `ROVARA_CORE_LESSONS`: a company needs both on.
 
 ## Not built here
 
-- The adapter behind `LearningKeySource`: a company-level store for the company's connected accounts (Anthropic, Gemini, OpenAI,
-  and for Vertex the project, location and minted token; the product key store holds Gemini/Vertex per project and has no
-  Anthropic or OpenAI). Until it exists, the process cannot mount the route.
-- The learning meter's tables in infra (`lib/model-gateway.ts`) and their grants; egress to `api.openai.com` for the OpenAI path.
+- Built: `learning-keys.ts` reads the company's own Anthropic account from the product key store (a company source of provider
+  `anthropic`, sealed like the product keys; never a project's, never linked); it answers only the Anthropic path (the other
+  providers' accounts and the Cloud settings route come with #64). The learning meter's tables and grants are in
+  `lib/model-gateway.ts` behind the product switch.
+- Egress to `api.openai.com` for the OpenAI path in infra.
 - Code: mint learning tokens whose `mdl` names the model of the path it calls, call the provider's path for the company's
   connected provider, and map `lessons_off`.
 - Learning calls on Vertex are corrected on the Gemini rows only (as the product route's are).
