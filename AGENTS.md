@@ -12,13 +12,14 @@ feature the app needs that Code's API cannot do yet starts as a Rovara Code issu
 
 ## Names
 
-- Packages are `@agentx/*` (for example `@agentx/contracts`) except `@rovara/cloud-server` and `@rovara/audit-verifier`.
+- Packages are `@agentx/*` (for example `@agentx/contracts`) except `@rovara/cloud-server`, `@rovara/model-gateway` and `@rovara/audit-verifier`.
 - `packages/contracts` still holds schemas of the Code engine it was copied from. Leave them until contracts is trimmed.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
+| `packages/model-gateway` | Cloud model gateway core: signed task tokens, budget reservations and streaming provider transport (not wired into the app yet). |
 | `packages/cloud-server` | Sign-in through Code, sessions, CSRF, and the route table `src/routes.ts`. See its README. |
 | `packages/web`, `packages/ui` | The web app (`/app`): `web` is the shell, build and page handler, `ui` holds the pages and components. |
 | `packages/contracts` | Shared types and schemas (zod). Browser code imports `@agentx/contracts/web` only. |

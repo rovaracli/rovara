@@ -1,0 +1,67 @@
+import { record, whole } from "./model-gateway-token.js";
+export const MAX_BODY_BYTES = 4 * 1024 * 1024;
+export const MAX_BODY_ITEMS = 1_000_000;
+export const ALLOWED_BETAS = new Set(["fine-grained-tool-streaming-2025-05-14", "interleaved-thinking-2025-05-14"]);
+const FIELDS = new Set(["model", "messages", "max_tokens", "stream", "system", "temperature", "thinking", "output_config", "tool_choice", "tools", "metadata"]);
+const CHOICES = new Set(["auto", "any", "none", "required", "tool", "function"]);
+const ARGUMENTS = new Set(["tool_use", "server_tool_use", "mcp_tool_use"]);
+export interface GuardFailure { ok: false; status: number; code: string; message: string }
+export interface ModelLimitsSource { maxOutputTokens(provider: string, model: string): unknown }
+export interface GuardedRequest { ok: true; inputBounded: boolean; model: string; maxTokens: number; streaming: boolean; bytes: Buffer; headers: Readonly<Record<string, string>> }
+const bad = (): GuardFailure => ({ ok: false, status: 400, code: "invalid_request", message: "request not allowed" });
+export const tooLarge = (): GuardFailure => ({ ok: false, status: 413, code: "request_too_large", message: "the request is too large" });
+const tool = (v: unknown): boolean => { const t = record(v); return t !== undefined && (t.type === undefined || t.type === null || t.type === "custom"); };
+const tools = (v: unknown): boolean => v === undefined || v === null || (Array.isArray(v) && v.every(tool));
+/** Anthropic-only port of Code local/model-proxy/providers.ts. Fixed refusal words replace echoed field names. */
+export function guardRequest(bytes: Buffer, headers: Readonly<Record<string, string | undefined>>, models: readonly string[], modelLimits: ModelLimitsSource): GuardedRequest | GuardFailure {
+  if (bytes.length > MAX_BODY_BYTES) return tooLarge();
+  if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/iu.test(headers["content-type"] ?? "")) return bad();
+  if (Object.keys(headers).some((h) => h.startsWith("x-litellm-") || ["openai-organization", "openai-project", "x-api-key-override"].includes(h))) return bad();
+  if (Object.keys(headers).length > 64 || Object.entries(headers).reduce((total, [name, value]) => total + name.length + (value?.length ?? 0), 0) > 16384) return bad();
+  const beta = headers["anthropic-beta"];
+  if (beta !== undefined && (beta.length > 1024 || beta.split(",").some((s) => !ALLOWED_BETAS.has(s.trim())))) return bad();
+  let b: Record<string, unknown> | undefined;
+  try { b = record(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown); } catch { return bad(); }
+  if (b === undefined || Object.keys(b).some((k) => !FIELDS.has(k))) return bad();
+  if (typeof b.model !== "string" || !models.includes(b.model) || !Array.isArray(b.messages)) return bad();
+  if (b.max_tokens !== undefined && (!whole(b.max_tokens) || b.max_tokens < 1)) return bad();
+  if (b.stream !== undefined && typeof b.stream !== "boolean") return bad();
+  if (b.temperature !== undefined && (typeof b.temperature !== "number" || !Number.isFinite(b.temperature) || b.temperature < 0 || b.temperature > 1)) return bad();
+  const metadata = record(b.metadata);
+  if (b.metadata !== undefined && (metadata === undefined || Object.keys(metadata).some((k) => k !== "user_id") || (metadata.user_id !== undefined && typeof metadata.user_id !== "string"))) return bad();
+  if (!tools(b.tools)) return bad();
+  const choice = b.tool_choice;
+  if (choice !== undefined && choice !== null && !(typeof choice === "string" ? CHOICES.has(choice) : typeof record(choice)?.type === "string" && CHOICES.has(record(choice)!.type as string))) return bad();
+  // Single iterative traversal, one total item limit (including nested argument data). Never skip an unparsed suffix.
+  const stack: unknown[] = [b.messages, b.system];
+  let count = 0;
+  let inputBounded = true;
+  while (stack.length > 0) {
+    if (++count > MAX_BODY_ITEMS) return bad();
+    const v = stack.pop();
+    if (Array.isArray(v)) { for (const x of v) stack.push(x); }
+    else {
+      const r = record(v); if (r === undefined) continue;
+      // Only inline text/function payloads have a byte-derived input ceiling. Media,
+      // remote files, caches and unknown block kinds must use the company marker.
+      if ((r.type !== undefined && (typeof r.type !== "string" || !["text", "tool_use", "tool_result"].includes(r.type))) || ["source", "fileData", "cachedContent", "cache_control"].some((k) => Object.hasOwn(r, k))) inputBounded = false;
+      if (Object.hasOwn(r, "tools") && !tools(r.tools)) return bad();
+      if (r.type === "tool_addition" && record(r.tool)?.type !== "tool_definition") return bad();
+      if (r.type === "tool_definition" && !tool(r.definition)) return bad();
+      for (const [k, x] of Object.entries(r)) {
+        if (k === "input" && typeof r.type === "string" && ARGUMENTS.has(r.type)) continue;
+        stack.push(x);
+      }
+    }
+  }
+  let rowMax: unknown;
+  try { rowMax = modelLimits.maxOutputTokens("anthropic", b.model); } catch { return bad(); }
+  if (!whole(rowMax) || rowMax < 1) return bad();
+  if (typeof b.max_tokens === "number" && b.max_tokens > rowMax) return bad();
+  const maxTokens = b.max_tokens ?? rowMax;
+  const streaming = b.stream === true;
+  const forwarded = Buffer.from(JSON.stringify({ ...b, max_tokens: maxTokens }));
+  const outbound: Record<string, string> = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
+  if (beta !== undefined) outbound["anthropic-beta"] = beta;
+  return { ok: true, inputBounded, model: b.model, maxTokens, streaming, bytes: forwarded, headers: outbound };
+}
