@@ -26,7 +26,7 @@ import { UsageCollector } from "./usage.js";
 export const LEARNING_STEP = "rovara-lessons-learning-call";
 /** Anthropic Messages, on the company's own account. */
 export const LEARNING_PATH = "/v1/learning/messages";
-/** DEC 226: $20 a month per company, in micro-dollars. */
+/** DEC 226: $20 a month per company, in micro-dollars: the learning month when the company's settings carry no learning cap of their own. */
 export const LEARNING_DEFAULT_MONTH_MICROS = 20_000_000;
 export const LEARNING_PAUSE_HEADER = "x-rovara-lessons-pause";
 export const LEARNING_PAUSE_REASONS = ["lessons_off", "no_provider", "monthly_limit", "no_budget", "cost_too_high"] as const;
@@ -67,19 +67,23 @@ export interface LearningRouteOptions {
   modelLimits: ModelLimitsSource;
   /** The Anthropic transport; the key it sends is always the company's own (`ProviderRequest.key`). */
   transport: ProviderTransport;
-  /** The learning month ceiling per company, micro-dollars. Default LEARNING_DEFAULT_MONTH_MICROS. */
+  /** The learning month for a company whose settings have no learning cap (an older row), micro-dollars. Default LEARNING_DEFAULT_MONTH_MICROS. */
   monthCeilingMicros?: number;
 }
 /** Builds one learning route per request (it keeps that request's admission state). */
 export interface LearningRouteFactory { route(): GatewayRoute }
 
-/** Learning caps for a scope (also the caps the learning meter's corrections use). Anything unreadable or no company cap: invalid caps. */
+/**
+ * Learning caps for a scope (also the caps the learning meter's corrections use). The learning month is the company's own learning cap
+ * (`Caps.learningMonth`, from its settings), else `ceiling`, and never more than the company's monthly cap. Anything unreadable or no
+ * company cap: invalid caps.
+ */
 export function createLearningCaps(companyCaps: CapsSource, ceiling: number = LEARNING_DEFAULT_MONTH_MICROS): CapsSource {
   return {
     async capsFor(scope: CapsScope, signal?: AbortSignal): Promise<Caps> {
       const company = await companyCaps.capsFor(scope, signal);
       if (!validCaps(company) || company.companyMonth === undefined) return UNAVAILABLE_CAPS;
-      return { task: NO_CAP, projectMonth: NO_CAP, companyMonth: Math.min(ceiling, company.companyMonth), combinedCompanyMonth: company.companyMonth };
+      return { task: NO_CAP, projectMonth: NO_CAP, companyMonth: Math.min(company.learningMonth ?? ceiling, company.companyMonth), combinedCompanyMonth: company.companyMonth };
     },
   };
 }
@@ -114,6 +118,8 @@ export function createLearningRoutes(options: LearningRouteOptions): LearningRou
         },
         async capRefusal(refused, scope, caps, estimateMicros) {
           const month = caps.companyMonth ?? 0;
+          // A learning cap of zero (the company switched learning spend off in its budgets) has no room for any call: not "too big".
+          if (month === 0) return learningPaused("no_budget");
           if (estimateMicros > month) return learningPaused("cost_too_high");
           if (refused.item !== "company") return learningPaused("monthly_limit");
           // Which company row refused: the learning month row (this meter's own) or the combined company cap. Labelling only:

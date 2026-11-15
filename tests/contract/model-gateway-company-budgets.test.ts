@@ -8,8 +8,9 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { COMPANY_SETTINGS_LIMITS, DEFAULT_COMPANY_SETTINGS, DynamoCompanyStore, defaultCompanySettings, validateCompanySettings } from "../../packages/cloud-server/src/index.js";
 import { CompanyBudgetCaps, CompanyLessonsSwitch, NO_CAP } from "../../packages/model-gateway/src/company-caps.js";
 import { validCaps } from "../../packages/model-gateway/src/caps.js";
-import { GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_LESSONS_GATE, GATEWAY_COMPANY_SETTINGS } from "../../packages/model-gateway/src/deploy.js";
+import { GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_LEARNING_BUDGET_FIELD, GATEWAY_COMPANY_LESSONS_GATE, GATEWAY_COMPANY_SETTINGS } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
+import { createLearningCaps, LEARNING_DEFAULT_MONTH_MICROS } from "../../packages/model-gateway/src/learning-route.js";
 import { WireDynamo } from "../unit/model-gateway-wire-dynamo.js";
 
 const TABLE = "cloud-companies";
@@ -26,7 +27,9 @@ function both() {
 
 describe("the gateway's budget reader matches the company backend's store", () => {
   it("names the same budget fields, the same key and the same ceiling", () => {
-    expect(Object.keys(DEFAULT_COMPANY_SETTINGS.budgets).sort()).toEqual([...GATEWAY_COMPANY_BUDGET_FIELDS].sort());
+    expect(Object.keys(DEFAULT_COMPANY_SETTINGS.budgets).sort()).toEqual([...GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_LEARNING_BUDGET_FIELD].sort());
+    expect(GATEWAY_COMPANY_LEARNING_BUDGET_FIELD).toBe("learningMonthlyUsdMicros");
+    expect(DEFAULT_COMPANY_SETTINGS.budgets.learningMonthlyUsdMicros).toBe(LEARNING_DEFAULT_MONTH_MICROS);
     expect(COMPANY_SETTINGS_LIMITS.usdMicrosMax).toBe(GATEWAY_COMPANY_BUDGET_MAX);
     expect(GATEWAY_COMPANY_SETTINGS).toEqual({ partitionPrefix: "COMPANY#", sortKey: "SETTINGS" });
   });
@@ -37,7 +40,7 @@ describe("the gateway's budget reader matches the company backend's store", () =
     expect(validateCompanySettings(settings).ok).toBe(true);
     await store.putSettings(cid, settings, 0, "a".repeat(64), "2026-11-15T12:00:00.000Z");
     expect(wire.fake.get(`${GATEWAY_COMPANY_SETTINGS.partitionPrefix}${cid}`, GATEWAY_COMPANY_SETTINGS.sortKey)).toBeDefined();
-    expect(await caps.capsFor(scope)).toEqual({ task: 2_000_000, projectMonth: 100_000_000, personMonth: 50_000_000, companyMonth: 500_000_000 });
+    expect(await caps.capsFor(scope)).toEqual({ task: 2_000_000, projectMonth: 100_000_000, personMonth: 50_000_000, companyMonth: 500_000_000, learningMonth: LEARNING_DEFAULT_MONTH_MICROS });
     // Another company's calls never see this company's budgets.
     expect(validCaps(await caps.capsFor({ ...scope, cid: `org_${"d".repeat(20)}` }))).toBe(false);
   });
@@ -53,7 +56,22 @@ describe("the gateway's budget reader matches the company backend's store", () =
     const settings = { ...defaultCompanySettings(), budgets: { companyMonthlyUsdMicros: GATEWAY_COMPANY_BUDGET_MAX, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } };
     expect(validateCompanySettings(settings).ok).toBe(true);
     await store.putSettings(cid, settings, 0, "a".repeat(64), "2026-11-15T12:00:00.000Z");
-    expect(await caps.capsFor(scope)).toEqual({ task: NO_CAP, projectMonth: NO_CAP, companyMonth: GATEWAY_COMPANY_BUDGET_MAX });
+    expect(await caps.capsFor(scope)).toEqual({ task: NO_CAP, projectMonth: NO_CAP, companyMonth: GATEWAY_COMPANY_BUDGET_MAX, learningMonth: LEARNING_DEFAULT_MONTH_MICROS });
+  });
+
+  it("the learning cap an admin saves is the learning month the gateway holds learning calls to, never above the company's cap", async () => {
+    const { store, caps } = both();
+    const settings = (companyMonthlyUsdMicros: number | null, learningMonthlyUsdMicros: number) => ({ ...defaultCompanySettings(), budgets: { companyMonthlyUsdMicros, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null, learningMonthlyUsdMicros } });
+    const learningCaps = createLearningCaps(caps);
+    await store.putSettings(cid, settings(500_000_000, 3_000_000), 0, "a".repeat(64), "2026-11-15T12:00:00.000Z");
+    expect(await learningCaps.capsFor(scope)).toEqual({ task: NO_CAP, projectMonth: NO_CAP, companyMonth: 3_000_000, combinedCompanyMonth: 500_000_000 });
+    // The backend never lets it pass the company cap; if a row somehow did, the gateway still holds it under that cap.
+    expect(validateCompanySettings(settings(1_000_000, 1_000_001)).ok).toBe(false);
+    await store.putSettings(cid, { ...settings(500_000_000, 400_000_000), budgets: { companyMonthlyUsdMicros: 100_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null, learningMonthlyUsdMicros: 400_000_000 } }, 1, "a".repeat(64), "2026-11-15T12:01:00.000Z");
+    expect(await learningCaps.capsFor(scope)).toMatchObject({ companyMonth: 100_000_000, combinedCompanyMonth: 100_000_000 });
+    // A saved default document: the $20 default.
+    await store.putSettings(cid, settings(500_000_000, LEARNING_DEFAULT_MONTH_MICROS), 2, "a".repeat(64), "2026-11-15T12:02:00.000Z");
+    expect(await learningCaps.capsFor(scope)).toMatchObject({ companyMonth: 20_000_000 });
   });
 });
 

@@ -1,5 +1,5 @@
 import type { Caps, CapsScope, CapsSource } from "./caps.js";
-import { GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_LESSONS_GATE, GATEWAY_COMPANY_SETTINGS } from "./deploy.js";
+import { GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_LEARNING_BUDGET_FIELD, GATEWAY_COMPANY_LESSONS_GATE, GATEWAY_COMPANY_SETTINGS } from "./deploy.js";
 import type { Dynamo } from "./dynamo.js";
 import type { LessonsSwitch } from "./learning-route.js";
 import { COMPANY, record, whole } from "./model-gateway-token.js";
@@ -13,7 +13,8 @@ import { COMPANY, record, whole } from "./model-gateway-token.js";
  * A company with no settings row, or with no company monthly cap (null), has set no ceiling: its calls are refused (503 "model
  * access unavailable") rather than run uncapped on Rovara's provider key. The backend's default settings hold every budget null,
  * so saving any other setting must not open unlimited spend; the other three nulls keep the backend's meaning ("no cap of this
- * kind"), always under the company's monthly cap. A row that is not this company's, or a budget that is not null or a whole number of micro-dollars up to
+ * kind"), always under the company's monthly cap. The learning cap (`learningMonthlyUsdMicros`, DEC 226) rides along in `learningMonth` for the
+ * learning route only; absent in an older row, it is left out. A row that is not this company's, or a budget that is not null or a whole number of micro-dollars up to
  * the backend's own ceiling, refuses the same way. A failed read throws (the call stops before anything is reserved or sent).
  */
 export const NO_CAP = Number.MAX_SAFE_INTEGER;
@@ -35,11 +36,15 @@ export class CompanyBudgetCaps implements CapsSource {
     };
     const [company, member, project, task] = GATEWAY_COMPANY_BUDGET_FIELDS.map(value);
     if ([company, member, project, task].some((v) => v === undefined) || company === null || company === undefined) return UNAVAILABLE;
+    // The learning cap (DEC 226): whole micro-dollars, or absent in an older row (the learning default applies). Anything else refuses.
+    const learning = budgets[GATEWAY_COMPANY_LEARNING_BUDGET_FIELD];
+    if (learning !== undefined && !(whole(learning) && learning <= GATEWAY_COMPANY_BUDGET_MAX)) return UNAVAILABLE;
     return {
       task: task ?? NO_CAP,
       projectMonth: project ?? NO_CAP,
       ...(member === null || member === undefined ? {} : { personMonth: member }),
       companyMonth: company,
+      ...(learning === undefined ? {} : { learningMonth: learning as number }),
     };
   }
 }

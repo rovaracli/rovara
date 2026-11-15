@@ -2,7 +2,7 @@
 // The Hybrid 1 admin pages (DEC 223): grouped navigation, Spending with real amounts and its over-budget states, company settings, the sign-in factor pages and the account
 // page, each with its "not connected yet" state and the fresh sign-in step in front of every sensitive action.
 import { beforeEach, describe, expect, it } from "vitest";
-import { screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AppNavSchema, AppMeResponseSchema } from "@agentx/contracts/web";
@@ -200,6 +200,20 @@ describe("model gateway readiness", () => {
    await screen.findByText(/Saved\. The new rules apply/);
    expect(writes(f).find(r => r.method === "PUT")?.body).toMatchObject({ expectedVersion: 4, settings: { budgets: { companyMonthlyUsdMicros: 1_500_500_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null } } });
   } finally { f.close(); }
+ });
+ it("keeps the learning cap under the company cap when saving, and leaves it alone otherwise", async () => {
+  const withLearning = () => { const body = settingsBody(); return { ...body, settings: { ...body.settings, budgets: { ...body.settings.budgets, companyMonthlyUsdMicros: 500_000_000, learningMonthlyUsdMicros: 20_000_000 } } }; };
+  for (const [typed, learning] of [["5", 5_000_000], ["100", 20_000_000]] as const) {
+   const f = mount(confirmedPath("/app/admin/settings"), r => (r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok(withLearning()) : ok({})));
+   try {
+    fireEvent.click(await screen.findByRole("button", { name: "Change rules" }));
+    fireEvent.change(await screen.findByLabelText("Company monthly cap (USD)"), { target: { value: typed } });
+    fireEvent.click(screen.getByRole("button", { name: "Save rules" }));
+    await screen.findByText(/Saved\. The new rules apply/);
+    expect(writes(f).find(r => r.method === "PUT")?.body).toMatchObject({ settings: { budgets: { companyMonthlyUsdMicros: Number(typed) * 1_000_000, learningMonthlyUsdMicros: learning } } });
+   } finally { f.close(); }
+   cleanup();
+  }
  });
  it("accepts a $0 cap (Cloud's validator does) and says it blocks all model gateway use", async () => {
   const f = mount(confirmedPath("/app/admin/settings"), r => (r.method === "PUT" ? ok({ settings: {}, version: 5 }) : r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));

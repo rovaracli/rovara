@@ -37,7 +37,15 @@ export interface CompanyBudgets {
   memberMonthlyUsdMicros: number | null;
   projectMonthlyUsdMicros: number | null;
   taskUsdMicros: number | null;
+  /**
+   * What lessons' learning calls may spend a month on the company's own provider account (DEC 226), in micro-dollars: a number, never
+   * null. Never above `companyMonthlyUsdMicros` when that is set (the gateway also holds it under the company's one monthly cap, which
+   * learning spend counts in). Raising it is loosening.
+   */
+  learningMonthlyUsdMicros: number;
 }
+/** DEC 226: $20 a month, in micro-dollars (the gateway's LEARNING_DEFAULT_MONTH_MICROS; a contract test holds the two together). */
+export const LEARNING_DEFAULT_MONTHLY_USD_MICROS = 20_000_000;
 export type LockValue = string | number | boolean | null;
 
 export interface CompanySettings {
@@ -68,7 +76,7 @@ export const DEFAULT_COMPANY_SETTINGS: Readonly<CompanySettings> = Object.freeze
   start: { allow: true, maxEstimateUsdMicros: null },
   decisions: [{ what: "setting.loosen", secondPerson: true }],
   locks: {},
-  budgets: { companyMonthlyUsdMicros: null, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null },
+  budgets: { companyMonthlyUsdMicros: null, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros: null, learningMonthlyUsdMicros: LEARNING_DEFAULT_MONTHLY_USD_MICROS },
 });
 
 export const defaultCompanySettings = (): CompanySettings => structuredClone(DEFAULT_COMPANY_SETTINGS);
@@ -219,16 +227,24 @@ export function validateCompanySettings(value: unknown): SettingsCheck {
 
   const budgets = value["budgets"];
   const budgetFields = ["companyMonthlyUsdMicros", "memberMonthlyUsdMicros", "projectMonthlyUsdMicros", "taskUsdMicros"] as const;
-  if (!plainObject(budgets) || !keysAre(budgets, budgetFields) || budgetFields.some((name) => !usdOrNull(budgets[name]))) {
+  // The learning cap is the one optional budget field: a stored row or a client from before it existed reads as the default, held under
+  // the company monthly cap (never above it), so an older document can never carry more than a new one could.
+  if (!plainObject(budgets) || !keysAre(budgets, [...budgetFields, "learningMonthlyUsdMicros"], budgetFields) || budgetFields.some((name) => !usdOrNull(budgets[name]))) {
     return problem("budgets: each of companyMonthlyUsdMicros, memberMonthlyUsdMicros, projectMonthlyUsdMicros, taskUsdMicros is micro-dollars or null");
   }
+  const companyCap = budgets["companyMonthlyUsdMicros"] as number | null;
+  const learningGiven = budgets["learningMonthlyUsdMicros"];
+  if (Object.hasOwn(budgets, "learningMonthlyUsdMicros") && (!whole(learningGiven, 0, L.usdMicrosMax) || (companyCap !== null && learningGiven > companyCap))) {
+    return problem("budgets: the learning cap is a whole number of micro-dollars, never above the company monthly cap");
+  }
+  const learning = Object.hasOwn(budgets, "learningMonthlyUsdMicros") ? learningGiven as number : Math.min(LEARNING_DEFAULT_MONTHLY_USD_MICROS, companyCap ?? LEARNING_DEFAULT_MONTHLY_USD_MICROS);
 
   return {
     ok: true,
     settings: {
       featureGates: { ...(gates as Record<string, boolean>) }, websiteCeiling, instructions, evalBudgetUsdMicros: evalBudget, freshSignInSeconds: fresh,
       start: { allow: start["allow"], maxEstimateUsdMicros: start["maxEstimateUsdMicros"] }, decisions, locks: { ...(locks as Record<string, LockValue>) },
-      budgets: Object.fromEntries(budgetFields.map((name) => [name, budgets[name]])) as unknown as CompanyBudgets,
+      budgets: { ...Object.fromEntries(budgetFields.map((name) => [name, budgets[name]])), learningMonthlyUsdMicros: learning } as unknown as CompanyBudgets,
     },
   };
 }
@@ -269,7 +285,7 @@ export function loosens(current: CompanySettings, next: CompanySettings): boolea
   const before = new Set(current.decisions.map(canonical));
   if (next.decisions.some((rule) => !before.has(canonical(rule)) && governsSettings(rule.what))) return true;
   if (canonical(next.locks) !== canonical(current.locks)) return true;
-  const caps = ["companyMonthlyUsdMicros", "memberMonthlyUsdMicros", "projectMonthlyUsdMicros", "taskUsdMicros"] as const;
+  const caps = ["companyMonthlyUsdMicros", "memberMonthlyUsdMicros", "projectMonthlyUsdMicros", "taskUsdMicros", "learningMonthlyUsdMicros"] as const;
   return caps.some((name) => !capNotLooser(next.budgets[name], current.budgets[name]));
 }
 
