@@ -98,3 +98,13 @@ it("says so when the record cannot be loaded", async () => {
  await waitFor(() => { expect(screen.getByRole("alert").textContent).toContain("could not be loaded"); }, { timeout: 8000 });
  s.close();
 });
+
+it("says nothing was recorded, not an error, where the server does not record it (404)", async () => {
+ const s = setup(async () => ({ status: 404, body: { error: { code: "NOT_FOUND", message: "This isn't recorded on Rovara Code yet." } } }));
+ const details = (await screen.findByText("What the agent loaded")).closest("details")!;
+ details.open = true; fireEvent(details, new Event("toggle"));
+ await waitFor(() => { expect(screen.getByText("Nothing was recorded for this task.")).toBeTruthy(); }, { timeout: 8000 });
+ expect(screen.queryByText(/could not be loaded/u)).toBeNull();
+ s.close();
+});
+

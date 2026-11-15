@@ -14,10 +14,15 @@ import { visibleAnchor, workflowStateWords, type ReadTask, type CommentOnPart } 
 const FixWithAgentPanel = lazy(async () => ({ default: (await import("./FixWithAgentPanel.js")).FixWithAgentPanel }));
 const STAGES = ["Understand", "Plan", "Plan check", "Build", "Check", "Review", "Pull request", "Merge"];
 const STAGE_WORDS: Record<string, string> = { UNDERSTAND: "Understand", PLAN: "Plan", PLAN_REVIEW: "Plan check", IMPLEMENT: "Build", VERIFY: "Check", REVIEW: "Review", PULL_REQUEST: "Pull request", WAIT_FOR_MERGE: "Merge", MERGED: "Merge" };
+/** What a starting session is doing before its first stage: Code is preparing the workspace (the repository and its dev container). */
+export const SETTING_UP = "Setting up the workspace: getting the repository and its dev container ready. This usually takes 2 to 3 minutes.";
 const stepWords: Record<string, string> = { pending: "Not started", running: "Working", waiting: "Waiting", done: "Finished", failed: "Failed" };
 export function PipelineTab({ session, task, onComment }: { session: ReadSession; task?: ReadTask | undefined; onComment?: CommentOnPart | undefined }) {
  if (session.body.kind === "chain") return <ChainSections session={session} />;
- return <section aria-label="Work progress">{task?.workflow && <><ol className="rv-pipeline" aria-label="Task stages">{STAGES.map(stage => <li key={stage} {...(STAGE_WORDS[task.workflow!.stage] === stage ? { "aria-current": "step" as const } : {})}>{stage}</li>)}</ol><p className="rv-muted">{workflowStateWords(task.workflow.state)}</p></>}
+ // While the session is starting, Code is still setting up its workspace: no stage has begun, so none is marked and the page says what is happening.
+ const settingUp = session.status === "starting";
+ const blockReason = task?.workflow?.state === "BLOCKED" && typeof task.workflow.blockReason === "string" && task.workflow.blockReason !== "" ? task.workflow.blockReason : undefined;
+ return <section aria-label="Work progress">{task?.workflow && <><ol className="rv-pipeline" aria-label="Task stages">{STAGES.map(stage => <li key={stage} {...(!settingUp && STAGE_WORDS[task.workflow!.stage] === stage ? { "aria-current": "step" as const } : {})}>{stage}</li>)}</ol><p className="rv-muted" role="status">{settingUp ? SETTING_UP : blockReason === undefined ? workflowStateWords(task.workflow.state) : <VisibleText text={"Stopped: " + blockReason} />}</p></>}
  {task && <ModelFallbackNotes task={task} />}
  {task && <NoChangeSection task={task} />}
  {task?.workflow && <LoadedKnowledgePanel taskId={task.taskId} />}

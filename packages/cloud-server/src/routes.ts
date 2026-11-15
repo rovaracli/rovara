@@ -274,6 +274,12 @@ export const ROUTES: Route[] = [
     },
   },
   {
+    // GET /v1/app/tasks/{task}/loaded-knowledge[/…] and /lessons: what the agent loaded and the lessons it used are not on Code yet. The app reads a
+    // 404 as "nothing recorded" (and hides the lessons), where any other answer shows "could not be loaded".
+    method: "GET", path: /^\/tasks\/[^/]+\/(?:loaded-knowledge(?:\/.*)?|lessons)$/u,
+    answer: () => Promise.resolve({ status: 404, body: { error: { code: "NOT_FOUND", message: "This isn't recorded on Rovara Code yet." } } }),
+  },
+  {
     // POST /v1/app/realtime/token: live updates are not on Code yet. The app reads a 404 here as "live updates are off" and reads its screens again
     // every 30 seconds, where any other answer would keep it reconnecting.
     method: "POST", path: /^\/realtime\/token$/u,

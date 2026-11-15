@@ -23,7 +23,8 @@ function RulesBody({ taskId }: { taskId: string }) {
  const query = useLoadedKnowledge(taskId, true);
  const [target, setTarget] = useState<{ operationId: string; stage: string; index: number } | undefined>();
  if (query.isPending) return <p className="rv-muted" role="status">Loading</p>;
- if (query.isError) return <p className="rv-muted" role="alert">This could not be loaded right now.</p>;
+ // A server that does not record what the agent loaded answers 404: nothing to show, which is not an error.
+ if (query.isError) return query.error instanceof ApiError && query.error.status === 404 ? <p className="rv-muted">Nothing was recorded for this task.</p> : <p className="rv-muted" role="alert">This could not be loaded right now.</p>;
  const stages = query.data.stages;
  if (stages.length === 0) return <p className="rv-muted">Nothing was recorded for this task.</p>;
  return <div>

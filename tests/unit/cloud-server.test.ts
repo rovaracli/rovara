@@ -281,6 +281,16 @@ describe("the app's API, answered from Code as the person", () => {
     expect(JSON.parse((await call("GET", "/v1/web/me", { cookie: ada.cookie }))!.body)).toMatchObject({ developer: { nameChosen: true } });
   });
 
+  it("answers what the agent loaded and its lessons as not recorded (404)", async () => {
+    const { call, signIn } = setUp();
+    const { cookie } = await signIn();
+    for (const path of ["/v1/web/tasks/6f9d0c1e-2b3a-4c5d-8e7f-001122334455/loaded-knowledge", "/v1/web/tasks/6f9d0c1e-2b3a-4c5d-8e7f-001122334455/loaded-knowledge/op1/plan/0", "/v1/web/tasks/6f9d0c1e-2b3a-4c5d-8e7f-001122334455/lessons"]) {
+      const answer = await call("GET", path, { cookie });
+      expect(answer!.status).toBe(404);
+      expect(JSON.parse(answer!.body)).toMatchObject({ error: { code: "NOT_FOUND" } });
+    }
+  });
+
   it("answers live updates as not offered (404), which the app reads as off rather than reconnecting", async () => {
     const { call, signIn } = setUp();
     const { cookie, csrf } = await signIn();
