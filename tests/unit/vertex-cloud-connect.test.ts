@@ -164,6 +164,21 @@ describe("the gateway's signed Vertex check (service-call.ts)", () => {
     expect(g.probes).toHaveLength(0);
   });
 
+  it("signs exactly [its own purpose, path, time, sha256(body)]: never a key fingerprint's purpose", () => {
+    const body = Buffer.from(JSON.stringify(good));
+    const expected = createHash("sha256").update(JSON.stringify(["rovara-gateway-service-call/v1", VERTEX_CHECK_PATH, 1234, createHash("sha256").update(body).digest("hex")])).digest();
+    expect(Buffer.from(serviceCallMessage(VERTEX_CHECK_PATH, 1234, body)).equals(expected)).toBe(true);
+    expect(PRODUCT_KEY_PURPOSE).not.toBe("rovara-gateway-service-call/v1");
+  });
+
+  it("a KMS that answers MacValid false is a refusal, never a pass", async () => {
+    const g = gatewayKit();
+    const no = { ...g.gateway, kms: { verifyMac: async () => false } };
+    const c = await signedCall(g, good);
+    expect((await answerVertexCheck(no, { method: "POST", headers: c.headers, body: (async function* () { yield c.bytes; })() })).status).toBe(401);
+    expect(g.probes).toHaveLength(0);
+  });
+
   it("a fingerprint made with the same key never signs a call (its own purpose)", async () => {
     const g = gatewayKit();
     const body = Buffer.from(JSON.stringify(good));

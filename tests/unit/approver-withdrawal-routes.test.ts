@@ -59,6 +59,19 @@ describe("withdrawn before a membership change", () => {
     expect(await storedEvalApprovals(w.store, () => w.clock.at).current(ISS, A, "web")).toBe(EVAL_APPROVAL_STALE);
   });
 
+  it("fails closed on invite accept too: the invite stays pending when the withdrawal can't be saved", async () => {
+    let failing = false;
+    const w = world({ company: true, beforeCommit: () => (failing ? false : undefined) });
+    await approved(w);
+    const token = randomBytes(32).toString("base64url");
+    const at = new Date(w.clock.at).toISOString();
+    await w.companies.createInvite({ inviteId: "00000000-0000-4000-8000-000000000003", requestId: "00000000-0000-4000-8000-000000000004", companyId: A, email: "pam@example.test", role: "member", state: "pending", tokenHash: createHash("sha256").update(token).digest("hex"), createdAt: at, createdBy: PEOPLE.ada!.developerId, expiresAt: new Date(w.clock.at + 86_400_000).toISOString(), revision: 1 });
+    failing = true;
+    const r = await w.call(await w.signIn("pam", 30), "POST", "/org/invites/accept", { invite: token });
+    expect(r.status).toBe(503);
+    expect((await w.companies.inviteByToken(createHash("sha256").update(token).digest("hex")))?.state).toBe("pending");
+  });
+
   it("fails closed: when the withdrawal can't be saved, Code is never asked and nothing changes", async () => {
     let failing = false;
     const w = world({ beforeCommit: () => (failing ? false : undefined) });

@@ -228,6 +228,10 @@ describe("learning key source (#57, PRODUCT-LEARNING-CONNECT-ROUTE): the company
     // A Gemini learning account is not a product source: the product route never resolves it.
     await k.store.connect({ ...change(A, LEARNING_OWNER, 2, admin), sourceId: "src_gemini", provider: "gemini", key: geminiKey() });
     expect(await k.store.resolve(ISS, A, PROJECT, "gemini")).toBeUndefined();
+    // The learning document never links to the company's product sources either.
+    // (Company B: its learning document is empty, so only that rule can refuse it.)
+    await k.store.connect({ ...change(B, PRODUCT_COMPANY_OWNER, 0, admin), sourceId: "src_shared", provider: "gemini", key: geminiKey() });
+    await expect(k.store.link({ ...change(B, LEARNING_OWNER, 0, admin), sourceId: "src_lnk", companySourceId: "src_shared" })).rejects.toThrow(new ProductKeyError("invalid"));
     // A provider refusal is recorded on that account (shown in Settings), never on another one.
     await keys.refused?.(ISS, A, "openai");
     const marked = await k.store.view(ISS, A, LEARNING_OWNER);
