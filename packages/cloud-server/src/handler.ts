@@ -2,6 +2,7 @@
 // (/v1/web/*, the browser's name for /v1/app/*) answered by the route table, and the plan approval page (/v1/app/approve/*, approve.ts).
 // Framework-neutral: a local HTTP server
 // and a Lambda both pass a CloudRequest and send back the CloudResponse.
+import { renameInSessions } from "./rename.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
@@ -101,6 +102,13 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
           access: signedIn.access, csrf: randomBytes(32).toString("base64url"), signedInAt: now().toISOString(),
         });
         log({ event: "cloud.signed_in", developerId: signedIn.access.developerId, projects: signedIn.access.projects.length });
+        // Rovara-cloud#39: a name changed since this person's sessions were written (chosen in Code, or a provider's) reaches them now. Best effort.
+        try {
+          const renamedSessions = await renameInSessions(options.work, signedIn.access.developerId, signedIn.access.displayName);
+          if (renamedSessions > 0) log({ event: "cloud.sessions_renamed", developerId: signedIn.access.developerId, sessions: renamedSessions });
+        } catch (error) {
+          log({ event: "cloud.sessions_rename_failed", developerId: signedIn.access.developerId, error: error instanceof Error ? error.name : "unknown" });
+        }
         return text(302, "", { location: pending.returnTo, "set-cookie": cookie(id) });
       } catch (error) {
         if (error instanceof CodeError) return text(502, "Rovara Code didn't complete the sign-in. Go back to the app and try again.");

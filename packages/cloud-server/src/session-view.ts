@@ -76,7 +76,14 @@ export function followState(session: WorkSession, developerId: string): { follow
   return { followers: followers.length, following: developerId === session.owner.developerId || followers.some((person) => person.developerId === developerId) };
 }
 
-export function sessionView(session: WorkSession, task: CodeTask, viewer: { developerId: string }, origin: string, people?: SessionPeople) {
+/**
+ * A person as the reader sees them: the reader's own name is the one they signed in with now (Rovara-cloud#39), never an older copy on the session.
+ */
+export function freshPerson<P extends { developerId: string; name: string }>(person: P, viewer: { developerId: string; name?: string }): P {
+  return viewer.name !== undefined && viewer.name !== "" && person.developerId === viewer.developerId ? { ...person, name: viewer.name } : person;
+}
+
+export function sessionView(session: WorkSession, task: CodeTask, viewer: { developerId: string; name?: string }, origin: string, people?: SessionPeople) {
   const status = sessionStatus(task);
   const owner = viewer.developerId === session.owner.developerId;
   const ended = ENDED.has(status);
@@ -92,13 +99,13 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
     mode: "delegate",
     title: task.title.trim() === "" ? "Task" : task.title,
     project: task.project,
-    owner: session.owner,
+    owner: freshPerson(session.owner, viewer),
     startedBy: { kind: "member", developerId: session.startedBy.developerId },
     where: { kind: "cloud" },
     status,
     ...(status === "failed" ? { lastRunFailed: true } : {}),
     // What Code has counted for the task (Rovara-cloud#31); before the first run is recorded it has spent nothing.
-    cost: { spentUsd: spentUsd(task), ...(runLimitUsd(task) === undefined ? {} : { runLimitUsd: runLimitUsd(task) }), payer: { kind: "member", name: session.startedBy.name } },
+    cost: { spentUsd: spentUsd(task), ...(runLimitUsd(task) === undefined ? {} : { runLimitUsd: runLimitUsd(task) }), payer: { kind: "member", name: freshPerson(session.startedBy, viewer).name } },
     // Only the task's owner decides a plan in Code, so only the owner is shown it.
     approvals: owner && waitingPlan(task) !== undefined ? [{ approvalId: `plan-${session.sessionId}`, title: "Review the plan", confirmUrl: approvalUrl(origin, session.sessionId) }] : [],
     followers: follow.followers,
@@ -129,7 +136,7 @@ export const sessionRunning = (task: CodeTask): boolean => !ENDED.has(sessionSta
  * One session as a Live tile (LiveTileSchema), for the person reading it, from the same parts as the session page: Code's task,
  * Cloud's followers and who is viewing. Only the owner is told a plan waits on them, with the link to Cloud's approval page.
  */
-export function liveTile(session: WorkSession, task: CodeTask, viewer: { developerId: string }, origin: string, people?: SessionPeople) {
+export function liveTile(session: WorkSession, task: CodeTask, viewer: { developerId: string; name?: string }, origin: string, people?: SessionPeople) {
   const view = sessionView(session, task, viewer, origin, people);
   const plan = view.you.owner && waitingPlan(task) !== undefined;
   const step = task.workflow?.stage === undefined ? undefined : STEP_WORDS[task.workflow.stage];

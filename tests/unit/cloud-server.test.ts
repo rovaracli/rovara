@@ -39,6 +39,7 @@ function fakeCode() {
     createdAt: "2026-11-14T10:00:00.000Z", updatedAt: "2026-11-14T10:05:00.000Z", events: [], changedFiles: [], artifacts: [], pullRequests: [], pageActions: [],
   };
   let peopleRevision = 3;
+  let adaName = "Ada";
   const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
@@ -65,12 +66,14 @@ function fakeCode() {
     if (url.pathname === "/v1/dev/access") {
       return respond(200, grace
         ? { developerId: GRACE, displayName: "Grace", nameChosen: false, administrator: false, projects: [{ name: "payments", access: "developer" }], notices: [] }
-        : { developerId: ADA, displayName: "Ada", administrator: true, projects: [{ name: "payments", access: "administrator" }], notices: [] });
+        : { developerId: ADA, displayName: adaName, administrator: true, projects: [{ name: "payments", access: "administrator" }], notices: [] });
     }
     if (url.pathname === "/v1/dev/me/name" && call.method === "PUT") {
       const raw = (JSON.parse(call.body ?? "{}") as { name?: unknown }).name;
       const name = (typeof raw === "string" ? raw : "").replace(/\s+/gu, " ").trim();
-      return name.includes("@") ? respond(400, { error: { code: "CONFIG_INVALID", message: "name: must not be an email address" } }) : respond(200, { name, nameChosen: true, requestId: "r" });
+      if (name.includes("@")) return respond(400, { error: { code: "CONFIG_INVALID", message: "name: must not be an email address" } });
+      if (!grace) adaName = name;
+      return respond(200, { name, nameChosen: true, requestId: "r" });
     }
     const notYours = () => respond(404, { error: { code: "TASK_NOT_FOUND", message: `no task ${TASK_ID} of yours` } });
     if (grace && url.pathname.startsWith(`/v1/dev/tasks/${TASK_ID}`)) {
@@ -129,6 +132,8 @@ function fakeCode() {
   return {
     fetchImpl, calls, taskId: TASK_ID,
     setTask: (change: Record<string, unknown>) => { task = { ...task, ...change }; },
+    /** Ada's name in Code from now on (her next sign-in reads it). */
+    setAdaName: (name: string) => { adaName = name; },
     refuseDecisions: (message: string) => { decisionRefusal = message; },
     failRevoke: () => { revokeFails = true; },
     expireToken: () => { validToken = "access-rotated"; }, endSignIn: () => { refreshable = false; validToken = "nobody"; } };
@@ -925,3 +930,36 @@ describe("several servers on the same stores (Rovara-cloud#11)", () => {
     expect(writes).toBe(3);
   });
 });
+
+describe("people's names on sessions follow their current name (Rovara-cloud#39)", () => {
+  const begin = async () => {
+    const context = setUp();
+    const ada = await context.signIn();
+    const grace = await context.signIn("grace-code");
+    const started = await context.call("POST", "/v1/web/projects/payments/code", { ...ada, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the README typo" } } });
+    const { sessionId } = JSON.parse(started!.body) as { sessionId: string };
+    await context.call("PUT", `/v1/web/sessions/${sessionId}/shares`, { ...ada, body: { requestId: "66666666-6666-4666-8666-666666666666", principal: { kind: "member", developerId: GRACE }, level: "view" } });
+    const read = async (who: { cookie: string }) => SessionResponseReaderSchema.parse(JSON.parse((await context.call("GET", `/v1/web/sessions/${sessionId}`, { cookie: who.cookie }))!.body)).session;
+    return { ...context, ada, grace, sessionId, read };
+  };
+
+  it("shows the owner's new name on sessions started under the old one: to the owner at once, and to others once the owner signs in again", async () => {
+    const { signIn, code, grace, read, call, sessionId } = await begin();
+    await call("POST", `/v1/web/sessions/${sessionId}/messages`, { ...(await signIn()), body: { requestId: "11111111-1111-4111-8111-111111111111", kind: "comment", text: "Started." } });
+    code.setAdaName("Ada Lovelace");
+    expect((await read(grace)).owner.name).toBe("Ada");
+    const ada = await signIn();
+    expect((await read(ada)).owner.name).toBe("Ada Lovelace");
+    expect((await read(grace)).owner).toEqual({ developerId: ADA, name: "Ada Lovelace" });
+    expect((await read(grace)).cost.payer.name).toBe("Ada Lovelace");
+    const comments = SessionMessagePageSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}/messages`, { cookie: grace.cookie }))!.body));
+    expect(comments.messages[0]?.author.name).toBe("Ada Lovelace");
+  });
+
+  it("renames the owner's sessions when they choose a new name in Cloud", async () => {
+    const { call, ada, grace, read } = await begin();
+    expect((await call("PUT", "/v1/web/me/name", { ...ada, body: { name: "Ada K" } }))!.status).toBe(200);
+    expect((await read(grace)).owner.name).toBe("Ada K");
+  });
+});
+
