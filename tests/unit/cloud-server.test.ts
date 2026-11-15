@@ -617,6 +617,16 @@ describe("Home's cards and plan approval (phase 2b)", () => {
     expect(code.calls.some((entry) => entry.path.endsWith("/workflow/review"))).toBe(false);
   });
 
+  it("shows what the task has cost from Code's spent figure, with its run limit, on the session and its tile; nothing spent reads $0 (Rovara-cloud#31)", async () => {
+    const { call, auth, code, sessionId } = await begin();
+    const session = async () => SessionResponseReaderSchema.parse(JSON.parse((await call("GET", `/v1/web/sessions/${sessionId}`, { cookie: auth.cookie }))!.body)).session;
+    expect((await session()).cost).toEqual({ spentUsd: 0, payer: { kind: "member", name: "Ada" } });
+    code.setTask({ ...PLAN_WAITING, spent: { usd: 28.4812, inputTokens: 26_257_037, outputTokens: 257_592, runs: 17, unpricedRuns: 0, updatedAt: "2026-11-15T01:43:15.327Z" }, runLimit: { limitUsd: 40, canAskAgain: true } });
+    expect((await session()).cost).toEqual({ spentUsd: 28.48, runLimitUsd: 40, payer: { kind: "member", name: "Ada" } });
+    const [tile] = ProjectOverviewSchema.parse(JSON.parse((await call("GET", "/v1/web/projects/payments/overview", { cookie: auth.cookie }))!.body)).running;
+    expect(tile?.costUsd).toBe(28.48);
+  });
+
   it("shows a failed run and an open pull request, until the pull request is merged", async () => {
     const { call, auth, code, sessionId } = await begin();
     code.setTask({ status: "FAILED" });

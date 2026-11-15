@@ -21,6 +21,10 @@ export interface CodeTask {
     acceptedFindings?: Array<{ candidateDigest?: string; role?: string; fingerprint?: string }>;
   };
   pullRequests?: Array<{ repository?: string; number?: number; url?: string; state?: string }>;
+  /** What the task's runs have cost so far (Code's task view, PrepLabsAI/Rovara#651); absent before the first run is recorded. */
+  spent?: { usd?: number; inputTokens?: number; outputTokens?: number; runs?: number; unpricedRuns?: number; updatedAt?: string };
+  /** The run limit Code holds the task to, when it has one. */
+  runLimit?: { limitUsd?: number };
   createdAt: string;
   updatedAt: string;
   [field: string]: unknown;
@@ -93,7 +97,8 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
     where: { kind: "cloud" },
     status,
     ...(status === "failed" ? { lastRunFailed: true } : {}),
-    cost: { spentUsd: 0, payer: { kind: "member", name: session.startedBy.name } },
+    // What Code has counted for the task (Rovara-cloud#31); before the first run is recorded it has spent nothing.
+    cost: { spentUsd: spentUsd(task), ...(runLimitUsd(task) === undefined ? {} : { runLimitUsd: runLimitUsd(task) }), payer: { kind: "member", name: session.startedBy.name } },
     // Only the task's owner decides a plan in Code, so only the owner is shown it.
     approvals: owner && waitingPlan(task) !== undefined ? [{ approvalId: `plan-${session.sessionId}`, title: "Review the plan", confirmUrl: approvalUrl(origin, session.sessionId) }] : [],
     followers: follow.followers,
@@ -140,7 +145,7 @@ export function liveTile(session: WorkSession, task: CodeTask, viewer: { develop
     statusWords: blockedReview(task)?.unfinished === true ? "Review couldn't finish" : STATUS_WORDS[view.status],
     ...(step === undefined ? {} : { step }),
     ...(view.status === "failed" ? { lastRunFailed: true as const } : {}),
-    costUsd: 0,
+    costUsd: spentUsd(task),
     viewingNow: view.viewingNow.slice(0, 5),
     viewingNowCount: view.viewingNow.length,
     needsYou: view.you.owner && view.status === "needs_person",
@@ -223,5 +228,17 @@ export function reviewChoices(task: CodeTask): { findings: OpenFinding[]; expect
   const findings = openFindings(task);
   if (findings.length === 0 || findings.length > RESOLVE_FINDINGS_MAX) return undefined;
   return { findings, expectedRevision: task.workflow.revision, candidateDigest: task.workflow.candidate.digest };
+}
+
+/** The task's spent dollars from Code (PrepLabsAI/Rovara#651), rounded to the cent; 0 before the first run is recorded. */
+export function spentUsd(task: CodeTask): number {
+  const usd = task.spent?.usd;
+  return typeof usd === "number" && Number.isFinite(usd) && usd > 0 ? Math.round(usd * 100) / 100 : 0;
+}
+
+/** The run limit Code holds the task to, when it has one. */
+function runLimitUsd(task: CodeTask): number | undefined {
+  const limit = task.runLimit?.limitUsd;
+  return typeof limit === "number" && Number.isFinite(limit) && limit >= 0 ? limit : undefined;
 }
 
