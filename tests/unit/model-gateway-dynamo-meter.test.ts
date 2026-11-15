@@ -2,7 +2,7 @@ import { denyNetwork } from "./model-gateway-no-network.js";
 beforeAll(denyNetwork);
 import { beforeAll, describe, expect, it } from "vitest";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
-import { DynamoEndedTasks, DynamoMeter, companyPartition } from "../../packages/model-gateway/src/dynamo-meter.js";
+import { DynamoEndedTasks, DynamoMeter, HOLD_SWEEP_AGE_MS, companyPartition } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { runMeterConformance, runMeterDeadlineConformance, type MeterRow } from "../../packages/model-gateway/src/meter.js";
 import { DAY_MS } from "../../packages/model-gateway/src/price-constants.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
@@ -213,6 +213,79 @@ describe("DynamoMeter at the wire", () => {
     expect(await meter.correct({ ...base, callKey: "k", realMicros: 0 })).toEqual({ status: "busy" });
     expect(await meter.reserve({ scope: { ...scope, cid: "nope" }, caps, estimateMicros: 1 })).toEqual({ ok: false, reason: "busy" });
     expect(wire.calls.filter((c) => c.operation !== "GetItem")).toEqual([]);
+  });
+});
+
+describe("DynamoMeter: the sweep of holds whose settle never landed", () => {
+  const holds = (wire: WireDynamo) => wire.items(TABLES.meter).filter((item) => String(item.sk).startsWith("HOLD#"));
+  it("closes an old open hold at its own estimate (estimated, swept), once, and never touches a young or settled one", async () => {
+    let clock = T0;
+    const { wire, db } = table();
+    const meter = new DynamoMeter({ db, tables: TABLES, now: () => clock });
+    const lost = await meter.reserve({ scope, caps, estimateMicros: 40 }); if (!lost.ok) throw new Error("reserve");
+    const settled = await meter.reserve({ scope: { ...scope, tid: "task_2" }, caps, estimateMicros: 10 }); if (!settled.ok) throw new Error("reserve");
+    await meter.settle(settled.reservation, 5);
+    expect(holds(wire).find((h) => h.status === "settled")).not.toHaveProperty("openAll");
+    clock = T0 + HOLD_SWEEP_AGE_MS - 1;
+    expect(await meter.sweepOpenHolds(clock, 10)).toEqual({ swept: 0, already: 0, failed: 0, more: false });
+    clock = T0 + HOLD_SWEEP_AGE_MS + 1;
+    const young = await meter.reserve({ scope: { ...scope, tid: "task_3" }, caps, estimateMicros: 7 }); if (!young.ok) throw new Error("reserve");
+    expect(await meter.sweepOpenHolds(clock, 10)).toEqual({ swept: 1, already: 0, failed: 0, more: false });
+    const task1 = (await meter.read(scope))[0]!;
+    expect(task1).toMatchObject({ spentMicros: 40, estimatedMicros: 40, reservedMicros: 0, committed: 40 });
+    expect(holds(wire).filter((h) => h.swept === true)).toHaveLength(1);
+    expect(wire.items(TABLES.ledger).find((item) => item.swept === true)).toMatchObject({ settledMicros: 40, estimated: true });
+    expect(await meter.sweepOpenHolds(clock, 10)).toEqual({ swept: 0, already: 0, failed: 0, more: false });
+    // A settle that finally arrives after the sweep changes nothing.
+    await meter.settle(lost.reservation, 3);
+    expect((await meter.read(scope))[0]).toMatchObject({ spentMicros: 40 });
+    expect((await meter.read({ ...scope, tid: "task_3" }))[0]).toMatchObject({ reservedMicros: 7, spentMicros: 0 });
+  });
+
+  it("never settles at $0: a zero-estimate hold is swept at one micro-dollar", async () => {
+    let clock = T0;
+    const { db } = table();
+    const meter = new DynamoMeter({ db, tables: TABLES, now: () => clock });
+    expect((await meter.reserve({ scope, caps, estimateMicros: 0 })).ok).toBe(true);
+    clock += HOLD_SWEEP_AGE_MS + 1;
+    expect((await meter.sweepOpenHolds(clock, 5)).swept).toBe(1);
+    expect((await meter.read(scope))[0]).toMatchObject({ spentMicros: 1, reservedMicros: 0 });
+  });
+
+  it("is bounded per run (oldest first, `more` when holds remain), and a sweep racing a settle applies once", async () => {
+    let clock = T0;
+    const { db } = table();
+    const big = { task: 10_000, projectMonth: 10_000, companyMonth: 10_000 };
+    const meter = new DynamoMeter({ db, tables: TABLES, now: () => clock });
+    const made = [];
+    for (let i = 0; i < 3; i++) { clock = T0 + i; const r = await meter.reserve({ scope: { ...scope, tid: `task_${String(i)}` }, caps: big, estimateMicros: 10 }); if (!r.ok) throw new Error("reserve"); made.push(r.reservation); }
+    clock = T0 + HOLD_SWEEP_AGE_MS + 10;
+    expect(await meter.sweepOpenHolds(clock, 1)).toEqual({ swept: 1, already: 0, failed: 0, more: true });
+    expect((await meter.read({ ...scope, tid: "task_0" }))[0]).toMatchObject({ spentMicros: 10 });
+    await Promise.all([meter.settle(made[1]!, 4), meter.sweepOpenHolds(clock, 1)]);
+    const row = (await meter.read({ ...scope, tid: "task_1" }))[0]!;
+    expect([4, 10]).toContain(row.spentMicros);
+    expect(row.reservedMicros).toBe(0);
+    expect((await meter.read({ ...scope, tid: "task_0" }))[0]!.spentMicros + row.spentMicros).toBeLessThanOrEqual(20);
+    await expect(meter.sweepOpenHolds(clock, 0)).rejects.toThrow("sweep unavailable");
+  });
+
+  it("a hold it cannot close does not block the ones after it: the next run resumes past it", async () => {
+    let clock = T0;
+    const { wire, db } = table();
+    const big = { task: 10_000, projectMonth: 10_000, companyMonth: 10_000 };
+    const meter = new DynamoMeter({ db, tables: TABLES, now: () => clock });
+    for (let i = 0; i < 3; i++) { clock = T0 + i; const r = await meter.reserve({ scope: { ...scope, tid: `task_${String(i)}` }, caps: big, estimateMicros: 10 }); if (!r.ok) throw new Error("reserve"); }
+    // The oldest hold is unreadable (its targets are gone), but still in the open-holds index.
+    const oldest = holds(wire).sort((a, b) => Number(a.createdAt) - Number(b.createdAt))[0]!;
+    await db.put(TABLES.meter, { ...(oldest as unknown as Record<string, string>), targets: [] });
+    clock = T0 + HOLD_SWEEP_AGE_MS + 10;
+    expect(await meter.sweepOpenHolds(clock, 1)).toEqual({ swept: 0, already: 0, failed: 1, more: true });
+    expect(await meter.sweepOpenHolds(clock, 1)).toEqual({ swept: 1, already: 0, failed: 0, more: true });
+    expect(await meter.sweepOpenHolds(clock, 1)).toEqual({ swept: 1, already: 0, failed: 0, more: false });
+    expect((await meter.read({ ...scope, tid: "task_2" }))[0]).toMatchObject({ spentMicros: 10, reservedMicros: 0 });
+    // From the oldest again: the stuck hold is reported (and keeps `more` set), never settled at $0 or guessed.
+    expect(await meter.sweepOpenHolds(clock, 5)).toEqual({ swept: 0, already: 0, failed: 1, more: true });
   });
 });
 

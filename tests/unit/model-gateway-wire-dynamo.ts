@@ -4,7 +4,9 @@
 // same evaluator cloud/next's other stores are tested on. Marshalling is this file's own, not the code under test's.
 import { FakeDynamoDb } from "../support/fake-dynamodb.js";
 import { AwsUnknownError, type WireRequest, type WireResponse, type WireTransport } from "../../packages/model-gateway/src/aws.js";
-import { GATEWAY_LEDGER_INDEXES } from "../../packages/model-gateway/src/deploy.js";
+import { GATEWAY_LEDGER_INDEXES, GATEWAY_METER_INDEXES } from "../../packages/model-gateway/src/deploy.js";
+
+const INDEXES = [...Object.values(GATEWAY_LEDGER_INDEXES), ...Object.values(GATEWAY_METER_INDEXES)];
 
 type Json = Record<string, unknown>;
 export interface WireCall { operation: string; table: string; keys: Array<{ pk: string; sk: string }>; input: Json }
@@ -39,7 +41,7 @@ const plain = (value: unknown): Json => Object.fromEntries(Object.entries(value 
 const wire = (value: Json): Json => Object.fromEntries(Object.entries(value).map(([k, v]) => [k, toWire(v)]));
 
 export class WireDynamo {
-  readonly fake = new FakeDynamoDb({ indexKeys: { [GATEWAY_LEDGER_INDEXES.pendingByKey.name]: { partition: GATEWAY_LEDGER_INDEXES.pendingByKey.partitionKey, sort: GATEWAY_LEDGER_INDEXES.pendingByKey.sortKey }, [GATEWAY_LEDGER_INDEXES.pendingByAge.name]: { partition: GATEWAY_LEDGER_INDEXES.pendingByAge.partitionKey, sort: GATEWAY_LEDGER_INDEXES.pendingByAge.sortKey } } });
+  readonly fake = new FakeDynamoDb({ indexKeys: Object.fromEntries(INDEXES.map((index) => [index.name, { partition: index.partitionKey, sort: index.sortKey }])) });
   readonly calls: WireCall[] = [];
   readonly requests: WireRequest[] = [];
   /** Which table each item was written to: a read on another table does not see it. */
@@ -118,7 +120,7 @@ export class WireDynamo {
       const key = translated.Key as { pk: string; sk: string };
       if ((this.#tableOf.get(JSON.stringify([key.pk, key.sk])) ?? call.table) !== call.table) return this.#ok({});
     }
-    if (operation === "Query" && translated.IndexName !== undefined && !Object.values(GATEWAY_LEDGER_INDEXES).some((index) => index.name === translated.IndexName)) return this.#error(400, "ValidationException");
+    if (operation === "Query" && translated.IndexName !== undefined && !INDEXES.some((index) => index.name === translated.IndexName)) return this.#error(400, "ValidationException");
     try {
       const answer = await this.fake.send({ constructor: { name: command }, input: translated }) as Json;
       if (operation === "TransactWriteItems") {

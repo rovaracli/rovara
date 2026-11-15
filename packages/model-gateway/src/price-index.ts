@@ -12,6 +12,7 @@ export class SnapshotPriceSource implements PriceSource {
   #failures: { litellm?: string; aws?: string } = {};
   #redundant = 0;
   #expiresAt = Infinity;
+  #limits = new Map<string, number>();
   constructor(private readonly store: PriceSnapshotStore, private readonly options: { now?: () => number; overrides?: readonly unknown[] } = {}) {}
   #now(): number { return (this.options.now ?? Date.now)(); }
   async reload(): Promise<void> {
@@ -24,6 +25,10 @@ export class SnapshotPriceSource implements PriceSource {
   #build(snapshot: PriceSnapshot | undefined): void {
     const overrides = validOverrides(this.options.overrides ?? PRICE_OVERRIDES, this.#now()).map((e) => ({ ...e, origin: { source: "override" as const, fetchedAt: e.verifiedAt } }));
     this.#book = priceBook(snapshot, overrides); this.#snapshot = snapshot;
+    // Several rows can name one identity (dated and undated IDs): the smallest ceiling holds for all of them.
+    const limits = new Map<string, number>();
+    for (const l of snapshot?.sources.litellm?.limits ?? []) { const key = identityKey(l.provider, l.model); limits.set(key, Math.min(limits.get(key) ?? Number.MAX_SAFE_INTEGER, l.maxOutputTokens)); }
+    this.#limits = limits;
     this.#redundant = this.#book.redundantOverrides; this.#expiresAt = this.#book.expiresAt;
   }
   effectiveFor(provider: string, model: string, kind: PriceKind): ResolvedPrice {
@@ -42,6 +47,19 @@ export class SnapshotPriceSource implements PriceSource {
     const p = this.#book.index.get(identityKey(provider, model));
     if (p === undefined) return undefined;
     return { ...resolved(p), origin: { ...p.origin }, priceVersion: this.#snapshot?.version ?? 0 };
+  }
+  /**
+   * The model's own most output tokens per call (ModelLimitsSource), from its source row, by the same identity a price is
+   * found by: the model's own key first, then the smallest ceiling among the aliases of its price identity. Undefined: no row
+   * names one.
+   */
+  maxOutputTokens(provider: string, model: string): number | undefined {
+    if (typeof provider !== "string" || typeof model !== "string") return undefined;
+    const own = this.#limits.get(identityKey(provider, model)); if (own !== undefined) return own;
+    const identity = this.#book.index.get(identityKey(provider, model)); if (identity === undefined) return undefined;
+    let found: number | undefined;
+    for (const alias of [identity.model, ...identity.aliases]) { const limit = this.#limits.get(identityKey(provider, alias)); if (limit !== undefined) found = Math.min(found ?? limit, limit); }
+    return found;
   }
   keys(): Array<{ provider: string; model: string }> { return [...this.#book.index.values()].filter((e) => !e.estimated).map(({ provider, model }) => ({ provider, model })); }
   failure(source: "litellm" | "aws", failed: boolean): void { if (failed) this.#failures[source] = "refresh failed"; else delete this.#failures[source]; }

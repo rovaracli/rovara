@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { AwsNotSentError } from "./aws.js";
 import { validCaps, type Caps } from "./caps.js";
-import { GATEWAY_COMPANY_KEY_PREFIX, GATEWAY_LEDGER_INDEXES, GATEWAY_PENDING_PARTITION } from "./deploy.js";
+import { GATEWAY_COMPANY_KEY_PREFIX, GATEWAY_LEDGER_INDEXES, GATEWAY_METER_INDEXES, GATEWAY_OPEN_PARTITION, GATEWAY_PENDING_PARTITION } from "./deploy.js";
+import { CALL_HARD_CEILING_MS } from "./provider.js";
 import { TransactionRefused, type Dynamo, type Expr, type Item, type Plain, type TransactAction } from "./dynamo.js";
 import type { EndedTasks } from "./ended.js";
 import type { CorrectionInput, CorrectionResult, EstimatedCall, EstimatedSettlement, ExpiryInput, Meter, MeterItem, MeterRow, MeterScope, Reservation, ReserveInput, ReserveResult } from "./meter.js";
@@ -44,6 +45,10 @@ const backoff = (attempt: number): Promise<void> => new Promise((resolve) => { s
 const pad = (n: number): string => String(n).padStart(16, "0");
 const pendingKeyAt = (key: string, settledAt: number, callKey: string): string => `${key}|${pad(settledAt)}|${callKey}`;
 const pendingAt = (settledAt: number, callKey: string): string => `${pad(settledAt)}|${callKey}`;
+const openAt = (createdAt: number, pk: string, id: string): string => `${pad(createdAt)}|${pk}|${id}`;
+/** A hold is swept only well after its call must have ended: the one-hour call ceiling plus fifteen minutes. */
+export const HOLD_SWEEP_AGE_MS = CALL_HARD_CEILING_MS + 15 * 60_000;
+export const HOLD_SWEEP_MAX = 100;
 
 interface Target { sk: string; item: MeterItem; cap?: number }
 interface Hold { scope: MeterScope; month: string; estimate: number; targets: Target[]; status: string }
@@ -119,6 +124,8 @@ export class DynamoMeter implements Meter {
   readonly #beforeWrite: NonNullable<DynamoMeterOptions["beforeWrite"]>;
   /** Where each reservation this process made lives. A reservation is settled by the process that made it (server.ts's finally). */
   readonly #holds = new WeakMap<object, { pk: string; id: string }>();
+  /** Where the next hold sweep resumes (an open-holds index position); undefined: from the oldest. */
+  #sweepAfter: string | undefined;
   constructor(options: DynamoMeterOptions) {
     this.#db = options.db; this.#t = options.tables; this.#now = options.now ?? Date.now; this.#beforeWrite = options.beforeWrite ?? (() => undefined);
   }
@@ -178,6 +185,8 @@ export class DynamoMeter implements Meter {
       });
       actions.push({ kind: "Put", table: this.#t.meter, condition: (e) => `attribute_not_exists(${e.name("pk")})`, item: {
         pk, sk: `HOLD#${id}`, status: "open", ...scopeFields(scope), month, estimateMicros, targets: targetsPlain(items), createdAt: now,
+        // In the open-holds index until settled, so the sweep can close a hold whose settle failed.
+        openAll: GATEWAY_OPEN_PARTITION, openAt: openAt(now, pk, id),
         ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }),
       } });
       if (expiresSeconds !== undefined) {
@@ -211,12 +220,21 @@ export class DynamoMeter implements Meter {
     if (hold === undefined || hold.status !== "open") return; // Already closed; ledger and rows stay untouched.
     if (!whole(actualMicros)) throw new Error("settlement unavailable");
     if (estimated !== undefined && (!validEntry({ ...estimated, inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 }) || !whole(estimated.settledAt) || (estimated.priceVersion !== undefined && !whole(estimated.priceVersion)) || (estimated.usage !== undefined && !validUsage(estimated.usage)) || actualMicros < 1)) throw new Error("settlement unavailable");
-    const extraEstimated = estimated === undefined ? 0 : actualMicros;
+    await this.#close(pk, id, hold, actualMicros, estimated, false);
+  }
+
+  /**
+   * One hold to spend, in one conditional transaction (the hold must still be open). `swept`: closed by the sweep at the hold's
+   * own estimate because its call's settle never landed; counted as estimated, never at $0.
+   */
+  async #close(pk: string, id: string, hold: Hold, actualMicros: number, estimated: EstimatedSettlement | undefined, swept: boolean): Promise<"closed" | "already"> {
+    const extraEstimated = estimated === undefined && !swept ? 0 : actualMicros;
     const callKey = JSON.stringify([hold.scope.iss, hold.scope.cid, id]);
     const now = this.#now();
     const pending = estimated?.usage !== undefined && hasUsage(estimated.usage);
     const ledger: Item = {
-      pk, sk: `CALL#${id}`, callKey, ...scopeFields(hold.scope), month: hold.month, settledMicros: actualMicros, estimated: estimated !== undefined, targets: targetsPlain(hold.targets),
+      pk, sk: `CALL#${id}`, callKey, ...scopeFields(hold.scope), month: hold.month, settledMicros: actualMicros, estimated: estimated !== undefined || swept, targets: targetsPlain(hold.targets),
+      ...(swept ? { swept: true } : {}),
       settledAt: pending ? estimated.settledAt : now,
       ...(!pending ? {} : {
         provider: estimated.provider, model: estimated.model, kind: estimated.kind, usage: usagePlain(estimated.usage!), status: "pending",
@@ -245,20 +263,56 @@ export class DynamoMeter implements Meter {
           ].join(" AND ") };
       });
       actions.push({ kind: "Update", table: this.#t.meter, key: { pk, sk: `HOLD#${id}` },
-        update: (e) => `SET ${e.name("status")} = ${e.value("settled")}, ${e.name("actualMicros")} = ${e.value(actualMicros)}, ${e.name("closedAt")} = ${e.value(now)}`,
+        update: (e) => `SET ${e.name("status")} = ${e.value("settled")}, ${e.name("actualMicros")} = ${e.value(actualMicros)}, ${e.name("closedAt")} = ${e.value(now)}${swept ? `, ${e.name("swept")} = ${e.value(true)}` : ""} REMOVE ${e.name("openAll")}, ${e.name("openAt")}`,
         condition: (e) => `${e.name("status")} = ${e.value("open")}` });
       actions.push({ kind: "Put", table: this.#t.ledger, item: ledger, condition: (e) => `attribute_not_exists(${e.name("pk")})` });
       try { await this.#db.transact(actions, randomUUID()); }
       catch (error) {
         if (!(error instanceof TransactionRefused)) throw new Error("settlement unavailable", { cause: error });
-        if (error.conditionFailed(holdIndex) || error.conditionFailed(ledgerIndex)) return; // Closed by another settle.
+        if (error.conditionFailed(holdIndex) || error.conditionFailed(ledgerIndex)) return "already"; // Closed by another settle.
         continue;
       }
       // The marker goes only if this reservation still owns it; a crash here leaves it to expire (at most the token's lifetime).
       try { await this.#db.delete(this.#t.markers, { pk, sk: INFLIGHT }, (e) => `${e.name("owner")} = ${e.value(id)}`); } catch { /* It expires. */ }
-      return;
+      return "closed";
     }
     throw new Error("settlement unavailable");
+  }
+
+  /**
+   * Closes holds left open past HOLD_SWEEP_AGE_MS (their call's settle failed, or its process stopped): each is settled at its
+   * own reserved estimate (at least 1 micro-dollar, never $0, DEC 172), marked estimated and swept, in the same conditional
+   * transaction as a settle, so a late settle and the sweep cannot both apply. Bounded: at most `limit` holds per run, oldest first.
+   */
+  async sweepOpenHolds(now: number, limit: number): Promise<{ swept: number; already: number; failed: number; more: boolean }> {
+    if (!whole(now) || !whole(limit) || limit < 1 || limit > HOLD_SWEEP_MAX) throw new Error("sweep unavailable");
+    const before = now - HOLD_SWEEP_AGE_MS;
+    const report = { swept: 0, already: 0, failed: 0, more: false };
+    if (before <= 0) return report;
+    const index = GATEWAY_METER_INDEXES.openHolds;
+    // Resume after the last hold this meter looked at, so holds that cannot be closed never block newer ones; a pass that
+    // reaches the end starts again from the oldest.
+    const after = this.#sweepAfter !== undefined && this.#sweepAfter < pad(before) ? this.#sweepAfter : undefined;
+    const found = (await this.#db.query(this.#t.meter, { index: index.name, limit: limit + 2, key: (e) => after === undefined
+      ? `${e.name(index.partitionKey)} = ${e.value(GATEWAY_OPEN_PARTITION)} AND ${e.name(index.sortKey)} < ${e.value(pad(before))}`
+      : `${e.name(index.partitionKey)} = ${e.value(GATEWAY_OPEN_PARTITION)} AND ${e.name(index.sortKey)} BETWEEN ${e.value(after)} AND ${e.value(pad(before))}` }))
+      .filter((item) => item.openAt !== after);
+    report.more = found.length > limit;
+    const page = found.slice(0, limit);
+    const last = page.at(-1)?.openAt;
+    this.#sweepAfter = report.more && typeof last === "string" ? last : undefined;
+    for (const item of page) {
+      try {
+        if (typeof item.pk !== "string" || !item.pk.startsWith(GATEWAY_COMPANY_KEY_PREFIX) || typeof item.sk !== "string" || !/^HOLD#[0-9a-f-]{36}$/u.test(item.sk) || !whole(item.createdAt) || item.createdAt >= before) { report.failed++; continue; }
+        const id = item.sk.slice("HOLD#".length);
+        // Re-read consistently: the index is eventually consistent, the decision is made from the table.
+        const hold = readHold(await this.#db.get(this.#t.meter, { pk: item.pk, sk: item.sk }));
+        if (hold === undefined || hold.status !== "open" || companyPartition(hold.scope.iss, hold.scope.cid) !== item.pk) { report.already++; continue; }
+        const result = await this.#close(item.pk, id, hold, Math.max(1, hold.estimate), undefined, true);
+        if (result === "closed") report.swept++; else report.already++;
+      } catch { report.failed++; report.more = true; }
+    }
+    return report;
   }
 
   async #beforeTransaction(operation: "correct" | "expire", input: ExpiryInput, rows?: MeterRow[]): Promise<boolean> {

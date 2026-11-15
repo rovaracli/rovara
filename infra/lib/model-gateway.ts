@@ -44,8 +44,9 @@ import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix } fr
  *  - ModelGatewayImagesStack: the image repository, deployed first so an image can be pushed before the service needs it;
  *  - ModelGatewayStack: everything else. Its parameters: CodeUrl (the one Code install trusted), CodeTaskKeyIds (the task-token
  *    key IDs Code's JWKS publishes, purpose=task; STAGING-KEY-PURPOSE-ORDER applies), CertificateArn (an existing ACM
- *    certificate for the gateway's name: this stack makes no certificate or DNS record) and ImageDigest (the image to run,
- *    by digest).
+ *    certificate for the gateway's name: this stack makes no certificate or DNS record), ImageDigest (the image to run,
+ *    by digest) and CompanyTableName (the Cloud company backend's Companies table, read-only for budgets; its AWS-managed
+ *    encryption key needs no grant).
  *
  * The literals shared with the process (environment names, table keys, log events) are in
  * packages/model-gateway/src/deploy.ts; tests/contract/model-gateway-infra.test.ts holds the two to one truth.
@@ -75,6 +76,7 @@ export const MODEL_GATEWAY_ENV = {
   markersTable: "GATEWAY_MARKERS_TABLE",
   pricesTable: "GATEWAY_PRICES_TABLE",
   anthropicKeySecret: "GATEWAY_ANTHROPIC_KEY_SECRET",
+  companyTable: "GATEWAY_COMPANY_TABLE",
 } as const;
 export const MODEL_GATEWAY_PORT = 8080;
 export const MODEL_GATEWAY_COMPANY_KEY_PREFIX = "CO#";
@@ -90,7 +92,14 @@ export const MODEL_GATEWAY_LOG_EVENTS = {
   settleFailed: "settle_failed",
   providerError: "provider_error",
   priceFetchFailed: "price_fetch_failed",
+  priceFetched: "price_fetched",
 } as const;
+/** The meter's open-holds index (deploy.ts GATEWAY_METER_INDEXES), read by the sweep of holds whose settle failed. */
+export const MODEL_GATEWAY_METER_INDEXES = {
+  openHolds: { name: "open-holds", partitionKey: "openAll", sortKey: "openAt" },
+} as const;
+/** The Cloud company backend's Companies table keys (deploy.ts GATEWAY_COMPANY_SETTINGS). */
+export const MODEL_GATEWAY_COMPANY_PARTITION_PREFIX = "COMPANY#";
 
 /** The providers whose keys the gateway holds; one secret each. Only the Anthropic Messages route exists (R3a). */
 export const MODEL_GATEWAY_PROVIDERS = ["anthropic"] as const;
@@ -111,6 +120,8 @@ export const MODEL_GATEWAY_ALARMS = {
   settleFailed: 1,
   /** One hour. */
   priceFetchFailed: 1,
+  /** No saved price fetch for this many days in a row (R3c STALE_ALARM_MS is three days). */
+  priceStaleDays: 3,
 } as const;
 
 /** The version ID Secrets Manager puts in the context of its key-access check (Secrets Manager encryption guide). */
@@ -193,10 +204,22 @@ export class ModelGatewayStack extends Stack {
       constraintDescription: "an image digest, sha256:<64 hex>",
       description: "The gateway image to run, by digest, from the gateway-images stack's repository",
     });
+    const companyTableName = new CfnParameter(this, "CompanyTableName", {
+      type: "String",
+      allowedPattern: "^[A-Za-z0-9_.-]{3,255}$",
+      constraintDescription: "a DynamoDB table name",
+      description: "The Cloud company backend's Companies table (RovaraCloudWeb output CompanyTableName): the gateway reads each company's budgets from it",
+    });
     const issuer = `${codeUrl.valueAsString}/v1/auth`;
 
     // Tables. Only markers expire (DEC 222: spend, holds and per-call records are kept).
-    const meter = table(this, "Meter", false);
+    // The meter's open holds, as one sparse index: the sweep closes holds whose settle failed.
+    const meter = table(this, "Meter", false, Object.values(MODEL_GATEWAY_METER_INDEXES).map((index) => ({
+      indexName: index.name,
+      partitionKey: { name: index.partitionKey, type: dynamodb.AttributeType.STRING },
+      sortKey: { name: index.sortKey, type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    })));
     // The ledger's estimated calls waiting for a real price (R3c's pending-correction index), as two sparse indexes.
     const ledger = table(this, "Ledger", false, Object.values(MODEL_GATEWAY_LEDGER_INDEXES).map((index) => ({
       indexName: index.name,
@@ -313,6 +336,17 @@ export class ModelGatewayStack extends Stack {
       sid: "QueryPendingCorrections", actions: ["dynamodb:Query"],
       resources: Object.values(MODEL_GATEWAY_LEDGER_INDEXES).map((index) => `${ledger.tableArn}/index/${index.name}`),
     }));
+    // The hold sweep: Query only, the meter's open-holds index by name (same reasoning as the pending indexes).
+    serveRole.addToPolicy(new iam.PolicyStatement({
+      sid: "QueryOpenHolds", actions: ["dynamodb:Query"],
+      resources: Object.values(MODEL_GATEWAY_METER_INDEXES).map((index) => `${meter.tableArn}/index/${index.name}`),
+    }));
+    // Budgets: read only, one company's settings row at a time (the backend's COMPANY# keys), from its Companies table.
+    serveRole.addToPolicy(new iam.PolicyStatement({
+      sid: "ReadCompanyBudgets", actions: ["dynamodb:GetItem"],
+      resources: [`arn:${this.partition}:dynamodb:${this.region}:${this.account}:table/${companyTableName.valueAsString}`],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${MODEL_GATEWAY_COMPANY_PARTITION_PREFIX}*`] }, Null: { "dynamodb:LeadingKeys": "false" } },
+    }));
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadPrices", actions: ["dynamodb:GetItem", "dynamodb:Query"], resources: [prices.tableArn] }));
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadProviderKeys", actions: ["secretsmanager:GetSecretValue"], resources: secrets.map((secret) => secret.secretArn) }));
     serveRole.addToPolicy(new iam.PolicyStatement({
@@ -373,6 +407,7 @@ export class ModelGatewayStack extends Stack {
         [MODEL_GATEWAY_ENV.ledgerTable]: ledger.tableName,
         [MODEL_GATEWAY_ENV.markersTable]: markers.tableName,
         [MODEL_GATEWAY_ENV.anthropicKeySecret]: anthropic.secretArn,
+        [MODEL_GATEWAY_ENV.companyTable]: companyTableName.valueAsString,
       },
     });
     props.repository.grantPull(serveTask.obtainExecutionRole());
@@ -473,6 +508,13 @@ export class ModelGatewayStack extends Stack {
     alarm("BusyAnswers", fromLog("BusyAnswers", serveLogs, MODEL_GATEWAY_LOG_EVENTS.overrunBusy, fiveMinutes), MODEL_GATEWAY_ALARMS.busy, "Many busy answers: calls waiting on another estimated-price call of the same company");
     alarm("SettleFailures", fromLog("SettleFailures", serveLogs, MODEL_GATEWAY_LOG_EVENTS.settleFailed, fiveMinutes), MODEL_GATEWAY_ALARMS.settleFailed, "A call's cost could not be settled (its hold is kept)");
     alarm("PriceFetchFailures", fromLog("PriceFetchFailures", fetchLogs, MODEL_GATEWAY_LOG_EVENTS.priceFetchFailed, Duration.hours(1)), MODEL_GATEWAY_ALARMS.priceFetchFailed, "The daily price fetch failed (the last good prices stay)");
+    // Staleness: no saved fetch for three days running. No log at all (the rule off, the task never starting) counts as stale.
+    new cloudwatch.Alarm(this, "PricesStale", {
+      metric: fromLog("PricesFetched", fetchLogs, MODEL_GATEWAY_LOG_EVENTS.priceFetched, Duration.days(1)),
+      threshold: 1, evaluationPeriods: MODEL_GATEWAY_ALARMS.priceStaleDays, datapointsToAlarm: MODEL_GATEWAY_ALARMS.priceStaleDays,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD, treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      alarmDescription: "No price fetch has saved prices for three days: estimates use stale prices",
+    }).addAlarmAction(notify);
 
     new CfnOutput(this, "GatewayAddress", { value: `https://${alb.loadBalancerDnsName}`, description: "Point the certificate's name at this (DNS is outside this stack); Code's model-access route answers that name" });
     new CfnOutput(this, "Issuer", { value: issuer, description: "The one Code install trusted" });

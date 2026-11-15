@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   GATEWAY_COMPANY_KEY_PREFIX,
   GATEWAY_ENV,
+  GATEWAY_COMPANY_SETTINGS,
   GATEWAY_LEDGER_INDEXES,
+  GATEWAY_METER_INDEXES,
   GATEWAY_LOG_EVENTS,
   GATEWAY_MARKERS_TTL_ATTRIBUTE,
   GATEWAY_PORT,
@@ -18,7 +20,9 @@ import {
   MODEL_GATEWAY_COMPANY_KEY_PREFIX,
   MODEL_GATEWAY_CONTEXT_KEY,
   MODEL_GATEWAY_ENV,
+  MODEL_GATEWAY_COMPANY_PARTITION_PREFIX,
   MODEL_GATEWAY_LEDGER_INDEXES,
+  MODEL_GATEWAY_METER_INDEXES,
   MODEL_GATEWAY_LOG_EVENTS,
   MODEL_GATEWAY_MARKERS_TTL_ATTRIBUTE,
   MODEL_GATEWAY_PORT,
@@ -68,6 +72,8 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
     expect(MODEL_GATEWAY_MARKERS_TTL_ATTRIBUTE).toBe(GATEWAY_MARKERS_TTL_ATTRIBUTE);
     expect(MODEL_GATEWAY_LOG_EVENTS).toEqual(GATEWAY_LOG_EVENTS);
     expect(MODEL_GATEWAY_LEDGER_INDEXES).toEqual(GATEWAY_LEDGER_INDEXES);
+    expect(MODEL_GATEWAY_METER_INDEXES).toEqual(GATEWAY_METER_INDEXES);
+    expect(MODEL_GATEWAY_COMPANY_PARTITION_PREFIX).toBe(GATEWAY_COMPANY_SETTINGS.partitionPrefix);
     // server.ts's own log events: a rename there fails to compile here.
     const serverEvents: Array<Parameters<GatewayDependencies["log"]>[0]["event"]> = [GATEWAY_LOG_EVENTS.refused, GATEWAY_LOG_EVENTS.overrunBusy, GATEWAY_LOG_EVENTS.settleFailed, GATEWAY_LOG_EVENTS.providerError];
     expect(serverEvents).toHaveLength(4);
@@ -122,9 +128,10 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
       expect(each.Properties.Replicas).toEqual([expect.objectContaining({ DeletionProtectionEnabled: true, PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true } })]);
       if (id.startsWith("Markers")) expect(each.Properties.TimeToLiveSpecification).toEqual({ AttributeName: GATEWAY_MARKERS_TTL_ATTRIBUTE, Enabled: true });
       else expect(each.Properties.TimeToLiveSpecification).toBeUndefined();
-      // Only the ledger has indexes: the two pending-correction indexes, keyed exactly as dynamo-meter.ts queries them.
-      if (id.startsWith("Ledger")) {
-        expect(each.Properties.GlobalSecondaryIndexes).toEqual(Object.values(GATEWAY_LEDGER_INDEXES).map((index) => ({
+      // The ledger's two pending-correction indexes and the meter's open-holds index, keyed exactly as dynamo-meter.ts queries them.
+      const expectedIndexes = id.startsWith("Ledger") ? Object.values(GATEWAY_LEDGER_INDEXES) : id.startsWith("Meter") ? Object.values(GATEWAY_METER_INDEXES) : [];
+      if (expectedIndexes.length > 0) {
+        expect(each.Properties.GlobalSecondaryIndexes).toEqual(expectedIndexes.map((index) => ({
           IndexName: index.name, Projection: { ProjectionType: "ALL" },
           KeySchema: [{ AttributeName: index.partitionKey, KeyType: "HASH" }, { AttributeName: index.sortKey, KeyType: "RANGE" }],
         })));
@@ -140,7 +147,15 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
     expect(actions(bySid.MeterAndLedgerCompanyKeys!).sort()).toEqual(["dynamodb:ConditionCheckItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query", "dynamodb:UpdateItem"]);
     expect(bySid.MarkersCompanyKeys).toMatchObject({ Condition: companyKeys, Resource: { "Fn::GetAtt": [tableId("Markers"), "Arn"] } });
     expect(bySid.ReadPrices).toMatchObject({ Action: ["dynamodb:GetItem", "dynamodb:Query"], Resource: { "Fn::GetAtt": [tableId("Prices"), "Arn"] } });
-    expect(Object.keys(bySid).sort()).toEqual(["DecryptProviderKeys", "MarkersCompanyKeys", "MeterAndLedgerCompanyKeys", "QueryPendingCorrections", "ReadPrices", "ReadProviderKeys"]);
+    expect(Object.keys(bySid).sort()).toEqual(["DecryptProviderKeys", "MarkersCompanyKeys", "MeterAndLedgerCompanyKeys", "QueryOpenHolds", "QueryPendingCorrections", "ReadCompanyBudgets", "ReadPrices", "ReadProviderKeys"]);
+    expect(bySid.QueryOpenHolds).toMatchObject({ Action: "dynamodb:Query", Resource: { "Fn::Join": ["", [{ "Fn::GetAtt": [tableId("Meter"), "Arn"] }, `/index/${GATEWAY_METER_INDEXES.openHolds.name}`]] } });
+    // Budgets: GetItem only, the named Companies table only, the backend's COMPANY# keys only.
+    expect(bySid.ReadCompanyBudgets).toMatchObject({
+      Action: "dynamodb:GetItem",
+      Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":dynamodb:us-west-2:", { Ref: "AWS::AccountId" }, ":table/", { Ref: "CompanyTableName" }]] },
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": [`${GATEWAY_COMPANY_SETTINGS.partitionPrefix}*`] }, Null: { "dynamodb:LeadingKeys": "false" } },
+    });
+    expect(envOf("ServeTask")[GATEWAY_ENV.companyTable]).toEqual({ Ref: "CompanyTableName" });
     // The pending-correction indexes: Query only, the two indexes by name (no table, no wildcard, no write).
     expect(bySid.QueryPendingCorrections).toMatchObject({ Action: "dynamodb:Query", Resource: Object.values(GATEWAY_LEDGER_INDEXES).map((index) => ({ "Fn::Join": ["", [{ "Fn::GetAtt": [tableId("Ledger"), "Arn"] }, `/index/${index.name}`]] })) });
     expect(bySid.QueryPendingCorrections!.Condition).toBeUndefined();
@@ -243,6 +258,11 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
       expect(filter.LogGroupName).toEqual({ Ref: group });
       expect(byMetric(`${name}-staging`)).toMatchObject({ Threshold: threshold, Statistic: "Sum" });
     }
-    expect(alarms).toHaveLength(7);
+    // Staleness: fewer than one saved fetch a day for three days running, and silence counts as stale.
+    const fetched = filters.find((each) => each.MetricTransformations[0]!.MetricName === "PricesFetched-staging")!;
+    expect(fetched.FilterPattern).toBe(`{ $.event = "${GATEWAY_LOG_EVENTS.priceFetched}" }`);
+    expect(fetched.LogGroupName).toEqual({ Ref: fetchLogs });
+    expect(byMetric("PricesFetched-staging")).toMatchObject({ Threshold: 1, ComparisonOperator: "LessThanThreshold", Period: 86400, EvaluationPeriods: 3, DatapointsToAlarm: 3, TreatMissingData: "breaching", Statistic: "Sum" });
+    expect(alarms).toHaveLength(8);
   });
 });

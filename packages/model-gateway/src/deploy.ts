@@ -22,6 +22,8 @@ export const GATEWAY_ENV = {
   pricesTable: "GATEWAY_PRICES_TABLE",
   /** The ARN of the secret holding the Anthropic key. Never the key itself. */
   anthropicKeySecret: "GATEWAY_ANTHROPIC_KEY_SECRET",
+  /** The Cloud company backend's Companies table, read for each company's budgets (GATEWAY_COMPANY_SETTINGS). */
+  companyTable: "GATEWAY_COMPANY_TABLE",
 } as const;
 
 export const GATEWAY_MODES = ["serve", "price-fetch"] as const;
@@ -47,6 +49,8 @@ export const GATEWAY_LOG_EVENTS = {
   settleFailed: "settle_failed",
   providerError: "provider_error",
   priceFetchFailed: "price_fetch_failed",
+  /** A price fetch that saved (counted daily; no count for three days raises the staleness alarm). */
+  priceFetched: "price_fetched",
 } as const;
 
 /**
@@ -60,3 +64,23 @@ export const GATEWAY_LEDGER_INDEXES = {
   pendingByAge: { name: "pending-by-age", partitionKey: "pendingAll", sortKey: "pendingAt" },
 } as const;
 export const GATEWAY_PENDING_PARTITION = "PENDING";
+
+/**
+ * The meter's sparse index over holds still open (one constant partition, ordered by when the hold was taken). The sweep
+ * (dynamo-meter.ts sweepOpenHolds) reads it to close holds whose settle failed; a settled hold leaves it.
+ */
+export const GATEWAY_METER_INDEXES = {
+  openHolds: { name: "open-holds", partitionKey: "openAll", sortKey: "openAt" },
+} as const;
+export const GATEWAY_OPEN_PARTITION = "OPEN";
+
+/**
+ * Budgets come from the Cloud company backend's Companies table (packages/cloud-server company-dynamo.ts, #52): the item COMPANY#<org_…> / SETTINGS holds `companyId` and `settings.budgets`, four caps in
+ * micro-dollars where null means no cap of that kind. The gateway only reads it (GetItem); the backend's admin API writes it.
+ * These literals repeat that store's; tests/contract/model-gateway-company-budgets.test.ts writes through the backend's store
+ * and reads back through the gateway's reader, so the two cannot drift.
+ */
+export const GATEWAY_COMPANY_SETTINGS = { partitionPrefix: "COMPANY#", sortKey: "SETTINGS" } as const;
+export const GATEWAY_COMPANY_BUDGET_FIELDS = ["companyMonthlyUsdMicros", "memberMonthlyUsdMicros", "projectMonthlyUsdMicros", "taskUsdMicros"] as const;
+/** The backend's own ceiling for one budget: $1,000,000 in micro-dollars. */
+export const GATEWAY_COMPANY_BUDGET_MAX = 1_000_000_000_000;

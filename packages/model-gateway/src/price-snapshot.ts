@@ -11,7 +11,10 @@ export interface EffectiveIdentity extends PriceKey, ResolvedPrice {
 }
 export const FLOOR_REASONS = ["unsupported mode", "unsupported deprecation date", "deprecated model", "unsupported price field", "unsupported token rate", "token rate exceeds maximum", "sanity hold", "unsupported provider", "unsupported per-request price"] as const;
 export interface ModelFloor extends Price, PriceKey { kind?: PriceKind; perRequest?: true; reason: typeof FLOOR_REASONS[number] }
-export interface SourceSnapshot { fetchedAt: number; count: number; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; unidentified?: UnidentifiedRow[]; confirmations?: (PriceEntry | ModelFloor)[] }
+/** A model's own most output tokens per call, from the source row (LiteLLM max_output_tokens). */
+export interface ModelLimit extends PriceKey { maxOutputTokens: number }
+export const MAX_OUTPUT_TOKENS_LIMIT = 10_000_000;
+export interface SourceSnapshot { fetchedAt: number; count: number; entries: PriceEntry[]; fallbacks?: ModelFallback[]; floors?: ModelFloor[]; unidentified?: UnidentifiedRow[]; limits?: ModelLimit[]; confirmations?: (PriceEntry | ModelFloor)[] }
 export interface PriceSnapshot { version: number; sources: { litellm?: SourceSnapshot; aws?: SourceSnapshot }; effective?: EffectiveIdentity[] }
 export interface PriceSnapshotStore { load(): Promise<PriceSnapshot | undefined>; save(snapshot: PriceSnapshot, expectedVersion: number): Promise<boolean> }
 export const priceKey = (key: PriceKey): string => JSON.stringify([key.provider, key.model]);
@@ -29,6 +32,10 @@ export function validFloor(value: unknown): value is ModelFloor {
 export function validFallback(value: unknown): value is ModelFallback {
   const v = record(value);
   return v !== undefined && (v.reason === "per_request_price" || v.reason === "unpriced") && (v.kind === undefined || v.kind === "chat" || v.kind === "embedding") && validEntry({ ...v, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 });
+}
+export function validLimit(value: unknown): value is ModelLimit {
+  const v = record(value);
+  return v !== undefined && Object.keys(v).length === 3 && whole(v.maxOutputTokens) && v.maxOutputTokens >= 1 && v.maxOutputTokens <= MAX_OUTPUT_TOKENS_LIMIT && validEntry({ provider: v.provider, model: v.model, kind: "chat", inputMicrosPerMTok: 1, outputMicrosPerMTok: 1 });
 }
 export function validUnidentified(value: unknown): value is UnidentifiedRow {
   const v = record(value);
@@ -67,6 +74,11 @@ export function validSnapshot(value: unknown): value is PriceSnapshot {
     for (const f of (s.fallbacks ?? []) as unknown[]) {
       if (!validFallback(f) || (name === "aws" && f.provider !== "bedrock") || seen.has(priceKey(f))) return false;
       seen.add(priceKey(f));
+    }
+    if (s.limits !== undefined) {
+      if (!Array.isArray(s.limits) || s.limits.length > MAX_ENTRIES_PER_SOURCE || name !== "litellm") return false;
+      const limits = new Set<string>();
+      for (const l of s.limits as unknown[]) { if (!validLimit(l) || limits.has(priceKey(l))) return false; limits.add(priceKey(l)); }
     }
     const unidentified = new Set<string>();
     for (const u of (s.unidentified ?? []) as unknown[]) {

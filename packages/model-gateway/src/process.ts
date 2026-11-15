@@ -3,6 +3,7 @@ import http, { type IncomingMessage, type Server, type ServerResponse } from "no
 import type { AddressInfo } from "node:net";
 import { credentialsFromEnvironment, type CredentialSource } from "./aws.js";
 import type { CapsSource } from "./caps.js";
+import { CompanyBudgetCaps } from "./company-caps.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
 import { GATEWAY_ENV, GATEWAY_LOG_EVENTS, GATEWAY_MODES } from "./deploy.js";
 import { Dynamo } from "./dynamo.js";
@@ -26,7 +27,7 @@ import { createTaskTokenVerifier } from "./token.js";
 
 export type GatewayEnv = Readonly<Record<string, string | undefined>>;
 export interface InstallConfig { issuer: string; jwksUrl: string; taskKids: string[] }
-export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string }; anthropicKeySecret: string }
+export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string }
 export interface PriceFetchConfig { mode: "price-fetch"; region: string; tables: { prices: string } }
 export type GatewayConfig = ServeConfig | PriceFetchConfig;
 
@@ -57,7 +58,7 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
   const taskKids = need(GATEWAY_ENV.installTaskKids, (value) => { const kids = value.split(","); return kids.length >= 1 && kids.length <= 2 && kids.every((kid) => KID.test(kid)) && new Set(kids).size === kids.length; }).split(",");
   const table = (name: string) => need(name, (value) => TABLE.test(value));
   const anthropicKeySecret = need(GATEWAY_ENV.anthropicKeySecret, (value) => /^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:\d{12}:secret:[A-Za-z0-9/_+=.@-]{1,512}$/u.test(value));
-  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables: { meter: table(GATEWAY_ENV.meterTable), ledger: table(GATEWAY_ENV.ledgerTable), markers: table(GATEWAY_ENV.markersTable), prices }, anthropicKeySecret };
+  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables: { meter: table(GATEWAY_ENV.meterTable), ledger: table(GATEWAY_ENV.ledgerTable), markers: table(GATEWAY_ENV.markersTable), prices, companies: table(GATEWAY_ENV.companyTable) }, anthropicKeySecret };
 }
 
 /** One JSON object per line on stdout, with an `event` field the alarms' metric filters count (deploy.ts GATEWAY_LOG_EVENTS). */
@@ -69,22 +70,21 @@ export function jsonLog(write: (text: string) => void = (text) => { process.stdo
 }
 
 /**
- * Budgets are not settable yet (R3a: "setting caps is a later lane"). Until a caps store exists, the gateway answers every call
- * 503 "model access unavailable" rather than run with an invented budget (fail closed). Corrections skip for the same reason.
- */
-export const UNCONFIGURED_CAPS: CapsSource = { capsFor: () => Promise.resolve({} as never) };
-/**
- * The most output tokens a request may ask for, and what a request that names none is given. One figure for every model the
- * task token allows, until per-model limits come with the model catalog (a request above a model's real limit is refused by the
- * provider).
+ * For a model no price row gives a ceiling for (a model newer than the last price fetch): the most output tokens a request may
+ * ask for, and what a request that names none is held at. Every model with a row uses the row's own max_output_tokens
+ * (DEC 165/180: "the row's default max output").
  */
 export const DEFAULT_MAX_OUTPUT_TOKENS = 64_000;
-export const DEFAULT_MODEL_LIMITS: ModelLimitsSource = { maxOutputTokens: (provider) => provider === "anthropic" ? DEFAULT_MAX_OUTPUT_TOKENS : undefined };
+export function modelLimitsFrom(rows: { maxOutputTokens(provider: string, model: string): number | undefined }): ModelLimitsSource {
+  return { maxOutputTokens: (provider, model) => provider !== "anthropic" ? undefined : (rows.maxOutputTokens(provider, model) ?? DEFAULT_MAX_OUTPUT_TOKENS) };
+}
 
 /** A release drains a task for as long as one call may last (the load balancer's deregistration delay is the same hour). */
 export const GATEWAY_DRAIN_MS = CALL_HARD_CEILING_MS;
 /** Every five minutes: reload the prices table, then a bounded correction run and expiry sweep. */
 export const MAINTENANCE_MS = 5 * 60_000;
+/** Open holds closed per maintenance pass (bounded; the rest wait for the next pass). */
+export const HOLD_SWEEP_PER_PASS = 50;
 
 export interface ServeDependencies {
   env?: GatewayEnv; log?: GatewayLog; credentials?: CredentialSource; db?: Dynamo;
@@ -103,13 +103,13 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const meter = new DynamoMeter({ db, tables: config.tables, now });
   const prices = new SnapshotPriceSource(new DynamoPriceSnapshotStore(db, config.tables.prices), { now });
   await prices.reload();
-  const caps = deps.caps ?? UNCONFIGURED_CAPS;
+  const caps = deps.caps ?? new CompanyBudgetCaps(db, config.tables.companies);
   const handlerDeps: GatewayDependencies = {
     verifyToken: createTaskTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }),
     ended: new DynamoEndedTasks(db, config.tables.markers), meter, caps, prices, now,
     // The busy answer is counted from its log line (overrun_busy); the process needs no metrics permission.
     metrics: { overrunBusy: () => undefined },
-    modelLimits: deps.modelLimits ?? DEFAULT_MODEL_LIMITS,
+    modelLimits: deps.modelLimits ?? modelLimitsFrom(prices),
     keys: deps.keys ?? createSecretsManagerKeys({ region: config.region, credentials, secretArns: { anthropic: config.anthropicKeySecret }, now }),
     transport: deps.transport ?? createAnthropicTransport(),
     log: (event) => log({ ...event }),
@@ -140,6 +140,9 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
         const runId = randomUUID();
         const expiry = await runExpirySweep({ meter, now: now(), runId, log: (line) => log({ ...line }) });
         const corrections = await runCorrections({ meter, prices, caps, now: now(), runId, log: (line) => log({ ...line }) });
+        // Holds whose settle never landed are closed at their estimate (never $0); a swept hold is logged, not alarmed.
+        const holds = await meter.sweepOpenHolds(now(), HOLD_SWEEP_PER_PASS);
+        if (holds.swept + holds.failed > 0) log({ event: "holds_swept", swept: holds.swept, failed: holds.failed, more: holds.more });
         log({ event: "maintenance", corrected: corrections.corrected, skipped: corrections.skipped + expiry.skipped, expired: expiry.expired, unknown: corrections.unknown + expiry.unknown, more: corrections.more || expiry.more });
       } catch { log({ event: "maintenance_failed" }); }
       finally { maintaining = undefined; }
@@ -191,7 +194,7 @@ export async function runPriceFetch(config: PriceFetchConfig, deps: PriceFetchDe
     });
     const result = await refresher.run((deps.now ?? Date.now)());
     if (!result.ok) { log({ event: GATEWAY_LOG_EVENTS.priceFetchFailed }); return 1; }
-    log({ event: "price_fetched", gained: result.gained });
+    log({ event: GATEWAY_LOG_EVENTS.priceFetched, gained: result.gained });
     return 0;
   } catch { log({ event: GATEWAY_LOG_EVENTS.priceFetchFailed }); return 1; }
 }

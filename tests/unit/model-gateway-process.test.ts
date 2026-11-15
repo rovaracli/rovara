@@ -7,18 +7,18 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
-import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
+import { DynamoMeter, HOLD_SWEEP_AGE_MS } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { LITELLM_URL } from "../../packages/model-gateway/src/price-sources.js";
 import { GatewayConfigError, readGatewayConfig, runGateway, runPriceFetch, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import { caps, claims, jwk, kid, mint, now, requestBody, scope, sse } from "./model-gateway-fixture.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 
-const TABLES = { meter: "gw-meter", ledger: "gw-ledger", markers: "gw-markers", prices: "gw-prices" };
+const TABLES = { meter: "gw-meter", ledger: "gw-ledger", markers: "gw-markers", prices: "gw-prices", companies: "cloud-companies" };
 const SECRET = "arn:aws:secretsmanager:us-west-2:944937319445:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf";
 const ENV = {
   [GATEWAY_ENV.mode]: "serve", AWS_REGION: "us-west-2", [GATEWAY_ENV.port]: "8080",
   [GATEWAY_ENV.installIssuer]: claims.iss, [GATEWAY_ENV.installJwksUrl]: `${claims.iss}/.well-known/jwks.json`, [GATEWAY_ENV.installTaskKids]: kid,
-  [GATEWAY_ENV.meterTable]: TABLES.meter, [GATEWAY_ENV.ledgerTable]: TABLES.ledger, [GATEWAY_ENV.markersTable]: TABLES.markers, [GATEWAY_ENV.pricesTable]: TABLES.prices,
+  [GATEWAY_ENV.meterTable]: TABLES.meter, [GATEWAY_ENV.ledgerTable]: TABLES.ledger, [GATEWAY_ENV.markersTable]: TABLES.markers, [GATEWAY_ENV.pricesTable]: TABLES.prices, [GATEWAY_ENV.companyTable]: TABLES.companies,
   [GATEWAY_ENV.anthropicKeySecret]: SECRET,
 };
 // A second key Code publishes for sign-in (ADDENDUM-4): purpose "developer". Its kid is listed here on purpose, as a
@@ -145,20 +145,34 @@ describe("gateway process: serving", () => {
     expect(f.lines.filter((line) => line.event === "refused")).toHaveLength(2);
   });
 
-  it("with no budget store yet, refuses every call 503 before any provider call (fail closed)", async () => {
+  it("reads the company's budgets from the Cloud company backend's table: none set refuses 503 before any provider call; set, the task cap holds", async () => {
     const f = serve({ caps: false });
     const gateway = await f.start; running.push(gateway);
     const answer = await request(gateway.server, "POST", "/v1/messages", callHeaders(), requestBody);
     expect([answer.statusCode, JSON.parse(answer.text())]).toEqual([503, { error: { type: "unavailable", message: "model access unavailable" } }]);
     expect(f.sent()).toBe(0);
     expect(f.lines.at(-1)).toMatchObject({ event: "refused" });
+    const budgets = (taskUsdMicros: number) => f.db.put(TABLES.companies, { pk: `COMPANY#${claims.cid}`, sk: "SETTINGS", companyId: claims.cid, version: 1, settings: { budgets: { companyMonthlyUsdMicros: 1_000_000_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: null, taskUsdMicros } } });
+    await budgets(1);
+    const capped = await request(gateway.server, "POST", "/v1/messages", callHeaders(), requestBody);
+    expect([capped.statusCode, (JSON.parse(capped.text()) as { error: { message: string } }).error.message]).toEqual([422, "Budget has been exceeded! Key=task"]);
+    expect(f.sent()).toBe(0);
+    await budgets(1_000_000_000);
+    expect((await request(gateway.server, "POST", "/v1/messages", callHeaders(), requestBody)).statusCode).toBe(200);
+    expect(f.sent()).toBe(1);
   });
 
-  it("runs a bounded maintenance pass: reloads prices, sweeps expiry, runs corrections, logs one line", async () => {
+  it("runs a bounded maintenance pass: reloads prices, sweeps expiry, runs corrections, closes holds left open, logs each", async () => {
     const f = serve();
     const gateway = await f.start; running.push(gateway);
     await gateway.maintain();
     expect(f.lines.at(-1)).toMatchObject({ event: "maintenance", corrected: 0, expired: 0, unknown: 0 });
+    // A hold taken long ago whose settle never landed (its server stopped): the next pass closes it at its estimate.
+    const old = await new DynamoMeter({ db: f.db, tables: TABLES, now: () => now - HOLD_SWEEP_AGE_MS - 1 }).reserve({ scope, caps, estimateMicros: 25 });
+    expect(old.ok).toBe(true);
+    await gateway.maintain();
+    expect(f.lines.filter((line) => line.event === "holds_swept")).toEqual([expect.objectContaining({ swept: 1, failed: 0 })]);
+    expect((await new DynamoMeter({ db: f.db, tables: TABLES, now: () => now - HOLD_SWEEP_AGE_MS - 1 }).read(scope))[0]).toMatchObject({ spentMicros: 25, reservedMicros: 0 });
   });
 });
 
