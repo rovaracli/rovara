@@ -225,7 +225,7 @@ describe("policy hook answering route", () => {
 
   it("the handler serves the route only when given one; without it the path is not Cloud's, as before", async () => {
     const base = {
-      client: {} as never, store: new LocalSessionStore(), org: { orgId: COMPANY, name: "Acme" } as never, callbackPath: "/callback", secureCookies: true, work: new LocalWorkSessionStore(), origin: "https://cloud.example",
+      client: { useRefreshGuard: () => undefined } as never, store: new LocalSessionStore(undefined, { environment: {} }), org: { orgId: COMPANY, name: "Acme" } as never, callbackPath: "/callback", secureCookies: true, work: new LocalWorkSessionStore(), origin: "https://cloud.example",
     };
     const request: CloudRequest = { method: "POST", path: POLICY_HOOK_PATH, query: new URLSearchParams(), headers: {}, body: "x" };
     expect(await createCloudHandler(base)(request)).toBeUndefined();

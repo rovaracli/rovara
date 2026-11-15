@@ -3,11 +3,12 @@
 // come from S3 through CloudFront; only the page shell (with its per-request nonce) and the API come here. infra/lib/cloud-web.ts runs it.
 //
 // Environment: ROVARA_CODE_URL, ROVARA_CLIENT_ID (rovara-cloud), ROVARA_SCOPES, CLOUD_TABLE, CLOUD_ORIGIN_PARAMETER (the SSM parameter
-// holding Cloud's https address), CLOUD_CLIENT_SECRET_ID (the secret holding Cloud's client secret), CLOUD_ORG_NAME, CLOUD_APP_DIRECTORY
-// (the page shell, index.html).
+// holding Cloud's https address), CLOUD_CLIENT_SECRET_ID (the secret holding Cloud's client secret), CLOUD_SESSIONS_KEY_ID (the KMS key
+// that seals sign-ins), CLOUD_ORG_NAME, CLOUD_APP_DIRECTORY (the page shell, index.html).
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { KMSClient } from "@aws-sdk/client-kms";
 import {
-  CodeClient, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, cloudConfigReader, cloudDocumentClient, createCloudHandler,
+  CodeClient, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, EnvelopeSealer, KmsKeyService, cloudConfigReader, cloudDocumentClient, createCloudHandler,
   type CloudRequest, type CloudResponse,
 } from "../packages/cloud-server/src/index.js";
 import { createAppHandler } from "../packages/web/src/server/handler.js";
@@ -65,7 +66,9 @@ function build() {
   const db = cloudDocumentClient(new DynamoDBClient({}));
   const table = required("CLOUD_TABLE");
   const config = cloudConfigReader({ originParameter: required("CLOUD_ORIGIN_PARAMETER"), clientSecretId: required("CLOUD_CLIENT_SECRET_ID") });
-  const store = new DynamoSessionStore(db, table), work = new DynamoWorkSessionStore(db, table), presence = new DynamoPresenceBoard(db, table);
+  // Short timeouts and few attempts, so a refresh's KMS calls stay well inside its hold on the session.
+  const kms = new KMSClient({ maxAttempts: 2, requestHandler: { connectionTimeout: 2_000, requestTimeout: 4_000 } });
+  const store = new DynamoSessionStore(db, table, new EnvelopeSealer(new KmsKeyService(kms, required("CLOUD_SESSIONS_KEY_ID")))), work = new DynamoWorkSessionStore(db, table), presence = new DynamoPresenceBoard(db, table);
   const app = createAppHandler({ appDirectory: required("CLOUD_APP_DIRECTORY"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
   // One Cloud handler per address and secret: a new pair (a rotated secret) gets a new client.
   let current: { key: string; handle: ReturnType<typeof createCloudHandler> } | undefined;

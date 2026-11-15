@@ -33,7 +33,7 @@ describe("the function URL's request and answer", () => {
   });
 
   it("sends / to the app without reading any configuration", async () => {
-    Object.assign(process.env, { CLOUD_TABLE: "t", CLOUD_ORIGIN_PARAMETER: "/p", CLOUD_CLIENT_SECRET_ID: "s", CLOUD_APP_DIRECTORY: "/nowhere", ROVARA_CODE_URL: "https://code.example.test" });
+    Object.assign(process.env, { CLOUD_TABLE: "t", CLOUD_ORIGIN_PARAMETER: "/p", CLOUD_CLIENT_SECRET_ID: "s", CLOUD_SESSIONS_KEY_ID: "k", CLOUD_APP_DIRECTORY: "/nowhere", ROVARA_CODE_URL: "https://code.example.test" });
     expect(await handler(event({ rawPath: "/" }))).toEqual({ statusCode: 302, headers: { location: "/app", "cache-control": "no-store" }, body: "" });
   });
 });

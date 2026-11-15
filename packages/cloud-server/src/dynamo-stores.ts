@@ -3,7 +3,7 @@
 // tests (tests/unit/cloud-stores.test.ts) hold both to the same behaviour.
 //
 //   pk                      sk                              what
-//   SIGNIN#<cookie id>      SIGNIN                          a sign-in: the person's Code tokens (expires)
+//   SIGNIN#<cookie hash>    SIGNIN                          a sign-in: the person's Code tokens, sealed (expires; session-table.ts)
 //   PENDING#<state>         PENDING                         a sign-in under way (expires after ten minutes)
 //   SESSION#<ses_…>         META                            a Cloud session without its comments; `version` guards writes
 //   SESSION#<ses_…>         COMMENT#<createdAt>#<msg_…>     one comment, so a session's comments can outgrow an item
@@ -15,7 +15,9 @@ import { ConditionalCheckFailedException, type DynamoDBClient } from "@aws-sdk/c
 import { DeleteCommand, DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import type { PendingSignIn } from "./code-client.js";
 import { PRESENCE_TTL_MS, currentViewers, type PresenceBoard, type Viewer } from "./presence.js";
-import type { CodeSession, SessionStore } from "./sessions.js";
+import { SealedRecordRefused, type TokenSealer } from "./session-crypto.js";
+import { DynamoSessionTable } from "./session-table.js";
+import { SessionKeeper, type PendingSignIns } from "./sessions.js";
 import { StoreConflict, type SessionComment, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
 
 /** The table's shape, which infra/lib (the table) and the tests (DynamoDB Local) create from. */
@@ -29,8 +31,6 @@ export const CLOUD_TABLE = {
   startedBySort: "gsi1sk",
 } as const;
 
-/** A sign-in lasts this long after it was last saved (made, or its tokens refreshed). */
-export const SIGN_IN_LIFETIME_S = 30 * 24 * 3600;
 /** A sign-in under way: the handler refuses it after ten minutes too (SIGN_IN_TTL_MS). */
 export const PENDING_LIFETIME_S = 10 * 60;
 /** One transaction holds at most 100 writes: the session, its start request, and the comments that changed. */
@@ -45,38 +45,43 @@ const seconds = (ms: number) => Math.floor(ms / 1000);
 const live = (item: Record<string, unknown> | undefined, nowMs: number) =>
   item !== undefined && (typeof item.expiresAt !== "number" || item.expiresAt > seconds(nowMs)) ? item : undefined;
 
-export class DynamoSessionStore implements SessionStore {
-  constructor(private readonly db: DynamoDBDocumentClient, private readonly table: string, private readonly now: Clock = Date.now) {}
-
-  async get(id: string): Promise<CodeSession | undefined> {
-    const { Item } = await this.db.send(new GetCommand({ TableName: this.table, Key: { pk: `SIGNIN#${id}`, sk: "SIGNIN" }, ConsistentRead: true }));
-    return live(Item, this.now())?.session as CodeSession | undefined;
-  }
-
-  async put(id: string, session: CodeSession): Promise<void> {
-    const stored: CodeSession = { ...session };
-    delete stored.changed;
-    await this.db.send(new PutCommand({
-      TableName: this.table,
-      Item: { pk: `SIGNIN#${id}`, sk: "SIGNIN", session: stored, expiresAt: seconds(this.now()) + SIGN_IN_LIFETIME_S },
-    }));
-  }
-
-  async delete(id: string): Promise<void> {
-    await this.db.send(new DeleteCommand({ TableName: this.table, Key: { pk: `SIGNIN#${id}`, sk: "SIGNIN" } }));
-  }
+/**
+ * Sign-ins under way, in the table: a state is taken with one delete, so it is used once whichever server takes it.
+ * (The PKCE verifier only lives ten minutes and is useless without the code Code sends back to the browser.)
+ */
+export class DynamoPendingSignIns implements PendingSignIns {
+  constructor(private readonly db: Pick<DynamoDBDocumentClient, "send">, private readonly table: string, private readonly sealer: TokenSealer, private readonly now: Clock = Date.now) {}
 
   async putPending(state: string, pending: PendingSignIn): Promise<void> {
+    // The PKCE verifier and where to go back are sealed like the sign-ins, bound to this state's row.
+    const sealed = await this.sealer.seal(JSON.stringify(pending), `PENDING#${state}`);
     await this.db.send(new PutCommand({
       TableName: this.table,
-      Item: { pk: `PENDING#${state}`, sk: "PENDING", pending, expiresAt: seconds(this.now()) + PENDING_LIFETIME_S },
+      Item: { pk: `PENDING#${state}`, sk: "PENDING", sealed, expiresAt: seconds(this.now()) + PENDING_LIFETIME_S },
     }));
   }
 
-  /** One delete that answers what it removed: a sign-in under way is used once, whichever server takes it. */
   async takePending(state: string): Promise<PendingSignIn | undefined> {
     const { Attributes } = await this.db.send(new DeleteCommand({ TableName: this.table, Key: { pk: `PENDING#${state}`, sk: "PENDING" }, ReturnValues: "ALL_OLD" }));
-    return live(Attributes, this.now())?.pending as PendingSignIn | undefined;
+    const sealed = live(Attributes, this.now())?.sealed;
+    if (typeof sealed !== "string") return undefined;
+    try {
+      const pending = JSON.parse(await this.sealer.open(sealed, `PENDING#${state}`)) as Partial<PendingSignIn> | null;
+      return typeof pending?.verifier === "string" && typeof pending.returnTo === "string" && typeof pending.at === "number" ? pending as PendingSignIn : undefined;
+    } catch (error) {
+      if (error instanceof SealedRecordRefused || error instanceof SyntaxError) return undefined;
+      throw error;
+    }
+  }
+}
+
+/**
+ * Sign-ins in the table (migration plan v3.2, 7.2 change 4): SessionKeeper's rules (a hash of the cookie, sealed tokens,
+ * idle and absolute limits, the refresh hold) over the `SIGNIN#<hash>` items, and sign-ins under way as `PENDING#` items.
+ */
+export class DynamoSessionStore extends SessionKeeper {
+  constructor(db: DynamoDBDocumentClient, table: string, sealer: TokenSealer, now: Clock = Date.now) {
+    super({ table: new DynamoSessionTable(db, table), sealer, now, pending: new DynamoPendingSignIns(db, table, sealer, now) });
   }
 }
 

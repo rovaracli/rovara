@@ -6,10 +6,13 @@ import {
   RemovalPolicy,
   Stack,
   type StackProps,
+  aws_dynamodb as dynamodb,
   aws_ec2 as ec2,
   aws_ecs as ecs,
   aws_efs as efs,
   aws_elasticloadbalancingv2 as elbv2,
+  aws_iam as iam,
+  aws_kms as kms,
   aws_logs as logs,
   aws_secretsmanager as secretsmanager,
 } from "aws-cdk-lib";
@@ -27,14 +30,18 @@ import { RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
  *
  *   browser -> HTTP API (HTTPS) -> VPC link -> internal load balancer -> one Fargate task -> Code's API
  *                                                                         |
- *                                                                         EFS: sign-ins and Cloud's sessions
+ *                                                                         |  DynamoDB (KMS-sealed): sign-ins
+ *                                                                         EFS: Cloud's sessions
  *
- * One task, never two at once (a release stops the old one first): Cloud's session stores are files (LocalSessionStore,
- * LocalWorkSessionStore) and who is viewing a session is in its memory (LocalPresenceBoard). The files live on EFS, so a
- * restart or a release keeps people signed in and keeps Cloud's sessions.
+ * Sign-ins (migration plan v3.2, 7.2 change 4) live in a DynamoDB table with expiry, under a hash of the cookie, each one
+ * sealed with a data key from a KMS key only the task's role may use (packages/cloud-server/src/sessions.ts). The task
+ * reads its client secret from Secrets Manager at run time; it is not in the task's environment.
+ *
+ * One task, never two at once (a release stops the old one first): Cloud's own sessions are a file (LocalWorkSessionStore)
+ * on EFS, and who is viewing a session is in its memory (LocalPresenceBoard).
  *
  * After the first deploy, a Code administrator registers Cloud (the RegisterWithCode output) and puts the secret it shows
- * once into CodeClientSecret, then restarts the service (docs/rovara-cloud-install.md).
+ * once into CodeClientSecret; the task reads it within five minutes, or at once after a restart (docs/rovara-cloud-install.md).
  */
 export const CLOUD_APP_CONTEXT_KEY = "rovaraCloudApp";
 /** The client ID Cloud signs in to Code as (Code's `admin sign-in-client add <id>`), and the audience its tokens carry. */
@@ -44,8 +51,42 @@ export const CLOUD_APP_SCOPES = ["projects:members", "projects:create"] as const
 export const CLOUD_APP_PORT = 8080;
 /** Where Code sends people back after sign-in: scripts/cloud-server.ts answers it (createCloudHandler's callbackPath). */
 export const CLOUD_APP_CALLBACK_PATH = "/callback";
-/** Inside the container: the EFS volume holding the session files. */
+/** Inside the container: the EFS volume holding Cloud's sessions file. */
 export const CLOUD_APP_DATA_PATH = "/data";
+/** The KMS encryption context every sign-in's data key carries (packages/cloud-server/src/session-crypto.ts). */
+export const CLOUD_SESSION_KEY_PURPOSE = "rovara-cloud-session";
+
+/**
+ * The key that seals sign-ins (packages/cloud-server/src/session-crypto.ts). The account may manage it but not use it: only
+ * `server` may make and open data keys, and only for sign-ins (the encryption context). Retained, so a sealed sign-in is
+ * never orphaned mid-release. Used by this stack and cloud-web.ts.
+ */
+export function signInKey(scope: Construct, description: string, server: iam.IRole): kms.Key {
+  const sealUse = ["kms:GenerateDataKey", "kms:Decrypt"];
+  const forSignIns = { StringEquals: { "kms:EncryptionContext:purpose": CLOUD_SESSION_KEY_PURPOSE } };
+  const key = new kms.Key(scope, "SignInKey", {
+    description,
+    enableKeyRotation: true,
+    removalPolicy: RemovalPolicy.RETAIN,
+    policy: new iam.PolicyDocument({
+      statements: [
+        new iam.PolicyStatement({
+          sid: "AccountManagesNotUses",
+          principals: [new iam.AccountRootPrincipal()],
+          actions: [
+            // Not kms:CreateGrant (nor Create*): a grant would let the account give itself use of the key.
+            "kms:CreateAlias", "kms:Describe*", "kms:Enable*", "kms:List*", "kms:Put*", "kms:Update*", "kms:Revoke*", "kms:Disable*", "kms:Get*", "kms:Delete*",
+            "kms:TagResource", "kms:UntagResource", "kms:ScheduleKeyDeletion", "kms:CancelKeyDeletion", "kms:RotateKeyOnDemand",
+          ],
+          resources: ["*"],
+        }),
+        new iam.PolicyStatement({ sid: "OnlyCloudsServerSeals", principals: [new iam.ArnPrincipal(server.roleArn)], actions: sealUse, resources: ["*"], conditions: forSignIns }),
+      ],
+    }),
+  });
+  server.addToPrincipalPolicy(new iam.PolicyStatement({ actions: sealUse, resources: [key.keyArn], conditions: forSignIns }));
+  return key;
+}
 
 export function cloudAppStackName(env: string): string {
   return `${RESOURCE_PREFIX}-${env}-app`;
@@ -108,7 +149,7 @@ export class CloudAppStack extends Stack {
       enableAutomaticBackups: true,
       performanceMode: efs.PerformanceMode.GENERAL_PURPOSE,
       throughputMode: efs.ThroughputMode.BURSTING,
-      // People's sign-ins and Cloud's sessions; deleting the stack must not delete them.
+      // Cloud's sessions; deleting the stack must not delete them.
       removalPolicy: RemovalPolicy.RETAIN,
     });
     sessions.connections.allowDefaultPortFrom(serviceAccess, "The Cloud task mounts its session files");
@@ -117,6 +158,18 @@ export class CloudAppStack extends Stack {
       path: "/cloud",
       posixUser: { uid: "1000", gid: "1000" },
       createAcl: { ownerUid: "1000", ownerGid: "1000", permissions: "700" },
+    });
+
+    // Sign-ins: one item per login under a hash of its cookie (SIGNIN#<hash>), and sign-ins under way (PENDING#<state>),
+    // deleted by DynamoDB after expiresAt. The key shape is Cloud's shared table's (CLOUD_TABLE in dynamo-stores.ts), so the
+    // shared table can take these items over. Losing them only asks people to sign in again, so the table goes with the stack.
+    const signIns = new dynamodb.Table(this, "SignIns", {
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: "expiresAt",
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      removalPolicy: RemovalPolicy.DESTROY,
     });
 
     const logGroup = new logs.LogGroup(this, "Logs", { retention: logs.RetentionDays.THREE_MONTHS, removalPolicy: RemovalPolicy.RETAIN });
@@ -133,6 +186,15 @@ export class CloudAppStack extends Stack {
       }],
     });
     sessions.grant(task.taskRole, "elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite");
+
+    const sessionKey = signInKey(this, `Rovara Cloud ${env}: seals people's sign-ins (Code tokens) in the SignIns table`, task.taskRole);
+    // Read, write and delete one sign-in by its key: no scan, no query.
+    task.taskRole.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"],
+      resources: [signIns.tableArn],
+    }));
+    // The client secret, read by the server itself when it calls Code's token endpoint.
+    task.taskRole.addToPrincipalPolicy(new iam.PolicyStatement({ actions: ["secretsmanager:GetSecretValue"], resources: [clientSecret.secretArn] }));
 
     const balancer = new elbv2.ApplicationLoadBalancer(this, "LoadBalancer", {
       vpc,
@@ -164,11 +226,15 @@ export class CloudAppStack extends Stack {
         ROVARA_CODE_URL: codeUrl.valueAsString,
         ROVARA_CLIENT_ID: CLOUD_APP_CLIENT_ID,
         ROVARA_SCOPES: CLOUD_APP_SCOPES.join(" "),
-        CLOUD_SESSIONS_FILE: `${CLOUD_APP_DATA_PATH}/sessions.json`,
+        CLOUD_ENVIRONMENT: env,
+        AWS_REGION: this.region,
+        CLOUD_SESSIONS_TABLE: signIns.tableName,
+        CLOUD_SESSIONS_KEY_ID: sessionKey.keyArn,
+        ROVARA_CLIENT_SECRET_ID: clientSecret.secretArn,
         CLOUD_WORK_SESSIONS_FILE: `${CLOUD_APP_DATA_PATH}/work-sessions.json`,
+        // The file an older Cloud kept sign-ins in, under raw cookies: its sign-ins are revoked at Code and it is removed.
+        CLOUD_LEGACY_SESSIONS_FILE: `${CLOUD_APP_DATA_PATH}/sessions.json`,
       },
-      // aws-cdk-lib types Secret.secretFullArn as `string | undefined`, which exactOptionalPropertyTypes rejects for ISecret.
-      secrets: { ROVARA_CLIENT_SECRET: ecs.Secret.fromSecretsManager(clientSecret as secretsmanager.ISecret) },
     });
     container.addMountPoints({ containerPath: CLOUD_APP_DATA_PATH, sourceVolume: "data", readOnly: false });
 
@@ -207,7 +273,7 @@ export class CloudAppStack extends Stack {
     });
     new CfnOutput(this, "RestartCommand", {
       value: Fn.join("", ["aws ecs update-service --region ", this.region, " --cluster ", cluster.clusterName, " --service ", service.serviceName, " --force-new-deployment"]),
-      description: "Restarts Cloud, so it reads a changed client secret",
+      description: "Restarts Cloud, so it reads a changed client secret at once (otherwise within five minutes)",
     });
   }
 }

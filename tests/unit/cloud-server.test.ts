@@ -29,6 +29,7 @@ function fakeCode() {
   // Code rotates refresh tokens: each one works once.
   let generation = 1;
   let decisionRefusal: string | undefined;
+  let revokeFails = false;
   // Spec 067: the people Code lets read the task besides its owner (Ada). Grace signs in with her own code and token.
   const readers = new Map<string, { developerId: string; name: string; role: string; projectMember: boolean; grantedAt: string }>();
   const members = [{ developerId: ADA, name: "Ada", role: "administrator" }];
@@ -43,6 +44,10 @@ function fakeCode() {
     const url = new URL(input instanceof Request ? input.url : input);
     const call: Call = { method: init?.method ?? "GET", path: url.pathname, ...(init?.headers ? { authorization: (init.headers as Record<string, string>).authorization } : {}), ...(typeof init?.body === "string" ? { body: init.body } : init?.body instanceof URLSearchParams ? { body: init.body.toString() } : {}) };
     calls.push(call);
+    if (url.pathname === "/v1/auth/revoke") {
+      if (call.authorization !== `Basic ${Buffer.from("rovara-cloud:secret").toString("base64")}`) return respond(401, { error: "invalid_client" });
+      return revokeFails ? respond(503, {}) : respond(200, {});
+    }
     if (url.pathname === "/v1/auth/token") {
       const form = new URLSearchParams(call.body);
       if (call.authorization !== `Basic ${Buffer.from("rovara-cloud:secret").toString("base64")}`) return respond(401, { error: "invalid_client" });
@@ -125,17 +130,19 @@ function fakeCode() {
     fetchImpl, calls, taskId: TASK_ID,
     setTask: (change: Record<string, unknown>) => { task = { ...task, ...change }; },
     refuseDecisions: (message: string) => { decisionRefusal = message; },
+    failRevoke: () => { revokeFails = true; },
     expireToken: () => { validToken = "access-rotated"; }, endSignIn: () => { refreshable = false; validToken = "nobody"; } };
 }
 
 /** One Cloud server; with `shared`, a second server on the same stores and the same Code (PrepLabsAI/Rovara-cloud#11). */
 function setUp(shared?: { code: ReturnType<typeof fakeCode>; store: SessionStore; work: WorkSessionStore }) {
   const code = shared?.code ?? fakeCode();
-  const store = shared?.store ?? new LocalSessionStore();
+  const store = shared?.store ?? new LocalSessionStore(undefined, { environment: {} });
+  const logged: Array<Record<string, unknown>> = [];
   const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: "http://127.0.0.1:8787/callback", scopes: "projects:members", fetch: code.fetchImpl });
   const work = shared?.work ?? new LocalWorkSessionStore();
   const clock = { ms: Date.parse("2026-11-14T12:00:00.000Z") };
-  const handler = createCloudHandler({ client, store, work, origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: () => undefined, now: () => new Date(clock.ms) });
+  const handler = createCloudHandler({ client, store, work, origin: "https://cloud.example.test", org: { orgId: "acme", name: "Acme", plan: "test" }, callbackPath: "/callback", secureCookies: true, log: (event) => { logged.push(event); }, now: () => new Date(clock.ms) });
   const call = async (method: string, target: string, options: { cookie?: string; csrf?: string; body?: unknown; form?: Record<string, string>; headers?: Record<string, string> } = {}) => {
     const url = new URL(target, "http://127.0.0.1:8787");
     const request: CloudRequest = {
@@ -158,7 +165,7 @@ function setUp(shared?: { code: ReturnType<typeof fakeCode>; store: SessionStore
     const me = JSON.parse((await call("GET", "/v1/web/me", { cookie }))!.body) as { csrf: string };
     return { cookie, csrf: me.csrf, back };
   };
-  return { code, store, work, call, signIn, clock };
+  return { code, store, work, call, signIn, clock, logged };
 }
 
 describe("signing in through Rovara Code", () => {
@@ -333,6 +340,39 @@ describe("the app's API, answered from Code as the person", () => {
     const out = await call("POST", "/v1/auth/browser/sign-out", { cookie, csrf });
     expect(out!.headers["set-cookie"]).toContain("Max-Age=0");
     expect(await store.get(id)).toBeUndefined();
+  });
+
+  it("ends the sign-in at Code on sign-out: Code's revoke with the refresh token and Cloud's client", async () => {
+    const { call, signIn, code, logged } = setUp();
+    const { cookie, csrf } = await signIn();
+    await call("POST", "/v1/auth/browser/sign-out", { cookie, csrf });
+    const revoke = code.calls.filter((entry) => entry.path === "/v1/auth/revoke");
+    expect(revoke).toHaveLength(1);
+    expect(Object.fromEntries(new URLSearchParams(revoke[0]!.body))).toEqual({ token: "refresh-1", token_type_hint: "refresh_token" });
+    expect(revoke[0]!.authorization).toBe(`Basic ${Buffer.from("rovara-cloud:secret").toString("base64")}`);
+    expect(logged.at(-1)).toEqual({ event: "cloud.signed_out", developerId: ADA });
+  });
+
+  it("signs out on Cloud even when Code's revoke fails, and says so in the log", async () => {
+    const { call, signIn, code, store, logged } = setUp();
+    const { cookie, csrf } = await signIn();
+    code.failRevoke();
+    const out = await call("POST", "/v1/auth/browser/sign-out", { cookie, csrf });
+    expect(out!.status).toBe(204);
+    expect(await store.get(cookie.split("=")[1]!)).toBeUndefined();
+    expect(logged.at(-1)).toEqual({ event: "cloud.revoke_failed", developerId: ADA });
+  });
+
+  it("logs no cookie, token, CSRF token or client secret through sign-in, refresh, a route and sign-out", async () => {
+    const { call, signIn, code, logged } = setUp();
+    const { cookie, csrf } = await signIn();
+    code.expireToken();
+    await call("GET", "/v1/web/nav", { cookie });
+    await call("GET", "/v1/web/org/budget-settings", { cookie });
+    await call("POST", "/v1/auth/browser/sign-out", { cookie, csrf });
+    const text = JSON.stringify(logged);
+    expect(logged.length).toBeGreaterThan(1);
+    for (const secret of [cookie.split("=")[1]!, csrf, "access-1", "access-2", "refresh-1", "refresh-2", "secret", Buffer.from("rovara-cloud:secret").toString("base64")]) expect(text).not.toContain(secret);
   });
 });
 
@@ -826,11 +866,8 @@ describe("several servers on the same stores (Rovara-cloud#11)", () => {
     expect(refreshed).not.toBe(before.refreshToken);
     // Server B read the sign-in before A saved its refresh: its own refresh is refused, so it reads the store again and goes on.
     let stale = true;
-    const shared: SessionStore = {
-      get: async (key) => (stale && key === id ? (stale = false, structuredClone(before)) : a.store.get(key)),
-      put: (key, value) => a.store.put(key, value), delete: (key) => a.store.delete(key),
-      putPending: (key, value) => a.store.putPending(key, value), takePending: (key) => a.store.takePending(key),
-    };
+    const shared = Object.create(a.store) as SessionStore;
+    shared.get = async (key) => (stale && key === id ? (stale = false, structuredClone(before)) : a.store.get(key));
     const b = setUp({ code: a.code, store: shared, work: a.work });
     expect((await b.call("GET", "/v1/web/nav", { cookie }))!.status).toBe(200);
     expect((await a.store.get(id))?.refreshToken).toBe(refreshed);

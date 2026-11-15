@@ -1,11 +1,12 @@
 // Cloud's stores (PrepLabsAI/Rovara-cloud#11): the same cases against the local stores (one server) and the DynamoDB stores
 // (several servers share one table), the DynamoDB ones on DynamoDB Local in Docker.
 import { execFileSync } from "node:child_process";
-import { CreateTableCommand, DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { randomBytes } from "node:crypto";
+import { CreateTableCommand, DynamoDBClient, ScanCommand } from "@aws-sdk/client-dynamodb";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   CLOUD_TABLE, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, LocalPresenceBoard, LocalSessionStore, LocalWorkSessionStore,
-  PENDING_LIFETIME_S, PRESENCE_TTL_MS, PRESENCE_VIEWERS_MAX, SIGN_IN_LIFETIME_S, StoreConflict, cloudDocumentClient,
+  EnvelopeSealer, PENDING_LIFETIME_S, PRESENCE_TTL_MS, PRESENCE_VIEWERS_MAX, SESSION_IDLE_MS, StoreConflict, cloudDocumentClient, localKeyService,
   type CodeSession, type PendingSignIn, type PresenceBoard, type SessionComment, type SessionStore, type WorkSession, type WorkSessionStore,
 } from "../../packages/cloud-server/src/index.js";
 
@@ -36,7 +37,7 @@ function contract(name: string, make: () => Stores) {
   describe(name, () => {
     it("keeps a sign-in until it is deleted, without the request's `changed` mark", async () => {
       const { sessions } = make();
-      await sessions.put("cookie-1", { ...signIn("t1"), changed: true });
+      await sessions.create("cookie-1", { ...signIn("t1"), changed: true });
       expect(await sessions.get("cookie-1")).toEqual(signIn("t1"));
       await sessions.delete("cookie-1");
       expect(await sessions.get("cookie-1")).toBeUndefined();
@@ -137,12 +138,14 @@ function contract(name: string, make: () => Stores) {
 
 contract("the local stores (one server)", () => {
   const presence = new LocalPresenceBoard(), work = new LocalWorkSessionStore();
-  return { sessions: new LocalSessionStore(), work, presence, second: () => ({ work, presence }) };
+  return { sessions: new LocalSessionStore(undefined, { environment: {} }), work, presence, second: () => ({ work, presence }) };
 });
 
 describe.skipIf(!docker)("the DynamoDB stores (several servers, DynamoDB Local)", () => {
   let container = "", client: DynamoDBClient | undefined, table = "";
   const clock = { ms: Date.parse("2026-11-14T12:00:00.000Z") };
+  // The sign-ins' key, made for this run (deployed, it is KMS).
+  const sealer = new EnvelopeSealer(localKeyService(randomBytes(32)));
 
   beforeAll(async () => {
     container = execFileSync("docker", ["run", "-d", "--rm", "-p", "127.0.0.1::8000", IMAGE, "-jar", "DynamoDBLocal.jar", "-inMemory"], { encoding: "utf8" }).trim();
@@ -173,21 +176,35 @@ describe.skipIf(!docker)("the DynamoDB stores (several servers, DynamoDB Local)"
   const stores = (): Stores => {
     const db = cloudDocumentClient(client!);
     return {
-      sessions: new DynamoSessionStore(db, table, () => clock.ms), work: new DynamoWorkSessionStore(db, table), presence: new DynamoPresenceBoard(db, table),
+      sessions: new DynamoSessionStore(db, table, sealer, () => clock.ms), work: new DynamoWorkSessionStore(db, table), presence: new DynamoPresenceBoard(db, table),
       // Another server: its own clients and stores, on the same table.
       second: () => { const other = cloudDocumentClient(client!); return { work: new DynamoWorkSessionStore(other, table), presence: new DynamoPresenceBoard(other, table) }; },
     };
   };
   contract("the shared cases", stores);
 
-  it("forgets a sign-in 30 days after it was last saved, and a sign-in under way after ten minutes", async () => {
+  it("forgets a sign-in after the idle limit, and a sign-in under way after ten minutes", async () => {
     const { sessions } = stores();
-    await sessions.put("cookie-old", signIn("old"));
+    await sessions.create("cookie-old", signIn("old"));
     await sessions.putPending("state-old", pending("state-old"));
     clock.ms += (PENDING_LIFETIME_S + 1) * 1000;
     expect(await sessions.takePending("state-old")).toBeUndefined();
     expect(await sessions.get("cookie-old")).toEqual(signIn("old"));
-    clock.ms += SIGN_IN_LIFETIME_S * 1000;
+    clock.ms += SESSION_IDLE_MS + 1;
     expect(await sessions.get("cookie-old")).toBeUndefined();
   });
+
+  it("keeps the cookie hashed and the tokens sealed in the table, and hands one server's refresh to the other", async () => {
+    const { sessions } = stores();
+    const other = new DynamoSessionStore(cloudDocumentClient(client!), table, sealer, () => clock.ms);
+    await sessions.create("cookie-raw", signIn("tok-raw"));
+    const scan = JSON.stringify(await client!.send(new ScanCommand({ TableName: table })));
+    for (const secret of ["cookie-raw", "tok-raw", "refresh-tok-raw"]) expect(scan).not.toContain(secret);
+    const [a, b] = [(await sessions.get("cookie-raw"))!, (await other.get("cookie-raw"))!];
+    expect(await sessions.beginRefresh(a)).toBe("refresh");
+    a.accessToken = "tok-new";
+    expect(await sessions.finishRefresh(a, true)).toBe(true);
+    expect(await other.beginRefresh(b)).toBe("refreshed");
+    expect(b.accessToken).toBe("tok-new");
+  }, 30_000);
 });

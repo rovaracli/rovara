@@ -64,6 +64,15 @@ describe("Rovara Cloud on CloudFront, Lambda and DynamoDB (Rovara-cloud#11)", ()
       CLOUD_ORIGIN_PARAMETER: "/rovara-cloud/production/web/origin", CLOUD_CLIENT_SECRET_ID: "rovara-cloud/production/code-client-secret", CLOUD_APP_DIRECTORY: "/var/task/app",
     });
     template.resourceCountIs("AWS::SecretsManager::Secret", 0);
+    // Sign-ins are sealed with this stack's own key, which only the function's role may use, and only for sign-ins.
+    expect(variables.CLOUD_SESSIONS_KEY_ID).toEqual({ "Fn::GetAtt": [idOf("AWS::KMS::Key"), "Arn"] });
+    template.hasResource("AWS::KMS::Key", { Properties: Match.objectLike({ EnableKeyRotation: true }), DeletionPolicy: "Retain" });
+    const role = (server().Role as { "Fn::GetAtt": [string, string] })["Fn::GetAtt"][0];
+    const statements = (Object.values(template.findResources("AWS::KMS::Key"))[0]!.Properties as { KeyPolicy: { Statement: Array<{ Sid?: string; Principal: unknown; Action: string | string[] }> } }).KeyPolicy.Statement;
+    const actions = (statement: { Action: string | string[] }) => [statement.Action].flat();
+    expect(statements.filter((statement) => actions(statement).some((action) => /^kms:(Decrypt|GenerateDataKey|Encrypt|CreateGrant|Create\*|\*)/u.test(action)))).toEqual([
+      expect.objectContaining({ Sid: "OnlyCloudsServerSeals", Principal: { AWS: { "Fn::GetAtt": [role, "Arn"] } }, Action: ["kms:GenerateDataKey", "kms:Decrypt"], Condition: { StringEquals: { "kms:EncryptionContext:purpose": "rovara-cloud-session" } } }),
+    ]);
     template.hasResourceProperties("AWS::SSM::Parameter", { Name: "/rovara-cloud/production/web/origin", Value: Match.objectLike({ "Fn::Join": ["", ["https://", Match.anyValue()]] }) });
   });
 

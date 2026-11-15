@@ -73,6 +73,8 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
   const now = options.now ?? (() => new Date());
   const log = options.log ?? ((event) => { console.log(JSON.stringify(event)); });
   const presence = options.presence ?? new LocalPresenceBoard();
+  // Every refresh goes through the store: one server at a time, and the new tokens saved before the retried call.
+  options.client.useRefreshGuard(options.store);
   const cookie = (value: string, maxAge?: number) =>
     `${COOKIE}=${value}; HttpOnly; SameSite=Lax; Path=/${options.secureCookies ? "; Secure" : ""}${maxAge === undefined ? "" : `; Max-Age=${String(maxAge)}`}`;
   const sessionId = (request: CloudRequest) =>
@@ -94,7 +96,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       try {
         const signedIn = await options.client.finishSignIn(request.query.get("code") ?? "", pending);
         const id = randomBytes(32).toString("base64url");
-        await options.store.put(id, {
+        await options.store.create(id, {
           accessToken: signedIn.accessToken, ...(signedIn.refreshToken === undefined ? {} : { refreshToken: signedIn.refreshToken }),
           access: signedIn.access, csrf: randomBytes(32).toString("base64url"), signedInAt: now().toISOString(),
         });
@@ -108,7 +110,12 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     if (path === "/v1/auth/browser/sign-out" && method === "POST") {
       const id = sessionId(request);
       const session = id === undefined ? undefined : await options.store.get(id);
-      if (id !== undefined && session !== undefined && sameText(request.headers["x-rovara-csrf"] ?? "", session.csrf)) await options.store.delete(id);
+      if (id !== undefined && session !== undefined && sameText(request.headers["x-rovara-csrf"] ?? "", session.csrf)) {
+        await options.store.delete(id);
+        // The sign-in ends at Code too, so the tokens are no use to anyone who copied them.
+        const revoked = await options.client.revoke(session);
+        log({ event: revoked ? "cloud.signed_out" : "cloud.revoke_failed", developerId: session.access.developerId });
+      }
       return text(204, "", { "set-cookie": cookie("", 0) });
     }
     const approval = APPROVAL_PATH.exec(path);
@@ -122,7 +129,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         const answer = await approvalRoute({ client: options.client, session, work: options.work, origin: options.origin }, approval[1]!, method, request.headers, form);
         if (session.changed === true) {
           delete session.changed;
-          await options.store.put(id, session);
+          await options.store.save(id, session);
         }
         if (method === "POST" && answer.status === 303) log({ event: "cloud.plan_decided", sessionId: approval[1], decision: form?.get("decision") });
         return answer;
@@ -181,7 +188,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         if (method === "POST" && retried !== null && answer.status === 200) log({ event: "cloud.reviews_retried", sessionId: retried[1] });
         if (session.changed === true) {
           delete session.changed;
-          await options.store.put(id, session);
+          await options.store.save(id, session);
         }
         return json(answer.status, answer.body);
       } catch (error) {

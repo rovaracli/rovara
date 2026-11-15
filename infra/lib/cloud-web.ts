@@ -20,7 +20,7 @@ import {
 import type { Construct } from "constructs";
 import { join, resolve } from "node:path";
 import { RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
-import { CLOUD_APP_CALLBACK_PATH, CLOUD_APP_CLIENT_ID, CLOUD_APP_SCOPES } from "./cloud-app.js";
+import { CLOUD_APP_CALLBACK_PATH, CLOUD_APP_CLIENT_ID, CLOUD_APP_SCOPES, signInKey } from "./cloud-app.js";
 
 /**
  * Rovara Cloud with no gap on a release (PrepLabsAI/Rovara-cloud#11): the same server as cloud-app.ts, on Lambda, with its state in
@@ -136,6 +136,9 @@ export class CloudWebStack extends Stack {
       });
     table.grantReadWriteData(server);
     clientSecret.grantRead(server);
+    // Sign-ins are sealed with this stack's own key, which only the function's role may use (migration plan v3.2, 7.2 change 4).
+    const sessionKey = signInKey(this, `Rovara Cloud ${env} (web): seals people's sign-ins (Code tokens) in the State table`, server.role!);
+    server.addEnvironment("CLOUD_SESSIONS_KEY_ID", sessionKey.keyArn);
     const url = server.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.NONE });
 
     const assetsOrigin = origins.S3BucketOrigin.withOriginAccessControl(assets);

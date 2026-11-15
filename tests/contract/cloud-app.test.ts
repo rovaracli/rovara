@@ -30,16 +30,49 @@ describe("Rovara Cloud stack", () => {
       ROVARA_SCOPES: CLOUD_APP_SCOPES.join(" "),
       HOST: "0.0.0.0",
       PORT: String(CLOUD_APP_PORT),
-      CLOUD_SESSIONS_FILE: "/data/sessions.json",
+      CLOUD_ENVIRONMENT: "production",
       CLOUD_WORK_SESSIONS_FILE: "/data/work-sessions.json",
+      CLOUD_LEGACY_SESSIONS_FILE: "/data/sessions.json",
+      CLOUD_SESSIONS_TABLE: { Ref: idOf("AWS::DynamoDB::Table") },
+      CLOUD_SESSIONS_KEY_ID: { "Fn::GetAtt": [idOf("AWS::KMS::Key"), "Arn"] },
+      ROVARA_CLIENT_SECRET_ID: { Ref: idOf("AWS::SecretsManager::Secret") },
     });
+    // Sign-ins are no longer a file: the server keeps them in the table.
+    expect(environment.CLOUD_SESSIONS_FILE).toBeUndefined();
     // Cloud's own address is the HTTP API's, so Code's redirect is that address's /callback.
     expect(environment.CLOUD_ORIGIN).toEqual({ "Fn::GetAtt": [idOf("AWS::ApiGatewayV2::Api"), "ApiEndpoint"] });
     expect(CLOUD_APP_CALLBACK_PATH).toBe("/callback");
-    // The client secret comes from Secrets Manager, never the template.
-    expect(container().Secrets).toEqual([{ Name: "ROVARA_CLIENT_SECRET", ValueFrom: { Ref: idOf("AWS::SecretsManager::Secret") } }]);
+    // The client secret comes from Secrets Manager at run time: never the template, and not the task's environment.
+    expect(container().Secrets).toBeUndefined();
+    expect(environment.ROVARA_CLIENT_SECRET).toBeUndefined();
     template.hasResourceProperties("AWS::SecretsManager::Secret", { Name: "rovara-cloud/production/code-client-secret" });
     template.hasResource("AWS::SecretsManager::Secret", { DeletionPolicy: "Retain" });
+  });
+
+  it("keeps sign-ins in a DynamoDB table with expiry, sealed with a KMS key only the task's role may use", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      KeySchema: [{ AttributeName: "pk", KeyType: "HASH" }, { AttributeName: "sk", KeyType: "RANGE" }], BillingMode: "PAY_PER_REQUEST", TimeToLiveSpecification: { AttributeName: "expiresAt", Enabled: true },
+    });
+    template.hasResource("AWS::KMS::Key", { Properties: Match.objectLike({ EnableKeyRotation: true }), DeletionPolicy: "Retain" });
+    const taskRole = (Object.values(template.findResources("AWS::ECS::TaskDefinition"))[0]!.Properties as { TaskRoleArn: { "Fn::GetAtt": [string, string] } }).TaskRoleArn["Fn::GetAtt"][0];
+    const keyPolicy = (Object.values(template.findResources("AWS::KMS::Key"))[0]!.Properties as { KeyPolicy: { Statement: Array<{ Principal: unknown; Action: string | string[]; Condition?: unknown }> } }).KeyPolicy.Statement;
+    const uses = (statement: { Action: string | string[] }) => [statement.Action].flat().some((action) => ["kms:Decrypt", "kms:GenerateDataKey", "kms:Encrypt", "kms:*", "kms:ReEncrypt*", "kms:GenerateDataKey*"].includes(action));
+    // No statement lets the account grant itself use: no CreateGrant, no Create* wildcard.
+    expect(keyPolicy.flatMap((statement) => [statement.Action].flat()).filter((action) => ["kms:CreateGrant", "kms:Create*", "kms:*"].includes(action))).toEqual([]);
+    // Only the task's role may make or open data keys, and only for sign-ins.
+    expect(keyPolicy.filter(uses)).toEqual([{
+      Sid: "OnlyCloudsServerSeals", Effect: "Allow", Principal: { AWS: { "Fn::GetAtt": [taskRole, "Arn"] } }, Action: ["kms:GenerateDataKey", "kms:Decrypt"], Resource: "*",
+      Condition: { StringEquals: { "kms:EncryptionContext:purpose": "rovara-cloud-session" } },
+    }]);
+    // The task's own policy: one item at a time on the table (no scan, no query), the key for sign-ins, and the secret.
+    const statements = Object.values(template.findResources("AWS::IAM::Policy"))
+      .filter((policy) => JSON.stringify((policy.Properties as { Roles: unknown }).Roles).includes(taskRole))
+      .flatMap((policy) => (policy.Properties as { PolicyDocument: { Statement: Array<{ Action: string | string[]; Resource: unknown }> } }).PolicyDocument.Statement);
+    const byAction = (action: string) => statements.filter((statement) => [statement.Action].flat().includes(action));
+    expect(byAction("dynamodb:GetItem")).toEqual([expect.objectContaining({ Action: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"], Resource: { "Fn::GetAtt": [idOf("AWS::DynamoDB::Table"), "Arn"] } })]);
+    expect(statements.flatMap((statement) => [statement.Action].flat()).filter((action) => /^dynamodb:(Scan|Query|\*)/u.test(action))).toEqual([]);
+    expect(byAction("kms:Decrypt")).toEqual([expect.objectContaining({ Resource: { "Fn::GetAtt": [idOf("AWS::KMS::Key"), "Arn"] }, Condition: { StringEquals: { "kms:EncryptionContext:purpose": "rovara-cloud-session" } } })]);
+    expect(byAction("secretsmanager:GetSecretValue")).toEqual([expect.objectContaining({ Resource: { Ref: idOf("AWS::SecretsManager::Secret") } })]);
   });
 
   it("runs one task at a time, so two never write the session files, and keeps those files on encrypted EFS", () => {

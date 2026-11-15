@@ -17,7 +17,8 @@ flowchart LR
   B[Browser] -->|HTTPS| A[HTTP API]
   A -->|VPC link| L[Internal load balancer]
   L --> T[Cloud task<br/>one Fargate task]
-  T --> E[(EFS<br/>sign-ins, Cloud sessions)]
+  T --> D[(DynamoDB<br/>sign-ins, KMS-sealed)]
+  T --> E[(EFS<br/>Cloud sessions)]
   T -->|sign-in and API calls<br/>as the person| C[Rovara Code install]
   C --> P[Code's sign-in:<br/>its user pool, Slack or OIDC]
 ```
@@ -30,13 +31,20 @@ One stack, `rovara-cloud-<env>-app` (`infra/lib/cloud-app.ts`):
   link, so nothing travels as plain HTTP over the internet.
 - **One Fargate task (arm64)** running `scripts/cloud-server.ts`: the web app's pages and Cloud's
   server in one Node process. The image is built from `environments/cloud/Dockerfile` during the deploy.
-- **EFS**, encrypted, holding people's sign-ins and Cloud's sessions, so a restart or a release keeps them.
+- **A DynamoDB table of sign-ins**: one item per login under a hash of its cookie (never the cookie), each
+  sealed with a data key from a **KMS key** only the task's role may use. A login ends after 12 hours unused or
+  7 days after sign-in, and DynamoDB deletes it after that time. Signing out also ends the sign-in at Code.
+- **EFS**, encrypted, holding Cloud's sessions, so a restart or a release keeps them. On the first start after
+  this change, the task ends at Code every sign-in in the old `sessions.json` file and removes the file (it keeps
+  the file and tries again at the next start if Code didn't confirm every one). EFS automatic backups still
+  hold copies of that file until their retention ends: delete those recovery points once it is gone.
 - **The secret `rovara-cloud/<env>/code-client-secret`**, Cloud's secret as Code's sign-in client
-  `rovara-cloud`. It starts as a placeholder.
+  `rovara-cloud`. It starts as a placeholder. The server reads it from Secrets Manager when it needs it (it is
+  not in the task's environment) and reads it again after five minutes.
 
 There is only ever one task, and a release stops the old task before it starts the new one. That leaves
-**about 2½ minutes with no server** on every release. The reason: this stack keeps Cloud's session stores
-as files, and who is viewing a session in the task's memory.
+**about 2½ minutes with no server** on every release. The reason: this stack keeps Cloud's own sessions
+as a file, and who is viewing a session in the task's memory.
 
 ### The stack replacing it: no gap on a release (#11)
 
@@ -49,8 +57,9 @@ removed.
     still finds its chunks.
   - Everything else goes to **Lambda** (`scripts/cloud-lambda.ts`), as many copies as needed. A release
     switches to the new version at once.
-- **DynamoDB**, one table: sign-ins, Cloud's sessions with their comments, and who is viewing
-  (`packages/cloud-server/src/dynamo-stores.ts`). It is kept if the stack is deleted, and can be restored
+- **DynamoDB**, one table: sign-ins (under a hash of the cookie, tokens and sign-ins under way sealed with
+  the stack's own **KMS key**, which only the function's role may use), Cloud's sessions with their comments,
+  and who is viewing (`packages/cloud-server/src/dynamo-stores.ts`). It is kept if the stack is deleted, and can be restored
   to any point in time.
 - **The same client secret** as the Fargate app. The function reads it, and its own address from the SSM
   parameter `/rovara-cloud/<env>/web/origin`, every few minutes, so a new secret needs no restart.
@@ -122,7 +131,7 @@ After the first deploy, the stack's outputs give you everything:
      --secret-string "$(cat rovara-cloud-secret.txt)" && rm rovara-cloud-secret.txt
    ```
 
-3. Run `RestartCommand`. Open `CloudUrl` and sign in: you go through Code's sign-in and come back to Cloud.
+3. Run `RestartCommand` (or wait five minutes). Open `CloudUrl` and sign in: you go through Code's sign-in and come back to Cloud.
 
 A later release keeps the secret. To rotate it, run `admin sign-in-client update rovara-cloud --rotate-secret
 --secret-file <file>` on Code, then repeat steps 2 and 3.
@@ -133,6 +142,8 @@ A later release keeps the secret. To rotate it, run `admin sign-in-client update
   OIDC settings), not on Cloud.
 - **Logs:** the stack's log group, stream prefix `cloud`.
 - **Restart:** `RestartCommand`. Sign-ins and Cloud's sessions survive it.
+- **Sign everyone out:** delete the items in the sign-ins table (their tokens stay valid at Code until they
+  expire there; ending them at Code is Code's "end all sessions").
 
 ## Running it on your computer
 
@@ -146,5 +157,5 @@ This needs the client registered with `--loopback`. See `packages/cloud-server/R
 ## Removing it
 
 Delete `rovara-cloud-<env>-app`, and `rovara-cloud-<env>-pipeline` if it's no longer needed. The EFS file
-system, the client secret and the log groups are kept: delete them by hand once you're sure. On Code, remove
+system, the sign-in KMS key, the client secret and the log groups are kept: delete them by hand once you're sure. On Code, remove
 the client with `admin sign-in-client remove rovara-cloud`.
