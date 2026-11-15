@@ -11,6 +11,7 @@ import { CodeError, SignInEnded } from "./code-client.js";
 import type { CloudAuditStore } from "./audit-log.js";
 import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, parseCompanyAuditQuery } from "./company-audit.js";
 import { WORK_READS } from "./work-reads.js";
+import type { CompanyBackend } from "./company-routes.js";
 
 /** The company this Cloud shows, until companies are Cloud's own (phase 4). */
 export interface OrgView { orgId: string; name: string; plan: string }
@@ -30,6 +31,8 @@ export interface RouteContext {
   origin: string;
   /** Who is looking at each session now (phase 2c). */
   presence: PresenceBoard;
+  /** Cloud's company data (company-routes.ts); absent when this Cloud has none. */
+  company?: CompanyBackend;
   /** Cloud's own audit records. Absent: the company audit answers 503, and a route that records a Cloud action has nowhere to record it. */
   audit?: CloudAuditStore;
 }

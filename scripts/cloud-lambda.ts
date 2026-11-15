@@ -4,11 +4,13 @@
 //
 // Environment: ROVARA_CODE_URL, ROVARA_CLIENT_ID (rovara-cloud), ROVARA_SCOPES, CLOUD_TABLE, CLOUD_ORIGIN_PARAMETER (the SSM parameter
 // holding Cloud's https address), CLOUD_CLIENT_SECRET_ID (the secret holding Cloud's client secret), CLOUD_SESSIONS_KEY_ID (the KMS key
-// that seals sign-ins), CLOUD_ORG_NAME, CLOUD_APP_DIRECTORY (the page shell, index.html).
+// that seals sign-ins), CLOUD_ORG_NAME, CLOUD_APP_DIRECTORY (the page shell, index.html); COMPANY_TABLE (Cloud's company data:
+// settings and rules, invites, profile, the policy hook's install allow-list; absent, the company routes answer 501) and CLOUD_COMPANY_ID
+// (the one company of a single-company Code, used only when Code's access check names none).
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
 import {
-  CodeClient, DynamoCloudAuditStore, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, EnvelopeSealer, KmsKeyService, cloudConfigReader, cloudDocumentClient, createCloudHandler,
+  CodeClient, DynamoCloudAuditStore, DynamoCompanyStore, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, EnvelopeSealer, KmsKeyService, cloudConfigReader, cloudDocumentClient, createCloudHandler,
   type CloudRequest, type CloudResponse,
 } from "../packages/cloud-server/src/index.js";
 import { createAppHandler } from "../packages/web/src/server/handler.js";
@@ -69,6 +71,9 @@ function build() {
   // Short timeouts and few attempts, so a refresh's KMS calls stay well inside its hold on the session.
   const kms = new KMSClient({ maxAttempts: 2, requestHandler: { connectionTimeout: 2_000, requestTimeout: 4_000 } });
   const store = new DynamoSessionStore(db, table, new EnvelopeSealer(new KmsKeyService(kms, required("CLOUD_SESSIONS_KEY_ID")))), work = new DynamoWorkSessionStore(db, table), presence = new DynamoPresenceBoard(db, table), audit = new DynamoCloudAuditStore(db, table);
+  const companyTable = process.env.COMPANY_TABLE;
+  const companyId = process.env.CLOUD_COMPANY_ID;
+  const company = companyTable ? { store: new DynamoCompanyStore(db, companyTable), ...(companyId ? { companyId } : {}) } : undefined;
   const app = createAppHandler({ appDirectory: required("CLOUD_APP_DIRECTORY"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
   // One Cloud handler per address and secret: a new pair (a rotated secret) gets a new client.
   let current: { key: string; handle: ReturnType<typeof createCloudHandler> } | undefined;
@@ -83,7 +88,7 @@ function build() {
       current = {
         key,
         handle: createCloudHandler({
-          client, store, work, presence, audit, origin, callbackPath: "/callback", secureCookies: true,
+          client, store, work, presence, audit, origin, callbackPath: "/callback", secureCookies: true, ...(company === undefined ? {} : { company }),
           org: { orgId: "rovara", name: process.env.CLOUD_ORG_NAME ?? "Rovara", plan: "cloud" },
         }),
       };

@@ -3,6 +3,7 @@
 // answers 401 refreshes the token once and tries again.
 import { createHash, randomBytes } from "node:crypto";
 import type { SecretReader } from "./client-secret.js";
+import { STEP_UP_ACR } from "./step-up.js";
 import type { CodeSession, RefreshGuard } from "./sessions.js";
 
 export interface CodeClientOptions {
@@ -25,6 +26,8 @@ export interface CodeAccess {
   /** True once the person chose their own name in Code (PrepLabsAI/Rovara#634). An older Code leaves it out. */
   nameChosen?: boolean;
   administrator: boolean;
+  /** The person's company (the isolation boundary, plan 2.4), once Code names it (lane T). A single-company Code leaves it out. */
+  companyId?: string;
   projects: Array<{ name: string; access: string }>;
   notices: string[];
 }
@@ -93,14 +96,18 @@ export class CodeClient {
     return this.base;
   }
 
-  /** Step 1 of sign-in: the URL to send the browser to, and what to keep until it comes back. */
-  startSignIn(returnTo: string, now: number): { url: string; state: string; pending: PendingSignIn } {
+  /**
+   * Step 1 of sign-in: the URL to send the browser to, and what to keep until it comes back. `stepUp` asks Code for a fresh step-up with
+   * a factor Code owns (`acr_values=step-up`), which a sensitive change in Cloud needs.
+   */
+  startSignIn(returnTo: string, now: number, options: { stepUp?: boolean } = {}): { url: string; state: string; pending: PendingSignIn } {
     const verifier = randomBytes(32).toString("base64url");
     const state = randomBytes(24).toString("base64url");
     const url = new URL(`${this.base}/v1/auth/authorize`);
     url.search = new URLSearchParams({
       response_type: "code", client_id: this.options.clientId, redirect_uri: this.options.redirectUri, state, scope: this.options.scopes,
       code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256",
+      ...(options.stepUp === true ? { acr_values: STEP_UP_ACR } : {}),
     }).toString();
     return { url: url.toString(), state, pending: { verifier, returnTo, at: now } };
   }

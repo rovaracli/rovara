@@ -79,6 +79,11 @@ same account and region as the Cloud it deploys. It asks for two things:
   The control plane stack is `AgentXControlPlane` for the legacy AgentX deployment, and
   `rovara-cloud-<env>-control-plane` for a named install.
 
+The web stack also takes an optional **`CompanyId`** (default empty): the one company (`org_` and 20 lower-case
+letters or digits) of a Rovara Code that does not yet name a company in its access check. Cloud keeps that company's
+settings, invites and profile in the stack's `Companies` table. Empty, a Code like that gets no company routes; a Code
+that names the company never uses it.
+
 The account must be CDK-bootstrapped (`cdk bootstrap`). Then, from a checkout of `cloud/next`:
 
 ```sh

@@ -85,6 +85,26 @@ export class CloudWebStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
+    // Cloud's company data (packages/cloud-server/src/company-dynamo.ts, COMPANY_TABLE): settings and rules, a change waiting for a second
+    // admin, profile, invites (with invitees' email addresses) and the policy hook's install allow-list. Long-lived configuration, so a
+    // table of its own: kept, recoverable, and granted to the server item by item (below), with no Scan and no batch writes.
+    const companies = new dynamodb.TableV2(this, "Companies", {
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "sk", type: dynamodb.AttributeType.STRING },
+      timeToLiveAttribute: "expiresAt",
+      encryption: dynamodb.TableEncryptionV2.awsManagedKey(),
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      deletionProtection: true,
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+    const companyId = new CfnParameter(this, "CompanyId", {
+      type: "String",
+      default: "",
+      allowedPattern: "^(org_[0-9a-z]{20})?$",
+      constraintDescription: "empty, or a company id: org_ and 20 lower-case letters or digits",
+      description: "The one company of a single-company Rovara Code, used only when Code's access check names none. Empty: such a Code gets no company routes.",
+    });
+
     // The same secret as cloud-app.ts: Cloud is one sign-in client of Code, whichever stack serves it.
     const clientSecret = secretsmanager.Secret.fromSecretNameV2(this, "CodeClientSecret", `${RESOURCE_PREFIX}/${env}/code-client-secret`);
 
@@ -104,6 +124,8 @@ export class CloudWebStack extends Stack {
       ROVARA_CLIENT_ID: CLOUD_APP_CLIENT_ID,
       ROVARA_SCOPES: CLOUD_APP_SCOPES.join(" "),
       CLOUD_TABLE: table.tableName,
+      COMPANY_TABLE: companies.tableName,
+      CLOUD_COMPANY_ID: companyId.valueAsString,
       CLOUD_ORIGIN_PARAMETER: originParameter,
       CLOUD_CLIENT_SECRET_ID: clientSecret.secretName,
       CLOUD_APP_DIRECTORY: `/var/task/${CLOUD_WEB_SHELL_DIRECTORY}`,
@@ -140,6 +162,8 @@ export class CloudWebStack extends Stack {
         },
       });
     table.grantReadWriteData(server);
+    // Exactly what DynamoCompanyStore sends (a transaction is authorized by each of its writes): no Scan, no batch, no table changes.
+    companies.grant(server, "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query");
     clientSecret.grantRead(server);
     // Sign-ins are sealed with this stack's own key, which only the function's role may use (migration plan v3.2, 7.2 change 4).
     const sessionKey = signInKey(this, `Rovara Cloud ${env} (web): seals people's sign-ins (Code tokens) in the State table`, server.role!);
@@ -205,5 +229,6 @@ export class CloudWebStack extends Stack {
     });
     new CfnOutput(this, "ClientSecretName", { value: clientSecret.secretName, description: "Where Cloud reads its client secret (made by the first-address stack); read again within five minutes of a change" });
     new CfnOutput(this, "TableName", { value: table.tableName });
+    new CfnOutput(this, "CompanyTableName", { value: companies.tableName });
   }
 }

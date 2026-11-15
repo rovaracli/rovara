@@ -8,6 +8,7 @@ import { CodeError, SignInEnded, type CodeClient } from "./code-client.js";
 import { APPROVAL_PATH, approvalRoute, signInPage } from "./approve.js";
 import { LocalPresenceBoard, type PresenceBoard } from "./presence.js";
 import { POLICY_HOOK_PATH } from "./policy-hook.js";
+import { COMPANY_ROUTES, type CompanyBackend } from "./company-routes.js";
 import { ROUTES, type OrgView, type Route, type RouteAnswer } from "./routes.js";
 import type { SessionStore } from "./sessions.js";
 import { StoreConflict, type WorkSessionStore } from "./work-sessions.js";
@@ -38,6 +39,8 @@ export interface CloudHandlerOptions {
   /** Who is looking at each session now; this server's memory by default. */
   presence?: PresenceBoard;
   routes?: Route[];
+  /** Cloud's company data: adds the company routes (company-routes.ts). Absent: those routes answer 501, as before. */
+  company?: CompanyBackend;
   /** Cloud's own audit records (plan v3.2 7.5): read by `GET /v1/app/company/audit`, written by routes that change something at company level and by the policy hook. */
   audit?: CloudAuditStore;
   /** Lane H: the policy hook's answering route (`createPolicyHookRoute`), served at `POLICY_HOOK_PATH`. Absent: that path is not Cloud's, as before. */
@@ -72,7 +75,7 @@ const signInAgain = () => json(401, { error: { code: "AUTH_REQUIRED", message: "
 
 /** The handler; it answers undefined for a path that is not Cloud's (the app's pages and assets). */
 export function createCloudHandler(options: CloudHandlerOptions): (request: CloudRequest) => Promise<CloudResponse | undefined> {
-  const routes = options.routes ?? ROUTES;
+  const routes = options.routes ?? (options.company === undefined ? ROUTES : [...ROUTES, ...COMPANY_ROUTES]);
   const now = options.now ?? (() => new Date());
   const log = options.log ?? ((event) => { console.log(JSON.stringify(event)); });
   const presence = options.presence ?? new LocalPresenceBoard();
@@ -87,7 +90,8 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     const { method, path } = request;
     if (path === POLICY_HOOK_PATH && options.policyHook !== undefined) return options.policyHook(request);
     if (path === "/v1/auth/browser/authorize" && method === "GET") {
-      const { url, state, pending } = options.client.startSignIn(returnPath(request.query.get("return_to")), now().getTime());
+      // `step_up=1`: the app asks for a fresh step-up before a sensitive change (company settings, inviting an admin).
+      const { url, state, pending } = options.client.startSignIn(returnPath(request.query.get("return_to")), now().getTime(), { stepUp: request.query.get("step_up") === "1" });
       await options.store.putPending(state, pending);
       return text(302, "", { location: url });
     }
@@ -176,7 +180,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
           try {
             answer = await route.answer({
               client: options.client, session: using, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
-              work: options.work, origin: options.origin, presence, ...(options.audit === undefined ? {} : { audit: options.audit }),
+              work: options.work, origin: options.origin, presence, ...(options.audit === undefined ? {} : { audit: options.audit }), ...(options.company === undefined ? {} : { company: options.company }),
             });
           } catch (error) {
             if (attempt >= REQUEST_ATTEMPTS) throw error;

@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CLOUD_TABLE } from "../../packages/cloud-server/src/index.js";
+import { CLOUD_TABLE, COMPANY_TABLE } from "../../packages/cloud-server/src/index.js";
 import { CloudWebStack, cloudWebStackName } from "../../infra/lib/cloud-web.js";
 import { CLOUD_APP_CLIENT_ID } from "../../infra/lib/cloud-app.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
@@ -76,6 +76,26 @@ describe("Rovara Cloud on CloudFront, Lambda and DynamoDB (Rovara-cloud#11)", ()
     template.hasResourceProperties("AWS::SSM::Parameter", { Name: "/rovara-cloud/production/web/origin", Value: Match.objectLike({ "Fn::Join": ["", ["https://", Match.anyValue()]] }) });
   });
 
+  it("keeps company data in a table of its own, kept and recoverable, granted to the server item by item", () => {
+    const companies = idOf("AWS::DynamoDB::GlobalTable", (properties) => JSON.stringify(properties).includes("SSESpecification") && !JSON.stringify(properties).includes("GlobalSecondaryIndexes"));
+    expect(resources[companies]!.DeletionPolicy).toBe("Retain");
+    expect(resources[companies]!.Properties).toMatchObject({
+      KeySchema: [{ AttributeName: COMPANY_TABLE.partitionKey, KeyType: "HASH" }, { AttributeName: COMPANY_TABLE.sortKey, KeyType: "RANGE" }],
+      TimeToLiveSpecification: { AttributeName: COMPANY_TABLE.ttlAttribute, Enabled: true },
+      SSESpecification: { SSEEnabled: true, SSEType: "KMS" },
+      Replicas: [expect.objectContaining({ DeletionProtectionEnabled: true, PointInTimeRecoverySpecification: { PointInTimeRecoveryEnabled: true } })],
+    });
+    const variables = (server().Environment as { Variables: Record<string, unknown> }).Variables;
+    expect(variables.COMPANY_TABLE).toEqual({ Ref: companies });
+    expect(variables.CLOUD_COMPANY_ID).toEqual({ Ref: "CompanyId" });
+    expect((template.toJSON() as { Parameters: Record<string, unknown> }).Parameters["CompanyId"]).toMatchObject({ Type: "String", Default: "", AllowedPattern: "^(org_[0-9a-z]{20})?$" });
+    // Every statement naming the company table: exactly the store's four item actions, nothing wider.
+    const statements = Object.values(template.findResources("AWS::IAM::Policy")).flatMap((policy) => (policy.Properties as { PolicyDocument: { Statement: Array<{ Action: string | string[]; Resource: unknown }> } }).PolicyDocument.Statement);
+    const onCompanies = statements.filter((statement) => JSON.stringify(statement.Resource).includes(companies));
+    expect(onCompanies).toHaveLength(1);
+    expect([onCompanies[0]!.Action].flat().sort()).toEqual(["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"]);
+  });
+
   it("lets the function read its address by name, so its role doesn't wait for the distribution that waits for it", () => {
     const policies = JSON.stringify(template.findResources("AWS::IAM::Policy"));
     expect(policies).toContain(":parameter/rovara-cloud/production/web/origin");
@@ -89,7 +109,7 @@ describe("Rovara Cloud on CloudFront, Lambda and DynamoDB (Rovara-cloud#11)", ()
 
   it("prints how to register a new environment with Code, and where its secret is", () => {
     const outputs = template.toJSON().Outputs as Record<string, { Value: unknown; Export?: unknown }>;
-    expect(Object.keys(outputs).filter((name) => outputs[name]!.Export === undefined).sort()).toEqual(["CallbackUrl", "ClientSecretName", "CloudUrl", "RegisterWithCode", "TableName"]);
+    expect(Object.keys(outputs).filter((name) => outputs[name]!.Export === undefined).sort()).toEqual(["CallbackUrl", "ClientSecretName", "CloudUrl", "CompanyTableName", "RegisterWithCode", "TableName"]);
     const register = JSON.stringify(outputs.RegisterWithCode!.Value);
     expect(register).toContain(`admin sign-in-client add ${CLOUD_APP_CLIENT_ID} --name \\"Rovara Cloud\\" --audience ${CLOUD_APP_CLIENT_ID} --redirect `);
     expect(register).toContain("--confidential --full-access --scope projects:members,projects:create --secret-file rovara-cloud-secret.txt");

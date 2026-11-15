@@ -21,7 +21,7 @@ import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
 import {
-  CodeClient, DynamoCloudAuditStore, DynamoSessionStore, EnvelopeSealer, KmsKeyService, LocalCloudAuditStore, LocalSessionStore, LocalWorkSessionStore, cloudDocumentClient, createCloudHandler,
+  CodeClient, DynamoCloudAuditStore, DynamoSessionStore, EnvelopeSealer, KmsKeyService, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, cloudDocumentClient, createCloudHandler,
   isDeployedEnvironment, secretsManagerSecret, type CloudAuditStore, type CodeSession, type SecretReader, type SessionStore,
 } from "../packages/cloud-server/src/index.js";
 import { createAppHandler } from "../packages/web/src/server/handler.js";
@@ -88,6 +88,8 @@ const cloud = createCloudHandler({
   org: { orgId: "rovara", name: process.env.CLOUD_ORG_NAME ?? "Rovara", plan: "local" },
   callbackPath: "/callback", secureCookies: secure,
   work: new LocalWorkSessionStore(process.env.CLOUD_WORK_SESSIONS_FILE), origin,
+  // CLOUD_COMPANY_ID: company settings, invites and profile in this server's memory, for the one company of a single-company Code.
+  ...(process.env.CLOUD_COMPANY_ID ? { company: { store: new LocalCompanyStore(), companyId: process.env.CLOUD_COMPANY_ID } } : {}),
 });
 const appDirectory = process.env.CLOUD_APP_DIRECTORY ?? join(resolve(process.cwd(), "packages/web/dist"), "app");
 const app = createAppHandler({ appDirectory, assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
