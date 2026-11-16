@@ -155,6 +155,24 @@ describe("Cloud: your own Bedrock settings", () => {
     expect((await w.audit.read(B, { max: 50 })).rows.map((r) => r.action)).toEqual(["agent_ai.bedrock.connected"]);
   });
 
+  it("a removal is undone by the company's admin inside its window (same role, still theirs); B can't take the role meanwhile", async () => {
+    const { w } = bedrockWorld();
+    const ada = await w.signIn("ada", 30); const bea = await w.signIn("bea", 30);
+    expect((await w.call(ada, "PUT", "/org/bedrock", write(0, FORM(A)))).status).toBe(200);
+    expect((await w.call(ada, "DELETE", "/org/bedrock", write(1))).body).toMatchObject({ connection: null });
+    const again = await w.call(ada, "PUT", "/org/bedrock", write(2, FORM(A)));
+    expect(again.status).toBe(409);
+    expect(again.body.error?.message).toBe("This connection was removed less than 7 days ago. Recover it, or wait until the 7 days have passed.");
+    expect((await w.call(bea, "PUT", "/org/bedrock", write(0, FORM(B, { roleArn: ROLE(A) })))).status).toBe(409);
+    // Not without a fresh step-up, and never B recovering A's.
+    expect((await w.call(await w.signIn("ada", 3600), "POST", "/org/bedrock/recover", write(2))).body.error?.code).toBe("STEP_UP_REQUIRED");
+    expect((await w.call(bea, "POST", "/org/bedrock/recover", write(0))).status).toBe(404);
+    const back = await w.call(ada, "POST", "/org/bedrock/recover", write(2));
+    expect(back.status).toBe(200);
+    expect(back.body.connection).toMatchObject({ roleArn: ROLE(A), connected: true });
+    expect((await w.audit.read(A, { max: 50 })).rows.map((r) => r.action).sort()).toEqual(["agent_ai.bedrock.connected", "agent_ai.bedrock.recovered", "agent_ai.bedrock.removed"]);
+  });
+
   it("too open, refused and unavailable save nothing, each in its own words", async () => {
     for (const [result, status, words] of [
       ["too_open", 400, "This AWS role would also trust another Rovara company"],

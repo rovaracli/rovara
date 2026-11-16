@@ -47,6 +47,8 @@ export interface ProductAiStore {
   connect(change: Change & { sourceId: string; provider: "gemini" | "vertex" | "anthropic" | "openai" | "bedrock"; key: string }): Promise<ProductAiView>;
   rotate(change: Change & { sourceId: string; key: string }): Promise<ProductAiView>;
   remove(change: Change & { sourceId: string }): Promise<ProductAiView>;
+  /** Restores a removed source inside its 7-day window (product-keys.ts recover). */
+  recover(change: Change & { sourceId: string }): Promise<ProductAiView>;
   setEvalBudget(change: Change & { budget: { calls: number; costMicros: number } }): Promise<ProductAiView>;
   setEvalApproval(change: Change & { approval: { selection: string; inputsDigest: string; maxCalls: number; maxCostMicros: number; model?: string } | null; provider: string; roleCheckedAt?: number }): Promise<ProductAiView>;
   /** Every eval approval this person made up to now stops counting (product-keys.ts withdrawApprovals). Throws when not saved. */

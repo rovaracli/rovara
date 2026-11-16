@@ -31,6 +31,8 @@ function fakeAws(clock: { at: number }) {
   const roles = new Map<string, { cid: string; trust: Trust }>([[ROLE_A, { cid: A, trust: "strict" }], [ROLE_B, { cid: B, trust: "strict" }]]);
   const calls: Array<{ roleArn: string; session: string; externalId?: string; signedBy: string }> = [];
   let issued = 0; let down = false;
+  /** Make one STS call fail with an error body (a throttle, or a 403 that is not AccessDenied). */
+  let fail: ((call: { roleArn: string; session: string; externalId?: string }) => { status: number; code: string } | undefined) | undefined;
   const credentials = (prefix: string) => { issued += 1; return { id: `ASIA${prefix}${String(issued).padStart(12, "0")}`, expiration: new Date(clock.at + 3600_000).toISOString() }; };
   const http = async (request: TokenHttpRequest) => {
     if (down) throw new Error("sts down");
@@ -39,6 +41,8 @@ function fakeAws(clock: { at: number }) {
     const roleArn = form.get("RoleArn")!; const session = form.get("RoleSessionName")!; const externalId = form.get("ExternalId") ?? undefined;
     const signedBy = /Credential=([A-Z0-9]+)\//u.exec(request.headers.authorization ?? "")?.[1] ?? "";
     calls.push({ roleArn, session, ...(externalId === undefined ? {} : { externalId }), signedBy });
+    const failed = fail?.({ roleArn, session, ...(externalId === undefined ? {} : { externalId }) });
+    if (failed !== undefined) return { status: failed.status, body: Buffer.from(`<ErrorResponse><Error><Type>Sender</Type><Code>${failed.code}</Code><Message>Rate exceeded</Message></Error></ErrorResponse>`) };
     let ok: boolean;
     if (roleArn === BROKER) ok = signedBy.startsWith("AKIATASK") && /^org_/u.test(session) && externalId === undefined;
     else {
@@ -51,7 +55,7 @@ function fakeAws(clock: { at: number }) {
     const c = credentials(roleArn === BROKER ? "BROKER" : "CUSTOMER");
     return { status: 200, body: Buffer.from(`<AssumeRoleResponse><AssumeRoleResult><Credentials><AccessKeyId>${c.id}</AccessKeyId><SecretAccessKey>s</SecretAccessKey><SessionToken>t</SessionToken><Expiration>${c.expiration}</Expiration></Credentials></AssumeRoleResult></AssumeRoleResponse>`) };
   };
-  return { http, externalIds, roles, calls, set down(v: boolean) { down = v; } };
+  return { http, externalIds, roles, calls, set down(v: boolean) { down = v; }, set fail(f: typeof fail) { fail = f; } };
 }
 function sessions(options: { bedrock?: (region: string, creds: () => Promise<{ accessKeyId: string }>) => ProviderTransport } = {}) {
   const clock = { at: START };
@@ -167,6 +171,28 @@ describe("the connection test", () => {
       aws.roles.set(ROLE_A, { cid: A, trust });
       expect((await s.probe(A, connection(ROLE_A))).result, trust).toBe("too_open");
     }
+  });
+
+  it("a canary that STS throttles (or any error but AccessDenied) proves nothing: the test is unavailable, never ok", async () => {
+    for (const [status, code] of [[400, "Throttling"], [400, "ExpiredToken"], [403, "RegionDisabledException"], [500, "InternalFailure"]] as const) {
+      for (const which of ["external id", "session name"] as const) {
+        const { s, aws } = sessions({ bedrock: () => answer(400) });
+        // The role is too open, and the canary that would show it (the 2nd call on the role for a role that ignores the external
+        // id, the 3rd for one that ignores the session name; the 1st is the real company) errors instead of answering.
+        aws.roles.set(ROLE_A, { cid: A, trust: which === "external id" ? "no_external_id" : "no_session_name" });
+        const target = which === "external id" ? 2 : 3; let seen = 0;
+        aws.fail = (call) => call.roleArn === ROLE_A && ++seen === target ? { status, code } : undefined;
+        expect((await s.probe(A, connection(ROLE_A))).result, `${code} ${which}`).toBe("unavailable");
+      }
+    }
+  });
+
+  it("on the call path a throttle is unavailable, never refused (so no refusal is recorded)", async () => {
+    const { s, aws } = sessions();
+    aws.fail = (call) => call.roleArn === ROLE_A ? { status: 400, code: "Throttling" } : undefined;
+    expect(await s.credentials(row(A), connection(ROLE_A))).toEqual({ ok: false, reason: "unavailable" });
+    aws.fail = (call) => call.roleArn === ROLE_A ? { status: 403, code: "AccessDenied" } : undefined;
+    expect(await s.credentials(row(A), connection(ROLE_A))).toEqual({ ok: false, reason: "refused" });
   });
 
   it("refused when the company can't assume it (wrong role, or another company's role); nothing is cached by a test", async () => {

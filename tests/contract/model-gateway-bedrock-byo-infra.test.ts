@@ -10,13 +10,15 @@ import { describe, expect, it } from "vitest";
 import { BEDROCK_BYO_ROLE_PREFIX } from "../../packages/model-gateway/src/bedrock-byo.js";
 import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { BEDROCK_BYO_CUSTOMER_ROLE_PREFIX, bedrockBrokerRoleName, MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_ENV, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
+import { BEDROCK_BYO_CUSTOMER_ROLE_PREFIX, bedrockBrokerRoleName, bedrockExternalIdKeyAlias, MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_ENV, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
 
 type Resource = { Type: string; Properties: Record<string, unknown>; DeletionPolicy?: string; UpdateReplacePolicy?: string };
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Principal?: unknown; Condition?: Record<string, Record<string, unknown>> };
 const app = (context: Record<string, string>, env = "staging") => buildAgentXApp({ [MODEL_GATEWAY_CONTEXT_KEY]: env, agentxRegion: "us-west-2", ...context });
 const synth = (context: Record<string, string>, env = "staging") => Template.fromStack(app(context, env).node.findChild("RovaraModelGateway") as Stack).toJSON() as { Resources: Record<string, Resource> };
 const productOn = { [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" };
+/** The logical ids as first made: CloudFormation replaces a resource whose logical id changes. Never change these. */
+const PINNED = { broker: "BedrockBrokerRoleEF230DEA", key: "BedrockExternalIdKey85A8D0A1" };
 const on = synth({ ...productOn, [MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY]: "on" });
 const without = synth(productOn);
 
@@ -56,7 +58,7 @@ describe("bring your own Bedrock in the gateway stack (DEC 238)", () => {
     expect(policies[0]!.PolicyDocument.Statement).toEqual([{
       Sid: "AssumeCustomerBedrockRoles", Effect: "Allow", Action: "sts:AssumeRole",
       Resource: { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, `:iam::*:role/${BEDROCK_BYO_CUSTOMER_ROLE_PREFIX}*`]] },
-      Condition: { StringLike: { "sts:ExternalId": "rvb-*", "sts:RoleSessionName": "org_*" } },
+      Condition: { StringLike: { "sts:ExternalId": "rvb-*", "sts:RoleSessionName": "org_*" }, StringNotEquals: { "aws:ResourceAccount": { Ref: "AWS::AccountId" } } },
     }]);
     // No managed policy and no separate policy attached to it: nothing else it may do (no Bedrock rights of its own).
     expect(role.Properties.ManagedPolicyArns).toBeUndefined();
@@ -84,6 +86,15 @@ describe("bring your own Bedrock in the gateway stack (DEC 238)", () => {
     expect(policy.map((x) => x.Sid)).toEqual(["AccountManagesNotUses", "OnlyGatewayMakesExternalIds"]);
     expect(policy[1]).toMatchObject({ Action: "kms:GenerateMac", Condition: { ArnEquals: { "aws:PrincipalArn": { "Fn::GetAtt": [serveRoleId(on), "Arn"] } } } });
     expect(JSON.stringify(policy)).not.toMatch(/ScheduleKeyDeletion|kms:Delete|VerifyMac|Decrypt/u);
+    // A fixed alias: a replacement key would clash with it and fail the deploy instead of changing every external id.
+    const aliases = byType(on, "AWS::KMS::Alias").filter(([, a]) => JSON.stringify(a.Properties.TargetKeyId).includes(externalIdKey(on)![0]));
+    expect(aliases.map(([, a]) => a.Properties.AliasName)).toEqual([bedrockExternalIdKeyAlias("staging")]);
+    expect(bedrockExternalIdKeyAlias("staging")).toBe("alias/rovara-bedrock-external-id-staging");
+  });
+
+  it("the broker's and the key's logical ids are pinned: a rename would replace them and break every customer", () => {
+    expect(broker(on)![0]).toBe(PINNED.broker);
+    expect(externalIdKey(on)![0]).toBe(PINNED.key);
   });
 
   it("the serving task gets both settings; the env names match the process's", () => {

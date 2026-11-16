@@ -27,19 +27,25 @@ Slice 1 (this page) is agents only. The product route and learning come later (s
    product key store's HMAC key, for the company's external id and the broker role's ARN. Only the gateway can make the external
    id: it is `rvb-` plus 160 bits of an HMAC of (install, company) under the gateway's own KMS key (`BedrockExternalIdKey`).
 2. The admin picks a Region and models (presets follow the Region's geography: `eu.` from `eu-west-1`) and gets one command
-   (`POST /org/bedrock/setup`) for **AWS CloudShell** in that Region. It downloads the template from the docs site and runs
-   `aws cloudformation deploy` with every parameter filled in, then prints the role ARN.
+   (`POST /org/bedrock/setup`) for **AWS CloudShell** in that Region. It downloads the template from the docs site, checks its
+   SHA-256 against the hash pinned in the gateway (a changed file stops it before any role is made), and runs
+   `aws cloudformation deploy` with every parameter filled in and single-quoted, then prints the role ARN.
+   - Each agent model name must be the same model as the Bedrock id picked for it (dates, versions and the profile prefix aside),
+     so a call is never sent to, or priced as, a different model.
    - Why not CloudFormation's one-click quick-create link: its `templateURL` must point at Amazon S3 (AWS docs, "Use quick-create
      links", checked 2026-11-15), and DEC 238 Q10 rules out a public bucket. If the owner later allows a public S3 object, the
      quick-create link is a small addition.
 3. The admin pastes the role ARN (`PUT /org/bedrock`). The store refuses a role another company holds, then asks the gateway to
    test it, then seals it in the company document as source `src_bedrock`.
-4. Under "AI for your agents" the admin picks "your own Bedrock". It is refused until a connection is saved. There is one active
+4. A removal keeps the connection for 7 days; the company admin can undo it then (`POST /org/bedrock/recover`, fresh step-up).
+5. Under "AI for your agents" the admin picks "your own Bedrock". It is refused until a connection is saved. There is one active
    source and never a fallback.
 
 ## The connection test (at connect and rotate, nothing cached)
 
 - The real company must get a session (broker, then the role, with its external id and session name). Else "AWS refused".
+- Only STS's `AccessDenied` counts as a refusal. A throttle or any other error makes the test "unavailable" (never "ok"), and on
+  the call path it is the fixed 503, never shown as "AWS refused".
 - Two canaries must be refused: the real session name with a canary company's external id, and a canary session name with the
   real external id. If either works, the role is **too open** and nothing is saved.
 - Each picked model gets one **$0 check**: an InvokeModel with `max_tokens: 0`, which IAM authorises and Bedrock rejects as
@@ -56,8 +62,9 @@ Slice 1 (this page) is agents only. The product route and learning come later (s
   name), written in the same transaction as the connection. A removed role stays claimed through the 7-day recovery window.
 - Sessions are cached per key-store row (install, company, owner, source, version) for at most 55 minutes (role chaining caps a
   session at one hour); a refusal is never cached; a 401/403 from Bedrock forgets the session.
-- The broker may only assume `RovaraBedrockInvoke-*` roles, with an `rvb-*` external id and an `org_*` session name. It has no
-  Bedrock rights. The customer role has only `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on the picked
+- The broker may only assume `RovaraBedrockInvoke-*` roles in OTHER accounts (`aws:ResourceAccount` is not Rovara's), with an
+  `rvb-*` external id and an `org_*` session name. It has no Bedrock rights. Its name and logical id are fixed; the external-id
+  key has a fixed alias and a pinned logical id, so a replacement fails the deploy instead of breaking every customer silently. The customer role has only `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on the picked
   models, and global routing is denied unless the admin turned it on.
 
 ## Money
@@ -75,6 +82,8 @@ Slice 1 (this page) is agents only. The product route and learning come later (s
 - That `sts:ExternalId` is evaluated in the broker's identity policy (AWS documents it for trust policies). If not, calls fail
   closed; the fix is to drop that condition (the customer's trust policy still requires the external id).
 - Whether global profiles are priced above the Regional rows for the newest Claude models (global is off by default).
+
+- An operator release of a deleted company's role claim (today a deleted company's claim stays until removed by hand).
 
 ## Later slices (not built)
 

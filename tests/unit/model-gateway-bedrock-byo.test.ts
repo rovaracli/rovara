@@ -3,10 +3,10 @@
 // one-command set-up, and the key store's rules: company-level only, one per company, a connection test that must pass, and a
 // role already connected by another company refused (two companies throughout).
 import { readFileSync } from "node:fs";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  BedrockExternalIds, allowedBedrockModel, bedrockExternalIdMessage, bedrockModelPresets, bedrockResourceArns, bedrockRoleClaim, bedrockRoleTemplateText, bedrockSetupCommand,
+  BedrockExternalIds, allowedBedrockModel, bedrockExternalIdMessage, bedrockModelPresets, bedrockResourceArns, bedrockRoleClaim, bedrockRoleTemplateSha256, bedrockRoleTemplateText, bedrockSetupCommand,
   parseBedrockConnect, serializeBedrockConnection, validTemplateUrl, type BedrockConnection,
 } from "../../packages/model-gateway/src/bedrock-byo.js";
 import { ROVARA_AI_US_MODELS } from "../../packages/model-gateway/src/agent-ai.js";
@@ -26,6 +26,9 @@ const EXT = `rvb-${"a1".repeat(20)}`;
 describe("the connection a company admin sends", () => {
   it("takes exactly the scheme, an invoke role of the fixed prefix, a commercial Region and 1 to 8 picked Claude models", () => {
     expect(parseBedrockConnect(conn())).toEqual({ scheme: "assume_role", roleArn: ROLE_A, region: "us-west-2", models: { "claude-sonnet-5-5": SONNET }, allowGlobal: false });
+    // Dates, versions and the profile prefix aside, the name and the id are one model.
+    expect(parseBedrockConnect(conn({ models: { "claude-haiku-4-5-20251001": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4-5": "anthropic.claude-haiku-4-5-20251001-v1:0" } }))).toBeDefined();
+    expect(parseBedrockConnect(conn({ models: Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`claude-m${String(i)}`, `us.anthropic.claude-m${String(i)}`])) }))).toBeDefined();
     expect(parseBedrockConnect(conn({ region: "eu-west-1", models: { "claude-sonnet-5-5": "eu.anthropic.claude-sonnet-5-5", "claude-haiku-4-5": "anthropic.claude-haiku-4-5-20251001-v1:0" } }))).toBeDefined();
     const refused = [
       conn({ roleArn: "arn:aws:iam::111111111111:role/Admin" }), // not the template's role
@@ -34,7 +37,9 @@ describe("the connection a company admin sends", () => {
       conn({ roleArn: `arn:aws:iam::11111111111:role/RovaraBedrockInvoke-${A}` }),
       conn({ region: "us-gov-west-1" }), conn({ region: "cn-north-1" }), conn({ region: "US-WEST-2" }),
       conn({ models: {} }), conn({ models: { "gpt-4": SONNET } }), conn({ models: { "claude-sonnet-5-5": "meta.llama3" } }),
-      conn({ models: Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`claude-m${String(i)}`, SONNET])) }),
+      conn({ models: Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`claude-m${String(i)}`, `us.anthropic.claude-m${String(i)}`])) }),
+      // The agent's name must be the same model as the id: never a cheaper name for a dearer model (priced and sent as asked).
+      conn({ models: { "claude-haiku-4-5": SONNET } }), conn({ models: { "claude-sonnet-5": SONNET } }),
       conn({ models: { "claude-sonnet-5-5": "eu.anthropic.claude-sonnet-5-5" } }), // another geography's profile
       conn({ models: { "claude-sonnet-5-5": "global.anthropic.claude-sonnet-5-5" } }), // global routing not allowed
       conn({ allowGlobal: "false" }), conn({ scheme: "access_key" }), conn({ extra: 1 }), "not json", JSON.stringify([conn()]),
@@ -55,8 +60,9 @@ describe("the connection a company admin sends", () => {
   });
 
   it("seals one canonical text whatever the order the models came in", () => {
-    const one = parseBedrockConnect(conn({ models: { "claude-b": SONNET, "claude-a": SONNET } }))!;
-    const two = parseBedrockConnect(conn({ models: { "claude-a": SONNET, "claude-b": SONNET } }))!;
+    const HAIKU = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+    const one = parseBedrockConnect(conn({ models: { "claude-sonnet-5-5": SONNET, "claude-haiku-4-5": HAIKU } }))!;
+    const two = parseBedrockConnect(conn({ models: { "claude-haiku-4-5": HAIKU, "claude-sonnet-5-5": SONNET } }))!;
     expect(serializeBedrockConnection(one)).toBe(serializeBedrockConnection(two));
     expect(parseBedrockConnect(serializeBedrockConnection(one))).toEqual(one);
   });
@@ -140,8 +146,17 @@ describe("the customer's role", () => {
     const input = { templateUrl: "https://docs.rovara.example/bedrock/rovara-bedrock-role.json", brokerRoleArn: BROKER, externalId: EXT, cid: A, region: "us-west-2", models: { "claude-sonnet-5-5": SONNET }, allowGlobal: false };
     const a = bedrockSetupCommand(input);
     expect(a.cloudShellUrl).toBe("https://us-west-2.console.aws.amazon.com/cloudshell/home?region=us-west-2");
-    expect(a.command).toContain(`CompanyId=${A} ExternalId=${EXT} BrokerRoleArn=${BROKER}`);
-    expect(a.command).toContain("AllowGlobalRouting=false");
+    expect(a.command).toContain(`'CompanyId=${A}' 'ExternalId=${EXT}' 'BrokerRoleArn=${BROKER}'`);
+    expect(a.command).toContain("'AllowGlobalRouting=false'");
+    // Every ARN (they hold *) is inside single quotes: no shell expands them.
+    expect(a.command).toContain(`'ModelResourceArns=${bedrockResourceArns({ region: "us-west-2", models: input.models }).join(",")}'`);
+    expect(a.command.replace(/'[^']*'/gu, "")).not.toContain("*");
+    // The downloaded template is checked against the docs file's own hash before anything is deployed.
+    const sha = createHash("sha256").update(readFileSync(new URL("../../docs/bedrock/rovara-bedrock-role.json", import.meta.url))).digest("hex");
+    expect(bedrockRoleTemplateSha256()).toBe(sha);
+    const steps = a.command.split(" && ");
+    expect(steps[1]).toBe(`echo '${sha}  rovara-bedrock-role.json' | sha256sum -c -`);
+    expect(steps[2]).toMatch(/^aws cloudformation deploy /u);
     expect(a.command).toContain("--capabilities CAPABILITY_NAMED_IAM");
     const b = bedrockSetupCommand({ ...input, cid: B, externalId: `rvb-${"b2".repeat(20)}` });
     expect(b.command).not.toContain(A);

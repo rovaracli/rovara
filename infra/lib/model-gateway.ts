@@ -77,6 +77,8 @@ export const MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY = "rovaraModelGatewayBedrockB
 export const BEDROCK_BYO_CUSTOMER_ROLE_PREFIX = "RovaraBedrockInvoke-";
 /** The broker role's FIXED name: every customer's trust policy names it, so it must never change or be re-created. */
 export const bedrockBrokerRoleName = (env: string) => `RovaraBedrockBroker-${env}`;
+/** The external-id key's FIXED alias (the same reason: a replaced key would change every company's external id). */
+export const bedrockExternalIdKeyAlias = (env: string) => `alias/rovara-bedrock-external-id-${env}`;
 /**
  * The Regions a system inference profile of each geography sends calls to (bedrock get-inference-profile, staging us-west-2,
  * 2026-11-15: every us. Claude profile lists us-east-1, us-east-2 and us-west-2). Invoking through a profile needs the
@@ -671,14 +673,18 @@ export class ModelGatewayStack extends Stack {
           statements: [new iam.PolicyStatement({
             sid: "AssumeCustomerBedrockRoles", actions: ["sts:AssumeRole"],
             resources: [`arn:${this.partition}:iam::*:role/${BEDROCK_BYO_CUSTOMER_ROLE_PREFIX}*`],
-            conditions: { StringLike: { "sts:ExternalId": "rvb-*", "sts:RoleSessionName": "org_*" } },
+            // Customers' accounts only: never a role of that name in Rovara's own account (made by mistake or by an insider).
+            conditions: { StringLike: { "sts:ExternalId": "rvb-*", "sts:RoleSessionName": "org_*" }, StringNotEquals: { "aws:ResourceAccount": this.account } },
           })],
         }),
       },
     });
     broker.applyRemovalPolicy(RemovalPolicy.RETAIN);
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "AssumeBedrockBroker", actions: ["sts:AssumeRole"], resources: [broker.roleArn], conditions: { StringLike: { "sts:RoleSessionName": "org_*" } } }));
+    // A fixed alias: if this key were ever replaced (a moved construct, a property that forces replacement), the new key's alias
+    // would clash with the old one's and the deploy would FAIL, instead of silently changing every company's external id.
     const externalIdKey = new kms.Key(this, "BedrockExternalIdKey", {
+      alias: bedrockExternalIdKeyAlias(env),
       description: `Rovara Cloud ${env}: makes each company's Bedrock external id (HMAC). Never delete or replace: customers' roles name its ids`,
       keySpec: kms.KeySpec.HMAC_256,
       keyUsage: kms.KeyUsage.GENERATE_VERIFY_MAC,

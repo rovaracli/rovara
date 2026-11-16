@@ -9,6 +9,7 @@
 //   POST   /org/bedrock/setup              {region, models, allowGlobal}: the one CloudShell command that creates the role
 //   PUT    /org/bedrock                    {requestId, expectedRevision, roleArn, region, models, allowGlobal}: test and save
 //   DELETE /org/bedrock                    {requestId, expectedRevision}: remove (7-day recovery window in the store)
+//   POST   /org/bedrock/recover            {requestId, expectedRevision}: undo a removal inside that window (same role, same claim)
 //
 // Who: company admins only (Code's access check made now), reads included. A change needs a fresh step-up and goes through the
 // app's signed-write path. Each saved change is audited. The agents use the connection only when the admin also picks "your own
@@ -54,7 +55,7 @@ const WORDS = Object.freeze({
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
   stale: refusal(409, "CONFLICT", "The Bedrock connection changed. Refresh and try again."),
   notFound: refusal(404, "NOT_FOUND", "No Bedrock connection is saved for this company."),
-  inRecovery: refusal(409, "CONFLICT", "This connection was removed less than 7 days ago. Ask an installation administrator to recover it."),
+  inRecovery: refusal(409, "CONFLICT", "This connection was removed less than 7 days ago. Recover it, or wait until the 7 days have passed."),
   tooOpen: refusal(400, "CONFIG_INVALID", "This AWS role would also trust another Rovara company, so it was not saved. Create it again with the setup command (it requires your company's external id and session name), then test again."),
   refused: refusal(400, "CONFIG_INVALID", "AWS refused Rovara for this role. Check the role ARN, and that the role was created with the setup command, then test again."),
   inUse: refusal(409, "CONFLICT", "This AWS role is already connected to another Rovara company. Create a role for this company with the setup command."),
@@ -193,6 +194,19 @@ async function removeBedrock(context: RouteContext): Promise<RouteAnswer> {
   return ok(view(v));
 }
 
+async function recoverBedrock(context: RouteContext): Promise<RouteAnswer> {
+  const who = await admin(context, true);
+  if ("status" in who) return who;
+  if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return WORDS.tooLarge;
+  const body = record(context.body);
+  if (body === undefined || !exactly(body, ["requestId", "expectedRevision"]) || typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision)) return WORDS.invalid;
+  const backend = context.productAi!;
+  const v = await guarded(() => backend.store.recover({ iss: backend.issuer, cid: who.companyId, owner: BEDROCK_OWNER, requestId: body.requestId as string, expectedRevision: body.expectedRevision as number, actor: { id: who.developerId, role: "company_admin" }, sourceId: BEDROCK_SOURCE_ID }));
+  if ("status" in v) return v;
+  await audited(context, who, "agent_ai.bedrock.recovered");
+  return ok(view(v));
+}
+
 /** Whether the company's own Bedrock is connected (for "AI for your agents"); null when this Cloud can't tell. */
 export async function bedrockConnected(context: RouteContext, companyId: string): Promise<boolean | null> {
   const backend = context.productAi;
@@ -210,4 +224,5 @@ export const BEDROCK_BYO_ROUTES: Route[] = [
   { method: "POST", path: /^\/org\/bedrock\/setup$/u, answer: postSetup },
   { method: "PUT", path: /^\/org\/bedrock$/u, answer: putBedrock },
   { method: "DELETE", path: /^\/org\/bedrock$/u, answer: removeBedrock },
+  { method: "POST", path: /^\/org\/bedrock\/recover$/u, answer: recoverBedrock },
 ];

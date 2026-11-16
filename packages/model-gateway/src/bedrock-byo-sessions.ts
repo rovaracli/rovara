@@ -8,7 +8,7 @@
 // broker sessions per company, customer sessions per key-store row (install, company, owner, source, version) and never shared
 // across companies. A refusal is never cached.
 //
-// The connection test (probe), at connect and rotate time, caches nothing:
+// The connection test (probe), at connect and rotate time, caches nothing (and only STS's AccessDenied counts as a refusal):
 //   - the real company must get a session (else "refused");
 //   - two canaries must be REFUSED: the real session name with a canary external id, and a canary session name with the real
 //     external id. If either gets a session the role trusts more than this company: "too_open", and nothing is saved;
@@ -110,31 +110,34 @@ export class BedrockSessions implements BedrockSessionSource {
   async probe(cid: string, connection: BedrockConnection, signal?: AbortSignal): Promise<BedrockProbe> {
     if (!COMPANY.test(cid) || !BEDROCK_BYO_ROLE_ARN.test(connection.roleArn)) return { result: "unavailable" };
     try {
-      const real = await this.#customer(cid, connection.roleArn, signal, false);
+      // One broker session, the real company's, for every assume of the test (the broker trusts any org_* name; the CUSTOMER's
+      // role is what must refuse the canaries).
+      const broker = await this.#broker(cid, signal, false);
+      if (broker === undefined) return { result: "unavailable" };
+      const externalId = await this.#options.externalIds.of(this.#options.issuer, cid);
+      const real = await this.#assume(broker, connection.roleArn, cid, externalId, signal);
       if (!real.ok) return { result: real.reason };
       let canary = this.#options.canaryCompany?.() ?? `org_${[...randomBytes(20)].map((b) => "0123456789abcdefghijklmnopqrstuvwxyz"[b % 36]).join("")}`;
       if (canary === cid || !COMPANY.test(canary)) canary = `org_${"0".repeat(19)}${cid.endsWith("0") ? "1" : "0"}`;
-      const externalId = await this.#options.externalIds.of(this.#options.issuer, cid);
       const canaryExternalId = await this.#options.externalIds.of(this.#options.issuer, canary);
-      // The broker session is the real company's (the broker trusts any org_* name; the CUSTOMER's role is what must refuse).
-      const broker = await this.#broker(cid, signal, false);
-      if (broker === undefined) return { result: "unavailable" };
       for (const [sessionName, id] of [[cid, canaryExternalId], [canary, externalId]] as const) {
         const other = await this.#assume(broker, connection.roleArn, sessionName, id, signal);
         if (other.ok) return { result: "too_open" };
+        // Only STS's AccessDenied counts as refused: a throttle or any other error proves nothing, so the test fails closed.
         if (other.reason !== "refused") return { result: "unavailable" };
       }
-      const models: Record<string, BedrockModelCheck> = {};
-      for (const id of new Set(Object.values(connection.models))) models[id] = await this.#modelCheck(connection.region, real.credentials, id, signal);
-      return { result: "ok", models };
+      // The models in parallel, each bounded, so the whole test stays inside Cloud's wait (service-call.ts SERVICE_CALL_TIMEOUT_MS).
+      const ids = [...new Set(Object.values(connection.models))];
+      const states = await Promise.all(ids.map((id) => this.#modelCheck(connection.region, real.credentials, id, signal)));
+      return { result: "ok", models: Object.fromEntries(ids.map((id, i) => [id, states[i]!])) };
     } catch { return { result: "unavailable" }; }
   }
 
   #fresh(credentials: AwsCredentials): boolean { return (credentials.expiresAt ?? 0) - BEDROCK_SESSION_MARGIN_MS > this.#now(); }
 
   /** Broker, then customer role, as `cid`. */
-  async #customer(cid: string, roleArn: string, signal: AbortSignal | undefined, cacheBroker = true): Promise<AssumeResult> {
-    const broker = await this.#broker(cid, signal, cacheBroker);
+  async #customer(cid: string, roleArn: string, signal: AbortSignal | undefined): Promise<AssumeResult> {
+    const broker = await this.#broker(cid, signal, true);
     if (broker === undefined) return UNAVAILABLE;
     let externalId: string;
     try { externalId = await this.#options.externalIds.of(this.#options.issuer, cid); } catch { return UNAVAILABLE; }
@@ -157,10 +160,11 @@ export class BedrockSessions implements BedrockSessionSource {
     const headers = signRequest({ method: "POST", host: this.#stsHost, region: this.#options.awsRegion, service: "sts", headers: { "content-type": "application/x-www-form-urlencoded; charset=utf-8" }, body, credentials: with_, now: new Date(this.#now()) });
     let answer: { status: number; body: Buffer };
     try { answer = await this.#options.http({ host: this.#stsHost, path: "/", method: "POST", headers, body, ...(signal === undefined ? {} : { signal }) }); } catch { return UNAVAILABLE; }
-    // STS answers AccessDenied (403) when the trust policy refuses; a malformed role or id is a ValidationError (400).
-    if (answer.status === 403 || answer.status === 400) return REFUSED;
-    if (answer.status !== 200 || answer.body.byteLength > STS_ANSWER_MAX_BYTES) return UNAVAILABLE;
+    if (answer.body.byteLength > STS_ANSWER_MAX_BYTES) return UNAVAILABLE;
     const text = answer.body.toString("utf8");
+    // Refused ONLY when STS says AccessDenied (403: the trust policy refused). A throttle, an expired token or any other error
+    // (STS answers most of them as 400) is unavailable: never shown as a refusal, never read as a canary refused.
+    if (answer.status !== 200) return answer.status === 403 && xmlOnce(text, "Code") === "AccessDenied" ? REFUSED : UNAVAILABLE;
     const accessKeyId = xmlOnce(text, "AccessKeyId"); const secretAccessKey = xmlOnce(text, "SecretAccessKey"); const sessionToken = xmlOnce(text, "SessionToken"); const expiration = xmlOnce(text, "Expiration");
     const expiresAt = expiration === undefined ? NaN : Date.parse(expiration);
     if (accessKeyId === undefined || secretAccessKey === undefined || sessionToken === undefined || !Number.isFinite(expiresAt) || !/^[A-Z0-9]{16,128}$/u.test(accessKeyId)) return UNAVAILABLE;

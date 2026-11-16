@@ -14,6 +14,7 @@
 // Parsing is strict and total: anything unexpected is refused as a whole.
 import { createHash } from "node:crypto";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
+import { normalizeBedrockModel } from "./price-identity.js";
 import { COMPANY, record, whole } from "./model-gateway-token.js";
 
 /** Every customer role's name starts with this; the broker may assume nothing else (infra/lib/model-gateway.ts). */
@@ -77,7 +78,10 @@ function validModels(value: unknown, region: string, allowGlobal: boolean): valu
   if (models === undefined) return false;
   const entries = Object.entries(models);
   return entries.length >= 1 && entries.length <= BEDROCK_BYO_MODELS_MAX
-    && entries.every(([name, id]) => AGENT_MODEL.test(name) && typeof id === "string" && allowedBedrockModel(id, region, allowGlobal));
+    && entries.every(([name, id]) => AGENT_MODEL.test(name) && typeof id === "string" && allowedBedrockModel(id, region, allowGlobal)
+      // The agent's name must be the SAME model as the Bedrock id (dates, versions and the profile prefix aside), so a call is
+      // never sent to, or priced as, a different model than the one the agent asked for.
+      && normalizeBedrockModel(name) === normalizeBedrockModel(id));
 }
 
 /** The connection a company admin sends (connect or rotate), or undefined. */
@@ -221,6 +225,8 @@ export function bedrockRoleTemplate(): Record<string, unknown> {
 }
 /** The template file's exact text (2-space JSON and a final newline). */
 export const bedrockRoleTemplateText = (): string => `${JSON.stringify(bedrockRoleTemplate(), null, 2)}\n`;
+/** Its SHA-256 (hex): the set-up command checks the downloaded file against it. */
+export const bedrockRoleTemplateSha256 = (): string => createHash("sha256").update(bedrockRoleTemplateText()).digest("hex");
 
 const TEMPLATE_URL = /^https:\/\/[a-z0-9.-]{1,253}\/[A-Za-z0-9._~/-]{1,512}\.json$/u;
 /** A docs-site template URL: https, a plain path to a .json file, and never an S3 host (DEC 238 Q10). */
@@ -242,10 +248,14 @@ export function bedrockSetupCommand(input: BedrockSetupInput): { cloudShellUrl: 
     || typeof input.allowGlobal !== "boolean" || !validModels(input.models, input.region, input.allowGlobal)) throw new Error("invalid bedrock setup");
   const arns = bedrockResourceArns({ region: input.region, models: input.models });
   const stackName = `rovara-bedrock-${input.cid.replace("_", "-")}`;
+  // Each override single-quoted (the ARNs hold `*`, which zsh or bash's failglob would expand); no value holds a quote.
+  const overrides = [`CompanyId=${input.cid}`, `ExternalId=${input.externalId}`, `BrokerRoleArn=${input.brokerRoleArn}`, `ModelResourceArns=${arns.join(",")}`, `AllowGlobalRouting=${String(input.allowGlobal)}`].map((v) => `'${v}'`).join(" ");
   const command = [
-    `curl -fsSL ${input.templateUrl} -o rovara-bedrock-role.json`,
+    `curl -fsSL '${input.templateUrl}' -o rovara-bedrock-role.json`,
+    // The template is pinned: a changed file on the docs site (or its CDN) stops here, before any IAM role is made.
+    `echo '${bedrockRoleTemplateSha256()}  rovara-bedrock-role.json' | sha256sum -c -`,
     `aws cloudformation deploy --region ${input.region} --stack-name ${stackName} --template-file rovara-bedrock-role.json --capabilities CAPABILITY_NAMED_IAM`
-      + ` --parameter-overrides CompanyId=${input.cid} ExternalId=${input.externalId} BrokerRoleArn=${input.brokerRoleArn} ModelResourceArns=${arns.join(",")} AllowGlobalRouting=${String(input.allowGlobal)}`,
+      + ` --parameter-overrides ${overrides}`,
     `aws cloudformation describe-stacks --region ${input.region} --stack-name ${stackName} --query "Stacks[0].Outputs[?OutputKey=='RoleArn'].OutputValue" --output text`,
   ].join(" && ");
   return { cloudShellUrl: `https://${input.region}.console.aws.amazon.com/cloudshell/home?region=${input.region}`, command, stackName };
