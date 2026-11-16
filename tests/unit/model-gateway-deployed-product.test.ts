@@ -4,20 +4,21 @@
 // stage from the shared stage table. Off unless configured: without the settings every product path is 404.
 import { denyNetwork } from "./model-gateway-no-network.js";
 beforeAll(denyNetwork);
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, sign } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import { GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_PRODUCT_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
+import { EVAL_AUTHORITY_AUDIENCE, EVAL_AUTHORITY_PATH } from "../../packages/model-gateway/src/eval-authority.js";
 import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { DynamoProductKeyTable } from "../../packages/model-gateway/src/dynamo-product-keys.js";
 import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import { ProductKeyStore } from "../../packages/model-gateway/src/product-keys.js";
 import { hmacFingerprinter, kmsProductKeyService, localProductKeyService, ProductKeySealer, type KmsLike } from "../../packages/model-gateway/src/product-seal.js";
 import type { ProviderRequest } from "../../packages/model-gateway/src/provider.js";
-import { caps, claims, jwk, kid, mint, now, scope as agentScope } from "./model-gateway-fixture.js";
+import { caps, claims, jwk, keys, kid, mint, now, scope as agentScope } from "./model-gateway-fixture.js";
 import { geminiAnswer, geminiBody, geminiKey, maintainer, pid, productScope, streamPath } from "./model-gateway-product-fixture.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 
@@ -137,6 +138,38 @@ describe("deployed product route (started process)", () => {
     expect((await request(t.gateway.server, "/v1/learning/messages", {})).statusCode).toBe(404);
     expect(t.wire.calls.filter((c) => c.table === PRODUCT.keys).length).toBe(before);
     expect(t.sent).toHaveLength(0);
+  });
+
+  it("DEC 253k: serves Code's eval authority from the stored approval and the key connection, only with the product route", async () => {
+    const authority = (server: RunningGateway["server"], company: string = claims.cid) => {
+      const at = now / 1000;
+      const input = [{ alg: "RS256", typ: "rovara-service+jwt", kid }, { iss: claims.iss, aud: EVAL_AUTHORITY_AUDIENCE, jti: randomUUID(), iat: at, nbf: at - 30, exp: at + 60, cid: company }].map((v) => Buffer.from(JSON.stringify(v)).toString("base64url")).join(".");
+      const token = `${input}.${sign("RSA-SHA256", Buffer.from(input), keys.privateKey).toString("base64url")}`;
+      const req = Object.assign(Readable.from([Buffer.from(JSON.stringify({ company, project: pid, approver: { personId: maintainer.id, provider: "rovara-code" } }))]), { method: "POST", url: EVAL_AUTHORITY_PATH, headers: { "content-type": "application/json", authorization: `Bearer ${token}` } });
+      const res = new FakeResponse();
+      const done = new Promise<FakeResponse>((resolve) => res.once("close", () => resolve(res)));
+      server.emit("request", req, res);
+      return done;
+    };
+    const t = await started({ product: true });
+    // No approval yet: the fixed not found.
+    const none = await authority(t.gateway.server);
+    expect([none.statusCode, JSON.parse(none.text())]).toEqual([404, { error: { type: "not_found", message: "not found" } }]);
+    // Cloud's settings route records the approval (same table): now 200, and another company's token learns nothing.
+    const writer = new ProductKeyStore({ table: new DynamoProductKeyTable(t.db, PRODUCT.keys), sealer: new ProductKeySealer(kmsProductKeyService(t.kms, KEY_ARN)), fingerprint: hmacFingerprinter(randomBytes(32)), now: () => now });
+    await writer.setEvalApproval({ iss: claims.iss, cid: claims.cid, owner: pid, requestId: randomUUID(), expectedRevision: (await writer.view(claims.iss, claims.cid, pid)).revision, actor: maintainer, approval: { selection: "all-questions", inputsDigest: "d".repeat(64), maxCalls: 400, maxCostMicros: 4_000_000 }, provider: "rovara-code" });
+    const yes = await authority(t.gateway.server);
+    expect(yes.statusCode).toBe(200);
+    expect(JSON.parse(yes.text())).toEqual({ company: claims.cid, project: pid, principal: { companyId: claims.cid, personId: maintainer.id, displayName: "", roles: ["maintainer"], provider: "rovara-code" }, provider: "customer", connected: true });
+    expect((await authority(t.gateway.server, `org_${"b".repeat(20)}`)).statusCode).toBe(404);
+    // A task token (the product route's own auth) never opens it.
+    expect((await request(t.gateway.server, EVAL_AUTHORITY_PATH, {})).statusCode).toBe(401);
+    expect(t.sent).toHaveLength(0);
+    // Without the product route the path is the gateway's 404.
+    const off = await started({ product: false });
+    const before = off.wire.calls.filter((c) => c.table === PRODUCT.keys).length;
+    expect((await authority(off.gateway.server)).statusCode).toBe(404);
+    expect(off.wire.calls.filter((c) => c.table === PRODUCT.keys).length).toBe(before);
   });
 
   it("serves Cloud's Vertex check only with Vertex, the MAC key and a KMS that verifies; an unsigned call is refused before any probe", async () => {

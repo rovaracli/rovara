@@ -91,7 +91,8 @@ export interface ProductEvalOptions {
 export interface ProductEvalContext {
   meter: Meter;
   caps: CapsSource;
-  connected(claims: TaskClaims, signal: AbortSignal): Promise<boolean>;
+  /** The project's own product key is connected (only its install, company and project are read). */
+  connected(scope: Pick<TaskClaims, "iss" | "cid" | "pid">, signal: AbortSignal): Promise<boolean>;
   blocked(claims: TaskClaims): Promise<boolean>;
   block(claims: TaskClaims): Promise<void>;
 }
@@ -303,6 +304,25 @@ export class ProductEvalStages {
     // A release only gives budget back: it is taken after the task ended too.
     if (path === EVAL_RELEASE_PATH) return { control: true, afterTaskEnd: true, handle: (claims, body) => this.release(claims, body) };
     return undefined;
+  }
+
+  /**
+   * DEC 253k: may this approver's stored approval spend now? (eval-authority.ts, Code's `eval-reservation` adapter.) The same
+   * re-reads as a hold, without a grant or a budget: the project's stored approval counts now (fresh, not withdrawn), it names
+   * exactly this approver (person and identity provider), that approver's role still allows it (roleOf, re-read), and the
+   * project's own product key is connected (re-read). Answers the role, or undefined for any "no" (none, stale, withdrawn, another
+   * approver, no role, not connected). Throws when anything can't be read (the caller answers 503): never a guess.
+   */
+  async authority(scope: { iss: string; cid: string; pid: string }, approver: EvalApproval["approver"], signal: AbortSignal): Promise<{ role: EvalRole } | undefined> {
+    const context = this.#context; if (context === undefined) throw new Error("eval stages not bound");
+    const approval = await raced(this.#options.approvals.current(scope.iss, scope.cid, scope.pid, signal), signal);
+    if (approval === undefined || approval === EVAL_APPROVAL_STALE) return undefined;
+    if (!validApproval(approval)) throw new Error("approval unreadable");
+    if (approval.approver.personId !== approver.personId || approval.approver.provider !== approver.provider) return undefined;
+    const role = await raced(this.#options.approvals.roleOf(scope.iss, scope.cid, scope.pid, { personId: approval.approver.personId, provider: approval.approver.provider }, signal), signal);
+    if (role === undefined || !ROLES.includes(role)) return undefined;
+    if ((await raced(context.connected({ iss: scope.iss, cid: scope.cid, pid: scope.pid }, signal), signal)) !== true) return undefined;
+    return { role };
   }
 
   async hold(claims: TaskClaims, body: unknown, signal: AbortSignal): Promise<{ status: number; body: Record<string, unknown> }> {
