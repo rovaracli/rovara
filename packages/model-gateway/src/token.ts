@@ -7,6 +7,9 @@ export const JWKS_CACHE_SECONDS = 900;
 interface Cache { expiresAt: number; keys: Map<string, KeyObject> | undefined; fetchedAt: number; failedAt: number; pending?: Promise<Map<string, KeyObject>> }
 export interface TokenVerifierOptions { registry: InstallRegistry; readJwks: JwksReader; now?: () => number }
 export type TaskTokenVerifier = (token: unknown) => Promise<TaskClaims | undefined>;
+/** What differs between the signed tokens an install's task key signs: the header `typ`, the claims' shape, and the longest life. */
+export interface SignedTokenKind<C extends { iss: string; iat: number; nbf: number; exp: number }> { typ: string; parse(value: unknown): C | undefined; maxSeconds: number }
+const TASK_KIND: SignedTokenKind<TaskClaims> = { typ: TASK_TOKEN_TYPE, parse: parseTaskClaims, maxSeconds: TASK_TOKEN_SECONDS };
 function importKeys(entries: unknown[]): Map<string, KeyObject> {
   if (!Array.isArray(entries) || entries.length > 32) throw new Error();
   const keys = new Map<string, KeyObject>();
@@ -21,7 +24,12 @@ function importKeys(entries: unknown[]): Map<string, KeyObject> {
   return keys;
 }
 /** Cached per trusted install, coalesced fetches. A cache slot is never created for an unknown issuer. */
-export function createTaskTokenVerifier(options: TokenVerifierOptions): TaskTokenVerifier {
+export function createTaskTokenVerifier(options: TokenVerifierOptions): TaskTokenVerifier { return createSignedTokenVerifier(options, TASK_KIND); }
+/**
+ * The same check for any token of the install's task key: pinned issuer and key ids, the JWKS cache, RS256 over the exact header
+ * and claims, the clock window. A token of one kind never verifies as another (the header `typ` and the claims' exact members differ).
+ */
+export function createSignedTokenVerifier<C extends { iss: string; iat: number; nbf: number; exp: number }>(options: TokenVerifierOptions, kind: SignedTokenKind<C>): (token: unknown) => Promise<C | undefined> {
   const now = options.now ?? Date.now;
   const caches = new Map<string, Cache>();
   return async (token) => {
@@ -30,11 +38,11 @@ export function createTaskTokenVerifier(options: TokenVerifierOptions): TaskToke
       const [h, p, s] = token.split(".") as [string, string, string];
       if (h.length + p.length + 1 > 3500) return undefined;
       const header = record(JSON.parse(Buffer.from(h, "base64url").toString()) as unknown);
-      if (header?.alg !== TASK_TOKEN_ALGORITHM || header.typ !== TASK_TOKEN_TYPE || typeof header.kid !== "string" || Object.keys(header).length !== 3) return undefined;
-      const claims = parseTaskClaims(JSON.parse(Buffer.from(p, "base64url").toString()) as unknown);
+      if (header?.alg !== TASK_TOKEN_ALGORITHM || header.typ !== kind.typ || typeof header.kid !== "string" || Object.keys(header).length !== 3) return undefined;
+      const claims = kind.parse(JSON.parse(Buffer.from(p, "base64url").toString()) as unknown);
       if (claims === undefined) return undefined;
       const seconds = Math.floor(now() / 1000);
-      if (claims.exp - claims.iat > TASK_TOKEN_SECONDS || claims.exp <= claims.iat || claims.nbf !== claims.iat - 30 || claims.iat > seconds + 30 || claims.exp <= seconds - 30 || claims.nbf > seconds + 30) return undefined;
+      if (claims.exp - claims.iat > kind.maxSeconds || claims.exp <= claims.iat || claims.nbf !== claims.iat - 30 || claims.iat > seconds + 30 || claims.exp <= seconds - 30 || claims.nbf > seconds + 30) return undefined;
       const install = options.registry.find(claims.iss);
       if (install === undefined || !install.taskKids.includes(header.kid)) return undefined;
       const cacheKey = JSON.stringify([install.issuer, install.jwksUrl]);

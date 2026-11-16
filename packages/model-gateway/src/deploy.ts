@@ -64,6 +64,11 @@ export const GATEWAY_ENV = {
   /** The companies the operator named exempt from Rovara's AI charges (DEC 240b, the founders' test company), comma-separated. */
   rovaraAiExempt: "GATEWAY_ROVARA_AI_EXEMPT",
   /**
+   * Models Rovara's AI lists but does not offer a company's agents yet (offered-models.ts): model names, comma-separated. Set but empty:
+   * none held back. Absent: the default (the three Claude models that wait for the account's one-time Marketplace enable).
+   */
+  agentModelsDisabled: "GATEWAY_AGENT_MODELS_DISABLED",
+  /**
    * Bring your own Bedrock (DEC 238), only with `agentKeys` "company" and the product MAC key: the ARN of Rovara's Bedrock broker
    * role (fixed name, retained; only this gateway's role may assume it, and it may only assume customers' RovaraBedrockInvoke-*
    * roles with an external id). Set together with `bedrockExternalIdKey`. Absent: a company that chose its own Bedrock is refused.
