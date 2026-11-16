@@ -263,6 +263,9 @@ it("Work links each task to its page (a Cloud task by its session) and o opens t
   f.close();
 });
 it("lists a task stopped for over a week under Stopped earlier, with how long, and not under Needs you", async () => {
+  // The page ages tasks against the real clock; the fixture's tasks are dated from NOW, so pin the clock there (only Date:
+  // timers stay real for the page's async reads). Unpinned, this failed once the wall clock passed NOW by half a day.
+  vi.useFakeTimers({ now: NOW, toFake: ["Date"] });
   const old = task("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "Upgrade the date library", { status: "FAILED" }, "IMPLEMENT", "BLOCKED", minutesAgo(10));
   const f = pageSetup({ path: "/app/live", tasks: [...TASKS, old] });
   const group = await screen.findByRole("region", { name: "Stopped earlier" });
