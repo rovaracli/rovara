@@ -100,6 +100,25 @@ describe("the approver as Cloud stores it", () => {
     expect(storedApproverOf(RAW_M)).toEqual({ personId: "a2389b50163f927aeb226bdce4345cf12e0bcbac45a00217909d2183b56ffa4d", provider: "rovara-code" });
     expect(storedApproverOf({ personId: "person-1", provider: "other-sign-in" }).personId).not.toBe(STORED_M.personId);
   });
+  it("Code PR #805's pinned vectors (provider first; ab/c and a/bc differ)", () => {
+    const vectors: Array<[string, string, string]> = [
+      ["local-owner", "local-owner", "3a1ffb674bf75bb195c53cef5e5da45419a42d3126adc1c8095ec911a5c54f06"],
+      ["rovara-sign-in", "person-1", "a2389b50163f927aeb226bdce4345cf12e0bcbac45a00217909d2183b56ffa4d"],
+      ["ab", "c", "82e70ec761e244de335b8e304cc1f90720053eec66c916859d5f47efeb8e4d47"],
+      ["a", "bc", "15959872f7033caa3dd5edf3c191e0509075fc88d34c166bcac1f9345fa4ebca"],
+    ];
+    for (const [provider, personId, developerId] of vectors) expect(storedApproverOf({ provider, personId })).toEqual({ personId: developerId, provider: "rovara-code" });
+  });
+  it("a local-owner approval stored as Cloud writes it answers 200 echoing the raw pair Code sent, never the stored form", async () => {
+    const w = await world();
+    const raw = { personId: "local-owner", provider: "local-owner" };
+    await w.approve(A, { id: "3a1ffb674bf75bb195c53cef5e5da45419a42d3126adc1c8095ec911a5c54f06", role: "project_maintainer" });
+    const answer = await call(w.opts, ask(A, { ...raw }));
+    expect(answer.status).toBe(200);
+    expect((answer.body as { principal: unknown }).principal).toEqual({ companyId: A, personId: "local-owner", displayName: "", roles: ["maintainer"], provider: "local-owner" });
+    expect(JSON.stringify(answer.body)).not.toContain("3a1ffb67");
+    expect(JSON.stringify(answer.body)).not.toContain("rovara-code");
+  });
 });
 
 describe("company isolation (two companies)", () => {
