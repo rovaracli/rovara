@@ -84,6 +84,26 @@ letters or digits) of a Rovara Code that does not yet name a company in its acce
 settings, invites and profile in the stack's `Companies` table. Empty, a Code like that gets no company routes; a Code
 that names the company never uses it.
 
+The web stack's product AI settings (staging, with the `ProductKeys*` parameters and `ModelGatewayUrl`) also take an optional
+**`BedrockTemplateUrl`** (default empty): the address of the role template a company's AWS admin deploys for "your own Bedrock"
+(`docs/model-gateway-bedrock-byo.md`). Empty, the Bedrock routes answer 501 and the server gets no
+`CLOUD_BEDROCK_TEMPLATE_URL`. Set, it must be an `https` address of a `.json` file that is not an S3 host (the stack refuses anything
+else), and `ModelGatewayUrl` must be set too. The value is the file as committed on the public repo, pinned to a merge commit:
+
+```
+https://raw.githubusercontent.com/PrepLabsAI/Rovara/<merge sha>/docs/bedrock/rovara-bedrock-role.json
+```
+
+(use the merge sha of public PR #778 or a later one that carries the file). Before setting it, check the file is the one the
+set-up command expects:
+
+```sh
+curl -fsS https://raw.githubusercontent.com/PrepLabsAI/Rovara/<merge sha>/docs/bedrock/rovara-bedrock-role.json | shasum -a 256
+# dad14bedc8d2a7e704f03d041f39809c06eeb20e8e41fa4b61c047cdb7a474ea
+```
+
+Like `ModelGatewayUrl`, it is a parameter of the web stack, set by hand on the first deploy and kept by later deploys.
+
 The account must be CDK-bootstrapped (`cdk bootstrap`). Then, from a checkout of `cloud/next`:
 
 ```sh
