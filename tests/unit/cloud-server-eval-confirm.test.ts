@@ -1,7 +1,7 @@
 // DEC 253q (d): POST /v1/app/projects/{p}/setup-agent/eval-confirm through Cloud's handler. Cloud is an API layer over Code: it
 // forwards the confirm to Code's own route as the signed-in person (their own bearer token), only for a company administrator or the
 // project's maintainer (Code re-checks the role live), only an object body and only its taskId, reportDigest, selection and paths.
-// Code's answer comes back as is; until Code serves the route its 501 NOT_ON_CODE_YET passes through unchanged.
+// Code's answer comes back as is, except Code's fixed unknown-route 404, which reads 501 NOT_ON_CODE_YET until Code serves the route (E2).
 import { describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type CodeSession } from "../../packages/cloud-server/src/index.js";
 import { APP_ROUTES } from "../../packages/contracts/src/code-contract-v0.js";
@@ -117,6 +117,14 @@ describe("Code's answer comes back as is", () => {
   it("501 NOT_ON_CODE_YET, until Code serves the route", async () => {
     const w = setUp(() => json(501, NOT_ON_CODE));
     expect(await w.post(WEB, confirm, as(await admin(w)))).toEqual({ status: 501, body: NOT_ON_CODE });
+  });
+  it("Code's fixed unknown-route 404 (a Code that does not serve the route yet) reads 501 NOT_ON_CODE_YET; Code's other 404s are its own (mutant: the route-not-found match)", async () => {
+    const w = setUp(() => json(404, { error: { code: "NOT_FOUND", message: "route not found" } }));
+    const answer = await w.post(WEB, confirm, as(await admin(w)));
+    expect(answer.status).toBe(501);
+    expect(answer.body).toMatchObject({ error: { code: "NOT_ON_CODE_YET" } });
+    const other = setUp(() => json(404, { error: { code: "NOT_FOUND", message: "There is no eval report for that setup run." } }));
+    expect(await other.post(WEB, confirm, as(await admin(other)))).toEqual({ status: 404, body: { error: { code: "NOT_FOUND", message: "There is no eval report for that setup run." } } });
   });
   it("Code's own refusals (its live role re-check, a missing task)", async () => {
     for (const [status, body] of [[403, { error: { code: "FORBIDDEN", message: "not a maintainer" } }], [404, { error: { code: "TASK_NOT_FOUND", message: "no such task" } }]] as const) {
