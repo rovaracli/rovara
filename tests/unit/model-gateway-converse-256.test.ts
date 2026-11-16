@@ -1,7 +1,7 @@
 // DEC 243c: the eight reasoning-first Bedrock models, from their REAL ConverseStream answers to one tool, maxTokens 256 (staging
 // us-west-2, 2026-11-15, run by the owner): all eight ended with a tool call. Three are listed: gpt-oss 120B / 20B (their reasoning
 // is dropped; OpenAI only recommends passing it back after tool calls) and Nova Pro (its leading "<thinking>...</thinking>" text is
-// left out). The other five are not, and this file pins why.
+// left out). The other five are not, and this file pins why (model-gateway-converse-reasoning.test.ts: the gateway now carries their reasoning, still unlisted).
 import { denyNetwork } from "./model-gateway-no-network.js";
 beforeAll(denyNetwork);
 import { EventEmitter } from "node:events";

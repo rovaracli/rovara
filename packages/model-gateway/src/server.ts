@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentAiSourceReader, ByoBedrock, RovaraAi } from "./agent-ai.js";
 import type { AwsCredentials } from "./aws.js";
 import { BEDROCK_MODEL_ACCESS_WORDS } from "./bedrock-byo-sessions.js";
-import { CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS, toConverse } from "./bedrock-converse.js";
+import { CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS, REASONING_CARRYOVER_MODEL, toConverse } from "./bedrock-converse.js";
 import { BEDROCK_CLAUDE_ID, bedrockConversePath, bedrockInvokePath } from "./bedrock-transport.js";
 import { validCaps, type Caps, type CapsSource } from "./caps.js";
 import type { EndedTasks } from "./ended.js";
@@ -234,7 +234,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         // DEC 243c: any other model through Converse, held to at most its own output limit.
         const limit = rovara.ai.maxOutputTokens?.(id);
         const maxTokens = Math.min(checked.maxTokens, typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS);
-        const converse = toConverse(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>, maxTokens);
+        const converse = toConverse(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>, maxTokens, REASONING_CARRYOVER_MODEL.test(id));
         if (converse === undefined) return ROVARA_AI_FEATURE;
         return { ...checked, model: id, maxTokens, bytes: Buffer.from(JSON.stringify(converse)), headers: { "content-type": "application/json" }, path: bedrockConversePath(id, checked.streaming) };
       }
