@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentAiSourceReader, RovaraAi } from "./agent-ai.js";
-import { bedrockInvokePath } from "./bedrock-transport.js";
+import { CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS, toConverse } from "./bedrock-converse.js";
+import { BEDROCK_CLAUDE_ID, bedrockConversePath, bedrockInvokePath } from "./bedrock-transport.js";
 import { validCaps, type Caps, type CapsSource } from "./caps.js";
 import type { EndedTasks } from "./ended.js";
 import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS, type MediaEstimate } from "./estimate.js";
@@ -122,6 +123,8 @@ export const AGENT_SOURCE_NOT_OFFERED: RouteRefusal = Object.freeze({ ok: false 
 export const ROVARA_AI_OFF: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: Rovara's AI is not available on this install." });
 /** DEC 240: a model that is not on Rovara's AI allow-list. Before any hold. */
 export const ROVARA_AI_MODEL: GuardFailure = Object.freeze({ ok: false as const, status: 400, code: "invalid_request", message: "This model is not offered on Rovara's AI." });
+/** DEC 243c: a request a non-Claude model is not offered with on Rovara's AI (images, documents, thinking blocks, tool_choice none). */
+export const ROVARA_AI_FEATURE: GuardFailure = Object.freeze({ ok: false as const, status: 400, code: "invalid_request", message: "This request uses something Rovara's AI does not offer for this model (only text and tools)." });
 /** DEC 243: the model is on the allow-list but not enabled yet in Rovara's account (its one-time Marketplace enable). Free. */
 export const ROVARA_AI_MODEL_NOT_ENABLED: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "model_not_enabled", message: "This model is not enabled yet on Rovara's AI. Choose another model, or try again after Rovara enables it." });
 /** Bedrock's words for "the account has no access to this model yet" (a Marketplace agreement or model access), read only to classify. */
@@ -190,6 +193,14 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
       if (rovara === undefined || !checked.ok) return checked;
       const id = rovara.ai.models.get(checked.model);
       if (id === undefined) return ROVARA_AI_MODEL;
+      if (!BEDROCK_CLAUDE_ID.test(id)) {
+        // DEC 243c: any other model through Converse, held to at most its own output limit.
+        const limit = rovara.ai.maxOutputTokens?.(id);
+        const maxTokens = Math.min(checked.maxTokens, typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS);
+        const converse = toConverse(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>, maxTokens);
+        if (converse === undefined) return ROVARA_AI_FEATURE;
+        return { ...checked, model: id, maxTokens, bytes: Buffer.from(JSON.stringify(converse)), headers: { "content-type": "application/json" }, path: bedrockConversePath(id, checked.streaming) };
+      }
       // The same checked Anthropic body, as InvokeModel takes it: no model or stream field (the path says both), Bedrock's version,
       // the allowed beta flags as a body field, and no metadata (Bedrock's Anthropic body has none).
       const rest = Object.fromEntries(Object.entries(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>).filter(([name]) => !["model", "stream", "metadata"].includes(name)));

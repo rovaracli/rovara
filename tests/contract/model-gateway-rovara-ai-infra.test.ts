@@ -85,6 +85,19 @@ describe("Rovara's AI in the gateway stack (DEC 240)", () => {
     }
   });
 
+  it("DEC 243c: a non-Claude model in this Region is granted there only; one on its us. profile only through that profile", () => {
+    const list = "claude-haiku-5-5=us.anthropic.claude-haiku-5-5,qwen.qwen3-coder-480b-a35b-v1:0=qwen.qwen3-coder-480b-a35b-v1:0,moonshotai.kimi-k3.1=us.moonshotai.kimi-k3.1";
+    const t = synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: list });
+    const bySid: Record<string, Statement> = Object.fromEntries(bedrock(t).map((s) => [s.Sid ?? "", s]));
+    expect(Object.keys(bySid).sort()).toEqual(["RovaraAiModels", "RovaraAiProfileModels", "RovaraAiProfiles"]);
+    for (const s of Object.values(bySid)) expect([...actionsOf(s)].sort()).toEqual(["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]);
+    expect([bySid.RovaraAiModels!.Resource].flat()).toEqual([modelArn("us-west-2", "qwen.qwen3-coder-480b-a35b-v1:0")]);
+    expect(bySid.RovaraAiModels!.Condition).toBeUndefined();
+    expect(bySid.RovaraAiProfiles!.Resource).toEqual([profileArn("us.anthropic.claude-haiku-5-5"), profileArn("us.moonshotai.kimi-k3.1")]);
+    expect([bySid.RovaraAiProfileModels!.Resource].flat()).toEqual(expect.arrayContaining(["us-east-1", "us-east-2", "us-west-2"].map((r) => modelArn(r, "moonshotai.kimi-k3.1"))));
+    expect(bySid.RovaraAiProfileModels!.Condition).toEqual({ StringEquals: { "bedrock:InferenceProfileArn": [profileArn("us.anthropic.claude-haiku-5-5"), profileArn("us.moonshotai.kimi-k3.1")] } });
+  });
+
   it("refused at synth: production, without product AI (company-key mode), global or another geography, bad lists", () => {
     expect(() => app({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS }, "production")).toThrow(/^Rovara's AI is for named test environments/u);
     expect(() => synth({ [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS })).toThrow(/needs rovaraModelGatewayProductAi=on/u);
@@ -97,7 +110,7 @@ describe("Rovara's AI in the gateway stack (DEC 240)", () => {
   });
 
   it("synth and the process accept and refuse the same allow-lists", () => {
-    for (const value of [MODELS, GATEWAY_US_MODELS, "claude-sonnet-5-5=anthropic.claude-sonnet-5-5", "claude-a=global.anthropic.claude-a", "claude-a=eu.anthropic.claude-a", "claude-a=us.anthropic.claude-a=x", "a=us.anthropic.claude-a", ""]) {
+    for (const value of ["qwen.qwen3-coder-480b-a35b-v1:0=qwen.qwen3-coder-480b-a35b-v1:0", "moonshotai.kimi-k3.1=us.moonshotai.kimi-k3.1", "kimi=us.moonshotai.kimi-k3.1", "moonshotai.kimi-k3.1=global.moonshotai.kimi-k3.1", "xai.grok-4.7=eu.xai.grok-4.7", MODELS, GATEWAY_US_MODELS, "claude-sonnet-5-5=anthropic.claude-sonnet-5-5", "claude-a=global.anthropic.claude-a", "claude-a=eu.anthropic.claude-a", "claude-a=us.anthropic.claude-a=x", "a=us.anthropic.claude-a", ""]) {
       let synthOk = true; let processOk = true;
       try { rovaraAiModelIds(value, "us-west-2"); } catch { synthOk = false; }
       try { parseRovaraAiModels(value, "us-west-2"); } catch { processOk = false; }

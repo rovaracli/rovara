@@ -259,7 +259,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     // DEC 240: in company-key mode each company's saved choice picks its agents' source; Rovara's AI only when configured.
     ...(companyKeys === undefined ? {} : { agentAi: {
       sources: deps.agentAiSources ?? new CompanyAgentAiSource(db, config.tables.companies),
-      ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt, transport: deps.bedrockTransport ?? createBedrockTransport({ region: config.region, credentials, now }) } }),
+      ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt, transport: deps.bedrockTransport ?? createBedrockTransport({ region: config.region, credentials, now }), maxOutputTokens: (id: string) => prices.maxOutputTokens("bedrock", id) } }),
     } }),
     transport,
     log: (event) => log({ ...event }),
