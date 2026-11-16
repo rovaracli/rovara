@@ -50,7 +50,16 @@ export const GATEWAY_ENV = {
   learningMeterTable: "GATEWAY_LEARNING_METER_TABLE",
   learningLedgerTable: "GATEWAY_LEARNING_LEDGER_TABLE",
   learningMarkersTable: "GATEWAY_LEARNING_MARKERS_TABLE",
+  /**
+   * Whose AI key the agent route sends (DEC 236): "company" (each company's own connected key from the product key store, only
+   * with the product route; a company with none is refused, never sent on Rovara's key) or "install" (the install key above).
+   * Absent: "install", as before.
+   */
+  agentKeys: "GATEWAY_AGENT_KEYS",
 } as const;
+/** The values of GATEWAY_ENV.agentKeys. */
+export const GATEWAY_AGENT_KEY_MODES = ["install", "company"] as const;
+export type GatewayAgentKeyMode = typeof GATEWAY_AGENT_KEY_MODES[number];
 /** The product route's settings: all or none. */
 export const GATEWAY_PRODUCT_ENV = [GATEWAY_ENV.productKeysTable, GATEWAY_ENV.productKeysKey, GATEWAY_ENV.productMeterTable, GATEWAY_ENV.productLedgerTable, GATEWAY_ENV.productMarkersTable, GATEWAY_ENV.evalStagesTable] as const;
 /** The learning route's settings: all or none. */
