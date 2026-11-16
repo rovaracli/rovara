@@ -885,6 +885,7 @@ POST /v1/app/projects/{p}/setup-agent | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/stop | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | L
+POST /v1/app/projects/{p}/setup-agent/eval-confirm | k | later | | setup-agent | LT
 GET /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 PUT /v1/app/projects/{p}/setup-agent/limits | k | later | | setup-limits |
 GET /v1/app/projects/{p}/setup-recipe | k | later | | setup-recipes |

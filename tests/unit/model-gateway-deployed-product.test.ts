@@ -12,6 +12,7 @@ import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import { GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_PRODUCT_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { EVAL_AUTHORITY_AUDIENCE, EVAL_AUTHORITY_PATH, storedApproverOf } from "../../packages/model-gateway/src/eval-authority.js";
+import { EVAL_CAP_AUDIENCE, EVAL_CAP_PATH } from "../../packages/model-gateway/src/eval-cap.js";
 import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { DynamoProductKeyTable } from "../../packages/model-gateway/src/dynamo-product-keys.js";
 import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
@@ -92,7 +93,7 @@ describe("deployed product settings: off unless configured, all or none", () => 
 });
 
 describe("deployed product route (started process)", () => {
-  async function started(options: { product: boolean; env?: Record<string, string>; verifyMac?: () => Promise<boolean> }) {
+  async function started(options: { product: boolean; env?: Record<string, string>; verifyMac?: () => Promise<boolean>; companyCaps?: boolean }) {
     const wire = new WireDynamo([...Object.values(TABLES), ...Object.values(PRODUCT), ...Object.values(LEARNING)], { namespaceTables: true });
     const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
     const kms = Object.assign(fakeKms(), options.verifyMac === undefined ? {} : { verifyMac: options.verifyMac });
@@ -103,7 +104,7 @@ describe("deployed product route (started process)", () => {
     const sent: ProviderRequest[] = [];
     const config = { ...(readGatewayConfig({ ...BASE, ...(options.product ? { ...PRODUCT_ENV, ...LEARNING_ENV } : {}), ...options.env }) as ServeConfig), port: 0 };
     const gateway = await startServe(config, {
-      db, kms, now: () => now, listen: false, log: () => undefined, caps: new FixedCapsSource(caps),
+      db, kms, now: () => now, listen: false, log: () => undefined, ...(options.companyCaps === true ? {} : { caps: new FixedCapsSource(caps) }),
       fetch: async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }), keys: { keyFor: async () => "fixture-provider-key" },
       geminiTransport: async (r) => { sent.push(r); return { status: 200, body: geminiAnswer() }; },
     });
@@ -170,6 +171,33 @@ describe("deployed product route (started process)", () => {
     const before = off.wire.calls.filter((c) => c.table === PRODUCT.keys).length;
     expect((await authority(off.gateway.server)).statusCode).toBe(404);
     expect(off.wire.calls.filter((c) => c.table === PRODUCT.keys).length).toBe(before);
+  });
+
+  it("DEC 253q: serves Code's eval monthly cap from Cloud's company budget (the Companies table), with or without the product route", async () => {
+    const capCall = (server: RunningGateway["server"], company: string = claims.cid, project: string = pid) => {
+      const at = now / 1000;
+      const input = [{ alg: "RS256", typ: "rovara-service+jwt", kid }, { iss: claims.iss, aud: EVAL_CAP_AUDIENCE, jti: randomUUID(), iat: at, nbf: at - 30, exp: at + 60, cid: company }].map((v) => Buffer.from(JSON.stringify(v)).toString("base64url")).join(".");
+      const token = `${input}.${sign("RSA-SHA256", Buffer.from(input), keys.privateKey).toString("base64url")}`;
+      const req = Object.assign(Readable.from([Buffer.from(JSON.stringify({ company, project }))]), { method: "POST", url: EVAL_CAP_PATH, headers: { "content-type": "application/json", authorization: `Bearer ${token}` } });
+      const res = new FakeResponse();
+      const done = new Promise<FakeResponse>((resolve) => res.once("close", () => resolve(res)));
+      server.emit("request", req, res);
+      return done;
+    };
+    for (const product of [true, false]) {
+      const t = await started({ product, companyCaps: true });
+      // No settings row: no source, the fixed not found.
+      const none = await capCall(t.gateway.server);
+      expect([none.statusCode, JSON.parse(none.text())]).toEqual([404, { error: { type: "not_found", message: "not found" } }]);
+      // The row Cloud's company backend writes: min(company, project).
+      await t.db.put(TABLES.companies, { pk: `COMPANY#${claims.cid}`, sk: "SETTINGS", companyId: claims.cid, version: 1, settings: { featureGates: {}, budgets: { companyMonthlyUsdMicros: 30_000_000, memberMonthlyUsdMicros: null, projectMonthlyUsdMicros: 12_000_000, taskUsdMicros: null } } });
+      const yes = await capCall(t.gateway.server);
+      expect([yes.statusCode, JSON.parse(yes.text())]).toEqual([200, { company: claims.cid, project: pid, monthlyCapMicros: 12_000_000 }]);
+      expect((await capCall(t.gateway.server, `org_${"b".repeat(20)}`)).statusCode).toBe(404);
+      // A task token (x-api-key) never opens it.
+      expect((await request(t.gateway.server, EVAL_CAP_PATH, { company: claims.cid, project: pid })).statusCode).toBe(401);
+      expect(t.sent).toHaveLength(0);
+    }
   });
 
   it("serves Cloud's Vertex check only with Vertex, the MAC key and a KMS that verifies; an unsigned call is refused before any probe", async () => {

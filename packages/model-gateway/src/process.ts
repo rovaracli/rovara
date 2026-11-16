@@ -27,6 +27,7 @@ import { createProductRoutes, productModelLimitsFrom } from "./product-route.js"
 import { kmsProductKeyService, ProductKeySealer, type KmsLike, type ProductKeyFingerprinter } from "./product-seal.js";
 import { createSignedTokenVerifier } from "./token.js";
 import { createEvalAuthorityHandler, EVAL_AUTHORITY_PATH, EVAL_AUTHORITY_TOKEN_KIND } from "./eval-authority.js";
+import { createEvalCapHandler, EVAL_CAP_PATH, EVAL_CAP_TOKEN_KIND } from "./eval-cap.js";
 import { createOfferedModelsHandler, OFFERED_MODELS_PATH, parseDisabledAgentModels, SERVICE_TOKEN_KIND } from "./offered-models.js";
 import { BEDROCK_CHECK_PATH, BEDROCK_SETUP_PATH, createBedrockServiceHandlers, createVertexCheckHandler, VERTEX_CHECK_PATH, type MacVerifier } from "./service-call.js";
 import { Dynamo } from "./dynamo.js";
@@ -318,6 +319,12 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, EVAL_AUTHORITY_TOKEN_KIND),
     stages: authorityStages, now,
   });
+  // DEC 253q (c): Code's eval monthly cap (eval-cap.ts), min(company, project) monthly cap from the company budget source the agent
+  // calls read (`caps`: CompanyBudgetCaps over Cloud's Companies table unless a test gives its own), signed with the task key.
+  const evalCap = createEvalCapHandler({
+    verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, EVAL_CAP_TOKEN_KIND),
+    caps, now,
+  });
   const inFlight = new Set<Promise<void>>();
   let draining = false;
   const refuse = (res: ServerResponse) => { res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store", connection: "close" }); res.end(UNAVAILABLE); };
@@ -328,7 +335,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     const service = vertexCheck !== undefined && path === VERTEX_CHECK_PATH ? vertexCheck
       : bedrockCalls !== undefined && (path === BEDROCK_SETUP_PATH || path === BEDROCK_CHECK_PATH) ? bedrockCalls[path]
       : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels
-      : evalAuthority !== undefined && path === EVAL_AUTHORITY_PATH ? evalAuthority : undefined;
+      : evalAuthority !== undefined && path === EVAL_AUTHORITY_PATH ? evalAuthority
+      : path === EVAL_CAP_PATH ? evalCap : undefined;
     const running = (service !== undefined ? service(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
     inFlight.add(running); void running.finally(() => inFlight.delete(running));
   });
