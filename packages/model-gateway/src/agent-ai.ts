@@ -56,6 +56,25 @@ export interface RovaraAi {
 
 const AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;
 /**
+ * DEC 243c: the other Bedrock coding models Rovara's AI offers, through Converse, each named exactly by the id called. Each passed
+ * an agent-loop test on fakes and one real tiny ConverseStream call with a tool (staging us-west-2, 2026-11-15: a tool call within
+ * 16 tokens, stop tool_use; the streams are tests/fixtures/model-gateway-bedrock/converse). Priced and limited by the price
+ * snapshot's Bedrock rows. Reasoning-first models (gpt-oss, DeepSeek V3.2, Kimi K2 Thinking / K3 / K3.1, MiniMax M2.5, Nova Pro)
+ * wait for a longer test.
+ */
+export const ROVARA_AI_US_CONVERSE_MODELS = [
+  "qwen.qwen3-coder-480b-a35b-v1:0=qwen.qwen3-coder-480b-a35b-v1:0",
+  "qwen.qwen3-coder-30b-a3b-v1:0=qwen.qwen3-coder-30b-a3b-v1:0",
+  "qwen.qwen3-235b-a22b-2507-v1:0=qwen.qwen3-235b-a22b-2507-v1:0",
+  "mistral.devstral-2-123b=mistral.devstral-2-123b",
+  "mistral.mistral-large-3-675b-instruct=mistral.mistral-large-3-675b-instruct",
+  "deepseek.v3-v1:0=deepseek.v3-v1:0",
+  "moonshotai.kimi-k2.5=moonshotai.kimi-k2.5",
+  "zai.glm-5=zai.glm-5",
+  "zai.glm-4.7=zai.glm-4.7",
+  "us.amazon.nova-2-lite-v1:0=us.amazon.nova-2-lite-v1:0",
+].join(",");
+/**
  * DEC 243: Rovara's AI offers every Claude model Bedrock has in the account, each engine model name (Code's model catalog) on its
  * `us.` system inference profile (US cross-Region routing; data stays in the US). Deployed with `-c rovaraModelGatewayRovaraAi=on`.
  * Every one is priced by the AWS price list's Bedrock rows (normalised to the same name) and limited by its Anthropic row.
