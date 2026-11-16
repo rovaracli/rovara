@@ -13,6 +13,7 @@ import { GEMINI_HOST, GEMINI_MODEL, GEMINI_VERSIONS } from "./product-gemini.js"
 import { PRODUCT_ROUTE_PREFIX } from "./server.js";
 import { AUTH_ERROR } from "./token.js";
 import { TASK_KEY_PURPOSE } from "./model-gateway-token.js";
+import { EVENT_STREAM_CONTENT_TYPE, PRODUCT_BEDROCK_FEATURE, PRODUCT_BEDROCK_MODEL, PRODUCT_BEDROCK_MODEL_NOT_ENABLED, PRODUCT_BEDROCK_NOT_CONNECTED, PRODUCT_BEDROCK_OPERATION, PRODUCT_BEDROCK_QUOTA, PRODUCT_BEDROCK_REFUSED, PRODUCT_BEDROCK_THROTTLED } from "./product-bedrock.js";
 
 export const PRODUCT_BRIDGE_VERSION = 1;
 export const PRODUCT_BRIDGE = {
@@ -62,6 +63,52 @@ export const PRODUCT_VERTEX_BRIDGE = {
   refusals: [
     { status: 400, type: "not_allowed", message: PRODUCT_VERTEX_NOT_CONNECTED },
     { status: 502, type: "product_key_refused", message: PRODUCT_KEY_REFUSED },
+    { status: 503, type: "unavailable", message: "model access unavailable" },
+  ],
+} as const;
+
+/**
+ * The Bedrock half of the bridge (DEC 238 slice 2, bridge contract v2), its own file so the Gemini contract (and Code's pinned copy)
+ * stays as it is: contracts/shared/model-gateway-product-bedrock.v2.json. The sandbox's AWS SDK has AWS_ENDPOINT_URL_BEDROCK_RUNTIME
+ * set to the worker's local port and dummy AWS credentials; its request is SigV4-signed with them. The worker removes every
+ * credential header (the dummy signature, session token, date and payload hash) and adds the task token as `x-api-key`, then forwards
+ * to `<baseUrl>/v1/product/bedrock/model/{id}/{operation}`, streaming the answer back unbuffered (a ConverseStream answer is AWS's
+ * binary event stream, application/vnd.amazon.eventstream). The gateway signs for the company's OWN role; the worker never holds one.
+ * The model must be one the company picked; the Region is the connection's, never the request's.
+ */
+export const PRODUCT_BEDROCK_BRIDGE = {
+  version: 2,
+  bridge: "model-gateway-product-ai.v1.json",
+  provider: {
+    name: "bedrock",
+    upstreamHost: "bedrock-runtime.{region}.amazonaws.com",
+    paths: [
+      "/v1/product/bedrock/model/{model}/converse",
+      "/v1/product/bedrock/model/{model}/converse-stream",
+      "/v1/product/bedrock/model/{model}/invoke",
+      "/v1/product/bedrock/model/{model}/invoke-with-response-stream",
+    ],
+    model: "^[a-z0-9][a-z0-9.:-]{1,200}$",
+    operations: {
+      converse: "every picked model", "converse-stream": "every picked model",
+      invoke: "Claude (Anthropic body) and Titan text embeddings", "invoke-with-response-stream": "Claude (Anthropic body)",
+    },
+    sandbox: { endpointEnvironment: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME", credentials: "dummy" },
+    streamContentType: EVENT_STREAM_CONTENT_TYPE,
+    workerRemovesHeaders: ["authorization", "x-amz-security-token", "x-amz-date", "x-amz-content-sha256"],
+    gatewayRefusesHeaders: ["authorization", "x-amz-security-token", "x-amz-bedrock-*", "x-amzn-bedrock-*"],
+    workerRemovesQuery: [],
+  },
+  refusals: [
+    { status: 400, type: "not_allowed", message: PRODUCT_BEDROCK_FEATURE },
+    { status: 400, type: "not_allowed", message: PRODUCT_BEDROCK_MODEL },
+    { status: 400, type: "not_allowed", message: PRODUCT_BEDROCK_OPERATION },
+    { status: 404, type: "not_set_up", message: PRODUCT_BEDROCK_NOT_CONNECTED },
+    { status: 403, type: "model_not_enabled", message: PRODUCT_BEDROCK_MODEL_NOT_ENABLED },
+    { status: 502, type: "product_key_refused", message: PRODUCT_BEDROCK_REFUSED },
+    { status: 429, type: "provider_limited", message: PRODUCT_BEDROCK_THROTTLED },
+    { status: 429, type: "provider_quota", message: PRODUCT_BEDROCK_QUOTA },
+    { status: 400, type: "provider_refused", message: PRODUCT_PROVIDER_REFUSED },
     { status: 503, type: "unavailable", message: "model access unavailable" },
   ],
 } as const;

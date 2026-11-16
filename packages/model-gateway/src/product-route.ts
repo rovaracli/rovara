@@ -16,6 +16,11 @@ import { guardVertex, parseVertexPath, type VertexPath, type VertexTarget } from
 import { parseStoredVertexCredential } from "./product-vertex-credential.js";
 import type { VertexTokenSource } from "./product-vertex-token.js";
 import type { ProductKeyRow } from "./product-seal.js";
+import type { CredentialSource } from "./aws.js";
+import { parseBedrockConnect, type BedrockConnection } from "./bedrock-byo.js";
+import { BEDROCK_MODEL_ACCESS_WORDS, type BedrockSessionSource } from "./bedrock-byo-sessions.js";
+import { BedrockUsage, bedrockFailureKind, bedrockFamily, bedrockMarker, bedrockUsageKind, guardBedrockProduct, parseBedrockProductPath, PRODUCT_BEDROCK_FEATURE, PRODUCT_BEDROCK_MODEL_NOT_ENABLED, PRODUCT_BEDROCK_NOT_CONNECTED, PRODUCT_BEDROCK_QUOTA, PRODUCT_BEDROCK_REFUSED, PRODUCT_BEDROCK_THROTTLED, type BedrockFamily, type BedrockProductPath } from "./product-bedrock.js";
+import { NotSentError } from "./provider.js";
 
 /** What the route needs from the product key store (ProductKeyStore implements it). */
 export interface ProductKeySource {
@@ -56,10 +61,16 @@ export interface ProductRouteOptions {
   companyCaps: CapsSource;
   /** The whole-stage eval holds (Code #683, product-eval.ts). Absent: the eval paths are 404 and a scope header is refused. */
   evalStages?: ProductEvalStages;
+  /**
+   * Bring your own Bedrock (DEC 238, slice 2): the project's own role, or the company's it links to. `sessions` assumes the company's
+   * role (broker, then the customer's, bedrock-byo-sessions.ts); `transport` signs for a connection's Region with that session.
+   * Without it `/v1/product/bedrock/...` is 404.
+   */
+  bedrock?: { sessions: BedrockSessionSource; transport(region: string, credentials: CredentialSource): ProviderTransport };
 }
-/** Gemini rows' own max output tokens from the price snapshot; a model with no row falls back to GEMINI_DEFAULT_MAX_OUTPUT_TOKENS in the guard. */
+/** Gemini and Bedrock rows' own max output tokens from the price snapshot; a model with no row falls back to GEMINI_DEFAULT_MAX_OUTPUT_TOKENS in the guard. */
 export function productModelLimitsFrom(rows: { maxOutputTokens(provider: string, model: string): number | undefined }): ModelLimitsSource {
-  return { maxOutputTokens: (provider, model) => provider !== "gemini" ? undefined : rows.maxOutputTokens(provider, model) };
+  return { maxOutputTokens: (provider, model) => provider !== "gemini" && provider !== "bedrock" ? undefined : rows.maxOutputTokens(provider, model) };
 }
 /**
  * Product caps for a scope: the project's product caps (clamped by the product ceiling), with the company month bounded by the
@@ -118,6 +129,7 @@ const unavailableGuard = { ok: false as const, status: 503, code: "unavailable",
 export function createProductRoutes(options: ProductRouteOptions): ProductRouteResolver & { caps: CapsSource; evalStages?: ProductEvalStages } {
   const productCaps = createProductCaps(options.keys, options.companyCaps);
   const vertexOn = options.vertex !== undefined && options.transports.vertex !== undefined;
+  const bedrockOn = options.bedrock !== undefined;
   options.evalStages?.bind({
     meter: options.meter,
     caps: { capsFor: async (scope, signal) => (options.meter.combinedCompany === true ? productCaps.capsFor(scope, signal) : UNAVAILABLE_CAPS) },
@@ -146,6 +158,22 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
     }
     return { row, target: { projectId: credential.projectId, location: credential.location }, token: minted.token };
   }
+  /**
+   * Bedrock admission, before any hold: the project's own connection, or the company's one it links to (resolve), opened and parsed
+   * as the store sealed it. Nothing is held or sent when it is missing or unreadable; the model and the operation are checked by the
+   * guard against what the company picked.
+   */
+  async function admitBedrock(claims: TaskClaims, resolution: ProductSourceResolution, path: BedrockProductPath): Promise<RouteRefusal | { row: ProductKeyRow; connection: BedrockConnection; family: BedrockFamily }> {
+    if (options.bedrock === undefined) return unavailable;
+    let text: string | undefined;
+    try { text = await options.keys.useKey(claims.iss, claims.cid, resolution); } catch { return unavailable; }
+    if (text === undefined) return { ok: false, status: 404, code: "not_set_up", message: PRODUCT_BEDROCK_NOT_CONNECTED };
+    const connection = parseBedrockConnect(text);
+    // A model that is no family at all (an application profile id) is refused by the guard as not picked, before anything is sent.
+    const family = bedrockFamily(path.modelId) ?? "converse";
+    if (connection === undefined) return unavailable;
+    return { row: { iss: claims.iss, cid: claims.cid, owner: resolution.owner, sourceId: resolution.sourceId, versionId: resolution.versionId }, connection, family };
+  }
   return {
     caps: productCaps,
     // The maintenance pass releases expired stages from here when startServe is not given them separately.
@@ -154,10 +182,13 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
       if (path === EVAL_HOLD_PATH || path === EVAL_RELEASE_PATH) return query === "" ? options.evalStages?.control(path) : undefined;
       const parsed = parseGeminiPath(path, query);
       const vertexPath: VertexPath | undefined = parsed === undefined && vertexOn ? parseVertexPath(path, query) : undefined;
-      if (parsed === undefined && vertexPath === undefined) return undefined;
-      const provider: ProductProvider = parsed === undefined ? "vertex" : "gemini";
+      const bedrockPath: BedrockProductPath | undefined = parsed === undefined && vertexPath === undefined && bedrockOn ? parseBedrockProductPath(path, query) : undefined;
+      if (parsed === undefined && vertexPath === undefined && bedrockPath === undefined) return undefined;
+      const provider: ProductProvider = bedrockPath !== undefined ? "bedrock" : parsed === undefined ? "vertex" : "gemini";
       const scopeId = headers?.[EVAL_SCOPE_HEADER];
       if (scopeId !== undefined && options.evalStages === undefined) return undefined;
+      // A Bedrock call is not an eval stage call: its answer is AWS's own bytes, not events.
+      if (scopeId !== undefined && bedrockPath !== undefined) return undefined;
       const stages = options.evalStages;
       let stage: EvalStage | undefined;
       let callMeter: (Meter & { settled(): StageSettle | undefined }) | undefined;
@@ -167,11 +198,35 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
       let guarded: RouteCall | undefined;
       // Vertex: the connected project and location, and the token minted for this company's source (at admission).
       let vertex: { row: ProductKeyRow; target: VertexTarget; token: string } | undefined;
+      // Bedrock: the connected role (the project's own, or the company's it links to), opened at admission; the session after the hold.
+      let bedrock: { row: ProductKeyRow; connection: BedrockConnection; family: BedrockFamily; credentials?: Awaited<ReturnType<CredentialSource>> } | undefined;
+      let bedrockNotSent: RouteRefusal | undefined;
+      /**
+       * Bedrock's error answers (class read from the error type and words, never echoed). A refusal of the role or a model, a throttle,
+       * a quota and a validation error carry no output: free. A timeout or a server error after the send is charged, as for every provider.
+       */
+      const bedrockFailure = (status: number, body: Uint8Array | undefined): { charged: boolean; refusal: RouteRefusal } => {
+        const kind = bedrockFailureKind(status, body, BEDROCK_MODEL_ACCESS_WORDS);
+        if (kind === "not_enabled") return { charged: false, refusal: { ok: false, status: 403, code: "model_not_enabled", message: PRODUCT_BEDROCK_MODEL_NOT_ENABLED } };
+        if (kind === "refused") {
+          // The settings page learns about a refused role, and the session is no longer good: the next call assumes it again.
+          if (resolution !== undefined && admitted !== undefined) void options.keys.recordWarning(admitted.iss, admitted.cid, resolution, status === 401 ? 401 : 403).catch(() => undefined);
+          if (bedrock !== undefined) { try { options.bedrock?.sessions.forget(bedrock.row); } catch { /* Never changes the call. */ } }
+          return { charged: false, refusal: { ok: false, status: 502, code: "product_key_refused", message: PRODUCT_BEDROCK_REFUSED } };
+        }
+        if (kind === "quota") return { charged: false, refusal: { ok: false, status: 429, code: "provider_quota", message: PRODUCT_BEDROCK_QUOTA } };
+        if (kind === "throttled") return { charged: false, refusal: { ok: false, status: 429, code: "provider_limited", message: PRODUCT_BEDROCK_THROTTLED, headers: { "retry-after": "5" } } };
+        if (kind === "invalid") return { charged: false, refusal: { ok: false, status: 400, code: "provider_refused", message: PRODUCT_PROVIDER_REFUSED } };
+        if (status === 503) return { charged: true, refusal: { ok: false, status: 503, code: "provider_overloaded", message: PRODUCT_PROVIDER_OVERLOADED, headers: { "retry-after": "5" } } };
+        return { charged: true, refusal: { ok: false, status: 502, code: "provider_error", message: "provider unavailable" } };
+      };
       const route: GatewayRoute = {
         // Vertex calls are logged and corrected on the Gemini rows, priced at the dearer of those and the Vertex rows (alsoPricedAs).
-        provider: "gemini", product: true, meter: options.meter, prefix: PRODUCT_PREFIX,
+        provider: bedrockPath !== undefined ? "bedrock" : "gemini", product: true, meter: options.meter, prefix: PRODUCT_PREFIX,
         async admit(claims, signal) {
           admitted = claims;
+          // Provisioned throughput, application inference profiles and prompts are named by ARN: refused before anything is read.
+          if (bedrockPath?.arn === true) return { ok: false, status: 400, code: "not_allowed", message: PRODUCT_BEDROCK_FEATURE };
           try {
             if (await options.overrun.isBlocked(claims.iss, claims.cid, claims.tid)) return { ok: false, status: 422, code: "budget_exceeded", message: PRODUCT_OVER_BY_ONE_CALL };
             resolution = await options.keys.resolve(claims.iss, claims.cid, claims.pid, provider);
@@ -188,10 +243,16 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
             if (refused !== undefined && "ok" in refused) return refused;
             vertex = refused;
           }
+          if (bedrockPath !== undefined) {
+            const admittedBedrock = await admitBedrock(claims, resolution, bedrockPath);
+            if ("ok" in admittedBedrock) return admittedBedrock;
+            bedrock = admittedBedrock;
+          }
           return undefined;
         },
-        guard: (bytes, headers) => {
-          const checked = parsed !== undefined ? guardGemini(bytes, headers, parsed, options.modelLimits, options.media)
+        guard: (bytes, headers, claims) => {
+          const checked = bedrockPath !== undefined ? (bedrock === undefined ? unavailableGuard : guardBedrockProduct({ bytes, headers, path: bedrockPath, connection: bedrock.connection, claims, modelLimits: options.modelLimits }))
+            : parsed !== undefined ? guardGemini(bytes, headers, parsed, options.modelLimits, options.media)
             : vertex === undefined ? unavailableGuard : guardVertex(bytes, headers, vertexPath!, vertex.target, options.modelLimits, options.media);
           // The approved model selection: every call of the stage names the approved model.
           if (checked.ok && stage?.model !== undefined && checked.model !== stage.model) return { ok: false, status: 400, code: "invalid_request", message: "request not allowed" };
@@ -208,12 +269,35 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
         async key(claims: TaskClaims) {
           // An empty answer is "not sent" in the core (the call cost nothing).
           if (provider === "vertex") return vertex?.token ?? "";
+          if (provider === "bedrock") {
+            // The company's role as THIS company (after the hold): a refusal is "not sent" ($0), in its own words; an outage is 503.
+            if (bedrock === undefined || options.bedrock === undefined) return "";
+            let got: Awaited<ReturnType<BedrockSessionSource["credentials"]>>;
+            try { got = await options.bedrock.sessions.credentials(bedrock.row, bedrock.connection); } catch { bedrockNotSent = unavailable; return ""; }
+            if (!got.ok) {
+              bedrockNotSent = got.reason === "refused" ? { ok: false, status: 502, code: "product_key_refused", message: PRODUCT_BEDROCK_REFUSED } : unavailable;
+              if (got.reason === "refused" && resolution !== undefined) void options.keys.recordWarning(claims.iss, claims.cid, resolution, 403).catch(() => undefined);
+              return "";
+            }
+            bedrock.credentials = got.credentials;
+            return bedrockMarker();
+          }
           return resolution === undefined ? "" : (await options.keys.useKey(claims.iss, claims.cid, resolution)) ?? "";
         },
-        transport: provider === "gemini" ? options.transports.gemini : options.transports.vertex!,
-        usage: () => new GeminiUsageCollector(missingDetailsKind(guarded)),
+        transport: provider === "bedrock"
+          // Signs with the session the key port assumed, for the connection's own Region (never the request's).
+          ? async (request) => {
+            const state = bedrock;
+            if (state?.credentials === undefined || options.bedrock === undefined) throw new NotSentError();
+            const credentials = state.credentials;
+            return options.bedrock.transport(state.connection.region, async () => credentials)(request);
+          }
+          : provider === "gemini" ? options.transports.gemini : options.transports.vertex!,
+        usage: () => provider === "bedrock" && bedrockPath !== undefined && bedrock !== undefined ? new BedrockUsage(bedrockUsageKind(bedrockPath, bedrock.family)) : new GeminiUsageCollector(missingDetailsKind(guarded)),
         failureBody: true,
+        ...(provider === "bedrock" ? { notSent: () => bedrockNotSent, refusalBody: (type: string, message: string) => ({ message, error: { type, message } }) } : {}),
         providerFailure(status, body) {
+          if (provider === "bedrock") return bedrockFailure(status, body);
           // Explicit rejections before any generation (bad key, bad request, unknown model, quota) cost nothing.
           if (status === 401 || status === 403) {
             // The settings page learns about a refused key. A failed write never changes the call.
@@ -234,6 +318,8 @@ export function createProductRoutes(options: ProductRouteOptions): ProductRouteR
           return { charged: true, refusal: { ok: false, status: 502, code: "provider_error", message: "provider unavailable" } };
         },
         async overReservation(claims) { await options.overrun.block(claims.iss, claims.cid, claims.tid); },
+        // Bedrock: Claude is also priced at the Anthropic row of each model name the company's agents use for that id (never below either).
+        ...(provider === "bedrock" ? { alsoPricedAs: (model: string) => Object.entries(bedrock?.connection.models ?? {}).filter(([, id]) => id === model).map(([name]) => ({ provider: "anthropic", model: name })) } : {}),
         // Vertex: never below its own rows either (LiteLLM keys them bare or as vertex_ai/<model>).
         ...(provider === "vertex" ? { alsoPricedAs: (model: string) => [{ provider: "vertex", model }, { provider: "vertex", model: `vertex_ai/${model}` }] } : {}),
       };

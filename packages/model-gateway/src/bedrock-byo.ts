@@ -13,9 +13,10 @@
 //    "models":{"claude-sonnet-5-5":"us.anthropic.claude-sonnet-5-5"},"allowGlobal":false}
 // Parsing is strict and total: anything unexpected is refused as a whole.
 import { createHash } from "node:crypto";
+import { BEDROCK_CONVERSE_ID } from "./bedrock-converse.js";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
 import { normalizeBedrockModel } from "./price-identity.js";
-import { COMPANY, record, whole } from "./model-gateway-token.js";
+import { COMPANY, PROJECT, record, whole } from "./model-gateway-token.js";
 
 /** Every customer role's name starts with this; the broker may assume nothing else (infra/lib/model-gateway.ts). */
 export const BEDROCK_BYO_ROLE_PREFIX = "RovaraBedrockInvoke-";
@@ -28,6 +29,15 @@ export const BEDROCK_BYO_ROLE_ARN = /^arn:aws:iam::([0-9]{12}):role\/(RovaraBedr
 export const BEDROCK_BYO_REGION = /^(?:us|eu|ap|ca|sa|me|af|il|mx)-[a-z]+-[1-9]$/u;
 /** At most this many models per connection (each becomes up to three IAM resource ARNs in the template's 4,096-byte parameter). */
 export const BEDROCK_BYO_MODELS_MAX = 8;
+/**
+ * Slice 2 (the product route): the Bedrock models a company's tests may call besides its agents' Claude picks (any family through
+ * Converse, Claude through either, Titan text embeddings through InvokeModel). At most this many, and at most BEDROCK_BYO_ALL_MODELS_MAX
+ * different ids in all, so the template's 4,096-byte ARN parameter always holds.
+ */
+export const BEDROCK_PRODUCT_MODELS_MAX = 8;
+export const BEDROCK_BYO_ALL_MODELS_MAX = 12;
+/** Amazon Titan Text Embeddings (V1, V2): the embedding models the product route serves (their answer carries the token count). */
+export const BEDROCK_EMBEDDING_ID = /^amazon\.titan-embed-text-v(?:1|2:0)$/u;
 const AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;
 /** A region's inference-profile geographies (AWS system profile prefixes). `global.` is never one: global routing is off. */
 export function geographiesOf(region: string): readonly string[] {
@@ -47,6 +57,12 @@ export interface BedrockConnection {
   models: Readonly<Record<string, string>>;
   /** Global cross-Region routing (`global.` profiles): data may leave the geography. Off unless the admin turns it on (DEC 238 Q3). */
   allowGlobal: boolean;
+  /**
+   * Slice 2: further Bedrock model ids (or system inference profiles of the Region's geography) the PRODUCT route may call: Claude
+   * (also through Converse), any other family through Converse, and Titan text embeddings. They are in the role's IAM policy too.
+   * Absent (every connection saved before slice 2): the product route may call only the agents' Claude picks (`models`).
+   */
+  productModels?: readonly string[];
 }
 /** The connection test's answer per model (bedrock-byo-sessions.ts). */
 export const BEDROCK_MODEL_CHECKS = ["ready", "not_enabled", "refused", "not_found", "unavailable"] as const;
@@ -54,15 +70,18 @@ export type BedrockModelCheck = typeof BEDROCK_MODEL_CHECKS[number];
 /** What Settings may show (nothing here is secret; the sealed connection is the same plus the scheme). */
 export interface BedrockSummary {
   roleArn: string; region: string; models: Readonly<Record<string, string>>; allowGlobal: boolean;
+  productModels?: readonly string[];
   /** Each model's state at the last connection test, and when that test ran. */
   checks: Readonly<Record<string, BedrockModelCheck>>; checkedAt: number;
 }
 
-const exact = (r: Record<string, unknown>, keys: readonly string[]) => keys.every((k) => Object.hasOwn(r, k)) && Object.keys(r).length === keys.length;
 /** A geography prefix of a system inference profile, or undefined for an in-Region model id. */
 const geographyOf = (id: string): string | undefined => /^(?:[a-z]{2,4}|global)\.anthropic\./u.test(id) ? id.slice(0, id.indexOf(".")) : undefined;
+/** The same for any provider's profile (`us.amazon.nova-pro-v1:0`): only AWS's own geography prefixes count. */
+const profileGeography = (id: string): string | undefined => /^(?:us|eu|apac|jp|au|ca|global)\.(?=[a-z][a-z0-9-]{1,30}\.)/u.test(id) ? id.slice(0, id.indexOf(".")) : undefined;
+const anyGeography = (id: string): string | undefined => geographyOf(id) ?? profileGeography(id);
 /** The Bedrock model id without its geography prefix (the foundation model a profile routes to). */
-const baseModel = (id: string): string => geographyOf(id) === undefined ? id : id.slice(id.indexOf(".") + 1);
+const baseModel = (id: string): string => anyGeography(id) === undefined ? id : id.slice(id.indexOf(".") + 1);
 
 /** Whether `id` may be called from `region`: in-Region, a profile of the Region's geography, or `global.` only when allowed. */
 export function allowedBedrockModel(id: string, region: string, allowGlobal: boolean): boolean {
@@ -71,6 +90,18 @@ export function allowedBedrockModel(id: string, region: string, allowGlobal: boo
   if (geo === undefined) return true;
   if (geo === "global") return allowGlobal;
   return geographiesOf(region).includes(geo);
+}
+/**
+ * Whether the product route may be given `id` (slice 2): a Claude id as for agents, a Titan text embedding model, or any other
+ * family's model or system profile (never `global.` for those: only Claude's global profiles are offered, and only when allowed).
+ */
+export function allowedProductModel(id: string, region: string, allowGlobal: boolean): boolean {
+  if (typeof id !== "string") return false;
+  if (BEDROCK_EMBEDDING_ID.test(id)) return true;
+  if (BEDROCK_CLAUDE_ID.test(id)) return allowedBedrockModel(id, region, allowGlobal);
+  if (!BEDROCK_CONVERSE_ID.test(id)) return false;
+  const geo = profileGeography(id);
+  return geo === undefined || geographiesOf(region).includes(geo);
 }
 
 function validModels(value: unknown, region: string, allowGlobal: boolean): value is Record<string, string> {
@@ -83,6 +114,16 @@ function validModels(value: unknown, region: string, allowGlobal: boolean): valu
       // never sent to, or priced as, a different model than the one the agent asked for.
       && normalizeBedrockModel(name) === normalizeBedrockModel(id));
 }
+/** The product models (slice 2): distinct, valid for the Region, and at most BEDROCK_BYO_ALL_MODELS_MAX different ids with the agents' picks. */
+function validProductModels(value: unknown, models: Readonly<Record<string, string>>, region: string, allowGlobal: boolean): value is string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > BEDROCK_PRODUCT_MODELS_MAX) return false;
+  if (!value.every((id: unknown) => typeof id === "string" && allowedProductModel(id, region, allowGlobal)) || new Set(value).size !== value.length) return false;
+  return new Set([...Object.values(models), ...(value as string[])]).size <= BEDROCK_BYO_ALL_MODELS_MAX;
+}
+/** Every Bedrock id the connection names: the agents' picks and the product models (one list for the IAM policy and the test). */
+export function bedrockConnectionIds(c: Pick<BedrockConnection, "models" | "productModels">): string[] {
+  return [...new Set([...Object.values(c.models), ...(c.productModels ?? [])])];
+}
 
 /** The connection a company admin sends (connect or rotate), or undefined. */
 export function parseBedrockConnect(text: string): BedrockConnection | undefined {
@@ -90,27 +131,33 @@ export function parseBedrockConnect(text: string): BedrockConnection | undefined
   let v: unknown;
   try { v = JSON.parse(text) as unknown; } catch { return undefined; }
   const r = record(v);
-  if (r === undefined || !exact(r, ["scheme", "roleArn", "region", "models", "allowGlobal"]) || r.scheme !== "assume_role") return undefined;
+  if (r === undefined || r.scheme !== "assume_role") return undefined;
+  const required = ["scheme", "roleArn", "region", "models", "allowGlobal"] as const;
+  if (!required.every((k) => Object.hasOwn(r, k)) || Object.keys(r).some((k) => !(required as readonly string[]).includes(k) && k !== "productModels")) return undefined;
   if (typeof r.roleArn !== "string" || !BEDROCK_BYO_ROLE_ARN.test(r.roleArn) || typeof r.region !== "string" || !BEDROCK_BYO_REGION.test(r.region) || typeof r.allowGlobal !== "boolean") return undefined;
   if (!validModels(r.models, r.region, r.allowGlobal)) return undefined;
-  return { scheme: "assume_role", roleArn: r.roleArn, region: r.region, models: sortedModels(r.models), allowGlobal: r.allowGlobal };
+  if (Object.hasOwn(r, "productModels") && !validProductModels(r.productModels, r.models, r.region, r.allowGlobal)) return undefined;
+  return { scheme: "assume_role", roleArn: r.roleArn, region: r.region, models: sortedModels(r.models), allowGlobal: r.allowGlobal, ...(Array.isArray(r.productModels) ? { productModels: [...(r.productModels as string[])].sort() } : {}) };
 }
 const sortedModels = (models: Readonly<Record<string, string>>): Record<string, string> => Object.fromEntries(Object.entries(models).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 
-/** The canonical text sealed in the key store (the same connection always seals the same text). */
+/** The canonical text sealed in the key store (the same connection always seals the same text; no productModels key when there are none). */
 export function serializeBedrockConnection(c: BedrockConnection): string {
-  return JSON.stringify({ scheme: "assume_role", roleArn: c.roleArn, region: c.region, models: sortedModels(c.models), allowGlobal: c.allowGlobal });
+  const product = c.productModels === undefined || c.productModels.length === 0 ? {} : { productModels: [...c.productModels].sort() };
+  return JSON.stringify({ scheme: "assume_role", roleArn: c.roleArn, region: c.region, models: sortedModels(c.models), allowGlobal: c.allowGlobal, ...product });
 }
 
 export function bedrockSummary(c: BedrockConnection, checks: Readonly<Record<string, BedrockModelCheck>>, checkedAt: number): BedrockSummary {
-  return { roleArn: c.roleArn, region: c.region, models: sortedModels(c.models), allowGlobal: c.allowGlobal, checks: { ...checks }, checkedAt };
+  return { roleArn: c.roleArn, region: c.region, models: sortedModels(c.models), allowGlobal: c.allowGlobal, ...(c.productModels === undefined || c.productModels.length === 0 ? {} : { productModels: [...c.productModels].sort() }), checks: { ...checks }, checkedAt };
 }
 export function validBedrockSummary(v: unknown): v is BedrockSummary {
   const s = record(v); const checks = record(s?.checks);
-  if (s === undefined || checks === undefined || !exact(s, ["roleArn", "region", "models", "allowGlobal", "checks", "checkedAt"])) return false;
+  const required = ["roleArn", "region", "models", "allowGlobal", "checks", "checkedAt"];
+  if (s === undefined || checks === undefined || !required.every((k) => Object.hasOwn(s, k)) || Object.keys(s).some((k) => !required.includes(k) && k !== "productModels")) return false;
   if (typeof s.roleArn !== "string" || !BEDROCK_BYO_ROLE_ARN.test(s.roleArn) || typeof s.region !== "string" || !BEDROCK_BYO_REGION.test(s.region) || typeof s.allowGlobal !== "boolean" || !whole(s.checkedAt)) return false;
   if (!validModels(s.models, s.region, s.allowGlobal)) return false;
-  const ids = new Set(Object.values(s.models));
+  if (Object.hasOwn(s, "productModels") && !validProductModels(s.productModels, s.models, s.region, s.allowGlobal)) return false;
+  const ids = new Set(bedrockConnectionIds({ models: s.models, ...(Array.isArray(s.productModels) ? { productModels: s.productModels as string[] } : {}) }));
   return Object.entries(checks).every(([id, state]) => ids.has(id) && BEDROCK_MODEL_CHECKS.some((c) => c === state));
 }
 
@@ -165,10 +212,10 @@ const GEOGRAPHY_REGIONS: Readonly<Record<string, string>> = { us: "us-*", eu: "e
  *                      foundation model in every Region of that geography
  *   `global.` profile  the profile, plus the foundation model in every Region and the Region-less ARN global routing uses
  */
-export function bedrockResourceArns(c: Pick<BedrockConnection, "region" | "models">): string[] {
+export function bedrockResourceArns(c: Pick<BedrockConnection, "region" | "models" | "productModels">): string[] {
   const arns = new Set<string>();
-  for (const id of Object.values(c.models)) {
-    const geo = geographyOf(id); const base = baseModel(id);
+  for (const id of bedrockConnectionIds(c)) {
+    const geo = anyGeography(id); const base = baseModel(id);
     if (geo === undefined) { arns.add(`arn:aws:bedrock:${c.region}::foundation-model/${id}`); continue; }
     arns.add(`arn:aws:bedrock:${c.region}:*:inference-profile/${id}`);
     if (geo === "global") { arns.add(`arn:aws:bedrock:*::foundation-model/${base}`); arns.add(`arn:aws:bedrock:::foundation-model/${base}`); }
@@ -235,7 +282,10 @@ export function validTemplateUrl(url: unknown): url is string {
   const host = new URL(url).hostname;
   return !/(?:^|\.)s3[.-]|\.amazonaws\.com$/u.test(host);
 }
-export interface BedrockSetupInput { templateUrl: string; brokerRoleArn: string; externalId: string; cid: string; region: string; models: Readonly<Record<string, string>>; allowGlobal: boolean }
+export interface BedrockSetupInput { templateUrl: string; brokerRoleArn: string; externalId: string; cid: string; region: string; models: Readonly<Record<string, string>>; allowGlobal: boolean; productModels?: readonly string[];
+  /** A project's OWN role (slice 2): its own stack, never the company's (a command must not update the company's stack). */ project?: string }
+/** CloudFormation's limit on one parameter value (the ARN list). */
+const PARAMETER_BYTES_MAX = 4_096;
 /**
  * The set-up, run by the customer's AWS admin in AWS CloudShell (opened in their Region). CloudFormation's one-click quick-create
  * link only takes a template stored in Amazon S3 (checked in AWS's docs 2026-11-15), and DEC 238 Q10 rules out a public bucket,
@@ -245,9 +295,16 @@ export interface BedrockSetupInput { templateUrl: string; brokerRoleArn: string;
 export function bedrockSetupCommand(input: BedrockSetupInput): { cloudShellUrl: string; command: string; stackName: string } {
   if (!validTemplateUrl(input.templateUrl) || !/^arn:aws:iam::[0-9]{12}:role\/RovaraBedrockBroker-[a-z0-9-]{1,32}$/u.test(input.brokerRoleArn)
     || !BEDROCK_EXTERNAL_ID.test(input.externalId) || !COMPANY.test(input.cid) || !BEDROCK_BYO_REGION.test(input.region)
-    || typeof input.allowGlobal !== "boolean" || !validModels(input.models, input.region, input.allowGlobal)) throw new Error("invalid bedrock setup");
-  const arns = bedrockResourceArns({ region: input.region, models: input.models });
-  const stackName = `rovara-bedrock-${input.cid.replace("_", "-")}`;
+    || typeof input.allowGlobal !== "boolean" || !validModels(input.models, input.region, input.allowGlobal)
+    || (input.productModels !== undefined && !validProductModels(input.productModels, input.models, input.region, input.allowGlobal))) throw new Error("invalid bedrock setup");
+  const arns = bedrockResourceArns({ region: input.region, models: input.models, ...(input.productModels === undefined ? {} : { productModels: input.productModels }) });
+  // One parameter holds the list: a longer one would fail at AWS after the admin ran the command.
+  if (Buffer.byteLength(arns.join(","), "utf8") > PARAMETER_BYTES_MAX) throw new Error("invalid bedrock setup");
+  if (input.project !== undefined && !PROJECT.test(input.project)) throw new Error("invalid bedrock setup");
+  // The company's stack is `rovara-bedrock-<company>`; a project's own role gets its own stack name, so this command can never
+  // update the company's stack (and so never change the company role's policy). IAM role names are account-wide: a project's own
+  // role (the template names it from the company id) needs another AWS account than the company's role, or the stack fails to create.
+  const stackName = `rovara-bedrock-${input.cid.replace("_", "-")}${input.project === undefined ? "" : `-${input.project}`}`;
   // Each override single-quoted (the ARNs hold `*`, which zsh or bash's failglob would expand); no value holds a quote.
   const overrides = [`CompanyId=${input.cid}`, `ExternalId=${input.externalId}`, `BrokerRoleArn=${input.brokerRoleArn}`, `ModelResourceArns=${arns.join(",")}`, `AllowGlobalRouting=${String(input.allowGlobal)}`].map((v) => `'${v}'`).join(" ");
   const command = [

@@ -14,6 +14,7 @@ import { CompanyAgentAiSource, parseRovaraAiExempt, parseRovaraAiModels, storedB
 import { BedrockExternalIds, type MacGenerator } from "./bedrock-byo.js";
 import { BedrockSessions } from "./bedrock-byo-sessions.js";
 import { createBedrockTransport } from "./bedrock-transport.js";
+import { createBedrockProductTransport } from "./product-bedrock.js";
 import { GATEWAY_AGENT_KEY_MODES, GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_LOG_EVENTS, GATEWAY_MODES, GATEWAY_PRODUCT_ENV, type GatewayAgentKeyMode } from "./deploy.js";
 import { DynamoEvalStageStore } from "./dynamo-eval-stages.js";
 import { DynamoProductKeyTable } from "./dynamo-product-keys.js";
@@ -183,6 +184,8 @@ export interface ServeDependencies {
   kms?: KmsLike & Partial<MacVerifier> & Partial<MacGenerator>;
   /** The HTTP the Bedrock broker and customer AssumeRole calls use (default: product-vertex-token.ts createTokenHttp, AWS STS hosts only). */
   bedrockHttp?: TokenHttp;
+  /** DEC 238 slice 2: the product route's Bedrock transport for a connection's Region (default: product-bedrock.ts createBedrockProductTransport). */
+  bedrockProductTransport?: (region: string, credentials: CredentialSource) => ProviderTransport;
   /** DEC 238: the company's own Bedrock for the agent route (default: built from config.bedrockByo over the product key store). */
   byoBedrock?: ByoBedrock;
   /** The HTTP the Vertex token minting uses (default: product-vertex-token.ts createTokenHttp, Google's and AWS's token hosts). */
@@ -421,6 +424,14 @@ function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { 
   const verifier: MacVerifier | undefined = typeof kms.verifyMac === "function" ? { verifyMac: (input) => kms.verifyMac!(input) } : undefined;
   const store = new ProductKeyStore({ table: new DynamoProductKeyTable(db, p.keysTable), sealer: new ProductKeySealer(kmsProductKeyService(kms, p.keysKeyArn)), fingerprint: READ_ONLY_FINGERPRINT, now });
   const combinedCompany = { meter: config.tables.meter, markers: config.tables.markers };
+  // DEC 238: the companies' own Bedrock: external ids from the gateway's own HMAC key, sessions through the broker role. The same
+  // sessions serve the agent route and the product route (slice 2).
+  let bedrockSessions: BedrockSessions | undefined; let bedrockExternalIds: BedrockExternalIds | undefined;
+  if (config.bedrockByo !== undefined && (wantsByo || deps.product === undefined)) {
+    if (typeof kms.generateMac !== "function") throw new Error("bring your own Bedrock needs a KMS that can make MACs");
+    bedrockExternalIds = new BedrockExternalIds({ generateMac: (input) => kms.generateMac!(input) }, config.bedrockByo.externalIdKeyArn);
+    bedrockSessions = new BedrockSessions({ http: deps.bedrockHttp ?? createTokenHttp(), aws: shared.credentials, brokerRoleArn: config.bedrockByo.brokerRoleArn, awsRegion: config.region, issuer: config.install.issuer, externalIds: bedrockExternalIds, now });
+  }
   let product: NonNullable<ServeDependencies["product"]> | undefined;
   let vertexTokens: VertexTokens | undefined;
   if (deps.product === undefined) {
@@ -431,6 +442,8 @@ function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { 
     const routes = createProductRoutes({
       keys: store, meter: productMeter, modelLimits: productModelLimitsFrom(prices), transports: { gemini: deps.geminiTransport ?? createGeminiTransport(), ...(vertex === undefined ? {} : { vertex: createVertexTransport() }) }, media: prices,
       ...(vertex === undefined ? {} : { vertex: { tokens: vertex } }),
+      // Slice 2: the project's own role, or the company's it links to, through the same sessions as the agents' (the fixed Bedrock transport).
+      ...(bedrockSessions === undefined ? {} : { bedrock: { sessions: bedrockSessions, transport: (region: string, credentials: CredentialSource) => deps.bedrockProductTransport?.(region, credentials) ?? createBedrockProductTransport({ region, credentials, now }) } }),
       overrun: new DynamoProductOverrunTasks(db, p.markers, now), companyCaps: caps, evalStages,
     });
     product = { routes, meter: productMeter, caps: routes.caps };
@@ -445,10 +458,8 @@ function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { 
   const agentKeys = wantsAgentKeys ? storedLearningKeys(store) : undefined;
   // DEC 238: the companies' own Bedrock: external ids from the gateway's own HMAC key, sessions through the broker role.
   let byo: { agent: ByoBedrock; service?: ReturnType<typeof createBedrockServiceHandlers> } | undefined;
-  if (wantsByo && config.bedrockByo !== undefined) {
-    if (typeof kms.generateMac !== "function") throw new Error("bring your own Bedrock needs a KMS that can make MACs");
-    const externalIds = new BedrockExternalIds({ generateMac: (input) => kms.generateMac!(input) }, config.bedrockByo.externalIdKeyArn);
-    const sessions = new BedrockSessions({ http: deps.bedrockHttp ?? createTokenHttp(), aws: shared.credentials, brokerRoleArn: config.bedrockByo.brokerRoleArn, awsRegion: config.region, issuer: config.install.issuer, externalIds, now });
+  if (wantsByo && config.bedrockByo !== undefined && bedrockSessions !== undefined && bedrockExternalIds !== undefined) {
+    const externalIds = bedrockExternalIds; const sessions = bedrockSessions;
     byo = {
       agent: storedBedrock(store, sessions),
       ...(verifier === undefined || p.macKeyArn === undefined ? {} : { service: createBedrockServiceHandlers({ issuer: config.install.issuer, kms: verifier, macKeyId: p.macKeyArn, now, brokerRoleArn: config.bedrockByo.brokerRoleArn, externalIds, bedrock: sessions }) }),

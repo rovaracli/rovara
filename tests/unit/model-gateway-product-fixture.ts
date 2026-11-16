@@ -3,7 +3,7 @@ import { InMemoryMeter, type Meter } from "../../packages/model-gateway/src/mete
 import { FixedCapsSource, type CapsSource } from "../../packages/model-gateway/src/caps.js";
 import type { ModelLimitsSource } from "../../packages/model-gateway/src/guard.js";
 import type { MediaPriceSource } from "../../packages/model-gateway/src/media-price.js";
-import { InMemoryProductKeyTable, ProductKeyStore, PRODUCT_COMPANY_OWNER, type ProductActor, type TableWrite, type VertexCheck } from "../../packages/model-gateway/src/product-keys.js";
+import { InMemoryProductKeyTable, ProductKeyStore, PRODUCT_COMPANY_OWNER, type ProductActor, type TableWrite, type VertexCheck, type BedrockCheck } from "../../packages/model-gateway/src/product-keys.js";
 import { hmacFingerprinter, localProductKeyService, ProductKeySealer, type ProductKeyService } from "../../packages/model-gateway/src/product-seal.js";
 import { createProductRoutes, InMemoryProductOverrunTasks, type ProductRouteOptions } from "../../packages/model-gateway/src/product-route.js";
 import type { ProductEvalStages } from "../../packages/model-gateway/src/product-eval.js";
@@ -25,12 +25,12 @@ export const geminiAnswer = (usage: Record<string, unknown> = { promptTokenCount
   { candidates: [{ content: { parts: [{ text: "hi" }], role: "model" } }] },
   { candidates: [{ content: { parts: [{ text: "!" }], role: "model" }, finishReason: "STOP" }], usageMetadata: usage },
 ]);
-export function storeKit(options: { beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; keyService?: ProductKeyService; clock?: () => number; vertexCheck?: VertexCheck } = {}) {
+export function storeKit(options: { beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; keyService?: ProductKeyService; clock?: () => number; vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck } = {}) {
   const table = new InMemoryProductKeyTable(options.beforeCommit);
   const keyService = options.keyService ?? localProductKeyService(randomBytes(32));
   const fingerprintSecret = randomBytes(32);
   let clock = now;
-  const store = new ProductKeyStore({ table, sealer: new ProductKeySealer(keyService), fingerprint: hmacFingerprinter(fingerprintSecret), now: options.clock ?? (() => clock), ...(options.vertexCheck === undefined ? {} : { vertexCheck: options.vertexCheck }) });
+  const store = new ProductKeyStore({ table, sealer: new ProductKeySealer(keyService), fingerprint: hmacFingerprinter(fingerprintSecret), now: options.clock ?? (() => clock), ...(options.vertexCheck === undefined ? {} : { vertexCheck: options.vertexCheck }), ...(options.bedrockCheck === undefined ? {} : { bedrockCheck: options.bedrockCheck }) });
   return { table, store, keyService, fingerprintSecret, advance: (ms: number) => { clock += ms; }, setClock: (ms: number) => { clock = ms; } };
 }
 export const change = (owner: string, expectedRevision: number, actor: ProductActor = admin) => ({ iss, cid, owner, requestId: randomUUID(), expectedRevision, actor });
@@ -40,7 +40,7 @@ export async function connected(kit = storeKit(), key = geminiKey()) {
   return { ...kit, key };
 }
 /** A gateway with the agent route (R3a fixture) plus the product route on a store that holds `key` for project `web`. */
-export async function productGateway(options: { evalStages?: ProductEvalStages; productMeter?: Meter; transport?: ProviderTransport; overrides?: Partial<GatewayDependencies>; key?: string; connect?: boolean; kit?: ReturnType<typeof storeKit>; companyCaps?: CapsSource; modelLimits?: ModelLimitsSource; media?: MediaPriceSource; vertex?: ProductRouteOptions["vertex"]; vertexTransport?: ProviderTransport } = {}) {
+export async function productGateway(options: { evalStages?: ProductEvalStages; productMeter?: Meter; transport?: ProviderTransport; overrides?: Partial<GatewayDependencies>; key?: string; connect?: boolean; kit?: ReturnType<typeof storeKit>; companyCaps?: CapsSource; modelLimits?: ModelLimitsSource; media?: MediaPriceSource; vertex?: ProductRouteOptions["vertex"]; vertexTransport?: ProviderTransport; bedrock?: ProductRouteOptions["bedrock"] } = {}) {
   const kit = options.kit ?? storeKit();
   const key = options.key ?? geminiKey();
   if (options.connect !== false) await kit.store.connect({ ...change(pid, 0, maintainer), sourceId: "src_gem", provider: "gemini", key });
@@ -50,7 +50,7 @@ export async function productGateway(options: { evalStages?: ProductEvalStages; 
   const productCalls: ProviderRequest[] = [];
   const overrun = new InMemoryProductOverrunTasks();
   const transport: ProviderTransport = options.transport ?? (async (request) => { productCalls.push(request); return { status: 200, body: geminiAnswer() }; });
-  const product = createProductRoutes({ keys: kit.store, meter: productMeter, companyCaps: options.companyCaps ?? new FixedCapsSource({ task: 1_000_000_000, projectMonth: 1_000_000_000, companyMonth: 1_000_000_000 }), modelLimits: options.modelLimits ?? { maxOutputTokens: () => 8192 }, transports: { gemini: async (r) => { if (options.transport !== undefined) productCalls.push(r); return transport(r); }, ...(options.vertexTransport === undefined ? {} : { vertex: options.vertexTransport }) }, overrun, ...(options.vertex === undefined ? {} : { vertex: options.vertex }), ...(options.evalStages === undefined ? {} : { evalStages: options.evalStages }), ...(options.media === undefined ? {} : { media: options.media }) });
+  const product = createProductRoutes({ keys: kit.store, meter: productMeter, companyCaps: options.companyCaps ?? new FixedCapsSource({ task: 1_000_000_000, projectMonth: 1_000_000_000, companyMonth: 1_000_000_000 }), modelLimits: options.modelLimits ?? { maxOutputTokens: () => 8192 }, transports: { gemini: async (r) => { if (options.transport !== undefined) productCalls.push(r); return transport(r); }, ...(options.vertexTransport === undefined ? {} : { vertex: options.vertexTransport }) }, overrun, ...(options.vertex === undefined ? {} : { vertex: options.vertex }), ...(options.bedrock === undefined ? {} : { bedrock: options.bedrock }), ...(options.evalStages === undefined ? {} : { evalStages: options.evalStages }), ...(options.media === undefined ? {} : { media: options.media }) });
   const base = setup({ product, ...options.overrides, meter: agentMeter });
   return { ...base, meter: agentMeter, kit, key, productMeter, productCalls, overrun };
 }

@@ -18,8 +18,8 @@
 // Results are fixed words; no AWS text and no credential leaves this module.
 import { randomBytes } from "node:crypto";
 import { signRequest, type AwsCredentials, type CredentialSource } from "./aws.js";
-import { BEDROCK_BYO_ROLE_ARN, type BedrockConnection, type BedrockModelCheck } from "./bedrock-byo.js";
-import { bedrockInvokePath, createBedrockTransport } from "./bedrock-transport.js";
+import { BEDROCK_BYO_ROLE_ARN, bedrockConnectionIds, type BedrockConnection, type BedrockModelCheck } from "./bedrock-byo.js";
+import { bedrockFamily, bedrockProductPath, createBedrockProductTransport } from "./product-bedrock.js";
 import { COMPANY } from "./model-gateway-token.js";
 import type { ProductKeyRow } from "./product-seal.js";
 import type { TokenHttp } from "./product-vertex-token.js";
@@ -127,7 +127,7 @@ export class BedrockSessions implements BedrockSessionSource {
         if (other.reason !== "refused") return { result: "unavailable" };
       }
       // The models in parallel, each bounded, so the whole test stays inside Cloud's wait (service-call.ts SERVICE_CALL_TIMEOUT_MS).
-      const ids = [...new Set(Object.values(connection.models))];
+      const ids = bedrockConnectionIds(connection);
       const states = await Promise.all(ids.map((id) => this.#modelCheck(connection.region, real.credentials, id, signal)));
       return { result: "ok", models: Object.fromEntries(ids.map((id, i) => [id, states[i]!])) };
     } catch { return { result: "unavailable" }; }
@@ -172,12 +172,17 @@ export class BedrockSessions implements BedrockSessionSource {
   }
   /** One $0 InvokeModel that IAM authorises and Bedrock rejects as invalid (max_tokens 0): nothing is generated or billed. */
   async #modelCheck(region: string, credentials: AwsCredentials, id: string, signal?: AbortSignal): Promise<BedrockModelCheck> {
+    // Each family's own invalid request (IAM authorises it; Bedrock rejects it, nothing is generated): Claude's Anthropic body with
+    // max_tokens 0, a Titan embedding with no text, any other model's Converse with maxTokens 0.
+    const family = bedrockFamily(id);
+    if (family === undefined) return "not_found";
     let path: string;
-    try { path = bedrockInvokePath(id, false); } catch { return "not_found"; }
-    const transport = (this.#options.bedrock ?? ((r, c) => createBedrockTransport({ region: r, credentials: c, now: this.#now })))(region, async () => credentials);
+    try { path = bedrockProductPath(id, family === "converse" ? "converse" : "invoke"); } catch { return "not_found"; }
+    const transport = (this.#options.bedrock ?? ((r, c) => createBedrockProductTransport({ region: r, credentials: c, now: this.#now })))(region, async () => credentials);
     const timeout = AbortSignal.timeout(MODEL_CHECK_TIMEOUT_MS);
     const bound = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
-    const body = Buffer.from(JSON.stringify({ anthropic_version: "bedrock-2023-05-31", max_tokens: 0, messages: [{ role: "user", content: "." }] }));
+    const body = Buffer.from(JSON.stringify(family === "claude" ? { anthropic_version: "bedrock-2023-05-31", max_tokens: 0, messages: [{ role: "user", content: "." }] }
+      : family === "embedding" ? { inputText: "" } : { messages: [{ role: "user", content: [{ text: "." }] }], inferenceConfig: { maxTokens: 0 } }));
     try {
       const answer = await transport({ body, headers: { "content-type": "application/json" }, key: "rovara-bedrock-check", signal: bound, path });
       const read: Buffer[] = []; let size = 0;

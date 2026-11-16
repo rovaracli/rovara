@@ -72,7 +72,7 @@ export function bedrockBackend(env: Readonly<Record<string, string | undefined>>
   const setup = gatewayBedrockSetup({ address: gateway, issuer: `${env.ROVARA_CODE_URL ?? ""}/v1/auth`, kms: awsKms({ region, credentials: credentialsFromEnvironment(env) }), macKeyId: macKey });
   return {
     async setup(cid) { const got = await setup(cid); return got === undefined ? undefined : { ...got, templateUrl }; },
-    command: (made, cid, choice) => bedrockSetupCommand({ templateUrl: made.templateUrl, brokerRoleArn: made.brokerRoleArn, externalId: made.externalId, cid, region: choice.region, models: choice.models, allowGlobal: choice.allowGlobal }),
+    command: (made, cid, choice) => bedrockSetupCommand({ templateUrl: made.templateUrl, brokerRoleArn: made.brokerRoleArn, externalId: made.externalId, cid, region: choice.region, models: choice.models, allowGlobal: choice.allowGlobal, ...(choice.productModels === undefined ? {} : { productModels: choice.productModels }), ...(choice.project === undefined ? {} : { project: choice.project }) }),
     presets: (region) => bedrockModelPresets(region, ROVARA_AI_US_MODELS),
   };
 }
