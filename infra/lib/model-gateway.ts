@@ -68,6 +68,12 @@ export const MODEL_GATEWAY_PRODUCT_CONTEXT_KEY = "rovaraModelGatewayProductAi";
 export const MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY = "rovaraModelGatewayRovaraAi";
 export const MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY = "rovaraModelGatewayRovaraAiExempt";
 /**
+ * `-c rovaraModelGatewayRovaraAiDisabled=<model>,...`: models Rovara's AI lists but does not offer a company's agents yet
+ * (GATEWAY_AGENT_MODELS_DISABLED; "" holds none back). Absent: the gateway's default (Sonnet 5.5, Opus 5.5 and Fable 5.2 until the
+ * account's one-time Marketplace enable), and the template is exactly as without it.
+ */
+export const MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY = "rovaraModelGatewayRovaraAiDisabled";
+/**
  * The Regions a system inference profile of each geography sends calls to (bedrock get-inference-profile, staging us-west-2,
  * 2026-11-15: every us. Claude profile lists us-east-1, us-east-2 and us-west-2). Invoking through a profile needs the
  * foundation-model ARN in each of them; the grant allows those ONLY through the named profiles (bedrock:InferenceProfileArn).
@@ -101,7 +107,7 @@ export const ROVARA_AI_PROFILE_REGIONS: Readonly<Record<string, readonly string[
 const ROVARA_AI_AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;
 const ROVARA_AI_BEDROCK_ID = /^([a-z]{2,4})\.(anthropic\.claude-[a-z0-9-]{1,80}(?::\d{1,3})?)$/u;
 const ROVARA_AI_COMPANY = /^org_[0-9a-z]{20}$/u;
-export interface RovaraAiProps { readonly models: string; readonly exempt?: string }
+export interface RovaraAiProps { readonly models: string; readonly exempt?: string; readonly disabled?: string }
 /** The allow-list's Bedrock ids, checked as the process checks them (agent-ai.ts parseRovaraAiModels; a contract test holds the two together). */
 /** DEC 243c: any other model, called through Converse: `<provider>.<model>` in this Region, or its `<geo>.` profile (bedrock-converse.ts BEDROCK_CONVERSE_ID). */
 const ROVARA_AI_CONVERSE_ID = /^(?!global\.)(?!(?:(?:us|eu|apac|jp|au|ca)\.)?anthropic\.)(?:(us|eu|apac|jp|au|ca)\.)?([a-z][a-z0-9-]{1,30}\.[a-z0-9][a-z0-9.:-]{0,100})$/u;
@@ -166,6 +172,7 @@ export const MODEL_GATEWAY_ENV = {
   agentKeys: "GATEWAY_AGENT_KEYS",
   rovaraAiModels: "GATEWAY_ROVARA_AI_MODELS",
   rovaraAiExempt: "GATEWAY_ROVARA_AI_EXEMPT",
+  agentModelsDisabled: "GATEWAY_AGENT_MODELS_DISABLED",
 } as const;
 /** The eval stage table's due-stages index (deploy.ts GATEWAY_EVAL_STAGE_INDEXES). */
 export const MODEL_GATEWAY_EVAL_STAGE_INDEXES = {
@@ -663,7 +670,9 @@ export class ModelGatewayStack extends Stack {
     }
     // DEC 243c: a non-Claude model with no profile, in this Region only (Converse is authorised by these same two actions).
     if (inRegion.length > 0) serveRole.addToPolicy(new iam.PolicyStatement({ sid: "RovaraAiModels", actions, resources: [...new Set(inRegion.map((m) => modelArn(region, m.model)))] }));
-    return { environment: { [MODEL_GATEWAY_ENV.rovaraAiModels]: models, ...(exempt === "" ? {} : { [MODEL_GATEWAY_ENV.rovaraAiExempt]: exempt }) } };
+    const disabled = settings.disabled;
+    if (disabled !== undefined && disabled !== "" && (disabled.split(",").length > 64 || disabled.split(",").some((name) => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(name.trim())))) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY}: give model names, comma-separated`);
+    return { environment: { [MODEL_GATEWAY_ENV.rovaraAiModels]: models, ...(exempt === "" ? {} : { [MODEL_GATEWAY_ENV.rovaraAiExempt]: exempt }), ...(disabled === undefined ? {} : { [MODEL_GATEWAY_ENV.agentModelsDisabled]: disabled }) } };
   }
 
   /**

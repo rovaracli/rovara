@@ -63,6 +63,11 @@ export const GATEWAY_ENV = {
   rovaraAiModels: "GATEWAY_ROVARA_AI_MODELS",
   /** The companies the operator named exempt from Rovara's AI charges (DEC 240b, the founders' test company), comma-separated. */
   rovaraAiExempt: "GATEWAY_ROVARA_AI_EXEMPT",
+  /**
+   * Models Rovara's AI lists but does not offer a company's agents yet (offered-models.ts): model names, comma-separated. Set but empty:
+   * none held back. Absent: the default (the three Claude models that wait for the account's one-time Marketplace enable).
+   */
+  agentModelsDisabled: "GATEWAY_AGENT_MODELS_DISABLED",
 } as const;
 /** The values of GATEWAY_ENV.agentKeys. */
 export const GATEWAY_AGENT_KEY_MODES = ["install", "company"] as const;

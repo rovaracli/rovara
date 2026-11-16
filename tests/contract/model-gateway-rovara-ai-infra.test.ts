@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { parseRovaraAiModels, ROVARA_AI_US_CONVERSE_MODELS as GATEWAY_US_CONVERSE_MODELS, ROVARA_AI_US_MODELS as GATEWAY_US_MODELS } from "../../packages/model-gateway/src/agent-ai.js";
 import { buildAgentXApp, rovaraAiContext } from "../../infra/lib/app.js";
-import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_ENV, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ROVARA_AI_US_CONVERSE_MODELS, ROVARA_AI_US_MODELS, rovaraAiModelIds } from "../../infra/lib/model-gateway.js";
+import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_ENV, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ROVARA_AI_US_CONVERSE_MODELS, ROVARA_AI_US_MODELS, rovaraAiModelIds } from "../../infra/lib/model-gateway.js";
 
 type Resource = { Type: string; Properties: Record<string, unknown> };
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>> };
@@ -120,5 +120,20 @@ describe("Rovara's AI in the gateway stack (DEC 240)", () => {
       try { parseRovaraAiModels(value, "us-west-2"); } catch { processOk = false; }
       expect([value, synthOk]).toEqual([value, processOk]);
     }
+  });
+});
+
+describe("models held back from the offered list (GATEWAY_AGENT_MODELS_DISABLED)", () => {
+  it("absent: no setting (the gateway's default list applies, and the template is as before); set: passed as given, empty included", () => {
+    expect(serveEnv(on)[GATEWAY_ENV.agentModelsDisabled]).toBeUndefined();
+    expect(MODEL_GATEWAY_ENV.agentModelsDisabled).toBe(GATEWAY_ENV.agentModelsDisabled);
+    expect(serveEnv(synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS, [MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY]: "claude-opus-5-5" }))[GATEWAY_ENV.agentModelsDisabled]).toBe("claude-opus-5-5");
+    expect(serveEnv(synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS, [MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY]: "" }))[GATEWAY_ENV.agentModelsDisabled]).toBe("");
+    expect(rovaraAiContext(MODELS, undefined, undefined)).toEqual({ rovaraAi: { models: MODELS } });
+  });
+  it("refused: never alone, not a list of model names", () => {
+    expect(() => rovaraAiContext(undefined, undefined, "claude-opus-5-5")).toThrow(/needs rovaraModelGatewayRovaraAi/u);
+    expect(() => rovaraAiContext(MODELS, undefined, 5)).toThrow();
+    for (const bad of ["a b", "../x", "claude-opus-5-5,"]) expect(() => synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS, [MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY]: bad })).toThrow();
   });
 });

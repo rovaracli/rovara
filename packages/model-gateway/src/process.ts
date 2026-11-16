@@ -22,6 +22,8 @@ import { createTokenHttp, VertexTokens, type TokenHttp } from "./product-vertex-
 import { ProductKeyStore } from "./product-keys.js";
 import { createProductRoutes, productModelLimitsFrom } from "./product-route.js";
 import { kmsProductKeyService, ProductKeySealer, type KmsLike, type ProductKeyFingerprinter } from "./product-seal.js";
+import { createSignedTokenVerifier } from "./token.js";
+import { createOfferedModelsHandler, OFFERED_MODELS_PATH, parseDisabledAgentModels, SERVICE_TOKEN_KIND } from "./offered-models.js";
 import { createVertexCheckHandler, VERTEX_CHECK_PATH, type MacVerifier } from "./service-call.js";
 import { Dynamo } from "./dynamo.js";
 import { DynamoEndedTasks, DynamoMeter } from "./dynamo-meter.js";
@@ -50,7 +52,7 @@ export interface InstallConfig { issuer: string; jwksUrl: string; taskKids: stri
 export interface ProductConfig { keysTable: string; keysKeyArn: string; meter: string; ledger: string; markers: string; stages: string; vertexFederationRoleArn?: string; /** Cloud's Vertex connection test (service-call.ts), only with the Vertex role. */ macKeyArn?: string }
 /** The learning route's meter tables (GATEWAY_LEARNING_ENV): only with the product route, whose key store holds the company's account. */
 export interface LearningConfig { meter: string; ledger: string; markers: string }
-export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode; /** DEC 240, only with agentKeys "company". Absent: Rovara's AI is off. */ rovaraAi?: RovaraAiConfig }
+export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode; /** DEC 240, only with agentKeys "company". Absent: Rovara's AI is off. */ rovaraAi?: RovaraAiConfig; /** Models left off every company's offered list on Rovara's AI (offered-models.ts). Absent: the default list. */ agentModelsDisabled?: ReadonlySet<string> }
 /** Rovara's AI (DEC 240): the allow-list (agent model to Bedrock id, the gateway's own region's geography) and the exempt companies. */
 export interface RovaraAiConfig { models: ReadonlyMap<string, string>; exempt: ReadonlySet<string> }
 export interface PriceFetchConfig { mode: "price-fetch"; region: string; tables: { prices: string } }
@@ -126,10 +128,15 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
     try { exempt = parseRovaraAiExempt(env[GATEWAY_ENV.rovaraAiExempt]); } catch { throw new GatewayConfigError(GATEWAY_ENV.rovaraAiExempt); }
     rovaraAi = { models, exempt };
   } else if (env[GATEWAY_ENV.rovaraAiExempt] !== undefined) throw new GatewayConfigError(GATEWAY_ENV.rovaraAiModels);
+  let agentModelsDisabled: ReadonlySet<string> | undefined;
+  if (env[GATEWAY_ENV.agentModelsDisabled] !== undefined) {
+    if (agentKeys !== "company") throw new GatewayConfigError(GATEWAY_ENV.agentKeys);
+    try { agentModelsDisabled = parseDisabledAgentModels(env[GATEWAY_ENV.agentModelsDisabled]); } catch { throw new GatewayConfigError(GATEWAY_ENV.agentModelsDisabled); }
+  }
   // Every table distinct: no two meters, stores or the stage table may share rows.
   const all = [tables.meter, tables.ledger, tables.markers, tables.prices, tables.companies, ...(product === undefined ? [] : [product.keysTable, product.meter, product.ledger, product.markers, product.stages]), ...(learning === undefined ? [] : [learning.meter, learning.ledger, learning.markers])];
   if (new Set(all).size !== all.length) throw new GatewayConfigError(product === undefined ? GATEWAY_ENV.meterTable : learning === undefined ? GATEWAY_ENV.productMeterTable : GATEWAY_ENV.learningMeterTable);
-  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(agentKeys === undefined ? {} : { agentKeys }), ...(rovaraAi === undefined ? {} : { rovaraAi }) };
+  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(agentKeys === undefined ? {} : { agentKeys }), ...(rovaraAi === undefined ? {} : { rovaraAi }), ...(agentModelsDisabled === undefined ? {} : { agentModelsDisabled }) };
 }
 
 /** One JSON object per line on stdout, with an `event` field the alarms' metric filters count (deploy.ts GATEWAY_LOG_EVENTS). */
@@ -270,6 +277,12 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   // Cloud's Vertex connection test (PRODUCT-VERTEX-CLOUD-CONNECT): only with Vertex, the MAC key and a KMS that can verify.
   const vertexCheck = built.vertex === undefined || built.verifier === undefined || config.product?.macKeyArn === undefined ? undefined
     : createVertexCheckHandler({ issuer: config.install.issuer, kms: built.verifier, macKeyId: config.product.macKeyArn, vertex: built.vertex, now });
+  // The models one company's agents may use (offered-models.ts), signed by the install's broker with its task key: company-key mode only.
+  const offeredModels = companyKeys === undefined || handlerDeps.agentAi === undefined ? undefined : createOfferedModelsHandler({
+    verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, SERVICE_TOKEN_KIND),
+    sources: handlerDeps.agentAi.sources, disabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined),
+    ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models } }), now,
+  });
   const inFlight = new Set<Promise<void>>();
   let draining = false;
   const refuse = (res: ServerResponse) => { res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store", connection: "close" }); res.end(UNAVAILABLE); };
@@ -277,7 +290,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     // Once draining, the health check fails and a new request (on a kept-alive connection) is refused; open calls finish.
     if (draining) { refuse(res); return; }
     const path = (req.url ?? "").split("?", 1)[0];
-    const running = (vertexCheck !== undefined && path === VERTEX_CHECK_PATH ? vertexCheck(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
+    const running = (vertexCheck !== undefined && path === VERTEX_CHECK_PATH ? vertexCheck(req, res) : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
     inFlight.add(running); void running.finally(() => inFlight.delete(running));
   });
   // The load balancer keeps idle connections for up to an hour; the target must keep them at least as long, or it would cut

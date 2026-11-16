@@ -43,3 +43,4 @@ export * from "./dynamo-product-overrun.js";
 export * from "./dynamo-eval-stages.js";
 export * from "./eval-approvals.js";
 export * from "./learning-keys.js";
+export * from "./offered-models.js";

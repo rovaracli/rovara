@@ -3,7 +3,7 @@ import { ENVIRONMENT_TAG_KEY, RESOURCE_PREFIX } from "@agentx/contracts";
 import { CLOUD_PIPELINE_CONTEXT_KEY, CloudReleasePipelineStack } from "./cloud-release-pipeline.js";
 import { CLOUD_APP_CONTEXT_KEY, CloudAppStack, cloudAppStackName } from "./cloud-app.js";
 import { CloudWebStack, cloudWebStackName } from "./cloud-web.js";
-import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ModelGatewayImagesStack, ModelGatewayStack, modelGatewayImagesStackName, modelGatewayStackName } from "./model-gateway.js";
+import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ModelGatewayImagesStack, ModelGatewayStack, modelGatewayImagesStackName, modelGatewayStackName } from "./model-gateway.js";
 
 /**
  * Rovara Cloud's CDK app. What it makes is chosen by context:
@@ -76,7 +76,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       environmentName: gatewayEnv,
       repository: images.repository,
       ...(productAiOn(app.node.tryGetContext(MODEL_GATEWAY_PRODUCT_CONTEXT_KEY), MODEL_GATEWAY_PRODUCT_CONTEXT_KEY) ? { productAi: true } : {}),
-      ...rovaraAiContext(app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY), app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY)),
+      ...rovaraAiContext(app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY), app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY), app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY)),
     });
     Tags.of(gateway).add(ENVIRONMENT_TAG_KEY, gatewayEnv);
     return app;
@@ -85,14 +85,16 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
 }
 
 /** Rovara's AI for agents (DEC 240): absent is off; a non-empty string is the allow-list; the exempt list never alone. */
-export function rovaraAiContext(models: unknown, exempt: unknown): { rovaraAi?: { models: string; exempt?: string } } {
+export function rovaraAiContext(models: unknown, exempt: unknown, disabled?: unknown): { rovaraAi?: { models: string; exempt?: string; disabled?: string } } {
   if (models === undefined) {
     if (exempt !== undefined) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY} needs ${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}`);
+    if (disabled !== undefined) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY} needs ${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}`);
     return {};
   }
   if (typeof models !== "string" || models === "") throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY} must be <agent model>=<bedrock id> pairs`);
   if (exempt !== undefined && typeof exempt !== "string") throw new Error(`${MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY} must be company ids`);
-  return { rovaraAi: { models, ...(exempt === undefined || exempt === "" ? {} : { exempt }) } };
+  if (disabled !== undefined && typeof disabled !== "string") throw new Error(`${MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY} must be model names`);
+  return { rovaraAi: { models, ...(exempt === undefined || exempt === "" ? {} : { exempt }), ...(disabled === undefined ? {} : { disabled }) } };
 }
 
 /** An opt-in switch read from CDK context: absent is off, "on" is on, anything else is refused (never guessed). */
