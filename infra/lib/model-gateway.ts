@@ -96,11 +96,11 @@ export function rovaraAiModelIds(models: string, region: string): Array<{ id: st
   return pairs.map((pair) => {
     const [name, id, extra] = pair.split("=");
     const converse = id === undefined || ROVARA_AI_BEDROCK_ID.test(id) ? null : ROVARA_AI_CONVERSE_ID.exec(id);
-    if (converse !== null && name !== undefined && extra === undefined && !names.has(name) && name === converse[2]) {
+    if (converse !== null && name !== undefined && extra === undefined && !names.has(name) && name === id) {
       names.add(name);
       const geography = converse[1];
       if (geography !== undefined && (ROVARA_AI_PROFILE_REGIONS[geography] === undefined || !ROVARA_AI_PROFILE_REGIONS[geography].includes(region))) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}: ${id} is not a profile of ${region}'s geography`);
-      return { id: id!, model: converse[2], ...(geography === undefined ? {} : { geography }) };
+      return { id, model: converse[2]!, ...(geography === undefined ? {} : { geography }) };
     }
     const match = id === undefined ? null : ROVARA_AI_BEDROCK_ID.exec(id);
     if (name === undefined || extra !== undefined || !ROVARA_AI_AGENT_MODEL.test(name) || names.has(name) || match === null) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}: give <agent model>=<bedrock id> pairs`);

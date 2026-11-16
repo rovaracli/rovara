@@ -21,8 +21,8 @@ const cidA = claims.cid; const cidB = `org_${"b".repeat(20)}`;
 const MODELS: ReadonlyArray<readonly [string, string]> = [
   ["openai.gpt-oss-120b-1:0", "openai.gpt-oss-120b-1:0"], ["qwen.qwen3-coder-480b-a35b-v1:0", "qwen.qwen3-coder-480b-a35b-v1:0"],
   ["mistral.devstral-2-123b", "mistral.devstral-2-123b"], ["deepseek.v3.2", "deepseek.v3.2"], ["moonshotai.kimi-k2.5", "moonshotai.kimi-k2.5"],
-  ["minimax.minimax-m2.5", "minimax.minimax-m2.5"], ["zai.glm-5", "zai.glm-5"], ["moonshotai.kimi-k3.1", "us.moonshotai.kimi-k3.1"],
-  ["amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0"], ["xai.grok-4.7", "us.xai.grok-4.7"],
+  ["minimax.minimax-m2.5", "minimax.minimax-m2.5"], ["zai.glm-5", "zai.glm-5"], ["us.moonshotai.kimi-k3.1", "us.moonshotai.kimi-k3.1"],
+  ["us.amazon.nova-2-lite-v1:0", "us.amazon.nova-2-lite-v1:0"], ["us.xai.grok-4.7", "us.xai.grok-4.7"],
 ];
 class Choices implements AgentAiSourceReader { saved = new Map<string, AgentAiSource>(); async sourceFor(cid: string) { return this.saved.get(cid); } }
 const noKeys: LearningKeySource = { connected: async () => false, keyFor: async () => undefined };
@@ -143,9 +143,9 @@ describe("agent loop on Rovara's AI through Converse (fakes)", () => {
     expect(bedrock.sent).toEqual([]);
   });
 
-  it("allow-list: a non-Claude entry is named by its own model id, in this Region or on its own geography's profile", () => {
-    expect([...parseRovaraAiModels("qwen.qwen3-coder-480b-a35b-v1:0=qwen.qwen3-coder-480b-a35b-v1:0,moonshotai.kimi-k3.1=us.moonshotai.kimi-k3.1", "us-west-2")]).toHaveLength(2);
-    for (const bad of ["qwen-coder=qwen.qwen3-coder-480b-a35b-v1:0", "moonshotai.kimi-k3.1=global.moonshotai.kimi-k3.1", "moonshotai.kimi-k3.1=eu.moonshotai.kimi-k3.1", "us.moonshotai.kimi-k3.1=us.moonshotai.kimi-k3.1", "claude-x=anthropic.claude-x"]) {
+  it("allow-list: a non-Claude entry is named exactly by the Bedrock id called (as Code's catalog names it), in this Region or on its own geography's profile", () => {
+    expect([...parseRovaraAiModels("qwen.qwen3-coder-480b-a35b-v1:0=qwen.qwen3-coder-480b-a35b-v1:0,us.moonshotai.kimi-k3.1=us.moonshotai.kimi-k3.1", "us-west-2")]).toHaveLength(2);
+    for (const bad of ["qwen-coder=qwen.qwen3-coder-480b-a35b-v1:0", "global.moonshotai.kimi-k3.1=global.moonshotai.kimi-k3.1", "eu.moonshotai.kimi-k3.1=eu.moonshotai.kimi-k3.1", "moonshotai.kimi-k3.1=us.moonshotai.kimi-k3.1", "claude-x=anthropic.claude-x"]) {
       expect(() => parseRovaraAiModels(bad, "us-west-2")).toThrow();
     }
   });

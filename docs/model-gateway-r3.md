@@ -195,9 +195,9 @@ invoke by an admin) before Rovara's AI is switched on.
 
 ### Other Bedrock models through Converse (DEC 243c)
 
-An allow-list entry for a non-Claude Bedrock model (`<model id>=<model id>`, or `<model id>=us.<model id>` for its US profile)
+An allow-list entry for a non-Claude Bedrock model (`<id>=<id>`: the model id in this Region, or its `us.` profile id)
 is called through Converse / ConverseStream (`bedrock-converse.ts`; Converse is authorised by the same two IAM actions as
-InvokeModel). The engine names such a model by its own Bedrock model id. The gateway translates the checked Anthropic request
+InvokeModel). The engine names such a model exactly by the Bedrock id that is called, as Code's model catalog does. The gateway translates the checked Anthropic request
 (system, text, `tool_use` / `tool_result`, tools, `tool_choice` auto/any/tool, temperature) and the answer back, including
 ConverseStream to Anthropic SSE (usage arrives on the final `message_delta`); reasoning blocks are dropped, and images,
 documents, thinking blocks and `tool_choice: none` are refused before any hold (400). A call is held to the model's own output

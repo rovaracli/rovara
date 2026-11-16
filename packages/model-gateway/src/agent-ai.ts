@@ -97,10 +97,10 @@ export function parseRovaraAiModels(value: string, region: string): Map<string, 
       // Claude: an engine model name, on a profile of this Region's geography only (DEC 243).
       if (!AGENT_MODEL.test(name) || !geographies.includes(id.slice(0, id.indexOf(".")))) throw new Error("invalid rovara ai models");
     } else if (BEDROCK_CONVERSE_ID.test(id)) {
-      // Any other model (DEC 243c, through Converse): the engine names it by its own Bedrock model id (without a profile prefix);
-      // the id is that model in this Region, or its profile of this Region's geography.
+      // Any other model (DEC 243c, through Converse): the engine names it exactly by the Bedrock id that is called (Code's model
+      // catalog names Bedrock models so, profiles included): that model in this Region, or its profile of this Region's geography.
       const geo = id.split(".").length > 2 && /^(?:us|eu|apac|jp|au|ca)\./u.test(id) ? id.slice(0, id.indexOf(".")) : undefined;
-      if (name !== (geo === undefined ? id : id.slice(geo.length + 1)) || (geo !== undefined && !geographies.includes(geo))) throw new Error("invalid rovara ai models");
+      if (name !== id || (geo !== undefined && !geographies.includes(geo))) throw new Error("invalid rovara ai models");
     } else throw new Error("invalid rovara ai models");
     models.set(name, id);
   }
