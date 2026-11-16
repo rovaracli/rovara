@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import { COMPANY, PERSON, PROJECT, record, whole } from "./model-gateway-token.js";
 import type { ProductKeyFingerprinter, ProductKeySealer } from "./product-seal.js";
 import { parseVertexConnect, serializeVertexCredential, validVertexSummary, vertexSummary, type VertexCredential, type VertexSummary } from "./product-vertex-credential.js";
+import { bedrockRoleClaim, bedrockSummary, parseBedrockConnect, serializeBedrockConnection, validBedrockSummary, type BedrockConnection, type BedrockModelCheck, type BedrockSummary } from "./bedrock-byo.js";
 
 export const PRODUCT_COMPANY_OWNER = "_company";
 /**
@@ -24,9 +25,16 @@ export const LEARNING_OWNER = "_learning";
 export const LEARNING_KEY_PROVIDERS = ["anthropic", "openai", "gemini"] as const;
 export type LearningKeyProvider = typeof LEARNING_KEY_PROVIDERS[number];
 /** "anthropic" and "openai" are learning accounts only (LEARNING_OWNER); "gemini" is both a product key and a learning account. */
-export const PRODUCT_PROVIDERS = ["gemini", "vertex", "anthropic", "openai"] as const;
+export const PRODUCT_PROVIDERS = ["gemini", "vertex", "anthropic", "openai", "bedrock"] as const;
 export type ProductProvider = typeof PRODUCT_PROVIDERS[number];
 const LEARNING_ONLY: ReadonlySet<ProductProvider> = new Set(["anthropic", "openai"]);
+/**
+ * DEC 238 slice 1: the company's own Bedrock is ONE company-level source (its agents' AI). A project can't connect or link one yet
+ * (the product route's Bedrock path is slice 2), and the company document holds at most one.
+ */
+const COMPANY_ONLY: ReadonlySet<ProductProvider> = new Set(["bedrock"]);
+/** The company's one Bedrock connection's source id (Cloud's settings route uses it). */
+export const BEDROCK_SOURCE_ID = "src_bedrock";
 /**
  * How long a recorded eval approval counts at the stage hold (PRODUCT-EVAL-APPROVER-REREAD): 15 minutes from the role check
  * Cloud made with Code. Older, it is stale and must be approved again.
@@ -52,7 +60,7 @@ export type ProductRole = "company_admin" | "project_maintainer";
 /** The caller (Cloud's settings route) has checked the person's role with Code; the store re-checks what the role may change. */
 export interface ProductActor { id: string; role: ProductRole }
 
-export type ProductKeyErrorCode = "invalid" | "stale" | "not_found" | "in_recovery" | "forbidden" | "unavailable" | "too_open" | "refused";
+export type ProductKeyErrorCode = "invalid" | "stale" | "not_found" | "in_recovery" | "forbidden" | "unavailable" | "too_open" | "refused" | "aws_too_open" | "aws_refused" | "role_in_use";
 const MESSAGES: Record<ProductKeyErrorCode, string> = {
   invalid: "These product AI settings are not valid.",
   stale: "Product AI settings changed. Refresh and try again.",
@@ -62,6 +70,9 @@ const MESSAGES: Record<ProductKeyErrorCode, string> = {
   unavailable: "Product AI settings are unavailable right now. Try again.",
   too_open: "This Google setup would trust any Rovara company. Add the attribute condition from the setup steps, then test again.",
   refused: "Google refused these credentials. Check the setup steps, then test again.",
+  aws_too_open: "This AWS role would trust another Rovara company. Create it again from the setup steps, then test again.",
+  aws_refused: "AWS refused Rovara for this role. Check the role ARN and the setup steps, then test again.",
+  role_in_use: "This AWS role is already connected to another Rovara company. Create a role for this company from the setup steps.",
 };
 /** Fixed words per code. Never echoes input, a key or a cause. */
 export class ProductKeyError extends Error { constructor(readonly code: ProductKeyErrorCode) { super(MESSAGES[code]); this.name = "ProductKeyError"; } }
@@ -129,6 +140,8 @@ interface SourceRecord {
   warning?: { status: 401 | 403; at: number };
   /** Vertex own key: the non-secret summary (scheme, Google Cloud project, location, service account). */
   vertex?: VertexSummary;
+  /** Bedrock own connection: the role, Region, models and the last connection test's answer per model. */
+  bedrock?: BedrockSummary;
 }
 interface RemovedRecord { source: SourceRecord; removedAt: number; recoverUntil: number }
 /**
@@ -145,7 +158,7 @@ export interface EvalBudget { calls: number; costMicros: number }
 interface OwnerDoc { sources: SourceRecord[]; removed: RemovedRecord[]; caps?: ProductCaps; ceiling?: ProductCeiling; evalBudget?: EvalBudget; evalApproval?: StoredEvalApproval; lastRequestId?: string }
 export interface ProductSourceView {
   sourceId: string; provider: ProductProvider; hasKey: boolean; linkedTo?: string; available: boolean;
-  connectedBy: string; connectedAt: number; updatedAt: number; warning?: { status: 401 | 403; at: number }; vertex?: VertexSummary;
+  connectedBy: string; connectedAt: number; updatedAt: number; warning?: { status: 401 | 403; at: number }; vertex?: VertexSummary; bedrock?: BedrockSummary;
 }
 export interface ProductKeysView {
   revision: number; owner: string; sources: ProductSourceView[]; removed: Array<{ sourceId: string; provider: ProductProvider; recoverUntil: number }>;
@@ -164,6 +177,18 @@ const docKey = (iss: string, cid: string, owner: string) => `${prefix(iss, cid)}
 const keyRowKey = (iss: string, cid: string, owner: string, sourceId: string, versionId: string) => `${prefix(iss, cid)}#key#${owner}#${sourceId}#${versionId}`;
 const receiptKey = (iss: string, cid: string, owner: string, requestId: string) => `${prefix(iss, cid)}#req#${owner}#${requestId}`;
 const auditKey = (iss: string, cid: string, owner: string, revision: number) => `${prefix(iss, cid)}#audit#${owner}#${revision}`;
+/**
+ * DEC 238 Q5: which company holds an AWS role (bedrock-byo.ts bedrockRoleClaim), across every company of the install. Under the
+ * install's own `CO#` prefix (the table's leading-key rule), apart from every company's rows: `_bedrock_roles` is not a company id.
+ */
+export const BEDROCK_ROLE_CLAIMS = "_bedrock_roles";
+const roleClaimKey = (iss: string, roleArn: string) => `${prefix(iss, BEDROCK_ROLE_CLAIMS)}#role#${bedrockRoleClaim(roleArn)}`;
+interface RoleClaim { cid: string; owner: string; sourceId: string; claimedAt: number; releaseAfter?: number }
+function parseClaim(value: unknown): RoleClaim {
+  const c = record(value);
+  if (c === undefined || typeof c.cid !== "string" || !COMPANY.test(c.cid) || typeof c.owner !== "string" || typeof c.sourceId !== "string" || !whole(c.claimedAt) || (c.releaseAfter !== undefined && c.releaseAfter !== null && !whole(c.releaseAfter))) throw new ProductKeyError("unavailable");
+  return { cid: c.cid, owner: c.owner, sourceId: c.sourceId, claimedAt: c.claimedAt, ...(whole(c.releaseAfter) ? { releaseAfter: c.releaseAfter } : {}) };
+}
 /** The company's withdrawn eval approvals: whose, and up to when (one row per company; see withdrawApprovals). */
 const withdrawalsKey = (iss: string, cid: string) => `${prefix(iss, cid)}#withdrawn#eval-approvals`;
 interface Withdrawals { people: Record<string, number>; allBefore?: number }
@@ -210,8 +235,9 @@ function parseDoc(value: unknown): OwnerDoc {
     const r = record(s);
     return r !== undefined && typeof r.sourceId === "string" && PRODUCT_SOURCE_ID.test(r.sourceId) && PRODUCT_PROVIDERS.some((p) => p === r.provider) && typeof r.connectedBy === "string" && PERSON.test(r.connectedBy)
       && whole(r.connectedAt) && whole(r.updatedAt) && ((r.currentVersion === undefined) !== (r.link === undefined)) && (r.currentVersion === undefined || (typeof r.currentVersion === "string" && UUID.test(r.currentVersion))) && (r.link === undefined || (typeof r.link === "string" && PRODUCT_SOURCE_ID.test(r.link) && whole(r.linkedAt))) && (r.link !== undefined || r.linkedAt === undefined)
-      // A Vertex own key carries its summary; nothing else does.
-      && (r.provider === "vertex" && r.currentVersion !== undefined ? validVertexSummary(r.vertex) : r.vertex === undefined);
+      // A Vertex own key carries its summary, a Bedrock connection its own; nothing else does.
+      && (r.provider === "vertex" && r.currentVersion !== undefined ? validVertexSummary(r.vertex) : r.vertex === undefined)
+      && (r.provider === "bedrock" && r.currentVersion !== undefined ? validBedrockSummary(r.bedrock) : r.bedrock === undefined);
   };
   if (d === undefined || !Array.isArray(d.sources) || d.sources.length > PRODUCT_MAX_SOURCES || !d.sources.every(source) || !Array.isArray(d.removed) || d.removed.length > 4 * PRODUCT_MAX_SOURCES
     || !d.removed.every((r: unknown) => { const x = record(r); return x !== undefined && source(x.source) && whole(x.removedAt) && whole(x.recoverUntil); })
@@ -228,7 +254,13 @@ const validGeminiKey = (key: unknown): key is string => typeof key === "string" 
  * nothing. Without it, Vertex can't be connected (fail closed).
  */
 export type VertexCheck = (cid: string, credential: VertexCredential) => Promise<"ok" | "too_open" | "refused" | "unavailable">;
-export interface ProductKeyStoreOptions { table: ProductKeyTable; sealer: ProductKeySealer; fingerprint: ProductKeyFingerprinter; now?: () => number; providers?: readonly ProductProvider[]; vertexCheck?: VertexCheck }
+/**
+ * The Bedrock connection test (bedrock-byo-sessions.ts BedrockSessions.probe, run by the gateway: service-call.ts), for the
+ * change's company before a connection is sealed. "ok" saves, with each model's state; "too_open" (the role would trust another
+ * Rovara company), "refused" or "unavailable" saves nothing. Without it, Bedrock can't be connected (fail closed).
+ */
+export type BedrockCheck = (cid: string, connection: BedrockConnection) => Promise<{ result: "ok" | "too_open" | "refused" | "unavailable"; models?: Record<string, BedrockModelCheck> }>;
+export interface ProductKeyStoreOptions { table: ProductKeyTable; sealer: ProductKeySealer; fingerprint: ProductKeyFingerprinter; now?: () => number; providers?: readonly ProductProvider[]; vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck }
 interface Change { iss: string; cid: string; owner: string; requestId: string; expectedRevision: number; actor: ProductActor }
 
 export class ProductKeyStore {
@@ -293,6 +325,17 @@ export class ProductKeyStore {
     return { sourceId: source.sourceId, owner: LEARNING_OWNER, provider, caps: { ...PRODUCT_DEFAULT_CAPS }, versionId: source.currentVersion };
   }
   /**
+   * DEC 238: the company's own Bedrock connection (its one company-level `bedrock` source), or undefined. Never the connection
+   * itself: the agent route opens it with useKey after it is admitted.
+   */
+  async companyBedrock(iss: string, cid: string): Promise<ProductSourceResolution | undefined> {
+    this.#identity(iss, cid, PRODUCT_COMPANY_OWNER);
+    const doc = (await this.#read(iss, cid, PRODUCT_COMPANY_OWNER)).doc;
+    const source = doc.sources.find((s) => s.provider === "bedrock" && s.currentVersion !== undefined);
+    if (source?.currentVersion === undefined) return undefined;
+    return { sourceId: source.sourceId, owner: PRODUCT_COMPANY_OWNER, provider: "bedrock", caps: { ...PRODUCT_DEFAULT_CAPS }, versionId: source.currentVersion };
+  }
+  /**
    * PRODUCT-EVAL-APPROVER-REREAD: Cloud learned that this person's membership or role changed, so every eval approval they made up
    * to now stops counting at once, in every project of the company (the stage hold reads this row with the approval). One
    * conditional write on the company's withdrawal row; entries older than twice the approval's freshness are dropped (their
@@ -331,6 +374,9 @@ export class ProductKeyStore {
     const secret = this.#secretOf(change.provider, change.key);
     // No connection test configured: a Vertex connect is refused before anything else runs (no fingerprint, no KMS call).
     if (secret.vertex !== undefined && this.options.vertexCheck === undefined) throw new ProductKeyError("unavailable");
+    if (secret.bedrock !== undefined && this.options.bedrockCheck === undefined) throw new ProductKeyError("unavailable");
+    // DEC 238 slice 1: the company's own Bedrock is a company-level source only.
+    if (COMPANY_ONLY.has(change.provider) && change.owner !== PRODUCT_COMPANY_OWNER) throw new ProductKeyError("invalid");
     // Learning accounts live only in the company's learning document (DEC 226), and nothing else does: a project or the company's
     // product sources never hold an Anthropic or OpenAI account, and the learning document never holds a product-only provider.
     if (change.owner === LEARNING_OWNER ? !LEARNING_KEY_PROVIDERS.some((p) => p === change.provider) : LEARNING_ONLY.has(change.provider)) throw new ProductKeyError("invalid");
@@ -338,11 +384,16 @@ export class ProductKeyStore {
     const keyPrint = await this.options.fingerprint({ cid: change.cid, owner: change.owner, sourceId: change.sourceId, key: secret.text });
     return this.#mutate(change, "connect", { sourceId: change.sourceId, provider: change.provider, keyPrint }, async (doc, now) => {
       this.#ensureNew(doc, change.sourceId, change.provider, change.owner, now);
-      // The connection test runs only for a change that would apply (a replay or a stale revision never reaches Google).
+      // One Bedrock connection per company (its agents' one source).
+      if (COMPANY_ONLY.has(change.provider) && doc.sources.some((s) => s.provider === change.provider)) throw new ProductKeyError("invalid");
+      // DEC 238 Q5, before the test: a role another company holds is refused without calling AWS.
+      const claim = secret.bedrock === undefined ? [] : await this.#claimRole(change, secret.bedrock.roleArn, now);
+      // The connection test runs only for a change that would apply (a replay or a stale revision never reaches Google or AWS).
       if (secret.vertex !== undefined) await this.#vertexCheck(change.cid, secret.vertex);
+      const checks = secret.bedrock === undefined ? undefined : await this.#bedrockCheck(change.cid, secret.bedrock);
       const sealed = await this.options.sealer.seal(secret.text, { iss: change.iss, cid: change.cid, owner: change.owner, sourceId: change.sourceId, versionId });
-      doc.sources.push({ sourceId: change.sourceId, provider: change.provider, connectedBy: change.actor.id, connectedAt: now, updatedAt: now, currentVersion: versionId, ...(secret.vertex === undefined ? {} : { vertex: vertexSummary(secret.vertex) }) });
-      return [{ key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, versionId), put: { stage: CURRENT_STAGE, sealed, fingerprint: keyPrint, createdAt: now }, condition: { absent: true } }];
+      doc.sources.push({ sourceId: change.sourceId, provider: change.provider, connectedBy: change.actor.id, connectedAt: now, updatedAt: now, currentVersion: versionId, ...(secret.vertex === undefined ? {} : { vertex: vertexSummary(secret.vertex) }), ...(secret.bedrock === undefined || checks === undefined ? {} : { bedrock: bedrockSummary(secret.bedrock, checks, now) }) });
+      return [{ key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, versionId), put: { stage: CURRENT_STAGE, sealed, fingerprint: keyPrint, createdAt: now }, condition: { absent: true } }, ...claim];
     });
   }
   /** A project uses a company source for its test calls: a link, never a copy. */
@@ -354,6 +405,8 @@ export class ProductKeyStore {
     if (target === undefined) throw new ProductKeyError("not_found");
     // Product test calls only: the company's learning account is never linked into a project.
     if (LEARNING_ONLY.has(target.provider)) throw new ProductKeyError("invalid");
+    // DEC 238 slice 1: the company's Bedrock serves its agents only; the product route's Bedrock path (slice 2) comes first.
+    if (COMPANY_ONLY.has(target.provider)) throw new ProductKeyError("invalid");
     return this.#mutate(change, "link", { sourceId: change.sourceId, companySourceId: change.companySourceId }, (doc, now) => {
       this.#ensureNew(doc, change.sourceId, target.provider, change.owner, now);
       doc.sources.push({ sourceId: change.sourceId, provider: target.provider, connectedBy: change.actor.id, connectedAt: now, updatedAt: now, link: target.sourceId, linkedAt: target.connectedAt });
@@ -372,12 +425,18 @@ export class ProductKeyStore {
       if (source === undefined) throw new ProductKeyError("not_found");
       if (source.currentVersion === undefined) throw new ProductKeyError("invalid");
       const secret = this.#secretOf(source.provider, change.key);
+      // A changed role is claimed (refused when another company holds it) and the old one released at once: a replaced version
+      // can't be restored, so the old role is free for its account's other uses.
+      const claim = secret.bedrock === undefined ? [] : await this.#claimRole(change, secret.bedrock.roleArn, now);
+      const release = secret.bedrock === undefined || source.bedrock === undefined || bedrockRoleClaim(source.bedrock.roleArn) === bedrockRoleClaim(secret.bedrock.roleArn) ? [] : await this.#releaseRole(change, source.bedrock.roleArn, now);
       if (secret.vertex !== undefined) await this.#vertexCheck(change.cid, secret.vertex);
+      const checks = secret.bedrock === undefined ? undefined : await this.#bedrockCheck(change.cid, secret.bedrock);
       const old = source.currentVersion;
       const sealed = await this.options.sealer.seal(secret.text, { iss: change.iss, cid: change.cid, owner: change.owner, sourceId: change.sourceId, versionId });
       source.currentVersion = versionId; source.updatedAt = now; delete source.warning;
       if (secret.vertex !== undefined) source.vertex = vertexSummary(secret.vertex);
-      return [
+      if (secret.bedrock !== undefined && checks !== undefined) source.bedrock = bedrockSummary(secret.bedrock, checks, now);
+      return [...claim, ...release,
         { key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, versionId), put: { stage: CURRENT_STAGE, sealed, fingerprint: keyPrint, createdAt: now }, condition: { absent: true } },
         { key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, old), merge: { stage: "AWSPREVIOUS", purgeAfter: Math.floor((now + PRODUCT_RECOVERY_DAYS * DAY_MS) / 1000) }, condition: { exists: true } },
       ];
@@ -387,27 +446,30 @@ export class ProductKeyStore {
   async remove(change: Change & { sourceId: string }): Promise<ProductKeysView> {
     this.#check(change);
     if (!PRODUCT_SOURCE_ID.test(change.sourceId)) throw new ProductKeyError("invalid");
-    return this.#mutate(change, "remove", { sourceId: change.sourceId }, (doc, now) => {
+    return this.#mutate(change, "remove", { sourceId: change.sourceId }, async (doc, now) => {
       const at = doc.sources.findIndex((s) => s.sourceId === change.sourceId);
       if (at < 0) throw new ProductKeyError("not_found");
       const [source] = doc.sources.splice(at, 1) as [SourceRecord];
       const recoverUntil = now + PRODUCT_RECOVERY_DAYS * DAY_MS;
       if (source.currentVersion === undefined) return []; // An unlinked link holds no key.
       doc.removed.push({ source, removedAt: now, recoverUntil });
-      return [{ key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, source.currentVersion), merge: { stage: "scheduled_deletion", purgeAfter: Math.floor(recoverUntil / 1000) }, condition: { exists: true } }];
+      // The role stays this company's through the recovery window (a recover gets it back), then is free.
+      const release = source.bedrock === undefined ? [] : await this.#releaseRole(change, source.bedrock.roleArn, recoverUntil);
+      return [{ key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, source.currentVersion), merge: { stage: "scheduled_deletion", purgeAfter: Math.floor(recoverUntil / 1000) }, condition: { exists: true } }, ...release];
     });
   }
   /** Restores a removed source inside its window, with the same key. After the window: not found. */
   async recover(change: Change & { sourceId: string }): Promise<ProductKeysView> {
     this.#check(change);
     if (!PRODUCT_SOURCE_ID.test(change.sourceId)) throw new ProductKeyError("invalid");
-    return this.#mutate(change, "recover", { sourceId: change.sourceId }, (doc, now) => {
+    return this.#mutate(change, "recover", { sourceId: change.sourceId }, async (doc, now) => {
       const at = doc.removed.findIndex((r) => r.source.sourceId === change.sourceId && r.recoverUntil > now);
       if (at < 0) throw new ProductKeyError("not_found");
       const [removed] = doc.removed.splice(at, 1) as [RemovedRecord];
-      if (doc.sources.length >= PRODUCT_MAX_SOURCES || (change.owner !== PRODUCT_COMPANY_OWNER && doc.sources.some((s) => s.provider === removed.source.provider))) throw new ProductKeyError("invalid");
+      if (doc.sources.length >= PRODUCT_MAX_SOURCES || ((change.owner !== PRODUCT_COMPANY_OWNER || COMPANY_ONLY.has(removed.source.provider)) && doc.sources.some((s) => s.provider === removed.source.provider))) throw new ProductKeyError("invalid");
       doc.sources.push({ ...removed.source, updatedAt: now });
-      return [{ key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, removed.source.currentVersion!), merge: { stage: CURRENT_STAGE, purgeAfter: null }, condition: { exists: true } }];
+      const claim = removed.source.bedrock === undefined ? [] : await this.#claimRole(change, removed.source.bedrock.roleArn, now);
+      return [...claim,{ key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, removed.source.currentVersion!), merge: { stage: CURRENT_STAGE, purgeAfter: null }, condition: { exists: true } }];
     });
   }
   async setCaps(change: Change & { caps: ProductCaps }): Promise<ProductKeysView> {
@@ -459,9 +521,14 @@ export class ProductKeyStore {
 
   // ---- internals ----
   /** The text to seal: a Gemini key as given, a Vertex credential in its canonical form (only the fields the token flow needs). */
-  #secretOf(provider: ProductProvider, key: unknown): { text: string; vertex?: VertexCredential } {
+  #secretOf(provider: ProductProvider, key: unknown): { text: string; vertex?: VertexCredential; bedrock?: BedrockConnection } {
     // Gemini (AI Studio), Anthropic and OpenAI (learning accounts) keys are one printable token.
     if (provider === "gemini" || provider === "anthropic" || provider === "openai") { if (!validGeminiKey(key)) throw new ProductKeyError("invalid"); return { text: key }; }
+    if (provider === "bedrock") {
+      const bedrock = typeof key === "string" ? parseBedrockConnect(key) : undefined;
+      if (bedrock === undefined) throw new ProductKeyError("invalid");
+      return { text: serializeBedrockConnection(bedrock), bedrock };
+    }
     const vertex = typeof key === "string" ? parseVertexConnect(key) : undefined;
     if (vertex === undefined) throw new ProductKeyError("invalid");
     return { text: serializeVertexCredential(vertex), vertex };
@@ -472,6 +539,45 @@ export class ProductKeyStore {
     try { result = await this.options.vertexCheck(cid, credential); } catch { throw new ProductKeyError("unavailable"); }
     if (result === "ok") return;
     throw new ProductKeyError(result === "too_open" || result === "refused" ? result : "unavailable");
+  }
+  async #bedrockCheck(cid: string, connection: BedrockConnection): Promise<Record<string, BedrockModelCheck>> {
+    if (this.options.bedrockCheck === undefined) throw new ProductKeyError("unavailable");
+    let answer: Awaited<ReturnType<BedrockCheck>>;
+    try { answer = await this.options.bedrockCheck(cid, connection); } catch { throw new ProductKeyError("unavailable"); }
+    if (answer.result === "too_open") throw new ProductKeyError("aws_too_open");
+    if (answer.result === "refused") throw new ProductKeyError("aws_refused");
+    if (answer.result !== "ok") throw new ProductKeyError("unavailable");
+    // Every chosen model's state, from the test; a model it did not answer is "unavailable" (never assumed ready).
+    const checks: Record<string, BedrockModelCheck> = {};
+    for (const id of new Set(Object.values(connection.models))) {
+      const state = answer.models?.[id];
+      checks[id] = state === "ready" || state === "not_enabled" || state === "refused" || state === "not_found" ? state : "unavailable";
+    }
+    return checks;
+  }
+  /**
+   * DEC 238 Q5: the role's claim for this change's source, as a write in the change's transaction. Refused (role_in_use) when
+   * another company or source holds it and has not released it; a released claim past its time may be taken. The claim row's
+   * version fences the transaction, so two companies racing for one role can't both win.
+   */
+  async #claimRole(change: Change & { sourceId: string }, roleArn: string, now: number): Promise<TableWrite[]> {
+    const key = roleClaimKey(change.iss, roleArn);
+    let row: StoredRow | undefined;
+    try { row = await this.options.table.get(key); } catch { throw new ProductKeyError("unavailable"); }
+    const held = row === undefined ? undefined : parseClaim(row.item);
+    const ours = held !== undefined && held.cid === change.cid && held.owner === change.owner && held.sourceId === change.sourceId;
+    if (held !== undefined && !ours && (held.releaseAfter === undefined || held.releaseAfter > now)) throw new ProductKeyError("role_in_use");
+    return [{ key, put: { cid: change.cid, owner: change.owner, sourceId: change.sourceId, claimedAt: ours ? held.claimedAt : now }, condition: row === undefined ? { absent: true } : { version: row.version } }];
+  }
+  /** Releases this source's claim on a role from `after` on. Nothing when the claim is not this source's (never another company's). */
+  async #releaseRole(change: Change & { sourceId: string }, roleArn: string, after: number): Promise<TableWrite[]> {
+    const key = roleClaimKey(change.iss, roleArn);
+    let row: StoredRow | undefined;
+    try { row = await this.options.table.get(key); } catch { throw new ProductKeyError("unavailable"); }
+    if (row === undefined) return [];
+    const held = parseClaim(row.item);
+    if (held.cid !== change.cid || held.owner !== change.owner || held.sourceId !== change.sourceId) return [];
+    return [{ key, put: { ...held, releaseAfter: after }, condition: { version: row.version } }];
   }
   #identity(iss: string, cid: string, owner: string): void {
     if (typeof iss !== "string" || iss.length === 0 || iss.length > 2048 || typeof cid !== "string" || !COMPANY.test(cid) || typeof owner !== "string" || (owner !== PRODUCT_COMPANY_OWNER && owner !== LEARNING_OWNER && !PROJECT.test(owner))) throw new ProductKeyError("invalid");
@@ -516,7 +622,7 @@ export class ProductKeyStore {
       revision, owner, pending: false, ...(doc.lastRequestId === undefined ? {} : { lastRequestId: doc.lastRequestId }),
       sources: doc.sources.map((s) => ({
         sourceId: s.sourceId, provider: s.provider, hasKey: s.currentVersion !== undefined, available: s.link === undefined || company?.sources.some((c) => c.sourceId === s.link && c.connectedAt === s.linkedAt) === true,
-        connectedBy: s.connectedBy, connectedAt: s.connectedAt, updatedAt: s.updatedAt, ...(s.link === undefined ? {} : { linkedTo: s.link }), ...(s.warning === undefined ? {} : { warning: { ...s.warning } }), ...(s.vertex === undefined ? {} : { vertex: { ...s.vertex } }),
+        connectedBy: s.connectedBy, connectedAt: s.connectedAt, updatedAt: s.updatedAt, ...(s.link === undefined ? {} : { linkedTo: s.link }), ...(s.warning === undefined ? {} : { warning: { ...s.warning } }), ...(s.vertex === undefined ? {} : { vertex: { ...s.vertex } }), ...(s.bedrock === undefined ? {} : { bedrock: structuredClone(s.bedrock) }),
       })),
       removed: doc.removed.filter((r) => r.recoverUntil > now).map((r) => ({ sourceId: r.source.sourceId, provider: r.source.provider, recoverUntil: r.recoverUntil })),
       ...(owner === LEARNING_OWNER ? {} : owner === PRODUCT_COMPANY_OWNER ? (doc.ceiling === undefined ? {} : { ceiling: { ...doc.ceiling } }) : { caps: { ...(doc.caps ?? PRODUCT_DEFAULT_CAPS) } }),

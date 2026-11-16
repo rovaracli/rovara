@@ -63,6 +63,14 @@ export const GATEWAY_ENV = {
   rovaraAiModels: "GATEWAY_ROVARA_AI_MODELS",
   /** The companies the operator named exempt from Rovara's AI charges (DEC 240b, the founders' test company), comma-separated. */
   rovaraAiExempt: "GATEWAY_ROVARA_AI_EXEMPT",
+  /**
+   * Bring your own Bedrock (DEC 238), only with `agentKeys` "company" and the product MAC key: the ARN of Rovara's Bedrock broker
+   * role (fixed name, retained; only this gateway's role may assume it, and it may only assume customers' RovaraBedrockInvoke-*
+   * roles with an external id). Set together with `bedrockExternalIdKey`. Absent: a company that chose its own Bedrock is refused.
+   */
+  bedrockBrokerRole: "GATEWAY_BEDROCK_BROKER_ROLE",
+  /** The ARN of the KMS HMAC key the companies' external ids are made with (only this gateway may GenerateMac; never replaced). */
+  bedrockExternalIdKey: "GATEWAY_BEDROCK_EXTERNAL_ID_KEY",
 } as const;
 /** The values of GATEWAY_ENV.agentKeys. */
 export const GATEWAY_AGENT_KEY_MODES = ["install", "company"] as const;

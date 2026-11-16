@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { AgentAiSourceReader, RovaraAi } from "./agent-ai.js";
+import type { AgentAiSourceReader, ByoBedrock, RovaraAi } from "./agent-ai.js";
+import type { AwsCredentials } from "./aws.js";
+import { BEDROCK_MODEL_ACCESS_WORDS } from "./bedrock-byo-sessions.js";
 import { CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS, toConverse } from "./bedrock-converse.js";
 import { BEDROCK_CLAUDE_ID, bedrockConversePath, bedrockInvokePath } from "./bedrock-transport.js";
 import { validCaps, type Caps, type CapsSource } from "./caps.js";
@@ -40,9 +42,10 @@ export interface GatewayDependencies {
   /**
    * DEC 240, only with `agentKeys` (company-key mode): each company's chosen agent AI source. A saved "rovara" sends the call to
    * Rovara's AI (`rovara`; refused when absent) and never reads the company's key; "anthropic_key" or no saved choice is DEC 236
-   * exactly; "bedrock_byo" is refused for now. Absent: DEC 236 exactly.
+   * exactly; "bedrock_byo" sends it to the company's OWN Bedrock through its own role (`byo`; refused when absent, DEC 238).
+   * Absent: DEC 236 exactly.
    */
-  agentAi?: { sources: AgentAiSourceReader; rovara?: RovaraAi };
+  agentAi?: { sources: AgentAiSourceReader; rovara?: RovaraAi; byo?: ByoBedrock };
 }
 /** One provider call shape after its route's guard. `path` is built by the guard from checked parts, never copied from the request. */
 export interface RouteCall {
@@ -117,8 +120,16 @@ export const AGENT_KEY_MISSING: RouteRefusal = Object.freeze({ ok: false as cons
 /** Company-key mode: the provider refused the company's own key (401/403 before any output). Free; fixed words. */
 export const AGENT_KEY_REFUSED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect an AI key: the AI provider refused this company's connected key." });
 const AGENT_UNAVAILABLE: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "unavailable", message: "model access unavailable" });
-/** DEC 240: the company chose its own Bedrock (DEC 238), which is not built yet. Nothing held or sent; no fallback. */
-export const AGENT_SOURCE_NOT_OFFERED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: your own Bedrock is not available yet." });
+/** DEC 240: the company chose its own Bedrock (DEC 238), and this gateway does not offer it. Nothing held or sent; no fallback. */
+export const AGENT_SOURCE_NOT_OFFERED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: your own Bedrock is not available on this install." });
+/** DEC 238: the company chose its own Bedrock but has no connection saved. Nothing held or sent; no fallback. */
+export const BYO_BEDROCK_NOT_CONNECTED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect your Bedrock: this company chose its own Bedrock for its agents, and no AWS role is connected." });
+/** DEC 238: a model the company did not pick when it connected its Bedrock. Before any hold. */
+export const BYO_BEDROCK_MODEL: GuardFailure = Object.freeze({ ok: false as const, status: 400, code: "invalid_request", message: "This model is not one your company picked for its Bedrock connection." });
+/** DEC 238: AWS refused Rovara's use of the company's role (trust changed, role deleted, or no permission). Free. */
+export const BYO_BEDROCK_REFUSED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Check your Bedrock connection: AWS refused Rovara's use of your company's role. Test the connection again in settings." });
+/** DEC 238: the model is picked but not enabled yet in the company's AWS account (its one-time access or Marketplace step). Free. */
+export const BYO_BEDROCK_MODEL_NOT_ENABLED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "model_not_enabled", message: "This model is not enabled yet in your company's AWS account. An AWS admin opens it once in the Bedrock console, then try again." });
 /** DEC 240: the company chose Rovara's AI, and this gateway does not offer it. Nothing held or sent; no fallback to its key. */
 export const ROVARA_AI_OFF: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: Rovara's AI is not available on this install." });
 /** DEC 240: a model that is not on Rovara's AI allow-list. Before any hold. */
@@ -128,7 +139,7 @@ export const ROVARA_AI_FEATURE: GuardFailure = Object.freeze({ ok: false as cons
 /** DEC 243: the model is on the allow-list but not enabled yet in Rovara's account (its one-time Marketplace enable). Free. */
 export const ROVARA_AI_MODEL_NOT_ENABLED: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "model_not_enabled", message: "This model is not enabled yet on Rovara's AI. Choose another model, or try again after Rovara enables it." });
 /** Bedrock's words for "the account has no access to this model yet" (a Marketplace agreement or model access), read only to classify. */
-const MODEL_ACCESS_WORDS = /aws-marketplace|Model access is denied|don't have access to the model|do not have access to the model|model access/iu;
+const MODEL_ACCESS_WORDS = BEDROCK_MODEL_ACCESS_WORDS;
 /** DEC 240: Bedrock refused Rovara's own role. Free: the customer is never charged for it. */
 export const ROVARA_AI_UNAVAILABLE: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "unavailable", message: "Rovara's AI is unavailable right now. Try again later." });
 const PROVIDER_ERROR: RouteRefusal = Object.freeze({ ok: false as const, status: 502, code: "provider_error", message: "provider unavailable" });
@@ -163,18 +174,32 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
   let notSent: RouteRefusal | undefined;
   // DEC 240: set by admit when the company chose Rovara's AI; then the company's key is never read.
   let rovara: { ai: RovaraAi; marker: string } | undefined;
+  // DEC 238: set by admit when the company chose its own Bedrock; then neither its key nor Rovara's account is used.
+  let byo: { deps: ByoBedrock; row: Parameters<ByoBedrock["sessions"]["credentials"]>[0]; connection: Parameters<ByoBedrock["sessions"]["credentials"]>[1]; marker: string; transport: ProviderTransport; credentials?: AwsCredentials } | undefined;
   return {
     ...base,
-    get provider() { return rovara === undefined ? base.provider : "bedrock"; },
-    get transport() { return rovara === undefined ? base.transport : rovara.ai.transport; },
-    // Rovara's AI reads the first bytes of a Bedrock refusal, only to tell "model not enabled yet" apart (never echoed or logged).
-    get failureBody() { return rovara !== undefined; },
+    get provider() { return rovara === undefined && byo === undefined ? base.provider : "bedrock"; },
+    get transport() { return byo !== undefined ? byo.transport : rovara === undefined ? base.transport : rovara.ai.transport; },
+    // Bedrock's refusal: its first bytes, only to tell "model not enabled yet" apart (never echoed or logged).
+    get failureBody() { return rovara !== undefined || byo !== undefined; },
     async admit(claims, signal) {
       const choice = deps.agentAi;
       if (choice !== undefined) {
         let source;
         try { source = await choice.sources.sourceFor(claims.cid, signal); } catch { return AGENT_UNAVAILABLE; }
-        if (source === "bedrock_byo") return AGENT_SOURCE_NOT_OFFERED;
+        if (source === "bedrock_byo") {
+          if (choice.byo === undefined) return AGENT_SOURCE_NOT_OFFERED;
+          // Only the verified company's own connection (the token's iss and cid), never another company's.
+          let found;
+          try { found = await choice.byo.connection(claims.iss, claims.cid, signal); } catch { return AGENT_UNAVAILABLE; }
+          if (found === undefined) return BYO_BEDROCK_NOT_CONNECTED;
+          const state = { deps: choice.byo, row: found.row, connection: found.connection, marker: `byo-bedrock-${randomUUID()}` } as NonNullable<typeof byo>;
+          // The transport signs with the session `key` assumed (after the hold); without one, nothing is sent.
+          state.transport = choice.byo.transport(found.connection.region, async () => { if (state.credentials === undefined) throw new Error("no session"); return state.credentials; });
+          byo = state;
+          admitted = true;
+          return undefined;
+        }
         if (source === "rovara") {
           if (choice.rovara === undefined) return ROVARA_AI_OFF;
           // A per-call marker stands in for a key: the transport signs with the task role, and no key exists to leak.
@@ -190,6 +215,12 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     },
     guard(bytes, headers, claims) {
       const checked = base.guard(bytes, headers, claims);
+      if (byo !== undefined && checked.ok) {
+        // Only a model the company picked, sent as the Claude id or profile it picked for it (Claude only in slice 1).
+        const id = Object.hasOwn(byo.connection.models, checked.model) ? byo.connection.models[checked.model] : undefined;
+        if (id === undefined || !BEDROCK_CLAUDE_ID.test(id)) return BYO_BEDROCK_MODEL;
+        return invokeCall(checked, id);
+      }
       if (rovara === undefined || !checked.ok) return checked;
       const id = rovara.ai.models.get(checked.model);
       if (id === undefined) return ROVARA_AI_MODEL;
@@ -201,12 +232,13 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         if (converse === undefined) return ROVARA_AI_FEATURE;
         return { ...checked, model: id, maxTokens, bytes: Buffer.from(JSON.stringify(converse)), headers: { "content-type": "application/json" }, path: bedrockConversePath(id, checked.streaming) };
       }
-      // The same checked Anthropic body, as InvokeModel takes it: no model or stream field (the path says both), Bedrock's version,
-      // the allowed beta flags as a body field, and no metadata (Bedrock's Anthropic body has none).
-      const rest = Object.fromEntries(Object.entries(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>).filter(([name]) => !["model", "stream", "metadata"].includes(name)));
-      const beta = checked.headers["anthropic-beta"];
-      const body = { anthropic_version: BEDROCK_ANTHROPIC_VERSION, ...rest, ...(beta === undefined ? {} : { anthropic_beta: beta.split(",").map((flag) => flag.trim()) }) };
-      return { ...checked, model: id, bytes: Buffer.from(JSON.stringify(body)), headers: { "content-type": "application/json" }, path: bedrockInvokePath(id, checked.streaming) };
+      return invokeCall(checked, id);
+    },
+    // DEC 238: the company's own Bedrock is priced at the dearer of its Bedrock row and the Anthropic row of the model it stands for
+    // (like Vertex's), so the cap never counts less than either list price.
+    alsoPricedAs(model) {
+      if (byo === undefined) return [];
+      return Object.entries(byo.connection.models).filter(([, id]) => id === model).map(([name]) => ({ provider: "anthropic", model: name }));
     },
     line(claims, model) {
       if (rovara === undefined) return undefined;
@@ -215,6 +247,18 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     async key(claims, signal) {
       if (!admitted) return "";
       if (rovara !== undefined) return rovara.marker;
+      if (byo !== undefined) {
+        // The customer's role as THIS company (after the hold): a refusal is "not sent" ($0), in its own words.
+        let got;
+        try { got = await byo.deps.sessions.credentials(byo.row, byo.connection, signal); } catch { notSent = AGENT_UNAVAILABLE; return ""; }
+        if (!got.ok) {
+          notSent = got.reason === "refused" ? BYO_BEDROCK_REFUSED : AGENT_UNAVAILABLE;
+          if (got.reason === "refused") await byo.deps.refused?.(claims.iss, claims.cid, byo.row).catch(() => undefined);
+          return "";
+        }
+        byo.credentials = got.credentials;
+        return byo.marker;
+      }
       let key: string | undefined;
       try { key = await keys.keyFor(claims.iss, claims.cid, "anthropic", signal); } catch { notSent = AGENT_UNAVAILABLE; return ""; }
       if (key === undefined) { notSent = AGENT_KEY_MISSING; return ""; }
@@ -222,6 +266,13 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     },
     notSent: () => notSent,
     providerFailure: (status, body) => {
+      if (byo !== undefined) {
+        // A Bedrock error answer carries no output: nothing used, never charged (AWS bills the customer only for what it generated).
+        // A refusal of the role means the session is no longer good: the next call assumes it again.
+        if (status === 403 && body !== undefined && BEDROCK_MODEL_ACCESS_WORDS.test(Buffer.from(body).toString("utf8"))) return { charged: false, refusal: BYO_BEDROCK_MODEL_NOT_ENABLED };
+        if (status === 401 || status === 403) { byo.deps.sessions.forget(byo.row); void byo.deps.refused?.(byo.row.iss, byo.row.cid, byo.row).catch(() => undefined); return { charged: false, refusal: BYO_BEDROCK_REFUSED }; }
+        return { charged: false, refusal: PROVIDER_ERROR };
+      }
       if (rovara !== undefined) {
         // A Bedrock error answer carries no output and no token counts: nothing the company used, so it is never charged (DEC 240b
         // charges from Bedrock's token counts). This includes 5xx and model timeouts on Rovara's own account, and an exception that
@@ -235,6 +286,16 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
       return status === 401 || status === 403 ? { charged: false, refusal: AGENT_KEY_REFUSED } : base.providerFailure(status, body);
     },
   };
+}
+/**
+ * The checked Anthropic body as Bedrock's InvokeModel takes it for a Claude id: no model or stream field (the path says both),
+ * Bedrock's version, the allowed beta flags as a body field, and no metadata (Bedrock's Anthropic body has none).
+ */
+function invokeCall(checked: RouteCall, id: string): RouteCall {
+  const rest = Object.fromEntries(Object.entries(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>).filter(([name]) => !["model", "stream", "metadata"].includes(name)));
+  const beta = checked.headers["anthropic-beta"];
+  const body = { anthropic_version: BEDROCK_ANTHROPIC_VERSION, ...rest, ...(beta === undefined ? {} : { anthropic_beta: beta.split(",").map((flag) => flag.trim()) }) };
+  return { ...checked, model: id, bytes: Buffer.from(JSON.stringify(body)), headers: { "content-type": "application/json" }, path: bedrockInvokePath(id, checked.streaming) };
 }
 function routeFor(deps: GatewayDependencies, request: GatewayRequest): GatewayRoute | ProductControl | undefined {
   if (request.method !== "POST") return undefined;

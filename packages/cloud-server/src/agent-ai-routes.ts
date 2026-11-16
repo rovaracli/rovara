@@ -3,7 +3,7 @@
 //
 //   rovara         Rovara's AI: Claude through Rovara's own AWS account, nothing to paste, charged to the company per use.
 //   anthropic_key  the company's own Anthropic key (connected on the "Learning AI key" page; DEC 236).
-//   bedrock_byo    the company's own Bedrock (DEC 238): shown as coming soon, refused here until it is built.
+//   bedrock_byo    the company's own Bedrock (DEC 238): choosable once its AWS role is connected (bedrock-byo-routes.ts).
 //
 //   GET /org/agent-ai   the saved choice (null when none), its version, and the three choices
 //   PUT /org/agent-ai   {expectedVersion, source}: save the choice
@@ -13,12 +13,13 @@
 // the gateway uses only the saved one.
 import { recordCloudAction } from "./audit-log.js";
 import { AGENT_AI_SOURCES, COMPANY_ID, CompanyStoreConflict, type AgentAiSource } from "./company-store.js";
+import { bedrockConnected } from "./bedrock-byo-routes.js";
 import { LEARNING_AI_OWNER } from "./learning-ai-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
-/** The sources an admin may save now. `bedrock_byo` stays reserved (DEC 238). */
-export const AGENT_AI_CHOOSABLE: readonly AgentAiSource[] = ["rovara", "anthropic_key"];
+/** The sources an admin may save. `bedrock_byo` (DEC 238) only once the company's Bedrock is connected on this Cloud. */
+export const AGENT_AI_CHOOSABLE: readonly AgentAiSource[] = ["rovara", "anthropic_key", "bedrock_byo"];
 const BODY_BYTES_MAX = 1_024;
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
@@ -27,8 +28,8 @@ const WORDS = Object.freeze({
   noCompany: refusal(403, "FORBIDDEN", "Your sign-in doesn't belong to a company Cloud knows."),
   forbidden: refusal(403, "FORBIDDEN", "Only a company admin can see or change the AI the company's agents use."),
   stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
-  invalid: refusal(400, "CONFIG_INVALID", "Choose Rovara's AI or your own Anthropic key."),
-  comingSoon: refusal(400, "CONFIG_INVALID", "Your own Bedrock is coming soon. Choose Rovara's AI or your own Anthropic key for now."),
+  invalid: refusal(400, "CONFIG_INVALID", "Choose Rovara's AI, your own Anthropic key or your own Bedrock."),
+  bedrockFirst: refusal(400, "CONFIG_INVALID", "Connect your own Bedrock first (Settings, Your own Bedrock), then choose it here."),
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
   stale: refusal(409, "CONFLICT", "The AI for your agents changed. Refresh and try again."),
   unavailable: refusal(503, "RUNTIME_UNAVAILABLE", "AI for your agents is unavailable right now. Try again."),
@@ -68,12 +69,14 @@ async function anthropicKeyConnected(context: RouteContext, companyId: string): 
 async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
   let saved;
   try { saved = await context.company!.store.agentAi(who.companyId); } catch { return WORDS.unavailable; }
+  const bedrock = await bedrockConnected(context, who.companyId);
   return ok({
     source: saved?.source ?? null,
     version: saved?.version ?? 0,
     canChange: true,
-    choices: AGENT_AI_SOURCES.map((source) => ({ source, available: AGENT_AI_CHOOSABLE.includes(source) })),
+    choices: AGENT_AI_SOURCES.map((source) => ({ source, available: AGENT_AI_CHOOSABLE.includes(source) && (source !== "bedrock_byo" || bedrock === true) })),
     anthropicKeyConnected: await anthropicKeyConnected(context, who.companyId),
+    bedrockConnected: bedrock,
   });
 }
 
@@ -88,9 +91,10 @@ async function putAgentAi(context: RouteContext): Promise<RouteAnswer> {
   if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return WORDS.tooLarge;
   const body = record(context.body);
   if (body === undefined || Object.keys(body).length !== 2 || !whole(body.expectedVersion) || typeof body.source !== "string") return WORDS.invalid;
-  if (body.source === "bedrock_byo") return WORDS.comingSoon;
   const source = AGENT_AI_CHOOSABLE.find((s) => s === body.source);
   if (source === undefined) return WORDS.invalid;
+  // Only a connected Bedrock can be chosen (the gateway would refuse every call otherwise). Can't tell: refused, never guessed.
+  if (source === "bedrock_byo" && (await bedrockConnected(context, who.companyId)) !== true) return WORDS.bedrockFirst;
   const store = context.company!.store;
   try {
     await store.putAgentAi({ companyId: who.companyId, source, updatedAt: context.now().toISOString(), updatedBy: who.developerId }, body.expectedVersion);

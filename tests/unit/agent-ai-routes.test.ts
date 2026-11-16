@@ -1,5 +1,5 @@
 // DEC 240: "AI for your agents" (agent-ai-routes.ts). Company admins only (reads too), a fresh step-up on every write, audited, the
-// three choices with "your own Bedrock" refused as coming soon, and two companies never meet. The gateway reads what these save
+// three choices with "your own Bedrock" choosable only once it is connected (bedrock-byo-routes.test.ts), and two companies never meet. The gateway reads what these save
 // (tests/contract/model-gateway-agent-ai-choice.test.ts).
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -14,7 +14,7 @@ describe("AI for your agents", () => {
     const ada = await w.signIn("ada", 30);
     const empty = await w.call(ada, "GET", PATH);
     expect(empty.status).toBe(200);
-    expect(empty.body).toEqual({ source: null, version: 0, canChange: true, anthropicKeyConnected: false, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }] });
+    expect(empty.body).toEqual({ source: null, version: 0, canChange: true, anthropicKeyConnected: false, bedrockConnected: null, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }] });
     const one = await w.call(ada, "PUT", PATH, choose(0, "rovara"));
     expect(one.status).toBe(200);
     expect(one.body).toMatchObject({ source: "rovara", version: 1 });
@@ -55,12 +55,12 @@ describe("AI for your agents", () => {
     expect(await w.companies.agentAi(A)).toBeUndefined();
   });
 
-  it("your own Bedrock is coming soon; anything else is refused in fixed words; a stale version conflicts", async () => {
+  it("your own Bedrock needs a connection first; anything else is refused in fixed words; a stale version conflicts", async () => {
     const w = world({ company: true });
     const ada = await w.signIn("ada", 30);
     const soon = await w.call(ada, "PUT", PATH, choose(0, "bedrock_byo"));
     expect(soon.status).toBe(400);
-    expect(soon.body.error?.message).toBe("Your own Bedrock is coming soon. Choose Rovara's AI or your own Anthropic key for now.");
+    expect(soon.body.error?.message).toBe("Connect your own Bedrock first (Settings, Your own Bedrock), then choose it here.");
     for (const body of [choose(0, "openai"), choose(0, "<b>x"), { source: "rovara" }, { expectedVersion: -1, source: "rovara" }, { ...choose(0, "rovara"), more: 1 }, null]) {
       const r = await w.call(ada, "PUT", PATH, body);
       expect(r.status).toBe(400);

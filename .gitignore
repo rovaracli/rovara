@@ -9,6 +9,8 @@ docs/*
 !docs/model-gateway-r3.md
 !docs/model-gateway-product-ai.md
 !docs/model-gateway-learning.md
+!docs/model-gateway-bedrock-byo.md
+!docs/bedrock/
 !docs/npm-package.md
 !docs/ordered-work.md
 !docs/rovara-cloud-install.md
