@@ -244,6 +244,11 @@ describe("Bedrock product route: refusals come first, free, with nothing held, a
     expect((await call(off, url(CLAUDE, "converse"))).status).toBe(404);
     const g = await gateway();
     for (const path of [`${url(CLAUDE, "converse")}?x=1`, url(CLAUDE, "count-tokens"), `/v1/product/bedrock/model/${CLAUDE}`, "/v1/product/bedrock/models/x/converse"]) expect((await call(g, path)).status, path).toBe(404);
+    // An eval stage scope on a Bedrock path is not a route at all (a stage's answer is events, Bedrock's is AWS's own bytes): nothing is read.
+    const staged = await gateway({ evalStages: new ProductEvalStages({ approvals: { current: async () => undefined, roleOf: async () => "maintainer" }, now: () => now }) });
+    const reads = staged.kit.table.reads.length;
+    expect((await call(staged, url(CLAUDE, "converse"), converseBody, mint(), { [EVAL_SCOPE_HEADER]: "stage-1" })).status).toBe(404);
+    expect(staged.kit.table.reads.length).toBe(reads);
     expect((await call(g, url(CLAUDE, "converse"), converseBody, mint(), { [EVAL_SCOPE_HEADER]: "stage-1" })).status).toBe(404);
     const none = await gateway({ connect: [{ none: true }] });
     const sink = await call(none, url(CLAUDE, "converse"));

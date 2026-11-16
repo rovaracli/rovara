@@ -96,6 +96,8 @@ describe("the path", () => {
   });
   it("families and the upstream path are rebuilt from the id", () => {
     expect([CLAUDE, NOVA, TITAN, "global.anthropic.claude-sonnet-5-5", "arn:aws:x", "abc123"].map(bedrockFamily)).toEqual(["claude", "converse", "embedding", "claude", undefined, undefined]);
+    // Only Titan Text Embeddings V1 and V2 are embedding models here: any other embed id is no InvokeModel model at all.
+    expect(["amazon.titan-embed-text-v3:0", "amazon.titan-embed-image-v1", "amazon.titan-embed-text-v2:0:8k", "amazon.titan-embed-text-v1:2"].map(bedrockFamily)).toEqual(["converse", "converse", "converse", "converse"]);
     expect(bedrockProductPath(CLAUDE, "converse")).toBe("/model/us.anthropic.claude-sonnet-4-5-20250929-v1%3A0/converse");
     expect(() => bedrockProductPath("arn:aws:bedrock:x", "converse")).toThrow();
     expect(() => bedrockProductPath(CLAUDE, "count-tokens" as never)).toThrow();
@@ -270,7 +272,8 @@ describe("the usage readers", () => {
     const exception = frame({ ":exception-type": "throttlingException", ":message-type": "exception", ":content-type": "application/json" }, Buffer.from("{}"));
     const flipped = Buffer.from(meta); flipped[flipped.length - 1] ^= 1;
     for (const [name, bytes] of Object.entries({
-      none: Buffer.concat([start, delta, stop, stopMsg]), early: Buffer.concat([start, meta, stopMsg]), twice: Buffer.concat([start, stopMsg, meta, meta]), exception: Buffer.concat([start, exception]),
+      none: Buffer.concat([start, delta, stop, stopMsg]), early: Buffer.concat([start, meta, stopMsg]), earlyOnly: Buffer.concat([start, meta]), trailingCut: Buffer.concat([start, stopMsg, meta, delta.subarray(0, 9)]),
+      exceptionAsEvent: Buffer.concat([start, frame({ ":event-type": "messageStart", ":message-type": "exception", ":content-type": "application/json" }, Buffer.from("{}")), stopMsg, meta]), twice: Buffer.concat([start, stopMsg, meta, meta]), exception: Buffer.concat([start, exception]),
       crc: Buffer.concat([start, stopMsg, flipped]), cut: Buffer.concat([start, stopMsg, meta.subarray(0, meta.length - 3)]), unknown: Buffer.concat([start, converseEvent("somethingNew", {}), stopMsg, meta]),
       badUsage: Buffer.concat([start, stopMsg, converseEvent("metadata", { usage: { inputTokens: -1, outputTokens: 1 } })]), noUsage: Buffer.concat([start, stopMsg, converseEvent("metadata", {})]),
     })) expect(feed(new BedrockUsage("converse-stream"), bytes), name).toBeUndefined();
@@ -364,6 +367,8 @@ describe("the passthrough transport", () => {
   it("sends nothing for a path or id the product route would not have built (not sent: free)", async () => {
     const f = fakeRequest(200, []);
     const transport = createBedrockProductTransport({ region: "us-west-2", credentials: async () => credentials, request: f.request });
+    // The path must be exactly the one the route builds: a raw ":" or a lower-case escape is another spelling, not sent.
+    for (const path of ["/model/us.amazon.nova-pro-v1:0/converse", "/model/us.amazon.nova-pro-v1%3a0/converse"]) await expect(send(transport, path), path).rejects.toBeInstanceOf(NotSentError);
     for (const path of [undefined, "/model/x/converse", "/model/arn%3Aaws%3Abedrock%3Aus-west-2%3A1%3Aprovisioned-model%2Fabc/converse", `/model/${NOVA}/invoke`, `/model/${encodeURIComponent(TITAN)}/converse`, `/model/${encodeURIComponent(NOVA)}/converse?x=1`, "/model/%2e%2e/converse", `/model/${encodeURIComponent(NOVA)}/invoke-with-response-stream`, "/v1/messages"]) {
       await expect(send(transport, path), String(path)).rejects.toBeInstanceOf(NotSentError);
     }

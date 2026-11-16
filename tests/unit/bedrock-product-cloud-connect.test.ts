@@ -103,7 +103,10 @@ describe("Cloud: a project's own Bedrock role", () => {
     for (const [method, path, body] of [["PUT", `${PROJECT}/bedrock`, write(0, FORM(A))], ["PUT", `${PROJECT}/bedrock/link`, write(0)], ["DELETE", `${PROJECT}/bedrock`, write(0)]] as const) {
       expect((await w.call(cal, method, path, body)).status, `${method} ${path}`).toBe(403);
     }
-    expect((await w.call(await w.signIn("pam", 3600), "PUT", `${PROJECT}/bedrock`, write(0, FORM(A)))).body.error?.code).toBe("STEP_UP_REQUIRED");
+    const stale = await w.signIn("pam", 3600);
+    for (const [method, path, body] of [["PUT", `${PROJECT}/bedrock`, write(0, FORM(A))], ["PUT", `${PROJECT}/bedrock/link`, write(0)], ["DELETE", `${PROJECT}/bedrock`, write(0)]] as const) {
+      expect((await w.call(stale, method, path, body)).body.error?.code, `${method} ${path}`).toBe("STEP_UP_REQUIRED");
+    }
     const pam = await w.signIn("pam", 30);
     for (const body of [
       write(0, FORM(A, { roleArn: "arn:aws:iam::111111111111:role/Admin" })), write(0, FORM(A, { region: "us-gov-west-1" })), write(0, FORM(A, { productModels: [] })), write(0, FORM(A, { productModels: ["arn:aws:bedrock:us-west-2:1:provisioned-model/x"] })),
