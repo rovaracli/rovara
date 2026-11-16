@@ -59,6 +59,40 @@ export const MODEL_GATEWAY_CONTEXT_KEY = "rovaraModelGateway";
  * byte for byte what it was before (tests/contract/model-gateway-product-infra.test.ts pins it).
  */
 export const MODEL_GATEWAY_PRODUCT_CONTEXT_KEY = "rovaraModelGatewayProductAi";
+/**
+ * Rovara's AI for agents (DEC 240), only with MODEL_GATEWAY_PRODUCT_CONTEXT_KEY on (company-key mode):
+ * `-c rovaraModelGatewayRovaraAi=<agent model>=<bedrock id>,...` is the allow-list (GATEWAY_ROVARA_AI_MODELS), and
+ * `-c rovaraModelGatewayRovaraAiExempt=<org id>,...` the operator's explicit list of companies exempt from charges (the founders'
+ * test company, DEC 240b). Refused for production at synth. Absent: the template is exactly as without it.
+ */
+export const MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY = "rovaraModelGatewayRovaraAi";
+export const MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY = "rovaraModelGatewayRovaraAiExempt";
+/**
+ * The Regions a system inference profile of each geography sends calls to (bedrock get-inference-profile, staging us-west-2,
+ * 2026-11-15: every us. Claude profile lists us-east-1, us-east-2 and us-west-2). Invoking through a profile needs the
+ * foundation-model ARN in each of them; the grant allows those ONLY through the named profiles (bedrock:InferenceProfileArn).
+ */
+export const ROVARA_AI_PROFILE_REGIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({ us: ["us-east-1", "us-east-2", "us-west-2"] });
+const ROVARA_AI_AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;
+const ROVARA_AI_BEDROCK_ID = /^(?:([a-z]{2,4})\.)?(anthropic\.claude-[a-z0-9-]{1,80}(?::\d{1,3})?)$/u;
+const ROVARA_AI_COMPANY = /^org_[0-9a-z]{20}$/u;
+export interface RovaraAiProps { readonly models: string; readonly exempt?: string }
+/** The allow-list's Bedrock ids, checked as the process checks them (agent-ai.ts parseRovaraAiModels; a contract test holds the two together). */
+export function rovaraAiModelIds(models: string, region: string): Array<{ id: string; geography?: string; model: string }> {
+  const pairs = models.split(",").map((pair) => pair.trim());
+  const names = new Set<string>();
+  if (models.trim() === "" || pairs.length > 20) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}: give <agent model>=<bedrock id> pairs`);
+  return pairs.map((pair) => {
+    const [name, id, extra] = pair.split("=");
+    const match = id === undefined ? null : ROVARA_AI_BEDROCK_ID.exec(id);
+    if (name === undefined || extra !== undefined || !ROVARA_AI_AGENT_MODEL.test(name) || names.has(name) || match === null) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}: give <agent model>=<bedrock id> pairs`);
+    names.add(name);
+    const geography = match[1];
+    // In-geography only: the gateway's own Region's profiles (no global routing), and only a geography whose Regions are known.
+    if (geography !== undefined && (ROVARA_AI_PROFILE_REGIONS[geography] === undefined || !ROVARA_AI_PROFILE_REGIONS[geography].includes(region))) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}: ${id} is not a profile of ${region}'s geography`);
+    return { id: id!, model: match[2]!, ...(geography === undefined ? {} : { geography }) };
+  });
+}
 
 /** Both validate the name first (the environment rules), so a bad name fails with that message, not CloudFormation's. */
 export function modelGatewayStackName(env: string): string {
@@ -95,6 +129,8 @@ export const MODEL_GATEWAY_ENV = {
   learningLedgerTable: "GATEWAY_LEARNING_LEDGER_TABLE",
   learningMarkersTable: "GATEWAY_LEARNING_MARKERS_TABLE",
   agentKeys: "GATEWAY_AGENT_KEYS",
+  rovaraAiModels: "GATEWAY_ROVARA_AI_MODELS",
+  rovaraAiExempt: "GATEWAY_ROVARA_AI_EXEMPT",
 } as const;
 /** The eval stage table's due-stages index (deploy.ts GATEWAY_EVAL_STAGE_INDEXES). */
 export const MODEL_GATEWAY_EVAL_STAGE_INDEXES = {
@@ -185,6 +221,8 @@ export interface ModelGatewayProps extends StackProps {
   readonly repository: ecr.IRepository;
   /** The product-AI, learning and Vertex additions (MODEL_GATEWAY_PRODUCT_CONTEXT_KEY). Default off. */
   readonly productAi?: boolean;
+  /** Rovara's AI for agents (MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY). Needs productAi. Default off. */
+  readonly rovaraAi?: RovaraAiProps;
 }
 
 /** Table defaults: on-demand, point-in-time recovery, deletion protection, kept if the stack goes. */
@@ -383,7 +421,10 @@ export class ModelGatewayStack extends Stack {
     // The price job: the prices table only (no meter, no ledger, no keys). Corrections run in the serving tasks.
     fetchRole.addToPolicy(new iam.PolicyStatement({ sid: "WritePrices", actions: ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [prices.tableArn] }));
 
+    // Checked first, so this refusal stands on its own (not only behind product AI's).
+    if (props.rovaraAi !== undefined && env === "production") throw new Error("Rovara's AI is for named test environments until a Cloud release carries it");
     const product = props.productAi === true ? this.productAi(env, issuer, serveRole, moneyActions, companyKeysOnly) : undefined;
+    const rovaraAi = props.rovaraAi === undefined ? undefined : this.rovaraAi(props.rovaraAi, product !== undefined, serveRole);
 
     // Network: two zones, public subnets and no NAT gateway. Tasks take only the load balancer's traffic; DynamoDB through a
     // gateway endpoint.
@@ -438,6 +479,7 @@ export class ModelGatewayStack extends Stack {
         [MODEL_GATEWAY_ENV.anthropicKeySecret]: anthropic.secretArn,
         [MODEL_GATEWAY_ENV.companyTable]: companyTableName.valueAsString,
         ...(product === undefined ? {} : product.environment),
+        ...(rovaraAi === undefined ? {} : rovaraAi.environment),
       },
     });
     props.repository.grantPull(serveTask.obtainExecutionRole());
@@ -556,6 +598,35 @@ export class ModelGatewayStack extends Stack {
       new CfnOutput(this, "ProductKeysMacKeyArn", { value: product.macKey.keyArn, description: "Keyed fingerprints of product keys and change intents (RovaraCloudWeb parameter ProductKeysMacKeyArn)" });
       new CfnOutput(this, "VertexFederationRoleArn", { value: product.vertexRole.roleArn, description: "Customers name this role in their Google workload identity pool (attribute condition on the assumed-role ARN with their company id)" });
     }
+  }
+
+  /**
+   * Rovara's AI for agents (DEC 240): Bedrock in THIS account, on the serving role. Exactly two actions (Converse is not used),
+   * on the allow-listed system inference profiles in this Region and, only through those profiles, their foundation models in
+   * the profile's Regions; a plain model id (no profile) only in this Region. No other Bedrock action, model or Region; no
+   * Marketplace rights (model access is enabled once by an operator). Production is refused before this (the constructor).
+   */
+  private rovaraAi(settings: RovaraAiProps, productOn: boolean, serveRole: iam.Role) {    if (!productOn) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY} needs ${MODEL_GATEWAY_PRODUCT_CONTEXT_KEY}=on (the company picks its agents' AI in company-key mode)`);
+    const region = this.region;
+    const ids = rovaraAiModelIds(settings.models, region);
+    const exempt = settings.exempt ?? "";
+    const exemptIds = exempt === "" ? [] : exempt.split(",");
+    if (exemptIds.length > 10 || exemptIds.some((id) => !ROVARA_AI_COMPANY.test(id)) || new Set(exemptIds).size !== exemptIds.length) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY}: give company ids (org_...), comma-separated`);
+    const actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"];
+    const profiles = ids.filter((m) => m.geography !== undefined);
+    const plain = ids.filter((m) => m.geography === undefined);
+    const profileArn = (id: string) => `arn:${this.partition}:bedrock:${region}:${this.account}:inference-profile/${id}`;
+    const modelArn = (where: string, model: string) => `arn:${this.partition}:bedrock:${where}::foundation-model/${model}`;
+    if (profiles.length > 0) {
+      serveRole.addToPolicy(new iam.PolicyStatement({ sid: "RovaraAiProfiles", actions, resources: [...new Set(profiles.map((m) => profileArn(m.id)))] }));
+      serveRole.addToPolicy(new iam.PolicyStatement({
+        sid: "RovaraAiProfileModels", actions,
+        resources: [...new Set(profiles.flatMap((m) => ROVARA_AI_PROFILE_REGIONS[m.geography!]!.map((where) => modelArn(where, m.model))))],
+        conditions: { StringEquals: { "bedrock:InferenceProfileArn": [...new Set(profiles.map((m) => profileArn(m.id)))] } },
+      }));
+    }
+    if (plain.length > 0) serveRole.addToPolicy(new iam.PolicyStatement({ sid: "RovaraAiModels", actions, resources: [...new Set(plain.map((m) => modelArn(region, m.model)))] }));
+    return { environment: { [MODEL_GATEWAY_ENV.rovaraAiModels]: settings.models, ...(exempt === "" ? {} : { [MODEL_GATEWAY_ENV.rovaraAiExempt]: exempt }) } };
   }
 
   /**

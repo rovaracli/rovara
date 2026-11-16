@@ -154,3 +154,33 @@ source that learning also reads; the deployed template sets it whenever `rovaraM
   a company-key process without its company key source refuses to start.
 
 Absent (or `install`): the install-key route exactly as before.
+
+## Rovara's AI for agents (DEC 240)
+
+In company-key mode each company's admin picks "AI for your agents" in Cloud (`/app/admin/agent-ai`, route
+`/org/agent-ai`: company admins, fresh step-up, audited as `agent_ai.source.changed`). Cloud saves it in its Companies table
+(`COMPANY#<org>` / `AGENT_AI`); the gateway reads it on every agent call (`agent-ai.ts`, strongly consistent, fail closed):
+
+- `rovara`: Rovara's AI. The call goes to Bedrock in Rovara's OWN account with the gateway task role (no customer role, no
+  external id): `InvokeModel` / `InvokeModelWithResponseStream` with the Anthropic body (`bedrock-transport.ts`, SigV4 service
+  `bedrock`, fixed host `bedrock-runtime.<region>.amazonaws.com`). The streamed AWS event stream is turned back into Anthropic SSE
+  (`bedrock-event-stream.ts`). Only the allow-listed models (`GATEWAY_ROVARA_AI_MODELS`, `<agent model>=<bedrock id>`), in the
+  gateway Region's geography (no `global.` profile). The company's own key is never read.
+- `anthropic_key`, or no saved choice: company-key mode exactly as above.
+- `bedrock_byo` (DEC 238): refused for now (403 `no_ai_key`, "your own Bedrock is not available yet").
+
+There is no fallback between sources: Rovara's AI chosen on a gateway without it is refused (403), and so is a company key that is
+missing. Money (DEC 240b): priced from the `bedrock` price rows (the dearest of their Regions and tiers), under the one combined
+company cap, settled from Bedrock's own token counts. Each Rovara's AI call's hold carries a billable line
+(`{ source: "rovara_ai", charge, model }`) that lands on its ledger row (`CALL#<id>`) when it settles or is swept: that row's
+`settledMicros` is the amount on the company's bill. `charge` is `exempt` only for companies the operator lists in
+`GATEWAY_ROVARA_AI_EXEMPT` (the founders' test company), never inferred; caps still apply to them. Bedrock's explicit refusals
+(400, 404, 429) are free; its refusal of Rovara's own role (401, 403) is free and answers 503 "Rovara's AI is unavailable right
+now"; other failures are charged as on the install-key route.
+
+Deploy: `-c rovaraModelGatewayRovaraAi=<allow-list>` (and optionally `-c rovaraModelGatewayRovaraAiExempt=<org ids>`) beside
+`-c rovaraModelGatewayProductAi=on`; refused for production at synth. The serving role then gets exactly `bedrock:InvokeModel` and
+`bedrock:InvokeModelWithResponseStream` on the allow-listed inference profiles in its Region and, only through those profiles
+(`bedrock:InferenceProfileArn`), their foundation models in the profile's Regions (a `us.` profile serves from us-east-1, us-east-2
+and us-west-2). The role has no Marketplace rights: an operator enables each model once in the account (Bedrock console or one
+invoke by an admin) before Rovara's AI is switched on.

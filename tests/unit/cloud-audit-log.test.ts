@@ -251,6 +251,7 @@ describe("recording a Cloud action", () => {
 
   it("knows exactly the Cloud actions the plan names, each recordable, and refuses any other action", async () => {
     expect([...CLOUD_AUDIT_ACTIONS].sort()).toEqual([
+      "agent_ai.source.changed",
       "company.budget.changed", "company.invite.created", "company.invite.revoked", "company.rules.changed", "company.signin_client.changed",
       "hook.decide.answered", "hook.decide.unanswered", "hook.start.answered", "hook.start.unanswered", "hook.values.answered", "hook.values.unanswered",
       "learning_ai.key.connected", "learning_ai.key.removed", "learning_ai.key.rotated",

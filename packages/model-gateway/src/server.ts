@@ -186,7 +186,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
       if (id === undefined) return ROVARA_AI_MODEL;
       // The same checked Anthropic body, as InvokeModel takes it: no model or stream field (the path says both), Bedrock's version,
       // the allowed beta flags as a body field, and no metadata (Bedrock's Anthropic body has none).
-      const { model: _model, stream: _stream, metadata: _metadata, ...rest } = JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>;
+      const rest = Object.fromEntries(Object.entries(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>).filter(([name]) => !["model", "stream", "metadata"].includes(name)));
       const beta = checked.headers["anthropic-beta"];
       const body = { anthropic_version: BEDROCK_ANTHROPIC_VERSION, ...rest, ...(beta === undefined ? {} : { anthropic_beta: beta.split(",").map((flag) => flag.trim()) }) };
       return { ...checked, model: id, bytes: Buffer.from(JSON.stringify(body)), headers: { "content-type": "application/json" }, path: bedrockInvokePath(id, checked.streaming) };

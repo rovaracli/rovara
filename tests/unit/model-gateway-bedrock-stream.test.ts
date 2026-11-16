@@ -47,9 +47,9 @@ describe("event-stream decoder", () => {
 
   it("refuses a message whose prelude or message checksum is wrong", () => {
     const good = chunk({ type: "message_stop" });
-    const badPrelude = Buffer.from(good); badPrelude[9] ^= 0xff;
+    const badPrelude = Buffer.from(good); badPrelude[9] = badPrelude[9]! ^ 0xff;
     expect(() => new EventStreamDecoder().push(badPrelude)).toThrow();
-    const badBody = Buffer.from(good); badBody[good.length - 6] ^= 0xff;
+    const badBody = Buffer.from(good); badBody[good.length - 6] = badBody[good.length - 6]! ^ 0xff;
     expect(() => new EventStreamDecoder().push(badBody)).toThrow();
   });
 

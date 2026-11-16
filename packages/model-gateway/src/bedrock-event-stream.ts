@@ -72,7 +72,7 @@ export class BedrockStreamToSse {
         event = record(JSON.parse(Buffer.from(wrapper.bytes, "base64").toString("utf8")) as unknown);
       } catch { throw new EventStreamError(); }
       if (event === undefined || typeof event.type !== "string" || !ANTHROPIC_EVENTS.has(event.type)) throw new EventStreamError();
-      const { "amazon-bedrock-invocationMetrics": _metrics, ...anthropic } = event;
+      const anthropic = Object.fromEntries(Object.entries(event).filter(([name]) => name !== "amazon-bedrock-invocationMetrics"));
       out.push(Buffer.from(`event: ${event.type}\ndata: ${JSON.stringify(anthropic)}\n\n`, "utf8"));
     }
     return Buffer.concat(out);

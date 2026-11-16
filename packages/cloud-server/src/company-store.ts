@@ -51,6 +51,16 @@ export interface InviteRecord {
   acceptedBy?: string;
 }
 /** A Code install the policy hook answers: its pinned public keys (at most two, for rotation) and the companies it may ask about. */
+/**
+ * DEC 240: which AI the company's agents use ("AI for your agents"). The model gateway reads the same item (model-gateway agent-ai.ts):
+ * "rovara" is Rovara's AI (charged per use), "anthropic_key" the company's own Anthropic key, "bedrock_byo" its own Bedrock (reserved:
+ * the routes refuse it until DEC 238 is built). No saved choice: the gateway's company-key mode as before.
+ */
+export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo"] as const;
+export type AgentAiSource = (typeof AGENT_AI_SOURCES)[number];
+export interface AgentAiChoice { companyId: string; source: AgentAiSource; version: number; updatedAt: string; updatedBy: string }
+export const validAgentAiSource = (value: unknown): value is AgentAiSource => typeof value === "string" && (AGENT_AI_SOURCES as readonly string[]).includes(value);
+
 export interface HookInstall { issuer: string; keys: PublicJwk[]; companyIds: string[]; updatedAt: string }
 
 export const PENDING_CHANGE_DAYS = 7;
@@ -89,6 +99,10 @@ export interface CompanyStore {
   updateInvite(next: InviteRecord, expected: { revision: number; state: InviteState }): Promise<void>;
   /** Removes an unconfirmed invite (Code never took it), with its request id and token. */
   removeInvite(invite: InviteRecord): Promise<void>;
+  /** The company's agent AI choice (DEC 240), or undefined when none was saved or the row does not read as this company's. */
+  agentAi(companyId: string): Promise<AgentAiChoice | undefined>;
+  /** Saves the choice at `expectedVersion + 1` (0: none saved yet). Throws CompanyStoreConflict. */
+  putAgentAi(choice: Omit<AgentAiChoice, "version">, expectedVersion: number): Promise<number>;
   hookInstall(issuer: string): Promise<HookInstall | undefined>;
   /** An install operator's change (no app route writes this). Throws on an install that does not read. */
   putHookInstall(install: HookInstall): Promise<void>;
@@ -162,6 +176,15 @@ export class LocalCompanyStore implements CompanyStore {
   private readonly requests = new Map<string, string>();
   private readonly tokens = new Map<string, { companyId: string; inviteId: string }>();
   private readonly installs = new Map<string, HookInstall>();
+  private readonly agentAiOf = new Map<string, AgentAiChoice>();
+
+  async agentAi(companyId: string) { const choice = this.agentAiOf.get(companyId); return choice === undefined ? undefined : copy(choice); }
+
+  async putAgentAi(choice: Omit<AgentAiChoice, "version">, expectedVersion: number) {
+    if ((this.agentAiOf.get(choice.companyId)?.version ?? 0) !== expectedVersion) throw new CompanyStoreConflict("agent ai");
+    this.agentAiOf.set(choice.companyId, { ...copy(choice), version: expectedVersion + 1 });
+    return expectedVersion + 1;
+  }
 
   async settings(companyId: string) { const stored = this.settingsOf.get(companyId); return stored === undefined ? undefined : copy(stored); }
 

@@ -286,6 +286,22 @@ describe("the company's choice in Cloud's Companies table (COMPANY#<org>/AGENT_A
   });
 });
 
+describe("InMemoryMeter: billable lines (DEC 240b)", () => {
+  it("a malformed line is refused at the hold; a good one lands only on its own company", async () => {
+    const { meter } = setup();
+    const good = { source: "rovara_ai" as const, charge: "customer" as const, model: BEDROCK_ID };
+    for (const bad of [{ ...good, charge: "free" }, { ...good, source: "anthropic" }, { ...good, model: "X Y" }, { ...good, extra: 1 }]) {
+      expect(await meter.reserve({ scope, caps, estimateMicros: 40, line: bad as never })).toEqual({ ok: false, reason: "busy" });
+    }
+    expect(await committed(meter)).toBe(0);
+    const held = await meter.reserve({ scope, caps, estimateMicros: 40, line: good });
+    if (!held.ok) throw new Error("hold refused");
+    await meter.settle(held.reservation, 30);
+    expect(meter.billedCalls(claims.iss, cidA)).toMatchObject([{ settledMicros: 30, line: good }]);
+    expect(meter.billedCalls(claims.iss, cidB)).toEqual([]);
+  });
+});
+
 describe("DynamoMeter: the billable line on the ledger row (DEC 240b)", () => {
   const TABLES = { meter: "gw-meter", ledger: "gw-ledger", markers: "gw-markers" };
   const meterScope = (cid: string) => ({ iss: "https://install.example/v1/auth", cid, pid: "web", tid: "task_1" });
