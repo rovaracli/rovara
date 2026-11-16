@@ -81,6 +81,19 @@ export const ROVARA_AI_US_MODELS = [
   "claude-opus-5-5=us.anthropic.claude-opus-5-5",
   "claude-fable-5-2=us.anthropic.claude-fable-5-2",
 ].join(",");
+/** DEC 243c: the other Bedrock coding models `on` also offers (the gateway's agent-ai.ts ROVARA_AI_US_CONVERSE_MODELS; a contract test holds them equal). */
+export const ROVARA_AI_US_CONVERSE_MODELS = [
+  "qwen.qwen3-coder-480b-a35b-v1:0=qwen.qwen3-coder-480b-a35b-v1:0",
+  "qwen.qwen3-coder-30b-a3b-v1:0=qwen.qwen3-coder-30b-a3b-v1:0",
+  "qwen.qwen3-235b-a22b-2507-v1:0=qwen.qwen3-235b-a22b-2507-v1:0",
+  "mistral.devstral-2-123b=mistral.devstral-2-123b",
+  "mistral.mistral-large-3-675b-instruct=mistral.mistral-large-3-675b-instruct",
+  "deepseek.v3-v1:0=deepseek.v3-v1:0",
+  "moonshotai.kimi-k2.5=moonshotai.kimi-k2.5",
+  "zai.glm-5=zai.glm-5",
+  "zai.glm-4.7=zai.glm-4.7",
+  "us.amazon.nova-2-lite-v1:0=us.amazon.nova-2-lite-v1:0",
+].join(",");
 export const ROVARA_AI_PROFILE_REGIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({ us: ["us-east-1", "us-east-2", "us-west-2"] });
 const ROVARA_AI_AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;
 const ROVARA_AI_BEDROCK_ID = /^([a-z]{2,4})\.(anthropic\.claude-[a-z0-9-]{1,80}(?::\d{1,3})?)$/u;
@@ -627,7 +640,7 @@ export class ModelGatewayStack extends Stack {
    */
   private rovaraAi(settings: RovaraAiProps, productOn: boolean, serveRole: iam.Role) {    if (!productOn) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY} needs ${MODEL_GATEWAY_PRODUCT_CONTEXT_KEY}=on (the company picks its agents' AI in company-key mode)`);
     const region = this.region;
-    const models = settings.models === "on" ? ROVARA_AI_US_MODELS : settings.models;
+    const models = settings.models === "on" ? `${ROVARA_AI_US_MODELS},${ROVARA_AI_US_CONVERSE_MODELS}` : settings.models;
     const ids = rovaraAiModelIds(models, region);
     const exempt = settings.exempt ?? "";
     const exemptIds = exempt === "" ? [] : exempt.split(",");

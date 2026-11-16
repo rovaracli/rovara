@@ -6,9 +6,9 @@ import type { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
-import { parseRovaraAiModels, ROVARA_AI_US_MODELS as GATEWAY_US_MODELS } from "../../packages/model-gateway/src/agent-ai.js";
+import { parseRovaraAiModels, ROVARA_AI_US_CONVERSE_MODELS as GATEWAY_US_CONVERSE_MODELS, ROVARA_AI_US_MODELS as GATEWAY_US_MODELS } from "../../packages/model-gateway/src/agent-ai.js";
 import { buildAgentXApp, rovaraAiContext } from "../../infra/lib/app.js";
-import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_ENV, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ROVARA_AI_US_MODELS, rovaraAiModelIds } from "../../infra/lib/model-gateway.js";
+import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_ENV, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ROVARA_AI_US_CONVERSE_MODELS, ROVARA_AI_US_MODELS, rovaraAiModelIds } from "../../infra/lib/model-gateway.js";
 
 type Resource = { Type: string; Properties: Record<string, unknown> };
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>> };
@@ -69,15 +69,19 @@ describe("Rovara's AI in the gateway stack (DEC 240)", () => {
     expect(serveEnv(synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS }))[GATEWAY_ENV.rovaraAiExempt]).toBeUndefined();
   });
 
-  it("on: the built-in allow-list of DEC 243 (all five Claude models on their us. profiles), the same list the process reads", () => {
+  it("on: the built-in allow-list of DEC 243 and 243c (five Claude models on us. profiles, ten other coding models), the same lists the process reads", () => {
     const t = synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "on" });
     expect(ROVARA_AI_US_MODELS).toBe(GATEWAY_US_MODELS);
-    expect(serveEnv(t)[GATEWAY_ENV.rovaraAiModels]).toBe(GATEWAY_US_MODELS);
-    const profiles = ["us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-haiku-5-5", "us.anthropic.claude-sonnet-5-5", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-fable-5-2"];
+    expect(ROVARA_AI_US_CONVERSE_MODELS).toBe(GATEWAY_US_CONVERSE_MODELS);
+    expect(serveEnv(t)[GATEWAY_ENV.rovaraAiModels]).toBe(`${GATEWAY_US_MODELS},${GATEWAY_US_CONVERSE_MODELS}`);
+    expect([...parseRovaraAiModels(`${GATEWAY_US_MODELS},${GATEWAY_US_CONVERSE_MODELS}`, "us-west-2")]).toHaveLength(16);
+    const profiles = ["us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-haiku-5-5", "us.anthropic.claude-sonnet-5-5", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-fable-5-2", "us.amazon.nova-2-lite-v1:0"];
     const bySid: Record<string, Statement> = Object.fromEntries(bedrock(t).map((s) => [s.Sid ?? "", s]));
     expect(bySid.RovaraAiProfiles!.Resource).toEqual(profiles.map(profileArn));
-    expect([bySid.RovaraAiProfileModels!.Resource].flat()).toHaveLength(15);
-    expect(Object.keys(bySid).sort()).toEqual(["RovaraAiProfileModels", "RovaraAiProfiles"]);
+    // 6 profiles x 3 US Regions, only through those profiles; the 9 in-Region models in us-west-2 only.
+    expect([bySid.RovaraAiProfileModels!.Resource].flat()).toHaveLength(18);
+    expect([bySid.RovaraAiModels!.Resource].flat()).toEqual(["qwen.qwen3-coder-480b-a35b-v1:0", "qwen.qwen3-coder-30b-a3b-v1:0", "qwen.qwen3-235b-a22b-2507-v1:0", "mistral.devstral-2-123b", "mistral.mistral-large-3-675b-instruct", "deepseek.v3-v1:0", "moonshotai.kimi-k2.5", "zai.glm-5", "zai.glm-4.7"].map((m) => modelArn("us-west-2", m)));
+    expect(Object.keys(bySid).sort()).toEqual(["RovaraAiModels", "RovaraAiProfileModels", "RovaraAiProfiles"]);
     // Every policy that carries a Bedrock action is attached to the serving role only.
     for (const r of Object.values(t.Resources).filter((x) => (x.Type === "AWS::IAM::Policy" || x.Type === "AWS::IAM::ManagedPolicy") && JSON.stringify(x.Properties.PolicyDocument).includes("bedrock:"))) {
       expect((r.Properties.Roles as Array<{ Ref: string }>).map((role) => role.Ref)).toEqual([expect.stringMatching(/^ServeTaskRole/u)]);

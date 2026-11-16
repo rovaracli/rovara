@@ -202,5 +202,11 @@ InvokeModel). The engine names such a model exactly by the Bedrock id that is ca
 ConverseStream to Anthropic SSE (usage arrives on the final `message_delta`); reasoning blocks are dropped, and images,
 documents, thinking blocks and `tool_choice: none` are refused before any hold (400). A call is held to the model's own output
 limit from the price snapshot's Bedrock row (4,096 when unknown), and priced from its Bedrock rows (dearest-of). The grant is the
-model in this Region, or its profile plus (only through it) the profile's Regions. No such model is listed by default: one is
-listed only after an agent-loop test on fakes and one tiny real call pass.
+model in this Region, or its profile plus (only through it) the profile's Regions. A model is
+listed only after an agent-loop test on fakes and one tiny real call pass. `-c rovaraModelGatewayRovaraAi=on` also offers these ten
+(`ROVARA_AI_US_CONVERSE_MODELS`; each answered a real one-tool ConverseStream call with a tool call, 2026-11-15, replayed in
+tests from `tests/fixtures/model-gateway-bedrock/converse`): `qwen.qwen3-coder-480b-a35b-v1:0`, `qwen.qwen3-coder-30b-a3b-v1:0`,
+`qwen.qwen3-235b-a22b-2507-v1:0`, `mistral.devstral-2-123b`, `mistral.mistral-large-3-675b-instruct`, `deepseek.v3-v1:0`,
+`moonshotai.kimi-k2.5`, `zai.glm-5`, `zai.glm-4.7`, `us.amazon.nova-2-lite-v1:0`. Tool call ids pass through as the model gives
+them (Kimi K2.5's look like `functions.ping:0`). Reasoning-first models (gpt-oss, DeepSeek V3.2, Kimi K2 Thinking / K3 / K3.1,
+MiniMax M2.5, Nova Pro) are not listed yet; GLM 5.3 and Grok 4.7 are not available to the account.
