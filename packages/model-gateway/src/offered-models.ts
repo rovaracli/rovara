@@ -17,7 +17,8 @@
 //
 // Every failure is a fixed answer: nothing from the request, a token or the store is echoed or logged.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { AgentAiSource, AgentAiSourceReader } from "./agent-ai.js";
+import type { AgentAiSource, AgentAiSourceReader, ByoBedrock } from "./agent-ai.js";
+import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
 import { COMPANY, record, whole } from "./model-gateway-token.js";
 import { serviceCallLimiter } from "./service-call.js";
 import type { SignedTokenKind } from "./token.js";
@@ -71,19 +72,21 @@ export function parseDisabledAgentModels(value: string | undefined): ReadonlySet
 
 export type OfferedModelsOutcome = { ok: true; models: string[] } | { ok: false; status: number; code: string; message: string };
 const refusal = (status: number, code: string, message: string): OfferedModelsOutcome => ({ ok: false, status, code, message });
-export const OFFERED_NONE = refusal(403, "no_ai_key", "Choose AI for your agents: your own Bedrock is not available yet.");
+export const OFFERED_BYO_OFF = refusal(403, "no_ai_key", "Choose AI for your agents: your own Bedrock is not available on this install.");
+export const OFFERED_BYO_NOT_CONNECTED = refusal(403, "no_ai_key", "Connect your Bedrock: this company chose its own Bedrock for its agents, and no AWS role is connected.");
 export const OFFERED_ROVARA_OFF = refusal(403, "no_ai_key", "Choose AI for your agents: Rovara's AI is not available on this install.");
 export const OFFERED_EMPTY = refusal(503, "unavailable", "No models are available for your agents right now.");
 
 /**
  * What the agent route accepts for a company with this source, now. rovara: every name the gateway's allow-list calls (one name per
  * Bedrock id; a dated alias of the same profile is not a second model), minus the disabled ones. anthropic_key, or nothing saved:
- * Anthropic's models. bedrock_byo: not built, refused. Never empty (a refusal), never more than OFFERED_MODELS_MAX, never a name the
+ * Anthropic's models. bedrock_byo: see offeredByoModels. Never empty (a refusal), never more than OFFERED_MODELS_MAX, never a name the
  * contract's pattern rejects.
  */
 export function offeredModelsFor(source: AgentAiSource | undefined, rovara: { models: ReadonlyMap<string, string> } | undefined, disabled: ReadonlySet<string>): OfferedModelsOutcome {
   let names: string[];
-  if (source === "bedrock_byo") return OFFERED_NONE;
+  // bedrock_byo is answered from the company's own connection (offeredByoModels), never here.
+  if (source === "bedrock_byo") return OFFERED_BYO_OFF;
   if (source === "rovara") {
     if (rovara === undefined) return OFFERED_ROVARA_OFF;
     const seen = new Set<string>();
@@ -98,6 +101,19 @@ export function offeredModelsFor(source: AgentAiSource | undefined, rovara: { mo
   return names.length === 0 ? OFFERED_EMPTY : { ok: true, models: names };
 }
 
+/**
+ * DEC 238, slice 1: the models the agent route accepts for a company on its own Bedrock are exactly the names of that company's own
+ * connection (`models`: agent model name to the Bedrock Claude id or profile it picked), and only Claude ids are sent (server.ts guard).
+ * The connection is read for the verified token's install and company only. The disabled list does not apply (it is Rovara's account).
+ */
+export async function offeredByoModels(byo: Pick<ByoBedrock, "connection"> | undefined, iss: string, cid: string): Promise<OfferedModelsOutcome> {
+  if (byo === undefined) return OFFERED_BYO_OFF;
+  const found = await byo.connection(iss, cid);
+  if (found === undefined) return OFFERED_BYO_NOT_CONNECTED;
+  const names = Object.entries(found.connection.models).filter(([name, id]) => BEDROCK_CLAUDE_ID.test(id) && OFFERED_MODEL_NAME.test(name)).map(([name]) => name).slice(0, OFFERED_MODELS_MAX);
+  return names.length === 0 ? OFFERED_EMPTY : { ok: true, models: names };
+}
+
 export interface OfferedModelsHandlerOptions {
   /** createSignedTokenVerifier(..., SERVICE_TOKEN_KIND) over this gateway's one install. */
   verify: (token: unknown) => Promise<ServiceClaims | undefined>;
@@ -105,6 +121,8 @@ export interface OfferedModelsHandlerOptions {
   /** The agent route's Rovara's AI allow-list, when configured. */
   rovara?: { models: ReadonlyMap<string, string> };
   disabled: ReadonlySet<string>;
+  /** The company's own Bedrock (DEC 238), when this gateway has it built (as the agent route's `agentAi.byo`). Absent: bedrock_byo is refused. */
+  byo?: Pick<ByoBedrock, "connection">;
   now?: () => number;
 }
 
@@ -126,9 +144,11 @@ export async function answerOfferedModels(options: OfferedModelsHandlerOptions, 
   const claims = await options.verify(auth.slice(7));
   // The token's company is THE company; a path naming another company is an unsigned call (nothing about either company is said).
   if (claims === undefined || claims.cid !== target[1]) return ANSWERS.refused;
-  let source: AgentAiSource | undefined;
-  try { source = await options.sources.sourceFor(claims.cid); } catch { return ANSWERS.unavailable; }
-  const outcome = offeredModelsFor(source, options.rovara, options.disabled);
+  let outcome: OfferedModelsOutcome;
+  try {
+    const source = await options.sources.sourceFor(claims.cid);
+    outcome = source === "bedrock_byo" ? await offeredByoModels(options.byo, claims.iss, claims.cid) : offeredModelsFor(source, options.rovara, options.disabled);
+  } catch { return ANSWERS.unavailable; }
   if (!outcome.ok) return { status: outcome.status, body: { error: { type: outcome.code, message: outcome.message } } };
   return { status: 200, body: { version: 1, models: outcome.models.map((model) => ({ model })) } };
 }

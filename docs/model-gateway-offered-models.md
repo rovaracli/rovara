@@ -11,7 +11,8 @@ It answers `{ "version": 1, "models": [ { "model": "<name>" }, ... ] }` (1 to 64
 - `rovara`: every name of the gateway's Rovara's AI allow-list (`GATEWAY_ROVARA_AI_MODELS`; one name per Bedrock id, so a dated alias is not a second model), minus `GATEWAY_AGENT_MODELS_DISABLED`.
   Absent that variable, Sonnet 5.5, Opus 5.5 and Fable 5.2 are left off (they answer `model_not_enabled` until the account's one-time Marketplace enable). Set it (empty for none) to change that; no deploy of code is needed.
 - `anthropic_key`, or no choice saved (company-key mode): Anthropic's models (`ANTHROPIC_KEY_AGENT_MODELS`). The disabled list is Bedrock account state, so it does not apply.
-- `bedrock_byo`: refused (403, not built). `rovara` while Rovara's AI is off here: refused (403). A source that cannot be read: 503.
+- `bedrock_byo` (DEC 238, slice 1): the Claude names of the company's OWN connection (`models`, read for the token's install and company only), the same models the agent route accepts for it. Not connected or not built on this gateway: 403; unreadable: 503. The disabled list does not apply.
+- `rovara` while Rovara's AI is off here: refused (403). A source that cannot be read: 503.
 - The names are the ids the agent route accepts (the engine name for Claude, the Bedrock id for the rest).
 
 ## Authentication

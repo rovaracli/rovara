@@ -166,7 +166,7 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     expect(g.bedrockSent).toHaveLength(1);
   });
 
-  it("your own Bedrock (DEC 238) is refused for now: nothing held or sent, the other company unaffected", async () => {
+  it("your own Bedrock (DEC 238) on a gateway that does not offer it is refused: nothing held or sent, the other company unaffected", async () => {
     const g = gateway();
     g.choices.saved.set(cidA, "bedrock_byo");
     const sink = await call(g.deps);

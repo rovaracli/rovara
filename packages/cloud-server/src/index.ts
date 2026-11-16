@@ -40,5 +40,6 @@ export { CLOSED_INVITE_DAYS, COMPANY_TABLE, DynamoCompanyStore } from "./company
 export { COMPANY_ROUTES, PRE_APPROVED_EMAILS_PATH, modelGatewayReadiness, type CompanyBackend } from "./company-routes.js";
 export { PRODUCT_AI_APPROVER_PROVIDER, PRODUCT_AI_ROUTES, PRODUCT_AI_SOURCE_ID, PRODUCT_AI_VERTEX_SOURCE_ID, withdrawForMember, type ProductAiBackend, type ProductAiStore, type ProductAiView } from "./product-ai-routes.js";
 export { AGENT_AI_CHOOSABLE, AGENT_AI_ROUTES } from "./agent-ai-routes.js";
+export { BEDROCK_BYO_ROUTES, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";
 export { LEARNING_AI_OWNER, LEARNING_AI_PROVIDERS, LEARNING_AI_ROUTES, LEARNING_PAUSE_WORDS, learningSourceId } from "./learning-ai-routes.js";
 export { STEP_UP_ACR, STEP_UP_METHODS, STEP_UP_SKEW_SECONDS, STEP_UP_WINDOW_SECONDS, freshStepUp, stepUpClaim, type StepUp, type StepUpMethod } from "./step-up.js";

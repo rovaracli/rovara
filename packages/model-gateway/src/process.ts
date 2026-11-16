@@ -10,7 +10,9 @@ import { createGeminiTransport } from "./product-gemini.js";
 import { createVertexTransport } from "./product-vertex.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
 import { awsKms } from "./aws-kms.js";
-import { CompanyAgentAiSource, parseRovaraAiExempt, parseRovaraAiModels, type AgentAiSourceReader } from "./agent-ai.js";
+import { CompanyAgentAiSource, parseRovaraAiExempt, parseRovaraAiModels, storedBedrock, type AgentAiSourceReader, type ByoBedrock } from "./agent-ai.js";
+import { BedrockExternalIds, type MacGenerator } from "./bedrock-byo.js";
+import { BedrockSessions } from "./bedrock-byo-sessions.js";
 import { createBedrockTransport } from "./bedrock-transport.js";
 import { GATEWAY_AGENT_KEY_MODES, GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_LOG_EVENTS, GATEWAY_MODES, GATEWAY_PRODUCT_ENV, type GatewayAgentKeyMode } from "./deploy.js";
 import { DynamoEvalStageStore } from "./dynamo-eval-stages.js";
@@ -24,7 +26,7 @@ import { createProductRoutes, productModelLimitsFrom } from "./product-route.js"
 import { kmsProductKeyService, ProductKeySealer, type KmsLike, type ProductKeyFingerprinter } from "./product-seal.js";
 import { createSignedTokenVerifier } from "./token.js";
 import { createOfferedModelsHandler, OFFERED_MODELS_PATH, parseDisabledAgentModels, SERVICE_TOKEN_KIND } from "./offered-models.js";
-import { createVertexCheckHandler, VERTEX_CHECK_PATH, type MacVerifier } from "./service-call.js";
+import { BEDROCK_CHECK_PATH, BEDROCK_SETUP_PATH, createBedrockServiceHandlers, createVertexCheckHandler, VERTEX_CHECK_PATH, type MacVerifier } from "./service-call.js";
 import { Dynamo } from "./dynamo.js";
 import { DynamoEndedTasks, DynamoMeter } from "./dynamo-meter.js";
 import { DynamoPriceSnapshotStore } from "./dynamo-prices.js";
@@ -52,7 +54,9 @@ export interface InstallConfig { issuer: string; jwksUrl: string; taskKids: stri
 export interface ProductConfig { keysTable: string; keysKeyArn: string; meter: string; ledger: string; markers: string; stages: string; vertexFederationRoleArn?: string; /** Cloud's Vertex connection test (service-call.ts), only with the Vertex role. */ macKeyArn?: string }
 /** The learning route's meter tables (GATEWAY_LEARNING_ENV): only with the product route, whose key store holds the company's account. */
 export interface LearningConfig { meter: string; ledger: string; markers: string }
-export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode; /** DEC 240, only with agentKeys "company". Absent: Rovara's AI is off. */ rovaraAi?: RovaraAiConfig; /** Models left off every company's offered list on Rovara's AI (offered-models.ts). Absent: the default list. */ agentModelsDisabled?: ReadonlySet<string> }
+export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode; /** DEC 240, only with agentKeys "company". Absent: Rovara's AI is off. */ rovaraAi?: RovaraAiConfig; /** DEC 238, only with agentKeys "company" and the product MAC key. Absent: a company's own Bedrock is refused. */ bedrockByo?: BedrockByoConfig; /** Models left off every company's offered list on Rovara's AI (offered-models.ts). Absent: the default list. */ agentModelsDisabled?: ReadonlySet<string> }
+/** Bring your own Bedrock (DEC 238): Rovara's broker role and the KMS HMAC key the companies' external ids come from. */
+export interface BedrockByoConfig { brokerRoleArn: string; externalIdKeyArn: string }
 /** Rovara's AI (DEC 240): the allow-list (agent model to Bedrock id, the gateway's own region's geography) and the exempt companies. */
 export interface RovaraAiConfig { models: ReadonlyMap<string, string>; exempt: ReadonlySet<string> }
 export interface PriceFetchConfig { mode: "price-fetch"; region: string; tables: { prices: string } }
@@ -128,6 +132,16 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
     try { exempt = parseRovaraAiExempt(env[GATEWAY_ENV.rovaraAiExempt]); } catch { throw new GatewayConfigError(GATEWAY_ENV.rovaraAiExempt); }
     rovaraAi = { models, exempt };
   } else if (env[GATEWAY_ENV.rovaraAiExempt] !== undefined) throw new GatewayConfigError(GATEWAY_ENV.rovaraAiModels);
+  // DEC 238: both settings or neither; only in company-key mode (the company picks its agents' source there) and with the product
+  // MAC key (Cloud's signed set-up and connection test calls, service-call.ts).
+  let bedrockByo: BedrockByoConfig | undefined;
+  if (env[GATEWAY_ENV.bedrockBrokerRole] !== undefined || env[GATEWAY_ENV.bedrockExternalIdKey] !== undefined) {
+    const brokerRoleArn = need(GATEWAY_ENV.bedrockBrokerRole, (value) => /^arn:aws:iam::\d{12}:role\/RovaraBedrockBroker-[a-z0-9-]{1,32}$/u.test(value));
+    const externalIdKeyArn = need(GATEWAY_ENV.bedrockExternalIdKey, (value) => /^arn:aws:kms:[a-z0-9-]+:\d{12}:key\/[0-9a-f-]{36}$/u.test(value));
+    if (agentKeys !== "company") throw new GatewayConfigError(GATEWAY_ENV.agentKeys);
+    if (product?.macKeyArn === undefined) throw new GatewayConfigError(GATEWAY_ENV.productMacKey);
+    bedrockByo = { brokerRoleArn, externalIdKeyArn };
+  }
   let agentModelsDisabled: ReadonlySet<string> | undefined;
   if (env[GATEWAY_ENV.agentModelsDisabled] !== undefined) {
     if (agentKeys !== "company") throw new GatewayConfigError(GATEWAY_ENV.agentKeys);
@@ -136,7 +150,7 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
   // Every table distinct: no two meters, stores or the stage table may share rows.
   const all = [tables.meter, tables.ledger, tables.markers, tables.prices, tables.companies, ...(product === undefined ? [] : [product.keysTable, product.meter, product.ledger, product.markers, product.stages]), ...(learning === undefined ? [] : [learning.meter, learning.ledger, learning.markers])];
   if (new Set(all).size !== all.length) throw new GatewayConfigError(product === undefined ? GATEWAY_ENV.meterTable : learning === undefined ? GATEWAY_ENV.productMeterTable : GATEWAY_ENV.learningMeterTable);
-  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(agentKeys === undefined ? {} : { agentKeys }), ...(rovaraAi === undefined ? {} : { rovaraAi }), ...(agentModelsDisabled === undefined ? {} : { agentModelsDisabled }) };
+  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(agentKeys === undefined ? {} : { agentKeys }), ...(rovaraAi === undefined ? {} : { rovaraAi }), ...(bedrockByo === undefined ? {} : { bedrockByo }), ...(agentModelsDisabled === undefined ? {} : { agentModelsDisabled }) };
 }
 
 /** One JSON object per line on stdout, with an `event` field the alarms' metric filters count (deploy.ts GATEWAY_LOG_EVENTS). */
@@ -166,7 +180,11 @@ export const HOLD_SWEEP_PER_PASS = 50;
 
 export interface ServeDependencies {
   /** The KMS client the deployed product key store opens keys with (default: aws-kms.ts with the task's credentials). */
-  kms?: KmsLike & Partial<MacVerifier>;
+  kms?: KmsLike & Partial<MacVerifier> & Partial<MacGenerator>;
+  /** The HTTP the Bedrock broker and customer AssumeRole calls use (default: product-vertex-token.ts createTokenHttp, AWS STS hosts only). */
+  bedrockHttp?: TokenHttp;
+  /** DEC 238: the company's own Bedrock for the agent route (default: built from config.bedrockByo over the product key store). */
+  byoBedrock?: ByoBedrock;
   /** The HTTP the Vertex token minting uses (default: product-vertex-token.ts createTokenHttp, Google's and AWS's token hosts). */
   vertexHttp?: TokenHttp;
   /** The deployed product route's Gemini transport (default: product-gemini.ts createGeminiTransport over HTTPS). */
@@ -239,7 +257,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   const caps = deps.caps ?? new CompanyBudgetCaps(db, config.tables.companies);
   // The deployed product and learning routes, from the configured tables (deps.product / deps.learning still win: tests).
   const built = deployedRoutes(config, deps, { db, credentials, now, prices, caps });
-  deps = { ...deps, ...(built.product === undefined ? {} : { product: built.product }), ...(built.learning === undefined ? {} : { learning: built.learning }), ...(built.agentKeys === undefined ? {} : { agentKeys: built.agentKeys }) };
+  deps = { ...deps, ...(built.product === undefined ? {} : { product: built.product }), ...(built.learning === undefined ? {} : { learning: built.learning }), ...(built.agentKeys === undefined ? {} : { agentKeys: built.agentKeys }), ...(built.byo === undefined ? {} : { byoBedrock: built.byo.agent }) };
   // Company-key mode never starts without the company key source (no silent fallback to the install key).
   const companyKeys = config.agentKeys === "company" ? deps.agentKeys : undefined;
   if (config.agentKeys === "company" && companyKeys === undefined) throw new Error("company-key mode needs the company key store");
@@ -267,6 +285,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(companyKeys === undefined ? {} : { agentAi: {
       sources: deps.agentAiSources ?? new CompanyAgentAiSource(db, config.tables.companies),
       ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt, transport: deps.bedrockTransport ?? createBedrockTransport({ region: config.region, credentials, now }), maxOutputTokens: (id: string) => prices.maxOutputTokens("bedrock", id) } }),
+      // DEC 238: only when configured (a company that chose its own Bedrock is refused otherwise, never sent elsewhere).
+      ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }),
     } }),
     transport,
     log: (event) => log({ ...event }),
@@ -277,11 +297,14 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
   // Cloud's Vertex connection test (PRODUCT-VERTEX-CLOUD-CONNECT): only with Vertex, the MAC key and a KMS that can verify.
   const vertexCheck = built.vertex === undefined || built.verifier === undefined || config.product?.macKeyArn === undefined ? undefined
     : createVertexCheckHandler({ issuer: config.install.issuer, kms: built.verifier, macKeyId: config.product.macKeyArn, vertex: built.vertex, now });
+  // DEC 238: Cloud's Bedrock set-up and connection test, only with BYO Bedrock built and a KMS that can verify Cloud's MAC.
+  const bedrockCalls = built.byo?.service;
   // The models one company's agents may use (offered-models.ts), signed by the install's broker with its task key: company-key mode only.
   const offeredModels = companyKeys === undefined || handlerDeps.agentAi === undefined ? undefined : createOfferedModelsHandler({
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, SERVICE_TOKEN_KIND),
     sources: handlerDeps.agentAi.sources, disabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined),
-    ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models } }), now,
+    ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models } }),
+    ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }), now,
   });
   const inFlight = new Set<Promise<void>>();
   let draining = false;
@@ -290,7 +313,10 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     // Once draining, the health check fails and a new request (on a kept-alive connection) is refused; open calls finish.
     if (draining) { refuse(res); return; }
     const path = (req.url ?? "").split("?", 1)[0];
-    const running = (vertexCheck !== undefined && path === VERTEX_CHECK_PATH ? vertexCheck(req, res) : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
+    const service = vertexCheck !== undefined && path === VERTEX_CHECK_PATH ? vertexCheck
+      : bedrockCalls !== undefined && (path === BEDROCK_SETUP_PATH || path === BEDROCK_CHECK_PATH) ? bedrockCalls[path]
+      : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels : undefined;
+    const running = (service !== undefined ? service(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
     inFlight.add(running); void running.finally(() => inFlight.delete(running));
   });
   // The load balancer keeps idle connections for up to an hour; the target must keep them at least as long, or it would cut
@@ -385,12 +411,13 @@ const READ_ONLY_FINGERPRINT: ProductKeyFingerprinter = async () => { throw new E
  * Gemini over HTTPS with media prices) and the learning route (the company's own account from the same key store, its own meter
  * combined the same way). Nothing is built for settings that are absent.
  */
-function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { db: Dynamo; credentials: CredentialSource; now: () => number; prices: SnapshotPriceSource; caps: CapsSource }): { product?: NonNullable<ServeDependencies["product"]>; learning?: NonNullable<ServeDependencies["learning"]>; vertex?: VertexTokens; verifier?: MacVerifier; agentKeys?: LearningKeySource } {
+function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { db: Dynamo; credentials: CredentialSource; now: () => number; prices: SnapshotPriceSource; caps: CapsSource }): { product?: NonNullable<ServeDependencies["product"]>; learning?: NonNullable<ServeDependencies["learning"]>; vertex?: VertexTokens; verifier?: MacVerifier; agentKeys?: LearningKeySource; byo?: { agent: ByoBedrock; service?: ReturnType<typeof createBedrockServiceHandlers> } } {
   const p = config.product;
   const wantsAgentKeys = config.agentKeys === "company" && deps.agentKeys === undefined;
-  if (p === undefined || (deps.product !== undefined && (config.learning === undefined || deps.learning !== undefined) && !wantsAgentKeys)) return {};
+  const wantsByo = config.bedrockByo !== undefined && deps.byoBedrock === undefined;
+  if (p === undefined || (deps.product !== undefined && (config.learning === undefined || deps.learning !== undefined) && !wantsAgentKeys && !wantsByo)) return {};
   const { db, now, prices, caps } = shared;
-  const kms: KmsLike & Partial<MacVerifier> = deps.kms ?? awsKms({ region: config.region, credentials: shared.credentials, now });
+  const kms: KmsLike & Partial<MacVerifier> & Partial<MacGenerator> = deps.kms ?? awsKms({ region: config.region, credentials: shared.credentials, now });
   const verifier: MacVerifier | undefined = typeof kms.verifyMac === "function" ? { verifyMac: (input) => kms.verifyMac!(input) } : undefined;
   const store = new ProductKeyStore({ table: new DynamoProductKeyTable(db, p.keysTable), sealer: new ProductKeySealer(kmsProductKeyService(kms, p.keysKeyArn)), fingerprint: READ_ONLY_FINGERPRINT, now });
   const combinedCompany = { meter: config.tables.meter, markers: config.tables.markers };
@@ -416,7 +443,19 @@ function deployedRoutes(config: ServeConfig, deps: ServeDependencies, shared: { 
   }
   // DEC 236: the agent route's company key is the same company-level source the learning route reads (provider "anthropic").
   const agentKeys = wantsAgentKeys ? storedLearningKeys(store) : undefined;
-  return { ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(vertexTokens === undefined ? {} : { vertex: vertexTokens }), ...(verifier === undefined ? {} : { verifier }), ...(agentKeys === undefined ? {} : { agentKeys }) };
+  // DEC 238: the companies' own Bedrock: external ids from the gateway's own HMAC key, sessions through the broker role.
+  let byo: { agent: ByoBedrock; service?: ReturnType<typeof createBedrockServiceHandlers> } | undefined;
+  if (wantsByo && config.bedrockByo !== undefined) {
+    if (typeof kms.generateMac !== "function") throw new Error("bring your own Bedrock needs a KMS that can make MACs");
+    const externalIds = new BedrockExternalIds({ generateMac: (input) => kms.generateMac!(input) }, config.bedrockByo.externalIdKeyArn);
+    const sessions = new BedrockSessions({ http: deps.bedrockHttp ?? createTokenHttp(), aws: shared.credentials, brokerRoleArn: config.bedrockByo.brokerRoleArn, awsRegion: config.region, issuer: config.install.issuer, externalIds, now });
+    byo = {
+      agent: storedBedrock(store, sessions),
+      ...(verifier === undefined || p.macKeyArn === undefined ? {} : { service: createBedrockServiceHandlers({ issuer: config.install.issuer, kms: verifier, macKeyId: p.macKeyArn, now, brokerRoleArn: config.bedrockByo.brokerRoleArn, externalIds, bedrock: sessions }) }),
+    };
+  }
+  return {
+    ...(byo === undefined ? {} : { byo }), ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(vertexTokens === undefined ? {} : { vertex: vertexTokens }), ...(verifier === undefined ? {} : { verifier }), ...(agentKeys === undefined ? {} : { agentKeys }) };
 }
 
 export interface PriceFetchDependencies { env?: GatewayEnv; log?: GatewayLog; credentials?: CredentialSource; db?: Dynamo; fetch?: typeof fetch; now?: () => number }

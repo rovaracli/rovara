@@ -22,18 +22,19 @@
 // one transaction with its own receipt and audit row, and Cloud records its own audit record after the change is saved.
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import { COMPANY_ID } from "./company-store.js";
+import type { BedrockBackend } from "./bedrock-byo-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
 /** The store's error codes (product-keys.ts ProductKeyErrorCode), answered in this module's own fixed words. */
-export type ProductAiErrorCode = "invalid" | "stale" | "not_found" | "in_recovery" | "forbidden" | "unavailable" | "too_open" | "refused";
+export type ProductAiErrorCode = "invalid" | "stale" | "not_found" | "in_recovery" | "forbidden" | "unavailable" | "too_open" | "refused" | "aws_too_open" | "aws_refused" | "role_in_use";
 export interface ProductAiActor { id: string; role: "company_admin" | "project_maintainer" }
 export interface ProductAiChange { iss: string; cid: string; owner: string; requestId: string; expectedRevision: number; actor: ProductAiActor }
 type Change = ProductAiChange;
 /** The view the store answers (ProductKeysView): never a key. */
 export interface ProductAiView {
   revision: number; owner: string;
-  sources: Array<{ sourceId: string; provider: string; hasKey: boolean; available: boolean; connectedAt: number; updatedAt: number; warning?: { status: number; at: number }; linkedTo?: string; vertex?: { scheme: string; projectId: string; location: string; serviceAccount?: string } }>;
+  sources: Array<{ sourceId: string; provider: string; hasKey: boolean; available: boolean; connectedAt: number; updatedAt: number; warning?: { status: number; at: number }; linkedTo?: string; vertex?: { scheme: string; projectId: string; location: string; serviceAccount?: string }; bedrock?: { roleArn: string; region: string; models: Record<string, string>; allowGlobal: boolean; checks: Record<string, string>; checkedAt: number } }>;
   removed: Array<{ sourceId: string; provider: string; recoverUntil: number }>;
   caps?: { taskMicros: number; projectMonthMicros: number };
   evalBudget?: { calls: number; costMicros: number };
@@ -43,9 +44,11 @@ export interface ProductAiView {
 /** What the routes need from ProductKeyStore (structural: cloud-server does not depend on the gateway package). */
 export interface ProductAiStore {
   view(iss: string, cid: string, owner: string): Promise<ProductAiView>;
-  connect(change: Change & { sourceId: string; provider: "gemini" | "vertex" | "anthropic" | "openai"; key: string }): Promise<ProductAiView>;
+  connect(change: Change & { sourceId: string; provider: "gemini" | "vertex" | "anthropic" | "openai" | "bedrock"; key: string }): Promise<ProductAiView>;
   rotate(change: Change & { sourceId: string; key: string }): Promise<ProductAiView>;
   remove(change: Change & { sourceId: string }): Promise<ProductAiView>;
+  /** Restores a removed source inside its 7-day window (product-keys.ts recover). */
+  recover(change: Change & { sourceId: string }): Promise<ProductAiView>;
   setEvalBudget(change: Change & { budget: { calls: number; costMicros: number } }): Promise<ProductAiView>;
   setEvalApproval(change: Change & { approval: { selection: string; inputsDigest: string; maxCalls: number; maxCostMicros: number; model?: string } | null; provider: string; roleCheckedAt?: number }): Promise<ProductAiView>;
   /** Every eval approval this person made up to now stops counting (product-keys.ts withdrawApprovals). Throws when not saved. */
@@ -57,6 +60,8 @@ export interface ProductAiBackend {
   issuer: string;
   /** The deployment's one company, used only when Code's access check names none (as company-routes.ts). */
   companyId?: string;
+  /** The company's own Bedrock (bedrock-byo-routes.ts, DEC 238): absent when the gateway's set-up call or the template is not configured. */
+  bedrock?: BedrockBackend;
 }
 
 /** The project's one AI Studio source (one per provider per project, so the route never has to guess). */
@@ -91,7 +96,7 @@ const WORDS = Object.freeze({
 });
 const ANSWER_OF: Record<ProductAiErrorCode, RouteAnswer> = {
   invalid: WORDS.invalid, stale: WORDS.stale, not_found: WORDS.noKey, in_recovery: WORDS.inRecovery, forbidden: WORDS.forbidden,
-  unavailable: WORDS.unavailable, too_open: WORDS.keyRefused, refused: WORDS.keyRefused,
+  unavailable: WORDS.unavailable, too_open: WORDS.keyRefused, refused: WORDS.keyRefused, aws_too_open: WORDS.keyRefused, aws_refused: WORDS.keyRefused, role_in_use: WORDS.keyRefused,
 };
 const record = (v: unknown): Record<string, unknown> | undefined => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
 const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;

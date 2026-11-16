@@ -74,6 +74,18 @@ export const MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY = "rovaraModelGatewayRov
  */
 export const MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY = "rovaraModelGatewayRovaraAiDisabled";
 /**
+ * Bring your own Bedrock (DEC 238), only with MODEL_GATEWAY_PRODUCT_CONTEXT_KEY on: `-c rovaraModelGatewayBedrockByo=on` adds the
+ * fixed-name, retained Bedrock broker role and the external-id HMAC key. Refused for production at synth. Absent: the template is
+ * exactly as without it.
+ */
+export const MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY = "rovaraModelGatewayBedrockByo";
+/** Every customer role's name starts with this (packages/model-gateway bedrock-byo.ts BEDROCK_BYO_ROLE_PREFIX; a test pins them). */
+export const BEDROCK_BYO_CUSTOMER_ROLE_PREFIX = "RovaraBedrockInvoke-";
+/** The broker role's FIXED name: every customer's trust policy names it, so it must never change or be re-created. */
+export const bedrockBrokerRoleName = (env: string) => `RovaraBedrockBroker-${env}`;
+/** The external-id key's FIXED alias (the same reason: a replaced key would change every company's external id). */
+export const bedrockExternalIdKeyAlias = (env: string) => `alias/rovara-bedrock-external-id-${env}`;
+/**
  * The Regions a system inference profile of each geography sends calls to (bedrock get-inference-profile, staging us-west-2,
  * 2026-11-15: every us. Claude profile lists us-east-1, us-east-2 and us-west-2). Invoking through a profile needs the
  * foundation-model ARN in each of them; the grant allows those ONLY through the named profiles (bedrock:InferenceProfileArn).
@@ -173,6 +185,8 @@ export const MODEL_GATEWAY_ENV = {
   rovaraAiModels: "GATEWAY_ROVARA_AI_MODELS",
   rovaraAiExempt: "GATEWAY_ROVARA_AI_EXEMPT",
   agentModelsDisabled: "GATEWAY_AGENT_MODELS_DISABLED",
+  bedrockBrokerRole: "GATEWAY_BEDROCK_BROKER_ROLE",
+  bedrockExternalIdKey: "GATEWAY_BEDROCK_EXTERNAL_ID_KEY",
 } as const;
 /** The eval stage table's due-stages index (deploy.ts GATEWAY_EVAL_STAGE_INDEXES). */
 export const MODEL_GATEWAY_EVAL_STAGE_INDEXES = {
@@ -265,6 +279,8 @@ export interface ModelGatewayProps extends StackProps {
   readonly productAi?: boolean;
   /** Rovara's AI for agents (MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY). Needs productAi. Default off. */
   readonly rovaraAi?: RovaraAiProps;
+  /** Bring your own Bedrock (MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY). Needs productAi. Default off. */
+  readonly bedrockByo?: boolean;
 }
 
 /** Table defaults: on-demand, point-in-time recovery, deletion protection, kept if the stack goes. */
@@ -467,6 +483,8 @@ export class ModelGatewayStack extends Stack {
     if (props.rovaraAi !== undefined && env === "production") throw new Error("Rovara's AI is for named test environments until a Cloud release carries it");
     const product = props.productAi === true ? this.productAi(env, issuer, serveRole, moneyActions, companyKeysOnly) : undefined;
     const rovaraAi = props.rovaraAi === undefined ? undefined : this.rovaraAi(props.rovaraAi, product !== undefined, serveRole);
+    if (props.bedrockByo === true && env === "production") throw new Error("bring your own Bedrock is for named test environments until a Cloud release carries it");
+    const bedrockByo = props.bedrockByo === true ? this.bedrockByo(env, product !== undefined, serveRole) : undefined;
 
     // Network: two zones, public subnets and no NAT gateway. Tasks take only the load balancer's traffic; DynamoDB through a
     // gateway endpoint.
@@ -522,6 +540,7 @@ export class ModelGatewayStack extends Stack {
         [MODEL_GATEWAY_ENV.companyTable]: companyTableName.valueAsString,
         ...(product === undefined ? {} : product.environment),
         ...(rovaraAi === undefined ? {} : rovaraAi.environment),
+        ...(bedrockByo === undefined ? {} : bedrockByo.environment),
       },
     });
     props.repository.grantPull(serveTask.obtainExecutionRole());
@@ -640,6 +659,63 @@ export class ModelGatewayStack extends Stack {
       new CfnOutput(this, "ProductKeysMacKeyArn", { value: product.macKey.keyArn, description: "Keyed fingerprints of product keys and change intents (RovaraCloudWeb parameter ProductKeysMacKeyArn)" });
       new CfnOutput(this, "VertexFederationRoleArn", { value: product.vertexRole.roleArn, description: "Customers name this role in their Google workload identity pool (attribute condition on the assumed-role ARN with their company id)" });
     }
+    if (bedrockByo !== undefined) new CfnOutput(this, "BedrockBrokerRoleArn", { value: bedrockByo.broker.roleArn, description: "Customers' RovaraBedrockInvoke roles trust this role (with their external id): never delete or rename it" });
+  }
+
+  /**
+   * Bring your own Bedrock (DEC 238). Two pieces, both RETAINED and never replaced, because every customer's role names them:
+   *   - the Bedrock broker role, at a FIXED name. If it were deleted and made again, IAM would have rewritten each customer's trust
+   *     policy principal to the old role's unique id, and every connection would break silently. Only the serving role may
+   *     assume it (with an org_* session name); its only right is sts:AssumeRole on customers' RovaraBedrockInvoke-* roles, with
+   *     an external id of Rovara's form and an org_* session name. It has no Bedrock rights of its own.
+   *   - the external-id HMAC key: each company's external id is an HMAC under it, so replacing it would change every id. Only the
+   *     serving role may GenerateMac with it (Cloud asks the gateway: service-call.ts BEDROCK_SETUP_PATH).
+   */
+  private bedrockByo(env: string, productOn: boolean, serveRole: iam.Role) {
+    if (!productOn) throw new Error(`${MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY} needs ${MODEL_GATEWAY_PRODUCT_CONTEXT_KEY}=on (the company picks its agents' AI in company-key mode)`);
+    const broker = new iam.Role(this, "BedrockBrokerRole", {
+      roleName: bedrockBrokerRoleName(env),
+      assumedBy: new iam.ArnPrincipal(serveRole.roleArn).withConditions({ StringLike: { "sts:RoleSessionName": "org_*" } }),
+      description: `Rovara Cloud ${env}: assumes customers' invoke-only Bedrock roles with their external id (no Bedrock rights of its own)`,
+      maxSessionDuration: Duration.hours(1),
+      inlinePolicies: {
+        AssumeCustomerBedrockRoles: new iam.PolicyDocument({
+          statements: [new iam.PolicyStatement({
+            sid: "AssumeCustomerBedrockRoles", actions: ["sts:AssumeRole"],
+            resources: [`arn:${this.partition}:iam::*:role/${BEDROCK_BYO_CUSTOMER_ROLE_PREFIX}*`],
+            // Customers' accounts only: never a role of that name in Rovara's own account (made by mistake or by an insider).
+            conditions: { StringLike: { "sts:ExternalId": "rvb-*", "sts:RoleSessionName": "org_*" }, StringNotEquals: { "aws:ResourceAccount": this.account } },
+          })],
+        }),
+      },
+    });
+    broker.applyRemovalPolicy(RemovalPolicy.RETAIN);
+    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "AssumeBedrockBroker", actions: ["sts:AssumeRole"], resources: [broker.roleArn], conditions: { StringLike: { "sts:RoleSessionName": "org_*" } } }));
+    // A fixed alias: if this construct were ever moved or renamed, the new key's alias would clash with the old one's and the
+    // deploy would FAIL, instead of silently changing every company's external id. A property change that replaces the key
+    // would only re-point the alias: never change this key's properties (the contract test pins its logical id, spec and usage).
+    const externalIdKey = new kms.Key(this, "BedrockExternalIdKey", {
+      alias: bedrockExternalIdKeyAlias(env),
+      description: `Rovara Cloud ${env}: makes each company's Bedrock external id (HMAC). Never delete or replace: customers' roles name its ids`,
+      keySpec: kms.KeySpec.HMAC_256,
+      keyUsage: kms.KeyUsage.GENERATE_VERIFY_MAC,
+      removalPolicy: RemovalPolicy.RETAIN,
+      policy: new iam.PolicyDocument({
+        statements: [
+          new iam.PolicyStatement({
+            sid: "AccountManagesNotUses", principals: [new iam.AccountRootPrincipal()],
+            actions: ["kms:CreateAlias", "kms:Describe*", "kms:Enable*", "kms:List*", "kms:Put*", "kms:Update*", "kms:Revoke*", "kms:Disable*", "kms:Get*", "kms:TagResource", "kms:UntagResource"],
+            resources: ["*"],
+          }),
+          new iam.PolicyStatement({ sid: "OnlyGatewayMakesExternalIds", principals: [new iam.AccountRootPrincipal()], actions: ["kms:GenerateMac"], resources: ["*"], conditions: { ArnEquals: { "aws:PrincipalArn": serveRole.roleArn } } }),
+        ],
+      }),
+    });
+    serveRole.addToPolicy(new iam.PolicyStatement({ sid: "MakeBedrockExternalIds", actions: ["kms:GenerateMac"], resources: [externalIdKey.keyArn] }));
+    return {
+      broker, externalIdKey,
+      environment: { [MODEL_GATEWAY_ENV.bedrockBrokerRole]: broker.roleArn, [MODEL_GATEWAY_ENV.bedrockExternalIdKey]: externalIdKey.keyArn },
+    };
   }
 
   /**

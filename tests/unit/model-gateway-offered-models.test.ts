@@ -113,7 +113,7 @@ describe("the list one company is offered", () => {
     expect((await get(all.opts, cidA, mintService())).status).toBe(503);
     const off = options({}, true);
     expect((await get(off.opts, cidA, mintService())).status).toBe(403);
-    const byo = options(); byo.choices.saved.set(cidA, "bedrock_byo");
+    const byo = options(); byo.choices.saved.set(cidA, "bedrock_byo"); // no own-Bedrock support built here
     expect((await get(byo.opts, cidA, mintService())).status).toBe(403);
     for (const a of [await get(all.opts, cidA, mintService()), await get(off.opts, cidA, mintService())]) expect(Object.keys((a.body as { error: object; models?: unknown }))).toEqual(["error"]);
   });
@@ -122,6 +122,48 @@ describe("the list one company is offered", () => {
     const answer = await get(opts, cidA, mintService());
     expect(answer.status).toBe(503);
     expect(JSON.stringify(answer.body)).not.toContain("store down");
+  });
+});
+
+describe("bring your own Bedrock (DEC 238): the company's own connection is the list", () => {
+  const connection = (models: Record<string, string>) => ({ row: {} as never, connection: { scheme: "assume_role", roleArn: "arn:aws:iam::111122223333:role/RovaraBedrockInvoke-x", region: "us-west-2", models, allowGlobal: false } as const });
+  function byoSetup() {
+    const asked: Array<[string, string]> = [];
+    const store = new Map<string, Record<string, string>>([
+      [cidA, { "claude-sonnet-5-5": "us.anthropic.claude-sonnet-5-5", "claude-haiku-5-5": "us.anthropic.claude-haiku-5-5", "qwen.qwen3-coder-480b-a35b-v1:0": "qwen.qwen3-coder-480b-a35b-v1:0", "bad name": "us.anthropic.claude-x" }],
+      [cidB, { "claude-opus-5-5": "global.anthropic.claude-opus-5-5" }],
+    ]);
+    const byo = { connection: async (iss: string, cid: string) => { asked.push([iss, cid]); const models = store.get(cid); return models === undefined ? undefined : connection(models); } };
+    const { opts, choices } = options({ byo });
+    choices.saved.set(cidA, "bedrock_byo"); choices.saved.set(cidB, "bedrock_byo");
+    return { opts, choices, asked, store };
+  }
+  it("offers exactly the Claude names the company connected (not Rovara's list, not the disabled list, no non-Claude id, no bad name)", async () => {
+    const { opts, asked } = byoSetup();
+    const a = await get(opts, cidA, mintService());
+    expect(a.status).toBe(200);
+    expect(names(a.body)).toEqual(["claude-sonnet-5-5", "claude-haiku-5-5"]);
+    expect(CodeOfferedAgentModelsSchema.safeParse(a.body).success).toBe(true);
+    expect(asked).toEqual([[ISS, cidA]]);
+  });
+  it("B's token reads only B's connection; a mismatched path reads nothing", async () => {
+    const { opts, asked } = byoSetup();
+    expect(names((await get(opts, cidB, mintService({ cid: cidB }))).body)).toEqual(["claude-opus-5-5"]);
+    expect((await get(opts, cidA, mintService({ cid: cidB }))).status).toBe(401);
+    expect(asked).toEqual([[ISS, cidB]]);
+  });
+  it("not connected: 403 in the agent route's words; unreadable: 503; not built on this gateway: 403; no Claude model: refusal", async () => {
+    const s = byoSetup();
+    s.store.delete(cidA);
+    const none = await get(s.opts, cidA, mintService());
+    expect(none.status).toBe(403); expect(JSON.stringify(none.body)).toContain("Connect your Bedrock");
+    const failing = options({ byo: { connection: async () => { throw new Error("sealed store down"); } } }); failing.choices.saved.set(cidA, "bedrock_byo");
+    const down = await get(failing.opts, cidA, mintService());
+    expect(down.status).toBe(503); expect(JSON.stringify(down.body)).not.toContain("sealed");
+    const off = options(); off.choices.saved.set(cidA, "bedrock_byo");
+    expect((await get(off.opts, cidA, mintService())).status).toBe(403);
+    s.store.set(cidA, { "qwen.qwen3-coder-480b-a35b-v1:0": "qwen.qwen3-coder-480b-a35b-v1:0" });
+    expect((await get(s.opts, cidA, mintService())).status).toBe(503);
   });
 });
 

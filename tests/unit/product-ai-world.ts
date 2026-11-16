@@ -1,8 +1,8 @@
 // A Cloud handler over a fake Code (access checks with step-up claims, project member changes) and the gateway's real write-only
 // product key store, for the product AI, Vertex connect, learning AI key and approval-withdrawal route tests.
 import { randomBytes, randomUUID } from "node:crypto";
-import { CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, defaultCompanySettings, type CloudRequest, type ProductAiStore } from "../../packages/cloud-server/src/index.js";
-import { InMemoryProductKeyTable, ProductKeyStore, type TableWrite, type VertexCheck } from "../../packages/model-gateway/src/product-keys.js";
+import { CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, defaultCompanySettings, type BedrockBackend, type CloudRequest, type ProductAiStore } from "../../packages/cloud-server/src/index.js";
+import { InMemoryProductKeyTable, ProductKeyStore, type BedrockCheck, type TableWrite, type VertexCheck } from "../../packages/model-gateway/src/product-keys.js";
 import { hmacFingerprinter, localProductKeyService, ProductKeySealer } from "../../packages/model-gateway/src/product-seal.js";
 
 export const CODE = "https://code.example.test";
@@ -24,7 +24,7 @@ const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url")
 export type Body = Record<string, unknown> & { error?: { code: string; message: string } };
 export const write = (expectedRevision: number, more: Record<string, unknown> = {}) => ({ requestId: randomUUID(), expectedRevision, ...more });
 
-export interface WorldOptions { vertexCheck?: VertexCheck; beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; company?: boolean; /** Code's access check takes this long (the clock moves while it runs). */ accessMs?: number; /** Code's answer to a member change (default 200), and what happens while Code makes it. */ memberStatus?: number; duringMemberChange?: () => Promise<void> }
+export interface WorldOptions { vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck; bedrock?: BedrockBackend; beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; company?: boolean; /** Code's access check takes this long (the clock moves while it runs). */ accessMs?: number; /** Code's answer to a member change (default 200), and what happens while Code makes it. */ memberStatus?: number; duringMemberChange?: () => Promise<void> }
 
 export function world(options: WorldOptions = {}) {
   const clock = { at: START }; let tokens = 0;
@@ -49,14 +49,14 @@ export function world(options: WorldOptions = {}) {
   const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: `${ORIGIN}/callback`, scopes: "", fetch: fetchImpl });
   const sessions = new LocalSessionStore(undefined, { now: () => clock.at, environment: {} });
   const table = new InMemoryProductKeyTable(options.beforeCommit);
-  const store = new ProductKeyStore({ table, sealer: new ProductKeySealer(localProductKeyService(randomBytes(32))), fingerprint: hmacFingerprinter(randomBytes(32)), now: () => clock.at, ...(options.vertexCheck === undefined ? {} : { vertexCheck: options.vertexCheck }) });
+  const store = new ProductKeyStore({ table, sealer: new ProductKeySealer(localProductKeyService(randomBytes(32))), fingerprint: hmacFingerprinter(randomBytes(32)), now: () => clock.at, ...(options.vertexCheck === undefined ? {} : { vertexCheck: options.vertexCheck }), ...(options.bedrockCheck === undefined ? {} : { bedrockCheck: options.bedrockCheck }) });
   const typed: ProductAiStore = store;
   const audit = new LocalCloudAuditStore(undefined, {});
   const companies = new LocalCompanyStore();
   const logs: string[] = [];
   const handler = createCloudHandler({
     client, store: sessions, org: { orgId: "rovara", name: "Rovara", plan: "cloud" }, callbackPath: "/callback", secureCookies: false, work: new LocalWorkSessionStore(), origin: ORIGIN,
-    now: () => new Date(clock.at), log: (event) => { logs.push(JSON.stringify(event)); }, audit, productAi: { store: typed, issuer: ISS },
+    now: () => new Date(clock.at), log: (event) => { logs.push(JSON.stringify(event)); }, audit, productAi: { store: typed, issuer: ISS, ...(options.bedrock === undefined ? {} : { bedrock: options.bedrock }) },
     ...(options.company === true ? { company: { store: companies, log: (event: Record<string, unknown>) => { logs.push(JSON.stringify(event)); } } } : {}),
   });
   const signIn = async (who: string, stepUpAge?: number) => {

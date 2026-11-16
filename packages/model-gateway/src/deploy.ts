@@ -68,6 +68,14 @@ export const GATEWAY_ENV = {
    * none held back. Absent: the default (the three Claude models that wait for the account's one-time Marketplace enable).
    */
   agentModelsDisabled: "GATEWAY_AGENT_MODELS_DISABLED",
+  /**
+   * Bring your own Bedrock (DEC 238), only with `agentKeys` "company" and the product MAC key: the ARN of Rovara's Bedrock broker
+   * role (fixed name, retained; only this gateway's role may assume it, and it may only assume customers' RovaraBedrockInvoke-*
+   * roles with an external id). Set together with `bedrockExternalIdKey`. Absent: a company that chose its own Bedrock is refused.
+   */
+  bedrockBrokerRole: "GATEWAY_BEDROCK_BROKER_ROLE",
+  /** The ARN of the KMS HMAC key the companies' external ids are made with (only this gateway may GenerateMac; never replaced). */
+  bedrockExternalIdKey: "GATEWAY_BEDROCK_EXTERNAL_ID_KEY",
 } as const;
 /** The values of GATEWAY_ENV.agentKeys. */
 export const GATEWAY_AGENT_KEY_MODES = ["install", "company"] as const;
