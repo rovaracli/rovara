@@ -2,7 +2,7 @@
 // these tests pin the translation both ways (system, messages, tool_use / tool_result, stop reasons, usage, streaming to SSE).
 // The Converse shapes are the ones AWS documents (conversation-inference.html); no real Converse call is recorded yet.
 import { describe, expect, it } from "vitest";
-import { anthropicStop, BEDROCK_CONVERSE_ID, ConverseStreamToSse, fromConverse, toConverse } from "../../packages/model-gateway/src/bedrock-converse.js";
+import { anthropicStop, BEDROCK_CONVERSE_ID, EMPTY_TOOL_RESULT, ConverseStreamToSse, fromConverse, toConverse } from "../../packages/model-gateway/src/bedrock-converse.js";
 import { EventStreamDecoder } from "../../packages/model-gateway/src/bedrock-event-stream.js";
 import { UsageCollector } from "../../packages/model-gateway/src/usage.js";
 import { converseEvent, toolCallStream } from "./model-gateway-converse-fixture.js";
@@ -39,7 +39,7 @@ describe("Anthropic request to Converse", () => {
     const tools = [{ name: "t", input_schema: { type: "object" } }];
     expect(toConverse({ messages: [{ role: "user", content: "x" }], tools, tool_choice: { type: "any" } }, 8)?.toolConfig).toEqual({ tools: [{ toolSpec: { name: "t", inputSchema: { json: { type: "object" } } } }], toolChoice: { any: {} } });
     expect(toConverse({ messages: [{ role: "user", content: "x" }], tools, tool_choice: { type: "tool", name: "t" } }, 8)?.toolConfig).toMatchObject({ toolChoice: { tool: { name: "t" } } });
-    expect(toConverse({ messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "boom", is_error: true }] }] }, 8)?.messages).toEqual([{ role: "user", content: [{ toolResult: { toolUseId: "a", content: [{ text: "boom" }], status: "error" } }] }]);
+    expect(toConverse({ messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "boom", is_error: true }] }], tools }, 8)?.messages).toEqual([{ role: "user", content: [{ toolResult: { toolUseId: "a", content: [{ text: "boom" }], status: "error" } }] }]);
     for (const bad of [
       { messages: [{ role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } }] }] },
       { messages: [{ role: "assistant", content: [{ type: "thinking", thinking: "...", signature: "s" }] }] },
@@ -50,6 +50,27 @@ describe("Anthropic request to Converse", () => {
       { messages: [{ role: "user", content: "x" }], tool_choice: { type: "any" } },
       { messages: [{ role: "user", content: "x" }], system: [{ type: "image" }] },
     ]) expect(toConverse(bad, 8)).toBeUndefined();
+  });
+});
+
+describe("REVIEW-1: refused rather than dropped, and silent tools", () => {
+  const tools = [{ name: "t", input_schema: { type: "object" } }];
+  const history = [{ role: "user", content: "x" }, { role: "assistant", content: [{ type: "tool_use", id: "a", name: "t", input: {} }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "ok" }] }];
+  it("tool history with no tools is refused (Converse needs a tool configuration then)", () => {
+    expect(toConverse({ messages: history }, 8)).toBeUndefined();
+    expect(toConverse({ messages: history, tools }, 8)).toBeDefined();
+  });
+  it("structured output, one-call-at-a-time and strict tools are refused, never silently dropped", () => {
+    expect(toConverse({ messages: [{ role: "user", content: "x" }], output_config: { format: { type: "json_schema", schema: {} } } }, 8)).toBeUndefined();
+    expect(toConverse({ messages: [{ role: "user", content: "x" }], output_config: { effort: "low" } }, 8)).toBeDefined();
+    expect(toConverse({ messages: [{ role: "user", content: "x" }], tools, tool_choice: { type: "auto", disable_parallel_tool_use: true } }, 8)).toBeUndefined();
+    expect(toConverse({ messages: [{ role: "user", content: "x" }], tools: [{ ...tools[0], strict: true }] }, 8)).toBeUndefined();
+  });
+  it("a tool result with no output, or only blank parts, carries a placeholder (Converse refuses blank text)", () => {
+    for (const content of [undefined, "", [], [{ type: "text", text: "" }]]) {
+      const c = toConverse({ messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "a", ...(content === undefined ? {} : { content }) }] }], tools }, 8);
+      expect(c?.messages).toEqual([{ role: "user", content: [{ toolResult: { toolUseId: "a", content: [{ text: EMPTY_TOOL_RESULT }], status: "success" } }] }]);
+    }
   });
 });
 

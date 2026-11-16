@@ -52,6 +52,8 @@ export function createBedrockTransport(options: BedrockTransportOptions): Provid
     const converse = match[2] === "converse" || match[2] === "converse-stream";
     // Claude through InvokeModel with the Anthropic body; every other model only through Converse.
     if (!(converse ? BEDROCK_CONVERSE_ID : BEDROCK_CLAUDE_ID).test(modelId)) throw new NotSentError();
+    // Claude never through Converse, whatever its prefix.
+    if (converse && /(?:^|\.)anthropic\./u.test(modelId)) throw new NotSentError();
     const streaming = match[2] === "invoke-with-response-stream" || match[2] === "converse-stream";
     let credentials;
     try { credentials = await options.credentials(); } catch { throw new NotSentError(); }

@@ -14,7 +14,7 @@ import { createBedrockTransport } from "../../packages/model-gateway/src/bedrock
 import type { LearningKeySource } from "../../packages/model-gateway/src/learning-route.js";
 import { ROVARA_AI_FEATURE } from "../../packages/model-gateway/src/server.js";
 import { call, claims, mint, setup } from "./model-gateway-fixture.js";
-import { converseEvent, toolCallStream } from "./model-gateway-converse-fixture.js";
+import { converseEvent, frame, toolCallStream } from "./model-gateway-converse-fixture.js";
 
 const cidA = claims.cid; const cidB = `org_${"b".repeat(20)}`;
 /** The candidate non-Claude coding models (staging us-west-2, 2026-11-15): engine name = Bedrock model id; id = what is called. */
@@ -107,10 +107,37 @@ describe("agent loop on Rovara's AI through Converse (fakes)", () => {
     expect(g.meter.billedCalls(claims.iss, cidB)).toHaveLength(1);
   });
 
+  it("money: a whole (non-streaming) answer settles from its usage; an exception before output is free; after output, or no usage, charges the hold", async () => {
+    const whole = Buffer.from(JSON.stringify({ output: { message: { role: "assistant", content: [{ text: "hi" }] } }, stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 10 } }));
+    const g1 = gateway("deepseek.v3.2", "deepseek.v3.2", [whole]);
+    const body = { model: "deepseek.v3.2", max_tokens: 100, messages: [{ role: "user", content: "hi" }] };
+    const token = mint({ mdl: ["deepseek.v3.2"] });
+    const one = await call(g1.deps, { ...body, stream: false }, token);
+    expect(one.status).toBe(200);
+    expect(JSON.parse(one.text())).toMatchObject({ type: "message", content: [{ type: "text", text: "hi" }], stop_reason: "end_turn", usage: { input_tokens: 100, output_tokens: 10 } });
+    expect(g1.bedrock.sent[0]!.path).toBe("/model/deepseek.v3.2/converse");
+    expect(g1.meter.billedCalls(claims.iss, cidA).map((l) => [l.settledMicros, l.estimated])).toEqual([[140, false]]);
+
+    const exception = frame({ ":exception-type": "throttlingException", ":content-type": "application/json", ":message-type": "exception" }, Buffer.from('{"message":"slow"}'));
+    const g2 = gateway("deepseek.v3.2", "deepseek.v3.2", [exception]);
+    expect((await call(g2.deps, { ...body, stream: true }, token)).status).toBe(502);
+    expect(g2.meter.billedCalls(claims.iss, cidA).map((l) => l.settledMicros)).toEqual([0]);
+
+    // The hold for 100 output tokens at $4 a million, plus the input estimate: whatever it is, it is charged in full.
+    const afterStart = Buffer.concat([converseEvent("messageStart", { role: "assistant" }), converseEvent("contentBlockDelta", { contentBlockIndex: 0, delta: { text: "partial" } }), exception]);
+    const noUsage = Buffer.concat([converseEvent("messageStart", { role: "assistant" }), converseEvent("contentBlockDelta", { contentBlockIndex: 0, delta: { text: "x" } }), converseEvent("contentBlockStop", { contentBlockIndex: 0 }), converseEvent("messageStop", { stopReason: "end_turn" })]);
+    for (const answer of [afterStart, noUsage]) {
+      const g = gateway("deepseek.v3.2", "deepseek.v3.2", [answer]);
+      await call(g.deps, { ...body, stream: true }, token);
+      const [line] = g.meter.billedCalls(claims.iss, cidA);
+      expect(line!.settledMicros).toBeGreaterThan(140);
+    }
+  });
+
   it("the transport calls Claude only through InvokeModel and every other model only through Converse; nothing else is sent", async () => {
     const bedrock = fakeBedrock([]);
     const transport = createBedrockTransport({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), request: bedrock.request, now: () => 0 });
-    for (const path of ["/model/us.anthropic.claude-haiku-5-5/converse-stream", "/model/qwen.qwen3-coder-480b-a35b-v1%3A0/invoke-with-response-stream", "/model/global.xai.grok-4.7/converse", "/model/us.anthropic.claude-haiku-5-5/converse"]) {
+    for (const path of ["/model/us.anthropic.claude-haiku-5-5/converse-stream", "/model/qwen.qwen3-coder-480b-a35b-v1%3A0/invoke-with-response-stream", "/model/global.xai.grok-4.7/converse", "/model/us.anthropic.claude-haiku-5-5/converse", "/model/in.anthropic.claude-x/converse", "/model/us-gov.anthropic.claude-x/converse"]) {
       await expect(transport({ body: Buffer.from("{}"), headers: {}, key: "m", signal: new AbortController().signal, path })).rejects.toThrow();
     }
     expect(bedrock.sent).toEqual([]);

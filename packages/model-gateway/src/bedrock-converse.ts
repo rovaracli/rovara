@@ -8,6 +8,8 @@ import { EventStreamError, type EventStreamMessage } from "./bedrock-event-strea
 
 /** A non-Claude Bedrock model or system inference profile id (`<provider>.<model>` or `<geo>.<provider>.<model>`). */
 export const BEDROCK_CONVERSE_ID = /^(?!global\.)(?!(?:(?:us|eu|apac|jp|au|ca)\.)?anthropic\.)(?:(?:us|eu|apac|jp|au|ca)\.)?[a-z][a-z0-9-]{1,30}\.[a-z0-9][a-z0-9.:-]{0,100}$/u;
+/** Sent for a tool result with no output (Converse refuses an empty one). */
+export const EMPTY_TOOL_RESULT = "(no output)";
 /** What a non-Claude call is held to when the price snapshot names no output limit for the model. */
 export const CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
 
@@ -28,10 +30,11 @@ function block(value: unknown, role: "user" | "assistant"): Json | undefined {
     for (const part of parts) {
       const p = text(part) ? part : record(part)?.type === "text" && text(record(part)!.text) ? record(part)!.text as string : undefined;
       if (p === undefined) return undefined;
-      content.push({ text: p });
+      // Converse refuses blank text: an empty part is left out.
+      if (p !== "") content.push({ text: p });
     }
-    // Converse needs at least one content item in a tool result.
-    return { toolResult: { toolUseId: b.tool_use_id, content: content.length === 0 ? [{ text: "" }] : content, status: b.is_error === true ? "error" : "success" } };
+    // A silent tool (no output): Converse needs at least one non-blank content item in a tool result.
+    return { toolResult: { toolUseId: b.tool_use_id, content: content.length === 0 ? [{ text: EMPTY_TOOL_RESULT }] : content, status: b.is_error === true ? "error" : "success" } };
   }
   return undefined;
 }
@@ -44,6 +47,10 @@ function block(value: unknown, role: "user" | "assistant"): Json | undefined {
 export function toConverse(body: Json, maxTokens: number): Json | undefined {
   const messages = body.messages;
   if (!Array.isArray(messages) || messages.length === 0) return undefined;
+  // Fields that change the answer's meaning and have no Converse form are refused, never dropped: structured output, and
+  // "one tool call at a time" (dropping it could let the model make several).
+  if (record(body.output_config)?.format !== undefined) return undefined;
+  if (record(body.tool_choice)?.disable_parallel_tool_use === true) return undefined;
   const out: Json[] = [];
   for (const m of messages) {
     const message = record(m);
@@ -70,7 +77,7 @@ export function toConverse(body: Json, maxTokens: number): Json | undefined {
     const tools: Json[] = [];
     for (const t of body.tools) {
       const tool = record(t);
-      if (tool === undefined || !text(tool.name) || record(tool.input_schema) === undefined || (tool.description !== undefined && !text(tool.description))) return undefined;
+      if (tool === undefined || !text(tool.name) || record(tool.input_schema) === undefined || (tool.description !== undefined && !text(tool.description)) || tool.strict === true) return undefined;
       tools.push({ toolSpec: { name: tool.name, ...(tool.description === undefined ? {} : { description: tool.description }), inputSchema: { json: tool.input_schema } } });
     }
     const choice = text(body.tool_choice) ? { type: body.tool_choice } : record(body.tool_choice);
@@ -81,6 +88,8 @@ export function toConverse(body: Json, maxTokens: number): Json | undefined {
     else return undefined; // "none" and anything else: not offered.
     toolConfig = { tools, ...(toolChoice === undefined ? {} : { toolChoice }) };
   } else if (body.tool_choice !== undefined && body.tool_choice !== null) return undefined;
+  // Converse refuses tool blocks without a tool configuration (a turn that resends tool history with no tools): refused here, free.
+  else if (out.some((m) => (m.content as Json[]).some((c) => c.toolUse !== undefined || c.toolResult !== undefined))) return undefined;
   return { messages: out, ...(system.length === 0 ? {} : { system: (system as string[]).map((s) => ({ text: s })) }), inferenceConfig, ...(toolConfig === undefined ? {} : { toolConfig }) };
 }
 
