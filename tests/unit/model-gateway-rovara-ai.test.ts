@@ -7,7 +7,8 @@ beforeAll(denyNetwork);
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { CompanyAgentAiSource, parseRovaraAiExempt, parseRovaraAiModels, type AgentAiSource, type AgentAiSourceReader, type RovaraAi } from "../../packages/model-gateway/src/agent-ai.js";
+import { normalizeBedrockModel } from "../../packages/model-gateway/src/price-identity.js";
+import { CompanyAgentAiSource, parseRovaraAiExempt, parseRovaraAiModels, ROVARA_AI_US_MODELS, type AgentAiSource, type AgentAiSourceReader, type RovaraAi } from "../../packages/model-gateway/src/agent-ai.js";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { DynamoMeter, HOLD_SWEEP_AGE_MS } from "../../packages/model-gateway/src/dynamo-meter.js";
@@ -16,7 +17,7 @@ import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway,
 import type { LearningKeySource } from "../../packages/model-gateway/src/learning-route.js";
 import type { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
 import type { ProviderRequest, ProviderTransport } from "../../packages/model-gateway/src/provider.js";
-import { AGENT_KEY_MISSING, AGENT_SOURCE_NOT_OFFERED, BEDROCK_ANTHROPIC_VERSION, ROVARA_AI_MODEL, ROVARA_AI_OFF, ROVARA_AI_UNAVAILABLE, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
+import { AGENT_KEY_MISSING, AGENT_SOURCE_NOT_OFFERED, BEDROCK_ANTHROPIC_VERSION, ROVARA_AI_MODEL, ROVARA_AI_MODEL_NOT_ENABLED, ROVARA_AI_OFF, ROVARA_AI_UNAVAILABLE, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
 import { answer, call, caps, claims, jwk, kid, mint, now, requestBody, scope, setup } from "./model-gateway-fixture.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 
@@ -234,6 +235,21 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     }
   });
 
+  it("a model on the list but not enabled yet in Rovara's account answers 'not enabled yet', free; the other company is unaffected", async () => {
+    // Bedrock's AccessDeniedException words when the account's Marketplace agreement for the model is missing.
+    const notEnabled: ProviderTransport = async () => ({ status: 403, body: (async function* () { yield Buffer.from(JSON.stringify({ message: "Model access is denied due to IAM user or service role is not authorized to perform the required AWS Marketplace actions (aws-marketplace:ViewSubscriptions, aws-marketplace:Subscribe) to enable access to this model." })); })() });
+    const g = gateway({ bedrock: notEnabled });
+    g.choices.saved.set(cidA, "rovara"); g.choices.saved.set(cidB, "anthropic_key");
+    const sink = await call(g.deps);
+    expect(sink.status).toBe(503);
+    expect(error(sink)).toEqual({ type: ROVARA_AI_MODEL_NOT_ENABLED.code, message: ROVARA_AI_MODEL_NOT_ENABLED.message });
+    expect(sink.text()).not.toContain("Marketplace");
+    expect(await committed(g.meter)).toBe(0);
+    expect(g.meter.billedCalls(claims.iss, cidA)).toMatchObject([{ settledMicros: 0 }]);
+    expect(g.keySent).toEqual([]);
+    expect((await call(g.deps, requestBody, mint({ cid: cidB }))).status).toBe(200);
+  });
+
   it("a stream that breaks after output started is charged (the core's rule), as a billable line", async () => {
     const g = gateway({ bedrock: async () => ({ status: 200, body: (async function* () { yield Buffer.from('event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":2,"output_tokens":1}}}\n\n'); throw new Error("stream cut"); })() }) });
     g.choices.saved.set(cidA, "rovara");
@@ -246,12 +262,20 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
 describe("Rovara's AI settings", () => {
   it("models: in-geography Claude models and profiles only; global routing and other geographies refused", () => {
     expect([...parseRovaraAiModels("claude-sonnet-5-5=us.anthropic.claude-sonnet-5-5, claude-haiku-4-5=us.anthropic.claude-haiku-4-5-20251001-v1:0", "us-west-2")]).toEqual([["claude-sonnet-5-5", "us.anthropic.claude-sonnet-5-5"], ["claude-haiku-4-5", "us.anthropic.claude-haiku-4-5-20251001-v1:0"]]);
-    expect([...parseRovaraAiModels("claude-sonnet-5-5=anthropic.claude-sonnet-5-5", "us-west-2")]).toEqual([["claude-sonnet-5-5", "anthropic.claude-sonnet-5-5"]]);
     expect([...parseRovaraAiModels("claude-sonnet-5-5=eu.anthropic.claude-sonnet-5-5", "eu-west-1")]).toHaveLength(1);
-    for (const bad of ["", "claude-sonnet-5-5=global.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=eu.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=us.meta.llama3", "gpt-5=us.anthropic.claude-sonnet-5-5",
+    for (const bad of ["", "claude-sonnet-5-5=anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=global.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=eu.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=us.meta.llama3", "gpt-5=us.anthropic.claude-sonnet-5-5",
       "claude-a=us.anthropic.claude-a,claude-a=us.anthropic.claude-b", "claude-a=us.anthropic.claude-a=x", "claude-a", "claude-a=arn:aws:bedrock:us-west-2:111122223333:inference-profile/x"]) {
       expect(() => parseRovaraAiModels(bad, "us-west-2")).toThrow();
     }
+  });
+
+  it("DEC 243: the built-in list offers the five Claude models by their engine names, each priced by the AWS price list's row", () => {
+    const models = parseRovaraAiModels(ROVARA_AI_US_MODELS, "us-west-2");
+    expect([...models.keys()]).toEqual(["claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"]);
+    // The AWS price list names these models so (its "model" attribute, 2026-11-15); the price fetcher folds each the same way
+    // (price-sources.ts fetchAWS), and the price index folds the Bedrock id (normalizeBedrockModel): both must meet.
+    const awsNames: Record<string, string> = { "claude-haiku-4-5": "Claude Haiku 4.5", "claude-haiku-4-5-20251001": "Claude Haiku 4.5", "claude-haiku-5-5": "Claude Haiku 5.5", "claude-sonnet-5-5": "Claude Sonnet 5.5", "claude-opus-5-5": "Claude Opus 5.5", "claude-fable-5-2": "Claude Fable 5.2" };
+    for (const [name, id] of models) expect([name, normalizeBedrockModel(id)]).toEqual([name, awsNames[name]!.toLowerCase().replace(/[^a-z0-9]+/gu, "-")]);
   });
 
   it("exempt companies: an explicit list of company ids only", () => {

@@ -6,9 +6,9 @@ import type { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
-import { parseRovaraAiModels } from "../../packages/model-gateway/src/agent-ai.js";
+import { parseRovaraAiModels, ROVARA_AI_US_MODELS as GATEWAY_US_MODELS } from "../../packages/model-gateway/src/agent-ai.js";
 import { buildAgentXApp, rovaraAiContext } from "../../infra/lib/app.js";
-import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_ENV, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, rovaraAiModelIds } from "../../infra/lib/model-gateway.js";
+import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_ENV, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ROVARA_AI_US_MODELS, rovaraAiModelIds } from "../../infra/lib/model-gateway.js";
 
 type Resource = { Type: string; Properties: Record<string, unknown> };
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>> };
@@ -20,7 +20,8 @@ const productOn = { [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" };
 const on = synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS, [MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY]: FOUNDERS });
 const without = synth(productOn);
 
-const statements = (t: { Resources: Record<string, Resource> }): Statement[] => Object.values(t.Resources).filter((r) => r.Type === "AWS::IAM::Policy").flatMap((p) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
+// CDK moves statements past the inline size limit into a managed "overflow" policy on the same role: both are read.
+const statements = (t: { Resources: Record<string, Resource> }): Statement[] => Object.values(t.Resources).filter((r) => r.Type === "AWS::IAM::Policy" || r.Type === "AWS::IAM::ManagedPolicy").flatMap((p) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
 const actionsOf = (s: Statement) => [s.Action].flat();
 const bedrock = (t: { Resources: Record<string, Resource> }) => statements(t).filter((s) => actionsOf(s).some((a) => a.startsWith("bedrock:")));
 const join = (parts: unknown[]) => ({ "Fn::Join": ["", parts] });
@@ -68,15 +69,26 @@ describe("Rovara's AI in the gateway stack (DEC 240)", () => {
     expect(serveEnv(synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS }))[GATEWAY_ENV.rovaraAiExempt]).toBeUndefined();
   });
 
-  it("a plain model id (no profile) is granted in this Region only", () => {
-    const t = synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "claude-sonnet-5-5=anthropic.claude-sonnet-5-5" });
-    expect(bedrock(t).map((s) => [s.Sid, [s.Resource].flat()])).toEqual([["RovaraAiModels", [modelArn("us-west-2", "anthropic.claude-sonnet-5-5")]]]);
+  it("on: the built-in allow-list of DEC 243 (all five Claude models on their us. profiles), the same list the process reads", () => {
+    const t = synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "on" });
+    expect(ROVARA_AI_US_MODELS).toBe(GATEWAY_US_MODELS);
+    expect(serveEnv(t)[GATEWAY_ENV.rovaraAiModels]).toBe(GATEWAY_US_MODELS);
+    const profiles = ["us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-haiku-5-5", "us.anthropic.claude-sonnet-5-5", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-fable-5-2"];
+    const bySid: Record<string, Statement> = Object.fromEntries(bedrock(t).map((s) => [s.Sid ?? "", s]));
+    expect(bySid.RovaraAiProfiles!.Resource).toEqual(profiles.map(profileArn));
+    expect([bySid.RovaraAiProfileModels!.Resource].flat()).toHaveLength(15);
+    expect(Object.keys(bySid).sort()).toEqual(["RovaraAiProfileModels", "RovaraAiProfiles"]);
+    // Every policy that carries a Bedrock action is attached to the serving role only.
+    for (const r of Object.values(t.Resources).filter((x) => (x.Type === "AWS::IAM::Policy" || x.Type === "AWS::IAM::ManagedPolicy") && JSON.stringify(x.Properties.PolicyDocument).includes("bedrock:"))) {
+      expect((r.Properties.Roles as Array<{ Ref: string }>).map((role) => role.Ref)).toEqual([expect.stringMatching(/^ServeTaskRole/u)]);
+      expect(r.Properties.Users).toBeUndefined(); expect(r.Properties.Groups).toBeUndefined();
+    }
   });
 
   it("refused at synth: production, without product AI (company-key mode), global or another geography, bad lists", () => {
     expect(() => app({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS }, "production")).toThrow(/^Rovara's AI is for named test environments/u);
     expect(() => synth({ [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS })).toThrow(/needs rovaraModelGatewayProductAi=on/u);
-    for (const bad of ["claude-sonnet-5-5=global.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=eu.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=us.meta.llama3", "x=us.anthropic.claude-a", "claude-a=us.anthropic.claude-a,claude-a=us.anthropic.claude-b"]) {
+    for (const bad of ["claude-sonnet-5-5=anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=global.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=eu.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5=us.meta.llama3", "x=us.anthropic.claude-a", "claude-a=us.anthropic.claude-a,claude-a=us.anthropic.claude-b"]) {
       expect(() => synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: bad })).toThrow();
     }
     expect(() => synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS, [MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY]: "founders" })).toThrow();
@@ -85,7 +97,7 @@ describe("Rovara's AI in the gateway stack (DEC 240)", () => {
   });
 
   it("synth and the process accept and refuse the same allow-lists", () => {
-    for (const value of [MODELS, "claude-sonnet-5-5=anthropic.claude-sonnet-5-5", "claude-a=global.anthropic.claude-a", "claude-a=eu.anthropic.claude-a", "claude-a=us.anthropic.claude-a=x", "a=us.anthropic.claude-a", ""]) {
+    for (const value of [MODELS, GATEWAY_US_MODELS, "claude-sonnet-5-5=anthropic.claude-sonnet-5-5", "claude-a=global.anthropic.claude-a", "claude-a=eu.anthropic.claude-a", "claude-a=us.anthropic.claude-a=x", "a=us.anthropic.claude-a", ""]) {
       let synthOk = true; let processOk = true;
       try { rovaraAiModelIds(value, "us-west-2"); } catch { synthOk = false; }
       try { parseRovaraAiModels(value, "us-west-2"); } catch { processOk = false; }

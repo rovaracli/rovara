@@ -49,6 +49,21 @@ export interface RovaraAi {
 }
 
 const AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;
+/**
+ * DEC 243: Rovara's AI offers every Claude model Bedrock has in the account, each engine model name (Code's model catalog) on its
+ * `us.` system inference profile (US cross-Region routing; data stays in the US). Deployed with `-c rovaraModelGatewayRovaraAi=on`.
+ * Every one is priced by the AWS price list's Bedrock rows (normalised to the same name) and limited by its Anthropic row.
+ * Haiku 4.5 and Haiku 5.5 work at once; Sonnet 5.5, Opus 5.5 and Fable 5.2 need the account's one-time Marketplace enable first
+ * (until then a call is refused, free, as ROVARA_AI_MODEL_NOT_ENABLED).
+ */
+export const ROVARA_AI_US_MODELS = [
+  "claude-haiku-4-5=us.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "claude-haiku-4-5-20251001=us.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "claude-haiku-5-5=us.anthropic.claude-haiku-5-5",
+  "claude-sonnet-5-5=us.anthropic.claude-sonnet-5-5",
+  "claude-opus-5-5=us.anthropic.claude-opus-5-5",
+  "claude-fable-5-2=us.anthropic.claude-fable-5-2",
+].join(",");
 export const ROVARA_AI_MODELS_MAX = 20;
 export const ROVARA_AI_EXEMPT_MAX = 10;
 /** A region's inference-profile geographies (AWS system profile prefixes). `global.` is never one: global routing is off. */
@@ -60,8 +75,9 @@ function geographiesOf(region: string): readonly string[] {
 
 /**
  * GATEWAY_ROVARA_AI_MODELS: `<agent model>=<bedrock id>` pairs, comma-separated, e.g.
- * `claude-sonnet-5-5=us.anthropic.claude-sonnet-5-5`. Each id is a Claude model or a system inference profile of the gateway's
- * own region's geography (in-geography routing only; a `global.` profile or another geography's is refused). Throws on anything else.
+ * `claude-sonnet-5-5=us.anthropic.claude-sonnet-5-5`. Each id is a Claude system inference profile of the gateway's own Region's
+ * geography (DEC 243: `us.` from a US Region). A plain model id, a `global.` profile or another geography's is refused. Throws on
+ * anything else.
  */
 export function parseRovaraAiModels(value: string, region: string): Map<string, string> {
   const models = new Map<string, string>();
@@ -71,8 +87,8 @@ export function parseRovaraAiModels(value: string, region: string): Map<string, 
   for (const pair of pairs) {
     const [name, id, extra] = pair.trim().split("=");
     if (name === undefined || id === undefined || extra !== undefined || !AGENT_MODEL.test(name) || !BEDROCK_CLAUDE_ID.test(id) || models.has(name)) throw new Error("invalid rovara ai models");
-    const prefix = id.startsWith("anthropic.") ? undefined : id.slice(0, id.indexOf("."));
-    if (prefix !== undefined && !geographies.includes(prefix)) throw new Error("invalid rovara ai models");
+    const prefix = id.slice(0, id.indexOf("."));
+    if (!geographies.includes(prefix)) throw new Error("invalid rovara ai models");
     models.set(name, id);
   }
   return models;

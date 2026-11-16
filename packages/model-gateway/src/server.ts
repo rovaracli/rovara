@@ -122,7 +122,11 @@ export const AGENT_SOURCE_NOT_OFFERED: RouteRefusal = Object.freeze({ ok: false 
 export const ROVARA_AI_OFF: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: Rovara's AI is not available on this install." });
 /** DEC 240: a model that is not on Rovara's AI allow-list. Before any hold. */
 export const ROVARA_AI_MODEL: GuardFailure = Object.freeze({ ok: false as const, status: 400, code: "invalid_request", message: "This model is not offered on Rovara's AI." });
-/** DEC 240: Bedrock refused Rovara's own role (access or model not enabled). Free: the customer is never charged for it. */
+/** DEC 243: the model is on the allow-list but not enabled yet in Rovara's account (its one-time Marketplace enable). Free. */
+export const ROVARA_AI_MODEL_NOT_ENABLED: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "model_not_enabled", message: "This model is not enabled yet on Rovara's AI. Choose another model, or try again after Rovara enables it." });
+/** Bedrock's words for "the account has no access to this model yet" (a Marketplace agreement or model access), read only to classify. */
+const MODEL_ACCESS_WORDS = /aws-marketplace|Model access is denied|don't have access to the model|do not have access to the model|model access/iu;
+/** DEC 240: Bedrock refused Rovara's own role. Free: the customer is never charged for it. */
 export const ROVARA_AI_UNAVAILABLE: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "unavailable", message: "Rovara's AI is unavailable right now. Try again later." });
 const PROVIDER_ERROR: RouteRefusal = Object.freeze({ ok: false as const, status: 502, code: "provider_error", message: "provider unavailable" });
 /** Bedrock's InvokeModel body version for Anthropic models. */
@@ -160,6 +164,8 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     ...base,
     get provider() { return rovara === undefined ? base.provider : "bedrock"; },
     get transport() { return rovara === undefined ? base.transport : rovara.ai.transport; },
+    // Rovara's AI reads the first bytes of a Bedrock refusal, only to tell "model not enabled yet" apart (never echoed or logged).
+    get failureBody() { return rovara !== undefined; },
     async admit(claims, signal) {
       const choice = deps.agentAi;
       if (choice !== undefined) {
@@ -210,6 +216,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         // charges from Bedrock's token counts). This includes 5xx and model timeouts on Rovara's own account, and an exception that
         // arrives as the stream's first frame (bedrock-transport.ts answers that as its error status). A stream that breaks AFTER
         // output started keeps the core's rule (charged). Its refusal of Rovara's own role is Rovara's to fix.
+        if (status === 403 && body !== undefined && MODEL_ACCESS_WORDS.test(Buffer.from(body).toString("utf8"))) return { charged: false, refusal: ROVARA_AI_MODEL_NOT_ENABLED };
         if (status === 401 || status === 403) return { charged: false, refusal: ROVARA_AI_UNAVAILABLE };
         return { charged: false, refusal: PROVIDER_ERROR };
       }

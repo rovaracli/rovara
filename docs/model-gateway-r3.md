@@ -179,7 +179,14 @@ no output and no token counts, so it is never charged (including 5xx, model time
 first frame, which the transport answers as its error status); its refusal of Rovara's own role (401, 403) answers 503 "Rovara's AI
 is unavailable right now". A stream that breaks after output started is charged at its hold, as on every route.
 
-Deploy: `-c rovaraModelGatewayRovaraAi=<allow-list>` (and optionally `-c rovaraModelGatewayRovaraAiExempt=<org ids>`) beside
+Models (DEC 243): `-c rovaraModelGatewayRovaraAi=on` offers every Claude model Bedrock has in the account, each engine model name on
+its `us.` system inference profile (US cross-Region routing; data stays in the US): `claude-haiku-4-5` (and the dated
+`claude-haiku-4-5-20251001`), `claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-fable-5-2`
+(`ROVARA_AI_US_MODELS`). Only `us.` profile ids are accepted (no plain model id, no `global.`). Each is priced by the AWS price
+list's Bedrock row and limited by its Anthropic row. Sonnet 5.5, Opus 5.5 and Fable 5.2 need the account's one-time Marketplace
+enable; until then a call answers 503 `model_not_enabled` ("This model is not enabled yet on Rovara's AI ...") and is not charged.
+
+Deploy: `-c rovaraModelGatewayRovaraAi=<allow-list or on>` (and optionally `-c rovaraModelGatewayRovaraAiExempt=<org ids>`) beside
 `-c rovaraModelGatewayProductAi=on`; refused for production at synth. The serving role then gets exactly `bedrock:InvokeModel` and
 `bedrock:InvokeModelWithResponseStream` on the allow-listed inference profiles in its Region and, only through those profiles
 (`bedrock:InferenceProfileArn`), their foundation models in the profile's Regions (a `us.` profile serves from us-east-1, us-east-2
