@@ -86,6 +86,7 @@ describe("Cloud web: product AI settings grants (B7)", () => {
       "https://my-bucket.s3.us-west-2.amazonaws.com/t.json", "https://s3.us-west-2.amazonaws.com/b/t.json", "https://s3-us-west-2.amazonaws.com/b/t.json", "https://s3.amazonaws.com/b/t.json",
       "https://x.cloudfront.net/t.yaml", "https://x.cloudfront.net/t.json", "https://x.amazonaws.com/t.json", "https://bucket.s3.example.com/t.json", "https://s3-bucket.example.com/t.json",
       "https://s3bucket.example.com/t.json", "https://docs.s3x.example.com/t.json", "https://a b/t.json", "ftp://docs/t.json", "https://docs.example.com/a b.json", "https://DOCS.example.com/t.json",
+      "https://x..s3.example.com/t.json", "https://.s3.example.com/t.json", "https://a.b..s3-x.com/t.json",
     ];
     for (const url of urls) expect(pattern.test(url), url).toBe(validTemplateUrl(url));
     expect(pattern.test(urls[0]!)).toBe(true);

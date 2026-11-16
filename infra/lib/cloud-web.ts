@@ -72,7 +72,7 @@ export const CLOUD_BEDROCK_TEMPLATE_URL_ENV = "CLOUD_BEDROCK_TEMPLATE_URL";
  * CloudFormation. Empty, or https, a plain path to a .json file, and never an S3 or amazonaws.com host (DEC 238 Q10). The two lookaheads
  * are the host rule: no label that starts "s3." or "s3-", and no name ending ".amazonaws.com". A test holds the two rules together.
  */
-export const BEDROCK_TEMPLATE_URL_PATTERN = "^(|https://(?!(?:[a-z0-9-]+\\.)*s3[.-])(?![a-z0-9.-]*\\.amazonaws\\.com/)[a-z0-9.-]{1,253}/[A-Za-z0-9._~/-]{1,512}\\.json)$";
+export const BEDROCK_TEMPLATE_URL_PATTERN = "^(|https://(?!(?:[a-z0-9-]*\\.)*s3[.-])(?![a-z0-9.-]*\\.amazonaws\\.com/)[a-z0-9.-]{1,253}/[A-Za-z0-9._~/-]{1,512}\\.json)$";
 
 /**
  * What the server may do in its State table, by partition-key prefix (the layout in packages/cloud-server/src/dynamo-stores.ts):
