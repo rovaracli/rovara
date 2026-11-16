@@ -14,7 +14,9 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { COMPANY, record } from "./model-gateway-token.js";
-import type { VertexCheck } from "./product-keys.js";
+import type { BedrockCheck, VertexCheck } from "./product-keys.js";
+import { BEDROCK_EXTERNAL_ID, BEDROCK_MODEL_CHECKS, parseBedrockConnect, type BedrockConnection, type BedrockModelCheck } from "./bedrock-byo.js";
+import type { BedrockProbe } from "./bedrock-byo-sessions.js";
 import { parseVertexConnect, type VertexCredential } from "./product-vertex-credential.js";
 import type { ProbeResult } from "./product-vertex-token.js";
 
@@ -115,6 +117,31 @@ async function readBody(req: AsyncIterable<Uint8Array>, max: number): Promise<Bu
   return Buffer.concat(parts);
 }
 
+type ServiceRequest = { method: string; headers: Readonly<Record<string, string | string[] | undefined>>; body: AsyncIterable<Uint8Array> };
+type ServiceAnswer = { status: number; body: unknown };
+/**
+ * A service call Cloud signed for `path`, read and checked: the method, the size, the time, the MAC (KMS VerifyMac), then a JSON
+ * object naming this gateway's issuer and a company. Anything else is the fixed answer. Shared by every service path.
+ */
+async function signedCall(options: { issuer: string; kms: MacVerifier; macKeyId: string; now?: () => number }, path: string, request: ServiceRequest): Promise<{ input: Record<string, unknown>; cid: string } | ServiceAnswer> {
+  if (request.method !== "POST") return ANSWERS.notAllowed;
+  const body = await readBody(request.body, SERVICE_CALL_BODY_MAX);
+  if (body === undefined) return ANSWERS.tooLarge;
+  const atText = request.headers[SERVICE_CALL_AT_HEADER]; const macText = request.headers[SERVICE_CALL_MAC_HEADER];
+  if (typeof atText !== "string" || !/^[0-9]{1,16}$/u.test(atText) || typeof macText !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(macText)) return ANSWERS.refused;
+  const at = Number(atText);
+  if (Math.abs((options.now ?? Date.now)() - at) > SERVICE_CALL_SKEW_MS) return ANSWERS.refused;
+  let valid: boolean;
+  try { valid = await options.kms.verifyMac({ KeyId: options.macKeyId, Message: serviceCallMessage(path, at, body), Mac: new Uint8Array(Buffer.from(macText, "base64url")) }); }
+  catch (error) { return (error as { name?: unknown } | null)?.name === "KMSInvalidMacException" ? ANSWERS.refused : ANSWERS.unavailable; }
+  if (valid !== true) return ANSWERS.refused;
+  let parsed: unknown;
+  try { parsed = JSON.parse(body.toString("utf8")) as unknown; } catch { return ANSWERS.invalid; }
+  const input = record(parsed);
+  if (input === undefined || input.iss !== options.issuer || typeof input.cid !== "string" || !COMPANY.test(input.cid)) return ANSWERS.invalid;
+  return { input, cid: input.cid };
+}
+
 /** The gateway's answer to one Vertex check: status and JSON body. Exported for tests; the server writes it. */
 export async function answerVertexCheck(options: VertexCheckHandlerOptions, request: { method: string; headers: Readonly<Record<string, string | string[] | undefined>>; body: AsyncIterable<Uint8Array> }, signal?: AbortSignal): Promise<{ status: number; body: unknown }> {
   if (request.method !== "POST") return ANSWERS.notAllowed;
@@ -142,13 +169,106 @@ export async function answerVertexCheck(options: VertexCheckHandlerOptions, requ
 
 /** The HTTP handler the serving process mounts at VERTEX_CHECK_PATH (process.ts), only when Vertex and the MAC key are configured. */
 export function createVertexCheckHandler(options: VertexCheckHandlerOptions): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const limit = serviceCallLimiter(options.now ?? Date.now);
+  return serviceHandler(options.now ?? Date.now, (request, signal) => answerVertexCheck(options, request, signal));
+}
+
+// ---- Bring your own Bedrock (DEC 238) -----------------------------------------------------------------------------------------
+// Only the gateway's serving role may assume the Bedrock broker and make the company's external id (its own KMS HMAC key), so
+// Cloud's settings route asks the gateway for both, signed as the Vertex check is:
+//   POST /v1/service/bedrock-setup  {iss, cid}              -> {externalId, brokerRoleArn}: what the company's AWS admin fills in
+//   POST /v1/service/bedrock-check  {iss, cid, connection}  -> {result, models}: the connection test (BedrockSessions.probe)
+// Each MAC covers its own path, so a signed setup call can't be replayed as a check or for another company. The gateway stays
+// read-only on keys: Cloud seals the connection in its own store transaction (ProductKeyStore.connect / rotate, bedrockCheck).
+export const BEDROCK_SETUP_PATH = "/v1/service/bedrock-setup";
+export const BEDROCK_CHECK_PATH = "/v1/service/bedrock-check";
+const PROBE_RESULTS = ["ok", "too_open", "refused", "unavailable"] as const;
+export interface BedrockSetup { externalId: string; brokerRoleArn: string }
+export interface BedrockServiceOptions {
+  issuer: string; kms: MacVerifier; macKeyId: string; now?: () => number;
+  brokerRoleArn: string;
+  externalIds: { of(iss: string, cid: string): Promise<string> };
+  bedrock: { probe(cid: string, connection: BedrockConnection, signal?: AbortSignal): Promise<BedrockProbe> };
+}
+export async function answerBedrockSetup(options: BedrockServiceOptions, request: ServiceRequest): Promise<ServiceAnswer> {
+  const call = await signedCall(options, BEDROCK_SETUP_PATH, request);
+  if ("status" in call) return call;
+  if (Object.keys(call.input).length !== 2) return ANSWERS.invalid;
+  let externalId: string;
+  try { externalId = await options.externalIds.of(options.issuer, call.cid); } catch { return ANSWERS.unavailable; }
+  if (!BEDROCK_EXTERNAL_ID.test(externalId)) return ANSWERS.unavailable;
+  return { status: 200, body: { externalId, brokerRoleArn: options.brokerRoleArn } };
+}
+export async function answerBedrockCheck(options: BedrockServiceOptions, request: ServiceRequest, signal?: AbortSignal): Promise<ServiceAnswer> {
+  const call = await signedCall(options, BEDROCK_CHECK_PATH, request);
+  if ("status" in call) return call;
+  if (Object.keys(call.input).length !== 3) return ANSWERS.invalid;
+  const fields = record(call.input.connection);
+  const connection = fields === undefined ? undefined : parseBedrockConnect(JSON.stringify(fields));
+  if (connection === undefined) return ANSWERS.invalid;
+  const probe = await options.bedrock.probe(call.cid, connection, signal).catch((): BedrockProbe => ({ result: "unavailable" }));
+  const result = PROBE_RESULTS.find((r) => r === probe.result) ?? "unavailable";
+  return { status: 200, body: { result, ...(result === "ok" && probe.models !== undefined ? { models: probe.models } : {}) } };
+}
+/** The handlers the serving process mounts at BEDROCK_SETUP_PATH and BEDROCK_CHECK_PATH (process.ts), only when BYO Bedrock is configured. */
+export function createBedrockServiceHandlers(options: BedrockServiceOptions): Record<typeof BEDROCK_SETUP_PATH | typeof BEDROCK_CHECK_PATH, (req: IncomingMessage, res: ServerResponse) => Promise<void>> {
+  const now = options.now ?? Date.now;
+  return {
+    [BEDROCK_SETUP_PATH]: serviceHandler(now, (request) => answerBedrockSetup(options, request)),
+    [BEDROCK_CHECK_PATH]: serviceHandler(now, (request, signal) => answerBedrockCheck(options, request, signal)),
+  };
+}
+
+async function signedPost(options: GatewayVertexCheckOptions, path: string, payload: Record<string, unknown>): Promise<unknown> {
+  const send = options.fetch ?? fetch;
+  const body = Buffer.from(JSON.stringify(payload));
+  const at = (options.now ?? Date.now)();
+  const signed = await options.kms.generateMac({ KeyId: options.macKeyId, Message: serviceCallMessage(path, at, body) });
+  if (signed.Mac === undefined || signed.Mac.length !== 32) throw new Error("unavailable");
+  const answer = await send(new URL(path, options.address), {
+    method: "POST", body, redirect: "error", signal: AbortSignal.timeout(SERVICE_CALL_TIMEOUT_MS),
+    headers: { "content-type": "application/json", [SERVICE_CALL_AT_HEADER]: String(at), [SERVICE_CALL_MAC_HEADER]: Buffer.from(signed.Mac).toString("base64url") },
+  });
+  if (answer.status !== 200) throw new Error("unavailable");
+  const text = await answer.text();
+  if (text.length > 4096) throw new Error("unavailable");
+  return JSON.parse(text) as unknown;
+}
+/** Cloud's side: the company's external id and Rovara's broker role, from the gateway. Undefined when it can't answer. */
+export function gatewayBedrockSetup(options: GatewayVertexCheckOptions): (cid: string) => Promise<BedrockSetup | undefined> {
+  return async (cid) => {
+    if (!COMPANY.test(cid)) return undefined;
+    try {
+      const answer = record(await signedPost(options, BEDROCK_SETUP_PATH, { iss: options.issuer, cid }));
+      if (answer === undefined || typeof answer.externalId !== "string" || !BEDROCK_EXTERNAL_ID.test(answer.externalId) || typeof answer.brokerRoleArn !== "string" || !/^arn:aws:iam::[0-9]{12}:role\/RovaraBedrockBroker-[a-z0-9-]{1,32}$/u.test(answer.brokerRoleArn)) return undefined;
+      return { externalId: answer.externalId, brokerRoleArn: answer.brokerRoleArn };
+    } catch { return undefined; }
+  };
+}
+/** Cloud's side: the store's BedrockCheck, answered by the gateway. Anything but a well-formed answer is "unavailable" (nothing saved). */
+export function gatewayBedrockCheck(options: GatewayVertexCheckOptions): BedrockCheck {
+  return async (cid, connection) => {
+    if (!COMPANY.test(cid)) return { result: "unavailable" };
+    try {
+      const answer = record(await signedPost(options, BEDROCK_CHECK_PATH, { iss: options.issuer, cid, connection: { scheme: "assume_role", roleArn: connection.roleArn, region: connection.region, models: connection.models, allowGlobal: connection.allowGlobal } }));
+      const result = PROBE_RESULTS.find((r) => r === answer?.result) ?? "unavailable";
+      if (result !== "ok") return { result };
+      const models = record(answer?.models);
+      const out: Record<string, BedrockModelCheck> = {};
+      for (const id of new Set(Object.values(connection.models))) { const state = models?.[id]; out[id] = BEDROCK_MODEL_CHECKS.find((c) => c === state) ?? "unavailable"; }
+      return { result, models: out };
+    } catch { return { result: "unavailable" }; }
+  };
+}
+
+/** One rate-limited service endpoint: at most SERVICE_CALL_OPEN at once and SERVICE_CALL_PER_MINUTE per minute, per path. */
+function serviceHandler(now: () => number, answerOf: (request: ServiceRequest, signal: AbortSignal) => Promise<ServiceAnswer>): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  const limit = serviceCallLimiter(now);
   return async (req, res) => {
     const controller = new AbortController(); const abort = () => controller.abort();
     res.once("close", abort);
     const release = limit.take();
     try {
-      const answer = release === undefined ? ANSWERS.busy : await answerVertexCheck(options, { method: req.method ?? "", headers: req.headers, body: req }, controller.signal);
+      const answer = release === undefined ? ANSWERS.busy : await answerOf({ method: req.method ?? "", headers: req.headers, body: req }, controller.signal);
       if (release === undefined) req.resume();
       if (res.headersSent || res.destroyed) return;
       res.writeHead(answer.status, { "content-type": "application/json", "cache-control": "no-store" });

@@ -4,15 +4,20 @@
 //   rovara         Rovara's AI: Claude through Bedrock in Rovara's OWN AWS account (bedrock-transport.ts), charged to the company
 //                  at list price on its bill (DEC 240b), under the one combined company cap.
 //   anthropic_key  the company's own Anthropic key (DEC 236, company-key mode).
-//   bedrock_byo    the company's own Bedrock (DEC 238): reserved, refused until it is built.
+//   bedrock_byo    the company's own Bedrock (DEC 238): its own invoke-only role, assumed as the company (ByoBedrock below).
 //
 // No choice saved: company-key mode exactly as before (DEC 236). There is never an automatic fallback between sources.
 import { BEDROCK_CONVERSE_ID } from "./bedrock-converse.js";
-import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
+import type { CredentialSource } from "./aws.js";
+import { geographiesOf, parseBedrockConnect, type BedrockConnection } from "./bedrock-byo.js";
+import type { BedrockSessionSource } from "./bedrock-byo-sessions.js";
+import { BEDROCK_CLAUDE_ID, createBedrockTransport } from "./bedrock-transport.js";
 import { GATEWAY_COMPANY_AGENT_AI } from "./deploy.js";
 import type { Dynamo } from "./dynamo.js";
 import { COMPANY, record } from "./model-gateway-token.js";
 import type { ProviderTransport } from "./provider.js";
+import { PRODUCT_DEFAULT_CAPS, type ProductKeyStore } from "./product-keys.js";
+import type { ProductKeyRow } from "./product-seal.js";
 
 export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo"] as const;
 export type AgentAiSource = typeof AGENT_AI_SOURCES[number];
@@ -91,12 +96,6 @@ export const ROVARA_AI_US_MODELS = [
 ].join(",");
 export const ROVARA_AI_MODELS_MAX = 20;
 export const ROVARA_AI_EXEMPT_MAX = 10;
-/** A region's inference-profile geographies (AWS system profile prefixes). `global.` is never one: global routing is off. */
-function geographiesOf(region: string): readonly string[] {
-  if (region.startsWith("us-gov-")) return ["us-gov"];
-  const area = region.split("-")[0];
-  return area === "us" ? ["us"] : area === "eu" ? ["eu"] : area === "ap" ? ["apac", "jp", "au"] : area === "ca" ? ["ca"] : [];
-}
 
 /**
  * GATEWAY_ROVARA_AI_MODELS: `<agent model>=<bedrock id>` pairs, comma-separated, e.g.
@@ -132,4 +131,39 @@ export function parseRovaraAiExempt(value: string | undefined): Set<string> {
   const ids = value.split(",").map((id) => id.trim());
   if (ids.length > ROVARA_AI_EXEMPT_MAX || ids.some((id) => !COMPANY.test(id)) || new Set(ids).size !== ids.length) throw new Error("invalid rovara ai exempt companies");
   return new Set(ids);
+}
+
+/**
+ * DEC 238: the company's OWN Bedrock as its agents' source (`bedrock_byo`). The connection is the company's one sealed `bedrock`
+ * source (product-keys.ts companyBedrock), opened only for the verified company; the call is signed with the customer's role,
+ * assumed as that company (bedrock-byo-sessions.ts). Bedrock bills the customer; the gateway meters at list price under the one
+ * combined company cap and writes no billable line.
+ */
+export interface ByoBedrock {
+  /** The company's connection, or undefined when none is connected. Throws when it can't be read (the route answers 503). */
+  connection(iss: string, cid: string, signal?: AbortSignal): Promise<{ row: ProductKeyRow; connection: BedrockConnection } | undefined>;
+  sessions: BedrockSessionSource;
+  /** The Bedrock transport for the connection's Region, signing with `credentials` (bedrock-transport.ts). */
+  transport(region: string, credentials: CredentialSource): ProviderTransport;
+  /** AWS refused the role or a model: shown on the settings page. Never changes the call; never throws. */
+  refused?(iss: string, cid: string, row: ProductKeyRow): Promise<void>;
+}
+/** The deployed ByoBedrock: the product key store's company source, the sessions, and the fixed Bedrock transport. */
+export function storedBedrock(store: Pick<ProductKeyStore, "companyBedrock" | "useKey" | "recordWarning">, sessions: BedrockSessionSource, transport: (region: string, credentials: CredentialSource) => ProviderTransport = (region, credentials) => createBedrockTransport({ region, credentials })): ByoBedrock {
+  return {
+    async connection(iss, cid) {
+      const source = await store.companyBedrock(iss, cid);
+      if (source === undefined) return undefined;
+      const text = await store.useKey(iss, cid, source);
+      // Removed between the two reads: not connected.
+      if (text === undefined) return undefined;
+      const connection = parseBedrockConnect(text);
+      if (connection === undefined) throw new Error("bedrock connection unreadable");
+      return { row: { iss, cid, owner: source.owner, sourceId: source.sourceId, versionId: source.versionId }, connection };
+    },
+    sessions, transport,
+    async refused(iss, cid, row) {
+      try { await store.recordWarning(iss, cid, { sourceId: row.sourceId, owner: row.owner, provider: "bedrock", caps: { ...PRODUCT_DEFAULT_CAPS }, versionId: row.versionId }, 403); } catch { /* A warning never changes a call. */ }
+    },
+  };
 }

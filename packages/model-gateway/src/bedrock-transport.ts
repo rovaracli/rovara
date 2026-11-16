@@ -17,8 +17,8 @@ import { NotSentError, type ProviderResponse, type ProviderTransport } from "./p
  * framing of InvokeModel(WithResponseStream), not of the native path (checked 2026-11-15); one real staging call settled the
  * framing used here (tests/fixtures/model-gateway-bedrock).
  */
-/** A Bedrock Claude model or system inference profile id: `anthropic.<model>` or `<geo>.anthropic.<model>`, optional `:<n>`. */
-export const BEDROCK_CLAUDE_ID = /^(?:[a-z]{2,4}\.)?anthropic\.claude-[a-z0-9-]{1,80}(?::\d{1,3})?$/u;
+/** A Bedrock Claude model or system inference profile id: `anthropic.<model>`, `<geo>.anthropic.<model>` or `global.anthropic.<model>` (only a BYO connection that allows global routing names one), optional `:<n>`. */
+export const BEDROCK_CLAUDE_ID = /^(?:[a-z]{2,4}\.|global\.)?anthropic\.claude-[a-z0-9-]{1,80}(?::\d{1,3})?$/u;
 const REGION = /^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u;
 const PATH = /^\/model\/([A-Za-z0-9.-]+(?:%3A\d{1,3})?)\/(invoke|invoke-with-response-stream|converse|converse-stream)$/u;
 /** The most a whole (non-streaming) Converse answer may be before it is translated (provider.ts MAX_RESPONSE_BYTES). */

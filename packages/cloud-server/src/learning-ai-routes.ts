@@ -52,7 +52,7 @@ const WORDS = Object.freeze({
 });
 const ANSWER_OF: Record<ProductAiErrorCode, RouteAnswer> = {
   invalid: WORDS.invalid, stale: WORDS.stale, not_found: WORDS.noKey, in_recovery: WORDS.inRecovery, forbidden: WORDS.forbidden,
-  unavailable: WORDS.unavailable, too_open: WORDS.keyRefused, refused: WORDS.keyRefused,
+  unavailable: WORDS.unavailable, too_open: WORDS.keyRefused, refused: WORDS.keyRefused, aws_too_open: WORDS.keyRefused, aws_refused: WORDS.keyRefused, role_in_use: WORDS.keyRefused,
 };
 const record = (v: unknown): Record<string, unknown> | undefined => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
 const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;

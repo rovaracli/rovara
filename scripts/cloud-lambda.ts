@@ -9,7 +9,8 @@
 // (the one company of a single-company Code, used only when Code's access check names none); CLOUD_PRODUCT_KEYS_TABLE,
 // CLOUD_PRODUCT_KEYS_KEY and CLOUD_PRODUCT_KEYS_MAC_KEY (the model gateway's product key table and KMS keys: the project product AI
 // settings, all three or none; absent, those routes answer 501); CLOUD_MODEL_GATEWAY_URL (the model gateway's https address, for the
-// Vertex AI connection test it runs for Cloud; empty or absent, a Vertex connect answers unavailable).
+// Vertex AI connection test it runs for Cloud; empty or absent, a Vertex connect answers unavailable); CLOUD_BEDROCK_TEMPLATE_URL (the
+// docs-site address of the customer's Bedrock role template, DEC 238; with the gateway's address it turns "your own Bedrock" on).
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
 import {
@@ -22,7 +23,10 @@ import { awsKms, kmsFingerprinter } from "../packages/model-gateway/src/aws-kms.
 import { Dynamo } from "../packages/model-gateway/src/dynamo.js";
 import { DynamoProductKeyTable } from "../packages/model-gateway/src/dynamo-product-keys.js";
 import { ProductKeyStore } from "../packages/model-gateway/src/product-keys.js";
-import { gatewayVertexCheck } from "../packages/model-gateway/src/service-call.js";
+import { gatewayBedrockCheck, gatewayBedrockSetup, gatewayVertexCheck } from "../packages/model-gateway/src/service-call.js";
+import { bedrockModelPresets, bedrockSetupCommand, validTemplateUrl } from "../packages/model-gateway/src/bedrock-byo.js";
+import { ROVARA_AI_US_MODELS } from "../packages/model-gateway/src/agent-ai.js";
+import type { BedrockBackend } from "../packages/cloud-server/src/index.js";
 import { kmsProductKeyService, ProductKeySealer } from "../packages/model-gateway/src/product-seal.js";
 
 /**
@@ -44,9 +48,33 @@ export function productAiStore(env: Readonly<Record<string, string | undefined>>
   const kms = awsKms({ region, credentials });
   return new ProductKeyStore({
     table: new DynamoProductKeyTable(new Dynamo({ region, credentials }), table!),
-    sealer: new ProductKeySealer(kmsProductKeyService(kms, key!)), fingerprint: kmsFingerprinter(kms, macKey!), providers: ["gemini", "vertex", "anthropic", "openai"],
-    ...(gateway === undefined ? {} : { vertexCheck: gatewayVertexCheck({ address: gateway, issuer: `${env.ROVARA_CODE_URL ?? ""}/v1/auth`, kms, macKeyId: macKey! }) }),
+    sealer: new ProductKeySealer(kmsProductKeyService(kms, key!)), fingerprint: kmsFingerprinter(kms, macKey!), providers: ["gemini", "vertex", "anthropic", "openai", "bedrock"],
+    ...(gateway === undefined ? {} : {
+      vertexCheck: gatewayVertexCheck({ address: gateway, issuer: `${env.ROVARA_CODE_URL ?? ""}/v1/auth`, kms, macKeyId: macKey! }),
+      // DEC 238: the gateway tests a company's Bedrock role (only it may assume the broker); without it a connect answers unavailable.
+      bedrockCheck: gatewayBedrockCheck({ address: gateway, issuer: `${env.ROVARA_CODE_URL ?? ""}/v1/auth`, kms, macKeyId: macKey! }),
+    }),
   });
+}
+
+/**
+ * "Your own Bedrock" (DEC 238) settings: the company's external id and Rovara's broker role from the gateway (a signed call), the
+ * role template's docs-site address (never an S3 bucket: DEC 238 Q10), the CloudShell command and the model presets. Undefined
+ * (the routes answer 501) unless the product key store, the gateway's address and the template address are all set.
+ */
+export function bedrockBackend(env: Readonly<Record<string, string | undefined>>): BedrockBackend | undefined {
+  const templateUrl = env.CLOUD_BEDROCK_TEMPLATE_URL ?? "";
+  const gateway = env.CLOUD_MODEL_GATEWAY_URL ?? ""; const macKey = env.CLOUD_PRODUCT_KEYS_MAC_KEY ?? "";
+  if (templateUrl === "") return undefined;
+  if (!validTemplateUrl(templateUrl)) throw new Error("bedrock settings: CLOUD_BEDROCK_TEMPLATE_URL is an https docs-site address of a .json file, never S3");
+  if (gateway === "" || macKey === "") throw new Error("bedrock settings: CLOUD_BEDROCK_TEMPLATE_URL needs CLOUD_MODEL_GATEWAY_URL and the product key settings");
+  const region = env.AWS_REGION ?? env.AWS_DEFAULT_REGION ?? "";
+  const setup = gatewayBedrockSetup({ address: gateway, issuer: `${env.ROVARA_CODE_URL ?? ""}/v1/auth`, kms: awsKms({ region, credentials: credentialsFromEnvironment(env) }), macKeyId: macKey });
+  return {
+    async setup(cid) { const got = await setup(cid); return got === undefined ? undefined : { ...got, templateUrl }; },
+    command: (made, cid, choice) => bedrockSetupCommand({ templateUrl: made.templateUrl, brokerRoleArn: made.brokerRoleArn, externalId: made.externalId, cid, region: choice.region, models: choice.models, allowGlobal: choice.allowGlobal }),
+    presets: (region) => bedrockModelPresets(region, ROVARA_AI_US_MODELS),
+  };
 }
 
 /** A function URL's (and an HTTP API's) request, payload version 2.0: the fields Cloud reads. */
@@ -109,7 +137,8 @@ function build() {
   const companyId = process.env.CLOUD_COMPANY_ID;
   const company = companyTable ? { store: new DynamoCompanyStore(db, companyTable), ...(companyId ? { companyId } : {}) } : undefined;
   const productStore = productAiStore(process.env);
-  const productAi = productStore === undefined ? undefined : { store: productStore, issuer: `${required("ROVARA_CODE_URL")}/v1/auth`, ...(companyId ? { companyId } : {}) };
+  const bedrock = productStore === undefined ? undefined : bedrockBackend(process.env);
+  const productAi = productStore === undefined ? undefined : { store: productStore, issuer: `${required("ROVARA_CODE_URL")}/v1/auth`, ...(companyId ? { companyId } : {}), ...(bedrock === undefined ? {} : { bedrock }) };
   const app = createAppHandler({ appDirectory: required("CLOUD_APP_DIRECTORY"), assetOrigin: "", realtimeHttpHost: "", realtimeWsHost: "" });
   // One Cloud handler per address and secret: a new pair (a rotated secret) gets a new client.
   let current: { key: string; handle: ReturnType<typeof createCloudHandler> } | undefined;
