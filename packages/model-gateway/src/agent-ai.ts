@@ -59,8 +59,12 @@ const AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;
  * DEC 243c: the other Bedrock coding models Rovara's AI offers, through Converse, each named exactly by the id called. Each passed
  * an agent-loop test on fakes and one real tiny ConverseStream call with a tool (staging us-west-2, 2026-11-15: a tool call within
  * 16 tokens, stop tool_use; the streams are tests/fixtures/model-gateway-bedrock/converse). Priced and limited by the price
- * snapshot's Bedrock rows. Reasoning-first models (gpt-oss, DeepSeek V3.2, Kimi K2 Thinking / K3 / K3.1, MiniMax M2.5, Nova Pro)
- * wait for a longer test.
+ * snapshot's Bedrock rows. gpt-oss 120B / 20B and Nova Pro passed with maxTokens 256 (they reason first; tests/fixtures/
+ * model-gateway-bedrock/converse-256): gpt-oss's reasoning is dropped (OpenAI only recommends passing it back after tool calls),
+ * and Nova Pro's leading "<thinking>...</thinking>" text is left out (LEADING_THINKING_TEXT_MODEL). Not listed: models whose
+ * reasoning must be sent back on later tool turns (DeepSeek V3.2, which also writes tool-call markup into its text; Kimi K3 / K3.1),
+ * or whose need is not documented for these versions (Kimi K2 Thinking, MiniMax M2.5): carrying unsigned reasoning back is not
+ * verified on Bedrock yet.
  */
 export const ROVARA_AI_US_CONVERSE_MODELS = [
   "qwen.qwen3-coder-480b-a35b-v1:0=qwen.qwen3-coder-480b-a35b-v1:0",
@@ -73,6 +77,9 @@ export const ROVARA_AI_US_CONVERSE_MODELS = [
   "zai.glm-5=zai.glm-5",
   "zai.glm-4.7=zai.glm-4.7",
   "us.amazon.nova-2-lite-v1:0=us.amazon.nova-2-lite-v1:0",
+  "openai.gpt-oss-120b-1:0=openai.gpt-oss-120b-1:0",
+  "openai.gpt-oss-20b-1:0=openai.gpt-oss-20b-1:0",
+  "us.amazon.nova-pro-v1:0=us.amazon.nova-pro-v1:0",
 ].join(",");
 /**
  * DEC 243: Rovara's AI offers every Claude model Bedrock has in the account, each engine model name (Code's model catalog) on its

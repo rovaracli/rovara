@@ -93,6 +93,9 @@ export const ROVARA_AI_US_CONVERSE_MODELS = [
   "zai.glm-5=zai.glm-5",
   "zai.glm-4.7=zai.glm-4.7",
   "us.amazon.nova-2-lite-v1:0=us.amazon.nova-2-lite-v1:0",
+  "openai.gpt-oss-120b-1:0=openai.gpt-oss-120b-1:0",
+  "openai.gpt-oss-20b-1:0=openai.gpt-oss-20b-1:0",
+  "us.amazon.nova-pro-v1:0=us.amazon.nova-pro-v1:0",
 ].join(",");
 export const ROVARA_AI_PROFILE_REGIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({ us: ["us-east-1", "us-east-2", "us-west-2"] });
 const ROVARA_AI_AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;

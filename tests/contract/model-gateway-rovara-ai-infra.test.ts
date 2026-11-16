@@ -74,13 +74,13 @@ describe("Rovara's AI in the gateway stack (DEC 240)", () => {
     expect(ROVARA_AI_US_MODELS).toBe(GATEWAY_US_MODELS);
     expect(ROVARA_AI_US_CONVERSE_MODELS).toBe(GATEWAY_US_CONVERSE_MODELS);
     expect(serveEnv(t)[GATEWAY_ENV.rovaraAiModels]).toBe(`${GATEWAY_US_MODELS},${GATEWAY_US_CONVERSE_MODELS}`);
-    expect([...parseRovaraAiModels(`${GATEWAY_US_MODELS},${GATEWAY_US_CONVERSE_MODELS}`, "us-west-2")]).toHaveLength(16);
-    const profiles = ["us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-haiku-5-5", "us.anthropic.claude-sonnet-5-5", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-fable-5-2", "us.amazon.nova-2-lite-v1:0"];
+    expect([...parseRovaraAiModels(`${GATEWAY_US_MODELS},${GATEWAY_US_CONVERSE_MODELS}`, "us-west-2")]).toHaveLength(19);
+    const profiles = ["us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-haiku-5-5", "us.anthropic.claude-sonnet-5-5", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-fable-5-2", "us.amazon.nova-2-lite-v1:0", "us.amazon.nova-pro-v1:0"];
     const bySid: Record<string, Statement> = Object.fromEntries(bedrock(t).map((s) => [s.Sid ?? "", s]));
     expect(bySid.RovaraAiProfiles!.Resource).toEqual(profiles.map(profileArn));
-    // 6 profiles x 3 US Regions, only through those profiles; the 9 in-Region models in us-west-2 only.
-    expect([bySid.RovaraAiProfileModels!.Resource].flat()).toHaveLength(18);
-    expect([bySid.RovaraAiModels!.Resource].flat()).toEqual(["qwen.qwen3-coder-480b-a35b-v1:0", "qwen.qwen3-coder-30b-a3b-v1:0", "qwen.qwen3-235b-a22b-2507-v1:0", "mistral.devstral-2-123b", "mistral.mistral-large-3-675b-instruct", "deepseek.v3-v1:0", "moonshotai.kimi-k2.5", "zai.glm-5", "zai.glm-4.7"].map((m) => modelArn("us-west-2", m)));
+    // 7 profiles x 3 US Regions, only through those profiles; the 11 in-Region models in us-west-2 only.
+    expect([bySid.RovaraAiProfileModels!.Resource].flat()).toHaveLength(21);
+    expect([bySid.RovaraAiModels!.Resource].flat()).toEqual(["qwen.qwen3-coder-480b-a35b-v1:0", "qwen.qwen3-coder-30b-a3b-v1:0", "qwen.qwen3-235b-a22b-2507-v1:0", "mistral.devstral-2-123b", "mistral.mistral-large-3-675b-instruct", "deepseek.v3-v1:0", "moonshotai.kimi-k2.5", "zai.glm-5", "zai.glm-4.7", "openai.gpt-oss-120b-1:0", "openai.gpt-oss-20b-1:0"].map((m) => modelArn("us-west-2", m)));
     expect(Object.keys(bySid).sort()).toEqual(["RovaraAiModels", "RovaraAiProfileModels", "RovaraAiProfiles"]);
     // Every policy that carries a Bedrock action is attached to the serving role only.
     for (const r of Object.values(t.Resources).filter((x) => (x.Type === "AWS::IAM::Policy" || x.Type === "AWS::IAM::ManagedPolicy") && JSON.stringify(x.Properties.PolicyDocument).includes("bedrock:"))) {

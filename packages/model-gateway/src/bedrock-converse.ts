@@ -8,6 +8,22 @@ import { EventStreamError, type EventStreamMessage } from "./bedrock-event-strea
 
 /** A non-Claude Bedrock model or system inference profile id (`<provider>.<model>` or `<geo>.<provider>.<model>`). */
 export const BEDROCK_CONVERSE_ID = /^(?!global\.)(?!(?:(?:us|eu|apac|jp|au|ca)\.)?anthropic\.)(?:(?:us|eu|apac|jp|au|ca)\.)?[a-z][a-z0-9-]{1,30}\.[a-z0-9][a-z0-9.:-]{0,100}$/u;
+/**
+ * Amazon Nova Pro writes its reasoning as plain text: the answer starts with "<thinking>...</thinking>". For these models only, exactly
+ * that leading, well-formed block (the message's first text block starting with "<thinking>", up to the first "</thinking>") is
+ * left out of what the agent gets. Anything else, including a block that never closes, is passed on unchanged.
+ */
+export const LEADING_THINKING_TEXT_MODEL = /^(?:us\.)?amazon\.nova-pro-v1:0$/u;
+const THINK_OPEN = "<thinking>"; const THINK_CLOSE = "</thinking>";
+/** The most text held back while deciding whether a leading thinking block is well formed; past it, the text goes out unchanged. */
+export const LEADING_THINKING_MAX_CHARS = 64 * 1024;
+/** `text` without its leading, well-formed thinking block, or unchanged. */
+export function withoutLeadingThinking(text: string): string {
+  if (!text.startsWith(THINK_OPEN)) return text;
+  const end = text.indexOf(THINK_CLOSE, THINK_OPEN.length);
+  return end < 0 ? text : text.slice(end + THINK_CLOSE.length);
+}
+
 /** Sent for a tool result with no output (Converse refuses an empty one). */
 export const EMPTY_TOOL_RESULT = "(no output)";
 /** What a non-Claude call is held to when the price snapshot names no output limit for the model. */
@@ -109,22 +125,29 @@ export function anthropicUsage(value: unknown): Json {
 }
 
 /** A Converse answer as an Anthropic message. Reasoning blocks are dropped; anything else unknown throws. */
-export function fromConverse(answer: unknown, model: string, id: string): Json {
+export function fromConverse(answer: unknown, model: string, id: string, stripLeadingThinking = false): Json {
   const a = record(answer);
   const message = record(record(a?.output)?.message);
   if (a === undefined || message === undefined || !Array.isArray(message.content)) throw new EventStreamError();
   const content: Json[] = [];
+  let firstText = stripLeadingThinking;
   for (const c of message.content) {
     const b = record(c);
-    if (b !== undefined && text(b.text)) content.push({ type: "text", text: b.text });
-    else if (b !== undefined && record(b.toolUse) !== undefined) {
-      const t = record(b.toolUse)!;
-      if (!text(t.toolUseId) || !text(t.name)) throw new EventStreamError();
-      content.push({ type: "tool_use", id: t.toolUseId, name: t.name, input: record(t.input) ?? {} });
-    } else if (b !== undefined && b.reasoningContent !== undefined) continue;
+    if (b !== undefined && text(b.text)) {
+      const t = firstText ? withoutLeadingThinking(b.text) : b.text; firstText = false;
+      if (t !== "" || t === b.text) content.push({ type: "text", text: t });
+    } else if (b !== undefined && record(b.toolUse) !== undefined && firstText) { firstText = false; content.push(...toolUse(b)); }
+    else if (b !== undefined && record(b.toolUse) !== undefined) content.push(...toolUse(b));
+    else if (b !== undefined && b.reasoningContent !== undefined) continue;
     else throw new EventStreamError();
   }
   return { id, type: "message", role: "assistant", model, content, stop_reason: anthropicStop(a.stopReason), stop_sequence: null, usage: anthropicUsage(a.usage) };
+}
+
+function toolUse(b: Json): Json[] {
+  const t = record(b.toolUse)!;
+  if (!text(t.toolUseId) || !text(t.name)) throw new EventStreamError();
+  return [{ type: "tool_use", id: t.toolUseId, name: t.name, input: record(t.input) ?? {} }];
 }
 
 /**
@@ -136,7 +159,20 @@ export class ConverseStreamToSse {
   readonly #model: string; readonly #id: string;
   #started = false; #stopReason: string | undefined; #ended = false;
   readonly #open = new Map<number, number>(); readonly #dropped = new Set<number>(); #next = 0;
-  constructor(model: string, id: string) { this.#model = model; this.#id = id; }
+  // The leading thinking block (LEADING_THINKING_TEXT_MODEL): "pending" until the first text block decides; its text held meanwhile.
+  #strip: "pending" | "done"; #held = ""; #heldIndex: number | undefined; readonly #stripped = new Set<number>();
+  constructor(model: string, id: string, stripLeadingThinking = false) { this.#model = model; this.#id = id; this.#strip = stripLeadingThinking ? "pending" : "done"; }
+  #text(index: number, value: string, out: Buffer[]): void {
+    if (value === "" && this.#open.has(index)) return;
+    if (!this.#open.has(index)) { const at = this.#next++; this.#open.set(index, at); out.push(this.#event("content_block_start", { index: at, content_block: { type: "text", text: "" } })); }
+    if (value !== "") out.push(this.#event("content_block_delta", { index: this.#open.get(index)!, delta: { type: "text_delta", text: value } }));
+  }
+  /** Ends the decision: what was held goes out as it came (`keep`), or only what follows the closed thinking block. */
+  #release(out: Buffer[], keep: string): void {
+    const index = this.#heldIndex; this.#strip = "done"; this.#held = ""; this.#heldIndex = undefined;
+    if (index === undefined) return;
+    if (keep === "") this.#stripped.add(index); else this.#text(index, keep, out);
+  }
   #event(type: string, data: Json): Buffer { return Buffer.from(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`, "utf8"); }
   convert(messages: readonly EventStreamMessage[]): Buffer {
     const out: Buffer[] = [];
@@ -156,6 +192,8 @@ export class ConverseStreamToSse {
         case "contentBlockStart": {
           const tool = record(record(p.start)?.toolUse);
           if (!this.#started || !validIndex || this.#open.has(index) || tool === undefined || !text(tool.toolUseId) || !text(tool.name)) throw new EventStreamError();
+          // Output that is not text first: there is no leading thinking block to look for.
+          if (this.#strip === "pending" && this.#heldIndex === undefined) this.#strip = "done";
           const at = this.#next++; this.#open.set(index, at);
           out.push(this.#event("content_block_start", { index: at, content_block: { type: "tool_use", id: tool.toolUseId, name: tool.name, input: {} } }));
           break;
@@ -166,7 +204,17 @@ export class ConverseStreamToSse {
           if (delta.reasoningContent !== undefined) { if (!this.#open.has(index)) this.#dropped.add(index); break; }
           if (this.#dropped.has(index)) throw new EventStreamError();
           if (text(delta.text)) {
-            // Converse starts text blocks with their first delta.
+            if (this.#strip === "pending" && (this.#heldIndex === undefined || this.#heldIndex === index) && !this.#open.has(index)) {
+              // Hold the first text block's start until it is clear whether it opens with a well-formed thinking block.
+              this.#heldIndex = index; this.#held += delta.text;
+              const held = this.#held;
+              if (held.length <= THINK_OPEN.length ? !THINK_OPEN.startsWith(held) : !held.startsWith(THINK_OPEN)) this.#release(out, held);
+              else if (held.length > LEADING_THINKING_MAX_CHARS) this.#release(out, held);
+              else if (held.indexOf(THINK_CLOSE, THINK_OPEN.length) >= 0) this.#release(out, withoutLeadingThinking(held));
+              break;
+            }
+            if (this.#stripped.has(index)) { this.#stripped.delete(index); }
+            // Converse starts text blocks with their first delta (an empty one included).
             if (!this.#open.has(index)) { const at = this.#next++; this.#open.set(index, at); out.push(this.#event("content_block_start", { index: at, content_block: { type: "text", text: "" } })); }
             out.push(this.#event("content_block_delta", { index: this.#open.get(index)!, delta: { type: "text_delta", text: delta.text } }));
           } else if (text(record(delta.toolUse)?.input) && this.#open.has(index)) {
@@ -177,11 +225,14 @@ export class ConverseStreamToSse {
         case "contentBlockStop":
           if (!validIndex) throw new EventStreamError();
           if (this.#dropped.delete(index)) break;
+          // The held block ends before its thinking block closed: not well formed, so all of it goes out unchanged.
+          if (this.#strip === "pending" && this.#heldIndex === index) this.#release(out, this.#held);
+          if (this.#stripped.delete(index)) break;
           if (!this.#open.has(index)) throw new EventStreamError();
           out.push(this.#event("content_block_stop", { index: this.#open.get(index)! })); this.#open.delete(index);
           break;
         case "messageStop":
-          if (!this.#started || this.#stopReason !== undefined) throw new EventStreamError();
+          if (!this.#started || this.#stopReason !== undefined || this.#strip === "pending" && this.#heldIndex !== undefined) throw new EventStreamError();
           this.#stopReason = anthropicStop(p.stopReason);
           break;
         case "metadata":
