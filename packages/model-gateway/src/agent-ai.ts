@@ -7,6 +7,7 @@
 //   bedrock_byo    the company's own Bedrock (DEC 238): reserved, refused until it is built.
 //
 // No choice saved: company-key mode exactly as before (DEC 236). There is never an automatic fallback between sources.
+import { BEDROCK_CONVERSE_ID } from "./bedrock-converse.js";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
 import { GATEWAY_COMPANY_AGENT_AI } from "./deploy.js";
 import type { Dynamo } from "./dynamo.js";
@@ -46,6 +47,11 @@ export interface RovaraAi {
   exempt: ReadonlySet<string>;
   /** Bedrock in Rovara's account (createBedrockTransport). */
   transport: ProviderTransport;
+  /**
+   * DEC 243c: a non-Claude model's own output limit (the price snapshot's Bedrock row). A call is held to at most this; unknown:
+   * CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS. Claude keeps the agent route's own limit.
+   */
+  maxOutputTokens?(id: string): number | undefined;
 }
 
 const AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;
@@ -86,9 +92,16 @@ export function parseRovaraAiModels(value: string, region: string): Map<string, 
   if (value.trim() === "" || pairs.length > ROVARA_AI_MODELS_MAX) throw new Error("invalid rovara ai models");
   for (const pair of pairs) {
     const [name, id, extra] = pair.trim().split("=");
-    if (name === undefined || id === undefined || extra !== undefined || !AGENT_MODEL.test(name) || !BEDROCK_CLAUDE_ID.test(id) || models.has(name)) throw new Error("invalid rovara ai models");
-    const prefix = id.slice(0, id.indexOf("."));
-    if (!geographies.includes(prefix)) throw new Error("invalid rovara ai models");
+    if (name === undefined || id === undefined || extra !== undefined || models.has(name)) throw new Error("invalid rovara ai models");
+    if (BEDROCK_CLAUDE_ID.test(id)) {
+      // Claude: an engine model name, on a profile of this Region's geography only (DEC 243).
+      if (!AGENT_MODEL.test(name) || !geographies.includes(id.slice(0, id.indexOf(".")))) throw new Error("invalid rovara ai models");
+    } else if (BEDROCK_CONVERSE_ID.test(id)) {
+      // Any other model (DEC 243c, through Converse): the engine names it exactly by the Bedrock id that is called (Code's model
+      // catalog names Bedrock models so, profiles included): that model in this Region, or its profile of this Region's geography.
+      const geo = id.split(".").length > 2 && /^(?:us|eu|apac|jp|au|ca)\./u.test(id) ? id.slice(0, id.indexOf(".")) : undefined;
+      if (name !== id || (geo !== undefined && !geographies.includes(geo))) throw new Error("invalid rovara ai models");
+    } else throw new Error("invalid rovara ai models");
     models.set(name, id);
   }
   return models;

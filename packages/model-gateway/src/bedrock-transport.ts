@@ -1,7 +1,9 @@
 import type { ClientRequest } from "node:http";
 import https from "node:https";
 import { signRequest, type CredentialSource } from "./aws.js";
-import { BedrockStreamToSse, exceptionStatus, type EventStreamMessage } from "./bedrock-event-stream.js";
+import { randomUUID } from "node:crypto";
+import { BEDROCK_CONVERSE_ID, ConverseStreamToSse, fromConverse } from "./bedrock-converse.js";
+import { BedrockStreamToSse, EventStreamDecoder, EventStreamError, exceptionStatus, type EventStreamMessage } from "./bedrock-event-stream.js";
 import { NotSentError, type ProviderResponse, type ProviderTransport } from "./provider.js";
 
 /**
@@ -18,12 +20,20 @@ import { NotSentError, type ProviderResponse, type ProviderTransport } from "./p
 /** A Bedrock Claude model or system inference profile id: `anthropic.<model>` or `<geo>.anthropic.<model>`, optional `:<n>`. */
 export const BEDROCK_CLAUDE_ID = /^(?:[a-z]{2,4}\.)?anthropic\.claude-[a-z0-9-]{1,80}(?::\d{1,3})?$/u;
 const REGION = /^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u;
-const PATH = /^\/model\/([A-Za-z0-9.-]+(?:%3A\d{1,3})?)\/(invoke|invoke-with-response-stream)$/u;
+const PATH = /^\/model\/([A-Za-z0-9.-]+(?:%3A\d{1,3})?)\/(invoke|invoke-with-response-stream|converse|converse-stream)$/u;
+/** The most a whole (non-streaming) Converse answer may be before it is translated (provider.ts MAX_RESPONSE_BYTES). */
+const CONVERSE_ANSWER_MAX_BYTES = 10 * 1024 * 1024;
 
 /** The request path for an allow-listed model id (encoded as AWS's SDKs send it). Throws for anything else. */
 export function bedrockInvokePath(modelId: string, streaming: boolean): string {
   if (!BEDROCK_CLAUDE_ID.test(modelId)) throw new Error("invalid bedrock model");
   return `/model/${encodeURIComponent(modelId)}/${streaming ? "invoke-with-response-stream" : "invoke"}`;
+}
+
+/** The Converse path for an allow-listed non-Claude model id (DEC 243c). Throws for anything else. */
+export function bedrockConversePath(modelId: string, streaming: boolean): string {
+  if (!BEDROCK_CONVERSE_ID.test(modelId)) throw new Error("invalid bedrock model");
+  return `/model/${encodeURIComponent(modelId)}/${streaming ? "converse-stream" : "converse"}`;
 }
 
 export interface BedrockTransportOptions { region: string; credentials: CredentialSource; request?: typeof https.request; now?: () => number }
@@ -37,8 +47,14 @@ export function createBedrockTransport(options: BedrockTransportOptions): Provid
     if (input.signal.aborted) throw new NotSentError();
     const path = input.path;
     const match = path === undefined ? null : PATH.exec(path);
-    if (path === undefined || match === null || !BEDROCK_CLAUDE_ID.test(decodeURIComponent(match[1]!))) throw new NotSentError();
-    const streaming = match[2] === "invoke-with-response-stream";
+    if (path === undefined || match === null) throw new NotSentError();
+    const modelId = decodeURIComponent(match[1]!);
+    const converse = match[2] === "converse" || match[2] === "converse-stream";
+    // Claude through InvokeModel with the Anthropic body; every other model only through Converse.
+    if (!(converse ? BEDROCK_CONVERSE_ID : BEDROCK_CLAUDE_ID).test(modelId)) throw new NotSentError();
+    // Claude never through Converse, whatever its prefix.
+    if (converse && /(?:^|\.)anthropic\./u.test(modelId)) throw new NotSentError();
+    const streaming = match[2] === "invoke-with-response-stream" || match[2] === "converse-stream";
     let credentials;
     try { credentials = await options.credentials(); } catch { throw new NotSentError(); }
     if (input.signal.aborted) throw new NotSentError();
@@ -54,10 +70,11 @@ export function createBedrockTransport(options: BedrockTransportOptions): Provid
           const status = response.statusCode ?? 0;
           const raw = response as AsyncIterable<Uint8Array>;
           const cancel = () => response.destroy();
-          if (!streaming || status < 200 || status >= 300) { resolve({ status, body: raw, cancel }); return; }
+          if (status < 200 || status >= 300) { resolve({ status, body: raw, cancel }); return; }
+          if (!streaming) { resolve({ status, body: converse ? converseAnswer(raw, modelId) : raw, cancel }); return; }
           // Look at the first message before answering: an exception before any output is answered as its error status, so the route
           // accounts it like the same error before the stream (free). Anything after it streams as Anthropic SSE.
-          firstMessage(raw).then((first) => {
+          firstMessage(raw, converse ? converseStream(modelId) : anthropicStream()).then((first) => {
             if (first.message?.headers[":message-type"] === "exception") { cancel(); resolve({ status: exceptionStatus(first.message), body: empty(), cancel }); return; }
             resolve({ status, body: toSse(first.sse, first.message, first.rest, first.iterator), cancel });
           }, () => { cancel(); reject(new Error("provider unavailable")); });
@@ -74,10 +91,26 @@ export function createBedrockTransport(options: BedrockTransportOptions): Provid
   };
 }
 
-interface First { sse: BedrockStreamToSse; message: EventStreamMessage | undefined; rest: EventStreamMessage[]; iterator: AsyncIterator<Uint8Array> }
+/** Event-stream messages to Anthropic SSE: the Anthropic body's own stream, or ConverseStream's (translated). */
+interface StreamConverter { decode(bytes: Uint8Array): EventStreamMessage[]; convert(messages: readonly EventStreamMessage[]): Buffer; finish(): void }
+const anthropicStream = (): StreamConverter => { const sse = new BedrockStreamToSse(); return { decode: (b) => sse.decode(b), convert: (m) => sse.convert(m), finish: () => { sse.finish(); } }; };
+const converseStream = (model: string): StreamConverter => {
+  const decoder = new EventStreamDecoder(); const sse = new ConverseStreamToSse(model, `msg_bdrk_${randomUUID().replaceAll("-", "")}`);
+  return { decode: (b) => decoder.push(b), convert: (m) => sse.convert(m), finish: () => { decoder.finish(); } };
+};
+/** A whole Converse answer as the Anthropic message JSON the route settles from. A malformed answer throws (a broken answer). */
+async function* converseAnswer(raw: AsyncIterable<Uint8Array>, model: string): AsyncIterable<Uint8Array> {
+  const parts: Buffer[] = []; let size = 0;
+  for await (const part of raw) { size += part.byteLength; if (size > CONVERSE_ANSWER_MAX_BYTES) throw new EventStreamError(); parts.push(Buffer.from(part)); }
+  let parsed: unknown;
+  try { parsed = JSON.parse(Buffer.concat(parts).toString("utf8")); } catch { throw new EventStreamError(); }
+  yield Buffer.from(JSON.stringify(fromConverse(parsed, model, `msg_bdrk_${randomUUID().replaceAll("-", "")}`)));
+}
+
+interface First { sse: StreamConverter; message: EventStreamMessage | undefined; rest: EventStreamMessage[]; iterator: AsyncIterator<Uint8Array> }
 /** Reads until the first whole message (or the end). Throws on a malformed stream. */
-async function firstMessage(raw: AsyncIterable<Uint8Array>): Promise<First & { rest: EventStreamMessage[] }> {
-  const sse = new BedrockStreamToSse(); const iterator = raw[Symbol.asyncIterator]();
+async function firstMessage(raw: AsyncIterable<Uint8Array>, sse: StreamConverter): Promise<First> {
+  const iterator = raw[Symbol.asyncIterator]();
   for (;;) {
     const next = await iterator.next();
     if (next.done) return { sse, message: undefined, rest: [], iterator };
@@ -86,8 +119,8 @@ async function firstMessage(raw: AsyncIterable<Uint8Array>): Promise<First & { r
   }
 }
 async function* empty(): AsyncIterable<Uint8Array> { /* An error answer: no bytes. */ }
-async function* toSse(sse: BedrockStreamToSse, first: EventStreamMessage | undefined, rest: EventStreamMessage[], iterator?: AsyncIterator<Uint8Array>): AsyncIterable<Uint8Array> {
+async function* toSse(sse: StreamConverter, first: EventStreamMessage | undefined, rest: EventStreamMessage[], iterator?: AsyncIterator<Uint8Array>): AsyncIterable<Uint8Array> {
   const head = sse.convert(first === undefined ? rest : [first, ...rest]); if (head.length > 0) yield head;
-  if (iterator !== undefined) for (;;) { const next = await iterator.next(); if (next.done) break; const out = sse.push(next.value); if (out.length > 0) yield out; }
+  if (iterator !== undefined) for (;;) { const next = await iterator.next(); if (next.done) break; const out = sse.convert(sse.decode(next.value)); if (out.length > 0) yield out; }
   sse.finish();
 }

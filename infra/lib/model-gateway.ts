@@ -87,12 +87,21 @@ const ROVARA_AI_BEDROCK_ID = /^([a-z]{2,4})\.(anthropic\.claude-[a-z0-9-]{1,80}(
 const ROVARA_AI_COMPANY = /^org_[0-9a-z]{20}$/u;
 export interface RovaraAiProps { readonly models: string; readonly exempt?: string }
 /** The allow-list's Bedrock ids, checked as the process checks them (agent-ai.ts parseRovaraAiModels; a contract test holds the two together). */
-export function rovaraAiModelIds(models: string, region: string): Array<{ id: string; geography: string; model: string }> {
+/** DEC 243c: any other model, called through Converse: `<provider>.<model>` in this Region, or its `<geo>.` profile (bedrock-converse.ts BEDROCK_CONVERSE_ID). */
+const ROVARA_AI_CONVERSE_ID = /^(?!global\.)(?!(?:(?:us|eu|apac|jp|au|ca)\.)?anthropic\.)(?:(us|eu|apac|jp|au|ca)\.)?([a-z][a-z0-9-]{1,30}\.[a-z0-9][a-z0-9.:-]{0,100})$/u;
+export function rovaraAiModelIds(models: string, region: string): Array<{ id: string; geography?: string; model: string }> {
   const pairs = models.split(",").map((pair) => pair.trim());
   const names = new Set<string>();
   if (models.trim() === "" || pairs.length > 20) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}: give <agent model>=<bedrock id> pairs`);
   return pairs.map((pair) => {
     const [name, id, extra] = pair.split("=");
+    const converse = id === undefined || ROVARA_AI_BEDROCK_ID.test(id) ? null : ROVARA_AI_CONVERSE_ID.exec(id);
+    if (converse !== null && name !== undefined && extra === undefined && !names.has(name) && name === id) {
+      names.add(name);
+      const geography = converse[1];
+      if (geography !== undefined && (ROVARA_AI_PROFILE_REGIONS[geography] === undefined || !ROVARA_AI_PROFILE_REGIONS[geography].includes(region))) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}: ${id} is not a profile of ${region}'s geography`);
+      return { id, model: converse[2]!, ...(geography === undefined ? {} : { geography }) };
+    }
     const match = id === undefined ? null : ROVARA_AI_BEDROCK_ID.exec(id);
     if (name === undefined || extra !== undefined || !ROVARA_AI_AGENT_MODEL.test(name) || names.has(name) || match === null) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}: give <agent model>=<bedrock id> pairs`);
     names.add(name);
@@ -624,7 +633,8 @@ export class ModelGatewayStack extends Stack {
     const exemptIds = exempt === "" ? [] : exempt.split(",");
     if (exemptIds.length > 10 || exemptIds.some((id) => !ROVARA_AI_COMPANY.test(id)) || new Set(exemptIds).size !== exemptIds.length) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY}: give company ids (org_...), comma-separated`);
     const actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"];
-    const profiles = ids;
+    const profiles = ids.filter((m): m is { id: string; geography: string; model: string } => m.geography !== undefined);
+    const inRegion = ids.filter((m) => m.geography === undefined);
     const profileArn = (id: string) => `arn:${this.partition}:bedrock:${region}:${this.account}:inference-profile/${id}`;
     const modelArn = (where: string, model: string) => `arn:${this.partition}:bedrock:${where}::foundation-model/${model}`;
     if (profiles.length > 0) {
@@ -635,6 +645,8 @@ export class ModelGatewayStack extends Stack {
         conditions: { StringEquals: { "bedrock:InferenceProfileArn": [...new Set(profiles.map((m) => profileArn(m.id)))] } },
       }));
     }
+    // DEC 243c: a non-Claude model with no profile, in this Region only (Converse is authorised by these same two actions).
+    if (inRegion.length > 0) serveRole.addToPolicy(new iam.PolicyStatement({ sid: "RovaraAiModels", actions, resources: [...new Set(inRegion.map((m) => modelArn(region, m.model)))] }));
     return { environment: { [MODEL_GATEWAY_ENV.rovaraAiModels]: models, ...(exempt === "" ? {} : { [MODEL_GATEWAY_ENV.rovaraAiExempt]: exempt }) } };
   }
 
