@@ -681,8 +681,9 @@ export class ModelGatewayStack extends Stack {
     });
     broker.applyRemovalPolicy(RemovalPolicy.RETAIN);
     serveRole.addToPolicy(new iam.PolicyStatement({ sid: "AssumeBedrockBroker", actions: ["sts:AssumeRole"], resources: [broker.roleArn], conditions: { StringLike: { "sts:RoleSessionName": "org_*" } } }));
-    // A fixed alias: if this key were ever replaced (a moved construct, a property that forces replacement), the new key's alias
-    // would clash with the old one's and the deploy would FAIL, instead of silently changing every company's external id.
+    // A fixed alias: if this construct were ever moved or renamed, the new key's alias would clash with the old one's and the
+    // deploy would FAIL, instead of silently changing every company's external id. A property change that replaces the key
+    // would only re-point the alias: never change this key's properties (the contract test pins its logical id, spec and usage).
     const externalIdKey = new kms.Key(this, "BedrockExternalIdKey", {
       alias: bedrockExternalIdKeyAlias(env),
       description: `Rovara Cloud ${env}: makes each company's Bedrock external id (HMAC). Never delete or replace: customers' roles name its ids`,

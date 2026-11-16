@@ -64,7 +64,9 @@ Slice 1 (this page) is agents only. The product route and learning come later (s
   session at one hour); a refusal is never cached; a 401/403 from Bedrock forgets the session.
 - The broker may only assume `RovaraBedrockInvoke-*` roles in OTHER accounts (`aws:ResourceAccount` is not Rovara's), with an
   `rvb-*` external id and an `org_*` session name. It has no Bedrock rights. Its name and logical id are fixed; the external-id
-  key has a fixed alias and a pinned logical id, so a replacement fails the deploy instead of breaking every customer silently. The customer role has only `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on the picked
+  key has a fixed alias and a pinned logical id (a renamed construct fails the deploy on the alias). A property change that
+  replaces the key would only re-point the alias, so never change the key's properties: its KeySpec and KeyUsage are pinned in
+  the contract test. The customer role has only `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on the picked
   models, and global routing is denied unless the admin turned it on.
 
 ## Money
