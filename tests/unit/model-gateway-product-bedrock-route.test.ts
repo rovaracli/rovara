@@ -10,14 +10,14 @@ import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import type { AwsCredentials, CredentialSource } from "../../packages/model-gateway/src/aws.js";
 import type { BedrockCheck } from "../../packages/model-gateway/src/product-keys.js";
 import type { AssumeResult, BedrockSessionSource } from "../../packages/model-gateway/src/bedrock-byo-sessions.js";
-import { PRODUCT_BEDROCK_FEATURE, PRODUCT_BEDROCK_MODEL, PRODUCT_BEDROCK_MODEL_NOT_ENABLED, PRODUCT_BEDROCK_NOT_CONNECTED, PRODUCT_BEDROCK_QUOTA, PRODUCT_BEDROCK_REFUSED, PRODUCT_BEDROCK_THROTTLED } from "../../packages/model-gateway/src/product-bedrock.js";
+import { PRODUCT_BEDROCK_FEATURE, PRODUCT_BEDROCK_MODEL, PRODUCT_BEDROCK_MODEL_NOT_ENABLED, PRODUCT_BEDROCK_QUOTA, PRODUCT_BEDROCK_REFUSED, PRODUCT_BEDROCK_THROTTLED } from "../../packages/model-gateway/src/product-bedrock.js";
 import { PRODUCT_NOT_SET_UP, PRODUCT_PROVIDER_REFUSED } from "../../packages/model-gateway/src/product-route.js";
 import { EVAL_SCOPE_HEADER, ProductEvalStages } from "../../packages/model-gateway/src/product-eval.js";
 import type { ProductKeyRow } from "../../packages/model-gateway/src/product-seal.js";
 import type { ProviderRequest, ProviderTransport } from "../../packages/model-gateway/src/provider.js";
 import { NotSentError } from "../../packages/model-gateway/src/provider.js";
-import { MemorySink, claims, mint, now, scope as agentScope } from "./model-gateway-fixture.js";
-import { admin, change, cid, iss, maintainer, pid, productCall, productGateway, productScope, storeKit, PRODUCT_COMPANY_OWNER } from "./model-gateway-product-fixture.js";
+import { type MemorySink, claims, mint, now, scope as agentScope } from "./model-gateway-fixture.js";
+import { admin, cid, iss, maintainer, pid, productCall, productGateway, productScope, storeKit, PRODUCT_COMPANY_OWNER } from "./model-gateway-product-fixture.js";
 
 const A = cid; const B = `org_${"b".repeat(20)}`;
 const CLAUDE = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
@@ -44,7 +44,6 @@ const chunk = (event: Record<string, unknown>): Buffer => frame({ ":event-type":
 const streamOf = (...parts: Buffer[]): AsyncIterable<Uint8Array> => (async function* () { for (const p of parts) yield p; })();
 const converseJson = Buffer.from(JSON.stringify({ output: { message: { role: "assistant", content: [{ text: "hi" }] } }, stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 }, metrics: { latencyMs: 5 } }));
 const converseStreamBytes = [ev("messageStart", { role: "assistant" }), ev("contentBlockDelta", { contentBlockIndex: 0, delta: { text: "hi" } }), ev("messageStop", { stopReason: "end_turn" }), ev("metadata", { usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 }, metrics: { latencyMs: 5 } })];
-const answer = (status: number, text: string): ProviderTransport => async () => ({ status, body: streamOf(Buffer.from(text)) });
 const converseBody = { messages: [{ role: "user", content: [{ text: "hello" }] }], inferenceConfig: { maxTokens: 50 } };
 
 class Sessions implements BedrockSessionSource {
@@ -55,7 +54,7 @@ class Sessions implements BedrockSessionSource {
   forget(row: ProductKeyRow): void { this.forgotten.push(row); }
 }
 interface Setup { company?: string; project?: string; link?: boolean; connection?: string; none?: boolean }
-async function gateway(options: { transport?: (region: string, request: ProviderRequest, credentials: AwsCredentials) => ReturnType<ProviderTransport>; companyMonth?: number; connect?: Setup[]; evalStages?: ProductEvalStages; noBedrock?: boolean } = {}) {
+async function gateway(options: { transport?: (request: ProviderRequest, region: string, credentials: AwsCredentials) => ReturnType<ProviderTransport>; companyMonth?: number; connect?: Setup[]; evalStages?: ProductEvalStages; noBedrock?: boolean } = {}) {
   const kit = storeKit({ bedrockCheck: OK });
   const sessions = new Sessions();
   const sent: Array<{ region: string; request: ProviderRequest; credentials: AwsCredentials }> = [];
@@ -80,7 +79,7 @@ async function gateway(options: { transport?: (region: string, request: Provider
     ...(options.noBedrock === true ? {} : { bedrock: { sessions, transport: (region: string, credentials: CredentialSource) => async (request: ProviderRequest) => {
       const creds = await credentials();
       sent.push({ region, request, credentials: creds });
-      return (options.transport ?? (async () => ({ status: 200, body: streamOf(converseJson) })))(region, request, creds);
+      return (options.transport ?? (async () => ({ status: 200, body: streamOf(converseJson) })))(request, region, creds);
     } } }),
     overrides: { prices: { priceFor: (provider, model) => { priced.push([provider, model, "chat"]); return provider === "anthropic" ? { inputMicrosPerMTok: 4_000_000, outputMicrosPerMTok: 12_000_000 } : { inputMicrosPerMTok: 3_000_000, outputMicrosPerMTok: 15_000_000 }; } } },
   });

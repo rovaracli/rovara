@@ -39,7 +39,7 @@ type Change = ProductAiChange;
 /** The view the store answers (ProductKeysView): never a key. */
 export interface ProductAiView {
   revision: number; owner: string;
-  sources: Array<{ sourceId: string; provider: string; hasKey: boolean; available: boolean; connectedAt: number; updatedAt: number; warning?: { status: number; at: number }; linkedTo?: string; vertex?: { scheme: string; projectId: string; location: string; serviceAccount?: string }; bedrock?: { roleArn: string; region: string; models: Record<string, string>; allowGlobal: boolean; productModels?: string[]; checks: Record<string, string>; checkedAt: number } }>;
+  sources: Array<{ sourceId: string; provider: string; hasKey: boolean; available: boolean; connectedAt: number; updatedAt: number; warning?: { status: number; at: number }; linkedTo?: string; vertex?: { scheme: string; projectId: string; location: string; serviceAccount?: string }; bedrock?: { roleArn: string; region: string; models: Record<string, string>; allowGlobal: boolean; productModels?: readonly string[]; checks: Record<string, string>; checkedAt: number } }>;
   removed: Array<{ sourceId: string; provider: string; recoverUntil: number }>;
   caps?: { taskMicros: number; projectMonthMicros: number };
   evalBudget?: { calls: number; costMicros: number };
@@ -107,7 +107,6 @@ const ANSWER_OF: Record<ProductAiErrorCode, RouteAnswer> = {
 };
 const record = (v: unknown): Record<string, unknown> | undefined => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
 const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
-const exactly = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
 
 interface Who { backend: ProductAiBackend; companyId: string; developerId: string; name: string; role: ProductAiActor["role"]; project: string; /** When Code's access check began (an approval counts from then). */ checkedAt: number }
 

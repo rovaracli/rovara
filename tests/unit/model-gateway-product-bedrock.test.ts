@@ -30,7 +30,7 @@ const guard = (id: string, op: string, body: unknown, headers: Record<string, st
 const converseBody = { messages: [{ role: "user", content: [{ text: "hello" }] }] };
 const anthropicBody = { anthropic_version: "bedrock-2023-05-31", max_tokens: 100, messages: [{ role: "user", content: "hello" }] };
 const refusal = (result: unknown) => result as { ok: false; status: number; code: string; message: string };
-const parsed = (call: unknown) => JSON.parse((call as { bytes: Buffer }).bytes.toString("utf8")) as Record<string, any>;
+const parsed = (call: unknown) => JSON.parse((call as { bytes: Buffer }).bytes.toString("utf8")) as unknown as Record<string, unknown>;
 
 describe("the connection's product models", () => {
   it("are optional, any family, distinct, valid for the Region, and at most 12 ids in all; the sealed text is unchanged without them", () => {
@@ -138,14 +138,14 @@ describe("the guard: the model and the operation", () => {
 
 describe("the guard: Converse", () => {
   it("sends the checked body with maxTokens held to the model's ceiling and the gateway's own requestMetadata, answered as an event stream when streaming", () => {
-    const call = guard(CLAUDE, "converse-stream", { ...converseBody, system: [{ text: "be brief" }], inferenceConfig: { temperature: 0.2, topP: 0.9, stopSequences: ["END"] }, requestMetadata: { rovara_project: "someone-else", other: "x" }, additionalModelRequestFields: { top_k: 40 } }) as Record<string, any>;
+    const call = guard(CLAUDE, "converse-stream", { ...converseBody, system: [{ text: "be brief" }], inferenceConfig: { temperature: 0.2, topP: 0.9, stopSequences: ["END"] }, requestMetadata: { rovara_project: "someone-else", other: "x" }, additionalModelRequestFields: { top_k: 40 } }) as unknown as Record<string, unknown>;
     expect(call).toMatchObject({ ok: true, model: CLAUDE, maxTokens: 64_000, streaming: true, hasTools: false, inputBounded: true, headers: { "content-type": "application/json" }, path: "/model/us.anthropic.claude-sonnet-4-5-20250929-v1%3A0/converse-stream", streamContentType: "application/vnd.amazon.eventstream" });
     expect(call.priceKind).toBeUndefined();
     expect(parsed(call).inferenceConfig).toEqual({ temperature: 0.2, topP: 0.9, stopSequences: ["END"], maxTokens: 64_000 });
     // The caller's metadata is overwritten, never merged.
     expect(parsed(call).requestMetadata).toEqual({ rovara_project: claims.pid, rovara_task: claims.tid });
     expect(parsed(call).additionalModelRequestFields).toEqual({ top_k: 40 });
-    const whole = guard(NOVA, "converse", { ...converseBody, inferenceConfig: { maxTokens: 300 } }) as Record<string, any>;
+    const whole = guard(NOVA, "converse", { ...converseBody, inferenceConfig: { maxTokens: 300 } }) as unknown as Record<string, unknown>;
     expect(whole.streamContentType).toBeUndefined(); expect(whole.maxTokens).toBe(300); expect(whole.streaming).toBe(false);
   });
   it("a request above the model's output ceiling is refused; a model with no row is held to 4,096", () => {
@@ -202,10 +202,10 @@ describe("the guard: Converse", () => {
 
 describe("the guard: Claude's Anthropic body through InvokeModel", () => {
   it("sends Bedrock's body: the version field, the guard's own limits, the extra Bedrock fields, no model or stream field; the stream is the operation", () => {
-    const call = guard(CLAUDE, "invoke-with-response-stream", { ...anthropicBody, top_p: 0.9, top_k: 5, stop_sequences: ["x"], anthropic_beta: ["interleaved-thinking-2025-05-14"], system: "s", temperature: 0.5, tools: [{ name: "t", input_schema: { type: "object" } }] }) as Record<string, any>;
+    const call = guard(CLAUDE, "invoke-with-response-stream", { ...anthropicBody, top_p: 0.9, top_k: 5, stop_sequences: ["x"], anthropic_beta: ["interleaved-thinking-2025-05-14"], system: "s", temperature: 0.5, tools: [{ name: "t", input_schema: { type: "object" } }] }) as unknown as Record<string, unknown>;
     expect(call).toMatchObject({ ok: true, model: CLAUDE, maxTokens: 100, streaming: true, hasTools: true, streamContentType: "application/vnd.amazon.eventstream", path: "/model/us.anthropic.claude-sonnet-4-5-20250929-v1%3A0/invoke-with-response-stream" });
     expect(parsed(call)).toEqual({ anthropic_version: "bedrock-2023-05-31", max_tokens: 100, messages: anthropicBody.messages, system: "s", temperature: 0.5, tools: [{ name: "t", input_schema: { type: "object" } }], top_p: 0.9, top_k: 5, stop_sequences: ["x"], anthropic_beta: ["interleaved-thinking-2025-05-14"] });
-    const whole = guard(CLAUDE, "invoke", { anthropic_version: "bedrock-2023-05-31", messages: anthropicBody.messages }) as Record<string, any>;
+    const whole = guard(CLAUDE, "invoke", { anthropic_version: "bedrock-2023-05-31", messages: anthropicBody.messages }) as unknown as Record<string, unknown>;
     expect(whole.maxTokens).toBe(64_000); expect(parsed(whole).max_tokens).toBe(64_000); expect(whole.streamContentType).toBeUndefined();
   });
   it("refuses a missing or other version, an output above the ceiling, a field the Bedrock body does not take, an unlisted beta, server tools and service tiers", () => {
@@ -226,7 +226,7 @@ describe("the guard: Claude's Anthropic body through InvokeModel", () => {
 
 describe("the guard: Titan text embeddings", () => {
   it("one text in; priced as an embedding; V2 options only on V2", () => {
-    const call = guard(TITAN, "invoke", { inputText: "hello", dimensions: 512, normalize: true, embeddingTypes: ["float"] }) as Record<string, any>;
+    const call = guard(TITAN, "invoke", { inputText: "hello", dimensions: 512, normalize: true, embeddingTypes: ["float"] }) as unknown as Record<string, unknown>;
     expect(call).toMatchObject({ ok: true, model: TITAN, priceKind: "embedding", maxTokens: 1, streaming: false, inputBounded: true, hasTools: false, path: "/model/amazon.titan-embed-text-v2%3A0/invoke" });
     expect(parsed(call)).toEqual({ inputText: "hello", dimensions: 512, normalize: true, embeddingTypes: ["float"] });
     expect((guard(TITAN1, "invoke", { inputText: "hello" }) as { ok: boolean }).ok).toBe(true);
@@ -270,7 +270,7 @@ describe("the usage readers", () => {
   it("ConverseStream: no metadata, metadata before messageStop, a second metadata, an exception, a bad CRC, a cut stream and unknown events leave it unknown", () => {
     const [start, delta, stop, stopMsg, meta] = converseStream() as [Buffer, Buffer, Buffer, Buffer, Buffer];
     const exception = frame({ ":exception-type": "throttlingException", ":message-type": "exception", ":content-type": "application/json" }, Buffer.from("{}"));
-    const flipped = Buffer.from(meta); flipped[flipped.length - 1] ^= 1;
+    const flipped = Buffer.from(meta); flipped[flipped.length - 1] = (flipped[flipped.length - 1] ?? 0) ^ 1;
     for (const [name, bytes] of Object.entries({
       none: Buffer.concat([start, delta, stop, stopMsg]), early: Buffer.concat([start, meta, stopMsg]), earlyOnly: Buffer.concat([start, meta]), trailingCut: Buffer.concat([start, stopMsg, meta, delta.subarray(0, 9)]),
       exceptionAsEvent: Buffer.concat([start, frame({ ":event-type": "messageStart", ":message-type": "exception", ":content-type": "application/json" }, Buffer.from("{}")), stopMsg, meta]), twice: Buffer.concat([start, stopMsg, meta, meta]), exception: Buffer.concat([start, exception]),

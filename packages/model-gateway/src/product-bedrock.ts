@@ -219,7 +219,7 @@ function toolConfigOk(config: unknown): { ok: boolean; bounded: boolean; hasTool
   if (c.toolChoice !== undefined) {
     const choice = record(c.toolChoice); const k = choice === undefined ? [] : Object.keys(choice);
     const named = k[0] === "tool" ? record(choice?.tool) : undefined;
-    if (choice === undefined || k.length !== 1 || !(k[0] === "auto" || k[0] === "any" || k[0] === "tool") || (k[0] !== "tool" && record(choice[k[0]!]) === undefined) || (k[0] === "tool" && (named === undefined || !exactKeys(named, ["name"]) || !text(named.name)))) return { ok: false, bounded, hasTools: true };
+    if (choice === undefined || k.length !== 1 || !(k[0] === "auto" || k[0] === "any" || k[0] === "tool") || (k[0] !== "tool" && record(choice[k[0]]) === undefined) || (k[0] === "tool" && (named === undefined || !exactKeys(named, ["name"]) || !text(named.name)))) return { ok: false, bounded, hasTools: true };
   }
   return { ok: true, bounded, hasTools: true };
 }
@@ -447,7 +447,7 @@ export function createBedrockProductTransport(options: BedrockTransportOptions):
     try { credentials = await options.credentials(); } catch { throw new NotSentError(); }
     if (input.signal.aborted) throw new NotSentError();
     const body = Buffer.from(input.body);
-    const path = input.path!;
+    const path = input.path;
     // Only these headers: nothing of the request's own (its dummy credentials are already gone) reaches AWS.
     const headers = signRequest({ method: "POST", host, path, region: options.region, service: "bedrock", body, credentials, now: new Date(now()), headers: { "content-type": "application/json", accept: streaming ? EVENT_STREAM_CONTENT_TYPE : "application/json" } });
     return new Promise<ProviderResponse>((resolve, reject) => {
