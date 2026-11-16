@@ -215,5 +215,12 @@ answer starts with its reasoning as plain text: for that model only, exactly a l
 (the first text block starting with `<thinking>`, up to the first `</thinking>`, within 64 KiB) is left out; anything else passes
 unchanged. Not listed: DeepSeek V3.2 (its provider requires reasoning to be sent back in tool loops, and it writes raw tool-call
 markup into its text), Kimi K3 / K3.1 (reasoning must be sent back), Kimi K2 Thinking and MiniMax M2.5 (not documented for these
-versions; their newer siblings require it). Carrying unsigned reasoning back through Anthropic `thinking` blocks is not verified on
-Bedrock or in the engine yet. GLM 5.3 and Grok 4.7 are not available to the account.
+versions; their newer siblings require it). For those five (`REASONING_CARRYOVER_MODEL` in `bedrock-converse.ts`) the gateway now carries reasoning both ways, off the
+list: Converse `reasoningContent` (text, and a signature when there is one; no real stream has shown one) becomes an Anthropic
+`thinking` block (streamed as `thinking_delta` / `signature_delta`; an unsigned block has an empty signature), and a `thinking`
+block in the history goes back as `reasoningContent` with its text exactly, before the tool result's turn. Blank unsigned reasoning
+and whitespace-only assistant text (MiniMax writes `"\n\n\n"` between its reasoning and the tool call) are left out of what goes
+back; redacted content and anything malformed fail the call, never part of a block. Every other model still drops its reasoning and
+refuses a `thinking` block. The five stay off the list until the owner's real two-turn call passes
+(`scripts/bedrock-reasoning-two-turn.ts`, run through `staging-aws.sh`; see that file's header). Listing them also needs
+`ROVARA_AI_MODELS_MAX` (20) raised: `on` already offers 19. GLM 5.3 and Grok 4.7 are not available to the account.

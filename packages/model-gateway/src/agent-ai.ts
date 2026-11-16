@@ -68,8 +68,9 @@ const AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;
  * model-gateway-bedrock/converse-256): gpt-oss's reasoning is dropped (OpenAI only recommends passing it back after tool calls),
  * and Nova Pro's leading "<thinking>...</thinking>" text is left out (LEADING_THINKING_TEXT_MODEL). Not listed: models whose
  * reasoning must be sent back on later tool turns (DeepSeek V3.2, which also writes tool-call markup into its text; Kimi K3 / K3.1),
- * or whose need is not documented for these versions (Kimi K2 Thinking, MiniMax M2.5): carrying unsigned reasoning back is not
- * verified on Bedrock yet.
+ * or whose need is not documented for these versions (Kimi K2 Thinking, MiniMax M2.5). The gateway can carry their reasoning
+ * both ways (REASONING_CARRYOVER_MODEL in bedrock-converse.ts); they are listed only after a real two-turn call passes
+ * (scripts/bedrock-reasoning-two-turn.ts).
  */
 export const ROVARA_AI_US_CONVERSE_MODELS = [
   "qwen.qwen3-coder-480b-a35b-v1:0=qwen.qwen3-coder-480b-a35b-v1:0",

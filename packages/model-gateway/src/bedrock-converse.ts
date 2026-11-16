@@ -3,6 +3,9 @@
 // back into an Anthropic message, and ConverseStream's event stream into Anthropic SSE (the meter's UsageCollector reads it as it
 // reads Anthropic's). Text and client tools only: images, documents, thinking blocks and server tools are refused (free, before
 // any hold). Everything is total over untrusted data; a malformed answer throws (the call is then treated as a broken stream).
+// Exception (REASONING_CARRYOVER_MODEL): five reasoning models need their earlier reasoning sent back on a later tool turn. For
+// those only, Converse reasoningContent (text, and a signature when there is one) becomes an Anthropic `thinking` block in the
+// answer, and a `thinking` block in the history becomes reasoningContent again.
 import { record } from "./model-gateway-token.js";
 import { EventStreamError, type EventStreamMessage } from "./bedrock-event-stream.js";
 
@@ -14,6 +17,13 @@ export const BEDROCK_CONVERSE_ID = /^(?!global\.)(?!(?:(?:us|eu|apac|jp|au|ca)\.
  * left out of what the agent gets. Anything else, including a block that never closes, is passed on unchanged.
  */
 export const LEADING_THINKING_TEXT_MODEL = /^(?:us\.)?amazon\.nova-pro-v1:0$/u;
+/**
+ * The reasoning models whose earlier reasoning must be sent back on the next turn of a tool loop (DeepSeek V3.2, Kimi K2 Thinking /
+ * K3 / K3.1, MiniMax M2.5; their providers' docs, quoted in Rovara-cloud #70). For these ids only, reasoning is carried both ways
+ * as Anthropic `thinking` blocks (unsigned when Bedrock sends no signature); for every other model it is dropped and a `thinking`
+ * block in the history is refused. Being here does not list a model: the allow-list (agent-ai.ts) does that, after a real two-turn call.
+ */
+export const REASONING_CARRYOVER_MODEL = /^(?:us\.)?(?:deepseek\.v3\.2|moonshot\.kimi-k2-thinking|minimax\.minimax-m2\.5|moonshotai\.kimi-k3(?:\.1)?)$/u;
 const THINK_OPEN = "<thinking>"; const THINK_CLOSE = "</thinking>";
 /** The most text held back while deciding whether a leading thinking block is well formed; past it, the text goes out unchanged. */
 export const LEADING_THINKING_MAX_CHARS = 64 * 1024;
@@ -32,12 +42,28 @@ export const CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS = 4_096;
 type Json = Record<string, unknown>;
 const text = (v: unknown): v is string => typeof v === "string";
 
+/** A `text` block of whitespace only. */
+function isBlankText(value: unknown): boolean {
+  const b = record(value);
+  return b?.type === "text" && text(b.text) && b.text.trim() === "";
+}
+
+/** A `thinking` block with no text beyond whitespace and no signature. */
+function isUnsignedBlankThinking(value: unknown): boolean {
+  const b = record(value);
+  return b?.type === "thinking" && text(b.thinking) && b.thinking.trim() === "" && (b.signature === undefined || b.signature === "");
+}
+
 /** One Anthropic content block to Converse. undefined: a block Rovara's AI does not offer for these models. */
-function block(value: unknown, role: "user" | "assistant"): Json | undefined {
+function block(value: unknown, role: "user" | "assistant", carryReasoning: boolean): Json | undefined {
   if (text(value)) return { text: value };
   const b = record(value);
   if (b === undefined) return undefined;
   if (b.type === "text" && text(b.text)) return { text: b.text };
+  // An earlier answer's reasoning, sent back (REASONING_CARRYOVER_MODEL). An empty signature is no signature (an unsigned block).
+  if (carryReasoning && role === "assistant" && b.type === "thinking" && text(b.thinking) && b.thinking.trim() !== "" && (b.signature === undefined || text(b.signature))) {
+    return { reasoningContent: { reasoningText: { text: b.thinking, ...(b.signature === undefined || b.signature === "" ? {} : { signature: b.signature }) } } };
+  }
   if (role === "assistant" && b.type === "tool_use" && text(b.id) && text(b.name) && record(b.input) !== undefined) return { toolUse: { toolUseId: b.id, name: b.name, input: b.input } };
   if (role === "user" && b.type === "tool_result" && text(b.tool_use_id)) {
     const parts = b.content === undefined ? [] : text(b.content) ? [b.content] : Array.isArray(b.content) ? b.content : undefined;
@@ -60,7 +86,7 @@ function block(value: unknown, role: "user" | "assistant"): Json | undefined {
  * models are not offered with (refused before any hold). `thinking`, `output_config`, `metadata` and cache markers are dropped:
  * they shape Claude's answer only.
  */
-export function toConverse(body: Json, maxTokens: number): Json | undefined {
+export function toConverse(body: Json, maxTokens: number, carryReasoning = false): Json | undefined {
   const messages = body.messages;
   if (!Array.isArray(messages) || messages.length === 0) return undefined;
   // Fields that change the answer's meaning and have no Converse form are refused, never dropped: structured output, and
@@ -78,7 +104,11 @@ export function toConverse(body: Json, maxTokens: number): Json | undefined {
     for (const each of blocks) {
       // An empty text block is dropped (Converse refuses blank text); anything else must translate.
       if (record(each)?.type === "text" && record(each)!.text === "") continue;
-      const converted = block(each, role);
+      // These models can write a whitespace-only text block between their reasoning and a tool call (MiniMax M2.5: "\n\n\n"); Converse refuses blank text, so it is left out of what goes back.
+      if (carryReasoning && role === "assistant" && isBlankText(each)) continue;
+      // Blank reasoning carries nothing and Converse refuses blank text: left out, unless a signature goes with it (then refused).
+      if (carryReasoning && role === "assistant" && isUnsignedBlankThinking(each)) continue;
+      const converted = block(each, role, carryReasoning);
       if (converted === undefined) return undefined;
       content.push(converted);
     }
@@ -124,8 +154,18 @@ export function anthropicUsage(value: unknown): Json {
   return { input_tokens: u.inputTokens, output_tokens: u.outputTokens, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite };
 }
 
-/** A Converse answer as an Anthropic message. Reasoning blocks are dropped; anything else unknown throws. */
-export function fromConverse(answer: unknown, model: string, id: string, stripLeadingThinking = false): Json {
+/**
+ * One Converse reasoning piece as Anthropic's: `text` and `signature` only, each a string when present. Anything else (redacted
+ * content, an unknown field, a wrong type) throws: a reasoning block that could not be sent back whole is never passed on in part.
+ */
+function reasoningPiece(value: unknown): { text?: string; signature?: string } {
+  const r = record(value);
+  if (r === undefined || Object.keys(r).some((k) => k !== "text" && k !== "signature") || (r.text !== undefined && !text(r.text)) || (r.signature !== undefined && !text(r.signature))) throw new EventStreamError();
+  return { ...(r.text === undefined ? {} : { text: r.text }), ...(r.signature === undefined ? {} : { signature: r.signature }) };
+}
+
+/** A Converse answer as an Anthropic message. Reasoning blocks are dropped (carried as `thinking` blocks for REASONING_CARRYOVER_MODEL); anything else unknown throws. */
+export function fromConverse(answer: unknown, model: string, id: string, stripLeadingThinking = false, carryReasoning = false): Json {
   const a = record(answer);
   const message = record(record(a?.output)?.message);
   if (a === undefined || message === undefined || !Array.isArray(message.content)) throw new EventStreamError();
@@ -133,11 +173,18 @@ export function fromConverse(answer: unknown, model: string, id: string, stripLe
   let firstText = stripLeadingThinking;
   for (const c of message.content) {
     const b = record(c);
+    // A content element that is reasoning and something else at once is not a shape Converse sends; carried reasoning is never dropped beside it.
+    if (carryReasoning && b !== undefined && b.reasoningContent !== undefined && Object.keys(b).length !== 1) throw new EventStreamError();
     if (b !== undefined && text(b.text)) {
       const t = firstText ? withoutLeadingThinking(b.text) : b.text; firstText = false;
       if (t !== "" || t === b.text) content.push({ type: "text", text: t });
     } else if (b !== undefined && record(b.toolUse) !== undefined && firstText) { firstText = false; content.push(...toolUse(b)); }
     else if (b !== undefined && record(b.toolUse) !== undefined) content.push(...toolUse(b));
+    else if (b !== undefined && b.reasoningContent !== undefined && carryReasoning) {
+      const piece = reasoningPiece(record(b.reasoningContent)?.reasoningText);
+      if (piece.text === undefined || Object.keys(record(b.reasoningContent)!).length !== 1) throw new EventStreamError();
+      content.push({ type: "thinking", thinking: piece.text, signature: piece.signature ?? "" });
+    }
     else if (b !== undefined && b.reasoningContent !== undefined) continue;
     else throw new EventStreamError();
   }
@@ -153,15 +200,31 @@ function toolUse(b: Json): Json[] {
 /**
  * ConverseStream events to Anthropic SSE, in order. Converse sends usage last (metadata, after messageStop), so message_start carries
  * zero counts and the final message_delta carries the real ones (the UsageCollector takes both). Converse's block indexes are
- * renumbered from 0 over the blocks passed on (reasoning blocks are dropped). Every event is re-serialised as one line of JSON.
+ * renumbered from 0 over the blocks passed on (reasoning blocks are dropped, or for REASONING_CARRYOVER_MODEL passed on as `thinking`
+ * blocks: thinking_delta for its text, signature_delta for its signature). Every event is re-serialised as one line of JSON.
  */
 export class ConverseStreamToSse {
   readonly #model: string; readonly #id: string;
   #started = false; #stopReason: string | undefined; #ended = false;
   readonly #open = new Map<number, number>(); readonly #dropped = new Set<number>(); #next = 0;
+  // Carried reasoning: the Converse indexes of the open thinking blocks, and those that have had their signature (nothing follows it).
+  readonly #carry: boolean; readonly #thinking = new Set<number>(); readonly #signed = new Set<number>();
   // The leading thinking block (LEADING_THINKING_TEXT_MODEL): "pending" until the first text block decides; its text held meanwhile.
   #strip: "pending" | "done"; #held = ""; #heldIndex: number | undefined; readonly #stripped = new Set<number>();
-  constructor(model: string, id: string, stripLeadingThinking = false) { this.#model = model; this.#id = id; this.#strip = stripLeadingThinking ? "pending" : "done"; }
+  constructor(model: string, id: string, stripLeadingThinking = false, carryReasoning = false) { this.#model = model; this.#id = id; this.#strip = stripLeadingThinking ? "pending" : "done"; this.#carry = carryReasoning; }
+  /** One reasoning delta (carried): the block opens with its first delta; text and signature only, the signature last. */
+  #reasoning(index: number, value: unknown, out: Buffer[]): void {
+    const piece = reasoningPiece(value);
+    if (this.#open.has(index) && !this.#thinking.has(index)) throw new EventStreamError();
+    if (this.#signed.has(index)) throw new EventStreamError();
+    if (!this.#open.has(index)) {
+      const at = this.#next++; this.#open.set(index, at); this.#thinking.add(index);
+      out.push(this.#event("content_block_start", { index: at, content_block: { type: "thinking", thinking: "", signature: "" } }));
+    }
+    const at = this.#open.get(index)!;
+    if (piece.text !== undefined && piece.text !== "") out.push(this.#event("content_block_delta", { index: at, delta: { type: "thinking_delta", thinking: piece.text } }));
+    if (piece.signature !== undefined && piece.signature !== "") { this.#signed.add(index); out.push(this.#event("content_block_delta", { index: at, delta: { type: "signature_delta", signature: piece.signature } })); }
+  }
   #text(index: number, value: string, out: Buffer[]): void {
     if (value === "" && this.#open.has(index)) return;
     if (!this.#open.has(index)) { const at = this.#next++; this.#open.set(index, at); out.push(this.#event("content_block_start", { index: at, content_block: { type: "text", text: "" } })); }
@@ -201,8 +264,10 @@ export class ConverseStreamToSse {
         case "contentBlockDelta": {
           const delta = record(p.delta);
           if (!this.#started || !validIndex || delta === undefined) throw new EventStreamError();
+          if (delta.reasoningContent !== undefined && this.#carry) { this.#reasoning(index, delta.reasoningContent, out); break; }
           if (delta.reasoningContent !== undefined) { if (!this.#open.has(index)) this.#dropped.add(index); break; }
-          if (this.#dropped.has(index)) throw new EventStreamError();
+          // Text or tool input into a block of reasoning (or into one whose reasoning was dropped) is not a valid stream.
+          if (this.#dropped.has(index) || this.#thinking.has(index)) throw new EventStreamError();
           if (text(delta.text)) {
             if (this.#strip === "pending" && (this.#heldIndex === undefined || this.#heldIndex === index) && !this.#open.has(index)) {
               // Hold the first text block's start until it is clear whether it opens with a well-formed thinking block.
@@ -225,6 +290,7 @@ export class ConverseStreamToSse {
         case "contentBlockStop":
           if (!validIndex) throw new EventStreamError();
           if (this.#dropped.delete(index)) break;
+          if (this.#thinking.delete(index)) { this.#signed.delete(index); out.push(this.#event("content_block_stop", { index: this.#open.get(index)! })); this.#open.delete(index); break; }
           // The held block ends before its thinking block closed: not well formed, so all of it goes out unchanged.
           if (this.#strip === "pending" && this.#heldIndex === index) this.#release(out, this.#held);
           if (this.#stripped.delete(index)) break;
