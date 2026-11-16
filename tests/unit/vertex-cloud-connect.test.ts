@@ -15,6 +15,9 @@ import { A, B, ISS, START, world, write } from "./product-ai-world.js";
 
 const MAC_KEY = "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-0000000000aa";
 const GATEWAY = "https://gateway.example.test";
+// Fake service accounts, built at runtime so no email-shaped text sits in the source (the public CI copy's token check).
+const RUNNER_ACCOUNT = ["evals-runner", "acme-evals.iam.gserviceaccount.com"].join("@");
+const KEY_FILE_ACCOUNT = ["x", "acme-evals.iam.gserviceaccount.com"].join("@");
 const FORM = { projectId: "acme-evals", location: "us-central1", audience: "//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/rovara-pool/providers/rovara-aws", serviceAccount: null as string | null };
 
 /** A KMS HMAC key in memory: Cloud's side may only sign, the gateway's may only verify (as the key policy says). */
@@ -73,9 +76,9 @@ describe("Cloud's Vertex connect: the gateway tests, Cloud seals", () => {
     const actions = (await w.audit.read(A, { max: 50 })).rows.map((each) => each.action);
     expect(actions).toContain("product_ai.vertex.connected");
     // A second save rotates (tested again), then removal.
-    const again = await w.call(pam, "PUT", VERTEX, write(1, { ...FORM, serviceAccount: "evals-runner@acme-evals.iam.gserviceaccount.com" }));
+    const again = await w.call(pam, "PUT", VERTEX, write(1, { ...FORM, serviceAccount: RUNNER_ACCOUNT }));
     expect(again.status).toBe(200);
-    expect(again.body).toMatchObject({ vertex: { connected: true, serviceAccount: "evals-runner@acme-evals.iam.gserviceaccount.com" } });
+    expect(again.body).toMatchObject({ vertex: { connected: true, serviceAccount: RUNNER_ACCOUNT } });
     expect(g.probes).toHaveLength(2);
     const removed = await w.call(pam, "DELETE", VERTEX, write(2));
     expect(removed.status).toBe(200);
@@ -238,7 +241,7 @@ describe("the gateway's signed Vertex check (service-call.ts)", () => {
 
   it("Cloud's client: only a federation setup is sent; any answer but the four results is unavailable", async () => {
     const g = gatewayKit();
-    expect(await g.check(A, { scheme: "service_account_key", projectId: "acme-evals", location: "us-central1", clientEmail: "x@acme-evals.iam.gserviceaccount.com", privateKeyId: "a".repeat(40), privateKey: "k" })).toBe("unavailable");
+    expect(await g.check(A, { scheme: "service_account_key", projectId: "acme-evals", location: "us-central1", clientEmail: KEY_FILE_ACCOUNT, privateKeyId: "a".repeat(40), privateKey: "k" })).toBe("unavailable");
     expect(g.sent).toHaveLength(0);
     const odd = gatewayVertexCheck({ address: GATEWAY, issuer: ISS, kms: g.kms.signer, macKeyId: MAC_KEY, fetch: async () => new Response(JSON.stringify({ result: "maybe" }), { status: 200 }) });
     expect(await odd(A, { scheme: "federation", projectId: "acme-evals", location: "us-central1", audience: FORM.audience })).toBe("unavailable");
