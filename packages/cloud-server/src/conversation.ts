@@ -49,9 +49,10 @@ export function timelinePage(events: ReturnType<typeof timelineOf>, after: strin
 }
 
 /** A comment as the app reads it (SessionMessageSchema). A deleted one keeps no text. */
-export function commentView(sessionId: string, comment: SessionComment) {
+export function commentView(sessionId: string, comment: SessionComment, viewer?: { developerId: string; name?: string }) {
+  const author = viewer?.name !== undefined && viewer.name !== "" && comment.author.developerId === viewer.developerId ? { ...comment.author, name: viewer.name } : comment.author;
   return {
-    messageId: comment.messageId, sessionId, kind: comment.kind, source: comment.source, author: comment.author,
+    messageId: comment.messageId, sessionId, kind: comment.kind, source: comment.source, author,
     text: comment.deletedAt === undefined ? comment.text : "Comment deleted", createdAt: comment.createdAt,
     ...(comment.editedAt === undefined ? {} : { editedAt: comment.editedAt }), ...(comment.deletedAt === undefined ? {} : { deletedAt: comment.deletedAt }),
     rev: comment.rev, ...(comment.threadId === undefined ? {} : { threadId: comment.threadId }),
@@ -59,13 +60,13 @@ export function commentView(sessionId: string, comment: SessionComment) {
 }
 
 /** A page of comments, oldest first, after the cursor `<createdAt>#<messageId>`, starting a few seconds before it. */
-export function commentsPage(sessionId: string, comments: readonly SessionComment[], after: string | null) {
+export function commentsPage(sessionId: string, comments: readonly SessionComment[], after: string | null, viewer?: { developerId: string; name?: string }) {
   // By time, and in the order they were written for the same instant (the sort is stable; the store keeps them in order).
   const sorted = [...comments].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const since = after === null ? undefined : Date.parse(after.split("#")[0] ?? "");
   const from = since === undefined || Number.isNaN(since) ? sorted : sorted.filter((comment) => Date.parse(comment.createdAt) >= since - COMMENTS_REREAD_MS);
   const page = from.slice(0, COMMENTS_PAGE_MAX), last = page.at(-1);
-  return { messages: page.map((comment) => commentView(sessionId, comment)), ...(last === undefined ? {} : { next: `${last.createdAt}#${last.messageId}` }) };
+  return { messages: page.map((comment) => commentView(sessionId, comment, viewer)), ...(last === undefined ? {} : { next: `${last.createdAt}#${last.messageId}` }) };
 }
 
 /** A comment's text as the person wrote it, or why it can't be saved. */
