@@ -10,7 +10,7 @@ import { isDeployedEnvironment } from "./sessions.js";
 export const CLOUD_AUDIT_ACTIONS = Object.freeze([
   "company.rules.changed", "company.invite.created", "company.invite.revoked", "company.budget.changed", "company.signin_client.changed",
   "product_ai.key.connected", "product_ai.key.rotated", "product_ai.key.removed", "product_ai.eval_budget.changed", "product_ai.eval_approval.recorded", "product_ai.eval_approval.withdrawn",
-  "product_ai.vertex.connected", "product_ai.vertex.rotated", "product_ai.vertex.removed", "product_ai.eval_approvals.withdrawn_for_member",
+  "product_ai.vertex.connected", "product_ai.vertex.rotated", "product_ai.vertex.removed", "product_ai.bedrock.connected", "product_ai.bedrock.rotated", "product_ai.bedrock.linked", "product_ai.bedrock.removed", "product_ai.eval_approvals.withdrawn_for_member",
   "learning_ai.key.connected", "learning_ai.key.rotated", "learning_ai.key.removed",
   "agent_ai.source.changed", "agent_ai.bedrock.connected", "agent_ai.bedrock.rotated", "agent_ai.bedrock.removed", "agent_ai.bedrock.recovered",
   "hook.start.answered", "hook.decide.answered", "hook.values.answered", "hook.start.unanswered", "hook.decide.unanswered", "hook.values.unanswered",

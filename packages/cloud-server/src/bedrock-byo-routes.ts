@@ -23,7 +23,7 @@ import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 /** The company document of the product key store (model-gateway product-keys.ts PRODUCT_COMPANY_OWNER) and its one Bedrock source. */
 export const BEDROCK_OWNER = "_company";
 export const BEDROCK_SOURCE_ID = "src_bedrock";
-export interface BedrockChoice { region: string; models: Record<string, string>; allowGlobal: boolean }
+export interface BedrockChoice { region: string; models: Record<string, string>; allowGlobal: boolean; /** Slice 2: more Bedrock ids the product route (the customer's tests) may call. */ productModels?: string[] }
 export interface BedrockSetupView { externalId: string; brokerRoleArn: string; templateUrl: string }
 /** What the routes need from the deployment (scripts/cloud-lambda.ts wires the gateway's signed set-up call). Structural only. */
 export interface BedrockBackend {
@@ -40,13 +40,16 @@ const REGION = /^(?:us|eu|ap|ca|sa|me|af|il|mx)-[a-z]+-[1-9]$/u;
 const ROLE_ARN = /^arn:aws:iam::[0-9]{12}:role\/RovaraBedrockInvoke-[A-Za-z0-9+=,.@_-]{1,44}$/u;
 const MODEL_NAME = /^claude-[a-z0-9-]{1,80}$/u;
 const MODEL_ID = /^(?:[a-z]{2,4}\.|global\.)?anthropic\.claude-[a-z0-9-]{1,80}(?::\d{1,3})?$/u;
+/** Any Bedrock model id or system profile (slice 2); the store checks the family, the geography and the total again. */
+const PRODUCT_MODEL_ID = /^(?:(?:us|eu|apac|jp|au|ca)\.)?[a-z][a-z0-9-]{1,30}\.[a-z0-9][a-z0-9.:-]{0,100}$|^global\.anthropic\.claude-[a-z0-9-]{1,80}(?::\d{1,3})?$/u;
+const PRODUCT_MODELS_MAX = 8;
 const BODY_BYTES_MAX = 4_096;
 const MODELS_MAX = 8;
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
 /** Shown when a model is picked but not enabled yet in the company's AWS account. */
 export const BEDROCK_NOT_ENABLED_STEPS = "Model not enabled yet in your AWS account. An AWS admin with AWS Marketplace rights opens the model once in the Amazon Bedrock console (Model catalog, then Open in playground). For Anthropic models before Claude Opus 4.7, also submit Anthropic's use-case form once. Then test the connection again.";
-const WORDS = Object.freeze({
+export const BEDROCK_WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "Your own Bedrock isn't set up on this Cloud."),
   noCompany: refusal(403, "FORBIDDEN", "Your sign-in doesn't belong to a company Cloud knows."),
   forbidden: refusal(403, "FORBIDDEN", "Only a company admin can see or change the company's Bedrock connection."),
@@ -61,9 +64,10 @@ const WORDS = Object.freeze({
   inUse: refusal(409, "CONFLICT", "This AWS role is already connected to another Rovara company. Create a role for this company with the setup command."),
   unavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The Bedrock connection is unavailable right now. Nothing was saved. Try again."),
 });
-const ANSWER_OF: Partial<Record<ProductAiErrorCode | "aws_too_open" | "aws_refused" | "role_in_use", RouteAnswer>> = {
-  invalid: WORDS.invalid, stale: WORDS.stale, not_found: WORDS.notFound, in_recovery: WORDS.inRecovery, forbidden: WORDS.forbidden, unavailable: WORDS.unavailable,
-  aws_too_open: WORDS.tooOpen, aws_refused: WORDS.refused, role_in_use: WORDS.inUse,
+/** The store's codes in this page's words (the project routes use them too). */
+export const BEDROCK_ANSWERS: Partial<Record<ProductAiErrorCode | "aws_too_open" | "aws_refused" | "role_in_use", RouteAnswer>> = {
+  invalid: BEDROCK_WORDS.invalid, stale: BEDROCK_WORDS.stale, not_found: BEDROCK_WORDS.notFound, in_recovery: BEDROCK_WORDS.inRecovery, forbidden: BEDROCK_WORDS.forbidden, unavailable: BEDROCK_WORDS.unavailable,
+  aws_too_open: BEDROCK_WORDS.tooOpen, aws_refused: BEDROCK_WORDS.refused, role_in_use: BEDROCK_WORDS.inUse,
 };
 const record = (v: unknown): Record<string, unknown> | undefined => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
 const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
@@ -72,24 +76,24 @@ const exactly = (value: Record<string, unknown>, keys: readonly string[]) => Obj
 interface Admin { companyId: string; developerId: string; name: string }
 async function admin(context: RouteContext, write: boolean): Promise<Admin | RouteAnswer> {
   const backend = context.productAi;
-  if (backend?.bedrock === undefined) return WORDS.off;
+  if (backend?.bedrock === undefined) return BEDROCK_WORDS.off;
   const access = await context.client.access(context.session);
   const said = (access as { companyId?: unknown }).companyId;
   let companyId: string;
   if (said !== undefined) {
-    if (typeof said !== "string" || !COMPANY_ID.test(said)) return WORDS.noCompany;
+    if (typeof said !== "string" || !COMPANY_ID.test(said)) return BEDROCK_WORDS.noCompany;
     companyId = said;
   } else if (backend.companyId !== undefined && COMPANY_ID.test(backend.companyId)) companyId = backend.companyId;
-  else return WORDS.noCompany;
-  if (access.administrator !== true || !/^[a-f0-9]{64}$/u.test(access.developerId)) return WORDS.forbidden;
-  if (write && freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return WORDS.stepUp;
+  else return BEDROCK_WORDS.noCompany;
+  if (access.administrator !== true || !/^[a-f0-9]{64}$/u.test(access.developerId)) return BEDROCK_WORDS.forbidden;
+  if (write && freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return BEDROCK_WORDS.stepUp;
   return { companyId, developerId: access.developerId, name: access.displayName };
 }
 async function guarded<T>(run: () => Promise<T>): Promise<T | RouteAnswer> {
   try { return await run(); }
   catch (error) {
     const code = (error as { code?: unknown } | null)?.code;
-    return typeof code === "string" && Object.hasOwn(ANSWER_OF, code) ? ANSWER_OF[code as keyof typeof ANSWER_OF]! : WORDS.unavailable;
+    return typeof code === "string" && Object.hasOwn(BEDROCK_ANSWERS, code) ? BEDROCK_ANSWERS[code as keyof typeof BEDROCK_ANSWERS]! : BEDROCK_WORDS.unavailable;
   }
 }
 async function audited(context: RouteContext, who: Admin, action: CloudAuditAction): Promise<void> {
@@ -99,17 +103,25 @@ async function audited(context: RouteContext, who: Admin, action: CloudAuditActi
   } catch { console.log(JSON.stringify({ event: "cloud.audit_failed", action, companyId: who.companyId })); }
 }
 /** A model choice the form sends, checked as the store checks it (the store parses again: model-gateway bedrock-byo.ts). */
-function choiceOf(body: Record<string, unknown>): BedrockChoice | undefined {
+export function choiceOf(body: Record<string, unknown>): BedrockChoice | undefined {
   const models = record(body.models);
   if (typeof body.region !== "string" || !REGION.test(body.region) || typeof body.allowGlobal !== "boolean" || models === undefined) return undefined;
   const entries = Object.entries(models);
   if (entries.length < 1 || entries.length > MODELS_MAX || !entries.every(([name, id]) => MODEL_NAME.test(name) && typeof id === "string" && MODEL_ID.test(id))) return undefined;
-  return { region: body.region, models: Object.fromEntries(entries) as Record<string, string>, allowGlobal: body.allowGlobal };
+  let productModels: string[] | undefined;
+  if (body.productModels !== undefined) {
+    const list = body.productModels;
+    if (!Array.isArray(list) || list.length < 1 || list.length > PRODUCT_MODELS_MAX || !list.every((id: unknown) => typeof id === "string" && PRODUCT_MODEL_ID.test(id)) || new Set(list).size !== list.length) return undefined;
+    productModels = list as string[];
+  }
+  return { region: body.region, models: Object.fromEntries(entries) as Record<string, string>, allowGlobal: body.allowGlobal, ...(productModels === undefined ? {} : { productModels }) };
 }
+/** The keys a connection form may carry: the same, plus the optional product models. */
+export const choiceKeys = (body: Record<string, unknown>, keys: readonly string[]): boolean => Object.keys(body).every((k) => keys.includes(k) || k === "productModels") && keys.every((k) => Object.hasOwn(body, k));
 
 /** The settings page's view: the connection (never a secret), each model's state in fixed words, and any removal window. */
 function view(v: ProductAiView) {
-  const source = v.sources.find((s) => s.provider === "bedrock") as (ProductAiView["sources"][number] & { bedrock?: { roleArn: string; region: string; models: Record<string, string>; allowGlobal: boolean; checks: Record<string, string>; checkedAt: number } }) | undefined;
+  const source = v.sources.find((s) => s.provider === "bedrock");
   const b = source?.bedrock;
   const anyNotEnabled = b !== undefined && Object.values(b.checks).some((state) => state === "not_enabled");
   return {
@@ -118,12 +130,19 @@ function view(v: ProductAiView) {
       connected: source!.hasKey && source!.available, connectedAt: source!.connectedAt, updatedAt: source!.updatedAt, ...(source!.warning === undefined ? {} : { refusedAt: source!.warning.at }),
       roleArn: b.roleArn, region: b.region, allowGlobal: b.allowGlobal, checkedAt: b.checkedAt,
       models: Object.entries(b.models).map(([name, id]) => ({ name, id, state: b.checks[id] ?? "unavailable" })),
+      productModels: (b.productModels ?? []).map((id) => ({ id, state: b.checks[id] ?? "unavailable" })),
       ...(anyNotEnabled ? { notEnabledSteps: BEDROCK_NOT_ENABLED_STEPS } : {}),
     },
     removedUntil: v.removed.find((r) => r.provider === "bedrock")?.recoverUntil ?? null,
     usage: "Your AWS account pays for these calls. Rovara counts them at AWS list price under your company's monthly limit; your AWS bill is the record.",
   };
 }
+
+/** The connection text the store parses and seals (it checks every field again). */
+export function connectionKey(roleArn: string, choice: BedrockChoice): string {
+  return JSON.stringify({ scheme: "assume_role", roleArn, region: choice.region, models: choice.models, allowGlobal: choice.allowGlobal, ...(choice.productModels === undefined ? {} : { productModels: choice.productModels }) });
+}
+export const BEDROCK_ROLE_ARN = ROLE_ARN;
 
 async function readBedrock(context: RouteContext): Promise<RouteAnswer> {
   const who = await admin(context, false);
@@ -137,38 +156,38 @@ async function readSetup(context: RouteContext): Promise<RouteAnswer> {
   const who = await admin(context, false);
   if ("status" in who) return who;
   const region = context.params[0] ?? "";
-  if (!REGION.test(region)) return WORDS.invalid;
+  if (!REGION.test(region)) return BEDROCK_WORDS.invalid;
   const bedrock = context.productAi!.bedrock!;
   const setup = await bedrock.setup(who.companyId).catch(() => undefined);
-  if (setup === undefined) return WORDS.unavailable;
+  if (setup === undefined) return BEDROCK_WORDS.unavailable;
   return ok({ ...setup, companyId: who.companyId, region, presets: bedrock.presets(region) });
 }
 
 async function postSetup(context: RouteContext): Promise<RouteAnswer> {
   const who = await admin(context, false);
   if ("status" in who) return who;
-  if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return WORDS.tooLarge;
+  if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return BEDROCK_WORDS.tooLarge;
   const body = record(context.body);
-  const choice = body === undefined || !exactly(body, ["region", "models", "allowGlobal"]) ? undefined : choiceOf(body);
-  if (choice === undefined) return WORDS.invalid;
+  const choice = body === undefined || !choiceKeys(body, ["region", "models", "allowGlobal"]) ? undefined : choiceOf(body);
+  if (choice === undefined) return BEDROCK_WORDS.invalid;
   const bedrock = context.productAi!.bedrock!;
   const setup = await bedrock.setup(who.companyId).catch(() => undefined);
-  if (setup === undefined) return WORDS.unavailable;
+  if (setup === undefined) return BEDROCK_WORDS.unavailable;
   let made;
-  try { made = bedrock.command(setup, who.companyId, choice); } catch { return WORDS.invalid; }
+  try { made = bedrock.command(setup, who.companyId, choice); } catch { return BEDROCK_WORDS.invalid; }
   return ok({ ...setup, companyId: who.companyId, ...made });
 }
 
 async function putBedrock(context: RouteContext): Promise<RouteAnswer> {
   const who = await admin(context, true);
   if ("status" in who) return who;
-  if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return WORDS.tooLarge;
+  if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return BEDROCK_WORDS.tooLarge;
   const body = record(context.body);
-  if (body === undefined || !exactly(body, ["requestId", "expectedRevision", "roleArn", "region", "models", "allowGlobal"])) return WORDS.invalid;
-  if (typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision) || typeof body.roleArn !== "string" || !ROLE_ARN.test(body.roleArn)) return WORDS.invalid;
+  if (body === undefined || !choiceKeys(body, ["requestId", "expectedRevision", "roleArn", "region", "models", "allowGlobal"])) return BEDROCK_WORDS.invalid;
+  if (typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision) || typeof body.roleArn !== "string" || !ROLE_ARN.test(body.roleArn)) return BEDROCK_WORDS.invalid;
   const choice = choiceOf(body);
-  if (choice === undefined) return WORDS.invalid;
-  const key = JSON.stringify({ scheme: "assume_role", roleArn: body.roleArn, region: choice.region, models: choice.models, allowGlobal: choice.allowGlobal });
+  if (choice === undefined) return BEDROCK_WORDS.invalid;
+  const key = connectionKey(body.roleArn, choice);
   const backend = context.productAi!;
   const current = await guarded(() => backend.store.view(backend.issuer, who.companyId, BEDROCK_OWNER));
   if ("status" in current) return current;
@@ -184,9 +203,9 @@ async function putBedrock(context: RouteContext): Promise<RouteAnswer> {
 async function removeBedrock(context: RouteContext): Promise<RouteAnswer> {
   const who = await admin(context, true);
   if ("status" in who) return who;
-  if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return WORDS.tooLarge;
+  if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return BEDROCK_WORDS.tooLarge;
   const body = record(context.body);
-  if (body === undefined || !exactly(body, ["requestId", "expectedRevision"]) || typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision)) return WORDS.invalid;
+  if (body === undefined || !exactly(body, ["requestId", "expectedRevision"]) || typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision)) return BEDROCK_WORDS.invalid;
   const backend = context.productAi!;
   const v = await guarded(() => backend.store.remove({ iss: backend.issuer, cid: who.companyId, owner: BEDROCK_OWNER, requestId: body.requestId as string, expectedRevision: body.expectedRevision as number, actor: { id: who.developerId, role: "company_admin" }, sourceId: BEDROCK_SOURCE_ID }));
   if ("status" in v) return v;
@@ -197,9 +216,9 @@ async function removeBedrock(context: RouteContext): Promise<RouteAnswer> {
 async function recoverBedrock(context: RouteContext): Promise<RouteAnswer> {
   const who = await admin(context, true);
   if ("status" in who) return who;
-  if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return WORDS.tooLarge;
+  if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return BEDROCK_WORDS.tooLarge;
   const body = record(context.body);
-  if (body === undefined || !exactly(body, ["requestId", "expectedRevision"]) || typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision)) return WORDS.invalid;
+  if (body === undefined || !exactly(body, ["requestId", "expectedRevision"]) || typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision)) return BEDROCK_WORDS.invalid;
   const backend = context.productAi!;
   const v = await guarded(() => backend.store.recover({ iss: backend.issuer, cid: who.companyId, owner: BEDROCK_OWNER, requestId: body.requestId as string, expectedRevision: body.expectedRevision as number, actor: { id: who.developerId, role: "company_admin" }, sourceId: BEDROCK_SOURCE_ID }));
   if ("status" in v) return v;

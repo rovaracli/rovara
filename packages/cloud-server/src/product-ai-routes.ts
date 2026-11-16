@@ -11,6 +11,11 @@
 //                                                     asks the model gateway to run the connection test (service-call.ts: a token for this
 //                                                     company, and the canary company refused) before it seals; nothing is saved otherwise.
 //   DELETE /projects/:name/product-ai/vertex          {requestId, expectedRevision}
+//   PUT    /projects/:name/product-ai/bedrock         {requestId, expectedRevision, roleArn, region, models, allowGlobal, productModels?}: the project's OWN
+//                                                     Bedrock role for its tests' calls (DEC 238 slice 2), tested by the gateway like the company's
+//   PUT    /projects/:name/product-ai/bedrock/link    {requestId, expectedRevision}: use the company's connected Bedrock (a link, never a copy)
+//   DELETE /projects/:name/product-ai/bedrock         {requestId, expectedRevision}: remove the own role, or the link
+//   POST   /projects/:name/product-ai/bedrock/setup   {region, models, allowGlobal, productModels?}: the CloudShell command that creates the role
 //
 // Eval approvals (PRODUCT-EVAL-APPROVER-REREAD): an approval counts at the gateway's stage hold for 15 minutes from the role check
 // made here, and Cloud withdraws a person's approvals when it changes their membership (withdrawForMember, below).
@@ -22,7 +27,7 @@
 // one transaction with its own receipt and audit row, and Cloud records its own audit record after the change is saved.
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import { COMPANY_ID } from "./company-store.js";
-import type { BedrockBackend } from "./bedrock-byo-routes.js";
+import { BEDROCK_ANSWERS, BEDROCK_ROLE_ARN, BEDROCK_WORDS, choiceKeys, choiceOf, connectionKey, type BedrockBackend } from "./bedrock-byo-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
@@ -34,7 +39,7 @@ type Change = ProductAiChange;
 /** The view the store answers (ProductKeysView): never a key. */
 export interface ProductAiView {
   revision: number; owner: string;
-  sources: Array<{ sourceId: string; provider: string; hasKey: boolean; available: boolean; connectedAt: number; updatedAt: number; warning?: { status: number; at: number }; linkedTo?: string; vertex?: { scheme: string; projectId: string; location: string; serviceAccount?: string }; bedrock?: { roleArn: string; region: string; models: Record<string, string>; allowGlobal: boolean; checks: Record<string, string>; checkedAt: number } }>;
+  sources: Array<{ sourceId: string; provider: string; hasKey: boolean; available: boolean; connectedAt: number; updatedAt: number; warning?: { status: number; at: number }; linkedTo?: string; vertex?: { scheme: string; projectId: string; location: string; serviceAccount?: string }; bedrock?: { roleArn: string; region: string; models: Record<string, string>; allowGlobal: boolean; productModels?: string[]; checks: Record<string, string>; checkedAt: number } }>;
   removed: Array<{ sourceId: string; provider: string; recoverUntil: number }>;
   caps?: { taskMicros: number; projectMonthMicros: number };
   evalBudget?: { calls: number; costMicros: number };
@@ -46,6 +51,8 @@ export interface ProductAiStore {
   view(iss: string, cid: string, owner: string): Promise<ProductAiView>;
   connect(change: Change & { sourceId: string; provider: "gemini" | "vertex" | "anthropic" | "openai" | "bedrock"; key: string }): Promise<ProductAiView>;
   rotate(change: Change & { sourceId: string; key: string }): Promise<ProductAiView>;
+  /** A project uses a company source (a link, never a copy; product-keys.ts link). */
+  link(change: Change & { sourceId: string; companySourceId: string }): Promise<ProductAiView>;
   remove(change: Change & { sourceId: string }): Promise<ProductAiView>;
   /** Restores a removed source inside its 7-day window (product-keys.ts recover). */
   recover(change: Change & { sourceId: string }): Promise<ProductAiView>;
@@ -142,6 +149,8 @@ function view(v: ProductAiView, w: Who) {
       projectId: vertex.vertex.projectId, location: vertex.vertex.location, ...(vertex.vertex.serviceAccount === undefined ? {} : { serviceAccount: vertex.vertex.serviceAccount }),
     },
     vertexRemovedUntil: v.removed.find((r) => r.provider === "vertex")?.recoverUntil ?? null,
+    bedrock: bedrockView(v),
+    bedrockRemovedUntil: v.removed.find((r) => r.provider === "bedrock")?.recoverUntil ?? null,
     evalBudget: v.evalBudget ?? null,
     evalApproval: v.evalApproval === undefined ? null : {
       selection: v.evalApproval.selection, inputsDigest: v.evalApproval.inputsDigest, maxCalls: v.evalApproval.maxCalls, maxCostMicros: v.evalApproval.maxCostMicros,
@@ -152,11 +161,26 @@ function view(v: ProductAiView, w: Who) {
   };
 }
 
+/** The project's Bedrock source (DEC 238 slice 2): its own role, or a link to the company's. Nothing secret is in either. */
+function bedrockView(v: ProductAiView) {
+  const b = v.sources.find((s) => s.provider === "bedrock");
+  if (b === undefined) return { connected: false };
+  const connected = b.available && (b.hasKey || b.linkedTo !== undefined);
+  if (b.linkedTo !== undefined) return { connected, linked: true, linkedTo: b.linkedTo, connectedAt: b.connectedAt, ...(b.warning === undefined ? {} : { refusedAt: b.warning.at }) };
+  if (b.bedrock === undefined) return { connected: false };
+  return {
+    connected, linked: false, connectedAt: b.connectedAt, updatedAt: b.updatedAt, ...(b.warning === undefined ? {} : { refusedAt: b.warning.at }),
+    roleArn: b.bedrock.roleArn, region: b.bedrock.region, allowGlobal: b.bedrock.allowGlobal, checkedAt: b.bedrock.checkedAt,
+    models: Object.entries(b.bedrock.models).map(([name, id]) => ({ name, id, state: b.bedrock!.checks[id] ?? "unavailable" })),
+    productModels: (b.bedrock.productModels ?? []).map((id) => ({ id, state: b.bedrock!.checks[id] ?? "unavailable" })),
+  };
+}
+
 /** Reads the write's envelope: a request id (replay-safe in the store) and the revision the person saw. */
-function envelope(context: RouteContext, keys: readonly string[]): { body: Record<string, unknown>; requestId: string; expectedRevision: number } | RouteAnswer {
+function envelope(context: RouteContext, keys: readonly string[], optional: readonly string[] = []): { body: Record<string, unknown>; requestId: string; expectedRevision: number } | RouteAnswer {
   if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return WORDS.tooLarge;
   const body = record(context.body);
-  if (body === undefined || !exactly(body, ["requestId", "expectedRevision", ...keys])) return WORDS.invalid;
+  if (body === undefined || !keys.concat(["requestId", "expectedRevision"]).every((k) => Object.hasOwn(body, k)) || !Object.keys(body).every((k) => k === "requestId" || k === "expectedRevision" || keys.includes(k) || optional.includes(k))) return WORDS.invalid;
   if (typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision)) return WORDS.invalid;
   return { body, requestId: body.requestId, expectedRevision: body.expectedRevision };
 }
@@ -289,6 +313,73 @@ async function removeVertex(context: RouteContext): Promise<RouteAnswer> {
   return ok(view(v, w));
 }
 
+/** The project's one Bedrock source, own or linked (the store keeps one source per provider per project). */
+export const PRODUCT_AI_BEDROCK_SOURCE_ID = "src_bedrock";
+const bedrockOff = (w: Who): RouteAnswer | undefined => (w.backend.bedrock === undefined ? BEDROCK_WORDS.off : undefined);
+
+async function putBedrockOwn(context: RouteContext): Promise<RouteAnswer> {
+  const w = await who(context, true);
+  if ("status" in w) return w;
+  const off = bedrockOff(w); if (off !== undefined) return off;
+  const e = envelope(context, ["roleArn", "region", "models", "allowGlobal"], ["productModels"]);
+  if ("status" in e) return e;
+  const choice = choiceOf(e.body);
+  if (choice === undefined || typeof e.body.roleArn !== "string" || !BEDROCK_ROLE_ARN.test(e.body.roleArn)) return BEDROCK_WORDS.invalid;
+  const key = connectionKey(e.body.roleArn, choice);
+  const current = await guarded(w, () => w.backend.store.view(w.backend.issuer, w.companyId, w.project), BEDROCK_ANSWERS);
+  if ("status" in current) return current;
+  const connected = current.sources.some((s) => s.sourceId === PRODUCT_AI_BEDROCK_SOURCE_ID && s.hasKey);
+  // The store parses it again, asks the gateway to test it for THIS company (canaries included), refuses a role another company or
+  // source holds, and seals it. A project that is linked must remove the link first (the store keeps one source per provider).
+  const v = await guarded(w, () => connected
+    ? w.backend.store.rotate({ ...changeOf(w, e), sourceId: PRODUCT_AI_BEDROCK_SOURCE_ID, key })
+    : w.backend.store.connect({ ...changeOf(w, e), sourceId: PRODUCT_AI_BEDROCK_SOURCE_ID, provider: "bedrock", key }), BEDROCK_ANSWERS);
+  if ("status" in v) return v;
+  await audited(context, w, connected ? "product_ai.bedrock.rotated" : "product_ai.bedrock.connected");
+  return ok(view(v, w));
+}
+
+async function linkBedrock(context: RouteContext): Promise<RouteAnswer> {
+  const w = await who(context, true);
+  if ("status" in w) return w;
+  const off = bedrockOff(w); if (off !== undefined) return off;
+  const e = envelope(context, []);
+  if ("status" in e) return e;
+  const v = await guarded(w, () => w.backend.store.link({ ...changeOf(w, e), sourceId: PRODUCT_AI_BEDROCK_SOURCE_ID, companySourceId: "src_bedrock" }), BEDROCK_ANSWERS);
+  if ("status" in v) return v;
+  await audited(context, w, "product_ai.bedrock.linked");
+  return ok(view(v, w));
+}
+
+async function removeBedrockSource(context: RouteContext): Promise<RouteAnswer> {
+  const w = await who(context, true);
+  if ("status" in w) return w;
+  const off = bedrockOff(w); if (off !== undefined) return off;
+  const e = envelope(context, []);
+  if ("status" in e) return e;
+  const v = await guarded(w, () => w.backend.store.remove({ ...changeOf(w, e), sourceId: PRODUCT_AI_BEDROCK_SOURCE_ID }), BEDROCK_ANSWERS);
+  if ("status" in v) return v;
+  await audited(context, w, "product_ai.bedrock.removed");
+  return ok(view(v, w));
+}
+
+/** The one CloudShell command that creates the role (the company's external id and Rovara's broker role come from the gateway). */
+async function postBedrockSetup(context: RouteContext): Promise<RouteAnswer> {
+  const w = await who(context, false);
+  if ("status" in w) return w;
+  const bedrock = w.backend.bedrock;
+  if (bedrock === undefined) return BEDROCK_WORDS.off;
+  if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return WORDS.tooLarge;
+  const body = record(context.body);
+  const choice = body === undefined || !choiceKeys(body, ["region", "models", "allowGlobal"]) ? undefined : choiceOf(body);
+  if (choice === undefined) return BEDROCK_WORDS.invalid;
+  const setup = await bedrock.setup(w.companyId).catch(() => undefined);
+  if (setup === undefined) return BEDROCK_WORDS.unavailable;
+  let made;
+  try { made = bedrock.command(setup, w.companyId, choice); } catch { return BEDROCK_WORDS.invalid; }
+  return ok({ ...setup, companyId: w.companyId, ...made });
+}
+
 /** What a member change does after Code made it: withdraw again (an approval whose role check raced the change) and audit. */
 export interface MemberWithdrawal { after(): Promise<void> }
 const NOTHING_TO_WITHDRAW: MemberWithdrawal = { after: async () => undefined };
@@ -345,4 +436,8 @@ export const PRODUCT_AI_ROUTES: Route[] = [
   { method: "PUT", path: new RegExp(`^${PROJECT_PATH}\\/eval-approval$`, "u"), answer: putEvalApproval },
   { method: "PUT", path: new RegExp(`^${PROJECT_PATH}\\/vertex$`, "u"), answer: putVertex },
   { method: "DELETE", path: new RegExp(`^${PROJECT_PATH}\\/vertex$`, "u"), answer: removeVertex },
+  { method: "PUT", path: new RegExp(`^${PROJECT_PATH}\\/bedrock$`, "u"), answer: putBedrockOwn },
+  { method: "PUT", path: new RegExp(`^${PROJECT_PATH}\\/bedrock\\/link$`, "u"), answer: linkBedrock },
+  { method: "DELETE", path: new RegExp(`^${PROJECT_PATH}\\/bedrock$`, "u"), answer: removeBedrockSource },
+  { method: "POST", path: new RegExp(`^${PROJECT_PATH}\\/bedrock\\/setup$`, "u"), answer: postBedrockSetup },
 ];

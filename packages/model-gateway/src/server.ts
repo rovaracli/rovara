@@ -12,7 +12,7 @@ import type { MediaRates } from "./media-price.js";
 import { guardRequest, MAX_BODY_BYTES, tooLarge, type GuardFailure, type ModelLimitsSource } from "./guard.js";
 import type { BillLine, Meter, MeterItem, MeterScope, Reservation } from "./meter.js";
 import { LEARNING_PATH_PREFIX, LEARNING_STEP, type LearningKeySource, type LearningRouteFactory } from "./learning-route.js";
-import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceSource } from "./price.js";
+import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceKind, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, type TaskClaims, type TaskTokenVerifier } from "./token.js";
 import { settleAmount } from "./reported-cost.js";
@@ -54,6 +54,10 @@ export interface RouteCall {
   mediaRates?: MediaRates;
   /** Inline audio/video: estimated prompt tokens, replacing their `dataBytes` encoded bytes in the hold (DEC 228e). */
   media?: MediaEstimate & { dataBytes: number };
+  /** A streamed answer's content type when it is not SSE (Bedrock's binary event stream, product-bedrock.ts). Absent: text/event-stream. */
+  streamContentType?: string;
+  /** The price kind of the call's model (a Titan embedding is priced as "embedding"). Absent: "chat". */
+  priceKind?: PriceKind;
 }
 export interface UsageReader { push(bytes: Uint8Array): void; whole(value: unknown): void; finish(): TokenUsage | undefined }
 /** A fixed refusal a route answers before any money moves. */
@@ -102,6 +106,8 @@ export interface GatewayRoute {
   alsoPricedAs?(model: string): ReadonlyArray<{ provider: string; model: string }>;
   /** DEC 240b: the billable line this call's hold carries to its ledger row (Rovara's AI). Absent or undefined: none. */
   line?(claims: TaskClaims, model: string): BillLine | undefined;
+  /** An error answer's JSON when the route's callers expect another shape (the AWS SDK reads a top-level `message`). Absent: `{error:{type,message}}`. */
+  refusalBody?(type: string, message: string): Readonly<Record<string, unknown>>;
 }
 /** A product request that is not a provider call (the eval stage hold and release): JSON in, JSON out, after the token check. */
 export interface ProductControl { readonly control: true; /** Also answered after the task ended (a release only gives budget back). */ readonly afterTaskEnd?: true; handle(claims: TaskClaims, body: unknown, signal: AbortSignal): Promise<{ status: number; body: Readonly<Record<string, unknown>> }> }
@@ -347,6 +353,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let settlementPrice: ResolvedPrice | undefined;
   let settlementUsage: TokenUsage | undefined;
   let settlementModel: string | undefined;
+  let settlementKind: PriceKind = "chat";
   // How the call ended, for an events route's settle: the refusal word last answered, or a complete answer.
   let refusedCode: string | undefined; let completed = false;
   let events: (GatewaySink & { finish(outcome: { completed: boolean; code?: string }): Promise<void> }) | undefined;
@@ -354,7 +361,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     refusedCode = type;
     if (head) { sink.destroy(); return; }
     head = true; sink.head(status, { ...JSON_HEADERS, ...extra });
-    await wait(sink.write(Buffer.from(JSON.stringify({ error: { type, message } })))); sink.end(); log({ event: "refused" });
+    await wait(sink.write(Buffer.from(JSON.stringify(route?.refusalBody?.(type, message) ?? { error: { type, message } })))); sink.end(); log({ event: "refused" });
   };
   try {
     if (request.method === "GET" && request.url === "/healthz") { head = true; sink.head(200, JSON_HEADERS); await wait(sink.write(Buffer.from('{"ok":true}'))); sink.end(); return; }
@@ -402,11 +409,11 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (!guarded.ok) { await respond(guarded.status, guarded.code, guarded.message); return; }
     shortenDeadline(startedAt + callDurationMs(guarded.maxTokens));
     const scope = route.scope(claims);
-    let resolved = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, route.provider, guarded.model, deps.cautiousCeiling, controller.signal, "chat"));
-    for (const also of route.alsoPricedAs?.(guarded.model) ?? []) resolved = dearerPrice(resolved, await wait(resolvePrice(deps.prices ?? UnknownPriceSource, also.provider, also.model, deps.cautiousCeiling, controller.signal, "chat")));
+    let resolved = await wait(resolvePrice(deps.prices ?? UnknownPriceSource, route.provider, guarded.model, deps.cautiousCeiling, controller.signal, guarded.priceKind ?? "chat"));
+    for (const also of route.alsoPricedAs?.(guarded.model) ?? []) resolved = dearerPrice(resolved, await wait(resolvePrice(deps.prices ?? UnknownPriceSource, also.provider, also.model, deps.cautiousCeiling, controller.signal, guarded.priceKind ?? "chat")));
     const price = guarded.mediaRates === undefined ? resolved : { ...resolved, media: guarded.mediaRates };
     if (price.operatorReview) log({ event: "price_operator_review" });
-    settlementPrice = price; settlementModel = guarded.model;
+    settlementPrice = price; settlementModel = guarded.model; settlementKind = guarded.priceKind ?? "chat";
     const caps = await wait(route.caps(scope, claims, controller.signal));
     if ((caps as RouteRefusal).ok === false) { const refused = caps as RouteRefusal; await respond(refused.status, refused.code, refused.message, refused.headers); return; }
     if (!validCaps(caps)) { await respond(503, "unavailable", "model access unavailable"); return; }
@@ -465,7 +472,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const usage = route.usage();
     const output: Uint8Array[] = []; let total = 0;
     const stream = provider.body[Symbol.asyncIterator]();
-    if (guarded.streaming) { head = true; sink.head(200, { ...JSON_HEADERS, "content-type": "text/event-stream; charset=utf-8" }); }
+    if (guarded.streaming) { head = true; sink.head(200, { ...JSON_HEADERS, "content-type": guarded.streamContentType ?? "text/event-stream; charset=utf-8" }); }
     for (;;) {
       const next = await wait(stream.next()); if (next.done) break;
       if (await taskEnded()) throw new Error("provider unavailable");
@@ -500,7 +507,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
         if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
           const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), price: settlementPrice, reservationMicros: cost });
           cost = amount.actualMicros; estimated = amount.estimated;
-          if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: "chat", settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
+          if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
         }
         await route.meter.settle(reservation, cost, estimateRecord); log({ event: "settled", costMicros: cost, estimated, appliedMaxOutputTokens, ...(route.product ? { route: "product" as const } : route.purpose === "learning" ? { route: "learning" as const } : {}) });
         if (route.overReservation !== undefined && callClaims !== undefined && cost > reservedMicros) {

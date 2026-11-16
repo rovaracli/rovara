@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { COMPANY, PERSON, PROJECT, record, whole } from "./model-gateway-token.js";
 import type { ProductKeyFingerprinter, ProductKeySealer } from "./product-seal.js";
 import { parseVertexConnect, serializeVertexCredential, validVertexSummary, vertexSummary, type VertexCredential, type VertexSummary } from "./product-vertex-credential.js";
-import { bedrockRoleClaim, bedrockSummary, parseBedrockConnect, serializeBedrockConnection, validBedrockSummary, type BedrockConnection, type BedrockModelCheck, type BedrockSummary } from "./bedrock-byo.js";
+import { bedrockConnectionIds, bedrockRoleClaim, bedrockSummary, parseBedrockConnect, serializeBedrockConnection, validBedrockSummary, type BedrockConnection, type BedrockModelCheck, type BedrockSummary } from "./bedrock-byo.js";
 
 export const PRODUCT_COMPANY_OWNER = "_company";
 /**
@@ -29,10 +29,11 @@ export const PRODUCT_PROVIDERS = ["gemini", "vertex", "anthropic", "openai", "be
 export type ProductProvider = typeof PRODUCT_PROVIDERS[number];
 const LEARNING_ONLY: ReadonlySet<ProductProvider> = new Set(["anthropic", "openai"]);
 /**
- * DEC 238 slice 1: the company's own Bedrock is ONE company-level source (its agents' AI). A project can't connect or link one yet
- * (the product route's Bedrock path is slice 2), and the company document holds at most one.
+ * DEC 238: the company document holds at most ONE Bedrock source (its agents' AI). Slice 2 (the product route): a project may also
+ * connect its OWN role (for example a separate test account) or link to the company's; a project holds one source per provider, as
+ * for every provider.
  */
-const COMPANY_ONLY: ReadonlySet<ProductProvider> = new Set(["bedrock"]);
+const ONE_PER_COMPANY: ReadonlySet<ProductProvider> = new Set(["bedrock"]);
 /** The company's one Bedrock connection's source id (Cloud's settings route uses it). */
 export const BEDROCK_SOURCE_ID = "src_bedrock";
 /**
@@ -375,8 +376,6 @@ export class ProductKeyStore {
     // No connection test configured: a Vertex connect is refused before anything else runs (no fingerprint, no KMS call).
     if (secret.vertex !== undefined && this.options.vertexCheck === undefined) throw new ProductKeyError("unavailable");
     if (secret.bedrock !== undefined && this.options.bedrockCheck === undefined) throw new ProductKeyError("unavailable");
-    // DEC 238 slice 1: the company's own Bedrock is a company-level source only.
-    if (COMPANY_ONLY.has(change.provider) && change.owner !== PRODUCT_COMPANY_OWNER) throw new ProductKeyError("invalid");
     // Learning accounts live only in the company's learning document (DEC 226), and nothing else does: a project or the company's
     // product sources never hold an Anthropic or OpenAI account, and the learning document never holds a product-only provider.
     if (change.owner === LEARNING_OWNER ? !LEARNING_KEY_PROVIDERS.some((p) => p === change.provider) : LEARNING_ONLY.has(change.provider)) throw new ProductKeyError("invalid");
@@ -385,7 +384,7 @@ export class ProductKeyStore {
     return this.#mutate(change, "connect", { sourceId: change.sourceId, provider: change.provider, keyPrint }, async (doc, now) => {
       this.#ensureNew(doc, change.sourceId, change.provider, change.owner, now);
       // One Bedrock connection per company (its agents' one source).
-      if (COMPANY_ONLY.has(change.provider) && doc.sources.some((s) => s.provider === change.provider)) throw new ProductKeyError("invalid");
+      if (ONE_PER_COMPANY.has(change.provider) && doc.sources.some((s) => s.provider === change.provider)) throw new ProductKeyError("invalid");
       // DEC 238 Q5, before the test: a role another company holds is refused without calling AWS.
       const claim = secret.bedrock === undefined ? [] : await this.#claimRole(change, secret.bedrock.roleArn, now);
       // The connection test runs only for a change that would apply (a replay or a stale revision never reaches Google or AWS).
@@ -405,8 +404,6 @@ export class ProductKeyStore {
     if (target === undefined) throw new ProductKeyError("not_found");
     // Product test calls only: the company's learning account is never linked into a project.
     if (LEARNING_ONLY.has(target.provider)) throw new ProductKeyError("invalid");
-    // DEC 238 slice 1: the company's Bedrock serves its agents only; the product route's Bedrock path (slice 2) comes first.
-    if (COMPANY_ONLY.has(target.provider)) throw new ProductKeyError("invalid");
     return this.#mutate(change, "link", { sourceId: change.sourceId, companySourceId: change.companySourceId }, (doc, now) => {
       this.#ensureNew(doc, change.sourceId, target.provider, change.owner, now);
       doc.sources.push({ sourceId: change.sourceId, provider: target.provider, connectedBy: change.actor.id, connectedAt: now, updatedAt: now, link: target.sourceId, linkedAt: target.connectedAt });
@@ -466,7 +463,7 @@ export class ProductKeyStore {
       const at = doc.removed.findIndex((r) => r.source.sourceId === change.sourceId && r.recoverUntil > now);
       if (at < 0) throw new ProductKeyError("not_found");
       const [removed] = doc.removed.splice(at, 1) as [RemovedRecord];
-      if (doc.sources.length >= PRODUCT_MAX_SOURCES || ((change.owner !== PRODUCT_COMPANY_OWNER || COMPANY_ONLY.has(removed.source.provider)) && doc.sources.some((s) => s.provider === removed.source.provider))) throw new ProductKeyError("invalid");
+      if (doc.sources.length >= PRODUCT_MAX_SOURCES || ((change.owner !== PRODUCT_COMPANY_OWNER || ONE_PER_COMPANY.has(removed.source.provider)) && doc.sources.some((s) => s.provider === removed.source.provider))) throw new ProductKeyError("invalid");
       doc.sources.push({ ...removed.source, updatedAt: now });
       const claim = removed.source.bedrock === undefined ? [] : await this.#claimRole(change, removed.source.bedrock.roleArn, now);
       return [...claim,{ key: keyRowKey(change.iss, change.cid, change.owner, change.sourceId, removed.source.currentVersion!), merge: { stage: CURRENT_STAGE, purgeAfter: null }, condition: { exists: true } }];
@@ -549,7 +546,7 @@ export class ProductKeyStore {
     if (answer.result !== "ok") throw new ProductKeyError("unavailable");
     // Every chosen model's state, from the test; a model it did not answer is "unavailable" (never assumed ready).
     const checks: Record<string, BedrockModelCheck> = {};
-    for (const id of new Set(Object.values(connection.models))) {
+    for (const id of bedrockConnectionIds(connection)) {
       const state = answer.models?.[id];
       checks[id] = state === "ready" || state === "not_enabled" || state === "refused" || state === "not_found" ? state : "unavailable";
     }

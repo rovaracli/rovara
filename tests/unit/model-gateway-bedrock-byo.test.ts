@@ -233,12 +233,10 @@ describe("the key store: the company's own Bedrock", () => {
     expect(table.rows.size).toBe(0);
   });
 
-  it("is company-level only in slice 1: no project connect, no project link, no learning document, one per company", async () => {
+  it("no learning document, one per company document, an unparseable connection refused (slice 2 lets a project connect or link: see model-gateway-product-bedrock-keys)", async () => {
     const s = storeWith(OK);
-    expect(await code(s.store.connect({ ...change(A, 0, "web"), sourceId: BEDROCK_SOURCE_ID, provider: "bedrock", key: conn() }))).toBe("invalid");
     expect(await code(s.store.connect({ ...change(A, 0, "_learning"), sourceId: BEDROCK_SOURCE_ID, provider: "bedrock", key: conn() }))).toBe("invalid");
     await s.store.connect({ ...change(A, 0), sourceId: BEDROCK_SOURCE_ID, provider: "bedrock", key: conn() });
-    expect(await code(s.store.link({ ...change(A, 0, "web"), sourceId: "src_link", companySourceId: BEDROCK_SOURCE_ID }))).toBe("invalid");
     expect(await code(s.store.connect({ ...change(A, 1), sourceId: "src_bedrock2", provider: "bedrock", key: conn({ roleArn: `${ROLE_A}2` }) }))).toBe("invalid");
     expect(await code(s.store.connect({ ...change(A, 1), sourceId: "src_x", provider: "bedrock", key: "not a connection" }))).toBe("invalid");
   });
