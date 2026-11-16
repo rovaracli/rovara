@@ -32,12 +32,13 @@ export {
   type CompanyBudgets, type CompanyInstruction, type CompanySettings, type LockValue, type SettingsCheck, type SettingsDecision, type WebsiteCeiling,
 } from "./company-settings.js";
 export {
-  COMPANY_ID, CompanyStoreConflict, HOOK_INSTALL_COMPANIES_MAX, INVITES_READ_MAX, INVITE_DAYS, LocalCompanyStore, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, StoreCompanyRules, StoreHookInstalls,
+  AGENT_AI_SOURCES, COMPANY_ID, CompanyStoreConflict, HOOK_INSTALL_COMPANIES_MAX, INVITES_READ_MAX, INVITE_DAYS, LocalCompanyStore, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, StoreCompanyRules, StoreHookInstalls,
   companySettings, validHookInstall,
-  type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
+  type AgentAiChoice, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
 } from "./company-store.js";
 export { CLOSED_INVITE_DAYS, COMPANY_TABLE, DynamoCompanyStore } from "./company-dynamo.js";
 export { COMPANY_ROUTES, PRE_APPROVED_EMAILS_PATH, modelGatewayReadiness, type CompanyBackend } from "./company-routes.js";
 export { PRODUCT_AI_APPROVER_PROVIDER, PRODUCT_AI_ROUTES, PRODUCT_AI_SOURCE_ID, PRODUCT_AI_VERTEX_SOURCE_ID, withdrawForMember, type ProductAiBackend, type ProductAiStore, type ProductAiView } from "./product-ai-routes.js";
+export { AGENT_AI_CHOOSABLE, AGENT_AI_ROUTES } from "./agent-ai-routes.js";
 export { LEARNING_AI_OWNER, LEARNING_AI_PROVIDERS, LEARNING_AI_ROUTES, LEARNING_PAUSE_WORDS, learningSourceId } from "./learning-ai-routes.js";
 export { STEP_UP_ACR, STEP_UP_METHODS, STEP_UP_SKEW_SECONDS, STEP_UP_WINDOW_SECONDS, freshStepUp, stepUpClaim, type StepUp, type StepUpMethod } from "./step-up.js";

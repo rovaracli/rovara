@@ -20,6 +20,7 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
  { id: "ai", title: "AI and connections", links: [
   { to: "/app/admin/models/sources", label: "AI models", blurb: "Which model providers the company pays for." },
   { to: "/app/admin/product-ai", label: "Product AI keys", blurb: "A project's own AI key for its tests, and what its evals may spend." },
+  { to: "/app/admin/agent-ai", label: "AI for your agents", blurb: "Rovara's AI, the company's own Anthropic key, or (soon) its own Bedrock.", ownerOnly: true },
   { to: "/app/admin/learning-ai", label: "Learning AI key", blurb: "The company's own AI account that lessons learn on, and its monthly learning cap.", ownerOnly: true },
   { to: "/app/admin/connections", label: "Connections", blurb: "Slack, GitHub, Jira and other connected tools." },
   { to: "/app/admin/tracker-people", label: "Tracker people", blurb: "Who in your tracker maps to whom in Rovara." },

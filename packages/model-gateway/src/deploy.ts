@@ -56,6 +56,13 @@ export const GATEWAY_ENV = {
    * Absent: "install", as before.
    */
   agentKeys: "GATEWAY_AGENT_KEYS",
+  /**
+   * Rovara's AI (DEC 240), only with `agentKeys` "company": the allow-list `<agent model>=<bedrock id>,...` (agent-ai.ts
+   * parseRovaraAiModels). Absent: Rovara's AI is off, and a company that chose it is refused.
+   */
+  rovaraAiModels: "GATEWAY_ROVARA_AI_MODELS",
+  /** The companies the operator named exempt from Rovara's AI charges (DEC 240b, the founders' test company), comma-separated. */
+  rovaraAiExempt: "GATEWAY_ROVARA_AI_EXEMPT",
 } as const;
 /** The values of GATEWAY_ENV.agentKeys. */
 export const GATEWAY_AGENT_KEY_MODES = ["install", "company"] as const;
@@ -131,6 +138,12 @@ export const GATEWAY_PRODUCT_TTL_ATTRIBUTE = "expiresAt";
  * and reads back through the gateway's reader, so the two cannot drift.
  */
 export const GATEWAY_COMPANY_SETTINGS = { partitionPrefix: "COMPANY#", sortKey: "SETTINGS" } as const;
+/**
+ * The company's agent AI choice (DEC 240) in the same Companies table: COMPANY#<org_…> / AGENT_AI, written by Cloud's
+ * agent-ai-routes.ts (company admins, fresh step-up, audited), read by the gateway (agent-ai.ts). A contract test writes through
+ * Cloud's store and reads back through the gateway's reader.
+ */
+export const GATEWAY_COMPANY_AGENT_AI = { partitionPrefix: "COMPANY#", sortKey: "AGENT_AI" } as const;
 export const GATEWAY_COMPANY_BUDGET_FIELDS = ["companyMonthlyUsdMicros", "memberMonthlyUsdMicros", "projectMonthlyUsdMicros", "taskUsdMicros"] as const;
 /** The backend's own ceiling for one budget: $1,000,000 in micro-dollars. */
 export const GATEWAY_COMPANY_BUDGET_MAX = 1_000_000_000_000;

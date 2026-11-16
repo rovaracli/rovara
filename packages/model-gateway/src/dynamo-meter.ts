@@ -5,8 +5,8 @@ import { GATEWAY_COMPANY_KEY_PREFIX, GATEWAY_LEDGER_INDEXES, GATEWAY_METER_INDEX
 import { CALL_HARD_CEILING_MS } from "./provider.js";
 import { TransactionRefused, type Dynamo, type Expr, type Item, type Plain, type TransactAction } from "./dynamo.js";
 import type { EndedTasks } from "./ended.js";
-import { SWEEP_AFTER_MAX_MS } from "./meter.js";
-import type { CorrectionInput, CorrectionResult, EstimatedCall, EstimatedSettlement, ExpiryInput, Meter, MeterItem, MeterRow, MeterScope, Reservation, ReserveInput, ReserveResult } from "./meter.js";
+import { SWEEP_AFTER_MAX_MS, validLine } from "./meter.js";
+import type { BillLine, CorrectionInput, CorrectionResult, EstimatedCall, EstimatedSettlement, ExpiryInput, Meter, MeterItem, MeterRow, MeterScope, Reservation, ReserveInput, ReserveResult } from "./meter.js";
 import { COMPANY, PERSON, PROJECT, TASK, TASK_TOKEN_SECONDS, record, whole } from "./model-gateway-token.js";
 import type { PendingPage } from "./pending-page.js";
 import { CORRECTION_RUN_MAX, CORRECTION_RUN_MS, DAY_MS, PENDING_RETENTION_DAYS } from "./price-constants.js";
@@ -59,7 +59,7 @@ export const HOLD_SWEEP_MAX = 100;
 
 /** `combined`: the agent meter's company row (DynamoMeterOptions.combinedCompany), in the agent meter table. */
 interface Target { sk: string; item: MeterItem; cap?: number; combined?: true }
-interface Hold { scope: MeterScope; month: string; estimate: number; targets: Target[]; status: string }
+interface Hold { scope: MeterScope; month: string; estimate: number; targets: Target[]; status: string; line?: BillLine }
 
 function validScope(value: unknown): value is MeterScope {
   const s = record(value);
@@ -96,7 +96,9 @@ function readHold(item: Item | undefined, combined: boolean): Hold | undefined {
   const scope = { iss: item.iss, cid: item.cid, pid: item.pid, tid: item.tid, ...(item.per === undefined ? {} : { per: item.per }) };
   const targets = readTargets(item.targets, combined);
   if (!validScope(scope) || targets === undefined || typeof item.month !== "string" || !whole(item.estimateMicros) || typeof item.status !== "string") throw new Error("settlement unavailable");
-  return { scope, month: item.month, estimate: item.estimateMicros, targets, status: item.status };
+  // A billable line (DEC 240b) that does not read keeps the hold open (the sweep retries): it is never dropped from the ledger row.
+  if (item.line !== undefined && !validLine(item.line)) throw new Error("settlement unavailable");
+  return { scope, month: item.month, estimate: item.estimateMicros, targets, status: item.status, ...(item.line === undefined ? {} : { line: { source: item.line.source, charge: item.line.charge, model: item.line.model } }) };
 }
 function rowOf(item: Item | undefined, target: Target, company: string): MeterRow {
   if (item === undefined) return { item: target.item, company, spentMicros: 0, estimatedMicros: 0, reservedMicros: 0, committed: 0, overrun: false };
@@ -170,6 +172,7 @@ export class DynamoMeter implements Meter {
     if (record(input) === undefined || !validScope(input.scope) || !validCaps(input.caps) || !whole(input.estimateMicros)) return { ok: false, reason: "busy" };
     const { scope, caps, estimateMicros } = input;
     if (input.appliedMaxOutputTokens !== undefined && (!whole(input.appliedMaxOutputTokens) || input.appliedMaxOutputTokens < 1)) return { ok: false, reason: "busy" };
+    if (input.line !== undefined && !validLine(input.line)) return { ok: false, reason: "busy" };
     // Fail closed: a combined meter without the combined company cap holds nothing.
     if (this.#combined !== undefined && caps.combinedCompanyMonth === undefined) return { ok: false, reason: "busy" };
     const now = this.#now();
@@ -225,6 +228,7 @@ export class DynamoMeter implements Meter {
         // In the open-holds index until settled, so the sweep can close a hold whose settle failed.
         openAll: GATEWAY_OPEN_PARTITION, openAt: openAt(openFrom, pk, id), ...(openFrom === now ? {} : { openFrom }),
         ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }),
+        ...(input.line === undefined ? {} : { line: { source: input.line.source, charge: input.line.charge, model: input.line.model } }),
       } });
       if (expiresSeconds !== undefined) {
         const expires = expiresSeconds;
@@ -284,6 +288,8 @@ export class DynamoMeter implements Meter {
     const ledger: Item = {
       pk, sk: `CALL#${id}`, callKey, ...scopeFields(hold.scope), month: hold.month, settledMicros: actualMicros, estimated: estimated !== undefined || swept, targets: targetsPlain(hold.targets),
       ...(swept ? { swept: true } : {}),
+      // The billable line (DEC 240b) lands with the call's settled cost, in the same transaction that closes the hold.
+      ...(hold.line === undefined ? {} : { line: { source: hold.line.source, charge: hold.line.charge, model: hold.line.model } }),
       settledAt: pending ? estimated.settledAt : now,
       ...(!pending ? {} : {
         provider: estimated.provider, model: estimated.model, kind: estimated.kind, usage: usagePlain(estimated.usage!), status: "pending",

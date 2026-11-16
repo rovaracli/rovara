@@ -7,6 +7,7 @@
 //   COMPANY#<org_…>             SETTINGS                    the company's settings and rules; `version` guards writes
 //   COMPANY#<org_…>             PENDING                     a settings change waiting for a second admin (`pendingUntil`; TTL after)
 //   COMPANY#<org_…>             PROFILE                     name and plan; `version` guards writes
+//   COMPANY#<org_…>             AGENT_AI                    which AI the company's agents use (DEC 240; the model gateway reads it); `version` guards writes
 //   COMPANY#<org_…>             INVITE#<invite id>          an invite; `revision` and `inviteState` guard writes
 //   COMPANY#<org_…>             INVITEREQUEST#<request id>  the invite a create request made, so a replay is refused
 //   INVITETOKEN#<sha256 hex>    INVITE                      the company and invite a link's token names (never the token)
@@ -17,8 +18,8 @@ import { createHash } from "node:crypto";
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
-  CompanyStoreConflict, INVITES_READ_MAX, validHookInstall,
-  type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
+  CompanyStoreConflict, INVITES_READ_MAX, validAgentAiSource, validHookInstall,
+  type AgentAiChoice, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
 } from "./company-store.js";
 import type { CompanySettings } from "./company-settings.js";
 
@@ -143,6 +144,21 @@ export class DynamoCompanyStore implements CompanyStore {
   async putProfile(profile: Omit<CompanyProfile, "version">, expectedVersion: number): Promise<number> {
     await guarded("profile", () => this.db.send(new PutCommand({
       TableName: this.table, Item: { pk: company(profile.companyId), sk: "PROFILE", companyId: profile.companyId, profile, version: expectedVersion + 1 }, ...versionCondition(expectedVersion),
+    })));
+    return expectedVersion + 1;
+  }
+
+  async agentAi(companyId: string): Promise<AgentAiChoice | undefined> {
+    const item = await this.get(company(companyId), "AGENT_AI");
+    if (item === undefined) return undefined;
+    // A row that does not read as this company's choice is an outage, never "none saved" (which would hide it and block every save).
+    if (item.companyId !== companyId || !validAgentAiSource(item.source) || typeof item.version !== "number" || typeof item.updatedAt !== "string" || typeof item.updatedBy !== "string") throw new Error("agent ai choice unreadable");
+    return { companyId, source: item.source, version: item.version, updatedAt: item.updatedAt, updatedBy: item.updatedBy };
+  }
+
+  async putAgentAi(choice: Omit<AgentAiChoice, "version">, expectedVersion: number): Promise<number> {
+    await guarded("agent ai", () => this.db.send(new PutCommand({
+      TableName: this.table, Item: { pk: company(choice.companyId), sk: "AGENT_AI", companyId: choice.companyId, source: choice.source, version: expectedVersion + 1, updatedAt: choice.updatedAt, updatedBy: choice.updatedBy }, ...versionCondition(expectedVersion),
     })));
     return expectedVersion + 1;
   }
