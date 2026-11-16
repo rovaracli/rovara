@@ -114,6 +114,11 @@ export const ROVARA_AI_US_CONVERSE_MODELS = [
   "openai.gpt-oss-120b-1:0=openai.gpt-oss-120b-1:0",
   "openai.gpt-oss-20b-1:0=openai.gpt-oss-20b-1:0",
   "us.amazon.nova-pro-v1:0=us.amazon.nova-pro-v1:0",
+  "moonshot.kimi-k2-thinking=moonshot.kimi-k2-thinking",
+  "minimax.minimax-m2.5=minimax.minimax-m2.5",
+  "us.moonshotai.kimi-k3=us.moonshotai.kimi-k3",
+  "us.moonshotai.kimi-k3.1=us.moonshotai.kimi-k3.1",
+  // deepseek.v3.2 stays unlisted: in the real two-turn call (2026-11-16) turn 1 ended end_turn with no tool call and no thinking.
 ].join(",");
 export const ROVARA_AI_PROFILE_REGIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({ us: ["us-east-1", "us-east-2", "us-west-2"] });
 const ROVARA_AI_AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;
@@ -126,7 +131,7 @@ const ROVARA_AI_CONVERSE_ID = /^(?!global\.)(?!(?:(?:us|eu|apac|jp|au|ca)\.)?ant
 export function rovaraAiModelIds(models: string, region: string): Array<{ id: string; geography?: string; model: string }> {
   const pairs = models.split(",").map((pair) => pair.trim());
   const names = new Set<string>();
-  if (models.trim() === "" || pairs.length > 20) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}: give <agent model>=<bedrock id> pairs`);
+  if (models.trim() === "" || pairs.length > 24) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY}: give <agent model>=<bedrock id> pairs`);
   return pairs.map((pair) => {
     const [name, id, extra] = pair.split("=");
     const converse = id === undefined || ROVARA_AI_BEDROCK_ID.test(id) ? null : ROVARA_AI_CONVERSE_ID.exec(id);
