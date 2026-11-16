@@ -1,9 +1,14 @@
 import {
+  Aws,
+  CfnCondition,
   CfnOutput,
   CfnParameter,
+  CfnRule,
   Duration,
+  Fn,
   RemovalPolicy,
   Stack,
+  Token,
   type StackProps,
   aws_cloudfront as cloudfront,
   aws_cloudfront_origins as origins,
@@ -59,6 +64,15 @@ export interface CloudWebProps extends StackProps {
 
 /** The server's environment for the product AI settings (scripts/cloud-lambda.ts reads them; all three or none). */
 export const CLOUD_PRODUCT_AI_ENV = { keysTable: "CLOUD_PRODUCT_KEYS_TABLE", keysKey: "CLOUD_PRODUCT_KEYS_KEY", macKey: "CLOUD_PRODUCT_KEYS_MAC_KEY", gatewayUrl: "CLOUD_MODEL_GATEWAY_URL" } as const;
+
+/** The server's environment variable for "your own Bedrock" (scripts/cloud-lambda.ts bedrockBackend): the role template's docs-site address. */
+export const CLOUD_BEDROCK_TEMPLATE_URL_ENV = "CLOUD_BEDROCK_TEMPLATE_URL";
+/**
+ * The BedrockTemplateUrl parameter's pattern: the same rule as validTemplateUrl (packages/model-gateway/src/bedrock-byo.ts) written for
+ * CloudFormation. Empty, or https, a plain path to a .json file, and never an S3 or amazonaws.com host (DEC 238 Q10). The two lookaheads
+ * are the host rule: no label that starts "s3." or "s3-", and no name ending ".amazonaws.com". A test holds the two rules together.
+ */
+export const BEDROCK_TEMPLATE_URL_PATTERN = "^(|https://(?!(?:[a-z0-9-]+\\.)*s3[.-])(?![a-z0-9.-]*\\.amazonaws\\.com/)[a-z0-9.-]{1,253}/[A-Za-z0-9._~/-]{1,512}\\.json)$";
 
 /**
  * What the server may do in its State table, by partition-key prefix (the layout in packages/cloud-server/src/dynamo-stores.ts):
@@ -317,5 +331,17 @@ export class CloudWebStack extends Stack {
     // Empty (the default): a Vertex connect answers unavailable; AI Studio and learning keys are unaffected.
     const gatewayUrl = new CfnParameter(this, "ModelGatewayUrl", { type: "String", default: "", allowedPattern: "^(|https://[^/\\s]+)$", description: "The model gateway's https address (its certificate's name, gateway output GatewayAddress); empty: no Vertex AI connect from Cloud" }).valueAsString;
     server.addEnvironment(CLOUD_PRODUCT_AI_ENV.gatewayUrl, gatewayUrl);
+    // "Your own Bedrock" (DEC 238): the role template's docs-site address. Empty (the default): the variable is not set at all and the
+    // Bedrock routes answer 501, so a pipeline deploy that passes no new parameter still works. Set, it needs the gateway's address.
+    const templateUrl = new CfnParameter(this, "BedrockTemplateUrl", {
+      type: "String", default: "", allowedPattern: BEDROCK_TEMPLATE_URL_PATTERN,
+      description: "The Bedrock role template's https address on the docs site (a .json file, never S3); empty: no BYO Bedrock connect (the routes answer 501); needs ModelGatewayUrl",
+    }).valueAsString;
+    const templateUrlSet = new CfnCondition(this, "BedrockTemplateUrlSet", { expression: Fn.conditionNot(Fn.conditionEquals(templateUrl, "")) });
+    server.addEnvironment(CLOUD_BEDROCK_TEMPLATE_URL_ENV, Token.asString(Fn.conditionIf(templateUrlSet.logicalId, templateUrl, Aws.NO_VALUE)));
+    new CfnRule(this, "BedrockNeedsGateway", {
+      ruleCondition: Fn.conditionNot(Fn.conditionEquals(templateUrl, "")),
+      assertions: [{ assert: Fn.conditionNot(Fn.conditionEquals(gatewayUrl, "")), assertDescription: "BedrockTemplateUrl needs ModelGatewayUrl (the server refuses to start with one and not the other)" }],
+    });
   }
 }

@@ -10,7 +10,8 @@ import { Code } from "aws-cdk-lib/aws-lambda";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { CLOUD_PRODUCT_AI_ENV, CloudWebStack } from "../../infra/lib/cloud-web.js";
+import { BEDROCK_TEMPLATE_URL_PATTERN, CLOUD_BEDROCK_TEMPLATE_URL_ENV, CLOUD_PRODUCT_AI_ENV, CloudWebStack } from "../../infra/lib/cloud-web.js";
+import { validTemplateUrl } from "../../packages/model-gateway/src/bedrock-byo.js";
 import { MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
 
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: unknown };
@@ -61,5 +62,37 @@ describe("Cloud web: product AI settings grants (B7)", () => {
     for (const good of ["", "https://gateway.staging.rovara.example"]) expect(pattern.test(good)).toBe(true);
     for (const bad of ["http://gateway.example", "https://gateway.example/v1", "https://a b"]) expect(pattern.test(bad)).toBe(false);
     expect(Object.keys(bySid).sort()).toEqual(expect.not.arrayContaining(["VerifyCloudCalls"]));
+  });
+
+  // BYO Bedrock (DEC 238): the role template's docs-site address, optional, passed to the server only when set.
+  it("BedrockTemplateUrl: optional; the variable is set only when the parameter is non-empty; the pattern is validTemplateUrl's rule", () => {
+    const t = synth("staging", true) as ReturnType<typeof synth> & { Conditions: Record<string, unknown>; Rules: Record<string, unknown> };
+    const parameter = t.Parameters.BedrockTemplateUrl as { Default: string; AllowedPattern: string };
+    expect(parameter.Default).toBe("");
+    expect(parameter.AllowedPattern).toBe(BEDROCK_TEMPLATE_URL_PATTERN);
+    expect(t.Conditions.BedrockTemplateUrlSet).toEqual({ "Fn::Not": [{ "Fn::Equals": [{ Ref: "BedrockTemplateUrl" }, ""] }] });
+    const fn = Object.values(t.Resources).find((r) => r.Type === "AWS::Lambda::Function" && JSON.stringify(r.Properties).includes("CLOUD_TABLE"))!;
+    const env = (fn.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
+    // Set: the address; empty: AWS::NoValue, so CloudFormation leaves the variable out (the routes answer 501).
+    expect(env[CLOUD_BEDROCK_TEMPLATE_URL_ENV]).toEqual({ "Fn::If": ["BedrockTemplateUrlSet", { Ref: "BedrockTemplateUrl" }, { Ref: "AWS::NoValue" }] });
+    expect(JSON.stringify(t.Rules)).toContain("BedrockTemplateUrl needs ModelGatewayUrl");
+    // The pattern accepts and refuses what validTemplateUrl does (Java regex lookaheads and JS agree on this syntax).
+    const pattern = new RegExp(BEDROCK_TEMPLATE_URL_PATTERN, "u");
+    expect(pattern.test("")).toBe(true);
+    const sha = "a".repeat(40);
+    const urls = [
+      `https://raw.githubusercontent.com/PrepLabsAI/Rovara/${sha}/docs/bedrock/rovara-bedrock-role.json`, "https://docs.rovara.example/bedrock/rovara-bedrock-role.json",
+      "http://docs.rovara.example/t.json", "https://docs.rovara.example/t.yaml", "https://docs.rovara.example/t.json?x=1", "https://docs.rovara.example/", "https://docs.rovara.example",
+      "https://my-bucket.s3.us-west-2.amazonaws.com/t.json", "https://s3.us-west-2.amazonaws.com/b/t.json", "https://s3-us-west-2.amazonaws.com/b/t.json", "https://s3.amazonaws.com/b/t.json",
+      "https://x.cloudfront.net/t.yaml", "https://x.cloudfront.net/t.json", "https://x.amazonaws.com/t.json", "https://bucket.s3.example.com/t.json", "https://s3-bucket.example.com/t.json",
+      "https://s3bucket.example.com/t.json", "https://docs.s3x.example.com/t.json", "https://a b/t.json", "ftp://docs/t.json", "https://docs.example.com/a b.json", "https://DOCS.example.com/t.json",
+    ];
+    for (const url of urls) expect(pattern.test(url), url).toBe(validTemplateUrl(url));
+    expect(pattern.test(urls[0]!)).toBe(true);
+    expect(pattern.test(urls[7]!)).toBe(false);
+  });
+  it("BedrockTemplateUrl exists only with the product AI settings: the off templates stay byte for byte (see the first test)", () => {
+    expect(synth("staging", false).Parameters.BedrockTemplateUrl).toBeUndefined();
+    expect(synth("production").Parameters.BedrockTemplateUrl).toBeUndefined();
   });
 });
