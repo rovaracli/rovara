@@ -134,6 +134,6 @@ describe("models held back from the offered list (GATEWAY_AGENT_MODELS_DISABLED)
   it("refused: never alone, not a list of model names", () => {
     expect(() => rovaraAiContext(undefined, undefined, "claude-opus-5-5")).toThrow(/needs rovaraModelGatewayRovaraAi/u);
     expect(() => rovaraAiContext(MODELS, undefined, 5)).toThrow();
-    for (const bad of ["a b", "../x", "claude-opus-5-5,"]) expect(() => synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS, [MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY]: bad })).toThrow();
+    for (const bad of ["a b", "../x", "claude-opus-5-5,", "a,a"]) expect(() => synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS, [MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY]: bad })).toThrow();
   });
 });

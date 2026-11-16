@@ -671,7 +671,7 @@ export class ModelGatewayStack extends Stack {
     // DEC 243c: a non-Claude model with no profile, in this Region only (Converse is authorised by these same two actions).
     if (inRegion.length > 0) serveRole.addToPolicy(new iam.PolicyStatement({ sid: "RovaraAiModels", actions, resources: [...new Set(inRegion.map((m) => modelArn(region, m.model)))] }));
     const disabled = settings.disabled;
-    if (disabled !== undefined && disabled !== "" && (disabled.split(",").length > 64 || disabled.split(",").some((name) => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(name.trim())))) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY}: give model names, comma-separated`);
+    if (disabled !== undefined && disabled !== "" && (disabled.split(",").length > 64 || new Set(disabled.split(",").map((name) => name.trim())).size !== disabled.split(",").length || disabled.split(",").some((name) => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(name.trim())))) throw new Error(`${MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY}: give model names, comma-separated`);
     return { environment: { [MODEL_GATEWAY_ENV.rovaraAiModels]: models, ...(exempt === "" ? {} : { [MODEL_GATEWAY_ENV.rovaraAiExempt]: exempt }), ...(disabled === undefined ? {} : { [MODEL_GATEWAY_ENV.agentModelsDisabled]: disabled }) } };
   }
 
