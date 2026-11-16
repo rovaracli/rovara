@@ -1,10 +1,13 @@
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { AgentAiSourceReader, RovaraAi } from "./agent-ai.js";
+import { bedrockInvokePath } from "./bedrock-transport.js";
 import { validCaps, type Caps, type CapsSource } from "./caps.js";
 import type { EndedTasks } from "./ended.js";
 import { estimateCall, TOOL_INPUT_ALLOWANCE_TOKENS, type MediaEstimate } from "./estimate.js";
 import type { MediaRates } from "./media-price.js";
 import { guardRequest, MAX_BODY_BYTES, tooLarge, type GuardFailure, type ModelLimitsSource } from "./guard.js";
-import type { Meter, MeterItem, MeterScope, Reservation } from "./meter.js";
+import type { BillLine, Meter, MeterItem, MeterScope, Reservation } from "./meter.js";
 import { LEARNING_PATH_PREFIX, LEARNING_STEP, type LearningKeySource, type LearningRouteFactory } from "./learning-route.js";
 import { dearerPrice, resolvePrice, UnknownPriceSource, type PriceSource } from "./price.js";
 import { CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BYTES, NotSentError, SecretScanner, type ProviderKeys, type ProviderResponse, type ProviderTransport } from "./provider.js";
@@ -33,6 +36,12 @@ export interface GatewayDependencies {
    * refused before anything is held (AGENT_KEY_MISSING), and the combined company cap applies as before. Absent: the install key.
    */
   agentKeys?: LearningKeySource;
+  /**
+   * DEC 240, only with `agentKeys` (company-key mode): each company's chosen agent AI source. A saved "rovara" sends the call to
+   * Rovara's AI (`rovara`; refused when absent) and never reads the company's key; "anthropic_key" or no saved choice is DEC 236
+   * exactly; "bedrock_byo" is refused for now. Absent: DEC 236 exactly.
+   */
+  agentAi?: { sources: AgentAiSourceReader; rovara?: RovaraAi };
 }
 /** One provider call shape after its route's guard. `path` is built by the guard from checked parts, never copied from the request. */
 export interface RouteCall {
@@ -87,6 +96,8 @@ export interface GatewayRoute {
    * known is merged in at the dearer rate per component (dearerPrice): a call is never priced below any of its rows.
    */
   alsoPricedAs?(model: string): ReadonlyArray<{ provider: string; model: string }>;
+  /** DEC 240b: the billable line this call's hold carries to its ledger row (Rovara's AI). Absent or undefined: none. */
+  line?(claims: TaskClaims, model: string): BillLine | undefined;
 }
 /** A product request that is not a provider call (the eval stage hold and release): JSON in, JSON out, after the token check. */
 export interface ProductControl { readonly control: true; /** Also answered after the task ended (a release only gives budget back). */ readonly afterTaskEnd?: true; handle(claims: TaskClaims, body: unknown, signal: AbortSignal): Promise<{ status: number; body: Readonly<Record<string, unknown>> }> }
@@ -105,6 +116,17 @@ export const AGENT_KEY_MISSING: RouteRefusal = Object.freeze({ ok: false as cons
 /** Company-key mode: the provider refused the company's own key (401/403 before any output). Free; fixed words. */
 export const AGENT_KEY_REFUSED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect an AI key: the AI provider refused this company's connected key." });
 const AGENT_UNAVAILABLE: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "unavailable", message: "model access unavailable" });
+/** DEC 240: the company chose its own Bedrock (DEC 238), which is not built yet. Nothing held or sent; no fallback. */
+export const AGENT_SOURCE_NOT_OFFERED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: your own Bedrock is not available yet." });
+/** DEC 240: the company chose Rovara's AI, and this gateway does not offer it. Nothing held or sent; no fallback to its key. */
+export const ROVARA_AI_OFF: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: Rovara's AI is not available on this install." });
+/** DEC 240: a model that is not on Rovara's AI allow-list. Before any hold. */
+export const ROVARA_AI_MODEL: GuardFailure = Object.freeze({ ok: false as const, status: 400, code: "invalid_request", message: "This model is not offered on Rovara's AI." });
+/** DEC 240: Bedrock refused Rovara's own role (access or model not enabled). Free: the customer is never charged for it. */
+export const ROVARA_AI_UNAVAILABLE: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "unavailable", message: "Rovara's AI is unavailable right now. Try again later." });
+const PROVIDER_ERROR: RouteRefusal = Object.freeze({ ok: false as const, status: 502, code: "provider_error", message: "provider unavailable" });
+/** Bedrock's InvokeModel body version for Anthropic models. */
+export const BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31";
 /** The agent route: Anthropic Messages, the R3a behaviour exactly; on the company's own key when `agentKeys` is set (DEC 236). */
 export function agentRoute(deps: GatewayDependencies): GatewayRoute {
   return deps.agentKeys !== undefined ? companyKeyAgentRoute(deps, deps.agentKeys) : installKeyAgentRoute(deps);
@@ -132,24 +154,66 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
   const base = installKeyAgentRoute(deps);
   let admitted = false;
   let notSent: RouteRefusal | undefined;
+  // DEC 240: set by admit when the company chose Rovara's AI; then the company's key is never read.
+  let rovara: { ai: RovaraAi; marker: string } | undefined;
   return {
     ...base,
+    get provider() { return rovara === undefined ? base.provider : "bedrock"; },
+    get transport() { return rovara === undefined ? base.transport : rovara.ai.transport; },
     async admit(claims, signal) {
+      const choice = deps.agentAi;
+      if (choice !== undefined) {
+        let source;
+        try { source = await choice.sources.sourceFor(claims.cid, signal); } catch { return AGENT_UNAVAILABLE; }
+        if (source === "bedrock_byo") return AGENT_SOURCE_NOT_OFFERED;
+        if (source === "rovara") {
+          if (choice.rovara === undefined) return ROVARA_AI_OFF;
+          // A per-call marker stands in for a key: the transport signs with the task role, and no key exists to leak.
+          rovara = { ai: choice.rovara, marker: `rovara-ai-${randomUUID()}` };
+          admitted = true;
+          return undefined;
+        }
+      }
       try { if ((await keys.connected(claims.iss, claims.cid, "anthropic", signal)) !== true) return AGENT_KEY_MISSING; }
       catch { return AGENT_UNAVAILABLE; }
       admitted = true;
       return undefined;
     },
+    guard(bytes, headers, claims) {
+      const checked = base.guard(bytes, headers, claims);
+      if (rovara === undefined || !checked.ok) return checked;
+      const id = rovara.ai.models.get(checked.model);
+      if (id === undefined) return ROVARA_AI_MODEL;
+      // The same checked Anthropic body, as InvokeModel takes it: no model or stream field (the path says both), Bedrock's version,
+      // the allowed beta flags as a body field, and no metadata (Bedrock's Anthropic body has none).
+      const { model: _model, stream: _stream, metadata: _metadata, ...rest } = JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>;
+      const beta = checked.headers["anthropic-beta"];
+      const body = { anthropic_version: BEDROCK_ANTHROPIC_VERSION, ...rest, ...(beta === undefined ? {} : { anthropic_beta: beta.split(",").map((flag) => flag.trim()) }) };
+      return { ...checked, model: id, bytes: Buffer.from(JSON.stringify(body)), headers: { "content-type": "application/json" }, path: bedrockInvokePath(id, checked.streaming) };
+    },
+    line(claims, model) {
+      if (rovara === undefined) return undefined;
+      return { source: "rovara_ai", charge: rovara.ai.exempt.has(claims.cid) ? "exempt" : "customer", model };
+    },
     async key(claims, signal) {
       if (!admitted) return "";
+      if (rovara !== undefined) return rovara.marker;
       let key: string | undefined;
       try { key = await keys.keyFor(claims.iss, claims.cid, "anthropic", signal); } catch { notSent = AGENT_UNAVAILABLE; return ""; }
       if (key === undefined) { notSent = AGENT_KEY_MISSING; return ""; }
       return key;
     },
     notSent: () => notSent,
-    // The provider refused the company's key: an explicit rejection before any generation, free; the company must connect a working key.
-    providerFailure: (status, body) => status === 401 || status === 403 ? { charged: false, refusal: AGENT_KEY_REFUSED } : base.providerFailure(status, body),
+    providerFailure: (status, body) => {
+      if (rovara !== undefined) {
+        // Bedrock's explicit refusals before any generation are free. Its refusal of Rovara's own role is Rovara's to fix.
+        if (status === 401 || status === 403) return { charged: false, refusal: ROVARA_AI_UNAVAILABLE };
+        if (status === 400 || status === 404 || status === 429) return { charged: false, refusal: PROVIDER_ERROR };
+        return { charged: true, refusal: PROVIDER_ERROR };
+      }
+      // The provider refused the company's key: an explicit rejection before any generation, free; the company must connect a working key.
+      return status === 401 || status === 403 ? { charged: false, refusal: AGENT_KEY_REFUSED } : base.providerFailure(status, body);
+    },
   };
 }
 function routeFor(deps: GatewayDependencies, request: GatewayRequest): GatewayRoute | ProductControl | undefined {
@@ -273,7 +337,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     const admissionExpiresSeconds = Math.floor(now() / 1000) + TASK_TOKEN_SECONDS;
     if (overrunCapable) shortenDeadline(Math.floor(Math.min(deadline, admissionExpiresSeconds * 1000) / 1000) * 1000);
     appliedMaxOutputTokens = guarded.maxTokens;
-    const reserved = await route.meter.reserve({ scope, caps, estimateMicros: estimate, appliedMaxOutputTokens,
+    const line = route.line?.(claims, guarded.model);
+    const reserved = await route.meter.reserve({ scope, caps, estimateMicros: estimate, appliedMaxOutputTokens, ...(line === undefined ? {} : { line }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
     });
     if (!reserved.ok) {

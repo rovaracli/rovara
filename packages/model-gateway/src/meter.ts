@@ -24,7 +24,24 @@ export interface ReserveInput {
    * a day ahead. Omitted: the sweep's usual age applies.
    */
   sweepAfter?: number;
+  /**
+   * DEC 240b: this call is charged by Rovara to the company (Rovara's AI). Kept on the hold and written onto the call's ledger row
+   * when it settles (or is swept), in the same transaction, so every settled Rovara's AI call is exactly one billable line.
+   */
+  line?: BillLine;
 }
+/**
+ * One billable line (DEC 240b). `charge` "customer": on the company's bill; "exempt": the operator-named founders' test company
+ * (never inferred). The amount is the call's settled cost on the same ledger row (list price, the Bedrock rows, dearest-of).
+ */
+export interface BillLine { source: "rovara_ai"; charge: "customer" | "exempt"; model: string }
+export const BILL_LINE_MODEL = /^[a-z0-9][a-z0-9.:-]{0,119}$/u;
+export function validLine(value: unknown): value is BillLine {
+  const v = record(value);
+  return v !== undefined && Object.keys(v).length === 3 && v.source === "rovara_ai" && (v.charge === "customer" || v.charge === "exempt") && typeof v.model === "string" && BILL_LINE_MODEL.test(v.model);
+}
+/** A settled call that carries a billable line (InMemoryMeter.billedCalls; the Dynamo ledger row holds the same fields). */
+export interface BilledCall extends MeterScope { callKey: string; month: string; line: BillLine; settledMicros: number; estimated: boolean }
 export interface Meter {
   /**
    * DEC 228c: true when this meter's holds ALSO count against the agent meter's company row (one combined company monthly cap,
@@ -57,7 +74,7 @@ export function costView(rows: readonly MeterRow[]): Array<{ item: MeterItem; sp
 }
 /** `combined`: the partner (agent) meter's company row, the one combined company monthly cap (DEC 228c). */
 interface Target { key: string; item: MeterItem; cap: number | undefined; combined?: true }
-interface Open { month: string; appliedMaxOutputTokens?: number; scope: MeterScope; estimate: number; targets: Target[] }
+interface Open { month: string; appliedMaxOutputTokens?: number; scope: MeterScope; estimate: number; targets: Target[]; line?: BillLine }
 function validScope(value: unknown): value is MeterScope {
   const s = record(value);
   return s !== undefined && typeof s.iss === "string" && s.iss.length > 0 && s.iss.length <= 2048 && typeof s.cid === "string" && COMPANY.test(s.cid) && typeof s.pid === "string" && PROJECT.test(s.pid) && typeof s.tid === "string" && TASK.test(s.tid) && (s.per === undefined || (typeof s.per === "string" && PERSON.test(s.per)));
@@ -87,6 +104,7 @@ export class InMemoryMeter implements Meter {
   readonly #expiryOrder: string[] = [];
   readonly #ownInFlight = new Map<string, { owner: string; expiresSeconds: number }>();
   readonly #partner: InMemoryMeter | undefined;
+  readonly #billed = new Map<string, BilledCall>();
   constructor(private readonly now: () => number = Date.now, private readonly conflict: () => boolean = () => false, private readonly beforeWrite: (operation: "settle" | "correct" | "expire", rows?: MeterRow[]) => void | Promise<void> = () => undefined, options: InMemoryMeterOptions = {}) {
     if (options.combineCompanyWith !== undefined && (options.combineCompanyWith === this || options.combineCompanyWith.#partner !== undefined)) throw new Error("meter unavailable");
     this.#partner = options.combineCompanyWith;
@@ -102,6 +120,7 @@ export class InMemoryMeter implements Meter {
     const { scope, caps, estimateMicros } = input;
     if (input.appliedMaxOutputTokens !== undefined && (!whole(input.appliedMaxOutputTokens) || input.appliedMaxOutputTokens < 1)) return { ok: false, reason: "busy" };
     if (input.sweepAfter !== undefined && (!whole(input.sweepAfter) || input.sweepAfter > this.now() + SWEEP_AFTER_MAX_MS)) return { ok: false, reason: "busy" };
+    if (input.line !== undefined && !validLine(input.line)) return { ok: false, reason: "busy" };
     // Fail closed: a combined meter without the combined company cap holds nothing.
     if (this.#partner !== undefined && caps.combinedCompanyMonth === undefined) return { ok: false, reason: "busy" };
     const clock = Math.floor(this.now() / 1000);
@@ -137,7 +156,7 @@ export class InMemoryMeter implements Meter {
       const reservation = Object.freeze({ id: randomUUID(), ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }) });
       for (const target of items) { const row = this.#row(target, scope); this.#store(target).set(target.key, { ...row, reservedMicros: row.reservedMicros + estimateMicros, committed: row.committed + estimateMicros }); }
       if (expiresSeconds !== undefined) this.#inFlight.set(companyKey, { owner: reservation.id, expiresSeconds });
-      this.#open.set(reservation.id, { month, ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }), scope: { ...scope }, estimate: estimateMicros, targets: items });
+      this.#open.set(reservation.id, { month, ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }), scope: { ...scope }, estimate: estimateMicros, targets: items, ...(input.line === undefined ? {} : { line: { ...input.line } }) });
       return { ok: true, reservation };
     }
     return { ok: false, reason: "busy" };
@@ -158,6 +177,10 @@ export class InMemoryMeter implements Meter {
     for (const target of open.targets) {
       const row = this.#row(target, open.scope); const spentMicros = row.spentMicros + actualMicros;
       this.#store(target).set(target.key, { ...row, spentMicros, estimatedMicros: row.estimatedMicros + extraEstimated, reservedMicros: row.reservedMicros - open.estimate, committed: row.committed - open.estimate + actualMicros, overrun: row.overrun || (target.cap !== undefined && spentMicros > target.cap) });
+    }
+    if (open.line !== undefined) {
+      const callKey = JSON.stringify([open.scope.iss, open.scope.cid, reservation.id]);
+      this.#billed.set(callKey, { ...open.scope, callKey, month: open.month, line: { ...open.line }, settledMicros: actualMicros, estimated: estimated !== undefined });
     }
     if (estimated?.usage !== undefined && hasUsage(estimated.usage)) {
       const callKey = JSON.stringify([open.scope.iss, open.scope.cid, reservation.id]);
@@ -258,6 +281,8 @@ export class InMemoryMeter implements Meter {
     if (expire || input.estimated !== true) this.#removePending(call);
     return expire ? { status: "expired" } : { status: "corrected", deltaMicros, ...(capExceeded ? { capExceeded: true } : {}) };
   }
+  /** The billable lines of this company's settled calls (DEC 240b), oldest first. */
+  billedCalls(iss: string, cid: string): BilledCall[] { return [...this.#billed.values()].filter((c) => c.iss === iss && c.cid === cid).map((c) => structuredClone(c)); }
   async read(scope: MeterScope): Promise<readonly MeterRow[]> {
     if (!validScope(scope)) throw new Error("meter unavailable");
     return targets(scope, { task: 0, projectMonth: 0 }, this.#month()).map((t) => ({ ...this.#row(t, scope) }));

@@ -10,6 +10,8 @@ import { createGeminiTransport } from "./product-gemini.js";
 import { createVertexTransport } from "./product-vertex.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
 import { awsKms } from "./aws-kms.js";
+import { CompanyAgentAiSource, parseRovaraAiExempt, parseRovaraAiModels, type AgentAiSourceReader } from "./agent-ai.js";
+import { createBedrockTransport } from "./bedrock-transport.js";
 import { GATEWAY_AGENT_KEY_MODES, GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_LOG_EVENTS, GATEWAY_MODES, GATEWAY_PRODUCT_ENV, type GatewayAgentKeyMode } from "./deploy.js";
 import { DynamoEvalStageStore } from "./dynamo-eval-stages.js";
 import { DynamoProductKeyTable } from "./dynamo-product-keys.js";
@@ -48,7 +50,9 @@ export interface InstallConfig { issuer: string; jwksUrl: string; taskKids: stri
 export interface ProductConfig { keysTable: string; keysKeyArn: string; meter: string; ledger: string; markers: string; stages: string; vertexFederationRoleArn?: string; /** Cloud's Vertex connection test (service-call.ts), only with the Vertex role. */ macKeyArn?: string }
 /** The learning route's meter tables (GATEWAY_LEARNING_ENV): only with the product route, whose key store holds the company's account. */
 export interface LearningConfig { meter: string; ledger: string; markers: string }
-export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode }
+export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode; /** DEC 240, only with agentKeys "company". Absent: Rovara's AI is off. */ rovaraAi?: RovaraAiConfig }
+/** Rovara's AI (DEC 240): the allow-list (agent model to Bedrock id, the gateway's own region's geography) and the exempt companies. */
+export interface RovaraAiConfig { models: ReadonlyMap<string, string>; exempt: ReadonlySet<string> }
 export interface PriceFetchConfig { mode: "price-fetch"; region: string; tables: { prices: string } }
 export type GatewayConfig = ServeConfig | PriceFetchConfig;
 
@@ -112,10 +116,20 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
     agentKeys = need(GATEWAY_ENV.agentKeys, (value) => (GATEWAY_AGENT_KEY_MODES as readonly string[]).includes(value)) as GatewayAgentKeyMode;
     if (agentKeys === "company" && product === undefined) throw new GatewayConfigError(GATEWAY_ENV.productKeysTable);
   }
+  // DEC 240: Rovara's AI, only in company-key mode (the company picks its agents' source there). The exempt list never on its own.
+  let rovaraAi: RovaraAiConfig | undefined;
+  if (env[GATEWAY_ENV.rovaraAiModels] !== undefined) {
+    if (agentKeys !== "company") throw new GatewayConfigError(GATEWAY_ENV.agentKeys);
+    let models: Map<string, string>;
+    try { models = parseRovaraAiModels(need(GATEWAY_ENV.rovaraAiModels, () => true), region); } catch { throw new GatewayConfigError(GATEWAY_ENV.rovaraAiModels); }
+    let exempt: Set<string>;
+    try { exempt = parseRovaraAiExempt(env[GATEWAY_ENV.rovaraAiExempt]); } catch { throw new GatewayConfigError(GATEWAY_ENV.rovaraAiExempt); }
+    rovaraAi = { models, exempt };
+  } else if (env[GATEWAY_ENV.rovaraAiExempt] !== undefined) throw new GatewayConfigError(GATEWAY_ENV.rovaraAiModels);
   // Every table distinct: no two meters, stores or the stage table may share rows.
   const all = [tables.meter, tables.ledger, tables.markers, tables.prices, tables.companies, ...(product === undefined ? [] : [product.keysTable, product.meter, product.ledger, product.markers, product.stages]), ...(learning === undefined ? [] : [learning.meter, learning.ledger, learning.markers])];
   if (new Set(all).size !== all.length) throw new GatewayConfigError(product === undefined ? GATEWAY_ENV.meterTable : learning === undefined ? GATEWAY_ENV.productMeterTable : GATEWAY_ENV.learningMeterTable);
-  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(agentKeys === undefined ? {} : { agentKeys }) };
+  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(agentKeys === undefined ? {} : { agentKeys }), ...(rovaraAi === undefined ? {} : { rovaraAi }) };
 }
 
 /** One JSON object per line on stdout, with an `event` field the alarms' metric filters count (deploy.ts GATEWAY_LOG_EVENTS). */
@@ -169,6 +183,8 @@ export interface ServeDependencies {
    * product key store, the one the learning route reads). Never the install key (`keys`), which is then not read at all.
    */
   agentKeys?: LearningKeySource;
+  /** DEC 240 in company-key mode: the companies' agent AI choices (default: Cloud's Companies table) and Bedrock (default: the fixed transport on the task role). */
+  agentAiSources?: AgentAiSourceReader; bedrockTransport?: ProviderTransport;
   now?: () => number; host?: string; port?: number; /** false: no listener (tests drive the server's request event). */ listen?: boolean; drainMs?: number; maintenanceMs?: number;
 }
 export interface RunningGateway { server: Server; port: number; draining(): boolean; drain(): Promise<void>; maintain(): Promise<void> }
@@ -240,6 +256,11 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     // Company-key mode: the install key is never read (a call can only go out on the company's own key, `agentKeys`).
     keys: companyKeys !== undefined ? NO_INSTALL_KEY : deps.keys ?? createSecretsManagerKeys({ region: config.region, credentials, secretArns: { anthropic: config.anthropicKeySecret }, now }),
     ...(companyKeys === undefined ? {} : { agentKeys: companyKeys }),
+    // DEC 240: in company-key mode each company's saved choice picks its agents' source; Rovara's AI only when configured.
+    ...(companyKeys === undefined ? {} : { agentAi: {
+      sources: deps.agentAiSources ?? new CompanyAgentAiSource(db, config.tables.companies),
+      ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt, transport: deps.bedrockTransport ?? createBedrockTransport({ region: config.region, credentials, now }) } }),
+    } }),
     transport,
     log: (event) => log({ ...event }),
     ...(deps.product === undefined ? {} : { product: deps.product.routes }),
