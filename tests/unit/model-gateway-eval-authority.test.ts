@@ -11,21 +11,28 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import { storedEvalApprovals, storedEvalBudget } from "../../packages/model-gateway/src/eval-approvals.js";
 import {
-  answerEvalAuthority, createEvalAuthorityHandler, EVAL_AUTHORITY_AUDIENCE, EVAL_AUTHORITY_BODY_MAX, EVAL_AUTHORITY_PATH, EVAL_AUTHORITY_PER_MINUTE, EVAL_AUTHORITY_TOKEN_KIND,
+  answerEvalAuthority, EVAL_APPROVER_PROVIDER, storedApproverOf, createEvalAuthorityHandler, EVAL_AUTHORITY_AUDIENCE, EVAL_AUTHORITY_BODY_MAX, EVAL_AUTHORITY_PATH, EVAL_AUTHORITY_PER_MINUTE, EVAL_AUTHORITY_TOKEN_KIND,
   type EvalAuthorityHandlerOptions,
 } from "../../packages/model-gateway/src/eval-authority.js";
 import { StaticInstallRegistry } from "../../packages/model-gateway/src/installs.js";
 import { SERVICE_TOKEN_AUDIENCE } from "../../packages/model-gateway/src/offered-models.js";
-import { EVAL_APPROVAL_FRESH_MS } from "../../packages/model-gateway/src/product-keys.js";
+import { EVAL_APPROVAL_FRESH_MS, type ProductActor } from "../../packages/model-gateway/src/product-keys.js";
 import { ProductEvalStages } from "../../packages/model-gateway/src/product-eval.js";
 import { createSignedTokenVerifier } from "../../packages/model-gateway/src/token.js";
 import { claims, jwk, keys, kid, mint, now } from "./model-gateway-fixture.js";
-import { admin, geminiKey, maintainer, pid, productGateway, storeKit } from "./model-gateway-product-fixture.js";
+import { geminiKey, maintainer, pid, productGateway, storeKit } from "./model-gateway-product-fixture.js";
 
 const ISS = claims.iss;
 const A = claims.cid;
 const B = `org_${"b".repeat(20)}`;
-const PROVIDER = "rovara-code";
+// Code asks with the approver's sign-in Principal (raw person id and identity adapter, as in Code PR #805's fixture); Cloud's settings
+// route stored that person's developer id (developerIdOf) under "rovara-code" as the acting ProductActor.
+const RAW_M = { personId: "person-1", provider: "rovara-sign-in" };
+const RAW_A = { personId: "person-2", provider: "rovara-sign-in" };
+const PROVIDER = RAW_M.provider;
+const STORED_M = storedApproverOf(RAW_M);
+const pam: ProductActor = { id: STORED_M.personId, role: "project_maintainer" };
+const ada: ProductActor = { id: storedApproverOf(RAW_A).personId, role: "company_admin" };
 const approval = { selection: "all-questions", inputsDigest: "d".repeat(64), maxCalls: 400, maxCostMicros: 4_000_000 };
 const secs = now / 1000;
 
@@ -43,14 +50,14 @@ async function world(options: { connectA?: boolean; connectB?: boolean } = {}) {
   const stages = new ProductEvalStages({ approvals: storedEvalApprovals(kit.store, () => clock.at), budget: storedEvalBudget(kit.store), now: () => clock.at });
   await productGateway({ evalStages: stages, kit, connect: options.connectA !== false, companyCaps: new FixedCapsSource({ task: 1e9, projectMonth: 1e9, companyMonth: 1e9 }) });
   if (options.connectB === true) await kit.store.connect({ iss: ISS, cid: B, owner: pid, requestId: randomUUID(), expectedRevision: 0, actor: maintainer, sourceId: "src_gem", provider: "gemini", key: geminiKey() });
-  const approve = async (cid: string = A, actor = maintainer) => {
+  const approve = async (cid: string = A, actor: ProductActor = pam) => {
     const revision = (await kit.store.view(ISS, cid, pid)).revision;
-    await kit.store.setEvalApproval({ iss: ISS, cid, owner: pid, requestId: randomUUID(), expectedRevision: revision, actor, approval, provider: PROVIDER });
+    await kit.store.setEvalApproval({ iss: ISS, cid, owner: pid, requestId: randomUUID(), expectedRevision: revision, actor, approval, provider: EVAL_APPROVER_PROVIDER });
   };
   const opts: EvalAuthorityHandlerOptions = { verify: verify(() => clock.at), stages, now: () => clock.at };
   return { clock, kit, stages, approve, opts };
 }
-const ask = (company: string = A, approver: Record<string, unknown> = { personId: maintainer.id, provider: PROVIDER }, project: string = pid) => ({ company, project, approver });
+const ask = (company: string = A, approver: Record<string, unknown> = { ...RAW_M }, project: string = pid) => ({ company, project, approver });
 async function call(opts: EvalAuthorityHandlerOptions, body: unknown, o: { token?: string | undefined; headers?: Record<string, string>; method?: string; raw?: Buffer } = {}) {
   const bytes = o.raw ?? Buffer.from(JSON.stringify(body));
   const token = "token" in o ? o.token : mintAuthority();
@@ -65,7 +72,7 @@ const UNAVAILABLE = { status: 503, body: { error: { type: "unavailable", message
 const UNSIGNED = { status: 401, body: { error: { type: "unauthorized", message: "the service call is not signed" } } };
 const INVALID = { status: 400, body: { error: { type: "invalid_request", message: "the service call is not valid" } } };
 const TOO_LARGE = { status: 413, body: { error: { type: "invalid_request", message: "the request is too large" } } };
-const approvedBody = (cid: string = A, role = "maintainer", personId = maintainer.id) => ({ company: cid, project: pid, principal: { companyId: cid, personId, displayName: "", roles: [role], provider: PROVIDER }, provider: "customer", connected: true });
+const approvedBody = (cid: string = A, role = "maintainer", personId = RAW_M.personId) => ({ company: cid, project: pid, principal: { companyId: cid, personId, displayName: "", roles: [role], provider: PROVIDER }, provider: "customer", connected: true });
 
 describe("approved", () => {
   it("a fresh approval by this approver, with the role still allowed and the project's own key connected: 200, the exact answer", async () => {
@@ -77,14 +84,21 @@ describe("approved", () => {
   });
   it("a company admin's approval answers the admin role", async () => {
     const w = await world();
-    await w.approve(A, admin);
-    expect(await call(w.opts, ask(A, { personId: admin.id, provider: PROVIDER }))).toEqual({ status: 200, body: approvedBody(A, "admin", admin.id) });
+    await w.approve(A, ada);
+    expect(await call(w.opts, ask(A, { ...RAW_A }))).toEqual({ status: 200, body: approvedBody(A, "admin", RAW_A.personId) });
   });
   it("still counts one millisecond before 15 minutes", async () => {
     const w = await world();
     await w.approve();
     w.clock.at = now + EVAL_APPROVAL_FRESH_MS - 1;
     expect((await call(w.opts, ask(), { token: mintAuthority({ iat: Math.floor(w.clock.at / 1000), nbf: Math.floor(w.clock.at / 1000) - 30, exp: Math.floor(w.clock.at / 1000) + 60 }) })).status).toBe(200);
+  });
+});
+
+describe("the approver as Cloud stores it", () => {
+  it("Code's Principal maps to Code's developer id (sha256 of developer, provider, person), under rovara-code", () => {
+    expect(storedApproverOf(RAW_M)).toEqual({ personId: "a2389b50163f927aeb226bdce4345cf12e0bcbac45a00217909d2183b56ffa4d", provider: "rovara-code" });
+    expect(storedApproverOf({ personId: "person-1", provider: "other-sign-in" }).personId).not.toBe(STORED_M.personId);
   });
 });
 
@@ -141,14 +155,17 @@ describe("every no is the same fixed 404", () => {
     const w = await world();
     await w.approve();
     w.clock.at = now + 1000;
-    await w.kit.store.withdrawApprovals(ISS, A, maintainer.id);
+    await w.kit.store.withdrawApprovals(ISS, A, pam.id);
     expect(await call(w.opts, ask())).toEqual(NOT_FOUND);
   });
   it("another approver than the one who approved: another person, or the same id at another identity provider", async () => {
     const w = await world();
     await w.approve();
-    expect(await call(w.opts, ask(A, { personId: admin.id, provider: PROVIDER }))).toEqual(NOT_FOUND);
-    expect(await call(w.opts, ask(A, { personId: maintainer.id, provider: "other-sign-in" }))).toEqual(NOT_FOUND);
+    expect(await call(w.opts, ask(A, { ...RAW_A }))).toEqual(NOT_FOUND);
+    expect(await call(w.opts, ask(A, { personId: RAW_M.personId, provider: "other-sign-in" }))).toEqual(NOT_FOUND);
+    // The stored developer id itself, sent as if it were a person id, is another person.
+    expect(await call(w.opts, ask(A, { personId: pam.id, provider: EVAL_APPROVER_PROVIDER }))).toEqual(NOT_FOUND);
+    expect(await call(w.opts, ask(A, { personId: pam.id, provider: PROVIDER }))).toEqual(NOT_FOUND);
   });
   it("a project the gateway could never store", async () => {
     const w = await world();
@@ -156,12 +173,17 @@ describe("every no is the same fixed 404", () => {
     for (const project of ["Web", "../web", "web/x", "x".repeat(64)]) expect(await call(w.opts, ask(A, undefined, project))).toEqual(NOT_FOUND);
   });
   it("a role the source answers that is not owner, admin or maintainer", async () => {
-    const opts: EvalAuthorityHandlerOptions = { verify: verify(), stages: new ProductEvalStages({ approvals: { current: async () => ({ ...approval, approver: { personId: maintainer.id, provider: PROVIDER } }), roleOf: async () => "member" as never } }) };
+    const opts: EvalAuthorityHandlerOptions = { verify: verify(), stages: new ProductEvalStages({ approvals: { current: async () => ({ ...approval, approver: { ...STORED_M } }), roleOf: async () => "member" as never } }) };
+    (opts.stages as ProductEvalStages).bind({ meter: {} as never, caps: {} as never, connected: async () => true, blocked: async () => false, block: async () => undefined });
+    expect(await call(opts, ask())).toEqual(NOT_FOUND);
+  });
+  it("a stored approval by the same developer id under another provider than rovara-code (not Cloud's settings route)", async () => {
+    const opts: EvalAuthorityHandlerOptions = { verify: verify(), stages: new ProductEvalStages({ approvals: { current: async () => ({ ...approval, approver: { personId: STORED_M.personId, provider: "other" } }), roleOf: async () => "maintainer" } }) };
     (opts.stages as ProductEvalStages).bind({ meter: {} as never, caps: {} as never, connected: async () => true, blocked: async () => false, block: async () => undefined });
     expect(await call(opts, ask())).toEqual(NOT_FOUND);
   });
   it("an approval that still counts, but whose approver no longer has a role (the re-read answers none)", async () => {
-    const opts: EvalAuthorityHandlerOptions = { verify: verify(), stages: new ProductEvalStages({ approvals: { current: async () => ({ ...approval, approver: { personId: maintainer.id, provider: PROVIDER } }), roleOf: async () => undefined } }) };
+    const opts: EvalAuthorityHandlerOptions = { verify: verify(), stages: new ProductEvalStages({ approvals: { current: async () => ({ ...approval, approver: { ...STORED_M } }), roleOf: async () => undefined } }) };
     (opts.stages as ProductEvalStages).bind({ meter: {} as never, caps: {} as never, connected: async () => true, blocked: async () => false, block: async () => undefined });
     expect(await call(opts, ask())).toEqual(NOT_FOUND);
   });
@@ -169,10 +191,10 @@ describe("every no is the same fixed 404", () => {
     const w = await world();
     await w.approve();
     w.clock.at = now + 1000;
-    await w.kit.store.withdrawApprovals(ISS, A, maintainer.id);
+    await w.kit.store.withdrawApprovals(ISS, A, pam.id);
     for (const answer of [await call(w.opts, ask()), await call(w.opts, ask(B)), await call(w.opts, ask(), { token: "x.y.z" }), await call(w.opts, { ...ask(), extra: 1 })]) {
       const text = JSON.stringify(answer.body);
-      for (const secret of [A, B, pid, maintainer.id, PROVIDER, "rovara"]) if (secret !== "rovara" || answer.status !== 200) expect(text).not.toContain(secret);
+      for (const secret of [A, B, pid, RAW_M.personId, pam.id, PROVIDER, "rovara"]) if (secret !== "rovara" || answer.status !== 200) expect(text).not.toContain(secret);
     }
   });
 });
@@ -185,17 +207,17 @@ describe("a store that can't be read: 503, never a guess", () => {
     expect(await call(w.opts, ask())).toEqual(UNAVAILABLE);
   });
   it("the key connection read fails", async () => {
-    const opts: EvalAuthorityHandlerOptions = { verify: verify(), stages: new ProductEvalStages({ approvals: { current: async () => ({ ...approval, approver: { personId: maintainer.id, provider: PROVIDER } }), roleOf: async () => "maintainer" } }) };
+    const opts: EvalAuthorityHandlerOptions = { verify: verify(), stages: new ProductEvalStages({ approvals: { current: async () => ({ ...approval, approver: { ...STORED_M } }), roleOf: async () => "maintainer" } }) };
     (opts.stages as ProductEvalStages).bind({ meter: {} as never, caps: {} as never, connected: async () => { throw new Error("kms down"); }, blocked: async () => false, block: async () => undefined });
     expect(await call(opts, ask())).toEqual(UNAVAILABLE);
   });
   it("the role read fails", async () => {
-    const opts: EvalAuthorityHandlerOptions = { verify: verify(), stages: new ProductEvalStages({ approvals: { current: async () => ({ ...approval, approver: { personId: maintainer.id, provider: PROVIDER } }), roleOf: async () => { throw new Error("down"); } } }) };
+    const opts: EvalAuthorityHandlerOptions = { verify: verify(), stages: new ProductEvalStages({ approvals: { current: async () => ({ ...approval, approver: { ...STORED_M } }), roleOf: async () => { throw new Error("down"); } } }) };
     (opts.stages as ProductEvalStages).bind({ meter: {} as never, caps: {} as never, connected: async () => true, blocked: async () => false, block: async () => undefined });
     expect(await call(opts, ask())).toEqual(UNAVAILABLE);
   });
   it("an approval the source answers malformed", async () => {
-    const opts: EvalAuthorityHandlerOptions = { verify: verify(), stages: new ProductEvalStages({ approvals: { current: async () => ({ ...approval, maxCalls: "400", approver: { personId: maintainer.id, provider: PROVIDER } }) as never, roleOf: async () => "maintainer" } }) };
+    const opts: EvalAuthorityHandlerOptions = { verify: verify(), stages: new ProductEvalStages({ approvals: { current: async () => ({ ...approval, maxCalls: "400", approver: { ...STORED_M } }) as never, roleOf: async () => "maintainer" } }) };
     (opts.stages as ProductEvalStages).bind({ meter: {} as never, caps: {} as never, connected: async () => true, blocked: async () => false, block: async () => undefined });
     expect(await call(opts, ask())).toEqual(UNAVAILABLE);
   });

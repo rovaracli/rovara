@@ -11,7 +11,7 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import { GATEWAY_ENV, GATEWAY_LEARNING_ENV, GATEWAY_PRODUCT_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
-import { EVAL_AUTHORITY_AUDIENCE, EVAL_AUTHORITY_PATH } from "../../packages/model-gateway/src/eval-authority.js";
+import { EVAL_AUTHORITY_AUDIENCE, EVAL_AUTHORITY_PATH, storedApproverOf } from "../../packages/model-gateway/src/eval-authority.js";
 import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { DynamoProductKeyTable } from "../../packages/model-gateway/src/dynamo-product-keys.js";
 import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
@@ -145,7 +145,7 @@ describe("deployed product route (started process)", () => {
       const at = now / 1000;
       const input = [{ alg: "RS256", typ: "rovara-service+jwt", kid }, { iss: claims.iss, aud: EVAL_AUTHORITY_AUDIENCE, jti: randomUUID(), iat: at, nbf: at - 30, exp: at + 60, cid: company }].map((v) => Buffer.from(JSON.stringify(v)).toString("base64url")).join(".");
       const token = `${input}.${sign("RSA-SHA256", Buffer.from(input), keys.privateKey).toString("base64url")}`;
-      const req = Object.assign(Readable.from([Buffer.from(JSON.stringify({ company, project: pid, approver: { personId: maintainer.id, provider: "rovara-code" } }))]), { method: "POST", url: EVAL_AUTHORITY_PATH, headers: { "content-type": "application/json", authorization: `Bearer ${token}` } });
+      const req = Object.assign(Readable.from([Buffer.from(JSON.stringify({ company, project: pid, approver: { personId: "person-1", provider: "rovara-sign-in" } }))]), { method: "POST", url: EVAL_AUTHORITY_PATH, headers: { "content-type": "application/json", authorization: `Bearer ${token}` } });
       const res = new FakeResponse();
       const done = new Promise<FakeResponse>((resolve) => res.once("close", () => resolve(res)));
       server.emit("request", req, res);
@@ -157,10 +157,10 @@ describe("deployed product route (started process)", () => {
     expect([none.statusCode, JSON.parse(none.text())]).toEqual([404, { error: { type: "not_found", message: "not found" } }]);
     // Cloud's settings route records the approval (same table): now 200, and another company's token learns nothing.
     const writer = new ProductKeyStore({ table: new DynamoProductKeyTable(t.db, PRODUCT.keys), sealer: new ProductKeySealer(kmsProductKeyService(t.kms, KEY_ARN)), fingerprint: hmacFingerprinter(randomBytes(32)), now: () => now });
-    await writer.setEvalApproval({ iss: claims.iss, cid: claims.cid, owner: pid, requestId: randomUUID(), expectedRevision: (await writer.view(claims.iss, claims.cid, pid)).revision, actor: maintainer, approval: { selection: "all-questions", inputsDigest: "d".repeat(64), maxCalls: 400, maxCostMicros: 4_000_000 }, provider: "rovara-code" });
+    await writer.setEvalApproval({ iss: claims.iss, cid: claims.cid, owner: pid, requestId: randomUUID(), expectedRevision: (await writer.view(claims.iss, claims.cid, pid)).revision, actor: { id: storedApproverOf({ personId: "person-1", provider: "rovara-sign-in" }).personId, role: "project_maintainer" }, approval: { selection: "all-questions", inputsDigest: "d".repeat(64), maxCalls: 400, maxCostMicros: 4_000_000 }, provider: "rovara-code" });
     const yes = await authority(t.gateway.server);
     expect(yes.statusCode).toBe(200);
-    expect(JSON.parse(yes.text())).toEqual({ company: claims.cid, project: pid, principal: { companyId: claims.cid, personId: maintainer.id, displayName: "", roles: ["maintainer"], provider: "rovara-code" }, provider: "customer", connected: true });
+    expect(JSON.parse(yes.text())).toEqual({ company: claims.cid, project: pid, principal: { companyId: claims.cid, personId: "person-1", displayName: "", roles: ["maintainer"], provider: "rovara-sign-in" }, provider: "customer", connected: true });
     expect((await authority(t.gateway.server, `org_${"b".repeat(20)}`)).statusCode).toBe(404);
     // A task token (the product route's own auth) never opens it.
     expect((await request(t.gateway.server, EVAL_AUTHORITY_PATH, {})).statusCode).toBe(401);

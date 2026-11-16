@@ -4,12 +4,13 @@
 // test is the place to change first.
 import { denyNetwork } from "../unit/model-gateway-no-network.js";
 beforeAll(denyNetwork);
-import { randomUUID, sign } from "node:crypto";
+import { createHash, randomUUID, sign } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
+import { PRODUCT_AI_APPROVER_PROVIDER } from "../../packages/cloud-server/src/product-ai-routes.js";
 import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
 import { storedEvalApprovals } from "../../packages/model-gateway/src/eval-approvals.js";
-import { answerEvalAuthority, EVAL_AUTHORITY_AUDIENCE, EVAL_AUTHORITY_PATH, EVAL_AUTHORITY_TOKEN_KIND } from "../../packages/model-gateway/src/eval-authority.js";
+import { answerEvalAuthority, EVAL_APPROVER_PROVIDER, EVAL_AUTHORITY_AUDIENCE, EVAL_AUTHORITY_PATH, EVAL_AUTHORITY_TOKEN_KIND } from "../../packages/model-gateway/src/eval-authority.js";
 import { StaticInstallRegistry } from "../../packages/model-gateway/src/installs.js";
 import { ProductEvalStages } from "../../packages/model-gateway/src/product-eval.js";
 import { createSignedTokenVerifier } from "../../packages/model-gateway/src/token.js";
@@ -39,12 +40,14 @@ const codeAccepts = (asked: { company: string; project: string; approver: { pers
   return found.company === asked.company && found.project === asked.project && found.principal.companyId === asked.company
     && found.principal.personId === asked.approver.personId && found.principal.provider === asked.approver.provider;
 };
-// Code's fixtures (ORG_A, ORG_B, PROJECT, APPROVER.provider). Code's fixture person "person-1" is not a gateway approver id (64 hex,
-// the Cloud actor id the settings route stores), so the approver here is the gateway's maintainer fixture.
+// Code's developerIdOf (packages/broker/src/core/sessions/create.ts at 31144a4c3): the id Cloud's settings route acts as, and so
+// the approver id it stores (cloud-server product-ai-routes.ts, provider PRODUCT_AI_APPROVER_PROVIDER).
+const developerIdOf = (p: { provider: string; personId: string }): string => createHash("sha256").update(`developer\u0000${p.provider}\u0000${p.personId}`, "utf8").digest("hex");
+// Code's fixtures (eval-authority-http.test.ts): ORG_A, ORG_B, PROJECT and the APPROVER Principal, exactly.
 const ORG_A = "org_evalauthority000000a";
 const ORG_B = "org_evalauthority000000b";
 const PROJECT = "demo";
-const APPROVER = { personId: maintainer.id, provider: "rovara-sign-in" };
+const APPROVER = { personId: "person-1", provider: "rovara-sign-in" };
 const ISS = claims.iss;
 const secs = now / 1000;
 
@@ -69,16 +72,19 @@ async function gateway() {
   await productGateway({ evalStages: stages, kit, companyCaps: new FixedCapsSource({ task: 1e9, projectMonth: 1e9, companyMonth: 1e9 }) });
   for (const cid of [ORG_A, ORG_B]) {
     await kit.store.connect({ iss: ISS, cid, owner: PROJECT, requestId: randomUUID(), expectedRevision: 0, actor: maintainer, sourceId: "src_gem", provider: "gemini", key: geminiKey() });
-    await kit.store.setEvalApproval({ iss: ISS, cid, owner: PROJECT, requestId: randomUUID(), expectedRevision: 1, actor: maintainer, approval: { selection: "evals/demo", inputsDigest: "a".repeat(64), maxCalls: 6, maxCostMicros: 60 }, provider: APPROVER.provider });
+    // As Cloud's settings route records it: acting as the approver's developer id, provider PRODUCT_AI_APPROVER_PROVIDER.
+    await kit.store.setEvalApproval({ iss: ISS, cid, owner: PROJECT, requestId: randomUUID(), expectedRevision: 1, actor: { id: developerIdOf(APPROVER), role: "project_maintainer" }, approval: { selection: "evals/demo", inputsDigest: "a".repeat(64), maxCalls: 6, maxCostMicros: 60 }, provider: PRODUCT_AI_APPROVER_PROVIDER });
   }
   const verify = createSignedTokenVerifier({ registry: new StaticInstallRegistry([{ issuer: ISS, jwksUrl: `${ISS}/.well-known/jwks.json`, taskKids: [kid] }]), readJwks: async () => [jwk], now: () => now }, EVAL_AUTHORITY_TOKEN_KIND);
   return { verify, stages };
 }
 
 describe("the gateway's eval authority answers Code's adapter (PR #805)", () => {
-  it("the same path and audience as Code", () => {
+  it("the same path and audience as Code, and the approver naming Cloud's settings route stores", () => {
     expect(EVAL_AUTHORITY_PATH).toBe(CODE_PATH);
     expect(EVAL_AUTHORITY_AUDIENCE).toBe(CODE_AUDIENCE);
+    expect(EVAL_APPROVER_PROVIDER).toBe(PRODUCT_AI_APPROVER_PROVIDER);
+    expect(developerIdOf(APPROVER)).toBe("a2389b50163f927aeb226bdce4345cf12e0bcbac45a00217909d2183b56ffa4d");
   });
 
   it("Code's exact request is answered with exactly the JSON Code accepts, pinned", async () => {
@@ -107,8 +113,9 @@ describe("the gateway's eval authority answers Code's adapter (PR #805)", () => 
     const g = await gateway();
     const refusals = [
       await answerEvalAuthority(g, codeRequest(ORG_A, "other")),
-      await answerEvalAuthority(g, codeRequest(ORG_A, PROJECT, { personId: "e".repeat(64), provider: APPROVER.provider })),
-      await answerEvalAuthority(g, codeRequest(ORG_A, PROJECT, { personId: "person-1", provider: APPROVER.provider })),
+      await answerEvalAuthority(g, codeRequest(ORG_A, PROJECT, { personId: "person-2", provider: APPROVER.provider })),
+      await answerEvalAuthority(g, codeRequest(ORG_A, PROJECT, { personId: APPROVER.personId, provider: "other-sign-in" })),
+      await answerEvalAuthority(g, codeRequest(ORG_A, PROJECT, { personId: developerIdOf(APPROVER), provider: PRODUCT_AI_APPROVER_PROVIDER })),
       await answerEvalAuthority(g, { ...codeRequest(ORG_A), headers: { ...codeRequest(ORG_A).headers, authorization: `Bearer ${codeToken(ORG_B)}` } }),
     ];
     for (const r of refusals) {

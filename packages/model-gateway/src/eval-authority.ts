@@ -10,7 +10,8 @@
 //   200 exactly {"company", "project", "principal": {companyId, personId, displayName, roles, provider}, "provider": "customer", "connected": true}
 //
 // 200 ONLY when: the token's cid is the body's company; the project's stored approval counts now (fresh: 15 minutes from the role
-// check Cloud made with Code, and not withdrawn) and names exactly this approver; the approver's role still allows it (owner, admin
+// check Cloud made with Code, and not withdrawn) and names exactly this approver (the asked Principal's developer id, as Cloud's
+// settings route stores it: storedApproverOf); the approver's role still allows it (owner, admin
 // or maintainer, re-read); and the project's own product key is connected (re-read). The same checks the stage hold makes
 // (ProductEvalStages.authority, product-eval.ts). `roles` is that one role; `displayName` is "" (the gateway holds no person's
 // name; Code re-reads the person's role itself before it grants anything).
@@ -19,6 +20,7 @@
 // connected, another company's token), so nothing says whether another company or project exists; 503 when a store can't be read;
 // 401 an unsigned call; 400 a body that is not exactly the contract; 413 over EVAL_AUTHORITY_BODY_MAX; 405 not a POST; 429 busy.
 // Nothing from the request, the token or a store is echoed or logged.
+import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { COMPANY, PROJECT, record, whole } from "./model-gateway-token.js";
 import { SERVICE_TOKEN_CLAIMS, SERVICE_TOKEN_SECONDS, SERVICE_TOKEN_TYPE } from "./offered-models.js";
@@ -50,6 +52,17 @@ export function parseEvalAuthorityClaims(value: unknown): EvalAuthorityClaims | 
 }
 /** createSignedTokenVerifier(..., EVAL_AUTHORITY_TOKEN_KIND): pinned issuer and task key ids, RS256, at most 60 seconds of life. */
 export const EVAL_AUTHORITY_TOKEN_KIND: SignedTokenKind<EvalAuthorityClaims> = { typ: SERVICE_TOKEN_TYPE, parse: parseEvalAuthorityClaims, maxSeconds: SERVICE_TOKEN_SECONDS };
+
+/**
+ * Code names the approver by its sign-in Principal (identity adapter `provider`, raw `personId`); Cloud's settings route stores the
+ * approver as Code's developer id of that Principal (`developerIdOf`, Code packages/broker/src/core/sessions/create.ts:
+ * sha256("developer\0" + provider + "\0" + personId), hex) under EVAL_APPROVER_PROVIDER (cloud-server product-ai-routes.ts
+ * PRODUCT_AI_APPROVER_PROVIDER). The asked approver is mapped to that stored form before it is compared.
+ */
+export const EVAL_APPROVER_PROVIDER = "rovara-code";
+export function storedApproverOf(asked: { personId: string; provider: string }): EvalApproval["approver"] {
+  return { personId: createHash("sha256").update(`developer\u0000${asked.provider}\u0000${asked.personId}`).digest("hex"), provider: EVAL_APPROVER_PROVIDER };
+}
 
 /** What the route needs from the eval stages (ProductEvalStages.authority). */
 export interface EvalAuthoritySource {
@@ -118,7 +131,7 @@ export async function answerEvalAuthority(options: EvalAuthorityHandlerOptions, 
   const cid = claims.cid; const pid = input.project;
   const asked = { personId: approver.personId, provider: approver.provider };
   let found: { role: EvalRole } | undefined;
-  try { found = await options.stages.authority({ iss: claims.iss, cid, pid }, asked, signal); } catch { return ANSWERS.unavailable; }
+  try { found = await options.stages.authority({ iss: claims.iss, cid, pid }, storedApproverOf(asked), signal); } catch { return ANSWERS.unavailable; }
   if (found === undefined) return ANSWERS.notFound;
   const answer: EvalAuthorityAnswer = {
     company: cid, project: pid,

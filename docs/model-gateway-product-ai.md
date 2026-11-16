@@ -294,14 +294,19 @@ connected product key. Never Rovara-paid: the answer's `provider` is always `cus
   `typ: rovara-service+jwt`, claims exactly `iss`/`aud`/`jti`/`iat`/`nbf`/`exp`/`cid`, `aud: "rovara-model-gateway-eval-authority"`,
   at most 60 seconds of life. A task token, the offered-models token or an `x-api-key` header never opens it (`401`).
 - **200 only when** the token's `cid` is the body's `company`; the project's stored approval counts now (fresh: 15 minutes from
-  the role check Cloud made with Code, and not withdrawn) and names exactly this approver (person and identity provider); the
+  the role check Cloud made with Code, and not withdrawn) and names exactly this approver: Code sends the approver's sign-in
+  Principal (`personId`, identity adapter `provider`), and Cloud's settings route stored that person's Code developer id
+  (`developerIdOf`: sha256 of `developer\0<provider>\0<personId>`, hex) under `rovara-code`, so the gateway compares
+  `storedApproverOf(asked)` with the stored approver; the
   approver's role (re-read) is owner, admin or maintainer; and the project's own product key is connected (re-read). The same
   checks the stage hold makes (`ProductEvalStages.authority`). `roles` is that one role; `displayName` is `""` (the gateway
   holds no person's name; Code re-reads the person's role itself before it grants anything).
 - **Refusals** are fixed words: `404 not_found` for every "no" (none, stale, withdrawn, another approver, no role, not
   connected, another company's token or body), so nothing says whether another company or project exists; `503 unavailable`
   when a store can't be read; `400` a body that is not exactly the contract (extra or missing members, wrong types, not JSON);
-  `413` over 4 KiB (`EVAL_AUTHORITY_BODY_MAX`); `405` not a POST; `429` past 8 at once or 600 a minute per serving task.
+  `413` over 4 KiB (`EVAL_AUTHORITY_BODY_MAX`; a chunked body that grows past it is cut off instead); `405` not a POST; `429`
+  past 8 at once or 600 a minute per serving task. The install's signing keys (JWKS) not readable is `401`, as on the
+  offered-models route. Code reads every non-200 as "spend not approved".
 - Mounted by `startServe` only when the product route holds eval stages; otherwise the path is the gateway's 404. It moves no
   money: the hold is still `/v1/product/eval/hold` with the task token.
 

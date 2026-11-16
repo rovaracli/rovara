@@ -328,7 +328,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     const service = vertexCheck !== undefined && path === VERTEX_CHECK_PATH ? vertexCheck
       : bedrockCalls !== undefined && (path === BEDROCK_SETUP_PATH || path === BEDROCK_CHECK_PATH) ? bedrockCalls[path]
       : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels
-      : evalAuthority !== undefined && req.url === EVAL_AUTHORITY_PATH ? evalAuthority : undefined;
+      : evalAuthority !== undefined && path === EVAL_AUTHORITY_PATH ? evalAuthority : undefined;
     const running = (service !== undefined ? service(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
     inFlight.add(running); void running.finally(() => inFlight.delete(running));
   });
