@@ -1,7 +1,7 @@
 // DEC 243c: the eight reasoning-first Bedrock models, from their REAL ConverseStream answers to one tool, maxTokens 256 (staging
 // us-west-2, 2026-11-15, run by the owner): all eight ended with a tool call. Three are listed: gpt-oss 120B / 20B (their reasoning
 // is dropped; OpenAI only recommends passing it back after tool calls) and Nova Pro (its leading "<thinking>...</thinking>" text is
-// left out). The other five are not, and this file pins why (model-gateway-converse-reasoning.test.ts: the gateway now carries their reasoning, still unlisted).
+// left out). The other five carry their reasoning back (model-gateway-converse-reasoning.test.ts); four of them were listed after the real two-turn call (2026-11-16), and DeepSeek V3.2 is not, which this file pins.
 import { denyNetwork } from "./model-gateway-no-network.js";
 beforeAll(denyNetwork);
 import { EventEmitter } from "node:events";
@@ -19,7 +19,7 @@ const fixture = (id: string) => readFileSync(new URL(`../fixtures/model-gateway-
 const decode = (bytes: Buffer): EventStreamMessage[] => { const d = new EventStreamDecoder(); const m = d.push(bytes); d.finish(); return m; };
 const payloads = (bytes: Buffer, type: string) => decode(bytes).filter((m) => m.headers[":event-type"] === type).map((m) => JSON.parse(m.payload.toString("utf8")) as Record<string, unknown>);
 const LISTED = ["openai.gpt-oss-120b-1:0", "openai.gpt-oss-20b-1:0", "us.amazon.nova-pro-v1:0"];
-const NOT_LISTED = ["deepseek.v3.2", "moonshot.kimi-k2-thinking", "minimax.minimax-m2.5", "us.moonshotai.kimi-k3", "us.moonshotai.kimi-k3.1"];
+const NOT_LISTED = ["deepseek.v3.2"]; // the other four reasoning models were listed after the real two-turn call (model-gateway-converse-reasoning.test.ts)
 
 function gateway(answer: Buffer) {
   const request = ((_options: https.RequestOptions, onResponse: (r: PassThrough & { statusCode: number; headers: Record<string, string> }) => void) => {
@@ -39,7 +39,7 @@ function gateway(answer: Buffer) {
 const sseEvents = (text: string) => text.split("\n\n").filter(Boolean).map((b) => JSON.parse(b.split("\n")[1]!.replace(/^data: /u, "")) as Record<string, unknown>);
 
 describe("the listed reasoning-first models, replayed", () => {
-  it("are on the built-in list; the other five are not", () => {
+  it("are on the built-in list; DeepSeek V3.2 is not", () => {
     const listed = [...parseRovaraAiModels(ROVARA_AI_US_CONVERSE_MODELS, "us-west-2").keys()];
     for (const id of LISTED) expect(listed).toContain(id);
     for (const id of NOT_LISTED) expect(listed).not.toContain(id);
@@ -74,7 +74,7 @@ describe("the listed reasoning-first models, replayed", () => {
   });
 });
 
-describe("why the other five are not listed (from their real answers)", () => {
+describe("why DeepSeek V3.2 is not listed (from its real answers)", () => {
   it("DeepSeek V3.2 writes raw tool-call markup into its text beside the real tool call", () => {
     const text = payloads(fixture("deepseek.v3.2"), "contentBlockDelta").map((p) => (p.delta as { text?: string }).text ?? "").join("");
     expect(text).toContain("DSML");

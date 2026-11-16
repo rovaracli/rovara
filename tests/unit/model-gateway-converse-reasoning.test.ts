@@ -2,8 +2,8 @@
 // tool loop: DeepSeek V3.2, Kimi K2 Thinking, Kimi K3, Kimi K3.1, MiniMax M2.5. For those ids only, Converse reasoningContent becomes an
 // Anthropic `thinking` block in the answer (unsigned when Bedrock sends no signature, as in every real stream so far), and a `thinking`
 // block in the history becomes reasoningContent again. Fakes only: the real 256-token streams (tests/fixtures/model-gateway-bedrock/
-// converse-256) and hand-built ones for the signature, which no real stream has shown. These models stay off the built-in list until the
-// owner's real two-turn call passes (see the last test).
+// converse-256) and hand-built ones for the signature, which no real stream has shown. Four of them are on the built-in list since the
+// owner's real two-turn call passed (2026-11-16; the last tests); DeepSeek V3.2 failed it and stays off.
 import { denyNetwork } from "./model-gateway-no-network.js";
 beforeAll(denyNetwork);
 import { EventEmitter } from "node:events";
@@ -274,9 +274,37 @@ describe("through the gateway: two turns of a tool loop", () => {
   });
 });
 
-describe("not listed yet", () => {
-  it("none of the five is on the built-in list, and listing one needs the owner's real two-turn call (scripts/bedrock-reasoning-two-turn.mjs)", () => {
+describe("what is listed", () => {
+  it("the four that passed the owner's real two-turn call (2026-11-16) are on the built-in list; DeepSeek V3.2, whose turn 1 made no tool call, is not", () => {
     const listed = [...parseRovaraAiModels(ROVARA_AI_US_CONVERSE_MODELS, "us-west-2").keys()];
-    for (const id of CARRY) expect(listed).not.toContain(id);
+    for (const id of REASONING) expect(listed).toContain(id);
+    expect(listed).not.toContain("deepseek.v3.2");
+  });
+});
+
+/** The owner's real two-turn answers (tests/fixtures/model-gateway-bedrock/two-turn-real: the Anthropic blocks the gateway gave the agent). */
+const real = (id: string, turn: 1 | 2) => JSON.parse(readFileSync(new URL(`../fixtures/model-gateway-bedrock/two-turn-real/${id}.turn${turn}.json`, import.meta.url), "utf8")) as { status: number; stop: string; complete: boolean; usage: { input: number; output: number }; blocks: Array<Record<string, unknown>> };
+describe("the owner's real two-turn answers", () => {
+  for (const id of REASONING) {
+    it(`${id}: turn 1 was a tool call with a thinking block; the next turn sends that reasoning back, exactly, and turn 2 ended normally`, () => {
+      const one = real(id, 1); const two = real(id, 2);
+      expect([one.status, one.stop, one.complete, two.status, two.stop, two.complete]).toEqual([200, "tool_use", true, 200, "end_turn", true]);
+      expect(one.usage.output).toBeGreaterThan(0); expect(two.usage.output).toBeGreaterThan(0);
+      const thinking = one.blocks.filter((b) => b.type === "thinking") as Array<{ thinking: string; signature: string }>;
+      const tool = one.blocks.find((b) => b.type === "tool_use") as { id: string; name: string };
+      expect([thinking.length, tool.name]).toEqual([1, "ping"]);
+      expect(thinking[0]!.thinking.trim()).not.toBe("");
+      const next = toConverse({ tools, messages: [{ role: "user", content: "Call the ping tool." }, { role: "assistant", content: one.blocks }, { role: "user", content: [{ type: "tool_result", tool_use_id: tool.id, content: "pong" }] }] }, 256, true);
+      const assistant = (next!.messages as Array<{ content: Array<Record<string, unknown>> }>)[1]!.content;
+      expect(assistant[0]).toEqual({ reasoningContent: { reasoningText: { text: thinking[0]!.thinking } } });
+      expect(assistant.filter((c) => "toolUse" in c)).toEqual([{ toolUse: { toolUseId: tool.id, name: "ping", input: {} } }]);
+      // Blank text between the blocks (MiniMax's "\n\n\n") is not sent back.
+      expect(assistant.filter((c) => "text" in c && String(c.text).trim() === "")).toEqual([]);
+    });
+  }
+  it("deepseek.v3.2 (not listed): turn 1 ended end_turn with no tool call and no thinking", () => {
+    const one = real("deepseek.v3.2", 1);
+    expect([one.status, one.stop]).toEqual([200, "end_turn"]);
+    expect(one.blocks.map((b) => b.type)).toEqual(["text"]);
   });
 });

@@ -66,11 +66,10 @@ const AGENT_MODEL = /^claude-[a-z0-9-]{1,80}$/u;
  * 16 tokens, stop tool_use; the streams are tests/fixtures/model-gateway-bedrock/converse). Priced and limited by the price
  * snapshot's Bedrock rows. gpt-oss 120B / 20B and Nova Pro passed with maxTokens 256 (they reason first; tests/fixtures/
  * model-gateway-bedrock/converse-256): gpt-oss's reasoning is dropped (OpenAI only recommends passing it back after tool calls),
- * and Nova Pro's leading "<thinking>...</thinking>" text is left out (LEADING_THINKING_TEXT_MODEL). Not listed: models whose
- * reasoning must be sent back on later tool turns (DeepSeek V3.2, which also writes tool-call markup into its text; Kimi K3 / K3.1),
- * or whose need is not documented for these versions (Kimi K2 Thinking, MiniMax M2.5). The gateway can carry their reasoning
- * both ways (REASONING_CARRYOVER_MODEL in bedrock-converse.ts); they are listed only after a real two-turn call passes
- * (scripts/bedrock-reasoning-two-turn.ts).
+ * and Nova Pro's leading "<thinking>...</thinking>" text is left out (LEADING_THINKING_TEXT_MODEL). Kimi K2 Thinking, MiniMax M2.5,
+ * Kimi K3 and Kimi K3.1 need their reasoning sent back on later tool turns; the gateway carries it both ways
+ * (REASONING_CARRYOVER_MODEL in bedrock-converse.ts) and each passed the owner's real two-turn call (2026-11-16,
+ * scripts/bedrock-reasoning-two-turn.ts; answers in tests/fixtures/model-gateway-bedrock/two-turn-real). Not listed: DeepSeek V3.2.
  */
 export const ROVARA_AI_US_CONVERSE_MODELS = [
   "qwen.qwen3-coder-480b-a35b-v1:0=qwen.qwen3-coder-480b-a35b-v1:0",
@@ -86,6 +85,11 @@ export const ROVARA_AI_US_CONVERSE_MODELS = [
   "openai.gpt-oss-120b-1:0=openai.gpt-oss-120b-1:0",
   "openai.gpt-oss-20b-1:0=openai.gpt-oss-20b-1:0",
   "us.amazon.nova-pro-v1:0=us.amazon.nova-pro-v1:0",
+  "moonshot.kimi-k2-thinking=moonshot.kimi-k2-thinking",
+  "minimax.minimax-m2.5=minimax.minimax-m2.5",
+  "us.moonshotai.kimi-k3=us.moonshotai.kimi-k3",
+  "us.moonshotai.kimi-k3.1=us.moonshotai.kimi-k3.1",
+  // deepseek.v3.2 stays unlisted: in the real two-turn call (2026-11-16) turn 1 ended end_turn with no tool call and no thinking.
 ].join(",");
 /**
  * DEC 243: Rovara's AI offers every Claude model Bedrock has in the account, each engine model name (Code's model catalog) on its
@@ -102,7 +106,7 @@ export const ROVARA_AI_US_MODELS = [
   "claude-opus-5-5=us.anthropic.claude-opus-5-5",
   "claude-fable-5-2=us.anthropic.claude-fable-5-2",
 ].join(",");
-export const ROVARA_AI_MODELS_MAX = 20;
+export const ROVARA_AI_MODELS_MAX = 24;
 export const ROVARA_AI_EXEMPT_MAX = 10;
 
 /**

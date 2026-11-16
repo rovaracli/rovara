@@ -35,7 +35,7 @@ const cidB = `org_${"b".repeat(20)}`;
 const ISS = claims.iss;
 const RESOLVED = parseRovaraAiModels(`${ROVARA_AI_US_MODELS},${ROVARA_AI_US_CONVERSE_MODELS}`, "us-west-2");
 const CLAUDE_OFFERED = ["claude-haiku-4-5", "claude-haiku-5-5"];
-const BEDROCK_13 = ROVARA_AI_US_CONVERSE_MODELS.split(",").map((pair) => pair.split("=")[0]!);
+const BEDROCK_17 = ROVARA_AI_US_CONVERSE_MODELS.split(",").map((pair) => pair.split("=")[0]!);
 const secs = now / 1000;
 
 function mintService(changes: Record<string, unknown> = {}, header: Record<string, unknown> = {}): string {
@@ -63,20 +63,20 @@ const get = (opts: OfferedModelsHandlerOptions, cid: string, token: string | und
 const names = (body: unknown) => (body as { models: Array<{ model: string }> }).models.map((m) => m.model);
 
 describe("the list one company is offered", () => {
-  it("Rovara's AI: the 13 Bedrock coding models and the Claude models that are enabled, one name per model, no disabled one", async () => {
+  it("Rovara's AI: the 17 Bedrock coding models and the Claude models that are enabled, one name per model, no disabled one", async () => {
     const { opts } = options();
     const answer = await get(opts, cidA, mintService());
     expect(answer.status).toBe(200);
-    expect(names(answer.body)).toEqual([...CLAUDE_OFFERED, ...BEDROCK_13]);
-    expect(names(answer.body)).toHaveLength(15);
+    expect(names(answer.body)).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
+    expect(names(answer.body)).toHaveLength(19);
     for (const off of AGENT_MODELS_DISABLED_DEFAULT) expect(names(answer.body)).not.toContain(off);
     expect(names(answer.body)).not.toContain("claude-haiku-4-5-20251001");
     // Every name is exactly an id the gateway's allow-list calls.
     for (const name of names(answer.body)) expect(RESOLVED.has(name)).toBe(true);
   });
-  it("once the operator enables the three models they are offered: 5 Claude + 13 Bedrock", async () => {
+  it("once the operator enables the three models they are offered: 5 Claude + 17 Bedrock", async () => {
     const { opts } = options({ disabled: parseDisabledAgentModels("") });
-    expect(names((await get(opts, cidA, mintService())).body)).toEqual(["claude-haiku-4-5", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2", ...BEDROCK_13]);
+    expect(names((await get(opts, cidA, mintService())).body)).toEqual(["claude-haiku-4-5", "claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2", ...BEDROCK_17]);
   });
   it("a company's own Anthropic key, or nothing saved: Anthropic's models (never Bedrock's); the Bedrock-only disable does not apply", async () => {
     const { opts, choices } = options();
@@ -336,7 +336,7 @@ describe("gateway process: two companies, one server", () => {
     const a = await ask(s.gateway.server, pathOf(cidA), bearer(mintService({ cid: cidA })));
     const b = await ask(s.gateway.server, pathOf(cidB), bearer(mintService({ cid: cidB })));
     expect(a.statusCode).toBe(200); expect(b.statusCode).toBe(200);
-    expect(names(JSON.parse(a.text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_13]);
+    expect(names(JSON.parse(a.text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
     expect(names(JSON.parse(b.text()))).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
     for (const [url, token] of [[pathOf(cidA), mintService({ cid: cidB })], [pathOf(cidB), mintService({ cid: cidA })]] as const) {
       const refused = await ask(s.gateway.server, url, bearer(token));
@@ -348,7 +348,7 @@ describe("gateway process: two companies, one server", () => {
     const s = await serve();
     expect(names(JSON.parse((await ask(s.gateway.server, pathOf(cidB), bearer(mintService({ cid: cidB })))).text()))).toEqual([...ANTHROPIC_KEY_AGENT_MODELS]);
     await s.db.put(TABLES.companies, { pk: `COMPANY#${cidB}`, sk: "AGENT_AI", companyId: cidB, source: "rovara", version: 2 });
-    expect(names(JSON.parse((await ask(s.gateway.server, pathOf(cidB), bearer(mintService({ cid: cidB })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_13]);
+    expect(names(JSON.parse((await ask(s.gateway.server, pathOf(cidB), bearer(mintService({ cid: cidB })))).text()))).toEqual([...CLAUDE_OFFERED, ...BEDROCK_17]);
     // B's row is A's row: the store refuses it, and the route answers unavailable.
     await s.db.put(TABLES.companies, { pk: `COMPANY#${cidB}`, sk: "AGENT_AI", companyId: cidA, source: "rovara", version: 3 });
     expect((await ask(s.gateway.server, pathOf(cidB), bearer(mintService({ cid: cidB })))).statusCode).toBe(503);
@@ -363,7 +363,7 @@ describe("gateway process: two companies, one server", () => {
   });
   it("answers the disabled list from GATEWAY_AGENT_MODELS_DISABLED", async () => {
     const s = await serve({ [GATEWAY_ENV.agentModelsDisabled]: "" });
-    expect(names(JSON.parse((await ask(s.gateway.server, pathOf(cidA), bearer(mintService({ cid: cidA })))).text()))).toHaveLength(18);
+    expect(names(JSON.parse((await ask(s.gateway.server, pathOf(cidA), bearer(mintService({ cid: cidA })))).text()))).toHaveLength(22);
     const t = await serve({ [GATEWAY_ENV.agentModelsDisabled]: "zai.glm-5,claude-haiku-5-5" });
     const list = names(JSON.parse((await ask(t.gateway.server, pathOf(cidA), bearer(mintService({ cid: cidA })))).text()));
     expect(list).not.toContain("zai.glm-5"); expect(list).not.toContain("claude-haiku-5-5"); expect(list).toContain("claude-sonnet-5-5");
