@@ -26,6 +26,7 @@ import { ProductKeyStore } from "./product-keys.js";
 import { createProductRoutes, productModelLimitsFrom } from "./product-route.js";
 import { kmsProductKeyService, ProductKeySealer, type KmsLike, type ProductKeyFingerprinter } from "./product-seal.js";
 import { createSignedTokenVerifier } from "./token.js";
+import { createEvalAuthorityHandler, EVAL_AUTHORITY_PATH, EVAL_AUTHORITY_TOKEN_KIND } from "./eval-authority.js";
 import { createOfferedModelsHandler, OFFERED_MODELS_PATH, parseDisabledAgentModels, SERVICE_TOKEN_KIND } from "./offered-models.js";
 import { BEDROCK_CHECK_PATH, BEDROCK_SETUP_PATH, createBedrockServiceHandlers, createVertexCheckHandler, VERTEX_CHECK_PATH, type MacVerifier } from "./service-call.js";
 import { Dynamo } from "./dynamo.js";
@@ -309,6 +310,14 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models } }),
     ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }), now,
   });
+  // DEC 253k: Code's eval spend authority (eval-authority.ts), answered from the product route's eval stages (the stored approval,
+  // the approver's role and the project's own key connection), signed by the install's broker with its task key. Only where the
+  // product route holds eval stages; otherwise the path is the product route's 404.
+  const authorityStages = (deps.product?.routes as { evalStages?: ProductEvalStages } | undefined)?.evalStages;
+  const evalAuthority = authorityStages === undefined ? undefined : createEvalAuthorityHandler({
+    verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, EVAL_AUTHORITY_TOKEN_KIND),
+    stages: authorityStages, now,
+  });
   const inFlight = new Set<Promise<void>>();
   let draining = false;
   const refuse = (res: ServerResponse) => { res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store", connection: "close" }); res.end(UNAVAILABLE); };
@@ -318,7 +327,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     const path = (req.url ?? "").split("?", 1)[0];
     const service = vertexCheck !== undefined && path === VERTEX_CHECK_PATH ? vertexCheck
       : bedrockCalls !== undefined && (path === BEDROCK_SETUP_PATH || path === BEDROCK_CHECK_PATH) ? bedrockCalls[path]
-      : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels : undefined;
+      : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels
+      : evalAuthority !== undefined && path === EVAL_AUTHORITY_PATH ? evalAuthority : undefined;
     const running = (service !== undefined ? service(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
     inFlight.add(running); void running.finally(() => inFlight.delete(running));
   });

@@ -280,6 +280,36 @@ mounts them.
 - Stage calls with an unknown price settle at the cautious hold; the parent settle is flagged estimated but carries no
   per-call usage, so R3c corrections do not lower them (conservative).
 
+## Eval spend authority (DEC 253k; `eval-authority.ts`)
+
+Rovara Code's `eval-reservation` plug-in point (Code PR #805, `core-host/eval-authority-http.ts`) asks the gateway whether a
+project's approved eval spend may spend now. The gateway is the source of truth: its stored approval plus the project's own
+connected product key. Never Rovara-paid: the answer's `provider` is always `customer`, and only with the project's own key.
+
+| Request | Body | Answer |
+|---|---|---|
+| `POST /v1/product/eval/authority`, `authorization: Bearer <service token>` | exactly `{"company","project","approver":{"personId","provider"}}` | `200` exactly `{"company","project","principal":{"companyId","personId","displayName","roles","provider"},"provider":"customer","connected":true}` |
+
+- **Token**: the install's task key signs it (as the offered-models token, `docs/model-gateway-offered-models.md`): header
+  `typ: rovara-service+jwt`, claims exactly `iss`/`aud`/`jti`/`iat`/`nbf`/`exp`/`cid`, `aud: "rovara-model-gateway-eval-authority"`,
+  at most 60 seconds of life. A task token, the offered-models token or an `x-api-key` header never opens it (`401`).
+- **200 only when** the token's `cid` is the body's `company`; the project's stored approval counts now (fresh: 15 minutes from
+  the role check Cloud made with Code, and not withdrawn) and names exactly this approver: Code sends the approver's sign-in
+  Principal (`personId`, identity adapter `provider`), and Cloud's settings route stored that person's Code developer id
+  (`developerIdOf`: sha256 of `developer\0<provider>\0<personId>`, hex) under `rovara-code`, so the gateway compares
+  `storedApproverOf(asked)` with the stored approver; the
+  approver's role (re-read) is owner, admin or maintainer; and the project's own product key is connected (re-read). The same
+  checks the stage hold makes (`ProductEvalStages.authority`). `roles` is that one role; `displayName` is `""` (the gateway
+  holds no person's name; Code re-reads the person's role itself before it grants anything).
+- **Refusals** are fixed words: `404 not_found` for every "no" (none, stale, withdrawn, another approver, no role, not
+  connected, another company's token or body), so nothing says whether another company or project exists; `503 unavailable`
+  when a store can't be read; `400` a body that is not exactly the contract (extra or missing members, wrong types, not JSON);
+  `413` over 4 KiB (`EVAL_AUTHORITY_BODY_MAX`; a chunked body that grows past it is cut off instead); `405` not a POST; `429`
+  past 8 at once or 600 a minute per serving task. The install's signing keys (JWKS) not readable is `401`, as on the
+  offered-models route. Code reads every non-200 as "spend not approved".
+- Mounted by `startServe` only when the product route holds eval stages; otherwise the path is the gateway's 404. It moves no
+  money: the hold is still `/v1/product/eval/hold` with the task token.
+
 ## Not built here
 
 Code's worker side of the bridge; a Code event that tells Cloud about member changes made in Code itself (until then the

@@ -4,6 +4,7 @@
 import type { CodeAccess, CodeClient } from "./code-client.js";
 import type { CodeSession } from "./sessions.js";
 import { newSessionId, type WorkSession, type WorkSessionStore, newMessageId } from "./work-sessions.js";
+import { renameInSessions } from "./rename.js";
 import { COMMENTS_PER_SESSION_MAX, commentText, commentView, commentsPage, timelineOf, timelinePage, type CodeTaskEvent } from "./conversation.js";
 import { approvalUrl, blockedReview, followState, reviewChoices, liveTile, sessionRunning, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 import type { PresenceBoard } from "./presence.js";
@@ -109,7 +110,8 @@ async function sessionAndTask(context: RouteContext): Promise<{ record: WorkSess
   return { record, task: await readTask(context, record.taskId) };
 }
 
-const viewer = (context: RouteContext) => ({ developerId: context.session.access.developerId });
+/** The reader, with the name they signed in with now: their own name on a session is always current (Rovara-cloud#39). */
+const viewer = (context: RouteContext) => ({ developerId: context.session.access.developerId, name: context.session.access.displayName });
 const me = (context: RouteContext) => ({ developerId: context.session.access.developerId, name: context.session.access.displayName });
 
 /** The session's followers and viewers for this person. */
@@ -250,13 +252,15 @@ export const ROUTES: Route[] = [
   {
     // PUT /v1/app/me/name (SetMyNameBodySchema): the person's own name, stored in Code (PrepLabsAI/Rovara#634), which checks it. Only the name is passed on.
     method: "PUT", path: /^\/me\/name$/u,
-    answer: async ({ client, session, body }) => {
+    answer: async ({ client, session, body, work }) => {
       const name = (body as { name?: unknown } | undefined)?.name;
       if (typeof name !== "string") return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "name: give a name of 1 to 80 characters." } } };
       const answer = await client.json<{ name: string; nameChosen: true }>(session, "/v1/dev/me/name", { method: "PUT", body: { name } });
       // The session keeps Code's access answer from sign-in; /me reads it, so it takes the new name now.
       session.access = { ...session.access, displayName: answer.name, nameChosen: true };
       session.changed = true;
+      // Rovara-cloud#39: the sessions this person started take the new name too, for everyone who reads them. Best effort: the name is already saved.
+      await renameInSessions(work, session.access.developerId, answer.name).catch(() => 0);
       return ok({ name: answer.name, nameChosen: true });
     },
   },
@@ -556,7 +560,7 @@ export const ROUTES: Route[] = [
       const record = await readableSession(context);
       if (record === undefined) return sessionNotFound;
       if (context.query.get("anchor") !== null) return ok({ messages: [] });
-      return ok(commentsPage(record.sessionId, record.messages ?? [], context.query.get("after")));
+      return ok(commentsPage(record.sessionId, record.messages ?? [], context.query.get("after"), viewer(context)));
     },
   },
   {
