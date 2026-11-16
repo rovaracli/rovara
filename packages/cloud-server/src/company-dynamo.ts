@@ -150,7 +150,9 @@ export class DynamoCompanyStore implements CompanyStore {
 
   async agentAi(companyId: string): Promise<AgentAiChoice | undefined> {
     const item = await this.get(company(companyId), "AGENT_AI");
-    if (item === undefined || item.companyId !== companyId || !validAgentAiSource(item.source) || typeof item.version !== "number" || typeof item.updatedAt !== "string" || typeof item.updatedBy !== "string") return undefined;
+    if (item === undefined) return undefined;
+    // A row that does not read as this company's choice is an outage, never "none saved" (which would hide it and block every save).
+    if (item.companyId !== companyId || !validAgentAiSource(item.source) || typeof item.version !== "number" || typeof item.updatedAt !== "string" || typeof item.updatedBy !== "string") throw new Error("agent ai choice unreadable");
     return { companyId, source: item.source, version: item.version, updatedAt: item.updatedAt, updatedBy: item.updatedBy };
   }
 

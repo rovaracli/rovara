@@ -217,7 +217,7 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
     expect(g.meter.billedCalls(claims.iss, cidA)).toEqual([]);
   });
 
-  it("Bedrock refusing Rovara's own role is free and Rovara's problem; throttling and validation are free; other failures are charged", async () => {
+  it("a Bedrock error answer (no output, no token counts) is never charged; refusing Rovara's own role says so", async () => {
     for (const status of [401, 403]) {
       const g = gateway({ bedrock: failing(status) }); g.choices.saved.set(cidA, "rovara");
       const sink = await call(g.deps);
@@ -226,18 +226,20 @@ describe("agent route: Rovara's AI (DEC 240)", () => {
       expect(await committed(g.meter)).toBe(0);
       expect(g.keySent).toEqual([]);
     }
-    for (const status of [400, 404, 429]) {
+    for (const status of [400, 404, 408, 424, 429, 500, 503]) {
       const g = gateway({ bedrock: failing(status) }); g.choices.saved.set(cidA, "rovara");
       expect((await call(g.deps)).status).toBe(502);
       expect(await committed(g.meter)).toBe(0);
+      expect(g.meter.billedCalls(claims.iss, cidA)).toMatchObject([{ settledMicros: 0 }]);
     }
-    for (const status of [408, 500, 503]) {
-      const g = gateway({ bedrock: failing(status) }); g.choices.saved.set(cidA, "rovara");
-      expect((await call(g.deps)).status).toBe(502);
-      expect(await committed(g.meter)).toBeGreaterThan(0);
-      // A charged failure is a billable line too, at the hold it settled for.
-      expect(g.meter.billedCalls(claims.iss, cidA)).toHaveLength(1);
-    }
+  });
+
+  it("a stream that breaks after output started is charged (the core's rule), as a billable line", async () => {
+    const g = gateway({ bedrock: async () => ({ status: 200, body: (async function* () { yield Buffer.from('event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":2,"output_tokens":1}}}\n\n'); throw new Error("stream cut"); })() }) });
+    g.choices.saved.set(cidA, "rovara");
+    await call(g.deps);
+    expect(await committed(g.meter)).toBeGreaterThan(0);
+    expect(g.meter.billedCalls(claims.iss, cidA)[0]!.settledMicros).toBeGreaterThan(0);
   });
 });
 

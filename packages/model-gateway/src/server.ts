@@ -206,10 +206,12 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     notSent: () => notSent,
     providerFailure: (status, body) => {
       if (rovara !== undefined) {
-        // Bedrock's explicit refusals before any generation are free. Its refusal of Rovara's own role is Rovara's to fix.
+        // A Bedrock error answer carries no output and no token counts: nothing the company used, so it is never charged (DEC 240b
+        // charges from Bedrock's token counts). This includes 5xx and model timeouts on Rovara's own account, and an exception that
+        // arrives as the stream's first frame (bedrock-transport.ts answers that as its error status). A stream that breaks AFTER
+        // output started keeps the core's rule (charged). Its refusal of Rovara's own role is Rovara's to fix.
         if (status === 401 || status === 403) return { charged: false, refusal: ROVARA_AI_UNAVAILABLE };
-        if (status === 400 || status === 404 || status === 429) return { charged: false, refusal: PROVIDER_ERROR };
-        return { charged: true, refusal: PROVIDER_ERROR };
+        return { charged: false, refusal: PROVIDER_ERROR };
       }
       // The provider refused the company's key: an explicit rejection before any generation, free; the company must connect a working key.
       return status === 401 || status === 403 ? { charged: false, refusal: AGENT_KEY_REFUSED } : base.providerFailure(status, body);

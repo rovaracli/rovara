@@ -174,9 +174,10 @@ missing. Money (DEC 240b): priced from the `bedrock` price rows (the dearest of 
 company cap, settled from Bedrock's own token counts. Each Rovara's AI call's hold carries a billable line
 (`{ source: "rovara_ai", charge, model }`) that lands on its ledger row (`CALL#<id>`) when it settles or is swept: that row's
 `settledMicros` is the amount on the company's bill. `charge` is `exempt` only for companies the operator lists in
-`GATEWAY_ROVARA_AI_EXEMPT` (the founders' test company), never inferred; caps still apply to them. Bedrock's explicit refusals
-(400, 404, 429) are free; its refusal of Rovara's own role (401, 403) is free and answers 503 "Rovara's AI is unavailable right
-now"; other failures are charged as on the install-key route.
+`GATEWAY_ROVARA_AI_EXEMPT` (the founders' test company), never inferred; caps still apply to them. A Bedrock error answer carries
+no output and no token counts, so it is never charged (including 5xx, model timeouts, and an exception that arrives as the stream's
+first frame, which the transport answers as its error status); its refusal of Rovara's own role (401, 403) answers 503 "Rovara's AI
+is unavailable right now". A stream that breaks after output started is charged at its hold, as on every route.
 
 Deploy: `-c rovaraModelGatewayRovaraAi=<allow-list>` (and optionally `-c rovaraModelGatewayRovaraAiExempt=<org ids>`) beside
 `-c rovaraModelGatewayProductAi=on`; refused for production at synth. The serving role then gets exactly `bedrock:InvokeModel` and

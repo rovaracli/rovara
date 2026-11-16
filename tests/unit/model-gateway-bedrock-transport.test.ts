@@ -7,6 +7,7 @@ import { SignatureV4 } from "@smithy/signature-v4";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
+import { crc32 } from "node:zlib";
 import type https from "node:https";
 import { beforeAll, describe, expect, it } from "vitest";
 import { signRequest } from "../../packages/model-gateway/src/aws.js";
@@ -33,6 +34,17 @@ function fakeRequest(status: number, chunks: Buffer[], headers: Record<string, s
     return call;
   }) as unknown as typeof https.request;
   return { request, sent };
+}
+function frame(headers: Record<string, string>, payload: Buffer): Buffer {
+  const head = Buffer.concat(Object.entries(headers).map(([name, value]) => {
+    const n = Buffer.from(name); const v = Buffer.from(value); const h = Buffer.alloc(4 + n.length + v.length);
+    h.writeUInt8(n.length, 0); n.copy(h, 1); h.writeUInt8(7, 1 + n.length); h.writeUInt16BE(v.length, 2 + n.length); v.copy(h, 4 + n.length); return h;
+  }));
+  const total = 12 + head.length + payload.length + 4;
+  const prelude = Buffer.alloc(8); prelude.writeUInt32BE(total, 0); prelude.writeUInt32BE(head.length, 4);
+  const pc = Buffer.alloc(4); pc.writeUInt32BE(crc32(prelude) >>> 0, 0);
+  const body = Buffer.concat([prelude, pc, head, payload]); const mc = Buffer.alloc(4); mc.writeUInt32BE(crc32(body) >>> 0, 0);
+  return Buffer.concat([body, mc]);
 }
 async function text(body: AsyncIterable<Uint8Array>): Promise<string> { const parts: Buffer[] = []; for await (const p of body) parts.push(Buffer.from(p)); return Buffer.concat(parts).toString("utf8"); }
 
@@ -99,6 +111,21 @@ describe("Bedrock transport", () => {
     }
     expect(fake.sent).toHaveLength(0);
     expect(() => createBedrockTransport({ region: "evil.example/", credentials: async () => credentials })).toThrow();
+  });
+
+  it("an exception as the stream's first frame is answered as its error status (no output: the route never charges it)", async () => {
+    const exception = (type: string) => frame({ ":exception-type": type, ":content-type": "application/json", ":message-type": "exception" }, Buffer.from('{"message":"x"}'));
+    for (const [type, status] of [["throttlingException", 429], ["serviceUnavailableException", 503], ["modelTimeoutException", 408], ["internalServerException", 500]] as const) {
+      const f = fakeRequest(200, [exception(type)]);
+      const response = await createBedrockTransport({ region: "us-west-2", credentials: async () => credentials, request: f.request, now: () => now })({ body: Buffer.from("{}"), headers: {}, key: "m", signal: new AbortController().signal, path: bedrockInvokePath(MODEL, true) });
+      expect(response.status).toBe(status);
+      expect(await text(response.body)).toBe("");
+    }
+    // After output started, an exception fails the stream instead.
+    const later = fakeRequest(200, [real.subarray(0, 300), exception("throttlingException")]);
+    const response = await createBedrockTransport({ region: "us-west-2", credentials: async () => credentials, request: later.request, now: () => now })({ body: Buffer.from("{}"), headers: {}, key: "m", signal: new AbortController().signal, path: bedrockInvokePath(MODEL, true) });
+    expect(response.status).toBe(200);
+    await expect(text(response.body)).rejects.toThrow();
   });
 
   it("a broken event stream fails the answer (charged as any stream that broke after sending)", async () => {

@@ -45,13 +45,13 @@ describe("the gateway's agent AI reader matches Cloud's company store", () => {
     expect(await reader.sourceFor(A)).toBe("anthropic_key");
   });
 
-  it("a row that names another company, or an unknown source, reads as nothing saved in Cloud and fails closed at the gateway", async () => {
+  it("a row that names another company, or an unknown source, fails closed in Cloud (unavailable, never \"none saved\") and at the gateway", async () => {
     const { wire, store, reader } = both();
     wire.fake.set({ pk: `COMPANY#${A}`, sk: "AGENT_AI", companyId: B, source: "rovara", version: 1, updatedAt: at, updatedBy: "d".repeat(64) });
-    expect(await store.agentAi(A)).toBeUndefined();
+    await expect(store.agentAi(A)).rejects.toThrow();
     await expect(reader.sourceFor(A)).rejects.toThrow();
     wire.fake.set({ pk: `COMPANY#${B}`, sk: "AGENT_AI", companyId: B, source: "openai", version: 1, updatedAt: at, updatedBy: "e".repeat(64) });
-    expect(await store.agentAi(B)).toBeUndefined();
+    await expect(store.agentAi(B)).rejects.toThrow();
     await expect(reader.sourceFor(B)).rejects.toThrow();
   });
 });

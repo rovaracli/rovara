@@ -59,11 +59,23 @@ const ANTHROPIC_EVENTS: ReadonlySet<string> = new Set(["message_start", "content
  * without Bedrock's own `amazon-bedrock-invocationMetrics` field. An exception message, any other message, or a payload that is
  * not one known Anthropic event fails the stream: the call is then charged as any stream that broke after sending.
  */
+/**
+ * The HTTP status an exception message stands for, from its `:exception-type` (AWS's InvokeModelWithResponseStream errors), so an
+ * exception that arrives before any output is answered (and accounted) like the same error before the stream: never charged.
+ */
+export function exceptionStatus(message: EventStreamMessage): number {
+  const type = message.headers[":exception-type"] ?? "";
+  return type === "throttlingException" ? 429 : type === "validationException" ? 400 : type === "modelTimeoutException" ? 408 : type === "serviceUnavailableException" ? 503 : type === "modelStreamErrorException" ? 424 : 500;
+}
+
 export class BedrockStreamToSse {
   readonly #decoder = new EventStreamDecoder();
-  push(bytes: Uint8Array): Buffer {
+  /** The decoded messages of `bytes` (for the transport's look at the first one); `convert` turns them into SSE. */
+  decode(bytes: Uint8Array): EventStreamMessage[] { return this.#decoder.push(bytes); }
+  push(bytes: Uint8Array): Buffer { return this.convert(this.#decoder.push(bytes)); }
+  convert(messages: readonly EventStreamMessage[]): Buffer {
     const out: Buffer[] = [];
-    for (const message of this.#decoder.push(bytes)) {
+    for (const message of messages) {
       if (message.headers[":message-type"] !== "event" || message.headers[":event-type"] !== "chunk") throw new EventStreamError();
       let event: Record<string, unknown> | undefined;
       try {

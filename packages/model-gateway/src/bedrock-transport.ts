@@ -1,7 +1,7 @@
 import type { ClientRequest } from "node:http";
 import https from "node:https";
 import { signRequest, type CredentialSource } from "./aws.js";
-import { BedrockStreamToSse } from "./bedrock-event-stream.js";
+import { BedrockStreamToSse, exceptionStatus, type EventStreamMessage } from "./bedrock-event-stream.js";
 import { NotSentError, type ProviderResponse, type ProviderTransport } from "./provider.js";
 
 /**
@@ -53,7 +53,14 @@ export function createBedrockTransport(options: BedrockTransportOptions): Provid
         call = request({ hostname: host, port: 443, path, method: "POST", agent: false, rejectUnauthorized: true, headers: { ...headers, "content-length": String(body.byteLength) } }, (response) => {
           const status = response.statusCode ?? 0;
           const raw = response as AsyncIterable<Uint8Array>;
-          resolve({ status, body: streaming && status >= 200 && status < 300 ? toSse(raw) : raw, cancel: () => response.destroy() });
+          const cancel = () => response.destroy();
+          if (!streaming || status < 200 || status >= 300) { resolve({ status, body: raw, cancel }); return; }
+          // Look at the first message before answering: an exception before any output is answered as its error status, so the route
+          // accounts it like the same error before the stream (free). Anything after it streams as Anthropic SSE.
+          firstMessage(raw).then((first) => {
+            if (first.message?.headers[":message-type"] === "exception") { cancel(); resolve({ status: exceptionStatus(first.message), body: empty(), cancel }); return; }
+            resolve({ status, body: toSse(first.sse, first.message, first.rest, first.iterator), cancel });
+          }, () => { cancel(); reject(new Error("provider unavailable")); });
         });
       } catch { reject(new NotSentError()); return; }
       const abort = () => { call.destroy(); fail(); };
@@ -67,8 +74,20 @@ export function createBedrockTransport(options: BedrockTransportOptions): Provid
   };
 }
 
-async function* toSse(raw: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  const sse = new BedrockStreamToSse();
-  for await (const part of raw) { const out = sse.push(part); if (out.length > 0) yield out; }
+interface First { sse: BedrockStreamToSse; message: EventStreamMessage | undefined; rest: EventStreamMessage[]; iterator: AsyncIterator<Uint8Array> }
+/** Reads until the first whole message (or the end). Throws on a malformed stream. */
+async function firstMessage(raw: AsyncIterable<Uint8Array>): Promise<First & { rest: EventStreamMessage[] }> {
+  const sse = new BedrockStreamToSse(); const iterator = raw[Symbol.asyncIterator]();
+  for (;;) {
+    const next = await iterator.next();
+    if (next.done) return { sse, message: undefined, rest: [], iterator };
+    const messages = sse.decode(next.value);
+    if (messages.length > 0) return { sse, message: messages[0], rest: messages.slice(1), iterator };
+  }
+}
+async function* empty(): AsyncIterable<Uint8Array> { /* An error answer: no bytes. */ }
+async function* toSse(sse: BedrockStreamToSse, first: EventStreamMessage | undefined, rest: EventStreamMessage[], iterator?: AsyncIterator<Uint8Array>): AsyncIterable<Uint8Array> {
+  const head = sse.convert(first === undefined ? rest : [first, ...rest]); if (head.length > 0) yield head;
+  if (iterator !== undefined) for (;;) { const next = await iterator.next(); if (next.done) break; const out = sse.push(next.value); if (out.length > 0) yield out; }
   sse.finish();
 }
