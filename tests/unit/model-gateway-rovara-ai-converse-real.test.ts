@@ -18,7 +18,8 @@ import { call, claims, mint, setup } from "./model-gateway-fixture.js";
 
 const cidA = claims.cid; const cidB = `org_${"b".repeat(20)}`;
 const fixture = (id: string) => readFileSync(new URL(`../fixtures/model-gateway-bedrock/converse/${id.replace(/[^a-z0-9.-]/giu, "_")}.bin`, import.meta.url));
-const ids = [...parseRovaraAiModels(ROVARA_AI_US_CONVERSE_MODELS, "us-west-2").keys()];
+// The ten that passed with maxTokens 16 (converse/); the reasoning-first ones are replayed in model-gateway-converse-256.test.ts.
+const ids = [...parseRovaraAiModels(ROVARA_AI_US_CONVERSE_MODELS, "us-west-2").keys()].slice(0, 10);
 /** What Bedrock reported in each real answer: its tool call id and its token counts (read from the fixture itself). */
 function reported(bytes: Buffer): { toolUseId: string; input: number; output: number } {
   const d = new EventStreamDecoder(); const messages = d.push(bytes); d.finish();

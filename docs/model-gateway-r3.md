@@ -208,5 +208,12 @@ listed only after an agent-loop test on fakes and one tiny real call pass. `-c r
 tests from `tests/fixtures/model-gateway-bedrock/converse`): `qwen.qwen3-coder-480b-a35b-v1:0`, `qwen.qwen3-coder-30b-a3b-v1:0`,
 `qwen.qwen3-235b-a22b-2507-v1:0`, `mistral.devstral-2-123b`, `mistral.mistral-large-3-675b-instruct`, `deepseek.v3-v1:0`,
 `moonshotai.kimi-k2.5`, `zai.glm-5`, `zai.glm-4.7`, `us.amazon.nova-2-lite-v1:0`. Tool call ids pass through as the model gives
-them (Kimi K2.5's look like `functions.ping:0`). Reasoning-first models (gpt-oss, DeepSeek V3.2, Kimi K2 Thinking / K3 / K3.1,
-MiniMax M2.5, Nova Pro) are not listed yet; GLM 5.3 and Grok 4.7 are not available to the account.
+them (Kimi K2.5's look like `functions.ping:0`). Three reasoning-first models are listed too, after a real call with maxTokens
+256 (`tests/fixtures/model-gateway-bedrock/converse-256`): `openai.gpt-oss-120b-1:0` and `openai.gpt-oss-20b-1:0` (their
+`reasoningContent` is dropped: OpenAI only recommends passing it back after tool calls) and `us.amazon.nova-pro-v1:0`, whose
+answer starts with its reasoning as plain text: for that model only, exactly a leading, well-formed `<thinking>...</thinking>`
+(the first text block starting with `<thinking>`, up to the first `</thinking>`, within 64 KiB) is left out; anything else passes
+unchanged. Not listed: DeepSeek V3.2 (its provider requires reasoning to be sent back in tool loops, and it writes raw tool-call
+markup into its text), Kimi K3 / K3.1 (reasoning must be sent back), Kimi K2 Thinking and MiniMax M2.5 (not documented for these
+versions; their newer siblings require it). Carrying unsigned reasoning back through Anthropic `thinking` blocks is not verified on
+Bedrock or in the engine yet. GLM 5.3 and Grok 4.7 are not available to the account.

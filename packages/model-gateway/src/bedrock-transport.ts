@@ -2,7 +2,7 @@ import type { ClientRequest } from "node:http";
 import https from "node:https";
 import { signRequest, type CredentialSource } from "./aws.js";
 import { randomUUID } from "node:crypto";
-import { BEDROCK_CONVERSE_ID, ConverseStreamToSse, fromConverse } from "./bedrock-converse.js";
+import { BEDROCK_CONVERSE_ID, ConverseStreamToSse, fromConverse, LEADING_THINKING_TEXT_MODEL } from "./bedrock-converse.js";
 import { BedrockStreamToSse, EventStreamDecoder, EventStreamError, exceptionStatus, type EventStreamMessage } from "./bedrock-event-stream.js";
 import { NotSentError, type ProviderResponse, type ProviderTransport } from "./provider.js";
 
@@ -95,7 +95,7 @@ export function createBedrockTransport(options: BedrockTransportOptions): Provid
 interface StreamConverter { decode(bytes: Uint8Array): EventStreamMessage[]; convert(messages: readonly EventStreamMessage[]): Buffer; finish(): void }
 const anthropicStream = (): StreamConverter => { const sse = new BedrockStreamToSse(); return { decode: (b) => sse.decode(b), convert: (m) => sse.convert(m), finish: () => { sse.finish(); } }; };
 const converseStream = (model: string): StreamConverter => {
-  const decoder = new EventStreamDecoder(); const sse = new ConverseStreamToSse(model, `msg_bdrk_${randomUUID().replaceAll("-", "")}`);
+  const decoder = new EventStreamDecoder(); const sse = new ConverseStreamToSse(model, `msg_bdrk_${randomUUID().replaceAll("-", "")}`, LEADING_THINKING_TEXT_MODEL.test(model));
   return { decode: (b) => decoder.push(b), convert: (m) => sse.convert(m), finish: () => { decoder.finish(); } };
 };
 /** A whole Converse answer as the Anthropic message JSON the route settles from. A malformed answer throws (a broken answer). */
@@ -104,7 +104,7 @@ async function* converseAnswer(raw: AsyncIterable<Uint8Array>, model: string): A
   for await (const part of raw) { size += part.byteLength; if (size > CONVERSE_ANSWER_MAX_BYTES) throw new EventStreamError(); parts.push(Buffer.from(part)); }
   let parsed: unknown;
   try { parsed = JSON.parse(Buffer.concat(parts).toString("utf8")); } catch { throw new EventStreamError(); }
-  yield Buffer.from(JSON.stringify(fromConverse(parsed, model, `msg_bdrk_${randomUUID().replaceAll("-", "")}`)));
+  yield Buffer.from(JSON.stringify(fromConverse(parsed, model, `msg_bdrk_${randomUUID().replaceAll("-", "")}`, LEADING_THINKING_TEXT_MODEL.test(model))));
 }
 
 interface First { sse: StreamConverter; message: EventStreamMessage | undefined; rest: EventStreamMessage[]; iterator: AsyncIterator<Uint8Array> }
