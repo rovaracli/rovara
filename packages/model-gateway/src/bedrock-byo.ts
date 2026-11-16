@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { BEDROCK_CONVERSE_ID } from "./bedrock-converse.js";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
 import { normalizeBedrockModel } from "./price-identity.js";
-import { COMPANY, record, whole } from "./model-gateway-token.js";
+import { COMPANY, PROJECT, record, whole } from "./model-gateway-token.js";
 
 /** Every customer role's name starts with this; the broker may assume nothing else (infra/lib/model-gateway.ts). */
 export const BEDROCK_BYO_ROLE_PREFIX = "RovaraBedrockInvoke-";
@@ -282,7 +282,8 @@ export function validTemplateUrl(url: unknown): url is string {
   const host = new URL(url).hostname;
   return !/(?:^|\.)s3[.-]|\.amazonaws\.com$/u.test(host);
 }
-export interface BedrockSetupInput { templateUrl: string; brokerRoleArn: string; externalId: string; cid: string; region: string; models: Readonly<Record<string, string>>; allowGlobal: boolean; productModels?: readonly string[] }
+export interface BedrockSetupInput { templateUrl: string; brokerRoleArn: string; externalId: string; cid: string; region: string; models: Readonly<Record<string, string>>; allowGlobal: boolean; productModels?: readonly string[];
+  /** A project's OWN role (slice 2): its own stack, never the company's (a command must not update the company's stack). */ project?: string }
 /** CloudFormation's limit on one parameter value (the ARN list). */
 const PARAMETER_BYTES_MAX = 4_096;
 /**
@@ -299,7 +300,11 @@ export function bedrockSetupCommand(input: BedrockSetupInput): { cloudShellUrl: 
   const arns = bedrockResourceArns({ region: input.region, models: input.models, ...(input.productModels === undefined ? {} : { productModels: input.productModels }) });
   // One parameter holds the list: a longer one would fail at AWS after the admin ran the command.
   if (Buffer.byteLength(arns.join(","), "utf8") > PARAMETER_BYTES_MAX) throw new Error("invalid bedrock setup");
-  const stackName = `rovara-bedrock-${input.cid.replace("_", "-")}`;
+  if (input.project !== undefined && !PROJECT.test(input.project)) throw new Error("invalid bedrock setup");
+  // The company's stack is `rovara-bedrock-<company>`; a project's own role gets its own stack name, so this command can never
+  // update the company's stack (and so never change the company role's policy). IAM role names are account-wide: a project's own
+  // role (the template names it from the company id) needs another AWS account than the company's role, or the stack fails to create.
+  const stackName = `rovara-bedrock-${input.cid.replace("_", "-")}${input.project === undefined ? "" : `-${input.project}`}`;
   // Each override single-quoted (the ARNs hold `*`, which zsh or bash's failglob would expand); no value holds a quote.
   const overrides = [`CompanyId=${input.cid}`, `ExternalId=${input.externalId}`, `BrokerRoleArn=${input.brokerRoleArn}`, `ModelResourceArns=${arns.join(",")}`, `AllowGlobalRouting=${String(input.allowGlobal)}`].map((v) => `'${v}'`).join(" ");
   const command = [

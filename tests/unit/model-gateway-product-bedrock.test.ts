@@ -59,6 +59,13 @@ describe("the connection's product models", () => {
     expect(arns).toContain("arn:aws:bedrock:us-west-2::foundation-model/meta.llama3-1-70b-instruct-v1:0");
     const setup = bedrockSetupCommand({ templateUrl: "https://raw.githubusercontent.com/PrepLabsAI/Rovara/0123456789abcdef0123456789abcdef01234567/docs/bedrock/rovara-bedrock-role.json", brokerRoleArn: "arn:aws:iam::944937319445:role/RovaraBedrockBroker-staging", externalId: `rvb-${"a1".repeat(20)}`, cid: "org_aaaaaaaaaaaaaaaaaaaa", region: "us-west-2", models: connection.models, allowGlobal: false, productModels: connection.productModels! });
     expect(setup.command).toContain("inference-profile/us.amazon.nova-pro-v1:0");
+    // A project's own role gets its own stack name: its command can never update the company's stack (and so its role's policy).
+    const forProject = bedrockSetupCommand({ templateUrl: "https://raw.githubusercontent.com/PrepLabsAI/Rovara/0123456789abcdef0123456789abcdef01234567/docs/bedrock/rovara-bedrock-role.json", brokerRoleArn: "arn:aws:iam::944937319445:role/RovaraBedrockBroker-staging", externalId: `rvb-${"a1".repeat(20)}`, cid: "org_aaaaaaaaaaaaaaaaaaaa", region: "us-west-2", models: connection.models, allowGlobal: false, project: "web" });
+    expect(setup.stackName).toBe("rovara-bedrock-org-aaaaaaaaaaaaaaaaaaaa");
+    expect(forProject.stackName).toBe("rovara-bedrock-org-aaaaaaaaaaaaaaaaaaaa-web");
+    expect(forProject.command).toContain("--stack-name rovara-bedrock-org-aaaaaaaaaaaaaaaaaaaa-web ");
+    expect(forProject.command).not.toContain("--stack-name rovara-bedrock-org-aaaaaaaaaaaaaaaaaaaa ");
+    expect(() => bedrockSetupCommand({ templateUrl: "https://raw.githubusercontent.com/PrepLabsAI/Rovara/0123456789abcdef0123456789abcdef01234567/docs/bedrock/rovara-bedrock-role.json", brokerRoleArn: "arn:aws:iam::944937319445:role/RovaraBedrockBroker-staging", externalId: `rvb-${"a1".repeat(20)}`, cid: "org_aaaaaaaaaaaaaaaaaaaa", region: "us-west-2", models: connection.models, allowGlobal: false, project: "Web; rm" })).toThrow();
     expect(() => bedrockSetupCommand({ templateUrl: "https://raw.githubusercontent.com/PrepLabsAI/Rovara/0123456789abcdef0123456789abcdef01234567/docs/bedrock/rovara-bedrock-role.json", brokerRoleArn: "arn:aws:iam::944937319445:role/RovaraBedrockBroker-staging", externalId: `rvb-${"a1".repeat(20)}`, cid: "org_aaaaaaaaaaaaaaaaaaaa", region: "us-west-2", models: connection.models, allowGlobal: false, productModels: ["eu.amazon.nova-pro-v1:0"] })).toThrow();
     const summary = bedrockSummary(connection, { [CLAUDE]: "ready", [NOVA]: "not_enabled", [TITAN]: "ready" }, 1);
     expect(validBedrockSummary(summary)).toBe(true);
@@ -113,6 +120,10 @@ describe("the guard: the model and the operation", () => {
       const result = refusal(guard(CLAUDE, "invoke", "not json", { ...JSON_HEADERS, [name]: "x" }));
       expect(result.message, name).toBe(PRODUCT_BEDROCK_FEATURE);
     }
+  });
+  it("the SDK's own accept and content-type negotiation headers are allowed (the transport sends its own), nothing else under x-amzn-bedrock-", () => {
+    expect((guard(CLAUDE, "invoke-with-response-stream", anthropicBody, { ...JSON_HEADERS, "x-amzn-bedrock-accept": "application/json", "x-amzn-bedrock-content-type": "application/json" }) as { ok: boolean }).ok).toBe(true);
+    expect(refusal(guard(CLAUDE, "invoke", anthropicBody, { ...JSON_HEADERS, "x-amzn-bedrock-accept": "application/json", "x-amzn-bedrock-trace": "ENABLED" })).message).toBe(PRODUCT_BEDROCK_FEATURE);
   });
   it("a content type that is not JSON, oversized headers, a body over 4 MiB and a body that is not UTF-8 JSON are refused", () => {
     expect(refusal(guard(CLAUDE, "converse", converseBody, { "content-type": "text/plain" })).code).toBe("invalid_request");

@@ -91,8 +91,9 @@ export function productAllowList(connection: Pick<BedrockConnection, "models" | 
 const CREDENTIAL_HEADER = /^(?:authorization|x-amz-security-token|x-amz-bedrock-|x-amzn-bedrock-)/u;
 /** Request headers that carry a credential, or select a feature the route refuses (guardrails, performance or service tier, trace). */
 function headersRefused(headers: Readonly<Record<string, string | undefined>>): boolean {
-  const names = Object.keys(headers);
-  return names.some((name) => CREDENTIAL_HEADER.test(name.toLowerCase()));
+  // The SDK's own content negotiation headers on a streaming InvokeModel are harmless (the transport sends its own); every other
+  // x-amzn-bedrock-* header (guardrail, trace, performance config, service tier) is a refused feature.
+  return Object.keys(headers).some((name) => { const lower = name.toLowerCase(); return CREDENTIAL_HEADER.test(lower) && lower !== "x-amzn-bedrock-accept" && lower !== "x-amzn-bedrock-content-type"; });
 }
 function headerShapeOk(headers: Readonly<Record<string, string | undefined>>): boolean {
   if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/iu.test(headers["content-type"] ?? "")) return false;

@@ -23,7 +23,7 @@ import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 /** The company document of the product key store (model-gateway product-keys.ts PRODUCT_COMPANY_OWNER) and its one Bedrock source. */
 export const BEDROCK_OWNER = "_company";
 export const BEDROCK_SOURCE_ID = "src_bedrock";
-export interface BedrockChoice { region: string; models: Record<string, string>; allowGlobal: boolean; /** Slice 2: more Bedrock ids the product route (the customer's tests) may call. */ productModels?: string[] }
+export interface BedrockChoice { region: string; models: Record<string, string>; allowGlobal: boolean; /** Slice 2: more Bedrock ids the product route (the customer's tests) may call. */ productModels?: string[]; /** Set by the project routes: the setup command names the project's own stack. */ project?: string }
 export interface BedrockSetupView { externalId: string; brokerRoleArn: string; templateUrl: string }
 /** What the routes need from the deployment (scripts/cloud-lambda.ts wires the gateway's signed set-up call). Structural only. */
 export interface BedrockBackend {

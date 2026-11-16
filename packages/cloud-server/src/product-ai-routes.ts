@@ -376,7 +376,7 @@ async function postBedrockSetup(context: RouteContext): Promise<RouteAnswer> {
   const setup = await bedrock.setup(w.companyId).catch(() => undefined);
   if (setup === undefined) return BEDROCK_WORDS.unavailable;
   let made;
-  try { made = bedrock.command(setup, w.companyId, choice); } catch { return BEDROCK_WORDS.invalid; }
+  try { made = bedrock.command(setup, w.companyId, { ...choice, project: w.project }); } catch { return BEDROCK_WORDS.invalid; }
   return ok({ ...setup, companyId: w.companyId, ...made });
 }
 

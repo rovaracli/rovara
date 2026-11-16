@@ -38,6 +38,9 @@ describe("Cloud: a project's own Bedrock role", () => {
     expect(command.status).toBe(200);
     expect(command.body.command).toContain(`ExternalId=${extOf(A)}`);
     expect(command.body.command).toContain("inference-profile/us.amazon.nova-pro-v1:0");
+    // Its own stack: never the company's (a deploy of the same stack name would rewrite the company role's policy).
+    expect(command.body.stackName).toBe("rovara-bedrock-org-aaaaaaaaaaaaaaaaaaaa-web");
+    expect((await w.call(await w.signIn("ada", 30), "POST", "/org/bedrock/setup", { region: "us-west-2", models: { "claude-sonnet-5-5": SONNET }, allowGlobal: false })).body.stackName).toBe("rovara-bedrock-org-aaaaaaaaaaaaaaaaaaaa");
     const saved = await w.call(pam, "PUT", `${PROJECT}/bedrock`, write(0, FORM(A, { productModels: [NOVA, TITAN] })));
     expect(saved.status).toBe(200);
     expect(k.probes).toEqual([{ cid: A, roleArn: ROLE(A), productModels: [NOVA, TITAN].sort() }]);

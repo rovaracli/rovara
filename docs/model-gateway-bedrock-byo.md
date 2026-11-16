@@ -133,3 +133,9 @@ Code half and is not in this repo). The gateway signs for the company's own role
 - **S4, lesson embeddings** through Bedrock (Titan Text Embeddings V2 or Cohere Embed), after the DEC 231a embedding path. Cohere
   needs the answer's token-count header (the product route serves Titan only: its body carries the count).
 - **S5, Settings UI:** the connect page, model picker, test result and warnings, and the usage note.
+
+Setup note (slice 2): a project's own role has its own CloudFormation stack (`rovara-bedrock-<company>-<project>`), so its command never
+updates the company's stack. The template names the role from the company id, and IAM role names are account-wide: a project's own role
+is created in a different AWS account than the company's role (in the same account the stack fails to create; nothing is changed).
+Known gap (Low): a 403 for one product model that is missing from the role's policy marks the whole connection refused in Settings (the
+agents still work) and drops the session; the fix is to tell a model refusal from a credential failure once AWS's wording is confirmed.
