@@ -52,7 +52,7 @@ describe("the built-in list (DEC 243c)", () => {
     expect(ids).toEqual(["qwen.qwen3-coder-480b-a35b-v1:0", "qwen.qwen3-coder-30b-a3b-v1:0", "qwen.qwen3-235b-a22b-2507-v1:0", "mistral.devstral-2-123b", "mistral.mistral-large-3-675b-instruct", "deepseek.v3-v1:0", "moonshotai.kimi-k2.5", "zai.glm-5", "zai.glm-4.7", "us.amazon.nova-2-lite-v1:0"]);
     // The names the price index looks each id up by; LiteLLM's Bedrock rows (bedrock / bedrock_converse) fold to the same names
     // (2026-11-15: every one has an input, output and max-output row there).
-    expect(ids.map(normalizeBedrockModel)).toEqual(["qwen3-coder-480b-a35b", "qwen3-coder-30b-a3b", "qwen3-235b-a22b-2507", "devstral-2-123b", "mistral-large-3-675b-instruct", "v3", "kimi-k2.5", "glm-5", "glm-4.7", "nova-2-lite"]);
+    expect(ids.map(normalizeBedrockModel)).toEqual(["qwen3-coder-480b-a35b", "qwen3-coder-30b-a3b", "qwen3-235b-a22b-2507", "devstral-2-123b", "mistral-large-3-675b-instruct", "deepseek-v3-1", "kimi-k2-5", "glm-5", "glm-4-7", "nova-2-lite"]);
   });
 });
 
