@@ -10,9 +10,9 @@ import {
 } from "../../packages/cloud-server/src/index.js";
 import {
   WIKI_COMMIT_PATTERN, WIKI_ID_PATTERN, WIKI_LIMITS, WIKI_PAGE_ID_PATTERN, WIKI_PAGE_NOT_FOUND, WIKI_PROJECT_NOT_FOUND, WIKI_PROJECT_PATTERN, WIKI_TRUST_LINE, WIKI_UNAVAILABLE, WIKI_WORDS as APP_WORDS,
-  WikiIndexResponseSchema, WikiPageResponseSchema, WikiSourcesResponseSchema,
+  WikiIndexResponseSchema, WikiPageResponseSchema, WikiSearchResponseSchema, WikiSourcesResponseSchema,
 } from "../../packages/contracts/src/app-wiki.js";
-import { wikiIndex, wikiPage, wikiSources } from "../support/wiki-fixture.js";
+import { wikiIndex, wikiPage, wikiSearch, wikiSources } from "../support/wiki-fixture.js";
 
 const CODE = "https://code.example.test";
 const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb";
@@ -47,14 +47,15 @@ function setUp(override: Override = () => undefined) {
     }
     const replaced = override(call, person);
     if (replaced !== undefined) return replaced;
-    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/pages\/([^/]+)(\/sources)?)?$/u.exec(url.pathname);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/(search|pages\/([^/]+)(\/sources)?))?$/u.exec(url.pathname);
     if (match === null) return json(404, { error: { code: "NOT_FOUND", message: "route not found" } });
     const project = decodeURIComponent(match[1]!);
     const admin = person.role === "owner" || person.role === "admin";
     if (person.company === undefined || PROJECTS[project] !== person.company || (!admin && person.grants[project] === undefined)) return json(404, { error: { code: "NOT_FOUND", message: `project not found ${LEAK}` } });
+    if (match[2] === "search") return json(200, wikiSearch(project, url.searchParams.get("q") ?? ""));
     if (match[2] === undefined) return json(200, wikiIndex(project));
-    const id = decodeURIComponent(match[2]);
-    const one = match[3] === undefined ? wikiPage(project, id) : wikiSources(project, id);
+    const id = decodeURIComponent(match[3]!);
+    const one = match[4] === undefined ? wikiPage(project, id) : wikiSources(project, id);
     return one === undefined ? json(404, { error: { code: "NOT_FOUND", message: `page not found ${LEAK}` } }) : json(200, one);
   }) as typeof fetch;
   const store = new LocalSessionStore(undefined, { environment: {} });
@@ -82,7 +83,7 @@ function setUp(override: Override = () => undefined) {
 const words = (answer: { body: unknown }) => (answer.body as { error: { code: string; message: string } }).error;
 const refusal = (key: keyof typeof WIKI_ANSWERS) => ({ status: WIKI_ANSWERS[key].status, error: (WIKI_ANSWERS[key].body as { error: unknown }).error });
 const asRefusal = (answer: { status: number; body: unknown }) => ({ status: answer.status, error: words(answer) });
-const INDEX = "/v1/web/projects/payments/wiki", PAGE = "/v1/web/projects/payments/wiki/pages/beacon-api--billing", SOURCES = PAGE + "/sources";
+const INDEX = "/v1/web/projects/payments/wiki", SEARCH = "/v1/web/projects/payments/wiki/search?q=refund", PAGE = "/v1/web/projects/payments/wiki/pages/beacon-api--billing", SOURCES = PAGE + "/sources";
 const onIndex = (answerFor: (project: string) => unknown) => (call: CodeCall) => (/\/wiki$/u.test(call.path) ? json(200, answerFor(decodeURIComponent(call.path.split("/")[4]!))) : undefined);
 const onPage = (answerFor: (project: string) => unknown) => (call: CodeCall) => (/\/wiki\/pages\/[^/]+$/u.test(call.path) ? json(200, answerFor(decodeURIComponent(call.path.split("/")[4]!))) : undefined);
 const onSources = (answerFor: (project: string) => unknown) => (call: CodeCall) => (/\/sources$/u.test(call.path) ? json(200, answerFor(decodeURIComponent(call.path.split("/")[4]!))) : undefined);
@@ -110,7 +111,7 @@ describe("the page list", () => {
     const res = await w.send("GET", INDEX, { ...await w.as("pam-token"), "x-rovara-company": B });
     expect(res.status).toBe(200);
     const index = WikiIndexResponseSchema.parse(res.body);
-    expect(index).toMatchObject({ project: "payments", state: "ready" });
+    expect(index).toMatchObject({ project: "payments", state: "ready", agentsEnabled: false });
     expect(index.pages.map((page) => page.pageId)).toContain("beacon-api--billing");
     expect(w.codeCalls()).toEqual([expect.objectContaining({ method: "GET", path: "/v1/app/projects/payments/wiki", search: "", authorization: "Bearer pam-token" })]);
     for (const call of w.calls) expect(JSON.stringify(call.headers)).not.toContain(B);
@@ -140,12 +141,23 @@ describe("the page list", () => {
     expect(asRefusal(await w.send("GET", INDEX, await w.as("bob-token")))).toEqual(refusal("notFound"));
     const before = w.codeCalls().length;
     const nob = await w.as("nob-token");
-    for (const target of [INDEX, PAGE, SOURCES]) {
+    for (const target of [INDEX, SEARCH, PAGE, SOURCES]) {
       const nobody = await w.send("GET", target, nob);
       expect(nobody.status, target).toBe(403);
       expect(words(nobody).code).toBe("NO_COMPANY");
     }
     expect(w.codeCalls()).toHaveLength(before);
+  });
+
+  it("searches bounded title, summary and page text using the signed-in person's project-scoped Code route", async () => {
+    const w = setUp();
+    const pam = await w.as("pam-token");
+    const res = await w.send("GET", SEARCH, pam);
+    expect(res.status).toBe(200);
+    expect(WikiSearchResponseSchema.parse(res.body)).toMatchObject({ project: "payments", query: "refund", results: [expect.objectContaining({ pageId: "beacon-api--billing", snippet: expect.stringContaining("refund") })] });
+    expect(w.codeCalls()).toEqual([expect.objectContaining({ method: "GET", path: "/v1/app/projects/payments/wiki/search", search: "?q=refund", authorization: "Bearer pam-token" })]);
+    expect((await w.send("GET", "/v1/web/projects/billing/wiki/search?q=refund", pam)).status).toBe(404);
+    expect((await w.send("GET", "/v1/web/projects/ledger/wiki/search?q=refund", await w.as("ada-token"))).status).toBe(404);
   });
 
   it("a project name that doesn't read is refused without asking Code, and so is any query", async () => {

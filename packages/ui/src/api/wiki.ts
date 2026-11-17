@@ -2,12 +2,12 @@
 // Cloud's fixed words (fixedWikiWords), never other text. Wiki text is untrusted data: every answer is read with a strict, bounded schema and drawn as plain text.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ProjectOverviewProjectSchema, WIKI_PAGE_ID_PATTERN, WIKI_SENTENCES, WikiIndexResponseSchema, WikiPageResponseSchema, WikiSourcesResponseSchema } from "@agentx/contracts/web";
+import { ProjectOverviewProjectSchema, WIKI_PAGE_ID_PATTERN, WIKI_SENTENCES, WikiIndexResponseSchema, WikiPageResponseSchema, WikiSearchResponseSchema, WikiSourcesResponseSchema } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
 import { ApiError } from "./errors.js";
 
-export type { WikiBlock, WikiIndexEntry, WikiIndexResponse, WikiLastBuild, WikiPageResponse, WikiShownClaim, WikiShownNote, WikiSourceState, WikiSourcesResponse } from "@agentx/contracts/web";
+export type { WikiBlock, WikiIndexEntry, WikiIndexResponse, WikiLastBuild, WikiPageResponse, WikiSearchResponse, WikiShownClaim, WikiShownNote, WikiSourceState, WikiSourcesResponse } from "@agentx/contracts/web";
 
 const base = (name: string) => "/v1/app/projects/" + encodeURIComponent(ProjectOverviewProjectSchema.shape.name.parse(name)) + "/wiki";
 const pageId = (id: string): string => { if (!WIKI_PAGE_ID_PATTERN.test(id)) throw new ApiError(400, "CONFIG_INVALID", "the request is not valid"); return encodeURIComponent(id); };
@@ -16,6 +16,7 @@ export function createWikiApi(host: AppHost) {
  const api = createApiClient(host);
  return {
   index: (project: string) => api.get(base(project), WikiIndexResponseSchema),
+  search: (project: string, query: string) => api.get(base(project) + "/search?q=" + encodeURIComponent(query), WikiSearchResponseSchema),
   page: (project: string, id: string) => api.get(base(project) + "/pages/" + pageId(id), WikiPageResponseSchema),
   sources: (project: string, id: string) => api.get(base(project) + "/pages/" + pageId(id) + "/sources", WikiSourcesResponseSchema),
  };
@@ -32,6 +33,10 @@ export function fixedWikiWords(error: unknown, fallback: string): string { retur
 export function useWikiIndex(project: string, enabled = true) {
  const api = useWikiApi();
  return useQuery({ queryKey: [...wikiKey(project), "index"], enabled, queryFn: () => api.index(project), staleTime: 60_000 });
+}
+export function useWikiSearch(project: string, query: string) {
+ const api = useWikiApi();
+ return useQuery({ queryKey: [...wikiKey(project), "search", query], enabled: query.trim().length > 0, queryFn: () => api.search(project, query.trim()), staleTime: 30_000, retry: false });
 }
 export function useWikiPage(project: string, id: string | undefined) {
  const api = useWikiApi();

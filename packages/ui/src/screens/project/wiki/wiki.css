@@ -77,3 +77,4 @@
 }
 @media (prefers-reduced-motion:reduce){.rv-wiki *{scroll-behavior:auto!important}}
 .rv-wiki-about .rv-wiki-chip{white-space:normal}
+.rv-wiki-agent-banner { margin: 0 0 1rem; padding: .75rem 1rem; border: 1px solid var(--rv-border, #d7dce2); border-radius: .5rem; background: var(--rv-surface-muted, #f5f6f8); color: var(--rv-text-muted, #4b5563); }

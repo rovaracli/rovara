@@ -14,7 +14,7 @@ import {
   type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
   type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
-import { wikiIndex, wikiPage, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
+import { wikiIndex, wikiPage, wikiSearch, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
 
 export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
 
@@ -147,8 +147,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return person.administrator || roleIn(person, name) !== undefined;
   };
   /** Code's wiki read routes (W2; `/v1/app/projects/{p}/wiki`, `.../pages/{id}`, `.../pages/{id}/sources`), as the person; every refusal is Code's one 404. */
-  const wikiAnswer = (method: string, path: string, person: Person): { status: number; body: unknown } | undefined => {
-    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/pages\/([^/]+)(\/sources)?)?$/u.exec(path);
+  const wikiAnswer = (method: string, path: string, search: URLSearchParams, person: Person): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/(search|pages\/([^/]+)(\/sources)?))?$/u.exec(path);
     if (match === null || method !== "GET") return undefined;
     const name = decodeURIComponent(match[1]!), set = wikis.get(name) ?? {};
     if (set.off) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
@@ -156,8 +156,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (!wikiReads(person, name)) return refuse;
     if (set.broken) return { status: 200, body: { project: "elsewhere" } };
     if (match[2] === undefined) return { status: 200, body: wikiIndex(name, set) };
-    const id = decodeURIComponent(match[2]);
-    const answered = match[3] === undefined ? wikiPage(name, id, set) : wikiSources(name, id, set);
+    if (match[2] === "search") return { status: 200, body: wikiSearch(name, search.get("q") ?? "") };
+    const id = decodeURIComponent(match[3]!);
+    const answered = match[4] === undefined ? wikiPage(name, id, set) : wikiSources(name, id, set);
     return answered === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "page not found" } } } : { status: 200, body: answered };
   };
   const log: FakeCode["log"] = [];
@@ -1156,7 +1157,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, url.searchParams, who) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
           if (who === undefined && /\/wiki(?:\/|$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (answer !== undefined) return send(answer.status, answer.body);

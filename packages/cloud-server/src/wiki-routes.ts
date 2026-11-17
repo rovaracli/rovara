@@ -1,7 +1,8 @@
-// Lead 4 slice W5 (DEC 254zi; designs-2026-11-17/wiki-and-just-answer-plan.md section 1.2, wiki-design-review.md fixes 5 and 6): the project Wiki tab's three reads, answered
+// Lead 4 slice W5/W5x (DEC 254zi; designs-2026-11-17/wiki-and-just-answer-plan.md section 1.2, wiki-design-review.md fixes 5 and 6): the project Wiki reads, answered
 // from Rovara Code's wiki read routes (slice W2, contract wiki-store.ts at 07cd73a5f on Code's local branch pr/l4-wiki-store) as the signed-in person, with their own token.
 //
 //   GET /v1/app/projects/{p}/wiki                        -> Code GET /v1/app/projects/{p}/wiki                        (WikiIndexResponseSchema)
+//   GET /v1/app/projects/{p}/wiki/search?q=               -> Code GET /v1/app/projects/{p}/wiki/search?q=               (WikiSearchResponseSchema)
 //   GET /v1/app/projects/{p}/wiki/pages/{pageId}         -> Code GET /v1/app/projects/{p}/wiki/pages/{pageId}         (WikiPageResponseSchema)
 //   GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources -> Code GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources (WikiSourcesResponseSchema)
 //
@@ -9,7 +10,7 @@
 //   - Code decides who may read: its live company and project role, on every call (any project role reads; anyone else, another company's project, a missing project or page
 //     and a malformed name all get Code's one 404). Cloud adds no rule that could widen that. It only refuses earlier: a person Code names no company for gets NOT_IN_COMPANY, a
 //     malformed project name, page id or query is refused without asking Code.
-//   - The browser never names a company, a person or a Code id. The project name and page id (both pattern-checked) go only into Code's path; no query goes on.
+//   - The browser never names a company, a person or a Code id. The project and page id are pattern-checked; search forwards only one bounded, control-free `q` value.
 //   - Every answer is rebuilt from known fields and must name THIS project (and, for a page and its sources, THIS page id). An answer for any other project or page, or one that
 //     does not read (a field out of bounds, a control or format character, a claim a paragraph names that the page does not hold, a citation at a commit the page was not written
 //     from), is refused whole: "unreadable is refusal".
@@ -55,7 +56,7 @@ const SOURCE_STATES = ["found", "changed", "not_found"] as const;
 const BUILD_KINDS = ["first", "refresh", "nightly"] as const;
 const BUILD_STATES = ["running", "done", "stopped", "failed"] as const;
 const STOP_REASONS = ["cap", "person", "repo_unreadable", "no_ai_key", "unpriced_model", "failed"] as const;
-const LIMITS = { pages: 300, blocks: 120, claims: 80, citations: 3, claimsPerBlock: 12, repos: 20, notes: 50, files: 240, ranges: 240 } as const;
+const LIMITS = { pages: 300, blocks: 120, claims: 80, citations: 3, claimsPerBlock: 12, repos: 20, notes: 50, files: 240, ranges: 240, searchResults: 20 } as const;
 
 type Plain = Record<string, unknown>;
 const plain = (value: unknown): value is Plain => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
@@ -90,6 +91,7 @@ export function indexAnswer(value: unknown, project: string): Plain {
   return {
     project,
     state: need(oneOf(v["state"], ["empty", "ready"] as const), v["state"]),
+    agentsEnabled: need(typeof v["agentsEnabled"] === "boolean", v["agentsEnabled"]),
     pages: list(v["pages"], LIMITS.pages).map((one) => {
       const p = rec(one);
       need(slug(p["pageId"]) && !ids.has(p["pageId"]), undefined);
@@ -194,15 +196,29 @@ export function sourcesAnswer(value: unknown, project: string, id: string): Plai
   };
 }
 
-type Kind = "index" | "page" | "sources";
+type Kind = "index" | "search" | "page" | "sources";
 /** Code's refusal in Cloud's fixed words. Only Code's exact unknown-route 404 means "not on Code yet"; any other 404 is "not found". */
 export function wikiRefusal(kind: Kind, error: CodeError): RouteAnswer {
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
-  if (error.status === 404) return body?.["code"] === "NOT_FOUND" && body["message"] === "route not found" ? A.notYet : kind === "index" ? A.notFound : A.noPage;
+  if (error.status === 404) return body?.["code"] === "NOT_FOUND" && body["message"] === "route not found" ? A.notYet : kind === "index" || kind === "search" ? A.notFound : A.noPage;
   // W2 answers 403 only to a script token, which Cloud never uses; a no-role caller on an existing project gets the same 404 as a missing one. If Code ever answers 403 for a no-role caller, this becomes an existence oracle: map it to the 404 then.
   if (error.status === 403) return A.forbidden;
   if (error.status === 400) return A.invalid;
   return A.unavailable;
+}
+
+/** Code's search hits rebuilt from the one requested project; never accept an index or result for another project. */
+export function searchAnswer(value: unknown, project: string, query: string): Plain {
+  const v = rec(value);
+  need(v["project"] === project && v["query"] === query, undefined);
+  const ids = new Set<string>();
+  need(v["trustLine"] === WIKI_TRUST_LINE, undefined);
+  return { project, query, results: list(v["results"], LIMITS.searchResults).map((one) => {
+    const hit = rec(one);
+    need(slug(hit["pageId"]) && !ids.has(hit["pageId"]), undefined);
+    ids.add(hit["pageId"] as string);
+    return { pageId: hit["pageId"], title: need(text(hit["title"], 120), hit["title"]), summary: need(text(hit["summary"], 300, 0), hit["summary"]), snippet: need(prose(hit["snippet"], 240), hit["snippet"]) };
+  }), trustLine: WIKI_TRUST_LINE };
 }
 
 type Got = { value: unknown } | { refusal: RouteAnswer };
@@ -238,6 +254,19 @@ function rebuilt(build: () => Plain): RouteAnswer {
 }
 
 export const WIKI_ROUTES: Route[] = [
+  {
+    method: "GET", path: /^\/projects\/([^/]+)\/wiki\/search$/u,
+    answer: async (context) => {
+      const at = await scope(context);
+      if ("refusal" in at) return at.refusal;
+      const values = context.query.getAll("q");
+      if ([...context.query.keys()].some((key) => key !== "q") || values.length !== 1 || values[0] === undefined || values[0].trim().length === 0 || values[0].length > 80 || /[\p{Cc}\p{Cf}]/u.test(values[0])) return A.invalid;
+      const query = values[0].trim();
+      const got = await fromCode(context, "search", wikiPath(at.project, `/search?q=${encodeURIComponent(query)}`));
+      if ("refusal" in got) return got.refusal;
+      return rebuilt(() => searchAnswer(got.value, at.project, query));
+    },
+  },
   {
     method: "GET", path: /^\/projects\/([^/]+)\/wiki$/u,
     answer: async (context) => {
