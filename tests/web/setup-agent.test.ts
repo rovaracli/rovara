@@ -54,6 +54,7 @@ function setup(element: ReactElement, options: Options = {}) {
     if (request.path === "/v1/app/me") return { status: 200, body: me };
     if (request.path === "/v1/app/github/installations") return { status: 200, body: { installations: [{ installationId: 55, accountLogin: "acme", accountType: "Organization", repositorySelection: "selected", status: "active" }] } };
     if (request.path.startsWith("/v1/app/github/repositories")) return { status: 200, body: { repositories: [{ fullName: "acme/web", githubRepositoryId: 101, private: true, defaultBranch: "main" }, { fullName: "acme/meta", githubRepositoryId: 102, private: true, defaultBranch: "main" }, { fullName: "acme/api", githubRepositoryId: 103, private: true, defaultBranch: "main" }] } };
+    if (request.path.startsWith("/v1/app/github/repository-choices")) return { status: 200, body: { repositories: ["web", "meta", "api"].map((name, index) => ({ installationId: 55, accountLogin: "acme", fullName: `acme/${name}`, githubRepositoryId: 101 + index, private: true, defaultBranch: "main", projects: [] })), incomplete: false } };
     if (request.path === "/v1/app/projects/web") return { status: 200, body: project() };
     if (request.path === "/v1/app/projects/web/setup-draft" && request.method === "GET") return { status: 200, body: { ...(draft as object), requestId: "gateway-1" } };
     if (request.path === "/v1/app/projects/web/setup-draft" && request.method === "POST") { draft = { status: "drafting", basedOnRevision: 2 }; return { status: options.startStatus ?? 202, body: { ...(draft as object), requestId: "gateway-2" } }; }
@@ -293,12 +294,13 @@ it("starts a project from a meta repo with the code repositories it covers, or w
   alone.close();
 });
 
-it("keeps choosing one repository as it was", async () => {
+it("picking one repository creates one project the one-repository way", async () => {
   const f = setup(h(OnboardScreen), { path: "/app/onboard?github=connected&step=repositories" });
-  fireEvent.click(await screen.findByLabelText("acme/web"));
-  fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+  fireEvent.click(await screen.findByRole("checkbox", { name: /^acme\/web/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Create 1 project" }));
   await waitFor(() => expect(posts(f, "/v1/app/projects")).toHaveLength(1));
-  expect(posts(f, "/v1/app/projects")[0]!.body).toMatchObject({ repository: "acme/web" });
+  expect(posts(f, "/v1/app/projects")[0]!.body).toMatchObject({ repositories: ["acme/web"] });
+  expect(posts(f, "/v1/app/projects")[0]!.body).not.toHaveProperty("separate");
   expect(posts(f, "/v1/app/projects")[0]!.body).not.toHaveProperty("metaRepository");
   f.close();
 });

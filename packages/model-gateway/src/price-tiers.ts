@@ -3,7 +3,13 @@ import type { TokenUsage } from "./usage.js";
 import type { Price, TokenRates } from "./price.js";
 export const RATE_KEYS = ["inputMicrosPerMTok", "outputMicrosPerMTok", "cacheReadMicrosPerMTok", "cacheWrite5mMicrosPerMTok", "cacheWrite1hMicrosPerMTok", "cacheWriteMicrosPerMTok"] as const;
 export type RateKey = typeof RATE_KEYS[number];
-export const CONTEXT_THRESHOLDS = [128_000, 200_000] as const;
+/**
+ * Every long-context band a price source states (LiteLLM's `_above_<n>k_tokens` fields, 2026-11-17: 32k, 100k, 128k, 200k, 256k,
+ * 272k, 512k). A row naming any other band stays unknown (the cautious price), never folded into a neighbouring band.
+ */
+export const CONTEXT_THRESHOLDS = [32_000, 100_000, 128_000, 200_000, 256_000, 272_000, 512_000] as const;
+/** LiteLLM's band suffix, for exactly the bands above: `_above_100k_tokens` is the band above 100,000 prompt tokens. */
+export const BAND_SUFFIX = new RegExp(`_above_(${CONTEXT_THRESHOLDS.map((t) => t / 1000).join("|")})k_tokens`, "u");
 export function copyRates(p: Partial<TokenRates>): Partial<TokenRates> {
   const result: Partial<TokenRates> = {};
   for (const key of RATE_KEYS) if (p[key] !== undefined) result[key] = p[key];

@@ -21,7 +21,8 @@ const on = synth({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: MODELS, 
 const without = synth(productOn);
 
 // CDK moves statements past the inline size limit into a managed "overflow" policy on the same role: both are read.
-const statements = (t: { Resources: Record<string, Resource> }): Statement[] => Object.values(t.Resources).filter((r) => r.Type === "AWS::IAM::Policy" || r.Type === "AWS::IAM::ManagedPolicy").flatMap((p) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
+// The role boundary (cloud-boundary.ts) is a ManagedPolicy attached to no role: a ceiling, not a grant, so it is not read here.
+const statements = (t: { Resources: Record<string, Resource> }): Statement[] => Object.values(t.Resources).filter((r) => r.Type === "AWS::IAM::Policy" || (r.Type === "AWS::IAM::ManagedPolicy" && r.Properties.Roles !== undefined)).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
 const actionsOf = (s: Statement) => [s.Action].flat();
 const bedrock = (t: { Resources: Record<string, Resource> }) => statements(t).filter((s) => actionsOf(s).some((a) => a.startsWith("bedrock:")));
 const join = (parts: unknown[]) => ({ "Fn::Join": ["", parts] });
@@ -83,7 +84,8 @@ describe("Rovara's AI in the gateway stack (DEC 240)", () => {
     expect([bySid.RovaraAiModels!.Resource].flat()).toEqual(["qwen.qwen3-coder-480b-a35b-v1:0", "qwen.qwen3-coder-30b-a3b-v1:0", "qwen.qwen3-235b-a22b-2507-v1:0", "mistral.devstral-2-123b", "mistral.mistral-large-3-675b-instruct", "deepseek.v3-v1:0", "moonshotai.kimi-k2.5", "zai.glm-5", "zai.glm-4.7", "openai.gpt-oss-120b-1:0", "openai.gpt-oss-20b-1:0", "moonshot.kimi-k2-thinking", "minimax.minimax-m2.5"].map((m) => modelArn("us-west-2", m)));
     expect(Object.keys(bySid).sort()).toEqual(["RovaraAiModels", "RovaraAiProfileModels", "RovaraAiProfiles"]);
     // Every policy that carries a Bedrock action is attached to the serving role only.
-    for (const r of Object.values(t.Resources).filter((x) => (x.Type === "AWS::IAM::Policy" || x.Type === "AWS::IAM::ManagedPolicy") && JSON.stringify(x.Properties.PolicyDocument).includes("bedrock:"))) {
+    // (Except the role boundary, attached to nothing: it bounds every role and grants nothing.)
+    for (const r of Object.values(t.Resources).filter((x) => (x.Type === "AWS::IAM::Policy" || (x.Type === "AWS::IAM::ManagedPolicy" && x.Properties.Roles !== undefined)) && JSON.stringify(x.Properties.PolicyDocument).includes("bedrock:"))) {
       expect((r.Properties.Roles as Array<{ Ref: string }>).map((role) => role.Ref)).toEqual([expect.stringMatching(/^ServeTaskRole/u)]);
       expect(r.Properties.Users).toBeUndefined(); expect(r.Properties.Groups).toBeUndefined();
     }
