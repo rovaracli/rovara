@@ -22,10 +22,15 @@ const signIn = (token: string): CodeSession => ({
 });
 const pending = (state: string) => ({ state, verifier: "v", returnTo: "/app", at: 1 }) as unknown as PendingSignIn;
 let made = 0;
-const session = (who = ADA, createdAt = "2026-11-14T12:00:00.000Z"): WorkSession => ({
-  sessionId: `ses_${String(made++).padStart(20, "0")}`, taskId: "6f9d0c1e-2b3a-4c5d-8e7f-001122334455", project: "payments",
-  startedBy: who, owner: who, createdAt, revision: 1,
-});
+// Each session gets its own task id: the DynamoDB cases share one table, and a new session records its task (K2), so a task id reused by another case would
+// already have a session there. A case that needs two sessions of one task sets `taskId` itself.
+const session = (who = ADA, createdAt = "2026-11-14T12:00:00.000Z"): WorkSession => {
+  const index = made++;
+  return {
+    sessionId: `ses_${String(index).padStart(20, "0")}`, taskId: `6f9d0c1e-2b3a-4c5d-8e7f-${String(index).padStart(12, "0")}`, project: "payments",
+    startedBy: who, owner: who, createdAt, revision: 1,
+  };
+};
 const comment = (index: number, text = `comment ${String(index)}`): SessionComment => ({
   messageId: `msg_${String(index).padStart(20, "0")}`, kind: "comment", source: "app", author: ADA, text,
   createdAt: new Date(Date.UTC(2026, 10, 14, 12, 0, 0, index)).toISOString(), rev: 1,
