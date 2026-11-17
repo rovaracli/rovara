@@ -1,8 +1,8 @@
 import type { Caps, CapsScope, CapsSource } from "./caps.js";
-import { GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_LEARNING_BUDGET_FIELD, GATEWAY_COMPANY_LESSONS_GATE, GATEWAY_COMPANY_SETTINGS } from "./deploy.js";
-import type { Dynamo } from "./dynamo.js";
+import { GATEWAY_COMPANY_BUDGET_FIELDS, GATEWAY_COMPANY_BUDGET_MAX, GATEWAY_COMPANY_LEARNING_BUDGET_FIELD, GATEWAY_COMPANY_LESSONS_GATE, GATEWAY_COMPANY_SETTINGS, GATEWAY_COMPANY_SPEND_LIMIT } from "./deploy.js";
+import type { Dynamo, Item } from "./dynamo.js";
 import type { LessonsSwitch } from "./learning-route.js";
-import { COMPANY, record, whole } from "./model-gateway-token.js";
+import { COMPANY, PERSON, PROJECT, record, whole } from "./model-gateway-token.js";
 
 /**
  * The caps a call is held to, read from the Cloud company backend's budgets (deploy.ts GATEWAY_COMPANY_SETTINGS): the company's
@@ -16,17 +16,45 @@ import { COMPANY, record, whole } from "./model-gateway-token.js";
  * kind"), always under the company's monthly cap. The learning cap (`learningMonthlyUsdMicros`, DEC 226) rides along in `learningMonth` for the
  * learning route only; absent in an older row, it is left out. A row that is not this company's, or a budget that is not null or a whole number of micro-dollars up to
  * the backend's own ceiling, refuses the same way. A failed read throws (the call stops before anything is reserved or sent).
+ *
+ * Overrides (lead 3 B1, DEC 254t b): the project the call runs in and the person it runs for may each have a monthly limit of their own
+ * (deploy.ts GATEWAY_COMPANY_SPEND_LIMIT), read by key on every call, strongly consistent (a lowered limit applies to the very next call).
+ * No item: the company default above. An item that is not exactly this company's, this kind's and this id's, or whose amount or version
+ * is not whole numbers (amount up to the backend's ceiling), refuses the call; so does a project or person id that is not in the token's
+ * format. A failed read throws. The company's monthly cap stays the outer bound (it is returned beside the override either way).
  */
 export const NO_CAP = Number.MAX_SAFE_INTEGER;
 /** What `validCaps` refuses: the server answers 503 and sends nothing. */
 const UNAVAILABLE = Object.freeze({}) as unknown as Caps;
 
+/** The override's amount: undefined for "no override item", null when an item is there but does not read, else micro-dollars. */
+function overrideAmount(item: Item | undefined, cid: string, kind: "project" | "person", id: string): number | null | undefined {
+  if (item === undefined) return undefined;
+  if (item.companyId !== cid || item.kind !== kind || item.id !== id) return null;
+  const amount = item.monthlyUsdMicros;
+  if (!whole(amount) || amount > GATEWAY_COMPANY_BUDGET_MAX || !whole(item.version) || item.version < 1) return null;
+  return amount;
+}
+
 export class CompanyBudgetCaps implements CapsSource {
   constructor(private readonly db: Dynamo, private readonly table: string) {}
 
+  private overrideItem(cid: string, prefix: string, id: string, signal: AbortSignal | undefined): Promise<Item | undefined> {
+    return this.db.get(this.table, { pk: `${GATEWAY_COMPANY_SPEND_LIMIT.partitionPrefix}${cid}`, sk: `${prefix}${id}` }, { consistent: true, ...(signal === undefined ? {} : { signal }) });
+  }
+
   async capsFor(scope: CapsScope, signal?: AbortSignal): Promise<Caps> {
     if (record(scope) === undefined || typeof scope.cid !== "string" || !COMPANY.test(scope.cid)) return UNAVAILABLE;
-    const item = await this.db.get(this.table, { pk: `${GATEWAY_COMPANY_SETTINGS.partitionPrefix}${scope.cid}`, sk: GATEWAY_COMPANY_SETTINGS.sortKey }, { consistent: false, ...(signal === undefined ? {} : { signal }) });
+    // The overrides' keys come only from ids in the token's own format; anything else is refused before a read.
+    if (typeof scope.pid !== "string" || !PROJECT.test(scope.pid) || (scope.per !== undefined && (typeof scope.per !== "string" || !PERSON.test(scope.per)))) return UNAVAILABLE;
+    const [item, projectItem, personItem] = await Promise.all([
+      this.db.get(this.table, { pk: `${GATEWAY_COMPANY_SETTINGS.partitionPrefix}${scope.cid}`, sk: GATEWAY_COMPANY_SETTINGS.sortKey }, { consistent: false, ...(signal === undefined ? {} : { signal }) }),
+      this.overrideItem(scope.cid, GATEWAY_COMPANY_SPEND_LIMIT.projectSortPrefix, scope.pid, signal),
+      scope.per === undefined ? Promise.resolve(undefined) : this.overrideItem(scope.cid, GATEWAY_COMPANY_SPEND_LIMIT.personSortPrefix, scope.per, signal),
+    ]);
+    const projectOverride = overrideAmount(projectItem, scope.cid, "project", scope.pid);
+    const personOverride = scope.per === undefined ? undefined : overrideAmount(personItem, scope.cid, "person", scope.per);
+    if (projectOverride === null || personOverride === null) return UNAVAILABLE;
     if (item === undefined || item.companyId !== scope.cid) return UNAVAILABLE;
     const budgets = record(record(item.settings)?.budgets);
     if (budgets === undefined) return UNAVAILABLE;
@@ -41,8 +69,8 @@ export class CompanyBudgetCaps implements CapsSource {
     if (learning !== undefined && !(whole(learning) && learning <= GATEWAY_COMPANY_BUDGET_MAX)) return UNAVAILABLE;
     return {
       task: task ?? NO_CAP,
-      projectMonth: project ?? NO_CAP,
-      ...(member === null || member === undefined ? {} : { personMonth: member }),
+      projectMonth: projectOverride ?? project ?? NO_CAP,
+      ...(personOverride !== undefined ? { personMonth: personOverride } : member === null || member === undefined ? {} : { personMonth: member }),
       companyMonth: company,
       ...(learning === undefined ? {} : { learningMonth: learning }),
     };

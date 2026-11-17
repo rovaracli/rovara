@@ -68,6 +68,32 @@ export type AgentAiSource = (typeof AGENT_AI_SOURCES)[number];
 export interface AgentAiChoice { companyId: string; source: AgentAiSource; version: number; updatedAt: string; updatedBy: string }
 export const validAgentAiSource = (value: unknown): value is AgentAiSource => typeof value === "string" && (AGENT_AI_SOURCES as readonly string[]).includes(value);
 
+/**
+ * Lead 3 B1 (DEC 254t b): a monthly limit of its own for one project or one person, over the company default (`settings.budgets`). One item
+ * per override in the Companies table (`SPEND_LIMIT#PROJECT#<project>` / `SPEND_LIMIT#PERSON#<developer id>` under the company); the model
+ * gateway reads the same item on every call (model-gateway company-caps.ts; deploy.ts GATEWAY_COMPANY_SPEND_LIMIT; a contract test holds the
+ * two together). Amounts are whole micro-dollars, never null (no override is how a company default applies).
+ */
+export const SPEND_LIMIT_KINDS = ["project", "person"] as const;
+export type SpendLimitKind = (typeof SPEND_LIMIT_KINDS)[number];
+export interface SpendLimit { companyId: string; kind: SpendLimitKind; id: string; monthlyUsdMicros: number; version: number; updatedAt: string; updatedBy: string }
+/** The sort-key prefixes of the override items (the gateway's GATEWAY_COMPANY_SPEND_LIMIT repeats them). */
+export const SPEND_LIMIT_SORT_PREFIX: Readonly<Record<SpendLimitKind, string>> = Object.freeze({ project: "SPEND_LIMIT#PROJECT#", person: "SPEND_LIMIT#PERSON#" });
+/** Overrides a company may keep of each kind; a read lists at most this many (and says when there were more). */
+export const SPEND_LIMITS_MAX: Readonly<Record<SpendLimitKind, number>> = Object.freeze({ project: 200, person: 200 });
+/** The ids an override may name (the gateway token's own formats: a project name, a developer id). */
+export const SPEND_LIMIT_ID: Readonly<Record<SpendLimitKind, RegExp>> = Object.freeze({ project: /^[a-z][a-z0-9-]{0,62}$/u, person: /^[a-f0-9]{64}$/u });
+/** The most one override may be: the backend's own ceiling for a budget ($1,000,000), as the gateway reads it. */
+export const SPEND_LIMIT_MICROS_MAX = 1_000_000_000_000;
+/** What a write was decided against: the override as read (its version and amount; none = absent) and the settings version the default came from. */
+export interface SpendLimitBasis { override: { version: number; monthlyUsdMicros: number } | undefined; settingsVersion: number }
+export const validSpendLimit = (value: unknown, companyId: string, kind: SpendLimitKind, id: string): value is SpendLimit => {
+  const v = value as Partial<SpendLimit> | null | undefined;
+  return v !== null && typeof v === "object" && v.companyId === companyId && v.kind === kind && v.id === id
+    && typeof v.monthlyUsdMicros === "number" && Number.isSafeInteger(v.monthlyUsdMicros) && v.monthlyUsdMicros >= 0 && v.monthlyUsdMicros <= SPEND_LIMIT_MICROS_MAX
+    && typeof v.version === "number" && Number.isSafeInteger(v.version) && v.version >= 1 && typeof v.updatedAt === "string" && typeof v.updatedBy === "string";
+};
+
 export interface HookInstall { issuer: string; keys: PublicJwk[]; companyIds: string[]; updatedAt: string }
 
 /** confirmInvite's arguments: one unconfirmed invite and itself, pending, under its new token hash (nothing else may move). */
@@ -122,6 +148,17 @@ export interface CompanyStore {
   agentAi(companyId: string): Promise<AgentAiChoice | undefined>;
   /** Saves the choice at `expectedVersion + 1` (0: none saved yet). Throws CompanyStoreConflict. */
   putAgentAi(choice: Omit<AgentAiChoice, "version">, expectedVersion: number): Promise<number>;
+  /** One override, or undefined when none is saved. An item that does not read as exactly this company's, kind's and id's THROWS (an outage, never "none saved"). */
+  spendLimit(companyId: string, kind: SpendLimitKind, id: string): Promise<SpendLimit | undefined>;
+  /** The company's overrides, each kind at most SPEND_LIMITS_MAX (`partial` when there were more). Throws when any item does not read. */
+  spendLimits(companyId: string): Promise<{ projects: SpendLimit[]; people: SpendLimit[]; partial: boolean }>;
+  /**
+   * Saves the override at `basis.override.version + 1` (version 1 when there is none), only while it is still exactly `basis.override` AND the
+   * company settings are still at `basis.settingsVersion` (the default the change was judged against). Throws CompanyStoreConflict.
+   */
+  putSpendLimit(limit: Omit<SpendLimit, "version">, basis: SpendLimitBasis): Promise<number>;
+  /** Removes the override, under the same two conditions. `basis.override` must be present. Throws CompanyStoreConflict. */
+  removeSpendLimit(companyId: string, kind: SpendLimitKind, id: string, basis: SpendLimitBasis): Promise<void>;
   hookInstall(issuer: string): Promise<HookInstall | undefined>;
   /** An install operator's change (no app route writes this). Throws on an install that does not read. */
   putHookInstall(install: HookInstall): Promise<void>;
@@ -213,6 +250,61 @@ export class LocalCompanyStore implements CompanyStore {
     const holder = this.githubTrials.get(githubUserId);
     if (holder === undefined) { this.githubTrials.set(githubUserId, companyId); return "claimed"; }
     return holder === companyId ? "held" : "other";
+  }
+
+  private readonly spendLimitsOf = new Map<string, SpendLimit>();
+  /** Rows a test or operator damaged by hand (see `corruptSpendLimit`): they read as an outage, as a damaged item does in DynamoDB. */
+  private readonly spendLimitDamaged = new Set<string>();
+
+  private static limitKey(companyId: string, kind: SpendLimitKind, id: string) { return `${companyId}\u0000${kind}\u0000${id}`; }
+
+  /** Tests only: makes one stored override unreadable. */
+  corruptSpendLimit(companyId: string, kind: SpendLimitKind, id: string) { this.spendLimitDamaged.add(LocalCompanyStore.limitKey(companyId, kind, id)); }
+
+  async spendLimit(companyId: string, kind: SpendLimitKind, id: string) {
+    const key = LocalCompanyStore.limitKey(companyId, kind, id);
+    const stored = this.spendLimitsOf.get(key);
+    if (stored === undefined) return undefined;
+    if (this.spendLimitDamaged.has(key) || !validSpendLimit(stored, companyId, kind, id)) throw new Error("spend limit unreadable");
+    return copy(stored);
+  }
+
+  async spendLimits(companyId: string) {
+    const found: SpendLimit[] = [];
+    for (const [key, stored] of this.spendLimitsOf) {
+      const [owner, kind, id] = key.split("\u0000") as [string, SpendLimitKind, string];
+      if (owner !== companyId) continue;
+      if (this.spendLimitDamaged.has(key) || !validSpendLimit(stored, companyId, kind, id)) throw new Error("spend limit unreadable");
+      found.push(copy(stored));
+    }
+    const of = (kind: SpendLimitKind) => found.filter((l) => l.kind === kind).sort((a, b) => a.id.localeCompare(b.id));
+    const [projects, people] = [of("project"), of("person")];
+    return {
+      projects: projects.slice(0, SPEND_LIMITS_MAX.project), people: people.slice(0, SPEND_LIMITS_MAX.person),
+      partial: projects.length > SPEND_LIMITS_MAX.project || people.length > SPEND_LIMITS_MAX.person,
+    };
+  }
+
+  private spendBasisHolds(companyId: string, key: string, basis: SpendLimitBasis) {
+    const stored = this.spendLimitsOf.get(key);
+    const same = basis.override === undefined ? stored === undefined : stored !== undefined && stored.version === basis.override.version && stored.monthlyUsdMicros === basis.override.monthlyUsdMicros;
+    return same && (this.settingsOf.get(companyId)?.version ?? 0) === basis.settingsVersion;
+  }
+
+  async putSpendLimit(limit: Omit<SpendLimit, "version">, basis: SpendLimitBasis) {
+    const key = LocalCompanyStore.limitKey(limit.companyId, limit.kind, limit.id);
+    if (!this.spendBasisHolds(limit.companyId, key, basis)) throw new CompanyStoreConflict("spend limit");
+    const version = (basis.override?.version ?? 0) + 1;
+    this.spendLimitsOf.set(key, { ...copy(limit), version });
+    this.spendLimitDamaged.delete(key);
+    return version;
+  }
+
+  async removeSpendLimit(companyId: string, kind: SpendLimitKind, id: string, basis: SpendLimitBasis) {
+    const key = LocalCompanyStore.limitKey(companyId, kind, id);
+    if (basis.override === undefined || !this.spendBasisHolds(companyId, key, basis)) throw new CompanyStoreConflict("spend limit");
+    this.spendLimitsOf.delete(key);
+    this.spendLimitDamaged.delete(key);
   }
 
   async agentAi(companyId: string) { const choice = this.agentAiOf.get(companyId); return choice === undefined ? undefined : copy(choice); }

@@ -1,0 +1,44 @@
+// Spending limits (lead 3 B1, DEC 254t b): Cloud's `/v1/app/org/spend-limits` routes. Company admins only. The reader is total over untrusted data: a body
+// that is not the shape is unreadable (the page says so, and draws no number it did not read).
+export const SPEND_LIMITS_PATH = "/v1/app/org/spend-limits";
+export const projectLimitPath = (project: string) => `${SPEND_LIMITS_PATH}/projects/${encodeURIComponent(project)}`;
+export const personLimitPath = (person: string) => `${SPEND_LIMITS_PATH}/people/${encodeURIComponent(person)}`;
+/** The ids a limit may name (the same formats Cloud's routes accept). */
+export const PROJECT_NAME = /^[a-z][a-z0-9-]{0,62}$/u;
+export const PERSON_ID = /^[a-f0-9]{64}$/u;
+export interface SpendLimitRow { id: string; monthlyUsd: number; version: number }
+export interface SpendLimitsRead {
+ /** The company defaults (null: no limit of that kind). Changed in Company settings, never here. */
+ defaults: { companyMonthlyUsd: number | null; memberMonthlyUsd: number | null; projectMonthlyUsd: number | null; taskUsd: number | null };
+ projects: SpendLimitRow[];
+ people: SpendLimitRow[];
+ /** There were more limits than the page lists. */
+ partial: boolean;
+ max: { projects: number; people: number };
+}
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+const usd = (v: unknown): number | null | undefined => (v === null ? null : typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
+function rows(raw: unknown, id: RegExp): SpendLimitRow[] {
+ if (!Array.isArray(raw)) throw new Error("not spending limits");
+ return raw.map(entry => {
+  if (!isRecord(entry) || typeof entry["id"] !== "string" || !id.test(entry["id"]) || typeof entry["monthlyUsd"] !== "number" || !Number.isFinite(entry["monthlyUsd"]) || entry["monthlyUsd"] < 0 || !whole(entry["version"]) || entry["version"] < 1) throw new Error("not spending limits");
+  return { id: entry["id"], monthlyUsd: entry["monthlyUsd"], version: entry["version"] };
+ });
+}
+export function readSpendLimits(body: unknown): SpendLimitsRead {
+ if (!isRecord(body) || !isRecord(body["defaults"]) || !isRecord(body["max"])) throw new Error("not spending limits");
+ const d = body["defaults"], company = usd(d["companyMonthlyUsd"]), member = usd(d["memberMonthlyUsd"]), project = usd(d["projectMonthlyUsd"]), task = usd(d["taskUsd"]);
+ if (company === undefined || member === undefined || project === undefined || task === undefined || typeof body["partial"] !== "boolean" || !whole(body["max"]["projects"]) || !whole(body["max"]["people"])) throw new Error("not spending limits");
+ return {
+  defaults: { companyMonthlyUsd: company, memberMonthlyUsd: member, projectMonthlyUsd: project, taskUsd: task },
+  projects: rows(body["projects"], PROJECT_NAME), people: rows(body["people"], PERSON_ID), partial: body["partial"], max: { projects: body["max"]["projects"], people: body["max"]["people"] },
+ };
+}
+/** A dollar amount a person typed: 0 to 1,000,000 with at most two decimals ("5", "12.50", "$1,200"). undefined for anything else. */
+export function parseUsd(text: string): number | undefined {
+ const cleaned = text.trim().replace(/^\$/u, "").replace(/,/gu, "");
+ if (!/^\d{1,7}(?:\.\d{1,2})?$/u.test(cleaned)) return undefined;
+ const value = Number(cleaned);
+ return value >= 0 && value <= 1_000_000 ? value : undefined;
+}

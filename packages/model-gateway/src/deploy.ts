@@ -157,6 +157,15 @@ export const GATEWAY_COMPANY_SETTINGS = { partitionPrefix: "COMPANY#", sortKey: 
  * Cloud's store and reads back through the gateway's reader.
  */
 export const GATEWAY_COMPANY_AGENT_AI = { partitionPrefix: "COMPANY#", sortKey: "AGENT_AI" } as const;
+/**
+ * The company's per-project and per-person MONTHLY limit overrides (lead 3 row B1, DEC 254t b) in the same Companies table: one item per
+ * override, `COMPANY#<org_…>` / `SPEND_LIMIT#PROJECT#<project>` or `SPEND_LIMIT#PERSON#<developer id>`, each
+ * `{ companyId, kind, id, monthlyUsdMicros, version, updatedAt, updatedBy }`. Written by Cloud's spend-limits-routes.ts (company admins,
+ * step-up when a limit goes up, audited), read by the gateway on every call (company-caps.ts): no item is the company default
+ * (`settings.budgets`); an item that does not read as exactly this company's, this kind's and this id's refuses the call. A contract
+ * test writes through Cloud's store and reads back through the gateway's reader.
+ */
+export const GATEWAY_COMPANY_SPEND_LIMIT = { partitionPrefix: "COMPANY#", projectSortPrefix: "SPEND_LIMIT#PROJECT#", personSortPrefix: "SPEND_LIMIT#PERSON#" } as const;
 export const GATEWAY_COMPANY_BUDGET_FIELDS = ["companyMonthlyUsdMicros", "memberMonthlyUsdMicros", "projectMonthlyUsdMicros", "taskUsdMicros"] as const;
 /** The backend's own ceiling for one budget: $1,000,000 in micro-dollars. */
 export const GATEWAY_COMPANY_BUDGET_MAX = 1_000_000_000_000;

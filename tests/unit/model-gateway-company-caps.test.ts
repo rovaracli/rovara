@@ -20,12 +20,12 @@ function setup() {
 const all = { companyMonthlyUsdMicros: 50_000_000, memberMonthlyUsdMicros: 10_000_000, projectMonthlyUsdMicros: 20_000_000, taskUsdMicros: 2_000_000 };
 
 describe("budgets from the Cloud company backend's Companies table", () => {
-  it("maps the four budgets to the meter's caps, reading only COMPANY#<org> / SETTINGS by GetItem", async () => {
+  it("maps the four budgets to the meter's caps, reading only COMPANY#<org> / SETTINGS and the project override key (B1) by GetItem", async () => {
     const { wire, caps, seed } = setup();
     await seed(all);
     expect(await caps.capsFor(scope)).toEqual({ task: 2_000_000, projectMonth: 20_000_000, personMonth: 10_000_000, companyMonth: 50_000_000 });
     const reads = wire.calls.filter((c) => c.operation !== "PutItem");
-    expect(reads.map((c) => [c.operation, c.table, c.keys])).toEqual([["GetItem", COMPANIES, [{ pk: `COMPANY#${cid}`, sk: "SETTINGS" }]]]);
+    expect(reads.map((c) => [c.operation, c.table, c.keys])).toEqual([["GetItem", COMPANIES, [{ pk: `COMPANY#${cid}`, sk: "SETTINGS" }]], ["GetItem", COMPANIES, [{ pk: `COMPANY#${cid}`, sk: "SPEND_LIMIT#PROJECT#web" }]]]);
   });
 
   it("under a company monthly cap, null is no cap of that kind (the backend's meaning): task and project unbounded, member drops out", async () => {
