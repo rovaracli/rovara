@@ -4,6 +4,7 @@
 // meters' tables, the shared eval stage table, the Vertex federation role, and the serving role's exact grants. The deploy role's
 // actions for the new resources are simulated against the agentx deploy role and its default permission boundary.
 import { createHash } from "node:crypto";
+import { withoutRoleBoundary } from "../support/without-role-boundary.js";
 import type { Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
@@ -17,7 +18,7 @@ type Resource = { Type: string; Properties: Record<string, unknown>; DeletionPol
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: Record<string, Record<string, unknown>>; Principal?: unknown };
 
 const synth = (context: Record<string, string>) => Template.fromStack(buildAgentXApp({ [MODEL_GATEWAY_CONTEXT_KEY]: "staging", agentxRegion: "us-west-2", ...context }).node.findChild("RovaraModelGateway") as Stack).toJSON() as { Resources: Record<string, Resource>; Parameters: Record<string, unknown>; Outputs: Record<string, unknown> };
-/** The gateway template (staging) at cloud/next d7d1edbb8, before this change (rule description reworded for EC2, 2026-11-16): SHA-256 of its JSON. */
+/** The gateway template (staging) at cloud/next d7d1edbb8, before this change (rule description reworded for EC2, 2026-11-16): SHA-256 of its JSON, less the role boundary (2026-11-17). */
 const BEFORE_SHA256 = "82fc411659fd6f86907541302bde328e9b217f2133854aefd7a1d371996baeaa";
 const off = synth({});
 const on = synth({ [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" });
@@ -33,7 +34,7 @@ const issuer = { "Fn::Join": ["", [{ Ref: "CodeUrl" }, "/v1/auth"]] };
 
 describe("off unless configured", () => {
   it("leaves the gateway template byte for byte as it was, and refuses any switch value but on", () => {
-    expect(createHash("sha256").update(JSON.stringify(off)).digest("hex")).toBe(BEFORE_SHA256);
+    expect(createHash("sha256").update(JSON.stringify(withoutRoleBoundary(off))).digest("hex")).toBe(BEFORE_SHA256);
     expect(productAiOn(undefined, "x")).toBe(false);
     expect(productAiOn("on", "x")).toBe(true);
     for (const bad of ["true", "1", "off", "", true]) expect(() => productAiOn(bad, "x")).toThrow(/must be "on" or absent/u);

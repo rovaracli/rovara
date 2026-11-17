@@ -25,6 +25,7 @@ import {
 import type { Construct } from "constructs";
 import { join, resolve } from "node:path";
 import { RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
+import { applyCloudBoundary } from "./cloud-boundary.js";
 import { CLOUD_APP_CALLBACK_PATH, CLOUD_APP_CLIENT_ID, CLOUD_APP_SCOPES, signInKey } from "./cloud-app.js";
 
 /**
@@ -276,6 +277,9 @@ export class CloudWebStack extends Stack {
       prune: false,
       cacheControl: [s3deploy.CacheControl.fromString("public, max-age=31536000, immutable")],
       memoryLimit: 512,
+      // Its own log group (named from this stack), not /aws/lambda/<function>: CloudFormation shortens that generated function name,
+      // stack name included, so the role boundary (cloud-boundary.ts) can't name it.
+      logGroup: new logs.LogGroup(this, "AppFilesLogs", { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY }),
     });
 
     const origin = `https://${distribution.distributionDomainName}`;
@@ -304,6 +308,8 @@ export class CloudWebStack extends Stack {
     new CfnOutput(this, "TableName", { value: table.tableName });
     new CfnOutput(this, "CompanyTableName", { value: companies.tableName });
     if (props.productAi === true) new CfnOutput(this, "ServerRoleArn", { value: server.role!.roleArn, description: "The model gateway stack's CloudSettingsRoleArn: this role seals product keys" });
+    // Last, so the template keeps its section order; the aspect puts it on every role at synth (cloud-boundary.ts).
+    applyCloudBoundary(this, env, "web");
   }
 
   /** The product AI settings' grants (B7): the gateway's product key table by company keys, and the two KMS keys' sealing calls only. */
