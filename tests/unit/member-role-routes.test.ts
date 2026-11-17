@@ -370,7 +370,7 @@ describe("member list: Code's list as the person", () => {
     // A cursor that repeats (Code loops) is refused, never followed forever.
     w.setListOverride({ status: 200, body: { members: [row("9")], more: true, cursor: "c1" } });
     expect(words(await w.call(ada, "GET", "/org/members"))).toEqual(words(MEMBER_WORDS.listUnavailable));
-    w.setListOverride({ status: 200, body: { members: [row("9"), row("9"), row("8", { name: "Eve\u202Elive" }), row("7", { name: "x".repeat(201), email: `${"e".repeat(330)}@x.test` })], more: false } });
+    w.setListOverride({ status: 200, body: { members: [row("9"), row("9"), row("8", { name: "Eve\u202Elive", email: "a\u202E@x.test" }), row("7", { name: "x".repeat(201), email: `${"e".repeat(330)}@x.test` })], more: false } });
     const answer = await w.call(ada, "GET", "/org/members");
     expect(answer.body.members).toEqual([
       { developerId: id("9"), name: "P9", role: "member", joinedAt: "2026-11-01T00:00:00.000Z" },
