@@ -29,7 +29,7 @@ export function AnswerView({ project, answer, repositories, onStart, starting }:
   return (
     <div className="rv-answer" data-testid="answer" data-outcome={answer.outcome} role="status">
       {said !== undefined ? <p className="rv-answer-text"><VisibleText text={said} /></p> : <p className="rv-answer-text" data-testid="answer-text">{text}</p>}
-      {answer.honesty !== undefined && answer.honesty !== said && <p className="rv-muted" data-testid="answer-honesty"><VisibleText text={answer.honesty} /></p>}
+      {answer.honesty !== undefined && said === undefined && <p className="rv-muted" data-testid="answer-honesty"><VisibleText text={answer.honesty} /></p>}
       {(shown.length > 0 || page !== undefined) && <p className="rv-answer-sources" data-testid="answer-sources"><span className="rv-muted">{A.SOURCES}: </span>
         {shown.map((cite) => <span key={cite.n}>[{cite.n}] {(() => { const href = link(cite); return href === undefined ? <code><VisibleText text={label(cite)} /></code> : <a href={href} target="_blank" rel="noopener noreferrer"><code><VisibleText text={label(cite)} /></code></a>; })()}{" "}</span>)}
         {page !== undefined && <span><span className="rv-muted">{A.WIKI}: </span>{wikiLink(page.pageId, page.title)}</span>}</p>}

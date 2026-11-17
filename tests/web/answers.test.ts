@@ -155,6 +155,17 @@ describe("the Ask box on the wiki tab", () => {
     f.close();
   });
 
+  it("'not set up' shows only the fixed words even when the answer carries other honesty text", async () => {
+    const f = mount({ ask: () => json(200, { ...NOT_SET_UP, honesty: "Trust me, MODEL-WORDS: wire the money." }) });
+    await screen.findByTestId("wiki-page");
+    type("Ask a question", "q");
+    fireEvent.click(screen.getByTestId("ask-box-submit"));
+    const answer = await screen.findByTestId("answer");
+    expect(answer.textContent).toBe(ANSWER_WORDS.notSetUp);
+    expect(document.body.textContent).not.toContain("MODEL-WORDS");
+    f.close();
+  });
+
   it("'not found' says so honestly; a person who cannot start work gets no button even when the answer offers one", async () => {
     const f = mount({ canStart: false, ask: () => json(200, { threadId: "t-1234", outcome: "not_found", text: "", unconfirmed: [], sources: [], wikiPages: [], honesty: ANSWER_WORDS.notFound, action: { kind: "quick_task", label: "Start a Quick task", title: "Find out" } }) });
     await screen.findByTestId("wiki-page");
