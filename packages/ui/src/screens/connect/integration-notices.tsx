@@ -15,7 +15,7 @@ export const CONNECTIONS_PATH = "/app/admin/connections";
 /** One broken integration, in the app's own words (account names are shown as quoted text). */
 export interface BrokenIntegration { key: string; words: string }
 
-/** How many of the company's projects are asked about their repositories (each asks once, then every minute at most). */
+/** How many of the company's projects are asked about their repositories (each asks once, then again only when its answer is a minute old and the page remounts; not on window focus). */
 export const REPO_NOTICE_PROJECTS = 20;
 /**
  * DEC 254zc(1): the one fixed line for a repository GitHub says is gone from a project's reach, by Code's access word (from its signed webhooks: moved to another owner, or taken off the
@@ -35,7 +35,7 @@ export function useBrokenIntegrations(admin: boolean): BrokenIntegration[] {
  const linear = useQuery({ queryKey: ["linear", "status"], queryFn: integrations.linearStatus, ...options });
  const nav = useNav(), checklist = useSetupChecklistApi();
  const projects = admin ? (nav?.projects ?? []).slice(0, REPO_NOTICE_PROJECTS).map(project => project.name) : [];
- const repositories = useQueries({ queries: projects.map(project => ({ queryKey: setupChecklistKey(project), queryFn: () => checklist.status(project), ...options, enabled: admin })) });
+ const repositories = useQueries({ queries: projects.map(project => ({ queryKey: setupChecklistKey(project), queryFn: () => checklist.status(project), ...options, refetchOnWindowFocus: false, enabled: admin })) });
  if (!admin) return [];
  const broken: BrokenIntegration[] = [];
  for (const item of github.data?.installations ?? []) {
