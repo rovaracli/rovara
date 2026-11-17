@@ -17,6 +17,7 @@ import { Dialog } from "../../design/Dialog.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { VisibleText, visibleText } from "../../design/VisibleText.js";
 import { SessionHeader, type ReadSession } from "./SessionHeader.js";
+import { WikiTaskUseCard } from "./WikiTaskUseCard.js";
 import { TaskPane } from "../work/TaskPane.js";
 import { TaskActions } from "./TaskActions.js";
 import type { Steer } from "./SteerBox.js";
@@ -129,6 +130,7 @@ export function SessionScreen() {
   {conversation !== false && <div className="rv-task-bar">{conversation}</div>}
   {designTask !== undefined && <DesignActions task={designTask} sessionKey={designKey} />}
   {row !== undefined && <TaskPane wide row={row} decisionsError={decisions.isError ? decisions.error : undefined} onDecided={onDecided} steer={steer} onComment={comment} design={design} />}
+  {row !== undefined && <WikiTaskUseCard project={row.project} taskId={row.id} />}
   {session !== undefined && <details className="rv-task-more" open={detailsOpen || undefined}><summary>More about this task</summary>
    <div className="rv-session-work"><Workspace session={session} onComment={discuss} /></div>
   </details>}
