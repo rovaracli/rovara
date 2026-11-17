@@ -17,6 +17,7 @@ import { MEMBER_ROUTES } from "./member-routes.js";
 import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
 import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./project-create-routes.js";
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
+import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
@@ -817,4 +818,6 @@ export const ROUTES: Route[] = [
   ...PROJECT_CREATE_ROUTES,
   // The "AI and spending" step (guided onboarding PR 15): the company's AI model and a project's per-task limit, answered by Code as the person.
   ...AI_SPEND_ROUTES,
+  // The project setup checklist and the hosted setup run (guided onboarding PR 9): Code decides who may; Cloud passes the person's token and fixed words.
+  ...SETUP_CHECKLIST_ROUTES,
 ];
