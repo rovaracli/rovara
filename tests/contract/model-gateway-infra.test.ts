@@ -191,12 +191,14 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
     expect(envOf("ServeTask")[GATEWAY_ENV.anthropicKeySecret]).toEqual({ Ref: idOf("AWS::SecretsManager::Secret") });
     template.hasResource("AWS::SecretsManager::Secret", {
       DeletionPolicy: "Retain",
-      Properties: { Name: "rovara-cloud/staging/model-gateway/provider/anthropic", KmsKeyId: { "Fn::GetAtt": [idOf("AWS::KMS::Key"), "Arn"] }, GenerateSecretString: { PasswordLength: 32, ExcludePunctuation: true } },
+      Properties: { KmsKeyId: { "Fn::GetAtt": [idOf("AWS::KMS::Key"), "Arn"] }, GenerateSecretString: { PasswordLength: 32, ExcludePunctuation: true } },
     });
+    // Generated names (the default, DEC: a fixed name stays reserved after a failed create): no Name, so CloudFormation picks one.
+    expect(Object.keys(resources[idOf("AWS::SecretsManager::Secret")]!.Properties)).not.toContain("Name");
     template.hasResource("AWS::KMS::Key", { DeletionPolicy: "Retain" });
     const keyPolicy = (ofType("AWS::KMS::Key")[0]![1].Properties.KeyPolicy as { Statement: Statement[] }).Statement;
     const decrypting = keyPolicy.filter((each) => actions(each).some((action) => /^kms:(Decrypt|ReEncrypt|CreateGrant|Create\*|\*)/u.test(action)));
-    const secretArn = { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":secretsmanager:us-west-2:", { Ref: "AWS::AccountId" }, ":secret:rovara-cloud/staging/model-gateway/provider/*"]] };
+    const secretArn = { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":secretsmanager:us-west-2:", { Ref: "AWS::AccountId" }, ":secret:*"]] };
     const viaSecretsManager = { "kms:ViaService": "secretsmanager.us-west-2.amazonaws.com" };
     expect(decrypting).toEqual([
       // Only Secrets Manager's key-access check (the deploy's CreateSecret needs it); it opens no stored version.

@@ -80,6 +80,15 @@ export const MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY = "rovaraModelGatewayR
  * exactly as without it.
  */
 export const MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY = "rovaraModelGatewayBedrockByo";
+/**
+ * How the provider key secrets are named. Absent (or "generated"): CloudFormation generates each secret's name, so a stack that
+ * failed on create and was deleted can be made again (a deleted secret keeps its NAME reserved for its recovery window, which
+ * blocks a re-create under a fixed name). `-c rovaraModelGatewayProviderSecretNames=fixed`: the original fixed name
+ * rovara-cloud/<env>/model-gateway/provider/<provider>. An environment ALREADY deployed with the fixed names MUST keep passing
+ * "fixed": changing a secret's name replaces it, and the replacement starts as a placeholder (the old secret, with the real
+ * key, is retained but no longer read). See docs/rovara-cloud-install.md, "The gateway's provider keys".
+ */
+export const MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY = "rovaraModelGatewayProviderSecretNames";
 /** Every customer role's name starts with this (packages/model-gateway bedrock-byo.ts BEDROCK_BYO_ROLE_PREFIX; a test pins them). */
 export const BEDROCK_BYO_CUSTOMER_ROLE_PREFIX = "RovaraBedrockInvoke-";
 /** The broker role's FIXED name: every customer's trust policy names it, so it must never change or be re-created. */
@@ -254,6 +263,13 @@ export function providerSecretName(env: string, provider: string): string {
   return `${RESOURCE_PREFIX}/${env}/model-gateway/provider/${provider}`;
 }
 
+/** Reads MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY: absent is "generated"; anything but "generated" or "fixed" is refused. */
+export function providerSecretNamesMode(value: unknown): "generated" | "fixed" {
+  if (value === undefined || value === "generated") return "generated";
+  if (value === "fixed") return "fixed";
+  throw new Error(`${MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY} must be "fixed" or "generated" (or absent, which is "generated")`);
+}
+
 export interface ModelGatewayImagesProps extends StackProps {
   readonly environmentName: string;
 }
@@ -289,6 +305,11 @@ export interface ModelGatewayProps extends StackProps {
   readonly rovaraAi?: RovaraAiProps;
   /** Bring your own Bedrock (MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY). Needs productAi. Default off. */
   readonly bedrockByo?: boolean;
+  /**
+   * "fixed" keeps the provider secrets at their original fixed names (an environment deployed that way must keep it); the default
+   * lets CloudFormation generate them (MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY).
+   */
+  readonly providerSecretNames?: "fixed" | "generated";
 }
 
 /** Table defaults: on-demand, point-in-time recovery, deletion protection, kept if the stack goes. */
@@ -365,7 +386,8 @@ export class ModelGatewayStack extends Stack {
     // role only (through Secrets Manager). Not a boundary against an account principal holding kms:PutKeyPolicy or
     // iam:PassRole on that role: those stay administrator rights. The value starts as a placeholder; an operator stores the
     // real key with `aws secretsmanager put-secret-value` (a new version; the console's edit reads the value first and is
-    // refused).
+    // refused), naming the secret by the ARN in the ProviderKeySecrets output (or its fixed name; see
+    // MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY).
     const serveRole = new iam.Role(this, "ServeTaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
         conditions: { ArnLike: { "aws:SourceArn": `arn:${this.partition}:ecs:${this.region}:${this.account}:*` }, StringEquals: { "aws:SourceAccount": this.account } },
@@ -385,7 +407,15 @@ export class ModelGatewayStack extends Stack {
       description: `Rovara Cloud ${env}: the model gateway's daily price fetch`,
     });
     const viaSecretsManager = `secretsmanager.${this.region}.amazonaws.com`;
-    const secretArnPattern = `arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:${providerSecretName(env, "")}*`;
+    const fixedSecretNames = (props.providerSecretNames ?? "generated") === "fixed";
+    // Fixed names: the key policy names the secrets' prefix. Generated names are unknown until the secrets exist, and the secrets
+    // name this key (a policy naming them would be circular), so the pattern is every secret in this account and Region. That
+    // adds no read: decrypt of a stored value is still the serving role's alone (OnlyGatewayReads), and the serving role is
+    // granted GetSecretValue on the provider secrets' ARNs only. It lets an operator store a value in another secret made with
+    // this key, which they cannot read back.
+    const secretArnPattern = fixedSecretNames
+      ? `arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:${providerSecretName(env, "")}*`
+      : `arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:*`;
     const providerKeysKey = new kms.Key(this, "ProviderKeysKey", {
       description: `Rovara Cloud ${env}: encrypts the model gateway's provider keys; only the gateway's serving role decrypts`,
       enableKeyRotation: true,
@@ -441,13 +471,15 @@ export class ModelGatewayStack extends Stack {
     // would let any account principal with secretsmanager:GetSecretValue read the keys.
     const secrets = MODEL_GATEWAY_PROVIDERS.map((provider) => {
       const secret = new secretsmanager.CfnSecret(this, `ProviderKey-${provider}`, {
-        name: providerSecretName(env, provider),
+        // No name: CloudFormation generates one (the default; see MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY).
+        ...(fixedSecretNames ? { name: providerSecretName(env, provider) } : {}),
         description: `Rovara Cloud ${env}: the model gateway's ${provider} key. Starts as a placeholder; put the real key here before switching the gateway on.`,
         kmsKeyId: providerKeysKey.keyArn,
         generateSecretString: { passwordLength: 32, excludePunctuation: true },
       });
       secret.applyRemovalPolicy(RemovalPolicy.RETAIN);
-      return { secretArn: secret.ref, secretName: providerSecretName(env, provider) };
+      // What the operator names to store the key: the fixed name, or (generated names) the secret's ARN, which Ref returns.
+      return { secretArn: secret.ref, secretId: fixedSecretNames ? providerSecretName(env, provider) : secret.ref };
     });
     const anthropic = secrets[0]!;
 
@@ -659,7 +691,12 @@ export class ModelGatewayStack extends Stack {
 
     new CfnOutput(this, "GatewayAddress", { value: `https://${alb.loadBalancerDnsName}`, description: "Point the certificate's name at this (DNS is outside this stack); Code's model-access route answers that name" });
     new CfnOutput(this, "Issuer", { value: issuer, description: "The one Code install trusted" });
-    new CfnOutput(this, "ProviderKeySecrets", { value: Fn.join(",", secrets.map((secret) => secret.secretName)), description: "Put each provider's key here (write only; only the gateway reads)" });
+    new CfnOutput(this, "ProviderKeySecrets", {
+      value: Fn.join(",", secrets.map((secret) => secret.secretId)),
+      description: fixedSecretNames
+        ? "Put each provider's key here (write only; only the gateway reads)"
+        : "Put each provider's key here, by secret ARN, in the order of the providers (anthropic first): aws secretsmanager put-secret-value --secret-id <ARN> (write only; only the gateway reads)",
+    });
     new CfnOutput(this, "AlarmTopic", { value: topic.topicArn });
     if (product !== undefined) {
       new CfnOutput(this, "ProductKeysTableName", { value: product.keysTable.tableName, description: "Cloud's settings routes write product keys, eval approvals and budgets here (RovaraCloudWeb parameter ProductKeysTableName)" });

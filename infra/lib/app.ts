@@ -4,7 +4,7 @@ import { CLOUD_PIPELINE_CONTEXT_KEY, CloudReleasePipelineStack } from "./cloud-r
 import { CLOUD_APP_CONTEXT_KEY, CloudAppStack, cloudAppStackName } from "./cloud-app.js";
 import { CloudWebStack, cloudWebStackName } from "./cloud-web.js";
 import { RequireCloudBoundary } from "./cloud-boundary.js";
-import { MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ModelGatewayImagesStack, ModelGatewayStack, modelGatewayImagesStackName, modelGatewayStackName } from "./model-gateway.js";
+import { MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ModelGatewayImagesStack, ModelGatewayStack, modelGatewayImagesStackName, modelGatewayStackName, providerSecretNamesMode } from "./model-gateway.js";
 
 /**
  * Rovara Cloud's CDK app. What it makes is chosen by context:
@@ -12,7 +12,8 @@ import { MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL
  *    (cloud-web.ts), and its first address, which redirects there (cloud-app.ts, #11);
  *  - `-c rovaraCloudPipeline=<environment>`: the release pipeline that deploys those (cloud-release-pipeline.ts);
  *  - `-c rovaraModelGateway=<environment>`: the model gateway and its image repository (model-gateway.ts). The release pipeline
- *    never makes or deploys these.
+ *    never makes or deploys these. `-c rovaraModelGatewayProviderSecretNames=fixed` keeps an already-deployed environment's fixed
+ *    provider secret names (default: CloudFormation generates them).
  * `-c agentxRegion=<region>` picks the region (us-east-1 by default).
  */
 export function buildAgentXApp(context: Record<string, unknown> = {}): App {
@@ -81,6 +82,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       ...(productAiOn(app.node.tryGetContext(MODEL_GATEWAY_PRODUCT_CONTEXT_KEY), MODEL_GATEWAY_PRODUCT_CONTEXT_KEY) ? { productAi: true } : {}),
       ...rovaraAiContext(app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY), app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY), app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY)),
       ...(productAiOn(app.node.tryGetContext(MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY), MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY) ? { bedrockByo: true } : {}),
+      providerSecretNames: providerSecretNamesMode(app.node.tryGetContext(MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY)),
     });
     Tags.of(gateway).add(ENVIRONMENT_TAG_KEY, gatewayEnv);
     return app;
