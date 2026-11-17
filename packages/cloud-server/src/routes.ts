@@ -15,6 +15,7 @@ import { WORK_READS } from "./work-reads.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
+import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 
 /** The company this Cloud shows, until companies are Cloud's own (phase 4). */
 export interface OrgView { orgId: string; name: string; plan: string }
@@ -251,6 +252,42 @@ async function homeCards(context: RouteContext): Promise<{ cards: HomeCard[]; to
 }
 
 export const ROUTES: Route[] = [
+  {
+    // Project machine size: member reads; SET is a stored choice and requires a fresh web-page step-up in Cloud and Code.
+    method: "GET", path: /^\/projects\/([^/]+)\/machine-size$/u,
+    answer: async (context) => {
+      const project = context.params[0]!;
+      if (mine(context.session.access, project) === undefined) return projectNotFound;
+      try { return ok(await context.client.json<Record<string, unknown>>(context.session, `/v1/dev/projects/${encodeURIComponent(project)}/machine-size`)); }
+      catch (error) {
+        if (error instanceof CodeError) {
+          const answered = (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+          if (error.status === 501 || answered?.code === "NOT_AVAILABLE_HERE" || error.status === 404 && answered?.code === "NOT_FOUND" && answered.message === "route not found") return { status: 501, body: { status: "not_set_up", message: "Machine size suggestions are not set up on Rovara Code yet." } };
+          if (error.status === 404 && answered?.code === "NOT_FOUND" && answered.message === "project not found") return projectNotFound;
+        }
+        throw error;
+      }
+    },
+  },
+  {
+    method: "POST", path: /^\/projects\/([^/]+)\/machine-size$/u,
+    answer: async (context) => {
+      const project = context.params[0]!;
+      if (mine(context.session.access, project) === undefined) return projectNotFound;
+      if (freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return { status: 403, body: { error: { code: "REAUTH_REQUIRED", message: "Confirm it's you again, then try once more." } } };
+      const rowId = (context.body as { rowId?: unknown } | undefined)?.rowId;
+      if (typeof rowId !== "string") return badRequest("Choose one of the listed machine sizes.");
+      try { return ok(await context.client.json<Record<string, unknown>>(context.session, `/v1/dev/projects/${encodeURIComponent(project)}/machine-size`, { method: "POST", body: { rowId } })); }
+      catch (error) {
+        if (error instanceof CodeError) {
+          const answered = (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
+          if (error.status === 501 || answered?.code === "NOT_AVAILABLE_HERE" || error.status === 404 && answered?.code === "NOT_FOUND" && answered.message === "route not found") return { status: 501, body: { status: "not_set_up", message: "Machine size suggestions are not set up on Rovara Code yet." } };
+          if (error.status === 404 && answered?.code === "NOT_FOUND" && answered.message === "project not found") return projectNotFound;
+        }
+        throw error;
+      }
+    },
+  },
   {
     // GET /v1/app/me (AppMeResponseSchema): the person from Code's access check, in the one company this Cloud shows.
     method: "GET", path: /^\/me$/u,

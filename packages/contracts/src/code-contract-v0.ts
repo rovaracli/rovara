@@ -894,6 +894,8 @@ GET /v1/app/projects/{p}/environment-image | k | later | | saved-env |
 POST /v1/app/projects/{p}/environment-image | k | later | | saved-env |
 PUT /v1/app/projects/{p}/environment-image/setting | k | later | | saved-env |
 GET /v1/app/projects/{p}/test-environment | k | later | | test-environment |
+GET /v1/app/projects/{p}/machine-size | k | later | | machine-size | T
+POST /v1/app/projects/{p}/machine-size | k | later | | machine-size | T
 POST /v1/app/projects/{p}/test-environment/propose | k | later | | test-environment |
 POST /v1/app/projects/{p}/test-environment/edit | k | later | | test-environment |
 POST /v1/app/projects/{p}/test-environment/seed | k | later | | test-environment |
