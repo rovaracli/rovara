@@ -12,6 +12,9 @@ it("words Cloud's not-on-Code answer plainly and keeps its code and status", () 
   expect(error.status).toBe(501);
   expect(error.message).not.toContain("/v1/");
 });
+it("keeps a route's own fixed not-yet sentence, which names its subject and no route", () => {
+  expect(apiError(501, { error: { code: "NOT_ON_CODE_YET", message: "Connecting GitHub isn't available yet." } }, origin).message).toBe("Connecting GitHub isn't available yet.");
+});
 it("leaves every other refusal's words as the server sent them", () => {
   expect(apiError(404, { error: { code: "NOT_FOUND", message: "project not found" } }, origin).message).toBe("project not found");
   expect(apiError(501, { error: { code: "SOMETHING_ELSE", message: "Kept as sent." } }, origin).message).toBe("Kept as sent.");

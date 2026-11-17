@@ -268,7 +268,7 @@ it.each(["no Cloud session", "no round from Code"])("a question on a task with %
 });
 it("says Work isn't connected yet, plainly, when Code does not serve the list", async () => {
   const f = screenSetup({ tasks: NOT_YET });
-  const error = await screen.findByTestId("load-error");expect(error.textContent).toContain("Not available yet.");expect(screen.queryByRole("progressbar")).toBeNull();
+  const error = await screen.findByTestId("load-error");expect(error.textContent).toContain("Work isn't available yet.");expect(error.textContent).not.toContain("Not available yet.");expect(error.textContent).not.toContain("/v1/");expect(screen.queryByRole("progressbar")).toBeNull();
   f.answerTasks({ status: 200, body: { tasks: TASKS } });fireEvent.click(within(error).getByRole("button", { name: "Try again" }));await screen.findByRole("heading", { name: /Needs you/u });
   f.close();
 });
