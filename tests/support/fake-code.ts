@@ -133,6 +133,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   let linearWorkspace: { id: string; name: string; urlKey: string; connectedAt: string; by: Person } | undefined;
   const linearTeams = [{ id: "lin-team-web", key: "WEB", name: "Web team" }, { id: "lin-team-ops", key: "OPS", name: "Operations" }];
   const linearPicks = new Map<string, string>();
+  // Guided onboarding PR 9 (Code #841, #844): each project's skipped optional rows and its hosted setup run (set by the specs through /__fake/setup-run).
+  const setupSkips = new Map<string, Set<"slackChannel" | "linear" | "invites">>();
+  type FakeRun = { status: "none" | "running" | "ready" | "failed"; startedAt?: string; taskId?: string; stop?: "stopped_by_person" | "proposed" };
+  const setupRuns = new Map<string, FakeRun>();
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
@@ -173,6 +177,72 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return undefined;
   };
   const roleIn = (person: Person, name: string) => project(name)?.members.get(person.developerId);
+  // Guided onboarding PR 9: the checklist read (Code #841's rule: any member of the company reads, a company admin or the project's admin sets rows aside) and the hosted
+  // setup run (Code #844's rule: a company owner/admin or the project's admin manages, a project user reads, anyone else "project not found").
+  const runOf = (name: string): FakeRun => setupRuns.get(name) ?? { status: "none" };
+  const FAILED_COMMAND = { n: 2, command: "npm test", exitCode: 1, timedOut: false, lastLines: ["FAIL src/app.test.ts", "  expected 2, received 3", "Tests: 1 failed, 41 passed"] };
+  const setupStatusOf = (name: string, person: Person) => {
+    const entry = project(name)!;
+    const run = runOf(name), skips = setupSkips.get(name) ?? new Set();
+    const grant = entry.members.get(person.developerId);
+    const companyRole = person.administrator ? "owner" as const : "member" as const;
+    const runRow = run.status === "none" ? { state: "needs_you" as const, status: "none" as const }
+      : run.status === "running" ? { state: "running" as const, status: "running" as const, startedAt: run.startedAt, elapsedMs: 95_000, costCents: 12, commandsRun: 3 }
+      : run.status === "ready" ? { state: "done" as const, status: "ready" as const, startedAt: run.startedAt, elapsedMs: 412_000, costCents: 48, commandsRun: 9, commandsFound: { setup: 2, tests: 1 }, testOutcome: "passed" as const }
+      : { state: "failed" as const, status: "failed" as const, startedAt: run.startedAt, elapsedMs: 300_000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed" as const, ...(run.stop === undefined ? {} : { stop: run.stop }), failure: "A test command failed.", failedCommand: FAILED_COMMAND };
+    const setupDone = runRow.state === "done";
+    const evalRow = setupDone ? { state: "needs_you" as const, report: "reported" as const, suites: [{ selection: "npm test", questions: 3 }] } : { state: "needs_you" as const, report: "none" as const, blockedBy: "setupRun" as const };
+    const channels = [...slackLinks].filter(([, linked]) => linked === name).map(([channelId]) => ({ channelId, name: slackChannels.find((one) => one.id === channelId)?.name ?? channelId }));
+    const team = linearPicks.get(name);
+    const optional = (set: boolean, row: "slackChannel" | "linear" | "invites") => set ? "done" as const : skips.has(row) ? "skipped" as const : "optional" as const;
+    const rows = {
+      repos: { state: "done" as const, count: entry.repositories.length, items: entry.repositories.map((one) => ({ name: one.name, fullName: one.fullName, defaultBranch: one.defaultBranch })) },
+      setupRun: runRow, evalConfirm: evalRow,
+      aiAndSpend: { state: "done" as const, source: companyModel === undefined ? "default" as const : "company" as const, companyModelSaved: companyModel !== undefined, modelBudgetUsd: null },
+      slackChannel: { state: optional(channels.length > 0, "slackChannel"), channels },
+      linear: { state: optional(team !== undefined, "linear"), team: team === undefined ? null : { id: team, name: linearTeams.find((one) => one.id === team)?.name ?? team } },
+      invites: { state: optional(false, "invites") },
+      firstTask: { state: "needs_you" as const, hasTask: false, canStart: false },
+    };
+    const order = ["repos", "setupRun", "evalConfirm", "aiAndSpend", "slackChannel", "linear", "invites", "firstTask"] as const;
+    const done = order.filter((row) => rows[row].state === "done" || rows[row].state === "skipped").length;
+    const nextRequired = (["repos", "setupRun", "evalConfirm", "aiAndSpend", "firstTask"] as const).find((row) => rows[row].state !== "done") ?? null;
+    return { project: name, viewer: { companyRole, projectAdmin: grant === "administrator", canSkip: person.administrator || grant === "administrator" }, progress: { done, total: order.length, percent: Math.round((done / order.length) * 100), nextRequired }, ...rows };
+  };
+  const setupRunView = (name: string, manage: boolean) => {
+    const run = runOf(name);
+    return { status: run.status, basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, ...(run.taskId === undefined ? {} : { taskId: run.taskId }), ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }), ...(run.status === "failed" ? { failure: "A test command failed.", ...(run.stop === undefined ? {} : { stop: run.stop }) } : {}), canManage: manage };
+  };
+  /** The hosted setup run's answer (Code #844 serves the laptop's /v1/app path), or undefined when the path is not one of its four. */
+  const setupRunAnswer = (method: string, path: string, query: URLSearchParams, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal))?$/u.exec(path);
+    if (match === null) return undefined;
+    const tail = match[2];
+    if (!((method === "GET" && (tail === undefined || tail === "journal")) || (method === "POST" && (tail === undefined || tail === "stop")))) return undefined;
+    const name = decodeURIComponent(match[1]!), entry = project(name), grant = roleIn(person, name);
+    const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
+    if (entry === undefined || companyless.has(person.developerId) || (!manage && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
+    if (method === "GET" && tail === undefined) return { status: 200, body: setupRunView(name, manage) };
+    if (method === "GET") {
+      const run = runOf(name), after = Number(query.get("after") ?? "0");
+      const all = run.status === "none" ? [] : [
+        { n: 1, source: "agent", command: "npm ci", exitCode: 0, durationMs: 42_000, timedOut: false, flagged: false, blockedHosts: [], tail: "added 812 packages in 41s", startedAt: run.startedAt ?? CREATED },
+        ...(run.status === "running" ? [] : [{ n: 2, source: "agent", command: "npm test", exitCode: run.status === "failed" ? 1 : 0, durationMs: 61_000, timedOut: false, flagged: false, blockedHosts: [], tail: run.status === "failed" ? FAILED_COMMAND.lastLines.join("\n") : "Tests: 42 passed", startedAt: run.startedAt ?? CREATED }]),
+      ];
+      return { status: 200, body: { status: run.status, entries: all.filter((one) => one.n > after), hostAsks: [] } };
+    }
+    if (!manage) return failure(403, "FORBIDDEN", "Only company owners and admins, or this project's admins, can run the project's setup.");
+    const given = body as { requestId?: unknown };
+    if (typeof given?.requestId !== "string" || Object.keys(given).length !== 1) return failure(400, "CONFIG_INVALID", "requestId: Required");
+    const run = runOf(name);
+    if (tail === undefined) {
+      if (run.status === "running") return failure(409, "WORKSPACE_BUSY", "A setup run is already going for this project.");
+      setupRuns.set(name, { status: "running", startedAt: iso(), taskId: randomUUID() });
+      return { status: 202, body: setupRunView(name, true) };
+    }
+    if (run.status === "running") setupRuns.set(name, { ...run, status: "failed", stop: "stopped_by_person" });
+    return { status: 202, body: setupRunView(name, true) };
+  };
   // Guided onboarding PR 16/17: each project's archive state (Code #839's rule, small).
   const lifecycle = new Map<string, { status: "active" | "archived"; revision: number; receipts: Map<string, { personId: string; outcome: ArchiveOutcome }> }>();
   type ArchiveOutcome = CodeResponse<"client.projects.archive">;
@@ -474,6 +544,22 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "client.projects.restorePreview": ({ params, person }) => lifecycleOr404(person, params["project"] ?? "", (name, manage) => ({ body: lifecyclePreview("restore", name, manage) })),
     "client.projects.archive": ({ params, person, body }) => lifecycleOr404(person, params["project"] ?? "", (name, manage) => lifecycleChange("archive", name, manage, person, body)),
     "client.projects.restore": ({ params, person, body }) => lifecycleOr404(person, params["project"] ?? "", (name, manage) => lifecycleChange("restore", name, manage, person, body)),
+    "client.projects.setupStatus": ({ params, person }) => {
+      const name = params["project"] ?? "";
+      if (project(name) === undefined || companyless.has(person.developerId)) return failure(404, "NOT_FOUND", "project not found");
+      return { body: setupStatusOf(name, person) };
+    },
+    "client.projects.setupSkips": ({ params, person, body }) => {
+      const name = params["project"] ?? "";
+      if (project(name) === undefined || companyless.has(person.developerId)) return failure(404, "NOT_FOUND", "project not found");
+      if (!person.administrator && roleIn(person, name) !== "administrator") return failure(403, "FORBIDDEN", "Only a company owner or admin, or this project's admin, can change the checklist.");
+      const keys = Object.keys(body ?? {});
+      if (!["slackChannel", "linear", "invites"].includes(body.row) || typeof body.skipped !== "boolean" || keys.length !== 2) return failure(400, "CONFIG_INVALID", "row: Invalid enum value");
+      const set = setupSkips.get(name) ?? new Set();
+      if (body.skipped) set.add(body.row); else set.delete(body.row);
+      setupSkips.set(name, set);
+      return { body: { project: name, row: body.row, skipped: body.skipped, skippedRows: [...set].sort() } };
+    },
     "client.projects.codeSettings.get": () => ({ body: { settings: { requireSecondReviewer: true, mergeRule: "maintainer", protectedPaths: ["infra/"], revision: 2 } } }),
     "client.projects.codeSettings.put": ({ body }) => ({ body: { settings: { ...body.settings, revision: body.expectedRevision + 1 } } }),
     "client.repositories.list": () => ({
@@ -707,7 +793,17 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       githubBound.set(5001, { accountLogin: "example", connectedAt: iso(), by: person });
       return { body: { status: "connected", alreadyConnected: already, installation: { installationId: 5001, accountLogin: "example", accountType: "Organization" }, githubUser: { id: 4242, login: `${person.key}-gh` } } };
     },
-    "company.github.status": () => ({ body: { installations: [...githubBound].map(([installationId, row]) => ({ installationId, accountLogin: row.accountLogin, connectedAt: row.connectedAt, connectedBy: { kind: "person" as const, personId: row.by.developerId, name: row.by.name } })) } }),
+    "company.github.status": () => ({ body: { installations: [...githubBound].map(([installationId, row]) => ({ installationId, accountLogin: row.accountLogin, status: "active" as const, accountType: "Organization" as const, connectedAt: row.connectedAt, connectedBy: { kind: "person" as const, personId: row.by.developerId, name: row.by.name } })) } }),
+    // Guided onboarding PR 12b (Code #832): an owner disconnects an installation the company holds, refused while a project uses its repos.
+    "company.github.disconnect": ({ params, person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner can disconnect GitHub.");
+      const id = Number(params["installationId"]), row = githubBound.get(id);
+      if (row === undefined) return failure(404, "NOT_FOUND", "That GitHub installation isn't connected to your company.");
+      const using = projects.filter((entry) => entry.repositories.some((repository) => repository.fullName.toLowerCase().startsWith(`${row.accountLogin.toLowerCase()}/`))).map((entry) => entry.name).sort();
+      if (using.length > 0) return failure(409, "GITHUB_IN_USE", `Projects still use this GitHub connection: ${using.join(", ")}. Remove its repositories from them first.`);
+      githubBound.delete(id);
+      return { body: { status: "disconnected" as const, installationId: id, accountLogin: row.accountLogin, uninstallUrl: `https://github.com/organizations/${row.accountLogin}/settings/installations/${String(id)}` } };
+    },
     "company.slack.install": ({ body, person }) => {
       if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can add Rovara to Slack.");
       const state = randomBytes(32).toString("base64url");
@@ -1017,6 +1113,23 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
         if (method === "POST" && url.pathname === "/v1/auth/token") {
           const answer = tokenEndpoint(new URLSearchParams(raw), request.headers.authorization);
           return send(answer.status, answer.body);
+        }
+        if (method === "POST" && url.pathname === "/__fake/setup-run") {
+          const given = JSON.parse(raw) as { project?: unknown; status?: unknown };
+          if (typeof given.project !== "string" || project(given.project) === undefined || !["none", "running", "ready", "failed"].includes(given.status as string)) return send(400, { error: { code: "CONFIG_INVALID", message: "project and status" } });
+          const status = given.status as FakeRun["status"];
+          setupRuns.set(given.project, status === "none" ? { status } : { status, startedAt: iso(), taskId: randomUUID() });
+          setupSkips.delete(given.project);
+          return send(200, { status });
+        }
+        if (url.pathname.startsWith("/v1/app/projects/")) {
+          const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
+          const who = bearer === undefined ? undefined : access.get(bearer);
+          let parsed: unknown = {};
+          if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
+          const answer = who === undefined ? undefined : setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          if (who === undefined && /\/setup-agent(?:\/(?:stop|journal))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (answer !== undefined) return send(answer.status, answer.body);
         }
         const matched = matchCodeRoute(method, url.pathname);
         if (matched === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });

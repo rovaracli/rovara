@@ -276,7 +276,7 @@ it("refuses an answer in words it does not know instead of guessing", async () =
 });
 
 it("starts a project from a meta repo with the code repositories it covers, or with the meta repo alone", async () => {
-  const f = setup(h(OnboardScreen), { path: "/app/onboard?github=connected" });
+  const f = setup(h(OnboardScreen), { path: "/app/onboard?github=connected&step=repositories" });
   fireEvent.click(await screen.findByRole("checkbox", { name: "Start from a meta repo" }));
   fireEvent.click(await screen.findByRole("radio", { name: "acme/meta" }));
   fireEvent.click(screen.getByRole("checkbox", { name: "acme/api" }));
@@ -284,7 +284,7 @@ it("starts a project from a meta repo with the code repositories it covers, or w
   await waitFor(() => expect(posts(f, "/v1/app/projects")).toHaveLength(1));
   expect(posts(f, "/v1/app/projects")[0]!.body).toMatchObject({ metaRepository: "acme/meta", codeRepositories: ["acme/api"] });
   f.close();
-  const alone = setup(h(OnboardScreen), { path: "/app/onboard?github=connected" });
+  const alone = setup(h(OnboardScreen), { path: "/app/onboard?github=connected&step=repositories" });
   fireEvent.click(await screen.findByRole("checkbox", { name: "Start from a meta repo" }));
   fireEvent.click(await screen.findByRole("radio", { name: "acme/meta" }));
   fireEvent.click(screen.getByRole("button", { name: "Create project" }));
@@ -295,7 +295,7 @@ it("starts a project from a meta repo with the code repositories it covers, or w
 });
 
 it("picking one repository creates one project the one-repository way", async () => {
-  const f = setup(h(OnboardScreen), { path: "/app/onboard?github=connected" });
+  const f = setup(h(OnboardScreen), { path: "/app/onboard?github=connected&step=repositories" });
   fireEvent.click(await screen.findByRole("checkbox", { name: /^acme\/web/ }));
   fireEvent.click(screen.getByRole("button", { name: "Create 1 project" }));
   await waitFor(() => expect(posts(f, "/v1/app/projects")).toHaveLength(1));

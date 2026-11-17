@@ -36,7 +36,7 @@ export const SLACK_WORDS = Object.freeze({
   unavailable: "Slack could not be connected just now. Start again from Rovara.",
   readUnavailable: "The company's Slack connection could not be read just now; try again.",
   disconnectUnavailable: "Slack could not be disconnected just now; try again.",
-  taken: "This Slack workspace is already connected to a different Rovara company.",
+  taken: "This Slack workspace is already connected to another company.",
   otherWorkspace: "This company is already connected to a different Slack workspace. A company owner can disconnect it first.",
   enterprise: "Rovara can be added to one Slack workspace, not to a whole Enterprise Grid organization. Add it to a single workspace.",
   notConnected: "This company has no Slack workspace connected.",
