@@ -21,8 +21,8 @@ import { createHash } from "node:crypto";
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
-  COMPANY_ID, CompanyStoreConflict, INVITES_READ_MAX, SPEND_LIMITS_MAX, SPEND_LIMIT_KINDS, SPEND_LIMIT_SORT_PREFIX, sameInvite, validAgentAiSource, validGithubUserId, validHookInstall, validSpendLimit, type GithubTrialClaim,
-  type AgentAiChoice, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type SpendLimit, type SpendLimitBasis, type SpendLimitKind, type StoredSettings,
+  COMPANY_ID, CompanyStoreConflict, INVITES_READ_MAX, SPEND_LIMIT_KINDS, SPEND_LIMIT_SORT_PREFIX, sameInvite, validAgentAiSource, validGithubUserId, validHookInstall, validSpendLimit, type GithubTrialClaim,
+  type AgentAiChoice, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type SpendLimit, type SpendLimitBasis, type SpendLimitKind, type SpendLimitList, type StoredSettings,
 } from "./company-store.js";
 import type { CompanySettings } from "./company-settings.js";
 
@@ -179,25 +179,26 @@ export class DynamoCompanyStore implements CompanyStore {
     return limit;
   }
 
-  async spendLimits(companyId: string): Promise<{ projects: SpendLimit[]; people: SpendLimit[]; partial: boolean }> {
-    const lists = {} as Record<SpendLimitKind, SpendLimit[]>;
+  async spendLimits(companyId: string): Promise<SpendLimitList> {
+    const limits = {} as Record<SpendLimitKind, SpendLimit[]>;
     let partial = false;
-    for (const kind of SPEND_LIMIT_KINDS) {
-      const prefix = SPEND_LIMIT_SORT_PREFIX[kind];
+    for (const def of SPEND_LIMIT_KINDS) {
+      const kind: SpendLimitKind = def.kind;
+      const prefix = def.sortPrefix;
       // One bounded query per kind: the most plus one, so "there were more" is known without reading them all.
       const page = await this.db.send(new QueryCommand({
         TableName: this.table, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": company(companyId), ":prefix": prefix },
-        ConsistentRead: true, Limit: SPEND_LIMITS_MAX[kind] + 1,
+        ConsistentRead: true, Limit: def.max + 1,
       }));
       const items = page.Items ?? [];
       const found = items.map((item) => {
         const sk = typeof item.sk === "string" && item.sk.startsWith(prefix) ? item.sk.slice(prefix.length) : "";
         return this.readSpendLimit(item, companyId, kind, sk);
       });
-      if (found.length > SPEND_LIMITS_MAX[kind] || (page.LastEvaluatedKey !== undefined && found.length >= SPEND_LIMITS_MAX[kind])) partial = true;
-      lists[kind] = found.slice(0, SPEND_LIMITS_MAX[kind]);
+      if (found.length > def.max || (page.LastEvaluatedKey !== undefined && found.length >= def.max)) partial = true;
+      limits[kind] = found.slice(0, def.max);
     }
-    return { projects: lists.project, people: lists.person, partial };
+    return { limits, partial };
   }
 
   /** The company settings item as the default this change was judged against: still at `settingsVersion` (or still absent at 0). */

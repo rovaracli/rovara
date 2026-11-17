@@ -3,7 +3,7 @@
 // shows the step only when the server asks. The company defaults live in Company settings; a project's per-task limit lives on its own page.
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { MEMBERS_PATH, PERSON_ID, PROJECT_NAME, SPEND_LIMITS_PATH, parseUsd, personLimitPath, projectLimitPath, readPeopleNames, readSpendLimits, type PersonName, type SpendLimitRow, type SpendLimitsRead } from "../../../api/admin-spend-limits.js";
+import { MEMBERS_PATH, SCOPE_ID, SPEND_LIMITS_PATH, SPEND_LIMIT_TABLES, limitPath, parseUsd, readPeopleNames, readSpendLimits, type PersonName, type SpendLimitRow, type SpendLimitScope, type SpendLimitTable, type SpendLimitsRead } from "../../../api/admin-spend-limits.js";
 import { isNotConnected, needsStepUp } from "../../../api/admin-company.js";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
@@ -21,15 +21,15 @@ import { AdminSection, FreshSignIn, NotConnected, forgetConfirmed, useJustConfir
 
 const reader = { parse: readSpendLimits };
 const namesReader = { parse: readPeopleNames };
-type Kind = "project" | "person";
-const WORDS: Record<Kind, { one: string; noun: string; idLabel: string; idHint: string; valid: (id: string) => boolean }> = {
- project: { one: "project", noun: "Projects", idLabel: "Project name", idHint: "The project's name, as it appears in Projects.", valid: id => PROJECT_NAME.test(id) },
- person: { one: "person", noun: "People", idLabel: "Person ID", idHint: "The person's developer ID (64 letters and digits, from the People page).", valid: id => PERSON_ID.test(id) },
+/** What a row of each scope is called, and what its id looks like. */
+const WORDS: Record<SpendLimitScope, { one: string; noun: string; idLabel: string; idHint: string; valid: (id: string) => boolean }> = {
+ project: { one: "project", noun: "Projects", idLabel: "Project name", idHint: "The project's name, as it appears in Projects.", valid: id => SCOPE_ID.project.test(id) },
+ person: { one: "person", noun: "People", idLabel: "Person ID", idHint: "The person's developer ID (64 letters and digits, from the People page).", valid: id => SCOPE_ID.person.test(id) },
 };
 const AMOUNT_HELP = "Use an amount from 0 to 1,000,000, with at most two decimals.";
 const problem = (when: boolean, text: string) => (when ? { error: text } : {});
 const usdOrNone = (value: number | null) => (value === null ? "No limit" : <Money usd={value} />);
-const shortId = (kind: Kind, id: string) => (kind === "person" ? `${id.slice(0, 12)}…` : id);
+const shortId = (scope: SpendLimitScope, id: string) => (scope === "person" ? `${id.slice(0, 12)}…` : id);
 
 export function SpendLimitsScreen() {
  const read = useAdminRead("spend-limits", SPEND_LIMITS_PATH, reader, { stable: true });
@@ -46,10 +46,10 @@ function Limits({ limits, reload }: { limits: SpendLimitsRead; reload: () => voi
  const confirmed = useJustConfirmed(developerId);
  const [stepNeeded, setStepNeeded] = useState(false), [busy, setBusy] = useState(false), [notice, setNotice] = useState<{ ok: boolean; text: string }>();
  /** Sends one change. `usd` null removes the limit. The server decides whether it needs the fresh sign-in step. */
- async function send(kind: Kind, id: string, version: number, usd: number | null, done: string): Promise<boolean> {
+ async function send(table: SpendLimitTable, id: string, version: number, usd: number | null, done: string): Promise<boolean> {
   setBusy(true); setNotice(undefined);
   try {
-   await api.sendAnswer("PUT", kind === "project" ? projectLimitPath(id) : personLimitPath(id), { expectedVersion: version, monthlyUsd: usd }, { parse: answer => answer }, { retry: "never" });
+   await api.sendAnswer("PUT", limitPath(table, id), { expectedVersion: version, monthlyUsd: usd }, { parse: answer => answer }, { retry: "never" });
    setStepNeeded(false); setNotice({ ok: true, text: done });
    await query.invalidateQueries({ queryKey: ["admin", "lane-c", "spend-limits"] }); reload();
    return true;
@@ -73,14 +73,13 @@ function Limits({ limits, reload }: { limits: SpendLimitsRead; reload: () => voi
    </ul>
    <p className="rv-muted">Raising a limit asks you to confirm it's you. Lowering one does not.</p>
   </AdminSection>
-  <LimitTable kind="project" rows={limits.projects} fallback={d.projectMonthlyUsd} max={limits.max.projects} partial={limits.partial} busy={busy} send={send} />
-  <LimitTable kind="person" people={people} rows={limits.people} fallback={d.memberMonthlyUsd} max={limits.max.people} partial={limits.partial} busy={busy} send={send} />
+  {SPEND_LIMIT_TABLES.map(table => <LimitTable key={table.listKey} table={table} people={people} rows={limits.lists[table.listKey] ?? []} fallback={d[table.defaultKey]} max={limits.max[table.listKey] ?? 0} partial={limits.partial} busy={busy} send={send} />)}
  </>;
 }
 
-interface TableProps { kind: Kind; people?: PersonName[] | undefined; rows: SpendLimitRow[]; fallback: number | null; max: number; partial: boolean; busy: boolean; send: (kind: Kind, id: string, version: number, usd: number | null, done: string) => Promise<boolean> }
-function LimitTable({ kind, people, rows, fallback, max, partial, busy, send }: TableProps) {
- const words = WORDS[kind];
+interface TableProps { table: SpendLimitTable; people?: PersonName[] | undefined; rows: SpendLimitRow[]; fallback: number | null; max: number; partial: boolean; busy: boolean; send: (table: SpendLimitTable, id: string, version: number, usd: number | null, done: string) => Promise<boolean> }
+function LimitTable({ table, people, rows, fallback, max, partial, busy, send }: TableProps) {
+ const kind = table.scope, key = table.listKey, words = WORDS[kind];
  const names = new Map((people ?? []).map(person => [person.developerId, person.name]));
  const label = (id: string) => (kind === "person" ? names.get(id) ?? shortId(kind, id) : id);
  // People without a limit of their own can be picked by name; with no readable list, the person's ID is typed.
@@ -88,30 +87,30 @@ function LimitTable({ kind, people, rows, fallback, max, partial, busy, send }: 
  const [editing, setEditing] = useState<string>(), [amount, setAmount] = useState(""), [newId, setNewId] = useState(""), [newAmount, setNewAmount] = useState("");
  const full = partial || rows.length >= max;
  const addId = newId.trim(), addUsd = parseUsd(newAmount);
- return <AdminSection title={`${words.noun} with their own limit`} note={`${String(rows.length)} of ${String(max)}`}>
-  <div className="rv-table-wrap"><table className="rv-table" data-testid={`spend-${kind}-table`}>
+ return <AdminSection title={table.title} note={`${String(rows.length)} of ${String(max)}`}>
+  <div className="rv-table-wrap"><table className="rv-table" data-testid={`spend-${key}-table`}>
    <caption>{words.noun} with their own monthly limit. Everyone else keeps the default ({usdOrNone(fallback)}).</caption>
    <thead><tr><th scope="col">{words.idLabel}</th><th scope="col">Monthly limit</th><th scope="col"><VisuallyHidden>Actions</VisuallyHidden></th></tr></thead>
    <tbody>
     {rows.length === 0 && <tr><td colSpan={3}>None. Every {words.one} uses the default.</td></tr>}
-    {rows.map(row => <tr key={row.id} data-testid={`spend-${kind}-row`}>
+    {rows.map(row => <tr key={row.id} data-testid={`spend-${key}-row`}>
      <th scope="row" title={row.id}><VisibleText text={label(row.id)} /></th>
      {editing === row.id
       ? <td><TextField label={`New monthly limit for ${label(row.id)} (dollars)`} inputMode="decimal" value={amount} onChange={event => { setAmount(event.target.value); }} {...problem(amount !== "" && parseUsd(amount) === undefined, AMOUNT_HELP)} /></td>
       : <td><Money usd={row.monthlyUsd} /></td>}
      <td>{editing === row.id
-      ? <><Button variant="primary" busy={busy} disabled={parseUsd(amount) === undefined} onClick={() => { const value = parseUsd(amount); if (value !== undefined) void send(kind, row.id, row.version, value, `Saved the limit for ${label(row.id)}.`).then(saved => { if (saved) setEditing(undefined); }); }}>Save</Button> <Button variant="quiet" onClick={() => { setEditing(undefined); }}>Cancel</Button></>
-      : <><Button variant="quiet" onClick={() => { setEditing(row.id); setAmount(String(row.monthlyUsd)); }}>Edit</Button> <Button variant="danger" busy={busy} onClick={() => { void send(kind, row.id, row.version, null, `Removed the limit for ${label(row.id)}. The default applies again.`); }}>Remove</Button></>}</td>
+      ? <><Button variant="primary" busy={busy} disabled={parseUsd(amount) === undefined} onClick={() => { const value = parseUsd(amount); if (value !== undefined) void send(table, row.id, row.version, value, `Saved the limit for ${label(row.id)}.`).then(saved => { if (saved) setEditing(undefined); }); }}>Save</Button> <Button variant="quiet" onClick={() => { setEditing(undefined); }}>Cancel</Button></>
+      : <><Button variant="quiet" onClick={() => { setEditing(row.id); setAmount(String(row.monthlyUsd)); }}>Edit</Button> <Button variant="danger" busy={busy} onClick={() => { void send(table, row.id, row.version, null, `Removed the limit for ${label(row.id)}. The default applies again.`); }}>Remove</Button></>}</td>
     </tr>)}
    </tbody>
   </table></div>
-  {full ? <p role="status" data-testid={`spend-${kind}-full`}>There are too many limits of this kind. Remove some before adding another.</p>
-   : <form aria-label={`Add a ${words.one} limit`} onSubmit={event => { event.preventDefault(); if (words.valid(addId) && addUsd !== undefined) void send(kind, addId, 0, addUsd, `Saved the limit for ${label(addId)}.`).then(saved => { if (saved) { setNewId(""); setNewAmount(""); } }); }}>
+  {full ? <p role="status" data-testid={`spend-${key}-full`}>There are too many limits of this kind. Remove some before adding another.</p>
+   : <form aria-label={`Add a ${words.one} limit`} onSubmit={event => { event.preventDefault(); if (words.valid(addId) && addUsd !== undefined) void send(table, addId, 0, addUsd, `Saved the limit for ${label(addId)}.`).then(saved => { if (saved) { setNewId(""); setNewAmount(""); } }); }}>
     {pickable.length > 0
      ? <Select label="Person" value={newId} onValueChange={setNewId} placeholder="Choose a person" options={pickable.map(person => ({ value: person.developerId, label: person.name }))} />
      : <TextField label={words.idLabel} hint={words.idHint} value={newId} onChange={event => { setNewId(event.target.value); }} {...problem(addId !== "" && !words.valid(addId), `That isn't a valid ${words.one} ${kind === "project" ? "name" : "ID"}.`)} />}
     <TextField label={`Monthly limit for this ${words.one} (dollars)`} inputMode="decimal" value={newAmount} onChange={event => { setNewAmount(event.target.value); }} {...problem(newAmount !== "" && addUsd === undefined, AMOUNT_HELP)} />
-    <Button variant="primary" busy={busy} disabled={!words.valid(addId) || addUsd === undefined} onClick={() => { if (words.valid(addId) && addUsd !== undefined) void send(kind, addId, 0, addUsd, `Saved the limit for ${label(addId)}.`).then(saved => { if (saved) { setNewId(""); setNewAmount(""); } }); }}>Add limit</Button>
+    <Button variant="primary" busy={busy} disabled={!words.valid(addId) || addUsd === undefined} onClick={() => { if (words.valid(addId) && addUsd !== undefined) void send(table, addId, 0, addUsd, `Saved the limit for ${label(addId)}.`).then(saved => { if (saved) { setNewId(""); setNewAmount(""); } }); }}>Add limit</Button>
    </form>}
  </AdminSection>;
 }

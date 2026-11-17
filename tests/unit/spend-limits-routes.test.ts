@@ -3,7 +3,7 @@
 // the highest); a write conditional on what was read; every change audited; fixed words that never echo the request; two companies never meet.
 import { describe, expect, it } from "vitest";
 import {
-  CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, SPEND_LIMITS_MAX, createCloudHandler, defaultCompanySettings,
+  CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, SPEND_LIMITS_MAX, SPEND_LIMIT_KINDS, createCloudHandler, defaultCompanySettings,
   type CloudRequest, type SpendLimit, type SpendLimitBasis, type SpendLimitKind,
 } from "../../packages/cloud-server/src/index.js";
 
@@ -133,12 +133,12 @@ const stored = (w: World, kind: SpendLimitKind, id: string, companyId = A) => w.
 describe("who may see and change spending limits", () => {
   it("a company admin reads the defaults and the overrides; each company sees only its own", async () => {
     const w = await READY();
-    await w.seed(A, "project", "web", 5 * MICROS); await w.seed(A, "person", DEV.pam, 7 * MICROS); await w.seed(B, "project", "web", 9 * MICROS); await w.seed(B, "person", DEV.pam, 11 * MICROS);
+    await w.seed(A, "project_month", "web", 5 * MICROS); await w.seed(A, "person_month", DEV.pam, 7 * MICROS); await w.seed(B, "project_month", "web", 9 * MICROS); await w.seed(B, "person_month", DEV.pam, 11 * MICROS);
     const a = await w.call(await w.signIn("ada", 30), "GET", PATH);
     expect(a.status).toBe(200);
     expect(a.body).toMatchObject({
       companyId: A, canChange: true, defaults: { companyMonthlyUsd: 100, memberMonthlyUsd: 20, projectMonthlyUsd: 30, taskUsd: 2 },
-      projects: [{ id: "web", monthlyUsd: 5, version: 1 }], people: [{ id: DEV.pam, monthlyUsd: 7, version: 1 }], partial: false, max: { projects: SPEND_LIMITS_MAX.project, people: SPEND_LIMITS_MAX.person },
+      projects: [{ id: "web", monthlyUsd: 5, version: 1 }], people: [{ id: DEV.pam, monthlyUsd: 7, version: 1 }], partial: false, max: { projects: SPEND_LIMITS_MAX.project_month, people: SPEND_LIMITS_MAX.person_month },
     });
     const b = await w.call(await w.signIn("bea", 30), "GET", PATH);
     expect(b.body).toMatchObject({ companyId: B, projects: [{ id: "web", monthlyUsd: 9 }], people: [{ id: DEV.pam, monthlyUsd: 11 }] });
@@ -147,7 +147,7 @@ describe("who may see and change spending limits", () => {
   });
 
   it("a plain member sees nothing and changes nothing (reads too), and nothing is written", async () => {
-    const w = await READY(); await w.seed(A, "project", "web", 5 * MICROS);
+    const w = await READY(); await w.seed(A, "project_month", "web", 5 * MICROS);
     // A plain member, and a person who is Code's install administrator but only a member of the company: neither is a company admin.
     for (const who of ["pam", "ins"]) {
       const cookie = await w.signIn(who, 30);
@@ -157,9 +157,9 @@ describe("who may see and change spending limits", () => {
         expect(answer.body.error?.code).toBe("FORBIDDEN");
       }
     }
-    expect((await stored(w, "project", "web"))?.version).toBe(1);
-    expect(await stored(w, "project", "api")).toBeUndefined();
-    expect(await stored(w, "person", DEV.pam)).toBeUndefined();
+    expect((await stored(w, "project_month", "web"))?.version).toBe(1);
+    expect(await stored(w, "project_month", "api")).toBeUndefined();
+    expect(await stored(w, "person_month", DEV.pam)).toBeUndefined();
     expect(await w.auditRows(A)).toEqual([]);
   });
 
@@ -170,7 +170,7 @@ describe("who may see and change spending limits", () => {
     const w = await READY();
     const ada = await w.signIn("ada", 30);
     expect((await w.call(ada, "PUT", project("web"), put(0, 1), "wrong")).status).toBe(403);
-    expect(await stored(w, "project", "web")).toBeUndefined();
+    expect(await stored(w, "project_month", "web")).toBeUndefined();
   });
 
   it("the path's ids are strict: a project name or person id that is not in the token format is no route (the table's own 501)", async () => {
@@ -178,7 +178,7 @@ describe("who may see and change spending limits", () => {
     for (const path of [project("Web"), project("web/../x"), project("-web"), person("abc"), person("G".repeat(64)), person("1".repeat(65)), `${PATH}/teams/web`]) {
       expect((await w.call(ada, "PUT", path, put(0, 1))).status, path).toBe(501);
     }
-    expect((await w.companies.spendLimits(A)).projects).toEqual([]);
+    expect((await w.companies.spendLimits(A)).limits.project_month).toEqual([]);
   });
 });
 
@@ -192,7 +192,7 @@ describe("which company, and who is an admin", () => {
       expect(answer.status).toBe(403);
       expect(answer.body.error?.code).toBe("NO_COMPANY");
     }
-    expect(await stored(w, "project", "web")).toBeUndefined();
+    expect(await stored(w, "project_month", "web")).toBeUndefined();
   });
 });
 
@@ -205,7 +205,7 @@ describe("a person's limit names a member of the company", () => {
       expect(answer.status, stranger).toBe(404);
       expect(answer.body.error?.message).toBe("That person isn't in your company.");
       expect(answer.raw).not.toContain(stranger);
-      expect(await stored(w, "person", stranger)).toBeUndefined();
+      expect(await stored(w, "person_month", stranger)).toBeUndefined();
     }
     // The same person id is a member of company B's list only when B's Code says so.
     expect((await w.call(await w.signIn("bea", 30), "PUT", person(DEV.zed), put(0, 1))).status).toBe(404);
@@ -227,17 +227,17 @@ describe("a person's limit names a member of the company", () => {
       const answer = await w.call(await w.signIn("ada", 30), "PUT", person(DEV.zed), put(0, 1));
       expect(answer.status, members).toBe(503);
       expect(answer.raw).not.toContain("secret outage text");
-      expect(await stored(w, "person", DEV.zed)).toBeUndefined();
+      expect(await stored(w, "person_month", DEV.zed)).toBeUndefined();
     }
   });
 
   it("removing a person's limit does not ask Code (an ex-member's limit can still be cleaned up), and a lowering of one that is not listed is refused", async () => {
-    const w = await READY(); await w.seed(A, "person", GONE, 5 * MICROS);
+    const w = await READY(); await w.seed(A, "person_month", GONE, 5 * MICROS);
     const ada = await w.signIn("ada", 30);
     const before = w.codeCalls.length;
     expect((await w.call(ada, "PUT", person(GONE), put(1, null))).status).toBe(200);
     expect(w.codeCalls.slice(before)).toEqual([]);
-    await w.seed(A, "person", GONE, 5 * MICROS);
+    await w.seed(A, "person_month", GONE, 5 * MICROS);
     expect((await w.call(ada, "PUT", person(GONE), put(1, 1))).status).toBe(404);
   });
 });
@@ -247,23 +247,23 @@ describe("step-up: only when a limit goes up", () => {
     const w = await READY(); const ada = await w.signIn("ada");
     const first = await w.call(ada, "PUT", project("web"), put(0, 10));
     expect(first.status).toBe(200);
-    expect(await stored(w, "project", "web")).toMatchObject({ monthlyUsdMicros: 10 * MICROS, version: 1, updatedBy: DEV.ada });
+    expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 10 * MICROS, version: 1, updatedBy: DEV.ada });
     const lower = await w.call(ada, "PUT", project("web"), put(1, 4.5));
     expect(lower.status).toBe(200);
-    expect(await stored(w, "project", "web")).toMatchObject({ monthlyUsdMicros: 4_500_000, version: 2 });
+    expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 4_500_000, version: 2 });
   });
 
   it("raising needs a fresh step-up: none, an old one and a fresh one (the refused ones change nothing)", async () => {
-    const w = await READY(); await w.seed(A, "project", "web", 10 * MICROS);
+    const w = await READY(); await w.seed(A, "project_month", "web", 10 * MICROS);
     for (const age of [undefined, 3600, 601]) {
       const answer = await w.call(await w.signIn("ada", age), "PUT", project("web"), put(1, 25));
       expect(answer.status, String(age)).toBe(403);
       expect(answer.body.error?.code).toBe("STEP_UP_REQUIRED");
-      expect(await stored(w, "project", "web")).toMatchObject({ monthlyUsdMicros: 10 * MICROS, version: 1 });
+      expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 10 * MICROS, version: 1 });
     }
     const fresh = await w.call(await w.signIn("ada", 30), "PUT", project("web"), put(1, 25));
     expect(fresh.status).toBe(200);
-    expect(await stored(w, "project", "web")).toMatchObject({ monthlyUsdMicros: 25 * MICROS, version: 2 });
+    expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 25 * MICROS, version: 2 });
   });
 
   it("a new override above the company default is a raise; at or below it is not", async () => {
@@ -273,50 +273,50 @@ describe("step-up: only when a limit goes up", () => {
     expect((await w.call(bare, "PUT", person(DEV.pam), put(0, 21))).body.error?.code).toBe("STEP_UP_REQUIRED");
     expect((await w.call(bare, "PUT", project("web"), put(0, 30))).status).toBe(200);
     expect((await w.call(bare, "PUT", person(DEV.pam), put(0, 0))).status).toBe(200);
-    expect(await stored(w, "person", DEV.pam)).toMatchObject({ monthlyUsdMicros: 0 });
+    expect(await stored(w, "person_month", DEV.pam)).toMatchObject({ monthlyUsdMicros: 0 });
   });
 
   it("removing an override is a raise when the default is higher (step-up), lowering when the default is lower (none), and a raise when there is no default limit", async () => {
     const w = await READY(); // project default $30
-    await w.seed(A, "project", "web", 10 * MICROS); await w.seed(A, "project", "api", 50 * MICROS);
+    await w.seed(A, "project_month", "web", 10 * MICROS); await w.seed(A, "project_month", "api", 50 * MICROS);
     const bare = await w.signIn("ada");
     expect((await w.call(bare, "PUT", project("web"), put(1, null))).body.error?.code).toBe("STEP_UP_REQUIRED");
-    expect(await stored(w, "project", "web")).toBeDefined();
+    expect(await stored(w, "project_month", "web")).toBeDefined();
     expect((await w.call(bare, "PUT", project("api"), put(1, null))).status).toBe(200);
-    expect(await stored(w, "project", "api")).toBeUndefined();
+    expect(await stored(w, "project_month", "api")).toBeUndefined();
     expect((await w.call(await w.signIn("ada", 30), "PUT", project("web"), put(1, null))).status).toBe(200);
-    expect(await stored(w, "project", "web")).toBeUndefined();
+    expect(await stored(w, "project_month", "web")).toBeUndefined();
     // No default limit at all: no limit is the highest, so removing an override raises, and setting one lowers.
     const open = await READY(); await open.settings(A, { project: null, member: null });
-    await open.seed(A, "project", "web", 10 * MICROS);
+    await open.seed(A, "project_month", "web", 10 * MICROS);
     expect((await open.call(await open.signIn("ada"), "PUT", project("web"), put(1, null))).body.error?.code).toBe("STEP_UP_REQUIRED");
     expect((await open.call(await open.signIn("ada"), "PUT", project("api"), put(0, 999_999))).status).toBe(200);
     expect((await open.call(await open.signIn("ada", 30), "PUT", project("web"), put(1, null))).status).toBe(200);
   });
 
   it("an unchanged limit writes nothing (no new version, no audit record)", async () => {
-    const w = await READY(); await w.seed(A, "project", "web", 10 * MICROS);
+    const w = await READY(); await w.seed(A, "project_month", "web", 10 * MICROS);
     const bare = await w.signIn("ada");
     expect((await w.call(bare, "PUT", project("web"), put(1, 10))).status).toBe(200);
     expect((await w.call(bare, "PUT", project("api"), put(0, null))).status).toBe(200);
-    expect(await stored(w, "project", "web")).toMatchObject({ version: 1 });
-    expect(await stored(w, "project", "api")).toBeUndefined();
+    expect(await stored(w, "project_month", "web")).toMatchObject({ version: 1 });
+    expect(await stored(w, "project_month", "api")).toBeUndefined();
     expect(await w.auditRows(A)).toEqual([]);
   });
 
   it("the company's own rules apply to a raise: a company that forbids loosening cannot raise a limit (lowering still works), and its sign-in window is its own", async () => {
     const w = await READY();
     await w.settings(A, {}, (s) => { s.decisions = [{ what: "setting.loosen", allow: false }]; });
-    await w.seed(A, "project", "web", 10 * MICROS);
+    await w.seed(A, "project_month", "web", 10 * MICROS);
     const ada = await w.signIn("ada", 5);
     const raise = await w.call(ada, "PUT", project("web"), put(1, 25));
     expect(raise.status).toBe(403);
     expect(raise.body.error?.code).toBe("FORBIDDEN");
-    expect((await stored(w, "project", "web"))?.monthlyUsdMicros).toBe(10 * MICROS);
+    expect((await stored(w, "project_month", "web"))?.monthlyUsdMicros).toBe(10 * MICROS);
     expect((await w.call(ada, "PUT", project("web"), put(1, 5))).status).toBe(200);
     // A short sign-in window: a step-up older than it is refused.
     const short = await READY(); await short.settings(A, {}, (s) => { s.freshSignInSeconds = 60; });
-    await short.seed(A, "project", "web", 10 * MICROS);
+    await short.seed(A, "project_month", "web", 10 * MICROS);
     expect((await short.call(await short.signIn("ada", 120), "PUT", project("web"), put(1, 25))).body.error?.code).toBe("STEP_UP_REQUIRED");
     expect((await short.call(await short.signIn("ada", 30), "PUT", project("web"), put(1, 25))).status).toBe(200);
   });
@@ -324,7 +324,7 @@ describe("step-up: only when a limit goes up", () => {
 
 describe("a write is decided on a fresh read and conditional on it", () => {
   it("a stale expectedVersion conflicts (409), for a new override too, and changes nothing", async () => {
-    const w = await READY(); await w.seed(A, "project", "web", 10 * MICROS);
+    const w = await READY(); await w.seed(A, "project_month", "web", 10 * MICROS);
     const ada = await w.signIn("ada", 30);
     for (const version of [0, 2, 7]) {
       const answer = await w.call(ada, "PUT", project("web"), put(version, 1));
@@ -332,36 +332,36 @@ describe("a write is decided on a fresh read and conditional on it", () => {
       expect(answer.body.error?.code).toBe("CONFLICT");
     }
     expect((await w.call(ada, "PUT", project("api"), put(3, 1))).status).toBe(409);
-    expect(await stored(w, "project", "web")).toMatchObject({ monthlyUsdMicros: 10 * MICROS, version: 1 });
-    expect(await stored(w, "project", "api")).toBeUndefined();
+    expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 10 * MICROS, version: 1 });
+    expect(await stored(w, "project_month", "api")).toBeUndefined();
   });
 
   it("two admins changing the same limit at once: one wins, the other conflicts", async () => {
-    const w = await READY(); await w.seed(A, "project", "web", 10 * MICROS);
+    const w = await READY(); await w.seed(A, "project_month", "web", 10 * MICROS);
     const [one, two] = await Promise.all([
       w.call(await w.signIn("ada", 30), "PUT", project("web"), put(1, 3)),
       w.call(await w.signIn("ann", 30), "PUT", project("web"), put(1, 4)),
     ]);
     expect([one.status, two.status].sort()).toEqual([200, 409]);
-    expect((await stored(w, "project", "web"))?.version).toBe(2);
+    expect((await stored(w, "project_month", "web"))?.version).toBe(2);
     expect(await w.auditRows(A)).toHaveLength(1);
   });
 
   it("an override changed between the read and the write (the version moved) is refused, not overwritten", async () => {
-    const w = await READY(); await w.seed(A, "project", "web", 10 * MICROS);
-    w.companies.afterRead = () => w.seed(A, "project", "web", 2 * MICROS);
+    const w = await READY(); await w.seed(A, "project_month", "web", 10 * MICROS);
+    w.companies.afterRead = () => w.seed(A, "project_month", "web", 2 * MICROS);
     const answer = await w.call(await w.signIn("ada", 30), "PUT", project("web"), put(1, 4));
     expect(answer.status).toBe(409);
-    expect(await stored(w, "project", "web")).toMatchObject({ monthlyUsdMicros: 2 * MICROS, version: 2 });
+    expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 2 * MICROS, version: 2 });
   });
 
   it("the company default raised between the read and the write refuses a removal that was judged a lowering", async () => {
     const w = await READY(); // project default $30, override $50: removing it LOWERS (no step-up needed)
-    await w.seed(A, "project", "web", 50 * MICROS);
+    await w.seed(A, "project_month", "web", 50 * MICROS);
     w.companies.afterRead = () => w.settings(A, { project: 500 });
     const answer = await w.call(await w.signIn("ada"), "PUT", project("web"), put(1, null));
     expect(answer.status).toBe(409);
-    expect(await stored(w, "project", "web")).toMatchObject({ monthlyUsdMicros: 50 * MICROS });
+    expect(await stored(w, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 50 * MICROS });
   });
 });
 
@@ -371,11 +371,11 @@ describe("two companies never meet", () => {
     expect((await w.call(await w.signIn("ada", 30), "PUT", project("web"), put(0, 3))).status).toBe(200);
     expect((await w.call(await w.signIn("bea", 30), "PUT", project("web"), put(0, 4))).status).toBe(200);
     expect((await w.call(await w.signIn("ada", 30), "PUT", person(DEV.zed), put(0, 5))).status).toBe(200);
-    expect(await stored(w, "project", "web", A)).toMatchObject({ companyId: A, monthlyUsdMicros: 3 * MICROS });
-    expect(await stored(w, "project", "web", B)).toMatchObject({ companyId: B, monthlyUsdMicros: 4 * MICROS });
-    expect(await stored(w, "person", DEV.zed, B)).toBeUndefined();
-    expect((await w.auditRows(A)).map((r) => r.subject).sort()).toEqual([`spend_limit:person:${DEV.zed}`, "spend_limit:project:web"]);
-    expect((await w.auditRows(B)).map((r) => r.subject)).toEqual(["spend_limit:project:web"]);
+    expect(await stored(w, "project_month", "web", A)).toMatchObject({ companyId: A, monthlyUsdMicros: 3 * MICROS });
+    expect(await stored(w, "project_month", "web", B)).toMatchObject({ companyId: B, monthlyUsdMicros: 4 * MICROS });
+    expect(await stored(w, "person_month", DEV.zed, B)).toBeUndefined();
+    expect((await w.auditRows(A)).map((r) => r.subject).sort()).toEqual([`spend_limit:person_month:${DEV.zed}`, "spend_limit:project_month:web"]);
+    expect((await w.auditRows(B)).map((r) => r.subject)).toEqual(["spend_limit:project_month:web"]);
     // B's version is B's own: A's version (1) does not stand for B's.
     expect((await w.call(await w.signIn("bea", 30), "PUT", project("web"), put(0, 6))).status).toBe(409);
   });
@@ -385,15 +385,15 @@ describe("two companies never meet", () => {
     const answer = await w.call(ada, "PUT", project("billing"), put(0, 1));
     expect(answer.status).toBe(404);
     expect(answer.body.error?.code).toBe("NOT_FOUND");
-    expect(await stored(w, "project", "billing", A)).toBeUndefined();
-    expect(await stored(w, "project", "billing", B)).toBeUndefined();
+    expect(await stored(w, "project_month", "billing", A)).toBeUndefined();
+    expect(await stored(w, "project_month", "billing", B)).toBeUndefined();
   });
 });
 
 describe("fail closed, in fixed words", () => {
   it("a stored limit or company settings that do not read answer 503 and change nothing", async () => {
-    const w = await READY(); await w.seed(A, "project", "web", 10 * MICROS);
-    w.companies.corruptSpendLimit(A, "project", "web");
+    const w = await READY(); await w.seed(A, "project_month", "web", 10 * MICROS);
+    w.companies.corruptSpendLimit(A, "project_month", "web");
     const ada = await w.signIn("ada", 30);
     for (const [method, path, body] of [["GET", PATH, undefined], ["PUT", project("web"), put(1, 3)], ["PUT", project("web"), put(1, null)]] as const) {
       const answer = await w.call(ada, method, path, body);
@@ -405,7 +405,7 @@ describe("fail closed, in fixed words", () => {
     await none.companies.putSettings(A, { ...defaultCompanySettings(), websiteCeiling: { mode: "bogus" } as never }, 0, DEV.ada, "2026-11-17T12:00:00.000Z");
     expect((await none.call(dead, "GET", PATH)).status).toBe(503);
     expect((await none.call(dead, "PUT", project("web"), put(0, 1))).status).toBe(503);
-    expect(await stored(none, "project", "web")).toBeUndefined();
+    expect(await stored(none, "project_month", "web")).toBeUndefined();
   });
 
   it("a failed write answers 503 with fixed words; the cause's text and the request never appear in any answer or log line", async () => {
@@ -415,7 +415,7 @@ describe("fail closed, in fixed words", () => {
     expect(answer.status).toBe(503);
     expect(answer.body.error?.code).toBe("RUNTIME_UNAVAILABLE");
     for (const text of [answer.raw, ...w.logs]) for (const secret of ["SECRET-CAUSE", "exploded", "12.34", "cloud-companies", "web"]) expect(text, secret).not.toContain(secret);
-    expect(await stored(w, "project", "web")).toBeUndefined();
+    expect(await stored(w, "project_month", "web")).toBeUndefined();
   });
 
   it("Code's answer about the project: unknown is 404, an outage is 503, and Code's own words never reach the answer", async () => {
@@ -427,16 +427,16 @@ describe("fail closed, in fixed words", () => {
     const answer = await out.call(await out.signIn("ada", 30), "PUT", project("web"), put(0, 1));
     expect(answer.status).toBe(503);
     expect(answer.raw).not.toContain("secret outage text");
-    expect(await stored(out, "project", "web")).toBeUndefined();
+    expect(await stored(out, "project_month", "web")).toBeUndefined();
   });
 
   it("removing a limit does not ask Code about the project (a deleted project's limit can still be cleaned up)", async () => {
-    const w = await READY(); await w.seed(A, "project", "gone", 5 * MICROS);
+    const w = await READY(); await w.seed(A, "project_month", "gone", 5 * MICROS);
     const ada = await w.signIn("ada", 30);
     const before = w.codeCalls.length;
     expect((await w.call(ada, "PUT", project("gone"), put(1, null))).status).toBe(200);
     expect(w.codeCalls.slice(before)).toEqual([]);
-    expect(await stored(w, "project", "gone")).toBeUndefined();
+    expect(await stored(w, "project_month", "gone")).toBeUndefined();
   });
 
   it("refuses amounts and bodies that are not exact, in the same words, and writes nothing", async () => {
@@ -452,7 +452,7 @@ describe("fail closed, in fixed words", () => {
     }
     const big = await w.call(ada, "PUT", project("web"), { expectedVersion: 0, monthlyUsd: 1, note: "x".repeat(5_000) });
     expect(big.status).toBe(413);
-    expect(await stored(w, "project", "web")).toBeUndefined();
+    expect(await stored(w, "project_month", "web")).toBeUndefined();
     // The ceiling itself and zero are fine.
     expect((await w.call(ada, "PUT", project("web"), put(0, 0))).status).toBe(200);
     expect((await w.call(ada, "PUT", project("api"), put(0, 1_000_000))).status).toBe(200);
@@ -460,25 +460,25 @@ describe("fail closed, in fixed words", () => {
 
   it("at most SPEND_LIMITS_MAX overrides of a kind: the next new one is refused (existing ones still change), and the list says it is partial", async () => {
     const w = await READY(); const ada = await w.signIn("ada", 30);
-    for (let i = 1; i < SPEND_LIMITS_MAX.person; i++) await w.seed(A, "person", i.toString(16).padStart(64, "0"), MICROS);
-    await w.seed(A, "person", DEV.pam, MICROS);
+    for (let i = 1; i < SPEND_LIMITS_MAX.person_month; i++) await w.seed(A, "person_month", i.toString(16).padStart(64, "0"), MICROS);
+    await w.seed(A, "person_month", DEV.pam, MICROS);
     const refused = await w.call(ada, "PUT", person(DEV.zed), put(0, 1));
     expect(refused.status).toBe(409);
     expect(refused.body.error?.message).toBe("There are too many limits of this kind. Remove some first.");
-    expect(await stored(w, "person", DEV.zed)).toBeUndefined();
+    expect(await stored(w, "person_month", DEV.zed)).toBeUndefined();
     expect((await w.call(ada, "PUT", person(DEV.pam), put(1, 0.5))).status).toBe(200);
     expect((await w.call(ada, "PUT", project("web"), put(0, 1))).status).toBe(200);
     // One more person row beyond the bound (as a race could leave): the list is bounded and partial.
-    await w.seed(A, "person", DEV.zed, MICROS);
+    await w.seed(A, "person_month", DEV.zed, MICROS);
     const listed = await w.call(ada, "GET", PATH);
-    expect((listed.body.people as unknown[]).length).toBe(SPEND_LIMITS_MAX.person);
+    expect((listed.body.people as unknown[]).length).toBe(SPEND_LIMITS_MAX.person_month);
     expect(listed.body.partial).toBe(true);
   });
 });
 
 describe("every change is audited", () => {
   it("records who, what and which way, in fixed words, in the company's own audit", async () => {
-    const w = await READY(); await w.seed(A, "project", "web", 10 * MICROS);
+    const w = await READY(); await w.seed(A, "project_month", "web", 10 * MICROS);
     const ada = await w.signIn("ada", 30);
     await w.call(ada, "PUT", project("web"), put(1, 25));
     await w.call(ada, "PUT", project("web"), put(2, 5));
@@ -486,24 +486,24 @@ describe("every change is audited", () => {
     await w.call(ada, "PUT", person(DEV.pam), put(0, 2));
     const rows = await w.auditRows(A);
     expect(rows.map((r) => [r.subject, r.detail, r.outcome, r.actor.developerId, r.via, r.project]).sort()).toEqual([
-      [`spend_limit:person:${DEV.pam}`, "lowered", "ok", DEV.ada, "web", undefined],
-      ["spend_limit:project:web", "lowered", "ok", DEV.ada, "web", "web"],
-      ["spend_limit:project:web", "raised", "ok", DEV.ada, "web", "web"],
-      ["spend_limit:project:web", "removed", "ok", DEV.ada, "web", "web"],
+      [`spend_limit:person_month:${DEV.pam}`, "lowered", "ok", DEV.ada, "web", undefined],
+      ["spend_limit:project_month:web", "lowered", "ok", DEV.ada, "web", "web"],
+      ["spend_limit:project_month:web", "raised", "ok", DEV.ada, "web", "web"],
+      ["spend_limit:project_month:web", "removed", "ok", DEV.ada, "web", "web"],
     ].sort());
     expect(await w.auditRows(B)).toEqual([]);
   });
 
   it("a refused change leaves no record, and a failed audit write does not undo the change", async () => {
     const w = await READY(); const ada = await w.signIn("ada");
-    await w.seed(A, "project", "web", 10 * MICROS);
+    await w.seed(A, "project_month", "web", 10 * MICROS);
     await w.call(ada, "PUT", project("web"), put(1, 25));
     expect(await w.auditRows(A)).toEqual([]);
     const failing = world(); await failing.settings(A, {});
     (failing.audit as unknown as { append: () => Promise<never> }).append = () => Promise.reject(new Error("audit store down"));
     const answer = await failing.call(await failing.signIn("ada", 30), "PUT", project("web"), put(0, 2));
     expect(answer.status).toBe(200);
-    expect(await stored(failing, "project", "web")).toMatchObject({ monthlyUsdMicros: 2 * MICROS });
+    expect(await stored(failing, "project_month", "web")).toMatchObject({ monthlyUsdMicros: 2 * MICROS });
     expect(failing.logs.join("\n") + answer.raw).not.toContain("audit store down");
   });
 });
@@ -520,4 +520,61 @@ describe("the company default is still PUT /org/settings", () => {
     // Nothing in this route's own PUT body can name a default.
     expect((await w.call(await w.signIn("ada", 30), "PUT", project("web"), { expectedVersion: 0, monthlyUsd: 1, defaults: { projectMonthlyUsd: 999 } })).status).toBe(400);
   });
+});
+
+// A new kind is an entry in SPEND_LIMIT_KINDS; this walks every entry through the routes the same way (the ids come from the kind's scope).
+describe("every kind in the table, through the routes", () => {
+  const ID = { project: "api", person: DEV.zed } as const;
+  for (const def of SPEND_LIMIT_KINDS) {
+    const id = ID[def.scope];
+    const path = `${PATH}/${def.segment}/${id}`;
+    describe(`kind ${def.kind}`, () => {
+      it("has its PUT route (strict id), lists its rows and bound under its own members, and keeps two companies apart", async () => {
+        const w = await READY(); const ada = await w.signIn("ada", 30);
+        expect((await w.call(ada, "PUT", path, put(0, 1))).status).toBe(200);
+        expect((await w.call(ada, "PUT", `${PATH}/${def.segment}/${"Z".repeat(3)}`, put(0, 1))).status).toBe(501);
+        const mine = await w.call(ada, "GET", PATH);
+        expect((mine.body[def.listKey] as Array<{ id: string; monthlyUsd: number }>).map((r) => [r.id, r.monthlyUsd])).toEqual([[id, 1]]);
+        expect((mine.body.max as Record<string, number>)[def.listKey]).toBe(def.max);
+        // Every other kind's list is empty, and company B sees none of it.
+        for (const other of SPEND_LIMIT_KINDS.filter((d) => d.kind !== def.kind)) expect(mine.body[other.listKey]).toEqual([]);
+        const theirs = await w.call(await w.signIn("bea", 30), "GET", PATH);
+        expect(theirs.body[def.listKey]).toEqual([]);
+        expect(await w.companies.spendLimit(B, def.kind, id)).toBeUndefined();
+        expect((await w.companies.spendLimit(A, def.kind, id))?.companyId).toBe(A);
+      });
+
+      it("needs a step-up to raise and none to lower, and a plain member is refused", async () => {
+        const w = await READY();
+        const bare = await w.signIn("ada");
+        expect((await w.call(bare, "PUT", path, put(0, 1))).status).toBe(200);
+        expect((await w.call(bare, "PUT", path, put(1, 1000))).body.error?.code).toBe("STEP_UP_REQUIRED");
+        expect((await w.companies.spendLimit(A, def.kind, id))?.monthlyUsdMicros).toBe(MICROS);
+        expect((await w.call(await w.signIn("ada", 30), "PUT", path, put(1, 1000))).status).toBe(200);
+        expect((await w.call(bare, "PUT", path, put(2, 2))).status).toBe(200);
+        const pam = await w.signIn("pam", 30);
+        expect((await w.call(pam, "GET", PATH)).status).toBe(403);
+        expect((await w.call(pam, "PUT", path, put(3, 1))).status).toBe(403);
+      });
+
+      it("is audited under its own name, and an item that does not read answers 503 and changes nothing", async () => {
+        const w = await READY(); const ada = await w.signIn("ada", 30);
+        await w.call(ada, "PUT", path, put(0, 3));
+        expect((await w.auditRows(A)).map((r) => r.subject)).toEqual([`spend_limit:${def.kind}:${id}`]);
+        w.companies.corruptSpendLimit(A, def.kind, id);
+        expect((await w.call(ada, "GET", PATH)).status).toBe(503);
+        expect((await w.call(ada, "PUT", path, put(1, 1))).status).toBe(503);
+        expect((await w.call(ada, "PUT", path, put(1, null))).status).toBe(503);
+      });
+
+      it("takes its default from the company's budgets when no override exists (a raise is judged against it)", async () => {
+        const w = await READY(); // project default $30, member default $20, task $2
+        const fallback = def.defaultOf({ companyMonthlyUsdMicros: 100 * MICROS, memberMonthlyUsdMicros: 20 * MICROS, projectMonthlyUsdMicros: 30 * MICROS, taskUsdMicros: 2 * MICROS, learningMonthlyUsdMicros: 1 });
+        const bare = await w.signIn("ada");
+        if (fallback === null) { expect((await w.call(bare, "PUT", path, put(0, 999_999))).status).toBe(200); return; }
+        expect((await w.call(bare, "PUT", path, put(0, fallback / MICROS + 1))).body.error?.code).toBe("STEP_UP_REQUIRED");
+        expect((await w.call(bare, "PUT", path, put(0, fallback / MICROS))).status).toBe(200);
+      });
+    });
+  }
 });

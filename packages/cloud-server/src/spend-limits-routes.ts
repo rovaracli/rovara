@@ -1,8 +1,9 @@
 // Lead 3 B1 (DEC 254t b): monthly spending limits for one project or one person, over the company default.
 //
-//   GET /org/spend-limits                          the company defaults (the Budgets in the company settings), the overrides, and how many more fit
+//   GET /org/spend-limits                          the company defaults (the Budgets in the company settings), the overrides of every kind, and how many more fit
 //   PUT /org/spend-limits/projects/{project}       {expectedVersion, monthlyUsd: number | null}   null removes the override (the default applies again)
 //   PUT /org/spend-limits/people/{developer id}    the same, for one person
+// The kinds (and their paths and list members) come from one table, SPEND_LIMIT_KINDS (company-store.ts): a new kind is an entry there, not new code here.
 //
 // The defaults are `settings.budgets` (PUT /org/settings writes them: a fresh step-up on EVERY write, and the company's decision rules for a
 // loosening one). An override is one item per project or person in the Companies table (company-store.ts SpendLimit); the model gateway
@@ -26,8 +27,8 @@ import { CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused as notCaller } from "./company-caller.js";
 import { plainObject, settingsDecision } from "./company-settings.js";
 import {
-  CompanyStoreConflict, SPEND_LIMITS_MAX, SPEND_LIMIT_ID, SPEND_LIMIT_MICROS_MAX, companySettings,
-  type CompanyStore, type SpendLimit, type SpendLimitKind,
+  CompanyStoreConflict, SPEND_LIMIT_KINDS, SPEND_LIMIT_SCOPES, SPEND_LIMIT_MICROS_MAX, companySettings, spendLimitDef,
+  type CompanyStore, type SpendLimit, type SpendLimitKind, type SpendLimitScope,
 } from "./company-store.js";
 import { CODE_MEMBERS_PATH, MEMBER_LIST_PAGES_MAX } from "./member-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
@@ -80,17 +81,19 @@ const refused = (value: Admin | RouteAnswer): value is RouteAnswer => "status" i
 const row = (limit: SpendLimit) => ({ id: limit.id, monthlyUsd: limit.monthlyUsdMicros / 1_000_000, version: limit.version, updatedAt: limit.updatedAt, updatedBy: limit.updatedBy });
 
 async function view(who: Admin): Promise<RouteAnswer> {
-  let settings, limits;
+  let settings, listed;
   try {
     settings = await companySettings(who.store, who.companyId);
     if (settings === undefined) return W.unreadable;
-    limits = await who.store.spendLimits(who.companyId);
+    listed = await who.store.spendLimits(who.companyId);
   } catch { return W.unreadable; }
   const b = settings.settings.budgets;
   return ok({
     companyId: who.companyId, canChange: true, settingsVersion: settings.version,
     defaults: { companyMonthlyUsd: usd(b.companyMonthlyUsdMicros), memberMonthlyUsd: usd(b.memberMonthlyUsdMicros), projectMonthlyUsd: usd(b.projectMonthlyUsdMicros), taskUsd: usd(b.taskUsdMicros) },
-    projects: limits.projects.map(row), people: limits.people.map(row), partial: limits.partial, max: { projects: SPEND_LIMITS_MAX.project, people: SPEND_LIMITS_MAX.person },
+    // Each kind's rows under its own list member, and its bound under the same name.
+    ...Object.fromEntries(SPEND_LIMIT_KINDS.map((def) => [def.listKey, listed.limits[def.kind].map(row)])),
+    partial: listed.partial, max: Object.fromEntries(SPEND_LIMIT_KINDS.map((def) => [def.listKey, def.max])),
   });
 }
 
@@ -133,13 +136,21 @@ async function personKnown(context: RouteContext, companyId: string, personId: s
   return undefined;
 }
 
+/** What each scope's id must be known as, and the answer when it is not. */
+const KNOWN: Record<SpendLimitScope, (context: RouteContext, companyId: string, id: string) => Promise<boolean | undefined>> = {
+  project: (context, _companyId, id) => projectKnown(context, id),
+  person: (context, companyId, id) => personKnown(context, companyId, id),
+};
+const NOT_FOUND: Record<SpendLimitScope, RouteAnswer> = { project: W.projectNotFound, person: W.personNotFound };
+
 const INFINITY = Number.POSITIVE_INFINITY;
 
 async function change(context: RouteContext, kind: SpendLimitKind): Promise<RouteAnswer> {
   const who = await admin(context);
   if (refused(who)) return who;
   const id = context.params[0]!;
-  if (!SPEND_LIMIT_ID[kind].test(id)) return W.invalid;
+  const def = spendLimitDef(kind);
+  if (!SPEND_LIMIT_SCOPES[def.scope].id.test(id)) return W.invalid;
   const body = context.body;
   if (Buffer.byteLength(JSON.stringify(body) ?? "", "utf8") > BODY_BYTES_MAX) return W.tooLarge;
   if (!plainObject(body) || Object.keys(body).length !== 2 || !Object.hasOwn(body, "expectedVersion") || !Object.hasOwn(body, "monthlyUsd") || !whole(body["expectedVersion"])) return W.invalid;
@@ -148,9 +159,9 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
   // Setting a limit names a project Code knows (as this person, in their company) or a person Code lists in the company. Removing one needs no
   // such check: a project or person that is gone can still have its limit cleaned up.
   if (asked !== null) {
-    const known = kind === "project" ? await projectKnown(context, id) : await personKnown(context, who.companyId, id);
+    const known = await KNOWN[def.scope](context, who.companyId, id);
     if (known === undefined) return W.unavailable;
-    if (!known) return kind === "project" ? W.projectNotFound : W.personNotFound;
+    if (!known) return NOT_FOUND[def.scope];
   }
   // A fresh read of everything the decision depends on.
   let settings, current: SpendLimit | undefined;
@@ -162,8 +173,7 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
   if (current !== undefined && (current.companyId !== who.companyId || current.kind !== kind || current.id !== id)) return W.unreadable;
   if (body["expectedVersion"] !== (current?.version ?? 0)) return W.stale;
 
-  const budgets = settings.settings.budgets;
-  const fallback = (kind === "project" ? budgets.projectMonthlyUsdMicros : budgets.memberMonthlyUsdMicros) ?? INFINITY;
+  const fallback = def.defaultOf(settings.settings.budgets) ?? INFINITY;
   const before = current?.monthlyUsdMicros ?? fallback;
   const after = asked ?? fallback;
   const raises = after > before;
@@ -179,7 +189,7 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
     // A new override: only while the company is under the bound for this kind.
     let have;
     try { have = await who.store.spendLimits(who.companyId); } catch { return W.unreadable; }
-    if (have.partial || (kind === "project" ? have.projects.length : have.people.length) >= SPEND_LIMITS_MAX[kind]) return W.tooMany;
+    if (have.partial || have.limits[kind].length >= def.max) return W.tooMany;
   }
   const basis = { override: current === undefined ? undefined : { version: current.version, monthlyUsdMicros: current.monthlyUsdMicros }, settingsVersion: settings.version };
   try {
@@ -190,7 +200,7 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
     try {
       await recordCloudAction(context.audit, {
         companyId: who.companyId, actor: { developerId: who.developerId, name: who.name, type: "person" }, action: "company.budget.changed", via: "web",
-        subject: `spend_limit:${kind}:${id}`, ...(kind === "project" ? { project: id } : {}),
+        subject: `spend_limit:${kind}:${id}`, ...(def.scope === "project" ? { project: id } : {}),
         detail: asked === null ? AUDIT_DETAIL.removed : raises ? AUDIT_DETAIL.raised : AUDIT_DETAIL.lowered,
       }, context.now);
     } catch { console.log(JSON.stringify({ event: "cloud.audit_failed", action: "company.budget.changed", companyId: who.companyId })); }
@@ -198,9 +208,8 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
   return view(who);
 }
 
-/** Added to the route table with the company routes (the same Companies table). The ids in the paths are strict: anything else is no route. */
+/** Added to the route table with the company routes (the same Companies table). The ids in the paths are strict: anything else is no route. One PUT route per kind, from the table. */
 export const SPEND_LIMIT_ROUTES: Route[] = [
   { method: "GET", path: /^\/org\/spend-limits$/u, answer: readLimits },
-  { method: "PUT", path: /^\/org\/spend-limits\/projects\/([a-z][a-z0-9-]{0,62})$/u, answer: (context) => change(context, "project") },
-  { method: "PUT", path: /^\/org\/spend-limits\/people\/([a-f0-9]{64})$/u, answer: (context) => change(context, "person") },
+  ...SPEND_LIMIT_KINDS.map((def): Route => ({ method: "PUT", path: new RegExp(`^\\/org\\/spend-limits\\/${def.segment}\\/(${SPEND_LIMIT_SCOPES[def.scope].idSource})$`, "u"), answer: (context) => change(context, def.kind) })),
 ];

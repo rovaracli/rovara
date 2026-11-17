@@ -33,9 +33,9 @@ export {
   type CompanyBudgets, type CompanyInstruction, type CompanySettings, type LockValue, type SettingsCheck, type SettingsDecision, type WebsiteCeiling,
 } from "./company-settings.js";
 export {
-  AGENT_AI_SOURCES, COMPANY_ID, CompanyStoreConflict, HOOK_INSTALL_COMPANIES_MAX, INVITES_READ_MAX, INVITE_DAYS, LocalCompanyStore, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, SPEND_LIMITS_MAX, SPEND_LIMIT_ID, SPEND_LIMIT_KINDS, SPEND_LIMIT_MICROS_MAX, SPEND_LIMIT_SORT_PREFIX, StoreCompanyRules, StoreHookInstalls,
+  AGENT_AI_SOURCES, COMPANY_ID, CompanyStoreConflict, HOOK_INSTALL_COMPANIES_MAX, INVITES_READ_MAX, INVITE_DAYS, LocalCompanyStore, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, SPEND_LIMITS_MAX, SPEND_LIMIT_ID, SPEND_LIMIT_KINDS, SPEND_LIMIT_MICROS_MAX, SPEND_LIMIT_SCOPES, SPEND_LIMIT_SORT_PREFIX, spendLimitDef, StoreCompanyRules, StoreHookInstalls,
   companySettings, validGithubUserId, validHookInstall,
-  type AgentAiChoice, type GithubTrialClaim, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type SpendLimit, type SpendLimitBasis, type SpendLimitKind, type StoredSettings,
+  type AgentAiChoice, type GithubTrialClaim, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type SpendLimit, type SpendLimitBasis, type SpendLimitKind, type SpendLimitKindDef, type SpendLimitList, type SpendLimitScope, type StoredSettings,
 } from "./company-store.js";
 export { CLOSED_INVITE_DAYS, COMPANY_TABLE, DynamoCompanyStore } from "./company-dynamo.js";
 export { CODE_MEMBERS_PATH, MEMBER_LIST_PAGES_MAX, MEMBER_ROUTES, MEMBER_WORDS, roleRefusal } from "./member-routes.js";

@@ -10,7 +10,7 @@ import { appRoutes } from "../../packages/ui/src/routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
-import { parseUsd, readPeopleNames, readSpendLimits } from "../../packages/ui/src/api/admin-spend-limits.js";
+import { SPEND_LIMIT_TABLES, limitPath, parseUsd, readPeopleNames, readSpendLimits } from "../../packages/ui/src/api/admin-spend-limits.js";
 import { visibleAdminGroups } from "../../packages/ui/src/screens/admin/admin-nav.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
@@ -45,7 +45,7 @@ describe("Spending limits page", () => {
  });
 
  it("reads only the shape it expects, and parses a typed amount strictly", () => {
-  expect(readSpendLimits(body()).projects).toEqual([{ id: "web", monthlyUsd: 40, version: 2 }]);
+  expect(readSpendLimits(body()).lists["projects"]).toEqual([{ id: "web", monthlyUsd: 40, version: 2 }]);
   for (const bad of [null, [], { ...body(), defaults: null }, body({ projects: [{ id: "Web", monthlyUsd: 1, version: 1 }] }), body({ people: [{ id: "abc", monthlyUsd: 1, version: 1 }] }), body({ projects: [{ id: "web", monthlyUsd: -1, version: 1 }] }),
    body({ projects: [{ id: "web", monthlyUsd: 1, version: 0 }] }), body({ partial: "no" }), body({ defaults: { companyMonthlyUsd: "5", memberMonthlyUsd: null, projectMonthlyUsd: null, taskUsd: null } }), body({ max: { projects: -1, people: 1 } })]) {
    expect(() => readSpendLimits(bad), JSON.stringify(bad)).toThrow();
@@ -64,8 +64,8 @@ describe("Spending limits page", () => {
    expect(defaults.textContent).toMatch(/Each project, each month: \$100/u);
    expect(screen.getByTestId("spend-task-default").textContent).toMatch(/Each task: \$2/u);
    expect(within(screen.getByTestId("spend-task-default")).getByRole("link", { name: "that project's page" }).getAttribute("href")).toBe("/app/admin/projects");
-   expect(within(screen.getByTestId("spend-project-table")).getByText("web")).toBeTruthy();
-   expect(within(screen.getByTestId("spend-person-table")).getByTitle(PERSON).textContent).toBe(`${"1".repeat(12)}…`);
+   expect(within(screen.getByTestId("spend-projects-table")).getByText("web")).toBeTruthy();
+   expect(within(screen.getByTestId("spend-people-table")).getByTitle(PERSON).textContent).toBe(`${"1".repeat(12)}…`);
    // Nothing here changes a default.
    expect(screen.queryByLabelText(/company monthly/iu)).toBeNull();
    // No fresh sign-in step until the server asks.
@@ -77,7 +77,7 @@ describe("Spending limits page", () => {
   const sent: ApiRequest[] = [];
   const f = mount("/app/admin/money/limits", r => { if (r.method === "PUT") { sent.push(r); return { status: 200, body: body() }; } return { status: 200, body: body({ projects: [] }) }; });
   try {
-   await screen.findByTestId("spend-project-table");
+   await screen.findByTestId("spend-projects-table");
    const form = within(screen.getByRole("form", { name: "Add a project limit" }));
    const add = form.getByRole<HTMLButtonElement>("button", { name: "Add limit" });
    expect(add.disabled).toBe(true);
@@ -101,14 +101,14 @@ describe("Spending limits page", () => {
   const sent: ApiRequest[] = [];
   const f = mount("/app/admin/money/limits", r => { if (r.method === "PUT") { sent.push(r); } return { status: 200, body: body() }; });
   try {
-   const table = within(await screen.findByTestId("spend-person-table"));
+   const table = within(await screen.findByTestId("spend-people-table"));
    fireEvent.click(table.getByRole("button", { name: "Edit" }));
    fireEvent.change(table.getByLabelText(/New monthly limit/u), { target: { value: "25" } });
    fireEvent.click(table.getByRole("button", { name: "Save" }));
    await waitFor(() => { expect(sent).toHaveLength(1); });
    expect(sent[0]!.path).toBe(`/v1/app/org/spend-limits/people/${PERSON}`);
    expect(sent[0]!.body).toEqual({ expectedVersion: 1, monthlyUsd: 25 });
-   fireEvent.click(within(screen.getByTestId("spend-project-table")).getByRole("button", { name: "Remove" }));
+   fireEvent.click(within(screen.getByTestId("spend-projects-table")).getByRole("button", { name: "Remove" }));
    await waitFor(() => { expect(sent).toHaveLength(2); });
    expect(sent[1]!.path).toBe("/v1/app/org/spend-limits/projects/web");
    expect(sent[1]!.body).toEqual({ expectedVersion: 2, monthlyUsd: null });
@@ -119,7 +119,7 @@ describe("Spending limits page", () => {
   const f = mount("/app/admin/money/limits", r => (r.method === "PUT" && (r.body as { monthlyUsd: number | null }).monthlyUsd !== null && (r.body as { monthlyUsd: number }).monthlyUsd > 40
    ? { status: 403, body: { error: { code: "STEP_UP_REQUIRED", message: "Confirm it's you again, then try once more." } } } : { status: 200, body: body() }));
   try {
-   const table = within(await screen.findByTestId("spend-project-table"));
+   const table = within(await screen.findByTestId("spend-projects-table"));
    fireEvent.click(table.getByRole("button", { name: "Edit" }));
    fireEvent.change(table.getByLabelText(/New monthly limit/u), { target: { value: "30" } });
    fireEvent.click(table.getByRole("button", { name: "Save" }));
@@ -138,10 +138,10 @@ describe("Spending limits page", () => {
 
  it("says too many when the list is full, shows a server refusal in its fixed words, and says not connected when Cloud has no company data", async () => {
   const full = mount("/app/admin/money/limits", () => ({ status: 200, body: body({ partial: true }) }));
-  try { expect((await screen.findByTestId("spend-project-full")).textContent).toMatch(/too many limits/u); expect(screen.queryByRole("form", { name: "Add a project limit" })).toBeNull(); } finally { full.close(); }
+  try { expect((await screen.findByTestId("spend-projects-full")).textContent).toMatch(/too many limits/u); expect(screen.queryByRole("form", { name: "Add a project limit" })).toBeNull(); } finally { full.close(); }
   const refused = mount("/app/admin/money/limits", r => (r.method === "PUT" ? { status: 409, body: { error: { code: "CONFLICT", message: "This limit changed since you opened it. Refresh and try again." } } } : { status: 200, body: body() }));
   try {
-   fireEvent.click(within(await screen.findByTestId("spend-project-table")).getByRole("button", { name: "Remove" }));
+   fireEvent.click(within(await screen.findByTestId("spend-projects-table")).getByRole("button", { name: "Remove" }));
    expect((await screen.findByRole("alert")).textContent).toBe("This limit changed since you opened it. Refresh and try again.");
   } finally { refused.close(); }
   const off = mount("/app/admin/money/limits", () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } }));
@@ -153,7 +153,7 @@ describe("Spending limits page", () => {
   const members = { members: [{ developerId: PERSON, name: "Maya Chen" }, { developerId: OTHER, name: "Ravi Patel" }, { developerId: "x", name: "Bad row" }, { developerId: "3".repeat(64), name: "  " }] };
   const f = mount("/app/admin/money/limits", r => (r.path === "/v1/app/org/members" ? { status: 200, body: members } : r.method === "PUT" ? (sent.push(r), { status: 200, body: body() }) : { status: 200, body: body() }));
   try {
-   const table = within(await screen.findByTestId("spend-person-table"));
+   const table = within(await screen.findByTestId("spend-people-table"));
    await waitFor(() => { expect(table.getByTitle(PERSON).textContent).toBe("Maya Chen"); });
    const form = within(screen.getByRole("form", { name: "Add a person limit" }));
    // Only people without a limit of their own can be picked.
@@ -168,11 +168,28 @@ describe("Spending limits page", () => {
   } finally { f.close(); }
   const plain = mount("/app/admin/money/limits", r => (r.path === "/v1/app/org/members" ? { status: 500, body: {} } : { status: 200, body: body() }));
   try {
-   const table = within(await screen.findByTestId("spend-person-table"));
+   const table = within(await screen.findByTestId("spend-people-table"));
    expect(table.getByTitle(PERSON).textContent).toBe(`${"1".repeat(12)}…`);
    expect(within(screen.getByRole("form", { name: "Add a person limit" })).getByLabelText("Person ID")).toBeTruthy();
   } finally { plain.close(); }
   expect(readPeopleNames(members)).toEqual([{ developerId: PERSON, name: "Maya Chen" }, { developerId: OTHER, name: "Ravi Patel" }]);
   expect(() => readPeopleNames({ members: "x" })).toThrow();
+ });
+ it("draws one table per entry of the page's table of kinds, from the lists and bounds the server names, and refuses an answer missing one", async () => {
+  const f = mount("/app/admin/money/limits", () => ({ status: 200, body: body() }));
+  try {
+   for (const table of SPEND_LIMIT_TABLES) {
+    expect(await screen.findByTestId(`spend-${table.listKey}-table`)).toBeTruthy();
+    expect(screen.getByRole("region", { name: table.title })).toBeTruthy();
+    expect(screen.getByRole("form", { name: `Add a ${table.scope} limit` })).toBeTruthy();
+    expect(limitPath(table, "x y")).toBe(`/v1/app/org/spend-limits/${table.segment}/x%20y`);
+   }
+  } finally { f.close(); }
+  for (const table of SPEND_LIMIT_TABLES) {
+   const withoutList: Record<string, unknown> = { ...body() };
+   delete withoutList[table.listKey];
+   expect(() => readSpendLimits(withoutList), `no ${table.listKey}`).toThrow();
+   expect(() => readSpendLimits(body({ max: { projects: 1, people: 1, [table.listKey]: undefined } })), `no bound for ${table.listKey}`).toThrow();
+  }
  });
 });
