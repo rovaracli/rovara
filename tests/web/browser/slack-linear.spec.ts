@@ -74,6 +74,30 @@ test("Project settings: link a private channel after /invite and Check, change i
   await expect(connect.channelNote).toContainText("Channel removed.");
 });
 
+test("an open Slack picker survives a narrow window, a focus and a visibility change (nothing is unmounted)", async ({ page }) => {
+  const connect = new ConnectPage(page);
+  await page.goto(`${ROUTES.admin.projects}/web`);
+  await expect(connect.channelRow).toBeVisible();
+  await connect.channelSelect.selectOption("GPRIVATE1");
+  await connect.channelLink.click();
+  await expect(connect.inviteNeeded).toBeVisible();
+  // Mark the very elements: a remount would make new ones without the mark.
+  await page.evaluate(() => { document.querySelector('[data-testid="slack-invite-needed"]')?.setAttribute("data-mark", "same"); document.querySelector('[data-testid="slack-channel-picker"]')?.setAttribute("data-mark", "same"); });
+  await page.setViewportSize({ width: 600, height: 720 });
+  await expect(page.getByTestId("admin-narrow")).toBeVisible();
+  await page.evaluate(() => { window.dispatchEvent(new Event("focus")); document.dispatchEvent(new Event("visibilitychange")); });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expect(page.getByTestId("admin-narrow")).toHaveCount(0);
+  await page.evaluate(() => { window.dispatchEvent(new Event("focus")); document.dispatchEvent(new Event("visibilitychange")); });
+  await page.waitForTimeout(500);
+  await expect(page.locator('[data-testid="slack-invite-needed"][data-mark="same"]')).toBeVisible();
+  await expect(page.locator('[data-testid="slack-channel-picker"][data-mark="same"]')).toBeVisible();
+  await connect.channelCheck.click();
+  await expect(connect.channelLinked).toHaveText("Linked to #private-team.");
+  await connect.channelRemove.click();
+  await expect(connect.channelNote).toContainText("Channel removed.");
+});
+
 test("Project settings: Connect Linear, back to the same page, pick the project's team, remove it", async ({ page, baseURL }, testInfo) => {
   const connect = new ConnectPage(page);
   await page.goto(`${ROUTES.admin.projects}/web`);

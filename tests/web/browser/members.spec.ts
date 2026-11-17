@@ -91,6 +91,26 @@ test("refusals are fixed sentences: the last owner, and a confirmation that is t
   await page.screenshot({ path: testInfo.outputPath("role-change-confirm-again.png"), fullPage: true });
 });
 
+test("an open role dialog and its refusal survive a narrow window, a focus and a visibility change (nothing is unmounted)", async ({ page }) => {
+  await serveMembers(page, () => ({ status: 409, body: { error: { code: "LAST_OWNER", message: "server words never shown" } } }));
+  const admin = new AdminPage(page);
+  await openConfirmed(admin, page);
+  await page.getByRole("button", { name: "Make Maya an admin" }).click();
+  await expect(page.getByText("New role: Admin")).toBeVisible();
+  await page.getByRole("button", { name: "Confirm role change" }).click();
+  await expect(page.getByText("A company needs at least one owner. Make someone else an owner first.")).toBeVisible();
+  await page.evaluate(() => { document.querySelector('[role="dialog"]')?.setAttribute("data-mark", "same"); });
+  await page.setViewportSize({ width: 600, height: 720 });
+  await expect(page.getByTestId("admin-narrow")).toBeVisible();
+  await page.evaluate(() => { window.dispatchEvent(new Event("focus")); document.dispatchEvent(new Event("visibilitychange")); });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.evaluate(() => { window.dispatchEvent(new Event("focus")); document.dispatchEvent(new Event("visibilitychange")); });
+  await page.waitForTimeout(500);
+  await expect(page.locator('[role="dialog"][data-mark="same"]')).toBeVisible();
+  await expect(page.getByText("A company needs at least one owner. Make someone else an owner first.")).toBeVisible();
+  await page.getByRole("button", { name: "Close dialog" }).click();
+});
+
 test("Roles explained shows the same who-can-do-what table", async ({ page }) => {
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.people + "/roles");
