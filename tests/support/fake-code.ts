@@ -173,12 +173,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (project(name) === undefined || companyless.has(person.developerId) || (!manage && grant === undefined) || !wikiReads(person, name)) return failure(404, "NOT_FOUND", "project not found");
     const view = (): { status: number; body: unknown } => ({ status: 200, body: wikiSetupBuildView(one, manage) });
-    if (method === "GET") return tail === "wiki-map" ? { status: 200, body: one.mapMade ? { status: "ready", canManage: manage, map: wikiMapOf(name) } : { status: "none", canManage: manage } } : tail === "upkeep" ? { status: 200, body: { enabled: one.upkeepOn, canManage: manage } } : view();
+    if (method === "GET") return tail === "wiki-map" ? { status: 200, body: one.mapMade ? { status: "ready", canManage: manage, map: wikiMapOf(name) } : { status: "none", canManage: manage } } : tail === "upkeep" ? { status: 200, body: { enabled: one.upkeepOn, canManage: manage, available: true } } : view();
     if (!manage) return failure(403, "FORBIDDEN", tail === "wiki-map" ? WIKI_SETUP_CODE_WORDS.mapNotAllowed : WIKI_SETUP_CODE_WORDS.notAllowed);
     const given = body as { requestId?: unknown; on?: unknown } | undefined;
     if (tail === "wiki-map") { one.mapMade = true; return { status: 200, body: { status: "ready", canManage: true, map: wikiMapOf(name) } }; }
     if (typeof given?.requestId !== "string") return failure(400, "CONFIG_INVALID", "the request is not valid");
-    if (tail === "upkeep") { one.upkeepOn = given.on === true; return { status: 200, body: { enabled: one.upkeepOn, canManage: true } }; }
+    if (tail === "upkeep") { one.upkeepOn = given.on === true; return { status: 200, body: { enabled: one.upkeepOn, canManage: true, available: true } }; }
     if (tail === "wiki-build/agents") { one.agentsOn = given.on === true; return view(); }
     if (tail === "wiki-build/delete") {
       if (one.status === "running") return failure(409, "WORKSPACE_BUSY", WIKI_SETUP_CODE_WORDS.deleteWhileRunning);
