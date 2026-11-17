@@ -41,6 +41,16 @@ function peopleOf(answer: unknown): PeopleEntry[] | undefined {
   return entries;
 }
 
+/** Code's task view names the task's own person (`task.owner`, Q7), checked strictly: a sign-in id and a readable name, or no owner (an older Code, or a task with no person owner). Never guessed from anything else. */
+const SIGN_IN_ID = /^[0-9a-f]{64}$/u;
+function codeOwnerOf(task: unknown): { developerId: string; name: string } | undefined {
+  const owner = (task as { owner?: unknown } | undefined)?.owner;
+  if (typeof owner !== "object" || owner === null || Array.isArray(owner) || Object.keys(owner).length !== 2) return undefined;
+  const { developerId, name } = owner as { developerId?: unknown; name?: unknown };
+  if (typeof developerId !== "string" || !SIGN_IN_ID.test(developerId) || typeof name !== "string" || name.trim() === "" || name.length > NAME_MAX) return undefined;
+  return { developerId, name };
+}
+
 /** The statuses Code refuses a read with (bad id, not allowed, no such task, gone; a 401 is the sign-in ending, which the client handles). Any other answer (Code down, busy, rate limiting, the sign-in ended) is not a refusal and passes on. */
 const REFUSAL_STATUSES: ReadonlySet<number> = new Set([400, 403, 404, 410]);
 /** How long (ms) a first opener who lost the race waits before each of its re-reads for the winner's session (the winner's write may land a moment later). */
@@ -71,27 +81,41 @@ export async function openTaskByCodeId(context: RouteContext): Promise<RouteAnsw
   const me = { developerId: caller.developerId, name: caller.name };
   const company = caller.companyId;
   // 1. Code's own read, as this person, before anything else is looked at.
-  const read = await readOrRefused(() => context.client.json<{ task?: { taskId?: unknown; project?: unknown } }>(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}?events=0`, { headers: TASK_VIEW }));
+  const read = await readOrRefused(() => context.client.json<{ task?: { taskId?: unknown; project?: unknown; owner?: unknown } }>(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}?events=0`, { headers: TASK_VIEW }));
   const project = read?.task?.project;
   if (read === undefined || read.task?.taskId !== taskId || typeof project !== "string" || project === "") return OPEN_REFUSED;
+  const codeOwner = codeOwnerOf(read.task);
   // 2. The session Cloud already holds for the task (the starter's, or one an earlier open made).
   const existing = await context.work.byTask(taskId);
   if (existing !== undefined) {
     // A session another company's person opened is not this person's, even if a Code that mixed companies let them read the task.
     if (existing.companyId !== undefined && existing.companyId !== company) return OPEN_REFUSED;
-    if (existing.ownerUnresolved === true) await healOwner(context, existing, me);
+    if (existing.ownerUnresolved === true) {
+      // Code names the owner on the task: the placeholder is replaced by the real person whoever opens (never the opener unless the opener is that person).
+      if (codeOwner !== undefined) await replaceOwner(context, existing, codeOwner.developerId === me.developerId ? me : codeOwner);
+      else await healOwner(context, existing, me);
+    }
     return opened(context, existing);
   }
   // 3. First open: who owns the task, from Code's People read of it (a refusal or an unreadable answer opens nothing).
-  const people = peopleOf(await readOrRefused(() => context.client.json<unknown>(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}/people`)));
-  const owners = people?.filter((entry) => entry.effectiveRole === "owner") ?? [];
-  const owner = owners.find((entry) => entry.you) ?? owners[0];
-  if (owner === undefined) return OPEN_REFUSED;
-  const person = owner.you ? me : { developerId: placeholderOwnerId(owner.personId), name: owner.name };
+  let person: { developerId: string; name: string };
+  let unresolved = false;
+  if (codeOwner !== undefined) {
+    // Code says who owns the task (its own person): no People read, no placeholder.
+    person = codeOwner.developerId === me.developerId ? me : codeOwner;
+  } else {
+    // An older Code names no owner on the task: the owner is read from its People list, with a placeholder until the real owner opens.
+    const people = peopleOf(await readOrRefused(() => context.client.json<unknown>(context.session, `/v1/dev/tasks/${encodeURIComponent(taskId)}/people`)));
+    const owners = people?.filter((entry) => entry.effectiveRole === "owner") ?? [];
+    const owner = owners.find((entry) => entry.you) ?? owners[0];
+    if (owner === undefined) return OPEN_REFUSED;
+    person = owner.you ? me : { developerId: placeholderOwnerId(owner.personId), name: owner.name };
+    unresolved = !owner.you;
+  }
   const record: WorkSession = {
     sessionId: newSessionId(), taskId, project, startedBy: person, owner: person, createdAt: context.now().toISOString(), revision: 1,
     companyId: company,
-    ...(owner.you ? {} : { ownerUnresolved: true as const }),
+    ...(unresolved ? { ownerUnresolved: true as const } : {}),
   };
   try {
     await context.work.put(record, undefined, { once: true });
@@ -113,8 +137,12 @@ export async function openTaskByCodeId(context: RouteContext): Promise<RouteAnsw
 async function healOwner(context: RouteContext, record: WorkSession, me: { developerId: string; name: string }): Promise<void> {
   const people = peopleOf(await readOrRefused(() => context.client.json<unknown>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/people`)));
   if (people?.some((entry) => entry.you && entry.effectiveRole === "owner") !== true) return;
-  // The placeholder was also the starter (the opener could name no one else), so it is replaced in both places: the owner's lists then show the session.
-  const healed: WorkSession = { ...record, owner: me, ...(record.startedBy.developerId === record.owner.developerId ? { startedBy: me } : {}), revision: record.revision + 1 };
+  await replaceOwner(context, record, me);
+}
+
+/** Code names the owner: a session made with a placeholder owner now names that person (in both places when the placeholder was also the starter). Best effort; the open already succeeded. */
+async function replaceOwner(context: RouteContext, record: WorkSession, person: { developerId: string; name: string }): Promise<void> {
+  const healed: WorkSession = { ...record, owner: person, ...(record.startedBy.developerId === record.owner.developerId ? { startedBy: person } : {}), revision: record.revision + 1 };
   delete healed.ownerUnresolved;
   try {
     await context.work.put(healed);

@@ -408,3 +408,75 @@ describe("the DynamoDB store reads two transactions that touch the same task rec
     await expect(failing("None", "ThrottlingError").put(record)).rejects.not.toBeInstanceOf(StoreConflict);
   });
 });
+
+// Web task channel Q7: Code's task view names the task's own person (`task.owner`), so Cloud never guesses the owner from the People list.
+describe("opening a task whose Code view names the owner", () => {
+  const base = { taskId: TASK, title: "Fix the README typo", project: "payments", status: "RUNNING", startingRevision: 1, client: "Rovara Cloud", shared: false, createdAt: "2026-11-14T10:00:00.000Z", updatedAt: "2026-11-14T10:05:00.000Z", events: [] };
+  const named = (owner: unknown) => ({ task: () => ({ ...base, owner }) });
+  const ADA_OWNER = { developerId: ADA, name: "Ada Lovelace" };
+
+  it("a commenter's first open names Code's owner on the session, with no placeholder and no People read", async () => {
+    const w = setUp(named(ADA_OWNER));
+    const res = await w.post(OPEN, undefined, await w.sam());
+    expect(res.status).toBe(200);
+    expect(w.route()).toEqual([`GET /v1/dev/tasks/${TASK}`]);
+    const record = w.sessions()[0]!;
+    expect(record.owner).toEqual(ADA_OWNER);
+    expect(record.startedBy).toEqual(ADA_OWNER);
+    expect(record.ownerUnresolved).toBeUndefined();
+    expect(record.owner.developerId).not.toBe(SAM);
+  });
+
+  it("the owner's own first open names the signed-in person, as before", async () => {
+    const w = setUp(named(ADA_OWNER));
+    await w.post(OPEN, undefined, await w.ada());
+    expect(w.sessions()[0]).toMatchObject({ owner: { developerId: ADA, name: "Ada" } });
+    expect(w.sessions()[0]!.ownerUnresolved).toBeUndefined();
+  });
+
+  it("a session made with a placeholder (an older Code) is healed to Code's owner by anyone who can open it, not only by the owner", async () => {
+    const old = setUp();
+    const { sessionId } = (await old.post(OPEN, undefined, await old.sam())).body as { sessionId: string };
+    expect(old.sessions()[0]!.ownerUnresolved).toBe(true);
+    // The same store, now with a Code that names the owner on the task.
+    const record = old.sessions()[0]!;
+    const newer = setUp(named(ADA_OWNER));
+    await newer.work.put(record);
+    await newer.post(OPEN, undefined, await newer.kim());
+    const healed = newer.sessions().find((one) => one.sessionId === sessionId)!;
+    expect(healed.owner).toEqual(ADA_OWNER);
+    expect(healed.startedBy).toEqual(ADA_OWNER);
+    expect(healed.ownerUnresolved).toBeUndefined();
+    expect(healed.revision).toBe(record.revision + 1);
+  });
+
+  it.each([
+    ["an extra key", { ...ADA_OWNER, issuer: "https://id.example" }],
+    ["an id that is not a sign-in id", { developerId: "ada", name: "Ada" }],
+    ["an upper-case id", { developerId: "A".repeat(64), name: "Ada" }],
+    ["an empty name", { developerId: ADA, name: "  " }],
+    ["a name over 80 characters", { developerId: ADA, name: "x".repeat(81) }],
+    ["a name that is not text", { developerId: ADA, name: 7 }],
+    ["an array", [ADA, "Ada"]],
+    ["a string", "Ada"],
+    ["null", null],
+  ])("does not believe %s: the owner is read from People, as with an older Code", async (_label, owner) => {
+    const w = setUp(named(owner));
+    expect((await w.post(OPEN, undefined, await w.sam())).status).toBe(200);
+    expect(w.route()).toEqual([`GET /v1/dev/tasks/${TASK}`, `GET /v1/dev/tasks/${TASK}/people`]);
+    expect(w.sessions()[0]!.ownerUnresolved).toBe(true);
+    expect(w.sessions()[0]!.owner.name).toBe("Ada");
+  });
+
+  it("never reads the owner from the request: a body naming one changes nothing", async () => {
+    const w = setUp(named(ADA_OWNER));
+    await w.post(OPEN, { owner: { developerId: SAM, name: "Sam" } }, await w.sam());
+    expect(w.sessions()[0]!.owner).toEqual(ADA_OWNER);
+  });
+
+  it("a person Code refuses learns nothing and nothing is written, whoever the view names", async () => {
+    const w = setUp(named(ADA_OWNER));
+    expect(await w.post(OPEN, undefined, await w.eve())).toEqual(REFUSED);
+    expect(w.sessions()).toHaveLength(0);
+  });
+});
