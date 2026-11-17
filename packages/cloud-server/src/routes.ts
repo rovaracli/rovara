@@ -19,6 +19,7 @@ import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./p
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { openTaskByCodeId } from "./open-task.js";
+import { WIKI_ROUTES } from "./wiki-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
@@ -849,4 +850,6 @@ export const ROUTES: Route[] = [
   // The project setup checklist and the hosted setup run (guided onboarding PR 9): Code decides who may; Cloud passes the person's token and fixed words.
   ...SETUP_CHECKLIST_ROUTES,
   ...PEOPLE_ROUTES,
+  // The project Wiki tab's reads (lead 4 W5): Code decides who may read; Cloud passes the person's token, rebuilds each answer for that project only, and answers in fixed words.
+  ...WIKI_ROUTES,
 ];

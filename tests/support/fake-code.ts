@@ -14,6 +14,7 @@ import {
   type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
   type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
+import { wikiIndex, wikiPage, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
 
 export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
 
@@ -137,6 +138,28 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const setupSkips = new Map<string, Set<"slackChannel" | "linear" | "invites">>();
   type FakeRun = { status: "none" | "running" | "ready" | "failed"; startedAt?: string; taskId?: string; stop?: "stopped_by_person" | "proposed" };
   const setupRuns = new Map<string, FakeRun>();
+  // Lead 4 W5 (Code W2): the pretend wiki, per project (set by the specs through /__fake/wiki); `off` makes Code answer its unknown-route 404, as a Code without the wiki does.
+  const wikis = new Map<string, WikiFixtureOptions & { off?: boolean; broken?: boolean }>();
+  /** Who may read a project's wiki, as Code decides it: someone with a role on the project, in the project's own company (an administrator reads every project of their company). */
+  const wikiReads = (person: Person, name: string) => {
+    const entry = project(name);
+    if (entry === undefined || companyless.has(person.developerId) || (entry.companyId ?? FAKE_COMPANY_ID) !== companyOfPerson(person)) return false;
+    return person.administrator || roleIn(person, name) !== undefined;
+  };
+  /** Code's wiki read routes (W2; `/v1/app/projects/{p}/wiki`, `.../pages/{id}`, `.../pages/{id}/sources`), as the person; every refusal is Code's one 404. */
+  const wikiAnswer = (method: string, path: string, person: Person): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/pages\/([^/]+)(\/sources)?)?$/u.exec(path);
+    if (match === null || method !== "GET") return undefined;
+    const name = decodeURIComponent(match[1]!), set = wikis.get(name) ?? {};
+    if (set.off) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    const refuse = { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    if (!wikiReads(person, name)) return refuse;
+    if (set.broken) return { status: 200, body: { project: "elsewhere" } };
+    if (match[2] === undefined) return { status: 200, body: wikiIndex(name, set) };
+    const id = decodeURIComponent(match[2]);
+    const answered = match[3] === undefined ? wikiPage(name, id, set) : wikiSources(name, id, set);
+    return answered === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "page not found" } } } : { status: 200, body: answered };
+  };
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
@@ -1225,6 +1248,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (taskId !== undefined) involved.set(taskId, new Set([...(involved.get(taskId) ?? []), added.developerId]));
           return send(200, { mode: involvedMode, ...(taskId === undefined ? {} : { taskId }) });
         }
+        if (method === "POST" && url.pathname === "/__fake/wiki") {
+          const given = JSON.parse(await readBody(request)) as { project?: unknown; state?: unknown; off?: unknown; broken?: unknown };
+          if (typeof given.project !== "string" || project(given.project) === undefined || (given.state !== undefined && !["ready", "none", "building", "stopped"].includes(given.state as string))) return send(400, { error: { code: "CONFIG_INVALID", message: "project, and state ready, none, building or stopped" } });
+          wikis.set(given.project, { ...(given.state === undefined ? {} : { state: given.state as "ready" }), ...(given.off === true ? { off: true } : {}), ...(given.broken === true ? { broken: true } : {}) });
+          return send(200, { project: given.project });
+        }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
           if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
@@ -1258,7 +1287,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          if (who === undefined && /\/wiki(?:\/|$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (answer !== undefined) return send(answer.status, answer.body);
         }
