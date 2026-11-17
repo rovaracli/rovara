@@ -6,6 +6,7 @@ import { ContextSources } from "./ContextSources.js";
 import { WorkingBranches } from "./WorkingBranches.js";
 import { RestoreProject } from "./RestoreProject.js";
 import { ArchiveProject } from "./ArchiveProject.js";
+import { ProjectSpendLimits } from "../../setup/ProjectSpendLimits.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { projectRoleLabel, projectSetupLabel } from "./labels.js";
 import { Link, useParams, useSearchParams } from "react-router";
@@ -41,6 +42,7 @@ export function ProjectDetailScreen() {
  {p.name===name && p.status==="active" && p.myRole==="maintainer" && !read.isFetching && !read.isError && !context.checking && <ContextSources key={`sources:${context.orgId}:${name}`} project={name} />}
  {p.name===name && p.status==="active" && <ProjectIntegrations key={`integrations:${context.orgId}:${name}`} project={name} canEdit={p.myRole === "maintainer" && !context.checking} />}
  <h2>Slack channels</h2><ProjectSlackLinks orgId={context.orgId} project={name} available={p.name === name && p.myRole === "maintainer" && !read.isFetching && !read.isError && !context.checking} />
- <p>Spending, AI source order, connector grants and code rules are not included in this read-only view.</p><ProjectPeople key={name} name={p.name} />
+ {p.name === name && !context.checking && <ProjectSpendLimits key={`spend:${context.orgId}:${context.developerId}:${name}`} project={name} developerId={context.developerId} />}
+ <p>AI source order, connector grants and code rules are not included in this read-only view.</p><ProjectPeople key={name} name={p.name} />
  </>}</ReadState></section>;
 }

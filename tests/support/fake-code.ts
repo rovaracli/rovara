@@ -159,6 +159,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return undefined;
   };
   const roleIn = (person: Person, name: string) => project(name)?.members.get(person.developerId);
+  // Guided onboarding PR 15: the company's engine model (Code #835) and each project's cost settings (Code's M4a), small.
+  const OFFERED_MODELS = ["zai.glm-4.7", "claude-sonnet-4-5", "zai.glm-4.6"];
+  let companyModel: string | undefined;
+  const engineView = () => { const model = companyModel ?? "zai.glm-4.6"; return { model, source: companyModel === undefined ? "install" as const : "company" as const, offered: [...OFFERED_MODELS], preselect: OFFERED_MODELS.includes(model) ? model : OFFERED_MODELS[0]! }; };
+  const projectSettings = new Map<string, { overrides: Record<string, unknown>; revision: number }>();
+  const settingsView = (name: string) => {
+    const entry = projectSettings.get(name) ?? { overrides: {}, revision: 0 };
+    const own = entry.overrides["model_budget_usd"];
+    return { preset: null, overrides: { ...entry.overrides }, revision: entry.revision, updatedAt: null, updatedBy: null, resolved: {}, values: { model_budget_usd: { value: own === undefined ? null : own, origin: own === undefined ? "preset" : "project" } }, clamped: [] };
+  };
 
   const base = (taskId: string, owner: Person, patch: Partial<TaskView> & { title: string; project: string }): { owner: Person; task: TaskView } => ({
     owner,
@@ -791,6 +801,27 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       if (!["off", "suggest", "auto"].includes(context.body.mode)) return failure(400, "CONFIG_INVALID", "the mode is off, suggest or auto");
       lessonMode = context.body.mode;
       return { body: { project: found.name, mode: lessonMode, effective: lessonMode, lockedByCompany: false, canChange: true } };
+    },
+    // Any member reads; an owner or admin sets a model from the offered list.
+    "company.engineModel.get": ({ person }) => (companyless.has(person.developerId) ? failure(401, "AUTH_REQUIRED", "sign in again") : { body: engineView() }),
+    "company.engineModel.put": ({ person, body }) => {
+      if (companyless.has(person.developerId)) return failure(401, "AUTH_REQUIRED", "sign in again");
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can change the company's AI model.");
+      if (body.model !== null && !OFFERED_MODELS.includes(body.model)) return failure(400, "CONFIG_INVALID", "That model isn't offered to this company now. Pick one from the list.");
+      companyModel = body.model ?? undefined;
+      return { body: engineView() };
+    },
+    // Members of the project read; its administrator changes (revision-checked). The pretend Code sets no step-up, so it checks none here.
+    "projects.settings.get": ({ params, person }) => (roleIn(person, params["project"] ?? "") === undefined ? notFound("project") : { body: settingsView(params["project"] ?? "") }),
+    "projects.settings.put": ({ params, person, body }) => {
+      const name = params["project"] ?? "";
+      const grant = roleIn(person, name);
+      if (grant === undefined) return notFound("project");
+      if (grant !== "administrator") return failure(403, "FORBIDDEN", "project administrator required");
+      const entry = projectSettings.get(name) ?? { overrides: {}, revision: 0 };
+      if (body.expectedRevision !== entry.revision) return failure(409, "PROJECT_REVISION_MISMATCH", "settings revision conflict");
+      projectSettings.set(name, { overrides: { ...(body.overrides ?? entry.overrides) }, revision: entry.revision + 1 });
+      return { body: settingsView(name) };
     },
     "scriptTokens.revoke": ({ params, person }) => {
       const list = scriptTokens.get(person.developerId) ?? [];
