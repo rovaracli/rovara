@@ -49,7 +49,7 @@ export function productAiStore(env: Readonly<Record<string, string | undefined>>
   const kms = awsKms({ region, credentials });
   return new ProductKeyStore({
     table: new DynamoProductKeyTable(new Dynamo({ region, credentials }), table!),
-    sealer: new ProductKeySealer(kmsProductKeyService(kms, key!)), fingerprint: kmsFingerprinter(kms, macKey!), providers: ["gemini", "vertex", "anthropic", "openai", "bedrock"],
+    sealer: new ProductKeySealer(kmsProductKeyService(kms, key!)), fingerprint: kmsFingerprinter(kms, macKey!), providers: ["gemini", "vertex", "anthropic", "openai", "bedrock", "openrouter"],
     ...(gateway === undefined ? {} : {
       vertexCheck: gatewayVertexCheck({ address: gateway, issuer: `${env.ROVARA_CODE_URL ?? ""}/v1/auth`, kms, macKeyId: macKey! }),
       // DEC 238: the gateway tests a company's Bedrock role (only it may assume the broker); without it a connect answers unavailable.
