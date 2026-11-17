@@ -19,6 +19,8 @@ import { isConfirmUrl } from "../../packages/ui/src/text/links.js";
 const CODE = "https://code.example.test";
 const ADA = "a".repeat(64);
 const GRACE = "f".repeat(64);
+const ACME = "org_acme0000000000000000";
+const OTHER = "org_other000000000000000";
 
 interface Call { method: string; path: string; authorization?: string; body?: string }
 
@@ -41,6 +43,9 @@ function fakeCode() {
   };
   let peopleRevision = 3;
   let adaName = "Ada";
+  let graceName: string | undefined;
+  // DEC 253z: the person's company and company role, from Code's live membership. Ada owns Acme; Grace is a member of it.
+  const companies = new Map<string, Record<string, unknown> | undefined>([[ADA, { companyId: ACME, companyRole: "owner", companyName: "Acme Ltd" }], [GRACE, { companyId: ACME, companyRole: "member", companyName: "Acme Ltd" }]]);
   const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
@@ -66,14 +71,14 @@ function fakeCode() {
     if (call.authorization !== `Bearer ${validToken}` && !grace) return respond(401, { error: { code: "AUTH_REQUIRED" } });
     if (url.pathname === "/v1/dev/access") {
       return respond(200, grace
-        ? { developerId: GRACE, displayName: "Grace", nameChosen: false, administrator: false, projects: [{ name: "payments", access: "developer" }], notices: [] }
-        : { developerId: ADA, displayName: adaName, administrator: true, projects: [{ name: "payments", access: "administrator" }], notices: [] });
+        ? { developerId: GRACE, displayName: graceName ?? "Grace", nameChosen: graceName !== undefined, administrator: false, projects: [{ name: "payments", access: "developer" }], notices: [], ...companies.get(GRACE) }
+        : { developerId: ADA, displayName: adaName, administrator: true, projects: [{ name: "payments", access: "administrator" }], notices: [], ...companies.get(ADA) });
     }
     if (url.pathname === "/v1/dev/me/name" && call.method === "PUT") {
       const raw = (JSON.parse(call.body ?? "{}") as { name?: unknown }).name;
       const name = (typeof raw === "string" ? raw : "").replace(/\s+/gu, " ").trim();
       if (name.includes("@")) return respond(400, { error: { code: "CONFIG_INVALID", message: "name: must not be an email address" } });
-      if (!grace) adaName = name;
+      if (grace) graceName = name; else adaName = name;
       return respond(200, { name, nameChosen: true, requestId: "r" });
     }
     const notYours = () => respond(404, { error: { code: "TASK_NOT_FOUND", message: `no task ${TASK_ID} of yours` } });
@@ -135,6 +140,8 @@ function fakeCode() {
     setTask: (change: Record<string, unknown>) => { task = { ...task, ...change }; },
     /** Ada's name in Code from now on (her next sign-in reads it). */
     setAdaName: (name: string) => { adaName = name; },
+    /** What Code's access check says of this person's company from now on (undefined: none). */
+    setCompany: (developerId: string, company: Record<string, unknown> | undefined) => { companies.set(developerId, company); },
     refuseDecisions: (message: string) => { decisionRefusal = message; },
     failRevoke: () => { revokeFails = true; },
     expireToken: () => { validToken = "access-rotated"; }, endSignIn: () => { refreshable = false; validToken = "nobody"; } };
@@ -233,11 +240,116 @@ describe("the app's API, answered from Code as the person", () => {
   it("answers me, nav and the projects from Code's access check and project read", async () => {
     const { call, signIn } = setUp();
     const { cookie } = await signIn();
-    expect(JSON.parse((await call("GET", "/v1/web/me", { cookie }))!.body)).toMatchObject({ developer: { id: ADA, name: "Ada", orgRole: "owner" }, org: { orgId: "acme", name: "Acme" } });
-    expect(JSON.parse((await call("GET", "/v1/web/nav", { cookie }))!.body)).toMatchObject({ org: { name: "Acme" }, projects: [{ name: "payments" }], features: { admin: true } });
+    // The company's own id and name from Code's access check, never the deployment's ("acme", "Acme").
+    expect(JSON.parse((await call("GET", "/v1/web/me", { cookie }))!.body)).toMatchObject({ developer: { id: ADA, name: "Ada", orgRole: "owner" }, org: { orgId: ACME, name: "Acme Ltd", plan: "test" } });
+    expect(JSON.parse((await call("GET", "/v1/web/nav", { cookie }))!.body)).toMatchObject({ me: { orgRole: "owner" }, org: { name: "Acme Ltd" }, projects: [{ name: "payments" }], features: { admin: true } });
     expect(JSON.parse((await call("GET", "/v1/web/projects", { cookie }))!.body)).toEqual({ projects: [{ name: "payments", status: "active", latestRevision: 3, myRole: "maintainer", setup: { status: "unchecked" }, repositories: [{ name: "api", fullName: "acme/payments-api", defaultBranch: "main" }] }] });
     expect(JSON.parse((await call("GET", "/v1/web/projects/payments/overview", { cookie }))!.body)).toMatchObject({ project: { name: "payments", latestRevision: 3, repositories: [{ fullName: "acme/payments-api" }] }, you: { role: "maintainer", canEditSettings: true } });
     expect((await call("GET", "/v1/web/projects/ledger", { cookie }))!.status).toBe(404);
+  });
+
+  it("names the company and role from Code's access check now: a company admin is owner or admin, never Code's install administrator", async () => {
+    const { call, signIn, code } = setUp();
+    const { cookie } = await signIn();
+    const me = async () => JSON.parse((await call("GET", "/v1/web/me", { cookie }))!.body) as { developer: { orgRole: string }; org: { orgId: string; name: string } };
+    const nav = async () => JSON.parse((await call("GET", "/v1/web/nav", { cookie }))!.body) as { me: { orgRole: string }; org: { name: string }; features: { admin: boolean } };
+    // Ada stays Code's install administrator throughout; only her company role moves.
+    code.setCompany(ADA, { companyId: ACME, companyRole: "admin" });
+    expect(await me()).toMatchObject({ developer: { orgRole: "admin" }, org: { orgId: ACME, name: "Your company" } });
+    expect(await nav()).toMatchObject({ me: { orgRole: "admin" }, org: { name: "Your company" }, features: { admin: true } });
+    code.setCompany(ADA, { companyId: ACME, companyRole: "member", companyName: "Acme Ltd" });
+    expect(await me()).toMatchObject({ developer: { orgRole: "member" } });
+    expect((await nav()).features.admin).toBe(false);
+    // A name that doesn't read (control characters, too long) is never shown.
+    code.setCompany(ADA, { companyId: ACME, companyRole: "owner", companyName: "Ac\u0000me" });
+    expect((await nav()).org.name).toBe("Your company");
+    code.setCompany(ADA, { companyId: ACME, companyRole: "owner", companyName: "x".repeat(201) });
+    expect((await me()).org.name).toBe("Your company");
+  });
+
+  it("refuses me and nav with fixed words when Code names no company, or a company or role that doesn't read; the browser can't name one", async () => {
+    const { call, signIn, code } = setUp();
+    const { cookie } = await signIn();
+    const refused = { error: { code: "NO_COMPANY", message: "You're not in a company yet." } };
+    for (const company of [undefined, { companyId: ACME }, { companyId: ACME, companyRole: "auditor" }, { companyId: ACME, companyRole: "Owner" }, { companyId: "acme", companyRole: "owner" }, { companyId: 5, companyRole: "owner" }, { companyRole: "owner" }]) {
+      code.setCompany(ADA, company);
+      for (const path of ["/v1/web/me", "/v1/web/nav", "/v1/web/company/audit"]) {
+        const answer = await call("GET", path, { cookie, headers: { "x-rovara-company": ACME, cookie: `${cookie}; company=${ACME}` } });
+        expect({ path, company, status: answer!.status, body: JSON.parse(answer!.body) as unknown }).toEqual({ path, company, status: 403, body: refused });
+      }
+      expect((await call("GET", `/v1/web/nav?companyId=${ACME}`, { cookie }))!.status).toBe(403);
+    }
+  });
+
+  it("keeps one company's sessions from another: a session started in Acme reads as missing to its reader once Code puts her in another company", async () => {
+    const { call, signIn, code, work } = setUp();
+    const ada = await signIn();
+    const started = JSON.parse((await call("POST", "/v1/web/projects/payments/code", { cookie: ada.cookie, csrf: ada.csrf, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the typo" } } }))!.body) as { sessionId: string };
+    expect((await work.get(started.sessionId))?.companyId).toBe(ACME);
+    await call("PUT", `/v1/web/sessions/${started.sessionId}/shares`, { cookie: ada.cookie, csrf: ada.csrf, body: { requestId: "33333333-3333-4333-8333-333333333333", principal: { kind: "member", developerId: GRACE }, level: "view" } });
+    const grace = await signIn("grace-code");
+    // Positive control: in Acme, Grace reads the shared session.
+    expect((await call("GET", `/v1/web/sessions/${started.sessionId}`, { cookie: grace.cookie }))!.status).toBe(200);
+    code.setCompany(GRACE, { companyId: OTHER, companyRole: "owner" });
+    const other = await signIn("grace-code");
+    const reads = ["", "/messages", "/events", "/shares"];
+    for (const tail of reads) {
+      const answer = await call("GET", `/v1/web/sessions/${started.sessionId}${tail}`, { cookie: other.cookie });
+      expect({ tail, status: answer!.status }).toEqual({ tail, status: 404 });
+    }
+    for (const [tail, body] of [["/follow", undefined], ["/messages", { requestId: "44444444-4444-4444-8444-444444444444", kind: "comment", text: "hi" }], ["/presence", {}]] as const) {
+      const answer = await call("POST", `/v1/web/sessions/${started.sessionId}${tail}`, { cookie: other.cookie, csrf: other.csrf, ...(body === undefined ? {} : { body }) });
+      expect({ tail, status: answer!.status }).toEqual({ tail, status: 404 });
+    }
+    expect(JSON.parse((await call("GET", "/v1/web/home", { cookie: other.cookie }))!.body)).toMatchObject({ total: 0 });
+    // A retried start from the other company never answers Acme's session.
+    const retried = await call("POST", "/v1/web/projects/payments/code", { cookie: other.cookie, csrf: other.csrf, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the typo" } } });
+    expect(JSON.parse(retried!.body)).not.toMatchObject({ sessionId: started.sessionId });
+    // Nothing in Acme's session changed.
+    expect((await work.get(started.sessionId))?.followers ?? []).toEqual([]);
+    expect((await work.get(started.sessionId))?.messages ?? []).toEqual([]);
+  });
+
+  it("starts no work for a person Code names no company for, and writes no session", async () => {
+    const { call, signIn, code, work } = setUp();
+    const ada = await signIn();
+    code.setCompany(ADA, undefined);
+    const answer = await call("POST", "/v1/web/projects/payments/code", { cookie: ada.cookie, csrf: ada.csrf, body: { requestId: "55555555-5555-4555-8555-555555555555", input: { text: "Fix the typo" } } });
+    expect({ status: answer!.status, body: JSON.parse(answer!.body) as unknown }).toEqual({ status: 403, body: { error: { code: "NO_COMPANY", message: "You're not in a company yet." } } });
+    expect(code.calls.filter((entry) => entry.path === "/v1/dev/tasks" && entry.method === "POST")).toEqual([]);
+    expect(await work.startedBy(ADA)).toEqual([]);
+  });
+
+  it("keeps the company Code names now with the stored sign-in: moved to another company, the person's next session read is that company's", async () => {
+    const { call, signIn, code } = setUp();
+    const ada = await signIn();
+    const started = JSON.parse((await call("POST", "/v1/web/projects/payments/code", { cookie: ada.cookie, csrf: ada.csrf, body: { requestId: "66666666-6666-4666-8666-666666666666", input: { text: "Fix the typo" } } }))!.body) as { sessionId: string };
+    expect((await call("GET", `/v1/web/sessions/${started.sessionId}`, { cookie: ada.cookie }))!.status).toBe(200);
+    code.setCompany(ADA, { companyId: OTHER, companyRole: "owner" });
+    // Any route that asks Code (here the navigation) moves the stored sign-in to the new company; session reads follow it, same cookie.
+    expect((await call("GET", "/v1/web/nav", { cookie: ada.cookie }))!.status).toBe(200);
+    expect((await call("GET", `/v1/web/sessions/${started.sessionId}`, { cookie: ada.cookie }))!.status).toBe(404);
+  });
+
+  it("keeps the plan approval page to the session's company", async () => {
+    const { call, signIn, code } = setUp();
+    const ada = await signIn();
+    const started = JSON.parse((await call("POST", "/v1/web/projects/payments/code", { cookie: ada.cookie, csrf: ada.csrf, body: { requestId: "77777777-7777-4777-8777-777777777777", input: { text: "Fix the typo" } } }))!.body) as { sessionId: string };
+    code.setTask(PLAN_WAITING);
+    expect((await call("GET", `/v1/app/approve/plan-${started.sessionId}`, { cookie: ada.cookie }))!.status).toBe(200);
+    code.setCompany(ADA, { companyId: OTHER, companyRole: "owner" });
+    const other = await signIn();
+    expect((await call("GET", `/v1/app/approve/plan-${started.sessionId}`, { cookie: other.cookie }))!.status).toBe(404);
+    const decided = await call("POST", `/v1/app/approve/plan-${started.sessionId}`, { cookie: other.cookie, form: { csrf: other.csrf, decision: "approve", revision: "4", digest: "d".repeat(64) }, headers: { origin: "https://cloud.example.test" } });
+    expect(decided!.status).toBe(404);
+    expect(code.calls.filter((entry) => entry.path.endsWith("/approve") || entry.path.includes("/plan/decision"))).toEqual([]);
+  });
+
+  it("still shows a session written before sessions carried a company (Code checks its task, as before)", async () => {
+    const { call, signIn, work } = setUp();
+    const ada = await signIn();
+    await work.put({ sessionId: "ses_legacy00000000000000", taskId: "6f9d0c1e-2b3a-4c5d-8e7f-001122334455", project: "payments", startedBy: { developerId: ADA, name: "Ada" }, owner: { developerId: ADA, name: "Ada" }, createdAt: "2026-11-01T00:00:00.000Z", revision: 1 });
+    expect((await call("GET", "/v1/web/sessions/ses_legacy00000000000000", { cookie: ada.cookie }))!.status).toBe(200);
   });
 
   it("lists, adds and removes a project's members through Code, and adds only contributors", async () => {

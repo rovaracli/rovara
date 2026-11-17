@@ -25,9 +25,14 @@ export interface CodeAccess {
   displayName: string;
   /** True once the person chose their own name in Code (PrepLabsAI/Rovara#634). An older Code leaves it out. */
   nameChosen?: boolean;
+  /** Install administrator (Code's own meaning). Never the company role: company-caller.ts reads `companyRole` for that. */
   administrator: boolean;
-  /** The person's company (the isolation boundary, plan 2.4), once Code names it (lane T). A single-company Code leaves it out. */
+  /** The person's company (the isolation boundary, plan 2.4), from live membership (Code PR #820). Absent: Code names no company, and Cloud refuses company routes. */
   companyId?: string;
+  /** The person's role in that company (Code PR #820). */
+  companyRole?: string;
+  /** The company's own name, when Code keeps one. */
+  companyName?: string;
   projects: Array<{ name: string; access: string }>;
   notices: string[];
 }
@@ -124,6 +129,9 @@ export class CodeClient {
   /** The access check as the person; refreshes the session's token when it has expired. */
   async access(session: CodeSession): Promise<CodeAccess> {
     const access = await this.json<CodeAccess>(session, "/v1/dev/access", { method: "POST", body: {} });
+    const before = session.access as CodeAccess | undefined;
+    // The stored sign-in keeps the company Code names now (company-caller.ts reads it for Cloud's own session records), so it is saved when it moved.
+    if (before?.companyId !== access.companyId || before?.companyRole !== access.companyRole) session.changed = true;
     session.access = access;
     return access;
   }

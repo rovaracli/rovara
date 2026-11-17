@@ -53,8 +53,12 @@ export interface AccessResponse {
   displayName: string;
   /** True once the person chose their own name; an older Code leaves it out. */
   nameChosen?: boolean;
-  /** An administrator of the company (the isolation boundary, plan 2.4). */
+  /** Code's install administrator. Not the company role: Cloud reads `companyRole` for that (DEC 253z). */
   administrator: boolean;
+  /** The person's company from live membership (Code PR #820, DEC 253z). All three are absent when Code names no company; Cloud then refuses company routes. */
+  companyId?: string;
+  companyRole?: "owner" | "admin" | "member";
+  companyName?: string;
   projects: Array<{ name: string; access: string /* known: administrator, developer */ }>;
   notices: string[];
 }

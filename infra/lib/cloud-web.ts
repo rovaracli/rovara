@@ -162,13 +162,6 @@ export class CloudWebStack extends Stack {
       deletionProtection: true,
       removalPolicy: RemovalPolicy.RETAIN,
     });
-    const companyId = new CfnParameter(this, "CompanyId", {
-      type: "String",
-      default: "",
-      allowedPattern: "^(org_[0-9a-z]{20})?$",
-      constraintDescription: "empty, or a company id: org_ and 20 lower-case letters or digits",
-      description: "The one company of a single-company Rovara Code, used only when Code's access check names none. Empty: such a Code gets no company routes.",
-    });
 
     // The same secret as cloud-app.ts: Cloud is one sign-in client of Code, whichever stack serves it.
     const clientSecret = secretsmanager.Secret.fromSecretNameV2(this, "CodeClientSecret", `${RESOURCE_PREFIX}/${env}/code-client-secret`);
@@ -190,7 +183,6 @@ export class CloudWebStack extends Stack {
       ROVARA_SCOPES: CLOUD_APP_SCOPES.join(" "),
       CLOUD_TABLE: table.tableName,
       COMPANY_TABLE: companies.tableName,
-      CLOUD_COMPANY_ID: companyId.valueAsString,
       CLOUD_ORIGIN_PARAMETER: originParameter,
       CLOUD_CLIENT_SECRET_ID: clientSecret.secretName,
       CLOUD_APP_DIRECTORY: `/var/task/${CLOUD_WEB_SHELL_DIRECTORY}`,

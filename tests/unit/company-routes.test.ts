@@ -20,15 +20,22 @@ const A = "org_aaaaaaaaaaaaaaaaaaaa";
 const B = "org_bbbbbbbbbbbbbbbbbbbb";
 const START = Date.parse("2026-11-15T12:00:00.000Z");
 
-interface Person { developerId: string; name: string; administrator: boolean; companyId?: unknown }
+/** `administrator` is the company role admin here (and Code's install administrator flag, unless `installAdministrator` says otherwise); `companyRole` overrides the role. */
+interface Person { developerId: string; name: string; administrator: boolean; companyId?: unknown; companyRole?: unknown; companyName?: string; installAdministrator?: boolean }
 const PEOPLE: Record<string, Person> = {
   ada: { developerId: "a".repeat(64), name: "Ada", administrator: true, companyId: A },
   bea: { developerId: "b".repeat(64), name: "Bea", administrator: true, companyId: A },
   cal: { developerId: "c".repeat(64), name: "Cal", administrator: false, companyId: A },
-  dan: { developerId: "d".repeat(64), name: "Dan", administrator: true, companyId: B },
+  dan: { developerId: "d".repeat(64), name: "Dan", administrator: true, companyId: B, companyName: "Bee Co" },
   eve: { developerId: "e".repeat(64), name: "Eve", administrator: false, companyId: B },
   solo: { developerId: "f".repeat(64), name: "Solo", administrator: true },
   odd: { developerId: "9".repeat(64), name: "Odd", administrator: true, companyId: "acme" },
+  // Code's install administrator, but a plain member of company A: never a company admin here.
+  ian: { developerId: "8".repeat(64), name: "Ian", administrator: false, companyId: A, companyRole: "member", installAdministrator: true },
+  // Company A's owner, though not Code's install administrator.
+  oz: { developerId: "7".repeat(64), name: "Oz", administrator: false, companyId: A, companyRole: "owner" },
+  // Code names company A but no readable role.
+  nob: { developerId: "6".repeat(64), name: "Nob", administrator: true, companyId: A, companyRole: "superuser" },
 };
 
 /** An answer body as the tests read it: whichever of these the route sent. */
@@ -36,7 +43,7 @@ interface Answer { error: { code: string; message: string }; pending: { changeId
 const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 let tokens = 0;
 
-function world(options: { deploymentCompany?: string; codeHasPreApprovals?: boolean; audit?: LocalCloudAuditStore } = {}) {
+function world(options: { codeHasPreApprovals?: boolean; audit?: LocalCloudAuditStore } = {}) {
   let clock = START;
   const nowS = () => Math.floor(clock / 1000);
   const byToken = new Map<string, Person>();
@@ -51,7 +58,11 @@ function world(options: { deploymentCompany?: string; codeHasPreApprovals?: bool
     const person = byToken.get(auth.replace(/^Bearer /u, ""));
     if (person === undefined) return respond(401, { error: { code: "AUTH_REQUIRED" } });
     if (url.pathname === "/v1/dev/access") {
-      return respond(200, { developerId: person.developerId, displayName: person.name, administrator: person.administrator && !demoted.has(person.developerId), projects: [], notices: [], ...(person.companyId === undefined ? {} : { companyId: person.companyId }) });
+      const admin = person.administrator && !demoted.has(person.developerId);
+      return respond(200, {
+        developerId: person.developerId, displayName: person.name, administrator: person.installAdministrator ?? admin, projects: [], notices: [],
+        ...(person.companyId === undefined ? {} : { companyId: person.companyId, companyRole: person.companyRole ?? (admin ? "admin" : "member"), ...(person.companyName === undefined ? {} : { companyName: person.companyName }) }),
+      });
     }
     if (url.pathname === PRE_APPROVED_EMAILS_PATH && init?.method === "PUT") {
       if (!codeHasPreApprovals) return respond(404, { message: "Not Found" });
@@ -68,7 +79,7 @@ function world(options: { deploymentCompany?: string; codeHasPreApprovals?: bool
   const log: Array<Record<string, unknown>> = [];
   const handler = createCloudHandler({
     client, store: sessions, org: { orgId: "rovara", name: "Rovara", plan: "cloud" }, callbackPath: "/callback", secureCookies: false, work: new LocalWorkSessionStore(), origin: ORIGIN,
-    company: { store, ...(options.deploymentCompany === undefined ? {} : { companyId: options.deploymentCompany }), log: (event) => { log.push(event); } },
+    company: { store, log: (event) => { log.push(event); } },
     now: () => new Date(clock), log: () => undefined, ...(options.audit === undefined ? {} : { audit: options.audit }),
   });
   /** Signs a person in. `stepUpAge` seconds ago they stepped up with `method`; undefined: no step-up in this sign-in. */
@@ -327,21 +338,37 @@ describe("Cloud's audit records", () => {
 });
 
 describe("which company", () => {
-  it("uses the deployment's one company only when Code names none, and never when Code names a company that does not read", async () => {
-    const single = world({ deploymentCompany: A });
-    const solo = await single.signIn("solo", 10);
-    expect((await single.call(solo, "GET", "/org/settings")).body.companyId).toBe(A);
-    const odd = await single.signIn("odd", 10);
-    expect((await single.call(odd, "GET", "/org/settings")).body.error.code).toBe("FORBIDDEN");
-    // Code names company B: B, whatever the deployment says.
-    const dan = await single.signIn("dan", 10);
-    expect((await single.call(dan, "GET", "/org/settings")).body.companyId).toBe(B);
-    const none = world();
-    const soloNone = await none.signIn("solo", 10);
-    expect((await none.call(soloNone, "GET", "/org/settings")).body).toEqual({ error: { code: "FORBIDDEN", message: "Your sign-in doesn't belong to a company Cloud knows." } });
-    const badDeployment = world({ deploymentCompany: "rovara" });
-    const soloBad = await badDeployment.signIn("solo", 10);
-    expect((await badDeployment.call(soloBad, "GET", "/org/settings")).status).toBe(403);
+  it("refuses every company route with fixed words when Code names no company, or a company or role that doesn't read: never a fallback", async () => {
+    const w = world();
+    const refusal = { error: { code: "NO_COMPANY", message: "You're not in a company yet." } };
+    for (const who of ["solo", "odd", "nob"]) {
+      const as = await w.signIn(who, 10);
+      for (const [method, path, body] of [
+        ["GET", "/org/settings"], ["PUT", "/org/settings", { expectedVersion: 0, settings: tightened() }], ["GET", "/org/budget-settings"], ["GET", "/org/profile"],
+        ["PATCH", "/org", { requestId: randomUUID(), name: "Mine" }], ["GET", "/org/invites"], ["POST", "/org/invites", { requestId: randomUUID(), role: "member", email: "x@example.com" }],
+        ["POST", "/org/invites/accept", { invite: "x".repeat(43) }],
+      ] as const) {
+        const answer = await w.call(as, method, path, body);
+        expect({ who, method, path, answer }).toEqual({ who, method, path, answer: { status: 403, body: refusal } });
+      }
+    }
+    expect(await w.store.settings(A)).toBeUndefined();
+    expect(await w.store.profile(A)).toBeUndefined();
+    expect(w.preApproved).toEqual([]);
+  });
+
+  it("a company admin is a company owner or admin from Code's answer, never Code's install administrator", async () => {
+    const w = world();
+    const ian = await w.signIn("ian", 10);
+    for (const [method, path, body] of [["GET", "/org/settings"], ["PUT", "/org/settings", { expectedVersion: 0, settings: tightened() }], ["GET", "/org/budget-settings"], ["PATCH", "/org", { requestId: randomUUID(), name: "Mine" }], ["GET", "/org/invites"]] as const) {
+      expect({ method, path, status: (await w.call(ian, method, path, body)).status }).toEqual({ method, path, status: 403 });
+    }
+    // A member still reads the company's profile, under Code's name for it.
+    expect((await w.call(ian, "GET", "/org/profile")).body).toMatchObject({ orgId: A });
+    const oz = await w.signIn("oz", 10);
+    expect((await w.call(oz, "GET", "/org/settings")).status).toBe(200);
+    expect((await w.call(oz, "PUT", "/org/settings", { expectedVersion: 0, settings: tightened() })).status).toBe(200);
+    expect((await w.store.settings(A))!.version).toBe(1);
   });
 
   it("leaves members, roles and removal on Code: those routes still answer 501", async () => {
@@ -436,7 +463,8 @@ describe("budgets and profile", () => {
   it("shows the profile to the company's people and lets an admin rename it", async () => {
     const w = world();
     const cal = await w.signIn("cal");
-    expect((await w.call(cal, "GET", "/org/profile")).body).toEqual({ orgId: A, name: "Rovara", plan: "cloud", version: 0 });
+    // Nothing stored yet: Code's name for the company, else "Your company"; never the deployment's name ("Rovara").
+    expect((await w.call(cal, "GET", "/org/profile")).body).toEqual({ orgId: A, name: "Your company", plan: "cloud", version: 0 });
     expect((await w.call(cal, "PATCH", "/org", { requestId: randomUUID(), name: "Acme" })).status).toBe(403);
     const ada = await w.signIn("ada");
     const renamed = await w.call(ada, "PATCH", "/org", { requestId: randomUUID(), name: "  Acme \t Corp " });
@@ -444,7 +472,7 @@ describe("budgets and profile", () => {
     expect(RenameOrganizationResponseSchema.parse(renamed.body)).toEqual({ org: { orgId: A, name: "Acme Corp", plan: "cloud" }, role: "owner" });
     expect((await w.call(cal, "GET", "/org/profile")).body).toMatchObject({ name: "Acme Corp", version: 1 });
     const dan = await w.signIn("dan");
-    expect((await w.call(dan, "GET", "/org/profile")).body.name).toBe("Rovara");
+    expect((await w.call(dan, "GET", "/org/profile")).body.name).toBe("Bee Co");
     expect((await w.call(ada, "PATCH", "/org", { requestId: randomUUID(), name: "‮evil" })).status).toBe(400);
     expect((await w.call(ada, "PATCH", "/org", { requestId: randomUUID(), name: "x".repeat(81) })).status).toBe(400);
   });

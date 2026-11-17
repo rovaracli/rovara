@@ -57,8 +57,8 @@ export default defineConfig({
       name: "Rovara Cloud",
       command: `env ${CLEARED_FOR_CLOUD} npm run cloud:local`,
       cwd: root,
-      // CLOUD_COMPANY_ID turns on Cloud's company backend (settings, invites, budgets, profile) in this server's memory, for the one company of the pretend Code.
-      env: { PORT: String(cloudPort), ROVARA_CODE_URL: codeUrl, ROVARA_CLIENT_SECRET: clientSecret, CLOUD_COMPANY_ID: "org_aaaaaaaaaaaaaaaaaaaa" },
+      // CLOUD_COMPANY_DATA=memory turns on Cloud's company backend (settings, invites, budgets, profile) in this server's memory. The company is the one the pretend Code's access check names.
+      env: { PORT: String(cloudPort), ROVARA_CODE_URL: codeUrl, ROVARA_CLIENT_SECRET: clientSecret, CLOUD_COMPANY_DATA: "memory" },
       url: `${cloudUrl}/app`,
       reuseExistingServer: false,
       timeout: 60_000,

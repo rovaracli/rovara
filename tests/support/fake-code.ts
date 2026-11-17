@@ -18,6 +18,9 @@ import {
 export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean }
 
 const id64 = (name: string) => createHash("sha256").update(`fake-code:${name}`).digest("hex");
+/** The pretend Code's one company (DEC 253z: Code names it in the access check). */
+export const FAKE_COMPANY_ID = "org_aaaaaaaaaaaaaaaaaaaa";
+export const FAKE_COMPANY_NAME = "Example Co";
 export const PRIYA: Person = { key: "priya", developerId: id64("priya"), name: "Priya", email: "priya@example.test", administrator: true };
 export const SAM: Person = { key: "sam", developerId: id64("sam"), name: "Sam", email: "sam@example.test", administrator: false };
 const PEOPLE: readonly Person[] = [PRIYA, SAM];
@@ -291,6 +294,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "access.check": ({ person }) => {
       const body: AccessResponse = {
         developerId: person.developerId, displayName: person.name, nameChosen: true, administrator: person.administrator,
+        // DEC 253z: the person's company and role, as Code PR #820 names them (the same role the company members list shows).
+        companyId: FAKE_COMPANY_ID, companyRole: person.administrator ? "owner" : "member", companyName: FAKE_COMPANY_NAME,
         projects: projects.filter((entry) => entry.members.has(person.developerId)).map((entry) => ({ name: entry.name, access: entry.members.get(person.developerId) ?? "developer" })), notices: [],
       };
       return { body };

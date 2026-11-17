@@ -14,8 +14,8 @@
 // Who: company admins only (Code's access check made now), reads included. A change needs a fresh step-up and goes through the
 // app's signed-write path. Each saved change is audited. The agents use the connection only when the admin also picks "your own
 // Bedrock" under AI for your agents (agent-ai-routes.ts): one active source, never an automatic fallback.
+import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
-import { COMPANY_ID } from "./company-store.js";
 import type { ProductAiErrorCode, ProductAiView } from "./product-ai-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
@@ -51,7 +51,6 @@ const refusal = (status: number, code: string, message: string): RouteAnswer => 
 export const BEDROCK_NOT_ENABLED_STEPS = "Model not enabled yet in your AWS account. An AWS admin with AWS Marketplace rights opens the model once in the Amazon Bedrock console (Model catalog, then Open in playground). For Anthropic models before Claude Opus 4.7, also submit Anthropic's use-case form once. Then test the connection again.";
 export const BEDROCK_WORDS = Object.freeze({
   off: refusal(501, "NOT_ON_CODE_YET", "Your own Bedrock isn't set up on this Cloud."),
-  noCompany: refusal(403, "FORBIDDEN", "Your sign-in doesn't belong to a company Cloud knows."),
   forbidden: refusal(403, "FORBIDDEN", "Only a company admin can see or change the company's Bedrock connection."),
   stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   invalid: refusal(400, "CONFIG_INVALID", "This Bedrock connection is not valid. Check the role ARN, the Region and the models."),
@@ -77,17 +76,12 @@ interface Admin { companyId: string; developerId: string; name: string }
 async function admin(context: RouteContext, write: boolean): Promise<Admin | RouteAnswer> {
   const backend = context.productAi;
   if (backend?.bedrock === undefined) return BEDROCK_WORDS.off;
-  const access = await context.client.access(context.session);
-  const said = (access as { companyId?: unknown }).companyId;
-  let companyId: string;
-  if (said !== undefined) {
-    if (typeof said !== "string" || !COMPANY_ID.test(said)) return BEDROCK_WORDS.noCompany;
-    companyId = said;
-  } else if (backend.companyId !== undefined && COMPANY_ID.test(backend.companyId)) companyId = backend.companyId;
-  else return BEDROCK_WORDS.noCompany;
-  if (access.administrator !== true || !/^[a-f0-9]{64}$/u.test(access.developerId)) return BEDROCK_WORDS.forbidden;
+  const who = await companyCaller(context);
+  if (refused(who)) return who;
+  // A company owner or admin (Code's company role, never its install administrator flag).
+  if (!isCompanyAdmin(who.companyRole)) return BEDROCK_WORDS.forbidden;
   if (write && freshStepUp(context.session.accessToken, context.now().getTime(), STEP_UP_WINDOW_SECONDS) === undefined) return BEDROCK_WORDS.stepUp;
-  return { companyId, developerId: access.developerId, name: access.displayName };
+  return { companyId: who.companyId, developerId: who.developerId, name: who.name };
 }
 async function guarded<T>(run: () => Promise<T>): Promise<T | RouteAnswer> {
   try { return await run(); }

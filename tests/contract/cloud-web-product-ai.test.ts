@@ -22,12 +22,35 @@ const synth = (environmentName: string, productAi?: boolean) => Template.fromSta
 /** The Cloud web templates at cloud/next d7d1edbb8, before this change (same stand-in app and code): SHA-256 of their JSON. */
 const BEFORE = { production: "f01b90f030e1bb81390cc84d2c0625cc48dae5f5ea57e474fc3093690eb85cc8", staging: "bfcde9467235f2f910ad3eef8fd68b5d7eca7a6d843b4f1b228d466688967737" };
 const sha = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+/**
+ * DEC 253z removed exactly two things from the web template: the CompanyId parameter and the server's CLOUD_COMPANY_ID setting. Put back as
+ * they were (same place, same words), the template must hash to BEFORE: so nothing else moved.
+ */
+function withOldCompanySetting(template: ReturnType<typeof synth>): unknown {
+  const parameters: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(template.Parameters)) {
+    parameters[key] = value;
+    if (key === "CodeUrl") parameters["CompanyId"] = { Type: "String", Default: "", AllowedPattern: "^(org_[0-9a-z]{20})?$", ConstraintDescription: "empty, or a company id: org_ and 20 lower-case letters or digits", Description: "The one company of a single-company Rovara Code, used only when Code's access check names none. Empty: such a Code gets no company routes." };
+  }
+  const resources: Record<string, unknown> = {};
+  for (const [id, resource] of Object.entries(template.Resources)) {
+    const variables = (resource.Properties.Environment as { Variables?: Record<string, unknown> } | undefined)?.Variables;
+    if (resource.Type !== "AWS::Lambda::Function" || variables === undefined || !("COMPANY_TABLE" in variables)) { resources[id] = resource; continue; }
+    const next: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(variables)) { next[key] = value; if (key === "COMPANY_TABLE") next["CLOUD_COMPANY_ID"] = { Ref: "CompanyId" }; }
+    resources[id] = { ...resource, Properties: { ...resource.Properties, Environment: { ...(resource.Properties.Environment as object), Variables: next } } };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(template)) out[key] = key === "Parameters" ? parameters : key === "Resources" ? resources : value;
+  return out;
+}
 
 describe("Cloud web: product AI settings grants (B7)", () => {
-  it("off: production and staging templates are byte for byte what they were", () => {
-    expect(sha(synth("production"))).toBe(BEFORE.production);
-    expect(sha(synth("staging"))).toBe(BEFORE.staging);
-    expect(sha(synth("staging", false))).toBe(BEFORE.staging);
+  it("off: production and staging templates are byte for byte what they were (less the company setting DEC 253z removed)", () => {
+    expect(sha(withOldCompanySetting(synth("production")))).toBe(BEFORE.production);
+    expect(sha(withOldCompanySetting(synth("staging")))).toBe(BEFORE.staging);
+    expect(sha(withOldCompanySetting(synth("staging", false)))).toBe(BEFORE.staging);
+    expect(Object.keys(synth("staging").Parameters)).not.toContain("CompanyId");
   });
   it("is refused for production, and by the app only when the switch is exactly on", () => {
     expect(() => synth("production", true)).toThrow(/named test environments/u);

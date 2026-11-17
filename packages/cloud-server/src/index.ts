@@ -6,9 +6,10 @@ export {
 export { DynamoSessionTable, LocalSessionTable, type SessionRecord, type SessionTable, type WriteCondition } from "./session-table.js";
 export { EnvelopeSealer, KmsKeyService, SealedRecordRefused, localKeyService, type KeyService, type TokenSealer } from "./session-crypto.js";
 export { ClientSecretUnavailable, secretsManagerSecret, type SecretReader } from "./client-secret.js";
+export { COMPANY_NAME_FALLBACK, COMPANY_ROLES, NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, type CompanyCaller, type CompanyMembership, type CompanyRole } from "./company-caller.js";
 export { ROUTES, roleOf, type OrgView, type Route, type RouteAnswer, type RouteContext } from "./routes.js";
 export { CODE_TASK_PAGE, createCloudHandler, returnPath, type CloudHandlerOptions, type CloudRequest, type CloudResponse } from "./handler.js";
-export { LocalWorkSessionStore, StoreConflict, newSessionId, withoutComments, type SessionComment, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
+export { LocalWorkSessionStore, SessionCompanyMissing, StoreConflict, companyScopedWork, newSessionId, withoutComments, type SessionComment, type WorkSession, type WorkSessionStore } from "./work-sessions.js";
 export { approvalUrl, sessionStatus, sessionView, waitingPlan, type CodeTask } from "./session-view.js";
 export { APPROVAL_PATH, approvalRoute } from "./approve.js";
 export { LocalPresenceBoard, PRESENCE_TTL_MS, PRESENCE_VIEWERS_MAX, currentViewers, type PresenceBoard, type Viewer } from "./presence.js";

@@ -2,17 +2,18 @@
 // rules (with a second admin for a loosening change), its budgets as the app's Budgets screen reads them, its profile, and invites. Members,
 // roles and removal stay on Code: those routes are not here, so they answer 501 NOT_ON_CODE_YET until Code serves them.
 //
-// Who and which company: every route asks Code's access check afresh (Code wins: a person Code no longer calls an administrator is not one
-// here), and takes the company from that answer. A Code that names no company is a single-company install; then, and only then, the
-// deployment's one company (CLOUD_COMPANY_ID) is used. Nothing a request carries ever names the company.
+// Who and which company: every route asks Code's access check afresh (company-caller.ts) and takes the company and the person's company role
+// from that answer (DEC 253z). A Code that names no company is refused ("You're not in a company yet."), never a fallback. A company admin is
+// a company owner or admin; Code's install `administrator` flag plays no part. Nothing a request carries ever names the company.
 //
 // Fresh step-up: changing settings, approving a change, and inviting an admin need the admin's step-up (step-up.ts) inside the company's
 // window. An invite tells Code first ("this email is pre-approved"), as the inviting admin; withdrawing one tells Code before it is marked.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { CodeError } from "./code-client.js";
+import { COMPANY_NAME_FALLBACK, companyCaller, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
 import { canonical, COMPANY_SETTINGS_LIMITS, loosens, plainObject, settingsDecision, validateCompanySettings } from "./company-settings.js";
 import {
-  COMPANY_ID, CompanyStoreConflict, INVITE_DAYS, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, companySettings,
+  CompanyStoreConflict, INVITE_DAYS, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, companySettings,
   type CompanyStore, type InviteRecord, type PendingSettingsChange,
 } from "./company-store.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
@@ -22,8 +23,6 @@ import { withdrawForMember } from "./product-ai-routes.js";
 
 export interface CompanyBackend {
   store: CompanyStore;
-  /** The deployment's one company, used only when Code's access check names none (a single-company Code). Absent: such a Code gets no company routes. */
-  companyId?: string;
   log?: (event: Record<string, unknown>) => void;
 }
 
@@ -37,7 +36,6 @@ const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
 const WORDS = Object.freeze({
   notAdmin: refusal(403, "FORBIDDEN", "Only a company admin can do this."),
-  noCompany: refusal(403, "FORBIDDEN", "Your sign-in doesn't belong to a company Cloud knows."),
   stepUp: refusal(403, "STEP_UP_REQUIRED", "Confirm it's you again, then try once more."),
   ruled: refusal(403, "FORBIDDEN", "Your company's rules don't allow this change."),
   secondPerson: refusal(403, "SECOND_PERSON_REQUIRED", "A different admin must approve this change."),
@@ -62,29 +60,22 @@ const newChangeId = () => `chg_${Array.from(randomBytes(20), (byte) => ALPHABET[
 const keysAre = (value: Record<string, unknown>, allowed: readonly string[], required: readonly string[] = allowed) =>
   Object.keys(value).every((key) => allowed.includes(key)) && required.every((key) => Object.hasOwn(value, key));
 
-interface Caller { backend: CompanyBackend; companyId: string; developerId: string; name: string; administrator: boolean }
+interface Caller { backend: CompanyBackend; companyId: string; companyRole: CompanyRole; companyName?: string; developerId: string; name: string }
 
-/** The person and their company, from Code's access check made now. A RouteAnswer when Cloud can't name the company. */
+/** The person and their company, from Code's access check made now. A RouteAnswer when Cloud has no company data or Code names no company. */
 async function caller(context: RouteContext): Promise<Caller | RouteAnswer> {
   const backend = context.company;
   if (backend === undefined) return refusal(501, "NOT_ON_CODE_YET", "Company settings aren't set up on this Cloud.");
-  const access = await context.client.access(context.session);
-  const named = (access as { companyId?: unknown }).companyId;
-  let companyId: string;
-  if (named !== undefined) {
-    // Code names the company: only that one, and only when it reads. Never the deployment's.
-    if (typeof named !== "string" || !COMPANY_ID.test(named)) return WORDS.noCompany;
-    companyId = named;
-  } else if (backend.companyId !== undefined && COMPANY_ID.test(backend.companyId)) {
-    companyId = backend.companyId;
-  } else return WORDS.noCompany;
-  return { backend, companyId, developerId: access.developerId, name: access.displayName, administrator: access.administrator === true };
+  const who = await companyCaller(context);
+  if (refused(who)) return who;
+  return { backend, companyId: who.companyId, companyRole: who.companyRole, ...(who.companyName === undefined ? {} : { companyName: who.companyName }), developerId: who.developerId, name: who.name };
 }
 
+/** A company owner or admin (Code's company role, never its install administrator flag). */
 async function admin(context: RouteContext): Promise<Caller | RouteAnswer> {
   const who = await caller(context);
   if ("status" in who) return who;
-  return who.administrator ? who : WORDS.notAdmin;
+  return isCompanyAdmin(who.companyRole) ? who : WORDS.notAdmin;
 }
 
 /** The admin's step-up is inside `windowSeconds`. */
@@ -235,7 +226,7 @@ async function budgetSettings(context: RouteContext): Promise<RouteAnswer> {
 
 async function profileOf(context: RouteContext, who: Caller) {
   const stored = await who.backend.store.profile(who.companyId);
-  return stored ?? { companyId: who.companyId, name: context.org.name, plan: context.org.plan, version: 0 };
+  return stored ?? { companyId: who.companyId, name: who.companyName ?? COMPANY_NAME_FALLBACK, plan: context.org.plan, version: 0 };
 }
 
 async function readProfile(context: RouteContext): Promise<RouteAnswer> {
@@ -266,7 +257,7 @@ async function renameCompany(context: RouteContext): Promise<RouteAnswer> {
     throw error;
   }
   log(who, { event: "cloud.company_renamed" });
-  // The app's RenameOrganizationResponseSchema names the role "owner": only a company admin gets here.
+  // The app's RenameOrganizationResponseSchema names the role "owner" only: only a company owner or admin gets here.
   return ok({ org: { orgId: who.companyId, name, plan: current.plan }, role: "owner" });
 }
 

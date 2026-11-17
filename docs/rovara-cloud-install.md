@@ -79,10 +79,15 @@ same account and region as the Cloud it deploys. It asks for two things:
   The control plane stack is `AgentXControlPlane` for the legacy AgentX deployment, and
   `rovara-cloud-<env>-control-plane` for a named install.
 
-The web stack also takes an optional **`CompanyId`** (default empty): the one company (`org_` and 20 lower-case
-letters or digits) of a Rovara Code that does not yet name a company in its access check. Cloud keeps that company's
-settings, invites and profile in the stack's `Companies` table. Empty, a Code like that gets no company routes; a Code
-that names the company never uses it.
+**Which company:** Cloud takes each person's company and company role only from Rovara Code's access check (DEC 253z).
+A person Code names no company for is refused on every company route ("You're not in a company yet."). The web stack has
+no company setting.
+
+*Upgrading from a stack that had the `CompanyId` parameter:* the template no longer has it, so the deploy must not pass
+`CompanyId` any more (CloudFormation refuses a parameter the template doesn't declare: remove it from your parameter
+list or `--parameters` overrides). On staging the old stopgap value was `org_jckf8av6ri11rszcdjsa` (DEC 254), which is
+exactly the company Code's access check now names for the founders, so no company data moves. Code must answer
+`companyId` and `companyRole` (Code PR #820) before this Cloud is deployed, or every company route refuses.
 
 The web stack's product AI settings (staging, with the `ProductKeys*` parameters and `ModelGatewayUrl`) also take an optional
 **`BedrockTemplateUrl`** (default empty): the address of the role template a company's AWS admin deploys for "your own Bedrock"

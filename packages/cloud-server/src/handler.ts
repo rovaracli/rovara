@@ -16,7 +16,8 @@ import { AGENT_AI_ROUTES } from "./agent-ai-routes.js";
 import { BEDROCK_BYO_ROUTES } from "./bedrock-byo-routes.js";
 import { ROUTES, type OrgView, type Route, type RouteAnswer } from "./routes.js";
 import type { SessionStore } from "./sessions.js";
-import { StoreConflict, type WorkSessionStore } from "./work-sessions.js";
+import { StoreConflict, companyScopedWork, type WorkSessionStore } from "./work-sessions.js";
+import { companyOf } from "./company-caller.js";
 
 export interface CloudRequest {
   method: string;
@@ -147,7 +148,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       if (id === undefined || session === undefined) return signInPage();
       const form = method === "POST" && (request.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded") ? new URLSearchParams(request.body ?? "") : undefined;
       try {
-        const answer = await approvalRoute({ client: options.client, session, work: options.work, origin: options.origin }, approval[1]!, method, request.headers, form);
+        const answer = await approvalRoute({ client: options.client, session, work: companyScopedWork(options.work, () => companyOf(session.access)?.companyId), origin: options.origin }, approval[1]!, method, request.headers, form);
         if (session.changed === true) {
           delete session.changed;
           await options.store.save(id, session);
@@ -194,7 +195,10 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
           try {
             answer = await route.answer({
               client: options.client, session: using, params: match.slice(1).map((part) => decodeURIComponent(part)), query: request.query, body, org: options.org, now,
-              work: options.work, origin: options.origin, presence, ...(options.audit === undefined ? {} : { audit: options.audit }), ...(options.company === undefined ? {} : { company: options.company }),
+              // Cloud's sessions as the person's company sees them, by the company Code named in its latest access check for this sign-in (kept
+              // with the stored sign-in). Not asked afresh on every session route: a person is in one company, a change of company is a new
+              // sign-in, and every route that shows or changes a session's data asks Code for its task first (Code checks the company live).
+              work: companyScopedWork(options.work, () => companyOf(using.access)?.companyId), origin: options.origin, presence, ...(options.audit === undefined ? {} : { audit: options.audit }), ...(options.company === undefined ? {} : { company: options.company }),
               ...(options.productAi === undefined ? {} : { productAi: options.productAi }),
             });
           } catch (error) {
