@@ -37,7 +37,8 @@ describe("code contract v0 tables", () => {
     // from Code's task events, comments Cloud keeps itself: events, messages list and send, edit, delete).
     // Plus the twelve lessons routes (DEC 231): the inbox batch, the lists, Keep, Drop and the batch, retire and retire requests, the mode, Lessons used and not helpful.
     // Plus the eval confirm (DEC 253q d), forwarded to Code's own route as the person (501 until Code serves it).
-    expect(counts.appCloudServerToday).toBe(50);
+    // Plus the five People panel routes (web task channel K3): the list, the candidates, a role change, adding a person and taking ownership; the candidates and add need Code's C4.
+    expect(counts.appCloudServerToday).toBe(55);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

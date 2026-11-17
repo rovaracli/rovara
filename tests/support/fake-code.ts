@@ -151,6 +151,28 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (entry === undefined) return notFound("task");
     return entry.owner.developerId === context.person.developerId ? then(entry) : failure(403, "FORBIDDEN", `Only ${entry.owner.name} can do that.`);
   };
+  // --- task People (the planned Code shapes): roles per task person, a revision, and changes that commit at once or wait for the confirm page
+  const personIdOf = (person: Person) => { const hex = person.developerId; return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`; };
+  const peopleStates = new Map<string, { revision: number; roles: Map<string, string>; listed: Set<string> }>();
+  const peopleOf = (taskId: string) => { let state = peopleStates.get(taskId); if (state === undefined) { state = { revision: 3, roles: new Map(), listed: new Set() }; peopleStates.set(taskId, state); } return state; };
+  const peopleListed = (entry: { owner: Person; task: TaskView }) => PEOPLE.filter((one) => one.developerId === entry.owner.developerId || peopleOf(entry.task.taskId).listed.has(one.developerId) || readers.get(entry.task.taskId)?.has(one.developerId) === true);
+  const peopleView = (entry: { owner: Person; task: TaskView }, person: Person) => {
+    const state = peopleOf(entry.task.taskId), mine = entry.owner.developerId === person.developerId;
+    return {
+      revision: state.revision, orphaned: false, canManage: mine, canTakeOwnership: !mine,
+      people: peopleListed(entry).map((one) => {
+        const role = one.developerId === entry.owner.developerId ? "owner" : state.roles.get(personIdOf(one)) ?? "viewer";
+        return { personId: personIdOf(one), name: one.name, role, you: one.developerId === person.developerId, effectiveRole: role === "denied" ? null : role, method: one.key === "sam" ? "slack" : "github" };
+      }),
+    };
+  };
+  const pendingPeople = new Map<string, () => void>();
+  const proposePeople = (entry: { owner: Person; task: TaskView }, person: Person, requestId: string, apply: () => void, needsConfirm: boolean) => {
+    const commit = () => { apply(); peopleOf(entry.task.taskId).revision += 1; };
+    if (!needsConfirm) { commit(); return { body: { change: { status: "COMMITTED", view: peopleView(entry, person) } } }; }
+    pendingPeople.set(requestId, commit);
+    return { body: { change: { status: "PENDING", requestId, confirmationUrl: `https://fake-code.invalid/review/${entry.task.taskId}/task/people/confirm/${requestId}`, expiresAt: new Date(now().getTime() + 600_000).toISOString() } } };
+  };
   const planOf = (task: TaskView): PlanView => ({
     taskId: task.taskId, document: "plan", version: 1, sha256: PLAN_DIGEST, approved: task.workflow?.stage !== "PLAN_REVIEW", current: true, versions: [1],
     content: { problem: `The task: ${task.title}`, approach: ["Read the code around the change", "Make the change", "Add a test that fails without it"], files: ["src/index.ts"], risks: ["Touches one shared module"] },
@@ -362,12 +384,26 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "tasks.continue": (context) => ownerTask(context, ({ task }) => ({ body: { task } })),
     "tasks.pullRequests.open": (context) => ownerTask(context, ({ task }) => { touch(task, { pullRequests: [{ repository: "example/web", number: 43, url: "https://github.com/example/web/pull/43", state: "open" }] }); return { body: { task } }; }),
     "tasks.share": (context) => ownerTask(context, ({ task }) => ({ body: { task } })),
-    "tasks.people.get": (context) => taskOr404(context, ({ owner }) => ({ body: { view: { revision: 3, owner: { developerId: owner.developerId, name: owner.name }, people: PEOPLE.map((one) => ({ developerId: one.developerId, name: one.name, role: one.developerId === owner.developerId ? "owner" : "viewer" })) } } })),
-    "tasks.people.role": (context) => ownerTask(context, () => ({ body: { change: { requestId: context.body.requestId, status: "COMMITTED" } } })),
+    "tasks.people.get": (context) => taskOr404(context, (entry) => ({ body: { view: peopleView(entry, context.person) } })),
+    "tasks.people.role": (context) => ownerTask(context, (entry) => {
+      const state = peopleOf(entry.task.taskId);
+      if (context.body.expectedPeopleRevision !== state.revision) return failure(409, "CHANGE_STALE", "Task access changed before the role could be saved");
+      return proposePeople(entry, context.person, context.body.requestId, () => { state.roles.set(context.body.personId, context.body.role); }, context.body.role === "owner");
+    }),
     "tasks.people.takeOwnership": (context) => taskOr404(context, (entry) => {
       if (entry.owner.developerId === context.person.developerId) return failure(409, "CONFLICT", "You already own this task.");
-      entry.owner = context.person;
-      return { body: { change: { requestId: context.body.requestId, status: "COMMITTED" } } };
+      const state = peopleOf(entry.task.taskId);
+      if (context.body.expectedPeopleRevision !== state.revision) return failure(409, "CHANGE_STALE", "Task access changed before the role could be saved");
+      return proposePeople(entry, context.person, context.body.requestId, () => { entry.owner = context.person; }, false);
+    }),
+    // The planned C4 routes: the owner's candidates are the project's people not yet on the task; an add of an owner waits for the confirm step.
+    "tasks.people.candidates": (context) => ownerTask(context, (entry) => ({ body: { candidates: { candidates: PEOPLE.filter((one) => roleIn(one, entry.task.project) !== undefined && !peopleListed(entry).some((listed) => listed.developerId === one.developerId)).map((one) => ({ developerId: one.developerId, name: one.name })), complete: true } } })),
+    "tasks.people.add": (context) => ownerTask(context, (entry) => {
+      const who = PEOPLE.find((one) => one.developerId === context.body.developerId);
+      if (who === undefined || roleIn(who, entry.task.project) === undefined) return failure(403, "TASK_ACCESS_DENIED", "That person can't be added to this task");
+      const state = peopleOf(entry.task.taskId);
+      if (context.body.expectedPeopleRevision !== state.revision) return failure(409, "CHANGE_STALE", "Task access changed before the role could be saved");
+      return proposePeople(entry, context.person, context.body.requestId, () => { state.roles.set(personIdOf(who), context.body.role); state.listed.add(who.developerId); }, context.body.role === "owner");
     }),
     "tasks.people.request": (context) => taskOr404(context, () => ({ body: { change: { requestId: context.params["requestId"] ?? "", status: "COMMITTED" } } })),
     "tasks.readers.list": (context) => ownerTask(context, ({ task }) => ({ body: { readers: [...(readers.get(task.taskId)?.values() ?? [])] } })),
@@ -648,6 +684,15 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (who === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "person is priya or sam" } });
           current = who;
           return send(200, { person: who.key });
+        }
+        // The person confirms a waiting People change on Code's own page (a test stands in for that page).
+        if (method === "POST" && url.pathname === "/__fake/people-confirm") {
+          const requestId = (JSON.parse(await readBody(request)) as { requestId?: string }).requestId;
+          // No request id: every waiting change is confirmed.
+          const waiting = requestId === undefined ? [...pendingPeople.keys()] : pendingPeople.has(requestId) ? [requestId] : [];
+          if (waiting.length === 0) return send(404, { error: { code: "NOT_FOUND", message: "no waiting change" } });
+          for (const id of waiting) { pendingPeople.get(id)?.(); pendingPeople.delete(id); }
+          return send(200, { confirmed: waiting.length });
         }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;

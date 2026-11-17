@@ -237,12 +237,20 @@ export interface ContinueRequest { requestId: string; [field: string]: unknown }
 export interface OpenPullRequestRequest { requestId: string; repository: string; [field: string]: unknown }
 export interface ShareTaskRequest { requestId: string; [field: string]: unknown }
 
-export interface PeopleView { revision: number; owner: { developerId: DeveloperId; name: string }; people: Array<{ developerId: DeveloperId; name: string; role: string }> }
-export interface PeopleChange { requestId: string; status: string /* known: PENDING, COMMITTED */; confirmationUrl?: string }
+/** Code's task People view (packages/contracts/src/task-people.ts in Rovara Code): ids are the task person's, not the developer's; `method` names how the person signs in, when Code says. */
+export interface PeopleView {
+  revision: number; orphaned: boolean; canManage: boolean; canTakeOwnership: boolean;
+  people: Array<{ personId: string; name: string; role: string; you: boolean; effectiveRole: string | null; method?: string }>;
+}
+/** `PENDING` waits for the person to confirm on Code's page (`confirmationUrl`); `COMMITTED` carries the list as it is now. */
+export interface PeopleChange { status: string /* known: PENDING, COMMITTED */; requestId?: string; confirmationUrl?: string; expiresAt?: string; view?: PeopleView }
 export interface PeopleResponse { view: PeopleView }
 export interface PeopleChangeResponse { change: PeopleChange }
-export interface PeopleRoleRequest { requestId: string; expectedPeopleRevision: number; developerId: DeveloperId; role: string }
+export interface PeopleRoleRequest { requestId: string; expectedPeopleRevision: number; personId: string; role: string }
 export interface TakeOwnershipRequest { requestId: string; expectedPeopleRevision: number }
+/** Web task channel C4 (planned): the owner adds a person from the web; the candidates are names and opaque developer ids, at most 200. */
+export interface PeopleAddRequest { requestId: string; expectedPeopleRevision: number; developerId: string; role: "owner" | "commenter" | "viewer" }
+export interface PeopleCandidatesResponse { candidates: { candidates: Array<{ developerId: DeveloperId; name: string }>; complete: boolean } }
 
 export interface TaskReader { developerId: DeveloperId; name: string; role: string; projectMember: boolean; grantedAt: Iso }
 export interface ReadersResponse { readers: TaskReader[] }
@@ -531,6 +539,8 @@ export interface CodeRouteTypes {
   "tasks.people.get": { request: void; response: PeopleResponse };
   "tasks.people.role": { request: PeopleRoleRequest; response: PeopleChangeResponse };
   "tasks.people.takeOwnership": { request: TakeOwnershipRequest; response: PeopleChangeResponse };
+  "tasks.people.candidates": { request: void; response: PeopleCandidatesResponse };
+  "tasks.people.add": { request: PeopleAddRequest; response: PeopleChangeResponse };
   "tasks.people.request": { request: void; response: PeopleChangeResponse };
   "tasks.readers.list": { request: void; response: ReadersResponse };
   "tasks.readers.put": { request: PutReaderRequest; response: PutReaderResponse };
@@ -665,6 +675,8 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("tasks.people.get", "GET", `${T}/people`, "Who is on the task and the people revision", "full", ["session"], "yes", true, `${TASKS}:6277`, true),
   spec("tasks.people.role", "POST", `${T}/people/role`, "Propose a role change (a pending change the person confirms)", "full", ["session"], "yes", true, `${TASKS}:6278`),
   spec("tasks.people.takeOwnership", "POST", `${T}/people/take-ownership`, "Propose taking the task over", "full", ["session"], "yes", true, `${TASKS}:6282`, true),
+  spec("tasks.people.candidates", "GET", `${T}/people/candidates`, "The people an owner may add from the web (names and opaque ids, at most 200; owner only). Planned: web task channel C4, not served yet", "full", ["session"], "no", false, "none", true),
+  spec("tasks.people.add", "POST", `${T}/people/add`, "Add a person from the web, then the usual confirm step (owner only). Planned: web task channel C4, not served yet", "full", ["session"], "no", false, "none", true),
   spec("tasks.people.request", "GET", `${T}/people/requests/{requestId}`, "Read one pending people change", "full", ["session"], "yes", true, `${TASKS}:6266`),
   spec("tasks.readers.list", "GET", `${T}/readers`, "The people who may read the task (owner only)", "full", ["session"], "no", true, `${MAIN}${TASKS}:6286`, true),
   spec("tasks.readers.put", "PUT", `${T}/readers/{developerId}`, "Share the task with a project member, at view", "full", ["session"], "no", true, `${MAIN}aws/task-readers.ts:109`, true),
@@ -770,6 +782,11 @@ DELETE /v1/app/sessions/{id}/messages/{messageId} | k | session | tasks.messages
 POST /v1/app/sessions/{id}/stop | k | session | tasks.cancel | session-actions | T
 POST /v1/app/sessions/{id}/retry | k | session | tasks.workflow.review | session-actions | T
 POST /v1/app/sessions/{id}/take-over | k | session | tasks.people.takeOwnership | session-actions | T
+GET /v1/app/sessions/{id}/people | k | session | tasks.people.get | screens/session/PeoplePanel | T
+GET /v1/app/sessions/{id}/people/candidates | k | session | tasks.people.candidates | screens/session/PeoplePanel | T
+POST /v1/app/sessions/{id}/people/role | k | session | tasks.people.role | screens/session/PeoplePanel | T
+POST /v1/app/sessions/{id}/people/add | k | session | tasks.people.add | screens/session/PeoplePanel | T
+POST /v1/app/sessions/{id}/people/take-ownership | k | session | tasks.people.takeOwnership | screens/session/PeoplePanel | T
 POST /v1/app/sessions/{id}/close | k | session | tasks.close | session-actions | T
 POST /v1/app/sessions/{id}/merge | k | session | tasks.merge | session-actions |
 POST /v1/app/sessions/{id}/answers | k | session | tasks.answers | session-actions | L
