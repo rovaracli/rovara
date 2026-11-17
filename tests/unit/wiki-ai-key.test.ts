@@ -7,7 +7,7 @@
 // Mutants (each killed by the named test, run by hand): M1 the fact is added for a person who only reads (viewer test); M2 the company is the stored sign-in's (two-company test); M3 the fact reads the
 // first company's choice (two-company test); M4 an unreadable fact is "missing" (unreadable test); M5 Code's own answer is overridden (code-says test); M6 "rovara" counts as no key and an unavailable
 // source counts as a key (matrix tests); M7 the refusal is answered to a person who may not start (viewer start test); M8 the refusal also stops stop/agents/delete (not-a-start test); M9 connectKey
-// kept while connected / missing without it (state tests); M10 the refusal skips the manager check (viewer start test); M11 a provider, source or key reaches the answer (leak test).
+// kept while connected / missing without it (state tests); M10 the refusal skips the manager check (viewer start test); M11 a provider, source or key reaches the answer (leak test); M12 the refusal ignores Code's own answer; M13 an unreadable fact refuses the start; M15 the company's choice is read before Code says who manages.
 import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentAiConnected } from "../../packages/cloud-server/src/agent-ai-presence.js";
@@ -210,7 +210,7 @@ describe("a start that would die is refused before Code is asked, for a person w
       const answer = await w.call(cookies.ada, "POST", P(tail), { requestId: RID });
       expect(answer.status).toBe(200);
       expect(answer.body).toMatchObject({ canManage: true, aiKey: "connected" });
-      expect(calls).toEqual([`POST ${seen}`]);
+      expect(calls).toEqual(["GET start-or-state", `POST ${seen}`]);
     }
   });
 
@@ -228,6 +228,24 @@ describe("a start that would die is refused before Code is asked, for a person w
     expect(raw(other)).not.toContain(CONNECT);
   });
 
+  it("a person who may not start it costs no read of the company's choice, so the refusal takes the same steps whatever the AI state (M15, review L1)", async () => {
+    const { w, cookies } = await setUp();
+    const read = vi.spyOn(w.companies, "agentAi");
+    expect((await w.call(cookies.cal, "POST", P(), { requestId: RID })).status).toBe(403);
+    expect((await w.call(cookies.bob, "POST", "/projects/payments/wiki-build", { requestId: RID })).status).toBe(404);
+    expect(read).not.toHaveBeenCalled();
+    // Positive control: the manager's start does read it.
+    expect((await w.call(cookies.ada, "POST", P(), { requestId: RID })).status).toBe(503);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("when Code already says the AI is connected, Cloud does not refuse the start on its own reading (M12)", async () => {
+    const { w, cookies, calls } = await setUp("connected");
+    const answer = await w.call(cookies.ada, "POST", P(), { requestId: RID });
+    expect(answer.status).toBe(200);
+    expect(calls).toEqual(["GET start-or-state", "POST start-or-state"]);
+  });
+
   it("stop, the agents switch and delete are not starts: they reach Code whatever the AI state (M8)", async () => {
     const { w, cookies, calls } = await setUp();
     expect((await w.call(cookies.ada, "POST", P("/stop"), { requestId: RID })).status).toBe(200);
@@ -241,7 +259,7 @@ describe("a start that would die is refused before Code is asked, for a person w
     vi.spyOn(w.companies, "agentAi").mockRejectedValue(new Error("table down"));
     const answer = await w.call(cookies.ada, "POST", P(), { requestId: RID });
     expect(answer.status).toBe(200);
-    expect(calls).toEqual(["POST start-or-state"]);
+    expect(calls).toEqual(["GET start-or-state", "POST start-or-state"]);
   });
 
   it("company B's missing AI does not stop company A's start, and A's connected AI does not start B's (two companies)", async () => {
@@ -249,6 +267,6 @@ describe("a start that would die is refused before Code is asked, for a person w
     await chooseRovara(w, cookies.ada);
     expect((await w.call(cookies.ada, "POST", P(), { requestId: RID })).status).toBe(200);
     expect((await w.call(cookies.bea, "POST", P(), { requestId: RID })).status).toBe(503);
-    expect(calls).toEqual(["POST start-or-state", "GET start-or-state"]);
+    expect(calls).toEqual(["GET start-or-state", "POST start-or-state", "GET start-or-state"]);
   });
 });

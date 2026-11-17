@@ -281,13 +281,18 @@ async function withAiKeyAnswer(context: RouteContext, company: string, body: Rec
   return plain(view) ? { ...body, view: await withAiKey(context, company, view) } : withAiKey(context, company, body);
 }
 
-/** A start the company's own AI cannot serve is refused before Code is asked, so no task is started that would end "needs an AI key". Only for a person Code says manages the project, and only when Code did not decide. */
+/**
+ * A start the company's own AI cannot serve is refused before Code is asked to start it, so no task is started that would end "needs an AI key". Code's state is read FIRST, as the person: only a person Code
+ * says manages the project, with Code's own `aiKey` still "unknown", causes a read of the company's choice, and only for them is the sentence ever answered (a reader's start reaches Code and gets Code's own refusal,
+ * in the same time and steps whatever the company's AI state is).
+ */
 async function startWouldDie(context: RouteContext, project: string, company: string): Promise<boolean> {
-  if ((await agentAiConnected(context, company)) !== false) return false;
   const state = await fromCode(context, "build", base(project, "wiki-build"));
   if ("refusal" in state) return false;
   const seen = rebuilt(() => buildAnswer(state.value), "build");
-  return seen.status === 200 && (seen.body as Record<string, unknown>)["canManage"] === true && (seen.body as Record<string, unknown>)["aiKey"] === "unknown";
+  const body = seen.body as Record<string, unknown>;
+  if (seen.status !== 200 || body["canManage"] !== true || body["aiKey"] !== "unknown") return false;
+  return (await agentAiConnected(context, company)) === false;
 }
 
 function postRoute(tail: RegExp, action: string, codeTail: string, body: (given: unknown) => Record<string, unknown> | undefined, answerOf: (value: unknown, project: string) => Record<string, unknown>, kind: Kind = "build"): Route {
