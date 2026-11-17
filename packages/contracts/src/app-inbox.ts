@@ -24,7 +24,7 @@ export const INBOX_POLL_MS = 30_000;
 export const InboxIdSchema = z.string().regex(/^[0-9a-z_]{1,64}\.[a-z_]{1,20}\.[0-9]{1,16}$/u);
 
 /** Where a row opens in this app: the session Cloud has for the task, otherwise the task by its id (`/t/<id>`). */
-export const InboxOpenPathSchema = z.string().regex(/^\/(?:s\/ses_[0-9a-z]{20}|t\/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/u);
+export const InboxOpenPathSchema = z.string().regex(/^\/(?:s\/ses_[0-9a-z]{20}|t\/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$/u);
 
 export const InboxItemSchema = z.object({
   id: InboxIdSchema,

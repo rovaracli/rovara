@@ -42,9 +42,8 @@ export function InboxScreen() {
   try {
    // At most 50 ids go in one request.
    for (let start = 0; start < unreadIds.length; start += INBOX_READ_IDS_MAX) await api.markRead({ requestId: crypto.randomUUID(), ids: unreadIds.slice(start, start + INBOX_READ_IDS_MAX) });
-   await refresh();
   } catch (error) { setFailure(error instanceof ApiError ? error.message : "Couldn't mark these as read. Try again."); }
-  finally { setMarking(false); }
+  finally { setMarking(false);await refresh(); }
  }
  const notAvailable = inbox.isError && inboxNotAvailable(inbox.error);
  return <section className="rv-notices" data-testid="inbox"><PageHeader title="Inbox" {...(!notAvailable && inbox.data !== undefined && unread > 0 ? { description: `${String(unread)} unread` } : {})}

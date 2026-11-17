@@ -15,7 +15,8 @@ import { CodeError } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
 export const INBOX_NOT_AVAILABLE = "Your inbox isn't available on this install yet.";
-const KINDS = ["needs_you", "paused", "ready", "failed", "done"] as const;
+/** Code's kinds today are needs_you, paused, ready, failed and done; a kind a newer Code adds is passed on (the app reads it as a plain update), so one new kind never fails the whole page. */
+const KIND = /^[a-z_]{1,20}$/u;
 /** Code's page and read-mark bounds (core/notify/inbox.ts). */
 const PAGE_DEFAULT = 20;
 const PAGE_MAX = 50;
@@ -23,11 +24,15 @@ const READ_IDS_MAX = 50;
 /** How many of the person's own sessions are looked at to place a row, and how many Code session reads run at once. */
 const OWN_SESSIONS_LOOKED_AT = 200;
 const READS_AT_ONCE = 5;
+/** A session of Code never changes its task, so a placed row is remembered (per company, person and session; bounded) and the next poll does not read the session again. */
+const TASKS_KEPT_MAX = 2000;
+const taskOfSessionKept = new Map<string, string>();
 
 const ID = /^[0-9a-z_]{1,64}\.[a-z_]{1,20}\.[0-9]{1,16}$/u;
 const CODE_SESSION = /^ses_[0-9a-z]{20}$/u;
 const CURSOR = /^[A-Za-z0-9_-]{1,200}$/u;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+/** The same shape as the task id Cloud opens by (open-by-task): a version 1 to 8 UUID with an RFC variant. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 const notAvailable: RouteAnswer = { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: INBOX_NOT_AVAILABLE } } };
@@ -37,18 +42,20 @@ const unreadable: RouteAnswer = { status: 502, body: { error: { code: "RUNTIME_U
 
 type Obj = Record<string, unknown>;
 const isObj = (value: unknown): value is Obj => typeof value === "object" && value !== null && !Array.isArray(value);
-const oneOf = <T extends string>(list: readonly T[], value: unknown): value is T => typeof value === "string" && (list as readonly string[]).includes(value);
+
+/** For tests: forget the rows already placed. */
+export const forgetPlacedRows = (): void => { taskOfSessionKept.clear(); };
 
 /** The session id Code gives a task (core/sessions/create.ts `taskSessionId`): `ses_` and the first 20 hex digits of the SHA-256 of `task-session\n<task id>`. */
 export const codeSessionIdOf = (taskId: string): string => `ses_${createHash("sha256").update(`task-session\n${taskId}`, "utf8").digest("hex").slice(0, 20)}`;
 
-interface Row { id: string; sessionId: string; kind: (typeof KINDS)[number]; title: string; status: string; at: string; read: boolean }
+interface Row { id: string; sessionId: string; kind: string; title: string; status: string; at: string; read: boolean }
 
 /** One of Code's rows in the shape Cloud expects, or undefined. Only the named fields are kept (Code's `link` is dropped). */
 function projectRow(value: unknown): Row | undefined {
   if (!isObj(value)) return undefined;
   const { id, sessionId, kind, title, status, at, read } = value;
-  if (typeof id !== "string" || !ID.test(id) || typeof sessionId !== "string" || !CODE_SESSION.test(sessionId) || !id.startsWith(`${sessionId}.`) || !oneOf(KINDS, kind)) return undefined;
+  if (typeof id !== "string" || !ID.test(id) || typeof sessionId !== "string" || !CODE_SESSION.test(sessionId) || !id.startsWith(`${sessionId}.`) || typeof kind !== "string" || !KIND.test(kind)) return undefined;
   if (typeof title !== "string" || title.length < 1 || title.length > 200 || typeof status !== "string" || status.length > 300 || typeof read !== "boolean") return undefined;
   const time = typeof at === "string" ? Date.parse(at) : Number.NaN;
   if (Number.isNaN(time)) return undefined;
@@ -82,11 +89,19 @@ async function placeSessions(context: RouteContext, sessionIds: string[]): Promi
       if (!places.has(code)) places.set(code, `/s/${record.sessionId}`);
     }
   } catch { /* the rows still open by their task's id */ }
+  const who = `${context.session.access.companyId ?? ""}/${context.session.access.developerId}/`;
+  for (const id of sessionIds) { const kept = taskOfSessionKept.get(who + id); if (!places.has(id) && kept !== undefined) places.set(id, `/t/${kept}`); }
   const unplaced = sessionIds.filter((id) => !places.has(id));
   for (let index = 0; index < unplaced.length; index += READS_AT_ONCE) {
     const chunk = unplaced.slice(index, index + READS_AT_ONCE);
     const tasks = await Promise.all(chunk.map((id) => taskOfSession(context, id)));
-    chunk.forEach((id, position) => { const taskId = tasks[position]; if (taskId !== undefined) places.set(id, `/t/${taskId}`); });
+    chunk.forEach((id, position) => {
+      const taskId = tasks[position];
+      if (taskId === undefined) return;
+      places.set(id, `/t/${taskId}`);
+      if (taskOfSessionKept.size >= TASKS_KEPT_MAX) taskOfSessionKept.delete(taskOfSessionKept.keys().next().value as string);
+      taskOfSessionKept.set(who + id, taskId);
+    });
   }
   return places;
 }

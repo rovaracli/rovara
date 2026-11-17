@@ -33,7 +33,8 @@ export const inboxNotAvailable = (error: unknown) => error instanceof ApiError &
 export function useInboxBadge() {
  const host = useAppHost(), api = useMemo(() => createInboxApi(host), [host]);
  return useQuery({
-  queryKey: ["inbox", "badge"], retry: false, refetchOnWindowFocus: false,
+  // Cloud's inbox is the web app's: a desktop host asks nothing.
+  enabled: host.kind === "web", queryKey: ["inbox", "badge"], retry: false, refetchOnWindowFocus: false,
   queryFn: async (): Promise<{ available: boolean; unread: number }> => {
    try { return { available: true, unread: (await api.page({ limit: 1 })).unread ?? 0 }; }
    catch (error) { if (inboxNotAvailable(error)) return { available: false, unread: 0 };throw error; }

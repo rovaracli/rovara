@@ -2,9 +2,9 @@
 // person. A fake Code stands in for C7 (the shapes in core-host/inbox-routes.ts on Code's pr/wtc-inbox): the company and the person come from the sign-in
 // alone, bodies and queries are checked at runtime, Code's refusals pass through, a Code with no inbox answers one fixed sentence, and every write needs
 // the CSRF header like every other write.
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
-import { codeSessionIdOf } from "../../packages/cloud-server/src/inbox-routes.js";
+import { codeSessionIdOf, forgetPlacedRows } from "../../packages/cloud-server/src/inbox-routes.js";
 import { InboxPageSchema, InboxReadResponseSchema, INBOX_NOT_AVAILABLE_TEXT } from "../../packages/contracts/src/app-inbox.js";
 
 const CODE = "https://code.example.test";
@@ -26,6 +26,8 @@ const TASKS: Record<string, "A" | "B"> = { [TASK_A]: "A", [TASK_B]: "B", [TASK_C
 interface Call { method: string; path: string; token: string; body?: string }
 type Mode = "ok" | "404" | "501" | "403" | "garbage-page" | "garbage-row" | "bad-cursor" | "bad-unread" | "huge-unread" | "long-title" | "foreign-id" | "huge-page";
 
+beforeEach(() => { forgetPlacedRows(); });
+
 const row = (taskId: string, kind: string, extra: Record<string, unknown> = {}) => {
   const sessionId = codeSessionIdOf(taskId);
   return { id: `${sessionId}.${kind}.${String(AT)}`, sessionId, kind, title: `Task ${taskId.slice(0, 4)}`, status: "Needs you now.", link: "https://evil.example.test/steal", at: new Date(AT).toISOString(), read: false, ...extra };
@@ -39,7 +41,7 @@ function fakeCode() {
     [CAL]: [row(TASK_C, "needs_you")],
     [BEA]: [row(TASK_B, "failed")],
   };
-  const flags = { mode: "ok" as Mode, sessionRead: "ok" as "ok" | "404" | "wrong-task" | "garbage", marked: 1 as unknown };
+  const flags = { mode: "ok" as Mode, sessionRead: "ok" as "ok" | "404" | "wrong-task" | "garbage" | "not-task" | "403" | "429" | "503", marked: 1 as unknown };
   const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const refuse = (status: number, code: string, message: string) => respond(status, { error: { code, message } });
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -60,6 +62,8 @@ function fakeCode() {
       const taskId = Object.keys(TASKS).find((id) => codeSessionIdOf(id) === session[1]);
       // Code shows a session only to a person of the task's company.
       if (flags.sessionRead === "404" || taskId === undefined || TASKS[taskId] !== me.company) return refuse(404, "NOT_FOUND", "There is no such session.");
+      if (flags.sessionRead === "403" || flags.sessionRead === "429" || flags.sessionRead === "503") return refuse(Number(flags.sessionRead), "REFUSED", "no");
+      if (flags.sessionRead === "not-task") return respond(200, { session: { sessionId: session[1], body: { kind: "chain", task: { taskId } } } });
       if (flags.sessionRead === "garbage") return respond(200, { session: { sessionId: session[1], body: { kind: "task", task: { taskId: "not-a-uuid" } } } });
       return respond(200, { session: { sessionId: session[1], body: { kind: "task", task: { taskId: flags.sessionRead === "wrong-task" ? TASK_B : taskId } } } });
     }
@@ -183,14 +187,14 @@ describe("Inbox: reading", () => {
   });
 
   it("places a row only on a session of the person's own company: a session stamped with another company is not used", async () => {
-    const { call, bea, session, code } = await base();
-    // A stale record of Bea's task, stamped with company A: Bea is in company B, so it must not place her row.
-    await session(SES_B_STALE, TASK_B, { developerId: BEA, name: "Bea" }, COMPANY_A);
-    const page = InboxPageSchema.parse(json(await call("GET", "/v1/web/inbox", bea)));
-    expect(page.items).toHaveLength(1);
-    expect(page.items[0]!.open).toBe(`/s/${SES_B}`);
-    expect(page.items[0]!.open).not.toBe(`/s/${SES_B_STALE}`);
-    expect(code.sessionCalls()).toEqual([]);
+    const context = setUp();
+    // Only a stale record of Bea's task, stamped with company A: Bea is in company B, so it must not place her row.
+    await context.session(SES_B_STALE, TASK_B, { developerId: BEA, name: "Bea" }, COMPANY_A);
+    const bea = await context.signIn("bea-code");
+    const page = InboxPageSchema.parse(json(await context.call("GET", "/v1/web/inbox", bea)));
+    expect(page.items.map((item) => item.open)).toEqual([`/t/${TASK_B}`]);
+    // The stale record placed nothing, so the row's session was read from Code.
+    expect(context.code.sessionCalls()).toHaveLength(1);
   });
 
   it("opens a row by its task's id, read from Code's session of the task, when Cloud has no session for it", async () => {
@@ -201,13 +205,51 @@ describe("Inbox: reading", () => {
   });
 
   it("leaves a row out when Code will not show its session, or answers a task that is not that session's, keeping the rest", async () => {
-    for (const mode of ["404", "wrong-task", "garbage"] as const) {
+    for (const mode of ["404", "wrong-task", "garbage", "not-task", "403", "429", "503"] as const) {
       const { call, ada, code } = await base();
       code.flags.sessionRead = mode;
       const page = InboxPageSchema.parse(json(await call("GET", "/v1/web/inbox", ada)));
       // The placed row (Ada's own session) stays; the one Cloud cannot place is left out.
       expect(page.items.map((item) => item.open), mode).toEqual([`/s/${SES_A}`]);
     }
+  });
+
+  it("refuses a row whose own fields are not what Code sends, each field on its own", async () => {
+    const bad: Array<[string, Record<string, unknown>]> = [
+      ["kind with capitals", { kind: "Needs_You" }], ["kind too long", { kind: "a".repeat(21) }], ["kind not text", { kind: 3 }], ["session id", { sessionId: "ses_short" }],
+      ["empty title", { title: "" }], ["title not text", { title: 5 }], ["status too long", { status: "s".repeat(301) }], ["status not text", { status: null }],
+      ["read not a flag", { read: "no" }], ["time not a time", { at: "yesterday" }], ["time missing", { at: undefined }],
+    ];
+    for (const [name, patch] of bad) {
+      const { call, ada, code } = await base();
+      code.rows[ADA] = [row(TASK_A, "needs_you", patch)];
+      const answer = await call("GET", "/v1/web/inbox", ada);
+      expect(answer.status, name).toBe(502);
+      expect(json(answer), name).toEqual(UNREADABLE);
+    }
+  });
+
+  it("passes on a kind a newer Code adds, so one new kind never fails the page (the app reads it as a plain update)", async () => {
+    const { call, ada, code } = await base();
+    code.rows[ADA] = [row(TASK_A, "mentioned")];
+    const answer = await call("GET", "/v1/web/inbox", ada);
+    expect(answer.status).toBe(200);
+    expect((json(answer)["items"] as Array<{ kind: string }>)[0]!.kind).toBe("mentioned");
+  });
+
+  it("does not read Code's session again on the next poll for a row it has placed", async () => {
+    const { call, cal, code } = await base();
+    await call("GET", "/v1/web/inbox", cal);
+    await call("GET", "/v1/web/inbox", cal);
+    expect(code.sessionCalls()).toHaveLength(1);
+  });
+
+  it("does not use one person's placed rows for another person", async () => {
+    const { call, ada, cal, code } = await base();
+    await call("GET", "/v1/web/inbox", cal);
+    await call("GET", "/v1/web/inbox", ada);
+    // Cal's placement of TASK_C is not Ada's: Ada's own read is made.
+    expect(code.sessionCalls().map((entry) => entry.token)).toEqual(["cal-access", "ada-access"]);
   });
 
   it("still places rows by their task's id when Cloud's own sessions cannot be read", async () => {

@@ -14,6 +14,7 @@ import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
 import { expectNoAxeViolations } from "./support/axe.js";
+import { ApiError } from "../../packages/ui/src/api/errors.js";
 import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
@@ -23,14 +24,14 @@ const item = (n: number, extra: Record<string, unknown> = {}) => ({ id: id(n), k
 const PAGE = InboxPageSchema.parse({ items: [item(1), item(2, { kind: "failed", read: true, open: `/t/${TASK}`, title: "<img src=x onerror=alert(1)>" })], unread: 1 });
 const ERROR = (status: number, code: string, message: string): ApiResponse => ({ status, body: { error: { code, message } } });
 
-function mount(options: { path?: string; theme?: "light" | "dark"; inbox?: (request: ApiRequest) => ApiResponse | Promise<ApiResponse> } = {}) {
+function mount(options: { beforeMount?: (host: { kind: "web" | "desktop" }) => void; path?: string; theme?: "light" | "dark"; inbox?: (request: ApiRequest) => ApiResponse | Promise<ApiResponse> } = {}) {
  const nav = AppNavSchema.parse({ me: { developerId: "a".repeat(64), name: "Priya", orgRole: "member" }, org: { name: "Acme" }, homeCount: 0, projects: [], shared: { agents: [], sessions: [] }, features });
  let current = options.inbox ?? (() => ({ status: 200, body: PAGE }));
  const f = fakeHost(async r => {
   if (r.path.startsWith("/v1/app/inbox")) return current(r);
   return { status: 200, body: r.path === "/v1/app/nav" ? nav : r.path === "/v1/app/home" ? { cards: [], total: 0 } : { notices: [], next: "settled" } };
  });
- const query = createQueryClient();query.setQueryData(["nav"], nav);f.storage.set("rovara.theme", options.theme ?? "light");
+ options.beforeMount?.(f.host);const query = createQueryClient();query.setQueryData(["nav"], nav);f.storage.set("rovara.theme", options.theme ?? "light");
  const router = createMemoryRouter(appRoutes(nav.features), { initialEntries: [options.path ?? "/app/inbox"] });
  const view = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(ThemeProvider, { host: f.host, children: h(RouterProvider, { router }) }) }) }), { theme: options.theme ?? "light" });
  const inboxCalls = () => f.request.mock.calls.map(([r]) => r).filter(r => r.path.startsWith("/v1/app/inbox"));
@@ -143,7 +144,8 @@ it("reads the badge and the screen again every 30 seconds while the inbox is ava
  const interval = (key: string[]) => f.query.getQueryCache().find({ queryKey: key })!.observers[0]!.options.refetchInterval as (query: unknown) => number | false;
  expect(interval(["inbox", "badge"])({ state: { data: { available: true, unread: 2 } } })).toBe(30_000);
  expect(interval(["inbox", "list"])({ state: { error: null } })).toBe(30_000);
- expect(interval(["inbox", "list"])({ state: { error: Object.assign(new Error("x"), { status: 501, code: "NOT_ON_CODE_YET", name: "ApiError" }) } })).toBe(30_000);f.close();
+ expect(interval(["inbox", "list"])({ state: { error: new ApiError(500, "RUNTIME_UNAVAILABLE", "down") } })).toBe(30_000);
+ expect(interval(["inbox", "list"])({ state: { error: new ApiError(501, "NOT_ON_CODE_YET", "no") } })).toBe(false);f.close();
 });
 
 it("reads again when the interval passes", async () => {
@@ -158,4 +160,23 @@ it("reads again when the interval passes", async () => {
 
 for (const theme of ["light", "dark"] as const) it("has an accessible inbox in " + theme, async () => {
  const f = mount({ theme });await screen.findAllByTestId("inbox-row");await expectNoAxeViolations(f.container);f.close();
+});
+
+it("asks nothing of Code's inbox in a desktop host", async () => {
+ const f = mount({ path: "/app", beforeMount: host => { host.kind = "desktop"; } });
+ await screen.findByRole("link", { name: "Work" });await new Promise(resolve => setTimeout(resolve, 30));
+ expect(f.inboxCalls()).toEqual([]);expect(screen.queryByRole("link", { name: /^Inbox/u })).toBeNull();f.close();
+});
+
+it("refreshes the rows after a mark-all that failed part way", async () => {
+ const f = mount();await screen.findAllByTestId("inbox-row");
+ const before = f.inboxCalls().filter(call => call.method === "GET").length;
+ f.answer(request => request.method === "POST" ? ERROR(403, "FORBIDDEN", "Your access ended.") : { status: 200, body: PAGE });
+ fireEvent.click(screen.getByRole("button", { name: "Mark all as read" }));await screen.findByText("Your access ended.");
+ await waitFor(() => expect(f.inboxCalls().filter(call => call.method === "GET").length).toBeGreaterThan(before));f.close();
+});
+
+it("draws a kind it does not know as a plain update", async () => {
+ const f = mount({ inbox: () => ({ status: 200, body: { items: [item(1, { kind: "mentioned" })], unread: 1 } }) });
+ expect((await screen.findByTestId("inbox-row")).textContent).toContain("Update · Waiting for you.");f.close();
 });
