@@ -13,4 +13,4 @@ export { SetupApprovalPage, SetupChecklistPage, setSetupApply, setSetupRun } fro
 export { ShellPage, UnavailablePage } from "./shell.js";
 export { SignedOutPage } from "./sign-in.js";
 export { WorkPage } from "./work.js";
-export { WikiPage, setWiki } from "./wiki.js";
+export { WikiPage, WikiSetupPanel, setWiki, setWikiSetup } from "./wiki.js";

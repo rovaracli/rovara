@@ -1,0 +1,28 @@
+/* Lead 4 W6: the wiki panel inside the setup checklist's row. Colours and spacing come from the design tokens. */
+.rv-wikis { display: grid; gap: var(--rv-space-3, 0.75rem); }
+.rv-wikis h3 { margin: 0; font-size: 1rem; }
+.rv-wikis h4 { margin: 0.5rem 0 0.25rem; font-size: 0.9rem; }
+.rv-wikis p { margin: 0; }
+.rv-wikis-line, .rv-wikis-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; justify-content: space-between; }
+.rv-wikis-actions { justify-content: flex-start; }
+.rv-wikis-table { overflow-x: auto; }
+.rv-wikis-table table { border-collapse: collapse; width: 100%; }
+.rv-wikis-table th, .rv-wikis-table td { padding: 0.3rem 0.5rem; text-align: left; border-bottom: 1px solid var(--rv-border, #d0d7de); font-weight: normal; }
+.rv-wikis-table thead th, .rv-wikis-table tfoot th { font-weight: 600; }
+.rv-wikis-table .r { text-align: right; font-variant-numeric: tabular-nums; }
+.rv-wikis-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: 0.5rem 1rem; margin: 0; }
+.rv-wikis-facts dt { color: var(--rv-text-muted, #57606a); font-size: 0.85rem; }
+.rv-wikis-facts dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.rv-wikis-progress { display: flex; align-items: center; gap: 0.5rem; }
+.rv-wikis-progress progress { width: min(18rem, 100%); }
+.rv-wikis-chips { border: 1px solid var(--rv-border, #d0d7de); border-radius: 6px; margin: 0.5rem 0; padding: 0.25rem 0.75rem 0.5rem; }
+.rv-wikis-chips legend { font-weight: 600; padding: 0 0.25rem; }
+.rv-wikis-matters summary { cursor: pointer; font-weight: 600; }
+.rv-wikis-matters ul { margin: 0.25rem 0 0; padding-left: 1.25rem; overflow-wrap: anywhere; }
+.rv-wikis-ok, .rv-wikis-stopped { border-left: 3px solid var(--rv-status-done, #1a7f37); padding: 0.4rem 0.75rem; background: var(--rv-bg-raised, transparent); }
+.rv-wikis-stopped { border-left-color: var(--rv-status-needs-you, #9a6700); }
+.rv-wikis-controls, .rv-wikis-upkeep { display: grid; gap: var(--rv-space-3, 0.75rem); border-top: 1px solid var(--rv-border, #d0d7de); padding-top: 0.75rem; }
+.rv-wikis-setting { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.5rem 1rem; }
+.rv-wikis-setting > div:first-child { flex: 1 1 18rem; display: grid; gap: 0.25rem; }
+.rv-wikis-cap { display: grid; gap: 0.5rem; max-width: 24rem; }
+.rv-wikis-upkeep ul { margin: 0; padding-left: 1.25rem; }

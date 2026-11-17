@@ -1067,6 +1067,17 @@ POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/suggest-lesson | k 
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags | k | later | | wiki | T
 POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags/resolve | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/disputed | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki-map | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-map | k | later | | wiki-setup | T
+GET /v1/app/projects/{p}/wiki-build | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/continue | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/stop | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/refresh | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/agents | k | later | | wiki-setup | T
+POST /v1/app/projects/{p}/wiki-build/delete | k | later | | wiki-setup | T
+GET /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
+PUT /v1/app/projects/{p}/upkeep | k | later | | wiki-setup | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | LT
 POST /v1/app/projects/{p}/setup-agent/discard | k | later | | setup-agent | LT

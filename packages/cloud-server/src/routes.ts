@@ -21,6 +21,7 @@ import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { openTaskByCodeId } from "./open-task.js";
 import { WIKI_ROUTES } from "./wiki-routes.js";
 import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
+import { WIKI_SETUP_ROUTES } from "./wiki-setup-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
@@ -892,4 +893,6 @@ export const ROUTES: Route[] = [
   ...WIKI_ROUTES,
   // The wiki's corrections (lead 4 C1): Code decides who may add notes, mark wrong, approve and resolve; Cloud passes the person's token and rebuilds each answer.
   ...WIKI_CORRECTION_ROUTES,
+  // The wiki panel on the setup page (lead 4 W6): the file map, the build controls and the nightly upkeep switch; Code decides who may, Cloud rebuilds bodies and answers (no dollar figure crosses).
+  ...WIKI_SETUP_ROUTES,
 ];
