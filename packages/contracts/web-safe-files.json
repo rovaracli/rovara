@@ -9,6 +9,7 @@
   "packages/contracts/src/agent.ts",
   "packages/contracts/src/app-allowed-websites.ts",
   "packages/contracts/src/app-design-review-company.ts",
+  "packages/contracts/src/app-inbox.ts",
   "packages/contracts/src/app-known-failing.ts",
   "packages/contracts/src/app-lessons.ts",
   "packages/contracts/src/app-nav.ts",
