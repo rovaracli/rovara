@@ -15,7 +15,7 @@ import {
   type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 
-export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean }
+export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
 
 const id64 = (name: string) => createHash("sha256").update(`fake-code:${name}`).digest("hex");
 /** The pretend Code's one company (DEC 253z: Code names it in the access check). */
@@ -31,6 +31,14 @@ export const FAKE_LINEAR_CODES = { connected: "fakelinearok" } as const;
 export const PRIYA: Person = { key: "priya", developerId: id64("priya"), name: "Priya", email: "priya@example.test", administrator: true };
 export const SAM: Person = { key: "sam", developerId: id64("sam"), name: "Sam", email: "sam@example.test", administrator: false };
 const PEOPLE: readonly Person[] = [PRIYA, SAM];
+/** The pretend Code's second company, with its own GitHub account and repositories (guided onboarding PR 10): its owner is not in PEOPLE, so the first company's lists never show them. */
+export const OTHER_COMPANY_ID = "org_bbbbbbbbbbbbbbbbbbbb";
+export const ZED: Person = { key: "zed", developerId: id64("zed"), name: "Zed", email: "zed@other.test", administrator: true, company: { id: OTHER_COMPANY_ID, name: "Other Co" } };
+/** The repositories each company's GitHub accounts reach (`client.repositories.available`), by company. */
+export const FAKE_AVAILABLE_REPOSITORIES: Readonly<Record<string, ReadonlyArray<{ installationId: number; accountLogin: string; fullName: string }>>> = {
+  [FAKE_COMPANY_ID]: ["web", "api", "docs", "billing", "mobile", "search", "infra", "design", "payments", "auth", "notifier", "reports"].map((name) => ({ installationId: 1001, accountLogin: "example", fullName: `example/${name}` })),
+  [OTHER_COMPANY_ID]: [{ installationId: 2002, accountLogin: "other-co", fullName: "other-co/secret-ledger" }, { installationId: 2002, accountLogin: "other-co", fullName: "other-co/web" }],
+};
 
 /** Fixed task ids, so a screen under construction can open them by address. */
 export const TASK_IDS = {
@@ -134,10 +142,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const refresh = new Map<string, Person>();
 
   // --- data
-  const projects: Array<{ name: string; repositories: Array<{ name: string; url: string; defaultBranch: string; fullName: string }>; members: Map<string, "administrator" | "developer"> }> = [
+  const projects: Array<{ companyId?: string; name: string; repositories: Array<{ name: string; url: string; defaultBranch: string; fullName: string }>; members: Map<string, "administrator" | "developer"> }> = [
     { name: "web", repositories: [{ name: "web", url: "https://github.com/example/web", defaultBranch: "main", fullName: "example/web" }], members: new Map([[PRIYA.developerId, "administrator"], [SAM.developerId, "developer"]]) },
     { name: "api", repositories: [{ name: "api", url: "https://github.com/example/api", defaultBranch: "main", fullName: "example/api" }], members: new Map([[PRIYA.developerId, "administrator"]]) },
+    { companyId: OTHER_COMPANY_ID, name: "secret-ledger", repositories: [{ name: "secret-ledger", url: "https://github.com/other-co/secret-ledger", defaultBranch: "main", fullName: "other-co/secret-ledger" }], members: new Map([[ZED.developerId, "administrator"]]) },
   ];
+  const companyOfPerson = (person: Person) => person.company?.id ?? FAKE_COMPANY_ID;
   const project = (name: string) => projects.find((entry) => entry.name === name);
   const linearRedirectUri = options.linearRedirectUri ?? "http://127.0.0.1:8787/api/connect/linear/callback";
   const linkNotAllowed = "Only a company owner or admin, or this project's admin, can link or unlink its Slack channel.";
@@ -398,7 +408,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
         developerId: person.developerId, displayName: person.name, nameChosen: true, administrator: person.administrator,
         // DEC 253z: the person's company and role, as Code PR #820 names them (the same role the company members list shows); none for a person
         // the test made companyless (POST /__fake/no-company).
-        ...(companyless.has(person.developerId) ? {} : { companyId: FAKE_COMPANY_ID, companyRole: person.administrator ? "owner" as const : "member" as const, companyName: FAKE_COMPANY_NAME }),
+        ...(companyless.has(person.developerId) ? {} : { companyId: companyOfPerson(person), companyRole: person.administrator ? "owner" as const : "member" as const, companyName: person.company?.name ?? FAKE_COMPANY_NAME }),
         projects: projects.filter((entry) => entry.members.has(person.developerId)).map((entry) => ({ name: entry.name, access: entry.members.get(person.developerId) ?? "developer" })), notices: [],
         ...(token !== undefined && joinedTokens.has(token) && !companyless.has(person.developerId) ? { joinedByInvite: true } : {}),
       };
@@ -415,11 +425,34 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "channelLinks.remove": () => ({ body: { removed: true } }),
     "projects.list": ({ person }) => ({ body: { projects: projects.filter((entry) => entry.members.has(person.developerId)).map((entry) => ({ name: entry.name, access: entry.members.get(person.developerId) ?? "developer" })) } }),
     "client.projects.create": ({ body, person }) => {
-      if (typeof body.repository !== "string" || body.repository === "") return failure(400, "CONFIG_INVALID", "repository: name a repository.");
-      const name = body.name ?? body.repository.split("/").pop() ?? "project";
-      if (project(name) !== undefined) return failure(409, "CONFLICT", "A project with that name exists.");
-      projects.push({ name, repositories: [{ name, url: `https://github.com/${body.repository}`, defaultBranch: "main", fullName: body.repository }], members: new Map([[person.developerId, "administrator"]]) });
+      // Guided onboarding PR 10 (Code PR #837 and 19): `repositories` makes ONE project holding them all, every repository on the caller's company's GitHub accounts; only a company owner or admin (here: the administrator flag) may create.
+      if (!person.administrator) return failure(403, "FORBIDDEN", "only a Rovara administrator can create a project");
+      const asked: unknown = "repositories" in body ? body.repositories : body.repository;
+      const list = Array.isArray(asked) ? asked : [asked];
+      if (list.length < 1 || list.some((entry) => typeof entry !== "string" || entry === "")) return failure(400, "CONFIG_INVALID", "repository: name a repository.");
+      const mine = new Set((FAKE_AVAILABLE_REPOSITORIES[companyOfPerson(person)] ?? []).map((entry) => entry.fullName.toLowerCase()));
+      if ("repositories" in body && list.some((entry) => !mine.has(String(entry).toLowerCase()))) return failure(400, "CONFIG_INVALID", "one or more of these repositories is not available through your company's GitHub connection; nothing was created");
+      const first = String(list[0]);
+      const name = body.name ?? first.split("/").pop() ?? "project";
+      if (project(name) !== undefined) return "repositories" in body ? failure(400, "CONFIG_INVALID", `a project named ${name} already exists; choose another name`) : failure(409, "CONFLICT", "A project with that name exists.");
+      projects.push({ companyId: companyOfPerson(person), name, repositories: list.map((entry) => ({ name: String(entry).split("/").pop() ?? name, url: `https://github.com/${String(entry)}`, defaultBranch: "main", fullName: String(entry) })), members: new Map([[person.developerId, "administrator"]]) });
       return { status: 201, body: { name } };
+    },
+    "client.projects.bulk": ({ body, person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "only a Rovara administrator can create a project");
+      if (!Array.isArray(body.repositories) || body.repositories.length < 1) return failure(400, "CONFIG_INVALID", "repositories: name at least one repository.");
+      const mine = new Set((FAKE_AVAILABLE_REPOSITORIES[companyOfPerson(person)] ?? []).map((entry) => entry.fullName.toLowerCase()));
+      return {
+        body: {
+          results: body.repositories.map((repository) => {
+            if (!mine.has(repository.toLowerCase())) return { repository, outcome: "refused" as const, reason: "not_available" as const };
+            const name = repository.split("/").pop() ?? "project";
+            if (project(name) !== undefined) return { repository, outcome: "refused" as const, reason: "name_taken" as const };
+            projects.push({ companyId: companyOfPerson(person), name, repositories: [{ name, url: `https://github.com/${repository}`, defaultBranch: "main", fullName: repository }], members: new Map([[person.developerId, "administrator"]]) });
+            return { repository, outcome: "created" as const, project: name };
+          }),
+        },
+      };
     },
     "client.projects.get": ({ params, person }) => {
       const entry = project(params["project"] ?? "");
@@ -436,6 +469,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "client.repositories.list": () => ({
       body: { installations: [{ installationId: 1001, accountLogin: "example", accountType: "Organization", repositorySelection: "selected", status: "active", repositories: [{ fullName: "example/web", githubRepositoryId: 1, private: true, defaultBranch: "main" }, { fullName: "example/api", githubRepositoryId: 2, private: true, defaultBranch: "main" }, { fullName: "example/docs", githubRepositoryId: 3, private: false, defaultBranch: "main" }] }] },
     }),
+    "client.repositories.available": ({ person, query }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "only a Rovara administrator can create a project");
+      const company = companyOfPerson(person);
+      const q = (query.get("q") ?? "").toLowerCase(), after = query.get("after"), limit = Number(query.get("limit") ?? 50);
+      const heldBy = (fullName: string) => projects.filter((entry) => (entry.companyId ?? FAKE_COMPANY_ID) === company && entry.repositories.some((repository) => repository.fullName.toLowerCase() === fullName.toLowerCase())).map((entry) => entry.name);
+      const sorted = [...(FAKE_AVAILABLE_REPOSITORIES[company] ?? [])].sort((a, b) => a.fullName.localeCompare(b.fullName)).filter((entry) => entry.fullName.toLowerCase().includes(q) && (after === null || entry.fullName.localeCompare(after) > 0));
+      const page = sorted.slice(0, limit);
+      const all = [...(FAKE_AVAILABLE_REPOSITORIES[company] ?? [])].sort((a, b) => a.fullName.localeCompare(b.fullName));
+      return { body: { repositories: page.map((entry) => ({ ...entry, githubRepositoryId: 100 + all.findIndex((one) => one.fullName === entry.fullName), private: true, defaultBranch: "main", projects: heldBy(entry.fullName) })), ...(sorted.length > limit ? { next: page.at(-1)!.fullName } : {}), incomplete: false } };
+    },
     "client.members.list": ({ params, person }) => {
       const entry = project(params["project"] ?? "");
       if (entry === undefined || !entry.members.has(person.developerId)) return notFound("project");
@@ -916,8 +959,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       try {
         if (method === "POST" && url.pathname === "/__fake/person") {
           const wanted = (JSON.parse(await readBody(request)) as { person?: string }).person;
-          const who = PEOPLE.find((one) => one.key === wanted);
-          if (who === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "person is priya or sam" } });
+          const who = [...PEOPLE, ZED].find((one) => one.key === wanted);
+          if (who === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "person is priya, sam or zed" } });
           current = who;
           return send(200, { person: who.key });
         }
@@ -926,6 +969,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
           if (on) companyless.add(current.developerId); else companyless.delete(current.developerId);
           return send(200, { on });
+        }
+        // Guided onboarding PR 10: forget the projects a spec made through the picker (the two the pretend Code starts with stay), so later specs see the people and projects they expect.
+        if (method === "POST" && url.pathname === "/__fake/reset-created-projects") {
+          const keep = new Set(["web", "api", "secret-ledger"]);
+          for (let index = projects.length - 1; index >= 0; index -= 1) if (!keep.has(projects[index]!.name)) projects.splice(index, 1);
+          return send(200, { projects: projects.length });
         }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;

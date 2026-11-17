@@ -40,7 +40,8 @@ describe("code contract v0 tables", () => {
     // Plus Connect GitHub (guided onboarding PR 2): connect, the callback's kept result, choose, and the company's connections.
     // Plus Add to Slack, the channel picker, Connect Linear and the team pick (guided onboarding PR 11): sixteen routes.
     // Plus a project's archive and restore (guided onboarding PR 17): the two previews, the two reviewed changes and the lifecycle read, as the person.
-    expect(counts.appCloudServerToday).toBe(75);
+    // Plus the repository picker (guided onboarding PR 10).
+    expect(counts.appCloudServerToday).toBe(76);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {
