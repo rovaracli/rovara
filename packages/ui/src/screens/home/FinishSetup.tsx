@@ -1,22 +1,18 @@
 // Guided onboarding PR 9 (design section 1 and section 4 "empty states"): on Home, a "Finish setting up" card for each of the person's first projects whose
 // checklist isn't done yet (read from Code's real state, never a saved position), and the empty state that points to the next step when there is no project:
-// "Pick repos" for a company owner or admin, "Ask <admin> to add you" for anyone else.
+// "Pick repos" for a company owner or admin, "Ask your company's admins to add you" for anyone else (no admin is named: the member list is admin-only).
 import { Link } from "react-router";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
 import { useNav } from "../account/use-nav.js";
 import { setupChecklistKey, useSetupChecklistApi } from "../../api/setup-checklist.js";
-import { useOnboardingApi } from "../../api/onboarding.js";
 import { VisibleText } from "../../design/VisibleText.js";
 
 /** How many projects Home asks about (each is one read). */
 const FINISH_SETUP_PROJECTS = 3;
 
+/** A person who can't add projects is told to ask the admins without naming them: the company member list is admin-only on Code (a plain member is answered 404 by design), so it is never asked for. */
 function AskAdmins() {
- const api = useOnboardingApi();
- const members = useQuery({ queryKey: ["org", "members"], queryFn: api.members, retry: false });
- if (members.isPending) return null;
- const names = members.data?.members.filter(member => member.role === "owner" || member.role === "admin").map(member => member.name).join(", ");
- return <>Ask <VisibleText text={names === undefined || names === "" ? "your company's admins" : names} /> to add you to a project.</>;
+ return <>Ask your company's admins to add you to a project.</>;
 }
 
 export function FinishSetup() {

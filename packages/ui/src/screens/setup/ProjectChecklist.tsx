@@ -2,13 +2,12 @@
 // finished. Every row is read from Code's real state (Code #841, through Cloud), never from a saved wizard position, so it is right after a reload, on another
 // device and for a second admin. One required thing at a time: the next required row is open, the others are collapsed with their state. Slack channel,
 // Linear and Invite teammates are optional ("Set up later" marks them "Skipped (optional)", which still counts toward 100%). A person who can't change the
-// project (not a company owner or admin, not the project's admin) sees it read-only with "Ask <admins> to finish setup".
+// project (not a company owner or admin, not the project's admin) sees it read-only with "Ask your company's admins to finish setup".
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ProjectSetupChecklist, SetupRowState, SetupSkippableRow, SetupStatusRow } from "@agentx/contracts/web";
 import { checklistAbsent, fixedSetupWords, setupChecklistKey, useSetupChecklistApi } from "../../api/setup-checklist.js";
-import { useOnboardingApi } from "../../api/onboarding.js";
 import { Button } from "../../design/Button.js";
 import { Skeleton } from "../../design/Skeleton.js";
 import { StatusPill } from "../../design/StatusDot.js";
@@ -40,12 +39,9 @@ function Row({ name, state, open, children }: { name: SetupStatusRow; state: Set
  </li>;
 }
 
+/** Shown to a person who can't change the project: no admin is named, because the company member list is admin-only on Code (a plain member is answered 404 by design) and is never asked for. */
 function AdminNames() {
- const api = useOnboardingApi();
- const members = useQuery({ queryKey: ["org", "members"], queryFn: api.members, retry: false });
- if (members.isPending) return null;
- const names = members.data?.members.filter(member => member.role === "owner" || member.role === "admin").map(member => member.name).join(", ");
- return <p data-testid="checklist-ask-admins">Ask <VisibleText text={names === undefined || names === "" ? "your company's admins" : names} /> to finish setup.</p>;
+ return <p data-testid="checklist-ask-admins">Ask your company's admins to finish setup.</p>;
 }
 
 /** The project's setup checklist. `place` "project": shown on the project page, and nothing once every row is done or skipped. */
