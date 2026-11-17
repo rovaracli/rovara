@@ -33,6 +33,8 @@ export function workTask(raw: unknown): Record<string, unknown> | undefined {
     taskId: raw["taskId"], title: raw["title"].slice(0, 300), project: raw["project"].slice(0, 200), status: text(raw["status"], 40),
     workflow: workflow === undefined ? undefined : some({
       stage: text(workflow["stage"], 40), state: text(workflow["state"], 40), revision: num(workflow["revision"]), path: text(workflow["path"], 40), outcome: text(workflow["outcome"], 40), blockReason: text(workflow["blockReason"], 500),
+      // K0b: the round of Understand's questions (Code's workflow.intent.rounds), so an answer names the round it answers.
+      round: isRecord(workflow["intent"]) ? num(workflow["intent"]["rounds"]) : undefined,
     }),
     pullRequests: list(raw["pullRequests"], 10).filter(isRecord).map((pull) => some({ repository: text(pull["repository"], 200), number: num(pull["number"]), url: text(pull["url"], 500), state: text(pull["state"], 40) })),
     spent: spent === undefined ? undefined : some({ usd: num(spent["usd"]) }),
