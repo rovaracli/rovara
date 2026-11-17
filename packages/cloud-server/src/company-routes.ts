@@ -12,6 +12,11 @@
 // { email, role: "member", expiresInHours } and, to withdraw, `DELETE /v1/dev/company/preapprovals/<sha256 of the normalised email>`. Code
 // checks the inviter's live company role itself. Cloud keeps the invite (the link token's hash, the company, the email, the expiry, the
 // state) and makes it usable only once Code took the pre-approval. Code pre-approves members only, so an admin invite is refused here.
+//
+// The link (DEC 254h): Code's answer to the pre-approval carries a single-use invite secret bound to the company and that pre-approval
+// (`invite: { secret, expiresAt }`), returned once. The link the admin copies carries that secret; Cloud keeps only its SHA-256 beside the
+// invite and never logs it. An older Code answers no `invite`: the link then carries Cloud's own token, as before, and the join relies on
+// Code's email check alone. An `invite` that doesn't read is never used: the pre-approval is withdrawn and the admin told.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { CodeError } from "./code-client.js";
 import { COMPANY_NAME_FALLBACK, companyCaller, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
@@ -24,6 +29,7 @@ import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 import { freshStepUp } from "./step-up.js";
 import { recordCloudAction, type CloudAuditAction } from "./audit-log.js";
 import { withdrawForMember } from "./product-ai-routes.js";
+import { LINK_TOKEN } from "./onboarding-routes.js";
 
 export interface CompanyBackend {
   store: CompanyStore;
@@ -54,18 +60,18 @@ const WORDS = Object.freeze({
   alreadyInvited: refusal(409, "CONFLICT", "This person already has an open invite. Withdraw it first to send a new one."),
   withdrawFailed: refusal(503, "RUNTIME_UNAVAILABLE", "Couldn't withdraw it in Rovara Code. Try again."),
   codeRefused: refusal(409, "CONFLICT", "Rovara Code didn't take this invite. The address may already be invited, or your role may have changed."),
+  codeUnreadable: refusal(502, "RUNTIME_UNAVAILABLE", "Rovara Code's answer to this invite couldn't be read. Try again."),
 });
 const bad = (message: string) => refusal(400, "CONFIG_INVALID", message);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
-const TOKEN = /^[A-Za-z0-9_-]{43}$/u;
 const EMAIL = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u;
 const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
 const newChangeId = () => `chg_${Array.from(randomBytes(20), (byte) => ALPHABET[byte % 36]).join("")}`;
 const keysAre = (value: Record<string, unknown>, allowed: readonly string[], required: readonly string[] = allowed) =>
   Object.keys(value).every((key) => allowed.includes(key)) && required.every((key) => Object.hasOwn(value, key));
 
-interface Caller { backend: CompanyBackend; companyId: string; companyRole: CompanyRole; companyName?: string; developerId: string; name: string }
+interface Caller { backend: CompanyBackend; companyId: string; companyRole: CompanyRole; companyName?: string; developerId: string; name: string; joinedByInvite: boolean }
 
 /** The person and their company, from Code's access check made now. A RouteAnswer when Cloud has no company data or Code names no company. */
 async function caller(context: RouteContext): Promise<Caller | RouteAnswer> {
@@ -73,7 +79,7 @@ async function caller(context: RouteContext): Promise<Caller | RouteAnswer> {
   if (backend === undefined) return refusal(501, "NOT_ON_CODE_YET", "Company settings aren't set up on this Cloud.");
   const who = await companyCaller(context);
   if (refused(who)) return who;
-  return { backend, companyId: who.companyId, companyRole: who.companyRole, ...(who.companyName === undefined ? {} : { companyName: who.companyName }), developerId: who.developerId, name: who.name };
+  return { backend, companyId: who.companyId, companyRole: who.companyRole, ...(who.companyName === undefined ? {} : { companyName: who.companyName }), developerId: who.developerId, name: who.name, joinedByInvite: who.access.joinedByInvite === true };
 }
 
 /** A company owner or admin (Code's company role, never its install administrator flag). */
@@ -269,6 +275,19 @@ async function renameCompany(context: RouteContext): Promise<RouteAnswer> {
 // ---- Invites ----
 
 const tokenHash = (token: string) => createHash("sha256").update(token, "utf8").digest("hex");
+
+/**
+ * The invite secret in Code's answer to a pre-approval (DEC 254h): undefined when Code sent none (an older Code), "unreadable" when the
+ * `invite` it sent isn't a link token with a future expiry.
+ */
+function codeInvite(answer: Record<string, unknown> | undefined, nowMs: number): { secret: string; expiresAt: string } | "unreadable" | undefined {
+  const minted = answer?.["invite"];
+  if (minted === undefined) return undefined;
+  if (minted === null || typeof minted !== "object" || Array.isArray(minted)) return "unreadable";
+  const { secret, expiresAt } = minted as { secret?: unknown; expiresAt?: unknown };
+  if (typeof secret !== "string" || !LINK_TOKEN.test(secret) || typeof expiresAt !== "string" || expiresAt.length > 40 || !(Date.parse(expiresAt) > nowMs)) return "unreadable";
+  return { secret, expiresAt };
+}
 const expired = (invite: InviteRecord, nowMs: number) => Date.parse(invite.expiresAt) <= nowMs;
 /** An address as the app may show it: the first character and the domain. */
 const masked = (email: string) => { const at = email.lastIndexOf("@"); return `${email.slice(0, 1)}***${email.slice(at)}`.slice(0, 260); };
@@ -283,16 +302,21 @@ export const preapprovalEmailHash = (email: string) => createHash("sha256").upda
  * 403, an answer that doesn't read). Code's outage or a dropped sign-in throws.
  */
 async function askCode(context: RouteContext, path: string, init: { method: string; body?: unknown }): Promise<"told" | "notOnCode" | "notFound" | "failed"> {
+  return (await askCodeFor(context, path, init)).told;
+}
+
+/** askCode, with Code's answer when it was "told" (the pre-approval's answer carries the invite secret). */
+async function askCodeFor(context: RouteContext, path: string, init: { method: string; body?: unknown }): Promise<{ told: "told" | "notOnCode" | "notFound" | "failed"; answer?: Record<string, unknown> }> {
   try {
-    const answer = await context.client.json<{ ok?: unknown }>(context.session, path, init);
-    return answer?.ok === true ? "told" : "failed";
+    const answer = await context.client.json<Record<string, unknown> | null>(context.session, path, init);
+    return answer !== null && typeof answer === "object" && answer.ok === true ? { told: "told", answer } : { told: "failed" };
   } catch (error) {
     if (!(error instanceof CodeError)) throw error;
     const said = (error.body as { error?: { code?: unknown; message?: unknown } } | undefined)?.error;
-    if (error.status === 405 || error.status === 501 || (error.status === 404 && said?.code === "NOT_FOUND" && said.message === "route not found")) return "notOnCode";
+    if (error.status === 405 || error.status === 501 || (error.status === 404 && said?.code === "NOT_FOUND" && said.message === "route not found")) return { told: "notOnCode" };
     // Code words every refusal of these routes as NOT_FOUND (not an admin, already pre-approved, none to withdraw).
-    if (error.status === 404 && said?.code === "NOT_FOUND") return "notFound";
-    if (error.status >= 400 && error.status < 500) return "failed";
+    if (error.status === 404 && said?.code === "NOT_FOUND") return { told: "notFound" };
+    if (error.status >= 400 && error.status < 500) return { told: "failed" };
     throw error;
   }
 }
@@ -336,12 +360,24 @@ async function createInvite(context: RouteContext, withReceipt: boolean): Promis
     if (error instanceof CompanyStoreConflict) return WORDS.conflict;
     throw error;
   }
-  let confirmed = false, told: "told" | "notOnCode" | "notFound" | "failed" | undefined;
+  let confirmed = false, told: "told" | "notOnCode" | "notFound" | "failed" | undefined, link = token;
   try {
     // Kept first and usable only once Code took it: the invite's expiry and Code's are the same seven days.
-    told = await askCode(context, PREAPPROVALS_PATH, { method: "POST", body: { email: input.email, role: "member", expiresInHours: INVITE_DAYS * 24 } });
+    const asked = await askCodeFor(context, PREAPPROVALS_PATH, { method: "POST", body: { email: input.email, role: "member", expiresInHours: INVITE_DAYS * 24 } });
+    told = asked.told;
     if (told !== "told") return told === "notOnCode" ? WORDS.notOnCode : WORDS.codeRefused;
-    await store.updateInvite({ ...invite, state: "pending" }, { revision: 0, state: "unconfirmed" });
+    const minted = codeInvite(asked.answer, nowMs);
+    // An `invite` that doesn't read: never a link Code can't check, and never a fallback to the email-only link. Withdrawn below.
+    if (minted === "unreadable") return WORDS.codeUnreadable;
+    if (minted === undefined) {
+      // An older Code (no secret): Cloud's own token, as before.
+      await store.updateInvite({ ...invite, state: "pending" }, { revision: 0, state: "unconfirmed" });
+    } else {
+      // The link carries Code's secret; Cloud keeps only its hash, and the invite lapses no later than Code's.
+      const expiresAt = Date.parse(minted.expiresAt) < Date.parse(invite.expiresAt) ? new Date(Date.parse(minted.expiresAt)).toISOString() : invite.expiresAt;
+      await store.confirmInvite(invite, { ...invite, state: "pending", tokenHash: tokenHash(minted.secret), codeSecret: true, expiresAt });
+      link = minted.secret;
+    }
     confirmed = true;
   } finally {
     if (!confirmed) {
@@ -359,7 +395,7 @@ async function createInvite(context: RouteContext, withReceipt: boolean): Promis
   }
   log(who, { event: "cloud.invite_created", inviteId: invite.inviteId, role: invite.role });
   await audited(context, who, "company.invite.created", `invite:${invite.inviteId}`);
-  const inviteUrl = `${context.origin}/app/join#invite=${token}`;
+  const inviteUrl = `${context.origin}/app/join#invite=${link}`;
   return ok(withReceipt ? { receipt: receipt(invite), inviteUrl } : { inviteUrl });
 }
 
@@ -457,18 +493,19 @@ async function revokeInvite(context: RouteContext): Promise<RouteAnswer> {
 }
 
 /**
- * The invited person, signed in through Code (which admitted them on the pre-approved email), records that they took the invite. The
- * invite must belong to the company Code put them in; a used, withdrawn, expired, unknown or other company's invite answers the same.
+ * The invited person, signed in through Code (which admitted them on the pre-approved email or the link's secret), records that they took the
+ * invite. The invite must belong to the company Code put them in, and Code must say this sign-in joined by an invite (`joinedByInvite`, DEC
+ * 254h); a used, withdrawn, expired, unknown or other company's invite, or a sign-in that didn't join by one, answers the same.
  */
 async function acceptInvite(context: RouteContext): Promise<RouteAnswer> {
   const who = await caller(context);
   if ("status" in who) return who;
   const body = context.body;
-  if (!plainObject(body) || !keysAre(body, ["invite"]) || typeof body["invite"] !== "string" || !TOKEN.test(body["invite"])) return bad("Send { invite } from the invite link.");
+  if (!plainObject(body) || !keysAre(body, ["invite"]) || typeof body["invite"] !== "string" || !LINK_TOKEN.test(body["invite"])) return bad("Send { invite } from the invite link.");
   const store = who.backend.store;
   const invite = await store.inviteByToken(tokenHash(body["invite"]));
   const nowMs = context.now().getTime();
-  if (invite === undefined || invite.companyId !== who.companyId || invite.state !== "pending" || expired(invite, nowMs)) return WORDS.unusable;
+  if (invite === undefined || invite.companyId !== who.companyId || invite.state !== "pending" || expired(invite, nowMs) || !who.joinedByInvite) return WORDS.unusable;
   // PRODUCT-EVAL-APPROVER-REREAD: accepting an invite sets the person's company role, so any eval approval they made stops counting first.
   const withdrawal = await withdrawForMember(context, who.developerId, { companyId: who.companyId });
   if ("status" in withdrawal) return withdrawal;

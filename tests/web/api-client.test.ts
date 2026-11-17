@@ -184,6 +184,13 @@ describe("onboarding in the browser host (DEC 253z)", () => {
   expect(new Headers(init!.headers).get("content-type")).toBe("application/json");
   expect(JSON.stringify(b.fetch.mock.calls[0]![0])).not.toContain(token);
  });
+ it("takes Code's invite secret (its prefix, any length the link pattern allows) the same way (DEC 254h)", async () => {
+  for (const secret of [`rvi_${"S".repeat(32)}`, "s".repeat(22), "s".repeat(128)]) {
+   const b = withHash(browser(async () => json({ companyName: "Acme" })), `#invite=${secret}`);
+   expect(await createBrowserHost(b.win).lookUpInvite!()).toEqual({ companyName: "Acme" });
+   expect(b.fetch.mock.calls[0]![1]).toMatchObject({ body: JSON.stringify({ invite: secret }) });
+  }
+ });
  it("drops the token from the address once read", async () => {
   const b = withHash(browser(async () => json({ companyName: "Acme" })), `#invite=${"T".repeat(43)}`);
   const replaceState = vi.fn();
@@ -193,7 +200,7 @@ describe("onboarding in the browser host (DEC 253z)", () => {
   expect(replaceState).toHaveBeenCalledWith(null, "", "/app/join");
  });
  it("asks nothing for a link without a well-formed token, and reads any refusal or odd answer as unusable", async () => {
-  for (const hash of ["", "#invite=short", `#invite=${"T".repeat(43)}&x=1`, `#other=${"T".repeat(43)}`]) {
+  for (const hash of ["", "#invite=short", `#invite=${"T".repeat(43)}&x=1`, `#other=${"T".repeat(43)}`, `#invite=${"T".repeat(129)}`, `#invite=rvi_${"T".repeat(30)}.x`, `#invite=${"T".repeat(43)}\n`]) {
    const b = withHash(browser(async () => json({ companyName: "Acme" })), hash);
    expect(await createBrowserHost(b.win).lookUpInvite!()).toBeUndefined();
    expect(b.fetch).not.toHaveBeenCalled();

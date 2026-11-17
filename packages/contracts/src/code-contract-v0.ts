@@ -59,6 +59,8 @@ export interface AccessResponse {
   companyId?: string;
   companyRole?: "owner" | "admin" | "member";
   companyName?: string;
+  /** True only when this session's sign-in spent an invite secret or a pre-approval for the session's company (Code PR #826); absent otherwise. */
+  joinedByInvite?: boolean;
   projects: Array<{ name: string; access: string /* known: administrator, developer */ }>;
   notices: string[];
 }
@@ -363,6 +365,11 @@ export interface PreApprovedEmailsResponse { emails: string[]; revision: number 
 /** Code's member pre-approval (DEC 253z): the inviting admin's own call; Code checks their live company role. Every refusal is NOT_FOUND. */
 export interface CompanyPreapprovalRequest { email: string; role: "member"; expiresInHours: number }
 export interface CompanyOkResponse { ok: true }
+/**
+ * Code's answer to a pre-approval (DEC 254h): also the single-use invite secret it minted for it, returned once (Code keeps only its SHA-256),
+ * expiring with the pre-approval. An older Code answers `{ ok: true }` alone.
+ */
+export interface CompanyPreapprovalResponse { ok: true; invite?: { secret: string; expiresAt: string } }
 /** A person with no company creates one with an operator's invite code (DEC 254a; Code PR 4) and becomes its owner. */
 export interface CreateCompanyRequest { name: string; inviteCode: string }
 export interface CreateCompanyResponse { companyId: string; companyName: string; companyRole: "owner" }
@@ -575,7 +582,7 @@ export interface CodeRouteTypes {
   "company.members.removalPreview": { request: void; response: RemovalPreview };
   "company.members.remove": { request: RemoveCompanyMemberRequest; response: { removed: boolean } };
   "company.preApproved.put": { request: PreApprovedEmailsRequest; response: PreApprovedEmailsResponse };
-  "company.preapprovals.create": { request: CompanyPreapprovalRequest; response: CompanyOkResponse };
+  "company.preapprovals.create": { request: CompanyPreapprovalRequest; response: CompanyPreapprovalResponse };
   "company.preapprovals.withdraw": { request: void; response: CompanyOkResponse };
   "company.create": { request: CreateCompanyRequest; response: CreateCompanyResponse };
   "company.audit.records": { request: void; response: AuditRecordsResponse };

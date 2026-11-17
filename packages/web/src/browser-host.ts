@@ -1,4 +1,4 @@
-import { AppMeResponseReaderSchema, RealtimeTokenResponseReaderSchema, SessionIdSchema } from "@agentx/contracts/web";
+import { AppMeResponseReaderSchema, INVITE_LINK_TOKEN, RealtimeTokenResponseReaderSchema, SessionIdSchema } from "@agentx/contracts/web";
 import type { ApiRequest, ApiResponse, AppHost, RealtimeSocket } from "@agentx/ui";
 import { ApiError, createApiClient, SIGN_IN_REPEAT_GUARD_MS } from "@agentx/ui";
 import { safeExternalUrl, isGithubInstallationUrl } from "../../ui/src/text/links.js";
@@ -90,8 +90,8 @@ export function createBrowserHost(win: BrowserWindow): AppHost {
   },
   // DEC 253z: the invite link's token stays in the page's fragment (never sent as a URL); Cloud's server looks it up and keeps the join ticket.
   async lookUpInvite() {
-   const token = /^#invite=([A-Za-z0-9_-]{43})$/u.exec(win.location.hash ?? "")?.[1];
-   if (token === undefined) return undefined;
+   const token = /^#invite=(.*)$/su.exec(win.location.hash ?? "")?.[1];
+   if (token === undefined || !INVITE_LINK_TOKEN.test(token)) return undefined;
    // Out of the address bar and the history once read: the token is a bearer secret until the invite is used.
    try { win.history?.replaceState(null, "", win.location.pathname + win.location.search); } catch { /* the lookup still runs */ }
    const response = await fetchJson("/v1/auth/browser/join", { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify({ invite: token }) });

@@ -10,6 +10,12 @@ export async function setNoCompany(page: Page, on: boolean): Promise<void> {
   expect(answer.status()).toBe(200);
 }
 
+/** Makes the pretend Code's next sign-in this person (tests/support/fake-code.ts PEOPLE: priya, sam). */
+export async function setFakePerson(page: Page, person: "priya" | "sam"): Promise<void> {
+  const answer = await page.request.post(`${FAKE_CODE_URL}/__fake/person`, { data: { person } });
+  expect(answer.status()).toBe(200);
+}
+
 /** The onboarding screens for a person with no company: "You're not in a company yet", "Create your company" and the invite link's join page. */
 export class CompanyOnboardingPage {
   readonly page: Page;

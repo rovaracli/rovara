@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
-  CompanyStoreConflict, INVITES_READ_MAX, validAgentAiSource, validHookInstall,
+  CompanyStoreConflict, INVITES_READ_MAX, sameInvite, validAgentAiSource, validHookInstall,
   type AgentAiChoice, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
 } from "./company-store.js";
 import type { CompanySettings } from "./company-settings.js";
@@ -219,6 +219,29 @@ export class DynamoCompanyStore implements CompanyStore {
       TableName: this.table, Item: this.inviteItem(next),
       ConditionExpression: "companyId = :company AND revision = :revision AND inviteState = :state",
       ExpressionAttributeValues: { ":company": next.companyId, ":revision": expected.revision, ":state": expected.state },
+    })));
+  }
+
+  async confirmInvite(unconfirmed: InviteRecord, confirmed: InviteRecord): Promise<void> {
+    sameInvite(unconfirmed, confirmed);
+    const invite = {
+      Put: {
+        TableName: this.table, Item: this.inviteItem(confirmed),
+        ConditionExpression: "companyId = :company AND revision = :revision AND inviteState = :state",
+        ExpressionAttributeValues: { ":company": unconfirmed.companyId, ":revision": unconfirmed.revision, ":state": "unconfirmed" },
+      },
+    };
+    if (confirmed.tokenHash === unconfirmed.tokenHash) {
+      await guarded("invite", () => this.db.send(new TransactWriteCommand({ TransactItems: [invite] })));
+      return;
+    }
+    // The token row moves to the new hash in the same write: the old hash names nothing, and no other invite may hold the new one.
+    await guarded("invite", () => this.db.send(new TransactWriteCommand({
+      TransactItems: [
+        invite,
+        { Delete: { TableName: this.table, Key: { pk: `INVITETOKEN#${unconfirmed.tokenHash}`, sk: "INVITE" }, ConditionExpression: "inviteId = :invite", ExpressionAttributeValues: { ":invite": unconfirmed.inviteId } } },
+        { Put: { TableName: this.table, Item: { pk: `INVITETOKEN#${confirmed.tokenHash}`, sk: "INVITE", companyId: confirmed.companyId, inviteId: confirmed.inviteId, expiresAt: inviteTtl(confirmed) }, ConditionExpression: "attribute_not_exists(pk)" } },
+      ],
     })));
   }
 

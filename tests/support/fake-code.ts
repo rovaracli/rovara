@@ -87,7 +87,7 @@ export interface FakeCode {
 }
 
 interface Answer<K extends CodeRouteId> { status?: number; body?: CodeResponse<K> | ErrorBody; headers?: Record<string, string> }
-interface Context<K extends CodeRouteId> { body: CodeRequest<K>; params: Record<string, string>; query: URLSearchParams; person: Person }
+interface Context<K extends CodeRouteId> { body: CodeRequest<K>; params: Record<string, string>; query: URLSearchParams; person: Person; token?: string }
 type Handler<K extends CodeRouteId> = (context: Context<K>) => Answer<K> | Promise<Answer<K>>;
 type Handlers = { [K in CodeRouteId]: Handler<K> };
 
@@ -102,11 +102,15 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   /** People Code names no company for (DEC 253z), and Code's live member pre-approvals by the email's SHA-256. */
   const companyless = new Set<string>();
   const preapprovals = new Map<string, string>();
+  /** DEC 254h: Code's single-use invite secrets by their SHA-256 (Code keeps only the hash), each bound to the company and its pre-approval. */
+  const inviteSecrets = new Map<string, { companyId: string; emailHash: string; expiresAt: number; used: boolean }>();
+  /** Access tokens whose sign-in spent an invite secret (the access answer's `joinedByInvite`). */
+  const joinedTokens = new Set<string>();
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
   // --- sign-in state
-  const codes = new Map<string, { person: Person; challenge: string; redirectUri: string }>();
+  const codes = new Map<string, { person: Person; challenge: string; redirectUri: string; joined?: true }>();
   const access = new Map<string, Person>();
   const refresh = new Map<string, Person>();
 
@@ -281,9 +285,25 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "auth.authorize": ({ query }) => {
       const redirectUri = query.get("redirect_uri") ?? "";
       if (query.get("client_id") !== clientId || redirectUri === "" || query.get("code_challenge_method") !== "S256") return failure(400, "invalid_request", "bad authorize request");
-      const code = randomBytes(12).toString("hex");
-      codes.set(code, { person: current, challenge: query.get("code_challenge") ?? "", redirectUri });
       const back = new URL(redirectUri);
+      // DEC 254h: a join with Code's invite secret. The secret must be live, unspent, bound to `company`, and its pre-approval still live; a
+      // person Code names another company for is refused. Spent with the membership. Any failure: the one "not invited" refusal.
+      const secret = query.get("invite");
+      let joined = false;
+      if (secret !== null) {
+        const held = inviteSecrets.get(createHash("sha256").update(secret).digest("hex"));
+        if (held === undefined || held.used || held.expiresAt <= now().getTime() || held.companyId !== query.get("company") || !preapprovals.has(held.emailHash)) {
+          back.searchParams.set("error", "access_denied");
+          back.searchParams.set("state", query.get("state") ?? "");
+          return { status: 302, headers: { location: back.toString() } };
+        }
+        held.used = true;
+        preapprovals.delete(held.emailHash);
+        companyless.delete(current.developerId);
+        joined = true;
+      }
+      const code = randomBytes(12).toString("hex");
+      codes.set(code, { person: current, challenge: query.get("code_challenge") ?? "", redirectUri, ...(joined ? { joined: true as const } : {}) });
       back.searchParams.set("code", code);
       back.searchParams.set("state", query.get("state") ?? "");
       return { status: 302, headers: { location: back.toString() } };
@@ -296,13 +316,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: {} };
     },
     "auth.jwks": () => ({ body: { keys: [] } }),
-    "access.check": ({ person }) => {
+    "access.check": ({ person, token }) => {
       const body: AccessResponse = {
         developerId: person.developerId, displayName: person.name, nameChosen: true, administrator: person.administrator,
         // DEC 253z: the person's company and role, as Code PR #820 names them (the same role the company members list shows); none for a person
         // the test made companyless (POST /__fake/no-company).
         ...(companyless.has(person.developerId) ? {} : { companyId: FAKE_COMPANY_ID, companyRole: person.administrator ? "owner" as const : "member" as const, companyName: FAKE_COMPANY_NAME }),
         projects: projects.filter((entry) => entry.members.has(person.developerId)).map((entry) => ({ name: entry.name, access: entry.members.get(person.developerId) ?? "developer" })), notices: [],
+        ...(token !== undefined && joinedTokens.has(token) && !companyless.has(person.developerId) ? { joinedByInvite: true } : {}),
       };
       return { body };
     },
@@ -500,10 +521,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       const key = createHash("sha256").update(body.email.trim().toLowerCase()).digest("hex");
       if (preapprovals.has(key) || body.role !== "member") return failure(404, "NOT_FOUND", "not found");
       preapprovals.set(key, body.email.trim().toLowerCase());
-      return { body: { ok: true } };
+      // DEC 254h: a single-use invite secret for this pre-approval, returned once; the fake keeps only its hash.
+      const secret = `rvi_${randomBytes(24).toString("base64url")}`;
+      const expiresAt = now().getTime() + body.expiresInHours * 3_600_000;
+      inviteSecrets.set(createHash("sha256").update(secret).digest("hex"), { companyId: FAKE_COMPANY_ID, emailHash: key, expiresAt, used: false });
+      return { body: { ok: true, invite: { secret, expiresAt: new Date(expiresAt).toISOString() } } };
     },
     "company.preapprovals.withdraw": ({ params, person }) => {
       if (!person.administrator || !preapprovals.delete(params["emailHash"] ?? "")) return failure(404, "NOT_FOUND", "not found");
+      // Withdrawing the pre-approval kills its secret too.
+      for (const [hash, held] of inviteSecrets) if (held.emailHash === params["emailHash"]) inviteSecrets.delete(hash);
       return { body: { ok: true } };
     },
     "company.create": ({ body, person }) => {
@@ -635,8 +662,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return Buffer.concat(chunks).toString("utf8");
   }
 
-  function issue(person: Person): { access_token: string; refresh_token: string; token_type: "Bearer" } {
+  function issue(person: Person, joined = false): { access_token: string; refresh_token: string; token_type: "Bearer" } {
     const accessToken = `fake-access-${randomBytes(12).toString("hex")}`;
+    if (joined) joinedTokens.add(accessToken);
     const refreshToken = `fake-refresh-${randomBytes(12).toString("hex")}`;
     access.set(accessToken, person);
     refresh.set(refreshToken, person);
@@ -650,7 +678,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       codes.delete(form.get("code") ?? "");
       const verifier = form.get("code_verifier") ?? "";
       if (code === undefined || form.get("redirect_uri") !== code.redirectUri || createHash("sha256").update(verifier).digest("base64url") !== code.challenge) return { status: 400, body: { error: "invalid_grant" } };
-      return { status: 200, body: issue(code.person) };
+      return { status: 200, body: issue(code.person, code.joined === true) };
     }
     if (form.get("grant_type") === "refresh_token") {
       const token = form.get("refresh_token") ?? "";
@@ -699,8 +727,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
         if (matched === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
         const id = matched.route.id;
         let person: Person | undefined = current;
+        let bearer: string | undefined;
         if (matched.route.scope !== "none" || id === "access.check" || id === "auth.revoke") {
-          const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
+          bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
           person = bearer === undefined ? undefined : access.get(bearer);
           if (person === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
         }
@@ -709,7 +738,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           try { body = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); }
         }
         const handler = handlers[id] as Handler<CodeRouteId>;
-        const answer = await handler({ body: body as never, params: matched.params, query: url.searchParams, person });
+        const answer = await handler({ body: body as never, params: matched.params, query: url.searchParams, person, ...(bearer === undefined ? {} : { token: bearer }) });
         const status = answer.status ?? 200;
         return send(status, status === 302 ? undefined : answer.body ?? {}, answer.headers);
       } catch (error) {

@@ -18,7 +18,7 @@ import { ROUTES, type OrgView, type Route, type RouteAnswer } from "./routes.js"
 import type { SessionStore } from "./sessions.js";
 import { StoreConflict, companyScopedWork, type WorkSessionStore } from "./work-sessions.js";
 import { companyOf } from "./company-caller.js";
-import { JOIN_UNUSABLE, inviteTokenHash, linkToken, usableInvite } from "./onboarding-routes.js";
+import { JOIN_UNUSABLE, inviteTokenHash, linkToken, openSecret, sealSecret, ticketKey, usableInvite } from "./onboarding-routes.js";
 
 export interface CloudRequest {
   method: string;
@@ -59,9 +59,12 @@ export interface CloudHandlerOptions {
 }
 
 const COOKIE = "rovara_cloud_session";
-/** The join ticket's cookie (onboarding-routes.ts): opaque, single use, ten minutes, only for Cloud's sign-in paths. */
+/**
+ * The join ticket's cookie (onboarding-routes.ts): opaque, single use, ten minutes, only for Cloud's sign-in paths. `<ticket>.<key>`: the
+ * ticket names the kept join; the key opens the invite secret sealed in it (DEC 254h), so the store alone can't.
+ */
 const JOIN_COOKIE = "rovara_cloud_join";
-const JOIN_TICKET = /^[A-Za-z0-9_-]{43}$/u;
+const JOIN_TICKET = /^([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/u;
 /** Where a join that can't go on lands: the join page's one sentence. */
 const JOIN_UNUSABLE_PAGE = "/app/join?unusable=1";
 /** The join page's lookup: the invite link's token in, the company's name and a join ticket out. */
@@ -120,28 +123,38 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     const token = body !== null && typeof body === "object" && !Array.isArray(body) && Object.keys(body).length === 1 ? linkToken((body as { invite?: unknown }).invite) : undefined;
     const invite = token === undefined ? undefined : await usableInvite(options.company?.store, inviteTokenHash(token), now().getTime());
     if (invite === undefined) return unusable();
-    const ticket = randomBytes(32).toString("base64url");
-    await options.store.putPending(`join.${ticket}`, { verifier: "", returnTo: "/app", at: now().getTime(), invite: invite.tokenHash, joinTicket: true });
-    return json(200, { companyName: invite.companyName ?? "your company" }, { "set-cookie": joinCookie(ticket, SIGN_IN_TTL_MS / 1000) });
+    const ticket = randomBytes(32).toString("base64url"), key = ticketKey();
+    // Code's secret rides in the ticket sealed under the cookie's key: the store never holds it readable, and it is never logged.
+    await options.store.putPending(`join.${ticket}`, {
+      verifier: "", returnTo: "/app", at: now().getTime(), invite: invite.tokenHash, joinTicket: true, ...(invite.codeSecret === true ? { sealedSecret: sealSecret(token!, key, ticket) } : {}),
+    });
+    return json(200, { companyName: invite.companyName ?? "your company" }, { "set-cookie": joinCookie(`${ticket}.${key}`, SIGN_IN_TTL_MS / 1000) });
   }
 
   /** "Sign in to join": the ticket from the cookie, the invite checked again, and Code's sign-in with the invite's company. */
   async function joinSignIn(request: CloudRequest): Promise<CloudResponse> {
-    const ticket = cookieNamed(request, JOIN_COOKIE);
+    const [, ticket, key] = JOIN_TICKET.exec(cookieNamed(request, JOIN_COOKIE) ?? "") ?? [];
     const clear = joinCookie("", 0);
-    const kept = ticket !== undefined && JOIN_TICKET.test(ticket) ? await options.store.takePending(`join.${ticket}`) : undefined;
+    const kept = ticket !== undefined ? await options.store.takePending(`join.${ticket}`) : undefined;
     const fresh = kept !== undefined && kept.joinTicket === true && kept.invite !== undefined && now().getTime() - kept.at <= SIGN_IN_TTL_MS;
     const invite = fresh ? await usableInvite(options.company?.store, kept.invite!, now().getTime()) : undefined;
-    if (invite === undefined) return text(302, "", { location: JOIN_UNUSABLE_PAGE, "set-cookie": clear });
-    const { url, state, pending } = options.client.startSignIn("/app", now().getTime(), { company: invite.companyId, invite: invite.tokenHash });
+    // An invite whose link is Code's secret joins only with that secret, opened from the ticket and matching the invite's hash.
+    const secret = invite?.codeSecret === true ? openSecret(kept!.sealedSecret, key!, ticket!) : undefined;
+    if (invite === undefined || (invite.codeSecret === true && (secret === undefined || inviteTokenHash(secret) !== invite.tokenHash))) {
+      return text(302, "", { location: JOIN_UNUSABLE_PAGE, "set-cookie": clear });
+    }
+    const { url, state, pending } = options.client.startSignIn("/app", now().getTime(), { company: invite.companyId, invite: invite.tokenHash, ...(secret === undefined ? {} : { inviteSecret: secret }) });
     await options.store.putPending(state, pending);
     return text(302, "", { location: url, "set-cookie": clear });
   }
 
-  /** After a join's sign-in: the invite is marked taken when Code put the person in the invite's company. Where the person lands. */
-  async function finishJoin(inviteHash: string, access: Parameters<typeof companyOf>[0], developerId: string): Promise<string> {
+  /**
+   * After a join's sign-in: the invite is marked taken only when Code put the person in the invite's company AND says this sign-in joined by
+   * an invite (`joinedByInvite`, DEC 254h). Where the person lands.
+   */
+  async function finishJoin(inviteHash: string, access: NonNullable<Parameters<typeof companyOf>[0]>, developerId: string): Promise<string> {
     const invite = await usableInvite(options.company?.store, inviteHash, now().getTime());
-    if (invite === undefined || companyOf(access)?.companyId !== invite.companyId) {
+    if (invite === undefined || companyOf(access)?.companyId !== invite.companyId || access.joinedByInvite !== true) {
       log({ event: "cloud.invite_join_refused", developerId });
       return JOIN_UNUSABLE_PAGE;
     }

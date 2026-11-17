@@ -10,7 +10,12 @@
 // short-lived HttpOnly cookie. "Sign in to join" then opens `/v1/auth/browser/authorize?join=1`, where Cloud takes the ticket, checks the
 // invite again and sends `company=<the invite's company>` to Code's sign-in itself. Code still checks the verified email against its
 // pre-approval. Nothing the browser sends names a company. Any failure is the one sentence JOIN_UNUSABLE.
-import { createHash } from "node:crypto";
+//
+// Code's invite secret (DEC 254h): when the link carries Code's single-use secret (the invite's `codeSecret`), the lookup seals the secret
+// into the join ticket under a key only the ticket's cookie holds (`<ticket>.<key>`), so the pending-sign-in store never keeps it readable.
+// "Sign in to join" opens it and sends `company=<id>&invite=<secret>` to Code's authorize: the only URL after the link that carries it. Cloud
+// marks the invite accepted only when Code's access answer puts the person in the invite's company AND says `joinedByInvite: true`.
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { CodeError } from "./code-client.js";
 import { companyOf } from "./company-caller.js";
 import { COMPANY_ID, type CompanyStore, type InviteRecord } from "./company-store.js";
@@ -28,7 +33,11 @@ export const CREATE_WORDS = Object.freeze({
   failed: refusal(503, "RUNTIME_UNAVAILABLE", "Your company couldn't be created right now. Try again in a moment."),
 });
 
-const TOKEN = /^[A-Za-z0-9_-]{43}$/u;
+/**
+ * The token an invite link carries: Code's invite secret (URL-safe, at least 128 bits, Code's fixed prefix) or Cloud's own 43-character token
+ * from a Code that mints none. The same pattern as @agentx/contracts INVITE_LINK_TOKEN (a test keeps them equal).
+ */
+export const LINK_TOKEN = /^[A-Za-z0-9_-]{22,128}$/u;
 const INVITE_CODE = /^[A-Za-z0-9_-]{8,128}$/u;
 const NAME_UNSAFE = /[\p{Cc}\p{Cf}]/u;
 export const inviteTokenHash = (token: string) => createHash("sha256").update(token, "utf8").digest("hex");
@@ -42,7 +51,35 @@ export async function usableInvite(store: CompanyStore | undefined, tokenHashHex
 }
 
 /** A link token as the join page sends it, or undefined. */
-export const linkToken = (value: unknown): string | undefined => (typeof value === "string" && TOKEN.test(value) ? value : undefined);
+export const linkToken = (value: unknown): string | undefined => (typeof value === "string" && LINK_TOKEN.test(value) ? value : undefined);
+
+/** A fresh key for sealing an invite secret into a join ticket (32 bytes, base64url: the cookie's second half). */
+export const ticketKey = () => randomBytes(32).toString("base64url");
+const TICKET_KEY = /^[A-Za-z0-9_-]{43}$/u;
+
+/** The invite secret sealed under the ticket's cookie key, bound to the ticket: base64url(iv | tag | ciphertext). */
+export function sealSecret(secret: string, key: string, ticket: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", Buffer.from(key, "base64url"), iv);
+  cipher.setAAD(Buffer.from(`rovara-join-ticket:${ticket}`, "utf8"));
+  const sealed = Buffer.concat([cipher.update(secret, "utf8"), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), sealed]).toString("base64url");
+}
+
+/** The secret sealSecret kept, or undefined when the key, the ticket or the sealed value don't match (never a throw). */
+export function openSecret(sealed: unknown, key: string, ticket: string): string | undefined {
+  if (typeof sealed !== "string" || sealed.length > 400 || !TICKET_KEY.test(key)) return undefined;
+  try {
+    const raw = Buffer.from(sealed, "base64url");
+    if (raw.length < 29) return undefined;
+    const decipher = createDecipheriv("aes-256-gcm", Buffer.from(key, "base64url"), raw.subarray(0, 12));
+    decipher.setAAD(Buffer.from(`rovara-join-ticket:${ticket}`, "utf8"));
+    decipher.setAuthTag(raw.subarray(12, 28));
+    return linkToken(Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString("utf8"));
+  } catch {
+    return undefined;
+  }
+}
 
 async function createCompany(context: Parameters<Route["answer"]>[0]): Promise<RouteAnswer> {
   const body = context.body as Record<string, unknown> | undefined;

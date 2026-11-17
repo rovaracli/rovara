@@ -1,6 +1,6 @@
 // Invite mutations deliberately do not inherit generic automatic network/429 POST retries.
 import type { InviteCreateReceiptSchema } from "@agentx/contracts/web";
-import { ReviewedInviteCreateBodySchema, ReviewedInviteCreateResponseSchema, AgentXErrorCodeSchema, AppOrgInviteStatusSchema, OrgIdSchema, OrgInvitePublicIdSchema, RevokeOrganizationInviteBodySchema, RevokeOrganizationInviteResponseSchema } from "@agentx/contracts/web";
+import { INVITE_LINK_TOKEN, ReviewedInviteCreateBodySchema, ReviewedInviteCreateResponseSchema, AgentXErrorCodeSchema, AppOrgInviteStatusSchema, OrgIdSchema, OrgInvitePublicIdSchema, RevokeOrganizationInviteBodySchema, RevokeOrganizationInviteResponseSchema } from "@agentx/contracts/web";
 import type { z } from "zod";
 import type { ApiRequest, ApiResponse, AppHost } from "../host.js";
 import { ApiError } from "./errors.js";
@@ -34,7 +34,7 @@ export function createInviteAdminApi(host: AppHost, orgId: string) {
  function validScope() { if (!OrgIdSchema.safeParse(orgId).success) throw new ApiError(400, "CONFIG_INVALID", "Check a valid company invite."); }
  // Broker-configured cloud join sites may differ from the cookie console origin.
  function safeLink(value: string) {
-  try { const url = new URL(value);return (url.protocol === "https:" || (url.protocol === "http:" && url.hostname === "localhost")) && url.username === "" && url.password === "" && url.pathname.endsWith("/join") && /^(?:#|\?)invite=[A-Za-z0-9_-]{43}$/.test(url.search + url.hash); } catch { return false; }
+  try { const url = new URL(value);return (url.protocol === "https:" || (url.protocol === "http:" && url.hostname === "localhost")) && url.username === "" && url.password === "" && url.pathname.endsWith("/join") && /^(?:#|\?)invite=/.test(url.search + url.hash) && INVITE_LINK_TOKEN.test((url.search + url.hash).slice("#invite=".length)); } catch { return false; }
  }
  return {
   async create(body: z.input<typeof ReviewedInviteCreateBodySchema>) {
