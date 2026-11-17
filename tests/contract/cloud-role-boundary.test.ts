@@ -12,11 +12,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { CloudAppStack } from "../../infra/lib/cloud-app.js";
-import { BOUNDARY_LOGICAL_ID, CDK_BOOTSTRAP_QUALIFIER, CLOUD_STACK_PARTS, RequireCloudBoundary, applyCloudBoundary, cloudBoundaryStatements, cloudPartRolePath, type CloudStackPart } from "../../infra/lib/cloud-boundary.js";
+import { BOUNDARY_LOGICAL_ID, CDK_BOOTSTRAP_QUALIFIER, CLOUD_STACK_PARTS, GATEWAY_PROVIDER_SECRET_LOGICAL_IDS, RequireCloudBoundary, applyCloudBoundary, cloudBoundaryStatements, cloudPartRolePath, type CloudStackPart } from "../../infra/lib/cloud-boundary.js";
 import { boundaryViolations, globMatch, overlaps, resolvedBoundaries, roleCases, type CfnTemplate, type StackTemplate } from "../../infra/lib/cloud-boundary-check.js";
 import { CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER, CloudReleasePipelineStack } from "../../infra/lib/cloud-release-pipeline.js";
 import { CloudWebStack } from "../../infra/lib/cloud-web.js";
-import { BEDROCK_BYO_CUSTOMER_ROLE_PREFIX, MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, bedrockBrokerRoleName } from "../../infra/lib/model-gateway.js";
+import { BEDROCK_BYO_CUSTOMER_ROLE_PREFIX, MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, MODEL_GATEWAY_PROVIDERS, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, bedrockBrokerRoleName } from "../../infra/lib/model-gateway.js";
 
 const ENV = "staging";
 /** The longest environment name the rules allow (14 characters): generated names get shortened past their limits. */
@@ -58,6 +58,9 @@ const SHAPES: Record<string, () => StackTemplate[]> = {
   "web with product AI + first address": () => cloudApp(true),
   pipeline: () => pipeline(),
   "gateway (images + gateway)": () => gateway({}),
+  // The provider secrets' two namings (model-gateway.ts MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY): generated (the default, above) and fixed.
+  "gateway with fixed provider secret names": () => gateway({ [MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY]: "fixed" }),
+  "gateway, everything on, fixed provider secret names": () => gateway({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "on", [MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY]: "org_00000000000000000000", [MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY]: "on", [MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY]: "fixed" }),
   "gateway with product AI": () => gateway(productOn),
   "gateway with Rovara's AI": () => gateway({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "on", [MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY]: "org_00000000000000000000" }),
   "gateway with BYO Bedrock": () => gateway({ ...productOn, [MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY]: "on" }),
@@ -194,6 +197,20 @@ describe("the boundary breaks nothing a Cloud role's own policy grants", () => {
     expect(has("sts:AssumeRole", /:role\/RovaraBedrockBroker-staging$/u)).toBe(true);
     expect(has("sts:AssumeRole", new RegExp(`:iam::\\*:role/${BEDROCK_BYO_CUSTOMER_ROLE_PREFIX}\\*$`, "u"))).toBe(true);
     expect(has("ecr:BatchGetImage", /:repository\/rovara-cloud-staging-gateway-images-/u)).toBe(true);
+    // The serving role reads its provider key secrets under both namings: generated (`<logical id>-<random>`) and fixed.
+    expect(has("secretsmanager:GetSecretValue", /:secret:ProviderKeyanthropic-a1b2c3d4e5f6-AbCdEf$/u)).toBe(true);
+    const fixedCases = roleCases(synthesized["gateway, everything on, fixed provider secret names"]!, scope);
+    expect(fixedCases.some((c) => c.action === "secretsmanager:GetSecretValue" && /:secret:rovara-cloud\/staging\/model-gateway\/provider\/anthropic-AbCdEf$/u.test(c.resource))).toBe(true);
+  });
+
+  it("names the gateway's provider secrets by their logical ids, in both namings, and only in the gateway's boundary", () => {
+    expect(GATEWAY_PROVIDER_SECRET_LOGICAL_IDS).toEqual(MODEL_GATEWAY_PROVIDERS.map((provider) => `ProviderKey${provider}`));
+    for (const shape of ["gateway (images + gateway)", "gateway with fixed provider secret names"]) {
+      expect(byType(synthesized[shape]![1]!, "AWS::SecretsManager::Secret").map(([id]) => id), shape).toEqual([...GATEWAY_PROVIDER_SECRET_LOGICAL_IDS]);
+    }
+    const ownSecrets = (p: CloudStackPart) => cloudBoundaryStatements(scope, p).find((s) => s.Sid === "OwnSecrets")?.Resource;
+    expect(ownSecrets("gateway")).toEqual(["arn:aws:secretsmanager:us-west-2:123456789012:secret:rovara-cloud/staging/*", "arn:aws:secretsmanager:us-west-2:123456789012:secret:ProviderKeyanthropic-*"]);
+    expect(ownSecrets("web")).toEqual(["arn:aws:secretsmanager:us-west-2:123456789012:secret:rovara-cloud/staging/*"]);
   });
 
   it("reports a grant outside the boundary, one a Deny touches, and a role with no boundary (the check can fail)", () => {
@@ -393,6 +410,7 @@ describe("the boundary breaks nothing a Cloud role's own policy grants", () => {
             "Effect": "Allow",
             "Resource": [
               "arn:aws:secretsmanager:us-west-2:123456789012:secret:rovara-cloud/staging/*",
+              "arn:aws:secretsmanager:us-west-2:123456789012:secret:ProviderKeyanthropic-*",
             ],
             "Sid": "OwnSecrets",
           },

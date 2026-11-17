@@ -76,6 +76,13 @@ export const CDK_BOOTSTRAP_QUALIFIER = "hnb659fds";
 /** The customers' roles the Bedrock broker assumes (packages/model-gateway bedrock-byo.ts; model-gateway.ts holds the two equal). */
 const BYO_CUSTOMER_ROLE_PREFIX = "RovaraBedrockInvoke-";
 const BYO_BROKER_ROLE_PREFIX = "RovaraBedrockBroker-";
+/**
+ * The logical ids of the gateway's provider key secrets (model-gateway.ts, `ProviderKey-<provider>` for each of MODEL_GATEWAY_PROVIDERS;
+ * a test holds the two equal). With generated names (model-gateway.ts MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, the default)
+ * CloudFormation names a secret `<logical id>-<random>`, with no stack name or environment in it, so the boundary can only name them
+ * by that prefix.
+ */
+export const GATEWAY_PROVIDER_SECRET_LOGICAL_IDS = ["ProviderKeyanthropic"] as const;
 
 /** The boundary of one part of one environment. Pure: tests and the controller's simulation call it with plain strings. */
 export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPart): BoundaryStatement[] {
@@ -137,7 +144,12 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
       logs([`${stack("gateway")}-*`]),
       // Its meter, ledger, markers, prices and product tables, and the web stack's Companies table (budgets, read only by its policy).
       tables(["gateway", "web"]),
-      secrets,
+      // Its provider key secrets under either naming (model-gateway.ts MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY): the fixed names
+      // sit under the environment's prefix; a generated name is `<logical id>-<random>` and carries no environment, so another
+      // environment's generated provider secret in the same account and Region also matches. That is a ceiling only: the serving role's
+      // own policy names its secrets' exact ARNs, and each environment's secrets are encrypted with that environment's key, whose policy
+      // lets only that environment's serving role decrypt (model-gateway.ts OnlyGatewayReads).
+      { ...secrets, Resource: [...secrets.Resource, ...GATEWAY_PROVIDER_SECRET_LOGICAL_IDS.map((id) => `arn:${p}:secretsmanager:${r}:${a}:secret:${id}-*`)] },
       keys(["kms:Decrypt", "kms:GenerateMac", "kms:VerifyMac"]),
       {
         Sid: "ModelCalls", Effect: "Allow", Action: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],

@@ -86,7 +86,9 @@ class Resolver {
     switch (resource.Type) {
       case "AWS::IAM::Role": return typeof props.RoleName === "string" ? props.RoleName : generatedName(stack.stackName, id);
       case "AWS::IAM::ManagedPolicy": return `arn:${p}:iam::${a}:policy${typeof props.Path === "string" ? props.Path : "/"}${typeof props.ManagedPolicyName === "string" ? props.ManagedPolicyName : generatedName(stack.stackName, id, 128)}`;
-      case "AWS::SecretsManager::Secret": return `arn:${p}:secretsmanager:${r}:${a}:secret:${typeof props.Name === "string" ? props.Name : generatedName(stack.stackName, id)}-AbCdEf`;
+      // A generated secret name is `<logical id>-<random>`, without the stack name (the AWS Secrets Manager user guide's
+      // CloudFormation example: CloudFormationCreatedSecret-a1b2c3d4e5f6); Secrets Manager adds `-<6 characters>` to the ARN.
+      case "AWS::SecretsManager::Secret": return `arn:${p}:secretsmanager:${r}:${a}:secret:${typeof props.Name === "string" ? props.Name : `${id}-a1b2c3d4e5f6`}-AbCdEf`;
       case "AWS::ECS::TaskDefinition": return `arn:${p}:ecs:${r}:${a}:task-definition/${typeof props.Family === "string" ? props.Family : generatedName(stack.stackName, id)}:1`;
       case "AWS::CodeBuild::Project": return typeof props.Name === "string" ? props.Name : generatedName(stack.stackName, id, 255);
       case "AWS::ECR::Repository": return generatedName(stack.stackName, id, 256, true);
