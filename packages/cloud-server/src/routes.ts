@@ -15,6 +15,7 @@ import { WORK_READS } from "./work-reads.js";
 import { ONBOARDING_ROUTES } from "./onboarding-routes.js";
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
+import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
@@ -810,4 +811,6 @@ export const ROUTES: Route[] = [
   ...AI_SPEND_ROUTES,
   // A project's archive and restore, preview first (DEC 254n item 3): Code decides who may; Cloud passes the person's token and fixed words.
   ...PROJECT_LIFECYCLE_ROUTES,
+  // The project setup checklist and the hosted setup run (guided onboarding PR 9): Code decides who may; Cloud passes the person's token and fixed words.
+  ...SETUP_CHECKLIST_ROUTES,
 ];

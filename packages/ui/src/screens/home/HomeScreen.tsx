@@ -15,6 +15,8 @@ import { HomeCard } from "./HomeCard.js";
 const NeedsYou = lazy(async () => ({ default: (await import("./NeedsYou.js")).NeedsYou }));
 // The empty state is in the same lazy chunk: it must know whether decision cards wait, and reading them would bring their contracts into the first page.
 const NothingNeedsYou = lazy(async () => ({ default: (await import("./NeedsYou.js")).NothingNeedsYou }));
+// Guided onboarding PR 9: "Finish setting up" cards and the no-project empty state, after the first paint.
+const FinishSetup = lazy(async () => ({ default: (await import("./FinishSetup.js")).FinishSetup }));
 import "./home.css";
 export function HomeScreen() {
  const host = useAppHost(), query = useQueryClient(), home = useHome(), announce = useAnnounce(), previous = useRef<Array<{ cardId: string; title: string }> | undefined>(undefined);
@@ -26,6 +28,7 @@ export function HomeScreen() {
  previous.current = cards;
  }, [cards, announce]);
  return <section className="rv-home" data-testid="home"><PageHeader title="Home" {...(cards !== undefined && total > 0 ? { description: `${total} ${total === 1 ? "thing needs" : "things need"} you` } : {})} />
+ <Suspense fallback={null}><FinishSetup /></Suspense>
  <Suspense fallback={null}><NeedsYou /></Suspense>
  {home.isPending && <Skeleton label="Loading what needs you" />}
  {home.isError && <div className="rv-home-error" role="alert" data-testid="load-error"><p><VisibleText text={home.error instanceof ApiError ? home.error.message : "Couldn't load what needs you. Try again."} /></p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
