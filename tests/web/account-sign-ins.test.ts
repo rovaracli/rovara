@@ -149,7 +149,9 @@ describe("Connected sign-ins section", () => {
    expect(notice.textContent).toContain("every sign-in of yours has ended");
    expect(writes(f)).toEqual([expect.objectContaining({ method: "DELETE", path: "/v1/app/me/sign-ins/slack" })]);
    const reads = f.request.mock.calls.filter(([r]) => r.path === "/v1/app/me/sign-ins").length;
-   fireEvent.click(within(notice).getByRole("button", { name: "Sign in again" }));
+   // The dialog closes asynchronously and hides the rest of the page from the accessibility tree until it has: wait for it, then find the button.
+   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+   fireEvent.click(await within(notice).findByRole("button", { name: "Sign in again" }));
    expect(vi.mocked(f.host.signIn)).toHaveBeenCalledWith("/app/live");
    expect(f.request.mock.calls.filter(([r]) => r.path === "/v1/app/me/sign-ins").length).toBe(reads);
    expect(screen.queryByRole("button", { name: /Unlink|Connect/ })).toBeNull();
