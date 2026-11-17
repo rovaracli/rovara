@@ -16,7 +16,7 @@ export interface CodeSession {
   csrf: string;
   signedInAt: string;
   /** Onboarding creations by requestId, so a retried request answers the same project. */
-  created?: Record<string, { name: string; at: string }>;
+  created?: Record<string, { name: string; at: string; /** Guided onboarding PR 10: a digest of the body, and for separate projects each repository's outcome (project-create-routes.ts). */ digest?: string; results?: Array<{ repository: string; outcome: string; project?: string; reason?: string }> }>;
   /** Set when a route changed the session (its name, its creations), so it is saved after the request. */
   changed?: boolean;
 }

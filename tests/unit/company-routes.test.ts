@@ -3,10 +3,10 @@
 // routes checked against Code live, the fresh step-up on every settings change (refused when stale, missing, of a factor Code doesn't own,
 // or past the company's own window), a second admin for a loosening change, invites told to Code first (501 while Code lacks the route),
 // the app's reader schemas, and the policy hook answering from the same store with its install allow-list.
-import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import {
-  CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, PREAPPROVALS_PATH, POLICY_HOOK_PATH, preapprovalEmailHash, StoreCompanyRules, StoreHookInstalls, createCloudHandler,
+  CodeClient, JOIN_PATH, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, PREAPPROVALS_PATH, POLICY_HOOK_PATH, preapprovalEmailHash, StoreCompanyRules, StoreHookInstalls, createCloudHandler,
   createPolicyHookRoute, defaultCompanySettings, type CloudRequest, type CompanySettings, type CompanyStore,
 } from "../../packages/cloud-server/src/index.js";
 import { AdminBudgetSettingsSchema } from "../../packages/contracts/src/admin-budget.js";
@@ -55,6 +55,10 @@ function world(options: { codeHasPreApprovals?: boolean; audit?: LocalCloudAudit
   let codeFails = false;
   /** When set, Code's answer to a withdrawal (DELETE), whatever it holds. */
   let deleteAnswer: { status: number; body: unknown } | undefined;
+  /** DEC 254h: what Code adds to a pre-approval's answer as `invite` (undefined: an older Code that mints no secret). */
+  let mint: (() => unknown) | undefined;
+  /** People whose sign-in Code says joined by an invite (`joinedByInvite`). */
+  const joined = new Set<string>();
   const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
@@ -66,6 +70,7 @@ function world(options: { codeHasPreApprovals?: boolean; audit?: LocalCloudAudit
       return respond(200, {
         developerId: person.developerId, displayName: person.name, administrator: person.installAdministrator ?? admin, projects: [], notices: [],
         ...(person.companyId === undefined ? {} : { companyId: person.companyId, companyRole: person.companyRole ?? (admin ? "admin" : "member"), ...(person.companyName === undefined ? {} : { companyName: person.companyName }) }),
+        ...(joined.has(person.developerId) ? { joinedByInvite: true } : {}),
       });
     }
     if (url.pathname === PREAPPROVALS_PATH || url.pathname.startsWith(`${PREAPPROVALS_PATH}/`)) {
@@ -83,7 +88,8 @@ function world(options: { codeHasPreApprovals?: boolean; audit?: LocalCloudAudit
         const hash = preapprovalEmailHash(body.email);
         if (live.has(hash)) return notFound;
         live.set(hash, { email: body.email, companyId: person.companyId });
-        return respond(200, { ok: true });
+        const minted = mint?.();
+        return respond(200, { ok: true, ...(minted === undefined ? {} : { invite: minted }) });
       }
       if (method === "DELETE" && deleteAnswer !== undefined) return respond(deleteAnswer.status, deleteAnswer.body);
       const hash = /^[a-f0-9]{64}$/u.exec(url.pathname.slice(PREAPPROVALS_PATH.length + 1))?.[0];
@@ -122,7 +128,8 @@ function world(options: { codeHasPreApprovals?: boolean; audit?: LocalCloudAudit
     return { status: answer!.status, body: JSON.parse(answer!.body) as Answer };
   };
   return {
-    handler, store, signIn, call, preApproved, live, demoted, log,
+    handler, store, signIn, call, preApproved, live, demoted, log, joined,
+    setMint: (value: (() => unknown) | undefined) => { mint = value; },
     advance: (ms: number) => { clock += ms; }, now: () => clock,
     setDeleteAnswer: (answer: { status: number; body: unknown } | undefined) => { deleteAnswer = answer; },
     setCode: (state: { preApprovals?: boolean; fails?: boolean }) => { if (state.preApprovals !== undefined) codeHasPreApprovals = state.preApprovals; if (state.fails !== undefined) codeFails = state.fails; },
@@ -391,12 +398,10 @@ describe("which company", () => {
     expect((await w.store.settings(A))!.version).toBe(1);
   });
 
-  it("leaves members, roles and removal on Code: those routes still answer 501", async () => {
+  it("leaves removal on Code: that route still answers 501 (members and roles: member-role-routes.test.ts)", async () => {
     const w = world();
     const ada = await w.signIn("ada", 10);
-    for (const [method, path] of [["GET", "/org/members"], ["PUT", `/org/members/${"b".repeat(64)}/role`], ["POST", `/org/members/${"b".repeat(64)}/removal`]] as const) {
-      expect((await w.call(ada, method, path, method === "GET" ? undefined : {})).body.error.code).toBe("NOT_ON_CODE_YET");
-    }
+    expect((await w.call(ada, "POST", `/org/members/${"b".repeat(64)}/removal`, {})).body.error.code).toBe("NOT_ON_CODE_YET");
   });
 
   it("serves no company routes on a Cloud without company data", async () => {
@@ -594,13 +599,17 @@ describe("invites", () => {
     expect((await w.store.invites(A)).invites).toEqual([]);
   });
 
-  it("is accepted once, by a person Code put in the invite's company", async () => {
+  it("is accepted once, by a person Code put in the invite's company by an invite (joinedByInvite)", async () => {
     const w = world();
     const ada = await w.signIn("ada");
     const token = tokenOf(await create(w, ada, "member", "cal@example.com"));
+    w.joined.add(PEOPLE.eve!.developerId);
     const eve = await w.signIn("eve");
     expect((await w.call(eve, "POST", "/org/invites/accept", { invite: token })).status).toBe(404);
     const cal = await w.signIn("cal");
+    // In the invite's company, but Code doesn't say this sign-in joined by an invite.
+    expect((await w.call(cal, "POST", "/org/invites/accept", { invite: token })).status).toBe(404);
+    w.joined.add(PEOPLE.cal!.developerId);
     expect((await w.call(cal, "POST", "/org/invites/accept", { invite: "x".repeat(43) })).status).toBe(404);
     const accepted = await w.call(cal, "POST", "/org/invites/accept", { invite: token });
     expect(accepted).toMatchObject({ status: 200, body: { accepted: true, orgId: A } });
@@ -612,6 +621,7 @@ describe("invites", () => {
     const w = world();
     const ada = await w.signIn("ada");
     const token = tokenOf(await create(w, ada, "member", "cal@example.com"));
+    w.joined.add(PEOPLE.cal!.developerId);
     w.advance(7 * 86_400_000);
     const cal = await w.signIn("cal");
     expect((await w.call(cal, "POST", "/org/invites/accept", { invite: token })).status).toBe(404);
@@ -735,5 +745,102 @@ describe("the policy hook on the same store", () => {
     expect(claims.a).toEqual({ locks: { extra_review: true, ci_fix_rounds: 1 } });
     // Company B is not this install's to ask about.
     expect((await ask(B)).status).toBe(401);
+  });
+});
+
+describe("invites carrying Code's invite secret (DEC 254h)", () => {
+  const secretOf = () => `rvi_${randomBytes(24).toString("base64url")}`;
+  const create = (w: ReturnType<typeof world>, as: { cookie: string }, email: string) => w.call(as, "POST", "/org/invites/reviewed", { requestId: randomUUID(), role: "member", email });
+  const linkOf = (made: { body: unknown }) => ReviewedInviteCreateResponseSchema.parse(made.body).inviteUrl!;
+  const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+  const lookUp = async (w: ReturnType<typeof world>, token: string) => w.handler({ method: "POST", path: JOIN_PATH, query: new URLSearchParams(), headers: { origin: ORIGIN, "content-type": "application/json" }, body: JSON.stringify({ invite: token }) });
+
+  it("puts Code's secret in the link and keeps only its hash, lapsing no later than Code's; never logs or audits it", async () => {
+    const audit = new LocalCloudAuditStore();
+    const w = world({ audit });
+    const printed: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => { printed.push(args.map(String).join(" ")); });
+    try {
+      const ada = await w.signIn("ada");
+      const secret = secretOf();
+      const codeExpiry = new Date(START + 3 * 86_400_000).toISOString();
+      w.setMint(() => ({ secret, expiresAt: codeExpiry }));
+      const made = await create(w, ada, "new@example.com");
+      expect(made.status).toBe(200);
+      expect(linkOf(made)).toBe(`${ORIGIN}/app/join#invite=${secret}`);
+      const stored = (await w.store.invites(A)).invites[0]!;
+      expect(stored).toMatchObject({ companyId: A, email: "new@example.com", state: "pending", tokenHash: sha(secret), codeSecret: true, expiresAt: codeExpiry });
+      expect(await w.store.inviteByToken(sha(secret))).toMatchObject({ inviteId: stored.inviteId });
+      // The token Cloud made before Code answered names nothing.
+      expect((await w.store.invites(A)).invites).toHaveLength(1);
+      const later = secretOf();
+      w.setMint(() => ({ secret: later, expiresAt: new Date(START + 30 * 86_400_000).toISOString() }));
+      expect((await create(w, ada, "later@example.com")).status).toBe(200);
+      expect(await w.store.inviteByToken(sha(later))).toMatchObject({ expiresAt: new Date(START + 7 * 86_400_000).toISOString() });
+      const everything = JSON.stringify({ stored: await w.store.invites(A), log: w.log, printed, audit: [...(audit as unknown as { rows: Map<string, unknown> }).rows.values()], list: (await w.call(ada, "GET", "/org/invites")).body });
+      expect((audit as unknown as { rows: Map<string, unknown> }).rows.size).toBeGreaterThan(0);
+      expect(w.log.length).toBeGreaterThan(0);
+      expect(everything).not.toContain(secret);
+      expect(everything).not.toContain(later);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("never uses an `invite` from Code that doesn't read: withdraws the pre-approval at Code and keeps nothing", async () => {
+    const good = secretOf();
+    const future = new Date(START + 86_400_000).toISOString();
+    for (const minted of [null, "x", [], {}, { secret: "short_123", expiresAt: future }, { secret: `${good}/`, expiresAt: future }, { secret: "a".repeat(129), expiresAt: future },
+      { secret: good }, { secret: good, expiresAt: "soon" }, { secret: good, expiresAt: new Date(START).toISOString() }, { secret: 42, expiresAt: future }]) {
+      const w = world();
+      const ada = await w.signIn("ada");
+      w.setMint(() => minted);
+      const made = await create(w, ada, "new@example.com");
+      expect({ minted, made }).toEqual({ minted, made: { status: 502, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara Code's answer to this invite couldn't be read. Try again." } } } });
+      expect(w.preApproved.map((call) => call.method)).toEqual(["POST", "DELETE"]);
+      expect(w.live.size).toBe(0);
+      expect((await w.store.invites(A)).invites).toEqual([]);
+    }
+  });
+
+  it("an older Code (no `invite`): Cloud's own token, as before", async () => {
+    const w = world();
+    const ada = await w.signIn("ada");
+    const link = linkOf(await create(w, ada, "new@example.com"));
+    expect(link).toMatch(/^https:\/\/cloud\.example\.test\/app\/join#invite=[A-Za-z0-9_-]{43}$/u);
+    expect((await w.store.invites(A)).invites[0]!.codeSecret).toBeUndefined();
+  });
+
+  it("withdrawal tells Code (which kills the secret) and only then marks it; the link is dead after", async () => {
+    const w = world();
+    const ada = await w.signIn("ada");
+    const secret = secretOf();
+    w.setMint(() => ({ secret, expiresAt: new Date(START + 86_400_000).toISOString() }));
+    const made = await create(w, ada, "drop@example.com");
+    const { inviteId } = ReviewedInviteCreateResponseSchema.parse(made.body).receipt;
+    expect((await lookUp(w, secret))!.status).toBe(200);
+    w.setCode({ fails: true });
+    expect((await w.call(ada, "POST", `/org/invites/${inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 0 })).status).toBe(503);
+    expect((await w.store.invite(A, inviteId))!.state).toBe("pending");
+    w.setCode({ fails: false });
+    expect((await w.call(ada, "POST", `/org/invites/${inviteId}/revoke`, { requestId: randomUUID(), expectedRevision: 0 })).status).toBe(200);
+    expect(w.preApproved.at(-1)).toMatchObject({ method: "DELETE", path: `${PREAPPROVALS_PATH}/${sha("drop@example.com")}` });
+    expect((await w.store.invite(A, inviteId))!.state).toBe("revoked");
+    expect((await lookUp(w, secret))!.status).toBe(404);
+  });
+
+  it("a secret invite is never accepted through the accept route (only by the join that spent it), whoever asks", async () => {
+    const w = world();
+    const secret = secretOf();
+    w.setMint(() => ({ secret, expiresAt: new Date(START + 86_400_000).toISOString() }));
+    expect((await create(w, await w.signIn("ada"), "cal@example.com")).status).toBe(200);
+    w.joined.add(PEOPLE.eve!.developerId);
+    expect((await w.call(await w.signIn("eve"), "POST", "/org/invites/accept", { invite: secret })).status).toBe(404);
+    const cal = await w.signIn("cal");
+    expect((await w.call(cal, "POST", "/org/invites/accept", { invite: secret })).status).toBe(404);
+    w.joined.add(PEOPLE.cal!.developerId);
+    // Joined by some invite this sign-in, in the invite's company: still not this route's to take.
+    expect((await w.call(cal, "POST", "/org/invites/accept", { invite: secret })).status).toBe(404);
+    expect((await lookUp(w, secret))!.status).toBe(200);
   });
 });

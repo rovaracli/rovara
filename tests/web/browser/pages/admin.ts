@@ -62,6 +62,37 @@ export class AccountPage {
   }
 }
 
+/** A project's Archive and Restore in the admin area (guided onboarding PR 17): the page's controls and the review dialog. */
+export class ProjectLifecyclePage {
+  readonly page: Page;
+  readonly reviewArchive: Locator;
+  readonly reviewRestore: Locator;
+  readonly dialog: Locator;
+  readonly acknowledge: Locator;
+  readonly archive: Locator;
+  readonly restore: Locator;
+  readonly close: Locator;
+  readonly reviewLatest: Locator;
+  constructor(page: Page) {
+    this.page = page;
+    this.reviewArchive = page.getByRole("button", { name: "Review archive" });
+    this.reviewRestore = page.getByRole("button", { name: "Review restore" });
+    this.dialog = page.getByRole("dialog");
+    this.acknowledge = this.dialog.getByRole("checkbox");
+    this.archive = this.dialog.getByRole("button", { name: "Archive project" });
+    this.restore = this.dialog.getByRole("button", { name: "Restore project" });
+    this.close = this.dialog.getByRole("button", { name: "Close", exact: true });
+    this.reviewLatest = this.dialog.getByRole("button", { name: "Review latest state" });
+  }
+  async open(name: string): Promise<void> {
+    await this.page.goto(ROUTES.adminProject(name));
+    await expect(this.page.getByRole("heading", { name, level: 1 })).toBeVisible();
+  }
+  status(text: string): Locator {
+    return this.page.getByText(text);
+  }
+}
+
 /** Guided onboarding PR 15: the company's "AI and spending" (Company settings, and the setup step) and a project's "AI and spend limit". */
 export class AiSpendPage {
   readonly page: Page;
@@ -103,36 +134,5 @@ export class AiSpendPage {
     await this.page.evaluate(() => window.localStorage.setItem("rovara.stepup.nonce", JSON.stringify({ nonce: "e2e-ai-spend", at: Date.now() })));
     await this.page.goto(`${path}?confirmed=e2e-ai-spend`);
     await expect(nav).toBeVisible();
-  }
-}
-
-/** A project's Archive and Restore in the admin area (guided onboarding PR 17): the page's controls and the review dialog. */
-export class ProjectLifecyclePage {
-  readonly page: Page;
-  readonly reviewArchive: Locator;
-  readonly reviewRestore: Locator;
-  readonly dialog: Locator;
-  readonly acknowledge: Locator;
-  readonly archive: Locator;
-  readonly restore: Locator;
-  readonly close: Locator;
-  readonly reviewLatest: Locator;
-  constructor(page: Page) {
-    this.page = page;
-    this.reviewArchive = page.getByRole("button", { name: "Review archive" });
-    this.reviewRestore = page.getByRole("button", { name: "Review restore" });
-    this.dialog = page.getByRole("dialog");
-    this.acknowledge = this.dialog.getByRole("checkbox");
-    this.archive = this.dialog.getByRole("button", { name: "Archive project" });
-    this.restore = this.dialog.getByRole("button", { name: "Restore project" });
-    this.close = this.dialog.getByRole("button", { name: "Close", exact: true });
-    this.reviewLatest = this.dialog.getByRole("button", { name: "Review latest state" });
-  }
-  async open(name: string): Promise<void> {
-    await this.page.goto(ROUTES.adminProject(name));
-    await expect(this.page.getByRole("heading", { name, level: 1 })).toBeVisible();
-  }
-  status(text: string): Locator {
-    return this.page.getByText(text);
   }
 }

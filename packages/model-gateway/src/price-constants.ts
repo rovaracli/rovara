@@ -50,5 +50,12 @@ export const UNKNOWN_READ_FACTOR = 1;
 export const UNKNOWN_WRITE_FACTOR = 2;
 /** Conservative unknown long-context component, applied to its own base component. */
 export const UNKNOWN_LONG_FACTOR = 2;
+/**
+ * AWS's offer names a `_long_ctx` rate but never where its band starts (checked against the public AmazonBedrockFoundationModels
+ * offer, 2026-11-17: no attribute or description states it). fetchAWS stores that rate at this band; pooling then moves it down to
+ * the lowest band the model's own LiteLLM rows state (effectivePrices), so a model whose band starts earlier (Claude Haiku 5.5:
+ * 100k) is never charged its base rate inside the band. It is never moved later.
+ */
+export const AWS_LONG_CONTEXT_FALLBACK = 200_000;
 /** The default long-context band when an identity has no published threshold. */
 export const UNKNOWN_LONG_THRESHOLD = 200_000;

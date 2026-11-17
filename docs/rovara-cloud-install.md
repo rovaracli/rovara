@@ -183,6 +183,30 @@ ROVARA_CODE_URL=https://<code api> ROVARA_CLIENT_SECRET_FILE=<file> npm run clou
 
 This needs the client registered with `--loopback`. See `packages/cloud-server/README.md`.
 
+## The model gateway's provider keys
+
+The model gateway (`-c rovaraModelGateway=<env>`, deployed by hand, never by the pipeline) keeps each provider's key in a
+retained secret. By default CloudFormation generates the secret's name: a fixed name stays reserved for its recovery window
+after a failed create and a delete, which blocks making the stack again. The gateway reads the secret by ARN, so the name
+doesn't matter to it.
+
+- **Where to put the key:** the gateway stack's `ProviderKeySecrets` output lists the secrets' ARNs (names, with `fixed`), anthropic first. Store the
+  real key as a new version (the secret starts as a generated placeholder; the console's edit is refused):
+  `aws secretsmanager put-secret-value --secret-id <ARN from the output> --secret-string <key>` (give the key from a file, not
+  the command line).
+- **An environment deployed before this change** has the fixed name `rovara-cloud/<env>/model-gateway/provider/anthropic`.
+  Keep deploying it with `-c rovaraModelGatewayProviderSecretNames=fixed`; without it, the next deploy would REPLACE the secret.
+  The replacement is a new placeholder: the old secret, holding the real key, is retained but the gateway no longer reads it.
+  Do not leave it that way: deploy with `fixed`, or copy the key into the new secret and then, once the old secret is no longer
+  needed, delete it by hand. Check `cdk diff` shows no change to the secret before a deploy of an existing environment.
+- **Moving an existing environment to generated names** (optional): deploy once without the flag, then put the key in the new secret
+  at once (output `ProviderKeySecrets`). From that deploy the gateway reads the new secret, a placeholder until then, so its
+  provider calls fail until you do, and it caches the key for up to five minutes. After it works, delete the old secret by hand (scheduling its deletion
+  reserves the old name, which nothing uses again).
+- **The key policy:** with fixed names it names the secrets' prefix; with generated names it can only name every secret of the
+  account and Region (the secrets name the key, so the policy cannot name them). Only the serving role can still decrypt a stored
+  value, and it is granted the provider secrets' ARNs only.
+
 ## Removing it
 
 Delete `rovara-cloud-<env>-app`, `rovara-cloud-<env>-web`, and `rovara-cloud-<env>-pipeline` if it's no longer
@@ -190,6 +214,7 @@ needed. Some resources are kept on delete; remove them by hand once you're sure:
 - the table and its KMS key;
 - the assets bucket;
 - the client secret;
+- the model gateway's provider key secrets, its KMS key and its tables (a deleted secret keeps its name for its recovery window; the default generated names avoid that);
 - the log groups;
 - anything the Fargate app left behind (above).
 

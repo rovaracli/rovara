@@ -25,7 +25,8 @@ const without = synth(productOn);
 const byType = (t: { Resources: Record<string, Resource> }, type: string) => Object.entries(t.Resources).filter(([, r]) => r.Type === type);
 const broker = (t: { Resources: Record<string, Resource> }) => byType(t, "AWS::IAM::Role").find(([id]) => id.startsWith("BedrockBrokerRole"));
 const externalIdKey = (t: { Resources: Record<string, Resource> }) => byType(t, "AWS::KMS::Key").find(([id]) => id.startsWith("BedrockExternalIdKey"));
-const statements = (t: { Resources: Record<string, Resource> }): Statement[] => Object.values(t.Resources).filter((r) => r.Type === "AWS::IAM::Policy" || r.Type === "AWS::IAM::ManagedPolicy").flatMap((p) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
+// The role boundary (cloud-boundary.ts) is a ManagedPolicy attached to no role: a ceiling, not a grant, so it is not read here.
+const statements = (t: { Resources: Record<string, Resource> }): Statement[] => Object.values(t.Resources).filter((r) => r.Type === "AWS::IAM::Policy" || (r.Type === "AWS::IAM::ManagedPolicy" && r.Properties.Roles !== undefined)).flatMap((p) => (p.Properties.PolicyDocument as { Statement: Statement[] }).Statement);
 const serveEnv = (t: { Resources: Record<string, Resource> }) => {
   const task = Object.entries(t.Resources).find(([id, r]) => r.Type === "AWS::ECS::TaskDefinition" && id.startsWith("ServeTask"))![1];
   return Object.fromEntries((task.Properties.ContainerDefinitions as Array<{ Environment: Array<{ Name: string; Value: unknown }> }>)[0]!.Environment.map((e) => [e.Name, e.Value]));
@@ -37,7 +38,10 @@ describe("bring your own Bedrock in the gateway stack (DEC 238)", () => {
     expect(broker(without)).toBeUndefined();
     expect(externalIdKey(without)).toBeUndefined();
     expect(serveEnv(without)[GATEWAY_ENV.bedrockBrokerRole]).toBeUndefined();
-    expect(JSON.stringify(without)).not.toContain("RovaraBedrock");
+    // Outside the role boundary, which names the broker and customers' roles as a ceiling for every gateway (cloud-boundary.ts).
+    const { RoleBoundary: _boundary, ...rest } = without.Resources;
+    expect(_boundary?.Type).toBe("AWS::IAM::ManagedPolicy");
+    expect(JSON.stringify({ ...without, Resources: rest })).not.toContain("RovaraBedrock");
   });
 
   it("the broker: fixed name, retained, one-hour sessions, only the serving role with an org_* session may assume it", () => {
