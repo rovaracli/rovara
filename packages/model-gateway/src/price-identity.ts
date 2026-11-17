@@ -2,8 +2,9 @@
  * Reviewed Bedrock ids whose name does not fold to the AWS price list's name for the model (BEDROCK-PRICE-ROWS, 2026-11-16): the
  * exact id (lower case, without its Region group) to that name, folded. deepseek.v3-v1:0 is DeepSeek-V3.1 (its name is the provider's
  * version alone); gpt-oss carries a `-1:0` id version. AWS names assumed: "DeepSeek V3.1", "DeepSeek V3.2", "DeepSeek R1",
- * "gpt-oss-120b", "gpt-oss-20b" (tests/unit/model-gateway-price-identity.test.ts). Exact ids only, so another version of these
- * models gets no row from here (the cautious price) until it is checked and added.
+ * "gpt-oss-120b", "gpt-oss-20b": the first staging fetch (2026-11-17) found no AWS row for any of them, so today they are priced from
+ * LiteLLM's rows for the same ids (tests/unit/model-gateway-price-identity.test.ts lists the real AWS rows). Exact ids only, so
+ * another version of these models gets no row from here (the cautious price) until it is checked and added.
  */
 const BEDROCK_PRICE_NAMES: ReadonlyMap<string, string> = new Map([
   ["deepseek.v3-v1:0", "deepseek-v3-1"],

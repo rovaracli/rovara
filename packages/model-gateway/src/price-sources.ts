@@ -3,8 +3,8 @@ import type { TokenRates } from "./price.js";
 import { record, whole } from "./model-gateway-token.js";
 import { priceKey, validEntry, validFallback, validFloor, validLimit, validUnidentified, type UnidentifiedRow, type ModelFloor, type ModelFallback, type ModelLimit, type PriceEntry } from "./price-snapshot.js";
 import { mediaRatesOf, type ModelMediaRates } from "./media-price.js";
-import { knownRates, priceKind, priceProvider, ratesOf, tokenRateField } from "./price-classify.js";
-import { AWS_MAX_BYTES, FETCH_DEADLINE_MS, FETCH_TIMEOUT_MS, LITELLM_MAX_BYTES, MAX_AWS_REGIONS, MAX_BAD_PRICE_FRACTION, MAX_ENTRIES_PER_SOURCE, MAX_NODES, MAX_PRICE_DEPTH, MICROS_PER_USD, MIN_AWS_MODELS, MIN_LITELLM_MODELS, PRICE_MAX, SHRINK_FLOOR } from "./price-constants.js";
+import { deprecatedRates, knownRates, priceKind, priceProvider, ratesOf, tokenRateField } from "./price-classify.js";
+import { AWS_LONG_CONTEXT_FALLBACK, AWS_MAX_BYTES, FETCH_DEADLINE_MS, FETCH_TIMEOUT_MS, LITELLM_MAX_BYTES, MAX_AWS_REGIONS, MAX_BAD_PRICE_FRACTION, MAX_ENTRIES_PER_SOURCE, MAX_NODES, MAX_PRICE_DEPTH, MICROS_PER_USD, MIN_AWS_MODELS, MIN_LITELLM_MODELS, PRICE_MAX, SHRINK_FLOOR } from "./price-constants.js";
 export const LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 export const AWS_HOST = "pricing.us-east-1.amazonaws.com";
 export const AWS_REGIONS = ["us-east-1", "us-west-2"] as const;
@@ -114,7 +114,13 @@ export function fetchLiteLLM(transport: PriceTransport, limits: SourceLimits = {
       const model = key; // Preserve exact upstream IDs for previously established identity recovery.
       if (typeof rates === "string" || kind === undefined) {
         const reason = typeof rates === "string" ? rates : "unsupported mode"; skip(reason, provider);
-        if (known !== undefined) {
+        // A deprecated row with every field known keeps its exact rates; pooling decides whether it may price its identity.
+        const deprecated = kind === undefined ? undefined : deprecatedRates(row, now);
+        if (deprecated !== undefined) {
+          const floor = { provider, model, kind, ...deprecated, reason: "deprecated price" as const };
+          if (!validFloor(floor) || seen.has(priceKey(floor))) return failure();
+          seen.add(priceKey(floor)); floors.push(floor);
+        } else if (known !== undefined) {
           const floor = { provider, model, ...(kind === undefined ? {} : { kind }), ...known, reason, ...(perRequest ? { perRequest: true as const } : {}) };
           if (!validFloor(floor) || seen.has(priceKey(floor))) return failure();
           seen.add(priceKey(floor)); floors.push(floor);
@@ -174,7 +180,7 @@ export function fetchAWS(transport: PriceTransport, limits: SourceLimits = {}): 
     const entries: PriceEntry[] = []; const floors: ModelFloor[] = [];
     for (const [model, rate] of models) {
       if (!rate.base.inputMicrosPerMTok || !rate.base.outputMicrosPerMTok) { report.skipped.push("missing base rate"); continue; }
-      const e: PriceEntry = { provider: "bedrock", model, kind: "chat", ...rate.base as TokenRates, ...(Object.keys(rate.long).length ? { longContext: [{ aboveTokens: 200_000, ...rate.long }] } : {}) };
+      const e: PriceEntry = { provider: "bedrock", model, kind: "chat", ...rate.base as TokenRates, ...(Object.keys(rate.long).length ? { longContext: [{ aboveTokens: AWS_LONG_CONTEXT_FALLBACK, ...rate.long }] } : {}) };
       if ([rate.base, rate.long].some((r) => RATE_KEYS.some((k) => (r[k] ?? 0) > PRICE_MAX)) || rate.operatorReview) {
         const floor: ModelFloor = { ...e, reason: "token rate exceeds maximum", ...(rate.operatorReview ? { operatorReview: true } : {}) };
         if (!validFloor(floor)) return failure(); floors.push(floor); report.skipped.push("token rate exceeds maximum");
