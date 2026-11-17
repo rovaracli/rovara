@@ -6,6 +6,7 @@ import type { SecretReader } from "./client-secret.js";
 import { STEP_UP_ACR } from "./step-up.js";
 import type { CodeSession, RefreshGuard } from "./sessions.js";
 import type { GithubPending } from "./github-connect.js";
+import type { ConnectPending } from "./connect-flow.js";
 
 export interface CodeClientOptions {
   /** The Code install's API, such as https://abc.execute-api.us-east-1.amazonaws.com. */
@@ -34,6 +35,8 @@ export interface CodeAccess {
   companyRole?: string;
   /** The company's own name, when Code keeps one. */
   companyName?: string;
+  /** True only when this session's sign-in spent an invite secret or a pre-approval for the session's company (Code PR #826). */
+  joinedByInvite?: boolean;
   projects: Array<{ name: string; access: string }>;
   notices: string[];
 }
@@ -60,8 +63,15 @@ export interface PendingSignIn {
   invite?: string;
   /** True on a join ticket (kept by the join page's lookup), never on a sign-in under way: the callback refuses a ticket. */
   joinTicket?: true;
+  /**
+   * On a join ticket for an invite whose link carries Code's invite secret (DEC 254h): that secret, sealed (AES-256-GCM) under a key only the
+   * ticket's cookie holds, so no store ever keeps it readable. Never on a sign-in under way.
+   */
+  sealedSecret?: string;
   /** Guided onboarding PR 2 (github-connect.ts): a GitHub connect's cookie binding or its result, never a sign-in; the sign-in callback refuses it. */
   github?: GithubPending;
+  /** Guided onboarding PR 11 (connect-flow.ts): a Slack or Linear connect's cookie binding or its result, never a sign-in; the sign-in callback refuses it. */
+  connect?: ConnectPending;
 }
 
 /** How long a call to Code's token or revoke endpoint may take: well inside a refresh's hold on the session. */
@@ -116,7 +126,7 @@ export class CodeClient {
    * Step 1 of sign-in: the URL to send the browser to, and what to keep until it comes back. `stepUp` asks Code for a fresh step-up with
    * a factor Code owns (`acr_values=step-up`), which a sensitive change in Cloud needs.
    */
-  startSignIn(returnTo: string, now: number, options: { stepUp?: boolean; company?: string; invite?: string } = {}): { url: string; state: string; pending: PendingSignIn } {
+  startSignIn(returnTo: string, now: number, options: { stepUp?: boolean; company?: string; invite?: string; inviteSecret?: string } = {}): { url: string; state: string; pending: PendingSignIn } {
     const verifier = randomBytes(32).toString("base64url");
     const state = randomBytes(24).toString("base64url");
     const url = new URL(`${this.base}/v1/auth/authorize`);
@@ -126,6 +136,9 @@ export class CodeClient {
       ...(options.stepUp === true ? { acr_values: STEP_UP_ACR } : {}),
       // A join: the company the invite names, chosen by Cloud's server (never the browser). Code still checks the email's pre-approval.
       ...(options.company === undefined ? {} : { company: options.company }),
+      // DEC 254h: Code's single-use invite secret, from Cloud's server (the join ticket), with the invite's company. Code checks it is live,
+      // bound to that company and unspent, and spends it with the membership. Only on Code's own authorize URL; never kept on the sign-in.
+      ...(options.company === undefined || options.inviteSecret === undefined ? {} : { invite: options.inviteSecret }),
     }).toString();
     return { url: url.toString(), state, pending: { verifier, returnTo, at: now, ...(options.invite === undefined ? {} : { invite: options.invite }) } };
   }

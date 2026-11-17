@@ -131,3 +131,12 @@ it("marks the Connect GitHub step Done from the company's real connections", asy
  expect(screen.getByTestId("onboard-step-github").textContent).not.toContain("Done");
  g.close();
 });
+
+it("a crafted github= word (an Object.prototype member) shows nothing and never crashes the page", async () => {
+ for (const word of ["toString", "constructor", "__proto__"]) {
+  const f = setup(`/app/onboard?github=${word}`);
+  await screen.findByRole("heading", { name: "Onboard a project" });
+  expect(screen.queryByTestId("github-refused")).toBeNull();
+  f.close();
+ }
+});

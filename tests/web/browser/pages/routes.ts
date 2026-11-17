@@ -11,9 +11,11 @@ export const ROUTES = {
   /** The admin area (Hybrid 1, DEC 223): five groups in a sidebar. */
   admin: {
     home: "/app/admin", people: "/app/admin/people", invites: "/app/admin/invites", signInClients: "/app/admin/sign-in-clients", signInFactors: "/app/admin/sign-in-factors",
-    spending: "/app/admin/money/budgets", settings: "/app/admin/settings", howWeWork: "/app/admin/how-we-work", projects: "/app/admin/projects", audit: "/app/admin/audit",
+    spending: "/app/admin/money/budgets", settings: "/app/admin/settings", howWeWork: "/app/admin/how-we-work", projects: "/app/admin/projects", audit: "/app/admin/audit", aiSpending: "/app/admin/ai-spending",
   },
   project: (name: string) => `/app/projects/${name}`,
+  /** A project in the admin area: its details, Archive and Restore (guided onboarding PR 17). */
+  adminProject: (name: string) => `/app/admin/projects/${name}`,
   session: (id: string) => `/app/sessions/${id}`,
   /** A well-formed session address that no one ever started. */
   unknownSession: "/app/sessions/ses_00000000000000000000",

@@ -7,7 +7,7 @@ import type { PriceFetchResult } from "./price-sources.js";
 export interface RefreshResult { ok: boolean; gained: number }
 export class PriceRefresher {
   #flight: Promise<RefreshResult> | undefined;
-  constructor(private readonly options: { store: PriceSnapshotStore; prices: SnapshotPriceSource; litellm: (previous: readonly PriceEntry[]) => Promise<PriceFetchResult>; aws: (previous: readonly PriceEntry[]) => Promise<PriceFetchResult>; correctedKeys?: (keys: readonly PriceKey[]) => Promise<void>; log?: (line: { event: "price_sanity_held" }) => void }) {}
+  constructor(private readonly options: { store: PriceSnapshotStore; prices: SnapshotPriceSource; litellm: (previous: readonly PriceEntry[]) => Promise<PriceFetchResult>; aws: (previous: readonly PriceEntry[]) => Promise<PriceFetchResult>; correctedKeys?: (keys: readonly PriceKey[]) => Promise<void>; log?: (line: { event: "price_sanity_held" } | { event: "price_deprecated_used"; identities: number }) => void }) {}
   run(now: number): Promise<RefreshResult> {
     if (this.#flight !== undefined) return this.#flight;
     this.#flight = this.#run(now).catch(() => ({ ok: false, gained: 0 })).finally(() => { this.#flight = undefined; });
@@ -48,7 +48,9 @@ export class PriceRefresher {
     // A failure invalidates pending evidence even if it was the only source this time.
     changed ||= previous.some((e) => e.pendingLower !== undefined && e.sources.some((name) => !successful.has(name)));
     if (changed) {
-      const effective = effectivePrices(sources, previous, successful, deadline, () => { try { this.options.log?.({ event: "price_sanity_held" }); } catch { /* Observability cannot change prices. */ } });
+      const effective = effectivePrices(sources, previous, successful, deadline, () => { try { this.options.log?.({ event: "price_sanity_held" }); } catch { /* Observability cannot change prices. */ } },
+        // Once per refresh: how many identities are priced only by a deprecated row (fixed words, a count, no model names).
+        (identities) => { try { this.options.log?.({ event: "price_deprecated_used", identities }); } catch { /* Observability cannot change prices. */ } });
       const snapshot = { version: (prior?.version ?? 0) + 1, sources, effective };
       if (performance.now() >= deadline || !validSnapshot(snapshot) || !await store.save(snapshot, prior?.version ?? 0)) return { ok: false, gained: 0 };
     }

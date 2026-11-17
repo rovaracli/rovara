@@ -21,7 +21,7 @@ interface Pool {
   clean?: Price; uncertain?: Price; perRequest: boolean;
 }
 /** One pricing model: normalize, pool every observation, apply policy once, then confirm the effective price. */
-export function effectivePrices(sources: PriceSnapshot["sources"], previous: readonly EffectiveIdentity[] = [], successful: ReadonlySet<Source> = new Set(names), deadline = performance.now() + FETCH_DEADLINE_MS, held: () => void = () => undefined): EffectiveIdentity[] {
+export function effectivePrices(sources: PriceSnapshot["sources"], previous: readonly EffectiveIdentity[] = [], successful: ReadonlySet<Source> = new Set(names), deadline = performance.now() + FETCH_DEADLINE_MS, held: () => void = () => undefined, deprecatedUsed: (identities: number) => void = () => undefined): EffectiveIdentity[] {
   let work = 0; const check = () => { if (++work > 20 * MAX_ENTRIES_PER_SOURCE || performance.now() >= deadline) throw new Error("refresh failed"); };
   const prior = new Map(previous.map((e) => [identityKey(e.provider, e.model), e]));
   const pools = new Map<string, Pool>(); const exact = new Map<string, string | null>();
@@ -41,10 +41,35 @@ export function effectivePrices(sources: PriceSnapshot["sources"], previous: rea
     p.perRequest ||= ("reason" in row && row.reason === "per_request_price") || ("perRequest" in row && row.perRequest === true);
     return p;
   };
+  // Identities some non-deprecated row names (any source), and the lowest long-context band the LiteLLM rows state per identity.
+  const live = new Set<string>(); const litellmBand = new Map<string, number>();
   for (const name of names) {
     const s = sources[name]; if (s === undefined) continue;
-    for (const row of [...s.entries, ...(s.floors ?? []), ...(s.fallbacks ?? [])]) add(row, name, s.fetchedAt);
+    for (const row of [...s.entries, ...(s.floors ?? []), ...(s.fallbacks ?? [])]) {
+      check(); const key = identityKey(row.provider, row.model);
+      if (!("reason" in row) || (row.reason !== "deprecated price" && row.reason !== "deprecated model")) live.add(key);
+      if (name !== "litellm" || !("longContext" in row)) continue;
+      for (const tier of row.longContext ?? []) litellmBand.set(key, Math.min(litellmBand.get(key) ?? Number.MAX_SAFE_INTEGER, tier.aboveTokens));
+    }
   }
+  const usedDeprecated = new Set<string>();
+  for (const name of names) {
+    const s = sources[name]; if (s === undefined) continue;
+    for (const row of [...s.entries, ...(s.floors ?? []), ...(s.fallbacks ?? [])]) {
+      const key = identityKey(row.provider, row.model);
+      if ("reason" in row && row.reason === "deprecated price") {
+        // Only when no non-deprecated row names the identity is a fully known deprecated row its price; otherwise it is an alias.
+        if (live.has(key)) add({ provider: row.provider, model: row.model, ...(row.kind === undefined ? {} : { kind: row.kind }), reason: "unpriced" }, name, s.fetchedAt);
+        else {
+          usedDeprecated.add(key);
+          add({ provider: row.provider, model: row.model, kind: row.kind ?? "chat", ...copyRates(row) as Price, ...(row.longContext === undefined ? {} : { longContext: row.longContext }), ...(row.operatorReview ? { operatorReview: true } : {}) }, name, s.fetchedAt);
+        }
+        continue;
+      }
+      add(name === "aws" ? awsBand(row, litellmBand.get(key)) : row, name, s.fetchedAt);
+    }
+  }
+  if (usedDeprecated.size > 0) { try { deprecatedUsed(usedDeprecated.size); } catch { /* Observability cannot change prices. */ } }
   // Resolve malformed provider metadata only via an unambiguous, exact ID established by a recognized row.
   for (const row of sources.litellm?.unidentified ?? []) {
     check(); const key = exact.get(row.model); if (key === undefined || key === null) continue;
@@ -106,6 +131,15 @@ export function effectivePrices(sources: PriceSnapshot["sources"], previous: rea
     e.uncertain = uncertainComponents(e, pools.get(identityKey(e.provider, e.model))?.clean);
     return e;
   });
+}
+/**
+ * AWS's offer never states where its one `_long_ctx` band starts (fetchAWS stores it at AWS_LONG_CONTEXT_FALLBACK): read it from the
+ * identity's LiteLLM rows. The band only ever moves earlier, so a dearer long rate is never skipped inside a band.
+ */
+function awsBand<T extends PriceEntry | ModelFloor | ModelFallback>(row: T, band: number | undefined): T {
+  if (!("longContext" in row) || row.longContext?.length !== 1 || band === undefined) return row;
+  const tier = row.longContext[0]!;
+  return band < tier.aboveTokens ? { ...row, longContext: [{ ...tier, aboveTokens: band }] } : row;
 }
 function addMaximum(maxima: Map<string, Price>, provider: string, kind: PriceKind | undefined, price: Price): void {
   for (const k of kind === undefined ? ["chat", "embedding", "all"] : [kind, "all"]) {

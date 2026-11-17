@@ -38,7 +38,11 @@ describe("code contract v0 tables", () => {
     // Plus the twelve lessons routes (DEC 231): the inbox batch, the lists, Keep, Drop and the batch, retire and retire requests, the mode, Lessons used and not helpful.
     // Plus the eval confirm (DEC 253q d), forwarded to Code's own route as the person (501 until Code serves it).
     // Plus Connect GitHub (guided onboarding PR 2): connect, the callback's kept result, choose, and the company's connections.
-    expect(counts.appCloudServerToday).toBe(54);
+    // Plus Add to Slack, the channel picker, Connect Linear and the team pick (guided onboarding PR 11): sixteen routes.
+    // Plus a project's archive and restore (guided onboarding PR 17): the two previews, the two reviewed changes and the lifecycle read, as the person.
+    // Plus the repository picker (guided onboarding PR 10).
+    // Plus the company's AI model and a project's per-task limit (guided onboarding PR 15): both reads and both changes, as the person.
+    expect(counts.appCloudServerToday).toBe(80);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

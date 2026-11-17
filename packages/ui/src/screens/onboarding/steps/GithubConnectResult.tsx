@@ -30,7 +30,7 @@ function Connected({login,trialUsed}:{login:string;trialUsed:boolean}){
 export function GithubConnectResult({outcome}:{outcome:string}){
  const api=useOnboardingApi(),host=useAppHost(),query=useQueryClient();
  const [chosen,setChosen]=useState<{login:string;trialUsed:boolean}>(),[choosing,setChoosing]=useState<number>(),[chooseError,setChooseError]=useState<string>(),[copied,setCopied]=useState(false);
- const refusal=GITHUB_REFUSALS[outcome];
+ const refusal=Object.hasOwn(GITHUB_REFUSALS,outcome)?GITHUB_REFUSALS[outcome]:undefined;
  const result=useQuery({queryKey:["github","connect-result"],enabled:outcome==="result",queryFn:async()=>{const value=await api.githubResult();if(value.status==="connected")void query.invalidateQueries({queryKey:["github"],predicate:item=>item.queryKey[1]!=="connect-result"});return value;},retry:false,staleTime:Infinity,gcTime:Infinity,refetchOnWindowFocus:false,refetchOnReconnect:false});
  async function choose(installationId:number){setChoosing(installationId);setChooseError(undefined);try{const value=await api.githubChoose(installationId);setChosen({login:value.accountLogin,trialUsed:value.trialUsed===true});void query.invalidateQueries({queryKey:["github"],predicate:item=>item.queryKey[1]!=="connect-result"});}catch(e){setChooseError(e instanceof Error?e.message:GITHUB_REFUSALS.start_again);}finally{setChoosing(undefined);}}
  async function copy(link:string){try{if(host.copyText===undefined)throw new Error("Clipboard unavailable.");await host.copyText(link);setCopied(true);}catch{setCopied(false);}}

@@ -18,6 +18,7 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
   { to: "/app/admin/settings", label: "Company settings", blurb: "Company rules, the approval window and who may start work." },
  ] },
  { id: "ai", title: "AI and connections", links: [
+  { to: "/app/admin/ai-spending", label: "AI and spending", blurb: "Who pays for the AI, the model Rovara uses, and the company's monthly limit." },
   { to: "/app/admin/models/sources", label: "AI models", blurb: "Which model providers the company pays for." },
   { to: "/app/admin/product-ai", label: "Product AI keys", blurb: "A project's own AI key for its tests, and what its evals may spend." },
   { to: "/app/admin/agent-ai", label: "AI for your agents", blurb: "Rovara's AI, the company's own Anthropic key, or (soon) its own Bedrock.", ownerOnly: true },

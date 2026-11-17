@@ -71,6 +71,7 @@
   "packages/contracts/src/pending-api.ts",
   "packages/contracts/src/plan-one-screen.ts",
   "packages/contracts/src/project-learning.ts",
+  "packages/contracts/src/project-lifecycle.ts",
   "packages/contracts/src/project-playbook.ts",
   "packages/contracts/src/project.ts",
   "packages/contracts/src/provenance.ts",

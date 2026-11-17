@@ -59,6 +59,8 @@ export interface AccessResponse {
   companyId?: string;
   companyRole?: "owner" | "admin" | "member";
   companyName?: string;
+  /** True only when this session's sign-in spent an invite secret or a pre-approval for the session's company (Code PR #826); absent otherwise. */
+  joinedByInvite?: boolean;
   projects: Array<{ name: string; access: string /* known: administrator, developer */ }>;
   notices: string[];
 }
@@ -74,7 +76,18 @@ export interface ChannelLink { channel: string; workspace: string; account: stri
 export interface ProjectRepository { name: string; url: string; defaultBranch: string; fullName?: string }
 export interface ProjectView { name: string; latestRevision: number; access: string /* known: administrator, developer */; repositories: ProjectRepository[] }
 export interface CreateProjectRequest { repository: string; name?: string; setupCommands?: string[]; testCommands?: string[] }
+/** Guided onboarding PR 10 (Code PR #837): the same route with `repositories` (1 to 32) instead of `repository` makes ONE project holding them all. */
+export interface CreateProjectsRequest { repositories: string[]; name?: string; setupCommands?: string[]; testCommands?: string[] }
 export interface CreateProjectResponse { name: string }
+/** `POST /v1/dev/client/projects/bulk`: one project per repository; a repository that made none says why, in Code's four fixed words. */
+export interface BulkCreateProjectsRequest { repositories: string[] }
+export interface BulkCreateProjectsResponse { results: Array<{ repository: string; outcome: "created"; project: string } | { repository: string; outcome: "refused"; reason: "not_available" | "name_taken" | "unavailable" | "not_started" }> }
+/** `GET /v1/dev/client/repositories/available?q=&limit=&after=`: the repositories the caller's company's connected GitHub accounts reach, with the company's own projects that hold each. */
+export interface RepositoryChoicesResponse {
+  repositories: Array<{ installationId: number; accountLogin: string; fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string; projects: string[] }>;
+  next?: string;
+  incomplete: boolean;
+}
 export interface GithubInstallation {
   installationId: number; accountLogin: string; accountType: string; repositorySelection: string; status: string;
   repositories: Array<{ fullName: string; githubRepositoryId: number; private: boolean; defaultBranch: string }>;
@@ -363,6 +376,11 @@ export interface PreApprovedEmailsResponse { emails: string[]; revision: number 
 /** Code's member pre-approval (DEC 253z): the inviting admin's own call; Code checks their live company role. Every refusal is NOT_FOUND. */
 export interface CompanyPreapprovalRequest { email: string; role: "member"; expiresInHours: number }
 export interface CompanyOkResponse { ok: true }
+/**
+ * Code's answer to a pre-approval (DEC 254h): also the single-use invite secret it minted for it, returned once (Code keeps only its SHA-256),
+ * expiring with the pre-approval. An older Code answers `{ ok: true }` alone.
+ */
+export interface CompanyPreapprovalResponse { ok: true; invite?: { secret: string; expiresAt: string } }
 /** A person with no company creates one with an operator's invite code (DEC 254a; Code PR 4) and becomes its owner. */
 export interface CreateCompanyRequest { name: string; inviteCode: string }
 export interface CreateCompanyResponse { companyId: string; companyName: string; companyRole: "owner" }
@@ -373,6 +391,21 @@ export interface GithubConnected { status: "connected"; alreadyConnected: boolea
 export interface GithubChoice { installationId: number; accountLogin: string; accountType: string; suspended: boolean; connection: string /* known: this_company, another_company, unbound */ }
 export type GithubClaimResponse = GithubConnected | { status: "choose"; ticket: string; expiresAt: Iso; githubUser: { id: number; login: string }; installations: GithubChoice[] } | { status: "requested" };
 export interface GithubChooseRequest { ticket: string; installationId: number }
+/** Guided onboarding (Code PRs #836, #840, #838): Add to Slack, a project's Slack channel, Connect Linear and a project's Linear team. */
+export interface SlackInstallStart { state: string; expiresAt: Iso; authorizeUrl: string; signedInWorkspace?: { teamId: string; teamName?: string } }
+export type SlackInstallComplete = { status: "connected"; alreadyConnected: boolean; workspace: { teamId: string; teamName?: string }; signedInWorkspace?: { teamId: string; teamName?: string }; matchesSignIn?: boolean } | { status: "cancelled" };
+export interface SlackWorkspaceRead { workspace: null | { teamId: string; teamName?: string; state: string; connectedAt: Iso; connectedBy: { kind: string; personId?: string; name?: string } } }
+export interface SlackDisconnected { status: "disconnected"; workspace: { teamId: string; teamName?: string }; projectsLosingChannel: string[] }
+export interface SlackChannelsPage { workspace: { teamId: string }; channels: Array<{ id: string; name: string; isPrivate: boolean; linked?: true; linkedProject?: string }>; nextCursor?: string }
+export interface SlackProjectChannel { workspace: null | { teamId: string }; channels: Array<{ channelId: string }> }
+export type SlackChannelLinked = { status: "linked"; workspace: { teamId: string }; channel: { id: string; name: string; isPrivate: boolean }; alreadyLinked: boolean; replaced: string[] } | { status: "invite_needed"; workspace: { teamId: string }; channel: { id: string }; message: string };
+export interface SlackChannelUnlinked { status: "unlinked"; teamId: string; channels: string[] }
+export interface LinearConnectStart { state: string; expiresAt: Iso; authorizeUrl: string }
+export interface LinearConnected { status: "connected"; reconnected: boolean; workspace: { id: string; name: string; urlKey: string } }
+export type LinearConnectionRead = { status: "disconnected" } | { status: "connected" | "needs_reconnect" | "disconnected"; statusAt: Iso; workspace: { id: string; name: string; urlKey: string }; connectedAt: Iso; connectedBy: { personId: string; name?: string } };
+export interface LinearDisconnected { status: "disconnected"; workspaceName: string; projects: string[] }
+export interface LinearTeam { id: string; key: string; name: string }
+export interface LinearProjectTeam { project: string; team: LinearTeam | null; teams?: LinearTeam[]; cleared?: boolean }
 export interface GithubConnectionsResponse { installations: Array<{ installationId: number; accountLogin: string; connectedAt: Iso; connectedBy: { kind: "person"; personId: string; name?: string } | { kind: "operator" } }> }
 /**
  * One engine action (Code's `GET /v1/dev/client/company/audit/records`, lane AU, Rovara PR #649). The optional fields are what Code adds: the record's id, the actor's kind and the caller the
@@ -422,8 +455,24 @@ export interface CreateScriptTokenRequest { requestId: string; label: string; ex
 export interface CreateScriptTokenResponse { token: ScriptToken; secret: string }
 export interface RevokeScriptTokenResponse { revoked: boolean }
 
-export interface ArchiveProjectRequest { requestId: string }
-export interface ArchiveProjectResponse { name: string; status: "archived" | "active" }
+/** Guided onboarding PR 16/17 (Code #839): a reviewed archive or restore names the preview's revisions and acknowledges what it does (Code's ReviewedProject*Body). */
+export interface ArchiveProjectRequest { requestId: string; expectedOrgId?: string; expectedRevision: number; expectedProjectRevision: number; acknowledgeNewWorkStops?: true; acknowledgeNewWorkAllowed?: true }
+/** Code's ReviewedProject*Preview: the lifecycle state, the revisions a change must name, the one action the person may take, and what it does. */
+export interface ProjectLifecyclePreview { orgId: string; project: string; status: "archived" | "active"; expectedRevision: number; expectedProjectRevision: number; checkedAt: Iso; prerequisites?: "checked" | "not_required"; access: { actions: Array<"archive" | "restore"> }; impact?: JsonObject }
+/** Code's ReviewedProject*Outcome: the original receipt, whether this answer replays it, and the current state read afresh. */
+export interface ArchiveProjectResponse { receipt: JsonObject; replayed: boolean; current: ProjectLifecyclePreview; effects: JsonObject }
+
+/**
+ * Guided onboarding PR 14/15 (Code #835, DEC 254n item 1): the company's engine model. `model` is what the company's tasks resolve to now (its own, else the
+ * install default, null where there is none); `offered` is the gateway's live list for THIS company; `preselect` is `model` when offered, else the first offered.
+ */
+export interface CompanyEngineModelView { model: string | null; source: "company" | "install"; offered: string[]; preselect: string }
+/** A model id, or null to clear the company's own (the install default applies again). Nothing else. */
+export interface PutCompanyEngineModelRequest { model: string | null }
+/** Code's project settings (M4a, `GET|PUT /v1/dev/projects/{name}/settings`): the stored preset and overrides, the revision, and what applies under the company's bounds. */
+export interface ProjectSettingsView { preset: string | null; overrides: JsonObject; revision: number; updatedAt: Iso | null; updatedBy: string | null; resolved: JsonObject; values: JsonObject; clamped: JsonObject[] }
+/** A change names the revision read; a cost field (such as `model_budget_usd`, the per-task model budget) needs the person's fresh step-up at Code. */
+export interface PutProjectSettingsRequest { expectedRevision: number; preset?: "lightweight" | "balanced" | "careful"; overrides?: JsonObject }
 
 // ---------------------------------------------------------------------------------------------------------------
 // Types: lessons (Code's lessons API, PrepLabsAI/Rovara#713, LM8 part 1; DEC 225, 226, 231). One project of the caller's own company: the
@@ -526,13 +575,17 @@ export interface CodeRouteTypes {
   "channelLinks.list": { request: void; response: { links: ChannelLink[] } };
   "channelLinks.remove": { request: void; response: { removed: boolean } };
   "projects.list": { request: void; response: { projects: Array<{ name: string; access: string }> } };
-  "client.projects.create": { request: CreateProjectRequest; response: CreateProjectResponse };
+  "client.projects.create": { request: CreateProjectRequest | CreateProjectsRequest; response: CreateProjectResponse };
+  "client.projects.bulk": { request: BulkCreateProjectsRequest; response: BulkCreateProjectsResponse };
   "client.projects.get": { request: void; response: ProjectView };
+  "client.projects.archivePreview": { request: void; response: ProjectLifecyclePreview };
   "client.projects.archive": { request: ArchiveProjectRequest; response: ArchiveProjectResponse };
+  "client.projects.restorePreview": { request: void; response: ProjectLifecyclePreview };
   "client.projects.restore": { request: ArchiveProjectRequest; response: ArchiveProjectResponse };
   "client.projects.codeSettings.get": { request: void; response: { settings: CodeSettings } };
   "client.projects.codeSettings.put": { request: PutCodeSettingsRequest; response: { settings: CodeSettings } };
   "client.repositories.list": { request: void; response: RepositoriesResponse };
+  "client.repositories.available": { request: void; response: RepositoryChoicesResponse };
   "client.members.list": { request: void; response: MembersResponse };
   "client.members.put": { request: void; response: PutMemberResponse };
   "client.members.remove": { request: void; response: RemoveMemberResponse };
@@ -583,13 +636,29 @@ export interface CodeRouteTypes {
   "company.members.removalPreview": { request: void; response: RemovalPreview };
   "company.members.remove": { request: RemoveCompanyMemberRequest; response: { removed: boolean } };
   "company.preApproved.put": { request: PreApprovedEmailsRequest; response: PreApprovedEmailsResponse };
-  "company.preapprovals.create": { request: CompanyPreapprovalRequest; response: CompanyOkResponse };
+  "company.preapprovals.create": { request: CompanyPreapprovalRequest; response: CompanyPreapprovalResponse };
   "company.preapprovals.withdraw": { request: void; response: CompanyOkResponse };
   "company.create": { request: CreateCompanyRequest; response: CreateCompanyResponse };
   "company.github.connect": { request: JsonObject; response: GithubConnectStart };
   "company.github.claim": { request: GithubClaimRequest; response: GithubClaimResponse };
   "company.github.choose": { request: GithubChooseRequest; response: GithubConnected };
   "company.github.status": { request: void; response: GithubConnectionsResponse };
+  "company.slack.install": { request: { redirectUri: string }; response: SlackInstallStart };
+  "company.slack.installComplete": { request: { state: string; code?: string; error?: string }; response: SlackInstallComplete };
+  "company.slack.get": { request: void; response: SlackWorkspaceRead };
+  "company.slack.disconnect": { request: JsonObject; response: SlackDisconnected };
+  "company.slack.channels": { request: void; response: SlackChannelsPage };
+  "company.slack.channel.get": { request: void; response: SlackProjectChannel };
+  "company.slack.channel.link": { request: { channelId: string }; response: SlackChannelLinked };
+  "company.slack.channel.check": { request: { channelId: string }; response: SlackChannelLinked };
+  "company.slack.channel.unlink": { request: void; response: SlackChannelUnlinked };
+  "company.linear.connect": { request: JsonObject; response: LinearConnectStart };
+  "company.linear.complete": { request: { state: string; code: string }; response: LinearConnected };
+  "company.linear.get": { request: void; response: LinearConnectionRead };
+  "company.linear.disconnect": { request: void; response: LinearDisconnected };
+  "company.linear.team.get": { request: void; response: LinearProjectTeam };
+  "company.linear.team.put": { request: { teamId: string }; response: LinearProjectTeam };
+  "company.linear.team.clear": { request: void; response: LinearProjectTeam };
   "company.audit.records": { request: void; response: AuditRecordsResponse };
   "scriptTokens.list": { request: void; response: ScriptTokensResponse };
   "scriptTokens.create": { request: CreateScriptTokenRequest; response: CreateScriptTokenResponse };
@@ -605,6 +674,10 @@ export interface CodeRouteTypes {
   "lessons.notHelpful": { request: JsonObject; response: NotHelpfulResponse };
   "lessons.mode.get": { request: void; response: LessonModeResponse };
   "lessons.mode.put": { request: PutLessonModeRequest; response: LessonModeResponse };
+  "company.engineModel.get": { request: void; response: CompanyEngineModelView };
+  "company.engineModel.put": { request: PutCompanyEngineModelRequest; response: CompanyEngineModelView };
+  "projects.settings.get": { request: void; response: ProjectSettingsView };
+  "projects.settings.put": { request: PutProjectSettingsRequest; response: ProjectSettingsView };
 }
 
 export type CodeRouteId = keyof CodeRouteTypes;
@@ -667,12 +740,18 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   // Projects and project members
   spec("projects.list", "GET", "/v1/dev/projects", "Projects the person may use", "full", ["admin"], "yes", true, `${DEV}:1056`),
   spec("client.projects.create", "POST", "/v1/dev/client/projects", "Create a project from a repository", "projects:create", ["admin"], "no", true, `${MAIN}${DEV}:854`, true),
+  // Guided onboarding PR 10 (Code PR #837, pr/go-multi-repo): not on code/next yet. A company owner or admin may call them once Code PR 19 lands; until then Code answers 403 "only a Rovara administrator can create a project".
+  spec("client.projects.bulk", "POST", "/v1/dev/client/projects/bulk", "One project per repository, each named after it; each repository answers created or one fixed refusal", "projects:create", ["admin"], "no", false, "none", true),
   spec("client.projects.get", "GET", CP, "One project: revision, access, repositories", "none", ["admin", "request"], "no", true, `${MAIN}${DEV}:870`, true),
-  spec("client.projects.archive", "POST", `${CP}/archive`, "Archive a project (reviewed)", "full", ["later"], "no", false, "none"),
-  spec("client.projects.restore", "POST", `${CP}/restore`, "Restore an archived project (reviewed)", "full", ["later"], "no", false, "none"),
+  // Guided onboarding PR 16 (Code #839, not on code/next yet): preview first; a live company owner/admin or the project's admin changes, a project user only sees.
+  spec("client.projects.archivePreview", "GET", `${CP}/archive-preview`, "What archiving the project does, and whether the person may", "full", ["later"], "no", false, "none", true),
+  spec("client.projects.archive", "POST", `${CP}/archive`, "Archive a project (reviewed)", "full", ["later"], "no", false, "none", true),
+  spec("client.projects.restorePreview", "GET", `${CP}/restore-preview`, "What restoring the project does, and whether the person may", "full", ["later"], "no", false, "none", true),
+  spec("client.projects.restore", "POST", `${CP}/restore`, "Restore an archived project (reviewed)", "full", ["later"], "no", false, "none", true),
   spec("client.projects.codeSettings.get", "GET", `${CP}/code-settings`, "Merge rules for the project", "full", ["admin"], "no", false, "none"),
   spec("client.projects.codeSettings.put", "PUT", `${CP}/code-settings`, "Change the merge rules (revision-checked)", "full", ["admin"], "no", false, "none"),
   spec("client.repositories.list", "GET", "/v1/dev/client/repositories", "The repositories Code's GitHub App can reach", "projects:create", ["admin"], "no", true, `${MAIN}${DEV}:855`, true),
+  spec("client.repositories.available", "GET", "/v1/dev/client/repositories/available", "The repositories the company's connected GitHub accounts reach, paged, with the company's projects that hold each", "projects:create", ["admin"], "no", false, "none", true),
   spec("client.members.list", "GET", `${CP}/members`, "The project's members", "projects:members", ["admin"], "no", true, `${MAIN}${DEV}:895`, true),
   spec("client.members.put", "PUT", `${CP}/members/{developerId}`, "Grant a person contributor access", "projects:members", ["admin"], "no", true, `${MAIN}${DEV}:902`, true),
   spec("client.members.remove", "DELETE", `${CP}/members/{developerId}`, "Revoke a person's access", "projects:members", ["admin"], "no", true, `${MAIN}${DEV}:877`, true),
@@ -735,6 +814,23 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.github.claim", "POST", "/v1/dev/company/github/claim", "GitHub's return: spend the state, check the person controls the installation, bind it or list the ones they control", "full", ["admin"], "no", false, "none", true),
   spec("company.github.choose", "POST", "/v1/dev/company/github/choose", "Bind one installation from a claim's checked list, with its single-use ticket", "full", ["admin"], "no", false, "none", true),
   spec("company.github.status", "GET", "/v1/dev/company/github", "The company's connected GitHub installations, who connected each and when (any member)", "full", ["admin"], "no", false, "none", true),
+  // Guided onboarding (Code PRs #836 pr/go-slack-install, #840 pr/go-slack-channel, #838 pr/go-linear-oauth): not on code/next yet.
+  spec("company.slack.install", "POST", "/v1/dev/company/slack/install", "A company owner or admin starts Add to Slack: a single-use state and Slack's OAuth v2 address for Cloud's callback", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.installComplete", "POST", "/v1/dev/company/slack/install/complete", "Slack's return: spend the state, exchange the code, bind the workspace to the company", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.get", "GET", "/v1/dev/company/slack", "The company's Slack workspace, who connected it and when (any member)", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.disconnect", "POST", "/v1/dev/company/slack/disconnect", "A company owner with a fresh step-up disconnects Slack", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.channels", "GET", "/v1/dev/company/slack/channels", "One page of the company workspace's channels a project may link", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.channel.get", "GET", "/v1/dev/company/slack/projects/{project}/channel", "A project's linked Slack channel", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.channel.link", "PUT", "/v1/dev/company/slack/projects/{project}/channel", "Link a project's Slack channel (or say the bot must be invited)", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.channel.check", "POST", "/v1/dev/company/slack/projects/{project}/channel/check", "Check again after /invite, then link", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.channel.unlink", "DELETE", "/v1/dev/company/slack/projects/{project}/channel", "Unlink a project's Slack channel", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.connect", "POST", "/v1/dev/company/linear/connect", "A company owner or admin starts Connect Linear: a single-use state and Linear's consent address (as the app, PKCE)", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.complete", "POST", "/v1/dev/company/linear/complete", "Linear's return: spend the state, exchange the code, bind the Linear workspace", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.get", "GET", "/v1/dev/company/linear", "The company's Linear connection (any member)", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.disconnect", "DELETE", "/v1/dev/company/linear", "A company owner with a fresh step-up disconnects Linear", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.team.get", "GET", "/v1/dev/company/linear/projects/{project}", "A project's Linear team and the teams the company's token sees", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.team.put", "PUT", "/v1/dev/company/linear/projects/{project}", "Pick a project's Linear team", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.team.clear", "DELETE", "/v1/dev/company/linear/projects/{project}", "Clear a project's Linear team", "full", ["admin"], "no", false, "none", true),
   spec("company.audit.records", "GET", "/v1/dev/client/company/audit/records", "Engine audit records, for a company administrator (lane AU)", "full", ["admin"], "no", false, "none"),
   // Settings: the person's script tokens
   spec("scriptTokens.list", "GET", "/v1/dev/script-tokens", "The person's script tokens", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:94")),
@@ -752,6 +848,11 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.notHelpful", "POST", `${DP}/tasks/{taskId}/lessons/{lessonId}/not-helpful`, "Mark a lesson the task was given as not helpful", "full", ["session"], "no", false, "none", true),
   spec("lessons.mode.get", "GET", `${DP}/lessons/mode`, "The project's learning mode, the mode in force and whether the company locks it", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.mode.put", "PUT", `${DP}/lessons/mode`, "Set the learning mode (a project admin, or a company owner or admin)", "full", ["how-we-work"], "no", false, "none", true),
+  // Guided onboarding PR 15 (DEC 254l item 7, 254n item 1): the company's AI model (Code #835, not on code/next yet) and a project's per-task model budget (Code's M4a settings).
+  spec("company.engineModel.get", "GET", "/v1/dev/company/engine-model", "The company's engine model, the models the gateway offers it now, and the one to preselect (any member)", "full", ["later"], "no", false, "none", true),
+  spec("company.engineModel.put", "PUT", "/v1/dev/company/engine-model", "Set or clear the company's engine model, only from its offered list (owner or admin)", "full", ["later"], "no", false, "none", true),
+  spec("projects.settings.get", "GET", `${DP}/settings`, "A project's cost and approval settings (preset, overrides, what applies)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
+  spec("projects.settings.put", "PUT", `${DP}/settings`, "Change them (revision-checked; a cost field needs a fresh step-up; the project's administrator)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
 ];
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -862,7 +963,7 @@ POST /v1/app/projects/{p}/code | k | request | tasks.start | code | T
 POST /v1/app/projects/{p}/code/suggest | k | request | | code |
 POST /v1/app/projects/{p}/start-preview | k | later | | code |
 GET /v1/app/projects | k | admin | access.check,client.projects.get | projects | T
-POST /v1/app/projects | k | admin | client.projects.create | onboarding | T
+POST /v1/app/projects | k | admin | client.projects.create,client.projects.bulk | onboarding | T
 GET /v1/app/projects/{p} | k | admin | access.check,client.projects.get | onboarding | T
 GET /v1/app/projects/{p}/overview | c | shell | client.projects.get,tasks.list | projects | T
 GET /v1/app/projects/{p}/members | k | admin | client.members.list | review-groups | T
@@ -878,10 +979,11 @@ POST /v1/app/projects/{p}/playbook/process | k | how-we-work | playbook.process 
 GET /v1/app/projects/{p}/playbook | k | how-we-work | playbook.get | how-we-work | L
 PUT /v1/app/projects/{p}/playbook | k | how-we-work | playbook.put | how-we-work | L
 GET /v1/app/projects/{p}/spend | g | budgets | | spending |
-GET /v1/app/projects/{p}/archive-preview | k | later | client.projects.archive | admin/projects/ArchiveProject |
-POST /v1/app/projects/{p}/reviewed-archive | k | later | client.projects.archive | admin/projects/ArchiveProject |
-GET /v1/app/projects/{p}/restore-preview | k | later | client.projects.restore | admin/projects/RestoreProject |
-POST /v1/app/projects/{p}/reviewed-restore | k | later | client.projects.restore | admin/projects/RestoreProject |
+GET /v1/app/projects/{p}/archive-preview | k | later | client.projects.archivePreview | admin/projects/ArchiveProject | T
+POST /v1/app/projects/{p}/reviewed-archive | k | later | client.projects.archive | admin/projects/ArchiveProject | T
+GET /v1/app/projects/{p}/restore-preview | k | later | client.projects.restorePreview | admin/projects/RestoreProject | T
+POST /v1/app/projects/{p}/reviewed-restore | k | later | client.projects.restore | admin/projects/RestoreProject | T
+GET /v1/app/projects/{p}/lifecycle | k | later | client.projects.archivePreview,client.projects.restorePreview | admin/projects/ProjectDetailScreen | T
 GET /v1/app/projects/{p}/working-branches | k | later | | admin/projects/WorkingBranches |
 POST /v1/app/projects/{p}/working-branches | k | later | | admin/projects/SaveWorkingBranch |
 GET /v1/app/projects/{p}/working-branches/requests/{requestId} | k | later | | admin/projects/SaveWorkingBranch |
@@ -995,10 +1097,27 @@ POST /v1/app/projects/{p}/context-sources/changes/{changeId}/reject | k | later 
 GET /v1/app/projects/{p}/automations | k | later | | automations |
 GET /v1/app/github/installations | k | admin | client.repositories.list | onboarding | T
 GET /v1/app/github/repositories | k | admin | client.repositories.list | onboarding | T
+GET /v1/app/github/repository-choices | k | admin | client.repositories.available | onboarding | T
 POST /v1/app/github/connect | k | admin | company.github.connect | onboarding | T
 POST /v1/app/github/connect/result | c | admin | | onboarding | T
 POST /v1/app/github/choose | k | admin | company.github.choose | onboarding | T
 GET /v1/app/github/connections | k | admin | company.github.status | onboarding | T
+POST /v1/app/slack/install | k | admin | company.slack.install | onboarding | T
+POST /v1/app/slack/install/result | c | admin | | onboarding | T
+GET /v1/app/slack | k | admin | company.slack.get | onboarding | T
+POST /v1/app/slack/disconnect | k | admin | company.slack.disconnect | admin/connections | T
+GET /v1/app/slack/channels | k | admin | company.slack.channels | project-setup | T
+GET /v1/app/projects/{p}/slack/channel | k | admin | company.slack.channel.get | project-setup | T
+PUT /v1/app/projects/{p}/slack/channel | k | admin | company.slack.channel.link | project-setup | T
+POST /v1/app/projects/{p}/slack/channel/check | k | admin | company.slack.channel.check | project-setup | T
+DELETE /v1/app/projects/{p}/slack/channel | k | admin | company.slack.channel.unlink | project-setup | T
+POST /v1/app/linear/connect | k | admin | company.linear.connect | project-setup | T
+POST /v1/app/linear/connect/result | c | admin | | project-setup | T
+GET /v1/app/linear | k | admin | company.linear.get | project-setup | T
+DELETE /v1/app/linear | k | admin | company.linear.disconnect | admin/connections | T
+GET /v1/app/projects/{p}/linear | k | admin | company.linear.team.get | project-setup | T
+PUT /v1/app/projects/{p}/linear | k | admin | company.linear.team.put | project-setup | T
+DELETE /v1/app/projects/{p}/linear | k | admin | company.linear.team.clear | project-setup | T
 GET /v1/app/github/requests | k | admin | | readiness |
 GET /v1/app/org/members | k | admin | company.members.list | project-people |
 PUT /v1/app/org/members/{developerId}/role | k | admin | company.members.setRole | admin/RoleChangeDialog |
@@ -1022,6 +1141,10 @@ GET /v1/app/budget | g | budgets | | spending |
 GET /v1/app/org/spend | g | budgets | | spending |
 GET /v1/app/spend-requests | g | budgets | | spending |
 GET /v1/app/org/budget-settings | g | budgets | | spending |
+GET /v1/app/org/engine-model | k | later | company.engineModel.get | setup/AiSpendStep | T
+PUT /v1/app/org/engine-model | k | later | company.engineModel.put | setup/AiSpendStep | T
+GET /v1/app/projects/{p}/spend-limits | k | later | projects.settings.get | setup/ProjectSpendLimits | T
+PUT /v1/app/projects/{p}/spend-limits | k | later | projects.settings.put | setup/ProjectSpendLimits | T
 GET /v1/app/trial | c | budgets | | trial-billing |
 GET /v1/app/org/billing | c | budgets | | trial-billing |
 POST /v1/app/org/billing | c | budgets | | trial-billing |

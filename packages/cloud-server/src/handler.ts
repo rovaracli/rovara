@@ -18,8 +18,11 @@ import { ROUTES, type OrgView, type Route, type RouteAnswer } from "./routes.js"
 import type { SessionStore } from "./sessions.js";
 import { StoreConflict, companyScopedWork, type WorkSessionStore } from "./work-sessions.js";
 import { companyOf } from "./company-caller.js";
-import { JOIN_UNUSABLE, inviteTokenHash, linkToken, usableInvite } from "./onboarding-routes.js";
+import { JOIN_UNUSABLE, inviteTokenHash, linkToken, openSecret, sealSecret, ticketKey, usableInvite } from "./onboarding-routes.js";
 import { GITHUB_APP_PATHS, GITHUB_CALLBACK_PATH, GITHUB_CONNECT_COOKIE, createGithubConnect, type GithubAnswer } from "./github-connect.js";
+import { connectCookieName } from "./connect-flow.js";
+import { SLACK_CALLBACK_PATH, createSlackConnect } from "./slack-connect.js";
+import { LINEAR_CALLBACK_PATH, createLinearConnect } from "./linear-connect.js";
 
 export interface CloudRequest {
   method: string;
@@ -60,9 +63,12 @@ export interface CloudHandlerOptions {
 }
 
 const COOKIE = "rovara_cloud_session";
-/** The join ticket's cookie (onboarding-routes.ts): opaque, single use, ten minutes, only for Cloud's sign-in paths. */
+/**
+ * The join ticket's cookie (onboarding-routes.ts): opaque, single use, ten minutes, only for Cloud's sign-in paths. `<ticket>.<key>`: the
+ * ticket names the kept join; the key opens the invite secret sealed in it (DEC 254h), so the store alone can't.
+ */
 const JOIN_COOKIE = "rovara_cloud_join";
-const JOIN_TICKET = /^[A-Za-z0-9_-]{43}$/u;
+const JOIN_TICKET = /^([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/u;
 /** Where a join that can't go on lands: the join page's one sentence. */
 const JOIN_UNUSABLE_PAGE = "/app/join?unusable=1";
 /** The join page's lookup: the invite link's token in, the company's name and a join ticket out. */
@@ -116,6 +122,9 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
   const appOrigin = new URL(options.origin).origin;
   // Guided onboarding PR 2: Connect GitHub (github-connect.ts).
   const github = createGithubConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, ...(options.company === undefined ? {} : { companies: options.company.store }) });
+  // Guided onboarding PR 11: Add to Slack, the channel picker, Connect Linear and the team pick (slack-connect.ts, linear-connect.ts).
+  const slack = createSlackConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, origin: options.origin });
+  const linear = createLinearConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, origin: options.origin });
 
   /**
    * The join page's lookup (onboarding-routes.ts): same origin only (a page elsewhere can't start a join for someone), JSON, small. A usable
@@ -128,28 +137,38 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     const token = body !== null && typeof body === "object" && !Array.isArray(body) && Object.keys(body).length === 1 ? linkToken((body as { invite?: unknown }).invite) : undefined;
     const invite = token === undefined ? undefined : await usableInvite(options.company?.store, inviteTokenHash(token), now().getTime());
     if (invite === undefined) return unusable();
-    const ticket = randomBytes(32).toString("base64url");
-    await options.store.putPending(`join.${ticket}`, { verifier: "", returnTo: "/app", at: now().getTime(), invite: invite.tokenHash, joinTicket: true });
-    return json(200, { companyName: invite.companyName ?? "your company" }, { "set-cookie": joinCookie(ticket, SIGN_IN_TTL_MS / 1000) });
+    const ticket = randomBytes(32).toString("base64url"), key = ticketKey();
+    // Code's secret rides in the ticket sealed under the cookie's key: the store never holds it readable, and it is never logged.
+    await options.store.putPending(`join.${ticket}`, {
+      verifier: "", returnTo: "/app", at: now().getTime(), invite: invite.tokenHash, joinTicket: true, ...(invite.codeSecret === true ? { sealedSecret: sealSecret(token!, key, ticket) } : {}),
+    });
+    return json(200, { companyName: invite.companyName ?? "your company" }, { "set-cookie": joinCookie(`${ticket}.${key}`, SIGN_IN_TTL_MS / 1000) });
   }
 
   /** "Sign in to join": the ticket from the cookie, the invite checked again, and Code's sign-in with the invite's company. */
   async function joinSignIn(request: CloudRequest): Promise<CloudResponse> {
-    const ticket = cookieNamed(request, JOIN_COOKIE);
+    const [, ticket, key] = JOIN_TICKET.exec(cookieNamed(request, JOIN_COOKIE) ?? "") ?? [];
     const clear = joinCookie("", 0);
-    const kept = ticket !== undefined && JOIN_TICKET.test(ticket) ? await options.store.takePending(`join.${ticket}`) : undefined;
+    const kept = ticket !== undefined ? await options.store.takePending(`join.${ticket}`) : undefined;
     const fresh = kept !== undefined && kept.joinTicket === true && kept.invite !== undefined && now().getTime() - kept.at <= SIGN_IN_TTL_MS;
     const invite = fresh ? await usableInvite(options.company?.store, kept.invite!, now().getTime()) : undefined;
-    if (invite === undefined) return text(302, "", { location: JOIN_UNUSABLE_PAGE, "set-cookie": clear });
-    const { url, state, pending } = options.client.startSignIn("/app", now().getTime(), { company: invite.companyId, invite: invite.tokenHash });
+    // An invite whose link is Code's secret joins only with that secret, opened from the ticket and matching the invite's hash.
+    const secret = invite?.codeSecret === true ? openSecret(kept!.sealedSecret, key!, ticket!) : undefined;
+    if (invite === undefined || (invite.codeSecret === true && (secret === undefined || inviteTokenHash(secret) !== invite.tokenHash))) {
+      return text(302, "", { location: JOIN_UNUSABLE_PAGE, "set-cookie": clear });
+    }
+    const { url, state, pending } = options.client.startSignIn("/app", now().getTime(), { company: invite.companyId, invite: invite.tokenHash, ...(secret === undefined ? {} : { inviteSecret: secret }) });
     await options.store.putPending(state, pending);
     return text(302, "", { location: url, "set-cookie": clear });
   }
 
-  /** After a join's sign-in: the invite is marked taken when Code put the person in the invite's company. Where the person lands. */
-  async function finishJoin(inviteHash: string, access: Parameters<typeof companyOf>[0], developerId: string): Promise<string> {
+  /**
+   * After a join's sign-in: the invite is marked taken only when Code put the person in the invite's company AND says this sign-in joined by
+   * an invite (`joinedByInvite`, DEC 254h). Where the person lands.
+   */
+  async function finishJoin(inviteHash: string, access: NonNullable<Parameters<typeof companyOf>[0]>, developerId: string): Promise<string> {
     const invite = await usableInvite(options.company?.store, inviteHash, now().getTime());
-    if (invite === undefined || companyOf(access)?.companyId !== invite.companyId) {
+    if (invite === undefined || companyOf(access)?.companyId !== invite.companyId || access.joinedByInvite !== true) {
       log({ event: "cloud.invite_join_refused", developerId });
       return JOIN_UNUSABLE_PAGE;
     }
@@ -170,6 +189,14 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       const back = await github.callback(request.query, cookieNamed(request, GITHUB_CONNECT_COOKIE), sessionId(request));
       return text(302, "", { location: back.location, "set-cookie": back.setCookie });
     }
+    if (path === SLACK_CALLBACK_PATH && method === "GET") {
+      const back = await slack.callback(request.query, cookieNamed(request, connectCookieName("slack")), sessionId(request));
+      return text(302, "", { location: back.location, "set-cookie": back.setCookie });
+    }
+    if (path === LINEAR_CALLBACK_PATH && method === "GET") {
+      const back = await linear.callback(request.query, cookieNamed(request, connectCookieName("linear")), sessionId(request));
+      return text(302, "", { location: back.location, "set-cookie": back.setCookie });
+    }
     if (path === JOIN_PATH && method === "POST") return joinLookup(request);
     if (path === "/v1/auth/browser/authorize" && method === "GET" && request.query.get("join") === "1") return joinSignIn(request);
     if (path === "/v1/auth/browser/authorize" && method === "GET") {
@@ -181,8 +208,8 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     if (path === options.callbackPath && method === "GET") {
       const state = request.query.get("state") ?? "";
       // A join ticket is never a sign-in under way.
-      const pending = state.startsWith("join.") || state.startsWith("github.") ? undefined : await options.store.takePending(state);
-      if (pending === undefined || pending.joinTicket === true || pending.github !== undefined || now().getTime() - pending.at > SIGN_IN_TTL_MS) return text(400, "This sign-in expired. Go back to the app and sign in again.");
+      const pending = state.startsWith("join.") || state.startsWith("github.") || state.startsWith("connect.") ? undefined : await options.store.takePending(state);
+      if (pending === undefined || pending.joinTicket === true || pending.github !== undefined || pending.connect !== undefined || now().getTime() - pending.at > SIGN_IN_TTL_MS) return text(400, "This sign-in expired. Go back to the app and sign in again.");
       const refused = request.query.get("error");
       // A join Code refused (the email isn't the invited one, the invite was used or withdrawn): the one sentence, never Code's words.
       if (refused !== null && pending.invite !== undefined) return text(302, "", { location: JOIN_UNUSABLE_PAGE });
@@ -261,18 +288,21 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
         : method === "POST" && apiPath === GITHUB_APP_PATHS.result ? () => github.result(session!, id)
           : method === "POST" && apiPath === GITHUB_APP_PATHS.choose ? () => github.choose(session!, id, parsedBody(request.body))
             : method === "GET" && apiPath === GITHUB_APP_PATHS.connections ? () => github.connections(session!) : undefined;
-    if (githubCall !== undefined) {
+    // Guided onboarding PR 11: Slack and Linear (the start and result routes need this sign-in's cookie, as GitHub's).
+    const connectRoute = githubCall === undefined ? slack.route(method, apiPath, request.query) ?? linear.route(method, apiPath) : undefined;
+    const connectCall = githubCall ?? (connectRoute === undefined ? undefined : () => connectRoute(session!, id, parsedBody(request.body)));
+    if (connectCall !== undefined) {
       try {
         let answer: GithubAnswer;
         try {
-          answer = await githubCall();
+          answer = await connectCall();
         } catch (error) {
           // Another server refreshed this sign-in first (its refresh token was used once): run once more on what the store holds, as the route loop does.
           if (!(error instanceof SignInEnded)) throw error;
           const stored = await options.store.get(id);
           if (stored === undefined || stored.refreshToken === session.refreshToken) throw error;
           session = stored;
-          answer = await githubCall();
+          answer = await connectCall();
         }
         if (session.changed === true) {
           delete session.changed;
