@@ -185,6 +185,15 @@ describe("the company step, AI and spending", () => {
   } finally { f.close(); }
  });
 
+ it("a read failure says fixed words, never the server's (501: not available yet)", async () => {
+  for (const [status, words] of [[501, "AI and spending isn't available on this Rovara yet."], [403, "Couldn't load AI and spending. Try again."]] as const) {
+   const f = mountAlone(h(AiSpendStep, { role: "owner", developerId: me }), r => (r.path === "/v1/app/org/engine-model" ? { status, body: { error: { code: "X", message: "private canary" } } } : company({ cap: null, source: null, model: null }).respond(r)));
+   try {
+    expect((await screen.findByTestId("ai-spend-read-error")).textContent).toBe(words);
+    expect(document.body.textContent).not.toContain("private canary");
+   } finally { f.close(); }
+  }
+ });
  it("a plain member sees the model read only: no money reads, no Save", async () => {
   const c = company({ cap: null, source: null, model: "claude-sonnet-4-5" });
   const f = mountAlone(h(AiSpendStep, { role: "member", developerId: me }), r => (r.path === "/v1/app/org/engine-model" ? { status: 200, body: engine("claude-sonnet-4-5", "company", false) } : c.respond(r)));
