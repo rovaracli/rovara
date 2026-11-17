@@ -11,7 +11,7 @@ import { VisibleText } from "../../../design/VisibleText.js";
 import { ApiError } from "../../../api/errors.js";
 import { AdminSection } from "../parts.js";
 import { useAdminContext } from "../AdminLayout.js";
-import { CostCell, EndCell, FilterRow, PullRequestCell, RANGE_NOTE, REPORT_HOME, ReadState, TopNumbers, useReportFilters } from "./ReportParts.js";
+import { CostCell, EndCell, FilterRow, PullRequestCell, RANGE_NOTE, REPORT_HOME, ReadState, TopNumbers, UnreadableNote, useReportFilters } from "./ReportParts.js";
 import { useReportRead } from "./useReportRead.js";
 
 const columns: readonly Column<FeatureTask>[] = [
@@ -47,6 +47,7 @@ function DetailView() {
     {data.feature.state !== undefined && <span className="rv-report-state" data-state={data.feature.state}>{data.feature.state === "done" ? "Done" : "Open"}</span>}
     {data.feature.trackerLink?.url !== undefined && <> <a href={data.feature.trackerLink.url} target="_blank" rel="noopener noreferrer">Open in <VisibleText text={data.feature.trackerLink.tracker} /> (<VisibleText text={data.feature.trackerLink.id} />)</a></>}
    </p>}
+   <UnreadableNote tasks={data.unreadableTasks} />
    <TopNumbers totals={data.totals} label="This feature's numbers" />
    <p className="rv-report-help">{RANGE_NOTE}</p>
    <AdminSection title="Tasks">

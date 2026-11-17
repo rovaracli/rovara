@@ -3,7 +3,7 @@ import { useMemo, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { ApiError } from "../../../api/errors.js";
-import { ORIGINS, ORIGIN_WORDS, PATHS, PATH_WORDS, RANGES, RANGE_WORDS, costWords, dollars, durationWords, filterQuery, isRange, pullRequestWords, rangeBounds, unpricedWords, type Origin, type RangeId, type ReportFilters, type ReportNumbers, type StateFilter, type TaskPath } from "../../../api/admin-report.js";
+import { ORIGINS, ORIGIN_WORDS, PATHS, PATH_WORDS, RANGES, RANGE_WORDS, costWords, dollars, durationWords, filterQuery, isRange, pullRequestWords, rangeBounds, unpricedWords, unreadableWords, type Origin, type RangeId, type ReportFilters, type ReportNumbers, type StateFilter, type TaskPath } from "../../../api/admin-report.js";
 import { Button } from "../../../design/Button.js";
 import { Select } from "../../../design/Select.js";
 import { Skeleton } from "../../../design/Skeleton.js";
@@ -65,6 +65,11 @@ export function CostCell({ cents, floor, unpriced }: { cents: number; floor: boo
 export const PullRequestCell = ({ merged, opened }: { merged: number; opened: number }) => <span className="rv-num">{pullRequestWords(merged, opened)}</span>;
 export function EndCell({ ms, soFar }: { ms: number | undefined; soFar: boolean | undefined }) {
  return ms === undefined ? <span className="rv-muted">Not known</span> : <span className="rv-num">{durationWords(ms)}{soFar === true && <span className="rv-report-note">so far</span>}</span>;
+}
+
+/** Tasks Code could not read are left out of every number here; the page says so. */
+export function UnreadableNote({ tasks }: { tasks: number | undefined }) {
+ return tasks === undefined || tasks === 0 ? null : <div role="status" className="rv-banner rv-banner-warning" data-testid="report-unreadable"><span><b>{unreadableWords(tasks)}</b></span></div>;
 }
 
 export const RANGE_NOTE = "A task counts in the range it started in, with all of its cost. The Spending page counts by calendar month, so the two can differ.";

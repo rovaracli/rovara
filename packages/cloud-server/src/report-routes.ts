@@ -3,10 +3,11 @@
 //   GET /v1/app/org/report                          the totals, then the tasks grouped by feature and by project
 //   GET /v1/app/org/report/features/{featureId}     one feature (or `none`, the tasks with no feature): its numbers and its tasks
 //
-// Cloud only reads and groups. The rows are Rovara Code's report read, one row per task, asked as the signed-in person with their own token:
+// Cloud only reads and groups. The rows are Rovara Code's report read (Code PR #913, contract packages/contracts/src/cost-report.ts there), one row per task, asked as the signed-in person
+// with their own token:
 //
-//   GET /v1/dev/company/report/tasks?from=&to=&project=&cursor=&limit=200      (oldest first, a cursor; Code decides who may and which company)
-//   GET /v1/dev/company/report/features                                      (the feature names and states; optional: a Code without it gives "Unnamed feature")
+//   GET /v1/app/org/report/tasks?from=&to=&project=&origin=&state=&path=&cursor=&limit=200   (oldest start first; `next` and `hasMore`; Code decides who may and which company)
+//   GET /v1/app/org/report/features                                                         (the feature names and states; optional: a Code without it gives "Unnamed feature")
 //
 // Who and which company: Code's access check now (company-caller.ts), never a parameter, header or cookie. A person who is not a company owner or admin is
 // refused here without asking Code for a row; Code checks again on its own route and its refusal is one fixed sentence here (what Code worded is never echoed).
@@ -22,13 +23,14 @@ import { CodeError } from "./code-client.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
-/** Code's company report routes (assumed paths until Code's contract is published; one place to change). */
-export const CODE_REPORT_TASKS_PATH = "/v1/dev/company/report/tasks";
-export const CODE_REPORT_FEATURES_PATH = "/v1/dev/company/report/features";
+/** Code's company report routes (Code PR #913, COMPANY_REPORT_TASKS_PATH and COMPANY_REPORT_FEATURES_PATH in its contracts). */
+export const CODE_REPORT_TASKS_PATH = "/v1/app/org/report/tasks";
+export const CODE_REPORT_FEATURES_PATH = "/v1/app/org/report/features";
 
-/** Code's page size and the most pages one answer reads (5,000 tasks). Past it the whole range is refused, never a part of it. */
+/** Code's page size (REPORT_PAGE_MAX), the most tasks and the most calls to Code one answer reads. Past either the whole range is refused, never a part of it. A call looks at up to 1,000 tasks and may give fewer. */
 export const REPORT_PAGE_ROWS = 200;
-export const REPORT_PAGES_MAX = 25;
+export const REPORT_ROWS_MAX = 5_000;
+export const REPORT_PAGES_MAX = 50;
 /** The tasks one feature detail answer lists; the totals above them count every task. */
 export const FEATURE_TASKS_MAX = 500;
 /** The id of the group of tasks with no feature. A feature's own id is never this. */
@@ -49,12 +51,12 @@ export const REPORT_WORDS = Object.freeze({
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------
 // The filters
 
-export const ORIGINS = ["linear", "jira", "slack", "web", "tool"] as const;
+export const ORIGINS = ["linear", "jira", "slack", "web", "tool", "other"] as const;
 export const PATHS = ["quick", "full"] as const;
 export const TASK_STATES = ["open", "merged", "closed", "failed"] as const;
 /** The state filter offers three words; "closed" also takes a task that failed (the report does not hide failed work, it files it with the closed ones). */
 export const STATE_FILTERS = ["open", "merged", "closed"] as const;
-export const FEATURE_SOURCES = ["chosen", "tracker", "inherited", "confirmed_at_plan", "moved"] as const;
+export const FEATURE_SOURCES = ["moved", "chosen", "tracker", "inherited", "confirmed_at_plan"] as const;
 type Origin = (typeof ORIGINS)[number];
 type TaskPath = (typeof PATHS)[number];
 type TaskState = (typeof TASK_STATES)[number];
@@ -64,9 +66,9 @@ type FeatureSource = (typeof FEATURE_SOURCES)[number];
 export interface ReportFilters { from?: string; to?: string; project?: string; origin?: Origin; state?: StateFilter; path?: TaskPath }
 
 const INSTANT = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?Z)?$/u;
-const FEATURE_ID = /^[A-Za-z0-9_-]{1,64}$/u;
-const TASK_ID = /^[A-Za-z0-9_.:-]{1,128}$/u;
-const CURSOR = /^[A-Za-z0-9_=.-]{1,512}$/u;
+/** Code's feature ids (FeatureIdSchema) and task ids (uuids). */
+const FEATURE_ID = /^ft_[a-f0-9]{20}$/u;
+const TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const NAME_UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 /** One task's cost can be at most $1,000,000: with at most 5,000 tasks the sum stays a safe integer. */
 const MAX_TASK_MICROS = 1_000_000_000_000;
@@ -101,7 +103,7 @@ export function parseReportFilters(query: URLSearchParams): ReportFilters | unde
 
 /** One task, as the report reads it. Only what the pages draw: no person, no wait split. */
 export interface ReportTask {
-  taskId: string; project: string; title: string; origin: Origin; path: TaskPath; state: TaskState;
+  taskId: string; project: string; title: string; origin: Origin; path?: TaskPath; state: TaskState;
   feature?: { id: string; source: FeatureSource };
   startedAt: number; firstPrAt?: number; endedAt?: number;
   prsOpened: number; prsMerged: number; prLinks: string[];
@@ -138,13 +140,15 @@ export function readRow(raw: unknown, companyId: string): ReportTask | undefined
   const taskId = raw["taskId"], title = inert(raw["title"], TITLE_MAX), project = typeof raw["project"] === "string" ? inert(raw["project"], PROJECT_MAX) : undefined;
   if (typeof taskId !== "string" || !TASK_ID.test(taskId) || project === undefined) return undefined;
   const { origin, path, state } = raw;
-  if (!oneOf(ORIGINS, origin) || !oneOf(PATHS, path) || !oneOf(TASK_STATES, state)) return undefined;
+  if (!oneOf(ORIGINS, origin) || !oneOf(TASK_STATES, state) || (path !== undefined && !oneOf(PATHS, path))) return undefined;
   const startedAt = instantOf(raw["startedAt"]);
   if (startedAt === undefined) return undefined;
   const firstPrAt = raw["firstPrAt"] === undefined ? undefined : instantOf(raw["firstPrAt"]), endedAt = raw["endedAt"] === undefined ? undefined : instantOf(raw["endedAt"]);
   if ((raw["firstPrAt"] !== undefined && firstPrAt === undefined) || (raw["endedAt"] !== undefined && endedAt === undefined)) return undefined;
   if (!isCount(raw["prsOpened"], 1_000) || !isCount(raw["prsMerged"], 1_000) || !isCount(raw["costMicros"], MAX_TASK_MICROS) || !isCount(raw["unpricedCalls"], 100_000_000)) return undefined;
-  if (raw["currency"] !== "USD") return undefined;
+  // Code leaves `currency` out when the ledger recorded nothing for the task (then the cost is 0 and nothing is unpriced); any other currency than USD is refused whole.
+  if (raw["currency"] === undefined ? raw["costMicros"] !== 0 || raw["unpricedCalls"] !== 0 : raw["currency"] !== "USD") return undefined;
+  if ((raw["prsMerged"]) > (raw["prsOpened"])) return undefined;
   let feature: ReportTask["feature"];
   if (raw["feature"] !== undefined) {
     const found = raw["feature"];
@@ -153,7 +157,7 @@ export function readRow(raw: unknown, companyId: string): ReportTask | undefined
   }
   const links = Array.isArray(raw["prLinks"]) ? (raw["prLinks"] as unknown[]).slice(0, 20).flatMap((link) => { const good = plainHttpsLink(link); return good === undefined ? [] : [good]; }) : [];
   return {
-    taskId, project, title: title ?? "Untitled task", origin, path, state, ...(feature === undefined ? {} : { feature }), startedAt, ...(firstPrAt === undefined ? {} : { firstPrAt }), ...(endedAt === undefined ? {} : { endedAt }),
+    taskId, project, title: title ?? "Untitled task", origin, ...(path === undefined ? {} : { path }), state, ...(feature === undefined ? {} : { feature }), startedAt, ...(firstPrAt === undefined ? {} : { firstPrAt }), ...(endedAt === undefined ? {} : { endedAt }),
     prsOpened: raw["prsOpened"], prsMerged: raw["prsMerged"], prLinks: links, costMicros: raw["costMicros"], unpricedCalls: raw["unpricedCalls"],
   };
 }
@@ -182,14 +186,21 @@ function refusalOf(error: CodeError): RouteAnswer {
   return REPORT_WORDS.unavailable;
 }
 
-/** Every row of the range, page by page as the person. A part of a range is never returned. */
-async function fetchRows(context: RouteContext, companyId: string, filters: ReportFilters): Promise<ReportTask[]> {
+/** The rows of the range and how many Code could not read (left out by Code, never shown). */
+interface FetchedRows { rows: ReportTask[]; unreadable: number }
+
+/**
+ * Every row of the range, call by call as the person (Code's `next` and `hasMore`; a call may give fewer rows than it looked at). A part of a range is never returned: too many rows or too many
+ * calls, a cursor that does not move, a duplicate or an unreadable row refuses the whole answer. Rows Code says it could not read are counted and said (`unreadableTasks`), never hidden.
+ */
+async function fetchRows(context: RouteContext, companyId: string, filters: ReportFilters): Promise<FetchedRows> {
   const rows: ReportTask[] = [];
   const seen = new Set<string>();
-  let cursor: string | undefined;
-  for (let page = 1; page <= REPORT_PAGES_MAX; page += 1) {
+  const cursors = new Set<string>();
+  let cursor: string | undefined, unreadable = 0;
+  for (let call = 1; call <= REPORT_PAGES_MAX; call += 1) {
     const params = new URLSearchParams();
-    for (const name of ["from", "to", "project"] as const) if (filters[name] !== undefined) params.set(name, filters[name]);
+    for (const name of ["from", "to", "project", "origin", "state", "path"] as const) if (filters[name] !== undefined) params.set(name, filters[name]);
     if (cursor !== undefined) params.set("cursor", cursor);
     params.set("limit", String(REPORT_PAGE_ROWS));
     let body: unknown;
@@ -199,19 +210,23 @@ async function fetchRows(context: RouteContext, companyId: string, filters: Repo
       if (error instanceof CodeError) throw new ReportRefused(refusalOf(error));
       throw error;
     }
-    if (!plain(body) || !Array.isArray(body["tasks"]) || body["tasks"].length > REPORT_PAGE_ROWS) throw new ReportRefused(REPORT_WORDS.unreadable);
+    if (!plain(body) || !Array.isArray(body["tasks"]) || body["tasks"].length > REPORT_PAGE_ROWS || typeof body["hasMore"] !== "boolean") throw new ReportRefused(REPORT_WORDS.unreadable);
     const next = body["next"];
-    if (next !== undefined && next !== null && (typeof next !== "string" || !CURSOR.test(next))) throw new ReportRefused(REPORT_WORDS.unreadable);
+    if (typeof next !== "string" || next.length > 1_024 || /\p{Cc}/u.test(next)) throw new ReportRefused(REPORT_WORDS.unreadable);
+    // `skipped` (rows of the partition that are not this company's) is Code's own count; none of them is in `tasks`.
+    const bad = body["unreadable"];
+    if (bad !== undefined && !isCount(bad, 100_000_000)) throw new ReportRefused(REPORT_WORDS.unreadable);
+    unreadable += bad ?? 0;
     for (const raw of body["tasks"] as unknown[]) {
       const row = readRow(raw, companyId);
-      if (row === undefined) throw new ReportRefused(REPORT_WORDS.unreadable);
-      if (seen.has(row.taskId)) throw new ReportRefused(REPORT_WORDS.unreadable);
+      if (row === undefined || seen.has(row.taskId)) throw new ReportRefused(REPORT_WORDS.unreadable);
       seen.add(row.taskId);
       rows.push(row);
     }
-    if (typeof next !== "string") return rows;
-    if (page >= REPORT_PAGES_MAX) throw new ReportRefused(REPORT_WORDS.tooLarge);
-    if (next === cursor) throw new ReportRefused(REPORT_WORDS.unreadable);
+    if (rows.length > REPORT_ROWS_MAX) throw new ReportRefused(REPORT_WORDS.tooLarge);
+    if (!body["hasMore"]) return { rows, unreadable };
+    if (cursors.has(next) || next === cursor) throw new ReportRefused(REPORT_WORDS.unreadable);
+    cursors.add(next);
     cursor = next;
   }
   throw new ReportRefused(REPORT_WORDS.tooLarge);
@@ -336,6 +351,8 @@ export interface CostReport {
   projects: string[];
   byFeature: ReportGroup[];
   byProject: ReportGroup[];
+  /** Tasks Code could not read and left out of every number here. Absent when none. */
+  unreadableTasks?: number;
 }
 
 /** The filters Cloud applies itself (Code takes the range and the project). */
@@ -381,10 +398,11 @@ export interface FeatureDetail {
   sources: Array<{ source: FeatureSource; count: number }>;
   /** Newest first, at most FEATURE_TASKS_MAX; `tasksTotal` counts them all. */
   tasks: Array<{
-    taskId: string; title: string; project: string; origin: Origin; path: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number;
+    taskId: string; title: string; project: string; origin: Origin; path?: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number;
     prsOpened: number; prsMerged: number; prLinks: string[]; wallMs?: number; wallSoFar?: boolean;
   }>;
   tasksTotal: number;
+  unreadableTasks?: number;
 }
 
 /** One feature's detail from the rows. Undefined for an id that is neither a feature of the company nor `none`. */
@@ -409,7 +427,7 @@ export function buildFeatureDetail(id: string, rows: readonly ReportTask[], feat
     tasks: shown.map((task, at) => {
       const end = task.state === "open" ? nowMs : task.endedAt;
       return {
-        taskId: task.taskId, title: task.title, project: task.project, origin: task.origin, path: task.path, state: task.state, startedAt: new Date(task.startedAt).toISOString(),
+        taskId: task.taskId, title: task.title, project: task.project, origin: task.origin, ...(task.path === undefined ? {} : { path: task.path }), state: task.state, startedAt: new Date(task.startedAt).toISOString(),
         costCents: cents[at]!, unpricedCalls: task.unpricedCalls, prsOpened: task.prsOpened, prsMerged: task.prsMerged, prLinks: task.prLinks,
         ...(end !== undefined && end >= task.startedAt ? { wallMs: end - task.startedAt, ...(task.state === "open" ? { wallSoFar: true } : {}) } : {}),
       };
@@ -435,11 +453,13 @@ async function read(context: RouteContext, featureId: string | undefined): Promi
     if ("status" in who) return who;
     const filters = parseReportFilters(context.query);
     if (filters === undefined) return REPORT_WORDS.badFilter;
-    const rows = applyOwnFilters(await fetchRows(context, who.companyId, filters), filters);
+    const fetched = await fetchRows(context, who.companyId, filters);
+    const rows = applyOwnFilters(fetched.rows, filters);
     const features = await fetchFeatures(context);
-    if (featureId === undefined) return { status: 200, body: buildReport(rows, features, filters, context.now()) };
+    const unreadable = fetched.unreadable > 0 ? { unreadableTasks: fetched.unreadable } : {};
+    if (featureId === undefined) return { status: 200, body: { ...buildReport(rows, features, filters, context.now()), ...unreadable } };
     const detail = buildFeatureDetail(featureId, rows, features, filters, context.now());
-    return detail === undefined ? REPORT_WORDS.notFound : { status: 200, body: detail };
+    return detail === undefined ? REPORT_WORDS.notFound : { status: 200, body: { ...detail, ...unreadable } };
   } catch (error) {
     if (error instanceof ReportRefused) return error.answer;
     // Code's access check failing is Code's refusal too: fixed words, never what Code said. An ended sign-in is the handler's.

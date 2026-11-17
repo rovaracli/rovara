@@ -18,16 +18,16 @@ const plainHttps = (value: unknown): string | undefined => {
 const optional = <K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } => (value === undefined ? {} : ({ [key]: value } as { [P in K]?: V }));
 function must<T>(value: T | undefined): T { if (value === undefined) throw new Error("unreadable report"); return value; }
 
-export const ORIGINS = ["linear", "jira", "slack", "web", "tool"] as const;
+export const ORIGINS = ["linear", "jira", "slack", "web", "tool", "other"] as const;
 export type Origin = (typeof ORIGINS)[number];
-export const ORIGIN_WORDS: Record<Origin, string> = { linear: "Linear", jira: "Jira", slack: "Slack", web: "Web", tool: "AI tool" };
+export const ORIGIN_WORDS: Record<Origin, string> = { linear: "Linear", jira: "Jira", slack: "Slack", web: "Web", tool: "AI tool", other: "Other" };
 export const TASK_STATES = ["open", "merged", "closed", "failed"] as const;
 export type TaskState = (typeof TASK_STATES)[number];
 export const STATE_WORDS: Record<TaskState, string> = { open: "Open", merged: "Merged", closed: "Closed", failed: "Failed" };
 export const PATHS = ["quick", "full"] as const;
 export type TaskPath = (typeof PATHS)[number];
 export const PATH_WORDS: Record<TaskPath, string> = { quick: "Quick", full: "Full" };
-export const FEATURE_SOURCES = ["chosen", "tracker", "inherited", "confirmed_at_plan", "moved"] as const;
+export const FEATURE_SOURCES = ["moved", "chosen", "tracker", "inherited", "confirmed_at_plan"] as const;
 export type FeatureSource = (typeof FEATURE_SOURCES)[number];
 export const SOURCE_WORDS: Record<FeatureSource, string> = { chosen: "chosen by a person", tracker: "from the tracker", inherited: "inherited from a related task", confirmed_at_plan: "confirmed at plan", moved: "moved by an admin" };
 
@@ -36,15 +36,15 @@ export interface ReportNumbers {
   costPerMergedCents?: number; endToEndMs?: number; endToEndSoFar?: boolean; medianRequestToPrMs?: number;
 }
 export interface ReportGroup extends ReportNumbers { key: string; name: string; state?: "open" | "done" }
-export interface CostReport { range: { from?: string; to?: string }; asOf: string; totals: ReportNumbers; projects: string[]; byFeature: ReportGroup[]; byProject: ReportGroup[] }
+export interface CostReport { range: { from?: string; to?: string }; asOf: string; totals: ReportNumbers; projects: string[]; byFeature: ReportGroup[]; byProject: ReportGroup[]; unreadableTasks?: number }
 export interface FeatureTask {
-  taskId: string; title: string; project: string; origin: Origin; path: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number;
+  taskId: string; title: string; project: string; origin: Origin; path?: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number;
   prsOpened: number; prsMerged: number; prLinks: string[]; wallMs?: number; wallSoFar?: boolean;
 }
 export interface FeatureDetail {
   feature: { id: string; name: string; state?: "open" | "done"; trackerLink?: { tracker: string; id: string; url?: string }; none: boolean };
   range: { from?: string; to?: string }; asOf: string; totals: ReportNumbers;
-  sources: Array<{ source: FeatureSource; count: number }>; tasks: FeatureTask[]; tasksTotal: number;
+  sources: Array<{ source: FeatureSource; count: number }>; tasks: FeatureTask[]; tasksTotal: number; unreadableTasks?: number;
 }
 
 const oneOf = <T extends string>(list: readonly T[], value: unknown): T | undefined => (typeof value === "string" && (list as readonly string[]).includes(value) ? (value as T) : undefined);
@@ -79,7 +79,7 @@ export const readCostReport: Reader<CostReport> = {
     if (!isRecord(body)) throw new Error("unreadable report");
     return {
       range: range(body["range"]), asOf: must(time(body["asOf"])), totals: numbers(body["totals"]),
-      projects: list(body["projects"], 2_000, (item) => must(text(item, 200))), byFeature: list(body["byFeature"], 5_000, group), byProject: list(body["byProject"], 2_000, group),
+      projects: list(body["projects"], 2_000, (item) => must(text(item, 200))), byFeature: list(body["byFeature"], 5_000, group), byProject: list(body["byProject"], 2_000, group), ...optional("unreadableTasks", count(body["unreadableTasks"])),
     };
   },
 };
@@ -106,13 +106,13 @@ export const readFeatureDetail: Reader<FeatureDetail> = {
         if (!isRecord(item)) throw new Error("unreadable report");
         const soFar = item["wallSoFar"];
         return {
-          taskId: must(text(item["taskId"], 128)), title: must(text(item["title"], 200)), project: must(text(item["project"], 200)), origin: must(oneOf(ORIGINS, item["origin"])), path: must(oneOf(PATHS, item["path"])), state: must(oneOf(TASK_STATES, item["state"])),
+          taskId: must(text(item["taskId"], 128)), title: must(text(item["title"], 200)), project: must(text(item["project"], 200)), origin: must(oneOf(ORIGINS, item["origin"])), ...optional("path", oneOf(PATHS, item["path"])), state: must(oneOf(TASK_STATES, item["state"])),
           startedAt: must(time(item["startedAt"])), costCents: must(count(item["costCents"])), unpricedCalls: must(count(item["unpricedCalls"])), prsOpened: must(count(item["prsOpened"])), prsMerged: must(count(item["prsMerged"])),
           prLinks: Array.isArray(item["prLinks"]) ? (item["prLinks"] as unknown[]).slice(0, 20).flatMap((link) => { const good = plainHttps(link); return good === undefined ? [] : [good]; }) : [],
           ...optional("wallMs", count(item["wallMs"])), ...optional("wallSoFar", soFar === true ? true : undefined),
         };
       }),
-      tasksTotal: must(count(body["tasksTotal"])),
+      tasksTotal: must(count(body["tasksTotal"])), ...optional("unreadableTasks", count(body["unreadableTasks"])),
     };
   },
 };
@@ -138,6 +138,7 @@ export function dollars(cents: number): string {
 }
 /** A cost, with the floor marked: "$12.00 or more" when calls could not be priced. */
 export function costWords(cents: number, floor: boolean): string { return floor ? `${dollars(cents)} or more` : dollars(cents); }
+export const unreadableWords = (tasks: number): string => `${tasks.toLocaleString("en-US")} ${tasks === 1 ? "task" : "tasks"} couldn't be read and ${tasks === 1 ? "is" : "are"} left out of these numbers.`;
 export const unpricedWords = (calls: number): string => `${calls.toLocaleString("en-US")} ${calls === 1 ? "call" : "calls"} not priced`;
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 /** A length of calendar time in the largest sensible unit: "5 days", "3 hours", "40 minutes". */

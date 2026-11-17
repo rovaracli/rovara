@@ -80,6 +80,10 @@ describe("the readers", () => {
       expect(() => readFeatureDetail.parse(d)).toThrow();
     }
     expect(() => readCostReport.parse("nope")).toThrow();
+    // Code's rows may have no path, and a task may start from "other".
+    const d = clean(detail()) as any;
+    delete d.tasks[0].path; d.tasks[1].origin = "other";
+    expect(readFeatureDetail.parse(d).tasks.map(t => [t.origin, t.path])).toEqual([["linear", undefined], ["other", "quick"]]);
   });
   it("drops a link that is not plain https, and draws no person field even when one is sent", () => {
     const d = clean(detail()) as any;
@@ -299,6 +303,21 @@ describe("Cost and time", () => {
       expect((await screen.findByTestId("report-error")).textContent).toContain("Couldn't load the cost report");
       expect(screen.queryByRole("table")).toBeNull();
     } finally { f.close(); }
+  });
+  it("says how many tasks could not be read, and says nothing when none", async () => {
+    const f = mount("/app/admin/money/report", server(clean({ ...report(), unreadableTasks: 3 })));
+    try {
+      expect((await screen.findByTestId("report-unreadable")).textContent).toBe("3 tasks couldn't be read and are left out of these numbers.");
+    } finally { f.close(); }
+    const g = mount("/app/admin/money/report", server(clean(report())));
+    try {
+      await screen.findByRole("table", { name: "Cost and time by feature" });
+      expect(screen.queryByTestId("report-unreadable")).toBeNull();
+    } finally { g.close(); }
+    const h2 = mount("/app/admin/money/report/features/f1", server(clean({ ...detail(), unreadableTasks: 1 })));
+    try {
+      expect((await screen.findByTestId("report-unreadable")).textContent).toBe("1 task couldn't be read and is left out of these numbers.");
+    } finally { h2.close(); }
   });
   it("is not drawn for a member, and asks nothing", async () => {
     const f = mount("/app/admin/money/report", server(clean(report())), { role: "member" });

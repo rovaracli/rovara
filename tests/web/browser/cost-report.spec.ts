@@ -6,11 +6,14 @@ import { AdminPage, FAKE_CODE_URL, ROUTES } from "./pages/index.js";
 // Cost and time (Feature A, slice A3) through Cloud on the pretend Code: Cloud reads Code's one-row-per-task report as the signed-in company owner, groups it and sends whole cents; the page
 // draws it. The pretend Code serves the rows each test sets (POST /__fake/report); with none set it answers 404 and the page says "not connected yet".
 const DAY = 86_400_000;
+/** Code's feature ids: `ft_` and 20 hex characters. */
+const FT = (letter: string) => `ft_${letter.repeat(20)}`;
+const F_CHECKOUT = FT("a"), F_SEARCH = FT("b"), F_BAD = FT("c");
 const NOW = Date.now();
 const iso = (ms: number) => new Date(ms).toISOString();
 function task(n: number, over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    taskId: `task_${String(n).padStart(4, "0")}`, project: "web", title: `Task ${String(n)}`, origin: "web", path: "full", state: "merged", startedAt: iso(NOW - 6 * DAY), firstPrAt: iso(NOW - 5 * DAY), endedAt: iso(NOW - 4 * DAY),
+    taskId: `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`, project: "web", title: `Task ${String(n)}`, origin: "web", path: "full", state: "merged", startedAt: iso(NOW - 6 * DAY), firstPrAt: iso(NOW - 5 * DAY), endedAt: iso(NOW - 4 * DAY),
     prsOpened: 1, prsMerged: 1, prLinks: [`https://github.com/acme/web/pull/${String(n)}`], costMicros: 12_000_000, currency: "USD", unpricedCalls: 0, ...over,
   };
 }
@@ -24,12 +27,12 @@ test.afterEach(async ({ page }) => { await page.request.post(`${FAKE_CODE_URL}/_
 const thisMonth = () => { const start = new Date(); start.setUTCDate(1); start.setUTCHours(0, 0, 0, 0); return start.getTime(); };
 const inMonth = (hoursIn: number) => iso(thisMonth() + hoursIn * 3_600_000);
 const NORMAL_TASKS = [
-  task(1, { feature: { id: "f_checkout", source: "tracker" }, startedAt: inMonth(1), firstPrAt: inMonth(25), endedAt: inMonth(49), costMicros: 212_340_000 }),
-  task(2, { feature: { id: "f_checkout", source: "chosen" }, startedAt: inMonth(2), state: "open", endedAt: undefined, firstPrAt: undefined, prsOpened: 0, prsMerged: 0, costMicros: 3_330_000, unpricedCalls: 3, project: "api", origin: "slack" }),
-  task(3, { feature: { id: "f_search", source: "inherited" }, startedAt: inMonth(3), firstPrAt: inMonth(5), endedAt: inMonth(9), costMicros: 55_550_000 }),
+  task(1, { feature: { id: F_CHECKOUT, source: "tracker" }, startedAt: inMonth(1), firstPrAt: inMonth(25), endedAt: inMonth(49), costMicros: 212_340_000 }),
+  task(2, { feature: { id: F_CHECKOUT, source: "chosen" }, startedAt: inMonth(2), state: "open", endedAt: undefined, firstPrAt: undefined, prsOpened: 0, prsMerged: 0, costMicros: 3_330_000, unpricedCalls: 3, project: "api", origin: "slack" }),
+  task(3, { feature: { id: F_SEARCH, source: "inherited" }, startedAt: inMonth(3), firstPrAt: inMonth(5), endedAt: inMonth(9), costMicros: 55_550_000 }),
   task(4, { startedAt: inMonth(4), state: "closed", prsOpened: 0, prsMerged: 0, firstPrAt: undefined, endedAt: inMonth(6), costMicros: 11_110_000, origin: "linear", path: "quick" }),
 ];
-const FEATURES = [{ id: "f_checkout", name: "Checkout v2", state: "open" }, { id: "f_search", name: "Search", state: "done" }];
+const FEATURES = [{ id: F_CHECKOUT, name: "Checkout v2", state: "open" }, { id: F_SEARCH, name: "Search", state: "done" }];
 
 const axeSource = readFileSync(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
 async function violations(page: Page): Promise<string[]> {
@@ -96,7 +99,7 @@ test("a filter narrows the report and the CSV is what it shows", async ({ page }
 });
 
 test("a task titled like a formula is exported with an apostrophe in front", async ({ page }) => {
-  await setReport(page, [task(1, { feature: { id: "f_bad", source: "chosen" }, startedAt: inMonth(1) })], [{ id: "f_bad", name: "=HYPERLINK(\"http://evil.example\",\"x\")", state: "open" }]);
+  await setReport(page, [task(1, { feature: { id: F_BAD, source: "chosen" }, startedAt: inMonth(1) })], [{ id: F_BAD, name: "=HYPERLINK(\"http://evil.example\",\"x\")", state: "open" }]);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.costReport);
   await expect(admin.table("Cost and time by feature")).toContainText("=HYPERLINK(");
@@ -114,8 +117,8 @@ test("an empty range says so", async ({ page }, info) => {
 });
 
 test("many features are paged 25 a page, and a made-up feature is not found", async ({ page }, info) => {
-  const tasks = Array.from({ length: 60 }, (_, n) => task(n + 1, { feature: { id: `f_${String(n)}`, source: "chosen" }, startedAt: inMonth(1 + n), costMicros: (100 - n) * 1_000_000 }));
-  const features = Array.from({ length: 60 }, (_, n) => ({ id: `f_${String(n)}`, name: `Feature ${String(n).padStart(2, "0")}`, state: n % 3 === 0 ? "done" : "open" }));
+  const tasks = Array.from({ length: 60 }, (_, n) => task(n + 1, { feature: { id: `ft_${n.toString(16).padStart(20, "0")}`, source: "chosen" }, startedAt: inMonth(1 + n), costMicros: (100 - n) * 1_000_000 }));
+  const features = Array.from({ length: 60 }, (_, n) => ({ id: `ft_${n.toString(16).padStart(20, "0")}`, name: `Feature ${String(n).padStart(2, "0")}`, state: n % 3 === 0 ? "done" : "open" }));
   await setReport(page, tasks, features);
   const admin = new AdminPage(page);
   await admin.open(ROUTES.admin.costReport);
@@ -124,7 +127,7 @@ test("many features are paged 25 a page, and a made-up feature is not found", as
   await shot(page, info, "many-light");
   await page.getByRole("button", { name: "Next page" }).click();
   await expect(page.getByText("Showing 26 to 50 of 60")).toBeVisible();
-  await page.goto(ROUTES.admin.costFeature("f_nothing"));
+  await page.goto(ROUTES.admin.costFeature(FT("f")));
   await expect(admin.heading("Feature not found")).toBeVisible();
 });
 
@@ -137,7 +140,7 @@ for (const scheme of ["light", "dark"] as const) {
     await expect(admin.table("Cost and time by feature")).toBeVisible();
     expect(await violations(page)).toEqual([]);
     if (scheme === "dark") await shot(page, info, "normal-feature-dark");
-    await page.goto(ROUTES.admin.costFeature("f_checkout"));
+    await page.goto(ROUTES.admin.costFeature(F_CHECKOUT));
     await expect(admin.table("Tasks in this feature")).toBeVisible();
     expect(await violations(page)).toEqual([]);
     if (scheme === "dark") await shot(page, info, "feature-dark");

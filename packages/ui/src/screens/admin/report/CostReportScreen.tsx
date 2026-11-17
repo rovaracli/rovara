@@ -13,7 +13,7 @@ import { VisibleText } from "../../../design/VisibleText.js";
 import { Select } from "../../../design/Select.js";
 import { AdminSection } from "../parts.js";
 import { useAdminContext } from "../AdminLayout.js";
-import { CostCell, EndCell, FilterRow, PullRequestCell, RANGE_NOTE, REPORT_HOME, ReadState, TopNumbers, useReportFilters } from "./ReportParts.js";
+import { CostCell, EndCell, FilterRow, PullRequestCell, RANGE_NOTE, REPORT_HOME, ReadState, TopNumbers, UnreadableNote, useReportFilters } from "./ReportParts.js";
 import { useReportRead } from "./useReportRead.js";
 
 const PAGE_ROWS = 25;
@@ -61,6 +61,7 @@ function ReportView() {
   <FilterRow projects={projects} state={state} />
   <ReadState read={read} what="the cost report" title="Cost and time" />
   {data !== undefined && <>
+   <UnreadableNote tasks={data.unreadableTasks} />
    <TopNumbers totals={data.totals} label="Cost and time in this range" />
    <p className="rv-report-help">{RANGE_NOTE}</p>
    {data.totals.tasks === 0 ? <EmptyState testId="report-empty" title="No tasks in this range" description="Nothing started in this range matches these filters. Try a longer date range or clear a filter." /> : <AdminSection title={tab === "feature" ? "By feature" : "By project"}>

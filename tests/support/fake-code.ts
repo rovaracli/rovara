@@ -1196,8 +1196,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           reportData = { tasks: given.tasks, features: given.features };
           return send(200, { served: true, tasks: given.tasks.length });
         }
-        // The Cost and time report's two reads (design A5): company owners and admins only, rows oldest first, 200 a page by a numeric cursor.
-        if (method === "GET" && (url.pathname === "/v1/dev/company/report/tasks" || url.pathname === "/v1/dev/company/report/features")) {
+        // The Cost and time report's two reads (design A5): company owners and admins only, rows oldest first, 200 a page by a numeric cursor, `next` always and `hasMore` (Code PR #913).
+        if (method === "GET" && (url.pathname === "/v1/app/org/report/tasks" || url.pathname === "/v1/app/org/report/features")) {
           const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
           const who = bearer === undefined ? undefined : access.get(bearer);
           if (who === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
@@ -1205,7 +1205,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (!who.administrator) return send(403, { error: { code: "FORBIDDEN", message: "only a company owner or admin" } });
           if (url.pathname.endsWith("/features")) return send(200, { features: reportData.features });
           const size = 200, start = Number(url.searchParams.get("cursor") ?? "0");
-          return send(200, { tasks: reportData.tasks.slice(start, start + size), ...(start + size < reportData.tasks.length ? { next: String(start + size) } : {}) });
+          const more = start + size < reportData.tasks.length;
+          return send(200, { tasks: reportData.tasks.slice(start, start + size), next: String(more ? start + size : reportData.tasks.length), hasMore: more, skipped: 0, unreadable: 0 });
         }
         const raw = await readBody(request);
         if (method === "POST" && url.pathname === "/v1/auth/token") {

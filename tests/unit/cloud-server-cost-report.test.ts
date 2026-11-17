@@ -3,7 +3,7 @@
 // pretend Rovara Code. Company owner or admin only; the company is Code's live access answer; Cloud reads Code's one-row-per-task report, groups it, and sends whole cents.
 import { describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type CodeSession } from "../../packages/cloud-server/src/index.js";
-import { CODE_REPORT_FEATURES_PATH, CODE_REPORT_TASKS_PATH, REPORT_PAGES_MAX, REPORT_WORDS, allocateCents, plainHttpsLink, readRow } from "../../packages/cloud-server/src/report-routes.js";
+import { CODE_REPORT_FEATURES_PATH, CODE_REPORT_TASKS_PATH, REPORT_PAGES_MAX, REPORT_ROWS_MAX, REPORT_WORDS, allocateCents, plainHttpsLink, readRow } from "../../packages/cloud-server/src/report-routes.js";
 
 const CODE = "https://code.example.test";
 const ADA = "a".repeat(64), GRACE = "f".repeat(64), BOB = "b".repeat(64);
@@ -11,12 +11,16 @@ const ACME = "org_acme0000000000000000", GLOBEX = "org_globex00000000000000";
 const NOW = Date.UTC(2026, 10, 17, 12, 0, 0);
 const DAY = 86_400_000;
 const iso = (ms: number) => new Date(ms).toISOString();
+/** Code's ids: a task is a uuid, a feature is `ft_` and 20 hex characters. */
+const uuidOf = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+const FT = (letter: string) => `ft_${letter.repeat(20)}`;
+const F1 = FT("1"), F2 = FT("2"), F9 = FT("9"), FA = FT("a"), FG = FT("b");
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 interface CodeRow { [field: string]: unknown }
 /** One of Code's rows as the design's A5 names it (v0: no wait split, no send-backs). */
 const row = (n: number, over: CodeRow = {}): CodeRow => ({
-  taskId: `task_${String(n).padStart(4, "0")}`, project: "web", title: `Task ${String(n)}`, origin: "web", path: "full", state: "merged", startedAt: iso(NOW - 10 * DAY), firstPrAt: iso(NOW - 9 * DAY), endedAt: iso(NOW - 8 * DAY),
+  taskId: uuidOf(n), project: "web", title: `Task ${String(n)}`, origin: "web", path: "full", state: "merged", startedAt: iso(NOW - 10 * DAY), firstPrAt: iso(NOW - 9 * DAY), endedAt: iso(NOW - 8 * DAY),
   prsOpened: 1, prsMerged: 1, prLinks: [`https://github.com/acme/web/pull/${String(n)}`], costMicros: 1_000_000, currency: "USD", unpricedCalls: 0, ...over,
 });
 const feat = (id: string, source = "chosen") => ({ id, source });
@@ -47,7 +51,8 @@ function setUp(companies: Record<string, Company>, over: { tasks?: (call: Call) 
       // Code names the company from the token and returns that company's rows only; a page is `pageSize` rows and a numeric cursor.
       const size = company.pageSize ?? 200, start = Number(url.searchParams.get("cursor") ?? "0");
       const page = company.rows.slice(start, start + size);
-      return json(200, { tasks: page, ...(start + size < company.rows.length ? { next: String(start + size) } : {}) });
+      const more = start + size < company.rows.length;
+      return json(200, { tasks: page, next: String(more ? start + size : company.rows.length), hasMore: more, skipped: 0, unreadable: 0 });
     }
     if (url.pathname === CODE_REPORT_FEATURES_PATH) {
       calls.push(call);
@@ -139,11 +144,11 @@ describe("who may read the cost report", () => {
 });
 
 describe("two companies", () => {
-  const acmeRows = [row(1, { title: "Acme checkout", project: "acme-web", feature: feat("feat_acme") })];
-  const globexRows = [row(2, { title: "Globex secret plan", project: "globex-api", feature: feat("feat_globex"), costMicros: 7_000_000 })];
+  const acmeRows = [row(1, { title: "Acme checkout", project: "acme-web", feature: feat(FA) })];
+  const globexRows = [row(2, { title: "Globex secret plan", project: "globex-api", feature: feat(FG), costMicros: 7_000_000 })];
   const world = () => setUp({
-    [ACME]: { rows: acmeRows, features: [{ id: "feat_acme", name: "Acme feature", state: "open" }] },
-    [GLOBEX]: { rows: globexRows, features: [{ id: "feat_globex", name: "Globex feature", state: "open" }] },
+    [ACME]: { rows: acmeRows, features: [{ id: FA, name: "Acme feature", state: "open" }] },
+    [GLOBEX]: { rows: globexRows, features: [{ id: FG, name: "Globex feature", state: "open" }] },
   });
   it("shows each company only its own rows and never the other's names", async () => {
     const w = world();
@@ -161,7 +166,7 @@ describe("two companies", () => {
     expect(answer.status).toBe(200);
     expect(answer.text).not.toMatch(/Globex/u);
     for (const call of w.calls) {
-      expect([...call.search.keys()].every((key) => ["from", "to", "project", "cursor", "limit"].includes(key))).toBe(true);
+      expect([...call.search.keys()].every((key) => ["from", "to", "project", "origin", "state", "path", "cursor", "limit"].includes(key))).toBe(true);
       expect(call.search.toString()).not.toContain(GLOBEX);
     }
   });
@@ -177,23 +182,23 @@ describe("two companies", () => {
   });
   it("a feature of another company is the same 404 as a missing one", async () => {
     const w = world();
-    const other = await w.get(FEATURE("feat_globex"), "ada-token"), missing = await w.get(FEATURE("feat_nothing"), "ada-token");
+    const other = await w.get(FEATURE(FG), "ada-token"), missing = await w.get(FEATURE(FT("c")), "ada-token");
     expect(other.status).toBe(404);
     expect(other.body).toEqual(missing.body);
     expect(other.body).toEqual(REPORT_WORDS.notFound.body);
-    expect((await w.get(FEATURE("feat_acme"), "ada-token")).status).toBe(200);
+    expect((await w.get(FEATURE(FA), "ada-token")).status).toBe(200);
   });
 });
 
 describe("the report", () => {
   const rows = [
-    row(1, { feature: feat("f1"), project: "web", costMicros: 212_340_000 }),
-    row(2, { feature: feat("f1", "tracker"), project: "api", state: "open", endedAt: undefined, firstPrAt: undefined, prsOpened: 0, prsMerged: 0, costMicros: 3_333_333, unpricedCalls: 3, startedAt: iso(NOW - 2 * DAY) }),
-    row(3, { feature: feat("f2"), project: "web", costMicros: 5_555_555 }),
+    row(1, { feature: feat(F1), project: "web", costMicros: 212_340_000 }),
+    row(2, { feature: feat(F1, "tracker"), project: "api", state: "open", endedAt: undefined, firstPrAt: undefined, prsOpened: 0, prsMerged: 0, costMicros: 3_333_333, unpricedCalls: 3, startedAt: iso(NOW - 2 * DAY) }),
+    row(3, { feature: feat(F2), project: "web", costMicros: 5_555_555 }),
     row(4, { project: "web", costMicros: 1_111_111, origin: "slack", path: "quick", state: "closed", prsOpened: 0, prsMerged: 0, firstPrAt: undefined }),
     row(5, { project: "api", state: "failed", prsOpened: 0, prsMerged: 0, firstPrAt: undefined, costMicros: 2_000_000, origin: "linear" }),
   ];
-  const features = [{ id: "f1", name: "Checkout v2", state: "open" }, { id: "f2", name: "Search", state: "done" }];
+  const features = [{ id: F1, name: "Checkout v2", state: "open" }, { id: F2, name: "Search", state: "done" }];
   const world = () => setUp({ [ACME]: { rows, features } });
 
   it("adds up in integer cents, and every table's rows add up to its total exactly", async () => {
@@ -215,17 +220,17 @@ describe("the report", () => {
     expect(none).toMatchObject({ key: "none", tasks: 2, prsMerged: 0 });
     expect(none.state).toBeUndefined();
     // Even when No feature is the dearest group it stays last.
-    const dear = await setUp({ [ACME]: { rows: [row(1, { costMicros: 9_000_000 }), row(2, { costMicros: 1_000_000, feature: feat("f2") })], features } }).get(REPORT, "ada-token");
-    expect(dear.body.byFeature.map((g: { key: string }) => g.key)).toEqual(["f2", "none"]);
+    const dear = await setUp({ [ACME]: { rows: [row(1, { costMicros: 9_000_000 }), row(2, { costMicros: 1_000_000, feature: feat(F2) })], features } }).get(REPORT, "ada-token");
+    expect(dear.body.byFeature.map((g: { key: string }) => g.key)).toEqual([F2, "none"]);
   });
   it("leaves No feature out when every task has a feature, and names an unknown feature 'Unnamed feature'", async () => {
-    const w = setUp({ [ACME]: { rows: [row(1, { feature: feat("f9") })], features: [] } });
+    const w = setUp({ [ACME]: { rows: [row(1, { feature: feat(F9) })], features: [] } });
     const { body } = await w.get(REPORT, "ada-token");
     expect(body.byFeature).toHaveLength(1);
     expect(body.byFeature[0].name).toBe("Unnamed feature");
   });
   it("still answers, with unnamed features, when Code has no features route", async () => {
-    const w = setUp({ [ACME]: { rows: [row(1, { feature: feat("f1") })], featuresStatus: 404 } });
+    const w = setUp({ [ACME]: { rows: [row(1, { feature: feat(F1) })], featuresStatus: 404 } });
     const { status, body, text } = await w.get(REPORT, "ada-token");
     expect(status).toBe(200);
     expect(body.byFeature[0].name).toBe("Unnamed feature");
@@ -233,9 +238,9 @@ describe("the report", () => {
   });
   it("never shows an unpriced call as nothing: the calls are counted and the cost is marked a floor", async () => {
     const { body } = await world().get(REPORT, "ada-token");
-    const checkout = body.byFeature.find((g: { key: string }) => g.key === "f1");
+    const checkout = body.byFeature.find((g: { key: string }) => g.key === F1);
     expect(checkout).toMatchObject({ unpricedCalls: 3, costIsFloor: true });
-    expect(body.byFeature.find((g: { key: string }) => g.key === "f2")).toMatchObject({ unpricedCalls: 0, costIsFloor: false });
+    expect(body.byFeature.find((g: { key: string }) => g.key === F2)).toMatchObject({ unpricedCalls: 0, costIsFloor: false });
     expect(body.totals).toMatchObject({ unpricedCalls: 3, costIsFloor: true });
     const zero = await setUp({ [ACME]: { rows: [row(1, { costMicros: 0, unpricedCalls: 2 })] } }).get(REPORT, "ada-token");
     expect(zero.body.totals).toMatchObject({ costCents: 0, costIsFloor: true, unpricedCalls: 2 });
@@ -246,11 +251,11 @@ describe("the report", () => {
   });
   it("works out end to end, 'so far' for open work, and the median from request to pull request", async () => {
     const { body } = await world().get(REPORT, "ada-token");
-    const checkout = body.byFeature.find((g: { key: string }) => g.key === "f1");
+    const checkout = body.byFeature.find((g: { key: string }) => g.key === F1);
     // First start 10 days ago; an open task keeps it running to now.
     expect(checkout.endToEndMs).toBe(10 * DAY);
     expect(checkout.endToEndSoFar).toBe(true);
-    const search = body.byFeature.find((g: { key: string }) => g.key === "f2");
+    const search = body.byFeature.find((g: { key: string }) => g.key === F2);
     expect(search.endToEndMs).toBe(2 * DAY);
     expect(search.endToEndSoFar).toBe(false);
     // Tasks 1, 3 opened a PR a day after they started.
@@ -262,7 +267,7 @@ describe("the report", () => {
   it("takes the median of distinct times (the middle of three, the mean of the middle two of four) and skips tasks with no pull request", async () => {
     const at = (days: number, over: CodeRow = {}) => row(Math.floor(Math.random() * 1e6), { startedAt: iso(NOW - 20 * DAY), firstPrAt: iso(NOW - 20 * DAY + days * DAY), ...over });
     let n = 0;
-    const mk = (days: number | undefined) => ({ ...at(1), taskId: `task_m${String(n++)}`, ...(days === undefined ? { firstPrAt: undefined, prsOpened: 0, prsMerged: 0, state: "closed" } : { firstPrAt: iso(NOW - 20 * DAY + days * DAY) }) });
+    const mk = (days: number | undefined) => ({ ...at(1), taskId: uuidOf(900 + n++), ...(days === undefined ? { firstPrAt: undefined, prsOpened: 0, prsMerged: 0, state: "closed" } : { firstPrAt: iso(NOW - 20 * DAY + days * DAY) }) });
     const three = await setUp({ [ACME]: { rows: [mk(10), mk(1), mk(3), mk(undefined)] } }).get(REPORT, "ada-token");
     expect(three.body.totals.medianRequestToPrMs).toBe(3 * DAY);
     const four = await setUp({ [ACME]: { rows: [mk(10), mk(1), mk(3), mk(2)] } }).get(REPORT, "ada-token");
@@ -275,11 +280,13 @@ describe("the report", () => {
     expect(body.byProject.map((g: { name: string }) => g.name)).toEqual(["web", "api"]);
     expect(body.projects).toEqual(["api", "web"]);
   });
-  it("filters: the range and project go to Code, origin, path and state are Cloud's (closed takes failed)", async () => {
+  it("filters: all six go to Code, and Cloud applies origin, path and state again (closed takes failed)", async () => {
     const w = world();
     await w.get(`${REPORT}?from=2026-11-01&to=2026-11-30T23:59:59Z&project=web`, "ada-token");
     expect(w.taskCalls()[0]!.search.get("from")).toBe("2026-11-01");
     expect(w.taskCalls()[0]!.search.get("project")).toBe("web");
+    await w.get(`${REPORT}?origin=slack&state=open&path=quick`, "ada-token");
+    expect(["origin", "state", "path"].map((name) => w.taskCalls()[1]!.search.get(name))).toEqual(["slack", "open", "quick"]);
     expect((await w.get(`${REPORT}?origin=slack`, "ada-token")).body.totals.tasks).toBe(1);
     expect((await w.get(`${REPORT}?path=quick`, "ada-token")).body.totals.tasks).toBe(1);
     expect((await w.get(`${REPORT}?state=closed`, "ada-token")).body.totals.tasks).toBe(2);
@@ -317,7 +324,8 @@ describe("what Code sent, read strictly", () => {
   it("refuses a body that is not a list of tasks, a duplicate task and a cursor that does not move", async () => {
     expect((await setUp({ [ACME]: { rows: [] } }, { tasks: () => json(200, { tasks: "no" }) }).get(REPORT, "ada-token")).status).toBe(502);
     expect((await setUp({ [ACME]: { rows: [row(1), row(1)] } }).get(REPORT, "ada-token")).status).toBe(502);
-    expect((await setUp({ [ACME]: { rows: [] } }, { tasks: () => json(200, { tasks: [row(1)], next: "same" }) }).get(REPORT, "ada-token")).status).toBe(502);
+    let served = 0; // a different task each call, so only the cursor check can stop it
+    expect((await setUp({ [ACME]: { rows: [] } }, { tasks: () => json(200, { tasks: [row(++served)], next: "same", hasMore: true }) }).get(REPORT, "ada-token")).status).toBe(502);
   });
   it("makes titles inert and short, keeps only plain https links, and shows a project name as text", () => {
     const parsed = readRow(row(1, { title: "A‮\u0000B  <b>x</b> " + "z".repeat(300), prLinks: ["https://github.com/a/b/pull/1", "http://insecure.example/x", "javascript:alert(1)", "https://user:pw@evil.example/x", "https://has space.example/x"] }), ACME)!;
@@ -326,7 +334,7 @@ describe("what Code sent, read strictly", () => {
     expect(parsed.prLinks).toEqual(["https://github.com/a/b/pull/1"]);
     expect(plainHttpsLink("https://localhost/x")).toBeUndefined();
   });
-  it("reads every page, and refuses a range with more pages than the limit instead of returning part of it", async () => {
+  it("reads every call of Code's cursor, and refuses a range with more rows or more calls than the limits instead of returning part of it", async () => {
     const many = Array.from({ length: 450 }, (_, n) => row(n + 1));
     const ok = await setUp({ [ACME]: { rows: many, pageSize: 200 } }).get(REPORT, "ada-token");
     expect(ok.body.totals.tasks).toBe(450);
@@ -334,27 +342,56 @@ describe("what Code sent, read strictly", () => {
     expect(exactly.status).toBe(200);
     expect(exactly.body.totals.tasks).toBe(REPORT_PAGES_MAX * 2);
     const one = await setUp({ [ACME]: { rows: Array.from({ length: REPORT_PAGES_MAX * 2 + 1 }, (_, n) => row(n + 1)), pageSize: 2 } }).get(REPORT, "ada-token");
-    expect(one.status).toBe(422);
-    const big = await setUp({ [ACME]: { rows: Array.from({ length: (REPORT_PAGES_MAX + 2) * 2 }, (_, n) => row(n + 1)), pageSize: 2 } }, {}).get(REPORT, "ada-token");
-    // pageSize 2 gives more pages than the limit: whole-range refusal.
-    expect(big.status).toBe(422);
-    expect(big.body).toEqual(REPORT_WORDS.tooLarge.body);
+    expect([one.status, one.body]).toEqual([422, REPORT_WORDS.tooLarge.body]);
+    const edge = await setUp({ [ACME]: { rows: Array.from({ length: REPORT_ROWS_MAX }, (_, n) => row(n + 1)) } }).get(REPORT, "ada-token");
+    expect(edge.body.totals.tasks).toBe(REPORT_ROWS_MAX);
+    const over = await setUp({ [ACME]: { rows: Array.from({ length: REPORT_ROWS_MAX + 1 }, (_, n) => row(n + 1)) } }).get(REPORT, "ada-token");
+    expect([over.status, over.body]).toEqual([422, REPORT_WORDS.tooLarge.body]);
+  });
+  it("goes on past a call that gave no rows while Code says there is more, and stops at hasMore false", async () => {
+    let at = 0;
+    const w = setUp({ [ACME]: { rows: [] } }, { tasks: () => { at += 1; return at < 3 ? json(200, { tasks: [], next: `c${String(at)}`, hasMore: true, skipped: 0, unreadable: 0 }) : json(200, { tasks: [row(1)], next: "end", hasMore: false, skipped: 0, unreadable: 0 }); } });
+    const answer = await w.get(REPORT, "ada-token");
+    expect(answer.body.totals.tasks).toBe(1);
+    expect(w.taskCalls().map((call) => call.search.get("cursor"))).toEqual([null, "c1", "c2"]);
+  });
+  it("says how many tasks Code could not read instead of hiding them, and ignores Code's count of other companies' rows", async () => {
+    const w = setUp({ [ACME]: { rows: [] } }, { tasks: () => json(200, { tasks: [row(1)], next: "n", hasMore: false, skipped: 4, unreadable: 2 }) });
+    const answer = await w.get(REPORT, "ada-token");
+    expect(answer.body.unreadableTasks).toBe(2);
+    expect(answer.body.totals.tasks).toBe(1);
+    expect(answer.text).not.toContain("skipped");
+    const clean = await setUp({ [ACME]: { rows: [row(1)] } }).get(REPORT, "ada-token");
+    expect(clean.body).not.toHaveProperty("unreadableTasks");
+    const bad = await setUp({ [ACME]: { rows: [] } }, { tasks: () => json(200, { tasks: [], next: "n", hasMore: false, unreadable: -1 }) }).get(REPORT, "ada-token");
+    expect(bad.status).toBe(502);
+  });
+  it("reads Code's real row: no path, no currency when nothing was recorded, the 'other' origin, and sends the other filters to Code", async () => {
+    const bare = row(1, { path: undefined, currency: undefined, costMicros: 0, unpricedCalls: 0, origin: "other", prLinks: [] });
+    const w = setUp({ [ACME]: { rows: [bare] } });
+    const answer = await w.get(`${REPORT}?origin=other&state=merged`, "ada-token");
+    expect(answer.status).toBe(200);
+    expect(answer.body.totals).toMatchObject({ tasks: 1, costCents: 0, costIsFloor: false });
+    expect([...w.taskCalls()[0]!.search.keys()].sort()).toEqual(["limit", "origin", "state"]);
+    // A cost with no currency is not a cost Cloud can read; merged cannot exceed opened.
+    expect((await setUp({ [ACME]: { rows: [row(1, { currency: undefined, costMicros: 5 })] } }).get(REPORT, "ada-token")).status).toBe(502);
+    expect((await setUp({ [ACME]: { rows: [row(1, { prsOpened: 1, prsMerged: 2 })] } }).get(REPORT, "ada-token")).status).toBe(502);
   });
 });
 
 describe("a feature's page", () => {
   const rows = [
-    row(1, { feature: feat("f1", "tracker"), title: "Pay with card", startedAt: iso(NOW - 5 * DAY), firstPrAt: iso(NOW - 4 * DAY), endedAt: iso(NOW - 3 * DAY), costMicros: 2_500_000 }),
-    row(2, { feature: feat("f1", "tracker"), title: "Pay with wallet", startedAt: iso(NOW - 3 * DAY), state: "open", endedAt: undefined, firstPrAt: undefined, prsMerged: 0, prsOpened: 0, costMicros: 1_250_000 }),
-    row(3, { feature: feat("f1", "confirmed_at_plan"), title: "Refunds", startedAt: iso(NOW - 4 * DAY), firstPrAt: iso(NOW - 3 * DAY), endedAt: iso(NOW - 2 * DAY), costMicros: 1_000_000, origin: "slack" }),
+    row(1, { feature: feat(F1, "tracker"), title: "Pay with card", startedAt: iso(NOW - 5 * DAY), firstPrAt: iso(NOW - 4 * DAY), endedAt: iso(NOW - 3 * DAY), costMicros: 2_500_000 }),
+    row(2, { feature: feat(F1, "tracker"), title: "Pay with wallet", startedAt: iso(NOW - 3 * DAY), state: "open", endedAt: undefined, firstPrAt: undefined, prsMerged: 0, prsOpened: 0, costMicros: 1_250_000 }),
+    row(3, { feature: feat(F1, "confirmed_at_plan"), title: "Refunds", startedAt: iso(NOW - 4 * DAY), firstPrAt: iso(NOW - 3 * DAY), endedAt: iso(NOW - 2 * DAY), costMicros: 1_000_000, origin: "slack" }),
     row(4, { title: "Loose task", feature: undefined }),
   ];
-  const features = [{ id: "f1", name: "Checkout v2", state: "open", trackerLink: { tracker: "linear", id: "CHK", url: "https://linear.app/acme/project/chk" } }];
+  const features = [{ id: F1, name: "Checkout v2", state: "open", trackerLink: { tracker: "linear", id: "CHK", url: "https://linear.app/acme/project/chk" } }];
   const world = () => setUp({ [ACME]: { rows, features } });
   it("lists the feature's tasks newest first with the four numbers, how they got here, and a tracker link", async () => {
-    const { status, body } = await world().get(FEATURE("f1"), "ada-token");
+    const { status, body } = await world().get(FEATURE(F1), "ada-token");
     expect(status).toBe(200);
-    expect(body.feature).toMatchObject({ id: "f1", name: "Checkout v2", state: "open", none: false, trackerLink: { tracker: "linear", id: "CHK", url: "https://linear.app/acme/project/chk" } });
+    expect(body.feature).toMatchObject({ id: F1, name: "Checkout v2", state: "open", none: false, trackerLink: { tracker: "linear", id: "CHK", url: "https://linear.app/acme/project/chk" } });
     expect(body.tasks.map((t: { title: string }) => t.title)).toEqual(["Pay with wallet", "Refunds", "Pay with card"]);
     expect(body.totals).toMatchObject({ tasks: 3, prsMerged: 2, costCents: 475 });
     expect(body.tasks.reduce((sum: number, t: { costCents: number }) => sum + t.costCents, 0)).toBe(body.totals.costCents);
@@ -371,7 +408,7 @@ describe("a feature's page", () => {
   });
   it("gives a feature with no tasks in the range an empty page, and a made-up id the fixed 404", async () => {
     const w = setUp({ [ACME]: { rows: [], features } });
-    expect((await w.get(FEATURE("f1"), "ada-token")).body.tasks).toEqual([]);
+    expect((await w.get(FEATURE(F1), "ada-token")).body.tasks).toEqual([]);
     expect((await w.get(FEATURE("nope"), "ada-token")).status).toBe(404);
     // An id that is not an id never reaches Code (the route does not match).
     expect((await w.get("/v1/web/org/report/features/a%2Fb", "ada-token")).status).toBe(501);
