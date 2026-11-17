@@ -30,7 +30,7 @@ export function workTask(raw: unknown): Record<string, unknown> | undefined {
   const workflow = isRecord(raw["workflow"]) ? raw["workflow"] : undefined;
   const spent = isRecord(raw["spent"]) ? raw["spent"] : undefined, limit = isRecord(raw["runLimit"]) ? raw["runLimit"] : undefined;
   return some({
-    taskId: raw["taskId"], title: raw["title"].slice(0, 300), project: raw["project"].slice(0, 200), status: text(raw["status"], 40),
+    taskId: raw["taskId"], title: raw["title"].slice(0, 300), project: raw["project"].slice(0, 200), status: text(raw["status"], 40), shared: raw["shared"] === true ? true : undefined,
     workflow: workflow === undefined ? undefined : some({
       stage: text(workflow["stage"], 40), state: text(workflow["state"], 40), revision: num(workflow["revision"]), path: text(workflow["path"], 40), outcome: text(workflow["outcome"], 40), blockReason: text(workflow["blockReason"], 500),
     }),

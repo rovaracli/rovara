@@ -9,6 +9,7 @@ import { DecisionCard, type DecisionCardActions, type DecisionPane } from "../..
 import { Skeleton } from "../../design/Skeleton.js";
 import { StepRail } from "../../design/StepRail.js";
 import { VisibleText } from "../../design/VisibleText.js";
+import { taskWords } from "../../text/task-words.js";
 import { BuildStep } from "../session/BuildStep.js";
 import { RequestStep } from "../session/RequestStep.js";
 import type { Steer } from "../session/SteerBox.js";
@@ -31,7 +32,7 @@ export function QuietCard({ row, decisionsError, wide = false }: { row: WorkRow;
  let title: string, body: ReactNode;
  if (row.group === "you") {
   title = row.need ?? "Needs you";
-  body = decisionsError === undefined ? <>This needs you, but its decision card isn't available yet. {row.task.workflow?.blockReason !== undefined && <VisibleText text={row.task.workflow.blockReason} />}</> : <>{decisionsError instanceof ApiError ? <VisibleText text={decisionsError.message} /> : "Decisions couldn't be loaded."}</>;
+  body = decisionsError === undefined ? <>This needs you, but its decision card isn't available yet. {row.task.workflow?.blockReason !== undefined && <VisibleText text={taskWords(row.task.workflow.blockReason, row.task.hasThread)} />}</> : <>{decisionsError instanceof ApiError ? <VisibleText text={decisionsError.message} /> : "Decisions couldn't be loaded."}</>;
  } else if (row.group === "others") { title = "Waiting on someone else"; body = <>{row.line}. It moves on when they act.</>; }
  else if (row.group === "done") { title = row.line; body = <>Nothing more to do here.</>; }
  else if (row.group === "stopped") { title = row.line; body = <>Rovara stopped before it finished and nobody has picked it up since. {wide ? (row.task.sessionId === undefined ? "Continue it in your tool from the button above." : "Close it or continue it in your tool, from the actions above.") : "Open the full page to close it, or continue it in your tool."}</>; }
