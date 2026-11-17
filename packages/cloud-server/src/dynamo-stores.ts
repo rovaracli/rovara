@@ -165,7 +165,7 @@ export class DynamoWorkSessionStore implements WorkSessionStore {
       await this.db.send(new TransactWriteCommand({ TransactItems: first }));
     } catch (error) {
       const reasons = (error as { CancellationReasons?: Array<{ Code?: string }> }).CancellationReasons;
-      if (error instanceof ConditionalCheckFailedException || reasons?.some((reason) => reason.Code === "ConditionalCheckFailed") === true) throw new StoreConflict(session.sessionId);
+      if (error instanceof ConditionalCheckFailedException || reasons?.some((reason) => reason.Code === "ConditionalCheckFailed" || reason.Code === "TransactionConflict") === true) throw new StoreConflict(session.sessionId);
       throw error;
     }
     for (let at = 0; at < rest.length; at += TRANSACTION_MAX) await this.db.send(new TransactWriteCommand({ TransactItems: rest.slice(at, at + TRANSACTION_MAX) }));

@@ -25,8 +25,9 @@ export interface WorkSession {
    */
   companyId?: string;
   /**
-   * Set on a session made by opening a task someone else started: Code names the task's owner only to the owner themselves, so `owner` holds a
-   * placeholder (a hash of Code's person id that matches no one's sign-in) until the owner opens it. Never set on a session a person started.
+   * Set on a session made by opening a task someone else started: Code's task view has no owner field, so `owner` (and `startedBy`) hold the
+   * owner's name from Code's People read and a placeholder id (a hash of Code's person id that matches no sign-in) until the owner opens the task.
+   * Never set on a session a person started.
    */
   ownerUnresolved?: true;
   /** What a change to the session (a take-over) is asked against; it goes up with each change Cloud makes. */

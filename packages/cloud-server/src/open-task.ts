@@ -41,12 +41,17 @@ function peopleOf(answer: unknown): PeopleEntry[] | undefined {
   return entries;
 }
 
-/** A Code refusal (4xx) is "no": undefined. Anything else that went wrong (Code down, the sign-in ended) is not a refusal and passes on. */
+/** The statuses Code refuses a read with (bad id, not allowed, no such task, gone; a 401 is the sign-in ending, which the client handles). Any other answer (Code down, busy, rate limiting, the sign-in ended) is not a refusal and passes on. */
+const REFUSAL_STATUSES: ReadonlySet<number> = new Set([400, 403, 404, 410]);
+/** How long (ms) a first opener who lost the race waits before each of its re-reads for the winner's session (the winner's write may land a moment later). */
+export const WINNER_WAITS_MS: readonly number[] = [0, 40, 120, 300];
+
+/** A Code refusal is "no": undefined. Anything else that went wrong is not a refusal and passes on. */
 async function readOrRefused<T>(read: () => Promise<T>): Promise<T | undefined> {
   try {
     return await read();
   } catch (error) {
-    if (error instanceof CodeError && error.status >= 400 && error.status < 500) return undefined;
+    if (error instanceof CodeError && REFUSAL_STATUSES.has(error.status)) return undefined;
     throw error;
   }
 }
@@ -92,9 +97,14 @@ export async function openTaskByCodeId(context: RouteContext): Promise<RouteAnsw
     await context.work.put(record, undefined, { once: true });
   } catch (error) {
     if (!(error instanceof StoreConflict)) throw error;
-    // Another opener made the session since step 2: this person gets that one. A session this company's view does not show (another company's) is no answer.
-    const winner = await context.work.byTask(taskId);
-    return winner === undefined ? OPEN_REFUSED : opened(context, winner);
+    // Another opener made the session since step 2 (or is writing it right now): this person gets that one, found by a few short re-reads.
+    // A session this company's view does not show (another company's) never appears, and is no answer.
+    for (const wait of WINNER_WAITS_MS) {
+      if (wait > 0) await new Promise((resolve) => { setTimeout(resolve, wait); });
+      const winner = await context.work.byTask(taskId);
+      if (winner !== undefined) return opened(context, winner);
+    }
+    return OPEN_REFUSED;
   }
   return opened(context, record);
 }
@@ -103,7 +113,8 @@ export async function openTaskByCodeId(context: RouteContext): Promise<RouteAnsw
 async function healOwner(context: RouteContext, record: WorkSession, me: { developerId: string; name: string }): Promise<void> {
   const people = peopleOf(await readOrRefused(() => context.client.json<unknown>(context.session, `/v1/dev/tasks/${encodeURIComponent(record.taskId)}/people`)));
   if (people?.some((entry) => entry.you && entry.effectiveRole === "owner") !== true) return;
-  const healed: WorkSession = { ...record, owner: me, revision: record.revision + 1 };
+  // The placeholder was also the starter (the opener could name no one else), so it is replaced in both places: the owner's lists then show the session.
+  const healed: WorkSession = { ...record, owner: me, ...(record.startedBy.developerId === record.owner.developerId ? { startedBy: me } : {}), revision: record.revision + 1 };
   delete healed.ownerUnresolved;
   try {
     await context.work.put(healed);

@@ -2,6 +2,7 @@
 // Cloud by its Code id: Cloud finds the task's session or makes it on the first open, but only after Code's own task read (as that person) succeeds.
 // The owner comes from Code's People read, never from the opener; the company from the sign-in; a Code refusal answers like a missing session.
 import { describe, expect, it } from "vitest";
+import { DynamoWorkSessionStore } from "../../packages/cloud-server/src/dynamo-stores.js";
 import { openTaskByCodeId } from "../../packages/cloud-server/src/open-task.js";
 import type { RouteContext } from "../../packages/cloud-server/src/routes.js";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, StoreConflict, createCloudHandler, type CloudRequest, type CodeSession, type WorkSession } from "../../packages/cloud-server/src/index.js";
@@ -24,7 +25,7 @@ interface CodeCall { method: string; path: string; authorization: string | undef
 type Who = "ada" | "sam" | "eve" | "zed" | "kim";
 const WHO: Record<string, Who> = { "Bearer fay-token": "zed", "Bearer ada-token": "ada", "Bearer sam-token": "sam", "Bearer eve-token": "eve", "Bearer zed-token": "zed", "Bearer kim-token": "kim" };
 
-interface Options { people?: (who: Who) => unknown; taskStatus?: (who: Who) => number; peopleStatus?: (who: Who) => number }
+interface Options { task?: (who: Who) => unknown; people?: (who: Who) => unknown; taskStatus?: (who: Who) => number; peopleStatus?: (who: Who) => number }
 
 function setUp(options: Options = {}) {
   const calls: CodeCall[] = [], accessOf: Record<string, unknown> = {};
@@ -45,8 +46,9 @@ function setUp(options: Options = {}) {
     if (url.pathname === "/v1/dev/tasks" && init?.method === "POST") return json(201, { task });
     if (url.pathname === `/v1/dev/tasks/${TASK}`) {
       const status = options.taskStatus?.(who) ?? (who === "eve" ? 404 : who === "zed" ? 403 : 200);
-      return status === 200 ? json(200, { task }) : json(status, refusal);
+      return status === 200 ? json(200, { task: options.task?.(who) ?? task }) : json(status, refusal);
     }
+    if (url.pathname === `/v1/dev/tasks/${TASK}/people/take-ownership` && init?.method === "POST") return json(200, { ok: true });
     if (url.pathname === `/v1/dev/tasks/${TASK}/people`) {
       const status = options.peopleStatus?.(who) ?? 200;
       return status === 200 ? json(200, options.people?.(who) ?? peopleFor(who)) : json(status, refusal);
@@ -154,6 +156,58 @@ describe("opening a task by its Code id", () => {
     expect(record.revision).toBe(2);
     const page = await w.get(`/v1/web/sessions/${sessionId}`, await w.ada());
     expect((SessionResponseReaderSchema.parse(page.body).session as { you: { owner: boolean } }).you.owner).toBe(true);
+  });
+
+  it("a task Code answers with another task id, or with no project, opens nothing", async () => {
+    for (const task of [{ taskId: OTHER_TASK, project: "payments" }, { taskId: TASK, project: "" }, { taskId: TASK }, { taskId: TASK, project: 7 }]) {
+      const w = setUp({ task: () => task });
+      expect(await w.post(OPEN, undefined, await w.sam())).toEqual(REFUSED);
+      expect(w.sessions()).toHaveLength(0);
+    }
+  });
+
+  it("with two owners, the opener who is one of them is the owner; a people entry with no name or that is null opens nothing", async () => {
+    const wrap = (people: unknown[]) => ({ view: { revision: 1, orphaned: false, canManage: false, canTakeOwnership: false, people } });
+    const owner = (id: string, name: string, you: boolean) => ({ personId: id, name, role: "owner", you, effectiveRole: "owner" });
+    const two = setUp({ people: () => wrap([owner(ADA_PERSON, "Ada", false), owner(SAM_PERSON, "Sam", true)]) });
+    await two.post(OPEN, undefined, await two.sam());
+    expect(two.sessions()[0]).toMatchObject({ owner: { developerId: SAM, name: "Sam" } });
+    expect(two.sessions()[0]!.ownerUnresolved).toBeUndefined();
+    for (const people of [[owner(ADA_PERSON, "", true)], [owner(ADA_PERSON, "   ", true)], [null]]) {
+      const w = setUp({ people: () => wrap(people) });
+      expect(await w.post(OPEN, undefined, await w.sam())).toEqual(REFUSED);
+      expect(w.sessions()).toHaveLength(0);
+    }
+  });
+
+  it("only Code's refusals (400, 403, 404, 410) read as a missing session: a busy or rate-limited Code passes through", async () => {
+    for (const status of [429, 408, 409]) {
+      const w = setUp({ taskStatus: () => status });
+      expect((await w.post(OPEN, undefined, await w.sam())).status).toBe(status);
+      expect(w.sessions()).toHaveLength(0);
+    }
+    for (const status of [400, 403, 404, 410]) {
+      const w = setUp({ taskStatus: () => status });
+      expect(await w.post(OPEN, undefined, await w.sam())).toEqual(REFUSED);
+    }
+  });
+
+  it("healing also names the owner as the starter, so the owner's own lists show the session", async () => {
+    const w = setUp();
+    await w.post(OPEN, undefined, await w.sam());
+    expect(w.sessions()[0]!.startedBy.developerId).not.toBe(ADA);
+    await w.post(OPEN, undefined, await w.ada());
+    expect(w.sessions()[0]!.startedBy).toEqual({ developerId: ADA, name: "Ada" });
+    expect((await w.work.startedBy(ADA)).map((each) => each.taskId)).toEqual([TASK]);
+  });
+
+  it("taking the task over clears the placeholder mark, so the new owner is not healed over later", async () => {
+    const w = setUp();
+    const { sessionId } = (await w.post(OPEN, undefined, await w.sam())).body as { sessionId: string };
+    const taken = await w.post(`/v1/web/sessions/${sessionId}/take-over`, { requestId: "55555555-5555-4555-8555-555555555555" }, await w.sam());
+    expect(taken.status).toBe(200);
+    expect(w.sessions()[0]).toMatchObject({ owner: { developerId: SAM, name: "Sam" } });
+    expect(w.sessions()[0]!.ownerUnresolved).toBeUndefined();
   });
 
   it("a session with a resolved owner costs no People read on later opens", async () => {
@@ -326,5 +380,31 @@ describe("the route's own company check, without the company-scoped store in fro
     const context = { client, session: { access }, params: [TASK], work, now: () => new Date(0), origin: "https://cloud.example.test" } as unknown as RouteContext;
     expect(await openTaskByCodeId(context)).toEqual(REFUSED);
     expect(work.everything().sessions).toHaveLength(1);
+  });
+});
+
+describe("a first opener who loses the race", () => {
+  const access = { developerId: SAM, displayName: "Sam", administrator: false, companyId: A, companyRole: "member", projects: [], notices: [] };
+  const mine = (work: unknown) => ({ client: { access: async () => access, json: async (_s: unknown, path: string) => (path.includes("/people") ? { view: { people: [{ personId: SAM_PERSON, name: "Sam", you: true, effectiveRole: "owner" }] } } : { task: { taskId: TASK, project: "payments" } }) }, session: { access }, params: [TASK], work, now: () => new Date(0), origin: "https://cloud.example.test" }) as unknown as RouteContext;
+  const winnerSession: WorkSession = { sessionId: "ses_wwwwwwwwwwwwwwwwwwww", taskId: TASK, project: "payments", startedBy: { developerId: ADA, name: "Ada" }, owner: { developerId: ADA, name: "Ada" }, createdAt: "2026-11-17T00:00:00.000Z", revision: 1, companyId: A };
+  it("gets the winner's session even when it shows a moment after the conflict", async () => {
+    let reads = 0;
+    const work = { byTask: async () => { reads += 1; return reads >= 4 ? winnerSession : undefined; }, put: async () => { throw new StoreConflict("ses_loser"); } };
+    expect((await openTaskByCodeId(mine(work))).body).toMatchObject({ sessionId: "ses_wwwwwwwwwwwwwwwwwwww" });
+    expect(reads).toBe(4);
+  });
+  it("is refused when no session ever shows", async () => {
+    const work = { byTask: async () => undefined, put: async () => { throw new StoreConflict("ses_loser"); } };
+    expect(await openTaskByCodeId(mine(work))).toEqual(REFUSED);
+  });
+});
+
+describe("the DynamoDB store reads two transactions that touch the same task record as a conflict", () => {
+  it("a TransactionConflict or a failed condition on the task record is a StoreConflict (so the request runs again), anything else is not", async () => {
+    const record: WorkSession = { sessionId: "ses_aaaaaaaaaaaaaaaaaaaa", taskId: TASK, project: "payments", startedBy: { developerId: ADA, name: "Ada" }, owner: { developerId: ADA, name: "Ada" }, createdAt: "2026-11-17T00:00:00.000Z", revision: 1 };
+    const failing = (...codes: string[]) => new DynamoWorkSessionStore({ send: async () => { throw Object.assign(new Error("cancelled"), { name: "TransactionCanceledException", CancellationReasons: codes.map((Code) => ({ Code })) }); } } as never, "table");
+    await expect(failing("None", "TransactionConflict").put(record, undefined, { once: true })).rejects.toBeInstanceOf(StoreConflict);
+    await expect(failing("None", "ConditionalCheckFailed").put(record, undefined, { once: true })).rejects.toBeInstanceOf(StoreConflict);
+    await expect(failing("None", "ThrottlingError").put(record)).rejects.not.toBeInstanceOf(StoreConflict);
   });
 });

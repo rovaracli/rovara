@@ -80,7 +80,7 @@ export const BEDROCK_TEMPLATE_URL_PATTERN = "^(|https://(?!(?:[a-z0-9-]*\\.)*s3[
  *   SIGNIN#   a sign-in: read, created, its last-seen time updated, deleted on sign-out (session-table.ts)
  *   PENDING#  a sign-in under way: written, then taken once with a delete
  *   SESSION#  a Cloud session and its comments: written (in a transaction) and read as one partition (Query)
- *   REQUEST#  the session a start request made: written and read
+ *   REQUEST#  the session a start request made, and (`REQUEST#task-<task id>`) the session of a Code task: written and read
  *   PRESENCE# who is viewing: a heartbeat written, the partition read (Query)
  *   AUDIT#    the company audit record (#50): written once, a month's partition read (Query); never updated or deleted
  *   AUDITID#  an audit record's id marker: written once (the same transaction), never read or changed

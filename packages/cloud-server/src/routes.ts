@@ -712,6 +712,7 @@ export const ROUTES: Route[] = [
       const { view } = await context.client.json<{ view: { revision: number } }>(context.session, path);
       await context.client.json(context.session, `${path}/take-ownership`, { method: "POST", body: { requestId, expectedPeopleRevision: view.revision } });
       const updated: WorkSession = { ...record, owner: { developerId: context.session.access.developerId, name: context.session.access.displayName }, revision: record.revision + 1 };
+      delete updated.ownerUnresolved;
       await context.work.put(updated);
       return ok({ session: sessionView(updated, await readTask(context, record.taskId), viewer(context), context.origin) });
     },
