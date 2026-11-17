@@ -2,7 +2,7 @@
 // not drawn as zero, and nobody is ranked (no person appears here). The wait split and send-backs are not drawn until Rovara Code sends them.
 import "./report.css";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { REPORT_PATH, readCostReport, reportCsv, type ReportGroup } from "../../../api/admin-report.js";
 import { useAppHost } from "../../../host.js";
 import { Button } from "../../../design/Button.js";
@@ -14,6 +14,7 @@ import { Select } from "../../../design/Select.js";
 import { AdminSection } from "../parts.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { CostCell, EndCell, FilterRow, PullRequestCell, RANGE_NOTE, REPORT_HOME, ReadState, TopNumbers, UnreadableNote, useReportFilters } from "./ReportParts.js";
+import { NewFeatureButton } from "./ReportActions.js";
 import { useReportRead } from "./useReportRead.js";
 
 const PAGE_ROWS = 25;
@@ -36,7 +37,7 @@ export function CostReportScreen() {
 }
 
 function ReportView() {
- const host = useAppHost(), state = useReportFilters(), [tab, setTab] = useState<Tab>("feature"), [sort, setSort] = useState<SortId>("cost"), [page, setPage] = useState(0);
+ const host = useAppHost(), navigate = useNavigate(), state = useReportFilters(), [tab, setTab] = useState<Tab>("feature"), [sort, setSort] = useState<SortId>("cost"), [page, setPage] = useState(0);
  const read = useReportRead("cost", REPORT_PATH + state.query, readCostReport);
  const data = read.data;
  // A project filter narrows the report to that project, so the menu keeps every project this page has seen (the Cloud answer lists only the projects in the filtered range).
@@ -57,7 +58,7 @@ function ReportView() {
  ];
  const download = () => { if (data !== undefined) host.saveFile(tab === "feature" ? "cost-and-time-by-feature.csv" : "cost-and-time-by-project.csv", new Blob([reportCsv(groups, tab)], { type: "text/csv" })); };
  return <section className="rv-report-surface" aria-busy={read.isFetching}>
-  <PageHeader focusOnMount title="Cost and time" description="What work cost and how long it took, by feature and by project." actions={<Button disabled={data === undefined || groups.length === 0} onClick={download}>Download CSV</Button>} />
+  <PageHeader focusOnMount title="Cost and time" description="What work cost and how long it took, by feature and by project." actions={<>{data?.canChange === true && <NewFeatureButton onCreated={id => { void navigate(`${REPORT_HOME}/features/${encodeURIComponent(id)}${state.carry}`); }} />}<Button disabled={data === undefined || groups.length === 0} onClick={download}>Download CSV</Button></>} />
   <FilterRow projects={projects} state={state} />
   <ReadState read={read} what="the cost report" title="Cost and time" />
   {data !== undefined && <>

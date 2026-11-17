@@ -47,7 +47,8 @@ describe("code contract v0 tables", () => {
     // Plus the five People panel routes (web task channel K3): the list, the candidates, a role change, adding a person and taking ownership; the candidates and add need Code's C4.
     // Plus Connected sign-ins (DEC 254w, approved DEC 254zf): the list, Connect and Unlink, passed to Code's /v1/dev/me/sign-ins routes as the person.
     // Plus the Cost and time report (Feature A, slice A3): the report and a feature's page, grouped by Cloud from Code's one-row-per-task read.
-    expect(counts.appCloudServerToday).toBe(97);
+    // Plus the Cost and time actions (lane L4-CR4): a new feature, rename, merge, mark done or reopen, and move a task, each passed to Code's own route as the person (Code decides).
+    expect(counts.appCloudServerToday).toBe(102);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

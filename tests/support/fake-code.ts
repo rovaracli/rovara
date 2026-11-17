@@ -1211,6 +1211,60 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const more = start + size < reportData.tasks.length;
           return send(200, { tasks: reportData.tasks.slice(start, start + size), next: String(more ? start + size : reportData.tasks.length), hasMore: more, skipped: 0, unreadable: 0 });
         }
+        // The Cost and time actions (lane L4-CR4), with Code's own rules and fixed sentences (Code PR #913): company owners and admins change features; the report's rows and features are the ones the specs set.
+        const featureAction = /^\/v1\/app\/org\/report\/features(?:\/(ft_[a-f0-9]{20})\/(rename|merge|state))?$/u.exec(url.pathname);
+        const taskMove = /^\/v1\/app\/tasks\/([^/]+)\/feature$/u.exec(url.pathname);
+        if (method === "POST" && (featureAction !== null || taskMove !== null)) {
+          const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
+          const who = bearer === undefined ? undefined : access.get(bearer);
+          if (who === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (reportData === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
+          if (!who.administrator) return send(403, { error: { code: "FORBIDDEN", message: "Only an owner or admin of the company can change features." } });
+          const given = JSON.parse(await readBody(request) || "{}") as Record<string, unknown>;
+          const features = reportData.features as Array<{ id: string; name: string; state: string }>;
+          const tasks = reportData.tasks as Array<Record<string, unknown>>;
+          const refuse = (status: number, code: string, message: string) => send(status, { error: { code, message } });
+          const view = (feature: { id: string; name: string; state: string }) => ({ ...feature, createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-17T00:00:00.000Z" });
+          if (taskMove !== null) {
+            const task = tasks.find((entry) => entry["taskId"] === taskMove[1]);
+            if (task === undefined) return refuse(404, "NOT_FOUND", "task not found");
+            const target = given["feature"];
+            if (target !== null && typeof target !== "string") return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            const into = target === null ? undefined : features.find((entry) => entry.id === target);
+            if (target !== null && into === undefined) return refuse(404, "NOT_FOUND", "That feature does not exist.");
+            if (into?.state === "done") return refuse(400, "CONFIG_INVALID", "That feature is done. Reopen it first.");
+            if (into === undefined) delete task["feature"]; else task["feature"] = { id: into.id, source: "moved" };
+            return send(200, { task: { taskId: task["taskId"], feature: into === undefined ? null : { id: into.id, source: "moved" } } });
+          }
+          if (featureAction![1] === undefined) {
+            const name = typeof given["name"] === "string" ? given["name"].trim() : "";
+            if (name === "" || [...name].length > 80) return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            if (features.some((entry) => entry.name === name)) return refuse(400, "CONFIG_INVALID", "A feature with that name already exists.");
+            const made = { id: `ft_${(features.length + 1 + 0xe0).toString(16).padStart(20, "0")}`, name, state: "open" };
+            features.push(made);
+            return send(201, { feature: view(made) });
+          }
+          const feature = features.find((entry) => entry.id === featureAction![1]);
+          if (feature === undefined) return refuse(404, "NOT_FOUND", "That feature does not exist.");
+          if (featureAction![2] === "rename") {
+            const name = typeof given["name"] === "string" ? given["name"].trim() : "";
+            if (name === "" || [...name].length > 80) return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            if (features.some((entry) => entry.name === name && entry.id !== feature.id)) return refuse(400, "CONFIG_INVALID", "A feature with that name already exists.");
+            feature.name = name;
+            return send(200, { feature: view(feature) });
+          }
+          if (featureAction![2] === "state") {
+            if (given["state"] !== "open" && given["state"] !== "done") return refuse(400, "CONFIG_INVALID", "The request is not valid.");
+            feature.state = given["state"];
+            return send(200, { feature: view(feature) });
+          }
+          const into = features.find((entry) => entry.id === given["into"]);
+          if (into === undefined) return refuse(404, "NOT_FOUND", "That feature does not exist.");
+          if (into.id === feature.id) return refuse(400, "CONFIG_INVALID", "A feature cannot be merged into itself or into one already merged away.");
+          for (const task of tasks) { const filed = task["feature"] as { id: string } | undefined; if (filed?.id === feature.id) task["feature"] = { id: into.id, source: "moved" }; }
+          features.splice(features.indexOf(feature), 1);
+          return send(200, { feature: view(into) });
+        }
         const raw = await readBody(request);
         if (method === "POST" && url.pathname === "/v1/auth/token") {
           const answer = tokenEndpoint(new URLSearchParams(raw), request.headers.authorization);

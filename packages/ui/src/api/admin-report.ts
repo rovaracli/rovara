@@ -1,7 +1,8 @@
 // The Cost and time report's read layer (Feature A, slice A3). What `GET /v1/app/org/report` and `GET /v1/app/org/report/features/{id}` send, read strictly: a field that is not
 // the shape makes the whole answer "unreadable" (never a half drawn table), money is whole cents (never a float of dollars), a missing number is absent (never zero), and nothing
 // here names a person. The words for the numbers (days, cents, state) and the CSV export live here too, so a test can pin each of them.
-import type { Reader } from "./client.js";
+import { createApiClient, type Reader } from "./client.js";
+import type { AppHost } from "../host.js";
 
 export const REPORT_PATH = "/v1/app/org/report";
 export const featurePath = (id: string) => `${REPORT_PATH}/features/${encodeURIComponent(id)}`;
@@ -36,15 +37,20 @@ export interface ReportNumbers {
   costPerMergedCents?: number; endToEndMs?: number; endToEndSoFar?: boolean; medianRequestToPrMs?: number;
 }
 export interface ReportGroup extends ReportNumbers { key: string; name: string; state?: "open" | "done" }
-export interface CostReport { range: { from?: string; to?: string }; asOf: string; totals: ReportNumbers; projects: string[]; byFeature: ReportGroup[]; byProject: ReportGroup[]; unreadableTasks?: number }
+/** A feature as the pickers (Move to feature, Merge into) offer it. */
+export interface PickerFeature { id: string; name: string; state?: "open" | "done" }
+/** `canChange`: Cloud says the person is a company owner or admin (Code's access answer, made for this read); the pages draw an action only when it is true. Absent (an older Cloud) is false. */
+export interface CostReport { range: { from?: string; to?: string }; asOf: string; totals: ReportNumbers; projects: string[]; byFeature: ReportGroup[]; byProject: ReportGroup[]; unreadableTasks?: number; canChange: boolean; features: PickerFeature[] }
 export interface FeatureTask {
   taskId: string; title: string; project: string; origin: Origin; path?: TaskPath; state: TaskState; startedAt: string; costCents: number; unpricedCalls: number;
   prsOpened: number; prsMerged: number; prLinks: string[]; wallMs?: number; wallSoFar?: boolean;
+  /** The task page, when the signed-in person started the task in Cloud. Absent: the title is not a link. */
+  sessionId?: string;
 }
 export interface FeatureDetail {
   feature: { id: string; name: string; state?: "open" | "done"; trackerLink?: { tracker: string; id: string; url?: string }; none: boolean };
   range: { from?: string; to?: string }; asOf: string; totals: ReportNumbers;
-  sources: Array<{ source: FeatureSource; count: number }>; tasks: FeatureTask[]; tasksTotal: number; unreadableTasks?: number;
+  sources: Array<{ source: FeatureSource; count: number }>; tasks: FeatureTask[]; tasksTotal: number; unreadableTasks?: number; canChange: boolean; features: PickerFeature[];
 }
 
 const oneOf = <T extends string>(list: readonly T[], value: unknown): T | undefined => (typeof value === "string" && (list as readonly string[]).includes(value) ? (value as T) : undefined);
@@ -74,12 +80,26 @@ function list<T>(raw: unknown, max: number, read: (item: unknown) => T): T[] {
   return raw.map(read);
 }
 
+const SESSION_ID = /^ses_[0-9a-z]{20}$/u;
+const FEATURE_ID = /^ft_[a-f0-9]{20}$/u;
+/** The pickers' features: a feature that is not the shape is left out (never shown, never offered), the rest are kept. */
+function pickers(raw: unknown): PickerFeature[] {
+  if (!Array.isArray(raw) || raw.length > 500) return [];
+  return (raw as unknown[]).flatMap((item) => {
+    if (!isRecord(item) || typeof item["id"] !== "string" || !FEATURE_ID.test(item["id"])) return [];
+    const name = text(item["name"], 80);
+    return name === undefined ? [] : [{ id: item["id"], name, ...optional("state", featureState(item["state"])) }];
+  });
+}
+const mayChange = (raw: unknown): boolean => raw === true;
+
 export const readCostReport: Reader<CostReport> = {
   parse(body: unknown): CostReport {
     if (!isRecord(body)) throw new Error("unreadable report");
     return {
       range: range(body["range"]), asOf: must(time(body["asOf"])), totals: numbers(body["totals"]),
       projects: list(body["projects"], 2_000, (item) => must(text(item, 200))), byFeature: list(body["byFeature"], 5_000, group), byProject: list(body["byProject"], 2_000, group), ...optional("unreadableTasks", count(body["unreadableTasks"])),
+      canChange: mayChange(body["canChange"]), features: pickers(body["features"]),
     };
   },
 };
@@ -110,9 +130,11 @@ export const readFeatureDetail: Reader<FeatureDetail> = {
           startedAt: must(time(item["startedAt"])), costCents: must(count(item["costCents"])), unpricedCalls: must(count(item["unpricedCalls"])), prsOpened: must(count(item["prsOpened"])), prsMerged: must(count(item["prsMerged"])),
           prLinks: Array.isArray(item["prLinks"]) ? (item["prLinks"] as unknown[]).slice(0, 20).flatMap((link) => { const good = plainHttps(link); return good === undefined ? [] : [good]; }) : [],
           ...optional("wallMs", count(item["wallMs"])), ...optional("wallSoFar", soFar === true ? true : undefined),
+          ...optional("sessionId", typeof item["sessionId"] === "string" && SESSION_ID.test(item["sessionId"]) ? item["sessionId"] : undefined),
         };
       }),
       tasksTotal: must(count(body["tasksTotal"])), ...optional("unreadableTasks", count(body["unreadableTasks"])),
+      canChange: mayChange(body["canChange"]), features: pickers(body["features"]),
     };
   },
 };
@@ -187,4 +209,37 @@ export function rangeBounds(range: RangeId, now: Date): { from?: string; to?: st
   if (range === "last-month") return { from: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString(), to: new Date(start - 1).toISOString() };
   if (range === "last-90") return { from: new Date(now.getTime() - 90 * DAY).toISOString() };
   return {};
+}
+
+// ---- The actions ----
+// New feature, Rename, Merge into, Mark done or reopen, and Move to feature. Each is one POST that Cloud passes to Rovara Code as the person; Code decides and Cloud words a refusal in fixed
+// sentences (the error's message, which the page shows). Never retried by the browser: the body carries no request id, and a second "New feature" would only be "name taken".
+const NEVER = { retry: "never" } as const;
+const readFeatureAnswer: Reader<{ feature: PickerFeature & { state: "open" | "done" } }> = {
+  parse(body: unknown) {
+    if (!isRecord(body) || !isRecord(body["feature"])) throw new Error("unreadable change");
+    const f = body["feature"], id = f["id"], state = featureState(f["state"]);
+    if (typeof id !== "string" || !FEATURE_ID.test(id) || state === undefined) throw new Error("unreadable change");
+    return { feature: { id, name: must(text(f["name"], 200)), state } };
+  },
+};
+const readTaskAnswer: Reader<{ task: { taskId: string; feature: { id: string } | null } }> = {
+  parse(body: unknown) {
+    if (!isRecord(body) || !isRecord(body["task"])) throw new Error("unreadable change");
+    const t = body["task"], feature = t["feature"];
+    if (feature !== null && (!isRecord(feature) || typeof feature["id"] !== "string" || !FEATURE_ID.test(feature["id"]))) throw new Error("unreadable change");
+    return { task: { taskId: must(text(t["taskId"], 128)), feature: feature === null ? null : { id: (feature as { id: string }).id } } };
+  },
+};
+export function createReportActions(host: AppHost) {
+  const api = createApiClient(host);
+  const featureAt = (id: string, what: "rename" | "merge" | "state") => `${REPORT_PATH}/features/${encodeURIComponent(id)}/${what}`;
+  return {
+    create: (name: string) => api.sendAnswer("POST", `${REPORT_PATH}/features`, { name }, readFeatureAnswer, NEVER),
+    rename: (id: string, name: string) => api.sendAnswer("POST", featureAt(id, "rename"), { name }, readFeatureAnswer, NEVER),
+    mergeInto: (id: string, into: string) => api.sendAnswer("POST", featureAt(id, "merge"), { into }, readFeatureAnswer, NEVER),
+    setState: (id: string, state: "open" | "done") => api.sendAnswer("POST", featureAt(id, "state"), { state }, readFeatureAnswer, NEVER),
+    /** `feature` null files the task under "No feature". */
+    moveTask: (taskId: string, feature: string | null) => api.sendAnswer("POST", `/v1/app/tasks/${encodeURIComponent(taskId)}/feature`, { feature }, readTaskAnswer, NEVER),
+  };
 }
