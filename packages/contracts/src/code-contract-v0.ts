@@ -414,6 +414,18 @@ export interface CreateScriptTokenRequest { requestId: string; label: string; ex
 export interface CreateScriptTokenResponse { token: ScriptToken; secret: string }
 export interface RevokeScriptTokenResponse { revoked: boolean }
 
+/**
+ * Guided onboarding PR 14/15 (Code #835, DEC 254n item 1): the company's engine model. `model` is what the company's tasks resolve to now (its own, else the
+ * install default, null where there is none); `offered` is the gateway's live list for THIS company; `preselect` is `model` when offered, else the first offered.
+ */
+export interface CompanyEngineModelView { model: string | null; source: "company" | "install"; offered: string[]; preselect: string }
+/** A model id, or null to clear the company's own (the install default applies again). Nothing else. */
+export interface PutCompanyEngineModelRequest { model: string | null }
+/** Code's project settings (M4a, `GET|PUT /v1/dev/projects/{name}/settings`): the stored preset and overrides, the revision, and what applies under the company's bounds. */
+export interface ProjectSettingsView { preset: string | null; overrides: JsonObject; revision: number; updatedAt: Iso | null; updatedBy: string | null; resolved: JsonObject; values: JsonObject; clamped: JsonObject[] }
+/** A change names the revision read; a cost field (such as `model_budget_usd`, the per-task model budget) needs the person's fresh step-up at Code. */
+export interface PutProjectSettingsRequest { expectedRevision: number; preset?: "lightweight" | "balanced" | "careful"; overrides?: JsonObject }
+
 export interface ArchiveProjectRequest { requestId: string }
 export interface ArchiveProjectResponse { name: string; status: "archived" | "active" }
 
@@ -593,6 +605,10 @@ export interface CodeRouteTypes {
   "lessons.notHelpful": { request: JsonObject; response: NotHelpfulResponse };
   "lessons.mode.get": { request: void; response: LessonModeResponse };
   "lessons.mode.put": { request: PutLessonModeRequest; response: LessonModeResponse };
+  "company.engineModel.get": { request: void; response: CompanyEngineModelView };
+  "company.engineModel.put": { request: PutCompanyEngineModelRequest; response: CompanyEngineModelView };
+  "projects.settings.get": { request: void; response: ProjectSettingsView };
+  "projects.settings.put": { request: PutProjectSettingsRequest; response: ProjectSettingsView };
 }
 
 export type CodeRouteId = keyof CodeRouteTypes;
@@ -735,6 +751,11 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("lessons.notHelpful", "POST", `${DP}/tasks/{taskId}/lessons/{lessonId}/not-helpful`, "Mark a lesson the task was given as not helpful", "full", ["session"], "no", false, "none", true),
   spec("lessons.mode.get", "GET", `${DP}/lessons/mode`, "The project's learning mode, the mode in force and whether the company locks it", "full", ["how-we-work"], "no", false, "none", true),
   spec("lessons.mode.put", "PUT", `${DP}/lessons/mode`, "Set the learning mode (a project admin, or a company owner or admin)", "full", ["how-we-work"], "no", false, "none", true),
+  // Guided onboarding PR 15 (DEC 254l item 7, 254n item 1): the company's AI model (Code #835, not on code/next yet) and a project's per-task model budget (Code's M4a settings).
+  spec("company.engineModel.get", "GET", "/v1/dev/company/engine-model", "The company's engine model, the models the gateway offers it now, and the one to preselect (any member)", "full", ["later"], "no", false, "none", true),
+  spec("company.engineModel.put", "PUT", "/v1/dev/company/engine-model", "Set or clear the company's engine model, only from its offered list (owner or admin)", "full", ["later"], "no", false, "none", true),
+  spec("projects.settings.get", "GET", `${DP}/settings`, "A project's cost and approval settings (preset, overrides, what applies)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
+  spec("projects.settings.put", "PUT", `${DP}/settings`, "Change them (revision-checked; a cost field needs a fresh step-up; the project's administrator)", "full", ["later"], "yes", false, `${DEV}:1924`, true),
 ];
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1002,6 +1023,10 @@ GET /v1/app/budget | g | budgets | | spending |
 GET /v1/app/org/spend | g | budgets | | spending |
 GET /v1/app/spend-requests | g | budgets | | spending |
 GET /v1/app/org/budget-settings | g | budgets | | spending |
+GET /v1/app/org/engine-model | k | later | company.engineModel.get | setup/AiSpendStep | T
+PUT /v1/app/org/engine-model | k | later | company.engineModel.put | setup/AiSpendStep | T
+GET /v1/app/projects/{p}/spend-limits | k | later | projects.settings.get | setup/ProjectSpendLimits | T
+PUT /v1/app/projects/{p}/spend-limits | k | later | projects.settings.put | setup/ProjectSpendLimits | T
 GET /v1/app/trial | c | budgets | | trial-billing |
 GET /v1/app/org/billing | c | budgets | | trial-billing |
 POST /v1/app/org/billing | c | budgets | | trial-billing |
