@@ -192,7 +192,6 @@ async function change(context: RouteContext, kind: SpendLimitKind): Promise<Rout
     if (required.secondPerson) return W.secondPerson;
     const decision = settingsDecision(settings.settings, true, "verdict", who.developerId);
     if (!decision.allow) return W.ruled;
-    if (decision.secondPerson) return W.secondPerson;
     if (freshStepUp(context.session.accessToken, context.now().getTime(), decision.signInMaxAgeSeconds) === undefined) return W.stepUp;
   }
   if (current === undefined) {
