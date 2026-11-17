@@ -13,7 +13,7 @@ import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 import {
-  ChatStreamToSse, createChatCompletionsTransport, fromChatCompletion, OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS, OPENAI_AGENT_UPSTREAM, toChatCompletions,
+  ChatStreamToSse, createChatCompletionsTransport, fromChatCompletion, MAX_UPSTREAM_STREAM_BYTES, OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS, OPENAI_AGENT_UPSTREAM, toChatCompletions,
 } from "../../packages/model-gateway/src/agent-openai.js";
 import type { AgentAiSource, CompanyChatAi } from "../../packages/model-gateway/src/agent-ai.js";
 import type { CompanyKeyProvider, LearningKeySource } from "../../packages/model-gateway/src/learning-route.js";
@@ -57,7 +57,7 @@ function convert(parts: Iterable<Buffer>, provider: "openai" | "openrouter" = "o
 
 describe("Anthropic Messages to Chat Completions", () => {
   const body: Json = {
-    model: MODEL, max_tokens: 500, stream: true, temperature: 0.2, stop_sequences: ["END"],
+    model: MODEL, max_tokens: 500, stream: true, temperature: 0.2, stop_sequences: [],
     system: [{ type: "text", text: "You are a coder.", cache_control: { type: "ephemeral" } }],
     metadata: { user_id: "u1" },
     tools: [{ name: "read", description: "Read a file", input_schema: { type: "object", properties: { path: { type: "string" } } } }],
@@ -71,9 +71,9 @@ describe("Anthropic Messages to Chat Completions", () => {
     ],
   };
 
-  it("translates system, messages, tools, tool choice, tool results, max tokens and stop sequences", () => {
+  it("translates system, messages, tools, tool choice, tool results and max tokens (an empty stop list is nothing)", () => {
     expect(toChatCompletions(body, MODEL, 400, "openai")).toEqual({
-      model: MODEL, stream: true, max_completion_tokens: 400, temperature: 0.2, stop: ["END"],
+      model: MODEL, stream: true, max_completion_tokens: 400, temperature: 0.2,
       messages: [
         { role: "system", content: "You are a coder." },
         { role: "user", content: "Read a.ts" },
@@ -111,6 +111,9 @@ describe("Anthropic Messages to Chat Completions", () => {
     ["structured output", { ...body, output_config: { format: { type: "json_schema" } } }],
     ["top_k", { ...body, top_k: 5 }],
     ["five stop sequences", { ...body, stop_sequences: ["a", "b", "c", "d", "e"] }],
+    // REVIEW-1 L4: a matched stop sequence comes back as a plain "stop", so it is refused rather than answered as end_turn.
+    ["a stop sequence", { ...body, stop_sequences: ["END"] }],
+    ["stop sequences that are not a list", { ...body, stop_sequences: "END" }],
     ["tool history without tools", { ...body, tools: undefined, tool_choice: undefined }],
     ["a forced tool without tools", { model: MODEL, messages: [{ role: "user", content: "x" }], tool_choice: { type: "any" } }],
     ["an unknown tool choice", { ...body, tool_choice: { type: "auto_but_different" } }],
@@ -181,6 +184,16 @@ describe("Chat Completions stream to Anthropic SSE", () => {
     expect(() => convert(parts)).toThrow("unreadable answer");
   });
 
+  it("REVIEW-1 L5: upstream bytes that make no output are bounded too (comments past the cap break the stream)", () => {
+    const c = new ChatStreamToSse("openai", MODEL, "m");
+    // Each comment is its own event (a blank line after it), so only the total cap can stop them, not the per-event limit.
+    const comment = Buffer.from(`: ${"x".repeat(1024 * 1024 - 4)}\n\n`);
+    expect(() => { for (let i = 0; i <= MAX_UPSTREAM_STREAM_BYTES / comment.byteLength; i += 1) c.push(comment); }).toThrow("unreadable answer");
+    // Below the cap, the same comments are fine.
+    const ok = new ChatStreamToSse("openai", MODEL, "m");
+    for (let i = 0; i < 3; i += 1) expect(ok.push(comment).byteLength).toBe(0);
+  });
+
   it("a whole answer becomes an Anthropic message (and OpenRouter's cost)", () => {
     const whole = { choices: [{ index: 0, message: { role: "assistant", content: "Sure.", tool_calls: [{ id: "call_9", type: "function", function: { name: "read", arguments: "{\"path\":\"b\"}" } }] }, finish_reason: "tool_calls" }], usage: { prompt_tokens: 10, completion_tokens: 5, cost: 0.002 } };
     expect(fromChatCompletion(whole, "openrouter", ROUTER_MODEL, "msg_1")).toEqual({
@@ -223,6 +236,32 @@ describe("the Chat Completions transport", () => {
     const sse = await drain(response);
     expect(events(sse).at(-1)!.type).toBe("message_stop");
     expect(response.reportedCostMicros?.()).toBe(provider === "openrouter" ? 1000 : undefined);
+  });
+
+  // REVIEW-1 M1: the money split. A failure before the TLS handshake finished was never sent ($0); after it, the request may have reached
+  // the provider and is charged at its hold.
+  function handshake(connected: boolean) {
+    return (() => {
+      const req = new EventEmitter() as EventEmitter & { end(): void; destroy(): void };
+      req.destroy = () => { req.emit("close"); };
+      req.end = () => { const socket = new EventEmitter(); req.emit("socket", socket); if (connected) socket.emit("secureConnect"); req.emit("error", new Error("reset")); req.emit("close"); };
+      return req;
+    }) as unknown as typeof https.request;
+  }
+  it.each(["openai", "openrouter"] as const)("%s: an error after the TLS handshake is a sent call; before it, not sent", async (provider) => {
+    const input = { body: Buffer.from(JSON.stringify({ model: MODEL, stream: true, messages: [] })), headers: {}, key: "x".repeat(20), path: OPENAI_AGENT_UPSTREAM[provider].path };
+    const after = createChatCompletionsTransport(provider, handshake(true))({ ...input, signal: new AbortController().signal });
+    await expect(after).rejects.toThrow("provider unavailable");
+    await expect(after).rejects.not.toBeInstanceOf(NotSentError);
+    await expect(createChatCompletionsTransport(provider, handshake(false))({ ...input, signal: new AbortController().signal })).rejects.toBeInstanceOf(NotSentError);
+  });
+  it("on the route: after the handshake the hold is charged; before it, $0", async () => {
+    for (const [connected, charged] of [[true, true], [false, false]] as const) {
+      const r = route({ transport: () => createChatCompletionsTransport("openai", handshake(connected)) });
+      const sink = await call(r.deps, anthropicBody, token());
+      expect(sink.status).toBe(502);
+      expect((await committedOf(r.meter)) > 0).toBe(charged);
+    }
   });
 
   it("never sends to any other path, or a body it did not build", async () => {

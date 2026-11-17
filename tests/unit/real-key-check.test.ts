@@ -207,6 +207,10 @@ describe("the one check on an OpenAI or OpenRouter key (real transport, fake net
     const sse: Buffer[] = []; for await (const part of anthropicAnswer()) sse.push(Buffer.from(part));
     const sink = { status: 200, ended: true, destroyed: false, bytes: sse };
     expect(judge("openrouter", sink, { micros: 420, estimated: false }, 420).pass).toBe(true);
+    // REVIEW-1 L2: the right amount but still flagged as an estimate is not settleAmount's reported-cost rule either.
+    const flagged = judge("openrouter", sink, { micros: 420, estimated: true, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }, 420);
+    expect(flagged.pass).toBe(false);
+    expect(flagged.lines.find((line) => line.name.startsWith("unknown price settled at the reported cost"))?.ok).toBe(false);
     const ignored = judge("openrouter", sink, { micros: 9_999, estimated: true, usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } }, 420);
     expect(ignored.pass).toBe(false);
     expect(ignored.lines.find((line) => line.name.startsWith("unknown price settled at the reported cost"))?.ok).toBe(false);

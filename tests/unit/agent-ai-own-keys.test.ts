@@ -82,6 +82,27 @@ describe("own OpenAI / OpenRouter keys for agents (Cloud)", () => {
     expect((await w.call(ada, "GET", AGENT)).body).toMatchObject({ openrouterKeyConnected: false });
   });
 
+  it("REVIEW-1 L3: once the openrouter kind is switched off, a stored OpenRouter key is still shown and can still be removed (never gated)", async () => {
+    const kinds = new Set(["openrouter"]);
+    const w = world({ company: true, aiSourceKinds: kinds });
+    const ada = await w.signIn("ada", 30);
+    const key = routerKey();
+    expect((await w.call(ada, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key }))).status).toBe(200);
+    kinds.delete("openrouter");
+    expect((await w.call(ada, "GET", KEYS)).body).toMatchObject({ accounts: { openrouter: { connected: true } } });
+    // Connecting or replacing stays gated...
+    expect((await w.call(ada, "PUT", `${KEYS}/key`, write(1, { provider: "openrouter", key: routerKey() }))).status).toBe(400);
+    // ...removing never is.
+    const removed = await w.call(ada, "DELETE", `${KEYS}/key`, write(1, { provider: "openrouter" }));
+    expect(removed.status).toBe(200);
+    expect(removed.raw).not.toContain(key);
+    expect(await storedLearningKeys(w.store).keyFor(ISS, A, "openrouter")).toBeUndefined();
+    expect((await w.audit.read(A, { max: 50 })).rows.map((r) => [r.action, r.subject])).toEqual(expect.arrayContaining([["learning_ai.key.removed", "learning_ai:openrouter"]]));
+    // A Cloud that never held one shows nothing new.
+    const fresh = world({ company: true });
+    expect((await fresh.call(await fresh.signIn("ada", 30), "GET", KEYS)).body.accounts).not.toHaveProperty("openrouter");
+  });
+
   it("two companies: one company's key never makes another's source choosable", async () => {
     const w = world({ company: true, aiSourceKinds: both });
     const ada = await w.signIn("ada", 30); const bea = await w.signIn("bea", 30);

@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import https from "node:https";
 import type { ClientRequest } from "node:http";
 import { record, whole } from "./model-gateway-token.js";
-import { NotSentError, type ProviderTransport } from "./provider.js";
+import { MAX_RESPONSE_BYTES, NotSentError, type ProviderTransport } from "./provider.js";
 import { parseReportedCost } from "./reported-cost.js";
 
 export type OpenAiAgentProvider = "openai" | "openrouter";
@@ -27,7 +27,6 @@ export const OPENAI_AGENT_UPSTREAM: Readonly<Record<OpenAiAgentProvider, { host:
 export const OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 /** The model names these sources accept (OpenAI ids; OpenRouter `vendor/model[:variant]`). */
 export const OPENAI_AGENT_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u;
-const MAX_STOP_SEQUENCES = 4;
 
 type Json = Record<string, unknown>;
 const text = (v: unknown): v is string => typeof v === "string";
@@ -110,10 +109,9 @@ export function toChatCompletions(body: Json, model: string, maxTokens: number, 
   if (provider === "openai") out.max_completion_tokens = maxTokens; else out.max_tokens = maxTokens;
   if (body.temperature !== undefined) { if (typeof body.temperature !== "number" || !Number.isFinite(body.temperature)) return undefined; out.temperature = body.temperature; }
   if (body.top_p !== undefined) { if (typeof body.top_p !== "number" || !Number.isFinite(body.top_p)) return undefined; out.top_p = body.top_p; }
-  if (body.stop_sequences !== undefined) {
-    if (!Array.isArray(body.stop_sequences) || body.stop_sequences.length > MAX_STOP_SEQUENCES || !body.stop_sequences.every(text)) return undefined;
-    if (body.stop_sequences.length > 0) out.stop = body.stop_sequences;
-  }
+  // Stop sequences are refused (unless empty): Chat Completions answers a matched one as a plain "stop", so the agent could not tell it
+  // from a natural end (Anthropic's stop_reason "stop_sequence" with the matched text). Never a quiet partial translation.
+  if (body.stop_sequences !== undefined && (!Array.isArray(body.stop_sequences) || body.stop_sequences.length > 0)) return undefined;
   const tools = body.tools;
   if (tools !== undefined && tools !== null) {
     if (!Array.isArray(tools)) return undefined;
@@ -172,6 +170,11 @@ export function anthropicUsageOf(value: unknown): Json {
 const event = (type: string, data: Json): Buffer => Buffer.from(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`, "utf8");
 const MAX_EVENT = 4 * 1024 * 1024;
 const MAX_TOOL_CALLS = 128;
+/**
+ * The most upstream bytes one streamed answer may carry, output or not (comments, `usage: null` chunks and empty deltas make no output,
+ * so the money core's MAX_RESPONSE_BYTES on the translated output does not bound them). Twice that limit.
+ */
+export const MAX_UPSTREAM_STREAM_BYTES = 2 * MAX_RESPONSE_BYTES;
 
 /**
  * Chat Completions SSE to Anthropic SSE. message_start carries zero counts; the final message_delta carries the real ones (from the
@@ -181,7 +184,7 @@ const MAX_TOOL_CALLS = 128;
  */
 export class ChatStreamToSse {
   readonly #provider: OpenAiAgentProvider; readonly #model: string; readonly #id: string;
-  #pending = ""; #data: string[] = []; #eventBytes = 0;
+  #pending = ""; #data: string[] = []; #eventBytes = 0; #upstreamBytes = 0;
   #started = false; #done = false; #finish: string | undefined; #usage: Json | undefined; #cost: number | undefined;
   #open: { kind: "text" } | { kind: "tool"; index: number } | undefined; #next = 0;
   readonly #tools = new Map<number, number>();
@@ -190,6 +193,8 @@ export class ChatStreamToSse {
   get reportedCost(): number | undefined { return this.#cost; }
   push(bytes: Uint8Array): Buffer {
     const out: Buffer[] = [];
+    this.#upstreamBytes += bytes.byteLength;
+    if (this.#upstreamBytes > MAX_UPSTREAM_STREAM_BYTES) throw new Error("unreadable answer");
     this.#pending += this.#decoder.decode(bytes, { stream: true });
     let at: number;
     while ((at = this.#pending.indexOf("\n")) >= 0) {
