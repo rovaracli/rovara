@@ -9,7 +9,9 @@
 // Nothing here prints, logs, stores or returns a key: the result holds only fixed words and numbers, every failure path answers with
 // fixed words, and the gateway's own scanner stops an answer that carries the key.
 import { randomBytes, randomUUID } from "node:crypto";
-import type { AgentAiSource, ByoBedrock, CompanyChatAi } from "../packages/model-gateway/src/agent-ai.js";
+import type { AgentAiSource, ByoBedrock, CompanyChatAi, CompanyEndpointAi } from "../packages/model-gateway/src/agent-ai.js";
+import { endpointTarget, type EndpointTarget } from "../packages/model-gateway/src/endpoint-guard.js";
+import { serializeEndpointConnection } from "../packages/model-gateway/src/endpoint-source.js";
 import { OPENAI_AGENT_MODEL } from "../packages/model-gateway/src/agent-openai.js";
 import type { AwsCredentials } from "../packages/model-gateway/src/aws.js";
 import { allowedBedrockModel, BEDROCK_BYO_REGION } from "../packages/model-gateway/src/bedrock-byo.js";
@@ -27,7 +29,7 @@ import { UsageCollector, type TokenUsage } from "../packages/model-gateway/src/u
 export const CHECK_KINDS = ["anthropic", "openai", "openrouter", "bedrock", "endpoint"] as const;
 export type CheckKind = typeof CHECK_KINDS[number];
 /** The kinds whose transport exists in this build. The others answer "not built yet" before any key is read. */
-export const CHECK_KINDS_BUILT: readonly CheckKind[] = ["anthropic", "bedrock", "openai", "openrouter"];
+export const CHECK_KINDS_BUILT: readonly CheckKind[] = ["anthropic", "bedrock", "openai", "openrouter", "endpoint"];
 /** The consent switch: the check refuses without exactly this. */
 export const CONSENT_VARIABLE = "ROVARA_REAL_KEY_CHECK";
 /** Where a key may come from besides the hidden prompt. Never argv, a file or chat. */
@@ -63,6 +65,7 @@ export const WORDS = Object.freeze({
   badRegion: "refused: ROVARA_CHECK_BEDROCK_REGION must be a Bedrock Region such as us-west-2",
   stagingProfile: "refused: the Bedrock check uses YOUR OWN AWS account; do not run it through staging-aws.sh or the agentx-test profile",
   noCredentials: "refused: could not read AWS credentials from the AWS CLI (aws configure export-credentials)",
+  badEndpoint: "refused: ROVARA_CHECK_ENDPOINT_URL must be an https address on port 443 of a public host",
   stopped: "FAIL: the check stopped before it finished (details withheld so no key can leak)",
 });
 
@@ -125,13 +128,22 @@ class CollectingSink implements GatewaySink {
 /** How a check reaches the provider: the kind's agent source and what that source needs. Built by the entry script (real) or a test (fake). */
 export type CheckTarget =
   | { kind: "anthropic" | "openai" | "openrouter"; key: string; model: string; transport: ProviderTransport }
+  | { kind: "endpoint"; key: string; baseUrl: string; model: string; catalog: { provider: string; modelId: string }; transport: (target: EndpointTarget, onRefused: (reason: "address" | "busy") => void) => ProviderTransport }
   | { kind: "bedrock"; region: string; agentModel: string; bedrockModel: string; credentials: AwsCredentials; transport: (region: string, credentials: () => Promise<AwsCredentials>) => ProviderTransport };
 
 const COMPANY = `org_${"c".repeat(20)}`;
 const ISSUER = "https://real-key-check.invalid/v1/auth";
 
 /** The stored company choice and key, in memory: exactly what the agent route reads for that source. */
-function sourceFor(target: CheckTarget): { source: AgentAiSource; keys: LearningKeySource; byo?: ByoBedrock; chat?: CompanyChatAi; model: string } {
+function sourceFor(target: CheckTarget): { source: AgentAiSource; keys: LearningKeySource; byo?: ByoBedrock; chat?: CompanyChatAi; endpoint?: CompanyEndpointAi; model: string } {
+  if (target.kind === "endpoint") {
+    // The company's sealed endpoint account, exactly as the store keeps it (address, key and the one model).
+    const text = serializeEndpointConnection({ scheme: "openai_compatible", baseUrl: target.baseUrl, key: target.key, models: [{ name: target.model, catalog: target.catalog }] });
+    return {
+      source: "custom_endpoint", model: target.model, endpoint: { transport: target.transport },
+      keys: { connected: async (_iss, cid, asked) => cid === COMPANY && asked === "endpoint", keyFor: async (_iss, cid, asked) => cid === COMPANY && asked === "endpoint" ? text : undefined },
+    };
+  }
   if (target.kind !== "bedrock") {
     const key = target.key; const provider = target.kind;
     const source: AgentAiSource = provider === "anthropic" ? "anthropic_key" : provider === "openai" ? "openai_key" : "openrouter_key";
@@ -163,7 +175,7 @@ function sourceFor(target: CheckTarget): { source: AgentAiSource; keys: Learning
  */
 export async function runCheck(target: CheckTarget, now: () => number = Date.now): Promise<CheckResult> {
   try {
-    const { source, keys, byo, chat, model } = sourceFor(target);
+    const { source, keys, byo, chat, endpoint, model } = sourceFor(target);
     // OpenRouter's reported cost, as the transport handed it to the money core (read after the call).
     let reported: (() => number | undefined) | undefined;
     const watched = chat === undefined ? undefined : { ...chat, transport: async (request: Parameters<ProviderTransport>[0]): Promise<ProviderResponse> => { const response = await chat.transport(request); reported = response.reportedCostMicros; return response; } };
@@ -189,6 +201,7 @@ export async function runCheck(target: CheckTarget, now: () => number = Date.now
         // The check is the owner's own, before the switch: this one kind is on for it.
         switchedOn: new Set([target.kind]),
         ...(watched === undefined ? {} : target.kind === "openai" ? { openai: watched } : { openrouter: watched }),
+        ...(endpoint === undefined ? {} : { endpoint }),
       },
       timeoutMs: CHECK_TIMEOUT_MS,
       log: (event) => { if (event.event === "settled") settledLog.push({ costMicros: event.costMicros, estimated: event.estimated }); },
@@ -255,6 +268,21 @@ export function keyProblem(key: string): string | undefined {
 export function chatModel(kind: "openai" | "openrouter", env: Readonly<Record<string, string | undefined>>): string | undefined {
   const model = (kind === "openai" ? env.ROVARA_CHECK_OPENAI_MODEL : env.ROVARA_CHECK_OPENROUTER_MODEL) ?? (kind === "openai" ? DEFAULT_OPENAI_MODEL : DEFAULT_OPENROUTER_MODEL);
   return OPENAI_AGENT_MODEL.test(model) ? model : undefined;
+}
+
+/**
+ * The endpoint settings: ROVARA_CHECK_ENDPOINT_URL (required; the SSRF guard's URL check applies), ROVARA_CHECK_ENDPOINT_MODEL (required:
+ * the name the endpoint serves) and ROVARA_CHECK_ENDPOINT_CATALOG (`<provider>/<model>` it stands for; default openai/<model>).
+ */
+export function endpointSettings(env: Readonly<Record<string, string | undefined>>): { baseUrl: string; model: string; catalog: { provider: string; modelId: string } } | string {
+  const baseUrl = env.ROVARA_CHECK_ENDPOINT_URL;
+  if (baseUrl === undefined || endpointTarget(baseUrl) === undefined) return WORDS.badEndpoint;
+  const model = env.ROVARA_CHECK_ENDPOINT_MODEL;
+  if (model === undefined || !OPENAI_AGENT_MODEL.test(model)) return WORDS.badModel;
+  const catalog = env.ROVARA_CHECK_ENDPOINT_CATALOG ?? `openai/${model}`;
+  const slash = catalog.indexOf("/");
+  if (slash < 1 || !/^[a-z][a-z0-9-]{0,31}$/u.test(catalog.slice(0, slash)) || !/^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/u.test(catalog.slice(slash + 1))) return WORDS.badModel;
+  return { baseUrl, model, catalog: { provider: catalog.slice(0, slash), modelId: catalog.slice(slash + 1) } };
 }
 
 /** The Anthropic model to call: ROVARA_CHECK_ANTHROPIC_MODEL or the cheap default. */

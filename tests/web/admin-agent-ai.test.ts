@@ -12,10 +12,13 @@ import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packag
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
 import { readAgentAi } from "../../packages/ui/src/api/admin-agent-ai.js";
+import { parseEndpointModels } from "../../packages/ui/src/screens/admin/agent-ai/AgentAiScreen.js";
 import { visibleAdminGroups } from "../../packages/ui/src/screens/admin/admin-nav.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
+// A fake endpoint key built at runtime (no key-shaped literal in the source; the public CI copy scans for them).
+const FAKE_ENDPOINT_KEY = ["ep", "fake", "z".repeat(16)].join("-");
 
 const me = "a".repeat(64);
 const features = { localAgents: false, admin: true, usage: false, chains: false, describe: false, notices: false };
@@ -41,7 +44,7 @@ describe("AI for your agents page", () => {
  });
  it("reads only the shape it expects", () => {
   expect(readAgentAi({ ...view("rovara", 3), choices: [{ source: "rovara", available: true }, { source: "bedrock_byo", available: "yes" }, { source: "<b>", available: true }], anthropicKeyConnected: "no" }))
-   .toEqual({ source: "rovara", version: 3, available: { rovara: true, anthropic_key: false, bedrock_byo: false, openai_key: false, openrouter_key: false }, anthropicKeyConnected: null, listed: ["rovara", "anthropic_key", "bedrock_byo"], openaiKeyConnected: null, openrouterKeyConnected: null });
+   .toEqual({ source: "rovara", version: 3, available: { rovara: true, anthropic_key: false, bedrock_byo: false, openai_key: false, openrouter_key: false, custom_endpoint: false }, anthropicKeyConnected: null, listed: ["rovara", "anthropic_key", "bedrock_byo"], openaiKeyConnected: null, openrouterKeyConnected: null, endpointConnected: null, keysRevision: null });
   expect(() => readAgentAi({ source: "openai", version: 1 })).toThrow();
   expect(() => readAgentAi({ source: null })).toThrow();
  });
@@ -90,6 +93,26 @@ describe("AI for your agents page", () => {
    expect(screen.queryByTestId("agent-ai-openai_key")).toBeNull();
    expect(screen.queryByTestId("agent-ai-openrouter_key")).toBeNull();
   } finally { today.close(); }
+ });
+ it("DEC 254t (A3): connects the company's own endpoint (key write-only) with the revision read; models one per line", async () => {
+  expect(parseEndpointModels("our-coder=openai/gpt-5-mini\n  fast = anthropic/claude-haiku-4-5 \n")).toEqual([{ name: "our-coder", catalog: { provider: "openai", modelId: "gpt-5-mini" } }, { name: "fast", catalog: { provider: "anthropic", modelId: "claude-haiku-4-5" } }]);
+  for (const bad of ["", "noequals", "=openai/x", "name=nocatalog", "name=openai/", Array.from({ length: 21 }, (_, i) => `m${String(i)}=openai/x`).join("\n")]) expect(parseEndpointModels(bad)).toBeUndefined();
+  const sent: ApiRequest[] = [];
+  const listed = { ...view(null, 0), choices: [...view(null, 0).choices, { source: "custom_endpoint", available: false }], endpointConnected: false, keysRevision: 7 };
+  const f = mount(confirmedPath("/app/admin/agent-ai"), (r) => { if (r.method === "PUT") sent.push(r); return { status: 200, body: listed }; });
+  try {
+   expect((await screen.findByTestId("agent-ai-custom_endpoint")).textContent).toMatch(/Your own endpoint/u);
+   expect(screen.getByTestId("agent-ai-no-endpoint")).toBeTruthy();
+   fireEvent.change(screen.getByLabelText("Address (https, port 443)"), { target: { value: "https://llm.example.com/v1" } });
+   fireEvent.change(screen.getByLabelText("Key"), { target: { value: FAKE_ENDPOINT_KEY } });
+   fireEvent.change(screen.getByLabelText("Models, one per line: name=provider/model"), { target: { value: "our-coder=openai/gpt-5-mini" } });
+   fireEvent.click(screen.getByRole("button", { name: "Connect endpoint" }));
+   await waitFor(() => { expect(sent).toHaveLength(1); });
+   expect(sent[0]!.path).toBe("/v1/app/org/agent-ai/endpoint");
+   expect(sent[0]!.body).toMatchObject({ expectedRevision: 7, baseUrl: "https://llm.example.com/v1", key: FAKE_ENDPOINT_KEY, models: [{ name: "our-coder", catalog: { provider: "openai", modelId: "gpt-5-mini" } }] });
+   expect(typeof (sent[0]!.body as { requestId: unknown }).requestId).toBe("string");
+   await waitFor(() => { expect((screen.getByLabelText<HTMLInputElement>("Key")).value).toBe(""); });
+  } finally { f.close(); }
  });
  it("says not connected yet when Cloud has no company data", async () => {
   const f = mount("/app/admin/agent-ai", () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } }));

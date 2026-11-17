@@ -30,7 +30,7 @@ import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway,
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 import type { LearningKeySource } from "../../packages/model-gateway/src/learning-route.js";
 import type { ProviderRequest } from "../../packages/model-gateway/src/provider.js";
-import { AGENT_SOURCE_SWITCHED_OFF } from "../../packages/model-gateway/src/server.js";
+import { AGENT_CHAT_NOT_OFFERED, AGENT_SOURCE_SWITCHED_OFF } from "../../packages/model-gateway/src/server.js";
 import { AI_SOURCE_KINDS_CONTEXT_KEY, aiSourceKindsContext, buildAgentXApp } from "../../infra/lib/app.js";
 import { CLOUD_AI_SOURCE_KINDS_ENV, CloudWebStack } from "../../infra/lib/cloud-web.js";
 import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_ENV, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
@@ -149,10 +149,11 @@ describe("the agent route with the switch (gateway, defence in depth)", () => {
     }
   });
 
-  it("switched on but not served by this route yet: refused (503), never sent on the company's Anthropic key", async () => {
+  it("switched on but not built on this gateway: refused (not offered), never sent on the company's Anthropic key", async () => {
     const g = gateway("custom_endpoint", new Set(["endpoint"]));
     const sink = await call(g.deps);
-    expect(sink.status).toBe(503);
+    expect(sink.status).toBe(403);
+    expect(JSON.parse(sink.text())).toEqual({ error: { type: AGENT_CHAT_NOT_OFFERED.code, message: AGENT_CHAT_NOT_OFFERED.message } });
     expect(g.sent).toEqual([]); expect(g.keys.asked).toEqual([]); expect(g.keys.reads).toEqual([]);
   });
 
@@ -170,8 +171,8 @@ describe("the agent route with the switch (gateway, defence in depth)", () => {
     expect(new Set(answers).size).toBe(1);
   });
 
-  it("of the sources the store can hold, only the own OpenAI and OpenRouter keys (A2) wait for the switch", () => {
-    expect(AGENT_AI_SOURCES.filter((source) => !gatewaySwitchedOn(source, new Set()))).toEqual(["openai_key", "openrouter_key"]);
+  it("of the sources the store can hold, only the own OpenAI, OpenRouter and endpoint sources (A2, A3) wait for the switch", () => {
+    expect(AGENT_AI_SOURCES.filter((source) => !gatewaySwitchedOn(source, new Set()))).toEqual(["openai_key", "openrouter_key", "custom_endpoint"]);
   });
 });
 
@@ -198,7 +199,7 @@ describe("the deployed gateway process passes the install's switch to the agent 
     const gateway = await startServe(config, {
       db, fetch: async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }), now: () => now, listen: false, log: () => undefined,
       keys: { keyFor: async () => "rovara-install-key" }, agentKeys: new CompanyKeys(),
-      agentAiSources: { sourceFor: async () => "custom_endpoint" as AgentAiSource },
+      agentAiSources: { sourceFor: async () => "custom_endpoint" },
       transport: async (request) => { sent.push(request); return { status: 200, body: answer() }; },
     });
     running.push(gateway);
@@ -209,7 +210,7 @@ describe("the deployed gateway process passes the install's switch to the agent 
     return { res: await done, sent };
   }
 
-  it("unset: a source of a kind that is off is refused; set: it passes the switch (and is then refused as not served, never sent)", async () => {
+  it("unset: a source of a kind that is off is refused; set: it passes the switch (and is then refused because this company's connection is unreadable, never sent)", async () => {
     const off = await serve(undefined);
     expect(off.res.statusCode).toBe(403);
     expect(JSON.parse(off.res.text())).toEqual({ error: { type: AGENT_SOURCE_SWITCHED_OFF.code, message: AGENT_SOURCE_SWITCHED_OFF.message } });

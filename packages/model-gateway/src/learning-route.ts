@@ -41,7 +41,7 @@ export const LEARNING_PATH_PREFIX = "/v1/learning/";
 export const LEARNING_PROVIDERS = ["anthropic", "gemini", "vertex", "openai"] as const;
 export type LearningProvider = typeof LEARNING_PROVIDERS[number];
 /** A company account the key source may hold: the learning providers, and OpenRouter, which only the agent route uses (DEC 254t, agent-openai.ts). */
-export type CompanyKeyProvider = LearningProvider | "openrouter";
+export type CompanyKeyProvider = LearningProvider | "openrouter" | "endpoint";
 export const LEARNING_OPENAI_PATH = "/v1/learning/openai/chat/completions";
 /** The product route's Gemini and Vertex paths, which parseGeminiPath and parseVertexPath read: a learning path is the same with this prefix. */
 const PRODUCT_PREFIX_OF: Readonly<Record<"gemini" | "vertex", string>> = { gemini: "/v1/product/gemini/", vertex: "/v1/product/vertex/" };

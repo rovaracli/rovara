@@ -14,6 +14,9 @@
 //   cd <this worktree> && ROVARA_REAL_KEY_CHECK=1 node_modules/.bin/tsx scripts/real-key-check.ts openai       (ROVARA_CHECK_OPENAI_KEY; optional ROVARA_CHECK_OPENAI_MODEL, default gpt-5-mini)
 //   cd <this worktree> && ROVARA_REAL_KEY_CHECK=1 node_modules/.bin/tsx scripts/real-key-check.ts openrouter   (ROVARA_CHECK_OPENROUTER_KEY; optional ROVARA_CHECK_OPENROUTER_MODEL, default openai/gpt-5-mini)
 //     Both go through the gateway's own Messages -> Chat Completions translation and back; OpenRouter also proves its reported cost.
+//   cd <this worktree> && ROVARA_REAL_KEY_CHECK=1 ROVARA_CHECK_ENDPOINT_URL=https://<host>/v1 ROVARA_CHECK_ENDPOINT_MODEL=<served name> \
+//     node_modules/.bin/tsx scripts/real-key-check.ts endpoint   (ROVARA_CHECK_ENDPOINT_KEY; optional ROVARA_CHECK_ENDPOINT_CATALOG=<provider>/<model>)
+//     Through the gateway's own SSRF guard: the address must be https on 443 of a public host; DNS is checked at call time.
 //
 // Cost: one call, one forced tool call, max_tokens 64 (the gateway's guard refuses anything above 256), a prompt under 1 KB: well under
 // one cent on any of these models. Prints one line per check and a final PASS or FAIL; exit 0 on PASS, 1 otherwise, 2 when refused.
@@ -22,8 +25,9 @@ import { execFileSync } from "node:child_process";
 import { createAnthropicTransport } from "../packages/model-gateway/src/provider.js";
 import { createBedrockTransport } from "../packages/model-gateway/src/bedrock-transport.js";
 import { createChatCompletionsTransport } from "../packages/model-gateway/src/agent-openai.js";
+import { createEndpointTransport } from "../packages/model-gateway/src/endpoint-source.js";
 import {
-  anthropicModel, bedrockSettings, chatModel, CHECK_KINDS_BUILT, CONSENT_VARIABLE, formatResult, KEY_VARIABLE, keyProblem, parseCliCredentials, parseKind,
+  anthropicModel, bedrockSettings, chatModel, endpointSettings, CHECK_KINDS_BUILT, CONSENT_VARIABLE, formatResult, KEY_VARIABLE, keyProblem, parseCliCredentials, parseKind,
   promptHidden, runCheck, WORDS, type CheckKind, type CheckTarget,
 } from "./real-key-check-lib.js";
 
@@ -49,6 +53,12 @@ async function target(kind: CheckKind): Promise<CheckTarget> {
     const model = anthropicModel(process.env);
     if (model === undefined) return refuse(WORDS.badModel);
     return { kind, key: await key(kind), model, transport: createAnthropicTransport() };
+  }
+  if (kind === "endpoint") {
+    const settings = endpointSettings(process.env);
+    if (typeof settings === "string") return refuse(settings);
+    // The gateway's own endpoint transport: DNS resolved now, every address checked, the connection pinned, no redirects.
+    return { kind, ...settings, key: await key(kind), transport: (target, onRefused) => createEndpointTransport(target, { onRefused }) };
   }
   if (kind === "openai" || kind === "openrouter") {
     const model = chatModel(kind, process.env);
