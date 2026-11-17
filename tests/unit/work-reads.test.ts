@@ -2,7 +2,8 @@
 // proof index, events and comments. Each answer keeps only what the page draws, and a task the person may not read is Code's own 404.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
-import { WORK_READS, WORK_TASKS_MAX, workPlan, workTask } from "../../packages/cloud-server/src/work-reads.js";
+import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
+import { EVENTS_MAX, WORK_READS, WORK_TASKS_MAX, workPlan, workTask } from "../../packages/cloud-server/src/work-reads.js";
 import type { RouteContext } from "../../packages/cloud-server/src/routes.js";
 import { PRIYA, SAM, TASK_IDS, startFakeCode, type FakeCode, type Person } from "../support/fake-code.js";
 
@@ -68,6 +69,17 @@ describe("the Work page's reads", () => {
     expect(events.body.events[1]).toMatchObject({ seq: 2, taskItemId: "T2", attempt: 1 });
     const comments = await call<{ comments: unknown[] }>(`/tasks/${TASK_IDS.planReview}/comments`);
     expect(comments.body).toEqual({ comments: [] });
+  });
+
+  it("asks Code for no more events than Code's own maximum (DEVELOPER_EVENTS_MAX), so the Build tab's activity never gets Code's 400", async () => {
+    expect(EVENTS_MAX).toBe(DEVELOPER_EVENTS_MAX);
+    const before = fake.log.length;
+    const events = await call<EventsBody>(`/tasks/${TASK_IDS.planReview}/events?limit=500`);
+    expect(events.status).toBe(200);
+    const sent = fake.log.slice(before).filter((entry) => entry.path.endsWith("/events"));
+    // One call, with Cloud's own fixed limit: the browser's limit never reaches Code.
+    expect(sent.map((entry) => entry.query)).toEqual([`?limit=${String(DEVELOPER_EVENTS_MAX)}`]);
+    expect(sent[0]!.status).toBe(200);
   });
 
   it("answers Code's refusal for a task that is not there, and refuses a path that is not a task id", async () => {

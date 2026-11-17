@@ -14,6 +14,7 @@ import {
   type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
   type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
+import { DEVELOPER_EVENTS_MAX } from "../../packages/contracts/src/developer-tasks.js";
 import { wikiIndex, wikiPage, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
 import { wikiMapOf, wikiSetupBuildView, type FakeWikiSetup } from "./wiki-setup-fixture.js";
 import { WIKI_SETUP_CODE_WORDS } from "../../packages/contracts/src/app-wiki-setup.js";
@@ -110,6 +111,13 @@ type Handler<K extends CodeRouteId> = (context: Context<K>) => Answer<K> | Promi
 type Handlers = { [K in CodeRouteId]: Handler<K> };
 
 const failure = (status: number, code: string, message: string): { status: number; body: ErrorBody } => ({ status, body: { error: { code, message } } });
+/** Code's events limit check (`whole`: one to three digits, then the range): absent is its default, anything else outside 1..DEVELOPER_EVENTS_MAX is refused with Code's 400. */
+const eventsLimitRefused = (query: URLSearchParams): { status: number; body: ErrorBody } | undefined => {
+  const raw = query.get("limit");
+  if (raw === null) return undefined;
+  const limit = /^\d{1,3}$/u.test(raw) ? Number(raw) : Number.NaN;
+  return limit >= 1 && limit <= DEVELOPER_EVENTS_MAX ? undefined : failure(400, "CONFIG_INVALID", `limit must be a whole number from 1 to ${String(DEVELOPER_EVENTS_MAX)}`);
+};
 const notFound = (what = "route") => failure(404, "NOT_FOUND", `${what} not found`);
 
 export async function startFakeCode(options: FakeCodeOptions = {}): Promise<FakeCode> {
@@ -812,7 +820,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: { involved: true, tasks: [...tasks.values()].filter((entry) => involved.get(entry.task.taskId)?.has(person.developerId) === true && entry.owner.developerId !== person.developerId).map((entry) => entry.task).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) } as never };
     },
     "tasks.get": (context) => taskOr404(context, ({ task }) => ({ body: { task } })),
-    "tasks.events": (context) => taskOr404(context, ({ task }) => ({ body: { events: [{ seq: 1, at: task.createdAt, kind: "status", text: "Task started" }, { seq: 2, at: task.updatedAt, kind: "progress", text: `Now at ${task.workflow?.stage ?? "start"}`, taskItemId: "T2", attempt: 1 }] } })),
+    // Code's own bound (packages/broker/src/aws/developer-tasks.ts taskEvents): the task is read first (its 404), then a limit outside 1..DEVELOPER_EVENTS_MAX is a 400.
+    "tasks.events": (context) => taskOr404(context, ({ task }) => eventsLimitRefused(context.query) ?? ({ body: { events: [{ seq: 1, at: task.createdAt, kind: "status", text: "Task started" }, { seq: 2, at: task.updatedAt, kind: "progress", text: `Now at ${task.workflow?.stage ?? "start"}`, taskItemId: "T2", attempt: 1 }] } })),
     "tasks.plan": (context) => taskOr404(context, ({ task }) => ({ body: planOf(task) })),
     "tasks.cancel": (context) => ownerTask(context, ({ task }) => { touch(task, { status: "CANCELLED" }); return { body: { task } }; }),
     "tasks.close": (context) => ownerTask(context, ({ task }) => { touch(task, { status: "CLOSED" }); return { body: { task, closed: true } }; }),
