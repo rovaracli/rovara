@@ -20,9 +20,11 @@ import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
+import { PEOPLE_ROUTES } from "./people-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
 import { NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
+import { parseAnswersBody } from "./answers.js";
 
 /** The deployment's plan words. The company itself (its id and name) is never the deployment's: it comes from Code's access check (company-caller.ts). */
 export interface OrgView { orgId: string; name: string; plan: string }
@@ -542,6 +544,21 @@ export const ROUTES: Route[] = [
     },
   },
   {
+    // POST /v1/app/sessions/{id}/answers: the owner's answers to the questions Understand asked. Cloud reads the task from Code for its own session record
+    // (Code decides whether the person may see it), checks the body, and sends the checked answers to Code's POST /v1/dev/tasks/{taskId}/answers with the
+    // task id from that record (never one from the request). Code serves every task: a core task's owner answers it, a workflow task says nothing waits.
+    // Code decides who may answer (only the task's owners); its refusals pass through unchanged. The answer is the session as GET shows it, re-read.
+    method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/answers$/u,
+    answer: async (context) => {
+      const found = await sessionAndTask(context);
+      if (found === undefined) return sessionNotFound;
+      const input = parseAnswersBody(context.body);
+      if (!input.ok) return badRequest(input.message);
+      await context.client.json(context.session, `/v1/dev/tasks/${encodeURIComponent(found.record.taskId)}/answers`, { method: "POST", headers: TASK_VIEW, body: input.value });
+      return ok({ session: sessionView(found.record, await readTask(context, found.record.taskId), viewer(context), context.origin, await peopleOf(context, found.record)) });
+    },
+  },
+  {
     // POST /v1/app/sessions/{id}/retry (Rovara-cloud#15): for a task stopped at review, Code reviews the same checked code again (its
     // workflow/review route, as Slack's Retry reviews). Only the owner; Code checks the owner, the revision and the candidate again.
     method: "POST", path: /^\/sessions\/(ses_[0-9a-z]{20})\/retry$/u,
@@ -823,4 +840,5 @@ export const ROUTES: Route[] = [
   ...INBOX_ROUTES,
   // The project setup checklist and the hosted setup run (guided onboarding PR 9): Code decides who may; Cloud passes the person's token and fixed words.
   ...SETUP_CHECKLIST_ROUTES,
+  ...PEOPLE_ROUTES,
 ];

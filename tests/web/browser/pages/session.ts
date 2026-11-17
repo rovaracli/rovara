@@ -58,3 +58,29 @@ export class SessionPage {
     return match[1];
   }
 }
+
+/** The People panel on a task's page (web task channel K3): the list, the add form and the confirm step. */
+export class PeoplePanel {
+  readonly page: Page;
+  readonly panel: Locator;
+  readonly rows: Locator;
+  readonly waiting: Locator;
+  readonly message: Locator;
+  constructor(page: Page) {
+    this.page = page;
+    this.panel = page.getByTestId("people-panel");
+    this.rows = this.panel.getByTestId("people-row");
+    this.waiting = this.panel.getByTestId("people-waiting");
+    this.message = this.panel.getByTestId("people-message");
+  }
+  async open(): Promise<void> {
+    await this.panel.locator("summary").click();
+    await expect(this.rows.first()).toBeVisible();
+  }
+  row(name: string): Locator {
+    return this.rows.filter({ hasText: name });
+  }
+  roleOf(name: string): Locator {
+    return this.panel.getByRole("combobox", { name: `Role for ${name}` });
+  }
+}

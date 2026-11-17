@@ -25,12 +25,15 @@ import { MoneyBanners } from "./MoneyBanners.js";
 import { Conversation, type CommentDraft } from "./Conversation.js";
 import { Composer, type MessageInput, type ComposerDrafts } from "./Composer.js";
 import { SessionControls } from "./SessionControls.js";
+import { PeoplePanel } from "./PeoplePanel.js";
 import { Workspace } from "./Workspace.js";
 import { DesignActions, useTaskDesign } from "./DesignActions.js";
 import { usePageVisible } from "./presence.js";
 import "./session.css";
 /** How often a task with no Cloud session reads its plan, proof and activity again. */
 const WORK_REFRESH_SECONDS = 15;
+// Hidden until the gateway answers purpose lands (DEC 254z-amend2). Hosted Cloud never offers "Ask about this task" until this is true; AskPanel and session-ask.ts stay in place.
+const ASK_ON_HOSTED = false;
 const SESSION_ID = /^ses_[0-9a-z]{20}$/u, TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 /**
@@ -110,7 +113,7 @@ export function SessionScreen() {
  };
  const controls = <div className="rv-task-controls">
   {row !== undefined && <TaskActions taskId={row.id} canContinue={row.step !== "merged" && row.step !== "closed"} showNote={sessionId === undefined && row.group !== "done"} />}
-  {session !== undefined && sessionId !== undefined && <SessionControls key={sessionId} id={sessionId} agent={agent} actions={session.you.actions} following={session.you.following} makeAgent responsive ask={session.you.live?.ask === true} share={{ orgName }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />}
+  {session !== undefined && sessionId !== undefined && <SessionControls key={sessionId} id={sessionId} agent={agent} actions={session.you.actions} following={session.you.following} makeAgent responsive ask={ASK_ON_HOSTED && session.you.live?.ask === true} share={{ orgName }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />}
  </div>;
  const statusWords = row === undefined ? undefined : row.need ?? row.line;
  const conversation = session !== undefined && sessionId !== undefined && <Dialog title={selected === undefined ? "Conversation" : selected.target === "change_file" ? "Discussion of this file" : selected.target === "step" ? "Discussion of this step" : "Discussion of this plan paragraph"} className="rv-conversation-tray" open={open} onOpenChange={setOpen} onCloseAutoFocus={event => { const source = sourceControl.current;if (source?.isConnected) { event.preventDefault();source.focus(); }sourceControl.current = undefined; }} trigger={<Button onClick={() => { setSelection(undefined);sourceControl.current = undefined; }}>Conversation</Button>}>
@@ -125,6 +128,7 @@ export function SessionScreen() {
   {session !== undefined ? <SessionHeader session={session} onAction={() => undefined} controls={controls} />
    : row !== undefined && <header className="rv-session-header" data-testid="session-header"><div className="rv-session-context"><span><VisibleText text={row.project} /></span></div><h1 tabIndex={-1} data-testid="session-title"><VisibleText text={row.title} /></h1><div className="rv-session-facts"><span data-testid="session-status"><ToneDot tone={row.tone} words={statusWords ?? "Status"} /> <VisibleText text={statusWords ?? ""} /></span></div><div className="rv-session-people">{controls}</div></header>}
   {controlsFailed && <div role="alert" className="rv-task-controls-error" data-testid="controls-error"><p>Couldn't load this task's controls (Stop, Share, Conversation).{read.error instanceof ApiError ? " " + read.error.message : ""}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div>}
+  {session !== undefined && sessionId !== undefined && <PeoplePanel key={sessionId} id={sessionId} />}
   {session !== undefined && <MoneyBanners session={session} />}{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}
   {conversation !== false && <div className="rv-task-bar">{conversation}</div>}
   {designTask !== undefined && <DesignActions task={designTask} sessionKey={designKey} />}

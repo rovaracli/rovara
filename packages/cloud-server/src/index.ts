@@ -54,6 +54,7 @@ export {
 } from "./github-connect.js";
 export { CONNECT_TTL_MS, connectBack, connectCallbackPath, connectCookieName, connectResultKey, connectStateKey, type ConnectPending, type ConnectProvider } from "./connect-flow.js";
 export { SLACK_CALLBACK_PATH, SLACK_OUTCOMES, SLACK_WORDS } from "./slack-connect.js";
+export { LINK_FAILURES, LINK_LANDING, LINK_METHODS, LINK_TTL_MS, SIGN_IN_LINK_WORDS, linkPendingKey, type LinkPending } from "./sign-in-links.js";
 export { LINEAR_CALLBACK_PATH, LINEAR_OUTCOMES, LINEAR_WORDS } from "./linear-connect.js";
 export { SETUP_CHECKLIST_ANSWERS, SETUP_CHECKLIST_ROUTES, SETUP_CHECKLIST_WORDS, checklistAnswer, runBody, setupRefusal, skipBody } from "./setup-checklist-routes.js";
 export { LIFECYCLE_ANSWERS, LIFECYCLE_WORDS, PROJECT_LIFECYCLE_ROUTES, lifecycleBody, lifecycleRefusal } from "./project-lifecycle-routes.js";
