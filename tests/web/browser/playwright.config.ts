@@ -47,7 +47,7 @@ export default defineConfig({
       name: "pretend Rovara Code",
       command: `env ${CLEARED_FOR_CODE} npm run fake-code`,
       cwd: root,
-      env: { PORT: String(codePort), ROVARA_CLIENT_SECRET: clientSecret },
+      env: { PORT: String(codePort), ROVARA_CLIENT_SECRET: clientSecret, FAKE_LINEAR_REDIRECT_URI: `${cloudUrl}/api/connect/linear/callback` },
       // The pretend Code has no page of its own to ask for, so Playwright waits for the port to accept connections.
       port: codePort,
       reuseExistingServer: false,

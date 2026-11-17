@@ -126,7 +126,17 @@ export interface CompanyStore {
   /** An install operator's change (no app route writes this). Throws on an install that does not read. */
   putHookInstall(install: HookInstall): Promise<void>;
   removeHookInstall(issuer: string): Promise<void>;
+  /**
+   * The one-trial-per-GitHub-account rule (`github=trial_used`; guided onboarding PR 2): the first company a GitHub account connects GitHub for
+   * holds that account's trial, written once and never overwritten. "claimed" (now), "held" (this company already held it), "other" (another
+   * company holds it). The GitHub user id is Code's checked answer (the claim's `githubUser.id`), never anything the browser sent.
+   */
+  claimGithubTrial(githubUserId: number, companyId: string, at: string): Promise<GithubTrialClaim>;
 }
+
+export type GithubTrialClaim = "claimed" | "held" | "other";
+/** A GitHub user id as GitHub numbers them. */
+export const validGithubUserId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 
 const isoTime = (value: unknown): value is string => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value) && Number.isFinite(Date.parse(value));
 const B64URL = /^[A-Za-z0-9_-]+$/u;
@@ -196,6 +206,14 @@ export class LocalCompanyStore implements CompanyStore {
   private readonly tokens = new Map<string, { companyId: string; inviteId: string }>();
   private readonly installs = new Map<string, HookInstall>();
   private readonly agentAiOf = new Map<string, AgentAiChoice>();
+  private readonly githubTrials = new Map<number, string>();
+
+  async claimGithubTrial(githubUserId: number, companyId: string): Promise<GithubTrialClaim> {
+    if (!validGithubUserId(githubUserId) || !COMPANY_ID.test(companyId)) throw new Error("the GitHub trial claim does not read");
+    const holder = this.githubTrials.get(githubUserId);
+    if (holder === undefined) { this.githubTrials.set(githubUserId, companyId); return "claimed"; }
+    return holder === companyId ? "held" : "other";
+  }
 
   async agentAi(companyId: string) { const choice = this.agentAiOf.get(companyId); return choice === undefined ? undefined : copy(choice); }
 

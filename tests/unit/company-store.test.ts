@@ -251,6 +251,19 @@ function contract(name: string, make: () => CompanyStore) {
       expect(await store.hookInstall(install().issuer)).toBeUndefined();
     });
 
+    it("gives a GitHub account's one trial to the first company that connects it, and never moves it (guided onboarding PR 2)", async () => {
+      const store = make();
+      expect(await store.claimGithubTrial(4242, A, iso(NOW))).toBe("claimed");
+      expect(await store.claimGithubTrial(4242, A, iso(NOW + 1))).toBe("held");
+      expect(await store.claimGithubTrial(4242, B, iso(NOW + 2))).toBe("other");
+      // Still A's after B asked.
+      expect(await store.claimGithubTrial(4242, A, iso(NOW + 3))).toBe("held");
+      expect(await store.claimGithubTrial(7, B, iso(NOW))).toBe("claimed");
+      await expect(store.claimGithubTrial(0, A, iso(NOW))).rejects.toThrow();
+      await expect(store.claimGithubTrial(1.5, A, iso(NOW))).rejects.toThrow();
+      await expect(store.claimGithubTrial(9, "acme", iso(NOW))).rejects.toThrow();
+    });
+
     it("answers the hook from the store: defaults, saved settings, and nothing for a row that does not read", async () => {
       const store = make();
       const rules = new StoreCompanyRules(store);

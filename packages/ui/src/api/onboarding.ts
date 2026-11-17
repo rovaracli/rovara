@@ -1,6 +1,6 @@
 // RULING Q53: readers project the existing routes; settings and permissions remain server-owned.
 import { useMemo } from "react";
-import { AppMeResponseReaderSchema, AppOrgMembersResponseReaderSchema, AppProjectDetailSchema, GithubConnectResponseReaderSchema, GithubInstallationsResponseReaderSchema, GithubRepositoriesResponseReaderSchema, CreateProjectBodySchema, CloudProjectCreatedResponseReaderSchema, RenameOrganizationBodySchema, RenameOrganizationResponseSchema, ProjectSettingsBodySchema, ProjectSettingsResponseSchema, ProjectSettingsUndoBodySchema, ProjectSetupCheckBodySchema, ProjectSetupCheckResponseSchema, CreateOrganizationInviteBodySchema, OrganizationInviteResponseSchema, ProjectRosterAddedResponseSchema, AgentDirectoryResponseReaderSchema, ProjectOverviewProjectSchema, AgentIdSchema, CreateProjectFromMetaBodySchema, SetupDraftResponseSchema, SetupDraftStartBodySchema, SetupApplyBodySchema, SetupApplyResponseSchema } from "@agentx/contracts/web";
+import { AppMeResponseReaderSchema, AppOrgMembersResponseReaderSchema, AppProjectDetailSchema, GithubConnectResponseReaderSchema, GithubConnectResultReaderSchema, GithubChooseBodySchema, GithubChooseResponseReaderSchema, GithubConnectionsResponseReaderSchema, GithubInstallationsResponseReaderSchema, GithubRepositoriesResponseReaderSchema, CreateProjectBodySchema, CloudProjectCreatedResponseReaderSchema, RenameOrganizationBodySchema, RenameOrganizationResponseSchema, ProjectSettingsBodySchema, ProjectSettingsResponseSchema, ProjectSettingsUndoBodySchema, ProjectSetupCheckBodySchema, ProjectSetupCheckResponseSchema, CreateOrganizationInviteBodySchema, OrganizationInviteResponseSchema, ProjectRosterAddedResponseSchema, AgentDirectoryResponseReaderSchema, ProjectOverviewProjectSchema, AgentIdSchema, CreateProjectFromMetaBodySchema, SetupDraftResponseSchema, SetupDraftStartBodySchema, SetupApplyBodySchema, SetupApplyResponseSchema } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient, type SendResult } from "./client.js";
 import { ApiError } from "./errors.js";
@@ -18,7 +18,11 @@ export function createOnboardingApi(host: AppHost) {
  me:()=>api.get("/v1/app/me",AppMeResponseReaderSchema), members:()=>api.get("/v1/app/org/members",AppOrgMembersResponseReaderSchema),
  rename:async(body:ReturnType<typeof RenameOrganizationBodySchema.parse>)=>completed(await api.send("PATCH","/v1/app/org",RenameOrganizationBodySchema.parse(body),RenameOrganizationResponseSchema)),
  installations:()=>api.get("/v1/app/github/installations",GithubInstallationsResponseReaderSchema),
- connect:async()=>completed(await api.send("POST","/v1/app/github/connect",{},GithubConnectResponseReaderSchema)),
+ connect:async()=>completed(await api.send("POST","/v1/app/github/connect",{},GithubConnectResponseReaderSchema,{retry:"never"})),
+ // Guided onboarding PR 2: the GitHub callback's outcome (kept by Cloud for this sign-in), a choice from its list, and the company's connections.
+ githubResult:()=>api.sendAnswer("POST","/v1/app/github/connect/result",{},GithubConnectResultReaderSchema,{retry:"never"}),
+ githubChoose:(installationId:number)=>api.sendAnswer("POST","/v1/app/github/choose",GithubChooseBodySchema.parse({installationId}),GithubChooseResponseReaderSchema,{retry:"never"}),
+ githubConnections:()=>api.get("/v1/app/github/connections",GithubConnectionsResponseReaderSchema),
  repositories:(installation:number)=>api.get("/v1/app/github/repositories?"+new URLSearchParams({installation:String(installation)}).toString(),GithubRepositoriesResponseReaderSchema),
  create:async(body:ReturnType<typeof CreateProjectBodySchema.parse>)=>completed(await api.send("POST","/v1/app/projects",CreateProjectBodySchema.parse(body),CloudProjectCreatedResponseReaderSchema)),
  createFromMeta:async(body:ReturnType<typeof CreateProjectFromMetaBodySchema.parse>)=>completed(await api.send("POST","/v1/app/projects",CreateProjectFromMetaBodySchema.parse(body),CloudProjectCreatedResponseReaderSchema)),

@@ -373,6 +373,29 @@ export interface CompanyPreapprovalResponse { ok: true; invite?: { secret: strin
 /** A person with no company creates one with an operator's invite code (DEC 254a; Code PR 4) and becomes its owner. */
 export interface CreateCompanyRequest { name: string; inviteCode: string }
 export interface CreateCompanyResponse { companyId: string; companyName: string; companyRole: "owner" }
+/** Guided onboarding (Code PR #830): a company owner or admin connects the company's GitHub App installation, proving control with a GitHub user authorization. */
+export interface GithubConnectStart { state: string; expiresAt: Iso; installUrl: string; authorizeUrl: string }
+export interface GithubClaimRequest { state: string; code?: string; installationId?: number; setupAction?: "install" | "update" | "request" }
+export interface GithubConnected { status: "connected"; alreadyConnected: boolean; installation: { installationId: number; accountLogin: string; accountType: string }; githubUser: { id: number; login: string } }
+export interface GithubChoice { installationId: number; accountLogin: string; accountType: string; suspended: boolean; connection: string /* known: this_company, another_company, unbound */ }
+export type GithubClaimResponse = GithubConnected | { status: "choose"; ticket: string; expiresAt: Iso; githubUser: { id: number; login: string }; installations: GithubChoice[] } | { status: "requested" };
+export interface GithubChooseRequest { ticket: string; installationId: number }
+/** Guided onboarding (Code PRs #836, #840, #838): Add to Slack, a project's Slack channel, Connect Linear and a project's Linear team. */
+export interface SlackInstallStart { state: string; expiresAt: Iso; authorizeUrl: string; signedInWorkspace?: { teamId: string; teamName?: string } }
+export type SlackInstallComplete = { status: "connected"; alreadyConnected: boolean; workspace: { teamId: string; teamName?: string }; signedInWorkspace?: { teamId: string; teamName?: string }; matchesSignIn?: boolean } | { status: "cancelled" };
+export interface SlackWorkspaceRead { workspace: null | { teamId: string; teamName?: string; state: string; connectedAt: Iso; connectedBy: { kind: string; personId?: string; name?: string } } }
+export interface SlackDisconnected { status: "disconnected"; workspace: { teamId: string; teamName?: string }; projectsLosingChannel: string[] }
+export interface SlackChannelsPage { workspace: { teamId: string }; channels: Array<{ id: string; name: string; isPrivate: boolean; linked?: true; linkedProject?: string }>; nextCursor?: string }
+export interface SlackProjectChannel { workspace: null | { teamId: string }; channels: Array<{ channelId: string }> }
+export type SlackChannelLinked = { status: "linked"; workspace: { teamId: string }; channel: { id: string; name: string; isPrivate: boolean }; alreadyLinked: boolean; replaced: string[] } | { status: "invite_needed"; workspace: { teamId: string }; channel: { id: string }; message: string };
+export interface SlackChannelUnlinked { status: "unlinked"; teamId: string; channels: string[] }
+export interface LinearConnectStart { state: string; expiresAt: Iso; authorizeUrl: string }
+export interface LinearConnected { status: "connected"; reconnected: boolean; workspace: { id: string; name: string; urlKey: string } }
+export type LinearConnectionRead = { status: "disconnected" } | { status: "connected" | "needs_reconnect" | "disconnected"; statusAt: Iso; workspace: { id: string; name: string; urlKey: string }; connectedAt: Iso; connectedBy: { personId: string; name?: string } };
+export interface LinearDisconnected { status: "disconnected"; workspaceName: string; projects: string[] }
+export interface LinearTeam { id: string; key: string; name: string }
+export interface LinearProjectTeam { project: string; team: LinearTeam | null; teams?: LinearTeam[]; cleared?: boolean }
+export interface GithubConnectionsResponse { installations: Array<{ installationId: number; accountLogin: string; connectedAt: Iso; connectedBy: { kind: "person"; personId: string; name?: string } | { kind: "operator" } }> }
 /**
  * One engine action (Code's `GET /v1/dev/client/company/audit/records`, lane AU, Rovara PR #649). The optional fields are what Code adds: the record's id, the actor's kind and the caller the
  * action came through ("person via caller": `web`, `slack`, `cli`, `client:<id>`). An older Code leaves them out.
@@ -585,6 +608,26 @@ export interface CodeRouteTypes {
   "company.preapprovals.create": { request: CompanyPreapprovalRequest; response: CompanyPreapprovalResponse };
   "company.preapprovals.withdraw": { request: void; response: CompanyOkResponse };
   "company.create": { request: CreateCompanyRequest; response: CreateCompanyResponse };
+  "company.github.connect": { request: JsonObject; response: GithubConnectStart };
+  "company.github.claim": { request: GithubClaimRequest; response: GithubClaimResponse };
+  "company.github.choose": { request: GithubChooseRequest; response: GithubConnected };
+  "company.github.status": { request: void; response: GithubConnectionsResponse };
+  "company.slack.install": { request: { redirectUri: string }; response: SlackInstallStart };
+  "company.slack.installComplete": { request: { state: string; code?: string; error?: string }; response: SlackInstallComplete };
+  "company.slack.get": { request: void; response: SlackWorkspaceRead };
+  "company.slack.disconnect": { request: JsonObject; response: SlackDisconnected };
+  "company.slack.channels": { request: void; response: SlackChannelsPage };
+  "company.slack.channel.get": { request: void; response: SlackProjectChannel };
+  "company.slack.channel.link": { request: { channelId: string }; response: SlackChannelLinked };
+  "company.slack.channel.check": { request: { channelId: string }; response: SlackChannelLinked };
+  "company.slack.channel.unlink": { request: void; response: SlackChannelUnlinked };
+  "company.linear.connect": { request: JsonObject; response: LinearConnectStart };
+  "company.linear.complete": { request: { state: string; code: string }; response: LinearConnected };
+  "company.linear.get": { request: void; response: LinearConnectionRead };
+  "company.linear.disconnect": { request: void; response: LinearDisconnected };
+  "company.linear.team.get": { request: void; response: LinearProjectTeam };
+  "company.linear.team.put": { request: { teamId: string }; response: LinearProjectTeam };
+  "company.linear.team.clear": { request: void; response: LinearProjectTeam };
   "company.audit.records": { request: void; response: AuditRecordsResponse };
   "scriptTokens.list": { request: void; response: ScriptTokensResponse };
   "scriptTokens.create": { request: CreateScriptTokenRequest; response: CreateScriptTokenResponse };
@@ -725,6 +768,28 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.preapprovals.create", "POST", "/v1/dev/company/preapprovals", "Cloud's invite pre-approves a member's email in the inviter's company (the inviting admin's own call; Code checks the role)", "full", ["admin"], "yes", false, `${DEV}:1561`, true),
   spec("company.preapprovals.withdraw", "DELETE", "/v1/dev/company/preapprovals/{emailHash}", "Withdraw a pre-approval by the SHA-256 of the email", "full", ["admin"], "yes", false, `${DEV}:1561`, true),
   spec("company.create", "POST", "/v1/dev/company", "A person with no company creates one with an operator's invite code and becomes its owner (DEC 254a)", "full", ["shell"], "no", false, "none", true),
+  // Guided onboarding (Code PR #830, pr/go-github-claim): not on code/next yet; Code answers 404 while COMPANY_SIGNIN is off.
+  spec("company.github.connect", "POST", "/v1/dev/company/github/connect", "A company owner or admin starts connecting GitHub: a single-use state and GitHub's install and authorize addresses", "full", ["admin"], "no", false, "none", true),
+  spec("company.github.claim", "POST", "/v1/dev/company/github/claim", "GitHub's return: spend the state, check the person controls the installation, bind it or list the ones they control", "full", ["admin"], "no", false, "none", true),
+  spec("company.github.choose", "POST", "/v1/dev/company/github/choose", "Bind one installation from a claim's checked list, with its single-use ticket", "full", ["admin"], "no", false, "none", true),
+  spec("company.github.status", "GET", "/v1/dev/company/github", "The company's connected GitHub installations, who connected each and when (any member)", "full", ["admin"], "no", false, "none", true),
+  // Guided onboarding (Code PRs #836 pr/go-slack-install, #840 pr/go-slack-channel, #838 pr/go-linear-oauth): not on code/next yet.
+  spec("company.slack.install", "POST", "/v1/dev/company/slack/install", "A company owner or admin starts Add to Slack: a single-use state and Slack's OAuth v2 address for Cloud's callback", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.installComplete", "POST", "/v1/dev/company/slack/install/complete", "Slack's return: spend the state, exchange the code, bind the workspace to the company", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.get", "GET", "/v1/dev/company/slack", "The company's Slack workspace, who connected it and when (any member)", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.disconnect", "POST", "/v1/dev/company/slack/disconnect", "A company owner with a fresh step-up disconnects Slack", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.channels", "GET", "/v1/dev/company/slack/channels", "One page of the company workspace's channels a project may link", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.channel.get", "GET", "/v1/dev/company/slack/projects/{project}/channel", "A project's linked Slack channel", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.channel.link", "PUT", "/v1/dev/company/slack/projects/{project}/channel", "Link a project's Slack channel (or say the bot must be invited)", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.channel.check", "POST", "/v1/dev/company/slack/projects/{project}/channel/check", "Check again after /invite, then link", "full", ["admin"], "no", false, "none", true),
+  spec("company.slack.channel.unlink", "DELETE", "/v1/dev/company/slack/projects/{project}/channel", "Unlink a project's Slack channel", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.connect", "POST", "/v1/dev/company/linear/connect", "A company owner or admin starts Connect Linear: a single-use state and Linear's consent address (as the app, PKCE)", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.complete", "POST", "/v1/dev/company/linear/complete", "Linear's return: spend the state, exchange the code, bind the Linear workspace", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.get", "GET", "/v1/dev/company/linear", "The company's Linear connection (any member)", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.disconnect", "DELETE", "/v1/dev/company/linear", "A company owner with a fresh step-up disconnects Linear", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.team.get", "GET", "/v1/dev/company/linear/projects/{project}", "A project's Linear team and the teams the company's token sees", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.team.put", "PUT", "/v1/dev/company/linear/projects/{project}", "Pick a project's Linear team", "full", ["admin"], "no", false, "none", true),
+  spec("company.linear.team.clear", "DELETE", "/v1/dev/company/linear/projects/{project}", "Clear a project's Linear team", "full", ["admin"], "no", false, "none", true),
   spec("company.audit.records", "GET", "/v1/dev/client/company/audit/records", "Engine audit records, for a company administrator (lane AU)", "full", ["admin"], "no", false, "none"),
   // Settings: the person's script tokens
   spec("scriptTokens.list", "GET", "/v1/dev/script-tokens", "The person's script tokens", "full", ["settings"], "no", false, "none", false, E2("local/app/script-tokens.ts:94")),
@@ -985,7 +1050,26 @@ POST /v1/app/projects/{p}/context-sources/changes/{changeId}/reject | k | later 
 GET /v1/app/projects/{p}/automations | k | later | | automations |
 GET /v1/app/github/installations | k | admin | client.repositories.list | onboarding | T
 GET /v1/app/github/repositories | k | admin | client.repositories.list | onboarding | T
-POST /v1/app/github/connect | k | admin | | onboarding |
+POST /v1/app/github/connect | k | admin | company.github.connect | onboarding | T
+POST /v1/app/github/connect/result | c | admin | | onboarding | T
+POST /v1/app/github/choose | k | admin | company.github.choose | onboarding | T
+GET /v1/app/github/connections | k | admin | company.github.status | onboarding | T
+POST /v1/app/slack/install | k | admin | company.slack.install | onboarding | T
+POST /v1/app/slack/install/result | c | admin | | onboarding | T
+GET /v1/app/slack | k | admin | company.slack.get | onboarding | T
+POST /v1/app/slack/disconnect | k | admin | company.slack.disconnect | admin/connections | T
+GET /v1/app/slack/channels | k | admin | company.slack.channels | project-setup | T
+GET /v1/app/projects/{p}/slack/channel | k | admin | company.slack.channel.get | project-setup | T
+PUT /v1/app/projects/{p}/slack/channel | k | admin | company.slack.channel.link | project-setup | T
+POST /v1/app/projects/{p}/slack/channel/check | k | admin | company.slack.channel.check | project-setup | T
+DELETE /v1/app/projects/{p}/slack/channel | k | admin | company.slack.channel.unlink | project-setup | T
+POST /v1/app/linear/connect | k | admin | company.linear.connect | project-setup | T
+POST /v1/app/linear/connect/result | c | admin | | project-setup | T
+GET /v1/app/linear | k | admin | company.linear.get | project-setup | T
+DELETE /v1/app/linear | k | admin | company.linear.disconnect | admin/connections | T
+GET /v1/app/projects/{p}/linear | k | admin | company.linear.team.get | project-setup | T
+PUT /v1/app/projects/{p}/linear | k | admin | company.linear.team.put | project-setup | T
+DELETE /v1/app/projects/{p}/linear | k | admin | company.linear.team.clear | project-setup | T
 GET /v1/app/github/requests | k | admin | | readiness |
 GET /v1/app/org/members | k | admin | company.members.list | project-people |
 PUT /v1/app/org/members/{developerId}/role | k | admin | company.members.setRole | admin/RoleChangeDialog |
