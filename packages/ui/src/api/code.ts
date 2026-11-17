@@ -48,10 +48,10 @@ export function createCodeApi(host: AppHost) {
    finally { clearTimeout(timer);if (cancel !== undefined) signal?.removeEventListener("abort", cancel); }
   },
   /** One request id per attempt at the same text: pass the same `requestId` to retry it. */
-  async startCode(project: string, text: string, requestId: string = crypto.randomUUID()): Promise<SendResult<StartedCode>> {
+  async startCode(project: string, text: string, requestId: string = crypto.randomUUID(), path?: "quick" | "full"): Promise<SendResult<StartedCode>> {
    const name = ProjectOverviewProjectSchema.shape.name.parse(project);
    if (!text.trim() || text.length > CODE_TEXT_MAX) throw new ApiError(400, "INVALID_INPUT", "Describe the work in 4000 characters or fewer.");
-   try { return await api.send("POST", "/v1/app/projects/" + encodeURIComponent(name) + "/code", { requestId, input: { text } }, StartedCodeReader); }
+   try { return await api.send("POST", "/v1/app/projects/" + encodeURIComponent(name) + "/code", { requestId, input: { text }, ...(path === undefined ? {} : { path }) }, StartedCodeReader); }
    catch (failure) {
     const message = failure instanceof ApiError ? MESSAGES[failure.code] : undefined;
     throw failure instanceof ApiError && message !== undefined ? new ApiError(failure.status, failure.code, message) : failure;

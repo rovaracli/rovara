@@ -45,7 +45,8 @@ describe("code contract v0 tables", () => {
     // Plus the project setup checklist and its skips, and the hosted setup run's read, start, stop and journal (guided onboarding PR 9).
     // Plus disconnecting a GitHub account on the Connections page (guided onboarding PR 12b).
     // Plus the project wiki's page list, one page and its cited files (lead 4 W5).
-    expect(counts.appCloudServerToday).toBe(90);
+    // Plus the smart Just answer's ask and the start box's suggestion, both off unless the deployment's answers setting is on (lead 4 J3).
+    expect(counts.appCloudServerToday).toBe(92);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

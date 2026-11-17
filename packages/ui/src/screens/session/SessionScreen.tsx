@@ -28,10 +28,12 @@ import { SessionControls } from "./SessionControls.js";
 import { Workspace } from "./Workspace.js";
 import { DesignActions, useTaskDesign } from "./DesignActions.js";
 import { usePageVisible } from "./presence.js";
+import { TaskAnswers } from "../answers/TaskAnswers.js";
 import "./session.css";
 /** How often a task with no Cloud session reads its plan, proof and activity again. */
 const WORK_REFRESH_SECONDS = 15;
-// Hidden until the gateway answers purpose lands (DEC 254z-amend2). Hosted Cloud never offers "Ask about this task" until this is true; AskPanel and session-ask.ts stay in place.
+// The old session Ask route (Code's laptop Ask) is never offered on hosted Cloud (DEC 254z-amend2). "Ask about this task" there is TaskAnswers: the project's answers with the task as context, drawn only when the
+// deployment's answers setting is on (the nav's `features.answers`: turned on once the gateway's answers purpose is merged AND deployed). AskPanel and session-ask.ts stay in place for a host that serves that route.
 const ASK_ON_HOSTED = false;
 const SESSION_ID = /^ses_[0-9a-z]{20}$/u, TASK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
@@ -113,6 +115,7 @@ export function SessionScreen() {
  const controls = <div className="rv-task-controls">
   {row !== undefined && <TaskActions taskId={row.id} canContinue={row.step !== "merged" && row.step !== "closed"} showNote={sessionId === undefined && row.group !== "done"} />}
   {session !== undefined && sessionId !== undefined && <SessionControls key={sessionId} id={sessionId} agent={agent} actions={session.you.actions} following={session.you.following} makeAgent responsive ask={ASK_ON_HOSTED && session.you.live?.ask === true} share={{ orgName }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />}
+  {row !== undefined && <TaskAnswers project={row.project} title={row.title} />}
  </div>;
  const statusWords = row === undefined ? undefined : row.need ?? row.line;
  const conversation = session !== undefined && sessionId !== undefined && <Dialog title={selected === undefined ? "Conversation" : selected.target === "change_file" ? "Discussion of this file" : selected.target === "step" ? "Discussion of this step" : "Discussion of this plan paragraph"} className="rv-conversation-tray" open={open} onOpenChange={setOpen} onCloseAutoFocus={event => { const source = sourceControl.current;if (source?.isConnected) { event.preventDefault();source.focus(); }sourceControl.current = undefined; }} trigger={<Button onClick={() => { setSelection(undefined);sourceControl.current = undefined; }}>Conversation</Button>}>

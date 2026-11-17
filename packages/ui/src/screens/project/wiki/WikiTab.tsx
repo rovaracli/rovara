@@ -1,6 +1,6 @@
 // The project's Wiki tab (lead 4 W5; designs-2026-11-17/project-wiki-demo-v2.html is the target look): the page tree and a search box on the left, one page at
 // reading width in the middle, "On this page" and "About this page" on the right. Everything is read from Code through Cloud (api/wiki.ts); this tab writes nothing.
-// Search looks through page titles and summaries (Code's W2 has no text search route yet). The Ask box is not part of it (hosted Ask stays hidden until the answers gateway purpose).
+// Search looks through page titles and summaries (Code's W2 has no text search route yet). The Ask box at the bottom (lead 4 J3) is drawn only when this deployment's answers setting is on (the nav's `features.answers`).
 import { useId, useState } from "react";
 import { useSearchParams } from "react-router";
 import { ApiError } from "../../../api/errors.js";
@@ -10,6 +10,9 @@ import { EmptyState } from "../../../design/EmptyState.js";
 import { Skeleton } from "../../../design/Skeleton.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { WikiPageView } from "./WikiPageView.js";
+import { useProject } from "../../../api/projects.js";
+import { useAnswersEnabled } from "../../../api/answers.js";
+import { AnswerBox } from "../../answers/AnswerBox.js";
 import { BUILD_STOP_WORDS, T, buildNotice, crumbOf, dotOf, treeOf } from "./wiki-text.js";
 import "./wiki.css";
 
@@ -66,7 +69,8 @@ function SearchResults({ index, q, open }: { index: WikiIndexResponse; q: string
 }
 
 export function WikiTab({ project }: { project: string }) {
-  const read = useWikiIndex(project), [params, setParams] = useSearchParams();
+  const read = useWikiIndex(project), [params, setParams] = useSearchParams(), answersOn = useAnswersEnabled(), overview = useProject(answersOn ? project : undefined);
+  const ask = answersOn && overview.data !== undefined ? <AnswerBox project={project} repositories={overview.data.project.repositories} canStart={overview.data.you.canStartWork} /> : null;
   const [draft, setDraft] = useState(""), [navOpen, setNavOpen] = useState(false), [opened, setOpened] = useState(false), searchId = useId();
   if (read.isPending) return <section aria-label={T.TITLE}><Skeleton label={T.LOADING} /></section>;
   if (read.isError || read.data === undefined) {
@@ -77,7 +81,7 @@ export function WikiTab({ project }: { project: string }) {
   if (index.state === "empty") {
     const running = index.lastBuild?.state === "running", stopped = index.lastBuild !== undefined && (index.lastBuild.state === "stopped" || index.lastBuild.state === "failed");
     const [title, text] = running ? [T.EMPTY_BUILDING_TITLE, T.EMPTY_BUILDING] : stopped ? [T.EMPTY_STOPPED_TITLE, notice ?? BUILD_STOP_WORDS.failed] : [T.EMPTY_NONE_TITLE, T.EMPTY_NONE];
-    return <section aria-label={T.TITLE}><EmptyState testId="wiki-empty" title={title} description={text} /></section>;
+    return <section aria-label={T.TITLE}><EmptyState testId="wiki-empty" title={title} description={text} />{ask}</section>;
   }
   const q = draft.trim();
   const wanted = params.get("page"), current = index.pages.find((page) => page.pageId === wanted) ?? index.pages.find((page) => page.kind === "overview") ?? index.pages[0];
@@ -104,6 +108,7 @@ export function WikiTab({ project }: { project: string }) {
       </nav>
       <div className="rv-wiki-main">
         {q !== "" ? <SearchResults index={index} q={q} open={open} /> : current === undefined ? <p className="rv-muted">{T.NO_PAGE}</p> : <WikiPageView key={current.pageId} project={project} id={current.pageId} entry={current} pages={index.pages} focusTitle={opened} />}
+        {ask}
       </div>
     </section>
   );

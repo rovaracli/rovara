@@ -1,4 +1,5 @@
 // Everything the browser specs know about the screens. A redesign changes the files in this folder, not the specs.
+export { AskBox, setAnswers } from "./answers.js";
 export { AccountPage, AdminPage, AiSpendPage, ProjectLifecyclePage } from "./admin.js";
 export { HomePage } from "./home.js";
 export { FAKE_CODE_URL, LessonsPage, setLessons } from "./lessons.js";

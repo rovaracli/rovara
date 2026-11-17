@@ -58,3 +58,4 @@ export { LINEAR_CALLBACK_PATH, LINEAR_OUTCOMES, LINEAR_WORDS } from "./linear-co
 export { SETUP_CHECKLIST_ANSWERS, SETUP_CHECKLIST_ROUTES, SETUP_CHECKLIST_WORDS, checklistAnswer, runBody, setupRefusal, skipBody } from "./setup-checklist-routes.js";
 export { LIFECYCLE_ANSWERS, LIFECYCLE_WORDS, PROJECT_LIFECYCLE_ROUTES, lifecycleBody, lifecycleRefusal } from "./project-lifecycle-routes.js";
 export { WIKI_ANSWERS, WIKI_ROUTES, WIKI_WORDS, indexAnswer, pageAnswer, sourcesAnswer, wikiRefusal } from "./wiki-routes.js";
+export { ANSWERS_ANSWERS, ANSWERS_ROUTES, ANSWERS_WORDS, answerObject, answersRefusal, suggestObject } from "./answers-routes.js";

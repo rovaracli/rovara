@@ -56,6 +56,11 @@ export interface CloudHandlerOptions {
   audit?: CloudAuditStore;
   /** The project's product AI settings over the gateway's write-only key store: adds those routes (product-ai-routes.ts). Absent: 501, as before. */
   productAi?: ProductAiBackend;
+  /**
+   * Lead 4 J3: this deployment's setting for the smart Just answer (the Ask boxes and the start box's suggestion). Off by default: it is turned on only once the gateway's answers purpose (L4-E) is merged AND
+   * deployed. Off: the nav says `answers: false` (so the app draws no Ask box) and the two routes answer "not available on this Rovara yet" without asking Code.
+   */
+  answersEnabled?: boolean;
   /** Lane H: the policy hook's answering route (`createPolicyHookRoute`), served at `POLICY_HOOK_PATH`. Absent: that path is not Cloud's, as before. */
   policyHook?: (request: CloudRequest) => Promise<CloudResponse>;
   now?: () => Date;
@@ -344,6 +349,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
               // sign-in, and every route that shows or changes a session's data asks Code for its task first (Code checks the company live).
               work: companyScopedWork(options.work, () => companyOf(using.access)?.companyId), origin: options.origin, presence, ...(options.audit === undefined ? {} : { audit: options.audit }), ...(options.company === undefined ? {} : { company: options.company }),
               ...(options.productAi === undefined ? {} : { productAi: options.productAi }),
+              ...(options.answersEnabled === true ? { answersEnabled: true } : {}),
             });
           } catch (error) {
             if (attempt >= REQUEST_ATTEMPTS) throw error;

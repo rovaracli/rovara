@@ -19,6 +19,7 @@ import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./p
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { WIKI_ROUTES } from "./wiki-routes.js";
+import { ANSWERS_ROUTES } from "./answers-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
@@ -48,6 +49,8 @@ export interface RouteContext {
   audit?: CloudAuditStore;
   /** The project's product AI settings (product-ai-routes.ts); absent when this Cloud has none. */
   productAi?: ProductAiBackend;
+  /** Lead 4 J3: the deployment setting for the smart Just answer (handler.ts `answersEnabled`). Absent: off. */
+  answersEnabled?: boolean;
 }
 
 export interface RouteAnswer { status: number; body: unknown }
@@ -306,7 +309,7 @@ export const ROUTES: Route[] = [
         projects: access.projects.slice(0, 50).map((project) => ({ name: project.name, agents: [] })),
         shared: { agents: [], sessions: [] },
         // Each turns on as its routes move to Code (phase 2 onwards). Admin: a company owner or admin, never the install administrator.
-        features: { localAgents: false, usage: false, admin: isCompanyAdmin(who.companyRole), chains: false, notices: false, describe: false },
+        features: { localAgents: false, usage: false, admin: isCompanyAdmin(who.companyRole), chains: false, notices: false, describe: false, answers: context.answersEnabled === true },
       });
     },
   },
@@ -506,7 +509,7 @@ export const ROUTES: Route[] = [
     },
   },
   {
-    // POST /v1/app/projects/{p}/code: start work. Code starts a Quick task (plan, code, checks, draft pull request); Cloud keeps a
+    // POST /v1/app/projects/{p}/code: start work. Code starts a Quick task (or a Full one when the body names `path: "full"`; plan, code, checks, draft pull request); Cloud keeps a
     // session for it. A retried requestId answers the same session without asking Code again.
     method: "POST", path: /^\/projects\/([^/]+)\/code$/u,
     answer: async (context) => {
@@ -514,6 +517,9 @@ export const ROUTES: Route[] = [
       if (typeof input.requestId !== "string" || !UUID.test(input.requestId)) return badRequest("requestId must be a UUID.");
       const text = typeof input.input?.text === "string" ? input.input.text.trim() : "";
       if (text === "") return badRequest("Say what the work is.");
+      // Lead 4 J3 (DEC 173): the start box may name the path it suggested ("quick" or "full"); absent is Quick, as it always was. Anything else is refused.
+      const path = (context.body as { path?: unknown } | undefined)?.path;
+      if (path !== undefined && path !== "quick" && path !== "full") return badRequest("The path is quick or full.");
       // The person's company now (DEC 253z): no company, no work; the answer also refreshes the company the new session is stamped with.
       const who = await companyCaller(context);
       if (refused(who)) return who;
@@ -525,7 +531,7 @@ export const ROUTES: Route[] = [
       }
       const started = await context.client.json<{ task: CodeTask }>(context.session, "/v1/dev/tasks", {
         method: "POST", headers: TASK_VIEW,
-        body: { requestId: input.requestId, project, instructions: text, workflow: true, workflowPath: "QUICK", client: "Rovara Cloud" },
+        body: { requestId: input.requestId, project, instructions: text, workflow: true, workflowPath: path === "full" ? "FULL" : "QUICK", client: "Rovara Cloud" },
       });
       const person = { developerId: context.session.access.developerId, name: context.session.access.displayName };
       const record: WorkSession = { sessionId: newSessionId(), taskId: started.task.taskId, project, startedBy: person, owner: person, createdAt: context.now().toISOString(), revision: 1 };
@@ -823,4 +829,6 @@ export const ROUTES: Route[] = [
   ...SETUP_CHECKLIST_ROUTES,
   // The project Wiki tab's reads (lead 4 W5): Code decides who may read; Cloud passes the person's token, rebuilds each answer for that project only, and answers in fixed words.
   ...WIKI_ROUTES,
+  // The smart Just answer and the start box's path suggestion (lead 4 J3): Code decides who may; Cloud passes the person's token, rebuilds each answer, and answers in fixed words. Off unless the deployment says so.
+  ...ANSWERS_ROUTES,
 ];
