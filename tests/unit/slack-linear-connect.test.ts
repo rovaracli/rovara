@@ -32,7 +32,9 @@ const NOVA_OLD = { ...person("nova", A, "owner", "TNOVA1", 3600), key: "nova-old
 const ADA = person("ada", A, "admin", "TNOVA1", 30);
 const MAX = person("max", A, "member", "TNOVA1");
 const BOB = person("bob", B, "owner", "TBOB01", 30);
-const PEOPLE = [NOVA, NOVA_PLAIN, NOVA_OLD, ADA, MAX, BOB];
+/** A person Code names no company for. */
+const NOBODY = person("nobody", "", "owner", "TNOBODY1", 30);
+const PEOPLE = [NOVA, NOVA_PLAIN, NOVA_OLD, ADA, MAX, BOB, NOBODY];
 
 const SLACK_CODES = { ok: "slackcode-ok", other: "slackcode-otherspace", taken: "slackcode-taken", enterprise: "slackcode-grid" } as const;
 const LINEAR_CODES = { ok: "lincode-ok", taken: "lincode-taken" } as const;
@@ -55,7 +57,7 @@ function world() {
   };
   const teamsOf: Record<string, Array<{ id: string; key: string; name: string }>> = { [A]: [{ id: "team-a1", key: "WEB", name: "Web" }, { id: "team-a2", key: "API", name: "Api" }], [B]: [{ id: "team-b1", key: "LED", name: "Ledger" }] };
   const calls: Array<{ method: string; path: string; search: string; token?: string; body?: unknown }> = [];
-  const overrides = new Map<string, () => Response>();
+  const overrides = new Map<string, () => Response | Promise<Response>>();
   const secret = () => randomBytes(32).toString("base64url");
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
@@ -63,14 +65,16 @@ function world() {
     const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : undefined;
     const method = init?.method ?? "GET";
     calls.push({ method, path: url.pathname, search: url.search, ...(token === undefined ? {} : { token }), ...(body === undefined ? {} : { body }) });
-    const who = PEOPLE.find((one) => one.token === token);
-    if (who === undefined) return respond(401, { error: { code: "AUTH_REQUIRED" } });
+    // Every refresh is refused (the grant is dead): a 401 ends the sign-in unless another server refreshed it first.
+    if (url.pathname === "/v1/auth/token") return respond(400, { error: "invalid_grant" });
     const override = overrides.get(`${method} ${url.pathname}`);
     if (override !== undefined) return override();
+    const who = PEOPLE.find((one) => one.token === token);
+    if (who === undefined) return respond(401, { error: { code: "AUTH_REQUIRED" } });
     const company = who.companyId;
     const isAdmin = who.role !== "member";
     const p = url.pathname;
-    if (p === "/v1/dev/access") return respond(200, { developerId: who.developerId, displayName: who.key, administrator: false, projects: [], notices: [], companyId: company, companyRole: who.role });
+    if (p === "/v1/dev/access") return respond(200, { developerId: who.developerId, displayName: who.key, administrator: false, projects: [], notices: [], ...(company === "" ? {} : { companyId: company, companyRole: who.role }) });
     const mint = (provider: string) => { const state = secret(); states.set(state, { token: who.token, spent: false, provider }); return state; };
     const spend = (provider: string) => {
       const kept = states.get(String(body?.state));
@@ -234,7 +238,7 @@ function world() {
     return { status: answer.status, location: answer.headers.location, setCookie: answer.headers["set-cookie"], body: answer.body };
   };
   const codeCalls = (path: string) => calls.filter((call) => call.path === path);
-  return { raw, api, signIn, start, callback, calls, codeCalls, logs, pendingWrites, put, overrides, slackOf, links, linearOf, picks, advance: (ms: number) => { clock += ms; } };
+  return { raw, api, signIn, start, callback, calls, codeCalls, logs, pendingWrites, put, overrides, slackOf, links, linearOf, picks, sessions, advance: (ms: number) => { clock += ms; } };
 }
 
 const SLACK_COMPLETE = "/v1/dev/company/slack/install/complete";
@@ -768,5 +772,91 @@ describe("nothing secret leaks", () => {
     expect(w.codeCalls(LINEAR_COMPLETE)).toHaveLength(1);
     const visible = JSON.stringify([w.logs, locations, w.pendingWrites.map(([key, row]) => [key, row])]);
     for (const value of secrets) expect(visible, value).not.toContain(value);
+  });
+});
+
+describe("review gaps: every trust check has its own test", () => {
+  it("a session cookie with no stored sign-in, or a binding row with a malformed sign-in hash, is refused cleanly", async () => {
+    const w = world();
+    const nova = await w.signIn(NOVA);
+    const a = await w.start("slack", nova);
+    await w.sessions.delete(nova.cookie);
+    expect(await w.callback("slack", { code: SLACK_CODES.ok, state: a.state }, { session: nova.cookie, binder: a.binder })).toMatchObject({ status: 302, location: "/app/onboard?slack=start_again" });
+    const nova2 = await w.signIn(NOVA);
+    const b = await w.start("slack", nova2);
+    const [key, row] = w.pendingWrites.at(-1)!;
+    await w.put(key, { ...row, connect: { ...row.connect!, session: "short" } });
+    expect(await w.callback("slack", { code: SLACK_CODES.ok, state: b.state }, { session: nova2.cookie, binder: b.binder })).toMatchObject({ status: 302, location: "/app/onboard?slack=start_again" });
+    expect(w.codeCalls(SLACK_COMPLETE)).toEqual([]);
+  });
+
+  it("a kept outcome of another provider, another kind or another sign-in's hash under this key reads as nothing", async () => {
+    for (const change of [
+      (row: PendingSignIn) => ({ ...row, connect: { ...row.connect!, provider: "linear" as const } }),
+      (row: PendingSignIn) => ({ ...row, connect: { ...row.connect!, kind: "state" as const } }),
+      (row: PendingSignIn) => ({ ...row, connect: { ...row.connect!, session: "0".repeat(64) } }),
+    ]) {
+      const w = world();
+      const nova = await w.signIn(NOVA);
+      const { binder, state } = await w.start("slack", nova);
+      await w.callback("slack", { code: SLACK_CODES.ok, state }, { session: nova.cookie, binder });
+      const [key, row] = w.pendingWrites.at(-1)!;
+      await w.put(key, change(structuredClone(row)));
+      expect((await w.api(nova, "POST", "/slack/install/result", {})).body).toEqual({ status: "none" });
+    }
+  });
+
+  it("someone Code names no company for is refused at both starts and both disconnects, before Code is asked", async () => {
+    const w = world();
+    const nobody = await w.signIn(NOBODY);
+    for (const [method, path] of [["POST", "/slack/install"], ["POST", "/linear/connect"], ["POST", "/slack/disconnect"], ["DELETE", "/linear"]] as const) {
+      expect((await w.api(nobody, method, path, method === "POST" ? {} : undefined)).body, path).toEqual({ error: { code: "NO_COMPANY", message: "You're not in a company yet." } });
+    }
+    expect(w.calls.filter((c) => c.path !== "/v1/dev/access")).toEqual([]);
+  });
+
+  it("Slack: a scope list that doesn't read, or a complete answer without a workspace, is refused", async () => {
+    const w = world();
+    const nova = await w.signIn(NOVA);
+    const state = "s".repeat(43);
+    w.overrides.set("POST /v1/dev/company/slack/install", () => respond(200, { state, expiresAt: new Date(START).toISOString(), authorizeUrl: `https://slack.com/oauth/v2/authorize?${new URLSearchParams({ client_id: "1.2", scope: "chat:write user_scope=admin", redirect_uri: SLACK_REDIRECT, state }).toString()}` }));
+    expect((await w.api(nova, "POST", "/slack/install", {})).status).toBe(503);
+    w.overrides.delete("POST /v1/dev/company/slack/install");
+    const a = await w.start("slack", nova);
+    w.overrides.set(`POST ${SLACK_COMPLETE}`, () => respond(200, { status: "connected", alreadyConnected: false }));
+    expect((await w.callback("slack", { code: SLACK_CODES.ok, state: a.state }, { session: nova.cookie, binder: a.binder })).location).toBe("/app/onboard?slack=unavailable");
+  });
+
+  it("every project route checks the project name before asking Code", async () => {
+    const w = world();
+    const nova = await w.signIn(NOVA);
+    for (const [method, path, body] of [
+      ["GET", "/projects/Bad_Name/slack/channel", undefined], ["DELETE", "/projects/Bad_Name/slack/channel", undefined], ["POST", "/projects/Bad_Name/slack/channel/check", { channelId: "CWEB00001" }],
+      ["GET", "/projects/Bad_Name/linear", undefined], ["PUT", "/projects/Bad_Name/linear", { teamId: "t1" }], ["DELETE", "/projects/Bad_Name/linear", undefined],
+    ] as const) {
+      expect((await w.api(nova, method, path, body)).status, `${method} ${path}`).toBe(404);
+    }
+    expect(w.calls.filter((c) => c.path.includes("/projects/"))).toEqual([]);
+  });
+
+  it("Linear: the authorize address needs a PKCE challenge, response_type=code and prompt=consent; the callback's code must read and be one value", async () => {
+    const w = world();
+    const nova = await w.signIn(NOVA);
+    const state = "s".repeat(43);
+    const good: Record<string, string> = { client_id: "linclient1", redirect_uri: LINEAR_REDIRECT, response_type: "code", scope: "read", state, actor: "app", prompt: "consent", code_challenge: "c".repeat(43), code_challenge_method: "S256" };
+    for (const change of [{ code_challenge: "short" }, { response_type: "token" }, { prompt: "none" }]) {
+      w.overrides.set("POST /v1/dev/company/linear/connect", () => respond(200, { state, expiresAt: new Date(START).toISOString(), authorizeUrl: `https://linear.app/oauth/authorize?${new URLSearchParams({ ...good, ...change }).toString()}` }));
+      expect((await w.api(nova, "POST", "/linear/connect", {})).status, JSON.stringify(change)).toBe(503);
+    }
+    w.overrides.delete("POST /v1/dev/company/linear/connect");
+    for (const query of [`code=${LINEAR_CODES.ok}&code=${LINEAR_CODES.ok}`, "code=bad%20code", "code=a%2Fb"]) {
+      const { binder, state: s } = await w.start("linear", nova);
+      expect((await w.callback("linear", `state=${s}&${query}`, { session: nova.cookie, binder })).location, query).toBe("/app/onboard?linear=start_again");
+    }
+    expect(w.codeCalls(LINEAR_COMPLETE)).toEqual([]);
+    // A workspace url key that doesn't read is refused.
+    const { binder, state: s } = await w.start("linear", nova);
+    w.overrides.set(`POST ${LINEAR_COMPLETE}`, () => respond(200, { status: "connected", reconnected: false, workspace: { id: "lin-1", name: "Acme", urlKey: "Bad Key!" } }));
+    expect((await w.callback("linear", { code: LINEAR_CODES.ok, state: s }, { session: nova.cookie, binder })).location).toBe("/app/onboard?linear=unavailable");
   });
 });

@@ -37,7 +37,8 @@ export function LinearConnectButton({ label = "Connect Linear" }: { label?: stri
 
 export function LinearConnectResult({ outcome }: { outcome: string }) {
  const api = useIntegrationsApi(), query = useQueryClient();
- const refusal = LINEAR_REFUSALS[outcome];
+ // Own words only: a crafted `?…=toString` must not find Object.prototype's members.
+ const refusal = Object.hasOwn(LINEAR_REFUSALS, outcome) ? LINEAR_REFUSALS[outcome] : undefined;
  const result = useQuery({ queryKey: ["linear", "connect-result"], enabled: outcome === "result", queryFn: async () => { const value = await api.linearResult();if (value.status === "connected") void query.invalidateQueries({ queryKey: ["linear"], predicate: item => item.queryKey[1] !== "connect-result" });return value; }, retry: false, staleTime: Infinity, gcTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false });
  if (refusal !== undefined) return <section className="rv-connect-result" aria-label="Linear connection" data-testid="linear-refused"><p role={outcome === "cancelled" ? "status" : "alert"} data-testid="linear-refused-message"><VisibleText text={refusal} /></p>{outcome !== "not_set_up" && outcome !== "not_available" && <LinearConnectButton label="Try again" />}</section>;
  if (outcome !== "result" || result.isPending || result.isError || result.data.status === "none") return null;

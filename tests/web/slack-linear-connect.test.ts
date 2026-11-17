@@ -41,7 +41,9 @@ function setup(node: ReactNode, answers: Record<string, Answer | ((request: ApiR
 it("only Slack's and Linear's own consent pages that come back to this app pass the link checks", () => {
  expect(isSlackAuthorizeUrl(slackUrl(), APP)).toBe(true);
  for (const bad of [slackUrl("https://evil.example/api/connect/slack/callback"), slackUrl(undefined, "&user_scope=admin"), slackUrl().replace("https://slack.com", "https://slack.com.evil.example"), `${slackUrl()}#x`, slackUrl().replace(STATE, "short")]) expect(isSlackAuthorizeUrl(bad, APP), bad).toBe(false);
+ expect(isSlackAuthorizeUrl(slackUrl().replace("/oauth/v2/authorize", "/oauth/v2/evil"), APP)).toBe(false);
  expect(isLinearAuthorizeUrl(linearUrl(), APP)).toBe(true);
+ expect(isLinearAuthorizeUrl(linearUrl().replace("/oauth/authorize", "/oauth/evil"), APP)).toBe(false);
  for (const bad of [linearUrl("https://evil.example/api/connect/linear/callback"), linearUrl(undefined, "user"), linearUrl().replace("https://linear.app", "https://evil.example"), linearUrl().replace("&prompt=consent", "")]) expect(isLinearAuthorizeUrl(bad, APP), bad).toBe(false);
 });
 
@@ -84,9 +86,14 @@ it("Slack's return: one fixed sentence per word, with Try again; the kept outcom
   expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   f.close();
  }
- const g = setup(h(SlackConnectResult, { outcome: "<script>" }), {});
- expect(screen.queryByTestId("slack-refused")).toBeNull();
- g.close();
+ // A crafted word (an Object.prototype member, or markup) shows nothing and never crashes the page.
+ for (const word of ["<script>", "toString", "constructor", "__proto__"]) {
+  const g = setup(h("div", { children: [h(SlackConnectResult, { outcome: word }), h(LinearConnectResult, { outcome: word }), h("p", { children: "page alive" })] }), {});
+  expect(screen.getByText("page alive")).toBeTruthy();
+  expect(screen.queryByTestId("slack-refused")).toBeNull();
+  expect(screen.queryByTestId("linear-refused")).toBeNull();
+  g.close();
+ }
  const r = setup(h(SlackConnectResult, { outcome: "result" }), { "/v1/app/slack/install/result": { status: 200, body: { status: "connected", alreadyConnected: false, workspaceName: "Acme" } } });
  expect((await screen.findByTestId("slack-connected")).textContent).toBe("Rovara is in Acme.");
  expect(r.calls("/v1/app/slack/install/result")).toHaveLength(1);

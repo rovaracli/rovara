@@ -70,7 +70,8 @@ export function AddToSlackStep({ skipped = false, onSkip, onUndoSkip }: { skippe
 export function SlackConnectResult({ outcome }: { outcome: string }) {
  const api = useIntegrationsApi(), query = useQueryClient();
  const [kept, setKept] = useState(false), [disconnect, setDisconnect] = useState<{ busy: boolean; done?: string; error?: string; stepUp?: boolean }>({ busy: false });
- const refusal = SLACK_REFUSALS[outcome];
+ // Own words only: a crafted `?…=toString` must not find Object.prototype's members.
+ const refusal = Object.hasOwn(SLACK_REFUSALS, outcome) ? SLACK_REFUSALS[outcome] : undefined;
  const result = useQuery({ queryKey: ["slack", "connect-result"], enabled: outcome === "result", queryFn: async () => { const value = await api.slackResult();if (value.status === "connected") void query.invalidateQueries({ queryKey: ["slack", "workspace"] });return value; }, retry: false, staleTime: Infinity, gcTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false });
  async function doDisconnect() {
   setDisconnect({ busy: true });
