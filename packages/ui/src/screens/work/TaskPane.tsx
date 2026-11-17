@@ -73,7 +73,7 @@ export function TaskPane({ row, decisionsError, onDecided, wide = false, fullPag
   };
  })();
  async function answer(questionId: string, optionId: string) {
-  const result = await api.answer(row.id, questionId, optionId, row.task.workflow?.revision);
+  const result = await api.answer(row.task, questionId, optionId);
   if (result.kind !== "done") throw new ApiError(409, "PENDING", "Your answer is waiting for confirmation.");
   await Promise.all([query.invalidateQueries({ queryKey: ["decisions"] }), query.invalidateQueries({ queryKey: ["work"] })]);
   onDecided(row.id);

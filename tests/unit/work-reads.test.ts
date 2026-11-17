@@ -71,6 +71,10 @@ describe("the Work page's reads", () => {
 
   it("keeps only the fields the page draws and bounds the list", () => {
     expect(workTask({ taskId: "t", title: "x".repeat(400), project: "web", status: "RUNNING", events: [1, 2], secret: "no", createdAt: "a", updatedAt: "b" })).toEqual({ taskId: "t", title: "x".repeat(300), project: "web", status: "RUNNING", pullRequests: [], createdAt: "a", updatedAt: "b" });
+    // K0b: the round of Understand's questions comes from Code's workflow.intent.rounds, and nothing else of the intent.
+    expect(workTask({ taskId: "t", title: "x", project: "web", workflow: { stage: "UNDERSTAND", state: "WAITING", revision: 2, intent: { rounds: 1, assessment: { kind: "questions", questions: [{ id: "q1", text: "secret?" }] } } }, createdAt: "a", updatedAt: "b" })?.["workflow"])
+      .toEqual({ stage: "UNDERSTAND", state: "WAITING", revision: 2, round: 1 });
+    expect(workTask({ taskId: "t", title: "x", project: "web", workflow: { stage: "UNDERSTAND", intent: { rounds: "1" } }, createdAt: "a", updatedAt: "b" })?.["workflow"]).toEqual({ stage: "UNDERSTAND" });
     expect(workTask({ title: "no id", project: "web" })).toBeUndefined();
     expect(workTask("nope")).toBeUndefined();
     expect(workPlan("not an object")).toEqual({});

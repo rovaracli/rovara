@@ -35,7 +35,7 @@ const records = (value: unknown): Array<Record<string, unknown>> => (Array.isArr
 
 export interface ReadTask {
  taskId: string; title: string; project: string; status: TaskView["status"] | undefined;
- workflow: { stage?: string; state?: string; revision?: number; path?: string; outcome?: string; blockReason?: string } | undefined;
+ workflow: { stage?: string; state?: string; revision?: number; path?: string; outcome?: string; blockReason?: string; round?: number } | undefined;
  pullRequests: Array<{ repository?: string; number?: number; url?: string; state?: string }>;
  spentUsd: number | undefined; runLimitUsd: number | undefined; createdAt: string; updatedAt: string;
  /** Rovara Cloud's session for the task (`ses_...`) when the person started it in Cloud: the steer, stop and comment routes are the session's. */
@@ -49,7 +49,7 @@ export function readTask(raw: unknown): ReadTask | undefined {
  const spent = isRecord(raw["spent"]) ? num(raw["spent"]["usd"]) : undefined, limit = isRecord(raw["runLimit"]) ? num(raw["runLimit"]["limitUsd"]) : undefined;
  return {
   taskId, sessionId: str(raw["sessionId"]), title, project, status: str(raw["status"]) as ReadTask["status"] | undefined,
-  workflow: workflow === undefined ? undefined : { ...opt("stage", str(workflow["stage"])), ...opt("state", str(workflow["state"])), ...opt("revision", num(workflow["revision"])), ...opt("path", str(workflow["path"])), ...opt("outcome", str(workflow["outcome"])), ...opt("blockReason", str(workflow["blockReason"])) },
+  workflow: workflow === undefined ? undefined : { ...opt("stage", str(workflow["stage"])), ...opt("state", str(workflow["state"])), ...opt("revision", num(workflow["revision"])), ...opt("path", str(workflow["path"])), ...opt("outcome", str(workflow["outcome"])), ...opt("blockReason", str(workflow["blockReason"])), ...opt("round", num(workflow["round"])) },
   pullRequests: records(raw["pullRequests"]).map(pull => ({ ...opt("repository", str(pull["repository"])), ...opt("number", num(pull["number"])), ...opt("url", str(pull["url"])), ...opt("state", str(pull["state"])) })),
   spentUsd: spent, runLimitUsd: limit, createdAt: str(raw["createdAt"]) ?? updatedAt, updatedAt,
  };
@@ -232,18 +232,19 @@ export function useWorkApi() {
     catch (failure) { if (failure instanceof ApiError && (failure.status === 404 || failure.status === 501)) return undefined;throw failure; }
    },
    /**
-    * Answers the understanding questions (contract v0 `tasks.answers`, app route `POST /v1/app/sessions/{id}/answers`). Rovara Code does not serve it yet, so
-    * Cloud answers 501 and the card shows "not connected yet". `round` is the round of questions being answered: Code's task view does not send it to this page,
-    * so this sends 1, the first round, until Code serves the route and says otherwise.
-    */
-   /**
     * Pins a comment to a passage of the plan (contract v0 `tasks.comments.create`: `anchor` is a criterion id, `replyTo` the comment it answers). Cloud does not forward
     * it yet, so it answers 501 and the passage says "not connected yet" in Cloud's words; the draft stays.
     */
    comment: (taskId: string, text: string, anchor: string, replyTo: string | undefined) => api.send("POST", taskPath(taskId) + "/comments", { requestId: crypto.randomUUID(), document: "plan", text, anchor, ...(replyTo === undefined ? {} : { replyTo }) }, { parse: (body: unknown) => body }, { retry: "never" }),
    /** "Continue in my tool" (contract v0 `tasks.continue`, `continue/publish-branch`): Code puts the task's branch where the person's own tool can take it. Not served yet: Cloud answers 501. */
    continueInTool: (taskId: string) => api.send("POST", taskPath(taskId) + "/continue/publish-branch", { requestId: crypto.randomUUID() }, { parse: (body: unknown) => body }, { retry: "never" }),
-   answer: (taskId: string, questionId: string, optionId: string, revision: number | undefined) => revision === undefined ? Promise.reject(new ApiError(501, "NOT_ON_CODE_YET", "Answering isn't connected to Rovara Code yet.")) : api.send("POST", "/v1/app/sessions/" + encodeURIComponent(taskId) + "/answers", { requestId: crypto.randomUUID(), round: 1, revision, answers: [{ questionId, optionId }] }, { parse: (body: unknown) => body }, { retry: "never" }),
+   /**
+    * Answers the understanding questions on Cloud's session route (`POST /v1/app/sessions/{sessionId}/answers`, which Cloud sends to Code for the session's task). It needs
+    * Cloud's session id (`ses_...`) and the round Code says is asked; without either, nothing is sent and the card says to answer on the task's session page.
+    */
+   answer: (task: Pick<ReadTask, "sessionId" | "workflow">, questionId: string, optionId: string) => task.sessionId === undefined || task.workflow?.round === undefined
+    ? Promise.reject(new ApiError(409, "ANSWER_ON_SESSION_PAGE", "Answer this question on the task's session page."))
+    : api.send("POST", "/v1/app/sessions/" + encodeURIComponent(task.sessionId) + "/answers", { requestId: crypto.randomUUID(), round: task.workflow.round, ...(task.workflow.revision === undefined ? {} : { revision: task.workflow.revision }), answers: [{ questionId, optionId }] }, { parse: (body: unknown) => body }, { retry: "never" }),
   };
  }, [host]);
 }

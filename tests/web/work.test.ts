@@ -25,7 +25,7 @@ import { expectNoAxeViolations } from "./support/axe.js";
 import { fakeHost } from "./support/fake-host.js";
 import { h } from "./support/h.js";
 import { navFixture } from "./support/fixtures.js";
-import { CARDS, EVENTS, ID, NOW, PLAN, PROOF, TASKS, decisionsView, task } from "./support/work-fixture.js";
+import { CARDS, EVENTS, ID, NOW, PLAN, PROOF, QUESTION_SESSION, TASKS, decisionsView, task } from "./support/work-fixture.js";
 
 afterEach(() => { vi.useRealTimers(); });
 const decisions = (cards = CARDS) => readDecisions(DecisionCardsViewReaderSchema.parse(decisionsView(cards)));
@@ -250,8 +250,19 @@ it("answers a question from the card; a route Code does not serve says so, never
   const card = await screen.findByRole("region", { name: "Question for you" });
   fireEvent.click(await within(card).findByRole("button", { name: /Yes, behind a flag/u }));
   expect((await screen.findByTestId("decision-error")).textContent).toContain("isn't connected to Rovara Code yet");
-  const call = send.mock.calls[0]![0];expect(call.path).toBe(`/v1/app/sessions/${ID.question}/answers`);expect(call.body).toMatchObject({ round: 1, revision: 2, answers: [{ questionId: "Q1", optionId: "yes" }] });
+  const call = send.mock.calls[0]![0];expect(call.path).toBe(`/v1/app/sessions/${QUESTION_SESSION}/answers`);expect(call.body).toMatchObject({ round: 2, revision: 2, answers: [{ questionId: "Q1", optionId: "yes" }] });
+  expect(call.path).not.toContain(ID.question);
   expect(screen.queryByRole("progressbar")).toBeNull();
+  f.close();
+});
+it.each(["no Cloud session", "no round from Code"])("a question on a task with %s sends nothing and says to answer on the session page", async (missing) => {
+  const send = vi.fn<(request: ApiRequest) => Promise<ApiResponse>>(async () => ({ status: 200, body: {} }));
+  const tasks = TASKS.map(item => (item.taskId !== ID.question ? item : missing === "no Cloud session" ? { ...item, sessionId: undefined } : { ...item, workflow: { stage: "UNDERSTAND", state: "WAITING", revision: 2, path: "STANDARD" } }));
+  const f = screenSetup({ send, tasks: { status: 200, body: { tasks } }, path: `/app/live?task=${ID.question}`, plan: { status: 200, body: { ...PLAN, questions: [{ ...PLAN.questions[0], criterionId: undefined }] } } });
+  const card = await screen.findByRole("region", { name: "Question for you" });
+  fireEvent.click(await within(card).findByRole("button", { name: /Yes, behind a flag/u }));
+  expect((await screen.findByTestId("decision-error")).textContent).toContain("Answer this question on the task's session page.");
+  expect(send.mock.calls.filter(([request]) => request.path.endsWith("/answers"))).toEqual([]);
   f.close();
 });
 it("says Work isn't connected yet, plainly, when Code does not serve the list", async () => {
@@ -299,11 +310,11 @@ it("keeps the proof when only the plan could not be read", async () => {
   expect(await screen.findByRole("region", { name: "Pull request" })).toBeTruthy();expect(screen.getByRole("region", { name: "Proof" })).toBeTruthy();expect(screen.getByTestId("section-error").textContent).toContain("You can no longer read this task.");
   f.close();
 });
-it("does not send an answer without the workflow revision, and says answering is not connected yet", async () => {
+it("does not send an answer for a task with no Cloud session or round, and says to answer on the session page", async () => {
   const send = vi.fn<(request: ApiRequest) => Promise<ApiResponse>>(async () => ({ status: 200, body: {} }));
   const f = screenSetup({ send, path: `/app/live?task=${ID.plan}`, tasks: { status: 200, body: { tasks: [task(ID.plan, "No revision", { workflow: { stage: "PLAN_REVIEW", state: "WAITING", path: "QUICK" } }, "PLAN_REVIEW", "WAITING", 2)] } } });
   fireEvent.click(await screen.findByRole("button", { name: /Yes, behind a flag/u }));
-  expect((await screen.findByTestId("answer-error")).textContent).toContain("isn't connected to Rovara Code yet");expect(send).not.toHaveBeenCalled();
+  expect((await screen.findByTestId("answer-error")).textContent).toContain("Answer this question on the task's session page.");expect(send).not.toHaveBeenCalled();
   f.close();
 });
 it("keeps the plan's own error in the pane without breaking the list", async () => {
