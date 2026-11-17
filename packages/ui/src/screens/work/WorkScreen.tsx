@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { useDecisions } from "../../api/decisions.js";
 import { ApiError } from "../../api/errors.js";
-import { nextNeedsYou, useOrgSpend, useWorkTasks, workRows } from "../../api/work.js";
+import { involvedRows, nextNeedsYou, useInvolvedTasks, useOrgSpend, useWorkTasks, workRows } from "../../api/work.js";
 import { useAppHost } from "../../host.js";
 import { paths } from "../../paths.js";
 import { useAnnounce } from "../../design/Announcer.js";
@@ -25,9 +25,12 @@ import "./work.css";
  * said in the list; a route Code does not serve yet says "isn't connected to Rovara Code yet" there, never a spinner.
  */
 export function WorkScreen() {
- const host = useAppHost(), navigate = useNavigate(), [params, setParams] = useSearchParams(), tasks = useWorkTasks(), decisions = useDecisions(), inbox = useLessonInbox(), spend = useOrgSpend(), announce = useAnnounce(), query = useQueryClient();
+ const host = useAppHost(), navigate = useNavigate(), [params, setParams] = useSearchParams(), tasks = useWorkTasks(), involved = useInvolvedTasks(), decisions = useDecisions(), inbox = useLessonInbox(), spend = useOrgSpend(), announce = useAnnounce(), query = useQueryClient();
  // The ages and the "waiting over a day" rule are worked out against the clock each time the list or the cards are read again.
- const rows = useMemo(() => (tasks.data === undefined || decisions.isPending ? [] : workRows(tasks.data, decisions.data ?? [], new Date())), [tasks.data, decisions.data, decisions.isPending]);
+ const own = useMemo(() => (tasks.data === undefined || decisions.isPending ? [] : workRows(tasks.data, decisions.data ?? [], new Date())), [tasks.data, decisions.data, decisions.isPending]);
+ // The tasks the person was added to (web task channel K4): their own group at the end. They never wait the page: the person's own work shows first, and a task already in the person's own list is not shown twice.
+ const added = useMemo(() => { const mine = new Set((tasks.data ?? []).map(task => task.taskId));return involved.data === undefined || tasks.data === undefined ? [] : involvedRows(involved.data.filter(task => !mine.has(task.taskId)), new Date()); }, [involved.data, tasks.data]);
+ const rows = useMemo(() => [...own, ...added], [own, added]);
  // The lesson batches (DEC 231b): one row per project under "Needs you". Lessons that are off, or a Code without the lessons API, add no row; any other failure says so quietly.
  const batches = useMemo(() => (inbox.data?.state === "on" ? inbox.data.batches : []), [inbox.data]);
  const wanted = params.get("task"), selectedBatch = batches.find(batch => batchId(batch.project) === wanted);
@@ -57,6 +60,7 @@ export function WorkScreen() {
    {spend.data !== undefined && <div className="rv-work-banner"><BudgetBanner remainingUsd={spend.data} canRaise={isAdmin} /></div>}
    <AgentsRow />
    {decisions.isError && !tasks.isPending && <p className="rv-muted rv-work-note" role="status" data-testid="decisions-unavailable"><VisibleText text={decisions.error instanceof ApiError ? decisions.error.message : "Decisions couldn't be loaded."} /></p>}
+   {involved.isError && !tasks.isPending && <p className="rv-muted rv-work-note" role="status" data-testid="involved-unavailable">Tasks you're involved in couldn't be loaded.</p>}
    {inboxFailed && !tasks.isPending && <p className="rv-muted rv-work-note" role="status" data-testid="lessons-unavailable">Lessons to review couldn't be loaded.</p>}
    {!inboxFailed && inbox.data !== undefined && inbox.data.unavailable.length > 0 && <p className="rv-muted rv-work-note" role="status" data-testid="lessons-unavailable">Lessons to review couldn't be loaded for <VisibleText text={inbox.data.unavailable.join(", ")} />.</p>}
    {listBody}

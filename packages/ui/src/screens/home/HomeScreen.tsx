@@ -15,6 +15,8 @@ import { HomeCard } from "./HomeCard.js";
 const NeedsYou = lazy(async () => ({ default: (await import("./NeedsYou.js")).NeedsYou }));
 // The empty state is in the same lazy chunk: it must know whether decision cards wait, and reading them would bring their contracts into the first page.
 const NothingNeedsYou = lazy(async () => ({ default: (await import("./NeedsYou.js")).NothingNeedsYou }));
+// The tasks the person was added to load after the first paint too (web task channel K4).
+const InvolvedHome = lazy(async () => ({ default: (await import("./InvolvedHome.js")).InvolvedHome }));
 import "./home.css";
 export function HomeScreen() {
  const host = useAppHost(), query = useQueryClient(), home = useHome(), announce = useAnnounce(), previous = useRef<Array<{ cardId: string; title: string }> | undefined>(undefined);
@@ -33,5 +35,6 @@ export function HomeScreen() {
  {cards !== undefined && cards.length === 0 && total > 0 && <div><p>Items are temporarily unavailable.</p><Button onClick={() => { void home.refetch(); }}>Try again</Button></div>}
  {cards !== undefined && total > cards.length && <p className="rv-muted">Showing {cards.length} of {total}</p>}
  {cards !== undefined && cards.length > 0 && <ol className="rv-attention-list" aria-label="What needs you">{cards.map(card => <HomeCard key={card.cardId} card={card} />)}</ol>}
+ {ready && <Suspense fallback={null}><InvolvedHome /></Suspense>}
  </section>;
 }

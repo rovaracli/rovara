@@ -7,7 +7,7 @@ import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { Announcer } from "../../packages/ui/src/design/Announcer.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { ageLabel, nextNeedsYou, proofRows, provenCount, readEvents, readPlan, readProof, readTaskList, sortRows, stepOf, workRows, type ReadProofItem } from "../../packages/ui/src/api/work.js";
+import { ageLabel, involvedRows, nextNeedsYou, proofRows, provenCount, readEvents, readPlan, readProof, readTaskList, sortRows, stepOf, workRows, type ReadProofItem } from "../../packages/ui/src/api/work.js";
 import { readDecisions } from "../../packages/ui/src/api/decisions.js";
 import { DecisionCardsViewReaderSchema } from "@agentx/contracts/web";
 import { BudgetBanner } from "../../packages/ui/src/design/BudgetBanner.js";
@@ -164,13 +164,14 @@ it("shows the budget banner only when the month's budget is used up, with the ra
 });
 
 // ---- The screen ----
-interface Setup { tasks?: unknown; decisions?: unknown; plan?: unknown; proof?: unknown; send?: (request: ApiRequest) => Promise<ApiResponse>; nav?: unknown; spend?: ApiResponse; path?: string }
+interface Setup { involved?: ApiResponse; tasks?: unknown; decisions?: unknown; plan?: unknown; proof?: unknown; send?: (request: ApiRequest) => Promise<ApiResponse>; nav?: unknown; spend?: ApiResponse; path?: string }
 function screenSetup(options: Setup = {}) {
   let tasks: ApiResponse = options.tasks === undefined ? { status: 200, body: { tasks: TASKS } } : options.tasks as ApiResponse, cards: ApiResponse = options.decisions === undefined ? { status: 200, body: decisionsView() } : options.decisions as ApiResponse;
   const f = fakeHost(async request => {
     if (request.method !== "GET") return options.send ? options.send(request) : { status: 200, body: {} };
     const path = request.path.split("?")[0]!;
     if (path === "/v1/app/sessions") return tasks;
+    if (path === "/v1/app/involved") return options.involved ?? { status: 200, body: { tasks: [] } };
     if (path === "/v1/app/decisions") return cards;
     if (path === "/v1/app/nav") return { status: 200, body: options.nav ?? navFixture({ projects: [] }) };
     if (path === "/v1/app/org/spend") return options.spend ?? NOT_YET;
@@ -323,6 +324,91 @@ it("Home does not say nothing needs you while decision cards are waiting", async
   f.close();
   const g = homeSetup({ status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } });
   expect(await screen.findByTestId("home-empty")).toBeTruthy();g.close();
+});
+// ---- Involved tasks (web task channel K4) ----
+const INVOLVED_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", INVOLVED_STOPPED = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", INVOLVED_OLD = "cccccccc-cccc-4ccc-8ccc-cccccccccccc", INVOLVED_DONE_OLD = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const INVOLVED = [
+  task(INVOLVED_ID, "Migrate the invoices table", { project: "api" }, "IMPLEMENT", "RUNNING", 10),
+  task(INVOLVED_STOPPED, "Rename the settings page", { status: "FAILED" }, "IMPLEMENT", "BLOCKED", 60),
+  task(INVOLVED_OLD, "Upgrade the date library", {}, "IMPLEMENT", "RUNNING", 60 * 24 * 40),
+  task(INVOLVED_DONE_OLD, "Fix a typo", { status: "SUCCEEDED" }, "MERGED", "COMPLETE", 60 * 24 * 10),
+];
+it("makes involved rows a group of their own: newest first, nothing asked of the person, no decision card, old finished or idle work left out", () => {
+  const rows = involvedRows(readTaskList({ tasks: INVOLVED }), NOW);
+  expect(rows.map(row => row.id)).toEqual([INVOLVED_ID, INVOLVED_STOPPED]);
+  for (const row of rows) expect(row).toMatchObject({ group: "involved", need: undefined, decision: undefined, stale: false });
+  // A stopped task reads as what it is, in its line, never as a request for the person.
+  expect(rows[1]).toMatchObject({ line: "Stopped", tone: "bad" });
+  expect(rows[0]).toMatchObject({ line: "Building", tone: "run" });
+});
+it("lists involved tasks under their own Involved group at the end, and opens one beside the list in fixed words", async () => {
+  const f = screenSetup({ involved: { status: 200, body: { tasks: INVOLVED } } });await screen.findByRole("heading", { name: /Needs you/u });
+  await screen.findByRole("heading", { name: /^Involved/u });
+  const groups = screen.getAllByRole("heading", { level: 2 }).map(heading => heading.textContent).filter(text => /^(Needs you|Rovara is working|Waiting on others|Finished this week|Involved)/u.test(text ?? ""));
+  expect(groups).toEqual(["Needs you 4", "Rovara is working 1", "Waiting on others 1", "Finished this week 1", "Involved 2"]);
+  expect(within(screen.getByRole("list", { name: "Involved" })).getAllByRole("button").map(button => button.getAttribute("data-task-id"))).toEqual([INVOLVED_ID, INVOLVED_STOPPED]);
+  // The person's own groups are unchanged, and the first own task is still the one open.
+  await waitFor(() => expect(paneTitle()).toBe("Fix the README typo"));
+  fireEvent.click(rowOf(INVOLVED_ID));
+  await waitFor(() => expect(paneTitle()).toBe("Migrate the invoices table"));
+  expect(screen.getByTestId("decision-quiet").textContent).toContain("You're involved in this task");
+  expect(screen.getByTestId("decision-quiet").textContent).toContain("Its owner answers the agent's questions and decides");
+  expect(f.where.current).toContain("task=" + INVOLVED_ID);
+  f.close();
+});
+it("shows a task that is in both lists once, in the person's own groups", async () => {
+  const f = screenSetup({ involved: { status: 200, body: { tasks: [TASKS[0], INVOLVED[0]] } } });await screen.findByRole("heading", { name: /^Involved/u });
+  expect(document.querySelectorAll(`[data-task-id="${String((TASKS[0] as { taskId: string }).taskId)}"].rv-inbox-row`)).toHaveLength(1);
+  expect(within(screen.getByRole("list", { name: "Involved" })).getAllByRole("button")).toHaveLength(1);
+  f.close();
+});
+it("shows nothing extra and no error when Code does not serve the involved list yet (404, 501) or answers it empty", async () => {
+  for (const involved of [{ status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } }, { status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "no" } } }, { status: 200, body: { tasks: [] } }]) {
+    const f = screenSetup({ involved });await screen.findByRole("heading", { name: /Needs you/u });
+    await waitFor(() => expect(paneTitle()).toBe("Fix the README typo"));
+    expect(screen.queryByRole("heading", { name: /^Involved/u })).toBeNull();expect(screen.queryByTestId("involved-unavailable")).toBeNull();expect(screen.queryByTestId("load-error")).toBeNull();
+    f.close();
+  }
+});
+it("says quietly that involved tasks could not be loaded for any other failure, and keeps the person's own list", async () => {
+  const f = screenSetup({ involved: { status: 403, body: { error: { code: "FORBIDDEN", message: "Your access ended." } } } });await screen.findByRole("heading", { name: /Needs you/u });
+  expect((await screen.findByTestId("involved-unavailable")).textContent).toContain("couldn't be loaded");
+  expect(screen.queryByTestId("load-error")).toBeNull();expect(rowOf(ID.merge)).toBeTruthy();
+  f.close();
+});
+it("lists involved tasks even when the person has no work of their own", async () => {
+  const f = screenSetup({ tasks: { status: 200, body: { tasks: [] } }, involved: { status: 200, body: { tasks: INVOLVED } } });
+  await screen.findByRole("heading", { name: /^Involved/u });
+  expect(screen.queryByTestId("work-empty")).toBeNull();
+  await waitFor(() => expect(paneTitle()).toBe("Migrate the invoices table"));
+  f.close();
+});
+it("Home lists the tasks the person was added to, each opening in Work, and draws nothing when there are none or Code does not serve them", async () => {
+  const home = (involved: ApiResponse) => {
+    const f = fakeHost(async request => {
+      const path = request.path.split("?")[0]!;
+      if (path === "/v1/app/home") return { status: 200, body: { cards: [], total: 0 } };
+      if (path === "/v1/app/involved") return involved;
+      return { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } };
+    });
+    const query = createQueryClient();
+    const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(Announcer, { children: h(HomeScreen, {}) }) }) }) }));
+    return { ...ui, close() { ui.unmount();query.clear(); } };
+  };
+  const f = home({ status: 200, body: { tasks: INVOLVED } });
+  const section = await screen.findByTestId("home-involved");
+  expect(within(section).getAllByRole("link").map(link => link.getAttribute("href"))).toEqual([`/app/live?task=${INVOLVED_ID}`, `/app/live?task=${INVOLVED_STOPPED}`]);
+  expect(section.textContent).toContain("Migrate the invoices table");
+  f.close();
+  for (const involved of [{ status: 200, body: { tasks: [] } }, { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } }, { status: 403, body: { error: { code: "FORBIDDEN", message: "Your access ended." } } }]) {
+    const g = home(involved);await screen.findByTestId("home-empty");
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(screen.queryByTestId("home-involved")).toBeNull();g.close();
+  }
+});
+for (const theme of ["light", "dark"] as const) it("has no accessibility violations with involved tasks in " + theme, async () => {
+  const f = screenSetup({ involved: { status: 200, body: { tasks: INVOLVED } } });await screen.findByRole("heading", { name: /^Involved/u });
+  document.documentElement.setAttribute("data-theme", theme);await expectNoAxeViolations(f.container);f.close();
 });
 for (const theme of ["light", "dark"] as const) it("has no accessibility violations in " + theme, async () => {
   const f = screenSetup();await screen.findByRole("heading", { name: /Needs you/u });await screen.findByRole("region", { name: "Spec" }).catch(() => undefined);await screen.findByRole("region", { name: "Your decision" });

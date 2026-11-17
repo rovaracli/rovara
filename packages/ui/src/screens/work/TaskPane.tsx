@@ -32,7 +32,8 @@ export function QuietCard({ row, decisionsError, wide = false }: { row: WorkRow;
  if (row.group === "you") {
   title = row.need ?? "Needs you";
   body = decisionsError === undefined ? <>This needs you, but its decision card isn't available yet. {row.task.workflow?.blockReason !== undefined && <VisibleText text={row.task.workflow.blockReason} />}</> : <>{decisionsError instanceof ApiError ? <VisibleText text={decisionsError.message} /> : "Decisions couldn't be loaded."}</>;
- } else if (row.group === "others") { title = "Waiting on someone else"; body = <>{row.line}. It moves on when they act.</>; }
+ } else if (row.group === "involved") { title = "You're involved in this task"; body = <>Someone added you to it. Its owner answers the agent's questions and decides. You can follow it here.</>; }
+ else if (row.group === "others") { title = "Waiting on someone else"; body = <>{row.line}. It moves on when they act.</>; }
  else if (row.group === "done") { title = row.line; body = <>Nothing more to do here.</>; }
  else if (row.group === "stopped") { title = row.line; body = <>Rovara stopped before it finished and nobody has picked it up since. {wide ? (row.task.sessionId === undefined ? "Continue it in your tool from the button above." : "Close it or continue it in your tool, from the actions above.") : "Open the full page to close it, or continue it in your tool."}</>; }
  else if (row.line === "In the queue") { title = "In the queue"; body = <>It starts as soon as there is room.</>; }

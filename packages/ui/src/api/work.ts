@@ -10,7 +10,7 @@ import { ApiError } from "./errors.js";
 import type { ReadDecision } from "./decisions.js";
 
 export type Tone = "wait" | "run" | "ok" | "bad" | "idle";
-export type Group = "you" | "run" | "others" | "stopped" | "done";
+export type Group = "you" | "run" | "others" | "stopped" | "done" | "involved";
 /** `closed`: the task was closed before it reached a pull request, and nothing says how far it got, so no step is marked. */
 export type Step = "request" | "spec" | "build" | "proof" | "pull_request" | "merged" | "closed";
 /** The stage of the task the pane shows (the five steps; a merged task shows its pull request, a closed one its request). */
@@ -20,6 +20,7 @@ export const STEPS: ReadonlyArray<{ step: Exclude<Step, "merged">; label: string
 ];
 export const GROUPS: ReadonlyArray<{ group: Group; label: string }> = [
  { group: "you", label: "Needs you" }, { group: "run", label: "Rovara is working" }, { group: "others", label: "Waiting on others" }, { group: "stopped", label: "Stopped earlier" }, { group: "done", label: "Finished this week" },
+ { group: "involved", label: "Involved" },
 ];
 const DAY_MS = 864e5;
 /** A stopped task nobody has picked up for this long leaves "Needs you" for "Stopped earlier" (it no longer claims the person's attention); past the second limit it leaves the list (its address still opens it). */
@@ -187,6 +188,17 @@ export function workRows(tasks: readonly ReadTask[], decisions: readonly ReadDec
  const pending = decisions.filter(decision => decision.card.status === "pending");
  return sortRows(tasks.map(task => workRow(task, pending.find(decision => decision.card.taskId === task.taskId), now)).filter(row => row.group === "stopped" ? now.getTime() - Date.parse(row.waitingSince) < STOPPED_DROPPED_DAYS * DAY_MS : row.group !== "done" || now.getTime() - Date.parse(row.updatedAt) < 7 * DAY_MS));
 }
+/**
+ * The tasks the person was added to, as rows of their own "Involved" group (web task channel K4). They are someone else's tasks, so no decision card is paired with them and none of them
+ * asks the person for anything: a stopped or waiting task reads as what it is, in its line. Finished work only from the last week and anything else only from the last month; newest first.
+ */
+export function involvedRows(tasks: readonly ReadTask[], now: Date): WorkRow[] {
+ return tasks.flatMap(task => {
+  const row = workRow(task, undefined, now), idle = now.getTime() - Date.parse(row.updatedAt);
+  if (idle >= STOPPED_DROPPED_DAYS * DAY_MS || (row.group === "done" && idle >= 7 * DAY_MS)) return [];
+  return [{ ...row, group: "involved" as const, need: undefined, stale: false, line: row.group === "you" ? row.need ?? row.line : row.line }];
+ }).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+}
 /** The row to select after a decision: the next one that needs you after this one, else the first, else nothing. */
 export function nextNeedsYou(rows: readonly WorkRow[], decidedId: string): string | undefined {
  const need = rows.filter(row => row.group === "you"), at = need.findIndex(row => row.id === decidedId);
@@ -222,6 +234,11 @@ export function useWorkApi() {
   const taskPath = (id: string) => "/v1/app/tasks/" + encodeURIComponent(id);
   return {
    tasks: () => api.get("/v1/app/sessions", { parse: readTaskList }),
+   /** The tasks the person was added to (Cloud asks Code; an older Code that does not serve it answers an empty list). */
+   involved: async (): Promise<ReadTask[]> => {
+    try { return await api.get("/v1/app/involved", { parse: readTaskList }); }
+    catch (failure) { if (failure instanceof ApiError && (failure.status === 404 || failure.status === 501)) return [];throw failure; }
+   },
    plan: (id: string) => api.get(taskPath(id) + "/documents/plan", { parse: readPlan }),
    proof: (id: string) => api.get(taskPath(id) + "/evidence", { parse: readProof }),
    events: (id: string) => api.get(taskPath(id) + "/events", { parse: readEvents }),
@@ -248,6 +265,8 @@ export function useWorkApi() {
  }, [host]);
 }
 export function useWorkTasks(enabled = true) { const api = useWorkApi();return useQuery({ queryKey: ["work", "tasks"], retry: false, enabled, queryFn: api.tasks }); }
+/** The tasks the person is involved in. Its own read, so a failure here never takes the person's own list with it. */
+export function useInvolvedTasks(enabled = true) { const api = useWorkApi();return useQuery({ queryKey: ["work", "involved"], retry: false, enabled, queryFn: api.involved }); }
 export function useTaskPlan(id: string | undefined) { const api = useWorkApi();return useQuery({ queryKey: ["work", "plan", id], retry: false, enabled: id !== undefined, queryFn: () => api.plan(id!) }); }
 export function useTaskProof(id: string | undefined) { const api = useWorkApi();return useQuery({ queryKey: ["work", "proof", id], retry: false, enabled: id !== undefined, queryFn: () => api.proof(id!) }); }
 export function useTaskEvents(id: string | undefined) { const api = useWorkApi();return useQuery({ queryKey: ["work", "events", id], retry: false, enabled: id !== undefined, queryFn: () => api.events(id!) }); }

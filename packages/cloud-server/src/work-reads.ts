@@ -2,6 +2,7 @@
 // Each is one call to Rovara Code as the signed-in person (contract v0: tasks.list, tasks.plan, tasks.evidence.list, tasks.events, tasks.comments.list),
 // kept to the fields the page draws. Code decides who may read a task; its refusal, a 404 included, reaches the app as Code worded it. Nothing here
 // writes, and nothing is invented: a field Code did not send is left out.
+import { CodeError } from "./code-client.js";
 import type { Route, RouteAnswer } from "./routes.js";
 
 /** Code's task view, version 2. */
@@ -13,6 +14,10 @@ const COMMENTS_MAX = 100;
 const TEXT_MAX = 2000;
 /** How many of the person's newest sessions the list matches to tasks (a bound on the store read, like Home's). */
 const SESSIONS_LOOKED_AT = 200;
+/** How many involved tasks one read asks Code for (Code's own page bound is 50). The first page only: the list says nothing about more. */
+const INVOLVED_PAGE = 50;
+/** Code's answers for "not deployed yet" (an older Code has no involved list, or does not know the query): the page shows nothing extra and no error. */
+const INVOLVED_NOT_YET: ReadonlySet<number> = new Set([400, 404, 501]);
 const TASK_ID = "([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})";
 
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
@@ -66,6 +71,23 @@ const WORK_READS: Route[] = [
       const sessions = new Map<string, string>();
       try { for (const record of (await work.startedBy(session.access.developerId)).slice(0, SESSIONS_LOOKED_AT)) if (!sessions.has(record.taskId)) sessions.set(record.taskId, record.sessionId); } catch { /* the list still answers */ }
       return ok({ tasks: list(answer.tasks, WORK_TASKS_MAX).flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [{ ...view, ...(sessions.has(view["taskId"] as string) ? { sessionId: sessions.get(view["taskId"] as string) } : {}) }]; }) });
+    },
+  },
+  {
+    // GET /v1/app/involved: the tasks the person was ADDED to (a co-owner, commenter or viewer on someone else's task), for the Work list's "Involved" group and Home. One call to Code,
+    // `GET /v1/dev/tasks?involved=1`, as the signed-in person: Code lists only the person's own rows and re-checks each task against its live access, so Cloud takes no id, company or
+    // person from the browser and adds no reach of its own. Only an answer that says it is the involved list (`involved: true`) counts: an older Code answers the ordinary list to this
+    // query, and those tasks (the person's own) must never show as involved. Code's 400, 404 and 501 (not deployed yet) show nothing and no error; any other refusal reaches the page as Code worded it.
+    method: "GET", path: /^\/involved$/u,
+    answer: async ({ client, session }) => {
+      try {
+        const answer = await client.json<{ involved?: unknown; tasks?: unknown[] }>(session, `/v1/dev/tasks?involved=1&limit=${String(INVOLVED_PAGE)}`, { headers: TASK_VIEW });
+        if (!isRecord(answer) || answer["involved"] !== true) return ok({ tasks: [] });
+        return ok({ tasks: list(answer["tasks"], WORK_TASKS_MAX).flatMap((task) => { const view = workTask(task); return view === undefined ? [] : [view]; }) });
+      } catch (error) {
+        if (error instanceof CodeError && INVOLVED_NOT_YET.has(error.status)) return ok({ tasks: [] });
+        throw error;
+      }
     },
   },
   {
