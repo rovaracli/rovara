@@ -15,7 +15,7 @@ import "./connect.css";
 export const SLACK_REFUSALS: Readonly<Record<string, string>> = Object.freeze({
  cancelled: "Rovara wasn't added to Slack. You can add it any time.",
  start_again: "Start again from Rovara.",
- taken: "This Slack workspace is already connected to a different Rovara company.",
+ taken: "This Slack workspace is already connected to another company.",
  other_workspace: "This company is already connected to a different Slack workspace. A company owner can disconnect it first.",
  enterprise: "Rovara can be added to one Slack workspace, not to a whole Enterprise Grid organization. Add it to a single workspace.",
  unavailable: "Slack could not be connected just now. Start again from Rovara.",

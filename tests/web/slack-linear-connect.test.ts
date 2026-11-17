@@ -80,9 +80,10 @@ it("shows the step done from the company's real workspace, and skipped when the 
 });
 
 it("Slack's return: one fixed sentence per word, with Try again; the kept outcome read once", async () => {
- for (const [word, text] of <Array<[string, string]>>[["start_again", "Start again from Rovara."], ["taken", "This Slack workspace is already connected to a different Rovara company."], ["cancelled", "Rovara wasn't added to Slack. You can add it any time."]]) {
+ for (const [word, text] of <Array<[string, string]>>[["start_again", "Start again from Rovara."], ["taken", "This Slack workspace is already connected to another company."], ["cancelled", "Rovara wasn't added to Slack. You can add it any time."]]) {
   const f = setup(h(SlackConnectResult, { outcome: word }), {});
   expect((await screen.findByTestId("slack-refused-message")).textContent).toBe(text);
+  if (word === "taken") expect((await screen.findByTestId("slack-refused-message")).textContent).not.toMatch(/Acme|T0[A-Z0-9]+|different Rovara company/u);
   expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   f.close();
  }
