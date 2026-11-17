@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { CloudAppStack } from "../../infra/lib/cloud-app.js";
-import { BOUNDARY_LOGICAL_ID, CDK_BOOTSTRAP_QUALIFIER, CLOUD_STACK_PARTS, RequireCloudBoundary, applyCloudBoundary, cloudBoundaryStatements, cloudRolePath, type CloudStackPart } from "../../infra/lib/cloud-boundary.js";
+import { BOUNDARY_LOGICAL_ID, CDK_BOOTSTRAP_QUALIFIER, CLOUD_STACK_PARTS, RequireCloudBoundary, applyCloudBoundary, cloudBoundaryStatements, cloudPartRolePath, type CloudStackPart } from "../../infra/lib/cloud-boundary.js";
 import { boundaryViolations, globMatch, overlaps, resolvedBoundaries, roleCases, type CfnTemplate, type StackTemplate } from "../../infra/lib/cloud-boundary-check.js";
 import { CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER, CloudReleasePipelineStack } from "../../infra/lib/cloud-release-pipeline.js";
 import { CloudWebStack } from "../../infra/lib/cloud-web.js";
@@ -112,7 +112,7 @@ describe("every role Rovara Cloud makes carries the environment's permissions bo
     new CfnResource(stack, "Raw", { type: "AWS::IAM::Role", properties: { AssumeRolePolicyDocument: {} } });
     const t = Template.fromStack(stack).toJSON() as CfnTemplate;
     expect(t.Resources.Raw!.Properties!.PermissionsBoundary).toEqual({ Ref: "RoleBoundary" });
-    expect(t.Resources.Raw!.Properties!.Path).toBe(`/rovara-cloud/${ENV}/`);
+    expect(t.Resources.Raw!.Properties!.Path).toBe(`/rovara-cloud/${ENV}/gateway/`);
 
     const typed = new Stack(new App(), "T", { env: { region: REGION } });
     applyCloudBoundary(typed, ENV, "web");
@@ -152,10 +152,10 @@ describe("role paths: no deployed role is replaced", () => {
     }
   });
 
-  it("pipeline (not deployed): roles under /rovara-cloud/<env>/, except the CodeBuild service roles (CodeBuild names them by name)", () => {
+  it("pipeline (not deployed): roles under /rovara-cloud/<env>/pipeline/, except the CodeBuild service roles", () => {
     const roles = byType(synthesized.pipeline![0]!, "AWS::IAM::Role");
     expect(roles.filter(([, r]) => r.Properties.Path === undefined).map(([id]) => id).sort()).toEqual(["CheckRole8E91A0E7", "DeployRoleFF7E9D15"]);
-    expect(roles.filter(([, r]) => r.Properties.Path === cloudRolePath(ENV))).toHaveLength(roles.length - 2);
+    expect(roles.filter(([, r]) => r.Properties.Path === cloudPartRolePath(ENV, "pipeline"))).toHaveLength(roles.length - 2);
     // Exactly the roles the projects name, by Ref.
     const named = byType(synthesized.pipeline![0]!, "AWS::CodeBuild::Project").map(([, p]) => p.Properties.ServiceRole);
     expect(named).toEqual(expect.arrayContaining([{ "Fn::GetAtt": ["DeployRoleFF7E9D15", "Arn"] }, { "Fn::GetAtt": ["CheckRole8E91A0E7", "Arn"] }]));
@@ -166,7 +166,7 @@ describe("role paths: no deployed role is replaced", () => {
       for (const stack of synthesized[shape]!) {
         for (const [id, role] of byType(stack, "AWS::IAM::Role")) {
           if (role.Properties.RoleName === bedrockBrokerRoleName(ENV)) expect(role.Properties.Path, id).toBeUndefined();
-          else expect(role.Properties.Path, id).toBe(cloudRolePath(ENV));
+          else expect(role.Properties.Path, id).toBe(cloudPartRolePath(ENV, "gateway"));
         }
       }
     }
@@ -254,11 +254,11 @@ describe("the boundary breaks nothing a Cloud role's own policy grants", () => {
     expect(statement("gateway", "KeyUse").Action).toEqual(["kms:Decrypt", "kms:GenerateMac", "kms:VerifyMac"]);
     expect(statement("web", "ReadDeployAssets").Action).toEqual(["s3:GetObject*", "s3:GetBucket*", "s3:List*"]);
     expect(statement("pipeline", "AssumeDeployRoles").Resource).toEqual([
-      "arn:aws:iam::123456789012:role/rovara-cloud/staging/*",
+      "arn:aws:iam::123456789012:role/rovara-cloud/staging/pipeline/*",
       ...["deploy-role", "file-publishing-role", "image-publishing-role", "lookup-role"].map((r) => `arn:aws:iam::123456789012:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-${r}-123456789012-us-west-2`),
     ]);
     expect(statement("gateway", "AssumeGatewayRoles").Resource).toEqual([
-      "arn:aws:iam::123456789012:role/rovara-cloud/staging/*", "arn:aws:iam::123456789012:role/RovaraBedrockBroker-staging", `arn:aws:iam::*:role/${BEDROCK_BYO_CUSTOMER_ROLE_PREFIX}*`,
+      "arn:aws:iam::123456789012:role/rovara-cloud/staging/gateway/*", "arn:aws:iam::123456789012:role/RovaraBedrockBroker-staging", `arn:aws:iam::*:role/${BEDROCK_BYO_CUSTOMER_ROLE_PREFIX}*`,
     ]);
     for (const p of CLOUD_STACK_PARTS) {
       const allows = allowsOf(p);
@@ -276,6 +276,633 @@ describe("the boundary breaks nothing a Cloud role's own policy grants", () => {
       expect(allows.filter((s) => s.Resource.includes("*")).map((s) => s.Sid), p).toEqual(p === "gateway" ? ["ImageToken"] : []);
     }
     expect(CDK_BOOTSTRAP_QUALIFIER).toBe(CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER);
+  });
+
+  it("every part's boundary, exactly (any widening of a resource or action fails here)", () => {
+    expect(Object.fromEntries(CLOUD_STACK_PARTS.map((p) => [p, cloudBoundaryStatements(scope, p)]))).toMatchInlineSnapshot(`
+      {
+        "app": [
+          {
+            "Action": [
+              "logs:CreateLogGroup",
+              "logs:CreateLogStream",
+              "logs:PutLogEvents",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:logs:us-west-2:123456789012:log-group:rovara-cloud-staging-app-*",
+            ],
+            "Sid": "Logs",
+          },
+          {
+            "Action": [
+              "iam:Create*",
+              "iam:Delete*",
+              "iam:Put*",
+              "iam:Attach*",
+              "iam:Detach*",
+              "iam:Update*",
+              "iam:Add*",
+              "iam:Remove*",
+              "iam:Set*",
+              "iam:Tag*",
+              "iam:Untag*",
+              "iam:Upload*",
+              "iam:Change*",
+              "iam:Reset*",
+              "iam:Enable*",
+              "iam:Deactivate*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyIamChanges",
+          },
+          {
+            "Action": [
+              "organizations:*",
+              "account:*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyAccountChanges",
+          },
+          {
+            "Action": [
+              "kms:PutKeyPolicy",
+              "kms:CreateGrant",
+              "kms:ScheduleKeyDeletion",
+              "kms:DisableKey",
+              "kms:Delete*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyKeyManagement",
+          },
+          {
+            "Action": [
+              "sts:AssumeRole",
+              "iam:PassRole",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/cdk-hnb659fds-cfn-exec-role-*",
+            ],
+            "Sid": "DenyAdminRoles",
+          },
+        ],
+        "gateway": [
+          {
+            "Action": [
+              "logs:CreateLogGroup",
+              "logs:CreateLogStream",
+              "logs:PutLogEvents",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:logs:us-west-2:123456789012:log-group:rovara-cloud-staging-gateway-*",
+            ],
+            "Sid": "Logs",
+          },
+          {
+            "Action": [
+              "dynamodb:GetItem",
+              "dynamodb:PutItem",
+              "dynamodb:UpdateItem",
+              "dynamodb:DeleteItem",
+              "dynamodb:ConditionCheckItem",
+              "dynamodb:Query",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:dynamodb:us-west-2:123456789012:table/rovara-cloud-staging-gateway-*",
+              "arn:aws:dynamodb:us-west-2:123456789012:table/rovara-cloud-staging-web-*",
+            ],
+            "Sid": "TableItems",
+          },
+          {
+            "Action": [
+              "secretsmanager:GetSecretValue",
+              "secretsmanager:DescribeSecret",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:secretsmanager:us-west-2:123456789012:secret:rovara-cloud/staging/*",
+            ],
+            "Sid": "OwnSecrets",
+          },
+          {
+            "Action": [
+              "kms:Decrypt",
+              "kms:GenerateMac",
+              "kms:VerifyMac",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:kms:us-west-2:123456789012:key/*",
+            ],
+            "Sid": "KeyUse",
+          },
+          {
+            "Action": [
+              "bedrock:InvokeModel",
+              "bedrock:InvokeModelWithResponseStream",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:bedrock:*::foundation-model/*",
+              "arn:aws:bedrock:us-west-2:123456789012:inference-profile/*",
+            ],
+            "Sid": "ModelCalls",
+          },
+          {
+            "Action": [
+              "ecr:GetAuthorizationToken",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "ImageToken",
+          },
+          {
+            "Action": [
+              "ecr:BatchCheckLayerAvailability",
+              "ecr:GetDownloadUrlForLayer",
+              "ecr:BatchGetImage",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:ecr:us-west-2:123456789012:repository/rovara-cloud-staging-gateway-images-*",
+            ],
+            "Sid": "ImagePull",
+          },
+          {
+            "Action": [
+              "ecs:RunTask",
+              "ecs:TagResource",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:ecs:us-west-2:123456789012:task-definition/*",
+              "arn:aws:ecs:us-west-2:*:task/rovara-cloud-staging-gateway-*",
+            ],
+            "Sid": "PriceFetchTask",
+          },
+          {
+            "Action": [
+              "iam:PassRole",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/rovara-cloud/staging/gateway/*",
+            ],
+            "Sid": "PassOwnRoles",
+          },
+          {
+            "Action": [
+              "sts:AssumeRole",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/rovara-cloud/staging/gateway/*",
+              "arn:aws:iam::123456789012:role/RovaraBedrockBroker-staging",
+              "arn:aws:iam::*:role/RovaraBedrockInvoke-*",
+            ],
+            "Sid": "AssumeGatewayRoles",
+          },
+          {
+            "Action": [
+              "iam:Create*",
+              "iam:Delete*",
+              "iam:Put*",
+              "iam:Attach*",
+              "iam:Detach*",
+              "iam:Update*",
+              "iam:Add*",
+              "iam:Remove*",
+              "iam:Set*",
+              "iam:Tag*",
+              "iam:Untag*",
+              "iam:Upload*",
+              "iam:Change*",
+              "iam:Reset*",
+              "iam:Enable*",
+              "iam:Deactivate*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyIamChanges",
+          },
+          {
+            "Action": [
+              "organizations:*",
+              "account:*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyAccountChanges",
+          },
+          {
+            "Action": [
+              "kms:PutKeyPolicy",
+              "kms:CreateGrant",
+              "kms:ScheduleKeyDeletion",
+              "kms:DisableKey",
+              "kms:Delete*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyKeyManagement",
+          },
+          {
+            "Action": [
+              "sts:AssumeRole",
+              "iam:PassRole",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/cdk-hnb659fds-cfn-exec-role-*",
+            ],
+            "Sid": "DenyAdminRoles",
+          },
+        ],
+        "gateway-images": [
+          {
+            "Action": [
+              "iam:Create*",
+              "iam:Delete*",
+              "iam:Put*",
+              "iam:Attach*",
+              "iam:Detach*",
+              "iam:Update*",
+              "iam:Add*",
+              "iam:Remove*",
+              "iam:Set*",
+              "iam:Tag*",
+              "iam:Untag*",
+              "iam:Upload*",
+              "iam:Change*",
+              "iam:Reset*",
+              "iam:Enable*",
+              "iam:Deactivate*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyIamChanges",
+          },
+          {
+            "Action": [
+              "organizations:*",
+              "account:*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyAccountChanges",
+          },
+          {
+            "Action": [
+              "kms:PutKeyPolicy",
+              "kms:CreateGrant",
+              "kms:ScheduleKeyDeletion",
+              "kms:DisableKey",
+              "kms:Delete*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyKeyManagement",
+          },
+          {
+            "Action": [
+              "sts:AssumeRole",
+              "iam:PassRole",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/cdk-hnb659fds-cfn-exec-role-*",
+            ],
+            "Sid": "DenyAdminRoles",
+          },
+        ],
+        "pipeline": [
+          {
+            "Action": [
+              "logs:CreateLogGroup",
+              "logs:CreateLogStream",
+              "logs:PutLogEvents",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:logs:us-west-2:123456789012:log-group:rovara-cloud-staging-pipeline-*",
+              "arn:aws:logs:us-west-2:123456789012:log-group:/aws/codebuild/rovara-cloud-staging-deploy*",
+              "arn:aws:logs:us-west-2:123456789012:log-group:/aws/codebuild/rovara-cloud-staging-check*",
+            ],
+            "Sid": "Logs",
+          },
+          {
+            "Action": [
+              "s3:GetObject*",
+              "s3:GetBucket*",
+              "s3:List*",
+              "s3:DeleteObject*",
+              "s3:PutObject*",
+              "s3:Abort*",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::rovara-cloud-staging-pipeline-*",
+            ],
+            "Sid": "OwnBuckets",
+          },
+          {
+            "Action": [
+              "codebuild:BatchGetBuilds",
+              "codebuild:StartBuild",
+              "codebuild:StopBuild",
+              "codebuild:CreateReport*",
+              "codebuild:UpdateReport",
+              "codebuild:BatchPut*",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:codebuild:us-west-2:123456789012:project/rovara-cloud-staging-deploy",
+              "arn:aws:codebuild:us-west-2:123456789012:project/rovara-cloud-staging-check",
+              "arn:aws:codebuild:us-west-2:123456789012:report-group/rovara-cloud-staging-deploy-*",
+              "arn:aws:codebuild:us-west-2:123456789012:report-group/rovara-cloud-staging-check-*",
+            ],
+            "Sid": "PipelineBuilds",
+          },
+          {
+            "Action": [
+              "codeconnections:UseConnection",
+              "codeconnections:GetConnectionToken",
+              "codestar-connections:UseConnection",
+              "codestar-connections:GetConnectionToken",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:codeconnections:*:123456789012:connection/*",
+              "arn:aws:codestar-connections:*:123456789012:connection/*",
+            ],
+            "Sid": "PipelineSource",
+          },
+          {
+            "Action": [
+              "cloudformation:DescribeStacks",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:cloudformation:us-west-2:123456789012:stack/rovara-cloud-staging-web/*",
+            ],
+            "Sid": "ReleaseCheckReadsWebStack",
+          },
+          {
+            "Action": [
+              "sts:AssumeRole",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/rovara-cloud/staging/pipeline/*",
+              "arn:aws:iam::123456789012:role/cdk-hnb659fds-deploy-role-123456789012-us-west-2",
+              "arn:aws:iam::123456789012:role/cdk-hnb659fds-file-publishing-role-123456789012-us-west-2",
+              "arn:aws:iam::123456789012:role/cdk-hnb659fds-image-publishing-role-123456789012-us-west-2",
+              "arn:aws:iam::123456789012:role/cdk-hnb659fds-lookup-role-123456789012-us-west-2",
+            ],
+            "Sid": "AssumeDeployRoles",
+          },
+          {
+            "Action": [
+              "iam:Create*",
+              "iam:Delete*",
+              "iam:Put*",
+              "iam:Attach*",
+              "iam:Detach*",
+              "iam:Update*",
+              "iam:Add*",
+              "iam:Remove*",
+              "iam:Set*",
+              "iam:Tag*",
+              "iam:Untag*",
+              "iam:Upload*",
+              "iam:Change*",
+              "iam:Reset*",
+              "iam:Enable*",
+              "iam:Deactivate*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyIamChanges",
+          },
+          {
+            "Action": [
+              "organizations:*",
+              "account:*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyAccountChanges",
+          },
+          {
+            "Action": [
+              "kms:PutKeyPolicy",
+              "kms:CreateGrant",
+              "kms:ScheduleKeyDeletion",
+              "kms:DisableKey",
+              "kms:Delete*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyKeyManagement",
+          },
+          {
+            "Action": [
+              "sts:AssumeRole",
+              "iam:PassRole",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/cdk-hnb659fds-cfn-exec-role-*",
+            ],
+            "Sid": "DenyAdminRoles",
+          },
+        ],
+        "web": [
+          {
+            "Action": [
+              "logs:CreateLogGroup",
+              "logs:CreateLogStream",
+              "logs:PutLogEvents",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:logs:us-west-2:123456789012:log-group:rovara-cloud-staging-web-*",
+            ],
+            "Sid": "Logs",
+          },
+          {
+            "Action": [
+              "dynamodb:GetItem",
+              "dynamodb:PutItem",
+              "dynamodb:UpdateItem",
+              "dynamodb:DeleteItem",
+              "dynamodb:ConditionCheckItem",
+              "dynamodb:Query",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:dynamodb:us-west-2:123456789012:table/rovara-cloud-staging-web-*",
+              "arn:aws:dynamodb:us-west-2:123456789012:table/rovara-cloud-staging-gateway-*",
+            ],
+            "Sid": "TableItems",
+          },
+          {
+            "Action": [
+              "secretsmanager:GetSecretValue",
+              "secretsmanager:DescribeSecret",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:secretsmanager:us-west-2:123456789012:secret:rovara-cloud/staging/*",
+            ],
+            "Sid": "OwnSecrets",
+          },
+          {
+            "Action": [
+              "ssm:GetParameter",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:ssm:us-west-2:123456789012:parameter/rovara-cloud/staging/*",
+            ],
+            "Sid": "OwnSettings",
+          },
+          {
+            "Action": [
+              "kms:Decrypt",
+              "kms:GenerateDataKey",
+              "kms:GenerateMac",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:kms:us-west-2:123456789012:key/*",
+            ],
+            "Sid": "KeyUse",
+          },
+          {
+            "Action": [
+              "s3:GetObject*",
+              "s3:GetBucket*",
+              "s3:List*",
+              "s3:DeleteObject*",
+              "s3:PutObject*",
+              "s3:Abort*",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::rovara-cloud-staging-web-*",
+            ],
+            "Sid": "OwnBuckets",
+          },
+          {
+            "Action": [
+              "s3:GetObject*",
+              "s3:GetBucket*",
+              "s3:List*",
+            ],
+            "Effect": "Allow",
+            "Resource": [
+              "arn:aws:s3:::cdk-hnb659fds-assets-123456789012-us-west-2",
+              "arn:aws:s3:::cdk-hnb659fds-assets-123456789012-us-west-2/*",
+            ],
+            "Sid": "ReadDeployAssets",
+          },
+          {
+            "Action": [
+              "iam:Create*",
+              "iam:Delete*",
+              "iam:Put*",
+              "iam:Attach*",
+              "iam:Detach*",
+              "iam:Update*",
+              "iam:Add*",
+              "iam:Remove*",
+              "iam:Set*",
+              "iam:Tag*",
+              "iam:Untag*",
+              "iam:Upload*",
+              "iam:Change*",
+              "iam:Reset*",
+              "iam:Enable*",
+              "iam:Deactivate*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyIamChanges",
+          },
+          {
+            "Action": [
+              "organizations:*",
+              "account:*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyAccountChanges",
+          },
+          {
+            "Action": [
+              "kms:PutKeyPolicy",
+              "kms:CreateGrant",
+              "kms:ScheduleKeyDeletion",
+              "kms:DisableKey",
+              "kms:Delete*",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "*",
+            ],
+            "Sid": "DenyKeyManagement",
+          },
+          {
+            "Action": [
+              "sts:AssumeRole",
+              "iam:PassRole",
+            ],
+            "Effect": "Deny",
+            "Resource": [
+              "arn:aws:iam::123456789012:role/cdk-hnb659fds-cfn-exec-role-*",
+            ],
+            "Sid": "DenyAdminRoles",
+          },
+        ],
+      }
+    `);
   });
 
   it("fits in a managed policy (6,144 characters without whitespace), with room, for the longest environment name, Region and partition", () => {
@@ -312,5 +939,8 @@ describe("the boundary breaks nothing a Cloud role's own policy grants", () => {
     expect(overlaps("arn:aws:iam::*:role/RovaraBedrockInvoke-*", "arn:aws:iam::1:role/cdk-x-*", false)).toBe(false);
     expect(overlaps("arn:aws:iam::*:role/X-*", "arn:aws:iam::1:role/X-a", false)).toBe(true);
     expect(overlaps("a?c", "abd", false)).toBe(false);
+    // A wildcard before the resource part may span a colon: compared as whole strings.
+    expect(overlaps("arn:aws:iam::123456789012:role/cdk-x-cfn-exec-role-*", "arn:aws:iam::*cfn-exec-role-*", false)).toBe(true);
+    expect(overlaps("arn:aws:iam::12*:role/a", "arn:aws:iam::123:role/a", false)).toBe(true);
   });
 });

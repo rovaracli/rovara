@@ -21,10 +21,18 @@ import { RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
  * generated ids: those are held to this account and region; each key's policy names the roles that may use it.
  */
 
-/** The IAM path of the boundary policies and of the roles of the parts in ROLE_PATH_PARTS. */
+/** The IAM path of the boundary policies: `/rovara-cloud/<env>/`. */
 export function cloudRolePath(env: string): string {
   // environmentSettingsPrefix validates the name and gives `/rovara-cloud/<env>/`.
   return environmentSettingsPrefix(env);
+}
+
+/**
+ * The IAM path of a part's roles (the parts in ROLE_PATH_PARTS): `/rovara-cloud/<env>/<part>/`, one per part, so a part's PassRole and
+ * AssumeRole never reach another part's roles (the gateway never the pipeline's, nor the other way round).
+ */
+export function cloudPartRolePath(env: string, part: CloudStackPart): string {
+  return `${cloudRolePath(env)}${part}/`;
 }
 
 /** What a Cloud stack is: the suffix of its stack name, rovara-cloud-<env>-<part>. */
@@ -36,12 +44,13 @@ export const CLOUD_STACK_PARTS: readonly CloudStackPart[] = ["web", "app", "pipe
  * already deployed on staging with roles at "/" (web, app) keep "/". The gateway and pipeline had no live roles when this was made (the
  * staging gateway create rolled back on 2026-11-16 with no role retained; the pipeline is not deployed). Kept at "/" wherever they are:
  * a role with a fixed name (the Bedrock broker, whose ARN every customer's trust policy names), and a role marked with keepRoleAtRoot
- * (the CodeBuild projects' service roles: CDK names them by name, which CodeBuild reads as a role at "/", cfn-lint E3050).
+ * (the CodeBuild projects' service roles: the template passes their ARN, but cfn-lint E3050 warns that CodeBuild may read a service
+ * role with a path wrongly, and nothing assumes or passes them, so "/" costs nothing).
  */
 export const ROLE_PATH_PARTS: ReadonlySet<CloudStackPart> = new Set(["pipeline", "gateway", "gateway-images"]);
 
 const atRoot = new WeakSet<IConstruct>();
-/** Keeps a role at "/" in a part whose roles are otherwise under the environment's path (a service that names the role by name). */
+/** Keeps a role at "/" in a part whose roles are otherwise under the part's path (a service that may not take a role with a path). */
 export function keepRoleAtRoot(role: iam.IRole): void {
   atRoot.add(role.node.defaultChild ?? role);
 }
@@ -72,6 +81,7 @@ const BYO_BROKER_ROLE_PREFIX = "RovaraBedrockBroker-";
 export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPart): BoundaryStatement[] {
   const { env, partition: p, region: r, account: a } = scope;
   const path = cloudRolePath(env);
+  const rolesOf = (which: CloudStackPart) => `arn:${p}:iam::${a}:role${cloudPartRolePath(env, which)}*`;
   // Generated names start with the stack name; never `rovara-cloud-<env>-*` (that would match an environment named <env>-eu too).
   const stack = (which: string) => `${RESOURCE_PREFIX}-${env}-${which}`;
   const logs = (groups: string[]): BoundaryStatement => ({
@@ -119,7 +129,7 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
       {
         // The pipeline assumes its own action roles (under the path) and the bootstrap roles cdk deploy uses. Only this part may.
         Sid: "AssumeDeployRoles", Effect: "Allow", Action: ["sts:AssumeRole"],
-        Resource: [`arn:${p}:iam::${a}:role${path}*`, ...CDK_BOOTSTRAP_ASSUMED_ROLES.map((role) => `arn:${p}:iam::${a}:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-${role}-${a}-${r}`)],
+        Resource: [rolesOf("pipeline"), ...CDK_BOOTSTRAP_ASSUMED_ROLES.map((role) => `arn:${p}:iam::${a}:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-${role}-${a}-${r}`)],
       },
     ],
     "gateway-images": [],
@@ -138,11 +148,11 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
       { Sid: "ImagePull", Effect: "Allow", Action: ["ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"], Resource: [`arn:${p}:ecr:${r}:${a}:repository/${stack("gateway-images")}-*`] },
       // The daily price fetch: EventBridge runs one task in the gateway's cluster, passing the gateway's own roles.
       { Sid: "PriceFetchTask", Effect: "Allow", Action: ["ecs:RunTask", "ecs:TagResource"], Resource: [`arn:${p}:ecs:${r}:${a}:task-definition/*`, `arn:${p}:ecs:${r}:*:task/${stack("gateway")}-*`] },
-      { Sid: "PassOwnRoles", Effect: "Allow", Action: ["iam:PassRole"], Resource: [`arn:${p}:iam::${a}:role${path}*`] },
+      { Sid: "PassOwnRoles", Effect: "Allow", Action: ["iam:PassRole"], Resource: [rolesOf("gateway")] },
       {
         // The serving role assumes its Vertex role (under the path) and the broker; the broker assumes customers' Bedrock roles.
         Sid: "AssumeGatewayRoles", Effect: "Allow", Action: ["sts:AssumeRole"],
-        Resource: [`arn:${p}:iam::${a}:role${path}*`, `arn:${p}:iam::${a}:role/${BYO_BROKER_ROLE_PREFIX}${env}`, `arn:${p}:iam::*:role/${BYO_CUSTOMER_ROLE_PREFIX}*`],
+        Resource: [rolesOf("gateway"), `arn:${p}:iam::${a}:role/${BYO_BROKER_ROLE_PREFIX}${env}`, `arn:${p}:iam::*:role/${BYO_CUSTOMER_ROLE_PREFIX}*`],
       },
     ],
   };
@@ -219,7 +229,7 @@ export function applyCloudBoundary(stack: Stack, env: string, part: CloudStackPa
     policy.cfnOptions.updateReplacePolicy = CfnDeletionPolicy.RETAIN;
   }
   bounded.set(stack, policy);
-  Aspects.of(stack).add(new CloudBoundaryAspect(policy.ref, ROLE_PATH_PARTS.has(part) ? cloudRolePath(env) : undefined, stack));
+  Aspects.of(stack).add(new CloudBoundaryAspect(policy.ref, ROLE_PATH_PARTS.has(part) ? cloudPartRolePath(env, part) : undefined, stack));
   return policy;
 }
 

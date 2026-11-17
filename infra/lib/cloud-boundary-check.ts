@@ -169,7 +169,8 @@ export function overlaps(x: string, y: string, lower: boolean): boolean {
   if (!lower && x.startsWith("arn:") && y.startsWith("arn:")) {
     const parts = (arn: string) => { const p = arn.split(":"); return [...p.slice(0, 5), p.slice(5).join(":")]; };
     const [px, py] = [parts(x), parts(y)];
-    if (px.length === 6 && py.length === 6) return px.every((part, i) => globOverlap(part, py[i]!));
+    // Only when no wildcard sits before the resource part (a `*` there could span a colon in IAM's match).
+    if (px.length === 6 && py.length === 6 && ![...px.slice(0, 5), ...py.slice(0, 5)].some((part) => part.includes("*") && part !== "*")) return px.every((part, i) => globOverlap(part, py[i]!));
   }
   return globOverlap(lower ? x.toLowerCase() : x, lower ? y.toLowerCase() : y);
 }
