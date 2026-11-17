@@ -160,7 +160,7 @@ describe("the run's read carries the waiting candidate", () => {
     expect(none.status).toBe(200);
     expect(none.body).not.toHaveProperty("apply");
     const bad: Array<Record<string, unknown>> = [
-      { risk: "extreme" }, { risk: LEAK }, { approver: "everyone" }, { canApprove: "yes" }, { canReject: 1 }, { candidateRevision: 0 }, { baseRevision: -1 }, { setup: "npm ci" }, { setup: ["x".repeat(2_001)] }, { readiness: Array(41).fill("npm test") },
+      { risk: "extreme" }, { risk: LEAK }, { approver: "everyone" }, { canApprove: "yes" }, { canReject: 1 }, { candidateRevision: 0 }, { baseRevision: -1 }, { setup: "npm ci" }, { setup: ["x".repeat(2_001)] }, { readiness: Array(65).fill("npm test") },
       { check: { status: "weird" } }, { check: { status: "failed", failedStep: 5 } }, { check: "ready" }, { changes: [{ area: "secrets", risk: "low" }] }, { changes: [{ area: "websites", risk: "bad" }] }, { changes: Array(17).fill({ area: "other", risk: "high" }) },
       { approval: { requestId: "task-1234", revision: 4, artifactDigest: digestOf(A, "payments"), kind: "setup", risk: "low" } }, { approval: { requestId: "setup-abc", revision: 4, artifactDigest: "ABC", kind: "setup", risk: "low" } },
       { approval: { requestId: "setup-abc", revision: 0, artifactDigest: digestOf(A, "payments"), kind: "setup", risk: "low" } }, { approval: { requestId: "setup-abc", revision: 4, artifactDigest: digestOf(A, "payments"), kind: "task", risk: "low" } },
@@ -221,6 +221,8 @@ describe("Use this setup (confirm)", () => {
       [err(409, "PROJECT_REVISION_MISMATCH", "Rovara found this setup for an earlier version of the project's settings. Set the project up again."), 409, "PROJECT_REVISION_MISMATCH", "Rovara found this setup for an earlier version of the project's settings. Set the project up again."],
       [err(409, "PROJECT_REVISION_MISMATCH", LEAK), 409, "CHANGE_STALE", SETUP_CHECKLIST_WORDS.stale],
       [err(409, "WORKSPACE_BUSY", LEAK), 409, "WORKSPACE_BUSY", SETUP_CHECKLIST_WORDS.busy],
+      [err(409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Decide it, or discard it, first."), 409, "WORKSPACE_BUSY", "Another setup is waiting for your approval. Decide it, or discard it, first."],
+      [err(500, "PROJECT_REVISION_MISMATCH", "Rovara found this setup for an earlier version of the project's settings. Set the project up again."), 503, "RUNTIME_UNAVAILABLE", SETUP_CHECKLIST_WORDS.unavailable],
       [err(400, "CONFIG_INVALID", "None of the suggestions can be used: each one failed its check, or is a command Rovara does not carry into a project's setup."), 400, "CONFIG_INVALID", "None of the suggestions can be used: each one failed its check, or is a command Rovara does not carry into a project's setup."],
       [err(400, "CONFIG_INVALID", LEAK), 400, "CONFIG_INVALID", SETUP_CHECKLIST_WORDS.invalid],
       [err(500, "X", LEAK), 503, "RUNTIME_UNAVAILABLE", SETUP_CHECKLIST_WORDS.unavailable],

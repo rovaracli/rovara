@@ -28,7 +28,7 @@ export default function SetupRunSection({ project, settingsRevision, onDecided }
   if (query.isPending) return null;
   if (query.isError || view === undefined) return <section aria-label="Set up with Rovara"><h3>Set up with Rovara</h3><p role="alert">Couldn't load the setup run.</p><Button onClick={() => { void query.refetch(); }}>Try again</Button></section>;
   async function act(kind: "start" | "stop") {
-    setBusy(kind); setError(undefined);
+    setBusy(kind); setError(undefined); setDecided(undefined);
     try { client.setQueryData(key, await (kind === "start" ? api.start(project, requestId) : api.stop(project, requestId))); setRequestId(crypto.randomUUID()); void client.invalidateQueries({ queryKey: ["onboard", "setup-journal", project] }); } catch (caught) { setError(caught instanceof ApiError ? caught.message : "Couldn't do that. Try again."); } finally { setBusy(undefined); }
   }
   const running = view.status === "running";

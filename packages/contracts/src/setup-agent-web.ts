@@ -15,8 +15,8 @@ export const SetupApplyViewSchema = z.object({
   candidateRevision: z.number().int().min(1),
   baseRevision: z.number().int().min(0),
   /** The candidate's commands as a person would type them, whole. */
-  setup: z.array(z.string().min(1).max(2_000)).max(40),
-  readiness: z.array(z.string().min(1).max(2_000)).max(40),
+  setup: z.array(z.string().min(1).max(2_000)).max(64),
+  readiness: z.array(z.string().min(1).max(2_000)).max(64),
   /** Where the candidate's check on a fresh workspace stands; a decision is offered only once it is `ready`. */
   check: z.object({ status: z.enum(SETUP_CHECK_STATES), failedStep: z.string().min(1).max(1_000).optional() }).passthrough(),
   risk: z.enum(SETUP_RISKS),

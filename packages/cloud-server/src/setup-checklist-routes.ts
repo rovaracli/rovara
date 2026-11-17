@@ -212,7 +212,7 @@ export const SETUP_APPROVAL_CODE_WORDS: readonly string[] = Object.freeze([
 ]);
 export const SETUP_APPROVAL_WORDS = Object.freeze({
   stale: "This setup changed or is no longer waiting for a decision. Refresh to see where it stands.",
-  conflict: "This decision was already sent. Refresh to see where the setup stands.",
+  conflict: "This was already sent. Refresh to see where the setup stands.",
   stepUp: "Confirm it's you again, then try once more.",
   cannotDecide: "Only the project's maintainers, or a company owner or admin, can decide this setup.",
   approvalNotYet: "Approving a setup isn't available on this Rovara yet.",
@@ -235,7 +235,7 @@ const lines = (value: unknown, max: number): value is string[] => Array.isArray(
 export function applyAnswer(value: unknown): Plain {
   need(plain(value), undefined);
   const v = value as Plain, check = v["check"], approval = v["approval"], changes = v["changes"];
-  need(whole(v["candidateRevision"], 1) && whole(v["baseRevision"], 0) && lines(v["setup"], 40) && lines(v["readiness"], 40), undefined);
+  need(whole(v["candidateRevision"], 1) && whole(v["baseRevision"], 0) && lines(v["setup"], 64) && lines(v["readiness"], 64), undefined);
   need(plain(check) && oneOf(check["status"], CHECK_STATES) && (check["failedStep"] === undefined || text(check["failedStep"], 1_000)), undefined);
   need(oneOf(v["risk"], RISKS) && oneOf(v["approver"], APPROVERS) && typeof v["canApprove"] === "boolean" && typeof v["canReject"] === "boolean", undefined);
   need(Array.isArray(changes) && changes.length <= 16 && changes.every((one) => plain(one) && oneOf(one["area"], AREAS) && oneOf(one["risk"], RISKS)), undefined);

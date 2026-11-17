@@ -40,7 +40,7 @@ export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefr
   const host = useAppHost();
   const who = useNav()?.me.developerId;
   const confirmed = useJustConfirmed(who);
-  const [stale, setStale] = useState(false), [busy, setBusy] = useState<"approve" | "reject" | "discard">(), [problem, setProblem] = useState<{ message: string; moved: boolean }>();
+  const [stale, setStale] = useState(false), [done, setDone] = useState(false), [busy, setBusy] = useState<"approve" | "reject" | "discard">(), [problem, setProblem] = useState<{ message: string; moved: boolean }>();
   const sending = useRef(false);
   const lines = changeLines(apply), more = lines.length - SHOWN_CHANGES;
   const ready = apply.check.status === "ready", failed = apply.check.status === "failed";
@@ -52,7 +52,9 @@ export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefr
     if (approval === undefined || sending.current) return;
     sending.current = true; setBusy(outcome); setProblem(undefined);
     try {
-      onDecided(await api.decide(project, { requestId: approval.requestId, outcome, seen: { revision: approval.revision, artifactDigest: approval.artifactDigest } }));
+      const reply = await api.decide(project, { requestId: approval.requestId, outcome, seen: { revision: approval.revision, artifactDigest: approval.artifactDigest } });
+      // Decided: nothing more can be pressed while the page reads the project again.
+      setDone(true); onDecided(reply);
     } catch (caught) {
       if (caught instanceof ApiError && caught.code === "REAUTH_REQUIRED") { if (who !== undefined) forgetConfirmed(host.storage, who); setStale(true); }
       else if (caught instanceof ApiError) setProblem({ message: caught.message, moved: caught.code === "CHANGE_STALE" || caught.code === "IDEMPOTENCY_CONFLICT" || caught.code === "PROJECT_REVISION_MISMATCH" });
@@ -62,7 +64,7 @@ export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefr
   async function discard() {
     if (sending.current) return;
     sending.current = true; setBusy("discard"); setProblem(undefined);
-    try { await api.discard(project, crypto.randomUUID()); onDecided("discarded"); }
+    try { await api.discard(project, crypto.randomUUID()); setDone(true); onDecided("discarded"); }
     catch (caught) { setProblem({ message: caught instanceof ApiError ? caught.message : "Couldn't discard it. Try again.", moved: caught instanceof ApiError && caught.code === "CHANGE_STALE" }); }
     finally { sending.current = false; setBusy(undefined); }
   }
@@ -92,9 +94,9 @@ export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefr
     </details>
     {allowed && <p className="rv-muted" data-testid="setup-approval-fresh" role="status">{stale ? T.stepUpOld : fresh ? T.stepUpDone : T.stepUp}</p>}
     <div className="rv-connect-actions rv-approval-actions">
-      {allowed && apply.canApprove && <Button variant="primary" busy={busy === "approve"} disabled={busy !== undefined} data-testid="setup-approve" onClick={() => { if (fresh) void decide("approve"); else confirmItsYou(); }}>Approve</Button>}
-      {allowed && apply.canReject && <Button variant="danger" busy={busy === "reject"} disabled={busy !== undefined} data-testid="setup-reject" onClick={() => { if (fresh) void decide("reject"); else confirmItsYou(); }}>Reject</Button>}
-      {canManage && !ready && <Button busy={busy === "discard"} disabled={busy !== undefined} data-testid="setup-discard" onClick={() => { void discard(); }}>Discard this setup</Button>}
+      {allowed && apply.canApprove && <Button variant="primary" busy={busy === "approve"} disabled={busy !== undefined || done} data-testid="setup-approve" onClick={() => { if (fresh) void decide("approve"); else confirmItsYou(); }}>Approve</Button>}
+      {allowed && apply.canReject && <Button variant="danger" busy={busy === "reject"} disabled={busy !== undefined || done} data-testid="setup-reject" onClick={() => { if (fresh) void decide("reject"); else confirmItsYou(); }}>Reject</Button>}
+      {canManage && !ready && <Button busy={busy === "discard"} disabled={busy !== undefined || done} data-testid="setup-discard" onClick={() => { void discard(); }}>Discard this setup</Button>}
     </div>
     {problem !== undefined && <div role="alert" data-testid="setup-approval-problem"><p><VisibleText text={problem.message} /></p>{problem.moved && <Button data-testid="setup-approval-refresh" onClick={onRefresh}>Refresh</Button>}</div>}
   </section>;

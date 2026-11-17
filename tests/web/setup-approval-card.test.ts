@@ -171,6 +171,18 @@ it("after the fresh sign-in, Approve sends exactly the binding the read offered,
   f.close();
 });
 
+it("a second press while the result is being read does not send a second decision", async () => {
+  const f = mount({ fresh: true });
+  const c = await card();
+  const approve = within(c).getByRole("button", { name: "Approve" });
+  fireEvent.click(approve);
+  fireEvent.click(approve);
+  await screen.findByTestId("setup-decided");
+  expect(decides(f)).toHaveLength(1);
+  expect(f.onDecided).toHaveBeenCalledTimes(1);
+  f.close();
+});
+
 it("Reject sends the reject answer with the same binding and says the project keeps its setup", async () => {
   const f = mount({ fresh: true, decide: { status: 200, body: { project: "web", decision: "rejected", risk: "low", revision: 4, replayed: false } } });
   const c = await card();
