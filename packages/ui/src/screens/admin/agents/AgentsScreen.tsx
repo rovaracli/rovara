@@ -5,6 +5,7 @@ import { DataTable } from "../../../design/DataTable.js";
 import { PageHeader } from "../../../design/PageHeader.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { ReadState, useAdminRead } from "../projects/read.js";
+import { AGENT_DIRECTORY_OFFERED } from "../../../shell/agent-directory-gate.js";
 const agentReader = { parse(value: unknown) { return { agents: AgentDirectoryResponseReaderSchema.parse(value).agents.map(a => ({ agentId:a.agentId,name:a.name,builtin:a.builtin,status:a.status,disabled:a.disabled,currentVersion:a.currentVersion,pinnedVersion:a.pinnedVersion,latestVersion:a.latestVersion,accountable:a.accountable,monthlyBudgetUsd:a.monthlyBudgetUsd,maxPerRunUsd:a.maxPerRunUsd,updateAvailable:a.updateAvailable })) }; } };
 const amount = z.number().finite().nonnegative();
 // Browser-only read projection: do not import the server guardrail schema (models-node).
@@ -20,7 +21,7 @@ export function AgentsScreen() {
  return <section><PageHeader focusOnMount title="Agents" description="Inspect versions and company guardrails. Existing sessions keep their pinned recipes." /><p>Visible agents only; this is not a complete company adoption inventory.</p><ReadState read={read} label="agents">{data=>{
  const matches = data.agents.filter(a=>a.name.toLocaleLowerCase("en-US").includes(term.trim().toLocaleLowerCase("en-US")));
  return <><div className="rv-field rv-admin-search"><label htmlFor="admin-agent-search">Find in this agent list</label><input id="admin-agent-search" type="search" maxLength={200} value={term} onChange={e=>setParams(e.target.value?{q:e.target.value}:{},{replace:true})} /></div><p>Per-agent autonomy and permitted-project lists are not returned by this directory. Inspect the existing profile for recipe details.</p>
- {data.agents.length === 0 ? <p>No visible agents were returned. <Link to="/app/agents">Open agent directory</Link></p> : matches.length === 0 ? <p>No matching agents in this list.</p> : <DataTable caption="Visible agents" rows={matches} rowKey={a=>a.agentId} columns={[
+ {data.agents.length === 0 ? <p>No visible agents were returned.{AGENT_DIRECTORY_OFFERED && <> <Link to="/app/agents">Open agent directory</Link></>}</p> : matches.length === 0 ? <p>No matching agents in this list.</p> : <DataTable caption="Visible agents" rows={matches} rowKey={a=>a.agentId} columns={[
  {key:"name",title:"Agent",render:a=><Link to={`/app/agents/${encodeURIComponent(a.agentId)}`}><VisibleText text={a.name} /></Link>},
  {key:"status",title:"Status",render:a=>a.disabled ? "Disabled" : a.status === "archived" ? "Archived" : "Active"},
  {key:"version",title:"Applied version",render:a=>a.builtin ? a.pinnedVersion ?? "Unknown" : a.currentVersion ?? "Unpublished"}, {key:"latest",title:"Latest version",render:a=>a.latestVersion || "No published versions"},

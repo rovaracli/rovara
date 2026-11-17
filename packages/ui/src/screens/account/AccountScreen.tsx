@@ -50,14 +50,14 @@ export function AccountScreen() {
   </AdminSection>
   {factorsOffered && <>
   <AdminSection title="Confirmation email" note="Where your sign-in codes go">
-   {factors.isPending ? <Skeleton label="Loading your sign-in factors" /> : factors.isError ? (isNotConnected(factors.error) ? <NotConnected what="Your confirmation email and passkeys" /> : <div role="alert" className="rv-banner rv-banner-danger"><span><b>Couldn't load your sign-in factors.</b></span><Button disabled={factors.isFetching} onClick={() => { void factors.refetch(); }}>Try again</Button></div>)
+   {factors.isPending ? <Skeleton label="Loading your sign-in factors" /> : factors.isError ? (<div role="alert" className="rv-banner rv-banner-danger"><span><b>Couldn't load your sign-in factors.</b></span><Button disabled={factors.isFetching} onClick={() => { void factors.refetch(); }}>Try again</Button></div>)
     : factors.data.factorEmail === undefined ? <p>No confirmation email is set. A fresh sign-in needs a passkey or a code sent to one. Ask a company admin to set it.</p>
     : <p><b data-testid="factor-email"><VisibleText text={factors.data.factorEmail} /></b></p>}
    <p className="rv-muted">It comes from your first sign-in. Changing your email at Slack, Google or GitHub never moves it; only a company admin can change it, and the old address is told first.</p>
   </AdminSection>
   <AdminSection title="Passkeys" note="Tap to confirm it's you">
    {removed && <p role="status">Passkey removed. You can still confirm with a code sent to your confirmation email.</p>}
-   {factors.isPending ? <Skeleton label="Loading your passkeys" /> : factors.data === undefined ? (isNotConnected(factors.error) ? <NotConnected what="Passkeys" /> : <p className="rv-muted">Passkeys are unavailable until your sign-in factors load.</p>)
+   {factors.isPending ? <Skeleton label="Loading your passkeys" /> : factors.data === undefined ? <p className="rv-muted">Passkeys are unavailable until your sign-in factors load.</p>
     : factors.data.passkeys.length === 0 ? <p>You have no passkeys. After a fresh sign-in with an emailed code, Rovara offers to add one.</p>
     : <ul className="rv-passkeys" aria-label="Your passkeys">{factors.data.passkeys.map(key => <li key={key.credentialId}><span>Passkey added {when(key.createdAt)}<small>{key.lastUsedAt === undefined ? "Not used yet" : `Last used ${when(key.lastUsedAt)}`}</small></span><Button aria-label={`Remove the passkey added ${when(key.createdAt)}`} onClick={() => { setResult(undefined); setRemoved(false); setParams({ remove: key.credentialId }, { replace: true }); }}>Remove</Button></li>)}</ul>}
   </AdminSection></>}
