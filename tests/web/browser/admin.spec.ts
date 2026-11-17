@@ -62,7 +62,7 @@ test("Overview shows this month's money and the people at a glance", async ({ pa
   const admin = new AdminPage(page);
   await admin.open();
   await expect(admin.stats("At a glance")).toContainText("$412.60");
-  await expect(page.getByRole("link", { name: "Open Spending" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open Spending", exact: true })).toBeVisible();
 });
 
 for (const screen of [

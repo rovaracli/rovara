@@ -3,6 +3,8 @@ export const ROUTES = {
   home: "/app",
   /** Work, the split inbox (the route is still /app/live). */
   work: "/app/live",
+  /** The inbox (web task channel K5). */
+  inbox: "/app/inbox",
   signedOut: "/app/signed-out",
   /** DEC 253z onboarding: no company yet, creating one, and the invite link's join page. */
   noCompany: "/app/no-company", createCompany: "/app/create-company", join: "/app/join", firstDay: "/app/onboard",

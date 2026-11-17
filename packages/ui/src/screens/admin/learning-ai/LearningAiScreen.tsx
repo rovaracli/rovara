@@ -3,7 +3,7 @@
 // back. Every change needs a fresh sign-in, which the server checks too. It is never a project's key and is never used for a project's tests.
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { LEARNING_AI_PATH, LEARNING_PROVIDERS, LEARNING_PROVIDER_LABELS, readLearningAi, type LearningAiRead, type LearningProvider } from "../../../api/admin-learning-ai.js";
+import { LEARNING_AI_PATH, LEARNING_PROVIDER_LABELS, readLearningAi, type LearningAiRead, type LearningProvider } from "../../../api/admin-learning-ai.js";
 import { isNotConnected, needsStepUp } from "../../../api/admin-company.js";
 import { createApiClient } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
@@ -54,7 +54,7 @@ function Settings({ settings, reload }: { settings: LearningAiRead; reload: () =
    {settings.pausedNow.length > 0 && <ul data-testid="paused-now">{settings.pausedNow.map(reason => <li key={reason}><VisibleText text={reasons.get(reason) ?? "Lessons are paused."} /></li>)}</ul>}
    <details><summary>Why lessons can be paused</summary><ul>{settings.pauseReasons.map(r => <li key={r.reason}><VisibleText text={r.message} /></li>)}</ul></details>
   </AdminSection>
-  {LEARNING_PROVIDERS.map(provider => <Account key={provider} provider={provider} settings={settings} ready={ready} busy={busy} send={send} />)}
+  {settings.listed.map(provider => <Account key={provider} provider={provider} settings={settings} ready={ready} busy={busy} send={send} />)}
  </>;
 }
 

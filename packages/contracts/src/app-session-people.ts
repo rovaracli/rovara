@@ -43,8 +43,14 @@ export const SessionPeopleViewSchema = z.object({
 }).strict();
 export type SessionPeopleView = z.infer<typeof SessionPeopleViewSchema>;
 
+/**
+ * A person the task was shared with before People (Code's task readers, spec 067), shown in the same list as a viewer. Only the owner sees them (Code answers the
+ * readers to the owner only). They are removed with the existing share removal (`DELETE /v1/app/sessions/{id}/shares/MEMBER%23{developerId}`).
+ */
+export const SessionPeopleSharedSchema = z.object({ developerId: DeveloperIdSchema, name: z.string().min(1).max(80), role: z.enum(["owner", "commenter", "viewer"]) }).strict();
+
 /** `GET /v1/app/sessions/{id}/people` */
-export const SessionPeopleResponseSchema = z.object({ people: SessionPeopleViewSchema }).strict();
+export const SessionPeopleResponseSchema = z.object({ people: SessionPeopleViewSchema, sharedWith: z.array(SessionPeopleSharedSchema).max(200).optional() }).strict();
 export const SessionPeopleResponseReaderSchema = forwardReader(SessionPeopleResponseSchema);
 
 /** `POST /v1/app/sessions/{id}/people/role`: change one person's role. The ids are Code's, taken from the list the page read. */

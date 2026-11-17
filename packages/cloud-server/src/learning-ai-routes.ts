@@ -20,7 +20,12 @@ import { freshStepUp, STEP_UP_WINDOW_SECONDS } from "./step-up.js";
 /** The store's learning document (product-keys.ts LEARNING_OWNER). */
 export const LEARNING_AI_OWNER = "_learning";
 export const LEARNING_AI_PROVIDERS = ["anthropic", "openai", "gemini"] as const;
-export type LearningAiProvider = typeof LEARNING_AI_PROVIDERS[number];
+/**
+ * DEC 254t (A2): the company accounts this page connects. OpenRouter is the agents' only (lessons have no OpenRouter path), so it never
+ * makes lessons usable, and it is listed and connectable only where the openrouter kind is switched on (elsewhere this page is unchanged).
+ */
+export const COMPANY_KEY_PROVIDERS = [...LEARNING_AI_PROVIDERS, "openrouter"] as const;
+export type LearningAiProvider = typeof COMPANY_KEY_PROVIDERS[number];
 /** One source per provider in the learning document. */
 export const learningSourceId = (provider: LearningAiProvider) => `src_${provider}`;
 /** The learning route's pause reasons and their words (model-gateway learning-route.ts LEARNING_PAUSE_REASONS / _MESSAGES; a test pins them equal). */
@@ -57,7 +62,12 @@ const ANSWER_OF: Record<ProductAiErrorCode, RouteAnswer> = {
 const record = (v: unknown): Record<string, unknown> | undefined => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
 const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 const exactly = (value: Record<string, unknown>, keys: readonly string[]) => Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
-const named = (v: unknown): v is LearningAiProvider => LEARNING_AI_PROVIDERS.some((p) => p === v);
+const named = (v: unknown): v is LearningAiProvider => COMPANY_KEY_PROVIDERS.some((p) => p === v);
+/** The providers this Cloud lists and connects: OpenRouter only where its kind is switched on (DEC 254t). */
+const providersOn = (context: RouteContext): readonly LearningAiProvider[] => context.company?.aiSourceKinds?.has("openrouter") === true ? COMPANY_KEY_PROVIDERS : LEARNING_AI_PROVIDERS;
+/** What the page shows: the providers switched on, plus OpenRouter whenever the company document still holds it (on or off), so it can always be removed. */
+const providersShown = (context: RouteContext, v: ProductAiView): readonly LearningAiProvider[] =>
+  providersOn(context).includes("openrouter") || !(v.sources.some((s) => s.provider === "openrouter") || v.removed.some((r) => r.provider === "openrouter")) ? providersOn(context) : COMPANY_KEY_PROVIDERS;
 
 interface Admin { companyId: string; developerId: string; name: string }
 
@@ -94,19 +104,20 @@ async function budgetOf(context: RouteContext, companyId: string): Promise<{ lea
 
 async function answer(context: RouteContext, who: Admin, v: ProductAiView): Promise<RouteAnswer> {
   const budget = await budgetOf(context, who.companyId);
-  const accounts = Object.fromEntries(LEARNING_AI_PROVIDERS.map((provider) => {
+  const accounts = Object.fromEntries(providersShown(context, v).map((provider) => {
     const s = v.sources.find((each) => each.provider === provider);
     return [provider, s === undefined ? { connected: false } : { connected: s.hasKey && s.available, connectedAt: s.connectedAt, updatedAt: s.updatedAt, ...(s.warning === undefined ? {} : { refusedAt: s.warning.at }) }];
-  })) as Record<LearningAiProvider, { connected: boolean; refusedAt?: number }>;
+  })) as Partial<Record<LearningAiProvider, { connected: boolean; refusedAt?: number }>>;
   // Why lessons are paused now, as far as Cloud can tell (the meter's monthly_limit and cost_too_high are known only at the gateway).
-  const usable = LEARNING_AI_PROVIDERS.some((provider) => accounts[provider].connected && accounts[provider].refusedAt === undefined);
+  // Lessons run only on the learning providers: an OpenRouter key never makes them usable.
+  const usable = LEARNING_AI_PROVIDERS.some((provider) => accounts[provider]?.connected === true && accounts[provider].refusedAt === undefined);
   const pausedNow: LearningPauseReason[] = [];
   if (budget !== null && !budget.lessonsOn) pausedNow.push("lessons_off");
   if (!usable) pausedNow.push("no_provider");
   if (budget !== null && (budget.companyMonthlyUsdMicros === null || budget.companyMonthlyUsdMicros === 0 || budget.learningMonthlyUsdMicros === 0)) pausedNow.push("no_budget");
   return ok({
     revision: v.revision, canChange: true, accounts,
-    removed: v.removed.filter((r) => named(r.provider)).map((r) => ({ provider: r.provider, recoverUntil: r.recoverUntil })),
+    removed: v.removed.filter((r) => providersShown(context, v).some((p) => p === r.provider)).map((r) => ({ provider: r.provider, recoverUntil: r.recoverUntil })),
     learningCap: budget === null ? null : { monthlyUsdMicros: budget.learningMonthlyUsdMicros, companyMonthlyUsdMicros: budget.companyMonthlyUsdMicros },
     lessonsOn: budget === null ? null : budget.lessonsOn,
     pausedNow,
@@ -122,11 +133,11 @@ async function audited(context: RouteContext, who: Admin, action: CloudAuditActi
 }
 
 /** Reads the write's envelope: a request id (replay-safe in the store), the revision the person saw, and the provider. */
-function envelope(context: RouteContext, keys: readonly string[]): { body: Record<string, unknown>; requestId: string; expectedRevision: number; provider: LearningAiProvider } | RouteAnswer {
+function envelope(context: RouteContext, keys: readonly string[], gated = true): { body: Record<string, unknown>; requestId: string; expectedRevision: number; provider: LearningAiProvider } | RouteAnswer {
   if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return WORDS.tooLarge;
   const body = record(context.body);
   if (body === undefined || !exactly(body, ["requestId", "expectedRevision", "provider", ...keys])) return WORDS.invalid;
-  if (typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision) || !named(body.provider)) return WORDS.invalid;
+  if (typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision) || !named(body.provider) || (gated && !providersOn(context).includes(body.provider))) return WORDS.invalid;
   return { body, requestId: body.requestId, expectedRevision: body.expectedRevision, provider: body.provider };
 }
 
@@ -160,7 +171,8 @@ async function putKey(context: RouteContext): Promise<RouteAnswer> {
 async function removeKey(context: RouteContext): Promise<RouteAnswer> {
   const who = await admin(context, true);
   if (("status" in who)) return who;
-  const e = envelope(context, []);
+  // Removing a key is never gated on the switch: a company can always remove what it stored (the store answers not found otherwise).
+  const e = envelope(context, [], false);
   if (("status" in e)) return e;
   const backend = context.productAi!;
   const v = await guarded(() => backend.store.remove({ iss: backend.issuer, cid: who.companyId, owner: LEARNING_AI_OWNER, requestId: e.requestId, expectedRevision: e.expectedRevision, actor: { id: who.developerId, role: "company_admin" }, sourceId: learningSourceId(e.provider) }));

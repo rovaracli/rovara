@@ -33,9 +33,9 @@ export {
   type CompanyBudgets, type CompanyInstruction, type CompanySettings, type LockValue, type SettingsCheck, type SettingsDecision, type WebsiteCeiling,
 } from "./company-settings.js";
 export {
-  AGENT_AI_SOURCES, COMPANY_ID, CompanyStoreConflict, HOOK_INSTALL_COMPANIES_MAX, INVITES_READ_MAX, INVITE_DAYS, LocalCompanyStore, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, StoreCompanyRules, StoreHookInstalls,
+  AGENT_AI_SOURCES, AGENT_SOURCE_OF_KIND, AI_SOURCE_KINDS, agentSourceSwitchedOn, parseAiSourceKinds, PRE_SWITCH_AGENT_SOURCES, COMPANY_ID, CompanyStoreConflict, HOOK_INSTALL_COMPANIES_MAX, INVITES_READ_MAX, INVITE_DAYS, LocalCompanyStore, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, SPEND_LIMITS_MAX, SPEND_LIMIT_ID, SPEND_LIMIT_KINDS, SPEND_LIMIT_MICROS_MAX, SPEND_LIMIT_SCOPES, SPEND_LIMIT_SORT_PREFIX, spendLimitDef, StoreCompanyRules, StoreHookInstalls,
   companySettings, validGithubUserId, validHookInstall,
-  type AgentAiChoice, type CompanyTrial, type TrialUnlock, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
+  type AgentAiChoice, type CompanyTrial, type TrialUnlock, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type SpendLimit, type SpendLimitBasis, type SpendLimitKind, type SpendLimitKindDef, type SpendLimitList, type SpendLimitScope, type StoredSettings,
 } from "./company-store.js";
 export { CLOSED_INVITE_DAYS, COMPANY_TABLE, DynamoCompanyStore } from "./company-dynamo.js";
 export { CODE_MEMBERS_PATH, MEMBER_LIST_PAGES_MAX, MEMBER_ROUTES, MEMBER_WORDS, roleRefusal } from "./member-routes.js";
@@ -45,8 +45,9 @@ export { COMPANY_CREATE_PATH, CREATE_WORDS, JOIN_UNUSABLE, ONBOARDING_ROUTES, in
 export { PRODUCT_AI_APPROVER_PROVIDER, PRODUCT_AI_ROUTES, PRODUCT_AI_SOURCE_ID, PRODUCT_AI_VERTEX_SOURCE_ID, withdrawForMember, type ProductAiBackend, type ProductAiStore, type ProductAiView } from "./product-ai-routes.js";
 export { AGENT_AI_CHOOSABLE, AGENT_AI_ROUTES } from "./agent-ai-routes.js";
 export { AI_SPEND_ANSWERS, AI_SPEND_ROUTES, AI_SPEND_WORDS, ENGINE_MODEL_CODE_PATH, PER_TASK_FIELD, PER_TASK_USD_MAX, engineModelRefusal, engineModelView, projectSettingsOf, projectSettingsRefusal } from "./ai-spend-routes.js";
+export { SPEND_LIMIT_ROUTES, SPEND_LIMIT_WORDS, dollarsToMicros } from "./spend-limits-routes.js";
 export { BEDROCK_BYO_ROUTES, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_SOURCE_ID, bedrockConnected, type BedrockBackend, type BedrockChoice, type BedrockSetupView } from "./bedrock-byo-routes.js";
-export { LEARNING_AI_OWNER, LEARNING_AI_PROVIDERS, LEARNING_AI_ROUTES, LEARNING_PAUSE_WORDS, learningSourceId } from "./learning-ai-routes.js";
+export { COMPANY_KEY_PROVIDERS, LEARNING_AI_OWNER, LEARNING_AI_PROVIDERS, LEARNING_AI_ROUTES, LEARNING_PAUSE_WORDS, learningSourceId } from "./learning-ai-routes.js";
 export { STEP_UP_ACR, STEP_UP_METHODS, STEP_UP_SKEW_SECONDS, STEP_UP_WINDOW_SECONDS, freshStepUp, stepUpClaim, type StepUp, type StepUpMethod } from "./step-up.js";
 export {
   GITHUB_CALLBACK_PATH, GITHUB_CONNECT_COOKIE, GITHUB_CONNECT_TTL_MS, GITHUB_OUTCOMES, GITHUB_WORDS, githubInUseWords, githubResultKey, githubStateKey,
@@ -58,3 +59,4 @@ export { LINK_FAILURES, LINK_LANDING, LINK_METHODS, LINK_TTL_MS, SIGN_IN_LINK_WO
 export { LINEAR_CALLBACK_PATH, LINEAR_OUTCOMES, LINEAR_WORDS } from "./linear-connect.js";
 export { SETUP_CHECKLIST_ANSWERS, SETUP_CHECKLIST_ROUTES, SETUP_CHECKLIST_WORDS, checklistAnswer, runBody, setupRefusal, skipBody } from "./setup-checklist-routes.js";
 export { LIFECYCLE_ANSWERS, LIFECYCLE_WORDS, PROJECT_LIFECYCLE_ROUTES, lifecycleBody, lifecycleRefusal } from "./project-lifecycle-routes.js";
+export { WIKI_ANSWERS, WIKI_ROUTES, WIKI_WORDS, indexAnswer, pageAnswer, sourcesAnswer, wikiRefusal } from "./wiki-routes.js";

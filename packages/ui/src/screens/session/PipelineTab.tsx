@@ -1,11 +1,12 @@
 import { Suspense, lazy } from "react";
-import { errorRefKey, type ErrorRef } from "@agentx/contracts/web";
+import { errorRefKey, noChangeHasThread, type ErrorRef } from "@agentx/contracts/web";
 import { Button } from "../../design/Button.js";
 import { VisibleText, visibleText } from "../../design/VisibleText.js";
 import type { ReadSession } from "./SessionHeader.js";
 import { ChainSections } from "./ChainSections.js";
 import { UnderstandQuestions } from "./UnderstandQuestions.js";
 import { NoChangeSection } from "./NoChangeSection.js";
+import { taskWords } from "../../text/task-words.js";
 import { AnsweredSection } from "./AnsweredSection.js";
 import { ModelFallbackNotes } from "./ModelFallbackNotes.js";
 import { LoadedKnowledgePanel } from "./LoadedKnowledgePanel.js";
@@ -23,7 +24,7 @@ export function PipelineTab({ session, task, onComment }: { session: ReadSession
  // While the session is starting, Code is still setting up its workspace: no stage has begun, so none is marked and the page says what is happening.
  const settingUp = session.status === "starting";
  const blockReason = task?.workflow?.state === "BLOCKED" && typeof task.workflow.blockReason === "string" && task.workflow.blockReason !== "" ? task.workflow.blockReason : undefined;
- return <section aria-label="Work progress">{task?.workflow && <><ol className="rv-pipeline" aria-label="Task stages">{STAGES.map(stage => <li key={stage} {...(!settingUp && STAGE_WORDS[task.workflow!.stage] === stage ? { "aria-current": "step" as const } : {})}>{stage}</li>)}</ol><p className="rv-muted" role="status">{settingUp ? SETTING_UP : blockReason === undefined ? workflowStateWords(task.workflow.state) : <VisibleText text={"Stopped: " + blockReason} />}</p></>}
+ return <section aria-label="Work progress">{task?.workflow && <><ol className="rv-pipeline" aria-label="Task stages">{STAGES.map(stage => <li key={stage} {...(!settingUp && STAGE_WORDS[task.workflow!.stage] === stage ? { "aria-current": "step" as const } : {})}>{stage}</li>)}</ol><p className="rv-muted" role="status">{settingUp ? SETTING_UP : blockReason === undefined ? workflowStateWords(task.workflow.state) : <VisibleText text={"Stopped: " + taskWords(blockReason, noChangeHasThread(task?.share))} />}</p></>}
  {task && <ReviewChoices session={session} task={task} />}
  {task && <ModelFallbackNotes task={task} />}
  {task && <NoChangeSection task={task} />}

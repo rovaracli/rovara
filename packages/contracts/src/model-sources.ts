@@ -17,11 +17,28 @@ export const CUSTOM_SOURCE_KINDS = ["anthropic", "openai", "openrouter", "bedroc
 export type CustomSourceKind = (typeof CUSTOM_SOURCE_KINDS)[number];
 
 /**
- * The custom kinds an org can use today. Empty on purpose (human decision): the target is
- * ["anthropic", "openai", "openrouter"], each added by a one-line change only after its real-key checklist
- * passes in the combined final round. `bedrock` waits for Task 37 Step 10 and `endpoint` is not at launch.
+ * DEC 254t (a): every custom kind the code supports. Supported is not switched on: each install names the kinds its owner
+ * switched on after that kind's real-key check passed (scripts/real-key-check.ts), in its own setting (Cloud's
+ * CLOUD_AI_SOURCE_KINDS, the gateway's GATEWAY_AI_SOURCE_KINDS, both from `-c rovaraAiSourceKinds`). With no setting, none.
+ * Cloud and the gateway do not import this package; each keeps its own copy and a contract test holds the three lists equal.
  */
-export const SOURCE_KINDS_AT_LAUNCH: readonly CustomSourceKind[] = [];
+export const SOURCE_KINDS_AT_LAUNCH: readonly CustomSourceKind[] = CUSTOM_SOURCE_KINDS;
+/** What an install has switched on when it names nothing: no custom kind. */
+export const SOURCE_KINDS_SWITCHED_ON_DEFAULT: readonly CustomSourceKind[] = [];
+/** The most kinds an install setting may name (each supported kind at most once). */
+const SOURCE_KINDS_SWITCH_MAX = CUSTOM_SOURCE_KINDS.length;
+
+/**
+ * An install's switched-on kinds from its setting: comma-separated supported kinds, no spaces, no repeats. Absent or empty: none.
+ * Anything else throws with fixed words (a broken setting is refused as a whole, never read as a partial list, and the value is
+ * never repeated).
+ */
+export function parseSourceKindsSwitch(value: string | undefined): CustomSourceKind[] {
+  if (value === undefined || value === "") return [];
+  const kinds = value.split(",");
+  if (kinds.length > SOURCE_KINDS_SWITCH_MAX || new Set(kinds).size !== kinds.length || !kinds.every((kind) => (CUSTOM_SOURCE_KINDS as readonly string[]).includes(kind))) throw new Error("invalid AI source kinds");
+  return kinds as CustomSourceKind[];
+}
 
 /** The wire formats the model proxy serves (docs/learnings/model-sources-spike.md, question 4). */
 export const TRANSPORTS_AT_LAUNCH = ["anthropic-messages", "openai-responses", "openai-completions"] as const;
@@ -46,15 +63,15 @@ export interface SourceLaunch {
 }
 
 /**
- * The refusal for a company source that is not available yet, or undefined when it is. A kind outside the
- * launch list is refused, and so is an endpoint whose `api` is missing or outside the transports. Rovara's own
- * models and a member's ChatGPT plan are not company sources, so they are never refused here. `launch` lets a
- * test (or a build that turns a kind on early) supply its own lists.
+ * The refusal for a company source that is not available yet, or undefined when it is. A kind the install has not
+ * switched on (`launch.kinds`, the install's parsed setting; absent: SOURCE_KINDS_SWITCHED_ON_DEFAULT, none) or the code
+ * does not support is refused, and so is an endpoint whose `api` is missing or outside the transports. Rovara's own
+ * models and a member's ChatGPT plan are not company sources, so they are never refused here.
  */
 export function sourceKindProblem(kind: ModelSourceKind, api?: string, launch: SourceLaunch = {}): string | undefined {
   if (kind === "rovara" || kind === "personal-chatgpt") return undefined;
   const refusal = `${kind} sources aren't available yet`;
-  if (!(launch.kinds ?? SOURCE_KINDS_AT_LAUNCH).includes(kind)) return refusal;
+  if (!SOURCE_KINDS_AT_LAUNCH.includes(kind) || !(launch.kinds ?? SOURCE_KINDS_SWITCHED_ON_DEFAULT).includes(kind)) return refusal;
   if (kind === "endpoint" && (api === undefined || !(launch.transports ?? TRANSPORTS_AT_LAUNCH).includes(api))) return refusal;
   return undefined;
 }

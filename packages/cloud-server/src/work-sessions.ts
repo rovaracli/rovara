@@ -24,6 +24,12 @@ export interface WorkSession {
    * (companyScopedWork) checks it. A session written before companies were stamped has none (see companyScopedWork).
    */
   companyId?: string;
+  /**
+   * Set on a session made by opening a task someone else started: Code's task view has no owner field, so `owner` (and `startedBy`) hold the
+   * owner's name from Code's People read and a placeholder id (a hash of Code's person id that matches no sign-in) until the owner opens the task.
+   * Never set on a session a person started.
+   */
+  ownerUnresolved?: true;
   /** What a change to the session (a take-over) is asked against; it goes up with each change Cloud makes. */
   revision: number;
   /** People who follow the session (phase 2c); the owner always follows and is never listed. */
@@ -79,7 +85,12 @@ export interface WorkSessionStore {
    * Writes the session: a new one (no `storeVersion`) only if its id is free, a read one only if nobody wrote it since.
    * Otherwise throws StoreConflict and writes nothing. With `requestId`, the start request that made it.
    */
-  put(session: WorkSession, requestId?: string): Promise<void>;
+  put(session: WorkSession, requestId?: string, options?: { once?: boolean }): Promise<void>;
+  /**
+   * The session of a Code task, whoever made it: each new session also records its task, so opening a task by its id finds the session. With
+   * `put`'s `once`, a new session whose task already has one writes nothing and throws StoreConflict, so two openers get the same session.
+   */
+  byTask(taskId: string): Promise<WorkSession | undefined>;
   /** The sessions a person started, newest first, without their comments (`messages`, `messageRequests`). */
   startedBy(developerId: string): Promise<WorkSession[]>;
 }
@@ -91,6 +102,9 @@ export function withoutComments(session: WorkSession): WorkSession {
   delete copy.messageRequests;
   return copy;
 }
+
+/** The request key a task's session is recorded under: a request id is a UUID, so this never collides with one. */
+export const taskRequestKey = (taskId: string): string => `task-${taskId}`;
 
 /** A new session id in Cloud's format (`ses_` and 20 lower-case letters and digits). */
 export function newSessionId(): string {
@@ -132,13 +146,19 @@ export class LocalWorkSessionStore implements WorkSessionStore {
     return sessionId === undefined ? undefined : this.read(this.data.sessions[sessionId]);
   }
 
-  async put(session: WorkSession, requestId?: string): Promise<void> {
+  async put(session: WorkSession, requestId?: string, options?: { once?: boolean }): Promise<void> {
     const current = this.data.sessions[session.sessionId];
     const expected = session.storeVersion;
     if (expected === undefined ? current !== undefined : (current?.storeVersion ?? 0) !== expected) throw new StoreConflict(session.sessionId);
+    if (expected === undefined && options?.once === true && this.data.requests[taskRequestKey(session.taskId)] !== undefined) throw new StoreConflict(session.sessionId);
     this.data.sessions[session.sessionId] = { ...structuredClone(session), storeVersion: (expected ?? -1) + 1 };
     if (requestId !== undefined) this.data.requests[requestId] = session.sessionId;
+    if (expected === undefined) this.data.requests[taskRequestKey(session.taskId)] = session.sessionId;
     this.save();
+  }
+
+  async byTask(taskId: string): Promise<WorkSession | undefined> {
+    return this.byRequest(taskRequestKey(taskId));
   }
 
   async startedBy(developerId: string): Promise<WorkSession[]> {
@@ -178,7 +198,8 @@ export function companyScopedWork(store: WorkSessionStore, companyOf: () => stri
   return {
     get: async (sessionId) => visible(await store.get(sessionId)),
     byRequest: async (requestId) => visible(await store.byRequest(requestId)),
-    put: async (session, requestId) => {
+    byTask: async (taskId) => visible(await store.byTask(taskId)),
+    put: async (session, requestId, options) => {
       const companyId = companyOf();
       if (session.companyId !== undefined && session.companyId !== companyId) throw new StoreConflict(session.sessionId);
       let stamped = session;
@@ -186,7 +207,7 @@ export function companyScopedWork(store: WorkSessionStore, companyOf: () => stri
         if (companyId === undefined) throw new SessionCompanyMissing();
         stamped = { ...session, companyId };
       }
-      await store.put(stamped, requestId);
+      await store.put(stamped, requestId, options);
     },
     startedBy: async (developerId) => (await store.startedBy(developerId)).filter((session) => visible(session) !== undefined),
   };

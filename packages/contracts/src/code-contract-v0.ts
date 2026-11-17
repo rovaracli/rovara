@@ -924,6 +924,8 @@ GET /v1/app/changes | c | session | tasks.list | realtime/client |
 POST /v1/app/realtime/token | c | later | | session-routes | T
 GET /v1/app/live | c | later | tasks.list | live |
 GET /v1/app/sessions | c | home | tasks.list | work-list |
+GET /v1/app/inbox | k | later | | inbox | T
+POST /v1/app/inbox/read | k | later | | inbox | T
 GET /v1/app/sessions/{id} | c | session | tasks.get,tasks.people.get | sessions | T
 GET /v1/app/sessions/{id}/events | k | session | tasks.events | sessions | T
 GET /v1/app/sessions/{id}/messages | k | session | tasks.messages.list | sessions | T
@@ -1054,6 +1056,9 @@ POST /v1/app/projects/{p}/setup-agent | k | later | | setup-agent | LT
 POST /v1/app/projects/{p}/setup-agent/stop | k | later | | setup-agent | LT
 GET /v1/app/projects/{p}/setup-status | k | later | client.projects.setupStatus | setup-status | T
 PUT /v1/app/projects/{p}/setup-status/skips | k | later | client.projects.setupSkips | setup-status | T
+GET /v1/app/projects/{p}/wiki | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/pages/{pageId} | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources | k | later | | wiki | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/eval-confirm | k | later | | setup-agent | LT

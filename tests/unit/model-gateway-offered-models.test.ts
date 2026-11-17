@@ -14,7 +14,7 @@ import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { StaticInstallRegistry } from "../../packages/model-gateway/src/installs.js";
 import {
   AGENT_MODELS_DISABLED_DEFAULT, ANTHROPIC_KEY_AGENT_MODELS, answerOfferedModels, createOfferedModelsHandler, OFFERED_MODELS_MAX, OFFERED_MODELS_PER_MINUTE,
-  parseDisabledAgentModels, SERVICE_TOKEN_AUDIENCE, SERVICE_TOKEN_KIND, SERVICE_TOKEN_SECONDS, SERVICE_TOKEN_TYPE, type OfferedModelsHandlerOptions,
+  OFFERED_SWITCHED_OFF, OPENAI_KEY_AGENT_MODELS, parseDisabledAgentModels, SERVICE_TOKEN_AUDIENCE, SERVICE_TOKEN_KIND, SERVICE_TOKEN_SECONDS, SERVICE_TOKEN_TYPE, type OfferedModelsHandlerOptions,
 } from "../../packages/model-gateway/src/offered-models.js";
 import { GatewayConfigError, readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import { createSignedTokenVerifier } from "../../packages/model-gateway/src/token.js";
@@ -352,6 +352,17 @@ describe("gateway process: two companies, one server", () => {
     // B's row is A's row: the store refuses it, and the route answers unavailable.
     await s.db.put(TABLES.companies, { pk: `COMPANY#${cidB}`, sk: "AGENT_AI", companyId: cidA, source: "rovara", version: 3 });
     expect((await ask(s.gateway.server, pathOf(cidB), bearer(mintService({ cid: cidB })))).statusCode).toBe(503);
+  });
+  it("DEC 254t: the deployed handler applies the install's switch (GATEWAY_AI_SOURCE_KINDS) to an own-key source", async () => {
+    for (const [kinds, status] of [[undefined, 403], ["openai", 200]] as const) {
+      const s = await serve(kinds === undefined ? {} : { [GATEWAY_ENV.aiSourceKinds]: kinds });
+      await s.db.put(TABLES.companies, { pk: `COMPANY#${cidB}`, sk: "AGENT_AI", companyId: cidB, source: "openai_key", version: 2 });
+      const answer = await ask(s.gateway.server, pathOf(cidB), bearer(mintService({ cid: cidB })));
+      expect(answer.statusCode).toBe(status);
+      const off = OFFERED_SWITCHED_OFF as { code: string; message: string };
+      if (status === 403) expect(JSON.parse(answer.text())).toEqual({ error: { type: off.code, message: off.message } });
+      else expect(names(JSON.parse(answer.text()))).toEqual([...OPENAI_KEY_AGENT_MODELS]);
+    }
   });
   it("task tokens and service tokens are not interchangeable between the two routes", async () => {
     const s = await serve();

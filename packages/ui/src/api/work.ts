@@ -39,6 +39,8 @@ export interface ReadTask {
  workflow: { stage?: string; state?: string; revision?: number; path?: string; outcome?: string; blockReason?: string; round?: number } | undefined;
  pullRequests: Array<{ repository?: string; number?: number; url?: string; state?: string }>;
  spentUsd: number | undefined; runLimitUsd: number | undefined; createdAt: string; updatedAt: string;
+ /** Whether the task lives in a Slack thread (Code's `shared` on a list row, or a share with a thread on the task view): Code's sentences about "the thread" are said only for such a task (text/task-words.ts). */
+ hasThread: boolean;
  /** Rovara Cloud's session for the task (`ses_...`) when the person started it in Cloud: the steer, stop and comment routes are the session's. */
  sessionId: string | undefined;
 }
@@ -49,6 +51,7 @@ export function readTask(raw: unknown): ReadTask | undefined {
  const workflow = isRecord(raw["workflow"]) ? raw["workflow"] : undefined;
  const spent = isRecord(raw["spent"]) ? num(raw["spent"]["usd"]) : undefined, limit = isRecord(raw["runLimit"]) ? num(raw["runLimit"]["limitUsd"]) : undefined;
  return {
+  hasThread: bool(raw["shared"]) === true || (isRecord(raw["share"]) && (str(raw["share"]["threadUrl"]) !== undefined || str(raw["share"]["threadTs"]) !== undefined)),
   taskId, sessionId: str(raw["sessionId"]), title, project, status: str(raw["status"]) as ReadTask["status"] | undefined,
   workflow: workflow === undefined ? undefined : { ...opt("stage", str(workflow["stage"])), ...opt("state", str(workflow["state"])), ...opt("revision", num(workflow["revision"])), ...opt("path", str(workflow["path"])), ...opt("outcome", str(workflow["outcome"])), ...opt("blockReason", str(workflow["blockReason"])), ...opt("round", num(workflow["round"])) },
   pullRequests: records(raw["pullRequests"]).map(pull => ({ ...opt("repository", str(pull["repository"])), ...opt("number", num(pull["number"])), ...opt("url", str(pull["url"])), ...opt("state", str(pull["state"])) })),

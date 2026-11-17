@@ -14,6 +14,7 @@ import {
   type PlaybookView, type PlanComment, type PlanView, type ProofIndexResponse, type ScriptToken, type TaskMessage, type TaskReader, type TaskView, type TaskWorkflow, type WorkflowArtifact,
   type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
+import { wikiIndex, wikiPage, wikiSources, type WikiFixtureOptions } from "./wiki-fixture.js";
 
 export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
 
@@ -137,6 +138,28 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const setupSkips = new Map<string, Set<"slackChannel" | "linear" | "invites">>();
   type FakeRun = { status: "none" | "running" | "ready" | "failed"; startedAt?: string; taskId?: string; stop?: "stopped_by_person" | "proposed" };
   const setupRuns = new Map<string, FakeRun>();
+  // Lead 4 W5 (Code W2): the pretend wiki, per project (set by the specs through /__fake/wiki); `off` makes Code answer its unknown-route 404, as a Code without the wiki does.
+  const wikis = new Map<string, WikiFixtureOptions & { off?: boolean; broken?: boolean }>();
+  /** Who may read a project's wiki, as Code decides it: someone with a role on the project, in the project's own company (an administrator reads every project of their company). */
+  const wikiReads = (person: Person, name: string) => {
+    const entry = project(name);
+    if (entry === undefined || companyless.has(person.developerId) || (entry.companyId ?? FAKE_COMPANY_ID) !== companyOfPerson(person)) return false;
+    return person.administrator || roleIn(person, name) !== undefined;
+  };
+  /** Code's wiki read routes (W2; `/v1/app/projects/{p}/wiki`, `.../pages/{id}`, `.../pages/{id}/sources`), as the person; every refusal is Code's one 404. */
+  const wikiAnswer = (method: string, path: string, person: Person): { status: number; body: unknown } | undefined => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/wiki(?:\/pages\/([^/]+)(\/sources)?)?$/u.exec(path);
+    if (match === null || method !== "GET") return undefined;
+    const name = decodeURIComponent(match[1]!), set = wikis.get(name) ?? {};
+    if (set.off) return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
+    const refuse = { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    if (!wikiReads(person, name)) return refuse;
+    if (set.broken) return { status: 200, body: { project: "elsewhere" } };
+    if (match[2] === undefined) return { status: 200, body: wikiIndex(name, set) };
+    const id = decodeURIComponent(match[2]);
+    const answered = match[3] === undefined ? wikiPage(name, id, set) : wikiSources(name, id, set);
+    return answered === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "page not found" } } } : { status: 200, body: answered };
+  };
   const log: FakeCode["log"] = [];
   const iso = () => now().toISOString();
 
@@ -305,6 +328,37 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     }) })],
   ]);
   const readers = new Map<string, Map<string, TaskReader>>();
+  // --- the in-app inbox (web task channel K5): Code's C7 shapes (core-host/inbox-routes.ts). Rows are kept per person and seeded by a spec (/__fake/inbox); `off` answers 404 like a Code with no inbox.
+  const sessionOfTask = (taskId: string) => `ses_${createHash("sha256").update(`task-session\n${taskId}`, "utf8").digest("hex").slice(0, 20)}`;
+  const inboxRows = new Map<string, Array<{ taskId: string; kind: string; atMs: number; read: boolean }>>();
+  let inboxOff = false;
+  const inboxAnswer = (method: string, pathname: string, query: URLSearchParams, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
+    const gone = { status: 404, body: { error: { code: "NOT_FOUND", message: "That is not on the core engine on this install yet." } } };
+    const session = /^\/v1\/app\/sessions\/(ses_[0-9a-z]{20})$/u.exec(pathname);
+    if (session !== null && method === "GET") {
+      const found = [...tasks.values()].find((entry) => sessionOfTask(entry.task.taskId) === session[1]);
+      return found === undefined ? { status: 404, body: { error: { code: "NOT_FOUND", message: "There is no such session." } } } : { status: 200, body: { session: { sessionId: session[1], body: { kind: "task", task: { taskId: found.task.taskId } } } } };
+    }
+    if (pathname !== "/v1/app/inbox" && pathname !== "/v1/app/inbox/read") return undefined;
+    if (inboxOff) return gone;
+    const own = [...(inboxRows.get(person.developerId) ?? [])].sort((a, b) => b.atMs - a.atMs);
+    const idOf = (row: { taskId: string; kind: string; atMs: number }) => `${sessionOfTask(row.taskId)}.${row.kind}.${String(row.atMs)}`;
+    if (pathname === "/v1/app/inbox/read" && method === "POST") {
+      const ids = (body as { ids?: unknown }).ids;
+      let marked = 0;
+      for (const row of own) if (Array.isArray(ids) && ids.includes(idOf(row)) && !row.read) { row.read = true; marked += 1; }
+      return { status: 200, body: { marked } };
+    }
+    if (pathname !== "/v1/app/inbox" || method !== "GET") return undefined;
+    const limit = Number(query.get("limit") ?? "20"), start = query.get("cursor") === null ? 0 : Number(Buffer.from(query.get("cursor")!, "base64url").toString("utf8"));
+    const shown = own.filter((row) => tasks.has(row.taskId));
+    const page = shown.slice(start, start + limit);
+    return { status: 200, body: {
+      items: page.map((row) => ({ id: idOf(row), sessionId: sessionOfTask(row.taskId), kind: row.kind, title: tasks.get(row.taskId)!.task.title, status: "Waiting for you.", link: `https://fake-code.invalid/app/sessions/${sessionOfTask(row.taskId)}`, at: new Date(row.atMs).toISOString(), read: row.read })),
+      ...(start + limit < shown.length ? { nextCursor: Buffer.from(String(start + limit), "utf8").toString("base64url") } : {}),
+      ...(start === 0 ? { unread: shown.filter((row) => !row.read).length } : {}),
+    } };
+  };
   /**
    * Web task channel K4: the tasks a person was ADDED to (Code's involved index), by task id. `involvedMode` is how this Code answers `GET /v1/dev/tasks?involved=1`: `on` lists the
    * current person's involved tasks (`{ involved: true, tasks }`); `old` is a Code from before the route, which ignores the query and answers the ordinary list; the others refuse.
@@ -342,7 +396,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const personIdOf = (person: Person) => { const hex = person.developerId; return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`; };
   const peopleStates = new Map<string, { revision: number; roles: Map<string, string>; listed: Set<string> }>();
   const peopleOf = (taskId: string) => { let state = peopleStates.get(taskId); if (state === undefined) { state = { revision: 3, roles: new Map(), listed: new Set() }; peopleStates.set(taskId, state); } return state; };
-  const peopleListed = (entry: { owner: Person; task: TaskView }) => PEOPLE.filter((one) => one.developerId === entry.owner.developerId || peopleOf(entry.task.taskId).listed.has(one.developerId) || readers.get(entry.task.taskId)?.has(one.developerId) === true);
+  const peopleListed = (entry: { owner: Person; task: TaskView }) => PEOPLE.filter((one) => one.developerId === entry.owner.developerId || peopleOf(entry.task.taskId).listed.has(one.developerId));
+  // (Readers a Share made are not on this list: Code lists them apart until it folds them into People, which Cloud shows beside it.)
   const peopleView = (entry: { owner: Person; task: TaskView }, person: Person) => {
     const state = peopleOf(entry.task.taskId), mine = entry.owner.developerId === person.developerId;
     return {
@@ -1155,6 +1210,18 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (on) companyless.add(current.developerId); else companyless.delete(current.developerId);
           return send(200, { on });
         }
+        // K5: seed the inbox. rows name a task by its title or id; `off` makes the inbox answer 404 (a Code with no inbox); `clear` forgets the rows.
+        if (method === "POST" && url.pathname === "/__fake/inbox") {
+          const wanted = JSON.parse(await readBody(request)) as { off?: boolean; clear?: boolean; rows?: Array<{ taskTitle?: string; taskId?: string; kind?: string; read?: boolean; atMs?: number }> };
+          if (wanted.off !== undefined) inboxOff = wanted.off;
+          if (wanted.clear === true) inboxRows.clear();
+          for (const row of wanted.rows ?? []) {
+            const entry = row.taskId !== undefined ? tasks.get(row.taskId) : [...tasks.values()].find((one) => one.task.title === row.taskTitle);
+            if (entry === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "no such task" } });
+            inboxRows.set(current.developerId, [...(inboxRows.get(current.developerId) ?? []), { taskId: entry.task.taskId, kind: row.kind ?? "needs_you", atMs: row.atMs ?? Date.now(), read: row.read === true }]);
+          }
+          return send(200, { off: inboxOff });
+        }
         // Guided onboarding PR 10: forget the projects a spec made through the picker (the two the pretend Code starts with stay), so later specs see the people and projects they expect.
         if (method === "POST" && url.pathname === "/__fake/reset-created-projects") {
           const keep = new Set(["web", "api", "secret-ledger"]);
@@ -1181,6 +1248,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (taskId !== undefined) involved.set(taskId, new Set([...(involved.get(taskId) ?? []), added.developerId]));
           return send(200, { mode: involvedMode, ...(taskId === undefined ? {} : { taskId }) });
         }
+        if (method === "POST" && url.pathname === "/__fake/wiki") {
+          const given = JSON.parse(await readBody(request)) as { project?: unknown; state?: unknown; off?: unknown; broken?: unknown };
+          if (typeof given.project !== "string" || project(given.project) === undefined || (given.state !== undefined && !["ready", "none", "building", "stopped"].includes(given.state as string))) return send(400, { error: { code: "CONFIG_INVALID", message: "project, and state ready, none, building or stopped" } });
+          wikis.set(given.project, { ...(given.state === undefined ? {} : { state: given.state as "ready" }), ...(given.off === true ? { off: true } : {}), ...(given.broken === true ? { broken: true } : {}) });
+          return send(200, { project: given.project });
+        }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
           if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
@@ -1191,6 +1264,15 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
         if (method === "POST" && url.pathname === "/v1/auth/token") {
           const answer = tokenEndpoint(new URLSearchParams(raw), request.headers.authorization);
           return send(answer.status, answer.body);
+        }
+        // The inbox and the session read Cloud makes to place its rows (K5): paths under /v1/app that Code's core serves; the bearer names the person.
+        if (/^\/v1\/app\/(?:inbox(?:\/read)?|sessions\/ses_[0-9a-z]{20})$/u.test(url.pathname)) {
+          const person = access.get(/^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1] ?? "");
+          if (person === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          let parsed: unknown = {};
+          try { parsed = raw === "" ? {} : JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); }
+          const answered = inboxAnswer(method, url.pathname, url.searchParams, person, parsed);
+          if (answered !== undefined) return send(answered.status, answered.body);
         }
         if (method === "POST" && url.pathname === "/__fake/setup-run") {
           const given = JSON.parse(raw) as { project?: unknown; status?: unknown };
@@ -1205,7 +1287,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           const who = bearer === undefined ? undefined : access.get(bearer);
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
-          const answer = who === undefined ? undefined : setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const answer = who === undefined ? undefined : wikiAnswer(method, url.pathname, who) ?? setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          if (who === undefined && /\/wiki(?:\/|$)/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
           if (answer !== undefined) return send(answer.status, answer.body);
         }

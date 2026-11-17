@@ -7,9 +7,11 @@ cdk.out/
 # docs/ stays ignored except the trees the-loop records into (they must be committed).
 docs/*
 !docs/model-gateway-r3.md
+!docs/company-and-projects.md
 !docs/model-gateway-product-ai.md
 !docs/model-gateway-learning.md
 !docs/model-gateway-bedrock-byo.md
+!docs/model-gateway-spend-limits.md
 !docs/bedrock/
 !docs/npm-package.md
 !docs/ordered-work.md

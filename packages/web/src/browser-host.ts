@@ -23,6 +23,7 @@ function apiPath(path: string): string {
 function returnPath(value: string): string {
  const path = value.split("#", 1)[0]!;
  if (path.startsWith("/s/") && SessionIdSchema.safeParse(path.slice(3)).success) return path;
+ if (path.startsWith("/t/") && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(path.slice(3))) return path;
  return /^\/app(?:\/[A-Za-z0-9._~%/-]*)?(?:\?[A-Za-z0-9._~%=&-]*)?$/.test(path) && !path.includes("..") && !path.includes("//") && !/%2e|%2f|%5c/i.test(path) && !path.split("?", 1)[0]!.split("/").includes(".") ? path : "/app";
 }
 /**

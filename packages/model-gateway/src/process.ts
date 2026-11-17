@@ -6,11 +6,14 @@ import type { CapsSource } from "./caps.js";
 import { CompanyBudgetCaps, CompanyLessonsSwitch } from "./company-caps.js";
 import { createLearningRoutes, type LearningKeySource, type LearningRouteOptions } from "./learning-route.js";
 import { createOpenAiTransport } from "./learning-openai.js";
+import { createChatCompletionsTransport } from "./agent-openai.js";
+import type { EndpointTarget } from "./endpoint-guard.js";
+import { createEndpointTransport, parseEndpointConnect } from "./endpoint-source.js";
 import { createGeminiTransport } from "./product-gemini.js";
 import { createVertexTransport } from "./product-vertex.js";
 import { runCorrections, runExpirySweep } from "./correction.js";
 import { awsKms } from "./aws-kms.js";
-import { CompanyAgentAiSource, parseRovaraAiExempt, parseRovaraAiModels, storedBedrock, type AgentAiSourceReader, type ByoBedrock } from "./agent-ai.js";
+import { CompanyAgentAiSource, parseAiSourceKinds, parseRovaraAiExempt, parseRovaraAiModels, storedBedrock, type AgentAiSourceReader, type ByoBedrock } from "./agent-ai.js";
 import { BedrockExternalIds, type MacGenerator } from "./bedrock-byo.js";
 import { BedrockSessions } from "./bedrock-byo-sessions.js";
 import { createBedrockTransport } from "./bedrock-transport.js";
@@ -57,7 +60,7 @@ export interface InstallConfig { issuer: string; jwksUrl: string; taskKids: stri
 export interface ProductConfig { keysTable: string; keysKeyArn: string; meter: string; ledger: string; markers: string; stages: string; vertexFederationRoleArn?: string; /** Cloud's Vertex connection test (service-call.ts), only with the Vertex role. */ macKeyArn?: string }
 /** The learning route's meter tables (GATEWAY_LEARNING_ENV): only with the product route, whose key store holds the company's account. */
 export interface LearningConfig { meter: string; ledger: string; markers: string }
-export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode; /** DEC 240, only with agentKeys "company". Absent: Rovara's AI is off. */ rovaraAi?: RovaraAiConfig; /** DEC 238, only with agentKeys "company" and the product MAC key. Absent: a company's own Bedrock is refused. */ bedrockByo?: BedrockByoConfig; /** Models left off every company's offered list on Rovara's AI (offered-models.ts). Absent: the default list. */ agentModelsDisabled?: ReadonlySet<string> }
+export interface ServeConfig { mode: "serve"; region: string; port: number; install: InstallConfig; tables: { meter: string; ledger: string; markers: string; prices: string; companies: string }; anthropicKeySecret: string; product?: ProductConfig; learning?: LearningConfig; /** DEC 236. Absent: "install". */ agentKeys?: GatewayAgentKeyMode; /** DEC 240, only with agentKeys "company". Absent: Rovara's AI is off. */ rovaraAi?: RovaraAiConfig; /** DEC 238, only with agentKeys "company" and the product MAC key. Absent: a company's own Bedrock is refused. */ bedrockByo?: BedrockByoConfig; /** DEC 254t, only with agentKeys "company": the switched-on company AI source kinds. Absent: none. */ aiSourceKinds?: ReadonlySet<string>; /** Models left off every company's offered list on Rovara's AI (offered-models.ts). Absent: the default list. */ agentModelsDisabled?: ReadonlySet<string> }
 /** Bring your own Bedrock (DEC 238): Rovara's broker role and the KMS HMAC key the companies' external ids come from. */
 export interface BedrockByoConfig { brokerRoleArn: string; externalIdKeyArn: string }
 /** Rovara's AI (DEC 240): the allow-list (agent model to Bedrock id, the gateway's own region's geography) and the exempt companies. */
@@ -150,10 +153,16 @@ export function readGatewayConfig(env: GatewayEnv): GatewayConfig {
     if (agentKeys !== "company") throw new GatewayConfigError(GATEWAY_ENV.agentKeys);
     try { agentModelsDisabled = parseDisabledAgentModels(env[GATEWAY_ENV.agentModelsDisabled]); } catch { throw new GatewayConfigError(GATEWAY_ENV.agentModelsDisabled); }
   }
+  // DEC 254t: the switched-on company AI source kinds, only in company-key mode (where a company picks its agents' source).
+  let aiSourceKinds: ReadonlySet<string> | undefined;
+  if (env[GATEWAY_ENV.aiSourceKinds] !== undefined) {
+    if (agentKeys !== "company") throw new GatewayConfigError(GATEWAY_ENV.agentKeys);
+    try { aiSourceKinds = parseAiSourceKinds(env[GATEWAY_ENV.aiSourceKinds]); } catch { throw new GatewayConfigError(GATEWAY_ENV.aiSourceKinds); }
+  }
   // Every table distinct: no two meters, stores or the stage table may share rows.
   const all = [tables.meter, tables.ledger, tables.markers, tables.prices, tables.companies, ...(product === undefined ? [] : [product.keysTable, product.meter, product.ledger, product.markers, product.stages]), ...(learning === undefined ? [] : [learning.meter, learning.ledger, learning.markers])];
   if (new Set(all).size !== all.length) throw new GatewayConfigError(product === undefined ? GATEWAY_ENV.meterTable : learning === undefined ? GATEWAY_ENV.productMeterTable : GATEWAY_ENV.learningMeterTable);
-  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(agentKeys === undefined ? {} : { agentKeys }), ...(rovaraAi === undefined ? {} : { rovaraAi }), ...(bedrockByo === undefined ? {} : { bedrockByo }), ...(agentModelsDisabled === undefined ? {} : { agentModelsDisabled }) };
+  return { mode, region, port, install: { issuer, jwksUrl, taskKids }, tables, anthropicKeySecret, ...(product === undefined ? {} : { product }), ...(learning === undefined ? {} : { learning }), ...(agentKeys === undefined ? {} : { agentKeys }), ...(rovaraAi === undefined ? {} : { rovaraAi }), ...(bedrockByo === undefined ? {} : { bedrockByo }), ...(agentModelsDisabled === undefined ? {} : { agentModelsDisabled }), ...(aiSourceKinds === undefined ? {} : { aiSourceKinds }) };
 }
 
 /** One JSON object per line on stdout, with an `event` field the alarms' metric filters count (deploy.ts GATEWAY_LOG_EVENTS). */
@@ -215,6 +224,10 @@ export interface ServeDependencies {
   agentKeys?: LearningKeySource;
   /** DEC 240 in company-key mode: the companies' agent AI choices (default: Cloud's Companies table) and Bedrock (default: the fixed transport on the task role). */
   agentAiSources?: AgentAiSourceReader; bedrockTransport?: ProviderTransport;
+  /** DEC 254t (A2): the own-key Chat Completions transports (default: agent-openai.ts createChatCompletionsTransport, fixed hosts). */
+  openaiAgentTransport?: ProviderTransport; openrouterAgentTransport?: ProviderTransport;
+  /** DEC 254t (A3): the endpoint transport per checked target (default: endpoint-source.ts createEndpointTransport). */
+  endpointTransport?: (target: EndpointTarget, onRefused: (reason: "address" | "busy") => void, company: string) => ProviderTransport;
   now?: () => number; host?: string; port?: number; /** false: no listener (tests drive the server's request event). */ listen?: boolean; drainMs?: number; maintenanceMs?: number;
 }
 export interface RunningGateway { server: Server; port: number; draining(): boolean; drain(): Promise<void>; maintain(): Promise<void> }
@@ -292,6 +305,13 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
       ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models, exempt: config.rovaraAi.exempt, transport: deps.bedrockTransport ?? createBedrockTransport({ region: config.region, credentials, now }), maxOutputTokens: (id: string) => prices.maxOutputTokens("bedrock", id) } }),
       // DEC 238: only when configured (a company that chose its own Bedrock is refused otherwise, never sent elsewhere).
       ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }),
+      // DEC 254t: the kinds the owner switched on (none when unset).
+      switchedOn: config.aiSourceKinds ?? new Set<string>(),
+      // DEC 254t (A2): the company's own OpenAI and OpenRouter keys (fixed hosts), each held to its price row's output limit.
+      openai: { transport: deps.openaiAgentTransport ?? createChatCompletionsTransport("openai"), maxOutputTokens: (model: string) => prices.maxOutputTokens("openai", model) },
+      openrouter: { transport: deps.openrouterAgentTransport ?? createChatCompletionsTransport("openrouter"), maxOutputTokens: (model: string) => prices.maxOutputTokens("openrouter", model) },
+      // DEC 254t (A3): the company's own endpoint behind the SSRF guard (system DNS at call time, pinned connection).
+      endpoint: { transport: deps.endpointTransport ?? ((target, onRefused, company) => createEndpointTransport(target, { onRefused, company })), maxOutputTokens: (provider: string, model: string) => prices.maxOutputTokens(provider, model) },
     } }),
     transport,
     log: (event) => log({ ...event }),
@@ -310,6 +330,9 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     sources: handlerDeps.agentAi.sources, disabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined),
     ...(config.rovaraAi === undefined ? {} : { rovara: { models: config.rovaraAi.models } }),
     ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }), now,
+    switchedOn: config.aiSourceKinds ?? new Set<string>(), chat: { openai: true, openrouter: true },
+    // The endpoint's registered model names, from the company's sealed endpoint account (this company only).
+    endpointModels: async (iss: string, cid: string) => { const text = await companyKeys.keyFor(iss, cid, "endpoint"); const c = text === undefined ? undefined : parseEndpointConnect(text); return c?.models.map((m) => m.name); },
   });
   // DEC 253k: Code's eval spend authority (eval-authority.ts), answered from the product route's eval stages (the stored approval,
   // the approver's role and the project's own key connection), signed by the install's broker with its task key. Only where the

@@ -11,7 +11,11 @@ export const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 export class NotSentError extends Error { constructor() { super("provider unavailable"); this.name = "NotSentError"; } }
 export interface ProviderKeys { keyFor(claims: TaskClaims, provider: "anthropic", signal?: AbortSignal): Promise<string> }
 export interface ProviderRequest { body: Uint8Array; headers: Readonly<Record<string, string>>; key: string; signal: AbortSignal; /** Set by routes whose upstream path depends on the checked request (the product route). */ path?: string }
-export interface ProviderResponse { status: number; body: AsyncIterable<Uint8Array>; cancel?: () => void }
+export interface ProviderResponse {
+  status: number; body: AsyncIterable<Uint8Array>; cancel?: () => void;
+  /** The provider's own reported cost of a completed call in micro-dollars (OpenRouter's usage.cost, agent-openai.ts), read after the body ends. settleAmount decides whether it is used. Absent: none. */
+  reportedCostMicros?: () => number | undefined;
+}
 /** An injected transport must stop on signal or cancel. A generic throw means possibly sent and is charged in full. */
 export type ProviderTransport = (request: ProviderRequest) => Promise<ProviderResponse>;
 /** Fixed endpoint, TLS, one attempt, no redirect following. Credentials are attached only here. */

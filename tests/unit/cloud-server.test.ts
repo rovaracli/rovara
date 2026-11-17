@@ -1031,7 +1031,7 @@ describe("several servers on the same stores (Rovara-cloud#11)", () => {
     // Server B's first write finds that server A added a comment after B read the session.
     let first = true;
     const racing: WorkSessionStore = {
-      get: (key) => a.work.get(key), byRequest: (key) => a.work.byRequest(key), startedBy: (key) => a.work.startedBy(key),
+      get: (key) => a.work.get(key), byRequest: (key) => a.work.byRequest(key), byTask: (key) => a.work.byTask(key), startedBy: (key) => a.work.startedBy(key),
       put: async (session, requestId) => {
         if (first) { first = false; expect((await comment(a, "33333333-3333-4333-8333-333333333333", "From server A"))!.status).toBe(201); }
         return a.work.put(session, requestId);
@@ -1048,7 +1048,7 @@ describe("several servers on the same stores (Rovara-cloud#11)", () => {
     const started = await a.call("POST", "/v1/web/projects/payments/code", { ...ada, body: { requestId: "22222222-2222-4222-8222-222222222222", input: { text: "Fix the README typo" } } });
     const { sessionId } = JSON.parse(started!.body) as { sessionId: string };
     let writes = 0;
-    const busy: WorkSessionStore = { get: (key) => a.work.get(key), byRequest: (key) => a.work.byRequest(key), startedBy: (key) => a.work.startedBy(key), put: async () => { writes += 1; throw new StoreConflict(sessionId); } };
+    const busy: WorkSessionStore = { get: (key) => a.work.get(key), byRequest: (key) => a.work.byRequest(key), byTask: (key) => a.work.byTask(key), startedBy: (key) => a.work.startedBy(key), put: async () => { writes += 1; throw new StoreConflict(sessionId); } };
     const b = setUp({ code: a.code, store: a.store, work: busy });
     await expect(b.call("POST", `/v1/web/sessions/${sessionId}/messages`, { ...ada, body: { requestId: "55555555-5555-4555-8555-555555555555", kind: "comment", text: "Hi" } })).rejects.toBeInstanceOf(StoreConflict);
     expect(writes).toBe(3);

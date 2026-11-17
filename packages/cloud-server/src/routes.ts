@@ -18,7 +18,10 @@ import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
 import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./project-create-routes.js";
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
+import { openTaskByCodeId } from "./open-task.js";
+import { WIKI_ROUTES } from "./wiki-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
+import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
@@ -535,6 +538,12 @@ export const ROUTES: Route[] = [
     },
   },
   {
+    // POST /v1/app/tasks/{taskId}/open (K2): the Cloud session of a Code task, made on the first open by anyone Code lets read the task (open-task.ts).
+    // The answer is { sessionId, sessionUrl }; a refusal from Code, and a task Cloud cannot open, answer the same SESSION_NOT_FOUND 404.
+    method: "POST", path: /^\/tasks\/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})\/open$/u,
+    answer: openTaskByCodeId,
+  },
+  {
     // GET /v1/app/sessions/{id}: Cloud's session around Code's task.
     method: "GET", path: /^\/sessions\/(ses_[0-9a-z]{20})$/u,
     answer: async (context) => {
@@ -722,6 +731,7 @@ export const ROUTES: Route[] = [
       const { view } = await context.client.json<{ view: { revision: number } }>(context.session, path);
       await context.client.json(context.session, `${path}/take-ownership`, { method: "POST", body: { requestId, expectedPeopleRevision: view.revision } });
       const updated: WorkSession = { ...record, owner: { developerId: context.session.access.developerId, name: context.session.access.displayName }, revision: record.revision + 1 };
+      delete updated.ownerUnresolved;
       await context.work.put(updated);
       return ok({ session: sessionView(updated, await readTask(context, record.taskId), viewer(context), context.origin) });
     },
@@ -835,7 +845,11 @@ export const ROUTES: Route[] = [
   ...PROJECT_CREATE_ROUTES,
   // The "AI and spending" step (guided onboarding PR 15): the company's AI model and a project's per-task limit, answered by Code as the person.
   ...AI_SPEND_ROUTES,
+  // The in-app inbox (web task channel K5): Code's C7 routes, as the person.
+  ...INBOX_ROUTES,
   // The project setup checklist and the hosted setup run (guided onboarding PR 9): Code decides who may; Cloud passes the person's token and fixed words.
   ...SETUP_CHECKLIST_ROUTES,
   ...PEOPLE_ROUTES,
+  // The project Wiki tab's reads (lead 4 W5): Code decides who may read; Cloud passes the person's token, rebuilds each answer for that project only, and answers in fixed words.
+  ...WIKI_ROUTES,
 ];

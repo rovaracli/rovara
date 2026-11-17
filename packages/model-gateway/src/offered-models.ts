@@ -17,7 +17,7 @@
 //
 // Every failure is a fixed answer: nothing from the request, a token or the store is echoed or logged.
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { AgentAiSource, AgentAiSourceReader, ByoBedrock } from "./agent-ai.js";
+import { agentSourceSwitchedOn, type AgentAiSource, type AgentAiSourceReader, type ByoBedrock } from "./agent-ai.js";
 import { BEDROCK_CLAUDE_ID } from "./bedrock-transport.js";
 import { COMPANY, record, whole } from "./model-gateway-token.js";
 import { serviceCallLimiter } from "./service-call.js";
@@ -76,6 +76,19 @@ export const OFFERED_BYO_OFF = refusal(403, "no_ai_key", "Choose AI for your age
 export const OFFERED_BYO_NOT_CONNECTED = refusal(403, "no_ai_key", "Connect your Bedrock: this company chose its own Bedrock for its agents, and no AWS role is connected.");
 export const OFFERED_ROVARA_OFF = refusal(403, "no_ai_key", "Choose AI for your agents: Rovara's AI is not available on this install.");
 export const OFFERED_EMPTY = refusal(503, "unavailable", "No models are available for your agents right now.");
+/** DEC 254t: the company chose a source this install has not switched on, or does not offer (the agent route's AGENT_SOURCE_SWITCHED_OFF / AGENT_CHAT_NOT_OFFERED). */
+export const OFFERED_SWITCHED_OFF = refusal(403, "no_ai_key", "Choose AI for your agents: the AI source your company chose is not switched on for this install.");
+export const OFFERED_CHAT_OFF = refusal(403, "no_ai_key", "Choose AI for your agents: the AI source your company chose is not available on this install.");
+/**
+ * DEC 254t (A2): OpenRouter names its models `vendor/model`, and Code's offered-models contract (OFFERED_MODEL_NAME, Code's
+ * AGENT_MODEL_NAME) has no "/" yet, so no OpenRouter model can be offered until Code accepts that shape. Fixed words, never a guessed rename.
+ */
+export const OFFERED_OPENROUTER_PENDING = refusal(503, "unavailable", "Your agents can't pick OpenRouter models on this Rovara Code yet.");
+/**
+ * DEC 254t (A2): the OpenAI models a company on its own OpenAI key may use (OpenAI's API names). Owner to confirm the list before the kind
+ * is switched on; each must have passed the real-key check's tool call.
+ */
+export const OPENAI_KEY_AGENT_MODELS: readonly string[] = Object.freeze(["gpt-5", "gpt-5-mini", "gpt-5-codex"]);
 
 /**
  * What the agent route accepts for a company with this source, now. rovara: every name the gateway's allow-list calls (one name per
@@ -87,6 +100,8 @@ export function offeredModelsFor(source: AgentAiSource | undefined, rovara: { mo
   let names: string[];
   // bedrock_byo is answered from the company's own connection (offeredByoModels), never here.
   if (source === "bedrock_byo") return OFFERED_BYO_OFF;
+  if (source === "openrouter_key") return OFFERED_OPENROUTER_PENDING;
+  if (source === "custom_endpoint") return OFFERED_CHAT_OFF;
   if (source === "rovara") {
     if (rovara === undefined) return OFFERED_ROVARA_OFF;
     const seen = new Set<string>();
@@ -96,9 +111,20 @@ export function offeredModelsFor(source: AgentAiSource | undefined, rovara: { mo
       seen.add(id);
       if (!disabled.has(name)) names.push(name);
     }
-  } else names = [...ANTHROPIC_KEY_AGENT_MODELS];
+  } else if (source === "openai_key") names = [...OPENAI_KEY_AGENT_MODELS];
+  else names = [...ANTHROPIC_KEY_AGENT_MODELS];
   names = names.filter((name) => OFFERED_MODEL_NAME.test(name)).slice(0, OFFERED_MODELS_MAX);
   return names.length === 0 ? OFFERED_EMPTY : { ok: true, models: names };
+}
+
+export const OFFERED_ENDPOINT_NOT_CONNECTED = refusal(403, "no_ai_key", "Connect your endpoint: this company chose its own endpoint for its agents, and none is connected.");
+/** DEC 254t (A3): the company's own endpoint offers exactly the names it registered (those Code's name shape accepts). */
+export async function offeredEndpointModels(read: OfferedModelsHandlerOptions["endpointModels"], iss: string, cid: string): Promise<OfferedModelsOutcome> {
+  if (read === undefined) return OFFERED_CHAT_OFF;
+  const names = await read(iss, cid);
+  if (names === undefined) return OFFERED_ENDPOINT_NOT_CONNECTED;
+  const offered = names.filter((name) => OFFERED_MODEL_NAME.test(name)).slice(0, OFFERED_MODELS_MAX);
+  return offered.length === 0 ? OFFERED_EMPTY : { ok: true, models: offered };
 }
 
 /**
@@ -123,6 +149,12 @@ export interface OfferedModelsHandlerOptions {
   disabled: ReadonlySet<string>;
   /** The company's own Bedrock (DEC 238), when this gateway has it built (as the agent route's `agentAi.byo`). Absent: bedrock_byo is refused. */
   byo?: Pick<ByoBedrock, "connection">;
+  /** DEC 254t: the switched-on kinds (as the agent route's `agentAi.switchedOn`). Absent: none. */
+  switchedOn?: ReadonlySet<string>;
+  /** DEC 254t (A2): which own-key Chat Completions sources this gateway has built (as the agent route's `agentAi.openai` / `.openrouter`). */
+  chat?: { openai?: boolean; openrouter?: boolean };
+  /** DEC 254t (A3): the names a company registered for its own endpoint (its sealed account; undefined when none). Absent: custom_endpoint is refused. */
+  endpointModels?: (iss: string, cid: string) => Promise<readonly string[] | undefined>;
   now?: () => number;
 }
 
@@ -147,7 +179,11 @@ export async function answerOfferedModels(options: OfferedModelsHandlerOptions, 
   let outcome: OfferedModelsOutcome;
   try {
     const source = await options.sources.sourceFor(claims.cid);
-    outcome = source === "bedrock_byo" ? await offeredByoModels(options.byo, claims.iss, claims.cid) : offeredModelsFor(source, options.rovara, options.disabled);
+    // The same order as the agent route's admission: the switch first, then whether this gateway serves the source at all.
+    if (source !== undefined && !agentSourceSwitchedOn(source, options.switchedOn ?? new Set())) outcome = OFFERED_SWITCHED_OFF;
+    else if ((source === "openai_key" && options.chat?.openai !== true) || (source === "openrouter_key" && options.chat?.openrouter !== true)) outcome = OFFERED_CHAT_OFF;
+    else if (source === "custom_endpoint") outcome = await offeredEndpointModels(options.endpointModels, claims.iss, claims.cid);
+    else outcome = source === "bedrock_byo" ? await offeredByoModels(options.byo, claims.iss, claims.cid) : offeredModelsFor(source, options.rovara, options.disabled);
   } catch { return ANSWERS.unavailable; }
   if (!outcome.ok) return { status: outcome.status, body: { error: { type: outcome.code, message: outcome.message } } };
   return { status: 200, body: { version: 1, models: outcome.models.map((model) => ({ model })) } };

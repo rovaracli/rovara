@@ -46,7 +46,7 @@ export function SessionScreen() {
  const id = useParams().id ?? "", bySession = SESSION_ID.test(id), byTask = TASK_ID.test(id), host = useAppHost(), query = useQueryClient(), api = useMemo(() => createSessionApi(host), [host]), workApi = useWorkApi(), visible = usePageVisible();
  const tasks = useWorkTasks(byTask), decisions = useDecisions(), listed = byTask ? tasks.data?.find(entry => entry.taskId.toLowerCase() === id.toLowerCase()) : undefined;
  const sessionId = bySession ? id : listed?.sessionId, read = useSession(sessionId ?? "", sessionId !== undefined);
- const [open, setOpen] = useState(false), [connection, setConnection] = useState("connecting");
+ const [shareRequest, setShareRequest] = useState(0), [open, setOpen] = useState(false), [connection, setConnection] = useState("connecting");
  const [editDrafts, setEditDrafts] = useState<Record<string, Record<string, CommentDraft>>>({});
  const [drafts, setDrafts] = useState<Record<string, ComposerDrafts>>({}), [sending, setSending] = useState(false), sendingRef = useRef(false);
  const [selection, setSelection] = useState<{ sessionId: string; anchor: SessionAnchorRef }>();
@@ -113,7 +113,7 @@ export function SessionScreen() {
  };
  const controls = <div className="rv-task-controls">
   {row !== undefined && <TaskActions taskId={row.id} canContinue={row.step !== "merged" && row.step !== "closed"} showNote={sessionId === undefined && row.group !== "done"} />}
-  {session !== undefined && sessionId !== undefined && <SessionControls key={sessionId} id={sessionId} agent={agent} actions={session.you.actions} following={session.you.following} makeAgent responsive ask={ASK_ON_HOSTED && session.you.live?.ask === true} share={{ orgName }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />}
+  {session !== undefined && sessionId !== undefined && <SessionControls key={sessionId} id={sessionId} agent={agent} actions={session.you.actions} following={session.you.following} makeAgent responsive ask={ASK_ON_HOSTED && session.you.live?.ask === true} share={{ orgName }} onPeopleShare={() => { setShareRequest(count => count + 1); }} onChanged={() => query.invalidateQueries({ queryKey: ["live"] })} />}
  </div>;
  const statusWords = row === undefined ? undefined : row.need ?? row.line;
  const conversation = session !== undefined && sessionId !== undefined && <Dialog title={selected === undefined ? "Conversation" : selected.target === "change_file" ? "Discussion of this file" : selected.target === "step" ? "Discussion of this step" : "Discussion of this plan paragraph"} className="rv-conversation-tray" open={open} onOpenChange={setOpen} onCloseAutoFocus={event => { const source = sourceControl.current;if (source?.isConnected) { event.preventDefault();source.focus(); }sourceControl.current = undefined; }} trigger={<Button onClick={() => { setSelection(undefined);sourceControl.current = undefined; }}>Conversation</Button>}>
@@ -128,7 +128,7 @@ export function SessionScreen() {
   {session !== undefined ? <SessionHeader session={session} onAction={() => undefined} controls={controls} />
    : row !== undefined && <header className="rv-session-header" data-testid="session-header"><div className="rv-session-context"><span><VisibleText text={row.project} /></span></div><h1 tabIndex={-1} data-testid="session-title"><VisibleText text={row.title} /></h1><div className="rv-session-facts"><span data-testid="session-status"><ToneDot tone={row.tone} words={statusWords ?? "Status"} /> <VisibleText text={statusWords ?? ""} /></span></div><div className="rv-session-people">{controls}</div></header>}
   {controlsFailed && <div role="alert" className="rv-task-controls-error" data-testid="controls-error"><p>Couldn't load this task's controls (Stop, Share, Conversation).{read.error instanceof ApiError ? " " + read.error.message : ""}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div>}
-  {session !== undefined && sessionId !== undefined && <PeoplePanel key={sessionId} id={sessionId} />}
+  {session !== undefined && sessionId !== undefined && <PeoplePanel key={sessionId} id={sessionId} shareRequest={shareRequest} />}
   {session !== undefined && <MoneyBanners session={session} />}{connection === "reconnecting" && <p className="rv-muted">Reconnecting. Showing the last update.</p>}
   {conversation !== false && <div className="rv-task-bar">{conversation}</div>}
   {designTask !== undefined && <DesignActions task={designTask} sessionKey={designKey} />}

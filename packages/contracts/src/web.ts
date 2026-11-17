@@ -88,6 +88,7 @@ export * from "./reviewed-project-archive.js";
 export * from "./reviewed-project-restore.js";
 export * from "./project-lifecycle.js";
 export * from "./project-setup-status.js";
+export * from "./app-wiki.js";
 
 // Lane B: browser-safe project-scoped working-branch page data.
 export * from "./app-working-branches.js";
@@ -165,4 +166,5 @@ export { DiagnosisStatusReaderSchema, DIAGNOSIS_ANSWER_LABEL, DIAGNOSIS_NO_PROVI
 
 export * from "./task-stop-start-preview.js";
 
-export { PEOPLE_NOT_AVAILABLE_TEXT, SESSION_PEOPLE_CANDIDATES_MAX, SESSION_PEOPLE_METHOD_LABELS, SessionPeopleRoleSchema, SessionPeopleAddRoleSchema, SessionPeopleEntrySchema, SessionPeopleViewSchema, type SessionPeopleView, SessionPeopleResponseSchema, SessionPeopleResponseReaderSchema, SessionPeopleRoleBodySchema, type SessionPeopleRoleBody, SessionPeopleAddBodySchema, type SessionPeopleAddBody, SessionPeopleOwnershipBodySchema, type SessionPeopleOwnershipBody, SessionPeopleCandidatesResponseSchema, SessionPeopleCandidatesResponseReaderSchema, SessionPeopleChangeResponseSchema, SessionPeopleChangeResponseReaderSchema, type SessionPeopleChangeResponse } from "./app-session-people.js";
+export { INBOX_NOT_AVAILABLE_TEXT, INBOX_KINDS, INBOX_KIND_WORDS, INBOX_PAGE_MAX, INBOX_READ_IDS_MAX, INBOX_POLL_MS, InboxIdSchema, InboxOpenPathSchema, InboxItemSchema, type InboxItem, InboxPageSchema, InboxPageReaderSchema, InboxReadBodySchema, type InboxReadBody, InboxReadResponseSchema, InboxReadResponseReaderSchema } from "./app-inbox.js";
+export { PEOPLE_NOT_AVAILABLE_TEXT, SESSION_PEOPLE_CANDIDATES_MAX, SESSION_PEOPLE_METHOD_LABELS, SessionPeopleRoleSchema, SessionPeopleAddRoleSchema, SessionPeopleEntrySchema, SessionPeopleViewSchema, type SessionPeopleView, SessionPeopleSharedSchema, SessionPeopleResponseSchema, SessionPeopleResponseReaderSchema, SessionPeopleRoleBodySchema, type SessionPeopleRoleBody, SessionPeopleAddBodySchema, type SessionPeopleAddBody, SessionPeopleOwnershipBodySchema, type SessionPeopleOwnershipBody, SessionPeopleCandidatesResponseSchema, SessionPeopleCandidatesResponseReaderSchema, SessionPeopleChangeResponseSchema, SessionPeopleChangeResponseReaderSchema, type SessionPeopleChangeResponse } from "./app-session-people.js";

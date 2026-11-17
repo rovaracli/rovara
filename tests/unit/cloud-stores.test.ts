@@ -22,10 +22,15 @@ const signIn = (token: string): CodeSession => ({
 });
 const pending = (state: string) => ({ state, verifier: "v", returnTo: "/app", at: 1 }) as unknown as PendingSignIn;
 let made = 0;
-const session = (who = ADA, createdAt = "2026-11-14T12:00:00.000Z"): WorkSession => ({
-  sessionId: `ses_${String(made++).padStart(20, "0")}`, taskId: "6f9d0c1e-2b3a-4c5d-8e7f-001122334455", project: "payments",
-  startedBy: who, owner: who, createdAt, revision: 1,
-});
+// Each session gets its own task id: the DynamoDB cases share one table, and a new session records its task (K2), so a task id reused by another case would
+// already have a session there. A case that needs two sessions of one task sets `taskId` itself.
+const session = (who = ADA, createdAt = "2026-11-14T12:00:00.000Z"): WorkSession => {
+  const index = made++;
+  return {
+    sessionId: `ses_${String(index).padStart(20, "0")}`, taskId: `6f9d0c1e-2b3a-4c5d-8e7f-${String(index).padStart(12, "0")}`, project: "payments",
+    startedBy: who, owner: who, createdAt, revision: 1,
+  };
+};
 const comment = (index: number, text = `comment ${String(index)}`): SessionComment => ({
   messageId: `msg_${String(index).padStart(20, "0")}`, kind: "comment", source: "app", author: ADA, text,
   createdAt: new Date(Date.UTC(2026, 10, 14, 12, 0, 0, index)).toISOString(), rev: 1,
@@ -61,6 +66,23 @@ function contract(name: string, make: () => Stores) {
       await expect(work.put({ ...fresh })).rejects.toBeInstanceOf(StoreConflict);
       await work.put({ ...read!, followers: [GRACE] });
       expect(await work.get(fresh.sessionId)).toEqual({ ...fresh, followers: [GRACE], storeVersion: 1 });
+    });
+
+    it("records each new session under its task, and `once` lets only the first new session of a task in, across servers (K2)", async () => {
+      const stores = make();
+      const first = session(), second = { ...session(), taskId: first.taskId }, plain = session();
+      expect(await stores.work.byTask(first.taskId)).toBeUndefined();
+      await stores.work.put(first, undefined, { once: true });
+      expect((await stores.work.byTask(first.taskId))?.sessionId).toBe(first.sessionId);
+      await expect(stores.second().work.put(second, undefined, { once: true })).rejects.toBeInstanceOf(StoreConflict);
+      expect(await stores.work.get(second.sessionId)).toBeUndefined();
+      expect((await stores.second().work.byTask(first.taskId))?.sessionId).toBe(first.sessionId);
+      // A put without `once` (the starter's) writes as before; a change to a session leaves its task's record alone.
+      await stores.work.put({ ...(await stores.work.get(first.sessionId))!, followers: [GRACE] });
+      expect((await stores.work.byTask(first.taskId))?.sessionId).toBe(first.sessionId);
+      await stores.work.put({ ...plain, taskId: "7a9d0c1e-2b3a-4c5d-8e7f-001122334466" }, "44444444-4444-4444-8444-444444444444");
+      expect((await stores.work.byTask("7a9d0c1e-2b3a-4c5d-8e7f-001122334466"))?.sessionId).toBe(plain.sessionId);
+      expect((await stores.work.byRequest("44444444-4444-4444-8444-444444444444"))?.sessionId).toBe(plain.sessionId);
     });
 
     it("refuses a write on a session someone else wrote since it was read, and keeps their change", async () => {

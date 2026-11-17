@@ -8,6 +8,8 @@
 //   COMPANY#<org_…>             PENDING                     a settings change waiting for a second admin (`pendingUntil`; TTL after)
 //   COMPANY#<org_…>             PROFILE                     name and plan; `version` guards writes
 //   COMPANY#<org_…>             AGENT_AI                    which AI the company's agents use (DEC 240; the model gateway reads it); `version` guards writes
+//   COMPANY#<org_…>             SPEND_LIMIT#PROJECT#<name>  a project's monthly limit over the company default (lead 3 B1; the gateway reads it); `version` guards writes
+//   COMPANY#<org_…>             SPEND_LIMIT#PERSON#<id>     a person's monthly limit, the same
 //   COMPANY#<org_…>             INVITE#<invite id>          an invite; `revision` and `inviteState` guard writes
 //   COMPANY#<org_…>             INVITEREQUEST#<request id>  the invite a create request made, so a replay is refused
 //   INVITETOKEN#<sha256 hex>    INVITE                      the company and invite a link's token names (never the token)
@@ -21,8 +23,8 @@ import { createHash } from "node:crypto";
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { DeleteCommand, GetCommand, PutCommand, QueryCommand, TransactWriteCommand, type DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import {
-  COMPANY_ID, CompanyStoreConflict, INVITES_READ_MAX, sameInvite, validAgentAiSource, validGithubUserId, validHookInstall, type CompanyTrial, type TrialUnlock,
-  type AgentAiChoice, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
+  COMPANY_ID, CompanyStoreConflict, INVITES_READ_MAX, SPEND_LIMIT_KINDS, SPEND_LIMIT_SORT_PREFIX, sameInvite, validAgentAiSource, validGithubUserId, validHookInstall, validSpendLimit, type CompanyTrial, type TrialUnlock,
+  type AgentAiChoice, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type SpendLimit, type SpendLimitBasis, type SpendLimitKind, type SpendLimitList, type StoredSettings,
 } from "./company-store.js";
 import type { CompanySettings } from "./company-settings.js";
 
@@ -174,6 +176,79 @@ export class DynamoCompanyStore implements CompanyStore {
       TableName: this.table, Item: { pk: company(choice.companyId), sk: "AGENT_AI", companyId: choice.companyId, source: choice.source, version: expectedVersion + 1, updatedAt: choice.updatedAt, updatedBy: choice.updatedBy }, ...versionCondition(expectedVersion),
     })));
     return expectedVersion + 1;
+  }
+
+  async spendLimit(companyId: string, kind: SpendLimitKind, id: string): Promise<SpendLimit | undefined> {
+    const item = await this.get(company(companyId), `${SPEND_LIMIT_SORT_PREFIX[kind]}${id}`);
+    if (item === undefined) return undefined;
+    return this.readSpendLimit(item, companyId, kind, id);
+  }
+
+  // An item that does not read as exactly this company's, kind's and id's is an outage, never "none saved" (the gateway refuses spend on it too).
+  private readSpendLimit(item: Record<string, unknown>, companyId: string, kind: SpendLimitKind, id: string): SpendLimit {
+    const limit = { companyId: item.companyId, kind: item.kind, id: item.id, monthlyUsdMicros: item.monthlyUsdMicros, version: item.version, updatedAt: item.updatedAt, updatedBy: item.updatedBy };
+    if (!validSpendLimit(limit, companyId, kind, id) || item.pk !== company(companyId) || item.sk !== `${SPEND_LIMIT_SORT_PREFIX[kind]}${id}`) throw new Error("spend limit unreadable");
+    return limit;
+  }
+
+  async spendLimits(companyId: string): Promise<SpendLimitList> {
+    const limits = {} as Record<SpendLimitKind, SpendLimit[]>;
+    let partial = false;
+    for (const def of SPEND_LIMIT_KINDS) {
+      const kind: SpendLimitKind = def.kind;
+      const prefix = def.sortPrefix;
+      // One bounded query per kind: the most plus one, so "there were more" is known without reading them all.
+      const page = await this.db.send(new QueryCommand({
+        TableName: this.table, KeyConditionExpression: "pk = :pk AND begins_with(sk, :prefix)", ExpressionAttributeValues: { ":pk": company(companyId), ":prefix": prefix },
+        ConsistentRead: true, Limit: def.max + 1,
+      }));
+      const items = page.Items ?? [];
+      const found = items.map((item) => {
+        const sk = typeof item.sk === "string" && item.sk.startsWith(prefix) ? item.sk.slice(prefix.length) : "";
+        return this.readSpendLimit(item, companyId, kind, sk);
+      });
+      if (found.length > def.max || (page.LastEvaluatedKey !== undefined && found.length >= def.max)) partial = true;
+      limits[kind] = found.slice(0, def.max);
+    }
+    return { limits, partial };
+  }
+
+  /** The company settings item as the default this change was judged against: still at `settingsVersion` (or still absent at 0). */
+  private settingsCheck(companyId: string, settingsVersion: number) {
+    return {
+      ConditionCheck: {
+        TableName: this.table, Key: { pk: company(companyId), sk: "SETTINGS" },
+        ...(settingsVersion === 0 ? { ConditionExpression: "attribute_not_exists(pk)" } : { ConditionExpression: "companyId = :company AND version = :settings", ExpressionAttributeValues: { ":company": companyId, ":settings": settingsVersion } }),
+      },
+    };
+  }
+
+  /** The override item is still exactly as read: absent, or at the version and amount the change was judged against. */
+  private spendBasis(companyId: string, basis: SpendLimitBasis) {
+    return basis.override === undefined
+      ? { ConditionExpression: "attribute_not_exists(pk)" }
+      : { ConditionExpression: "companyId = :company AND version = :version AND monthlyUsdMicros = :amount", ExpressionAttributeValues: { ":company": companyId, ":version": basis.override.version, ":amount": basis.override.monthlyUsdMicros } };
+  }
+
+  async putSpendLimit(limit: Omit<SpendLimit, "version">, basis: SpendLimitBasis): Promise<number> {
+    const version = (basis.override?.version ?? 0) + 1;
+    await guarded("spend limit", () => this.db.send(new TransactWriteCommand({
+      TransactItems: [
+        { Put: { TableName: this.table, Item: { pk: company(limit.companyId), sk: `${SPEND_LIMIT_SORT_PREFIX[limit.kind]}${limit.id}`, companyId: limit.companyId, kind: limit.kind, id: limit.id, monthlyUsdMicros: limit.monthlyUsdMicros, version, updatedAt: limit.updatedAt, updatedBy: limit.updatedBy }, ...this.spendBasis(limit.companyId, basis) } },
+        this.settingsCheck(limit.companyId, basis.settingsVersion),
+      ],
+    })));
+    return version;
+  }
+
+  async removeSpendLimit(companyId: string, kind: SpendLimitKind, id: string, basis: SpendLimitBasis): Promise<void> {
+    if (basis.override === undefined) throw new CompanyStoreConflict("spend limit");
+    await guarded("spend limit", () => this.db.send(new TransactWriteCommand({
+      TransactItems: [
+        { Delete: { TableName: this.table, Key: { pk: company(companyId), sk: `${SPEND_LIMIT_SORT_PREFIX[kind]}${id}` }, ...this.spendBasis(companyId, basis) } },
+        this.settingsCheck(companyId, basis.settingsVersion),
+      ],
+    })));
   }
 
   private inviteItem(invite: InviteRecord) {

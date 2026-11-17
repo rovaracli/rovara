@@ -1,6 +1,6 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.css", "screens/live/live.css", "screens/work/work.css", "screens/project/project.css", "screens/session/session.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
+for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.css", "screens/inbox/inbox.css", "screens/live/live.css", "screens/work/work.css", "screens/project/project.css", "screens/session/session.css", "screens/builder/builder.css", "screens/agents/agents.css", "screens/onboarding/onboarding.css", "screens/admin/admin.css",
  // Lane B: allowed-websites editor, shared by admin and own-project surfaces.
  "screens/admin/projects/allowed-websites.css",
  "screens/admin/projects/project-slack.css",
@@ -23,7 +23,9 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  // Guided onboarding PR 11: Add to Slack, the Slack channel and Linear team rows.
  "screens/connect/connect.css",
  // Guided onboarding PR 9: the project setup checklist.
- "screens/setup/checklist.css"]) {
+ "screens/setup/checklist.css",
+ // Lead 4 W5: the project Wiki tab.
+ "screens/project/wiki/wiki.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

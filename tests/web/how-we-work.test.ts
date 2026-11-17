@@ -50,7 +50,8 @@ describe("the How we work tab", () => {
   const checks = card("Checks");
   expect(within(checks).queryByText("npm test")).toBeNull();
   expect(within(checks).getByText(/Nothing here is changed or locked/u)).toBeTruthy();
-  expect(within(card("Build")).getByText("Run the linter.")).toBeTruthy();
+  // The row's own text, not the editor's textarea (whose text child holds the same words when it mounts after the data, as it now does).
+  expect(within(card("Build")).getByText("Run the linter.", { selector: ".rv-hww-text" })).toBeTruthy();
   expect(within(card("Build")).queryByText("Who approves")).toBeNull();
   fireEvent.click(screen.getByRole("checkbox", { name: "Show unchanged settings" }));
   expect(within(checks).getByText("npm test")).toBeTruthy();

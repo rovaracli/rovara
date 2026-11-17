@@ -5,10 +5,14 @@
 //                  at list price on its bill (DEC 240b), under the one combined company cap.
 //   anthropic_key  the company's own Anthropic key (DEC 236, company-key mode).
 //   bedrock_byo    the company's own Bedrock (DEC 238): its own invoke-only role, assumed as the company (ByoBedrock below).
+//   openai_key     the company's own OpenAI key (DEC 254t), through Chat Completions (agent-openai.ts); only when its kind is switched on.
+//   openrouter_key the company's own OpenRouter key (DEC 254t), the same way; its reported cost is used by settleAmount's rules.
+//   custom_endpoint the company's own OpenAI-compatible endpoint (DEC 254t), behind the SSRF guard (endpoint-guard.ts).
 //
 // No choice saved: company-key mode exactly as before (DEC 236). There is never an automatic fallback between sources.
 import { BEDROCK_CONVERSE_ID } from "./bedrock-converse.js";
 import type { CredentialSource } from "./aws.js";
+import type { EndpointTarget } from "./endpoint-guard.js";
 import { geographiesOf, parseBedrockConnect, type BedrockConnection } from "./bedrock-byo.js";
 import type { BedrockSessionSource } from "./bedrock-byo-sessions.js";
 import { BEDROCK_CLAUDE_ID, createBedrockTransport } from "./bedrock-transport.js";
@@ -19,8 +23,61 @@ import type { ProviderTransport } from "./provider.js";
 import { PRODUCT_DEFAULT_CAPS, type ProductKeyStore } from "./product-keys.js";
 import type { ProductKeyRow } from "./product-seal.js";
 
-export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo"] as const;
+export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key", "custom_endpoint"] as const;
 export type AgentAiSource = typeof AGENT_AI_SOURCES[number];
+
+/**
+ * DEC 254t (A2): the company's own OpenAI or OpenRouter key as its agents' AI (agent-openai.ts translates Anthropic Messages to Chat
+ * Completions and back). The key is the company's sealed account of that provider (the learning document, learning-keys.ts); the
+ * transport has a fixed host. `maxOutputTokens` is the price snapshot's limit for the model (unknown: OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS).
+ */
+/** DEC 254t (A3): the company's own OpenAI-compatible endpoint: a transport per checked target (endpoint-source.ts), and catalog limits. */
+export interface CompanyEndpointAi {
+  /** `onRefused` is told why a call was refused before sending ("address" or "busy"); `company` is the verified company (resolution limits). */
+  transport(target: EndpointTarget, onRefused: (reason: "address" | "busy") => void, company: string): ProviderTransport;
+  /** The catalog model's output limit (the price snapshot's row). Unknown: OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS. */
+  maxOutputTokens?(provider: string, model: string): number | undefined;
+}
+export interface CompanyChatAi {
+  transport: ProviderTransport;
+  maxOutputTokens?(model: string): number | undefined;
+}
+
+/**
+ * DEC 254t (a): the company AI source kinds the code supports (the contracts' SOURCE_KINDS_AT_LAUNCH; this package imports no
+ * contracts, so a contract test holds the copies equal). Supported is not switched on: GATEWAY_AI_SOURCE_KINDS names the kinds the
+ * install's owner switched on after each one's real-key check passed (scripts/real-key-check.ts). Absent or empty: none.
+ */
+export const AI_SOURCE_KINDS = ["anthropic", "openai", "openrouter", "bedrock", "endpoint"] as const;
+export type AiSourceKind = typeof AI_SOURCE_KINDS[number];
+/** The agent source each kind is chosen as. `rovara` is Rovara's own AI, never a company source kind. */
+export const AGENT_SOURCE_OF_KIND: Readonly<Record<AiSourceKind, string>> = Object.freeze({ anthropic: "anthropic_key", openai: "openai_key", openrouter: "openrouter_key", bedrock: "bedrock_byo", endpoint: "custom_endpoint" });
+/**
+ * The company sources that were live before the per-install switch (DEC 236 and DEC 238). They keep working exactly as before, switch
+ * or no switch: turning them off on an install that uses them would stop its agents. Whether to gate them too is an owner question.
+ */
+export const PRE_SWITCH_AGENT_SOURCES: readonly string[] = ["anthropic_key", "bedrock_byo"];
+
+/**
+ * GATEWAY_AI_SOURCE_KINDS: comma-separated supported kinds, no spaces, no repeats. Absent or empty: none switched on. Anything else
+ * throws with fixed words (never a partial list; the value is never repeated).
+ */
+export function parseAiSourceKinds(value: string | undefined): Set<AiSourceKind> {
+  if (value === undefined || value === "") return new Set();
+  const kinds = value.split(",");
+  if (kinds.length > AI_SOURCE_KINDS.length || new Set(kinds).size !== kinds.length || !kinds.every((kind) => (AI_SOURCE_KINDS as readonly string[]).includes(kind))) throw new Error("invalid AI source kinds");
+  return new Set(kinds as AiSourceKind[]);
+}
+
+/**
+ * Whether a saved agent source may be used on this install: Rovara's AI and the pre-switch sources always (their own settings decide,
+ * as before); any other source only when its kind is switched on. An unknown source never.
+ */
+export function agentSourceSwitchedOn(source: string, switchedOn: ReadonlySet<string>): boolean {
+  if (source === "rovara" || PRE_SWITCH_AGENT_SOURCES.includes(source)) return true;
+  const kind = AI_SOURCE_KINDS.find((k) => AGENT_SOURCE_OF_KIND[k] === source);
+  return kind !== undefined && switchedOn.has(kind);
+}
 
 export interface AgentAiSourceReader {
   /** The company's saved choice, or undefined when it saved none. Throws when the choice can't be read or is not one of the sources. */

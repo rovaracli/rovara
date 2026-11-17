@@ -4,10 +4,10 @@
 // rotates and removes them through Cloud's "Learning AI key" settings (cloud-server learning-ai-routes.ts); a project never holds
 // one and can never link to one (product-keys.ts). Each provider is answered only by ITS account: a company with only Anthropic
 // connected is not connected for OpenAI or Gemini, and Vertex learning is not connectable here (never connected).
-import type { LearningKeySource, LearningProvider } from "./learning-route.js";
+import type { CompanyKeyProvider, LearningKeySource } from "./learning-route.js";
 import { LEARNING_KEY_PROVIDERS, type LearningKeyProvider, type ProductKeyStore } from "./product-keys.js";
 
-const connectable = (provider: LearningProvider): provider is LearningKeyProvider => LEARNING_KEY_PROVIDERS.some((p) => p === provider);
+const connectable = (provider: CompanyKeyProvider): provider is LearningKeyProvider => LEARNING_KEY_PROVIDERS.some((p) => p === provider);
 
 export function storedLearningKeys(store: Pick<ProductKeyStore, "learningSource" | "useKey" | "recordWarning">): LearningKeySource {
   return {
