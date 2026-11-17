@@ -46,6 +46,8 @@ export function codeNotYet(error: CodeError): boolean {
 /** Code's view, kept to its own fields, or undefined when it does not name `project`. */
 export function howWeWorkView(raw: unknown, project: string): Record<string, unknown> | undefined {
   if (!isRecord(raw) || raw["project"] !== project) return undefined;
+  // The view's own shape at the top (the app's strict reader checks the rest): anything else is refused whole, never passed on.
+  if (!Number.isSafeInteger(raw["playbookRevision"]) || (raw["playbookRevision"] as number) < 0 || raw["modelsEditable"] !== false || !isRecord(raw["process"]) || !Array.isArray(raw["stages"]) || !Array.isArray(raw["rules"])) return undefined;
   return Object.fromEntries(HOW_WE_WORK_FIELDS.filter((field) => Object.hasOwn(raw, field)).map((field) => [field, raw[field]]));
 }
 

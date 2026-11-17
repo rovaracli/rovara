@@ -1,7 +1,7 @@
 // The project page's How we work tab through Cloud's handler (staging walkthrough 2026-11-17, item 4): Cloud forwards GET /v1/app/projects/{p}/how-we-work to
-// Code's own route of the same path, as the signed-in person. Code decides who may read (the fake applies its rule: a grant on THAT project in the project's own
-// company, a company administrator reads every project of their company). Cloud must forward nothing of the browser's query, refuse a name Code never takes
+// Code's own route of the same path, as the signed-in person. Code decides who may read. Cloud must forward nothing of the browser's query, refuse a name Code never takes
 // before asking, keep only the view's own fields for THIS project, and turn "Code does not serve it yet" into 501 NOT_ON_CODE_YET in fixed words.
+// The fake applies Code's canReadProject: the person's own grant on THAT project, in the project's own company, with no company-administrator shortcut.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CodeError } from "../../packages/cloud-server/src/code-client.js";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
@@ -69,6 +69,15 @@ describe("How we work through Cloud", () => {
     await mode("api", "on");
   });
 
+  it("passes Code's 501 on as not yet, and any other refusal of Code as Code worded it", async () => {
+    const priya = await signInAs(PRIYA);
+    await mode("api", "501");
+    expect(await priya("/projects/api/how-we-work")).toEqual({ status: 501, body: HOW_WE_WORK_ANSWERS.notYet.body });
+    await mode("api", "403");
+    expect(await priya("/projects/api/how-we-work")).toEqual({ status: 403, body: { error: { code: "FORBIDDEN", message: "This sign-in can't read projects." } } });
+    await mode("api", "on");
+  });
+
   it("refuses an answer that names another project", async () => {
     await mode("web", "broken");
     const priya = await signInAs(PRIYA);
@@ -102,7 +111,9 @@ describe("the parts", () => {
     expect(codeNotYet(new CodeError(404, undefined))).toBe(false);
   });
   it("keeps a view only when it names this project", () => {
-    expect(howWeWorkView({ project: "web", stages: [], extra: 1 }, "web")).toEqual({ project: "web", stages: [] });
+    const good = { project: "web", playbookRevision: 2, process: { kind: "builtin", agentId: "x" }, stages: [], rules: [], modelsEditable: false };
+    expect(howWeWorkView({ ...good, extra: 1 }, "web")).toEqual(good);
+    for (const broken of [{ playbookRevision: -1 }, { playbookRevision: 1.5 }, { playbookRevision: "2" }, { modelsEditable: true }, { process: [] }, { stages: {} }, { rules: "x" }]) expect(howWeWorkView({ ...good, ...broken }, "web")).toBeUndefined();
     expect(howWeWorkView({ project: "api" }, "web")).toBeUndefined();
     expect(howWeWorkView([], "web")).toBeUndefined();
     expect(howWeWorkView("web", "web")).toBeUndefined();
