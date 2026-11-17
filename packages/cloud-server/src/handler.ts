@@ -19,7 +19,7 @@ import type { SessionStore } from "./sessions.js";
 import { StoreConflict, companyScopedWork, type WorkSessionStore } from "./work-sessions.js";
 import { companyOf } from "./company-caller.js";
 import { JOIN_UNUSABLE, inviteTokenHash, linkToken, usableInvite } from "./onboarding-routes.js";
-import { GITHUB_APP_PATHS, GITHUB_CALLBACK_PATH, GITHUB_CONNECT_COOKIE, createGithubConnect, type GithubAnswer } from "./github-connect.js";
+import { GITHUB_APP_PATHS, GITHUB_CALLBACK_PATH, GITHUB_DISCONNECT_PATH, GITHUB_CONNECT_COOKIE, createGithubConnect, type GithubAnswer } from "./github-connect.js";
 import { connectCookieName } from "./connect-flow.js";
 import { SLACK_CALLBACK_PATH, createSlackConnect } from "./slack-connect.js";
 import { LINEAR_CALLBACK_PATH, createLinearConnect } from "./linear-connect.js";
@@ -274,7 +274,9 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
       method === "POST" && apiPath === GITHUB_APP_PATHS.start ? () => github.start(session!, id, parsedBody(request.body))
         : method === "POST" && apiPath === GITHUB_APP_PATHS.result ? () => github.result(session!, id)
           : method === "POST" && apiPath === GITHUB_APP_PATHS.choose ? () => github.choose(session!, id, parsedBody(request.body))
-            : method === "GET" && apiPath === GITHUB_APP_PATHS.connections ? () => github.connections(session!) : undefined;
+            : method === "GET" && apiPath === GITHUB_APP_PATHS.connections ? () => github.connections(session!)
+              // Guided onboarding PR 12b: disconnect one of the company's GitHub accounts (owner + fresh step-up).
+              : method === "DELETE" && GITHUB_DISCONNECT_PATH.test(apiPath) ? () => github.disconnect(session!, GITHUB_DISCONNECT_PATH.exec(apiPath)![1]!, parsedBody(request.body)) : undefined;
     // Guided onboarding PR 11: Slack and Linear (the start and result routes need this sign-in's cookie, as GitHub's).
     const connectRoute = githubCall === undefined ? slack.route(method, apiPath, request.query) ?? linear.route(method, apiPath) : undefined;
     const connectCall = githubCall ?? (connectRoute === undefined ? undefined : () => connectRoute(session!, id, parsedBody(request.body)));

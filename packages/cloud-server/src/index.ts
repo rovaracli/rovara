@@ -47,7 +47,7 @@ export { BEDROCK_BYO_ROUTES, BEDROCK_NOT_ENABLED_STEPS, BEDROCK_OWNER, BEDROCK_S
 export { LEARNING_AI_OWNER, LEARNING_AI_PROVIDERS, LEARNING_AI_ROUTES, LEARNING_PAUSE_WORDS, learningSourceId } from "./learning-ai-routes.js";
 export { STEP_UP_ACR, STEP_UP_METHODS, STEP_UP_SKEW_SECONDS, STEP_UP_WINDOW_SECONDS, freshStepUp, stepUpClaim, type StepUp, type StepUpMethod } from "./step-up.js";
 export {
-  GITHUB_CALLBACK_PATH, GITHUB_CONNECT_COOKIE, GITHUB_CONNECT_TTL_MS, GITHUB_OUTCOMES, GITHUB_WORDS, githubResultKey, githubStateKey,
+  GITHUB_CALLBACK_PATH, GITHUB_CONNECT_COOKIE, GITHUB_CONNECT_TTL_MS, GITHUB_OUTCOMES, GITHUB_WORDS, githubInUseWords, githubResultKey, githubStateKey,
   type GithubPending, type GithubResult,
 } from "./github-connect.js";
 export { CONNECT_TTL_MS, connectBack, connectCallbackPath, connectCookieName, connectResultKey, connectStateKey, type ConnectPending, type ConnectProvider } from "./connect-flow.js";

@@ -388,7 +388,9 @@ export type LinearConnectionRead = { status: "disconnected" } | { status: "conne
 export interface LinearDisconnected { status: "disconnected"; workspaceName: string; projects: string[] }
 export interface LinearTeam { id: string; key: string; name: string }
 export interface LinearProjectTeam { project: string; team: LinearTeam | null; teams?: LinearTeam[]; cleared?: boolean }
-export interface GithubConnectionsResponse { installations: Array<{ installationId: number; accountLogin: string; connectedAt: Iso; connectedBy: { kind: "person"; personId: string; name?: string } | { kind: "operator" } }> }
+export interface GithubConnectionsResponse { installations: Array<{ installationId: number; accountLogin: string; status?: "active" | "suspended" | "uninstalled"; accountType?: "User" | "Organization"; connectedAt: Iso; connectedBy: { kind: "person"; personId: string; name?: string } | { kind: "operator" } }> }
+/** Guided onboarding PR 12b (Code #832): a company owner with a fresh step-up disconnects one of the company's GitHub installations (refused while in use). */
+export interface GithubDisconnected { status: "disconnected"; installationId: number; accountLogin: string; uninstallUrl: string }
 /**
  * One engine action (Code's `GET /v1/dev/client/company/audit/records`, lane AU, Rovara PR #649). The optional fields are what Code adds: the record's id, the actor's kind and the caller the
  * action came through ("person via caller": `web`, `slack`, `cli`, `client:<id>`). An older Code leaves them out.
@@ -630,6 +632,7 @@ export interface CodeRouteTypes {
   "company.github.claim": { request: GithubClaimRequest; response: GithubClaimResponse };
   "company.github.choose": { request: GithubChooseRequest; response: GithubConnected };
   "company.github.status": { request: void; response: GithubConnectionsResponse };
+  "company.github.disconnect": { request: void; response: GithubDisconnected };
   "company.slack.install": { request: { redirectUri: string }; response: SlackInstallStart };
   "company.slack.installComplete": { request: { state: string; code?: string; error?: string }; response: SlackInstallComplete };
   "company.slack.get": { request: void; response: SlackWorkspaceRead };
@@ -801,6 +804,7 @@ export const CODE_ROUTES: readonly CodeRouteSpec[] = [
   spec("company.github.claim", "POST", "/v1/dev/company/github/claim", "GitHub's return: spend the state, check the person controls the installation, bind it or list the ones they control", "full", ["admin"], "no", false, "none", true),
   spec("company.github.choose", "POST", "/v1/dev/company/github/choose", "Bind one installation from a claim's checked list, with its single-use ticket", "full", ["admin"], "no", false, "none", true),
   spec("company.github.status", "GET", "/v1/dev/company/github", "The company's connected GitHub installations, who connected each and when (any member)", "full", ["admin"], "no", false, "none", true),
+  spec("company.github.disconnect", "DELETE", "/v1/dev/company/github/{installationId}", "A company owner with a fresh step-up disconnects one GitHub installation (refused while projects use it)", "full", ["admin"], "no", false, "none", true),
   // Guided onboarding (Code PRs #836 pr/go-slack-install, #840 pr/go-slack-channel, #838 pr/go-linear-oauth): not on code/next yet.
   spec("company.slack.install", "POST", "/v1/dev/company/slack/install", "A company owner or admin starts Add to Slack: a single-use state and Slack's OAuth v2 address for Cloud's callback", "full", ["admin"], "no", false, "none", true),
   spec("company.slack.installComplete", "POST", "/v1/dev/company/slack/install/complete", "Slack's return: spend the state, exchange the code, bind the workspace to the company", "full", ["admin"], "no", false, "none", true),
@@ -1090,6 +1094,7 @@ POST /v1/app/github/connect | k | admin | company.github.connect | onboarding | 
 POST /v1/app/github/connect/result | c | admin | | onboarding | T
 POST /v1/app/github/choose | k | admin | company.github.choose | onboarding | T
 GET /v1/app/github/connections | k | admin | company.github.status | onboarding | T
+DELETE /v1/app/github/connections/{installationId} | k | admin | company.github.disconnect | admin/connections | T
 POST /v1/app/slack/install | k | admin | company.slack.install | onboarding | T
 POST /v1/app/slack/install/result | c | admin | | onboarding | T
 GET /v1/app/slack | k | admin | company.slack.get | onboarding | T

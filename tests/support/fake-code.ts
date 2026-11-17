@@ -723,7 +723,17 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       githubBound.set(5001, { accountLogin: "example", connectedAt: iso(), by: person });
       return { body: { status: "connected", alreadyConnected: already, installation: { installationId: 5001, accountLogin: "example", accountType: "Organization" }, githubUser: { id: 4242, login: `${person.key}-gh` } } };
     },
-    "company.github.status": () => ({ body: { installations: [...githubBound].map(([installationId, row]) => ({ installationId, accountLogin: row.accountLogin, connectedAt: row.connectedAt, connectedBy: { kind: "person" as const, personId: row.by.developerId, name: row.by.name } })) } }),
+    "company.github.status": () => ({ body: { installations: [...githubBound].map(([installationId, row]) => ({ installationId, accountLogin: row.accountLogin, status: "active" as const, accountType: "Organization" as const, connectedAt: row.connectedAt, connectedBy: { kind: "person" as const, personId: row.by.developerId, name: row.by.name } })) } }),
+    // Guided onboarding PR 12b (Code #832): an owner disconnects an installation the company holds, refused while a project uses its repos.
+    "company.github.disconnect": ({ params, person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner can disconnect GitHub.");
+      const id = Number(params["installationId"]), row = githubBound.get(id);
+      if (row === undefined) return failure(404, "NOT_FOUND", "That GitHub installation isn't connected to your company.");
+      const using = projects.filter((entry) => entry.repositories.some((repository) => repository.fullName.toLowerCase().startsWith(`${row.accountLogin.toLowerCase()}/`))).map((entry) => entry.name).sort();
+      if (using.length > 0) return failure(409, "GITHUB_IN_USE", `Projects still use this GitHub connection: ${using.join(", ")}. Remove its repositories from them first.`);
+      githubBound.delete(id);
+      return { body: { status: "disconnected" as const, installationId: id, accountLogin: row.accountLogin, uninstallUrl: `https://github.com/organizations/${row.accountLogin}/settings/installations/${String(id)}` } };
+    },
     "company.slack.install": ({ body, person }) => {
       if (!person.administrator) return failure(403, "FORBIDDEN", "Only a company owner or admin can add Rovara to Slack.");
       const state = randomBytes(32).toString("base64url");
