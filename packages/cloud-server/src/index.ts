@@ -60,3 +60,5 @@ export { LINEAR_CALLBACK_PATH, LINEAR_OUTCOMES, LINEAR_WORDS } from "./linear-co
 export { SETUP_CHECKLIST_ANSWERS, SETUP_CHECKLIST_ROUTES, SETUP_CHECKLIST_WORDS, checklistAnswer, runBody, setupRefusal, skipBody } from "./setup-checklist-routes.js";
 export { LIFECYCLE_ANSWERS, LIFECYCLE_WORDS, PROJECT_LIFECYCLE_ROUTES, lifecycleBody, lifecycleRefusal } from "./project-lifecycle-routes.js";
 export { WIKI_ANSWERS, WIKI_ROUTES, WIKI_WORDS, indexAnswer, pageAnswer, sourcesAnswer, wikiRefusal } from "./wiki-routes.js";
+export { PEOPLE_LIMITS_ROUTES, PEOPLE_LIMITS_WORDS, type PersonSpendReader } from "./people-limits-routes.js";
+export { DynamoGatewayMeterReader, meterPartition, personMonthSort } from "./gateway-meter-read.js";

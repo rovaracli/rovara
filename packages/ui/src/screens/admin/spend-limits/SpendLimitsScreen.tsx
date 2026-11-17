@@ -3,6 +3,7 @@
 // shows the step only when the server asks. The company defaults live in Company settings; a project's per-task limit lives on its own page.
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router";
 import { MEMBERS_PATH, SCOPE_ID, SPEND_LIMITS_PATH, SPEND_LIMIT_TABLES, limitPath, parseUsd, readPeopleNames, readSpendLimits, type PersonName, type SpendLimitRow, type SpendLimitScope, type SpendLimitTable, type SpendLimitsRead } from "../../../api/admin-spend-limits.js";
 import { isNotConnected, needsStepUp } from "../../../api/admin-company.js";
 import { createApiClient } from "../../../api/client.js";
@@ -44,6 +45,8 @@ function Limits({ limits, reload }: { limits: SpendLimitsRead; reload: () => voi
  // The company's people, to show names. Best effort: when the list can't be read the page falls back to person IDs, and nothing else changes.
  const people = useAdminRead("spend-limits-people", MEMBERS_PATH, namesReader, { stable: true }).data;
  const confirmed = useJustConfirmed(developerId);
+ // People and limits links here with `?person=<id>`: that person's add (or edit) form opens (only a well-formed id is used).
+ const [params] = useSearchParams(), asked = params.get("person") ?? "", pick = SCOPE_ID.person.test(asked) ? asked : "";
  const [stepNeeded, setStepNeeded] = useState(false), [busy, setBusy] = useState(false), [notice, setNotice] = useState<{ ok: boolean; text: string }>();
  /** Sends one change. `usd` null removes the limit. The server decides whether it needs the fresh sign-in step. */
  async function send(table: SpendLimitTable, id: string, version: number, usd: number | null, done: string): Promise<boolean> {
@@ -73,18 +76,20 @@ function Limits({ limits, reload }: { limits: SpendLimitsRead; reload: () => voi
    </ul>
    <p className="rv-muted">Raising a limit asks you to confirm it's you. Lowering one does not.</p>
   </AdminSection>
-  {SPEND_LIMIT_TABLES.map(table => <LimitTable key={table.listKey} table={table} people={people} rows={limits.lists[table.listKey] ?? []} fallback={d[table.defaultKey]} max={limits.max[table.listKey] ?? 0} partial={limits.partial} busy={busy} send={send} />)}
+  {SPEND_LIMIT_TABLES.map(table => <LimitTable key={table.listKey} table={table} initialId={table.scope === "person" ? pick : ""} people={people} rows={limits.lists[table.listKey] ?? []} fallback={d[table.defaultKey]} max={limits.max[table.listKey] ?? 0} partial={limits.partial} busy={busy} send={send} />)}
  </>;
 }
 
-interface TableProps { table: SpendLimitTable; people?: PersonName[] | undefined; rows: SpendLimitRow[]; fallback: number | null; max: number; partial: boolean; busy: boolean; send: (table: SpendLimitTable, id: string, version: number, usd: number | null, done: string) => Promise<boolean> }
-function LimitTable({ table, people, rows, fallback, max, partial, busy, send }: TableProps) {
+interface TableProps { table: SpendLimitTable; /** The id the add form starts on (from the address). */ initialId: string; people?: PersonName[] | undefined; rows: SpendLimitRow[]; fallback: number | null; max: number; partial: boolean; busy: boolean; send: (table: SpendLimitTable, id: string, version: number, usd: number | null, done: string) => Promise<boolean> }
+function LimitTable({ table, initialId, people, rows, fallback, max, partial, busy, send }: TableProps) {
  const kind = table.scope, key = table.listKey, words = WORDS[kind];
  const names = new Map((people ?? []).map(person => [person.developerId, person.name]));
  const label = (id: string) => (kind === "person" ? names.get(id) ?? shortId(kind, id) : id);
  // People without a limit of their own can be picked by name; with no readable list, the person's ID is typed.
  const pickable = kind === "person" ? (people ?? []).filter(person => !rows.some(row => row.id === person.developerId)) : [];
- const [editing, setEditing] = useState<string>(), [amount, setAmount] = useState(""), [newId, setNewId] = useState(""), [newAmount, setNewAmount] = useState("");
+ // A person who already has a limit opens on its edit; one who has none opens the add form on them.
+ const existing = rows.find(row => row.id === initialId);
+ const [editing, setEditing] = useState<string | undefined>(existing?.id), [amount, setAmount] = useState(existing === undefined ? "" : String(existing.monthlyUsd)), [newId, setNewId] = useState(existing === undefined ? initialId : ""), [newAmount, setNewAmount] = useState("");
  const full = partial || rows.length >= max;
  const addId = newId.trim(), addUsd = parseUsd(newAmount);
  return <AdminSection title={table.title} note={`${String(rows.length)} of ${String(max)}`}>
