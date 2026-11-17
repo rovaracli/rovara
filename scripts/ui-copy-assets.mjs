@@ -21,7 +21,9 @@ for (const path of ["design/design.css", "shell/shell.css", "screens/home/home.c
  // DEC 231: the inbox lesson batch, Learned in How we work, Lessons used on the task page.
  "screens/work/lessons.css",
  // Guided onboarding PR 11: Add to Slack, the Slack channel and Linear team rows.
- "screens/connect/connect.css"]) {
+ "screens/connect/connect.css",
+ // Guided onboarding PR 9: the project setup checklist.
+ "screens/setup/checklist.css"]) {
  const source = new URL(`../packages/ui/src/${path}`, import.meta.url);
  const destination = new URL(`../packages/ui/dist/${path}`, import.meta.url);
  await mkdir(fileURLToPath(new URL(".", destination)), { recursive: true });

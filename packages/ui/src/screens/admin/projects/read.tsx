@@ -4,7 +4,7 @@ import { useAppHost } from "../../../host.js";
 import { createApiClient, type Reader } from "../../../api/client.js";
 import { ApiError } from "../../../api/errors.js";
 import { Skeleton } from "../../../design/Skeleton.js";
-import { useAdminContext } from "../AdminLayout.js";
+import { useAdminContext } from "../admin-context.js";
 export function useAdminRead<T>(area: string, resource: string, path: string, reader: Reader<T>) {
  const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]), query = useQueryClient();
  const { orgId, developerId } = useAdminContext();

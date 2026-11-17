@@ -17,6 +17,7 @@ import { MEMBER_ROUTES } from "./member-routes.js";
 import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
 import { PROJECT_CREATE_ROUTES, createProjects, isCreateProjectsBody } from "./project-create-routes.js";
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
+import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
@@ -820,4 +821,6 @@ export const ROUTES: Route[] = [
   ...AI_SPEND_ROUTES,
   // The in-app inbox (web task channel K5): Code's C7 routes, as the person.
   ...INBOX_ROUTES,
+  // The project setup checklist and the hosted setup run (guided onboarding PR 9): Code decides who may; Cloud passes the person's token and fixed words.
+  ...SETUP_CHECKLIST_ROUTES,
 ];
