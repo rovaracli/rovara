@@ -5,7 +5,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  CodeClient, GITHUB_CALLBACK_PATH, GITHUB_WORDS, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type PendingSignIn,
+  CodeClient, GITHUB_CALLBACK_PATH, type CompanyStore, GITHUB_WORDS, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type PendingSignIn,
 } from "../../packages/cloud-server/src/index.js";
 
 const CODE = "https://code.example.test";
@@ -95,7 +95,7 @@ function world() {
   const pendingWrites: Array<[string, PendingSignIn]> = [];
   const put = sessions.putPending.bind(sessions);
   sessions.putPending = async (key, value) => { pendingWrites.push([key, structuredClone(value)]); await put(key, value); };
-  const companies = new LocalCompanyStore();
+  const companies: CompanyStore = new LocalCompanyStore();
   const logs: Array<Record<string, unknown>> = [];
   const handler = createCloudHandler({
     client, store: sessions, org: { orgId: "rovara", name: "Rovara", plan: "cloud" }, callbackPath: "/callback", secureCookies: true, work: new LocalWorkSessionStore(), origin: ORIGIN,
