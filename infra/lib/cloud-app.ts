@@ -16,6 +16,7 @@ import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { HttpLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import type { Construct } from "constructs";
 import { RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
+import { applyCloudBoundary } from "./cloud-boundary.js";
 
 /**
  * Rovara Cloud's first address (owner decisions 2026-11-14): Cloud's web app and server on an existing Rovara Code install. Cloud has
@@ -144,5 +145,7 @@ export class CloudAppStack extends Stack {
 
     new CfnOutput(this, "FirstUrl", { value: `${api.apiEndpoint}/app`, description: "Cloud's first address: it redirects to CloudUrl" });
     new CfnOutput(this, "CloudUrl", { value: `${props.movedTo}/app`, description: "Rovara Cloud's web app" });
+    // Last, so the template keeps its section order; the aspect puts it on every role at synth (cloud-boundary.ts).
+    applyCloudBoundary(this, env, "app");
   }
 }
