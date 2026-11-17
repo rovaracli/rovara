@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { FAKE_CODE_URL, PeoplePanel, PROJECT, ProjectPage, SessionPage } from "./pages/index.js";
 
@@ -51,21 +52,28 @@ test("the owner adds a person, changes the role through the confirm step, and re
   await expect(page.getByTestId("people-panel")).not.toContainText(/slack invite|channel/iu);
 });
 
-// D8: Share folds into People. Where Code serves the task's People list, the Share button opens the panel to add a viewer, and the people a Share made readers show in the same list.
-test("Share opens the People panel to add a viewer, and a person shared with before shows in the list as a viewer", async ({ page }, testInfo) => {
+// D8: Share folds into People. A person a Share made a reader of the task (the earlier Share route, still there) shows in the same People list as a viewer, and is
+// removed from it with the share removal. (Cloud's session offers no Share button today; where one is offered, the unit tests cover it opening this panel.)
+test("a person shared with before shows in the People list as a viewer and can be removed there", async ({ page }, testInfo) => {
   const title = `Share into People ${String(Date.now())}`;
   const project = new ProjectPage(page);
   await project.open(PROJECT);
   await project.startWork(title);
   await expect(page).toHaveURL(SessionPage.SHARE_ADDRESS);
-  await new SessionPage(page).expectLoaded(title);
+  const session = new SessionPage(page);
+  await session.expectLoaded(title);
+  const sessionId = session.sessionIdFromAddress();
+  // The earlier Share route makes Sam a reader (Code's task readers).
+  const me = await (await page.request.get("/v1/web/me")).json() as { csrf: string };
+  const sam = createHash("sha256").update("fake-code:sam").digest("hex");
+  const shared = await page.request.put(`/v1/web/sessions/${sessionId}/shares`, { headers: { "x-rovara-csrf": me.csrf }, data: { requestId: randomUUID(), principal: { kind: "member", developerId: sam }, level: "view" } });
+  expect(shared.status()).toBe(200);
   const people = new PeoplePanel(page);
-  await page.getByRole("button", { name: "Share", exact: true }).click();
-  await expect(people.panel.getByRole("combobox", { name: "Add as" })).toHaveValue("viewer");
-  await expect(people.panel.getByRole("combobox", { name: "Person" })).toBeFocused();
-  await expect(page.getByText("Share this session")).toHaveCount(0);
-  await people.panel.getByRole("combobox", { name: "Person" }).selectOption({ label: "Sam" });
-  await people.panel.getByRole("button", { name: "Add person" }).click();
+  await people.open();
   await expect(people.row("Sam")).toContainText("Can view");
-  await page.screenshot({ path: testInfo.outputPath("people-panel-share.png") });
+  await expect(people.rows).toHaveCount(2);
+  await page.screenshot({ path: testInfo.outputPath("people-panel-shared-viewer.png") });
+  await people.panel.getByRole("button", { name: "Remove Sam" }).click();
+  await expect(people.row("Sam")).toHaveCount(0);
+  await expect(people.rows).toHaveCount(1);
 });
