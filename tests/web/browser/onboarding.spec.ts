@@ -2,9 +2,9 @@
 // a company with an operator's invite code (Code's fixed words on a wrong one) and lands on the first-day flow after signing in again; an
 // invite link opens "Join <company> on Rovara" and joins through Code's sign-in, and a link that can't be used says the one sentence.
 import { expect, test } from "@playwright/test";
-import { CompanyOnboardingPage, FAKE_INVITE_CODE, HomePage, ROUTES, setNoCompany } from "./pages/index.js";
+import { CompanyOnboardingPage, FAKE_INVITE_CODE, HomePage, ROUTES, setFakePerson, setNoCompany } from "./pages/index.js";
 
-test.afterEach(async ({ page }) => { await setNoCompany(page, false); });
+test.afterEach(async ({ page }) => { await setFakePerson(page, "sam"); await setNoCompany(page, false); await setFakePerson(page, "priya"); await setNoCompany(page, false); });
 
 test("a person with no company is sent to create one, and lands on the first-day flow once it's made", async ({ page }, testInfo) => {
   const home = new HomePage(page);
@@ -32,7 +32,7 @@ test("a person with no company is sent to create one, and lands on the first-day
   await page.screenshot({ path: testInfo.outputPath("first-day.png"), fullPage: true });
 });
 
-test("an invite link opens the join page with the company's name, and joins through Code's sign-in; a used or broken link says one sentence", async ({ page }, testInfo) => {
+test("an invite link carries Code's secret, opens the join page with the company's name, and joins a person with no company through Code's sign-in; a used or broken link says one sentence", async ({ page }, testInfo) => {
   const home = new HomePage(page);
   await home.open();
   await home.expectLoaded();
@@ -44,13 +44,30 @@ test("an invite link opens the join page with the company's name, and joins thro
   });
   const link = new URL(inviteUrl);
   expect(link.pathname).toBe(ROUTES.join);
-  expect(link.hash).toMatch(/^#invite=[A-Za-z0-9_-]{43}$/u);
+  // DEC 254h: the link carries Code's single-use invite secret (the pretend Code's prefix), in the fragment only.
+  expect(link.hash).toMatch(/^#invite=rvi_[A-Za-z0-9_-]{32}$/u);
+  const secret = link.hash.slice("#invite=".length);
+  // The invited person is someone else, in no company yet: Sam signs in to join.
+  await page.context().clearCookies();
+  await setFakePerson(page, "sam");
+  await setNoCompany(page, true);
   const screens = new CompanyOnboardingPage(page);
+  const seen: string[] = [];
+  page.on("request", (request) => { seen.push(request.url()); });
   await page.goto(link.pathname + link.hash);
   await expect(page.getByRole("heading", { name: /^Join .+ on Rovara$/u })).toBeVisible();
+  // Read once and dropped from the address.
+  expect(page.url()).not.toContain(secret);
   await page.screenshot({ path: testInfo.outputPath("join.png"), fullPage: true });
   await screens.joinSignIn.click();
   await page.waitForURL((url) => url.pathname === ROUTES.home && url.searchParams.get("joined") === "1");
+  // After the link, only Code's authorize URL carried the secret: no Cloud address did.
+  const carrying = seen.filter((url) => url.includes(secret));
+  expect(carrying.length).toBe(1);
+  expect(new URL(carrying[0]!).pathname).toBe("/v1/auth/authorize");
+  expect(page.url()).not.toContain(secret);
+  expect(await page.content()).not.toContain(secret);
+  await page.screenshot({ path: testInfo.outputPath("joined.png"), fullPage: true });
   // Used now: the same link can't be used again.
   await page.goto(link.pathname + link.hash);
   await expect(screens.joinUnusable).toHaveText("This invite can't be used. Ask your company admin for a new one.");

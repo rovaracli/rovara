@@ -23,6 +23,7 @@ import {
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
+import { applyCloudBoundary } from "./cloud-boundary.js";
 
 /**
  * The Cloud model gateway's infrastructure (migration plan v3.2, 7.4; packages/model-gateway). Every model call of every task
@@ -79,6 +80,15 @@ export const MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY = "rovaraModelGatewayR
  * exactly as without it.
  */
 export const MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY = "rovaraModelGatewayBedrockByo";
+/**
+ * How the provider key secrets are named. Absent (or "generated"): CloudFormation generates each secret's name, so a stack that
+ * failed on create and was deleted can be made again (a deleted secret keeps its NAME reserved for its recovery window, which
+ * blocks a re-create under a fixed name). `-c rovaraModelGatewayProviderSecretNames=fixed`: the original fixed name
+ * rovara-cloud/<env>/model-gateway/provider/<provider>. An environment ALREADY deployed with the fixed names MUST keep passing
+ * "fixed": changing a secret's name replaces it, and the replacement starts as a placeholder (the old secret, with the real
+ * key, is retained but no longer read). See docs/rovara-cloud-install.md, "The gateway's provider keys".
+ */
+export const MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY = "rovaraModelGatewayProviderSecretNames";
 /** Every customer role's name starts with this (packages/model-gateway bedrock-byo.ts BEDROCK_BYO_ROLE_PREFIX; a test pins them). */
 export const BEDROCK_BYO_CUSTOMER_ROLE_PREFIX = "RovaraBedrockInvoke-";
 /** The broker role's FIXED name: every customer's trust policy names it, so it must never change or be re-created. */
@@ -253,6 +263,13 @@ export function providerSecretName(env: string, provider: string): string {
   return `${RESOURCE_PREFIX}/${env}/model-gateway/provider/${provider}`;
 }
 
+/** Reads MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY: absent is "generated"; anything but "generated" or "fixed" is refused. */
+export function providerSecretNamesMode(value: unknown): "generated" | "fixed" {
+  if (value === undefined || value === "generated") return "generated";
+  if (value === "fixed") return "fixed";
+  throw new Error(`${MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY} must be "fixed" or "generated" (or absent, which is "generated")`);
+}
+
 export interface ModelGatewayImagesProps extends StackProps {
   readonly environmentName: string;
 }
@@ -273,6 +290,8 @@ export class ModelGatewayImagesStack extends Stack {
     });
     this.repository = repository;
     new CfnOutput(this, "RepositoryUri", { value: repository.repositoryUri, description: "Push the gateway image here; deploy the gateway stack with its digest" });
+    // Last, so the template keeps its section order; the aspect puts it on every role at synth (cloud-boundary.ts).
+    applyCloudBoundary(this, props.environmentName, "gateway-images");
   }
 }
 
@@ -286,6 +305,11 @@ export interface ModelGatewayProps extends StackProps {
   readonly rovaraAi?: RovaraAiProps;
   /** Bring your own Bedrock (MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY). Needs productAi. Default off. */
   readonly bedrockByo?: boolean;
+  /**
+   * "fixed" keeps the provider secrets at their original fixed names (an environment deployed that way must keep it); the default
+   * lets CloudFormation generate them (MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY).
+   */
+  readonly providerSecretNames?: "fixed" | "generated";
 }
 
 /** Table defaults: on-demand, point-in-time recovery, deletion protection, kept if the stack goes. */
@@ -362,7 +386,8 @@ export class ModelGatewayStack extends Stack {
     // role only (through Secrets Manager). Not a boundary against an account principal holding kms:PutKeyPolicy or
     // iam:PassRole on that role: those stay administrator rights. The value starts as a placeholder; an operator stores the
     // real key with `aws secretsmanager put-secret-value` (a new version; the console's edit reads the value first and is
-    // refused).
+    // refused), naming the secret by the ARN in the ProviderKeySecrets output (or its fixed name; see
+    // MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY).
     const serveRole = new iam.Role(this, "ServeTaskRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com", {
         conditions: { ArnLike: { "aws:SourceArn": `arn:${this.partition}:ecs:${this.region}:${this.account}:*` }, StringEquals: { "aws:SourceAccount": this.account } },
@@ -382,7 +407,15 @@ export class ModelGatewayStack extends Stack {
       description: `Rovara Cloud ${env}: the model gateway's daily price fetch`,
     });
     const viaSecretsManager = `secretsmanager.${this.region}.amazonaws.com`;
-    const secretArnPattern = `arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:${providerSecretName(env, "")}*`;
+    const fixedSecretNames = (props.providerSecretNames ?? "generated") === "fixed";
+    // Fixed names: the key policy names the secrets' prefix. Generated names are unknown until the secrets exist, and the secrets
+    // name this key (a policy naming them would be circular), so the pattern is every secret in this account and Region. That
+    // adds no read: decrypt of a stored value is still the serving role's alone (OnlyGatewayReads), and the serving role is
+    // granted GetSecretValue on the provider secrets' ARNs only. It lets an operator store a value in another secret made with
+    // this key, which they cannot read back.
+    const secretArnPattern = fixedSecretNames
+      ? `arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:${providerSecretName(env, "")}*`
+      : `arn:${this.partition}:secretsmanager:${this.region}:${this.account}:secret:*`;
     const providerKeysKey = new kms.Key(this, "ProviderKeysKey", {
       description: `Rovara Cloud ${env}: encrypts the model gateway's provider keys; only the gateway's serving role decrypts`,
       enableKeyRotation: true,
@@ -438,13 +471,15 @@ export class ModelGatewayStack extends Stack {
     // would let any account principal with secretsmanager:GetSecretValue read the keys.
     const secrets = MODEL_GATEWAY_PROVIDERS.map((provider) => {
       const secret = new secretsmanager.CfnSecret(this, `ProviderKey-${provider}`, {
-        name: providerSecretName(env, provider),
+        // No name: CloudFormation generates one (the default; see MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY).
+        ...(fixedSecretNames ? { name: providerSecretName(env, provider) } : {}),
         description: `Rovara Cloud ${env}: the model gateway's ${provider} key. Starts as a placeholder; put the real key here before switching the gateway on.`,
         kmsKeyId: providerKeysKey.keyArn,
         generateSecretString: { passwordLength: 32, excludePunctuation: true },
       });
       secret.applyRemovalPolicy(RemovalPolicy.RETAIN);
-      return { secretArn: secret.ref, secretName: providerSecretName(env, provider) };
+      // What the operator names to store the key: the fixed name, or (generated names) the secret's ARN, which Ref returns.
+      return { secretArn: secret.ref, secretId: fixedSecretNames ? providerSecretName(env, provider) : secret.ref };
     });
     const anthropic = secrets[0]!;
 
@@ -623,11 +658,26 @@ export class ModelGatewayStack extends Stack {
 
     // Alarms, to one topic (subscribe by hand). Gateway events are counted from its JSON log lines.
     const topic = new sns.Topic(this, "Alarms", { displayName: `Rovara Cloud ${env} model gateway alarms`, enforceSSL: true });
+    // CloudWatch needs its own allow to publish here: enforceSSL adds only a Deny, and without an allow every alarm action
+    // failed with "Failed to execute action" (staging, 2026-11-17). Scoped to this account and to this stack's alarms, whose
+    // names are fixed below (stack name, then the alarm id) so the ARN pattern is exact.
+    const alarmNamePrefix = `${this.stackName}-`;
+    topic.addToResourcePolicy(new iam.PolicyStatement({
+      sid: "AllowCloudWatchAlarms",
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal("cloudwatch.amazonaws.com")],
+      actions: ["sns:Publish"],
+      resources: [topic.topicArn],
+      conditions: {
+        StringEquals: { "aws:SourceAccount": this.account },
+        ArnLike: { "aws:SourceArn": `arn:${this.partition}:cloudwatch:${this.region}:${this.account}:alarm:${alarmNamePrefix}*` },
+      },
+    }));
     const notify = new cwActions.SnsAction(topic);
     const fiveMinutes = Duration.minutes(5);
     const alarm = (id: string, metric: cloudwatch.IMetric, threshold: number, description: string, evaluationPeriods = 1, comparison = cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD) => {
       new cloudwatch.Alarm(this, id, {
-        metric, threshold, evaluationPeriods, comparisonOperator: comparison, alarmDescription: description,
+        alarmName: `${alarmNamePrefix}${id}`, metric, threshold, evaluationPeriods, comparisonOperator: comparison, alarmDescription: description,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       }).addAlarmAction(notify);
     };
@@ -646,17 +696,35 @@ export class ModelGatewayStack extends Stack {
     alarm("BusyAnswers", fromLog("BusyAnswers", serveLogs, MODEL_GATEWAY_LOG_EVENTS.overrunBusy, fiveMinutes), MODEL_GATEWAY_ALARMS.busy, "Many busy answers: calls waiting on another estimated-price call of the same company");
     alarm("SettleFailures", fromLog("SettleFailures", serveLogs, MODEL_GATEWAY_LOG_EVENTS.settleFailed, fiveMinutes), MODEL_GATEWAY_ALARMS.settleFailed, "A call's cost could not be settled (its hold is kept)");
     alarm("PriceFetchFailures", fromLog("PriceFetchFailures", fetchLogs, MODEL_GATEWAY_LOG_EVENTS.priceFetchFailed, Duration.hours(1)), MODEL_GATEWAY_ALARMS.priceFetchFailed, "The daily price fetch failed (the last good prices stay)");
-    // Staleness: no saved fetch for three days running. No log at all (the rule off, the task never starting) counts as stale.
+    // Staleness: no saved fetch on any of the last three days. A new stack has no fetch log yet, and missing data counted as
+    // breaching made this alarm fire about 30 minutes after every create. So missing data does not breach; the alarm counts a
+    // day only when the gateway itself reported that day (healthy-host samples exist from the day the stack is made) and no
+    // fetch was saved. Silence from the fetch (rule off, task never starting) still counts as stale, after about two to three days (the oldest day counts once the gateway has reported in it).
+    const oneDay = Duration.days(1);
     new cloudwatch.Alarm(this, "PricesStale", {
-      metric: fromLog("PricesFetched", fetchLogs, MODEL_GATEWAY_LOG_EVENTS.priceFetched, Duration.days(1)),
+      alarmName: `${alarmNamePrefix}PricesStale`,
+      metric: new cloudwatch.MathExpression({
+        expression: "IF(alive > 0, 1, 0) * IF(FILL(fetched, 0) < 1, 1, 0)",
+        usingMetrics: {
+          alive: targetGroup.metrics.healthyHostCount({ period: oneDay, statistic: "SampleCount" }),
+          fetched: fromLog("PricesFetched", fetchLogs, MODEL_GATEWAY_LOG_EVENTS.priceFetched, oneDay),
+        },
+        period: oneDay,
+        label: "Days without a saved price fetch",
+      }),
       threshold: 1, evaluationPeriods: MODEL_GATEWAY_ALARMS.priceStaleDays, datapointsToAlarm: MODEL_GATEWAY_ALARMS.priceStaleDays,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD, treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD, treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       alarmDescription: "No price fetch has saved prices for three days: estimates use stale prices",
     }).addAlarmAction(notify);
 
     new CfnOutput(this, "GatewayAddress", { value: `https://${alb.loadBalancerDnsName}`, description: "Point the certificate's name at this (DNS is outside this stack); Code's model-access route answers that name" });
     new CfnOutput(this, "Issuer", { value: issuer, description: "The one Code install trusted" });
-    new CfnOutput(this, "ProviderKeySecrets", { value: Fn.join(",", secrets.map((secret) => secret.secretName)), description: "Put each provider's key here (write only; only the gateway reads)" });
+    new CfnOutput(this, "ProviderKeySecrets", {
+      value: Fn.join(",", secrets.map((secret) => secret.secretId)),
+      description: fixedSecretNames
+        ? "Put each provider's key here (write only; only the gateway reads)"
+        : "Put each provider's key here, by secret ARN, in the order of the providers (anthropic first): aws secretsmanager put-secret-value --secret-id <ARN> (write only; only the gateway reads)",
+    });
     new CfnOutput(this, "AlarmTopic", { value: topic.topicArn });
     if (product !== undefined) {
       new CfnOutput(this, "ProductKeysTableName", { value: product.keysTable.tableName, description: "Cloud's settings routes write product keys, eval approvals and budgets here (RovaraCloudWeb parameter ProductKeysTableName)" });
@@ -665,6 +733,8 @@ export class ModelGatewayStack extends Stack {
       new CfnOutput(this, "VertexFederationRoleArn", { value: product.vertexRole.roleArn, description: "Customers name this role in their Google workload identity pool (attribute condition on the assumed-role ARN with their company id)" });
     }
     if (bedrockByo !== undefined) new CfnOutput(this, "BedrockBrokerRoleArn", { value: bedrockByo.broker.roleArn, description: "Customers' RovaraBedrockInvoke roles trust this role (with their external id): never delete or rename it" });
+    // Last, so the template keeps its section order; the aspect puts it on every role at synth (cloud-boundary.ts).
+    applyCloudBoundary(this, env, "gateway");
   }
 
   /**

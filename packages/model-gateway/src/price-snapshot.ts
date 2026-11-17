@@ -10,7 +10,8 @@ export interface UnidentifiedRow { model: string; kind?: PriceKind; rates?: Pric
 export interface EffectiveIdentity extends PriceKey, ResolvedPrice {
   tokenPrice?: Price; kind?: PriceKind; aliases: string[]; sources: Array<"litellm" | "aws">; origin: PriceOrigin; pendingLower?: ResolvedPrice;
 }
-export const FLOOR_REASONS = ["unsupported mode", "unsupported deprecation date", "deprecated model", "unsupported price field", "unsupported token rate", "token rate exceeds maximum", "sanity hold", "unsupported provider", "unsupported per-request price"] as const;
+/** "deprecated price": a row past its deprecation date whose every field is known, stored at its exact rates (deprecatedRates). */
+export const FLOOR_REASONS = ["unsupported mode", "unsupported deprecation date", "deprecated model", "deprecated price", "unsupported price field", "unsupported token rate", "token rate exceeds maximum", "sanity hold", "unsupported provider", "unsupported per-request price"] as const;
 export interface ModelFloor extends Price, PriceKey { kind?: PriceKind; perRequest?: true; reason: typeof FLOOR_REASONS[number] }
 /** A model's own most output tokens per call, from the source row (LiteLLM max_output_tokens). */
 export interface ModelLimit extends PriceKey { maxOutputTokens: number }

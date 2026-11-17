@@ -72,7 +72,12 @@ describe("Rovara Cloud release pipeline", () => {
     const statements = policies.filter((policy) => policy.Roles.some((role) => role.Ref === deployRole)).flatMap((policy) => policy.PolicyDocument.Statement);
     const assume = statements.filter((statement) => [statement.Action].flat().some((action) => action.startsWith("sts:")));
     expect(assume).toHaveLength(1);
-    expect(JSON.stringify(assume[0]!.Resource)).toContain(`:role/cdk-${CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER}-*-`);
+    // The four bootstrap roles cdk deploy uses, by name: never the CloudFormation execution role (the account's administrator).
+    const assumed = JSON.stringify(assume[0]!.Resource);
+    for (const role of ["deploy-role", "file-publishing-role", "image-publishing-role", "lookup-role"]) expect(assumed).toContain(`:role/cdk-${CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER}-${role}-`);
+    expect((assume[0]!.Resource as unknown[]).length).toBe(4);
+    expect(assumed).not.toContain("cfn-exec-role");
+    expect(assumed).not.toContain(`cdk-${CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER}-*`);
     // The release check reads the web stack's outputs, and no other stack's.
     const describe = statements.filter((statement) => [statement.Action].flat().includes("cloudformation:DescribeStacks"));
     expect(describe).toHaveLength(1);

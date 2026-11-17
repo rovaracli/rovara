@@ -26,7 +26,8 @@ async function fromRows(rows: unknown) {
 }
 it.each([
   ["unsupported price field", { future_feature_cost_per_query: { secret: 1 } }, 15e-6, 75e-6],
-  ["deprecated model", { deprecation_date: "2020-01-01" }, 15e-6, 75e-6],
+  // A deprecated row with every field known now prices its identity (model-gateway-price-bands.test.ts); one with an unknown field stays a floor.
+  ["deprecated model", { deprecation_date: "2020-01-01", future_feature_cost_per_query: 1e-6 }, 15e-6, 75e-6],
   ["token rate exceeds maximum", {}, 0.002, 0.003],
 ] as const)("retains own known floor for %s through hold, settlement and correction", async (reason, extra, input, output) => {
   const { result, store, prices } = await fromRows({ old: base, "claude-sonnet-4-5": { ...base, ...extra, input_cost_per_token: input, output_cost_per_token: output } });

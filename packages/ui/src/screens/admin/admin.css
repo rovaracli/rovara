@@ -56,6 +56,11 @@
 
 .rv-admin-role-review{display:grid;gap:var(--rv-space-3)}
 .rv-admin-role-review p{margin:0;overflow-wrap:anywhere}
+.rv-admin-who{width:100%;border-collapse:collapse;margin-block:var(--rv-space-4)}
+.rv-admin-who caption{text-align:left;font-weight:600;padding-bottom:var(--rv-space-2)}
+.rv-admin-who th,.rv-admin-who td{text-align:left;vertical-align:top;padding:var(--rv-space-2) var(--rv-space-3);border-top:1px solid var(--rv-border);overflow-wrap:anywhere}
+.rv-admin-who tbody th{width:8rem;font-weight:600}
+.rv-admin-role-buttons{display:flex;flex-wrap:wrap;gap:var(--rv-space-2)}
 .rv-admin-role-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3)}
 
 .rv-admin-surface .rv-button[aria-disabled=true],.rv-admin-role-review .rv-button[aria-disabled=true]{opacity:.55;cursor:not-allowed}
@@ -84,3 +89,4 @@
 .rv-admin-card .rv-fresh{margin-bottom:var(--rv-space-3)}.rv-admin-card .rv-field{margin-bottom:var(--rv-space-2)}
 .rv-meter-caption{font-size:var(--rv-font-xs);color:var(--rv-text-muted);margin:0 0 var(--rv-space-2)}
 .rv-account{max-width:920px}.rv-shell-main .rv-account h1{font:600 var(--rv-font-title-size,21px)/1.25 var(--rv-font-title,var(--rv-font-ui));letter-spacing:0;margin:0}.rv-account .rv-page-header{margin-bottom:var(--rv-space-4)}
+.rv-admin[hidden]{display:none}

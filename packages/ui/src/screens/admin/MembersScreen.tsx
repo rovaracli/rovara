@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppOrgMembersResponseReaderSchema } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
@@ -13,6 +13,8 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { useAdminContext } from "./AdminLayout.js";
 import { RoleChangeDialog } from "./RoleChangeDialog.js";
 import { RemoveMemberDialog } from "./RemoveMemberDialog.js";
+import { roleChangesFor, WhoCanDoWhat } from "./company-roles.js";
+import { useJustConfirmed } from "./parts.js";
 const roleNames: Record<string, string> = { owner: "Owner", admin: "Admin", member: "Member", auditor: "Auditor" };
 const methodNames: Record<string, string> = { cloud: "Rovara sign-in", github: "GitHub", slack: "Slack", oidc: "Organization sign-in" };
 type Role = "owner" | "admin" | "member";
@@ -20,9 +22,9 @@ type Receipt = { scope: string; focus: boolean } & ({ kind: "verified"; person: 
 function joinedDate(value: string) { const date = new Date(value);return Number.isFinite(date.getTime()) ? date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }) : "Date unavailable"; }
 export function MembersScreen() {
  const host = useAppHost(), query = useQueryClient(), api = useMemo(() => createApiClient(host), [host]);
- const { orgId, developerId, company, role, checking } = useAdminContext(), [params, setParams] = useSearchParams(), navigate = useNavigate();
+ const { orgId, developerId, company, role, checking } = useAdminContext(), [params, setParams] = useSearchParams();
  const [removalReceipt, setRemovalReceipt] = useState<string>(), [receipt, setReceipt] = useState<Receipt>(), receiptElement = useRef<HTMLParagraphElement>(null), reasonId = useId();
- const scope = `${orgId}:${developerId}`, search = params.get("q") ?? "";
+ const scope = `${orgId}:${developerId}`, search = params.get("q") ?? "", confirmed = useJustConfirmed(developerId);
  useEffect(() => () => { const key = ["admin", "members", orgId, developerId];void query.cancelQueries({ queryKey: key, exact: true });query.removeQueries({ queryKey: key, exact: true }); }, [query, orgId, developerId]);
  useEffect(() => {
   if (receipt?.focus && receipt.scope === scope && role === "admin") { const timer = setTimeout(() => { receiptElement.current?.focus(); }, 0);return () => { clearTimeout(timer); }; }
@@ -39,13 +41,12 @@ export function MembersScreen() {
   if (member.role === "unknown") return "Role unavailable";
   // The Auditor is set by the company sign-in mapping or by an owner through the API; this screen does not change it.
   if (member.role === "auditor") return "Set outside this screen";
-  return <RoleChangeDialog key={`${scope}:${role}:${member.developerId}`} company={company} member={{ developerId: member.developerId, name: member.name, role: member.role }} self={member.developerId === developerId} ownerCount={members.filter(person => person.role === "owner").length} checking={accessChecking} staleData={dataStale} checkingReasonId={reasonId}
+  if (member.developerId === developerId) return <span className="rv-muted">You</span>;
+  const target = member.role;
+  return <RoleChangeDialog key={`${scope}:${role}:${member.developerId}`} company={company} member={{ developerId: member.developerId, name: member.name, role: target }} changes={roleChangesFor(role, target, member.developerId === developerId)} viewerId={developerId} confirmed={confirmed} checking={accessChecking} staleData={dataStale} checkingReasonId={reasonId}
    verify={async () => { const result = await read.refetch({ throwOnError: true });const actual = result.data?.members.find(person => person.developerId === member.developerId)?.role;return actual === "owner" || actual === "admin" || actual === "member" ? actual : undefined; }}
    onDenied={() => { void query.invalidateQueries({ queryKey: ["admin", "identity"] }).then(() => { setReceipt({ scope, focus: true, kind: "denied" }); });void query.invalidateQueries({ queryKey: ["nav"] }); }}
-   onApplied={next => {
-    setReceipt({ scope, focus: member.developerId === developerId && next === "admin", kind: "verified", person: member.name, role: next, checkedAt: new Date().toISOString() });
-    if (member.developerId === developerId) { if (next === "member") { void navigate("/app/admin", { state: { roleChange: { orgId, developerId, role: next } } }); }void query.invalidateQueries({ queryKey: ["admin", "identity"] });void query.invalidateQueries({ queryKey: ["nav"] }); }
-   }} />;
+   onApplied={next => { setReceipt({ scope, focus: false, kind: "verified", person: member.name, role: next, checkedAt: new Date().toISOString() }); }} />;
  }
  function removeAction(member: (typeof members)[number]) {
   if (member.developerId === developerId) return <span className="rv-muted">You</span>;
@@ -60,6 +61,7 @@ export function MembersScreen() {
   {!fatal && removalReceipt !== undefined && <p role="status">{removalReceipt}</p>}
   {!fatal && receipt?.scope === scope && <p ref={receiptElement} tabIndex={-1} role="status">{receipt.kind === "denied" ? "Role change refused. Company access was checked again." : <><VisibleText text={`${receipt.person}: company role verified: ${roleNames[receipt.role]}.`} /> Checked at <time dateTime={receipt.checkedAt}>{new Date(receipt.checkedAt).toLocaleString("en-US", { timeZone: "UTC" })}</time> UTC.</>}</p>}
   <PageHeader focusOnMount title="People" description="Company membership and sign-in methods. Project access also depends on project roles." actions={<Link to={"/app/admin/people/roles" + (search ? "?q=" + encodeURIComponent(search) : "")}>Roles explained</Link>} />
+  <WhoCanDoWhat />
   {read.isPending ? <Skeleton label="Loading company members" /> : fatal ? <div><p role="alert">{read.error instanceof ApiError && read.error.status === 403 ? "You don't have permission to view company members." : "Couldn't load company members. Try again."}</p><Button onClick={() => { void read.refetch(); }}>Try again</Button></div> : <>
    {read.data !== undefined && (accessChecking || dataStale) && <p id={reasonId} role={dataStale ? "alert" : "status"}>{dataStale ? "Member list is stale. Changes are disabled until a successful check." : "Checking company access..."}</p>}
    {dataStale && <Button disabled={read.isFetching} onClick={() => { void read.refetch(); }}>Retry member list</Button>}
@@ -72,7 +74,7 @@ export function MembersScreen() {
      { key: "role", title: "Company role", render: member => roleNames[member.role] ?? "Role unavailable" },
      { key: "methods", title: "Sign-in methods", render: member => member.identities === undefined ? "Unavailable" : member.identities.length === 0 ? "None returned" : member.identities.map(method => methodNames[method] ?? "Other sign-in method").join(", ") },
      { key: "joined", title: "Joined (UTC)", render: member => member.joinedAt === undefined ? "Date unavailable" : joinedDate(member.joinedAt) },
-     ...(role === "owner" ? [{ key: "action", title: "Role action", render: action }] : []),
+     ...(role === "owner" || role === "admin" ? [{ key: "action", title: "Change role", render: action }] : []),
      ...(role === "owner" || role === "admin" ? [{ key: "remove", title: "Remove", render: removeAction }] : []),
     ]} />}
    </>}

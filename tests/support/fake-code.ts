@@ -15,7 +15,7 @@ import {
   type DecisionsResponse, type DecisionOutcome, type LessonItem, type LessonMode, type TaskLesson,
 } from "../../packages/contracts/src/code-contract-v0.js";
 
-export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean }
+export interface Person { key: string; developerId: string; name: string; email: string; administrator: boolean; /** Another company than the pretend Code's own (guided onboarding PR 10: two-company tests). */ company?: { id: string; name: string } }
 
 const id64 = (name: string) => createHash("sha256").update(`fake-code:${name}`).digest("hex");
 /** The pretend Code's one company (DEC 253z: Code names it in the access check). */
@@ -31,6 +31,14 @@ export const FAKE_LINEAR_CODES = { connected: "fakelinearok" } as const;
 export const PRIYA: Person = { key: "priya", developerId: id64("priya"), name: "Priya", email: "priya@example.test", administrator: true };
 export const SAM: Person = { key: "sam", developerId: id64("sam"), name: "Sam", email: "sam@example.test", administrator: false };
 const PEOPLE: readonly Person[] = [PRIYA, SAM];
+/** The pretend Code's second company, with its own GitHub account and repositories (guided onboarding PR 10): its owner is not in PEOPLE, so the first company's lists never show them. */
+export const OTHER_COMPANY_ID = "org_bbbbbbbbbbbbbbbbbbbb";
+export const ZED: Person = { key: "zed", developerId: id64("zed"), name: "Zed", email: "zed@other.test", administrator: true, company: { id: OTHER_COMPANY_ID, name: "Other Co" } };
+/** The repositories each company's GitHub accounts reach (`client.repositories.available`), by company. */
+export const FAKE_AVAILABLE_REPOSITORIES: Readonly<Record<string, ReadonlyArray<{ installationId: number; accountLogin: string; fullName: string }>>> = {
+  [FAKE_COMPANY_ID]: ["web", "api", "docs", "billing", "mobile", "search", "infra", "design", "payments", "auth", "notifier", "reports"].map((name) => ({ installationId: 1001, accountLogin: "example", fullName: `example/${name}` })),
+  [OTHER_COMPANY_ID]: [{ installationId: 2002, accountLogin: "other-co", fullName: "other-co/secret-ledger" }, { installationId: 2002, accountLogin: "other-co", fullName: "other-co/web" }],
+};
 
 /** Fixed task ids, so a screen under construction can open them by address. */
 export const TASK_IDS = {
@@ -94,7 +102,7 @@ export interface FakeCode {
 }
 
 interface Answer<K extends CodeRouteId> { status?: number; body?: CodeResponse<K> | ErrorBody; headers?: Record<string, string> }
-interface Context<K extends CodeRouteId> { body: CodeRequest<K>; params: Record<string, string>; query: URLSearchParams; person: Person }
+interface Context<K extends CodeRouteId> { body: CodeRequest<K>; params: Record<string, string>; query: URLSearchParams; person: Person; token?: string }
 type Handler<K extends CodeRouteId> = (context: Context<K>) => Answer<K> | Promise<Answer<K>>;
 type Handlers = { [K in CodeRouteId]: Handler<K> };
 
@@ -109,6 +117,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   /** People Code names no company for (DEC 253z), and Code's live member pre-approvals by the email's SHA-256. */
   const companyless = new Set<string>();
   const preapprovals = new Map<string, string>();
+  /** DEC 254h: Code's single-use invite secrets by their SHA-256 (Code keeps only the hash), each bound to the company and its pre-approval. */
+  const inviteSecrets = new Map<string, { companyId: string; emailHash: string; expiresAt: number; used: boolean }>();
+  /** Access tokens whose sign-in spent an invite secret (the access answer's `joinedByInvite`). */
+  const joinedTokens = new Set<string>();
   // Guided onboarding (Code PR #830): single-use GitHub connect states and choose tickets, each for the person who got it; the company's bound installations.
   const githubStates = new Map<string, { developerId: string; spent: boolean }>();
   const githubTickets = new Map<string, { developerId: string; spent: boolean }>();
@@ -129,15 +141,17 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const iso = () => now().toISOString();
 
   // --- sign-in state
-  const codes = new Map<string, { person: Person; challenge: string; redirectUri: string }>();
+  const codes = new Map<string, { person: Person; challenge: string; redirectUri: string; joined?: true }>();
   const access = new Map<string, Person>();
   const refresh = new Map<string, Person>();
 
   // --- data
-  const projects: Array<{ name: string; repositories: Array<{ name: string; url: string; defaultBranch: string; fullName: string }>; members: Map<string, "administrator" | "developer"> }> = [
+  const projects: Array<{ companyId?: string; name: string; repositories: Array<{ name: string; url: string; defaultBranch: string; fullName: string }>; members: Map<string, "administrator" | "developer"> }> = [
     { name: "web", repositories: [{ name: "web", url: "https://github.com/example/web", defaultBranch: "main", fullName: "example/web" }], members: new Map([[PRIYA.developerId, "administrator"], [SAM.developerId, "developer"]]) },
     { name: "api", repositories: [{ name: "api", url: "https://github.com/example/api", defaultBranch: "main", fullName: "example/api" }], members: new Map([[PRIYA.developerId, "administrator"]]) },
+    { companyId: OTHER_COMPANY_ID, name: "secret-ledger", repositories: [{ name: "secret-ledger", url: "https://github.com/other-co/secret-ledger", defaultBranch: "main", fullName: "other-co/secret-ledger" }], members: new Map([[ZED.developerId, "administrator"]]) },
   ];
+  const companyOfPerson = (person: Person) => person.company?.id ?? FAKE_COMPANY_ID;
   const project = (name: string) => projects.find((entry) => entry.name === name);
   const linearRedirectUri = options.linearRedirectUri ?? "http://127.0.0.1:8787/api/connect/linear/callback";
   const linkNotAllowed = "Only a company owner or admin, or this project's admin, can link or unlink its Slack channel.";
@@ -229,16 +243,6 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     if (run.status === "running") setupRuns.set(name, { ...run, status: "failed", stop: "stopped_by_person" });
     return { status: 202, body: setupRunView(name, true) };
   };
-  // Guided onboarding PR 15: the company's engine model (Code #835) and each project's cost settings (Code's M4a), small.
-  const OFFERED_MODELS = ["zai.glm-4.7", "claude-sonnet-4-5", "zai.glm-4.6"];
-  let companyModel: string | undefined;
-  const engineView = () => { const model = companyModel ?? "zai.glm-4.6"; return { model, source: companyModel === undefined ? "install" as const : "company" as const, offered: [...OFFERED_MODELS], preselect: OFFERED_MODELS.includes(model) ? model : OFFERED_MODELS[0]! }; };
-  const projectSettings = new Map<string, { overrides: Record<string, unknown>; revision: number }>();
-  const settingsView = (name: string) => {
-    const entry = projectSettings.get(name) ?? { overrides: {}, revision: 0 };
-    const own = entry.overrides["model_budget_usd"];
-    return { preset: null, overrides: { ...entry.overrides }, revision: entry.revision, updatedAt: null, updatedBy: null, resolved: {}, values: { model_budget_usd: { value: own === undefined ? null : own, origin: own === undefined ? "preset" : "project" } }, clamped: [] };
-  };
   // Guided onboarding PR 16/17: each project's archive state (Code #839's rule, small).
   const lifecycle = new Map<string, { status: "active" | "archived"; revision: number; receipts: Map<string, { personId: string; outcome: ArchiveOutcome }> }>();
   type ArchiveOutcome = CodeResponse<"client.projects.archive">;
@@ -273,6 +277,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const outcome: ArchiveOutcome = { receipt, replayed: false, current: lifecyclePreview(kind, name, manage), effects: kind === "archive" ? { egress: "not_attempted", archiveHook: "not_configured" } : { egress: "not_attempted" } };
     entry.receipts.set(body.requestId, { personId: person.developerId, outcome });
     return { body: outcome };
+  };
+  // Guided onboarding PR 15: the company's engine model (Code #835) and each project's cost settings (Code's M4a), small.
+  const OFFERED_MODELS = ["zai.glm-4.7", "claude-sonnet-4-5", "zai.glm-4.6"];
+  let companyModel: string | undefined;
+  const engineView = () => { const model = companyModel ?? "zai.glm-4.6"; return { model, source: companyModel === undefined ? "install" as const : "company" as const, offered: [...OFFERED_MODELS], preselect: OFFERED_MODELS.includes(model) ? model : OFFERED_MODELS[0]! }; };
+  const projectSettings = new Map<string, { overrides: Record<string, unknown>; revision: number }>();
+  const settingsView = (name: string) => {
+    const entry = projectSettings.get(name) ?? { overrides: {}, revision: 0 };
+    const own = entry.overrides["model_budget_usd"];
+    return { preset: null, overrides: { ...entry.overrides }, revision: entry.revision, updatedAt: null, updatedBy: null, resolved: {}, values: { model_budget_usd: { value: own === undefined ? null : own, origin: own === undefined ? "preset" : "project" } }, clamped: [] };
   };
 
   const base = (taskId: string, owner: Person, patch: Partial<TaskView> & { title: string; project: string }): { owner: Person; task: TaskView } => ({
@@ -438,9 +452,25 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "auth.authorize": ({ query }) => {
       const redirectUri = query.get("redirect_uri") ?? "";
       if (query.get("client_id") !== clientId || redirectUri === "" || query.get("code_challenge_method") !== "S256") return failure(400, "invalid_request", "bad authorize request");
-      const code = randomBytes(12).toString("hex");
-      codes.set(code, { person: current, challenge: query.get("code_challenge") ?? "", redirectUri });
       const back = new URL(redirectUri);
+      // DEC 254h: a join with Code's invite secret. The secret must be live, unspent, bound to `company`, and its pre-approval still live; a
+      // person Code names another company for is refused. Spent with the membership. Any failure: the one "not invited" refusal.
+      const secret = query.get("invite");
+      let joined = false;
+      if (secret !== null) {
+        const held = inviteSecrets.get(createHash("sha256").update(secret).digest("hex"));
+        if (held === undefined || held.used || held.expiresAt <= now().getTime() || held.companyId !== query.get("company") || !preapprovals.has(held.emailHash)) {
+          back.searchParams.set("error", "access_denied");
+          back.searchParams.set("state", query.get("state") ?? "");
+          return { status: 302, headers: { location: back.toString() } };
+        }
+        held.used = true;
+        preapprovals.delete(held.emailHash);
+        companyless.delete(current.developerId);
+        joined = true;
+      }
+      const code = randomBytes(12).toString("hex");
+      codes.set(code, { person: current, challenge: query.get("code_challenge") ?? "", redirectUri, ...(joined ? { joined: true as const } : {}) });
       back.searchParams.set("code", code);
       back.searchParams.set("state", query.get("state") ?? "");
       return { status: 302, headers: { location: back.toString() } };
@@ -453,13 +483,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       return { body: {} };
     },
     "auth.jwks": () => ({ body: { keys: [] } }),
-    "access.check": ({ person }) => {
+    "access.check": ({ person, token }) => {
       const body: AccessResponse = {
         developerId: person.developerId, displayName: person.name, nameChosen: true, administrator: person.administrator,
         // DEC 253z: the person's company and role, as Code PR #820 names them (the same role the company members list shows); none for a person
         // the test made companyless (POST /__fake/no-company).
-        ...(companyless.has(person.developerId) ? {} : { companyId: FAKE_COMPANY_ID, companyRole: person.administrator ? "owner" as const : "member" as const, companyName: FAKE_COMPANY_NAME }),
+        ...(companyless.has(person.developerId) ? {} : { companyId: companyOfPerson(person), companyRole: person.administrator ? "owner" as const : "member" as const, companyName: person.company?.name ?? FAKE_COMPANY_NAME }),
         projects: projects.filter((entry) => entry.members.has(person.developerId)).map((entry) => ({ name: entry.name, access: entry.members.get(person.developerId) ?? "developer" })), notices: [],
+        ...(token !== undefined && joinedTokens.has(token) && !companyless.has(person.developerId) ? { joinedByInvite: true } : {}),
       };
       return { body };
     },
@@ -474,11 +505,34 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "channelLinks.remove": () => ({ body: { removed: true } }),
     "projects.list": ({ person }) => ({ body: { projects: projects.filter((entry) => entry.members.has(person.developerId)).map((entry) => ({ name: entry.name, access: entry.members.get(person.developerId) ?? "developer" })) } }),
     "client.projects.create": ({ body, person }) => {
-      if (typeof body.repository !== "string" || body.repository === "") return failure(400, "CONFIG_INVALID", "repository: name a repository.");
-      const name = body.name ?? body.repository.split("/").pop() ?? "project";
-      if (project(name) !== undefined) return failure(409, "CONFLICT", "A project with that name exists.");
-      projects.push({ name, repositories: [{ name, url: `https://github.com/${body.repository}`, defaultBranch: "main", fullName: body.repository }], members: new Map([[person.developerId, "administrator"]]) });
+      // Guided onboarding PR 10 (Code PR #837 and 19): `repositories` makes ONE project holding them all, every repository on the caller's company's GitHub accounts; only a company owner or admin (here: the administrator flag) may create.
+      if (!person.administrator) return failure(403, "FORBIDDEN", "only a Rovara administrator can create a project");
+      const asked: unknown = "repositories" in body ? body.repositories : body.repository;
+      const list = Array.isArray(asked) ? asked : [asked];
+      if (list.length < 1 || list.some((entry) => typeof entry !== "string" || entry === "")) return failure(400, "CONFIG_INVALID", "repository: name a repository.");
+      const mine = new Set((FAKE_AVAILABLE_REPOSITORIES[companyOfPerson(person)] ?? []).map((entry) => entry.fullName.toLowerCase()));
+      if ("repositories" in body && list.some((entry) => !mine.has(String(entry).toLowerCase()))) return failure(400, "CONFIG_INVALID", "one or more of these repositories is not available through your company's GitHub connection; nothing was created");
+      const first = String(list[0]);
+      const name = body.name ?? first.split("/").pop() ?? "project";
+      if (project(name) !== undefined) return "repositories" in body ? failure(400, "CONFIG_INVALID", `a project named ${name} already exists; choose another name`) : failure(409, "CONFLICT", "A project with that name exists.");
+      projects.push({ companyId: companyOfPerson(person), name, repositories: list.map((entry) => ({ name: String(entry).split("/").pop() ?? name, url: `https://github.com/${String(entry)}`, defaultBranch: "main", fullName: String(entry) })), members: new Map([[person.developerId, "administrator"]]) });
       return { status: 201, body: { name } };
+    },
+    "client.projects.bulk": ({ body, person }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "only a Rovara administrator can create a project");
+      if (!Array.isArray(body.repositories) || body.repositories.length < 1) return failure(400, "CONFIG_INVALID", "repositories: name at least one repository.");
+      const mine = new Set((FAKE_AVAILABLE_REPOSITORIES[companyOfPerson(person)] ?? []).map((entry) => entry.fullName.toLowerCase()));
+      return {
+        body: {
+          results: body.repositories.map((repository) => {
+            if (!mine.has(repository.toLowerCase())) return { repository, outcome: "refused" as const, reason: "not_available" as const };
+            const name = repository.split("/").pop() ?? "project";
+            if (project(name) !== undefined) return { repository, outcome: "refused" as const, reason: "name_taken" as const };
+            projects.push({ companyId: companyOfPerson(person), name, repositories: [{ name, url: `https://github.com/${repository}`, defaultBranch: "main", fullName: repository }], members: new Map([[person.developerId, "administrator"]]) });
+            return { repository, outcome: "created" as const, project: name };
+          }),
+        },
+      };
     },
     "client.projects.get": ({ params, person }) => {
       const entry = project(params["project"] ?? "");
@@ -511,6 +565,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     "client.repositories.list": () => ({
       body: { installations: [{ installationId: 1001, accountLogin: "example", accountType: "Organization", repositorySelection: "selected", status: "active", repositories: [{ fullName: "example/web", githubRepositoryId: 1, private: true, defaultBranch: "main" }, { fullName: "example/api", githubRepositoryId: 2, private: true, defaultBranch: "main" }, { fullName: "example/docs", githubRepositoryId: 3, private: false, defaultBranch: "main" }] }] },
     }),
+    "client.repositories.available": ({ person, query }) => {
+      if (!person.administrator) return failure(403, "FORBIDDEN", "only a Rovara administrator can create a project");
+      const company = companyOfPerson(person);
+      const q = (query.get("q") ?? "").toLowerCase(), after = query.get("after"), limit = Number(query.get("limit") ?? 50);
+      const heldBy = (fullName: string) => projects.filter((entry) => (entry.companyId ?? FAKE_COMPANY_ID) === company && entry.repositories.some((repository) => repository.fullName.toLowerCase() === fullName.toLowerCase())).map((entry) => entry.name);
+      const sorted = [...(FAKE_AVAILABLE_REPOSITORIES[company] ?? [])].sort((a, b) => a.fullName.localeCompare(b.fullName)).filter((entry) => entry.fullName.toLowerCase().includes(q) && (after === null || entry.fullName.localeCompare(after) > 0));
+      const page = sorted.slice(0, limit);
+      const all = [...(FAKE_AVAILABLE_REPOSITORIES[company] ?? [])].sort((a, b) => a.fullName.localeCompare(b.fullName));
+      return { body: { repositories: page.map((entry) => ({ ...entry, githubRepositoryId: 100 + all.findIndex((one) => one.fullName === entry.fullName), private: true, defaultBranch: "main", projects: heldBy(entry.fullName) })), ...(sorted.length > limit ? { next: page.at(-1)!.fullName } : {}), incomplete: false } };
+    },
     "client.members.list": ({ params, person }) => {
       const entry = project(params["project"] ?? "");
       if (entry === undefined || !entry.members.has(person.developerId)) return notFound("project");
@@ -676,10 +740,16 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       const key = createHash("sha256").update(body.email.trim().toLowerCase()).digest("hex");
       if (preapprovals.has(key) || body.role !== "member") return failure(404, "NOT_FOUND", "not found");
       preapprovals.set(key, body.email.trim().toLowerCase());
-      return { body: { ok: true } };
+      // DEC 254h: a single-use invite secret for this pre-approval, returned once; the fake keeps only its hash.
+      const secret = `rvi_${randomBytes(24).toString("base64url")}`;
+      const expiresAt = now().getTime() + body.expiresInHours * 3_600_000;
+      inviteSecrets.set(createHash("sha256").update(secret).digest("hex"), { companyId: FAKE_COMPANY_ID, emailHash: key, expiresAt, used: false });
+      return { body: { ok: true, invite: { secret, expiresAt: new Date(expiresAt).toISOString() } } };
     },
     "company.preapprovals.withdraw": ({ params, person }) => {
       if (!person.administrator || !preapprovals.delete(params["emailHash"] ?? "")) return failure(404, "NOT_FOUND", "not found");
+      // Withdrawing the pre-approval kills its secret too.
+      for (const [hash, held] of inviteSecrets) if (held.emailHash === params["emailHash"]) inviteSecrets.delete(hash);
       return { body: { ok: true } };
     },
     "company.create": ({ body, person }) => {
@@ -967,8 +1037,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return Buffer.concat(chunks).toString("utf8");
   }
 
-  function issue(person: Person): { access_token: string; refresh_token: string; token_type: "Bearer" } {
+  function issue(person: Person, joined = false): { access_token: string; refresh_token: string; token_type: "Bearer" } {
     const accessToken = `fake-access-${randomBytes(12).toString("hex")}`;
+    if (joined) joinedTokens.add(accessToken);
     const refreshToken = `fake-refresh-${randomBytes(12).toString("hex")}`;
     access.set(accessToken, person);
     refresh.set(refreshToken, person);
@@ -982,7 +1053,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       codes.delete(form.get("code") ?? "");
       const verifier = form.get("code_verifier") ?? "";
       if (code === undefined || form.get("redirect_uri") !== code.redirectUri || createHash("sha256").update(verifier).digest("base64url") !== code.challenge) return { status: 400, body: { error: "invalid_grant" } };
-      return { status: 200, body: issue(code.person) };
+      return { status: 200, body: issue(code.person, code.joined === true) };
     }
     if (form.get("grant_type") === "refresh_token") {
       const token = form.get("refresh_token") ?? "";
@@ -1005,8 +1076,8 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       try {
         if (method === "POST" && url.pathname === "/__fake/person") {
           const wanted = (JSON.parse(await readBody(request)) as { person?: string }).person;
-          const who = PEOPLE.find((one) => one.key === wanted);
-          if (who === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "person is priya or sam" } });
+          const who = [...PEOPLE, ZED].find((one) => one.key === wanted);
+          if (who === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "person is priya, sam or zed" } });
           current = who;
           return send(200, { person: who.key });
         }
@@ -1015,6 +1086,12 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (typeof on !== "boolean") return send(400, { error: { code: "CONFIG_INVALID", message: "on is true or false" } });
           if (on) companyless.add(current.developerId); else companyless.delete(current.developerId);
           return send(200, { on });
+        }
+        // Guided onboarding PR 10: forget the projects a spec made through the picker (the two the pretend Code starts with stay), so later specs see the people and projects they expect.
+        if (method === "POST" && url.pathname === "/__fake/reset-created-projects") {
+          const keep = new Set(["web", "api", "secret-ledger"]);
+          for (let index = projects.length - 1; index >= 0; index -= 1) if (!keep.has(projects[index]!.name)) projects.splice(index, 1);
+          return send(200, { projects: projects.length });
         }
         if (method === "POST" && url.pathname === "/__fake/lessons") {
           const on = (JSON.parse(await readBody(request)) as { on?: unknown }).on;
@@ -1048,8 +1125,9 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
         if (matched === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
         const id = matched.route.id;
         let person: Person | undefined = current;
+        let bearer: string | undefined;
         if (matched.route.scope !== "none" || id === "access.check" || id === "auth.revoke") {
-          const bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
+          bearer = /^Bearer (.+)$/u.exec(request.headers.authorization ?? "")?.[1];
           person = bearer === undefined ? undefined : access.get(bearer);
           if (person === undefined) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
         }
@@ -1058,7 +1136,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           try { body = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); }
         }
         const handler = handlers[id] as Handler<CodeRouteId>;
-        const answer = await handler({ body: body as never, params: matched.params, query: url.searchParams, person });
+        const answer = await handler({ body: body as never, params: matched.params, query: url.searchParams, person, ...(bearer === undefined ? {} : { token: bearer }) });
         const status = answer.status ?? 200;
         return send(status, status === 302 ? undefined : answer.body ?? {}, answer.headers);
       } catch (error) {
