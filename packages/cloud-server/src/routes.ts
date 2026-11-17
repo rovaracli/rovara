@@ -14,6 +14,7 @@ import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, pars
 import { WORK_READS } from "./work-reads.js";
 import { ONBOARDING_ROUTES } from "./onboarding-routes.js";
 import { MEMBER_ROUTES } from "./member-routes.js";
+import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
@@ -806,4 +807,6 @@ export const ROUTES: Route[] = [
   // Creating a company (DEC 254a), for a person with no company yet.
   ...ONBOARDING_ROUTES,
   ...MEMBER_ROUTES,
+  // A project's archive and restore, preview first (DEC 254n item 3): Code decides who may; Cloud passes the person's token and fixed words.
+  ...PROJECT_LIFECYCLE_ROUTES,
 ];

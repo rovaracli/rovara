@@ -231,6 +231,7 @@ export * from "./reviewed-project-archive.js";
 
 // Lane B reviewed restore boundary.
 export * from "./reviewed-project-restore.js";
+export * from "./project-lifecycle.js";
 
 // Lane B: browser-safe project-scoped working-branch page data.
 export * from "./app-working-branches.js";

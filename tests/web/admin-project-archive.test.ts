@@ -20,6 +20,8 @@ function mount(options: {post?: (r:ApiRequest)=>Promise<ApiResponse>; preview?:(
  const f=fakeHost(async r=>{
   if(r.path.endsWith("/me"))return {status:200,body:structuredClone(me)};
   if(r.path.endsWith("/nav"))return {status:200,body:nav};
+  // The lifecycle read is Cloud's summary of the same previews Code answers (PR 17).
+  if(r.path.endsWith("/lifecycle")){const given=options.preview?.(),p=given?.status===200&&typeof (given.body as {status?:unknown}).status==="string"?given:{status:200,body:preview()};const b=p.body as {status:"active"|"archived"};return {status:200,body:{status:b.status,actions:[b.status==="active"?"archive":"restore"]}};}
   if(r.path.endsWith("/archive-preview"))return options.preview?.()??{status:200,body:preview()};
   if(r.method==="POST"){if(options.post)return options.post(r);status="archived";revision++;return {status:200,body:{replayed:false,receipt:{project:"payments",status:"archived",revision,projectRevision:3,archivedAt:"2026-10-27T15:01:00.000Z",egressReconciliation:"pending"},current:preview(),effects:{egress:"synchronized",archiveHook:"not_configured"}}};}
   return {status:200,body:r.path.endsWith("/members")?{members:[]}: {...project,status}};
