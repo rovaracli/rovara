@@ -59,7 +59,7 @@ export function AddToSlackStep({ skipped = false, onSkip, onUndoSkip }: { skippe
  return <section className="rv-connect-step" aria-label="Add Rovara to Slack" data-testid="slack-step" data-state="open">
   <h2>Add Rovara to Slack <span className="rv-connect-optional">Optional</span></h2>
   <p>Rovara answers in Slack threads and posts updates to your project's channel. Slack asks which workspace to add it to.</p>
-  {workspace.isError && <p role="alert">Couldn't check Slack just now.</p>}
+  {workspace.isError && <p>Couldn't check Slack just now.</p>}
   {ws !== undefined && ws !== null && ws.state === "disconnected" && <p role="status">Rovara was removed from <VisibleText text={workspaceWords(ws.teamName)} />. Add it again to reconnect.</p>}
   <div className="rv-connect-actions"><AddButton label={ws !== undefined && ws !== null ? "Reconnect Slack" : "Add to Slack"} />{onSkip !== undefined && <Button variant="secondary" data-testid="slack-skip" onClick={onSkip}>Set up later</Button>}</div>
   <p className="rv-connect-note">{SLACK_APPROVAL_NOTE}</p>

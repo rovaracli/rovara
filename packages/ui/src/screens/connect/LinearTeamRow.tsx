@@ -7,6 +7,7 @@ import { Button } from "../../design/Button.js";
 import { Select } from "../../design/Select.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { LinearConnectButton } from "./LinearConnect.js";
+import { readFailure } from "./read-failure.js";
 import "./connect.css";
 
 type Mode = "checklist" | "settings";
@@ -29,7 +30,7 @@ export function LinearTeamRow({ project, mode, canEdit, skipped = false, onSkip,
  const state: LinearRowState = picked !== undefined ? "done" : skipped ? "skipped" : "optional";
  const wrap = (children: ReactNode) => <section className="rv-connect-row" aria-label="Linear" data-testid="linear-row" data-state={state}><h3>Linear {mode === "checklist" && <span className="rv-connect-optional">{state === "done" ? "Done" : state === "skipped" ? "Skipped (optional)" : "Optional"}</span>}</h3>{children}</section>;
  if (status.isPending) return wrap(<p>Checking Linear…</p>);
- if (status.isError) return wrap(<><p role="alert"><VisibleText text={status.error instanceof Error ? status.error.message : "Couldn't read the Linear connection."} /></p><Button onClick={() => { void status.refetch(); }}>Try again</Button></>);
+ if (status.isError) return wrap(<><p data-testid="linear-read-error"><VisibleText text={readFailure(status.error, "Couldn't read the Linear connection just now; try again.")} /></p><Button onClick={() => { void status.refetch(); }}>Try again</Button></>);
  if (mode === "checklist" && skipped && picked === undefined) return wrap(<><p data-testid="linear-skipped">Skipped. You can connect Linear later in Project settings.</p>{onUndoSkip !== undefined && <Button onClick={onUndoSkip}>Set it up now</Button>}</>);
  if (!connected) return wrap(<>
   <p data-testid="linear-not-connected">{status.data.status === "needs_reconnect" ? "Linear needs reconnecting." : "Connect Linear once for your company, then pick this project's team."}</p>
@@ -38,7 +39,7 @@ export function LinearTeamRow({ project, mode, canEdit, skipped = false, onSkip,
  const workspaceLine = status.data.workspace === undefined ? null : <p className="rv-connect-note">Linear workspace: <VisibleText text={status.data.workspace.name} /></p>;
  if (!canEdit) return wrap(<>{workspaceLine}<p>A company owner or admin, or this project's admin, can pick its Linear team.</p></>);
  if (team.isPending) return wrap(<p>Loading Linear teams…</p>);
- if (team.isError) return wrap(<><p role="alert" data-testid="linear-error"><VisibleText text={team.error instanceof Error ? team.error.message : "Linear's teams could not be read just now; try again."} /></p><Button onClick={() => { void team.refetch(); }}>Try again</Button></>);
+ if (team.isError) return wrap(<><p data-testid="linear-error"><VisibleText text={readFailure(team.error, "Linear's teams could not be read just now; try again.")} /></p><Button onClick={() => { void team.refetch(); }}>Try again</Button></>);
  if (picked !== undefined && !editing) return wrap(<>
   {workspaceLine}
   <p role="status" data-testid="linear-team">Team: <strong><VisibleText text={`${picked.name} (${picked.key})`} /></strong></p>

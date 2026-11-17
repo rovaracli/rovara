@@ -7,6 +7,7 @@ import { Button } from "../../design/Button.js";
 import { Select } from "../../design/Select.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { useSlackInstall } from "./SlackConnect.js";
+import { readFailure } from "./read-failure.js";
 import "./connect.css";
 
 type Mode = "checklist" | "settings";
@@ -29,7 +30,7 @@ function ChannelPicker({ project, current, onDone, onCancel }: { project: string
   finally { setBusy(false); }
  }
  if (page.isPending) return <p>Loading channels…</p>;
- if (page.isError) return <><p role="alert" data-testid="slack-channels-error"><VisibleText text={page.error instanceof Error ? page.error.message : "Couldn't load channels."} /></p><Button onClick={() => { void page.refetch(); }}>Try again</Button></>;
+ if (page.isError) return <><p data-testid="slack-channels-error"><VisibleText text={readFailure(page.error, "Couldn't load Slack channels just now; try again.")} /></p><Button onClick={() => { void page.refetch(); }}>Try again</Button></>;
  const options = page.data.channels.map(channel => ({ value: channel.id, label: `${channel.isPrivate ? "" : "#"}${channel.name}${channel.isPrivate ? " (private)" : ""}${channel.linked === true && channel.linkedProject !== project ? ` (linked to ${channel.linkedProject ?? "another project"})` : ""}`, disabled: channel.linked === true && channel.linkedProject !== project }));
  return <div className="rv-connect-picker" data-testid="slack-channel-picker">
   <Select label="Slack channel" value={chosen ?? current ?? ""} onValueChange={value => { setChosen(value);setInvite(undefined); }} options={options} placeholder="Pick a channel" />
@@ -62,7 +63,7 @@ export function SlackChannelRow({ project, mode, canEdit, skipped = false, onSki
  const heading = <h3>Slack channel {mode === "checklist" && <span className="rv-connect-optional">{state === "done" ? "Done" : state === "skipped" ? "Skipped (optional)" : "Optional"}</span>}</h3>;
  const wrap = (children: ReactNode) => <section className="rv-connect-row" aria-label="Slack channel" data-testid="slack-channel-row" data-state={state}>{heading}{children}</section>;
  if (linked.isPending) return wrap(<p>Checking Slack…</p>);
- if (linked.isError) return wrap(<><p role="alert"><VisibleText text={linked.error instanceof Error ? linked.error.message : "Couldn't read the Slack channel."} /></p><Button onClick={() => { void linked.refetch(); }}>Try again</Button></>);
+ if (linked.isError) return wrap(<><p data-testid="slack-channel-read-error"><VisibleText text={readFailure(linked.error, "Couldn't read the Slack channel just now; try again.")} /></p><Button onClick={() => { void linked.refetch(); }}>Try again</Button></>);
  if (mode === "checklist" && skipped && channelId === undefined) return wrap(<><p data-testid="slack-channel-skipped">Skipped. You can link a channel later in Project settings.</p>{onUndoSkip !== undefined && <Button onClick={onUndoSkip}>Link a channel now</Button>}</>);
  if (!linked.data.connected) return wrap(<>
   <p data-testid="slack-channel-not-connected">Add Rovara to Slack first, then pick this project's channel.</p>

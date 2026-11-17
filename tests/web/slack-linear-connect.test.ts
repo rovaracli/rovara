@@ -229,3 +229,14 @@ it("Linear's return: fixed sentences, and the kept workspace name", async () => 
  expect((await screen.findByTestId("linear-connected")).textContent).toBe("Connected to Linear workspace Acme Linear.");
  g.close();
 });
+
+it("a failed read says the app's own words by code, never the server's text", async () => {
+ const f = setup(h("div", { children: [h(SlackChannelRow, { project: "web", mode: "settings", canEdit: true }), h(LinearTeamRow, { project: "web", mode: "settings", canEdit: true })] }), {
+  "/v1/app/projects/web/slack/channel": err(409, "SLACK_NOT_CONNECTED", "PRIVATE_SERVER_TEXT"),
+  "/v1/app/linear": err(400, "CONFIG_INVALID", "PRIVATE_SERVER_TEXT"),
+ });
+ expect((await screen.findByTestId("slack-channel-read-error")).textContent).toBe("Add Rovara to Slack first: this company has no Slack workspace connected.");
+ expect((await screen.findByTestId("linear-read-error")).textContent).toBe("Couldn't read the Linear connection just now; try again.");
+ expect(document.body.textContent).not.toContain("PRIVATE_SERVER_TEXT");
+ f.close();
+});
