@@ -447,6 +447,21 @@ describe("the Slack callback (GET /api/connect/slack/callback)", () => {
     expect(JSON.stringify(w.logs)).not.toContain("xoxb");
   });
 
+  it("Code's 409 SLACK_WORKSPACE_TAKEN lands on 'taken' and Cloud's one sentence is exact, never echoing the workspace name or id", async () => {
+    expect(SLACK_WORDS.taken).toBe("This Slack workspace is already connected to another company.");
+    const w = world();
+    const nova = await w.signIn(NOVA);
+    const { binder, state } = await w.start("slack", nova);
+    w.overrides.set(`POST ${SLACK_COMPLETE}`, () => respond(409, { error: { code: "SLACK_WORKSPACE_TAKEN", message: "Workspace Leaky Labs (T0LEAKED1) is connected to company c-secret-9" } }));
+    const back = await w.callback("slack", { code: SLACK_CODES.ok, state }, { session: nova.cookie, binder });
+    expect(back.location).toBe("/app/onboard?slack=taken");
+    for (const leaked of ["Leaky", "T0LEAKED1", "c-secret-9"]) {
+      expect(back.location).not.toContain(leaked);
+      expect(JSON.stringify(w.logs)).not.toContain(leaked);
+    }
+    expect(SLACK_WORDS.taken).not.toMatch(/Leaky|T0LEAKED1|c-secret-9|Rovara company/u);
+  });
+
   it("keeps the 'You signed in from A but added Rovara to B' question across reads until it expires or Slack is disconnected", async () => {
     const w = world();
     const nova = await w.signIn(NOVA);

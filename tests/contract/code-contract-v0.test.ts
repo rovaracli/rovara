@@ -42,8 +42,10 @@ describe("code contract v0 tables", () => {
     // Plus a project's archive and restore (guided onboarding PR 17): the two previews, the two reviewed changes and the lifecycle read, as the person.
     // Plus the repository picker (guided onboarding PR 10).
     // Plus the company's AI model and a project's per-task limit (guided onboarding PR 15): both reads and both changes, as the person.
+    // Plus the project setup checklist and its skips, and the hosted setup run's read, start, stop and journal (guided onboarding PR 9).
+    // Plus disconnecting a GitHub account on the Connections page (guided onboarding PR 12b).
     // Plus the five People panel routes (web task channel K3): the list, the candidates, a role change, adding a person and taking ownership; the candidates and add need Code's C4.
-    expect(counts.appCloudServerToday).toBe(85);
+    expect(counts.appCloudServerToday).toBe(92);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

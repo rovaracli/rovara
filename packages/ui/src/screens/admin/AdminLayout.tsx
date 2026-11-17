@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { NavLink, Outlet, useOutletContext, useLocation, useNavigate } from "react-router";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppMeResponseReaderSchema } from "@agentx/contracts/web";
 import { useAppHost } from "../../host.js";
@@ -13,8 +13,8 @@ import { visibleAdminGroups } from "./admin-nav.js";
 import "./admin.css";
 /** Whether the second opinion page exists on this install, asked once per session and kept, and asked again when the scope (company, person, role) changes. */
 const secondReviewProbeKey = ["second-review-probe"] as const;
-interface AdminContext { orgId: string; company: string; developerId: string; role: "owner" | "admin" | "member"; checking: boolean }
-export function useAdminContext() { return useOutletContext<AdminContext>(); }
+import { useAdminContext as scopedAdminContext, type AdminContext } from "./admin-context.js";
+export function useAdminContext() { return scopedAdminContext(); }
 const narrowViewport = () => false;
 function OwnRoleReceipt({ initial }: { initial: boolean }) {
  const [show] = useState(initial), location = useLocation(), navigate = useNavigate();
