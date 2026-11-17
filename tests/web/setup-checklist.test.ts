@@ -137,9 +137,10 @@ describe("the project checklist", () => {
     g.close();
   });
 
-  it("is read-only for a person who can't change the project, naming the company's admins", async () => {
+  it("is read-only for a person who can't change the project, pointing to the company's admins without asking for the admin-only members list", async () => {
     const f = mount(h(ProjectChecklist, { project: "web" }), { status: () => ({ status: 200, body: checklist({ viewer: { companyRole: "member", projectAdmin: false, canSkip: false } }) }), run: () => ({ status: 200, body: runView("failed", false) }) });
-    expect(await screen.findByText("Ask Priya to finish setup.")).toBeTruthy();
+    expect(await screen.findByText("Ask your company's admins to finish setup.")).toBeTruthy();
+    expect(calls(f, "GET", "/v1/app/org/members")).toHaveLength(0);
     expect(screen.queryByTestId("checklist-skip-invites")).toBeNull();
     expect(screen.queryByTestId("checklist-company")).toBeNull();
     f.close();
@@ -189,12 +190,13 @@ describe("Home", () => {
     f.close();
   });
 
-  it("points an admin with no project to Pick repos, and a member to the admins", async () => {
+  it("points an admin with no project to Pick repos, and a member to the admins without asking for the members list", async () => {
     const f = mount(h(FinishSetup, {}), { projects: [] });
     expect((await screen.findByRole("link", { name: "Pick repos" })).getAttribute("href")).toBe("/app/onboard?step=repositories");
     f.close();
     const g = mount(h(FinishSetup, {}), { projects: [], role: "member" });
-    expect(await screen.findByText("Ask Priya to add you to a project.")).toBeTruthy();
+    expect(await screen.findByText("Ask your company's admins to add you to a project.")).toBeTruthy();
+    expect(calls(g, "GET", "/v1/app/org/members")).toHaveLength(0);
     g.close();
   });
 });
