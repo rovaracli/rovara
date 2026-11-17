@@ -99,6 +99,17 @@ describe("the connections read carries #832's health", () => {
 });
 
 describe("disconnecting a GitHub account", () => {
+  it("an ended sign-in signs the person out (401, the session deleted) and nothing is disconnected", async () => {
+    const w = world();
+    const nova = await w.signIn(NOVA);
+    w.overrides.set("DELETE /v1/dev/company/github/12", () => respond(401, { error: { code: "AUTH_REQUIRED", message: LEAK } }));
+    const answer = await w.api(nova, "DELETE", "/github/connections/12");
+    expect(answer.status).toBe(401);
+    expect(answer.text).not.toContain(LEAK);
+    expect((await w.api(nova, "GET", "/github/connections")).status).toBe(401);
+    expect(w.installations.has(12)).toBe(true);
+  });
+
   it("an owner with a fresh step-up disconnects the company's own installation; Code gets only the id in its path and the person's own token", async () => {
     const w = world();
     const nova = await w.signIn(NOVA);
@@ -124,7 +135,7 @@ describe("disconnecting a GitHub account", () => {
     const nova = await w.signIn(NOVA);
     expect((await w.api(nova, "DELETE", "/github/connections/12", undefined, false)).status).toBe(403);
     expect((await w.api(nova, "DELETE", "/github/connections/12", { companyId: B })).status).toBe(400);
-    for (const id of ["0", "012", "-1", "1e3", "abc", "99999999999999999", "12%2F..%2F21"]) {
+    for (const id of ["0", "012", "-1", "1e3", "abc", "99999999999999999", "9999999999999999", "12%2F..%2F21"]) {
       expect((await w.api(nova, "DELETE", `/github/connections/${id}`)).body.error, id).toEqual({ code: "NOT_FOUND", message: GITHUB_WORDS.notConnected });
     }
     expect(w.deletes()).toEqual([]);
@@ -143,7 +154,9 @@ describe("disconnecting a GitHub account", () => {
     const w = world();
     const nova = await w.signIn(NOVA);
     expect((await w.api(nova, "DELETE", "/github/connections/11")).body).toEqual({ error: { code: "GITHUB_IN_USE", message: githubInUseWords(["web", "api"]) }, projects: ["web", "api"] });
-    for (const message of [`${LEAK}`, "Projects still use this GitHub connection: <b>x</b>. Remove its repositories from them first.", "Projects still use this GitHub connection: Web Site. Remove its repositories from them first."]) {
+    for (const message of [`${LEAK}`, "Projects still use this GitHub connection: <b>x</b>. Remove its repositories from them first.", "Projects still use this GitHub connection: Web Site. Remove its repositories from them first.",
+      "Projects still use this GitHub connection: web, -x. Remove its repositories from them first.", "Projects still use this GitHub connection: web, , api. Remove its repositories from them first.",
+      `Projects still use this GitHub connection: ${Array.from({ length: 101 }, (_, n) => `p${String(n)}`).join(", ")}. Remove its repositories from them first.`]) {
       w.overrides.set("DELETE /v1/dev/company/github/11", () => respond(409, { error: { code: "GITHUB_IN_USE", message } }));
       const answer = await w.api(nova, "DELETE", "/github/connections/11");
       expect(answer.body).toEqual({ error: { code: "GITHUB_IN_USE", message: GITHUB_WORDS.inUseUnreadable } });
@@ -158,6 +171,7 @@ describe("disconnecting a GitHub account", () => {
       [respond(403, { error: { code: "REAUTH_REQUIRED", message: LEAK } }), 403, "REAUTH_REQUIRED", "Confirm it's you again, then try once more."],
       [respond(403, { error: { code: "FORBIDDEN", message: LEAK } }), 403, "FORBIDDEN", GITHUB_WORDS.ownerOnly],
       [respond(404, { error: { code: "NOT_FOUND", message: "route not found" } }), 501, "NOT_ON_CODE_YET", GITHUB_WORDS.notAvailable],
+      [respond(404, { error: { code: "SOMETHING_ELSE", message: LEAK } }), 501, "NOT_ON_CODE_YET", GITHUB_WORDS.notAvailable],
       [respond(500, { error: { code: "X", message: LEAK } }), 503, "RUNTIME_UNAVAILABLE", GITHUB_WORDS.disconnectUnavailable],
     ];
     for (const [reply, status, code, message] of cases) {

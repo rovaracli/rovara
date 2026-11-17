@@ -19,9 +19,22 @@ import { readFailure } from "./read-failure.js";
 import "./connect.css";
 
 type Role = "owner" | "admin" | "member";
-/** The refusals a disconnect may show: Cloud's fixed sentences for these routes (github-connect.ts, slack-connect.ts, linear-connect.ts). */
-const DISCONNECT_CODES: ReadonlySet<string> = new Set(["FORBIDDEN", "NOT_FOUND", "NOT_ON_CODE_YET", "RUNTIME_UNAVAILABLE", "GITHUB_IN_USE", "NO_COMPANY", "CONFIG_INVALID"]);
-const disconnectWords = (error: unknown, fallback: string) => error instanceof ApiError && DISCONNECT_CODES.has(error.code) ? error.message : fallback;
+/** A disconnect's refusal in the app's own words, chosen by the error's code (never the server's text); a GitHub in-use refusal names the projects Cloud read. */
+function disconnectWords(error: unknown, what: string): string {
+ const fallback = `${what} could not be disconnected just now; try again.`;
+ if (!(error instanceof ApiError)) return fallback;
+ // Cloud's in-use sentence names the projects; the app reads the names back only when every one is a project name, and writes its own sentence.
+ const named = /^Projects still use this GitHub connection: ([a-z0-9, -]{1,4000})\. Remove its repositories from them first\.$/u.exec(error.message)?.[1]?.split(", ");
+ const projects = named !== undefined && named.length <= 100 && named.every(name => /^[a-z][a-z0-9-]{0,62}$/u.test(name)) ? named : undefined;
+ switch (error.code) {
+  case "FORBIDDEN": return `Only a company owner can disconnect ${what}.`;
+  case "NOT_FOUND": case "SLACK_NOT_CONNECTED": case "LINEAR_NOT_CONNECTED": return `${what} isn't connected to your company.`;
+  case "NOT_ON_CODE_YET": return `Disconnecting ${what} isn't available yet.`;
+  case "GITHUB_IN_USE": return projects === undefined || projects.length === 0 ? "Projects still use this GitHub connection. Remove its repositories from them first." : `Projects still use this GitHub connection: ${projects.join(", ")}. Remove its repositories from them first.`;
+  case "NO_COMPANY": return "You're not in a company yet.";
+  default: return fallback;
+ }
+}
 const when = (at: string) => { const date = new Date(at);return Number.isNaN(date.getTime()) ? "at an unknown time" : `on ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(date)}`; };
 const byWords = (by: { kind: string; name?: string | undefined } | undefined) => by === undefined ? "" : by.kind === "operator" ? "by a Rovara operator" : by.name === undefined ? "by a teammate" : `by ${by.name}`;
 
@@ -33,7 +46,7 @@ function Disconnect({ what, effect, role, testId, run }: { what: string; effect:
  async function go() {
   setBusy(true);setError(undefined);setStepUp(false);
   try { setDone(await run());setConfirming(false); }
-  catch (caught) { if (needsStepUp(caught)) setStepUp(true); else setError(disconnectWords(caught, `${what} could not be disconnected just now; try again.`)); }
+  catch (caught) { if (needsStepUp(caught)) setStepUp(true); else setError(disconnectWords(caught, what)); }
   finally { setBusy(false); }
  }
  return <div className="rv-connect-disconnect">
