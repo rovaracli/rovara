@@ -49,7 +49,8 @@ describe("code contract v0 tables", () => {
     // Plus Connected sign-ins (DEC 254w, approved DEC 254zf): the list, Connect and Unlink, passed to Code's /v1/dev/me/sign-ins routes as the person.
     // Plus the project wiki's page list, one page and its cited files (lead 4 W5).
     // Plus the project machine-size read and stored-choice write (machine-size screen).
-    expect(counts.appCloudServerToday).toBe(102);
+    // Plus the wiki's corrections: the notes, marks, approvals and the disputed list (lead 4 C1): 8 rows.
+    expect(counts.appCloudServerToday).toBe(110);
   });
 
   it("says no route is served from the laptop core: the ten whose code exists only there arrive with E2, with nothing to cite on the deployed API", () => {

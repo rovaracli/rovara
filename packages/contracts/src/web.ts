@@ -89,6 +89,7 @@ export * from "./reviewed-project-restore.js";
 export * from "./project-lifecycle.js";
 export * from "./project-setup-status.js";
 export * from "./app-wiki.js";
+export * from "./app-wiki-corrections.js";
 
 // Lane B: browser-safe project-scoped working-branch page data.
 export * from "./app-working-branches.js";

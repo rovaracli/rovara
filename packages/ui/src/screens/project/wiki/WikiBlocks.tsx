@@ -1,14 +1,16 @@
 // Page text as the app draws it: plain text nodes only, never markup (wiki text is made from repository content, so it is untrusted). A source marker opens a small popover
 // with the file, the lines, the commit and what the check found ("source found", never "verified"); a stale, unfound or marked-wrong paragraph carries its own thin note, and
 // nothing else on the page warns.
-import { Fragment } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Popover } from "radix-ui";
 import type { WikiBlock } from "../../../api/wiki.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import type { Cite, PageModel } from "./wiki-model.js";
 import { SOURCE_WORDS, T, linesWords, shortSha } from "./wiki-text.js";
 
-export interface BlockContext { model: PageModel; link(cite: Cite): string | undefined; headingId(blockId: string): string }
+/** Mark wrong on a paragraph (C1): present only for a person Code says may mark. `markable` is false for a paragraph with nothing left to mark; `open` is the paragraph whose reason box is open. */
+export interface BlockMarking { markable(block: WikiBlock): boolean; open: string | undefined; start(blockId: string): void; form(block: WikiBlock): ReactNode }
+export interface BlockContext { model: PageModel; link(cite: Cite): string | undefined; headingId(blockId: string): string; marking?: BlockMarking | undefined }
 
 /** Backticked words become `code`; everything else is text. Odd or unclosed backticks stay as typed. */
 function Inline({ text }: { text: string }) {
@@ -43,17 +45,18 @@ export function Block({ block, context }: { block: WikiBlock; context: BlockCont
       : <h4 id={context.headingId(block.blockId)} className="rv-wiki-h3"><VisibleText text={block.text} /></h4>;
   }
   const state = context.model.state(block), markers = context.model.markers(block);
-  const struck = state.flagged;
+  const struck = state.flagged, marking = context.marking;
   return (
     <div className={struck ? "rv-wiki-para rv-wiki-struck" : "rv-wiki-para"} data-block={block.blockId}>
       {block.kind === "paragraph"
-        ? <p className="rv-wiki-text"><Inline text={block.text} />{markers.map((cite) => <Marker key={cite.n} cite={cite} link={context.link(cite)} />)}</p>
+        ? <p className="rv-wiki-text"><Inline text={block.text} />{markers.map((cite) => <Marker key={cite.n} cite={cite} link={context.link(cite)} />)}{marking?.markable(block) === true && <button type="button" className="rv-wiki-mark" onClick={() => { marking.start(block.blockId); }}>{T.MARK_WRONG}<span className="rv-visually-hidden"> on this paragraph</span></button>}</p>
         : (
           <details className="rv-wiki-diagram">
             <summary>{T.DIAGRAM}</summary>
             <pre><VisibleText text={block.mermaid} /></pre>
           </details>
         )}
+      {marking?.open === block.blockId && marking.form(block)}
       {block.kind === "diagram" && markers.length > 0 && <p className="rv-wiki-text">{markers.map((cite) => <Marker key={cite.n} cite={cite} link={context.link(cite)} />)}</p>}
       {state.flagged && <p className="rv-wiki-pnote rv-wiki-pnote-flag"><b>{T.WRONG}</b> {T.WRONG_AFTER}</p>}
       {!state.flagged && state.stale && <p className="rv-wiki-pnote rv-wiki-pnote-stale"><b>{T.STALE}</b> {T.STALE_NOTE}</p>}

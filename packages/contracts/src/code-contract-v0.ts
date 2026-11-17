@@ -1059,6 +1059,14 @@ PUT /v1/app/projects/{p}/setup-status/skips | k | later | client.projects.setupS
 GET /v1/app/projects/{p}/wiki | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId} | k | later | | wiki | T
 GET /v1/app/projects/{p}/wiki/pages/{pageId}/sources | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/pages/{pageId}/corrections | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/approve | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/delete | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/notes/{noteId}/suggest-lesson | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags | k | later | | wiki | T
+POST /v1/app/projects/{p}/wiki/pages/{pageId}/flags/resolve | k | later | | wiki | T
+GET /v1/app/projects/{p}/wiki/disputed | k | later | | wiki | T
 POST /v1/app/projects/{p}/setup-agent/command | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/confirm | k | later | | setup-agent | L
 POST /v1/app/projects/{p}/setup-agent/eval-confirm | k | later | | setup-agent | LT

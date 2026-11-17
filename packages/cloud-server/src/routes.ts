@@ -20,6 +20,7 @@ import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { openTaskByCodeId } from "./open-task.js";
 import { WIKI_ROUTES } from "./wiki-routes.js";
+import { WIKI_CORRECTION_ROUTES } from "./wiki-corrections-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { INBOX_ROUTES } from "./inbox-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
@@ -889,4 +890,6 @@ export const ROUTES: Route[] = [
   ...PEOPLE_ROUTES,
   // The project Wiki tab's reads (lead 4 W5): Code decides who may read; Cloud passes the person's token, rebuilds each answer for that project only, and answers in fixed words.
   ...WIKI_ROUTES,
+  // The wiki's corrections (lead 4 C1): Code decides who may add notes, mark wrong, approve and resolve; Cloud passes the person's token and rebuilds each answer.
+  ...WIKI_CORRECTION_ROUTES,
 ];
