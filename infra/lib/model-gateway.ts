@@ -23,6 +23,7 @@ import {
 } from "aws-cdk-lib";
 import type { Construct } from "constructs";
 import { METRICS_NAMESPACE_ROOT, RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
+import { applyCloudBoundary } from "./cloud-boundary.js";
 
 /**
  * The Cloud model gateway's infrastructure (migration plan v3.2, 7.4; packages/model-gateway). Every model call of every task
@@ -273,6 +274,8 @@ export class ModelGatewayImagesStack extends Stack {
     });
     this.repository = repository;
     new CfnOutput(this, "RepositoryUri", { value: repository.repositoryUri, description: "Push the gateway image here; deploy the gateway stack with its digest" });
+    // Last, so the template keeps its section order; the aspect puts it on every role at synth (cloud-boundary.ts).
+    applyCloudBoundary(this, props.environmentName, "gateway-images");
   }
 }
 
@@ -665,6 +668,8 @@ export class ModelGatewayStack extends Stack {
       new CfnOutput(this, "VertexFederationRoleArn", { value: product.vertexRole.roleArn, description: "Customers name this role in their Google workload identity pool (attribute condition on the assumed-role ARN with their company id)" });
     }
     if (bedrockByo !== undefined) new CfnOutput(this, "BedrockBrokerRoleArn", { value: bedrockByo.broker.roleArn, description: "Customers' RovaraBedrockInvoke roles trust this role (with their external id): never delete or rename it" });
+    // Last, so the template keeps its section order; the aspect puts it on every role at synth (cloud-boundary.ts).
+    applyCloudBoundary(this, env, "gateway");
   }
 
   /**

@@ -14,6 +14,7 @@ import {
 import type { Construct } from "constructs";
 import { RESOURCE_PREFIX, environmentSettingsPrefix } from "@agentx/contracts";
 import { CLOUD_APP_CONTEXT_KEY } from "./cloud-app.js";
+import { CDK_BOOTSTRAP_ASSUMED_ROLES, applyCloudBoundary } from "./cloud-boundary.js";
 import { MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "./model-gateway.js";
 
 /**
@@ -178,10 +179,11 @@ export class CloudReleasePipelineStack extends Stack {
       actions: ["cloudformation:DescribeStacks"],
       resources: [`arn:${this.partition}:cloudformation:${this.region}:${this.account}:stack/${RESOURCE_PREFIX}-${env}-web/*`],
     }));
-    // cdk deploy works through the account's bootstrap roles (deploy, publishing, lookup) and nothing else.
+    // cdk deploy works through the account's bootstrap roles (deploy, publishing, lookup) and nothing else: named, so never the
+    // CloudFormation execution role (the role boundary denies that one too).
     deploy.addToRolePolicy(new iam.PolicyStatement({
       actions: ["sts:AssumeRole"],
-      resources: [`arn:${this.partition}:iam::${this.account}:role/cdk-${CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER}-*-${this.account}-${this.region}`],
+      resources: CDK_BOOTSTRAP_ASSUMED_ROLES.map((role) => `arn:${this.partition}:iam::${this.account}:role/cdk-${CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER}-${role}-${this.account}-${this.region}`),
     }));
 
     const sourceRole = new iam.Role(this, "SourceActionRole", {
@@ -248,5 +250,7 @@ export class CloudReleasePipelineStack extends Stack {
         gitConfiguration: { sourceAction: source, pushFilter: [{ tagsIncludes: ["v*.*.*"], tagsExcludes: ["v*-*"] }] },
       }],
     });
+    // Last, so the template keeps its section order; the aspect puts it on every role at synth (cloud-boundary.ts).
+    applyCloudBoundary(this, env, "pipeline");
   }
 }

@@ -2,6 +2,7 @@
 // product key table by company keys and seal keys (GenerateDataKey, GenerateMac), never Decrypt. Off, the Cloud web template is
 // byte for byte what it was, for production and for staging.
 import { createHash } from "node:crypto";
+import { withoutRoleBoundary } from "../support/without-role-boundary.js";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,8 @@ const synth = (environmentName: string, productAi?: boolean) => Template.fromSta
 })).toJSON() as { Resources: Record<string, { Type: string; Properties: Record<string, unknown> }>; Parameters: Record<string, unknown>; Outputs: Record<string, unknown> };
 /** The Cloud web templates at cloud/next d7d1edbb8, before this change (same stand-in app and code): SHA-256 of their JSON. */
 const BEFORE = { production: "f01b90f030e1bb81390cc84d2c0625cc48dae5f5ea57e474fc3093690eb85cc8", staging: "bfcde9467235f2f910ad3eef8fd68b5d7eca7a6d843b4f1b228d466688967737" };
-const sha = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+// Less the role boundary (2026-11-17), which every template now carries (tests/contract/cloud-role-boundary.test.ts).
+const sha = (value: Parameters<typeof withoutRoleBoundary>[0]) => createHash("sha256").update(JSON.stringify(withoutRoleBoundary(value))).digest("hex");
 
 describe("Cloud web: product AI settings grants (B7)", () => {
   it("off: production and staging templates are byte for byte what they were", () => {

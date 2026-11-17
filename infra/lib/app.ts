@@ -1,8 +1,9 @@
-import { App, Tags } from "aws-cdk-lib";
+import { App, Aspects, Tags } from "aws-cdk-lib";
 import { ENVIRONMENT_TAG_KEY, RESOURCE_PREFIX } from "@agentx/contracts";
 import { CLOUD_PIPELINE_CONTEXT_KEY, CloudReleasePipelineStack } from "./cloud-release-pipeline.js";
 import { CLOUD_APP_CONTEXT_KEY, CloudAppStack, cloudAppStackName } from "./cloud-app.js";
 import { CloudWebStack, cloudWebStackName } from "./cloud-web.js";
+import { RequireCloudBoundary } from "./cloud-boundary.js";
 import { MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ModelGatewayImagesStack, ModelGatewayStack, modelGatewayImagesStackName, modelGatewayStackName } from "./model-gateway.js";
 
 /**
@@ -16,6 +17,8 @@ import { MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL
  */
 export function buildAgentXApp(context: Record<string, unknown> = {}): App {
   const app = new App({ context: { "@aws-cdk/core:defaultCrossStackReferences": "strong", ...context } });
+  // Every role of every Cloud stack carries the environment's permissions boundary (cloud-boundary.ts); a stack that forgets it fails here.
+  Aspects.of(app).add(new RequireCloudBoundary());
   const deploymentRegion = app.node.tryGetContext("agentxRegion") as string | undefined;
   // Rovara Cloud on an existing Rovara Code install: its own stack only, so a Cloud release synthesizes and deploys
   // nothing of Code's.
