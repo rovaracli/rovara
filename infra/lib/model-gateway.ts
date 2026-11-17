@@ -505,7 +505,7 @@ export class ModelGatewayStack extends Stack {
     const taskGroup = new ec2.SecurityGroup(this, "TaskGroup", { vpc, allowAllOutbound: false, description: "model gateway tasks: the load balancer in, HTTPS out" });
     taskGroup.addIngressRule(albGroup, ec2.Port.tcp(MODEL_GATEWAY_PORT), "from the load balancer only");
     albGroup.addEgressRule(taskGroup, ec2.Port.tcp(MODEL_GATEWAY_PORT), "to the tasks");
-    taskGroup.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), "providers, Code's JWKS, AWS APIs, the image registry");
+    taskGroup.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), "providers, JWKS from Code, AWS APIs, the image registry");
     const fetchGroup = new ec2.SecurityGroup(this, "PriceFetchGroup", { vpc, allowAllOutbound: false, description: "model gateway price fetch: HTTPS out only" });
     fetchGroup.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), "price sources, AWS APIs, the image registry");
 
