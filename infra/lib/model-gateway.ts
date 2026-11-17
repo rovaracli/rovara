@@ -658,11 +658,26 @@ export class ModelGatewayStack extends Stack {
 
     // Alarms, to one topic (subscribe by hand). Gateway events are counted from its JSON log lines.
     const topic = new sns.Topic(this, "Alarms", { displayName: `Rovara Cloud ${env} model gateway alarms`, enforceSSL: true });
+    // CloudWatch needs its own allow to publish here: enforceSSL adds only a Deny, and without an allow every alarm action
+    // failed with "Failed to execute action" (staging, 2026-11-17). Scoped to this account and to this stack's alarms, whose
+    // names are fixed below (stack name, then the alarm id) so the ARN pattern is exact.
+    const alarmNamePrefix = `${this.stackName}-`;
+    topic.addToResourcePolicy(new iam.PolicyStatement({
+      sid: "AllowCloudWatchAlarms",
+      effect: iam.Effect.ALLOW,
+      principals: [new iam.ServicePrincipal("cloudwatch.amazonaws.com")],
+      actions: ["sns:Publish"],
+      resources: [topic.topicArn],
+      conditions: {
+        StringEquals: { "aws:SourceAccount": this.account },
+        ArnLike: { "aws:SourceArn": `arn:${this.partition}:cloudwatch:${this.region}:${this.account}:alarm:${alarmNamePrefix}*` },
+      },
+    }));
     const notify = new cwActions.SnsAction(topic);
     const fiveMinutes = Duration.minutes(5);
     const alarm = (id: string, metric: cloudwatch.IMetric, threshold: number, description: string, evaluationPeriods = 1, comparison = cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD) => {
       new cloudwatch.Alarm(this, id, {
-        metric, threshold, evaluationPeriods, comparisonOperator: comparison, alarmDescription: description,
+        alarmName: `${alarmNamePrefix}${id}`, metric, threshold, evaluationPeriods, comparisonOperator: comparison, alarmDescription: description,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       }).addAlarmAction(notify);
     };
@@ -681,11 +696,24 @@ export class ModelGatewayStack extends Stack {
     alarm("BusyAnswers", fromLog("BusyAnswers", serveLogs, MODEL_GATEWAY_LOG_EVENTS.overrunBusy, fiveMinutes), MODEL_GATEWAY_ALARMS.busy, "Many busy answers: calls waiting on another estimated-price call of the same company");
     alarm("SettleFailures", fromLog("SettleFailures", serveLogs, MODEL_GATEWAY_LOG_EVENTS.settleFailed, fiveMinutes), MODEL_GATEWAY_ALARMS.settleFailed, "A call's cost could not be settled (its hold is kept)");
     alarm("PriceFetchFailures", fromLog("PriceFetchFailures", fetchLogs, MODEL_GATEWAY_LOG_EVENTS.priceFetchFailed, Duration.hours(1)), MODEL_GATEWAY_ALARMS.priceFetchFailed, "The daily price fetch failed (the last good prices stay)");
-    // Staleness: no saved fetch for three days running. No log at all (the rule off, the task never starting) counts as stale.
+    // Staleness: no saved fetch on any of the last three days. A new stack has no fetch log yet, and missing data counted as
+    // breaching made this alarm fire about 30 minutes after every create. So missing data does not breach; the alarm counts a
+    // day only when the gateway itself reported that day (healthy-host samples exist from the day the stack is made) and no
+    // fetch was saved. Silence from the fetch (rule off, task never starting) still counts as stale, once three days have passed.
+    const oneDay = Duration.days(1);
     new cloudwatch.Alarm(this, "PricesStale", {
-      metric: fromLog("PricesFetched", fetchLogs, MODEL_GATEWAY_LOG_EVENTS.priceFetched, Duration.days(1)),
+      alarmName: `${alarmNamePrefix}PricesStale`,
+      metric: new cloudwatch.MathExpression({
+        expression: "IF(alive > 0, 1, 0) * IF(FILL(fetched, 0) < 1, 1, 0)",
+        usingMetrics: {
+          alive: targetGroup.metrics.healthyHostCount({ period: oneDay, statistic: "SampleCount" }),
+          fetched: fromLog("PricesFetched", fetchLogs, MODEL_GATEWAY_LOG_EVENTS.priceFetched, oneDay),
+        },
+        period: oneDay,
+        label: "Days without a saved price fetch",
+      }),
       threshold: 1, evaluationPeriods: MODEL_GATEWAY_ALARMS.priceStaleDays, datapointsToAlarm: MODEL_GATEWAY_ALARMS.priceStaleDays,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD, treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD, treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       alarmDescription: "No price fetch has saved prices for three days: estimates use stale prices",
     }).addAlarmAction(notify);
 
