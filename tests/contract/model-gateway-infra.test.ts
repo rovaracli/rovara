@@ -260,11 +260,39 @@ describe("model gateway infrastructure (plan v3.2 7.4, 7.5)", () => {
       expect(filter.LogGroupName).toEqual({ Ref: group });
       expect(byMetric(`${name}-staging`)).toMatchObject({ Threshold: threshold, Statistic: "Sum" });
     }
-    // Staleness: fewer than one saved fetch a day for three days running, and silence counts as stale.
+    // Staleness: a daily math alarm that counts a day when the gateway reported (healthy-host samples) and no fetch was saved.
     const fetched = filters.find((each) => each.MetricTransformations[0]!.MetricName === "PricesFetched-staging")!;
     expect(fetched.FilterPattern).toBe(`{ $.event = "${GATEWAY_LOG_EVENTS.priceFetched}" }`);
     expect(fetched.LogGroupName).toEqual({ Ref: fetchLogs });
-    expect(byMetric("PricesFetched-staging")).toMatchObject({ Threshold: 1, ComparisonOperator: "LessThanThreshold", Period: 86400, EvaluationPeriods: 3, DatapointsToAlarm: 3, TreatMissingData: "breaching", Statistic: "Sum" });
+    const stale = alarms.find((alarm) => alarm.AlarmName === "rovara-cloud-staging-gateway-PricesStale")!;
+    // Missing data must not breach (a new stack has no fetch log yet), but silence still counts once the gateway has reported.
+    expect(stale).toMatchObject({ Threshold: 1, ComparisonOperator: "GreaterThanOrEqualToThreshold", EvaluationPeriods: 3, DatapointsToAlarm: 3, TreatMissingData: "notBreaching" });
+    const queries = stale.Metrics as Array<{ Id: string; Expression?: string; ReturnData?: boolean; MetricStat?: { Metric: { MetricName: string }; Period: number; Stat: string } }>;
+    const expression = queries.find((query) => query.Expression !== undefined)!;
+    expect(queries.filter((query) => query.ReturnData === true).map((query) => query.Id)).toEqual([expression.Id]);
+    expect(expression.Expression).toBe("IF(alive > 0, 1, 0) * IF(FILL(fetched, 0) < 1, 1, 0)");
+    const alive = queries.find((query) => query.Id === "alive")!;
+    expect(alive.MetricStat).toMatchObject({ Metric: { MetricName: "HealthyHostCount" }, Period: 86400, Stat: "SampleCount" });
+    // Without both dimensions the metric would never have data and the alarm would stay silent.
+    expect((alive.MetricStat as unknown as { Metric: { Dimensions: Array<{ Name: string }> } }).Metric.Dimensions.map((each) => each.Name).sort()).toEqual(["LoadBalancer", "TargetGroup"]);
+    const fetchedQuery = queries.find((query) => query.Id === "fetched")!;
+    expect(fetchedQuery.MetricStat).toMatchObject({ Metric: { MetricName: "PricesFetched-staging" }, Period: 86400, Stat: "Sum" });
+    expect(Object.values(resources).some((each) => each.Type === "AWS::CloudWatch::Alarm" && each.Properties.TreatMissingData === "breaching")).toBe(false);
     expect(alarms).toHaveLength(8);
+  });
+
+  it("lets CloudWatch publish to the alarm topic, from this account and this stack's alarms only, and keeps the SSL-only deny", () => {
+    const topic = idOf("AWS::SNS::Topic");
+    const policy = ofType("AWS::SNS::TopicPolicy").find(([, each]) => JSON.stringify(each.Properties.Topics) === JSON.stringify([{ Ref: topic }]))![1];
+    const statements = (policy.Properties.PolicyDocument as { Statement: Statement[] }).Statement;
+    const deny = statements.find((statement) => statement.Effect === "Deny")!;
+    expect(deny.Condition).toEqual({ Bool: { "aws:SecureTransport": "false" } });
+    const allow = statements.filter((statement) => statement.Effect === "Allow");
+    expect(allow).toHaveLength(1);
+    expect(allow[0]).toMatchObject({ Principal: { Service: "cloudwatch.amazonaws.com" }, Action: "sns:Publish", Resource: { Ref: topic } });
+    expect(allow[0]!.Condition!.StringEquals).toEqual({ "aws:SourceAccount": { Ref: "AWS::AccountId" } });
+    expect(allow[0]!.Condition!.ArnLike).toEqual({ "aws:SourceArn": { "Fn::Join": ["", ["arn:", { Ref: "AWS::Partition" }, ":cloudwatch:us-west-2:", { Ref: "AWS::AccountId" }, ":alarm:rovara-cloud-staging-gateway-*"]] } });
+    // Every alarm's name begins with that prefix, so the allow covers each of them.
+    for (const [, each] of ofType("AWS::CloudWatch::Alarm")) expect(String(each.Properties.AlarmName)).toMatch(/^rovara-cloud-staging-gateway-/);
   });
 });
