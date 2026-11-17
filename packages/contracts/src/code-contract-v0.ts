@@ -1010,7 +1010,7 @@ PUT /v1/app/projects/{p}/people/{who} | k | admin | client.members.put | project
 DELETE /v1/app/projects/{p}/people/{who} | k | admin | client.members.remove | project-people |
 GET /v1/app/projects/{p}/code-settings | k | admin | client.projects.codeSettings.get | project-people |
 PUT /v1/app/projects/{p}/code-settings | k | admin | client.projects.codeSettings.put | project-people |
-GET /v1/app/projects/{p}/how-we-work | k | how-we-work | howWeWork.get | how-we-work | L
+GET /v1/app/projects/{p}/how-we-work | k | how-we-work | howWeWork.get | how-we-work | LT
 POST /v1/app/projects/{p}/playbook/process | k | how-we-work | playbook.process | how-we-work |
 GET /v1/app/projects/{p}/playbook | k | how-we-work | playbook.get | how-we-work | L
 PUT /v1/app/projects/{p}/playbook | k | how-we-work | playbook.put | how-we-work | L
