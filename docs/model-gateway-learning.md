@@ -142,4 +142,4 @@ A fourth route on the same gateway for answers to people's questions (hosted "As
 | After the task ended | still runs | still runs (a question about a finished task is answered) |
 
 The answers spend counts in the one combined company cap exactly as learning's does; there is no other company cap. The limit is read with `readSpendLimit` on every call
-(strongly consistent): an item that does not read pauses answers (`no_budget`), a failed read is an error and sends nothing. No caller is built here: Code mints the token and calls the paths later.
+(strongly consistent): an item that does not read, like a failed read, is a fault (an error, nothing held or sent), never a pause. No caller is built here: Code mints the token and calls the paths later.
