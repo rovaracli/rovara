@@ -1,6 +1,6 @@
 // Guided onboarding PR 13 (design section 4 "A teammate's first experience"): after the invite link, sign-in and their name, a short welcome on Home. The projects
 // they are in, each project's Slack channel to use, and "Start a task" or "See what's running". No setup screens. A person in no project is pointed to the
-// company's admins (Home's empty state says it). Shown on the first visit after joining (`?joined=1`), and until dismissed for a company member who has not seen it.
+// company's admins (Home's empty state says it). Shown on the first visit after joining (`?joined=1`) and to a company member, until the person dismisses it.
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useQueries } from "@tanstack/react-query";
@@ -26,7 +26,7 @@ export function TeammateWelcome() {
  const joined = params.get("joined") === "1";
  let storedSeen = seen;
  try { storedSeen = storedSeen || host.storage.get(seenKey(developerId)) === "1"; } catch { /* Blocked storage: shown until dismissed in this tab. */ }
- if (!joined && (!member || storedSeen)) return null;
+ if (storedSeen || (!joined && !member)) return null;
  if (nav.projects.length === 0) return null;
  function dismiss() { setSeen(true); try { host.storage.set(seenKey(developerId!), "1"); } catch { /* Blocked storage: it shows again next time. */ } }
  return <section className="rv-welcome" aria-labelledby="rv-welcome-heading" data-testid="teammate-welcome">

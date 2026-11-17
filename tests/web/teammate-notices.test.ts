@@ -55,12 +55,12 @@ describe("a teammate's welcome", () => {
   });
 
   it("is dismissed once seen, and stays dismissed for that person", async () => {
-    const f = mount(h(TeammateWelcome, {}), { path: "/app" });
+    const f = mount(h(TeammateWelcome, {}));
     fireEvent.click(await screen.findByTestId("welcome-dismiss"));
     expect(screen.queryByTestId("teammate-welcome")).toBeNull();
     expect(f.storage.get(`rovara.welcome.seen.${"a".repeat(64)}`)).toBe("1");
     f.close();
-    const g = mount(h(TeammateWelcome, {}), { path: "/app", storage: { [`rovara.welcome.seen.${"a".repeat(64)}`]: "1" } });
+    const g = mount(h(TeammateWelcome, {}), { storage: { [`rovara.welcome.seen.${"a".repeat(64)}`]: "1" } });
     await waitFor(() => expect(asked(g, "/v1/app/nav")).toBe(true));
     expect(screen.queryByTestId("teammate-welcome")).toBeNull();
     g.close();
