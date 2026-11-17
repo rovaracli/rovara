@@ -34,6 +34,11 @@ describe("model gateway provider secret names", () => {
     // The key policy cannot name secrets that do not exist yet (they name the key): every secret of the account and Region.
     expect(patterns).toHaveLength(3);
     for (const pattern of patterns) expect(tail(pattern)).toBe(":secret:*");
+    // Only the SecretARN pattern differs between modes: the principal and version conditions stay.
+    const strip = (mode: Record<string, unknown>) => JSON.stringify(synth(mode).json.Resources).replace(/:secret:[^"]*"/gu, ':secret:X"');
+    expect(strip({})).toContain('"aws:PrincipalArn"');
+    expect(strip({ [MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY]: "fixed" }).match(/"kms:EncryptionContext:SecretVersionId"/gu)).toHaveLength(1);
+    expect(strip({}).match(/"kms:EncryptionContext:SecretVersionId"/gu)).toHaveLength(1);
     // "generated" spelled out is the same template.
     expect(synth({ [MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY]: "generated" }).json).toEqual(json);
   });
