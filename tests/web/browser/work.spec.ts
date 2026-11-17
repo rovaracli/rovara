@@ -46,7 +46,10 @@ test("j and k move the selection while the list has focus, and the address follo
   await expect(page).toHaveURL(/\/app\/live/u);
 });
 
-test("the spec shows its criteria with ids, asks its question in place, and says what is not connected yet", async ({ page }) => {
+test("the spec shows its criteria with ids, asks its question in place, and says to answer on the session page when the task has no Cloud session", async ({ page }) => {
+  // The pretend Code's plan task was not started in Cloud (no session id), so the answer has no Cloud session route to go to: nothing is sent (K0b).
+  const answerPosts: string[] = [];
+  page.on("request", request => { if (request.method() === "POST" && request.url().endsWith("/answers")) answerPosts.push(request.url()); });
   const work = new WorkPage(page);
   await work.open();
   await work.select(PLAN_TASK);
@@ -54,9 +57,9 @@ test("the spec shows its criteria with ids, asks its question in place, and says
   await expect(spec).toContainText("R1.1");
   await expect(spec).toContainText("Question for you.");
   await spec.getByRole("button", { name: /Yes, behind a flag/u }).click();
-  // Code does not serve the answers route yet: the question says so, plainly.
-  await expect(page.getByTestId("answer-error").first()).toContainText("isn't connected to Rovara Code yet");
+  await expect(page.getByTestId("answer-error").first()).toContainText("Answer this question on the task's session page.");
   await expect(page.getByRole("progressbar")).toHaveCount(0);
+  expect(answerPosts).toEqual([]);
 });
 
 test("a click on a step shows that stage: build activity, then proof per criterion", async ({ page }) => {
