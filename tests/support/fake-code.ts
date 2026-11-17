@@ -207,6 +207,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     const outcome: ArchiveOutcome = { receipt, replayed: false, current: lifecyclePreview(kind, name, manage), effects: kind === "archive" ? { egress: "not_attempted", archiveHook: "not_configured" } : { egress: "not_attempted" } };
     entry.receipts.set(body.requestId, { personId: person.developerId, outcome });
     return { body: outcome };
+  };
   // Guided onboarding PR 15: the company's engine model (Code #835) and each project's cost settings (Code's M4a), small.
   const OFFERED_MODELS = ["zai.glm-4.7", "claude-sonnet-4-5", "zai.glm-4.6"];
   let companyModel: string | undefined;

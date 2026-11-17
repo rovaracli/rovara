@@ -30,7 +30,7 @@ const sha = (value: Parameters<typeof withoutRoleBoundary>[0]) => createHash("sh
  * DEC 253z removed exactly two things from the web template: the CompanyId parameter and the server's CLOUD_COMPANY_ID setting. Put back as
  * they were (same place, same words), the template must hash to BEFORE: so nothing else moved.
  */
-function withOldCompanySetting(template: ReturnType<typeof synth>): unknown {
+function withOldCompanySetting(template: ReturnType<typeof synth>): ReturnType<typeof synth> {
   const parameters: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(template.Parameters)) {
     parameters[key] = value;
@@ -46,7 +46,7 @@ function withOldCompanySetting(template: ReturnType<typeof synth>): unknown {
   }
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(template)) out[key] = key === "Parameters" ? parameters : key === "Resources" ? resources : value;
-  return out;
+  return out as ReturnType<typeof synth>;
 }
 
 describe("Cloud web: product AI settings grants (B7)", () => {
