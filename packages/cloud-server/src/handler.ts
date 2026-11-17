@@ -127,7 +127,7 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
   const slack = createSlackConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, origin: options.origin });
   const linear = createLinearConnect({ client: options.client, store: options.store, now, log, secureCookies: options.secureCookies, origin: options.origin });
   // DEC 254w: Connected sign-ins (sign-in-links.ts). Its return arrives at the registered sign-in callback, so the callback below asks `isReturn` first.
-  const signInLinks = createSignInLinks({ client: options.client, store: options.store, now, log });
+  const signInLinks = createSignInLinks({ client: options.client, store: options.store, now, log, expiredCookie: cookie("", 0) });
 
   /**
    * The join page's lookup (onboarding-routes.ts): same origin only (a page elsewhere can't start a join for someone), JSON, small. A usable
@@ -211,7 +211,8 @@ export function createCloudHandler(options: CloudHandlerOptions): (request: Clou
     if (path === options.callbackPath && method === "GET" && signInLinks.isReturn(request.query)) {
       // A connected sign-in's return, never a sign-in: it goes on only for the browser whose sign-in started it.
       const back = await signInLinks.callback(request.query, sessionId(request));
-      return text(302, "", { location: back.location });
+      // The request URL carried link_code: the answer is never cached and the page it lands on never sends this URL on as a referrer.
+      return text(302, "", { location: back.location, "referrer-policy": "no-referrer", "cache-control": "no-store" });
     }
     if (path === options.callbackPath && method === "GET") {
       const state = request.query.get("state") ?? "";

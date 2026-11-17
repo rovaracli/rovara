@@ -97,6 +97,8 @@ export interface SignInLinksDeps {
   store: SessionStore;
   now: () => Date;
   log: (event: Record<string, unknown>) => void;
+  /** The Set-Cookie value that expires Cloud's own session cookie (handler.ts), sent after an unlink so the browser drops a session Code has ended. */
+  expiredCookie: string;
 }
 
 type Operation = "list" | "start" | "unlink";
@@ -169,13 +171,15 @@ export function createSignInLinks(deps: SignInLinksDeps) {
     },
 
     /** DELETE /v1/app/me/sign-ins/{method}: Code checks the step-up and the first-method rule, then ends every sign-in of the person. */
-    async unlink(session: CodeSession, method: string): Promise<ConnectAnswer> {
+    async unlink(session: CodeSession, sessionCookie: string, method: string): Promise<ConnectAnswer> {
       if (!isLinkMethod(method)) return connectRefusal(404, "SIGN_IN_NOT_CONNECTED", SIGN_IN_LINK_WORDS.notConnected);
       const asked = await ask(session, "unlink", `${CODE_SIGN_INS}/${method}`, { method: "DELETE" });
       if (!asked.ok) return asked.refusal;
       if (!isObject(asked.answer) || asked.answer.removed !== true) return unreadable(session, "unlink");
+      // Code has ended every sign-in of the person, this one included: Cloud keeps no session Code has already ended, and the browser drops its cookie.
+      await deps.store.delete(sessionCookie);
       deps.log({ event: "cloud.sign_in_unlinked", developerId: session.access.developerId, method });
-      return { status: 200, body: { removed: true } };
+      return { status: 200, body: { removed: true }, setCookie: deps.expiredCookie };
     },
   };
 
@@ -242,7 +246,7 @@ export function createSignInLinks(deps: SignInLinksDeps) {
       if (method === "GET" && apiPath === "/me/sign-ins") return (session) => routes.list(session);
       if (method === "POST" && apiPath === "/me/sign-ins/link") return (session, id, body) => routes.start(session, id, body);
       const match = /^\/me\/sign-ins\/([A-Za-z0-9_-]{1,32})$/u.exec(apiPath);
-      if (method === "DELETE" && match !== null) return (session) => routes.unlink(session, match[1]!);
+      if (method === "DELETE" && match !== null) return (session, id) => routes.unlink(session, id, match[1]!);
       return undefined;
     },
   };

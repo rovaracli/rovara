@@ -116,7 +116,7 @@ function world() {
   };
   const callback = async (query: string, sessionCookie?: string) => {
     const answer = await raw("GET", `/callback?${query}`, sessionCookie === undefined ? {} : { cookie: `rovara_cloud_session=${sessionCookie}` });
-    return { status: answer.status, location: answer.headers.location, setCookie: answer.headers["set-cookie"], body: answer.body };
+    return { status: answer.status, location: answer.headers.location, setCookie: answer.headers["set-cookie"], headers: answer.headers, body: answer.body };
   };
   const good = (s: { state: string; linkId: string; code: string }) => `state=${s.state}&link_id=${s.linkId}&link_code=${s.code}`;
   return { raw, api, signIn, start, callback, good, calls, codeCalls, logs, pendingWrites, overrides, sessions, linked, ended, FINISH, advance: (ms: number) => { clock += ms; } };
@@ -263,6 +263,20 @@ describe("connect a sign-in: the link return (the registered callback with link_
     expect(w.codeCalls(w.FINISH)).toEqual([]);
   });
 
+  it("answers every link return, whatever it decides, with no-referrer and no-store", async () => {
+    const w = world();
+    const nova = await w.signIn(NOVA);
+    const s = await w.start(nova, "slack");
+    const returns = [await w.callback(w.good(s), undefined), await w.callback(`state=${"A".repeat(32)}&link_error=cancelled`, nova.cookie), await w.callback(w.good(s), nova.cookie)];
+    const t = await w.start(nova, "slack");
+    returns.push(await w.callback(w.good(t), nova.cookie));
+    expect(returns.map((r) => r.location)).toEqual(["/app/account?link=failed", "/app/account?link=failed", "/app/account?link=failed", "/app/account?linked=slack"]);
+    for (const one of returns) {
+      expect(one.headers["referrer-policy"]).toBe("no-referrer");
+      expect(one.headers["cache-control"]).toBe("no-store");
+    }
+  });
+
   it("does not finish a replayed return", async () => {
     const w = world();
     const nova = await w.signIn(NOVA);
@@ -368,6 +382,24 @@ describe("connected sign-ins: unlink (DELETE /v1/app/me/sign-ins/{method})", () 
     expect(answer).toMatchObject({ status: 200, body: { removed: true } });
     expect(w.codeCalls("/v1/dev/me/sign-ins/slack")).toEqual([{ method: "DELETE", path: "/v1/dev/me/sign-ins/slack", token: NOVA.token }]);
     expect(w.linked.get(NOVA.developerId)?.has("slack")).toBe(false);
+  });
+
+  it("deletes this browser's Cloud session after a successful unlink and expires its cookie, and only then", async () => {
+    const w = world();
+    const nova = await w.signIn(NOVA);
+    const other = await w.signIn(NOVA);
+    const s = await w.start(nova, "slack");
+    await w.callback(w.good(s), nova.cookie);
+    const refused = await w.api(nova, "DELETE", "/me/sign-ins/github");
+    expect(refused.status).toBe(403);
+    expect(refused.headers["set-cookie"]).toBeUndefined();
+    expect(await w.sessions.get(nova.cookie)).toBeDefined();
+    const answer = await w.api(nova, "DELETE", "/me/sign-ins/slack");
+    expect(answer.status).toBe(200);
+    expect(answer.headers["set-cookie"]).toBe("rovara_cloud_session=; HttpOnly; SameSite=Lax; Path=/; Secure; Max-Age=0");
+    expect(await w.sessions.get(nova.cookie)).toBeUndefined();
+    // Only this browser's row is Cloud's to remove here; the other one ends when its own next call finds Code has ended it.
+    expect(await w.sessions.get(other.cookie)).toBeDefined();
   });
 
   it("signs the person out on Cloud's next call once Code has ended every sign-in", async () => {
