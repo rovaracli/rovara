@@ -32,8 +32,9 @@ export const CODE_AVAILABLE_PATH = "/v1/dev/client/repositories/available";
 /** The most repositories one create names (Code's cap), and the most rows one picker page shows. */
 export const REPOSITORIES_MAX = 32;
 export const PICKER_PAGE_MAX = 100;
-/** How many creations a session remembers for replays (the newest). */
+/** How many creations a session remembers for replays (the newest), and how many of them may carry per-repository rows (up to 32 each), so the sealed session stays small. */
 export const REMEMBERED_CREATES_MAX = 50;
+export const REMEMBERED_BULK_MAX = 10;
 
 const refusal = (status: number, code: string, message: string): RouteAnswer => Object.freeze({ status, body: Object.freeze({ error: Object.freeze({ code, message }) }) });
 /** Code's fixed sentences, which Cloud shows as Code worded them (Code PR #837). */
@@ -168,7 +169,7 @@ function bulkRows(answer: unknown, asked: readonly string[]): BulkRow[] | undefi
   if (!plain(answer) || !Array.isArray(answer["results"]) || answer["results"].length !== asked.length) return undefined;
   const rows: BulkRow[] = [];
   for (const [index, row] of (answer["results"] as unknown[]).entries()) {
-    if (!plain(row) || row["repository"] !== asked[index]) return undefined;
+    if (!plain(row) || typeof row["repository"] !== "string" || sameKey(row["repository"]) !== sameKey(asked[index]!)) return undefined;
     if (row["outcome"] === "created" && typeof row["project"] === "string" && PROJECT_NAME.test(row["project"])) rows.push({ repository: asked[index]!, outcome: "created", project: row["project"] });
     else if (row["outcome"] === "refused" && typeof row["reason"] === "string" && BULK_REASONS.has(row["reason"])) rows.push({ repository: asked[index]!, outcome: "refused", reason: row["reason"] });
     else return undefined;
@@ -178,11 +179,16 @@ function bulkRows(answer: unknown, asked: readonly string[]): BulkRow[] | undefi
 
 const digestOf = (input: CreateProjectsInput) => createHash("sha256").update(JSON.stringify([input.repositories, input.separate, input.name ?? null])).digest("hex");
 
-/** Keeps a creation in the session for replays, dropping the oldest ones past REMEMBERED_CREATES_MAX. */
+/** Keeps a creation in the session for replays: the newest REMEMBERED_CREATES_MAX in the order made (never by clock), of which only the newest REMEMBERED_BULK_MAX keep their rows. An id already kept keeps its first answer. */
 function remember(session: CodeSession, requestId: string, entry: NonNullable<CodeSession["created"]>[string]): void {
-  const all = { ...session.created, [requestId]: entry };
-  const keep = Object.entries(all).sort((a, b) => Date.parse(b[1].at) - Date.parse(a[1].at)).slice(0, REMEMBERED_CREATES_MAX);
-  session.created = Object.fromEntries(keep);
+  if (session.created?.[requestId] !== undefined) return;
+  const all = Object.entries({ ...session.created, [requestId]: entry }).slice(-REMEMBERED_CREATES_MAX);
+  let bulk = 0;
+  for (let index = all.length - 1; index >= 0; index -= 1) {
+    const [, kept] = all[index]!;
+    if (kept.results !== undefined && (bulk += 1) > REMEMBERED_BULK_MAX) all[index] = [all[index]![0], { name: kept.name, at: kept.at, ...(kept.digest === undefined ? {} : { digest: kept.digest }) }];
+  }
+  session.created = Object.fromEntries(all);
   session.changed = true;
 }
 

@@ -4,7 +4,7 @@
 // the repositories and a name.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CodeClient, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest } from "../../packages/cloud-server/src/index.js";
-import { CODE_NOT_AVAILABLE, CODE_UNREACHABLE, PICKER_WORDS, REMEMBERED_CREATES_MAX, readCreateProjectsBody, readPickerQuery } from "../../packages/cloud-server/src/project-create-routes.js";
+import { CODE_NOT_AVAILABLE, CODE_UNREACHABLE, PICKER_WORDS, REMEMBERED_BULK_MAX, REMEMBERED_CREATES_MAX, readCreateProjectsBody, readPickerQuery } from "../../packages/cloud-server/src/project-create-routes.js";
 import { SETUP_RUNS_AT_ONCE_PER_COMPANY, setupRunsToStart } from "../../packages/contracts/src/onboarding.js";
 import { OTHER_COMPANY_ID, PRIYA, SAM, ZED, startFakeCode, type FakeCode, type Person } from "../support/fake-code.js";
 
@@ -281,8 +281,23 @@ describe("answers Cloud does not trust", () => {
     for (let n = 0; n < REMEMBERED_CREATES_MAX + 5; n += 1) expect((await w.send("POST", "/projects", { requestId: ID(100 + n), repositories: ["a/one"] })).status).toBe(201);
     const kept = Object.keys((await w.store.get(w.id))!.created ?? {});
     expect(kept).toHaveLength(REMEMBERED_CREATES_MAX);
-    // The newest are the ones kept (the clock is the real one, so only the count and the latest are checked).
-    expect(kept).toContain(ID(100 + REMEMBERED_CREATES_MAX + 4));
+    // The newest are the ones kept, in the order made (never by clock): the first five are the ones dropped.
+    expect(kept).toEqual(Array.from({ length: REMEMBERED_CREATES_MAX }, (_, n) => ID(105 + n)));
+  });
+
+  it("keeps the rows of only the newest bulk creates, so the sealed session stays small; an older one is refused in fixed words, not answered wrongly", async () => {
+    const w = stub((path) => (path === "/v1/dev/client/projects/bulk" ? json(200, { results: [{ repository: "a/one", outcome: "created", project: "one" }] }) : json(404, {})));
+    for (let n = 0; n < REMEMBERED_BULK_MAX + 2; n += 1) expect((await w.send("POST", "/projects", { requestId: ID(200 + n), repositories: ["a/one"], separate: true })).status).toBe(200);
+    const kept = (await w.store.get(w.id))!.created!;
+    expect(Object.values(kept).filter((entry) => entry.results !== undefined)).toHaveLength(REMEMBERED_BULK_MAX);
+    expect((await w.send("POST", "/projects", { requestId: ID(200), repositories: ["a/one"], separate: true })).body).toEqual(PICKER_WORDS.sameIdOtherBody.body);
+    expect((await w.send("POST", "/projects", { requestId: ID(211), repositories: ["a/one"], separate: true })).body).toMatchObject({ duplicate: true });
+  });
+
+  it("reads Code's rows by the repository's own key: a canonical spelling of what was asked is the same repository, shown as asked", async () => {
+    const w = stub((path) => (path === "/v1/dev/client/projects/bulk" ? json(200, { results: [{ repository: "acme/web", outcome: "created", project: "web" }] }) : json(404, {})));
+    const answer = await w.send("POST", "/projects", { requestId: ID(300), repositories: ["Acme/Web"], separate: true });
+    expect(answer.body).toEqual({ duplicate: false, results: [{ repository: "Acme/Web", outcome: "created", project: "web" }] });
   });
 });
 

@@ -147,6 +147,48 @@ it("'Try the rest again' sends only the repositories a second try can fix, with 
   f.close();
 });
 
+it("a failed 'Try the rest again' says so, and trying again sends the same request id (so a lost answer is never created twice); a success gets a new one", async () => {
+  let call = 0;
+  const f = setup({ create: () => {
+    call += 1;
+    if (call === 1) return { status: 200, body: { duplicate: false, results: [{ repository: "acme/api", outcome: "created", project: "api" }, { repository: "acme/auth", outcome: "refused", reason: "unavailable" }] } };
+    if (call === 2) return { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara couldn't create the projects just now. Try again." } } };
+    return { status: 200, body: { duplicate: false, results: [{ repository: "acme/auth", outcome: "created", project: "auth" }] } };
+  } });
+  await pick("api", "auth");
+  fireEvent.click(screen.getByRole("radio", { name: /No, separate projects/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Create 2 projects" }));
+  await screen.findByRole("table");
+  fireEvent.click(screen.getByRole("button", { name: "Try the rest again" }));
+  expect((await screen.findByRole("alert")).textContent).toBe("Rovara couldn't create the projects just now. Try again.");
+  fireEvent.click(screen.getByRole("button", { name: "Try the rest again" }));
+  await screen.findByRole("link", { name: "Open auth" });
+  const ids = posts(f).map((post) => (post.body as { requestId: string }).requestId);
+  expect(ids[2]).toBe(ids[1]);
+  expect(ids[1]).not.toBe(ids[0]);
+  f.close();
+});
+
+it("a search with a space or other odd characters is cleaned before it is asked, never an error", async () => {
+  const f = setup();
+  await pick("web");
+  fireEvent.change(screen.getByLabelText("Search repositories"), { target: { value: "acme web!" } });
+  await waitFor(() => expect(f.request.mock.calls.map(([r]) => r.path)).toContain("/v1/app/github/repository-choices?q=acmeweb&limit=50"));
+  expect(screen.queryByRole("alert")).toBeNull();
+  f.close();
+});
+
+it("stops at 32 repositories: the 33rd box is disabled and says so", async () => {
+  const names = Array.from({ length: 40 }, (_, index) => `r${String(index).padStart(2, "0")}`);
+  const f = setup({ names });
+  await pick(...names.slice(0, 32));
+  expect(screen.getByRole("checkbox", { name: /^acme\/r32/ })).toHaveProperty("disabled", true);
+  expect(screen.getByTestId("picked-count").textContent).toContain("32 repositories picked (the most one step takes)");
+  fireEvent.click(screen.getByRole("checkbox", { name: /^acme\/r00/ }));
+  expect(screen.getByRole("checkbox", { name: /^acme\/r32/ })).toHaveProperty("disabled", false);
+  f.close();
+});
+
 it("a name already taken can be created on its own: the picker comes back with that repository and 'one project'", async () => {
   const f = setup({ create: () => ({ status: 200, body: { duplicate: false, results: [{ repository: "acme/api", outcome: "created", project: "api" }, { repository: "acme/auth", outcome: "refused", reason: "name_taken" }] } }) });
   await pick("api", "auth");
