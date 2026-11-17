@@ -23,6 +23,7 @@ Rovara Cloud's server for its web app, on a Rovara Code install's API ([Rovara-c
 | `src/handler.ts` | Sign-in, sign-out, the session cookie, CSRF and route dispatch, framework-neutral |
 | `src/work-reads.ts` | The Work page's reads (the split inbox): the task list, and for one task its plan, proof index, events and plan comments, each one call to Code as the person, kept to the fields the page draws |
 | `src/lessons-routes.ts` | The lessons screens (DEC 231) on Code's lessons API (#713, contract v0 `lessons.*`): the inbox batch (`GET /v1/app/lessons/inbox`, one batch per project of the proposed lessons the person may decide, theirs first), the lists, Keep, Edit and Drop (one or a batch), retire and retire requests, the learning mode, Lessons used and not helpful. Only fixed words are forwarded; Code's "Lessons are off." (404 `LESSONS_SWITCHED_OFF`) passes through for the screens' calm off state |
+| `src/wiki-routes.ts` | The project Wiki tab's three reads (lead 4 W5) on Code's wiki routes (W2): the page list, one page and its cited files, each rebuilt field by field for THAT project and page (an answer for another project, or one that does not read, is refused whole), refusals in fixed words, no query forwarded |
 | `src/work-sessions.ts` | Cloud's sessions: the store interface; `LocalWorkSessionStore` |
 | `src/session-view.ts` | A session as the app reads it, from the session and Code's task; the waiting plan |
 | `src/approve.ts` | The plan approval page and the decision it sends to Code |
