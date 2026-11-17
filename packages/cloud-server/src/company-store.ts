@@ -60,6 +60,30 @@ export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo"] as co
 export type AgentAiSource = (typeof AGENT_AI_SOURCES)[number];
 export interface AgentAiChoice { companyId: string; source: AgentAiSource; version: number; updatedAt: string; updatedBy: string }
 export const validAgentAiSource = (value: unknown): value is AgentAiSource => typeof value === "string" && (AGENT_AI_SOURCES as readonly string[]).includes(value);
+/**
+ * DEC 254t (a): the company AI source kinds the code supports (the contracts' SOURCE_KINDS_AT_LAUNCH and the gateway's AI_SOURCE_KINDS;
+ * a contract test holds them equal). CLOUD_AI_SOURCE_KINDS names the kinds this install's owner switched on after each real-key check
+ * passed. Absent or empty: none.
+ */
+export const AI_SOURCE_KINDS = ["anthropic", "openai", "openrouter", "bedrock", "endpoint"] as const;
+export type AiSourceKind = (typeof AI_SOURCE_KINDS)[number];
+/** The agent source each kind is chosen as (the gateway's AGENT_SOURCE_OF_KIND). */
+export const AGENT_SOURCE_OF_KIND: Readonly<Record<AiSourceKind, string>> = Object.freeze({ anthropic: "anthropic_key", openai: "openai_key", openrouter: "openrouter_key", bedrock: "bedrock_byo", endpoint: "custom_endpoint" });
+/** The sources that were live before the switch (DEC 236, DEC 238): choosable as before, switch or no switch (the gateway's PRE_SWITCH_AGENT_SOURCES). */
+export const PRE_SWITCH_AGENT_SOURCES: readonly string[] = ["anthropic_key", "bedrock_byo"];
+/** CLOUD_AI_SOURCE_KINDS: comma-separated supported kinds, no spaces, no repeats; absent or empty is none; anything else throws (fixed words). */
+export function parseAiSourceKinds(value: string | undefined): Set<AiSourceKind> {
+  if (value === undefined || value === "") return new Set();
+  const kinds = value.split(",");
+  if (kinds.length > AI_SOURCE_KINDS.length || new Set(kinds).size !== kinds.length || !kinds.every((kind) => (AI_SOURCE_KINDS as readonly string[]).includes(kind))) throw new Error("invalid AI source kinds");
+  return new Set(kinds as AiSourceKind[]);
+}
+/** Whether an agent source is switched on for this install: Rovara's AI and the pre-switch sources always; any other only when its kind is on. */
+export function agentSourceSwitchedOn(source: string, switchedOn: ReadonlySet<string>): boolean {
+  if (source === "rovara" || PRE_SWITCH_AGENT_SOURCES.includes(source)) return true;
+  const kind = AI_SOURCE_KINDS.find((k) => AGENT_SOURCE_OF_KIND[k] === source);
+  return kind !== undefined && switchedOn.has(kind);
+}
 
 export interface HookInstall { issuer: string; keys: PublicJwk[]; companyIds: string[]; updatedAt: string }
 

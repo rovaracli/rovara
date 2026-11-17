@@ -6,7 +6,8 @@
 // holding Cloud's https address), CLOUD_CLIENT_SECRET_ID (the secret holding Cloud's client secret), CLOUD_SESSIONS_KEY_ID (the KMS key
 // that seals sign-ins), CLOUD_ORG_NAME, CLOUD_APP_DIRECTORY (the page shell, index.html); COMPANY_TABLE (Cloud's company data:
 // settings and rules, invites, profile, the policy hook's install allow-list; absent, the company routes answer 501) and CLOUD_COMPANY_ID
-// (the one company of a single-company Code, used only when Code's access check names none); CLOUD_PRODUCT_KEYS_TABLE,
+// (the one company of a single-company Code, used only when Code's access check names none); CLOUD_AI_SOURCE_KINDS (DEC 254t: the company AI
+// source kinds the owner switched on after their real-key checks, comma-separated; absent or empty, none); CLOUD_PRODUCT_KEYS_TABLE,
 // CLOUD_PRODUCT_KEYS_KEY and CLOUD_PRODUCT_KEYS_MAC_KEY (the model gateway's product key table and KMS keys: the project product AI
 // settings, all three or none; absent, those routes answer 501); CLOUD_MODEL_GATEWAY_URL (the model gateway's https address, for the
 // Vertex AI connection test it runs for Cloud; empty or absent, a Vertex connect answers unavailable); CLOUD_BEDROCK_TEMPLATE_URL (the
@@ -14,7 +15,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { KMSClient } from "@aws-sdk/client-kms";
 import {
-  CodeClient, DynamoCloudAuditStore, DynamoCompanyStore, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, EnvelopeSealer, KmsKeyService, cloudConfigReader, cloudDocumentClient, createCloudHandler,
+  CodeClient, DynamoCloudAuditStore, DynamoCompanyStore, DynamoPresenceBoard, DynamoSessionStore, DynamoWorkSessionStore, EnvelopeSealer, KmsKeyService, cloudConfigReader, cloudDocumentClient, createCloudHandler, parseAiSourceKinds,
   type CloudRequest, type CloudResponse,
 } from "../packages/cloud-server/src/index.js";
 import { createAppHandler } from "../packages/web/src/server/handler.js";
@@ -135,7 +136,9 @@ function build() {
   const store = new DynamoSessionStore(db, table, new EnvelopeSealer(new KmsKeyService(kms, required("CLOUD_SESSIONS_KEY_ID")))), work = new DynamoWorkSessionStore(db, table), presence = new DynamoPresenceBoard(db, table), audit = new DynamoCloudAuditStore(db, table);
   const companyTable = process.env.COMPANY_TABLE;
   const companyId = process.env.CLOUD_COMPANY_ID;
-  const company = companyTable ? { store: new DynamoCompanyStore(db, companyTable), ...(companyId ? { companyId } : {}) } : undefined;
+  // DEC 254t: the AI source kinds this install's owner switched on (none when unset); a malformed setting stops the server here.
+  const aiSourceKinds = parseAiSourceKinds(process.env.CLOUD_AI_SOURCE_KINDS);
+  const company = companyTable ? { store: new DynamoCompanyStore(db, companyTable), aiSourceKinds, ...(companyId ? { companyId } : {}) } : undefined;
   const productStore = productAiStore(process.env);
   const bedrock = productStore === undefined ? undefined : bedrockBackend(process.env);
   const productAi = productStore === undefined ? undefined : { store: productStore, issuer: `${required("ROVARA_CODE_URL")}/v1/auth`, ...(companyId ? { companyId } : {}), ...(bedrock === undefined ? {} : { bedrock }) };

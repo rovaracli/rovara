@@ -61,7 +61,15 @@ export interface CloudWebProps extends StackProps {
    * release carries it; absent, the template is what it was (tests/contract/cloud-web-product-ai.test.ts).
    */
   readonly productAi?: boolean;
+  /**
+   * DEC 254t: the company AI source kinds the owner switched on (`-c rovaraAiSourceKinds`, checked in app.ts), set as
+   * CLOUD_AI_SOURCE_KINDS. Absent: the variable is not set (none switched on; the template is what it was). Never for "production".
+   */
+  readonly aiSourceKinds?: string;
 }
+
+/** DEC 254t: the server's environment variable for the switched-on company AI source kinds (scripts/cloud-lambda.ts reads it). */
+export const CLOUD_AI_SOURCE_KINDS_ENV = "CLOUD_AI_SOURCE_KINDS";
 
 /** The server's environment for the product AI settings (scripts/cloud-lambda.ts reads them; all three or none). */
 export const CLOUD_PRODUCT_AI_ENV = { keysTable: "CLOUD_PRODUCT_KEYS_TABLE", keysKey: "CLOUD_PRODUCT_KEYS_KEY", macKey: "CLOUD_PRODUCT_KEYS_MAC_KEY", gatewayUrl: "CLOUD_MODEL_GATEWAY_URL" } as const;
@@ -238,6 +246,10 @@ export class CloudWebStack extends Stack {
     const sessionKey = signInKey(this, `Rovara Cloud ${env} (web): seals people's sign-ins (Code tokens) in the State table`, server.role!);
     server.addEnvironment("CLOUD_SESSIONS_KEY_ID", sessionKey.keyArn);
     if (props.productAi === true) this.productAi(env, server, codeUrl.valueAsString);
+    if (props.aiSourceKinds !== undefined) {
+      if (env === "production" && props.aiSourceKinds !== "") throw new Error("company AI sources are for named test environments until a Cloud release carries them");
+      server.addEnvironment(CLOUD_AI_SOURCE_KINDS_ENV, props.aiSourceKinds);
+    }
     // IAM auth on the function URL, signed by CloudFront's origin access control (SigV4, always), and invoke rights only for this
     // distribution: the function's own address answers 403 to anyone else, so every request goes through CloudFront.
     const url = server.addFunctionUrl({ authType: lambda.FunctionUrlAuthType.AWS_IAM });

@@ -24,7 +24,7 @@ const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url")
 export type Body = Record<string, unknown> & { error?: { code: string; message: string } };
 export const write = (expectedRevision: number, more: Record<string, unknown> = {}) => ({ requestId: randomUUID(), expectedRevision, ...more });
 
-export interface WorldOptions { vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck; bedrock?: BedrockBackend; beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; company?: boolean; /** Code's access check takes this long (the clock moves while it runs). */ accessMs?: number; /** Code's answer to a member change (default 200), and what happens while Code makes it. */ memberStatus?: number; duringMemberChange?: () => Promise<void> }
+export interface WorldOptions { vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck; bedrock?: BedrockBackend; beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; company?: boolean; /** DEC 254t: the install's switched-on AI source kinds (company backend). */ aiSourceKinds?: ReadonlySet<string>; /** Code's access check takes this long (the clock moves while it runs). */ accessMs?: number; /** Code's answer to a member change (default 200), and what happens while Code makes it. */ memberStatus?: number; duringMemberChange?: () => Promise<void> }
 
 export function world(options: WorldOptions = {}) {
   const clock = { at: START }; let tokens = 0;
@@ -57,7 +57,7 @@ export function world(options: WorldOptions = {}) {
   const handler = createCloudHandler({
     client, store: sessions, org: { orgId: "rovara", name: "Rovara", plan: "cloud" }, callbackPath: "/callback", secureCookies: false, work: new LocalWorkSessionStore(), origin: ORIGIN,
     now: () => new Date(clock.at), log: (event) => { logs.push(JSON.stringify(event)); }, audit, productAi: { store: typed, issuer: ISS, ...(options.bedrock === undefined ? {} : { bedrock: options.bedrock }) },
-    ...(options.company === true ? { company: { store: companies, log: (event: Record<string, unknown>) => { logs.push(JSON.stringify(event)); } } } : {}),
+    ...(options.company === true ? { company: { store: companies, log: (event: Record<string, unknown>) => { logs.push(JSON.stringify(event)); }, ...(options.aiSourceKinds === undefined ? {} : { aiSourceKinds: options.aiSourceKinds }) } } : {}),
   });
   const signIn = async (who: string, stepUpAge?: number) => {
     const person = PEOPLE[who]!; tokens += 1;

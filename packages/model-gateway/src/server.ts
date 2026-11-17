@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { AgentAiSourceReader, ByoBedrock, RovaraAi } from "./agent-ai.js";
+import { AGENT_AI_SOURCES, agentSourceSwitchedOn, type AgentAiSourceReader, type ByoBedrock, type RovaraAi } from "./agent-ai.js";
 import type { AwsCredentials } from "./aws.js";
 import { BEDROCK_MODEL_ACCESS_WORDS } from "./bedrock-byo-sessions.js";
 import { CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS, REASONING_CARRYOVER_MODEL, toConverse } from "./bedrock-converse.js";
@@ -45,7 +45,15 @@ export interface GatewayDependencies {
    * exactly; "bedrock_byo" sends it to the company's OWN Bedrock through its own role (`byo`; refused when absent, DEC 238).
    * Absent: DEC 236 exactly.
    */
-  agentAi?: { sources: AgentAiSourceReader; rovara?: RovaraAi; byo?: ByoBedrock };
+  agentAi?: {
+    sources: AgentAiSourceReader; rovara?: RovaraAi; byo?: ByoBedrock;
+    /**
+     * DEC 254t: the company source kinds this install switched on (GATEWAY_AI_SOURCE_KINDS). A saved source whose kind is off is
+     * refused at admission (AGENT_SOURCE_SWITCHED_OFF): nothing read, held or sent. Absent: none. Rovara's AI and the pre-switch
+     * sources (agent-ai.ts PRE_SWITCH_AGENT_SOURCES) are not gated.
+     */
+    switchedOn?: ReadonlySet<string>;
+  };
 }
 /** One provider call shape after its route's guard. `path` is built by the guard from checked parts, never copied from the request. */
 export interface RouteCall {
@@ -125,9 +133,12 @@ export const PRODUCT_ROUTE_PREFIX = "/v1/product/";
 export const AGENT_KEY_MISSING: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect an AI key: this company has no AI provider key connected, so its agents cannot call AI." });
 /** Company-key mode: the provider refused the company's own key (401/403 before any output). Free; fixed words. */
 export const AGENT_KEY_REFUSED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect an AI key: the AI provider refused this company's connected key." });
+const NOTHING_SWITCHED_ON: ReadonlySet<string> = new Set();
 const AGENT_UNAVAILABLE: RouteRefusal = Object.freeze({ ok: false as const, status: 503, code: "unavailable", message: "model access unavailable" });
 /** DEC 240: the company chose its own Bedrock (DEC 238), and this gateway does not offer it. Nothing held or sent; no fallback. */
 export const AGENT_SOURCE_NOT_OFFERED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: your own Bedrock is not available on this install." });
+/** DEC 254t: the company chose an AI source this install has not switched on. Nothing read, held or sent; no fallback. */
+export const AGENT_SOURCE_SWITCHED_OFF: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: the AI source your company chose is not switched on for this install." });
 /** DEC 238: the company chose its own Bedrock but has no connection saved. Nothing held or sent; no fallback. */
 export const BYO_BEDROCK_NOT_CONNECTED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect your Bedrock: this company chose its own Bedrock for its agents, and no AWS role is connected." });
 /** DEC 238: a model the company did not pick when it connected its Bedrock. Before any hold. */
@@ -193,6 +204,9 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
       if (choice !== undefined) {
         let source;
         try { source = await choice.sources.sourceFor(claims.cid, signal); } catch { return AGENT_UNAVAILABLE; }
+        if (source !== undefined && !agentSourceSwitchedOn(source, choice.switchedOn ?? NOTHING_SWITCHED_ON)) return AGENT_SOURCE_SWITCHED_OFF;
+        // A source this route does not serve is never sent on another one's key (no fallback to the company's Anthropic key).
+        if (source !== undefined && !(AGENT_AI_SOURCES as readonly string[]).includes(source)) return AGENT_UNAVAILABLE;
         if (source === "bedrock_byo") {
           if (choice.byo === undefined) return AGENT_SOURCE_NOT_OFFERED;
           // Only the verified company's own connection (the token's iss and cid), never another company's.

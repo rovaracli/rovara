@@ -76,6 +76,12 @@ export const GATEWAY_ENV = {
   bedrockBrokerRole: "GATEWAY_BEDROCK_BROKER_ROLE",
   /** The ARN of the KMS HMAC key the companies' external ids are made with (only this gateway may GenerateMac; never replaced). */
   bedrockExternalIdKey: "GATEWAY_BEDROCK_EXTERNAL_ID_KEY",
+  /**
+   * DEC 254t: the company AI source kinds this install's owner switched on after each one's real-key check passed, comma-separated
+   * (agent-ai.ts parseAiSourceKinds), only with `agentKeys` "company". Absent or empty: none (a company that chose an AI source of a
+   * kind that is off is refused). Rovara's AI and the pre-switch sources (own Anthropic key, own Bedrock) are not gated by it.
+   */
+  aiSourceKinds: "GATEWAY_AI_SOURCE_KINDS",
 } as const;
 /** The values of GATEWAY_ENV.agentKeys. */
 export const GATEWAY_AGENT_KEY_MODES = ["install", "company"] as const;

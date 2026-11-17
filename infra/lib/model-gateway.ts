@@ -202,6 +202,7 @@ export const MODEL_GATEWAY_ENV = {
   agentModelsDisabled: "GATEWAY_AGENT_MODELS_DISABLED",
   bedrockBrokerRole: "GATEWAY_BEDROCK_BROKER_ROLE",
   bedrockExternalIdKey: "GATEWAY_BEDROCK_EXTERNAL_ID_KEY",
+  aiSourceKinds: "GATEWAY_AI_SOURCE_KINDS",
 } as const;
 /** The eval stage table's due-stages index (deploy.ts GATEWAY_EVAL_STAGE_INDEXES). */
 export const MODEL_GATEWAY_EVAL_STAGE_INDEXES = {
@@ -305,6 +306,8 @@ export interface ModelGatewayProps extends StackProps {
   readonly rovaraAi?: RovaraAiProps;
   /** Bring your own Bedrock (MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY). Needs productAi. Default off. */
   readonly bedrockByo?: boolean;
+  /** DEC 254t: the switched-on company AI source kinds (app.ts AI_SOURCE_KINDS_CONTEXT_KEY, checked there). Needs productAi. Absent: not set (none). */
+  readonly aiSourceKinds?: string;
   /**
    * "fixed" keeps the provider secrets at their original fixed names (an environment deployed that way must keep it); the default
    * lets CloudFormation generate them (MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY).
@@ -525,6 +528,9 @@ export class ModelGatewayStack extends Stack {
     const rovaraAi = props.rovaraAi === undefined ? undefined : this.rovaraAi(props.rovaraAi, product !== undefined, serveRole);
     if (props.bedrockByo === true && env === "production") throw new Error("bring your own Bedrock is for named test environments until a Cloud release carries it");
     const bedrockByo = props.bedrockByo === true ? this.bedrockByo(env, product !== undefined, serveRole) : undefined;
+    // DEC 254t: company-key mode only (product AI), never for production.
+    if (props.aiSourceKinds !== undefined && product === undefined) throw new Error("company AI source kinds need the product AI additions (rovaraModelGatewayProductAi=on)");
+    if (props.aiSourceKinds !== undefined && props.aiSourceKinds !== "" && env === "production") throw new Error("company AI sources are for named test environments until a Cloud release carries them");
 
     // Network: two zones, public subnets and no NAT gateway. Tasks take only the load balancer's traffic; DynamoDB through a
     // gateway endpoint.
@@ -581,6 +587,7 @@ export class ModelGatewayStack extends Stack {
         ...(product === undefined ? {} : product.environment),
         ...(rovaraAi === undefined ? {} : rovaraAi.environment),
         ...(bedrockByo === undefined ? {} : bedrockByo.environment),
+        ...(props.aiSourceKinds === undefined ? {} : { [MODEL_GATEWAY_ENV.aiSourceKinds]: props.aiSourceKinds }),
       },
     });
     props.repository.grantPull(serveTask.obtainExecutionRole());

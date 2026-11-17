@@ -25,6 +25,8 @@ export interface CompanyBackend {
   /** The deployment's one company, used only when Code's access check names none (a single-company Code). Absent: such a Code gets no company routes. */
   companyId?: string;
   log?: (event: Record<string, unknown>) => void;
+  /** DEC 254t: the company AI source kinds this install switched on (CLOUD_AI_SOURCE_KINDS, company-store.ts parseAiSourceKinds). Absent: none. */
+  aiSourceKinds?: ReadonlySet<string>;
 }
 
 /** Code's route that takes the company's pre-approved emails (contract v0 `company.preApproved.put`). */
