@@ -132,7 +132,14 @@ async function scope(context: RouteContext): Promise<{ project: string; company:
   const project = context.params[0];
   // Not a project name: answered as Code would (not found), without asking Code.
   if (project === undefined || !PROJECT_NAME.test(project)) return { refusal: LIFECYCLE_ANSWERS.notFound };
-  const who = await companyCaller(context);
+  let who: Awaited<ReturnType<typeof companyCaller>>;
+  try {
+    who = await companyCaller(context);
+  } catch (error) {
+    // Code's access check refused or failed: Cloud's fixed words, never Code's text (an ended sign-in still reaches the handler).
+    if (error instanceof CodeError) return { refusal: LIFECYCLE_ANSWERS.unavailable };
+    throw error;
+  }
   return refused(who) ? { refusal: who } : { project, company: who.companyId };
 }
 

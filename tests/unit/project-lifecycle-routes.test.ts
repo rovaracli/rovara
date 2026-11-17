@@ -27,7 +27,7 @@ interface CodeCall { method: string; path: string; search: string; authorization
 type Override = (call: CodeCall) => Response | undefined;
 
 /** A small pretend Code applying #839's rule; `override` replaces its answer for a test. */
-function setUp(override: Override = () => undefined) {
+function setUp(override: Override = () => undefined, accessAnswer?: () => Response) {
   const calls: CodeCall[] = [];
   const state: Record<string, { status: "active" | "archived"; revision: number; receipts: Map<string, unknown> }> = {
     payments: { status: "active", revision: 0, receipts: new Map() }, ledger: { status: "active", revision: 0, receipts: new Map() },
@@ -50,6 +50,7 @@ function setUp(override: Override = () => undefined) {
     const person = PEOPLE[token];
     if (url.pathname === "/v1/auth/token") return json(400, { error: "invalid_grant" });
     if (person === undefined) return json(401, {});
+    if (url.pathname === "/v1/dev/access" && accessAnswer !== undefined) return accessAnswer();
     if (url.pathname === "/v1/dev/access") {
       return json(200, { developerId: person.id, displayName: "Someone", administrator: false, ...(person.company === undefined ? {} : { companyId: person.company, companyRole: person.role }), projects: Object.entries(person.grants).map(([name, access]) => ({ name, access })), notices: [] });
     }
@@ -130,6 +131,10 @@ describe("previews", () => {
     const headers = await w.as("pam-token");
     expect((await w.send("GET", "/v1/web/projects/payments/archive-preview", headers)).body).toMatchObject({ access: { actions: [] } });
     expect((await w.send("GET", "/v1/web/projects/payments/lifecycle", headers)).body).toEqual({ status: "active", actions: [] });
+    // Archived: the member is offered no restore either.
+    w.state["payments"]!.status = "archived";
+    expect((await w.send("GET", "/v1/web/projects/payments/restore-preview", headers)).body).toMatchObject({ access: { actions: [] } });
+    expect((await w.send("GET", "/v1/web/projects/payments/lifecycle", headers)).body).toEqual({ status: "archived", actions: [] });
   });
 
   it("the lifecycle read: active -> archive for a manager; archived -> asks the restore preview -> restore", async () => {
@@ -184,6 +189,39 @@ describe("two companies", () => {
     const res = await w.send("GET", "/v1/web/projects/payments/archive-preview", await w.as("ada-token"));
     expect(res).toMatchObject({ status: 503, body: LIFECYCLE_ANSWERS.unavailable.body });
     expect(res.text).not.toContain(B);
+  });
+
+  const base = (kind: "archive" | "restore") => ({ orgId: A, project: "payments", status: kind === "archive" ? "active" : "archived", expectedRevision: 0, expectedProjectRevision: 3, checkedAt: "2026-11-17T10:00:00.000Z", ...(kind === "restore" ? { prerequisites: "not_required" } : {}), access: { actions: [kind] } });
+  for (const kind of ["archive", "restore"] as const) {
+    for (const [what, twist] of [["another project", { project: "ledger" }], ["another company", { orgId: B }], ["the other action", { access: { actions: [kind === "archive" ? "restore" : "archive"] } }], ["an extra member", { leak: LEAK }]] as const) {
+      it(`a ${kind} preview naming ${what} is never passed on (preview and lifecycle read)`, async () => {
+        const w = setUp((call) => call.path.endsWith(`/${kind}-preview`) ? json(200, { ...base(kind), ...twist }) : call.path.endsWith("/archive-preview") ? json(200, { ...base("archive"), status: "archived", access: { actions: [] } }) : undefined);
+        const headers = await w.as("ada-token");
+        for (const path of [`${kind}-preview`, "lifecycle"]) {
+          const res = await w.send("GET", `/v1/web/projects/payments/${path}`, headers);
+          expect(res).toMatchObject({ status: 503, body: LIFECYCLE_ANSWERS.unavailable.body });
+          expect(res.text).not.toContain(LEAK);
+          expect(res.text).not.toContain("ledger");
+        }
+      });
+    }
+  }
+
+  it("a change without the sign-in's CSRF value is refused by the handler, and Code is not asked", async () => {
+    const w = setUp();
+    const { cookie } = await w.as("ada-token");
+    const res = await w.send("POST", "/v1/web/projects/payments/reviewed-archive", { cookie }, change());
+    expect(res.status).toBe(403);
+    expect(words(res).code).toBe("CSRF_INVALID");
+    expect(w.lifecycleCalls()).toEqual([]);
+  });
+
+  it("Code's access check failing reaches the app in Cloud's fixed words, never Code's text", async () => {
+    const w = setUp(undefined, () => json(500, { error: { code: "INTERNAL", message: LEAK } }));
+    const res = await w.send("GET", "/v1/web/projects/payments/archive-preview", await w.as("ada-token"));
+    expect(res).toMatchObject({ status: 503, body: LIFECYCLE_ANSWERS.unavailable.body });
+    expect(res.text).not.toContain(LEAK);
+    expect(w.lifecycleCalls()).toEqual([]);
   });
 
   it("a person Code names no company for gets NO_COMPANY, and Code's lifecycle routes are not asked", async () => {
