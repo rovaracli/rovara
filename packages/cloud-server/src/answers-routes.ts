@@ -33,6 +33,8 @@ export const ANSWERS_WORDS = Object.freeze({
 });
 const W = ANSWERS_WORDS;
 const TASK_BUTTON = "Start a Quick task";
+/** What a Code whose core engine does not serve a route yet says (core-host/dev-routes.ts NOT_ON_THE_CORE_YET): the same as an unknown route, "not available on this Rovara yet". */
+const CORE_NOT_YET = "That is not on the core engine on this install yet.";
 const answer = (status: number, code: string, message: string): RouteAnswer => Object.freeze({ status, body: Object.freeze({ error: Object.freeze({ code, message }) }) });
 export const ANSWERS_ANSWERS = Object.freeze({
   notFound: answer(404, "NOT_FOUND", W.notFound),
@@ -131,7 +133,7 @@ type Kind = "answer" | "suggest";
 /** Code's refusal in Cloud's fixed words. Only Code's exact unknown-route 404 means "not on Code yet"; any other 404 is "not found". */
 export function answersRefusal(kind: Kind, error: CodeError): RouteAnswer {
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
-  if (error.status === 404) return body?.["code"] === "NOT_FOUND" && body["message"] === "route not found" ? A.notYet : A.notFound;
+  if (error.status === 404) return body?.["code"] === "NOT_FOUND" && (body["message"] === "route not found" || body["message"] === CORE_NOT_YET) ? A.notYet : A.notFound;
   if (error.status === 403) return A.forbidden;
   if (error.status === 400) return A.invalid;
   if (error.status === 429) return kind === "suggest" ? A.suggestRate : body?.["message"] === W.limitReached ? A.limitReached : A.rate;
