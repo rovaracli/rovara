@@ -198,3 +198,13 @@ it("explains a draft made from scratch without guessing that the source method w
  await screen.findByText("The source workflow couldn't be copied. Your new draft starts from scratch.");expect(screen.getByRole("link", { name: "Inspect draft" }).getAttribute("href")).toBe("/app/agents/" + AGENT_FIXTURE_ID + "/edit");expect(screen.getByRole<HTMLButtonElement>("button", { name: "Create draft" }).disabled).toBe(true);expect(navigate).not.toHaveBeenCalled();f.close();
 });
 it("does not offer task-to-method creation without its server capability", async () => { const f = setup();await screen.findByRole("heading", { name: "Fix duplicate refunds" });expect(screen.queryByRole("button", { name: "Make this an agent" })).toBeNull();f.close(); });
+
+it("hides Ask about this task on hosted even when the server offers it, and makes no ask request (DEC 254z-amend2)", async () => {
+ const f = setup([], undefined, workspaceFixture({ you: { ...workspaceFixture().you, live: { ask: true } } }));
+ await screen.findByRole("heading", { name: "Fix duplicate refunds" });
+ await import("../../packages/ui/src/screens/session/AskPanel.js");
+ await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
+ expect(screen.queryByText("Ask about this task")).toBeNull();
+ expect(f.request.mock.calls.some(([request]) => /\/asks?(\/|\?|$)/.test(request.path))).toBe(false);
+ f.close();
+});
