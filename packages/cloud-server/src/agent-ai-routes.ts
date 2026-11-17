@@ -13,7 +13,7 @@
 // the gateway uses only the saved one.
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
 import { recordCloudAction } from "./audit-log.js";
-import { AGENT_AI_SOURCES, CompanyStoreConflict, type AgentAiSource } from "./company-store.js";
+import { AGENT_AI_SOURCES, agentSourceSwitchedOn, CompanyStoreConflict, type AgentAiSource } from "./company-store.js";
 import { bedrockConnected } from "./bedrock-byo-routes.js";
 import { LEARNING_AI_OWNER } from "./learning-ai-routes.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
@@ -31,6 +31,7 @@ const WORDS = Object.freeze({
   invalid: refusal(400, "CONFIG_INVALID", "Choose Rovara's AI, your own Anthropic key or your own Bedrock."),
   bedrockFirst: refusal(400, "CONFIG_INVALID", "Connect your own Bedrock first (Settings, Your own Bedrock), then choose it here."),
   tooLarge: refusal(413, "CONFIG_INVALID", "The request is too large."),
+  switchedOff: refusal(400, "CONFIG_INVALID", "This AI source isn't switched on for this Cloud yet."),
   stale: refusal(409, "CONFLICT", "The AI for your agents changed. Refresh and try again."),
   unavailable: refusal(503, "RUNTIME_UNAVAILABLE", "AI for your agents is unavailable right now. Try again."),
 });
@@ -38,6 +39,10 @@ const record = (v: unknown): Record<string, unknown> | undefined => v !== null &
 const whole = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 
 interface Admin { companyId: string; developerId: string; name: string }
+
+const NOTHING_SWITCHED_ON: ReadonlySet<string> = new Set();
+/** DEC 254t: whether this install switched the source's kind on (Rovara's AI and the pre-switch sources always are). */
+const switchedOn = (context: RouteContext, source: string): boolean => agentSourceSwitchedOn(source, context.company?.aiSourceKinds ?? NOTHING_SWITCHED_ON);
 
 /** A company admin of a company Cloud knows, from Code's access check made now. A RouteAnswer when refused. */
 async function admin(context: RouteContext, write: boolean): Promise<Admin | RouteAnswer> {
@@ -69,7 +74,7 @@ async function answer(context: RouteContext, who: Admin): Promise<RouteAnswer> {
     source: saved?.source ?? null,
     version: saved?.version ?? 0,
     canChange: true,
-    choices: AGENT_AI_SOURCES.map((source) => ({ source, available: AGENT_AI_CHOOSABLE.includes(source) && (source !== "bedrock_byo" || bedrock === true) })),
+    choices: AGENT_AI_SOURCES.map((source) => ({ source, available: AGENT_AI_CHOOSABLE.includes(source) && switchedOn(context, source) && (source !== "bedrock_byo" || bedrock === true) })),
     anthropicKeyConnected: await anthropicKeyConnected(context, who.companyId),
     bedrockConnected: bedrock,
   });
@@ -88,6 +93,8 @@ async function putAgentAi(context: RouteContext): Promise<RouteAnswer> {
   if (body === undefined || Object.keys(body).length !== 2 || !whole(body.expectedVersion) || typeof body.source !== "string") return WORDS.invalid;
   const source = AGENT_AI_CHOOSABLE.find((s) => s === body.source);
   if (source === undefined) return WORDS.invalid;
+  // DEC 254t: a source of a kind this install has not switched on is not choosable (the gateway refuses it too).
+  if (!switchedOn(context, source)) return WORDS.switchedOff;
   // Only a connected Bedrock can be chosen (the gateway would refuse every call otherwise). Can't tell: refused, never guessed.
   if (source === "bedrock_byo" && (await bedrockConnected(context, who.companyId)) !== true) return WORDS.bedrockFirst;
   const store = context.company!.store;

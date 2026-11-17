@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { canonicalModelName } from "../../packages/contracts/src/models-node.js";
 import {
   BEDROCK_ROLE_ARN_PATTERN,
+  CUSTOM_SOURCE_KINDS,
   MAX_CUSTOM_SOURCES_PER_ORG,
   MAX_MODELS_PER_SOURCE,
   ModelSourceInputSchema,
@@ -10,6 +11,8 @@ import {
   ModelSourceSchema,
   OrgModelSourcesSchema,
   SOURCE_KINDS_AT_LAUNCH,
+  SOURCE_KINDS_SWITCHED_ON_DEFAULT,
+  parseSourceKindsSwitch,
   TRANSPORTS_AT_LAUNCH,
   bedrockExternalId,
   customSourceLimitProblem,
@@ -30,8 +33,11 @@ const bedrockInput = { kind: "bedrock", label: "Our AWS", roleArn: ROLE, region:
 const endpointInput = { kind: "endpoint", label: "Gateway", baseUrl: "https://llm.example.com/v1", api: "openai-completions", models: [{ name: "our-model", catalog: claude }] };
 
 describe("launch gates", () => {
-  it("keeps every company source kind off until its checklist passes", () => {
-    expect(SOURCE_KINDS_AT_LAUNCH).toEqual([]);
+  it("lists every kind the code supports, and keeps each one off until the install switches it on after its real-key check (DEC 254t)", () => {
+    expect([...SOURCE_KINDS_AT_LAUNCH]).toEqual(["anthropic", "openai", "openrouter", "bedrock", "endpoint"]);
+    expect([...SOURCE_KINDS_AT_LAUNCH]).toEqual([...CUSTOM_SOURCE_KINDS]);
+    // No install list given: nothing is switched on.
+    expect([...SOURCE_KINDS_SWITCHED_ON_DEFAULT]).toEqual([]);
     expect([...TRANSPORTS_AT_LAUNCH]).toEqual(["anthropic-messages", "openai-responses", "openai-completions"]);
     expect(ModelSourceKindSchema.options).toEqual(["rovara", "personal-chatgpt", "anthropic", "openai", "openrouter", "bedrock", "endpoint"]);
   });
@@ -58,6 +64,29 @@ describe("launch gates", () => {
   it("refuses an endpoint api outside the transports even when the transports list is narrowed", () => {
     const launch = { kinds: ["endpoint"] as const, transports: ["openai-completions"] as const };
     expect(sourceKindProblem("endpoint", "openai-responses", launch)).toBe("endpoint sources aren't available yet");
+  });
+});
+
+describe("the per-install switch (DEC 254t)", () => {
+  it("reads a comma-separated list of supported kinds; absent or empty is none", () => {
+    expect(parseSourceKindsSwitch(undefined)).toEqual([]);
+    expect(parseSourceKindsSwitch("")).toEqual([]);
+    expect(parseSourceKindsSwitch("openai")).toEqual(["openai"]);
+    expect(parseSourceKindsSwitch("openrouter,anthropic")).toEqual(["openrouter", "anthropic"]);
+  });
+
+  it.each(["OpenAI", "openai,", ",openai", "openai,openai", "openai, openrouter", "rovara", "personal-chatgpt", "gemini", "openai;openrouter", " openai", "openai,openrouter,anthropic,bedrock,endpoint,openai"])("refuses %j as a whole (never a partial list)", (value) => {
+    expect(() => parseSourceKindsSwitch(value)).toThrow("invalid AI source kinds");
+  });
+
+  it("never repeats the refused value in its error", () => {
+    try { parseSourceKindsSwitch("sk-ant-not-a-kind"); expect.unreachable(); } catch (error) { expect(String(error)).not.toContain("sk-ant"); }
+  });
+
+  it("a switched-on kind passes sourceKindProblem; everything else is still refused", () => {
+    const kinds = parseSourceKindsSwitch("openai");
+    expect(sourceKindProblem("openai", undefined, { kinds })).toBeUndefined();
+    expect(sourceKindProblem("openrouter", undefined, { kinds })).toBe("openrouter sources aren't available yet");
   });
 });
 

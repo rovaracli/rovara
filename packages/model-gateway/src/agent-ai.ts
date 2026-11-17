@@ -22,6 +22,42 @@ import type { ProductKeyRow } from "./product-seal.js";
 export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo"] as const;
 export type AgentAiSource = typeof AGENT_AI_SOURCES[number];
 
+/**
+ * DEC 254t (a): the company AI source kinds the code supports (the contracts' SOURCE_KINDS_AT_LAUNCH; this package imports no
+ * contracts, so a contract test holds the copies equal). Supported is not switched on: GATEWAY_AI_SOURCE_KINDS names the kinds the
+ * install's owner switched on after each one's real-key check passed (scripts/real-key-check.ts). Absent or empty: none.
+ */
+export const AI_SOURCE_KINDS = ["anthropic", "openai", "openrouter", "bedrock", "endpoint"] as const;
+export type AiSourceKind = typeof AI_SOURCE_KINDS[number];
+/** The agent source each kind is chosen as. `rovara` is Rovara's own AI, never a company source kind. */
+export const AGENT_SOURCE_OF_KIND: Readonly<Record<AiSourceKind, string>> = Object.freeze({ anthropic: "anthropic_key", openai: "openai_key", openrouter: "openrouter_key", bedrock: "bedrock_byo", endpoint: "custom_endpoint" });
+/**
+ * The company sources that were live before the per-install switch (DEC 236 and DEC 238). They keep working exactly as before, switch
+ * or no switch: turning them off on an install that uses them would stop its agents. Whether to gate them too is an owner question.
+ */
+export const PRE_SWITCH_AGENT_SOURCES: readonly string[] = ["anthropic_key", "bedrock_byo"];
+
+/**
+ * GATEWAY_AI_SOURCE_KINDS: comma-separated supported kinds, no spaces, no repeats. Absent or empty: none switched on. Anything else
+ * throws with fixed words (never a partial list; the value is never repeated).
+ */
+export function parseAiSourceKinds(value: string | undefined): Set<AiSourceKind> {
+  if (value === undefined || value === "") return new Set();
+  const kinds = value.split(",");
+  if (kinds.length > AI_SOURCE_KINDS.length || new Set(kinds).size !== kinds.length || !kinds.every((kind) => (AI_SOURCE_KINDS as readonly string[]).includes(kind))) throw new Error("invalid AI source kinds");
+  return new Set(kinds as AiSourceKind[]);
+}
+
+/**
+ * Whether a saved agent source may be used on this install: Rovara's AI and the pre-switch sources always (their own settings decide,
+ * as before); any other source only when its kind is switched on. An unknown source never.
+ */
+export function agentSourceSwitchedOn(source: string, switchedOn: ReadonlySet<string>): boolean {
+  if (source === "rovara" || PRE_SWITCH_AGENT_SOURCES.includes(source)) return true;
+  const kind = AI_SOURCE_KINDS.find((k) => AGENT_SOURCE_OF_KIND[k] === source);
+  return kind !== undefined && switchedOn.has(kind);
+}
+
 export interface AgentAiSourceReader {
   /** The company's saved choice, or undefined when it saved none. Throws when the choice can't be read or is not one of the sources. */
   sourceFor(cid: string, signal?: AbortSignal): Promise<AgentAiSource | undefined>;

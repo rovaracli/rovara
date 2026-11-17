@@ -1,5 +1,5 @@
 import { App, Aspects, Tags } from "aws-cdk-lib";
-import { ENVIRONMENT_TAG_KEY, RESOURCE_PREFIX } from "@agentx/contracts";
+import { ENVIRONMENT_TAG_KEY, RESOURCE_PREFIX, parseSourceKindsSwitch } from "@agentx/contracts";
 import { CLOUD_PIPELINE_CONTEXT_KEY, CloudReleasePipelineStack } from "./cloud-release-pipeline.js";
 import { CLOUD_APP_CONTEXT_KEY, CloudAppStack, cloudAppStackName } from "./cloud-app.js";
 import { CloudWebStack, cloudWebStackName } from "./cloud-web.js";
@@ -33,6 +33,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       env: { region: deploymentRegion ?? "us-east-1" },
       environmentName: cloudAppEnv,
       ...(productAiOn(app.node.tryGetContext(MODEL_GATEWAY_PRODUCT_CONTEXT_KEY), MODEL_GATEWAY_PRODUCT_CONTEXT_KEY) ? { productAi: true } : {}),
+      ...aiSourceKindsContext(app.node.tryGetContext(AI_SOURCE_KINDS_CONTEXT_KEY)),
     });
     Tags.of(cloudWeb).add(ENVIRONMENT_TAG_KEY, cloudAppEnv);
     const cloudApp = new CloudAppStack(app, "RovaraCloudApp", {
@@ -82,12 +83,27 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
       ...(productAiOn(app.node.tryGetContext(MODEL_GATEWAY_PRODUCT_CONTEXT_KEY), MODEL_GATEWAY_PRODUCT_CONTEXT_KEY) ? { productAi: true } : {}),
       ...rovaraAiContext(app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY), app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY), app.node.tryGetContext(MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY)),
       ...(productAiOn(app.node.tryGetContext(MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY), MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY) ? { bedrockByo: true } : {}),
+      ...aiSourceKindsContext(app.node.tryGetContext(AI_SOURCE_KINDS_CONTEXT_KEY)),
       providerSecretNames: providerSecretNamesMode(app.node.tryGetContext(MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY)),
     });
     Tags.of(gateway).add(ENVIRONMENT_TAG_KEY, gatewayEnv);
     return app;
   }
   throw new Error(`Name the stack to make: -c ${CLOUD_APP_CONTEXT_KEY}=<environment> (Rovara Cloud), -c ${CLOUD_PIPELINE_CONTEXT_KEY}=<environment> (its release pipeline) or -c ${MODEL_GATEWAY_CONTEXT_KEY}=<environment> (the model gateway)`);
+}
+
+/**
+ * DEC 254t (a): `-c rovaraAiSourceKinds=<kind>,...` names the company AI source kinds the owner switched on after each one's real-key
+ * check passed (scripts/real-key-check.ts). The SAME value goes to Cloud (CLOUD_AI_SOURCE_KINDS: what an admin may choose) and to the
+ * gateway (GATEWAY_AI_SOURCE_KINDS: what a call may use), so pass it to both deploys. Absent: neither setting (none switched on).
+ */
+export const AI_SOURCE_KINDS_CONTEXT_KEY = "rovaraAiSourceKinds";
+/** Absent: nothing. A string: the checked list (the contracts' parseSourceKindsSwitch; a bad value stops the synth). Anything else is refused. */
+export function aiSourceKindsContext(value: unknown): { aiSourceKinds?: string } {
+  if (value === undefined) return {};
+  if (typeof value !== "string") throw new Error(`${AI_SOURCE_KINDS_CONTEXT_KEY} must be AI source kinds, comma-separated`);
+  try { parseSourceKindsSwitch(value); } catch { throw new Error(`${AI_SOURCE_KINDS_CONTEXT_KEY} must be AI source kinds, comma-separated (anthropic, openai, openrouter, bedrock, endpoint)`); }
+  return { aiSourceKinds: value };
 }
 
 /** Rovara's AI for agents (DEC 240): absent is off; a non-empty string is the allow-list; the exempt list never alone. */

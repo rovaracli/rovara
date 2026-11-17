@@ -33,7 +33,7 @@ export {
   type CompanyBudgets, type CompanyInstruction, type CompanySettings, type LockValue, type SettingsCheck, type SettingsDecision, type WebsiteCeiling,
 } from "./company-settings.js";
 export {
-  AGENT_AI_SOURCES, COMPANY_ID, CompanyStoreConflict, HOOK_INSTALL_COMPANIES_MAX, INVITES_READ_MAX, INVITE_DAYS, LocalCompanyStore, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, StoreCompanyRules, StoreHookInstalls,
+  AGENT_AI_SOURCES, AGENT_SOURCE_OF_KIND, AI_SOURCE_KINDS, agentSourceSwitchedOn, parseAiSourceKinds, PRE_SWITCH_AGENT_SOURCES, COMPANY_ID, CompanyStoreConflict, HOOK_INSTALL_COMPANIES_MAX, INVITES_READ_MAX, INVITE_DAYS, LocalCompanyStore, OPEN_INVITES_MAX, PENDING_CHANGE_DAYS, StoreCompanyRules, StoreHookInstalls,
   companySettings, validGithubUserId, validHookInstall,
   type AgentAiChoice, type CompanyTrial, type TrialUnlock, type AgentAiSource, type CompanyProfile, type CompanyStore, type HookInstall, type InviteRecord, type InviteState, type PendingSettingsChange, type StoredSettings,
 } from "./company-store.js";

@@ -34,6 +34,8 @@ import { LINK_TOKEN } from "./onboarding-routes.js";
 export interface CompanyBackend {
   store: CompanyStore;
   log?: (event: Record<string, unknown>) => void;
+  /** DEC 254t: the company AI source kinds this install switched on (CLOUD_AI_SOURCE_KINDS, company-store.ts parseAiSourceKinds). Absent: none. */
+  aiSourceKinds?: ReadonlySet<string>;
 }
 
 /** Code's pre-approval routes (contract v0 `company.preapprovals.create` and `.withdraw`). */
