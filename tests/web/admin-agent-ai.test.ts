@@ -41,7 +41,7 @@ describe("AI for your agents page", () => {
  });
  it("reads only the shape it expects", () => {
   expect(readAgentAi({ ...view("rovara", 3), choices: [{ source: "rovara", available: true }, { source: "bedrock_byo", available: "yes" }, { source: "<b>", available: true }], anthropicKeyConnected: "no" }))
-   .toEqual({ source: "rovara", version: 3, available: { rovara: true, anthropic_key: false, bedrock_byo: false }, anthropicKeyConnected: null });
+   .toEqual({ source: "rovara", version: 3, available: { rovara: true, anthropic_key: false, bedrock_byo: false, openai_key: false, openrouter_key: false }, anthropicKeyConnected: null, listed: ["rovara", "anthropic_key", "bedrock_byo"], openaiKeyConnected: null, openrouterKeyConnected: null });
   expect(() => readAgentAi({ source: "openai", version: 1 })).toThrow();
   expect(() => readAgentAi({ source: null })).toThrow();
  });
@@ -73,6 +73,23 @@ describe("AI for your agents page", () => {
    expect(sent[0]!.body).toEqual({ expectedVersion: 4, source: "rovara" });
    expect(await screen.findByText(/Agents now use Rovara's AI/u)).toBeTruthy();
   } finally { f.close(); }
+ });
+ it("DEC 254t: lists the own OpenAI / OpenRouter key only when Cloud lists it, not choosable until its key is connected", async () => {
+  const listed = { ...view("anthropic_key", 2), choices: [...view(null, 0).choices, { source: "openai_key", available: false }, { source: "openrouter_key", available: true }], openaiKeyConnected: false, openrouterKeyConnected: true };
+  const f = mount("/app/admin/agent-ai", () => ({ status: 200, body: listed }));
+  try {
+   expect((await screen.findByTestId("agent-ai-openai_key")).textContent).toMatch(/Your own OpenAI key/u);
+   expect((screen.getByTestId("agent-ai-openai_key").querySelector("input") as HTMLInputElement).disabled).toBe(true);
+   expect(screen.getByTestId("agent-ai-no-openai-key")).toBeTruthy();
+   expect((screen.getByTestId("agent-ai-openrouter_key").querySelector("input") as HTMLInputElement).disabled).toBe(false);
+   expect(screen.queryByTestId("agent-ai-no-openrouter-key")).toBeNull();
+  } finally { f.close(); }
+  const today = mount("/app/admin/agent-ai", () => ({ status: 200, body: view(null, 0) }));
+  try {
+   await screen.findByTestId("agent-ai-rovara");
+   expect(screen.queryByTestId("agent-ai-openai_key")).toBeNull();
+   expect(screen.queryByTestId("agent-ai-openrouter_key")).toBeNull();
+  } finally { today.close(); }
  });
  it("says not connected yet when Cloud has no company data", async () => {
   const f = mount("/app/admin/agent-ai", () => ({ status: 501, body: { error: { code: "NOT_ON_CODE_YET", message: "not connected" } } }));

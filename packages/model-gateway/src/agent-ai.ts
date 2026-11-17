@@ -5,6 +5,8 @@
 //                  at list price on its bill (DEC 240b), under the one combined company cap.
 //   anthropic_key  the company's own Anthropic key (DEC 236, company-key mode).
 //   bedrock_byo    the company's own Bedrock (DEC 238): its own invoke-only role, assumed as the company (ByoBedrock below).
+//   openai_key     the company's own OpenAI key (DEC 254t), through Chat Completions (agent-openai.ts); only when its kind is switched on.
+//   openrouter_key the company's own OpenRouter key (DEC 254t), the same way; its reported cost is used by settleAmount's rules.
 //
 // No choice saved: company-key mode exactly as before (DEC 236). There is never an automatic fallback between sources.
 import { BEDROCK_CONVERSE_ID } from "./bedrock-converse.js";
@@ -19,8 +21,18 @@ import type { ProviderTransport } from "./provider.js";
 import { PRODUCT_DEFAULT_CAPS, type ProductKeyStore } from "./product-keys.js";
 import type { ProductKeyRow } from "./product-seal.js";
 
-export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo"] as const;
+export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key"] as const;
 export type AgentAiSource = typeof AGENT_AI_SOURCES[number];
+
+/**
+ * DEC 254t (A2): the company's own OpenAI or OpenRouter key as its agents' AI (agent-openai.ts translates Anthropic Messages to Chat
+ * Completions and back). The key is the company's sealed account of that provider (the learning document, learning-keys.ts); the
+ * transport has a fixed host. `maxOutputTokens` is the price snapshot's limit for the model (unknown: OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS).
+ */
+export interface CompanyChatAi {
+  transport: ProviderTransport;
+  maxOutputTokens?(model: string): number | undefined;
+}
 
 /**
  * DEC 254t (a): the company AI source kinds the code supports (the contracts' SOURCE_KINDS_AT_LAUNCH; this package imports no

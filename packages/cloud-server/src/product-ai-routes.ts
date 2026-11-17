@@ -49,7 +49,7 @@ export interface ProductAiView {
 /** What the routes need from ProductKeyStore (structural: cloud-server does not depend on the gateway package). */
 export interface ProductAiStore {
   view(iss: string, cid: string, owner: string): Promise<ProductAiView>;
-  connect(change: Change & { sourceId: string; provider: "gemini" | "vertex" | "anthropic" | "openai" | "bedrock"; key: string }): Promise<ProductAiView>;
+  connect(change: Change & { sourceId: string; provider: "gemini" | "vertex" | "anthropic" | "openai" | "bedrock" | "openrouter"; key: string }): Promise<ProductAiView>;
   rotate(change: Change & { sourceId: string; key: string }): Promise<ProductAiView>;
   /** A project uses a company source (a link, never a copy; product-keys.ts link). */
   link(change: Change & { sourceId: string; companySourceId: string }): Promise<ProductAiView>;

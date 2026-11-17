@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { AGENT_AI_SOURCES, agentSourceSwitchedOn, type AgentAiSourceReader, type ByoBedrock, type RovaraAi } from "./agent-ai.js";
+import { AGENT_AI_SOURCES, agentSourceSwitchedOn, type AgentAiSourceReader, type ByoBedrock, type CompanyChatAi, type RovaraAi } from "./agent-ai.js";
+import { OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS, OPENAI_AGENT_MODEL, OPENAI_AGENT_UPSTREAM, toChatCompletions, type OpenAiAgentProvider } from "./agent-openai.js";
 import type { AwsCredentials } from "./aws.js";
 import { BEDROCK_MODEL_ACCESS_WORDS } from "./bedrock-byo-sessions.js";
 import { CONVERSE_DEFAULT_MAX_OUTPUT_TOKENS, REASONING_CARRYOVER_MODEL, toConverse } from "./bedrock-converse.js";
@@ -47,6 +48,8 @@ export interface GatewayDependencies {
    */
   agentAi?: {
     sources: AgentAiSourceReader; rovara?: RovaraAi; byo?: ByoBedrock;
+    /** DEC 254t (A2): the company's own OpenAI / OpenRouter key through Chat Completions (agent-openai.ts). Absent: that source is refused (not offered). */
+    openai?: CompanyChatAi; openrouter?: CompanyChatAi;
     /**
      * DEC 254t: the company source kinds this install switched on (GATEWAY_AI_SOURCE_KINDS). A saved source whose kind is off is
      * refused at admission (AGENT_SOURCE_SWITCHED_OFF): nothing read, held or sent. Absent: none. Rovara's AI and the pre-switch
@@ -139,6 +142,10 @@ const AGENT_UNAVAILABLE: RouteRefusal = Object.freeze({ ok: false as const, stat
 export const AGENT_SOURCE_NOT_OFFERED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: your own Bedrock is not available on this install." });
 /** DEC 254t: the company chose an AI source this install has not switched on. Nothing read, held or sent; no fallback. */
 export const AGENT_SOURCE_SWITCHED_OFF: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: the AI source your company chose is not switched on for this install." });
+/** DEC 254t (A2): the company chose its own OpenAI or OpenRouter key, and this gateway does not offer it. Nothing held or sent; no fallback. */
+export const AGENT_CHAT_NOT_OFFERED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Choose AI for your agents: the AI source your company chose is not available on this install." });
+/** DEC 254t (A2): a request with something an OpenAI or OpenRouter key cannot be given faithfully (images, documents, thinking, server or strict tools). Before any hold. */
+export const AGENT_CHAT_FEATURE: GuardFailure = Object.freeze({ ok: false as const, status: 400, code: "invalid_request", message: "This request uses something your company's own OpenAI or OpenRouter key does not offer for agents (only text and tools)." });
 /** DEC 238: the company chose its own Bedrock but has no connection saved. Nothing held or sent; no fallback. */
 export const BYO_BEDROCK_NOT_CONNECTED: RouteRefusal = Object.freeze({ ok: false as const, status: 403, code: "no_ai_key", message: "Connect your Bedrock: this company chose its own Bedrock for its agents, and no AWS role is connected." });
 /** DEC 238: a model the company did not pick when it connected its Bedrock. Before any hold. */
@@ -193,13 +200,17 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
   let rovara: { ai: RovaraAi; marker: string } | undefined;
   // DEC 238: set by admit when the company chose its own Bedrock; then neither its key nor Rovara's account is used.
   let byo: { deps: ByoBedrock; row: Parameters<ByoBedrock["sessions"]["credentials"]>[0]; connection: Parameters<ByoBedrock["sessions"]["credentials"]>[1]; marker: string; transport: ProviderTransport; credentials?: AwsCredentials } | undefined;
+  // DEC 254t (A2): set by admit when the company chose its own OpenAI or OpenRouter key; then only that provider's account is read.
+  let chat: { provider: OpenAiAgentProvider; ai: CompanyChatAi } | undefined;
+  let claimsOf: TaskClaims | undefined;
   return {
     ...base,
-    get provider() { return rovara === undefined && byo === undefined ? base.provider : "bedrock"; },
-    get transport() { return byo !== undefined ? byo.transport : rovara === undefined ? base.transport : rovara.ai.transport; },
+    get provider() { return chat !== undefined ? chat.provider : rovara === undefined && byo === undefined ? base.provider : "bedrock"; },
+    get transport() { return chat !== undefined ? chat.ai.transport : byo !== undefined ? byo.transport : rovara === undefined ? base.transport : rovara.ai.transport; },
     // Bedrock's refusal: its first bytes, only to tell "model not enabled yet" apart (never echoed or logged).
     get failureBody() { return rovara !== undefined || byo !== undefined; },
     async admit(claims, signal) {
+      claimsOf = claims;
       const choice = deps.agentAi;
       if (choice !== undefined) {
         let source;
@@ -220,6 +231,17 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
           admitted = true;
           return undefined;
         }
+        if (source === "openai_key" || source === "openrouter_key") {
+          const provider: OpenAiAgentProvider = source === "openai_key" ? "openai" : "openrouter";
+          const ai = choice[provider];
+          if (ai === undefined) return AGENT_CHAT_NOT_OFFERED;
+          // Only the verified company's own account of THAT provider (an Anthropic key is never a stand-in).
+          try { if ((await keys.connected(claims.iss, claims.cid, provider, signal)) !== true) return AGENT_KEY_MISSING; }
+          catch { return AGENT_UNAVAILABLE; }
+          chat = { provider, ai };
+          admitted = true;
+          return undefined;
+        }
         if (source === "rovara") {
           if (choice.rovara === undefined) return ROVARA_AI_OFF;
           // A per-call marker stands in for a key: the transport signs with the task role, and no key exists to leak.
@@ -235,6 +257,19 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
     },
     guard(bytes, headers, claims) {
       const checked = base.guard(bytes, headers, claims);
+      if (chat !== undefined && checked.ok) {
+        if (!OPENAI_AGENT_MODEL.test(checked.model)) return AGENT_CHAT_FEATURE;
+        // Held to the model's own output limit (the price snapshot's row for this provider), else the default.
+        let limit: unknown;
+        try { limit = chat.ai.maxOutputTokens?.(checked.model); } catch { limit = undefined; }
+        const maxTokens = Math.min(checked.maxTokens, typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : OPENAI_AGENT_DEFAULT_MAX_OUTPUT_TOKENS);
+        let translated: Record<string, unknown> | undefined;
+        try { translated = toChatCompletions(JSON.parse(checked.bytes.toString("utf8")) as Record<string, unknown>, checked.model, maxTokens, chat.provider); } catch { translated = undefined; }
+        if (translated === undefined) return AGENT_CHAT_FEATURE;
+        let forwarded: Buffer;
+        try { forwarded = Buffer.from(JSON.stringify(translated)); } catch { return AGENT_CHAT_FEATURE; }
+        return { ...checked, maxTokens, bytes: forwarded, headers: { "content-type": "application/json" }, path: OPENAI_AGENT_UPSTREAM[chat.provider].path };
+      }
       if (byo !== undefined && checked.ok) {
         // Only a model the company picked, sent as the Claude id or profile it picked for it (Claude only in slice 1).
         const id = Object.hasOwn(byo.connection.models, checked.model) ? byo.connection.models[checked.model] : undefined;
@@ -280,12 +315,21 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
         return byo.marker;
       }
       let key: string | undefined;
-      try { key = await keys.keyFor(claims.iss, claims.cid, "anthropic", signal); } catch { notSent = AGENT_UNAVAILABLE; return ""; }
+      try { key = await keys.keyFor(claims.iss, claims.cid, chat?.provider ?? "anthropic", signal); } catch { notSent = AGENT_UNAVAILABLE; return ""; }
       if (key === undefined) { notSent = AGENT_KEY_MISSING; return ""; }
       return key;
     },
     notSent: () => notSent,
     providerFailure: (status, body) => {
+      if (chat !== undefined) {
+        // An error answer carries no output (OpenAI and OpenRouter bill only what they generate): never charged. A refused key is the
+        // company's to fix (marked on its settings page), in fixed words; nothing from the answer is echoed.
+        if (status === 401 || status === 403) {
+          if (claimsOf !== undefined) { const who = claimsOf; void (async () => { try { await keys.refused?.(who.iss, who.cid, chat.provider); } catch { /* a warning never changes a call */ } })(); }
+          return { charged: false, refusal: AGENT_KEY_REFUSED };
+        }
+        return { charged: false, refusal: PROVIDER_ERROR };
+      }
       if (byo !== undefined) {
         // A Bedrock error answer carries no output: nothing used, never charged (AWS bills the customer only for what it generated).
         // A refusal of the role means the session is no longer good: the next call assumes it again.
@@ -366,6 +410,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   let provider: ProviderResponse | undefined;
   let settlementPrice: ResolvedPrice | undefined;
   let settlementUsage: TokenUsage | undefined;
+  let settlementReported: number | undefined;
   let settlementModel: string | undefined;
   let settlementKind: PriceKind = "chat";
   // How the call ended, for an events route's settle: the refusal word last answered, or a complete answer.
@@ -507,6 +552,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (counts === undefined) throw new Error("provider unavailable");
     sink.end(); completed = true;
     settlementUsage = counts;
+    // A provider-reported cost (OpenRouter) counts only for a call that completed with readable usage; settleAmount applies its rules.
+    try { const reported = provider.reportedCostMicros?.(); if (reported !== undefined) settlementReported = reported; } catch { /* no reported cost */ }
   } catch (error) {
     log({ event: "provider_error" });
     const notSent = !head && error instanceof NotSentError ? route?.notSent?.() : undefined;
@@ -519,7 +566,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       try {
         let estimateRecord: EstimatedSettlement | undefined;
         if (cost > 0 && settlementPrice !== undefined && settlementModel !== undefined) {
-          const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), price: settlementPrice, reservationMicros: cost });
+          const amount = settleAmount({ ...(settlementUsage === undefined ? {} : { usage: settlementUsage }), ...(settlementReported === undefined ? {} : { reportedCostMicros: settlementReported }), price: settlementPrice, reservationMicros: cost });
           cost = amount.actualMicros; estimated = amount.estimated;
           if (estimated) estimateRecord = { provider: route.provider, model: settlementModel, kind: settlementKind, settledAt: now(), priceVersion: settlementPrice.priceVersion ?? 0, ...(amount.usage === undefined ? {} : { usage: amount.usage }) };
         }

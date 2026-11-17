@@ -150,7 +150,7 @@ describe("the agent route with the switch (gateway, defence in depth)", () => {
   });
 
   it("switched on but not served by this route yet: refused (503), never sent on the company's Anthropic key", async () => {
-    const g = gateway("openai_key", new Set(["openai"]));
+    const g = gateway("custom_endpoint", new Set(["endpoint"]));
     const sink = await call(g.deps);
     expect(sink.status).toBe(503);
     expect(g.sent).toEqual([]); expect(g.keys.asked).toEqual([]); expect(g.keys.reads).toEqual([]);
@@ -170,8 +170,8 @@ describe("the agent route with the switch (gateway, defence in depth)", () => {
     expect(new Set(answers).size).toBe(1);
   });
 
-  it("every saved source the store can hold today is let through the switch", () => {
-    for (const source of AGENT_AI_SOURCES) expect(gatewaySwitchedOn(source, new Set())).toBe(true);
+  it("of the sources the store can hold, only the own OpenAI and OpenRouter keys (A2) wait for the switch", () => {
+    expect(AGENT_AI_SOURCES.filter((source) => !gatewaySwitchedOn(source, new Set()))).toEqual(["openai_key", "openrouter_key"]);
   });
 });
 
@@ -198,7 +198,7 @@ describe("the deployed gateway process passes the install's switch to the agent 
     const gateway = await startServe(config, {
       db, fetch: async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }), now: () => now, listen: false, log: () => undefined,
       keys: { keyFor: async () => "rovara-install-key" }, agentKeys: new CompanyKeys(),
-      agentAiSources: { sourceFor: async () => "openai_key" as AgentAiSource },
+      agentAiSources: { sourceFor: async () => "custom_endpoint" as AgentAiSource },
       transport: async (request) => { sent.push(request); return { status: 200, body: answer() }; },
     });
     running.push(gateway);
@@ -213,7 +213,7 @@ describe("the deployed gateway process passes the install's switch to the agent 
     const off = await serve(undefined);
     expect(off.res.statusCode).toBe(403);
     expect(JSON.parse(off.res.text())).toEqual({ error: { type: AGENT_SOURCE_SWITCHED_OFF.code, message: AGENT_SOURCE_SWITCHED_OFF.message } });
-    const on = await serve("openai");
+    const on = await serve("endpoint");
     expect(on.res.statusCode).toBe(503);
     expect([...off.sent, ...on.sent]).toEqual([]);
   });
@@ -224,7 +224,8 @@ describe("the deployed gateway process passes the install's switch to the agent 
 describe("AI for your agents with the switch (Cloud)", () => {
   it("today's choices and answers are byte-identical with no switch, an empty one and every kind on", async () => {
     const answers: string[] = [];
-    for (const aiSourceKinds of [undefined, new Set<string>(), new Set<string>(CLOUD_KINDS)]) {
+    // Switching on only the pre-switch kinds lists nothing new; a new kind adds its own choice (A2), never changes these.
+    for (const aiSourceKinds of [undefined, new Set<string>(), new Set<string>(["anthropic", "bedrock"])]) {
       const w = world({ company: true, ...(aiSourceKinds === undefined ? {} : { aiSourceKinds }) });
       const ada = await w.signIn("ada", 30);
       const read = await w.call(ada, "GET", "/org/agent-ai");
@@ -236,7 +237,7 @@ describe("AI for your agents with the switch (Cloud)", () => {
     expect(new Set(answers).size).toBe(1);
   });
 
-  it("a kind's name or a future source is never choosable today, switched on or not", async () => {
+  it("a kind's name, an unbuilt source, or an own-key source without its key is never choosable, switched on or not", async () => {
     const w = world({ company: true, aiSourceKinds: new Set<string>(CLOUD_KINDS) });
     const ada = await w.signIn("ada", 30);
     for (const source of ["openai", "openai_key", "openrouter_key", "custom_endpoint"]) {

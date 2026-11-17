@@ -53,10 +53,11 @@ export interface InviteRecord {
 /** A Code install the policy hook answers: its pinned public keys (at most two, for rotation) and the companies it may ask about. */
 /**
  * DEC 240: which AI the company's agents use ("AI for your agents"). The model gateway reads the same item (model-gateway agent-ai.ts):
- * "rovara" is Rovara's AI (charged per use), "anthropic_key" the company's own Anthropic key, "bedrock_byo" its own Bedrock (reserved:
- * the routes refuse it until DEC 238 is built). No saved choice: the gateway's company-key mode as before.
+ * "rovara" is Rovara's AI (charged per use), "anthropic_key" the company's own Anthropic key, "bedrock_byo" its own Bedrock (DEC 238),
+ * "openai_key" / "openrouter_key" its own OpenAI / OpenRouter key (DEC 254t, only where the kind is switched on). No saved choice: the
+ * gateway's company-key mode as before.
  */
-export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo"] as const;
+export const AGENT_AI_SOURCES = ["rovara", "anthropic_key", "bedrock_byo", "openai_key", "openrouter_key"] as const;
 export type AgentAiSource = (typeof AGENT_AI_SOURCES)[number];
 export interface AgentAiChoice { companyId: string; source: AgentAiSource; version: number; updatedAt: string; updatedBy: string }
 export const validAgentAiSource = (value: unknown): value is AgentAiSource => typeof value === "string" && (AGENT_AI_SOURCES as readonly string[]).includes(value);

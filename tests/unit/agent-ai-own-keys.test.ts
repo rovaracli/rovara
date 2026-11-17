@@ -1,0 +1,103 @@
+// DEC 254t (a), row A2 in Cloud: "AI for your agents" offers the company's own OpenAI and OpenRouter keys only where the install switched
+// the kind on, and only once that provider's key is connected. The OpenAI key is the company's existing sealed OpenAI account; the
+// OpenRouter key joins the same write-only learning document (company admins, fresh step-up, audited, never answered), is connectable
+// only where its kind is on, and never makes lessons usable. The gateway reads exactly what these routes save. Two companies never meet.
+import { randomBytes } from "node:crypto";
+import { describe, expect, it } from "vitest";
+import { storedLearningKeys } from "../../packages/model-gateway/src/learning-keys.js";
+import { A, B, ISS, world, write } from "./product-ai-world.js";
+
+const AGENT = "/org/agent-ai";
+const KEYS = "/org/learning-ai";
+const openaiKey = () => ["sk", "proj", randomBytes(16).toString("hex")].join("-");
+const routerKey = () => ["sk", "or", "v1", randomBytes(24).toString("hex")].join("-");
+const both = new Set(["openai", "openrouter"]);
+
+describe("own OpenAI / OpenRouter keys for agents (Cloud)", () => {
+  it("listed only where the kind is switched on; choosable only once its key is connected; saved and audited", async () => {
+    const w = world({ company: true, aiSourceKinds: both });
+    const ada = await w.signIn("ada", 30);
+    const before = await w.call(ada, "GET", AGENT);
+    expect(before.body).toMatchObject({
+      choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }, { source: "openai_key", available: false }, { source: "openrouter_key", available: false }],
+      openaiKeyConnected: false, openrouterKeyConnected: false,
+    });
+    const early = await w.call(ada, "PUT", AGENT, { expectedVersion: 0, source: "openai_key" });
+    expect(early.status).toBe(400);
+    expect(early.body.error?.message).toBe("Connect that provider's key first (Settings, AI keys), then choose it here.");
+    const key = openaiKey();
+    expect((await w.call(ada, "PUT", `${KEYS}/key`, write(0, { provider: "openai", key }))).status).toBe(200);
+    const saved = await w.call(ada, "PUT", AGENT, { expectedVersion: 0, source: "openai_key" });
+    expect(saved.status).toBe(200);
+    expect(saved.body).toMatchObject({ source: "openai_key", version: 1, openaiKeyConnected: true });
+    expect(await w.companies.agentAi(A)).toMatchObject({ source: "openai_key", version: 1 });
+    expect((await w.audit.read(A, { max: 50 })).rows.filter((r) => r.action === "agent_ai.source.changed").map((r) => r.subject)).toEqual(["agent_ai:openai_key"]);
+    expect(saved.raw).not.toContain(key);
+  });
+
+  it("switched off: the answer is exactly today's, and neither source can be saved", async () => {
+    const today = world({ company: true });
+    const on = world({ company: true, aiSourceKinds: new Set(["anthropic", "bedrock"]) });
+    for (const w of [today, on]) {
+      const ada = await w.signIn("ada", 30);
+      const read = await w.call(ada, "GET", AGENT);
+      expect(read.body).toEqual({ source: null, version: 0, canChange: true, anthropicKeyConnected: false, bedrockConnected: null, choices: [{ source: "rovara", available: true }, { source: "anthropic_key", available: true }, { source: "bedrock_byo", available: false }] });
+      await w.call(ada, "PUT", `${KEYS}/key`, write(0, { provider: "openai", key: openaiKey() }));
+      for (const source of ["openai_key", "openrouter_key"]) {
+        const refused = await w.call(ada, "PUT", AGENT, { expectedVersion: 0, source });
+        expect(refused.status).toBe(400);
+        expect(refused.body.error?.message).toBe("This AI source isn't switched on for this Cloud yet.");
+      }
+      expect(await w.companies.agentAi(A)).toBeUndefined();
+    }
+  });
+
+  it("an OpenRouter key: connectable only where its kind is on, write-only, audited, read back by the gateway for the agent route only", async () => {
+    const off = world({ company: true });
+    const adaOff = await off.signIn("ada", 30);
+    expect((await off.call(adaOff, "GET", KEYS)).body.accounts).not.toHaveProperty("openrouter");
+    const refused = await off.call(adaOff, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key: routerKey() }));
+    expect(refused.status).toBe(400);
+    expect(await off.store.view(ISS, A, "_learning")).toMatchObject({ sources: [] });
+
+    const w = world({ company: true, aiSourceKinds: new Set(["openrouter"]) });
+    const ada = await w.signIn("ada", 30);
+    const key = routerKey();
+    const put = await w.call(ada, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key }));
+    expect(put.status).toBe(200);
+    expect(put.raw).not.toContain(key);
+    // OpenRouter is the agents' only: it never makes lessons usable.
+    expect(put.body).toMatchObject({ accounts: { openrouter: { connected: true }, anthropic: { connected: false } }, pausedNow: expect.arrayContaining(["no_provider"]) as unknown });
+    const keys = storedLearningKeys(w.store);
+    expect(await keys.keyFor(ISS, A, "openrouter")).toBe(key);
+    expect(await keys.connected(ISS, A, "openrouter")).toBe(true);
+    expect(await keys.keyFor(ISS, B, "openrouter")).toBeUndefined();
+    expect((await w.audit.read(A, { max: 50 })).rows.map((r) => [r.action, r.subject])).toEqual(expect.arrayContaining([["learning_ai.key.connected", "learning_ai:openrouter"]]));
+    for (const text of [JSON.stringify(await w.audit.read(A, { max: 50 })), ...w.logs]) expect(text).not.toContain(key);
+    const chosen = await w.call(ada, "PUT", AGENT, { expectedVersion: 0, source: "openrouter_key" });
+    expect(chosen.status).toBe(200);
+    // Removed: no longer choosable.
+    expect((await w.call(ada, "DELETE", `${KEYS}/key`, write(1, { provider: "openrouter" }))).status).toBe(200);
+    expect(await keys.keyFor(ISS, A, "openrouter")).toBeUndefined();
+    expect((await w.call(ada, "GET", AGENT)).body).toMatchObject({ openrouterKeyConnected: false });
+  });
+
+  it("two companies: one company's key never makes another's source choosable", async () => {
+    const w = world({ company: true, aiSourceKinds: both });
+    const ada = await w.signIn("ada", 30); const bea = await w.signIn("bea", 30);
+    expect((await w.call(ada, "PUT", `${KEYS}/key`, write(0, { provider: "openai", key: openaiKey() }))).status).toBe(200);
+    expect((await w.call(ada, "PUT", AGENT, { expectedVersion: 0, source: "openai_key" })).status).toBe(200);
+    expect((await w.call(bea, "GET", AGENT)).body).toMatchObject({ source: null, openaiKeyConnected: false });
+    expect((await w.call(bea, "PUT", AGENT, { expectedVersion: 0, source: "openai_key" })).status).toBe(400);
+    expect(await w.companies.agentAi(B)).toBeUndefined();
+  });
+
+  it("non-admins can neither read nor change it; a write needs a fresh step-up", async () => {
+    const w = world({ company: true, aiSourceKinds: both });
+    const pam = await w.signIn("pam", 30);
+    expect((await w.call(pam, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key: routerKey() }))).status).toBe(403);
+    const stale = await w.signIn("ada", 3600);
+    expect((await w.call(stale, "PUT", `${KEYS}/key`, write(0, { provider: "openrouter", key: routerKey() }))).body.error?.code).toBe("STEP_UP_REQUIRED");
+    expect((await w.store.view(ISS, A, "_learning")).sources).toEqual([]);
+  });
+});
