@@ -29,6 +29,8 @@ export const CODE_REPORT_FEATURES_PATH = "/v1/app/org/report/features";
 
 /** Code's page size (REPORT_PAGE_MAX), the most tasks and the most calls to Code one answer reads. Past either the whole range is refused, never a part of it. A call looks at up to 1,000 tasks and may give fewer. */
 export const REPORT_PAGE_ROWS = 200;
+/** "All time" has no `from` of its own; Code needs one on the first call. */
+const ALL_TIME_FROM = "1970-01-01T00:00:00.000Z";
 export const REPORT_ROWS_MAX = 5_000;
 export const REPORT_PAGES_MAX = 50;
 /** The tasks one feature detail answer lists; the totals above them count every task. */
@@ -93,7 +95,7 @@ export function parseReportFilters(query: URLSearchParams): ReportFilters | unde
   if (state !== undefined && !oneOf(STATE_FILTERS, state)) return undefined;
   if (path !== undefined && !oneOf(PATHS, path)) return undefined;
   return {
-    ...(from === undefined ? {} : { from: from! }), ...(to === undefined ? {} : { to: to! }), ...(project === undefined ? {} : { project: project! }),
+    ...(from === undefined ? {} : { from: new Date(from!).toISOString() }), ...(to === undefined ? {} : { to: new Date(to!).toISOString() }), ...(project === undefined ? {} : { project: project! }),
     ...(origin === undefined ? {} : { origin: origin }), ...(state === undefined ? {} : { state: state }), ...(path === undefined ? {} : { path: path }),
   };
 }
@@ -200,8 +202,9 @@ async function fetchRows(context: RouteContext, companyId: string, filters: Repo
   let cursor: string | undefined, unreadable = 0;
   for (let call = 1; call <= REPORT_PAGES_MAX; call += 1) {
     const params = new URLSearchParams();
-    for (const name of ["from", "to", "project", "origin", "state", "path"] as const) if (filters[name] !== undefined) params.set(name, filters[name]);
-    if (cursor !== undefined) params.set("cursor", cursor);
+    // Code takes exactly one of `from` (the first call) and `cursor` (every later one); the cursor is bound to `to` and the other filters, so those go on every call as they were.
+    for (const name of ["to", "project", "origin", "state", "path"] as const) if (filters[name] !== undefined) params.set(name, filters[name]);
+    if (cursor === undefined) params.set("from", filters.from ?? ALL_TIME_FROM); else params.set("cursor", cursor);
     params.set("limit", String(REPORT_PAGE_ROWS));
     let body: unknown;
     try {

@@ -25,7 +25,7 @@ const row = (n: number, over: CodeRow = {}): CodeRow => ({
 });
 const feat = (id: string, source = "chosen") => ({ id, source });
 
-interface Company { rows: CodeRow[]; features?: unknown; featuresStatus?: number; pageSize?: number; failTasks?: number }
+interface Company { rows: CodeRow[]; features?: unknown; featuresStatus?: number; pageSize?: number; failTasks?: number; /** The `to` the first call carried; later calls must carry it again. */ cursorTo?: string }
 interface Call { path: string; search: URLSearchParams; authorization: string | undefined }
 
 function setUp(companies: Record<string, Company>, over: { tasks?: (call: Call) => Response | undefined; access?: () => Response | undefined } = {}) {
@@ -49,7 +49,11 @@ function setUp(companies: Record<string, Company>, over: { tasks?: (call: Call) 
       const special = over.tasks?.(call);
       if (special !== undefined) return special;
       // Code names the company from the token and returns that company's rows only; a page is `pageSize` rows and a numeric cursor.
-      const size = company.pageSize ?? 200, start = Number(url.searchParams.get("cursor") ?? "0");
+      // Code takes exactly one of `from` (an instant with milliseconds) and `cursor`; the cursor is bound to `to` and the other filters.
+      const from = url.searchParams.get("from"), cursor = url.searchParams.get("cursor");
+      if ((from === null) === (cursor === null) || (from !== null && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(from))) return json(400, { error: { code: "CONFIG_INVALID", message: "the report query is not valid" } });
+      if (cursor !== null && (url.searchParams.get("to") ?? "") !== (company.cursorTo ?? "")) return json(400, { error: { code: "CONFIG_INVALID", message: "cursor does not match" } });
+      const size = company.pageSize ?? 200, start = Number(cursor ?? "0");
       const page = company.rows.slice(start, start + size);
       const more = start + size < company.rows.length;
       return json(200, { tasks: page, next: String(more ? start + size : company.rows.length), hasMore: more, skipped: 0, unreadable: 0 });
@@ -283,7 +287,8 @@ describe("the report", () => {
   it("filters: all six go to Code, and Cloud applies origin, path and state again (closed takes failed)", async () => {
     const w = world();
     await w.get(`${REPORT}?from=2026-11-01&to=2026-11-30T23:59:59Z&project=web`, "ada-token");
-    expect(w.taskCalls()[0]!.search.get("from")).toBe("2026-11-01");
+    expect(w.taskCalls()[0]!.search.get("from")).toBe("2026-11-01T00:00:00.000Z");
+    expect(w.taskCalls()[0]!.search.get("to")).toBe("2026-11-30T23:59:59.000Z");
     expect(w.taskCalls()[0]!.search.get("project")).toBe("web");
     await w.get(`${REPORT}?origin=slack&state=open&path=quick`, "ada-token");
     expect(["origin", "state", "path"].map((name) => w.taskCalls()[1]!.search.get(name))).toEqual(["slack", "open", "quick"]);
@@ -348,6 +353,22 @@ describe("what Code sent, read strictly", () => {
     const over = await setUp({ [ACME]: { rows: Array.from({ length: REPORT_ROWS_MAX + 1 }, (_, n) => row(n + 1)) } }).get(REPORT, "ada-token");
     expect([over.status, over.body]).toEqual([422, REPORT_WORDS.tooLarge.body]);
   });
+  it("asks Code the way its cursor needs: `from` on the first call only, the cursor and the filters it is bound to on every later one, and a start for All time", async () => {
+    const many = Array.from({ length: 450 }, (_, n) => row(n + 1));
+    const w = setUp({ [ACME]: { rows: many, pageSize: 200, cursorTo: "2026-11-30T23:59:59.000Z" } });
+    const answer = await w.get(`${REPORT}?from=2026-11-01&to=2026-11-30T23:59:59Z&project=web&origin=web`, "ada-token");
+    expect(answer.status).toBe(200);
+    expect(answer.body.totals.tasks).toBe(450);
+    const calls = w.taskCalls();
+    expect(calls).toHaveLength(3);
+    expect(calls.map((call) => [call.search.has("from"), call.search.has("cursor")])).toEqual([[true, false], [false, true], [false, true]]);
+    for (const call of calls) expect(["to", "project", "origin"].map((name) => call.search.get(name))).toEqual(["2026-11-30T23:59:59.000Z", "web", "web"]);
+    // All time has no `from` of its own: the first call gets a floor so Code accepts it, and later calls still carry the cursor alone.
+    const all = setUp({ [ACME]: { rows: many, pageSize: 200 } });
+    expect((await all.get(REPORT, "ada-token")).body.totals.tasks).toBe(450);
+    expect(all.taskCalls()[0]!.search.get("from")).toBe("1970-01-01T00:00:00.000Z");
+    expect(all.taskCalls()[1]!.search.has("from")).toBe(false);
+  });
   it("goes on past a call that gave no rows while Code says there is more, and stops at hasMore false", async () => {
     let at = 0;
     const w = setUp({ [ACME]: { rows: [] } }, { tasks: () => { at += 1; return at < 3 ? json(200, { tasks: [], next: `c${String(at)}`, hasMore: true, skipped: 0, unreadable: 0 }) : json(200, { tasks: [row(1)], next: "end", hasMore: false, skipped: 0, unreadable: 0 }); } });
@@ -372,7 +393,7 @@ describe("what Code sent, read strictly", () => {
     const answer = await w.get(`${REPORT}?origin=other&state=merged`, "ada-token");
     expect(answer.status).toBe(200);
     expect(answer.body.totals).toMatchObject({ tasks: 1, costCents: 0, costIsFloor: false });
-    expect([...w.taskCalls()[0]!.search.keys()].sort()).toEqual(["limit", "origin", "state"]);
+    expect([...w.taskCalls()[0]!.search.keys()].sort()).toEqual(["from", "limit", "origin", "state"]);
     // A cost with no currency is not a cost Cloud can read; merged cannot exceed opened.
     expect((await setUp({ [ACME]: { rows: [row(1, { currency: undefined, costMicros: 5 })] } }).get(REPORT, "ada-token")).status).toBe(502);
     expect((await setUp({ [ACME]: { rows: [row(1, { prsOpened: 1, prsMerged: 2 })] } }).get(REPORT, "ada-token")).status).toBe(502);

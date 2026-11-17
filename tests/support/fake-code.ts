@@ -1204,7 +1204,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           if (reportData === undefined) return send(404, { error: { code: "NOT_FOUND", message: "route not found" } });
           if (!who.administrator) return send(403, { error: { code: "FORBIDDEN", message: "only a company owner or admin" } });
           if (url.pathname.endsWith("/features")) return send(200, { features: reportData.features });
-          const size = 200, start = Number(url.searchParams.get("cursor") ?? "0");
+          // Code takes exactly one of `from` (a full instant with milliseconds) and `cursor`.
+          const from = url.searchParams.get("from"), cursor = url.searchParams.get("cursor");
+          if ((from === null) === (cursor === null) || (from !== null && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(from))) return send(400, { error: { code: "CONFIG_INVALID", message: "the report query is not valid" } });
+          const size = 200, start = Number(cursor ?? "0");
           const more = start + size < reportData.tasks.length;
           return send(200, { tasks: reportData.tasks.slice(start, start + size), next: String(more ? start + size : reportData.tasks.length), hasMore: more, skipped: 0, unreadable: 0 });
         }
