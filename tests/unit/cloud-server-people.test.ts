@@ -26,7 +26,8 @@ function fakeCode() {
   const calls: Call[] = [];
   const owners: Record<string, string> = { [TASK_A]: ADA, [TASK_B]: BEA };
   const peopleRevision: Record<string, number> = { [TASK_A]: 3, [TASK_B]: 5 };
-  const flags = { commit: false, candidates: "ok" as "ok" | "404" | "501" | "huge" | "garbage", view: "ok" as "ok" | "garbage", confirmationUrl: undefined as string | undefined, changeRequestId: undefined as string | undefined };
+  const readers: Record<string, Array<Record<string, unknown>>> = { [TASK_A]: [{ developerId: DAN, name: "Dan", role: "viewer", projectMember: true, grantedAt: "2026-11-17T09:00:00.000Z" }], [TASK_B]: [] };
+  const flags = { readers: "ok" as "ok" | "garbage" | "refused", commit: false, candidates: "ok" as "ok" | "404" | "501" | "huge" | "garbage", view: "ok" as "ok" | "garbage", confirmationUrl: undefined as string | undefined, changeRequestId: undefined as string | undefined };
   const respond = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const refuse = (status: number, code: string, message: string) => respond(status, { error: { code, message } });
   const viewOf = (taskId: string, me: Who) => ({
@@ -51,6 +52,14 @@ function fakeCode() {
     if (me === undefined) return respond(401, { error: { code: "AUTH_REQUIRED" } });
     if (url.pathname === "/v1/dev/access") return respond(200, { developerId: me.developerId, displayName: me.name, administrator: false, companyId: me.company === "A" ? COMPANY_A : COMPANY_B, companyRole: "member", projects: [{ name: "payments", access: "developer" }], notices: [] });
     calls.push({ method, path: url.pathname, token: me.token, ...(typeof init?.body === "string" ? { body: init.body } : {}) });
+    // Code's task readers (spec 067): the people a Share made readers; only the owner reads them.
+    const sharing = /^\/v1\/dev\/tasks\/([^/]+)\/readers$/u.exec(url.pathname);
+    if (sharing !== null) {
+      const taskId = sharing[1]!;
+      if (!((taskId === TASK_A && me.company === "A") || (taskId === TASK_B && me.company === "B"))) return refuse(404, "TASK_NOT_FOUND", `no task ${taskId} of yours`);
+      if (owners[taskId] !== me.developerId || flags.readers === "refused") return refuse(403, "FORBIDDEN", "only the task's owner can share it");
+      return flags.readers === "garbage" ? respond(200, { readers: "nope" }) : respond(200, { readers: readers[taskId] });
+    }
     const route = /^\/v1\/dev\/tasks\/([^/]+)\/people(?:\/([a-z-]+))?$/u.exec(url.pathname);
     if (route === null) return refuse(404, "NOT_FOUND", "route not found");
     const taskId = route[1]!;
@@ -81,7 +90,7 @@ function fakeCode() {
     }
     return refuse(404, "NOT_FOUND", "route not found");
   }) as typeof fetch;
-  return { fetchImpl, calls, flags, owners, peopleCalls: () => calls.filter((call) => call.path.includes("/people")) };
+  return { fetchImpl, calls, flags, owners, setReaders: (taskId: string, list: unknown[]) => { readers[taskId] = list as Array<Record<string, unknown>>; }, peopleCalls: () => calls.filter((call) => call.path.includes("/people")), readerCalls: () => calls.filter((call) => call.path.endsWith("/readers")) };
 }
 
 function setUp() {
@@ -358,5 +367,53 @@ describe("People on a session: sign-in, CSRF and the company boundary", () => {
     context.code.flags.commit = true;
     expect((await context.call("POST", path("/take-ownership"), { ...ada, body: ownBody() })).status).toBe(200);
     expect((await context.work.get(SES_A))?.companyId).toBe(COMPANY_A);
+  });
+});
+
+// D8: Share folds into People. The owner's list also shows the people a Share made readers of the task, as viewers, so one list says who is on a task.
+describe("People on a session: people shared with through Code's readers (D8)", () => {
+  it("adds the task's readers to the owner's list as viewers (name and opaque id only), asking Code as the owner", async () => {
+    const { call, ada, code } = await base();
+    const answer = await call("GET", path(""), ada);
+    expect(answer.status).toBe(200);
+    expect(SessionPeopleResponseSchema.parse(json(answer)).sharedWith).toEqual([{ developerId: DAN, name: "Dan", role: "viewer" }]);
+    expect(code.readerCalls()).toEqual([{ method: "GET", path: `/v1/dev/tasks/${TASK_A}/readers`, token: "ada-access" }]);
+  });
+
+  it("asks for no readers for a person who may not manage People, and shows none", async () => {
+    const { call, cal, code } = await base();
+    const answer = await call("GET", path(""), cal);
+    expect(answer.status).toBe(200);
+    expect(json(answer)["sharedWith"]).toBeUndefined();
+    expect(code.readerCalls()).toEqual([]);
+  });
+
+  it("shows the list without readers when Code refuses or answers them unreadably, never failing the list or echoing", async () => {
+    const { call, ada, code } = await base();
+    for (const mode of ["refused", "garbage"] as const) {
+      code.flags.readers = mode;
+      const answer = await call("GET", path(""), ada);
+      expect(answer.status, mode).toBe(200);
+      expect(json(answer)["sharedWith"]).toBeUndefined();
+      expect(answer.body).not.toContain("nope");
+    }
+  });
+
+  it("lists only readers it can read: a reader with a role or id Cloud does not know is left out, with nothing echoed", async () => {
+    const { call, ada, code } = await base();
+    code.setReaders(TASK_A, [
+      { developerId: DAN, name: "Dan", role: "viewer" }, { developerId: CAL, name: "Odd", role: "superuser" }, { developerId: "zz", name: "Short", role: "viewer" },
+      { developerId: BEA, name: "", role: "viewer" }, "nope",
+    ]);
+    const answer = await call("GET", path(""), ada);
+    expect(SessionPeopleResponseSchema.parse(json(answer)).sharedWith).toEqual([{ developerId: DAN, name: "Dan", role: "viewer" }]);
+    expect(answer.body).not.toContain("superuser");
+  });
+
+  it("keeps Share's own routes as they were: the shares list still answers the same readers", async () => {
+    const { call, ada } = await base();
+    const answer = await call("GET", `/v1/web/sessions/${SES_A}/shares`, ada);
+    expect(answer.status).toBe(200);
+    expect((json(answer)["shares"] as unknown[]).length).toBe(1);
   });
 });

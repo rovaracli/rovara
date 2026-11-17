@@ -50,3 +50,22 @@ test("the owner adds a person, changes the role through the confirm step, and re
   await expect(people.panel.getByRole("button", { name: "Remove Sam" })).toHaveCount(0);
   await expect(page.getByTestId("people-panel")).not.toContainText(/slack invite|channel/iu);
 });
+
+// D8: Share folds into People. Where Code serves the task's People list, the Share button opens the panel to add a viewer, and the people a Share made readers show in the same list.
+test("Share opens the People panel to add a viewer, and a person shared with before shows in the list as a viewer", async ({ page }, testInfo) => {
+  const title = `Share into People ${String(Date.now())}`;
+  const project = new ProjectPage(page);
+  await project.open(PROJECT);
+  await project.startWork(title);
+  await expect(page).toHaveURL(SessionPage.SHARE_ADDRESS);
+  await new SessionPage(page).expectLoaded(title);
+  const people = new PeoplePanel(page);
+  await page.getByRole("button", { name: "Share", exact: true }).click();
+  await expect(people.panel.getByRole("combobox", { name: "Add as" })).toHaveValue("viewer");
+  await expect(people.panel.getByRole("combobox", { name: "Person" })).toBeFocused();
+  await expect(page.getByText("Share this session")).toHaveCount(0);
+  await people.panel.getByRole("combobox", { name: "Person" }).selectOption({ label: "Sam" });
+  await people.panel.getByRole("button", { name: "Add person" }).click();
+  await expect(people.row("Sam")).toContainText("Can view");
+  await page.screenshot({ path: testInfo.outputPath("people-panel-share.png") });
+});
