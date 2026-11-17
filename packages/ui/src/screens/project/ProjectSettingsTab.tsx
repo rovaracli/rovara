@@ -15,6 +15,7 @@ import { ProjectIntegrations } from "../connect/ProjectIntegrations.js";
 import { ProjectSpendLimits } from "../setup/ProjectSpendLimits.js";
 import { SetupRunControls } from "../setup/SetupRunRow.js";
 import { setupChecklistKey } from "../../api/setup-checklist.js";
+import { TicketUpdatesSettings } from "./TicketUpdatesSettings.js";
 
 const lifecycleReader = { parse(value: unknown) { return AppProjectLifecycleSchema.parse(value); } };
 
@@ -48,6 +49,7 @@ export function ProjectSettingsTab({ project, canEdit }: { project: string; canE
   </section>
   <Lifecycle project={project} scope={scope} />
   <ProjectIntegrations project={project} canEdit={canEdit} />
+  <TicketUpdatesSettings project={project} />
   <ProjectSpendLimits key={`spend:${scope.orgId}:${scope.developerId}:${project}`} project={project} developerId={scope.developerId} />
  </div></ProjectScopeContext.Provider>;
 }

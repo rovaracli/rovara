@@ -20,6 +20,7 @@ import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
 import { SETUP_CHECKLIST_ROUTES } from "./setup-checklist-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import { PEOPLE_ROUTES } from "./people-routes.js";
+import { INTAKE_UPDATES_ROUTES } from "./intake-updates-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
 import { NOT_IN_COMPANY, companyCaller, companyNameOf, companyOf, isCompanyAdmin, refused, type CompanyRole } from "./company-caller.js";
@@ -838,4 +839,5 @@ export const ROUTES: Route[] = [
   // The project setup checklist and the hosted setup run (guided onboarding PR 9): Code decides who may; Cloud passes the person's token and fixed words.
   ...SETUP_CHECKLIST_ROUTES,
   ...PEOPLE_ROUTES,
+  ...INTAKE_UPDATES_ROUTES,
 ];

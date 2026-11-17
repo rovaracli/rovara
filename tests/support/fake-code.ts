@@ -153,6 +153,24 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   ];
   const companyOfPerson = (person: Person) => person.company?.id ?? FAKE_COMPANY_ID;
   const project = (name: string) => projects.find((entry) => entry.name === name);
+  const ticketUpdates = new Map<string, { comments: boolean; changeStatus: boolean; statuses: Record<string, string>; level?: "status_only" | "decisions" | "plan_decisions" | "full" }>();
+  const ticketUpdatesAnswer = (method: string, path: string, who: Person, body: unknown) => {
+    const match = /^\/v1\/app\/projects\/([^/]+)\/intake\/updates$/u.exec(path);
+    if (match === null) return undefined;
+    const name = decodeURIComponent(match[1]!);
+    const selected = project(name);
+    if (selected === undefined || companyOfPerson(who) !== (selected.companyId ?? FAKE_COMPANY_ID) || (!who.administrator && !selected.members.has(who.developerId))) return { status: 404, body: { error: { code: "NOT_FOUND", message: "project not found" } } };
+    const canEdit = who.administrator || selected.members.get(who.developerId) === "administrator";
+    const key = `${selected.companyId ?? FAKE_COMPANY_ID}:${name}`;
+    const settings = ticketUpdates.get(key) ?? { comments: true, changeStatus: false, statuses: { started: "In Progress", pr_opened: "In Review", merged: "Done" } };
+    if (method === "GET") return { status: 200, body: { settings, canEdit, access: [] } };
+    if (method !== "PUT") return { status: 405, body: { error: { code: "METHOD_NOT_ALLOWED", message: "method not allowed" } } };
+    if (!canEdit) return { status: 403, body: { error: { code: "FORBIDDEN", message: "Only a project admin can change these settings." } } };
+    if (typeof body !== "object" || body === null || !("requestId" in body) || !((body as { requestId?: unknown }).requestId) || !("settings" in body)) return { status: 400, body: { error: { code: "CONFIG_INVALID", message: "Send valid ticket update settings." } } };
+    const next = (body as { settings: typeof settings }).settings;
+    ticketUpdates.set(key, next);
+    return { status: 200, body: { settings: next, canEdit, access: [] } };
+  };
   const linearRedirectUri = options.linearRedirectUri ?? "http://127.0.0.1:8787/api/connect/linear/callback";
   const linkNotAllowed = "Only a company owner or admin, or this project's admin, can link or unlink its Slack channel.";
   /** Link (or ask for the /invite: a private channel needs Check after /invite, which the fake takes as done). */
@@ -1206,7 +1224,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           let parsed: unknown = {};
           if (raw !== "") { try { parsed = JSON.parse(raw); } catch { return send(400, { error: { code: "CONFIG_INVALID", message: "the request body is not JSON" } }); } }
           const answer = who === undefined ? undefined : setupRunAnswer(method, url.pathname, url.searchParams, who, parsed);
+          const updateAnswer = who === undefined ? undefined : ticketUpdatesAnswer(method, url.pathname, who, parsed);
           if (who === undefined && /\/setup-agent(?:\/(?:stop|journal))?$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (who === undefined && /\/intake\/updates$/u.test(url.pathname)) return send(401, { error: { code: "AUTH_REQUIRED", message: "Sign in again." } });
+          if (updateAnswer !== undefined) return send(updateAnswer.status, updateAnswer.body);
           if (answer !== undefined) return send(answer.status, answer.body);
         }
         const matched = matchCodeRoute(method, url.pathname);
