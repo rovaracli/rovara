@@ -14,6 +14,7 @@ import { CompanyAuditQueryRefused, codeEngineAuditSource, listCompanyAudit, pars
 import { WORK_READS } from "./work-reads.js";
 import { ONBOARDING_ROUTES } from "./onboarding-routes.js";
 import { AI_SPEND_ROUTES } from "./ai-spend-routes.js";
+import { PROJECT_LIFECYCLE_ROUTES } from "./project-lifecycle-routes.js";
 import { LESSONS_ROUTES } from "./lessons-routes.js";
 import type { CompanyBackend } from "./company-routes.js";
 import { withdrawForMember, type ProductAiBackend } from "./product-ai-routes.js";
@@ -807,4 +808,6 @@ export const ROUTES: Route[] = [
   ...ONBOARDING_ROUTES,
   // The "AI and spending" step (guided onboarding PR 15): the company's AI model and a project's per-task limit, answered by Code as the person.
   ...AI_SPEND_ROUTES,
+  // A project's archive and restore, preview first (DEC 254n item 3): Code decides who may; Cloud passes the person's token and fixed words.
+  ...PROJECT_LIFECYCLE_ROUTES,
 ];

@@ -53,3 +53,4 @@ export {
 export { CONNECT_TTL_MS, connectBack, connectCallbackPath, connectCookieName, connectResultKey, connectStateKey, type ConnectPending, type ConnectProvider } from "./connect-flow.js";
 export { SLACK_CALLBACK_PATH, SLACK_OUTCOMES, SLACK_WORDS } from "./slack-connect.js";
 export { LINEAR_CALLBACK_PATH, LINEAR_OUTCOMES, LINEAR_WORDS } from "./linear-connect.js";
+export { LIFECYCLE_ANSWERS, LIFECYCLE_WORDS, PROJECT_LIFECYCLE_ROUTES, lifecycleBody, lifecycleRefusal } from "./project-lifecycle-routes.js";
